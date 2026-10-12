@@ -24,6 +24,7 @@ paint.workspace = true
 profile.workspace = true
 render.workspace = true
 style.workspace = true
+svg.workspace = true
 text.workspace = true
 
 [[example]]

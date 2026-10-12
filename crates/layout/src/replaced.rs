@@ -88,6 +88,12 @@ fn natural(style: &ComputedStyle, replaced: &Replaced) -> Natural {
                 ratio: (w > 0.0 && h > 0.0).then(|| w / h),
             }
         }
+        // An outer `<svg>` has its `viewBox`'s ratio, and no size (M32).
+        Replaced::Svg { ratio, .. } => Natural {
+            width: None,
+            height: None,
+            ratio: *ratio,
+        },
         // A gradient has no natural size nor ratio: the default object
         // size stands in (CSS Images 3 section 4.3).
         Replaced::Gradient(_) => Natural {
@@ -123,6 +129,11 @@ struct Sizing<'a> {
     /// The icon with not both of `width` and `height` given: 16 by 16,
     /// whatever its style says.
     fixed: bool,
+    /// The width a ratio with no size takes, an outer `<svg>`'s: its
+    /// containing block's, its border and padding taken off (CSS 2
+    /// section 10.3.2 suggests it, and the reference browser does), when
+    /// that is known.
+    fills: Option<f32>,
 }
 
 impl<'a> Sizing<'a> {
@@ -133,6 +144,10 @@ impl<'a> Sizing<'a> {
         let fixed = *replaced == Replaced::Icon
             && !(style.width.length_percentage().is_some()
                 && style.height.length_percentage().is_some());
+        let fills = matches!(replaced, Replaced::Svg { .. })
+            .then_some(cb_width)
+            .flatten()
+            .map(|w| (w - edges.horizontal()).max(0.0));
         Sizing {
             style,
             natural,
@@ -140,6 +155,7 @@ impl<'a> Sizing<'a> {
             horizontal: edges.horizontal(),
             vertical: edges.vertical(),
             fixed,
+            fills,
         }
     }
 
@@ -290,8 +306,10 @@ fn natural_fit(
     let (w, h) = match (natural.width, natural.height) {
         (Some(w), h) => (w, s.height_for(w).or(h).unwrap_or(DEFAULT_HEIGHT)),
         (None, Some(h)) => (s.width_for(h).unwrap_or(DEFAULT_WIDTH), h),
-        // A ratio and no size: contained in the default object size.
+        // A ratio and no size: as wide as it is let be, or contained in
+        // the default object size.
         (None, None) => match s.ratio {
+            Some((r, _)) if let Some(w) = s.fills => (w, w / r),
             Some((r, _)) if r >= DEFAULT_WIDTH / DEFAULT_HEIGHT => {
                 (DEFAULT_WIDTH, DEFAULT_WIDTH / r)
             }

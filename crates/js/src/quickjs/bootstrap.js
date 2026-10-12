@@ -8048,6 +8048,52 @@
     SVGTextContentElement,
   );
   const SVGGradientElement = svgElement("SVGGradientElement", [], SVGElement);
+
+  // The geometry scripts ask of SVG (M32): the host answers from the
+  // render tree of the element's outer svg, at the size its style gives.
+  function svgAsk(element, query, a, b) {
+    const answer = native.svgQuery(self(element), query, a, b);
+    return answer.length === 0 ? null : answer;
+  }
+  function svgMethod(cls, name, fn) {
+    defineProperty(cls.prototype, name, {
+      value: fn,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  svgMethod(SVGGraphicsElement, "getBBox", function getBBox() {
+    const n = svgAsk(this, "bbox", 0, 0);
+    return n === null ? new DOMRect(0, 0, 0, 0) : new DOMRect(n[0], n[1], n[2], n[3]);
+  });
+  svgMethod(SVGGraphicsElement, "getCTM", function getCTM() {
+    const n = svgAsk(this, "ctm", 0, 0);
+    return n === null ? null : new DOMMatrix([n[0], n[1], n[2], n[3], n[4], n[5]]);
+  });
+  svgMethod(SVGTextContentElement, "getComputedTextLength", function getComputedTextLength() {
+    const n = svgAsk(this, "textLength", 0, 0);
+    return n === null ? 0 : n[0];
+  });
+  svgMethod(SVGGeometryElement, "getTotalLength", function getTotalLength() {
+    const n = svgAsk(this, "totalLength", 0, 0);
+    return n === null ? 0 : n[0];
+  });
+  svgMethod(SVGGeometryElement, "getPointAtLength", function getPointAtLength(distance) {
+    need(arguments.length, 1, "getPointAtLength", "SVGGeometryElement");
+    const n = svgAsk(this, "pointAtLength", $Number(distance), 0);
+    return n === null ? new DOMPoint(0, 0) : new DOMPoint(n[0], n[1]);
+  });
+  svgMethod(SVGGeometryElement, "isPointInFill", function isPointInFill(point) {
+    const p = pointInit(point, "isPointInFill", "SVGGeometryElement");
+    const n = svgAsk(this, "inFill", p[0], p[1]);
+    return n !== null && n[0] === 1;
+  });
+  svgMethod(SVGGeometryElement, "isPointInStroke", function isPointInStroke(point) {
+    const p = pointInit(point, "isPointInStroke", "SVGGeometryElement");
+    const n = svgAsk(this, "inStroke", p[0], p[1]);
+    return n !== null && n[0] === 1;
+  });
   const SVG_ELEMENTS = [
     ["SVGSVGElement", ["svg"], SVGGraphicsElement],
     ["SVGGElement", ["g"], SVGGraphicsElement],
@@ -10920,8 +10966,115 @@
     });
   }
 
+  // A rectangle (Geometry Interfaces 1 section 4, M32: what `getBBox()`
+  // gives): its x, y, width and height, the rest made from them.
+  const rects = new $WeakMap();
+  function rectOf(object) {
+    const r = WeakMapGet(rects, object);
+    if (r === undefined) {
+      throw illegalInvocation();
+    }
+    return r;
+  }
+
+  class DOMRectReadOnly {
+    constructor() {
+      const a = arguments;
+      WeakMapSet(rects, this, [
+        a[0] === undefined ? 0 : $Number(a[0]),
+        a[1] === undefined ? 0 : $Number(a[1]),
+        a[2] === undefined ? 0 : $Number(a[2]),
+        a[3] === undefined ? 0 : $Number(a[3]),
+      ]);
+    }
+
+    static fromRect(other) {
+      const r = rectInit(other);
+      return new DOMRectReadOnly(r[0], r[1], r[2], r[3]);
+    }
+
+    get x() {
+      return rectOf(this)[0];
+    }
+
+    get y() {
+      return rectOf(this)[1];
+    }
+
+    get width() {
+      return rectOf(this)[2];
+    }
+
+    get height() {
+      return rectOf(this)[3];
+    }
+
+    get top() {
+      const r = rectOf(this);
+      return MathMin(r[1], r[1] + r[3]);
+    }
+
+    get right() {
+      const r = rectOf(this);
+      return MathMax(r[0], r[0] + r[2]);
+    }
+
+    get bottom() {
+      const r = rectOf(this);
+      return MathMax(r[1], r[1] + r[3]);
+    }
+
+    get left() {
+      const r = rectOf(this);
+      return MathMin(r[0], r[0] + r[2]);
+    }
+
+    toJSON() {
+      return {
+        x: this.x,
+        y: this.y,
+        width: this.width,
+        height: this.height,
+        top: this.top,
+        right: this.right,
+        bottom: this.bottom,
+        left: this.left,
+      };
+    }
+  }
+
+  class DOMRect extends DOMRectReadOnly {
+    static fromRect(other) {
+      const r = rectInit(other);
+      return new DOMRect(r[0], r[1], r[2], r[3]);
+    }
+  }
+  const RECT_FIELDS = ["x", "y", "width", "height"];
+  for (let i = 0; i < 4; i++) {
+    defineProperty(DOMRect.prototype, RECT_FIELDS[i], {
+      get() {
+        return rectOf(this)[i];
+      },
+      set(value) {
+        rectOf(this)[i] = $Number(value);
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  }
+
+  function rectInit(value) {
+    const field = (name) => {
+      const given = value === undefined || value === null ? undefined : value[name];
+      return given === undefined ? 0 : $Number(given);
+    };
+    return [field("x"), field("y"), field("width"), field("height")];
+  }
+
   expose(DOMPointReadOnly, "DOMPointReadOnly");
   expose(DOMPoint, "DOMPoint");
+  expose(DOMRectReadOnly, "DOMRectReadOnly");
+  expose(DOMRect, "DOMRect");
   expose(DOMMatrixReadOnly, "DOMMatrixReadOnly");
   expose(DOMMatrix, "DOMMatrix");
 

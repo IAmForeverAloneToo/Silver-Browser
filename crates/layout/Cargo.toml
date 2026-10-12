@@ -8,6 +8,7 @@ license.workspace = true
 dom.workspace = true
 images.workspace = true
 style.workspace = true
+svg.workspace = true
 text.workspace = true
 unicode-properties.workspace = true
 

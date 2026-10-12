@@ -689,6 +689,57 @@ impl Path {
     /// Each subpath flattened into a closed polygon, for the tests of a
     /// point in it: curves cut into lines within a tenth of a pixel.
     fn polygons(&self) -> Vec<Vec<Point>> {
+        self.flattened()
+            .into_iter()
+            .map(|(polygon, _)| polygon)
+            .collect()
+    }
+
+    /// The length along the path's subpaths, curves flattened as for the
+    /// tests of a point in it, a closed one's way back to its start
+    /// counted (M32: an SVG shape's `getTotalLength()`).
+    pub fn length(&self) -> f64 {
+        self.lines().iter().map(|line| line_length(line)).sum()
+    }
+
+    /// The point `distance` along the path, clamped to its ends (M32:
+    /// `getPointAtLength()`); `None` for a path of no point.
+    pub fn point_at_length(&self, distance: f64) -> Option<(f64, f64)> {
+        let lines = self.lines();
+        let mut left = distance.max(0.0);
+        let mut last = None;
+        for line in &lines {
+            for pair in line.windows(2) {
+                let (a, b) = (pair[0], pair[1]);
+                let step = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+                if left <= step && step > 0.0 {
+                    let t = left / step;
+                    return Some((a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1)));
+                }
+                left -= step;
+                last = Some(b);
+            }
+            last = last.or(line.first().copied());
+        }
+        last
+    }
+
+    /// Each subpath flattened into lines, a closed one ending at its
+    /// start again.
+    fn lines(&self) -> Vec<Vec<Point>> {
+        self.flattened()
+            .into_iter()
+            .map(|(mut line, closed)| {
+                if closed && let Some(&start) = line.first() {
+                    line.push(start);
+                }
+                line
+            })
+            .collect()
+    }
+
+    /// Each subpath flattened, and whether it is closed.
+    fn flattened(&self) -> Vec<(Vec<Point>, bool)> {
         let mut out = Vec::new();
         for subpath in &self.subpaths {
             let mut polygon = vec![subpath.start];
@@ -724,7 +775,7 @@ impl Path {
                 at = segment.end();
             }
             if polygon.len() > 1 {
-                out.push(polygon);
+                out.push((polygon, subpath.closed));
             }
         }
         out
@@ -732,7 +783,7 @@ impl Path {
 
     /// Whether (x, y) is inside the path by `rule`, a point on an edge
     /// counting as inside, as `isPointInPath()` says.
-    pub(crate) fn contains(&self, x: f64, y: f64, rule: FillRule) -> bool {
+    pub fn contains(&self, x: f64, y: f64, rule: FillRule) -> bool {
         let mut winding = 0i32;
         for polygon in self.polygons() {
             let n = polygon.len();
@@ -775,4 +826,12 @@ fn on_segment(a: Point, b: Point, p: Point) -> bool {
     };
     let (cx, cy) = (a.0 + t * dx, a.1 + t * dy);
     (p.0 - cx).hypot(p.1 - cy) < 1e-9
+}
+
+/// The length of a line through `points`.
+fn line_length(points: &[Point]) -> f64 {
+    points
+        .windows(2)
+        .map(|pair| ((pair[1].0 - pair[0].0).powi(2) + (pair[1].1 - pair[0].1).powi(2)).sqrt())
+        .sum()
 }

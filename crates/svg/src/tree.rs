@@ -173,13 +173,35 @@ pub fn build(context: Context<'_>, svg: NodeId, width: f64, height: f64) -> Tree
     build_within(context, svg, (width, height), (MAX_SVG_ELEMENTS, MAX_DEPTH))
 }
 
+/// [`build`] for scripts' questions: a shape that paints nothing is
+/// kept, its fill and stroke transparent, for its geometry.
+pub(crate) fn build_queries(context: Context<'_>, svg: NodeId, width: f64, height: f64) -> Tree {
+    build_with(
+        context,
+        svg,
+        (width, height),
+        (MAX_SVG_ELEMENTS, MAX_DEPTH),
+        true,
+    )
+}
+
 /// [`build`], at most `limit` elements built, at most `max_depth` open
 /// at once.
 pub(crate) fn build_within(
     context: Context<'_>,
     svg: NodeId,
+    size: (f64, f64),
+    bounds: (usize, usize),
+) -> Tree {
+    build_with(context, svg, size, bounds, false)
+}
+
+fn build_with(
+    context: Context<'_>,
+    svg: NodeId,
     (width, height): (f64, f64),
     (limit, max_depth): (usize, usize),
+    queries: bool,
 ) -> Tree {
     let Context {
         document,
@@ -201,6 +223,7 @@ pub(crate) fn build_within(
         elements: 1,
         limit,
         max_depth,
+        queries,
         ids: OnceCell::new(),
         using: Vec::new(),
         host: None,
@@ -261,6 +284,9 @@ pub(crate) struct Builder<'a> {
     /// The most elements open at once ([`MAX_DEPTH`], the document's
     /// own bound, which instances could pass).
     max_depth: usize,
+    /// Whether shapes that paint nothing are kept, for scripts'
+    /// questions.
+    queries: bool,
     /// The document's elements by `id`, the first of each, made when a
     /// reference first asks.
     ids: OnceCell<HashMap<&'a str, NodeId>>,
@@ -500,9 +526,21 @@ impl<'a> Builder<'a> {
         };
         self.host = host;
         self.using.pop();
-        let mut outer = group(node, style, viewport, vec![instance?]);
-        outer.transform = outer.transform.then(&translate(x, y));
-        Some(Item::Group(outer))
+        // Its `x` and `y` a group of their own, so that the use's own
+        // user units are its transform's alone.
+        let moved = Group {
+            node: None,
+            transform: translate(x, y),
+            opacity: 1.0,
+            clip: None,
+            children: vec![instance?],
+        };
+        Some(Item::Group(group(
+            node,
+            style,
+            viewport,
+            vec![Item::Group(moved)],
+        )))
     }
 
     /// An instanced `<symbol>` or `<svg>`: the `<use>`'s `width` and
@@ -587,12 +625,19 @@ impl<'a> Builder<'a> {
     ) -> Option<Shape> {
         let svg = style.svg();
         let fill = if fillable {
-            self.paint(&svg.fill, style.color, bounds, viewport)
-                .map(|paint| Fill {
+            match self.paint(&svg.fill, style.color, bounds, viewport) {
+                Some(paint) => Some(Fill {
                     paint,
                     opacity: f64::from(svg.fill_opacity),
                     rule: fill_rule(svg.fill_rule),
-                })
+                }),
+                None if self.queries => Some(Fill {
+                    paint: Paint::Color(Rgba::TRANSPARENT),
+                    opacity: 0.0,
+                    rule: fill_rule(svg.fill_rule),
+                }),
+                None => None,
+            }
         } else {
             None
         };
@@ -662,7 +707,13 @@ impl<'a> Builder<'a> {
         if !(width > 0.0 && width.is_finite()) {
             return None;
         }
-        let paint = self.paint(&svg.stroke, style.color, bounds, viewport)?;
+        let (paint, opacity) = match self.paint(&svg.stroke, style.color, bounds, viewport) {
+            Some(paint) => (paint, f64::from(svg.stroke_opacity)),
+            // A script's question is of the stroke's shape, whatever
+            // paints it.
+            None if self.queries => (Paint::Color(Rgba::TRANSPARENT), 0.0),
+            None => return None,
+        };
         let mut dashes: Vec<f64> = svg
             .stroke_dasharray
             .as_deref()
@@ -677,7 +728,7 @@ impl<'a> Builder<'a> {
         }
         Some(Stroke {
             paint,
-            opacity: f64::from(svg.stroke_opacity),
+            opacity,
             width,
             cap: match svg.stroke_linecap {
                 StrokeLinecap::Butt => LineCap::Butt,
@@ -1036,7 +1087,7 @@ fn group(node: NodeId, style: &ComputedStyle, viewport: &Viewport, children: Vec
 /// What an item covers in its parent's user units, `[x, y, width,
 /// height]`, its transforms taken: the bounding box `objectBoundingBox`
 /// units are of.
-fn item_bounds(item: &Item) -> Option<[f64; 4]> {
+pub(crate) fn item_bounds(item: &Item) -> Option<[f64; 4]> {
     match item {
         Item::Shape(shape) => Some(shape.bounds),
         Item::Group(group) => {
@@ -1146,7 +1197,7 @@ fn attr_length(document: &Document, node: NodeId, name: &str) -> Length {
 /// A shape's path and bounds, in its user units: `None` for a shape in
 /// error or of no geometry (a radius or a size not above 0, fewer than
 /// two points, no path data), which draws nothing.
-fn geometry(
+pub(crate) fn geometry(
     document: &Document,
     node: NodeId,
     tag: &str,

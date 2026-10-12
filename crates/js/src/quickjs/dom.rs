@@ -90,6 +90,11 @@ impl<'js> Args<'_, 'js> {
         }
     }
 
+    /// A number the bootstrap has already converted; anything else is 0.
+    fn number(&self, i: usize) -> f64 {
+        self.value(i).as_number().unwrap_or(0.0)
+    }
+
     /// A list of strings, as an array of them.
     fn strings(&self, i: usize) -> rquickjs::Result<Vec<String>> {
         let Some(array) = self.value(i).into_array() else {
@@ -428,6 +433,13 @@ const NATIVES: &[(&str, Decode)] = &[
         })
     }),
     ("computedProperties", |_| Ok(Call::ComputedProperties)),
+    ("svgQuery", |a| {
+        Ok(Call::SvgQuery {
+            node: a.handle(0)?,
+            query: a.string(1)?,
+            args: vec![a.number(2), a.number(3)],
+        })
+    }),
     ("released", |a| Ok(Call::Released(a.handle(0)?))),
     ("setTimer", |a| {
         Ok(Call::SetTimer {

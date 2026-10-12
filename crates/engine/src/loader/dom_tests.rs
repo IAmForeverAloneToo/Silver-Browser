@@ -1488,6 +1488,40 @@ fn svg_markup_is_svgs_through_inner_html_clones_and_tag_name_lookups() {
 }
 
 #[test]
+fn svgs_geometry_answers_scripts_as_the_reference_browser_does() {
+    // M32: the probe's rect, its box without stroke or transform, its
+    // matrix with the transform; a path's length and points.
+    let (_tab, console) = scripted(
+        "<svg width=200 height=100><rect id=r x=5 y=6 width=7 height=8 stroke=red \
+         stroke-width=3 transform='translate(3 4)'></rect>\
+         <path id=p d='M0 0 H30 V40' fill=none></path>\
+         <g id=g style='display: none'><rect id=h x=1 y=2 width=3 height=4></rect></g></svg>\
+         <script>var r = document.getElementById('r'); var b = r.getBBox(); \
+         console.log(b.x, b.y, b.width, b.height, b.right, b instanceof DOMRect); \
+         var m = r.getCTM(); console.log(m.a, m.d, m.e, m.f); \
+         var p = document.getElementById('p'); var at = p.getPointAtLength(50); \
+         console.log(p.getTotalLength(), at.x, at.y); \
+         console.log(r.isPointInFill({x: 6, y: 7}), r.isPointInFill(new DOMPoint(1, 1)), \
+         r.isPointInStroke({x: 5, y: 10}), r.isPointInStroke({x: 8, y: 10})); \
+         var g = document.getElementById('g').getBBox(); \
+         var h = document.getElementById('h').getBBox(); console.log(g.width, g.height, h.x, h.height); \
+         var d = new DOMRect(1, 2, -3, 4); console.log(d.left, d.right, JSON.stringify(d))</script>",
+        true,
+    );
+    assert_eq!(
+        console,
+        [
+            "5 6 7 8 12 true",
+            "1 1 3 4",
+            "70 30 20",
+            "true false true false",
+            "0 0 1 4",
+            "-2 1 {\"x\":1,\"y\":2,\"width\":-3,\"height\":4,\"top\":2,\"right\":1,\"bottom\":6,\"left\":-2}"
+        ]
+    );
+}
+
+#[test]
 fn svgs_properties_reach_scripts_through_computed_styles_and_style() {
     // M32: SVG's properties are the cascade's, presentation attributes
     // among its declarations, and CSSOM's.

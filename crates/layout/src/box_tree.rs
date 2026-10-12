@@ -209,6 +209,21 @@ pub enum Replaced {
         width: u32,
         height: u32,
     },
+    /// An outer `<svg>` (M32): the element, whose drawing the engine
+    /// shows, and its `viewBox`'s ratio when it has one of some area. It
+    /// has no natural size: its `width` and `height` attributes are its
+    /// style's.
+    Svg { node: NodeId, ratio: Option<f32> },
+}
+
+/// Whether `node` is an outer `<svg>` (SVG 2 section 5.1.2): an SVG
+/// `svg` element whose parent is no SVG element. Its content makes no
+/// box: it is drawn whole as a replaced element.
+pub fn is_outer_svg(document: &Document, node: NodeId) -> bool {
+    document.svg_tag(node) == Some("svg")
+        && document
+            .parent(node)
+            .is_none_or(|parent| document.svg_tag(parent).is_none())
 }
 
 /// A `canvas` element's size, as its attributes give it (HTML section
@@ -832,10 +847,14 @@ impl<'a> Styled<'a> {
             {
                 None
             }
-            // An SVG element makes no CSS box: an `<svg>` is drawn whole
-            // as a replaced element (M32), its content never laid out as
-            // the page's.
-            Item::Node(node) if self.document.svg_tag(node).is_some() => None,
+            // An SVG element makes no CSS box: an outer `<svg>` is drawn
+            // whole as a replaced element (M32), its content never laid
+            // out as the page's.
+            Item::Node(node)
+                if self.document.svg_tag(node).is_some() && !is_outer_svg(self.document, node) =>
+            {
+                None
+            }
             Item::Node(node) => self.styles.get(node),
             Item::Generated(element, side) => self.styles.pseudo(element, side.pseudo_element()),
             Item::GeneratedText(..) | Item::ControlText(_) | Item::ControlArrow(_) => None,
@@ -1276,6 +1295,16 @@ impl<'a> Styled<'a> {
         };
         if let Some(mark) = self.mark_of(node) {
             return Some(self.replaced_box(item, style, Replaced::Mark(mark)));
+        }
+        if is_outer_svg(self.document, node) {
+            let ratio = self
+                .document
+                .attr(node, "viewBox")
+                .and_then(svg::parse_view_box)
+                .filter(svg::ViewBox::has_area)
+                .map(|v| (v.width / v.height) as f32)
+                .filter(|r| r.is_finite() && *r > 0.0);
+            return Some(self.replaced_box(item, style, Replaced::Svg { node, ratio }));
         }
         let img = self.document.tag(node) == Some("img");
         if let Some(image) = self.content_image(style) {

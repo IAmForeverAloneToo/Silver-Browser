@@ -386,6 +386,15 @@ pub enum Call {
     },
     /// The properties a computed style lists.
     ComputedProperties,
+    /// What a script asks of an SVG element's geometry (M32): `query`
+    /// names the question (`bbox`, `ctm`, `textLength`, `totalLength`,
+    /// `pointAtLength`, `inFill`, `inStroke`), `args` its numbers; the
+    /// answer's numbers, none when there is no answer.
+    SvgQuery {
+        node: Handle,
+        query: String,
+        args: Vec<f64>,
+    },
     /// The script holds no object for the node any longer.
     Released(Handle),
     /// Timer `id` is set (M26, HTML section 8.6): its callback is to

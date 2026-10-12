@@ -1255,6 +1255,26 @@ impl DocumentHost {
                     style.and_then(|style| style::serialize::computed_value(style, &property));
                 Ok(Answer::MaybeString(value))
             }
+            Call::SvgQuery { node, query, args } => {
+                let node = self.node(node)?;
+                let (a, b) = (args.first().copied(), args.get(1).copied());
+                let question = match query.as_str() {
+                    "bbox" => svg::Query::BBox,
+                    "ctm" => svg::Query::Ctm,
+                    "textLength" => svg::Query::TextLength,
+                    "totalLength" => svg::Query::TotalLength,
+                    "pointAtLength" => svg::Query::PointAtLength(a.unwrap_or(0.0)),
+                    "inFill" => svg::Query::InFill(a.unwrap_or(0.0), b.unwrap_or(0.0)),
+                    "inStroke" => svg::Query::InStroke(a.unwrap_or(0.0), b.unwrap_or(0.0)),
+                    _ => return Ok(Answer::Numbers(Vec::new())),
+                };
+                if !self.connected(node) {
+                    return Ok(Answer::Numbers(Vec::new()));
+                }
+                Ok(Answer::Numbers(
+                    self.svg_query(node, question).unwrap_or_default(),
+                ))
+            }
             Call::ComputedProperties => Ok(Answer::Strings(
                 style::serialize::COMPUTED_PROPERTIES
                     .iter()
@@ -2354,6 +2374,37 @@ impl DocumentHost {
             .map_err(refused)?;
         self.put_in(node);
         Ok(())
+    }
+
+    /// The answer to a script's question about the SVG element `node`'s
+    /// geometry (M32), from the styles as they stand: its outer `<svg>`'s
+    /// render tree, an instance's style recascaded from its `<use>`.
+    fn svg_query(&mut self, node: NodeId, question: svg::Query) -> Option<Vec<f64>> {
+        self.styles_now()?;
+        let page = self.page.as_ref()?;
+        let computed = self.computed.as_ref()?;
+        let measure = self.window.fonts.as_ref().map(Measure);
+        let animations = RefCell::new(Animations::new());
+        let context = CascadeContext {
+            viewport_width: self.window.viewport.0 as f32,
+            viewport_height: self.window.viewport.1 as f32,
+            fonts: measure.as_ref().map(|measure| measure as &dyn FontMeasure),
+            language: page.language(),
+            media: self.window.media,
+            animations: Some(&animations),
+        };
+        let recascade = computed
+            .sheets
+            .recascader(&self.document, &computed.styles, &context);
+        let context = svg::Context {
+            document: &self.document,
+            styles: &computed.styles,
+            recascade: Some(&recascade),
+            fonts: self.window.fonts.as_ref(),
+        };
+        let answer = svg::query(context, node, question);
+        self.work += self.document.len() as u64 / 16 + 1;
+        answer
     }
 
     /// The document's styles as they stand, for `getComputedStyle`

@@ -647,6 +647,7 @@ dependencies = [
  "profile",
  "render",
  "style",
+ "svg",
  "text",
 ]
 
@@ -1160,6 +1161,7 @@ dependencies = [
  "html",
  "images",
  "style",
+ "svg",
  "text",
  "unicode-properties",
 ]

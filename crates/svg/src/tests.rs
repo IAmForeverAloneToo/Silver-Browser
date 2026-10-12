@@ -8,7 +8,9 @@ use text::FontCollection;
 
 use crate::draw::draw_within;
 use crate::tree::build_within;
-use crate::{Context, Item, MAX_SVG_ELEMENTS, MAX_SVG_LAYERS, Paint, Tree, build, draw};
+use crate::{
+    Context, Item, MAX_SVG_ELEMENTS, MAX_SVG_LAYERS, Paint, Query, Tree, build, draw, query,
+};
 
 /// The tree of the first `<svg>` in `markup`, for a viewport `w` by `h`.
 fn tree_of(markup: &str, w: f64, h: f64) -> Tree {
@@ -821,4 +823,97 @@ fn text_is_filled_and_stroked_as_a_shape_is() {
     let stem = (2..12).map(|x| px(&canvas, x, 30)).find(|p| p[3] == 255);
     assert_eq!(stem, Some([0, 0, 255, 255]));
     assert_eq!(px(&canvas, 20, 5), [0, 0, 0, 0]);
+}
+
+/// The element of `id` in `markup` parsed as [`tree_of`] parses it.
+fn by_id(markup: &str, id: &str) -> dom::NodeId {
+    let document = Document::from_node(&html::parse_document(markup).expect("never fails"));
+    document
+        .subtree(document.root())
+        .find(|&n| document.attr(n, "id") == Some(id))
+        .expect("an element of the id")
+}
+
+#[test]
+fn a_point_hits_the_topmost_painted_shape_inside_its_clips() {
+    let markup = "<svg><rect id=a width=20 height=20 fill=red></rect>\
+                  <rect id=b x=10 y=10 width=20 height=20 fill=none stroke=blue stroke-width=2>\
+                  </rect><g clip-path='url(#c)'><rect id=d x=30 width=10 height=10></rect></g>\
+                  <clipPath id=c><rect x=30 width=5 height=10></rect></clipPath>\
+                  <rect id=e x=40 y=40 width=10 height=10 transform='translate(-40 0)'></rect></svg>";
+    let tree = tree_of(markup, 50.0, 50.0);
+    let id = |name| Some(by_id(markup, name));
+    assert_eq!(tree.hit(5.0, 5.0), id("a"));
+    assert_eq!(tree.hit(15.0, 15.0), id("a"), "b's inside is unpainted");
+    assert_eq!(tree.hit(10.0, 15.0), id("b"), "b's stroke");
+    assert_eq!(tree.hit(25.0, 25.0), None);
+    assert_eq!(tree.hit(32.0, 5.0), id("d"));
+    assert_eq!(tree.hit(37.0, 5.0), None, "clipped away");
+    assert_eq!(tree.hit(5.0, 45.0), id("e"), "under its transform");
+    assert_eq!(tree.hit(45.0, 45.0), None);
+}
+
+/// `query` about the element of `id` in `markup`, text in the test face.
+fn ask(markup: &str, id: &str, question: Query) -> Option<Vec<f64>> {
+    let fonts = fonts();
+    let document = Document::from_node(&html::parse_document(markup).expect("never fails"));
+    let sheets = Stylesheets::new(Vec::new());
+    let context = CascadeContext::default();
+    let styles = sheets.cascade(&document, &context);
+    let recascade = sheets.recascader(&document, &styles, &context);
+    let node = document
+        .subtree(document.root())
+        .find(|&n| document.attr(n, "id") == Some(id))
+        .expect("an element of the id");
+    let context = Context {
+        document: &document,
+        styles: &styles,
+        recascade: Some(&recascade),
+        fonts: Some(&fonts),
+    };
+    query(context, node, question)
+}
+
+#[test]
+fn scripts_questions_are_answered_from_the_geometry() {
+    let markup = "<svg width=100 height=100>\
+                  <rect id=r x=5 y=6 width=7 height=8 stroke=red stroke-width=3 \
+                  transform='translate(3 4)'></rect>\
+                  <g id=g transform='translate(10 0)'><rect width=10 height=10 fill=none></rect>\
+                  <circle cx=30 cy=5 r=5></circle></g>\
+                  <text id=t font-size=20>Hello</text>\
+                  <use id=u href='#r' x=50></use>\
+                  <rect id=n width=10 height=10 fill=none stroke=none></rect>\
+                  <path id=p d='M0 0 H30 V40'></path></svg><p id=html>x</p>";
+    let at = |id, q| ask(markup, id, q);
+    // The geometry alone, in its own user units, its transform not.
+    assert_eq!(at("r", Query::BBox), Some(vec![5.0, 6.0, 7.0, 8.0]));
+    assert_eq!(
+        at("r", Query::Ctm),
+        Some(vec![1.0, 0.0, 0.0, 1.0, 3.0, 4.0])
+    );
+    assert_eq!(at("g", Query::BBox), Some(vec![0.0, 0.0, 35.0, 10.0]));
+    assert_eq!(
+        at("g", Query::Ctm),
+        Some(vec![1.0, 0.0, 0.0, 1.0, 10.0, 0.0])
+    );
+    // A use's box is its instance's where it puts it.
+    assert_eq!(at("u", Query::BBox), Some(vec![58.0, 10.0, 7.0, 8.0]));
+    let advance = f64::from(fonts().measure("Hello", 20.0));
+    let length = at("t", Query::TextLength).expect("a length")[0];
+    assert!(close(length, advance), "{length} {advance}");
+    assert_eq!(at("p", Query::TotalLength), Some(vec![70.0]));
+    // A closed one's way back counts.
+    assert_eq!(at("n", Query::TotalLength), Some(vec![40.0]));
+    assert_eq!(at("p", Query::PointAtLength(50.0)), Some(vec![30.0, 20.0]));
+    assert_eq!(at("p", Query::PointAtLength(500.0)), Some(vec![30.0, 40.0]));
+    // In its fill and its stroke, painted or not.
+    assert_eq!(at("r", Query::InFill(6.0, 7.0)), Some(vec![1.0]));
+    assert_eq!(at("r", Query::InFill(1.0, 1.0)), Some(vec![0.0]));
+    assert_eq!(at("r", Query::InStroke(5.0, 10.0)), Some(vec![1.0]));
+    assert_eq!(at("r", Query::InStroke(8.0, 10.0)), Some(vec![0.0]));
+    assert_eq!(at("n", Query::InFill(5.0, 5.0)), Some(vec![1.0]));
+    assert_eq!(at("n", Query::BBox), Some(vec![0.0, 0.0, 10.0, 10.0]));
+    // Nothing for an element drawn in no svg.
+    assert_eq!(at("html", Query::BBox), None);
 }

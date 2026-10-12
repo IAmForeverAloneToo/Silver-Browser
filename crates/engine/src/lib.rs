@@ -456,6 +456,11 @@ struct Shown {
     /// What its `img`s give a canvas to draw, shared with its scripts'
     /// host (M30).
     drawables: scripts::canvas::SharedDrawables,
+    /// Its outer `<svg>`s' render trees and drawings (M32).
+    svgs: HashMap<NodeId, SvgDrawing>,
+    /// Moved on by each drawing of an `<svg>`: the frame its image is
+    /// shown as, so that a new drawing is never taken for the last.
+    svg_frames: u32,
     /// When on the timeline the next frame of an animated image the last
     /// frame showed in the viewport comes (M23.1).
     next_image_frame: Option<f64>,
@@ -545,6 +550,8 @@ impl Shown {
             animated: Vec::new(),
             images: ImageStore::default(),
             drawables: Default::default(),
+            svgs: HashMap::new(),
+            svg_frames: 0,
             next_image_frame: None,
             parsing: None,
             scripts: scripts::Scripts::default(),
@@ -733,6 +740,39 @@ struct CachedStyle {
 /// The engine's fonts, lent to the cascade for `ex` and `ch`.
 struct FontMeasurer<'a>(&'a text::FontCollection);
 
+/// An outer `<svg>`'s render tree (M32), as the document and its styles
+/// stood (`key`) for a viewport `size` CSS pixels big, and its last
+/// drawing: its size in raster pixels, its frame and its pixels.
+struct SvgDrawing {
+    key: (u64, u64, u64),
+    size: (f32, f32),
+    tree: Arc<svg::Tree>,
+    drawn: Option<((u32, u32), u32, Arc<images::Image>)>,
+}
+
+/// A point on an outer `<svg>`'s drawing (M32): the svg, the point in
+/// its content box, and that box's size.
+type SvgPoint = (NodeId, (f32, f32), (f32, f32));
+
+/// The raster size an `<svg>` landing on `(w, h)` raster pixels is
+/// drawn at: whole pixels, at least one each way, and at most
+/// `svg::MAX_SVG_PIXELS` in all, the largest that fits kept in its
+/// ratio (the shown image then stretched to its place).
+fn svg_raster_size((w, h): (f32, f32)) -> (u32, u32) {
+    let (w, h) = (f64::from(w.max(1.0)), f64::from(h.max(1.0)));
+    let most = svg::MAX_SVG_PIXELS as f64;
+    // Within the bound, whole pixels below it; else up to whole ones.
+    let side = |v: f64| {
+        let v = if w * h > most {
+            (v * (most / (w * h)).sqrt()).floor()
+        } else {
+            v.ceil()
+        };
+        (v.max(1.0) as u32).min(canvas::MAX_CANVAS_SIDE)
+    };
+    (side(w), side(h))
+}
+
 /// The size in raster pixels each way that `image`, one tile `tile` of
 /// it in the coordinates `matrix` maps to the raster's, is drawn at
 /// (M23.5): the whole image's, of which a slice is drawn, as its pixels
@@ -779,6 +819,38 @@ fn read_by_layout(change: &Change) -> bool {
             ) || layout::shown_by_controls(name)
         }
         _ => true,
+    }
+}
+
+/// Whether `node` is drawn within an outer `<svg>` rather than laid out
+/// (M32): a node inside one, the outer `<svg>` itself apart.
+fn in_svg_content(document: &Document, node: NodeId) -> bool {
+    // From the parent up: an outer svg's own is no SVG element.
+    let mut at = document.parent(node);
+    while let Some(n) = at {
+        if layout::is_outer_svg(document, n) {
+            return true;
+        }
+        if document.svg_tag(n).is_none() {
+            return false;
+        }
+        at = document.parent(n);
+    }
+    false
+}
+
+/// Whether `change` is within an outer `<svg>`'s content (M32), which
+/// its drawing shows and layout does not read.
+fn change_in_svg(document: &Document, change: &Change) -> bool {
+    match change {
+        Change::Inserted { parent, .. } | Change::Removed { parent, .. } => {
+            layout::is_outer_svg(document, *parent) || in_svg_content(document, *parent)
+        }
+        Change::AttributeChanged { element, .. }
+        | Change::StateChanged { element, .. }
+        | Change::ControlChanged { element } => in_svg_content(document, *element),
+        Change::TextChanged { node } => in_svg_content(document, *node),
+        Change::Everything => false,
     }
 }
 
@@ -3386,6 +3458,8 @@ impl Engine {
         // First the size each image is drawn at and whether in view, so
         // that a decode asked for knows how large (M23.5).
         let mut seen = Vec::new();
+        // Each image's drawn size, for an `<svg>`'s drawing (M32).
+        let mut sizes = Vec::new();
         let mut groups = vec![style::transform::Matrix::IDENTITY];
         for item in items.iter() {
             let (image, rect, tile) = match item {
@@ -3420,19 +3494,40 @@ impl Engine {
                     .bounds(rect[0], rect[1], rect[2], rect[3])
                     .is_none_or(|(l, t, r, b)| l < width && r > 0.0 && t < height && b > 0.0),
             );
-            if paint::canvas_node(image.id).is_none() {
-                let size = drawn_size(matrix, tile, image);
+            let size = drawn_size(matrix, tile, image);
+            sizes.push(size);
+            if paint::canvas_node(image.id).is_none() && paint::svg_node(image.id).is_none() {
                 self.shown.images.drew(image.id, frame, size);
             }
         }
+        // The drawings of outer `<svg>`s no longer shown are let go.
+        let shown: HashSet<NodeId> = items
+            .iter()
+            .filter_map(|item| match item {
+                DisplayItem::Image { image, .. } => paint::svg_node(image.id),
+                _ => None,
+            })
+            .collect();
+        self.shown.svgs.retain(|node, _| shown.contains(node));
         let mut next: Option<f64> = None;
         let mut seen = seen.into_iter();
+        let mut sizes = sizes.into_iter();
         for item in items {
-            let image = match item {
-                DisplayItem::Image { image, .. } | DisplayItem::Pattern { image, .. } => image,
+            let (image, place) = match item {
+                DisplayItem::Image { image, w, h, .. } => (image, (*w, *h)),
+                DisplayItem::Pattern { image, w, h, .. } => (image, (*w, *h)),
                 _ => continue,
             };
             let seen = seen.next().unwrap_or(true);
+            let size = sizes.next().unwrap_or(place);
+            // An outer `<svg>`'s drawing (M32), at the size it lands on.
+            if let Some(node) = paint::svg_node(image.id) {
+                if let Some((frame, pixels)) = self.svg_pixels(node, place, size) {
+                    image.pixels = Some(pixels);
+                    image.frame = frame;
+                }
+                continue;
+            }
             // A canvas's bitmap (M30.3), its generation as the frame.
             if let Some(node) = paint::canvas_node(image.id) {
                 if let Some((generation, pixels)) = self.shown.scripts.canvas_pixels(node) {
@@ -4337,8 +4432,13 @@ impl Engine {
         }
         // A change layout reads whatever the styles drops the layout now,
         // between frames, as every change did before M22: only the others
-        // wait for the restyle to say what they reach (M22.4).
-        if sheets.is_some() || changes.iter().any(read_by_layout) {
+        // wait for the restyle to say what they reach (M22.4). One within
+        // an outer `<svg>` its drawing shows (M32).
+        let document = &self.shown.document;
+        let read = changes
+            .iter()
+            .any(|change| read_by_layout(change) && !change_in_svg(document, change));
+        if sheets.is_some() || read {
             self.shown.layout = None;
         }
         if let Some(sheets) = sheets {
@@ -4608,14 +4708,25 @@ impl Engine {
                 // reads — the document's structure or text, a table's
                 // spans, a style but in its composited properties — and
                 // the composited changes are written into it (M22.4).
-                let read = changes.iter().any(read_by_layout);
-                let kept =
-                    !read && restyle.changed.is_empty() && self.composite(&restyle.composited);
+                // What changes within an outer `<svg>` its drawing shows
+                // (M32).
+                let document = &self.shown.document;
+                let read = changes
+                    .iter()
+                    .any(|change| read_by_layout(change) && !change_in_svg(document, change));
+                let laid = |node: &NodeId| !in_svg_content(document, *node);
+                let changed: Vec<NodeId> = restyle.changed.into_iter().filter(laid).collect();
+                let composited: Vec<style::Composited> = restyle
+                    .composited
+                    .into_iter()
+                    .filter(|c| laid(&c.node))
+                    .collect();
+                let kept = !read && changed.is_empty() && self.composite(&composited);
                 if kept {
                     self.layouts_kept += 1;
                 } else {
-                    let mut restyled = restyle.changed;
-                    restyled.extend(restyle.composited.iter().map(|c| c.node));
+                    let mut restyled = changed;
+                    restyled.extend(composited.iter().map(|c| c.node));
                     self.shown
                         .layout_cache
                         .invalidate(&self.shown.document, &changes, &restyled);
@@ -5337,6 +5448,9 @@ impl Engine {
             clips.iter().filter_map(|(node, _, _)| *node).collect()
         };
         let mut hit = None;
+        // When the hit is an outer `<svg>`'s drawing (M32): the svg, the
+        // point in it and its size, for its render tree to answer.
+        let mut in_svg: Option<SvgPoint> = None;
         for step in paint_order(&layout.roots, viewport, &offsets) {
             if passed > 0 {
                 match step {
@@ -5362,11 +5476,19 @@ impl Engine {
                             chain.push(fragment.node);
                         }
                         hit = Some((fragment.node, chain));
+                        in_svg = None;
                     }
                 }
                 Step::Text { fragment, rect, .. } => {
                     if under(&rect, &clips, &points) {
                         hit = Some((fragment.node, chain(&clips)));
+                        let (px, py) = points[points.len() - 1];
+                        in_svg = match &fragment.kind {
+                            layout::FragmentKind::Replaced(layout::Replaced::Svg {
+                                node, ..
+                            }) => Some((*node, (px - rect.x, py - rect.y), (rect.w, rect.h))),
+                            _ => None,
+                        };
                     }
                 }
                 Step::PushClip { node, rect } => clips.push((node, rect, points.len() - 1)),
@@ -5388,7 +5510,105 @@ impl Engine {
                 Step::Scrollbar { .. } => {}
             }
         }
+        // A point on an outer `<svg>` hits the shape under it (M32), or
+        // the svg.
+        if let (Some((node, _)), Some((svg, (x, y), (w, h)))) = (&mut hit, in_svg)
+            && *node == svg
+            && let Some(tree) = self.svg_tree(svg, (w, h))
+            && let Some(shape) = tree.hit(f64::from(x), f64::from(y))
+        {
+            *node = shape;
+        }
         hit
+    }
+
+    /// The render tree of the outer `<svg>` `node` for a viewport `size`
+    /// CSS pixels big (M32), as the document and its styles stand: built
+    /// again when either has changed, or the size.
+    fn svg_tree(&mut self, node: NodeId, size: (f32, f32)) -> Option<Arc<svg::Tree>> {
+        self.cached_styles();
+        let key = (
+            self.shown.document.version(),
+            self.style_runs,
+            self.restyled_elements,
+        );
+        if let Some(drawing) = self.shown.svgs.get(&node)
+            && drawing.key == key
+            && drawing.size == size
+        {
+            return Some(Arc::clone(&drawing.tree));
+        }
+        let tree = {
+            let styles = &self.shown.styled.as_ref()?.styles;
+            let fonts = FontMeasurer(&self.layout_fonts);
+            let context = cascade_context(
+                self.viewport,
+                &fonts,
+                self.shown.page.language(),
+                self.media(self.viewport),
+                &self.shown.animations,
+            );
+            let recascade =
+                self.shown
+                    .stylesheets
+                    .recascader(&self.shown.document, styles, &context);
+            let context = svg::Context {
+                document: &self.shown.document,
+                styles,
+                recascade: Some(&recascade),
+                fonts: Some(&self.layout_fonts),
+            };
+            Arc::new(svg::build(
+                context,
+                node,
+                f64::from(size.0),
+                f64::from(size.1),
+            ))
+        };
+        self.shown.svgs.insert(
+            node,
+            SvgDrawing {
+                key,
+                size,
+                tree: Arc::clone(&tree),
+                drawn: None,
+            },
+        );
+        Some(tree)
+    }
+
+    /// The drawing of the outer `<svg>` `node` placed `place` CSS pixels
+    /// big and landing on `drawn` raster pixels (M32): its frame and its
+    /// pixels, drawn again when its tree or the size has changed.
+    fn svg_pixels(
+        &mut self,
+        node: NodeId,
+        place: (f32, f32),
+        drawn: (f32, f32),
+    ) -> Option<(u32, Arc<images::Image>)> {
+        let tree = self.svg_tree(node, place)?;
+        let raster = svg_raster_size(drawn);
+        let drawing = self.shown.svgs.get_mut(&node)?;
+        if let Some((size, frame, pixels)) = &drawing.drawn
+            && *size == raster
+        {
+            return Some((*frame, Arc::clone(pixels)));
+        }
+        let mut bitmap = canvas::Canvas::new(raster.0, raster.1, false);
+        let base = canvas::Matrix::new(
+            f64::from(raster.0) / f64::from(place.0.max(f32::EPSILON)),
+            0.0,
+            0.0,
+            f64::from(raster.1) / f64::from(place.1.max(f32::EPSILON)),
+            0.0,
+            0.0,
+        );
+        svg::draw(&tree, &mut bitmap, &base);
+        let pixels = bitmap.snapshot()?;
+        self.shown.svg_frames = self.shown.svg_frames.wrapping_add(1);
+        let frame = self.shown.svg_frames;
+        drawing.drawn = Some((raster, frame, Arc::clone(&pixels)));
+        Some((frame, pixels))
     }
 
     /// The link under the viewport point, if any (M9.4, M15): the
@@ -5805,6 +6025,196 @@ mod tests {
             })
             .collect();
         assert_eq!(runs.concat(), "acx");
+    }
+
+    #[test]
+    fn an_inline_svg_is_sized_as_the_reference_browser_sizes_it() {
+        // M32, the design note's probe: in 400 wide boxes.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0; font: 16px sans-serif } .box { width: 400px }</style>\
+             <div class=box><svg id=a></svg></div>\
+             <div class=box><svg id=b viewBox='0 0 100 50'></svg></div>\
+             <div class=box><svg id=c width=100 viewBox='0 0 100 50'></svg></div>\
+             <div class=box><svg id=d height=40 viewBox='0 0 100 50'></svg></div>\
+             <div class=box><svg id=e width=50% height=20></svg></div>\
+             <div class=box><svg id=f width=120 height=30></svg></div>\
+             <div class=box><svg id=g width=0 height=0></svg></div>\
+             <div class=box><svg id=i style='width: 77px' width=10 height=10></svg></div>\
+             <div class=box><svg id=j width=-5 height=abc></svg></div>\
+             <div class=box><svg id=k viewBox='0 0 0 0' width=10 height=10></svg></div>\
+             <div class=box><svg id=l viewBox='0 0 2 1' style='padding: 10px'></svg></div>",
+        );
+        let fragments = engine.fragments(800.0);
+        let mut sizes = Vec::new();
+        fn find(fragments: &[layout::Fragment], out: &mut Vec<(NodeId, f32, f32)>) {
+            for f in fragments {
+                if let layout::FragmentKind::Replaced(layout::Replaced::Svg { node, .. }) = &f.kind
+                {
+                    out.push((*node, f.w, f.h));
+                }
+                find(&f.children, out);
+            }
+        }
+        find(&fragments, &mut sizes);
+        let size = |id: &str| {
+            let node = crate::testing::by_id(&engine, id);
+            sizes
+                .iter()
+                .find(|(n, ..)| *n == node)
+                .map(|&(_, w, h)| (w, h))
+        };
+        assert_eq!(size("a"), Some((300.0, 150.0)));
+        assert_eq!(
+            size("b"),
+            Some((400.0, 200.0)),
+            "a ratio takes the width it has"
+        );
+        assert_eq!(size("c"), Some((100.0, 50.0)));
+        assert_eq!(size("d"), Some((80.0, 40.0)));
+        assert_eq!(size("e"), Some((200.0, 20.0)));
+        assert_eq!(size("f"), Some((120.0, 30.0)));
+        assert_eq!(size("g"), Some((0.0, 0.0)));
+        assert_eq!(size("i"), Some((77.0, 10.0)));
+        assert_eq!(size("j"), Some((0.0, 150.0)));
+        assert_eq!(size("k"), Some((10.0, 10.0)));
+        assert_eq!(
+            size("l"),
+            Some((380.0, 190.0)),
+            "its padding off the width it has"
+        );
+    }
+
+    #[test]
+    fn an_inline_svg_is_drawn_and_hit_at_its_shapes() {
+        let mut engine = test_engine();
+        engine.load_document(
+            "<body style='margin: 0'><svg id=s width=40 height=20 style='display: block'>\
+             <rect id=r width=20 height=20 fill=red></rect>\
+             <circle id=c cx=30 cy=10 r=5 fill=blue></circle></svg>",
+        );
+        let frame = engine.frame(100, 40);
+        let at = |x: usize, y: usize| {
+            let i = (y * 100 + x) * 4;
+            [frame[i], frame[i + 1], frame[i + 2]]
+        };
+        assert_eq!(at(10, 10), [255, 0, 0]);
+        assert_eq!(at(30, 10), [0, 0, 255]);
+        assert_eq!(at(38, 2), [255, 255, 255]);
+        let [r, c, s] = ["r", "c", "s"].map(|name| Some(crate::testing::by_id(&engine, name)));
+        assert_eq!(engine.hit_test(10.0, 10.0), r);
+        assert_eq!(engine.hit_test(30.0, 10.0), c);
+        assert_eq!(engine.hit_test(38.0, 2.0), s, "between the shapes, the svg");
+        // Drawn again at a larger raster when scaled: a sharp edge.
+        engine.load_document(
+            "<body style='margin: 0'><svg width=10 height=10 viewBox='0 0 10 10' \
+             style='display: block; transform: scale(4); transform-origin: 0 0'>\
+             <circle cx=5 cy=5 r=4 fill=black></circle></svg>",
+        );
+        let frame = engine.frame(60, 60);
+        let alpha_like = |x: usize, y: usize| frame[(y * 60 + x) * 4];
+        // Across the circle's edge at row 20, at most one pixel between
+        // black and white, as a drawing at 40 by 40 has.
+        let row: Vec<u8> = (0..20).map(|x| alpha_like(x, 20)).collect();
+        let between = row.iter().filter(|&&v| v > 30 && v < 225).count();
+        assert!(between <= 2, "{row:?}");
+    }
+
+    #[test]
+    fn a_change_within_an_svg_is_drawn_and_lays_nothing_out() {
+        let mut engine = test_engine();
+        engine.load_document(
+            "<body style='margin: 0'><svg id=s width=20 height=20 style='display: block'>\
+             <rect id=r width=20 height=20 fill=red></rect>\
+             <path id=p d='M0 0' fill=lime></path></svg><p>after</p>",
+        );
+        let frame = engine.frame(40, 40);
+        assert_eq!(&frame[0..3], [255, 0, 0]);
+        let (runs, kept) = (engine.layout_runs(), engine.layouts_kept());
+        let [svg, rect, path] = ["s", "r", "p"].map(|id| crate::testing::by_id(&engine, id));
+        engine.mutate(|d| d.set_attribute(rect, "fill", "blue").unwrap());
+        let frame = engine.frame(40, 40);
+        assert_eq!(&frame[0..3], [0, 0, 255]);
+        // A path's data, which no style reads.
+        engine.mutate(|d| d.set_attribute(path, "d", "M0 0 H5 V5 H0 Z").unwrap());
+        let frame = engine.frame(40, 40);
+        assert_eq!(&frame[(2 * 40 + 2) * 4..(2 * 40 + 2) * 4 + 3], [0, 255, 0]);
+        // A shape put in.
+        engine.mutate(|d| {
+            let more = d
+                .create_element_ns(
+                    dom::Namespace::Svg,
+                    "rect",
+                    vec![
+                        ("x".into(), "10".into()),
+                        ("y".into(), "10".into()),
+                        ("width".into(), "10".into()),
+                        ("height".into(), "10".into()),
+                        ("fill".into(), "black".into()),
+                    ],
+                )
+                .unwrap();
+            d.append_child(svg, more).unwrap();
+        });
+        let frame = engine.frame(40, 40);
+        assert_eq!(
+            &frame[(15 * 40 + 15) * 4..(15 * 40 + 15) * 4 + 3],
+            [0, 0, 0]
+        );
+        assert_eq!(
+            (engine.layout_runs() - runs, engine.layouts_kept() - kept),
+            (0, 3),
+            "the layout stood"
+        );
+        // Scaled, it is drawn again at its new size: sharp.
+        engine.mutate(|d| {
+            d.set_attribute(
+                svg,
+                "style",
+                "display: block; transform: scale(4); transform-origin: 0 0",
+            )
+            .unwrap()
+        });
+        let frame = engine.frame(100, 100);
+        // The black rect's edge at x 40 (10 scaled 4 times), whole pixels.
+        let row: Vec<u8> = (36..44).map(|x| frame[(60 * 100 + x) * 4]).collect();
+        assert!(row.iter().all(|&v| !(10..=245).contains(&v)), "{row:?}");
+    }
+
+    #[test]
+    fn a_nested_svg_is_content_and_a_new_size_builds_the_tree_again() {
+        let mut engine = test_engine();
+        engine.load_document(
+            "<body style='margin: 0'><svg width=50% height=10 viewBox='0 0 10 10' \
+             preserveAspectRatio=none style='display: block'>\
+             <svg id=n width=10 height=10><rect width=10 height=10 fill=red></rect></svg></svg>",
+        );
+        let red =
+            |frame: &[u8], width: usize, x: usize| frame[(5 * width + x) * 4..][..3] == [255, 0, 0];
+        let frame = engine.frame(100, 20);
+        assert!(red(&frame, 100, 49) && !red(&frame, 100, 51));
+        let (runs, kept) = (engine.layout_runs(), engine.layouts_kept());
+        let nested = crate::testing::by_id(&engine, "n");
+        engine.mutate(|d| d.set_attribute(nested, "width", "5").unwrap());
+        let frame = engine.frame(100, 20);
+        assert!(red(&frame, 100, 20) && !red(&frame, 100, 30));
+        assert_eq!(
+            (engine.layout_runs() - runs, engine.layouts_kept() - kept),
+            (0, 1),
+            "a nested svg's change lays nothing out"
+        );
+        // Twice as wide a viewport: the svg twice as wide, its tree
+        // built again for it.
+        let frame = engine.frame(200, 20);
+        assert!(red(&frame, 200, 40) && !red(&frame, 200, 60));
+    }
+
+    #[test]
+    fn an_svg_is_drawn_within_the_pixels_a_canvas_may_have() {
+        let (w, h) = svg_raster_size((20_000.0, 20_000.0));
+        assert!(u64::from(w) * u64::from(h) <= svg::MAX_SVG_PIXELS);
+        assert_eq!(w, h, "in its ratio");
+        assert_eq!(svg_raster_size((10.4, 0.0)), (11, 1));
     }
 
     #[test]

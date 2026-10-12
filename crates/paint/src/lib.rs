@@ -80,6 +80,23 @@ pub fn canvas_node(id: u64) -> Option<NodeId> {
     NodeId::from_bits(id & !CANVAS_IMAGE)
 }
 
+/// The bit an outer `<svg>`'s image number has (M32), apart from the
+/// canvases' and gradients' bits: the rest is the element's node.
+pub const SVG_IMAGE: u64 = 1 << 61;
+
+/// The image number the drawing of the outer `<svg>` `node` is shown by.
+pub fn svg_image(node: NodeId) -> u64 {
+    SVG_IMAGE | node.to_bits()
+}
+
+/// The outer `<svg>` an image number names, if it names one.
+pub fn svg_node(id: u64) -> Option<NodeId> {
+    if id & (3 << 62) != 0 || id & SVG_IMAGE == 0 {
+        return None;
+    }
+    NodeId::from_bits(id & !SVG_IMAGE)
+}
+
 /// Why a group is a layer (M19): the compositing note's policy, which
 /// is a function of the computed style and the matrix alone, so that a
 /// page's layers are the same from frame to frame until its styles
@@ -1093,6 +1110,27 @@ fn push_replaced(
     match replaced {
         Replaced::Empty => {}
         Replaced::Mark(mark) => push_mark(items, *mark, rect, to_rgba8(fragment.style.color)),
+        // An outer `<svg>` (M32) fills its content box, its `viewBox`
+        // fitted in it by its own `preserveAspectRatio`: an image the
+        // engine draws at the size it lands on.
+        Replaced::Svg { node, .. } => {
+            if rect.w > 0.0 && rect.h > 0.0 {
+                items.push(DisplayItem::Image {
+                    x: rect.x,
+                    y: rect.y,
+                    w: rect.w,
+                    h: rect.h,
+                    image: ImageRef {
+                        id: svg_image(*node),
+                        frame: 0,
+                        orientation: images::Orientation::Normal,
+                        crop: None,
+                        pixels: None,
+                    },
+                    sharp: false,
+                });
+            }
+        }
         // A gradient (M23.3) fills the box, rendered for its size.
         Replaced::Gradient(gradient) => {
             if rect.w > 0.0 && rect.h > 0.0 {

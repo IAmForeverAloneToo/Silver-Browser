@@ -9,6 +9,8 @@
 #![forbid(unsafe_code)]
 
 mod draw;
+mod hit;
+mod query;
 mod syntax;
 mod text;
 mod tree;
@@ -17,6 +19,7 @@ mod tree;
 mod tests;
 
 pub use draw::draw;
+pub use query::{Query, outer_svg, query};
 pub use syntax::{
     Align, AspectRatio, Axis, Length, Unit, ViewBox, Viewport, parse_length, parse_number,
     parse_numbers, parse_points, parse_preserve_aspect_ratio, parse_view_box, view_box_matrix,
@@ -34,6 +37,9 @@ pub const MAX_GRADIENT_STOPS: usize = 1_024;
 /// The most groups drawn into layers of their own, nested; past it, an
 /// opacity goes to each child.
 pub const MAX_SVG_LAYERS: usize = 16;
+/// The most pixels a drawing's bitmap has, as a canvas's; one larger is
+/// drawn at the largest size within it and stretched.
+pub const MAX_SVG_PIXELS: u64 = 1 << 25;
 /// The most pixels the layers of one drawing take, together; past it,
 /// an opacity goes to each child, as past [`MAX_SVG_LAYERS`].
 pub const MAX_SVG_LAYER_PIXELS: u64 = 1 << 28;
