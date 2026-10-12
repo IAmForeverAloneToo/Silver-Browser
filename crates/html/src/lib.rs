@@ -18,6 +18,7 @@ mod named_references;
 mod serialize;
 pub mod tokenizer;
 pub mod tree_builder;
+pub mod xml;
 
 pub use encoding_sniffing::Confidence;
 pub use load::{Load, Progress};
