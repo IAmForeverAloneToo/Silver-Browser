@@ -161,6 +161,16 @@ to `p7-text.html`, and `p5-top.svg`):
   the glyphs down by about a quarter of the size; `getBBox()` of a text
   is its advance by the font's ascent and descent (22 high at 20px).
 
+*(corrected: three probes followed as the steps asked: `p8-selectors.html`
+(a type selector matches an SVG element's local name in any case in an
+HTML document, `lineargradient` among them, an attribute selector its
+attribute's too; `getElementsByTagName` is case-sensitive for SVG; a
+namespace prefix a sheet does not declare makes a selector invalid),
+`p9-ns.html` (`createElementNS`'s errors in the reference browser's
+words) and `p10-props.html` (SVG's properties past the first probe, see
+below); and the SVG documents' probe gave a canvas the window's white,
+not a transparent one.)*
+
 ## 1. Decisions
 
 **An `svg` crate of our own, drawing through `canvas` (D23, M32.1).**
@@ -189,13 +199,25 @@ and its own transform (`gradientTransform`, and an `objectBoundingBox`
 gradient's box), a stroke's default miter limit of 4 being SVG's to
 set, and `Path` exposed to its new neighbour where a shape's geometry
 is asked for (`getBBox`, hit testing). `svg` forbids `unsafe`.
+*(corrected: the canvas crate's additions are `Spread` and a
+gradient's transform, `clip_union` (a clip path's children's union),
+`State::anti_alias`, and `Path::bounds`, `contains`, `length`,
+`point_at_length` and `add_outline` made public; `svg` takes a
+`Context` of the document, its styles, a recascader for `<use>`
+instances and the fonts, `build` a tree for a viewport's size and
+`draw` it under a matrix; `layout` depends on it for the `viewBox`
+grammar. Text is shaped once a run and size and outlined once a glyph
+and size within a tree, which the fuzzing found mattered: a text set
+apart by `letter-spacing` is a run a character.)*
 
 - *Group opacity.* A group with `opacity` below 1 is drawn into a
   canvas of its own and composited at its opacity, as the reference
   browser does (`0, 0, 255, 128` above); so is a shape with both a fill
   and a stroke, which overlap; a shape with one paint takes its opacity
   into that paint's alpha. Layers nest at most `MAX_SVG_LAYERS` deep;
-  past it, the opacity is applied to each child, recorded.
+  past it, the opacity is applied to each child, recorded. *(corrected:
+  and past `MAX_SVG_LAYER_PIXELS`, the pixels all of a drawing's layers
+  take together, below.)*
 - *Gradient interpolation* is tiny-skia's, unpremultiplied, as the
   reference browser's SVG is (`128, 0, 130, 126` above).
 
@@ -215,7 +237,9 @@ bindings' names). An attribute keeps its qualified name as now
 `createElementNS`, `namespaceURI`, `prefix`, `getAttributeNS`,
 `setAttributeNS`, `hasAttributeNS`, `removeAttributeNS` and
 `getElementsByTagNameNS` come with it, attributes in other namespaces
-than those two being G51's still.
+than those two being G51's still. *(corrected: `set_attribute` and
+`remove_attribute` lowercase an HTML element's names alone; MathML's
+elements are `MathMLElement`s, another namespace's `Element`s.)*
 
 The tree builder takes foreign content as the HTML Standard writes it:
 an `<svg>` or `<math>` start tag inserts a foreign element, the SVG
@@ -233,11 +257,28 @@ states exist, unused till now); `</script>` in SVG runs the script as
 HTML's does. The serializer writes foreign elements with their case
 and their self-closed empty elements as `<rect/>`. Fragments
 (`innerHTML` on an SVG element) parse in the context's namespace.
+*(corrected: a breakout tag is reprocessed by HTML's rules directly, as
+the standard has it, since going through the dispatcher again looped in
+an SVG-context fragment; HTML's "in body" `</p>` with no `p` open now
+makes an empty one and `</br>` a `br`, which html5lib's foreign
+fragments asked. The vendored tests (tests9 to 12, svg, math,
+foreign-fragment, namespace-sensitivity: 179) pass but for 35 that need
+the table, select and frameset modes, G44's still.)*
 
 **Namespaces in CSS (M32.2).** Type selectors match an HTML element's
 name in any case and another element's exactly (`linearGradient`
 matches `linearGradient`, as the reference browser does in an HTML
-document). `@namespace` (default and prefixed) and `ns|type`, `*|type`
+document). *(corrected: the reference browser matches an SVG element's
+local name in any case in an HTML document, `lineargradient` too, and
+an attribute's name on one in any case (`[viewBox]`), and so does the
+engine; `:nth-of-type` counts by namespace and name; a prefix the sheet
+does not declare makes the selector invalid, `querySelector` throwing.
+T4.3 found the cascade 12 to 16% slower for it: a type selector asked
+every element's local name and compared it ignoring case, and every
+element was tried against the user agent's SVG rules. An HTML element's
+tag is compared as it is, a rule whose subjects are all SVG's is tried
+against SVG elements alone, and a compound's namespace is tested
+right after its type: within 8% again.)* `@namespace` (default and prefixed) and `ns|type`, `*|type`
 and `|type` selectors are taken (CSS Namespaces 3); `[ns|attr]`
 attribute selectors stay unsupported (G51). The user agent sheet
 splits in two: its HTML rules under a default HTML namespace, so that
@@ -273,7 +314,23 @@ grammar with SVG's leniencies (a number without a unit is pixels, white
 space at the ends is no error), one that does not parse ignored. The
 `transform` attribute's grammar is SVG's (unitless numbers, commas or
 spaces, `rotate(a x y)`), turned into the property's matrix; an outer
-`<svg>`'s `width` and `height` are its CSS size's hints.
+`<svg>`'s `width` and `height` are its CSS size's hints. *(corrected,
+by a probe of the properties: `stroke-linejoin: miter-clip` and `arcs`
+are no values in the reference browser and are rejected here too;
+`context-fill` and `context-stroke` are kept as computed values, drawn
+as `none`; `var()` works in a presentation attribute; a sheet takes a
+number for SVG's own lengths too (`stroke-width: 3`); `stroke-miterlimit`
+takes a value below 1, none negative; the `transform` attribute takes
+no unit and keeps nothing of a list in error. The properties sit behind
+one pointer of the computed style, `Svg { inherited, own }`, the style
+696 bytes; a hint is built as a declaration from the attribute's
+tokens, never as text a value could add a declaration to. Known
+differences of the same drawing: `rx="auto"` computes `0px` there,
+`auto` here; `r="-1"` computes `-1px` there and is ignored here.)*
+*(corrected: a nested `<svg>`'s, a `<symbol>`'s and a `<use>`'s `width`
+and `height` are their attributes alone: the properties do not apply
+to them in the reference browser (svgwg pull 1059), which seventeen
+web-platform tests check.)*
 
 **The render tree, and what v1 draws (M32.1).** SVG 2 sections 13 and
 14, for these elements: `svg` (outer and nested, its viewport clipped
@@ -291,12 +348,30 @@ inheritance of stops and attributes, `fx`, `fy` and `fr`), `stop`, and
 `style` draw nothing; `<style>` in SVG is a style sheet, as HTML's is.
 Painting follows SVG's order (fill, then stroke, or as `paint-order`
 says), `display: none` draws nothing under it, `visibility: hidden` the
-element alone. A `viewBox` maps to the viewport by
+element alone. *(corrected: the engine has no `visibility` property
+(G12), so it draws as `visible`.)* A `viewBox` maps to the viewport by
 `preserveAspectRatio` (`xMidYMid meet` by default, `none` stretching,
 `slice` cutting). Lengths: a percentage of the nearest viewport's width,
 height or normalized diagonal, `em` and `ex` of the element's font,
 the absolute units at 96 per inch. An element in error (a negative
 radius, a degenerate gradient) draws as SVG 2 says, mostly nothing.
+*(corrected, by the web-platform tests and the golden cases: a `use`'s
+`x` and `y` move its user units after its transform, as SVG 2 section
+5.6.2 has it, so its clip is in them (its `getBBox()` still where they
+put its instance, as the probe has it); a `clipPath` clipped by
+another clips by both (each clip a group's around the last, at most
+`MAX_USE_DEPTH`); an `objectBoundingBox` clip is of the element's own
+user units, a transformed group's children's; a `gradientTransform`
+that cannot be inverted paints the fallback, one empty or that does not
+parse is not specified, so a template's is taken; a radial gradient
+whose circles coincide paints its last stop; a fragment is
+percent-decoded before its lookup (`url(#%66oo)`); `transform-box:
+stroke-box` and `border-box` grow the shape's box by half its stroke's
+width, a group's reference box being its viewport's (recorded);
+`switch`'s `systemLanguage` passes for English alone. `<style>` in SVG
+was not read at all until the web-platform tests showed it (the sheets'
+scan took HTML's): now it is, inline, in an SVG document and in an SVG
+image, HTML's `<style>` in an SVG image too.)*
 
 - *Text v1.* A `<text>`'s characters, white space collapsed as SVG 2
   and the reference browser do (or kept, by `xml:space` or
@@ -307,7 +382,13 @@ radius, a degenerate gradient) draws as SVG 2 says, mostly nothing.
   `middle`, `central`, `hanging`, `text-top`, `text-bottom`), filled
   and stroked as a path is, `letter-spacing` and `word-spacing` taken;
   `<tspan>`s nest within it. `textPath`, `rotate`, `textLength`,
-  vertical text and bidirectional runs are G87's.
+  vertical text and bidirectional runs are G87's. *(corrected: a run
+  of one element and no position is shaped together, a character each
+  where `letter-spacing` or `word-spacing` is set; `text-transform`
+  applies, as HTML's; a `tspan`'s own opacity is not taken and a
+  gradient on a tspan's run uses that run's box, text in a `clipPath`
+  and `lang`'s localized forms being G87's too; `dominant-baseline`
+  takes `mathematical` and `ideographic` as well.)*
 
 **Inline `<svg>` (M32.2).** An outer `<svg>` (an SVG `svg` whose parent
 is not an SVG element) is a replaced element, `Replaced::Svg`: its
@@ -327,7 +408,21 @@ that time and draws it at the size the image lands on in raster pixels
 through the group transforms above it and the device scale, and keeps
 that bitmap while neither the generation nor the size moves. A change
 under an outer `<svg>` that does not change its own size or style
-lays nothing out again.
+lays nothing out again. *(corrected: the tree is kept by the
+document's version, the restyle's counters and the size, so any change
+anywhere builds it again (a per-svg generation would build less,
+recorded); a drawing's frame is numbered across documents and engines
+(`SVG_FRAMES`), since the GPU keeps its textures by image and frame and
+showed one page's drawing in the next page's place; the drawing lands
+on whole device pixels where its groups only translate and scale it,
+and its box's overflow clip, which clips nothing of a drawing that is
+its content box, is left out, so that it is drawn a pixel to a pixel
+on either backend at any scale. A ratio with no size takes its margins
+off the containing block's width too, by CSS 2's constraint, and as a
+row flex item its content widths are the room it has, within its
+`min-height` and `max-height` through the ratio, as the reference
+browser has them. An svg drawing's memory is not counted in the image
+store's budget, recorded.)*
 
 - *Hit testing.* A point in an outer `<svg>`'s content box is put to
   its render tree, topmost first: a shape whose fill (by its rule) or
@@ -344,7 +439,15 @@ lays nothing out again.
   `getNumberOfChars()`, `isPointInFill()` and `isPointInStroke()`, and
   `getTotalLength()` and `getPointAtLength()` on geometry. The animated
   values (`x.baseVal`, `SVGLength`, `SVGTransformList`) are G87's: the
-  attributes are what scripts set.
+  attributes are what scripts set. *(corrected: `getScreenCTM()` needs
+  layout's position for scripts (G46) and `getNumberOfChars()` and
+  `pathLength` are G87's, not done; a nested svg's `getCTM()` is to the
+  outer svg's viewport; the questions go through one host call,
+  `svgQuery`, answered from a tree that keeps unpainted shapes, at the
+  outer svg's size as its style gives it, which the script host keeps
+  by its outer svg and the document's version for the run, so that a
+  chart's labels asked of one by one build it once. `DOMRect` and
+  `DOMRectReadOnly` came with `getBBox()`.)*
 
 **SVG images (M32.1).** A response of `image/svg+xml`, or whose type the
 image request leaves unknown and whose bytes begin like SVG (MIME
@@ -363,6 +466,19 @@ it lands on in raster pixels, a background tile at its tile's, a
 border image's slices from one drawing; a drawing is kept per size,
 under the image store's budget. `drawImage` of an SVG `img` on a canvas
 draws it at the size drawn; printing at the print's resolution.
+*(corrected: one drawing is kept, the largest asked; `drawImage` and a
+print draw an SVG image at its natural size, without fonts, so its text
+is not drawn there (recorded). Its ratio is its `width`'s and
+`height`'s where it has both, else its `viewBox`'s (SVG 2 section 8.2),
+which the web-platform tests found; a background sizes it by CSS
+Images 3's default sizing algorithm with what it has of a natural size
+(a width or a height alone, a ratio alone), which 117 of them check;
+the header that carries the natural size is boxed in a fragment's
+kind, since inline it grew every fragment and a page's paint 12%
+(T4.3);
+its root's background is painted under it. Recorded: a border image
+and a list marker of an SVG image of no natural size use its 300 by
+150; its media queries see no color scheme of its page's.)*
 
 **SVG documents (M32.1).** A navigation's response of `image/svg+xml`
 makes an XML document of the XML parser (other XML types and XHTML
@@ -373,7 +489,13 @@ root `<svg>` is laid out as an outer `<svg>` that is the root element:
 `display: block`, 100% of the viewport by the user agent sheet, its
 `overflow` visible. A document that is not well formed shows the
 parser's error as the reference browser does, a short page naming the
-line and column, rather than nothing.
+line and column, rather than nothing. *(corrected: its scripts are
+prepared once it is shown, in tree order as if its parser had just
+closed each; one with a `src` runs when it comes, not in order with
+the inline ones after it; the error page has no rendering of the
+document up to the error, which the reference browser adds; its
+`characterSet` reads UTF-8 whatever its declaration said; its root
+`svg` fires no `load` event (SVG 2's), all recorded.)*
 
 **The XML parser (M32.1).** A new module of the `html` crate, `xml`,
 bytes to a `dom` tree as the HTML parser's are: XML 1.0 (Fifth Edition)
@@ -391,7 +513,12 @@ entity is never fetched. Every well-formedness error ends the parse
 with its line and column; there is no recovery, as there is none in
 the reference browser's. Namespace prefixes are resolved through
 `xmlns` declarations; an undeclared prefix is an error; `xml:` is
-bound.
+bound. *(corrected: errors are worded as libxml2's, the reference
+browser's parser, words them where the probe gave them; entities
+nest at most `MAX_ENTITY_NESTING` 32 deep, and the factor bound is ten
+times the document's length plus 4,096; `ELEMENT`, `ATTLIST`,
+`NOTATION` and parameter entities are skipped; an external entity
+stands for nothing in content and is an error in an attribute.)*
 
 **Drawing at a display's scale (M32.4, G9 in part).** The engine gains
 a device scale factor, `Engine::set_scale_factor`: the viewport, in CSS
@@ -404,6 +531,12 @@ and takes it again when it changes, the pointer's position over it,
 the toolbar drawn at it too. Edges are snapped to CSS pixels as now,
 which at a scale that is not whole leaves a border's edge between
 device pixels where the reference browser snaps to them: recorded.
+*(corrected: a scrolled layer's tiles are drawn a pixel to a pixel, so
+under a scale it is kept whole at the scale on both backends (the
+software's at step 11; the GPU's after the real shell at 125% showed it
+blurred, its tiles stretched), its scrolling then repainting, recorded:
+tiles at a scale would keep it fast. An outer svg's drawing is snapped
+to device pixels, above.)*
 
 **Limits (the bounds a hostile document cannot pass).**
 
@@ -418,6 +551,12 @@ device pixels where the reference browser snaps to them: recorded.
 | `MAX_GRADIENT_STOPS` | 1,024 | a gradient's stops |
 | `MAX_SVG_PIXELS` | 33,554,432 (2^25) | an SVG drawing's bitmap, as a canvas's |
 | `MAX_SVG_IMAGE_BYTES` | 32 MiB | an SVG image's bytes, as any image's |
+| `MAX_ENTITY_NESTING` | 32 | entities within entities *(corrected: added)* |
+| `MAX_SVG_LAYER_PIXELS` | 268,435,456 (2^28) | the pixels all of a drawing's layers take together *(corrected: added)* |
+
+*(corrected: `MAX_SVG_IMAGE_BYTES` is the image crate's
+`MAX_IMAGE_BYTES`, 32 MiB, which bounds any image's bytes; SVG has no
+constant of its own for them.)*
 
 A render tree past its elements' bound draws what was built; a `<use>`
 past its depth draws nothing; a drawing past its pixels is drawn at the
@@ -435,14 +574,27 @@ crate's: namespaces in selectors and sheets, SVG's properties and the
 presentation attributes. The engine's: an inline `<svg>` laid out,
 drawn, changed and drawn again without a layout, hit, scripted; an SVG
 image in each place an image goes, its natural sizes, its static mode;
-an SVG document opened; a page drawn at a scale.
+an SVG document opened; a page drawn at a scale. *(corrected: also
+the GPU backend against the software one at display scales, which the
+equivalence suite drew at 1 alone.)*
 
 **Fuzzing.** Two new targets: `xml` (any bytes to the XML parser:
 nothing panics, entity expansion bounded) and `svg` (any bytes as an
 SVG image: parsed, styled, its tree built and drawn small: nothing
 panics, nothing allocates past the bounds). `dom_api` gains inline SVG:
 elements made with `createElementNS`, attributes set and removed, a
-`<use>` pointed at its ancestor.
+`<use>` pointed at its ancestor. *(corrected: the targets are
+`xml_parse` and `svg`, the latter reading its input as XML and as a
+page's markup after twelve bytes of sizes, a scale and points, and
+asking every element the scripts' questions. Their runs found no crash
+but three slow units, 15 to 39 seconds under the address sanitizer: a
+text set apart by `letter-spacing`, shaped twice and outlined a
+character at a time, and a tree built again for each question; both
+fixed, above. The final runs: `xml_parse` 19.5 million inputs and `svg`
+337,281 in fifteen minutes each, nothing; `dom_api` a latent bug of the
+differential's, which named an outer svg's drawing by its node's
+number, which the two engines it compares number apart: named by its
+place, as M31's canvas is.)*
 
 **The web-platform tests.** The `svg` directory's reftests and
 testharness tests by the pull's rule, `.svg` tests opened as SVG
@@ -450,7 +602,13 @@ documents, their `<h:link rel="match">` read; the CSS tests the rule
 left out for an `<svg>` element or an SVG image taken again; the
 html5lib foreign content tests. A test that needs SMIL, a filter, a
 mask, a marker, a pattern, `textPath`, `foreignObject`'s HTML or the
-animated values is left out by the rule.
+animated values is left out by the rule. *(corrected: the reftests and
+crash tests alone, the subset's rule for its own directories; a test
+referring into another document (a `use`, a gradient, an attribute's
+`url()`) is left out too, and an XHTML test that needs a namespace the
+HTML parser does not give. 649 tests more, 130 of svg's; their first
+run failed 208, which found what is corrected above; 47 are named in
+`expectations.txt`, each with its reason.)*
 
 **Golden cases** continue from 133: shapes, strokes and dashes;
 gradients and their spreads; transforms, `viewBox` and
@@ -458,6 +616,9 @@ gradients and their spreads; transforms, `viewBox` and
 `<img>` and as a background; captured from the reference browser.
 Text is left out, the reference browser's face not the engine's, as at
 M30; the acceptance's chart has its labels in the engine's tests.
+*(corrected: pages 133 to 138; they found the `use` clip, the clip
+path's own clip-path and the bounding box above, and the GPU's
+drawings of one page shown in the next.)*
 
 **Acceptance (M32.4).** The roadmap's: an icon set (thirty icons of a
 stroke-drawn and a filled family, as inline SVG through `<use>` of
@@ -470,7 +631,12 @@ sharp as at 1 (compared with the same SVG drawn at the larger size at
 1), in the engine's tests and in the real shell at this machine's
 125%. `benches/svg.rs` measures the icon page and the chart's first
 frame, a change to the chart, and an SVG image drawn at a new size.
-T4.3 and fuzz runs.
+T4.3 and fuzz runs. *(corrected: met: each demo is within 0 of a
+channel of the page drawn larger at 1, at every ratio; in the real
+shell at 125% the GPU backend blurred the page until its scrolled
+layer was kept whole at the scale and the drawings snapped, then drew
+the chart as the software backend does, to the pixel. The numbers are
+in `docs/perf-budgets.md`.)*
 
 ## 2. Not in this milestone, said rather than hidden
 
@@ -500,7 +666,11 @@ T4.3 and fuzz runs.
   there to take it, a later step.
 - *Snapping to device pixels* at a scale that is not whole, and the
   display's scale in the `ui` crate's text metrics past drawing: with
-  M35's layout polish.
+  M35's layout polish. *(corrected: an outer svg's drawing is snapped,
+  above; the rest stays.)*
+- *The `CSS` namespace object* (`CSS.supports()`, `CSS.escape()`),
+  which the probes of the properties found missing: G88. *(corrected:
+  added)*
 
 ## 3. Order of work
 

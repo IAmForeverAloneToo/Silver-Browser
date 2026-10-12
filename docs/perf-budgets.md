@@ -1651,6 +1651,69 @@ media page's print:
   1,000 before, 25 to 37 after, their frame's median the same (12.1
   and 12.2ms).
 
+### SVG (M32)
+
+`benches/svg.rs` (`cargo bench -p engine --bench svg`), on the Windows
+machine, release, medians of ten: the icon demo (`tests/demos/
+svg-icons.html`, thirty icons inline through `<use>` of symbols and as
+img files, at 16, 24 and 48 pixels) and the chart demo (`tests/demos/
+svg-chart.html`, a chart as d3 writes one) from their navigation to
+their first frame with what they draw decoded, at a display scale of
+1 and of 2; a bar of the chart made taller or shorter to its next
+frame; and an SVG image given a new width to its frame drawn at it.
+
+| | At 1 | At 2 |
+| --- | --- | --- |
+| The icon demo, its load to its first frame | 19.3ms | 34.9ms |
+| The chart demo, its load to its first frame | 9.1ms | 20.0ms |
+
+| | |
+| --- | --- |
+| A bar's height changed, to its frame | 5.4ms |
+| An SVG image given a new width, to its frame drawn at it | 11.4ms |
+
+- *A change within an svg* lays nothing out: the tree is built again
+  and drawn at its size, the rest of the frame composited.
+- *An SVG image drawn at a new size* is parsed, styled and drawn again
+  on a decode thread; the frame that asked shows the last drawing
+  stretched, the next the new one, as a raster image's larger copy is
+  (M23.5).
+- The fuzzing found two costs a script or an input could make large,
+  and both are bounded now: a text set apart by `letter-spacing` is
+  shaped and outlined once a character and size in a tree, not once a
+  character it shows (30 to 6.5ms for 516 characters); and the script
+  host keeps the tree it answers geometry questions from by its outer
+  svg and the document's version, so that a chart's labels asked of
+  one by one build it once.
+
+**T4.3.** The benchmarks of the code before M32 (331aff5) and of M32
+(ed870dd), by turns, four rounds, M31's eighteen and `match`: within
+10% by their medians (a realm made 26.6 to 28.6ms, x1.07, the
+bootstrap 533 lines longer with SVG's interfaces). The first run
+(against 0a48d40) found three costs, each taken back before this one:
+
+| | First run: before, M32 | Last run: before, M32 |
+| --- | --- | --- |
+| Values: 1,000 list items as blocks, their cascade | 16.5, 19.2ms (x1.16) | 16.6, 17.5ms (x1.05) |
+| Matching: 1,000 selectors over 10,003 elements | 258, 288ms (x1.12) | 256, 266ms (x1.04) |
+| An appended paragraph's paint, median | 0.81, 0.92ms (x1.12) | 0.85, 0.85ms (x1.00) |
+
+- *Type selectors.* Matching an SVG element's local name in any case
+  had every type selector ask each element's local name and compare
+  it ignoring case; an HTML element's tag, kept lowercase as the
+  selector's name is, is compared as it is.
+- *The user agent's SVG rules.* Every element is tried against every
+  rule: a rule whose every selector's subject is in SVG's namespace is
+  now tried against SVG elements alone, and a compound's namespace is
+  tested right after its type, before a `:not()` after it.
+- *Every fragment's size.* An SVG image's natural size grew the image
+  header by 24 bytes, and a header sat in every fragment's kind: boxed
+  there, the fragments are 824 bytes again (a test pins it).
+- *The pseudo-element page's "all of them"* came out x1.83 in the first
+  run's head rounds; bisected to no change, its runs by turns are
+  bimodal (144 against 150ms by their medians, one at 279), the
+  machine's variance M23 noted.
+
 ### Over budget, and why
 
 These are known and recorded rather than hidden. Each has the item that
@@ -1739,9 +1802,14 @@ is to take it on.
   is the conservative rule of M13.1.
 - **A realm made.** A page's first script waits for its realm, which
   compiles and runs the bindings' bootstrap: 5ms at M25, 10.6ms at
-  M26, 15.6ms at M27, 17.5ms at M29, 22.9ms at M30 and 27.6ms at M31,
-  14,854 lines, past a frame's budget alone; a worker waits as long
-  for its first message (25.9ms). Loading it compiled is M35.12's.
+  M26, 15.6ms at M27, 17.5ms at M29, 22.9ms at M30, 27.6ms at M31 and
+  28.6ms at M32, 15,387 lines, past a frame's budget alone; a worker
+  waits as long for its first message (25.9ms). Loading it compiled is
+  M35.12's.
+- **A scrolled page at a display's scale (M32).** A scrolled layer's
+  tiles are drawn a pixel to a pixel, so at a scale other than 1 the
+  document's layer is kept whole at the scale, and its scrolling draws
+  it again rather than compositing tiles (G89).
 - **A transfer between realms (M31).** 4 MB there and back in 89ms:
   a message crosses as a string, a buffer's bytes in base64, where the
   reference browser moves them. A page that hands large buffers to its

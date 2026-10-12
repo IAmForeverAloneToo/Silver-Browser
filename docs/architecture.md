@@ -26,6 +26,10 @@ shell          (bin "silver-browser": windowing, event loop, input, clipboard)
     |          and css; it knows no DOM and no script)
     ├ paint   (fragment tree → display list)
     ├ layout  (box tree construction + layout algorithms)
+    | svg     (SVG's microsyntaxes and render tree, built from the
+    |          document and its computed styles and drawn through
+    |          canvas, since M32: below layout, over canvas, style,
+    |          text and dom; it knows no script)
     ├ style   (selector matching, cascade, computed values)
     ├ text    (font loading, shaping, glyph rasterization)
     | images  (image decoding, animation frames, decode bounds: a leaf
@@ -1903,3 +1907,60 @@ than hidden: shared and service workers (G82, M39), module workers
 streams (G67), a worker's own CSP and referrer policy (M33.1, M33.3),
 what G85 lists, and process isolation (M34). 2,364 tests pass
 workspace-wide, two ignored. Next milestone: SVG v1 (M32).
+
+Milestone 32 (SVG v1; `docs/design/svg.md`): the engine draws vector
+graphics. Namespaces in the DOM (step 1): an element's namespace beside
+its local name, `tag()` an HTML element's alone, the tree builder's
+foreign content as the HTML Standard writes it (html5lib's tests of it
+vendored), the serializer and fragments in a foreign context. In CSS
+and the bindings (step 2): `@namespace` and namespace selectors, type
+selectors matching any element's local name in any case as the
+reference browser does in an HTML document, the user agent sheet split
+into HTML's rules and SVG's; `createElementNS` with DOM's validation,
+the namespaced attribute methods, SVG's interfaces. An XML parser of
+its own (step 3, `html::xml`): XML 1.0 with namespaces, entities
+expanded within bounds, no recovery, libxml2's words for its errors.
+SVG's properties and presentation attributes (step 4), behind one
+pointer of the computed style, the attributes as declarations of the
+author's level built from their tokens. The `svg` crate (steps 5 to 7,
+D23): microsyntaxes, a render tree of groups, shapes and text runs
+built from the document and its computed styles, drawn through the
+canvas crate (which gained a gradient's spread and transform and a
+clip of a union): gradients with templates, `use` and `symbol`
+instances restyled from the use, nested viewports, clip paths,
+`switch`, text v1 in the engine's face. Inline `<svg>` (step 8): a
+replaced box sized as the reference browser sizes it, its tree kept
+and drawn at the pixels it lands on, a change within it drawn without
+a layout, the pointer hit to its shapes, scripts given `getBBox()` and
+the geometry questions. SVG images (step 9) wherever an image goes,
+read and drawn on a decode thread at their drawn size; SVG documents
+(step 10), their scripts run, the parser's error shown. A display's
+scale (step 11): the engine draws its frame in device pixels, the
+page in CSS pixels under the scale, `devicePixelRatio` and the
+`resolution` feature saying it, the shell taking the window's scale
+factor. Fuzzing (step 12): `xml_parse` and `svg`, and `dom_api`'s SVG,
+whose slow units made a text shaped once a character and size and the
+geometry questions' tree kept for a run. The web-platform tests (step
+13): svg's reftests and crash tests, and the subset's tests with
+inline svg or SVG images, 649 more; their first run found fourteen
+faults, among them SVG's style elements never read, backgrounds of SVG
+images sized as 300 by 150, nested svg sizes taken from CSS; 6,106 of
+6,735 tests pass. Pages 133 to 138 (step 14) match the reference
+browser, finding a use's clip, a clip path's own clip and the GPU
+showing one page's svg drawings in the next. The acceptance (step 15):
+an icon set and a chart the same pixels at ratios 1.25 to 3 as their
+pages drawn larger at 1; the real shell at this machine's 125%, which
+showed the GPU backend blurring a scaled page, now drawing as software
+does; T4.3, whose first run found the cascade 12 to 16% slower and
+paint 12% (type selectors, the user agent's SVG rules, every
+fragment's kind grown by an image header), within 8% after;
+final fuzz runs of `xml_parse` and `svg` (fifteen minutes each, with
+their dictionary) found nothing, and of `dom_api` (ten, on six workers,
+from the milestone's seeds) a latent bug of the differential's, an svg
+named by its node's number as M31's canvas was. Not in this
+milestone, said rather than hidden: SMIL (rejected, M32.3); filters,
+masks, markers, patterns, SVG's `<image>`, the
+animated DOM values and what else G87 lists; the `CSS` namespace
+object (G88); what M32's web-platform tests found outside SVG (G89);
+XHTML through the XML parser. 2,449 tests pass workspace-wide, two
+ignored. Next milestone: the security hardening sweep (M33).

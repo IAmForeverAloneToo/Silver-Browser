@@ -421,13 +421,25 @@ images, the last item on T0's list, come with M23.
   replace; the web-platform tests of workers and messaging and a
   worker's variant of every `.any.js` test; a Mandelbrot demo whose
   workers keep its frames 16.7 ms apart.
+- **M32, SVG v1** (done 2026-10-13, designed in `docs/design/svg.md`):
+  namespaces in the DOM, foreign content in the HTML parser and in CSS;
+  an XML parser of the engine's own; SVG's properties and presentation
+  attributes in the cascade; a new `svg` crate (D23) building a render
+  tree of shapes, paths, gradients, `use` and `symbol`, nested
+  viewports, clip paths and text v1 and drawing it through `canvas`;
+  inline `<svg>` a replaced element drawn again without a layout, hit
+  and asked its geometry by scripts; SVG images wherever an image goes,
+  drawn at the pixels they land on; SVG documents; SMIL rejected; the
+  engine and the shell drawing at a display's scale; an icon set and a
+  chart the same pictures at every ratio, in the engine and in the
+  shell at this machine's 125%.
 
 Each milestone's fuller writeup and stated gaps are in
 `docs/architecture.md` "Current state", and the gaps no milestone holds
 on the G list (M39+, below).
 
 Verified per the vertical-slice rule at each milestone, by the gate:
-the workspace's tests (2,364 at M31, two ignored), clippy clean (`-D
+the workspace's tests (2,449 at M32, two ignored), clippy clean (`-D
 warnings`, every target), `cargo deny`, the fuzz targets, and a smoke
 run of the shell. Toolchain: 1.98.1, pinned by `rust-toolchain.toml`.
 The checkout lives outside OneDrive since 2026-10-08
@@ -1513,9 +1525,10 @@ Per css-grid-1 (level 2 subgrid included):
        the canvas; `border-image` in full; gradients rendered by paint's
        own code into an image both backends draw; image markers and
        `content` images; the taint per value.
-- [ ] M23.4 SVG-as-image v1 (render an SVG file to a surface via M32
+- [x] M23.4 SVG-as-image v1 (render an SVG file to a surface via M32
        subset: static shapes/text only). Moved to M32.1, which it
-       depends on: an SVG image is broken until then.
+       depends on: an SVG image is broken until then. Done there
+       2026-10-13.
 - [x] M23.5 Lazy decoding + downscale-on-decode for huge images (memory
        cap posture, `decoding=async`). Done 2026-10-09: headers read on
        arrival, pixels decoded on first draw; 512 MiB of decoded pixels
@@ -1986,15 +1999,52 @@ Per css-grid-1 (level 2 subgrid included):
 
 ## M32 — SVG v1  ·  new `svg` crate (below `css`, above `dom`)  ·  Effort: XL  ·  Depends: M23, M9
 
-- [ ] M32.1 SVG-as-image (M23.4 completion): static shapes (rect, circle,
+*(corrected: the `svg` crate is below `layout`, over `canvas`, `style`,
+`text` and `dom`: it draws through the canvas crate and reads the
+cascade's computed styles, and layout reads its `viewBox` grammar.)*
+
+- [x] M32.1 SVG-as-image (M23.4 completion): static shapes (rect, circle,
        ellipse, line, polyline, polygon, path), fill/stroke, gradients,
        transforms, `viewBox`, text v1.
-- [ ] M32.2 Inline `<svg>` in HTML: layout integration (replaced-element
+       Done 2026-10-13: the `svg` crate (D23): microsyntaxes, a render
+       tree of groups, shapes and text runs from a document and its
+       computed styles, drawn through `canvas` (which gained a
+       gradient's spread and transform and a clip of a union);
+       gradients with `href` templates, `use` and `symbol`, nested
+       viewports, `clipPath`, `switch`; text v1 in the engine's face.
+       An XML parser in `html` (entities bounded, no recovery, libxml2's
+       words). SVG images in `img`, backgrounds by CSS Images 3's
+       default sizing, markers, border images, print and `drawImage`,
+       drawn at the size they land on; SVG documents with their
+       scripts; golden pages 133 to 138 the reference browser's.
+- [x] M32.2 Inline `<svg>` in HTML: layout integration (replaced-element
        sizing), CSS styling of SVG presentation attributes.
-- [ ] M32.3 SMIL: explicitly rejected (chromium has it; cost/benefit
+       Done 2026-10-13: namespaces in the DOM, foreign content in the
+       tree builder (html5lib's tests of it), `@namespace` and
+       namespace selectors, the user agent sheet split; the SVG
+       properties and presentation attributes as hints of the author's
+       level; an outer `<svg>` a replaced box sized as the reference
+       browser sizes it, drawn again without a layout when only its
+       content changes, hit to its shapes; `createElementNS` and SVG's
+       interfaces, `getBBox()` and the geometry questions.
+- [x] M32.3 SMIL: explicitly rejected (chromium has it; cost/benefit
        documented — revisit only at T4).
-- [ ] M32.4 Acceptance: an icon set + a statistical chart render at all
+       Done 2026-10-13: rejected in `docs/design/svg.md` section 2, its
+       interfaces absent, its elements drawing nothing; the web-platform
+       tests that need it left out.
+- [x] M32.4 Acceptance: an icon set + a statistical chart render at all
        DPIs.
+       Done 2026-10-13: the engine and the shell draw at a display's
+       scale (`devicePixelRatio`, the `resolution` feature, the pointer
+       in CSS pixels); `tests/demos/svg-icons.html` (thirty icons,
+       stroked and filled, inline and as images, at 16, 24 and 48
+       pixels) and `tests/demos/svg-chart.html` (a chart as d3 writes
+       one) drawn at ratios 1.25, 1.5, 2 and 3 the same pixels as the
+       pages drawn that many times larger at 1 (`tests/demos.rs`); in
+       the real shell at 125% the same as software on the GPU backend,
+       once its scrolled layer was kept whole at the scale and an svg's
+       drawing snapped to device pixels. `benches/svg.rs` and T4.3 in
+       `docs/perf-budgets.md`.
 
 ---
 
@@ -2238,7 +2288,8 @@ Deferred from the milestones above, each with what it waits on:
 - [ ] G9 The user's colour scheme and reduced motion on Linux from the
        XDG desktop portal, over D-Bus; and the resolution media feature
        at the display's scale factor, once the engine draws at it.
-       Deferred from M20.3.
+       Deferred from M20.3. The resolution at the display's scale: done
+       at M32.
 - [ ] G10 Line breaking by UAX #14 (css-text-3 §5): soft wrap
        opportunities after hyphens and the rest of the line-breaking
        classes, where M7.3 wraps at white space only; and `white-space:
@@ -2368,7 +2419,9 @@ Deferred from the milestones above, each with what it waits on:
        the active formatting elements and the adoption agency, foster
        parenting, templates and foreign content beyond self-closing
        elements; comments and doctypes in the tree ("in head noscript" is
-       G12's). Found at M24.
+       G12's). Found at M24. Foreign content: done at M32 (html5lib's
+       tests of it pass but for those of the table, select and frameset
+       modes).
 - [ ] G45 HTML's presentational attributes and elements (HTML section
        15, Rendering), as hints the cascade takes below the author's
        rules, as M21.6 does for lists and M23 for images: `<center>` and
@@ -2402,7 +2455,10 @@ Deferred from the milestones above, each with what it waits on:
        in `style` and `cssText`, which keep the text they were given;
        `document.styleSheets` and the CSSOM's rule objects. Found at M25.
 - [ ] G51 Namespaces: `createElementNS`, and MathML's elements as their
-       own interfaces (SVG's are M32's). Found at M25.
+       own interfaces (SVG's are M32's). Found at M25. `createElementNS`,
+       the namespaced attribute methods for XLink's and XML's, and
+       `MathMLElement`: done at M32; attributes of other namespaces,
+       `[ns|attr]` selectors and MathML's own interfaces remain.
 - [ ] G52 Traversal and ranges: `TreeWalker`, `NodeIterator`, `Range`,
        `Selection`, `compareDocumentPosition`, `isEqualNode`,
        `normalize`. Found at M25.
@@ -2515,6 +2571,38 @@ Deferred from the milestones above, each with what it waits on:
        up. Found 2026-10-12 in Google's account bar, which calls
        `matchMedia` as it starts and fails without it (with `URL`,
        G68).
+- [ ] G87 SVG past v1 (M32): filters, masks, markers, patterns, `<image>`
+       and `foreignObject`'s HTML; `textPath`, `rotate`, `textLength`,
+       vertical and bidirectional text, `lang`'s localized forms, text
+       in a `clipPath`, a `tspan`'s own opacity; the SVG DOM's animated
+       values (`SVGAnimatedLength`, `SVGTransformList`, `baseVal`),
+       `getNumberOfChars()`, `pathLength`; `context-fill` and
+       `context-stroke`; `vector-effect`'s stroke box; `<view>`,
+       fragment identifiers and linked parameters of an SVG image;
+       references into another document (`use`, paint servers,
+       markers); 3D transforms of SVG content (drawn flattened); a
+       gradient's `transform` property; a group's `fill-box`; a use's
+       instance as a shadow tree to selectors; a template in a place
+       nothing renders; the `svg` element's `load` event; an svg's tree
+       kept per svg rather than per document version, its drawing
+       counted in the image store's budget, an SVG image's drawings
+       kept per size, its text drawn by print and `drawImage`; an SVG
+       document's scripts with a `src` in order, its error page with
+       the rendering up to the error, its encoding told. Named at M32.
+- [ ] G88 The `CSS` namespace object: `CSS.supports()`, `CSS.escape()`
+       and the rest. Found at M32 by the probes of SVG's properties.
+- [ ] G89 What M32's web-platform tests found outside SVG: a border
+       image and a list marker of an image of no natural size (an SVG
+       of a ratio alone) sized by the border image area and the
+       marker's default rather than 300 by 150; an SVG image's media
+       queries told its page's color scheme; `attr()` with a type
+       (css-values-5); a `::before` or `::after` of `display:
+       list-item` a list item; a lazy `img` whose `src` changes in the
+       load event; an element replaced by `content: url()` after its
+       first frame; an image's `min-height` through its ratio in a
+       container's min-content width; a scrolled layer's tiles at a
+       display's scale (it is kept whole there, and repaints as it
+       scrolls). Found at M32.
 
 ---
 
@@ -2656,6 +2744,7 @@ Deferred from the milestones above, each with what it waits on:
 | D20 | The Public Suffix List | M27 | the `psl` crate / the list vendored with a matcher of our own | the `psl` crate (2.1.241, `no_std`, `forbid(unsafe_code)`), a matcher generated from the list; a bump of the crate keeps it current (see `docs/design/fetch.md`) |
 | D21 | WebAssembly | M29 | a `wasmi` bridge / a `wasmtime` bridge / the change of JavaScript engine D1 left open | `wasmi` 2.0 in `js` beside QuickJS-ng: an interpreter, validating every module, metered by fuel, bounded by a resource limiter, calls resumable at a host function; no JIT before M34's sandbox (see `docs/design/wasm.md`) |
 | D22 | The 2D canvas's rasterizer | M30 | `tiny-skia` on the processor / the GPU through `wgpu` / a rasterizer of our own | `tiny-skia` 0.12 in a `canvas` crate below `engine`: a port of Skia, the reference browser's, on every machine and read back without a stall; the bitmap shown as an image by both backends; drawing on the GPU left to G81 (see `docs/design/canvas.md`) |
+| D23 | SVG's renderer | M32 | `resvg` and `usvg` / an `svg` crate of our own drawing through `canvas` | an `svg` crate of our own: a render tree from the engine's DOM and its cascade's computed styles, drawn through the canvas crate's `tiny-skia` context, so that an inline `<svg>` is styled by the page's CSS and its shapes hit; `resvg` brings its own XML, CSS, fonts and a second `tiny-skia` (see `docs/design/svg.md`) |
 
 ---
 
