@@ -296,6 +296,14 @@ impl<'a> Item<'a> {
                 );
                 crate::replaced::transferred_width(b, replaced, height)
             });
+        // A row item with a ratio and no natural size, an outer `<svg>`
+        // (M32): its content widths are the room it has, as the
+        // reference browser has them.
+        let filled = b
+            .replaced
+            .as_ref()
+            .filter(|_| !c.column)
+            .and_then(|replaced| crate::replaced::filled_width(b, replaced, room));
         // The content size in the main axis, measured if anything asks:
         // under a max-content constraint, what `content` means (case E);
         // the min-content size, for the automatic minimum. A column
@@ -304,14 +312,18 @@ impl<'a> Item<'a> {
             if c.column {
                 content_height()
             } else {
-                transferred.unwrap_or_else(|| intrinsic.widths().0)
+                transferred
+                    .or(filled)
+                    .unwrap_or_else(|| intrinsic.widths().0)
             }
         };
         let max_content = || {
             if c.column {
                 content_height()
             } else {
-                transferred.unwrap_or_else(|| intrinsic.widths().1)
+                transferred
+                    .or(filled)
+                    .unwrap_or_else(|| intrinsic.widths().1)
             }
         };
         // A keyword in `min-height` or `max-height` is the column item's

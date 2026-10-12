@@ -1907,19 +1907,26 @@ fn push_layers(
     let layers: Vec<_> = background.layers().collect();
     for layer in layers.iter().rev() {
         // An image's natural size, its resolution applied, and its
-        // number; a gradient has neither.
+        // number; an SVG image what it has of one (M32); a gradient
+        // neither.
         let (natural, picture) = match layer.image {
             Some(Image::Url { url, resolution }) => {
                 let Some((id, header)) = backdrop.pictures.picture(url) else {
                     continue;
                 };
                 let ((w, h), orientation) = oriented(&f.style, &header);
+                let natural = header.vector.unwrap_or_else(|| sized(w, h));
+                let by = |side: Option<f32>| side.map(|side| side / resolution);
                 (
-                    Some((w / resolution, h / resolution)),
+                    images::Vector {
+                        width: by(natural.width),
+                        height: by(natural.height),
+                        ratio: natural.ratio,
+                    },
                     Some((id, orientation)),
                 )
             }
-            Some(Image::Gradient(_)) => (None, None),
+            Some(Image::Gradient(_)) => (images::Vector::default(), None),
             None => continue,
         };
         let area = placed.area.unwrap_or_else(|| placed.box_of(layer.clip));
@@ -1987,42 +1994,87 @@ fn push_layers(
     }
 }
 
+/// A raster image's natural size: both sides, and their ratio where
+/// neither is zero.
+pub fn sized(width: f32, height: f32) -> images::Vector {
+    images::Vector {
+        width: Some(width),
+        height: Some(height),
+        ratio: (width > 0.0 && height > 0.0).then(|| width / height),
+    }
+}
+
+/// The largest size of `ratio` within `room` (`cover` false), or the
+/// smallest covering it (CSS Images 3 section 5.3, the contain and cover
+/// constraints); a room of no area holds nothing, and one of no height
+/// is covered by its width.
+fn constrained(ratio: f32, room: (f32, f32), cover: bool) -> (f32, f32) {
+    let wider = room.0 / room.1 > ratio;
+    if wider == cover {
+        (room.0, room.0 / ratio)
+    } else {
+        (room.1 * ratio, room.1)
+    }
+}
+
+/// The default sizing algorithm (CSS Images 3 section 5.2): the size of
+/// an image whose `specified` sides may be `auto`, from what it has of a
+/// `natural` size, in a `room` of the default object size. A side left
+/// `auto` follows the other through the ratio, else is its natural one,
+/// else the room's; with neither specified, an image of a ratio alone is
+/// contained in the room.
+pub fn concrete(
+    specified: (Option<f32>, Option<f32>),
+    natural: images::Vector,
+    room: (f32, f32),
+) -> (f32, f32) {
+    let ratio = natural.ratio.filter(|r| r.is_finite() && *r > 0.0);
+    match specified {
+        (Some(w), Some(h)) => (w, h),
+        (Some(w), None) => (w, ratio.map_or(natural.height.unwrap_or(room.1), |r| w / r)),
+        (None, Some(h)) => (ratio.map_or(natural.width.unwrap_or(room.0), |r| h * r), h),
+        (None, None) => match (natural.width, natural.height, ratio) {
+            (Some(w), Some(h), _) => (w, h),
+            (Some(w), None, Some(r)) => (w, w / r),
+            (None, Some(h), Some(r)) => (h * r, h),
+            (Some(w), None, None) => (w, room.1),
+            (None, Some(h), None) => (room.0, h),
+            (None, None, Some(r)) => constrained(r, room, false),
+            (None, None, None) => room,
+        },
+    }
+}
+
 /// A layer's tile size (CSS Backgrounds 3 sections 2.4 and 2.3): what
-/// `size` makes of the image's `natural` size in the positioning `area`,
-/// `auto` keeping its ratio; then, for `round`, as wide or tall as fits a
-/// whole number of times, the other side, where `auto`, keeping the
-/// ratio. An image with no natural size, a gradient, is the area's size
-/// where `size` leaves it `auto` (CSS Images 3 section 4.3).
+/// `size` makes of what the image has of a `natural` size in the
+/// positioning `area` by the default sizing algorithm, `auto` keeping
+/// its ratio; then, for `round`, as wide or tall as fits a whole number
+/// of times, the other side, where `auto`, keeping the ratio. An image
+/// with no natural size, a gradient, is the area's size where `size`
+/// leaves it `auto` (CSS Images 3 section 4.3); `contain` and `cover`
+/// size an image of a ratio by it, another to the area.
 pub fn tile_size(
     size: &BackgroundSize,
-    natural: Option<(f32, f32)>,
+    natural: images::Vector,
     area: Rect,
     repeat: [Repeat; 2],
 ) -> (f32, f32) {
-    let (nw, nh) = natural.unwrap_or((area.w, area.h));
-    let ratio = natural.and_then(|(nw, nh)| (nw > 0.0 && nh > 0.0).then(|| nw / nh));
+    let room = (area.w, area.h);
+    let ratio = natural.ratio.filter(|r| r.is_finite() && *r > 0.0);
     let (w, h, auto) = match size {
-        BackgroundSize::Cover | BackgroundSize::Contain => {
-            if ratio.is_none() {
-                return (area.w, area.h);
+        // An area of no height still covers by its width (csswg issue
+        // 4049).
+        BackgroundSize::Cover | BackgroundSize::Contain => match ratio {
+            Some(r) => {
+                let (w, h) = constrained(r, room, *size == BackgroundSize::Cover);
+                (w, h, [false, false])
             }
-            let (sx, sy) = (area.w / nw, area.h / nh);
-            let scale = if *size == BackgroundSize::Cover {
-                sx.max(sy)
-            } else {
-                sx.min(sy)
-            };
-            (nw * scale, nh * scale, [false, false])
-        }
+            _ => return room,
+        },
         BackgroundSize::Sized(sw, sh) => {
             let sw = sw.as_ref().map(|v| v.resolve(area.w));
             let sh = sh.as_ref().map(|v| v.resolve(area.h));
-            let (w, h) = match (sw, sh) {
-                (Some(w), Some(h)) => (w, h),
-                (Some(w), None) => (w, ratio.map_or(nh, |r| w / r)),
-                (None, Some(h)) => (ratio.map_or(nw, |r| h * r), h),
-                (None, None) => (nw, nh),
-            };
+            let (w, h) = concrete((sw, sh), natural, room);
             (w, h, [sw.is_none(), sh.is_none()])
         }
     };
@@ -3203,24 +3255,96 @@ mod fragment_tests {
         };
         let auto = BackgroundSize::Sized(None, None);
         let no = [Repeat::NoRepeat; 2];
-        assert_eq!(tile_size(&auto, Some((20.0, 10.0)), area, no), (20.0, 10.0));
+        assert_eq!(tile_size(&auto, sized(20.0, 10.0), area, no), (20.0, 10.0));
         assert_eq!(
-            tile_size(&BackgroundSize::Cover, Some((0.0, 0.0)), area, no),
+            tile_size(&BackgroundSize::Cover, sized(0.0, 0.0), area, no),
             (100.0, 40.0)
         );
         assert_eq!(
             tile_size(
                 &auto,
-                Some((30.0, 10.0)),
+                sized(30.0, 10.0),
                 area,
                 [Repeat::Round, Repeat::NoRepeat]
             ),
             (100.0 / 3.0, 100.0 / 9.0)
         );
         assert_eq!(
-            tile_size(&auto, Some((30.0, 10.0)), area, [Repeat::Round; 2]),
+            tile_size(&auto, sized(30.0, 10.0), area, [Repeat::Round; 2]),
             (100.0 / 3.0, 10.0)
         );
+        // An SVG image's partial natural size (M32): a width alone, a
+        // ratio alone, nothing; `auto` and a side given, and contained.
+        let svg = |width, height, ratio| images::Vector {
+            width,
+            height,
+            ratio,
+        };
+        let px = |v| Some(LengthPercentage::Px(v));
+        let wide = BackgroundSize::Sized(px(16.0), None);
+        assert_eq!(
+            tile_size(&wide, svg(Some(8.0), None, None), area, no),
+            (16.0, 40.0)
+        );
+        assert_eq!(
+            tile_size(&auto, svg(Some(8.0), None, None), area, no),
+            (8.0, 40.0)
+        );
+        assert_eq!(
+            tile_size(&auto, svg(None, Some(8.0), None), area, no),
+            (100.0, 8.0)
+        );
+        assert_eq!(
+            tile_size(&auto, svg(None, None, Some(2.0)), area, no),
+            (80.0, 40.0)
+        );
+        assert_eq!(
+            tile_size(&auto, svg(None, None, Some(5.0)), area, no),
+            (100.0, 20.0)
+        );
+        assert_eq!(
+            tile_size(&wide, svg(None, None, Some(2.0)), area, no),
+            (16.0, 8.0)
+        );
+        assert_eq!(
+            tile_size(&auto, svg(None, None, None), area, no),
+            (100.0, 40.0)
+        );
+        let tall = BackgroundSize::Sized(None, px(10.0));
+        assert_eq!(
+            tile_size(&tall, svg(None, Some(4.0), None), area, no),
+            (100.0, 10.0)
+        );
+        assert_eq!(
+            tile_size(&tall, svg(Some(3.0), None, None), area, no),
+            (3.0, 10.0)
+        );
+        let cover = BackgroundSize::Cover;
+        assert_eq!(
+            tile_size(&cover, svg(None, None, Some(1.0)), area, no),
+            (100.0, 100.0)
+        );
+        assert_eq!(
+            tile_size(
+                &BackgroundSize::Contain,
+                svg(Some(8.0), None, None),
+                area,
+                no
+            ),
+            (100.0, 40.0)
+        );
+        let flat = Rect { h: 0.0, ..area };
+        assert_eq!(
+            tile_size(&cover, sized(100.0, 50.0), flat, no),
+            (100.0, 50.0)
+        );
+        let contain = BackgroundSize::Contain;
+        assert_eq!(
+            tile_size(&contain, sized(100.0, 50.0), flat, no),
+            (0.0, 0.0)
+        );
+        let none = Rect { w: 0.0, ..flat };
+        assert_eq!(tile_size(&cover, sized(100.0, 50.0), none, no), (0.0, 0.0));
         let p = LengthPercentage::Percent;
         assert_eq!(
             place(Repeat::NoRepeat, &p(50.0), 0.0, 100.0, 20.0),

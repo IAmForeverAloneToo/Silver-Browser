@@ -87,7 +87,7 @@ pub struct Header {
 /// A vector image's natural size and ratio, each possibly missing (M32,
 /// CSS Images 3 section 4.1): what layout fits it by, where its header's
 /// width and height are what a script reads.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Vector {
     /// The natural width in CSS pixels, if any.
     pub width: Option<f32>,

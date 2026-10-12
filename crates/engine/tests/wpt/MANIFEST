@@ -38,6 +38,7 @@ reftest	css/css-flexbox/aspect-ratio-intrinsic-size-003.html	==css/reference/ref
 reftest	css/css-flexbox/aspect-ratio-intrinsic-size-004.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-flexbox/aspect-ratio-intrinsic-size-005.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-flexbox/aspect-ratio-intrinsic-size-006.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-flexbox/aspect-ratio-intrinsic-size-007.html	==css/css-flexbox/aspect-ratio-intrinsic-size-007-ref.html
 reftest	css/css-flexbox/aspect-ratio-intrinsic-size-008.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-flexbox/aspect-ratio-intrinsic-size-010.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-flexbox/aspect-ratio-intrinsic-size-011.html	==css/reference/ref-filled-green-100px-square-only.html
@@ -77,13 +78,19 @@ reftest	css/css-flexbox/flex-aspect-ratio-cross-size-001.html	==css/css-flexbox/
 reftest	css/css-flexbox/flex-aspect-ratio-cross-size-002.html	==css/css-flexbox/flex-aspect-ratio-cross-size-002-ref.html
 checklayout	css/css-flexbox/flex-aspect-ratio-img-column-011.html	.flexbox
 reftest	css/css-flexbox/flex-aspect-ratio-img-column-012.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-flexbox/flex-aspect-ratio-img-column-013.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-flexbox/flex-aspect-ratio-img-column-016.html	==css/reference/ref-filled-green-100px-square-only.html
+checklayout	css/css-flexbox/flex-aspect-ratio-img-column-017.html	img
+reftest	css/css-flexbox/flex-aspect-ratio-img-column-018.html	==css/reference/ref-filled-green-100px-square-only.html
 checklayout	css/css-flexbox/flex-aspect-ratio-img-row-005.html	img
 reftest	css/css-flexbox/flex-aspect-ratio-img-row-006.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-flexbox/flex-aspect-ratio-img-row-007.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-flexbox/flex-aspect-ratio-img-row-008.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-flexbox/flex-aspect-ratio-img-row-012.html	==css/reference/ref-filled-green-100px-square-only.html
 checklayout	css/css-flexbox/flex-aspect-ratio-img-row-013.html	img
 reftest	css/css-flexbox/flex-aspect-ratio-img-row-014.html	==css/css-flexbox/reference/flex-aspect-ratio-img-row-014-ref.html
+reftest	css/css-flexbox/flex-aspect-ratio-img-row-015.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-flexbox/flex-aspect-ratio-intrinsic-padding-001.html	==css/css-flexbox/flex-aspect-ratio-intrinsic-padding-001-ref.html
 reftest	css/css-flexbox/flex-base-size-ignores-max-width.html	==css/css-flexbox/flex-base-size-ignores-max-width-ref.html
 reftest	css/css-flexbox/flex-basis-011.html	==css/css-flexbox/flex-basis-011-ref.html
 reftest	css/css-flexbox/flex-box-wrap.html	==css/css-flexbox/reference/flex-box-wrap-ref.html
@@ -129,6 +136,7 @@ reftest	css/css-flexbox/flex-minimum-height-flex-items-028.html	==css/reference/
 reftest	css/css-flexbox/flex-minimum-height-flex-items-029.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-flexbox/flex-minimum-height-flex-items-030.html	==css/reference/ref-filled-green-100px-square-only.html
 checklayout	css/css-flexbox/flex-minimum-size-001.html	.flexbox, .inline-flexbox
+checklayout	css/css-flexbox/flex-minimum-size-003.html	img
 reftest	css/css-flexbox/flex-minimum-width-flex-items-011.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-flexbox/flex-minimum-width-flex-items-012.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-flexbox/flex-minimum-width-flex-items-016.html	==css/reference/ref-filled-green-100px-square-only.html
@@ -137,6 +145,7 @@ reftest	css/css-flexbox/flex-order-last-baseline.html	==css/css-flexbox/flex-ord
 reftest	css/css-flexbox/flex-order-wrap-reverse-baseline.html	==css/css-flexbox/flex-order-wrap-reverse-baseline-ref.html
 reftest	css/css-flexbox/flex-order.html	==css/css-flexbox/flex-order-ref.html
 crashtest	css/css-flexbox/flex-shrink-large-value-crash.html
+reftest	css/css-flexbox/flex-svg-no-intrinsic-column-001.html	==css/css-flexbox/flex-svg-no-intrinsic-column-001-ref.html
 reftest	css/css-flexbox/flex-vertical-align-effect.html	==css/css-flexbox/reference/flex-vertical-align-effect.html
 reftest	css/css-flexbox/flexbox-align-items-center-nested-001.html	==css/css-flexbox/flexbox-align-items-center-nested-001-ref.html
 reftest	css/css-flexbox/flexbox-align-self-stretch-vert-001.html	==css/css-flexbox/flexbox-align-self-stretch-vert-001-ref.html
@@ -379,6 +388,7 @@ crashtest	css/css-flexbox/frame-flex-item-crash.html
 checklayout	css/css-flexbox/gap-017.html	.button
 reftest	css/css-flexbox/grid-flex-item-002.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-flexbox/grid-flex-item-005.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-flexbox/image-nested-within-definite-column-flexbox.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-flexbox/inline-flex-column-image-load.html	==css/css-flexbox/inline-flex-column-image-load-ref.html
 reftest	css/css-flexbox/inline-flex-min-content-height.html	==css/reference/ref-filled-green-100px-square-only.html
 checklayout	css/css-flexbox/inline-flex.html	#testcase
@@ -430,6 +440,7 @@ reftest	css/css-flexbox/percentage-heights-002.html	==css/css-flexbox/percentage
 reftest	css/css-flexbox/percentage-heights-015.html	==css/css-flexbox/percentage-heights-015-ref.html
 reftest	css/css-flexbox/percentage-heights-021.html	==css/reference/ref-filled-green-200px-square.html
 checklayout	css/css-flexbox/percentage-margins-001.html	.flexbox
+reftest	css/css-flexbox/percentage-max-height-002.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-flexbox/percentage-max-height-004.html	==css/css-flexbox/percentage-max-height-004-ref.html
 checklayout	css/css-flexbox/percentage-max-width-cross-axis.html	.flexbox
 checklayout	css/css-flexbox/percentage-padding-001.html	x-flexbox
@@ -450,6 +461,9 @@ reftest	css/css-flexbox/select-element-zero-height-002.html	==css/css-flexbox/se
 reftest	css/css-flexbox/stretch-flex-item-checkbox-input.html	==css/css-flexbox/stretch-flex-item-checkbox-input-ref.html
 reftest	css/css-flexbox/stretch-flex-item-radio-input.html	==css/css-flexbox/stretch-flex-item-radio-input-ref.html
 reftest	css/css-flexbox/stretched-child-in-nested-flexbox-003.html	==css/reference/ref-filled-green-200px-square.html
+reftest	css/css-flexbox/svg-root-as-flex-item-003.html	==css/reference/ref-filled-green-100px-square-only.html
+checklayout	css/css-flexbox/svg-root-as-flex-item-006.html	svg
+checklayout	css/css-flexbox/svg-root-as-flex-item-007.html	svg
 checklayout	css/css-flexbox/table-as-item-cross-size.html	.test
 reftest	css/css-flexbox/table-as-item-inflexible-in-column-1.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-flexbox/table-as-item-inflexible-in-column-2.html	==css/reference/ref-filled-green-100px-square-only.html
@@ -699,6 +713,7 @@ reftest	css/css-grid/grid-items/grid-minimum-size-grid-items-009.html	==css/css-
 reftest	css/css-grid/grid-items/item-with-table-with-infinite-max-intrinsic-width.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/grid-items/percentage-margin-dynamic.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/grid-items/percentage-size-subitems-002.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-grid/grid-items/replaced-element-015.html	==css/css-grid/reference/replaced-element-015-ref.html
 reftest	css/css-grid/grid-items/table-with-infinite-max-intrinsic-width.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/grid-model/display-grid.html	==css/css-grid/reference/display-grid-ref.html
 reftest	css/css-grid/grid-model/display-inline-grid.html	==css/css-grid/reference/display-inline-grid-ref.html
@@ -762,6 +777,7 @@ reftest	css/css-grid/replaced-element-percentage-height-in-grid-nested-in-flex-0
 reftest	css/css-grid/replaced-element-percentage-height-in-grid-nested-in-flex-002.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/stretch-grid-item-checkbox-input.html	==css/css-grid/stretch-grid-item-checkbox-input-ref.html
 reftest	css/css-grid/stretch-grid-item-radio-input.html	==css/css-grid/stretch-grid-item-radio-input-ref.html
+reftest	css/css-transforms/2d-rotate-001.html	==css/css-transforms/2d-rotate-ref.html	fuzzy=:87-159;643-1290
 reftest	css/css-transforms/3d-rendering-context-and-abspos.html	==css/css-transforms/reference/green.html
 reftest	css/css-transforms/3d-rendering-context-and-fixpos.html	==css/css-transforms/reference/green.html
 reftest	css/css-transforms/3d-rendering-context-and-inline.html	==css/css-transforms/transform-blank-ref.html
@@ -787,6 +803,8 @@ crashtest	css/css-transforms/crashtests/preserve3d-containing-block-inline-002.h
 crashtest	css/css-transforms/crashtests/w-crossing-zero-001.html
 reftest	css/css-transforms/css-rotate-2d-3d-001.html	==css/css-transforms/css-rotate-2d-3d-001-ref.html
 reftest	css/css-transforms/css-scale-nested-001.html	==css/css-transforms/reference/css-scale-nested-ref.html
+reftest	css/css-transforms/css-skew-001.html	==css/css-transforms/css-skew-001-ref.html
+reftest	css/css-transforms/css-skew-002.html	==css/css-transforms/css-skew-002-ref.html	fuzzy=:5-36;12-174
 reftest	css/css-transforms/css-transform-3d-rotate3d-X-negative.html	==css/css-transforms/reference/css-transform-3d-rotateX-ref.html
 reftest	css/css-transforms/css-transform-3d-rotate3d-X-positive.html	==css/css-transforms/reference/css-transform-3d-rotateX-ref.html
 reftest	css/css-transforms/css-transform-3d-rotate3d-Y-negative.html	==css/css-transforms/reference/css-transform-3d-rotateX-ref.html
@@ -803,11 +821,60 @@ reftest	css/css-transforms/css-transform-3d-transform-style.html	==css/css-trans
 reftest	css/css-transforms/css-transform-inherit-scale.html	==css/reference/ref-filled-green-200px-square.html
 reftest	css/css-transforms/css-transform-scale-002.html	==css/css-transforms/reference/css-transform-scale-ref-002.html
 reftest	css/css-transforms/css-transforms-3d-on-anonymous-block-001.html	==css/css-transforms/reference/css-transforms-3d-anonymous-block-ref.html
+reftest	css/css-transforms/css-transforms-transformlist.html	==css/css-transforms/reference/css-transforms-transformlist-ref.html
 reftest	css/css-transforms/css3-transform-perspective.html	==css/css-transforms/reference/css3-transform-perspective-ref.html
 reftest	css/css-transforms/css3-transform-rotateY.html	==css/css-transforms/css3-transform-rotateY-ref.html
 reftest	css/css-transforms/css3-transform-scale-002.html	==css/css-transforms/css3-transform-scale-ref-002.html
 reftest	css/css-transforms/css3-transform-scale.html	==css/css-transforms/reference/css3-transform-scale-ref.html
+reftest	css/css-transforms/document-styles/svg-document-styles-001.html	==css/css-transforms/document-styles/reference/svg-document-styles-ref.html
+reftest	css/css-transforms/document-styles/svg-document-styles-002.html	==css/css-transforms/document-styles/reference/svg-document-styles-ref.html
+reftest	css/css-transforms/document-styles/svg-document-styles-003.html	==css/css-transforms/document-styles/reference/svg-document-styles-ref.html
+reftest	css/css-transforms/document-styles/svg-document-styles-004.html	==css/css-transforms/document-styles/reference/svg-document-styles-ref.html
+reftest	css/css-transforms/document-styles/svg-document-styles-012.html	==css/css-transforms/document-styles/reference/svg-document-styles-ref.html
 reftest	css/css-transforms/fractional-scale-gradient-bg-obscure-red-bg.html	==css/css-transforms/fractional-scale-gradient-bg-obscure-red-bg-ref.html	fuzzy=:0-1;0-350
+reftest	css/css-transforms/gradientTransform/svg-gradientTransform-001.html	==css/css-transforms/gradientTransform/reference/svg-gradientTransform-ref.html	fuzzy=:0-1;0-4400
+reftest	css/css-transforms/gradientTransform/svg-gradientTransform-combination-001.html	==css/css-transforms/gradientTransform/reference/svg-gradientTransform-combination-ref.html	fuzzy=:0-1;0-18000
+reftest	css/css-transforms/gradientTransform/svg-gradientTransform-combination-003.html	==css/css-transforms/gradientTransform/reference/svg-gradientTransform-combination-ref.html	fuzzy=:0-1;0-18000
+reftest	css/css-transforms/group/svg-transform-group-001.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-group-002.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-group-003.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-group-004.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-group-005.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-group-006.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-group-007.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-group-008.html	==css/css-transforms/group/reference/svg-green-square-250x250-ref.html
+reftest	css/css-transforms/group/svg-transform-group-009.html	==css/css-transforms/group/reference/svg-green-square-250x250-ref.html	fuzzy=:0-47;0-490
+reftest	css/css-transforms/group/svg-transform-group-010.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-group-011.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-nested-001.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-nested-002.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-nested-003.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-nested-004.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-nested-005.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-nested-006.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-nested-007.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-nested-008.html	==css/css-transforms/group/reference/svg-green-square-250x250-ref.html	fuzzy=:0-1;0-50
+reftest	css/css-transforms/group/svg-transform-nested-009.html	==css/css-transforms/group/reference/svg-green-square-250x250-ref.html	fuzzy=:0-2;0-600
+reftest	css/css-transforms/group/svg-transform-nested-010.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-nested-011.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-nested-012.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-nested-013.html	==css/css-transforms/group/reference/svg-green-square-250x250-ref.html
+reftest	css/css-transforms/group/svg-transform-nested-014.html	==css/css-transforms/group/reference/svg-green-square-250x250-ref.html	fuzzy=:0-2;0-216
+reftest	css/css-transforms/group/svg-transform-nested-015.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-nested-016.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-nested-017.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-nested-018.html	==css/css-transforms/group/reference/svg-green-square-250x250-ref.html
+reftest	css/css-transforms/group/svg-transform-nested-019.html	==css/css-transforms/group/reference/svg-green-square-250x250-ref.html	fuzzy=:0-2;0-400
+reftest	css/css-transforms/group/svg-transform-nested-020.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-nested-021.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-nested-022.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-nested-023.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-nested-024.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-nested-025.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-nested-026.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-nested-027.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-nested-028.html	==css/css-transforms/group/reference/svg-green-square-ref.html
+reftest	css/css-transforms/group/svg-transform-nested-029.html	==css/css-transforms/group/reference/svg-green-square-ref.html
 reftest	css/css-transforms/huge-length-tiny-scale.html	==css/css-transforms/huge-length-tiny-scale-ref.html
 reftest	css/css-transforms/individual-transform/animation/individual-transform-combine.html	==css/css-transforms/individual-transform/animation/individual-transform-combine-ref.html
 reftest	css/css-transforms/individual-transform/animation/individual-transform-ordering.html	==css/css-transforms/individual-transform/animation/individual-transform-ordering-ref.html
@@ -819,6 +886,13 @@ reftest	css/css-transforms/individual-transform/individual-transform-2d.html	==c
 reftest	css/css-transforms/individual-transform/individual-transform-2e.html	==css/css-transforms/individual-transform/individual-transform-2-ref.html
 reftest	css/css-transforms/individual-transform/individual-transform-3.html	==css/reference/ref-filled-green-200px-square.html
 reftest	css/css-transforms/individual-transform/stacking-context-001.html	==css/css-transforms/individual-transform/stacking-context-ref.html
+reftest	css/css-transforms/individual-transform/translate-fill-box.html	==css/css-transforms/transform-box/reference/greensquare200x200.html
+reftest	css/css-transforms/individual-transform/translate-view-box.html	==css/css-transforms/transform-box/reference/greensquare200x200.html
+reftest	css/css-transforms/inline-styles/svg-inline-styles-001.html	==css/css-transforms/inline-styles/reference/svg-inline-styles-ref.html
+reftest	css/css-transforms/inline-styles/svg-inline-styles-002.html	==css/css-transforms/inline-styles/reference/svg-inline-styles-ref.html
+reftest	css/css-transforms/inline-styles/svg-inline-styles-003.html	==css/css-transforms/inline-styles/reference/svg-inline-styles-ref.html
+reftest	css/css-transforms/inline-styles/svg-inline-styles-004.html	==css/css-transforms/inline-styles/reference/svg-inline-styles-ref.html
+reftest	css/css-transforms/inline-styles/svg-inline-styles-012.html	==css/css-transforms/inline-styles/reference/svg-inline-styles-ref.html
 reftest	css/css-transforms/overflow-perspective-001.html	==css/css-transforms/overflow-perspective-ref.html
 reftest	css/css-transforms/overflow-perspective-002.html	==css/css-transforms/overflow-perspective-ref.html
 reftest	css/css-transforms/overflow-perspective-003.html	==css/css-transforms/overflow-perspective-ref.html
@@ -828,6 +902,9 @@ reftest	css/css-transforms/perspective-children-only-inline.html	==css/css-trans
 reftest	css/css-transforms/perspective-origin-x.html	==css/css-transforms/reference/perspective-origin-reftest.html
 reftest	css/css-transforms/perspective-origin-xy.html	==css/css-transforms/reference/perspective-reftest.html
 reftest	css/css-transforms/perspective-split-by-zero-w.html	==css/css-transforms/perspective-split-by-zero-w-ref.html
+reftest	css/css-transforms/perspective-svg-001.html	==css/css-transforms/perspective-svg-001-ref.html
+reftest	css/css-transforms/perspective-svg-child-001.html	==css/css-transforms/perspective-svg-child-ref.html
+reftest	css/css-transforms/perspective-svg-child-002.html	==css/css-transforms/perspective-svg-child-ref.html
 reftest	css/css-transforms/perspective-transforms-equivalence.html	==css/css-transforms/perspective-transforms-equivalence-ref.html	fuzzy=:0-178;0-538
 reftest	css/css-transforms/perspective-translateZ-0.html	==css/css-transforms/reference/perspective-reftest.html
 reftest	css/css-transforms/perspective-translateZ-negative.html	==css/css-transforms/reference/perspective-reftest.html
@@ -853,18 +930,61 @@ reftest	css/css-transforms/preserve3d-button.html	==css/css-transforms/preserve3
 reftest	css/css-transforms/preserve3d-nested-perspective.html	==css/css-transforms/preserve3d-nested-perspective-ref.html
 reftest	css/css-transforms/preserve3d-overflow-percent.html	!=common/blank.html
 reftest	css/css-transforms/preserve3d-pseudo-element.html	==css/css-transforms/preserve3d-pseudo-element-ref.html
+reftest	css/css-transforms/rotate/svg-rotate-3args-002.html	==css/css-transforms/rotate/reference/svg-rotate-3args-ref.html
+reftest	css/css-transforms/rotate/svg-rotate-3args-invalid-001.html	==css/css-transforms/rotate/reference/svg-rotate-3args-ref.html
+reftest	css/css-transforms/rotate/svg-rotate-3args-invalid-002.html	==css/css-transforms/rotate/reference/svg-rotate-3args-ref.html
+reftest	css/css-transforms/rotate/svg-rotate-3args-invalid-003.html	==css/css-transforms/rotate/reference/svg-rotate-3args-ref.html
+reftest	css/css-transforms/rotate/svg-rotate-3args-invalid-004.html	==css/css-transforms/rotate/reference/svg-rotate-3args-ref.html
+reftest	css/css-transforms/rotate/svg-rotate-3args-invalid-005.html	==css/css-transforms/rotate/reference/svg-rotate-3args-ref.html
+reftest	css/css-transforms/rotate/svg-rotate-angle-45-001.html	==css/css-transforms/rotate/reference/svg-rotate-angle-45-ref.html	fuzzy=:0-1;0-142
+reftest	css/css-transforms/rotate/svg-rotate-angle-45-011.html	==css/css-transforms/rotate/reference/svg-rotate-angle-45-ref.html	fuzzy=:0-1;0-142
+reftest	css/css-transforms/rotate/svg-rotate-angle-45-022.html	==css/css-transforms/rotate/reference/svg-rotate-angle-45-ref.html	fuzzy=:0-1;0-142
+reftest	css/css-transforms/rotate/svg-rotate-angle-90-001.html	==css/css-transforms/rotate/reference/svg-rotate-angle-90-ref.html
+reftest	css/css-transforms/rotate/svg-rotate-angle-90-006.html	==css/css-transforms/rotate/reference/svg-rotate-angle-90-ref.html
+reftest	css/css-transforms/rotate/svg-rotate-angle-90-011.html	==css/css-transforms/rotate/reference/svg-rotate-angle-90-ref.html
+reftest	css/css-transforms/rotate/svg-rotate-angle-90-016.html	==css/css-transforms/rotate/reference/svg-rotate-angle-90-ref.html
+reftest	css/css-transforms/rotate/svg-rotate-angle-90-021.html	==css/css-transforms/rotate/reference/svg-rotate-angle-90-ref.html
 reftest	css/css-transforms/rotateY-180deg-with-overflow-scroll.html	==css/css-transforms/rotateY-180deg-with-overflow-scroll-ref.html
 reftest	css/css-transforms/rotateY.html	==css/css-transforms/reference/rotateY-ref.html
 reftest	css/css-transforms/rotate_45deg.html	==css/css-transforms/rotate_45deg-ref.html	fuzzy=:159-255;50-200
 reftest	css/css-transforms/rotate_x_45deg.html	==css/css-transforms/rotate_x_45deg-ref.html	fuzzy=:0-255;0-200
 reftest	css/css-transforms/rotate_y_45deg.html	==css/css-transforms/rotate_y_45deg-ref.html	fuzzy=:159-255;50-200
 reftest	css/css-transforms/rotated-clip-under-opacity.html	==css/css-transforms/reference/green.html
+reftest	css/css-transforms/scale/svg-scale-001.html	==css/css-transforms/scale/reference/svg-scale-ref.html
+reftest	css/css-transforms/scale/svg-scale-002.html	==css/css-transforms/scale/reference/svg-scale-ref.html
+reftest	css/css-transforms/scale/svg-scale-003.html	==css/css-transforms/scale/reference/svg-scale-ref.html
+reftest	css/css-transforms/scale/svg-scale-004.html	==css/css-transforms/scale/reference/svg-scale-ref.html
+reftest	css/css-transforms/scale/svg-scale-006.html	==css/css-transforms/scale/reference/svg-scale-ref.html
+reftest	css/css-transforms/scale/svg-scale-007.html	==css/css-transforms/scale/reference/svg-scale-ref.html
+reftest	css/css-transforms/scale/svg-scale-008.html	==css/css-transforms/scale/reference/svg-scale-ref.html
+reftest	css/css-transforms/scale/svg-scale-009.html	==css/css-transforms/scale/reference/svg-scale-ref.html
+reftest	css/css-transforms/scale/svg-scale-010.html	==css/css-transforms/scale/reference/svg-scale-ref.html
+reftest	css/css-transforms/scale/svg-scale-011.html	==css/css-transforms/scale/reference/svg-scale-ref.html
+reftest	css/css-transforms/scale/svg-scale-012.html	==css/css-transforms/scale/reference/svg-scale-ref.html
+reftest	css/css-transforms/scale/svg-scale-013.html	==css/css-transforms/scale/reference/svg-scale-ref.html
+reftest	css/css-transforms/scale/svg-scale-014.html	==css/css-transforms/scale/reference/svg-scale-ref.html
+reftest	css/css-transforms/scale/svg-scale-015.html	==css/css-transforms/scale/reference/svg-scale-ref.html
+reftest	css/css-transforms/scale/svg-scale-016.html	==css/css-transforms/scale/reference/svg-scale-ref.html
+reftest	css/css-transforms/scale/svg-scale-017.html	==css/css-transforms/scale/reference/svg-scale-ref.html
 reftest	css/css-transforms/scale-animation-with-var-001.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-transforms/scale-optional-second-001.html	==css/css-transforms/reference/scale-optional-second-ref.html
 reftest	css/css-transforms/scale-transform-overlap.html	==css/css-transforms/scale-transform-overlap-ref.html
 reftest	css/css-transforms/scale-zero-001.html	==css/css-transforms/reference/scale-zero-ref.html
 reftest	css/css-transforms/scalex.html	==css/css-transforms/scalex-ref.html
 reftest	css/css-transforms/scaley.html	==css/css-transforms/scaley-ref.html
+reftest	css/css-transforms/skewX/svg-skewx-001.html	==css/css-transforms/skewX/reference/svg-skewx-ref.html
+reftest	css/css-transforms/skewX/svg-skewx-006.html	==css/css-transforms/skewX/reference/svg-skewx-ref.html
+reftest	css/css-transforms/skewX/svg-skewx-011.html	==css/css-transforms/skewX/reference/svg-skewx-ref.html
+reftest	css/css-transforms/skewX/svg-skewx-016.html	==css/css-transforms/skewX/reference/svg-skewx-ref.html
+reftest	css/css-transforms/skewX/svg-skewx-021.html	==css/css-transforms/skewX/reference/svg-skewx-ref.html
+reftest	css/css-transforms/skewX/svg-skewx-with-units.html	==css/css-transforms/skewX/reference/svg-skewx-ref.html
+reftest	css/css-transforms/skewX/svg-skewxy-001.html	==css/css-transforms/skewX/reference/svg-skewxy-ref.html	fuzzy=:0-2;0-270
+reftest	css/css-transforms/skewY/svg-skewy-001.html	==css/css-transforms/skewY/reference/svg-skewy-ref.html	fuzzy=:0-1;0-202
+reftest	css/css-transforms/skewY/svg-skewy-006.html	==css/css-transforms/skewY/reference/svg-skewy-ref.html	fuzzy=:0-1;0-202
+reftest	css/css-transforms/skewY/svg-skewy-011.html	==css/css-transforms/skewY/reference/svg-skewy-ref.html	fuzzy=:0-1;0-202
+reftest	css/css-transforms/skewY/svg-skewy-016.html	==css/css-transforms/skewY/reference/svg-skewy-ref.html	fuzzy=:0-1;0-202
+reftest	css/css-transforms/skewY/svg-skewy-021.html	==css/css-transforms/skewY/reference/svg-skewy-ref.html	fuzzy=:0-1;0-202
+reftest	css/css-transforms/skewY/svg-skewy-with-units.html	==css/css-transforms/skewY/reference/svg-skewy-ref.html
 reftest	css/css-transforms/subpixel-perspective-backface-hidden.html	==css/css-transforms/subpixel-perspective-backface-hidden-ref.html
 reftest	css/css-transforms/subpixel-perspective-translate-z-0.html	==css/css-transforms/subpixel-perspective-translate-z-0-ref.html
 crashtest	css/css-transforms/transform-3d-fixed-under-fixed-opacity-crash.html
@@ -876,6 +996,14 @@ reftest	css/css-transforms/transform-abspos-004.html	==css/css-transforms/transf
 reftest	css/css-transforms/transform-abspos-005.html	!=css/css-transforms/transform-abspos-ref.html
 reftest	css/css-transforms/transform-abspos-006.html	==css/css-transforms/transform-abspos-ref.html
 reftest	css/css-transforms/transform-abspos-007.html	==css/css-transforms/transform-abspos-ref.html
+reftest	css/css-transforms/transform-background-001.html	==css/css-transforms/transform-background-ref-1.html	fuzzy=:0-4;0-400
+reftest	css/css-transforms/transform-background-002.html	==css/css-transforms/transform-background-ref-1.html	fuzzy=:0-5;0-400
+reftest	css/css-transforms/transform-background-003.html	==css/css-transforms/transform-background-ref-1.html	fuzzy=:0-1;0-400
+reftest	css/css-transforms/transform-background-004.html	==css/css-transforms/transform-background-ref-1.html	fuzzy=:0-1;0-400
+reftest	css/css-transforms/transform-background-005.html	==css/css-transforms/transform-background-ref-2.html	fuzzy=:0-3;0-12102
+reftest	css/css-transforms/transform-background-006.html	==css/css-transforms/transform-background-ref-2.html	!=css/css-transforms/transform-background-006-notref.html
+reftest	css/css-transforms/transform-background-007.html	==css/css-transforms/transform-root-bg-001-ref.html
+reftest	css/css-transforms/transform-background-008.html	==css/css-transforms/transform-root-bg-001-ref.html
 reftest	css/css-transforms/transform-box/content-box-mutation-001.html	==css/css-transforms/transform-box/reference/cssbox-ref.html
 reftest	css/css-transforms/transform-box/cssbox-border-box.html	==css/css-transforms/transform-box/reference/cssbox-ref.html
 reftest	css/css-transforms/transform-box/cssbox-content-box-001.html	==css/css-transforms/transform-box/reference/cssbox-ref.html
@@ -884,14 +1012,44 @@ reftest	css/css-transforms/transform-box/cssbox-fill-box.html	==css/css-transfor
 reftest	css/css-transforms/transform-box/cssbox-initial.html	==css/css-transforms/transform-box/reference/cssbox-ref.html
 reftest	css/css-transforms/transform-box/cssbox-stroke-box.html	==css/css-transforms/transform-box/reference/cssbox-ref.html
 reftest	css/css-transforms/transform-box/cssbox-view-box.html	==css/css-transforms/transform-box/reference/cssbox-ref.html
+reftest	css/css-transforms/transform-box/fill-box-001.html	==css/css-transforms/transform-box/reference/greensquare200x200.html
+reftest	css/css-transforms/transform-box/fill-box-002.html	==css/css-transforms/transform-box/reference/greensquare200x200.html
+reftest	css/css-transforms/transform-box/fill-box-mutation-001.html	==css/css-transforms/transform-box/reference/greensquare200x200.html
+reftest	css/css-transforms/transform-box/stroke-box-mutation-001.html	==css/css-transforms/transform-box/reference/svgbox-rect-ref.html
+reftest	css/css-transforms/transform-box/stroke-box-mutation-002.html	==css/css-transforms/transform-box/reference/svgbox-rect-ref.html
+reftest	css/css-transforms/transform-box/stroke-box-mutation-003.html	==css/css-transforms/transform-box/reference/svgbox-rect-ref.html
+reftest	css/css-transforms/transform-box/stroke-box-mutation-004.html	==css/css-transforms/transform-box/reference/svgbox-rect-ref.html
+reftest	css/css-transforms/transform-box/svgbox-border-box.html	==css/css-transforms/transform-box/reference/svgbox-rect-ref.html
+reftest	css/css-transforms/transform-box/svgbox-content-box.html	==css/css-transforms/transform-box/reference/svgbox-ref.html
+reftest	css/css-transforms/transform-box/svgbox-fill-box.html	==css/css-transforms/transform-box/reference/svgbox-ref.html
+reftest	css/css-transforms/transform-box/svgbox-initial.html	==css/css-transforms/transform-box/reference/svgbox-ref.html
+reftest	css/css-transforms/transform-box/svgbox-stroke-box-001.html	==css/css-transforms/transform-box/reference/svgbox-rect-ref.html
+reftest	css/css-transforms/transform-box/svgbox-stroke-box-002.html	==css/css-transforms/transform-box/reference/svgbox-rect-dasharray-ref.html
+reftest	css/css-transforms/transform-box/svgbox-stroke-box-003.html	==css/css-transforms/transform-box/reference/svgbox-rect-ref.html
+reftest	css/css-transforms/transform-box/svgbox-stroke-box-004.html	==css/css-transforms/transform-box/reference/svgbox-rect-ref.html
+reftest	css/css-transforms/transform-box/svgbox-stroke-box-005.html	==css/css-transforms/transform-box/reference/svgbox-rect-ref.html
+reftest	css/css-transforms/transform-box/svgbox-view-box.html	==css/css-transforms/transform-box/reference/svgbox-ref.html
+reftest	css/css-transforms/transform-box/value-changed.html	==css/css-transforms/transform-box/reference/greensquare200x200.html
+reftest	css/css-transforms/transform-box/view-box-mutation-001.html	==css/css-transforms/transform-box/reference/greensquare200x200.html
+reftest	css/css-transforms/transform-box/view-box-nested.html	==css/css-transforms/transform-box/reference/greensquare200x200.html
+reftest	css/css-transforms/transform-box/view-box-viewbox-nested.html	==css/css-transforms/transform-box/reference/greensquare200x200.html
+reftest	css/css-transforms/transform-box/view-box-viewbox.html	==css/css-transforms/transform-box/reference/greensquare200x200.html
+reftest	css/css-transforms/transform-box/view-box.html	==css/css-transforms/transform-box/reference/greensquare200x200.html
 reftest	css/css-transforms/transform-compound-001.html	==css/css-transforms/transform-compound-ref.html	!=css/css-transforms/transform-compound-notref-1.html	!=css/css-transforms/transform-compound-notref-2.html	fuzzy=:0-30;0-500
 reftest	css/css-transforms/transform-descendant-001.html	==css/css-transforms/transform-descendant-ref.html
 reftest	css/css-transforms/transform-display-001.html	==css/css-transforms/transform-display-ref.html	!=css/css-transforms/transform-display-notref.html
 reftest	css/css-transforms/transform-display-002.html	==css/css-transforms/transform-display-ref.html	!=css/css-transforms/transform-display-notref.html
 reftest	css/css-transforms/transform-display-003.html	==css/css-transforms/transform-display-ref.html	!=css/css-transforms/transform-display-notref.html
 reftest	css/css-transforms/transform-display-004.html	==css/css-transforms/transform-display-ref.html	!=css/css-transforms/transform-display-notref.html
+reftest	css/css-transforms/transform-fixed-bg-001.html	==css/css-transforms/transform-fixed-bg-ref.html
+reftest	css/css-transforms/transform-fixed-bg-003.html	==css/css-transforms/transform-fixed-bg-ref.html	fuzzy=:0-1;0-200
+reftest	css/css-transforms/transform-fixed-bg-005.html	==css/css-transforms/transform-fixed-bg-ref.html
+reftest	css/css-transforms/transform-fixed-bg-006.html	==css/css-transforms/transform-fixed-bg-ref.html	fuzzy=:0-1;0-200
+reftest	css/css-transforms/transform-fixed-bg-007.html	==css/css-transforms/transform-fixed-bg-ref.html	fuzzy=:0-1;0-200
+reftest	css/css-transforms/transform-fixed-bg-008.tentative.html	==css/css-transforms/transform-fixed-bg-ref.html	fuzzy=:0-5;0-200
 reftest	css/css-transforms/transform-generated-001.html	==css/css-transforms/transform-generated-001-ref.html	!=css/css-transforms/transform-generated-001-notref.html
 reftest	css/css-transforms/transform-generated-002.html	==css/css-transforms/transform-generated-002-ref.html	!=css/css-transforms/transform-generated-002-notref.html
+reftest	css/css-transforms/transform-image-001.html	==css/css-transforms/transform-image-ref.html	fuzzy=:0-1;0-200
 reftest	css/css-transforms/transform-inherit-001.html	==css/css-transforms/transform-inherit-ref.html
 reftest	css/css-transforms/transform-inherit-002.html	==css/css-transforms/transform-inherit-ref.html
 reftest	css/css-transforms/transform-inherit-origin-001.html	==css/css-transforms/transform-inherit-origin-ref.html
@@ -907,6 +1065,17 @@ reftest	css/css-transforms/transform-input-014.html	==css/css-transforms/transfo
 reftest	css/css-transforms/transform-input-017.html	==css/css-transforms/transform-input-017-ref.html	fuzzy=:0-48;0-16
 reftest	css/css-transforms/transform-input-018.html	==css/css-transforms/transform-input-018-ref.html
 reftest	css/css-transforms/transform-input-019.html	==css/css-transforms/transform-input-019-ref.html	fuzzy=:0-60;0-100
+reftest	css/css-transforms/transform-list-separation/svg-transform-list-separations-001.html	==css/css-transforms/transform-list-separation/reference/svg-transform-list-separations-ref.html
+reftest	css/css-transforms/transform-list-separation/svg-transform-list-separations-002.html	==css/css-transforms/transform-list-separation/reference/svg-transform-list-separations-ref.html
+reftest	css/css-transforms/transform-list-separation/svg-transform-list-separations-003.html	==css/css-transforms/transform-list-separation/reference/svg-transform-list-separations-ref.html
+reftest	css/css-transforms/transform-list-separation/svg-transform-list-separations-004.html	==css/css-transforms/transform-list-separation/reference/svg-transform-list-separations-ref.html
+reftest	css/css-transforms/transform-list-separation/svg-transform-list-separations-005.html	==css/css-transforms/transform-list-separation/reference/svg-transform-list-separations-ref.html
+reftest	css/css-transforms/transform-list-separation/svg-transform-list-separations-006.html	==css/css-transforms/transform-list-separation/reference/svg-transform-list-separations-ref.html
+reftest	css/css-transforms/transform-list-separation/svg-transform-list-separations-007.html	==css/css-transforms/transform-list-separation/reference/svg-transform-list-separations-ref.html
+reftest	css/css-transforms/transform-list-separation/svg-transform-list-separations-008.html	==css/css-transforms/transform-list-separation/reference/svg-transform-list-separations-ref.html
+reftest	css/css-transforms/transform-list-separation/svg-transform-list-separations-009.html	==css/css-transforms/transform-list-separation/reference/svg-transform-list-separations-ref.html
+reftest	css/css-transforms/transform-list-separation/svg-transform-list-separations-010.html	==css/css-transforms/transform-list-separation/reference/svg-transform-list-separations-ref.html
+reftest	css/css-transforms/transform-list-separation/svg-transform-list-separations-011.html	==css/css-transforms/transform-list-separation/reference/svg-transform-list-separations-ref.html
 reftest	css/css-transforms/transform-matrix-001.html	==css/css-transforms/transform-matrix-001-ref.html
 reftest	css/css-transforms/transform-matrix-002.html	==css/css-transforms/transform-matrix-002-ref.html
 reftest	css/css-transforms/transform-matrix-003.html	==css/css-transforms/transform-matrix-003-ref.html
@@ -915,6 +1084,87 @@ reftest	css/css-transforms/transform-matrix-005.html	==css/css-transforms/transf
 reftest	css/css-transforms/transform-matrix-006.html	==css/css-transforms/transform-matrix-006-ref.html	!=css/css-transforms/transform-matrix-005-notref.html
 reftest	css/css-transforms/transform-matrix-007.html	==css/css-transforms/transform-matrix-007-ref.html
 reftest	css/css-transforms/transform-matrix-009.html	==css/reference/ref-filled-green-200px-square.html
+reftest	css/css-transforms/transform-origin/svg-origin-length-001.html	==css/css-transforms/transform-origin/reference/svg-origin-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-length-002.html	==css/css-transforms/transform-origin/reference/svg-origin-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-length-003.html	==css/css-transforms/transform-origin/reference/svg-origin-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-length-004.html	==css/css-transforms/transform-origin/reference/svg-origin-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-length-005.html	==css/css-transforms/transform-origin/reference/svg-origin-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-length-006.html	==css/css-transforms/transform-origin/reference/svg-origin-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-length-007.html	==css/css-transforms/transform-origin/reference/svg-origin-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-length-008.html	==css/css-transforms/transform-origin/reference/svg-origin-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-length-cm-001.html	==css/css-transforms/transform-origin/reference/svg-origin-length-cm-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-length-cm-002.html	==css/css-transforms/transform-origin/reference/svg-origin-length-cm-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-length-cm-003.html	==css/css-transforms/transform-origin/reference/svg-origin-length-cm-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-length-cm-004.html	==css/css-transforms/transform-origin/reference/svg-origin-length-cm-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-length-cm-005.html	==css/css-transforms/transform-origin/reference/svg-origin-length-cm-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-length-in-001.html	==css/css-transforms/transform-origin/reference/svg-origin-length-in-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-length-in-002.html	==css/css-transforms/transform-origin/reference/svg-origin-length-in-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-length-in-003.html	==css/css-transforms/transform-origin/reference/svg-origin-length-in-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-length-in-004.html	==css/css-transforms/transform-origin/reference/svg-origin-length-in-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-length-in-005.html	==css/css-transforms/transform-origin/reference/svg-origin-length-in-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-length-pt-001.html	==css/css-transforms/transform-origin/reference/svg-origin-length-pt-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-length-pt-002.html	==css/css-transforms/transform-origin/reference/svg-origin-length-pt-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-length-pt-003.html	==css/css-transforms/transform-origin/reference/svg-origin-length-pt-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-length-pt-004.html	==css/css-transforms/transform-origin/reference/svg-origin-length-pt-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-length-pt-005.html	==css/css-transforms/transform-origin/reference/svg-origin-length-pt-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-001.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-002.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-003.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-004.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-005.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-006.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-007.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-008.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-009.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-010.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-011.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-012.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-013.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-014.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-015.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-016.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-017.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-018.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-019.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-020.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-021.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-022.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-023.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-024.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-025.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-026.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-027.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-028.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-029.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-030.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-031.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-032.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-033.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-034.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-035.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-036.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-037.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-038.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-039.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-040.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-041.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-042.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-043.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-044.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-045.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-046.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-invalid-001.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-invalid-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-invalid-002.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-invalid-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-invalid-003.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-invalid-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-invalid-004.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-invalid-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-invalid-005.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-invalid-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-invalid-006.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-invalid-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-invalid-007.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-invalid-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-invalid-008.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-invalid-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-invalid-009.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-invalid-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-invalid-010.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-invalid-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-invalid-011.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-invalid-ref.html
+reftest	css/css-transforms/transform-origin/svg-origin-relative-length-invalid-012.html	==css/css-transforms/transform-origin/reference/svg-origin-relative-length-invalid-ref.html
 reftest	css/css-transforms/transform-origin-001.html	!=css/css-transforms/transform-origin-ref-1.html
 reftest	css/css-transforms/transform-origin-002.html	!=css/css-transforms/transform-origin-ref-1.html
 reftest	css/css-transforms/transform-origin-003.html	==css/css-transforms/transform-origin-ref-2.html
@@ -947,7 +1197,12 @@ reftest	css/css-transforms/transform-percent-005.html	==css/css-transforms/trans
 reftest	css/css-transforms/transform-percent-006.html	==css/css-transforms/transform-percent-ref.html	!=css/css-transforms/transform-percent-notref.html
 reftest	css/css-transforms/transform-percent-007.html	==css/css-transforms/transform-percent-ref.html	!=css/css-transforms/transform-percent-notref.html
 reftest	css/css-transforms/transform-percent-008.html	==css/css-transforms/transform-percent-ref.html	!=css/css-transforms/transform-percent-notref.html	fuzzy=:0-102;0-560
+reftest	css/css-transforms/transform-percent-010.html	==css/css-transforms/transform-box/reference/greensquare200x200.html
 reftest	css/css-transforms/transform-propagate-inherit-boolean-001.html	==css/css-transforms/transform-propagate-inherit-boolean-ref.html
+reftest	css/css-transforms/transform-root-bg-001.html	==css/css-transforms/transform-root-bg-001-ref.html
+reftest	css/css-transforms/transform-root-bg-002.html	==css/css-transforms/transform-root-bg-001-ref.html
+reftest	css/css-transforms/transform-root-bg-003.html	==css/css-transforms/transform-root-bg-001-ref.html
+reftest	css/css-transforms/transform-root-bg-004.html	==css/css-transforms/transform-root-bg-004-ref.html
 reftest	css/css-transforms/transform-rotate-001.html	==css/css-transforms/transform-rotate-001-ref.html	!=css/css-transforms/transform-rotate-001-notref.html
 reftest	css/css-transforms/transform-rotate-002.html	==css/css-transforms/transform-rotate-001-ref.html	!=css/css-transforms/transform-rotate-001-notref.html
 reftest	css/css-transforms/transform-rotate-003.html	==css/css-transforms/transform-rotate-001-ref.html	!=css/css-transforms/transform-rotate-001-notref.html	fuzzy=:0-9;0-11
@@ -1022,6 +1277,7 @@ reftest	css/css-transforms/transform3d-backface-visibility-005.html	==css/css-tr
 reftest	css/css-transforms/transform3d-backface-visibility-006.html	==css/css-transforms/transform-lime-square-ref.html
 reftest	css/css-transforms/transform3d-backface-visibility-007.html	==css/css-transforms/transform-lime-square-ref.html
 reftest	css/css-transforms/transform3d-image-scale-001.html	==css/css-transforms/transform-lime-square-ref.html
+reftest	css/css-transforms/transform3d-image-scale-002.html	==css/css-transforms/transform-lime-square-ref.html
 reftest	css/css-transforms/transform3d-matrix3d-001.html	==css/css-transforms/transform3d-matrix3d-001-ref.html	!=css/css-transforms/transform-lime-square-ref.html	fuzzy=css/css-transforms/transform3d-matrix3d-001-ref.html:0-100;0-980
 reftest	css/css-transforms/transform3d-matrix3d-002.html	==css/css-transforms/transform3d-matrix3d-002-ref.html	!=css/css-transforms/transform-lime-square-ref.html
 reftest	css/css-transforms/transform3d-matrix3d-003.html	==css/css-transforms/transform3d-matrix3d-003-ref.html	!=css/css-transforms/transform-lime-square-ref.html
@@ -1075,16 +1331,38 @@ reftest	css/css-transforms/transform3d-translatez-001.html	==css/css-transforms/
 reftest	css/css-transforms/transformed-preserve-3d-1.html	==css/css-transforms/reference/transformed-preserve-3d-1-ref.html
 reftest	css/css-transforms/transformed-rotateX-3.html	==css/css-transforms/reference/transformed-rotateX-3-ref.html
 reftest	css/css-transforms/transformed-rotateY-1.html	==css/css-transforms/reference/transformed-rotateY-1-ref.html
+reftest	css/css-transforms/transforms-rotate-degree-45.html	==css/css-transforms/reference/transforms-rotate-degree-45-ref.html	fuzzy=:0-19;0-564
 reftest	css/css-transforms/transforms-rotate-degree-90.html	==css/css-transforms/reference/transforms-rotate-degree-90-ref.html
 reftest	css/css-transforms/transforms-rotate-translate-scale.html	==css/css-transforms/reference/transforms-rotate-translate-scale-ref.html
 reftest	css/css-transforms/transforms-rotateY-degree-60.html	==css/css-transforms/reference/transforms-rotateY-degree-60-ref.html
 reftest	css/css-transforms/transforms-skewX.html	==css/css-transforms/reference/transforms-skewX-ref.html	fuzzy=:0-9;0-200
 reftest	css/css-transforms/transforms-skewY.html	==css/css-transforms/reference/transforms-skewY-ref.html	fuzzy=:0-1;0-200
+reftest	css/css-transforms/translate/svg-translate-001.html	==css/css-transforms/translate/reference/svg-translate-ref.html
+reftest	css/css-transforms/translate/svg-translate-009.html	==css/css-transforms/translate/reference/svg-translate-ref.html
+reftest	css/css-transforms/translate/svg-translate-017.html	==css/css-transforms/translate/reference/svg-translate-ref.html
+reftest	css/css-transforms/translate/svg-translate-025.html	==css/css-transforms/translate/reference/svg-translate-ref.html
+reftest	css/css-transforms/translate/svg-translate-033.html	==css/css-transforms/translate/reference/svg-translate-ref.html
+reftest	css/css-transforms/translate/svg-translate-041.html	==css/css-transforms/translate/reference/svg-translate-ref.html
+reftest	css/css-transforms/translate/svg-translate-049.html	==css/css-transforms/translate/reference/svg-translate-ref.html
+reftest	css/css-transforms/translate/svg-translate-050.html	==css/css-transforms/translate/reference/svg-translate-ref.html
+reftest	css/css-transforms/translate/svg-translate-051.html	==css/css-transforms/translate/reference/svg-translate-ref.html
+reftest	css/css-transforms/translate/svg-translate-052.html	==css/css-transforms/translate/reference/svg-translate-ref.html
+reftest	css/css-transforms/translate/svg-translate-053.html	==css/css-transforms/translate/reference/svg-translate-ref.html
+reftest	css/css-transforms/translate/svg-translate-054.html	==css/css-transforms/translate/reference/svg-translate-ref.html
+reftest	css/css-transforms/translate/svg-translate-055.html	==css/css-transforms/translate/reference/svg-translate-ref.html
+reftest	css/css-transforms/translate/svg-translate-multiple-001.html	==css/css-transforms/translate/reference/svg-translate-multiple-ref.html
+reftest	css/css-transforms/translate/svg-translate-multiple-002.html	==css/css-transforms/translate/reference/svg-translate-multiple-ref.html
+reftest	css/css-transforms/translate/svg-translate-with-units.html	==css/css-transforms/translate/reference/svg-translate-ref.html
+reftest	css/css-transforms/translate/translate-and-transform-attribute-in-svg.html	==css/css-transforms/translate/reference/translate-and-transform-attribute-in-svg-ref.html
+reftest	css/css-transforms/translate/translate-and-transform-css-property-in-svg.html	==css/css-transforms/translate/reference/translate-and-transform-css-property-in-svg-ref.html
+reftest	css/css-transforms/translate/translate-in-svg.html	==css/css-transforms/translate/reference/translate-in-svg-ref.html
 reftest	css/css-transforms/translate-optional-second-001.html	==css/css-transforms/reference/translate-optional-second-ref.html
 reftest	css/css-transforms/translate.html	==css/css-transforms/translate-ref.html
 reftest	css/css-transforms/ttwf-css-3d-polygon-cycle-mismatch.html	!=css/css-transforms/reference/ttwf-css-3d-polygon-cycle-ref.html
 reftest	css/css-transforms/ttwf-css-3d-polygon-cycle.html	==css/css-transforms/reference/ttwf-css-3d-polygon-cycle-ref.html	fuzzy=:0-113;0-674
 reftest	css/css-transforms/ttwf-reftest-rotate.html	==css/css-transforms/reference/ttwf-reftest-rotate-ref.html
+reftest	css/css-transforms/ttwf-transform-skewx-001.html	==css/css-transforms/reference/ttwf-reftest-transform-skewx-001.html	fuzzy=:63-64;100-200
+reftest	css/css-transforms/ttwf-transform-skewy-001.html	==css/css-transforms/reference/ttwf-reftest-transform-skewy-001.html	fuzzy=:63-68;100-200
 reftest	css/css-transforms/ttwf-transform-translatex-001.html	==css/css-transforms/reference/ttwf-reftest-transform-translatex-001.html
 reftest	css/css-transforms/ttwf-transform-translatey-001.html	==css/css-transforms/reference/ttwf-reftest-transform-translatey-001.html
 crashtest	css/css-transforms/webkit-transform-origin-x-supports-crash.html
@@ -1128,6 +1406,9 @@ reftest	css/css-will-change/will-change-stacking-context-z-index-1.html	==css/cs
 reftest	css/css-will-change/will-change-transform-image.html	==css/css-will-change/will-change-transform-image-ref.html
 reftest	css/css-will-change/will-change-transform-inline.html	==css/css-will-change/will-change-transform-inline-ref.html
 crashtest	css/mediaqueries/duplicate-media-stylesheet-crash.html
+reftest	css/mediaqueries/prefers-color-scheme-svg-as-image.html	==css/mediaqueries/prefers-color-scheme-svg-as-image-ref.html
+reftest	css/mediaqueries/prefers-color-scheme-svg-image-normal-with-meta-dark.html	==css/mediaqueries/prefers-color-scheme-svg-image-normal-with-meta-dark-ref.html
+reftest	css/mediaqueries/prefers-color-scheme-svg-image-normal-with-meta-light.html	==css/mediaqueries/prefers-color-scheme-svg-image-normal-with-meta-light-ref.html
 reftest	css/mediaqueries/relative-units-001.html	==css/mediaqueries/reference/ref-green-body.xht
 reftest	css/mediaqueries/relative-units-002.html	==css/mediaqueries/reference/ref-green-body.xht
 reftest	css/mediaqueries/relative-units-003.html	==css/mediaqueries/reference/ref-green-body.xht
@@ -1398,6 +1679,7 @@ reftest	css/css-values/calc-width-block-1.html	==css/css-values/calc-width-block
 reftest	css/css-values/calc-width-block-intrinsic-1.html	==css/css-values/calc-width-block-intrinsic-1-ref.html
 reftest	css/css-values/calc-width-table-auto-1.html	==css/css-values/calc-width-table-auto-1-ref.html
 reftest	css/css-values/calc-width-table-fixed-1.html	==css/css-values/calc-width-table-fixed-1-ref.html
+reftest	css/css-values/ch-unit-001.html	==css/css-values/reference/ch-unit-001-ref.html
 crashtest	css/css-values/chrome-typed-arithmetic-crash.html
 crashtest	css/css-values/crashtests/chrome-bug-492735384.html
 crashtest	css/css-values/crashtests/chrome-bug-493952652.html
@@ -1410,6 +1692,7 @@ reftest	css/css-values/min-max-percentage-length-interpolation.html	==css/refere
 reftest	css/css-values/percentage-rem-low.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-values/rem-root-font-size-restyle-1.html	==css/css-values/rem-root-font-size-restyle-1-ref.html
 reftest	css/css-values/resolution-with-percentage-without-context.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-values/svg-attr-case-sensitivity.html	==css/css-values/svg-attr-case-sensitivity-ref.html
 crashtest	css/css-values/typed-arithmetic-mixed-units-crash.html
 reftest	css/css-values/vh-calc-support-pct.html	==css/css-values/reference/all-green.html
 reftest	css/css-values/vh-calc-support.html	==css/css-values/reference/all-green.html
@@ -1507,8 +1790,10 @@ reftest	css/css-lists/li-with-height-001.html	==css/css-lists/li-with-height-001
 reftest	css/css-lists/li-with-overflow-hidden-change-list-style-position-001.html	==css/css-lists/li-with-overflow-hidden-change-list-style-position-001-ref.html
 crashtest	css/css-lists/li-without-ul-counter-crash.html
 reftest	css/css-lists/list-and-grid-001.html	==css/css-lists/list-and-grid-001-ref.html	fuzzy=:0-8;0-10
+reftest	css/css-lists/list-item-definition.html	==css/css-lists/list-item-definition-ref.html
 reftest	css/css-lists/list-item-dynamic-padding.html	==css/css-lists/list-item-dynamic-padding-ref.html
 crashtest	css/css-lists/list-marker-position-crash.html
+reftest	css/css-lists/list-style-image-gradients.html	==css/css-lists/list-style-image-gradients-ref.html
 reftest	css/css-lists/list-type-none-style-image.html	==css/css-lists/list-type-none-style-image-ref.html
 reftest	css/css-lists/list-with-image-display-changed-001.html	==css/css-lists/list-with-image-display-changed-001-ref.html
 reftest	css/css-lists/marker-counter.html	==css/css-lists/marker-counter-ref.html
@@ -1694,15 +1979,23 @@ crashtest	css/css-content/crashtests/generated-quote.html
 crashtest	css/css-content/crashtests/generated-text.html
 reftest	css/css-content/element-replacement-alt.html	==css/css-content/element-replacement-alt-ref.html
 reftest	css/css-content/element-replacement-display-none.html	==css/reference/blank.html
+reftest	css/css-content/element-replacement-dynamic.html	==css/css-content/element-replacement-ref.html
 reftest	css/css-content/element-replacement-gradient.html	==css/css-content/element-replacement-gradient-ref.html
+reftest	css/css-content/element-replacement-image-alt.html	==css/css-content/element-replacement-ref.html
 reftest	css/css-content/element-replacement-image-no-src.tentative.html	==css/css-content/element-replacement-image-no-src-ref.html
 reftest	css/css-content/element-replacement-image-src.tentative.html	==css/css-content/element-replacement-image-no-src-ref.html
+reftest	css/css-content/element-replacement-root-canvas-bg-from-body.html	==css/css-content/element-replacement-root-ref.html
+reftest	css/css-content/element-replacement-root-canvas-bg.html	==css/css-content/element-replacement-root-canvas-bg-ref.html
+reftest	css/css-content/element-replacement-root.html	==css/css-content/element-replacement-root-ref.html
+reftest	css/css-content/element-replacement.html	==css/css-content/element-replacement-ref.html
+reftest	css/css-content/pseudo-element-inline-box.html	==css/css-content/pseudo-element-inline-box-ref.html
 crashtest	css/css-text-decor/crashtests/pseudo-element-text-decoration-under-pseudo-first-line-crash.html
 crashtest	css/css-text-decor/crashtests/text-decoration-first-line-layer-crash.html
 crashtest	css/css-text-decor/crashtests/text-decoration-on-empty-first-line-crash.html
 crashtest	css/css-text-decor/crashtests/text-decoration-on-pseudo-first-line-crash.html
 reftest	css/css-text-decor/decorating-box/text-decoration-decorating-box-thickness-001.html	==css/css-text-decor/decorating-box/text-decoration-decorating-box-thickness-001-ref.html
 reftest	css/css-text-decor/text-decoration-decorating-box-001.html	==css/css-text-decor/reference/text-decoration-decorating-box-001-ref.html
+reftest	css/css-text-decor/text-decoration-propagation-01.html	==css/css-text-decor/reference/text-decoration-propagation-01-ref.html
 reftest	css/css-text-decor/text-decoration-propagation-02.html	==css/css-text-decor/reference/text-decoration-propagation-02-ref.html
 reftest	css/css-text-decor/text-decoration-propagation-03.html	==css/css-text-decor/reference/text-decoration-propagation-03-ref.html
 reftest	css/css-text-decor/text-decoration-propagation-04.html	==css/css-text-decor/reference/text-decoration-propagation-04-ref.html
@@ -2025,6 +2318,8 @@ crashtest	css/css-animations/crashtests/keyframe-timing-function-unset.html
 crashtest	css/css-animations/crashtests/pause.html
 crashtest	css/css-animations/crashtests/pseudo-element-animation-with-color.html
 crashtest	css/css-animations/crashtests/servo-bug-45008.html
+crashtest	css/css-animations/crashtests/svg-element-css-animation.html
+crashtest	css/css-animations/crashtests/svg-use-animation-crash.html
 crashtest	css/css-animations/crashtests/transform-css-animation-squash.html
 crashtest	css/css-animations/crashtests/transform-properties-from-none-to-none-crash.html
 crashtest	css/css-animations/crashtests/universal-selector-opacity-inherit.html
@@ -2033,6 +2328,7 @@ reftest	css/css-animations/inheritance-pseudo-element.html	==css/css-animations/
 crashtest	css/css-animations/keyframes-remove-documentElement-crash.html
 reftest	css/css-animations/nested-scale-animations.html	==css/css-animations/nested-scale-animations-ref.html
 crashtest	css/css-animations/neutral-var-keyframe-cycle-crash.html
+reftest	css/css-animations/svg-transform-animation.html	==css/css-animations/svg-transform-animation-ref.html
 reftest	css/css-animations/transform-animation-under-large-scale.html	==css/css-animations/transform-animation-under-large-scale-ref.html
 reftest	css/css-animations/translation-animation-on-important-property.html	==css/css-animations/translation-animation-on-important-property-ref.html
 reftest	css/css-animations/translation-animation-subpixel-offset.html	==css/css-animations/translation-animation-subpixel-offset-ref.html
@@ -2148,7 +2444,10 @@ reftest	css/css-images/normalization-radial-degenerate.html	==css/css-images/ref
 reftest	css/css-images/normalization-radial.html	==css/css-images/reference/100x100-blue.html	fuzzy=:0-1;0-40000
 reftest	css/css-images/object-position-png-001i.html	==css/css-images/object-position-png-001-ref.html
 reftest	css/css-images/object-position-png-002i.html	==css/css-images/object-position-png-002-ref.html
+reftest	css/css-images/object-position-svg-001i.html	==css/css-images/object-position-svg-001-ref.html	fuzzy=:0-40;0-50
+reftest	css/css-images/object-position-svg-002i.html	==css/css-images/object-position-svg-002-ref.html	fuzzy=:0-40;0-50
 crashtest	css/css-images/radial-gradient-transition-hint-crash.html
+reftest	css/css-images/svg-images-are-ignored.html	==css/css-images/svg-images-are-ignored-ref.html
 reftest	css/css-images/tiled-gradients.html	==css/css-images/tiled-gradients-ref.html	fuzzy=:0-255;0-800
 reftest	css/css-images/tiled-radial-gradients.html	==css/css-images/tiled-radial-gradients-ref.html	fuzzy=:0-2;0-8009
 reftest	css/css-backgrounds/animations/background-color-animation-element-not-visible-at-current-viewport.html	==css/css-backgrounds/animations/background-color-animation-element-not-visible-at-current-viewport-ref.html
@@ -2242,9 +2541,217 @@ reftest	css/css-backgrounds/background-repeat-space-6.html	==css/css-backgrounds
 reftest	css/css-backgrounds/background-repeat-space-7.html	==css/css-backgrounds/background-repeat-space-7-ref.html	fuzzy=:0-32;0-16500
 reftest	css/css-backgrounds/background-repeat-space-8.html	==css/css-backgrounds/background-repeat-space-8-ref.html	fuzzy=:0-80;0-15880
 reftest	css/css-backgrounds/background-repeat-space-9.html	==css/css-backgrounds/background-repeat-space-9-ref.html	fuzzy=:0-52;0-1680
+reftest	css/css-backgrounds/background-size/background-size-contain-svg-view.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-backgrounds/background-size/background-size-cover-svg-view.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-backgrounds/background-size/background-size-cover-svg.html	==css/css-backgrounds/background-size/reference/background-size-cover-svg-ref.html	fuzzy=:0-2;0-1200
 reftest	css/css-backgrounds/background-size/background-size-near-zero-color.html	==css/css-backgrounds/background-size/reference/background-size-near-zero-ref.html
 reftest	css/css-backgrounds/background-size/background-size-near-zero-gradient.html	==css/css-backgrounds/background-size/reference/background-size-near-zero-ref.html
 reftest	css/css-backgrounds/background-size/background-size-near-zero-png.html	==css/css-backgrounds/background-size/reference/background-size-near-zero-ref.html
+reftest	css/css-backgrounds/background-size/background-size-near-zero-svg.html	==css/css-backgrounds/background-size/reference/background-size-near-zero-ref.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-001.html	==css/css-backgrounds/background-size/vector/reference/background-size-vector-001-ref.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-002.html	==css/css-backgrounds/background-size/vector/reference/background-size-vector-001-ref.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-003.html	==css/css-backgrounds/background-size/vector/reference/ref-t-lime16x128-aqua16x128.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-004.html	==css/css-backgrounds/background-size/vector/reference/ref-t-lime16x192-aqua16x192.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-005.html	==css/css-backgrounds/background-size/vector/reference/ref-t-lime16x128-aqua16x128.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-006.html	==css/css-backgrounds/background-size/vector/reference/ref-t-lime16x192-aqua16x192.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-007.html	==css/css-backgrounds/background-size/vector/reference/ref-t-lime16x128-aqua16x128.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-008.html	==css/css-backgrounds/background-size/vector/reference/background-size-vector-008-ref.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-009.html	==css/css-backgrounds/background-size/vector/reference/ref-t-lime16x128-aqua16x128.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-010.html	==css/css-backgrounds/background-size/vector/reference/ref-t-lime16x192-aqua16x192.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-011.html	==css/css-backgrounds/background-size/vector/reference/ref-t-lime16x128-aqua16x128.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-012.html	==css/css-backgrounds/background-size/vector/reference/ref-t-lime16x192-aqua16x192.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-013.html	==css/css-backgrounds/background-size/vector/reference/ref-t-lime16x128-aqua16x128.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-014.html	==css/css-backgrounds/background-size/vector/reference/background-size-vector-008-ref.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-015.html	==css/css-backgrounds/background-size/vector/reference/ref-t-lime16x128-aqua16x128.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-016.html	==css/css-backgrounds/background-size/vector/reference/ref-t-lime16x192-aqua16x192.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-017.html	==css/css-backgrounds/background-size/vector/reference/ref-t-lime16x128-aqua16x128.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-018.html	==css/css-backgrounds/background-size/vector/reference/ref-t-lime16x192-aqua16x192.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-019.html	==css/css-backgrounds/background-size/vector/reference/ref-t-lime8x16-aqua8x16.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-020.html	==css/css-backgrounds/background-size/vector/reference/ref-t-lime8x16-aqua8x16.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-021.html	==css/css-backgrounds/background-size/vector/reference/background-size-vector-021-ref.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-022.html	==css/css-backgrounds/background-size/vector/reference/background-size-vector-022-ref.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-023.html	==css/css-backgrounds/background-size/vector/reference/background-size-vector-021-ref.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-024.html	==css/css-backgrounds/background-size/vector/reference/background-size-vector-022-ref.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-025.html	==css/css-backgrounds/background-size/vector/reference/ref-t-lime2x16-aqua2x16.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-026.html	==css/css-backgrounds/background-size/vector/reference/ref-t-lime128x16-aqua128x16.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-027.html	==css/css-backgrounds/background-size/vector/reference/ref-t-lime24x192-aqua24x192.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-028.html	==css/css-backgrounds/background-size/vector/reference/ref-t-lime128x192-aqua128x192.html
+reftest	css/css-backgrounds/background-size/vector/background-size-vector-029.html	==css/css-backgrounds/background-size/vector/reference/ref-t-lime24x192-aqua24x192.html
+reftest	css/css-backgrounds/background-size/vector/diagonal-percentage-vector-background.html	==css/css-backgrounds/background-size/vector/reference/diagonal-percentage-vector-background-ref.html	fuzzy=:0-5;0-360
+reftest	css/css-backgrounds/background-size/vector/tall--auto--omitted-width-percent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x384-aqua256x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--auto--percent-width-nonpercent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime2x16-aqua2x16.html
+reftest	css/css-backgrounds/background-size/vector/tall--auto--percent-width-nonpercent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x16-aqua256x16.html
+reftest	css/css-backgrounds/background-size/vector/tall--auto--percent-width-omitted-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime48x384-aqua48x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--auto--percent-width-omitted-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x384-aqua256x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--auto--percent-width-percent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime48x384-aqua48x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--auto--percent-width-percent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x384-aqua256x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--auto-32px--nonpercent-width-nonpercent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime8x16-aqua8x16.html
+reftest	css/css-backgrounds/background-size/vector/tall--auto-32px--nonpercent-width-nonpercent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime8x16-aqua8x16.html
+reftest	css/css-backgrounds/background-size/vector/tall--auto-32px--nonpercent-width-omitted-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime2x16-aqua2x16.html
+reftest	css/css-backgrounds/background-size/vector/tall--auto-32px--nonpercent-width-omitted-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime8x16-aqua8x16.html
+reftest	css/css-backgrounds/background-size/vector/tall--auto-32px--nonpercent-width-percent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime2x16-aqua2x16.html
+reftest	css/css-backgrounds/background-size/vector/tall--auto-32px--nonpercent-width-percent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime8x16-aqua8x16.html
+reftest	css/css-backgrounds/background-size/vector/tall--auto-32px--omitted-width-nonpercent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime2x16-aqua2x16.html
+reftest	css/css-backgrounds/background-size/vector/tall--auto-32px--omitted-width-nonpercent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x16-aqua256x16.html
+reftest	css/css-backgrounds/background-size/vector/tall--auto-32px--omitted-width-omitted-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime2x16-aqua2x16.html
+reftest	css/css-backgrounds/background-size/vector/tall--auto-32px--omitted-width-omitted-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x16-aqua256x16.html
+reftest	css/css-backgrounds/background-size/vector/tall--auto-32px--omitted-width-percent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime2x16-aqua2x16.html
+reftest	css/css-backgrounds/background-size/vector/tall--auto-32px--omitted-width-percent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x16-aqua256x16.html
+reftest	css/css-backgrounds/background-size/vector/tall--auto-32px--percent-width-nonpercent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime2x16-aqua2x16.html
+reftest	css/css-backgrounds/background-size/vector/tall--auto-32px--percent-width-nonpercent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x16-aqua256x16.html
+reftest	css/css-backgrounds/background-size/vector/tall--auto-32px--percent-width-omitted-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime2x16-aqua2x16.html
+reftest	css/css-backgrounds/background-size/vector/tall--auto-32px--percent-width-omitted-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x16-aqua256x16.html
+reftest	css/css-backgrounds/background-size/vector/tall--auto-32px--percent-width-percent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime2x16-aqua2x16.html
+reftest	css/css-backgrounds/background-size/vector/tall--auto-32px--percent-width-percent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x16-aqua256x16.html
+reftest	css/css-backgrounds/background-size/vector/tall--contain--height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-empty.html
+reftest	css/css-backgrounds/background-size/vector/tall--contain--nonpercent-width-nonpercent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime192x384-aqua192x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--contain--nonpercent-width-nonpercent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime192x384-aqua192x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--contain--nonpercent-width-omitted-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime48x384-aqua48x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--contain--nonpercent-width-omitted-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x384-aqua256x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--contain--nonpercent-width-percent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime48x384-aqua48x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--contain--nonpercent-width-percent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x384-aqua256x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--contain--omitted-width-nonpercent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime48x384-aqua48x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--contain--omitted-width-nonpercent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x384-aqua256x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--contain--omitted-width-omitted-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime48x384-aqua48x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--contain--omitted-width-omitted-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x384-aqua256x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--contain--omitted-width-percent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime48x384-aqua48x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--contain--omitted-width-percent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x384-aqua256x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--contain--percent-width-nonpercent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime48x384-aqua48x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--contain--percent-width-nonpercent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x384-aqua256x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--contain--percent-width-omitted-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime48x384-aqua48x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--contain--percent-width-omitted-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x384-aqua256x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--contain--percent-width-percent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime48x384-aqua48x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--contain--percent-width-percent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x384-aqua256x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--contain--width.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-empty.html
+reftest	css/css-backgrounds/background-size/vector/tall--cover--height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime.html
+reftest	css/css-backgrounds/background-size/vector/tall--cover--nonpercent-width-nonpercent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x512-aqua256x256.html
+reftest	css/css-backgrounds/background-size/vector/tall--cover--nonpercent-width-nonpercent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x512-aqua256x256.html
+reftest	css/css-backgrounds/background-size/vector/tall--cover--nonpercent-width-omitted-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x768.html
+reftest	css/css-backgrounds/background-size/vector/tall--cover--nonpercent-width-omitted-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x384-aqua256x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--cover--nonpercent-width-percent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x768.html
+reftest	css/css-backgrounds/background-size/vector/tall--cover--nonpercent-width-percent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x384-aqua256x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--cover--omitted-width-nonpercent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x768.html
+reftest	css/css-backgrounds/background-size/vector/tall--cover--omitted-width-nonpercent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x384-aqua256x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--cover--omitted-width-omitted-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x768.html
+reftest	css/css-backgrounds/background-size/vector/tall--cover--omitted-width-omitted-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x384-aqua256x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--cover--omitted-width-percent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x768.html
+reftest	css/css-backgrounds/background-size/vector/tall--cover--omitted-width-percent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x384-aqua256x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--cover--percent-width-nonpercent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x768.html
+reftest	css/css-backgrounds/background-size/vector/tall--cover--percent-width-nonpercent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x384-aqua256x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--cover--percent-width-omitted-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x768.html
+reftest	css/css-backgrounds/background-size/vector/tall--cover--percent-width-omitted-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x384-aqua256x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--cover--percent-width-percent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x768.html
+reftest	css/css-backgrounds/background-size/vector/tall--cover--percent-width-percent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime256x384-aqua256x384.html
+reftest	css/css-backgrounds/background-size/vector/tall--cover--width.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-lime.html
+reftest	css/css-backgrounds/background-size/vector/wide--12px-auto--nonpercent-width-nonpercent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime12x24-aqua12x24.html
+reftest	css/css-backgrounds/background-size/vector/wide--12px-auto--nonpercent-width-nonpercent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime12x24-aqua12x24.html
+reftest	css/css-backgrounds/background-size/vector/wide--12px-auto--nonpercent-width-omitted-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime12x96-aqua12x96.html
+reftest	css/css-backgrounds/background-size/vector/wide--12px-auto--nonpercent-width-omitted-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime12x128-aqua12x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--12px-auto--nonpercent-width-percent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime12x96-aqua12x96.html
+reftest	css/css-backgrounds/background-size/vector/wide--12px-auto--nonpercent-width-percent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime12x128-aqua12x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--12px-auto--omitted-width-nonpercent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime12x96-aqua12x96.html
+reftest	css/css-backgrounds/background-size/vector/wide--12px-auto--omitted-width-nonpercent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime12x16-aqua12x16.html
+reftest	css/css-backgrounds/background-size/vector/wide--12px-auto--omitted-width-omitted-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime12x96-aqua12x96.html
+reftest	css/css-backgrounds/background-size/vector/wide--12px-auto--omitted-width-omitted-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime12x128-aqua12x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--12px-auto--omitted-width-percent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime12x96-aqua12x96.html
+reftest	css/css-backgrounds/background-size/vector/wide--12px-auto--omitted-width-percent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime12x128-aqua12x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--12px-auto--percent-width-nonpercent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime12x96-aqua12x96.html
+reftest	css/css-backgrounds/background-size/vector/wide--12px-auto--percent-width-nonpercent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime12x16-aqua12x16.html
+reftest	css/css-backgrounds/background-size/vector/wide--12px-auto--percent-width-omitted-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime12x96-aqua12x96.html
+reftest	css/css-backgrounds/background-size/vector/wide--12px-auto--percent-width-omitted-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime12x128-aqua12x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--12px-auto--percent-width-percent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime12x96-aqua12x96.html
+reftest	css/css-backgrounds/background-size/vector/wide--12px-auto--percent-width-percent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime12x128-aqua12x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto--nonpercent-width-nonpercent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime8x16-aqua8x16.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto--nonpercent-width-nonpercent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime8x16-aqua8x16.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto--nonpercent-width-omitted-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime8x64-aqua8x64.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto--nonpercent-width-omitted-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime8x128-aqua8x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto--nonpercent-width-percent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime8x64-aqua8x64.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto--nonpercent-width-percent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime8x128-aqua8x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto--omitted-width-nonpercent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime2x16-aqua2x16.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto--omitted-width-nonpercent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x16-aqua768x16.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto--omitted-width-omitted-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime16x128-aqua16x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto--omitted-width-omitted-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x128-aqua768x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto--omitted-width-percent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime16x128-aqua16x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto--omitted-width-percent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x128-aqua768x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto--percent-width-nonpercent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime2x16-aqua2x16.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto--percent-width-nonpercent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x16-aqua768x16.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto--percent-width-omitted-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime16x128-aqua16x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto--percent-width-omitted-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x128-aqua768x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto--percent-width-percent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime16x128-aqua16x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto--percent-width-percent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x128-aqua768x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto-32px--nonpercent-width-nonpercent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime8x16-aqua8x16.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto-32px--nonpercent-width-nonpercent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime8x16-aqua8x16.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto-32px--nonpercent-width-omitted-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime2x16-aqua2x16.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto-32px--nonpercent-width-omitted-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime8x16-aqua8x16.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto-32px--nonpercent-width-percent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime2x16-aqua2x16.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto-32px--nonpercent-width-percent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime8x16-aqua8x16.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto-32px--omitted-width-nonpercent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime2x16-aqua2x16.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto-32px--omitted-width-nonpercent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x16-aqua768x16.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto-32px--omitted-width-omitted-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime2x16-aqua2x16.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto-32px--omitted-width-omitted-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x16-aqua768x16.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto-32px--omitted-width-percent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime2x16-aqua2x16.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto-32px--omitted-width-percent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x16-aqua768x16.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto-32px--percent-width-nonpercent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime2x16-aqua2x16.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto-32px--percent-width-nonpercent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x16-aqua768x16.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto-32px--percent-width-omitted-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime2x16-aqua2x16.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto-32px--percent-width-omitted-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x16-aqua768x16.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto-32px--percent-width-percent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime2x16-aqua2x16.html
+reftest	css/css-backgrounds/background-size/vector/wide--auto-32px--percent-width-percent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x16-aqua768x16.html
+reftest	css/css-backgrounds/background-size/vector/wide--contain--height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-empty.html
+reftest	css/css-backgrounds/background-size/vector/wide--contain--nonpercent-width-nonpercent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime64x128-aqua64x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--contain--nonpercent-width-nonpercent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime64x128-aqua64x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--contain--nonpercent-width-omitted-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime16x128-aqua16x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--contain--nonpercent-width-omitted-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x128-aqua768x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--contain--nonpercent-width-percent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime16x128-aqua16x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--contain--nonpercent-width-percent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x128-aqua768x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--contain--omitted-width-nonpercent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime16x128-aqua16x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--contain--omitted-width-nonpercent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x128-aqua768x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--contain--omitted-width-omitted-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime16x128-aqua16x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--contain--omitted-width-omitted-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x128-aqua768x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--contain--omitted-width-percent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime16x128-aqua16x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--contain--omitted-width-percent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x128-aqua768x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--contain--percent-width-nonpercent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime16x128-aqua16x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--contain--percent-width-nonpercent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x128-aqua768x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--contain--percent-width-omitted-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime16x128-aqua16x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--contain--percent-width-omitted-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x128-aqua768x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--contain--percent-width-percent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime16x128-aqua16x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--contain--percent-width-percent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x128-aqua768x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--contain--width.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-empty.html
+reftest	css/css-backgrounds/background-size/vector/wide--cover--height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime.html
+reftest	css/css-backgrounds/background-size/vector/wide--cover--nonpercent-width-nonpercent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x256.html
+reftest	css/css-backgrounds/background-size/vector/wide--cover--nonpercent-width-nonpercent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x256.html
+reftest	css/css-backgrounds/background-size/vector/wide--cover--nonpercent-width-omitted-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x256.html
+reftest	css/css-backgrounds/background-size/vector/wide--cover--nonpercent-width-omitted-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x128-aqua768x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--cover--nonpercent-width-percent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x256.html
+reftest	css/css-backgrounds/background-size/vector/wide--cover--nonpercent-width-percent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x128-aqua768x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--cover--omitted-width-nonpercent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x256.html
+reftest	css/css-backgrounds/background-size/vector/wide--cover--omitted-width-nonpercent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x128-aqua768x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--cover--omitted-width-omitted-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x256.html
+reftest	css/css-backgrounds/background-size/vector/wide--cover--omitted-width-omitted-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x128-aqua768x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--cover--omitted-width-percent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x256.html
+reftest	css/css-backgrounds/background-size/vector/wide--cover--omitted-width-percent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x128-aqua768x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--cover--percent-width-nonpercent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x256.html
+reftest	css/css-backgrounds/background-size/vector/wide--cover--percent-width-nonpercent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x128-aqua768x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--cover--percent-width-omitted-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x256.html
+reftest	css/css-backgrounds/background-size/vector/wide--cover--percent-width-omitted-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x128-aqua768x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--cover--percent-width-percent-height-viewbox.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x256.html
+reftest	css/css-backgrounds/background-size/vector/wide--cover--percent-width-percent-height.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime768x128-aqua768x128.html
+reftest	css/css-backgrounds/background-size/vector/wide--cover--width.html	==css/css-backgrounds/background-size/vector/reference/ref-wide-lime.html
+reftest	css/css-backgrounds/background-size/vector/zero-height-ratio-5px-auto.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-empty.html
+reftest	css/css-backgrounds/background-size/vector/zero-height-ratio-auto-5px.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-empty.html
+reftest	css/css-backgrounds/background-size/vector/zero-height-ratio-auto-auto.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-empty.html
+reftest	css/css-backgrounds/background-size/vector/zero-height-ratio-contain.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-empty.html
+reftest	css/css-backgrounds/background-size/vector/zero-height-ratio-cover.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-empty.html
+reftest	css/css-backgrounds/background-size/vector/zero-ratio-no-dimensions-5px-auto.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-empty.html
+reftest	css/css-backgrounds/background-size/vector/zero-ratio-no-dimensions-auto-5px.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-empty.html
+reftest	css/css-backgrounds/background-size/vector/zero-ratio-no-dimensions-auto-auto.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-empty.html
+reftest	css/css-backgrounds/background-size/vector/zero-ratio-no-dimensions-contain.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-empty.html
+reftest	css/css-backgrounds/background-size/vector/zero-ratio-no-dimensions-cover.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-empty.html
+reftest	css/css-backgrounds/background-size/vector/zero-width-ratio-5px-auto.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-empty.html
+reftest	css/css-backgrounds/background-size/vector/zero-width-ratio-auto-5px.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-empty.html
+reftest	css/css-backgrounds/background-size/vector/zero-width-ratio-auto-auto.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-empty.html
+reftest	css/css-backgrounds/background-size/vector/zero-width-ratio-contain.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-empty.html
+reftest	css/css-backgrounds/background-size/vector/zero-width-ratio-cover.html	==css/css-backgrounds/background-size/vector/reference/ref-tall-empty.html
 reftest	css/css-backgrounds/background-size-002.html	==css/css-backgrounds/reference/background-size-002-ref.html
 reftest	css/css-backgrounds/background-size-005.html	==css/css-backgrounds/reference/background-size-002-ref.html
 reftest	css/css-backgrounds/background-size-006.html	==css/css-backgrounds/reference/background-size-006-ref.html
@@ -2257,6 +2764,8 @@ reftest	css/css-backgrounds/background-size-017.html	==css/css-backgrounds/refer
 reftest	css/css-backgrounds/background-size-021.html	==css/css-backgrounds/reference/background-size-021-ref.html
 reftest	css/css-backgrounds/background-size-041.html	==css/css-backgrounds/reference/background-size-041-ref.html
 reftest	css/css-backgrounds/background-size-042.html	==css/css-backgrounds/reference/background-size-041-ref.html
+reftest	css/css-backgrounds/background-size-043.html	==css/css-backgrounds/reference/background-size-043-ref.html
+reftest	css/css-backgrounds/background-size-044.html	==css/css-backgrounds/reference/background-size-043-ref.html
 reftest	css/css-backgrounds/background-size-cover-003.html	==css/css-backgrounds/background-size-cover-003-ref.html	fuzzy=:0-255;0-1
 reftest	css/css-backgrounds/background-size-one-value-1x1-image.html	==css/css-backgrounds/reference/background-size-one-value-1x1-image-ref.html
 reftest	css/css-backgrounds/background-size-percentage-root.html	==css/css-backgrounds/background-size-percentage-root-ref.html
@@ -2269,10 +2778,16 @@ reftest	css/css-backgrounds/border-image-012.html	==css/css-backgrounds/referenc
 reftest	css/css-backgrounds/border-image-013.html	==css/css-backgrounds/reference/border-image-013-ref.html
 reftest	css/css-backgrounds/border-image-calc.html	==css/css-backgrounds/border-image-calc-ref.html
 reftest	css/css-backgrounds/border-image-displayed-with-transparent-border-color.html	==css/css-backgrounds/border-image-displayed-with-transparent-border-color-ref.html
+reftest	css/css-backgrounds/border-image-image-type-001.htm	==css/css-backgrounds/reference/border-image-image-type-001-ref.html	fuzzy=:0-75;0-600
+reftest	css/css-backgrounds/border-image-image-type-002.htm	==css/css-backgrounds/reference/border-image-image-type-002-ref.html
 reftest	css/css-backgrounds/border-image-image-type-003.htm	==css/css-backgrounds/reference/border-image-image-type-003-ref.html	fuzzy=:0-3;0-10800
+reftest	css/css-backgrounds/border-image-image-type-004.htm	==css/css-backgrounds/reference/border-image-image-type-004-ref.html	fuzzy=:0-1;0-100
+reftest	css/css-backgrounds/border-image-image-type-005.htm	==css/css-backgrounds/reference/border-image-image-type-004-ref.html	fuzzy=:0-1;0-100
 reftest	css/css-backgrounds/border-image-outset-003.html	==css/css-backgrounds/border-image-outset-003-ref.html
 reftest	css/css-backgrounds/border-image-repeat-002.htm	==css/css-backgrounds/reference/border-image-repeat-002-ref.html	fuzzy=:0-20;0-2160
 reftest	css/css-backgrounds/border-image-repeat-004.htm	==css/css-backgrounds/reference/border-image-repeat-004-ref.html
+reftest	css/css-backgrounds/border-image-repeat-005.html	==css/css-backgrounds/reference/border-image-repeat-005-ref.html
+reftest	css/css-backgrounds/border-image-repeat-1.html	==css/css-backgrounds/border-image-repeat-1-ref.html
 reftest	css/css-backgrounds/border-image-repeat-repeat-001.html	==css/css-backgrounds/reference/border-image-repeat-repeat-001-ref.html
 reftest	css/css-backgrounds/border-image-repeat-round-1.html	==css/css-backgrounds/border-image-repeat-round-1-ref.html	fuzzy=:0-10;0-596
 reftest	css/css-backgrounds/border-image-repeat-round-2.html	==css/css-backgrounds/border-image-repeat-round-2-ref.html	fuzzy=:0-55;0-380
@@ -2341,7 +2856,10 @@ crashtest	css/css-backgrounds/linear-gradient-calc-crash.html
 reftest	css/css-backgrounds/order-of-images.htm	==css/css-backgrounds/reference/order-of-images-ref.html
 reftest	html/semantics/embedded-content/the-img-element/animated-image-update.tentative.html	==html/semantics/embedded-content/the-img-element/animated-image-update-ref.tentative.html
 reftest	html/semantics/embedded-content/the-img-element/animated-webp-update.tentative.html	==html/semantics/embedded-content/the-img-element/animated-image-update-ref.tentative.html
+reftest	html/semantics/embedded-content/the-img-element/content-type-with-parameters.html	==html/semantics/embedded-content/the-img-element/content-type-with-parameters-ref.html
 reftest	html/semantics/embedded-content/the-img-element/document-base-url.html	==html/semantics/embedded-content/the-img-element/document-base-url-ref.html
+reftest	html/semantics/embedded-content/the-img-element/image-loading-lazy-data-url-to-https.html	==html/semantics/embedded-content/the-img-element/image-loading-lazy-data-url-to-https-ref.html
+reftest	html/semantics/embedded-content/the-img-element/svg-img-with-external-stylesheet.html	==html/semantics/embedded-content/the-img-element/svg-img-with-external-stylesheet-ref.html
 reftest	css/selectors/invalidation/any-link-attribute-removal.html	==css/selectors/invalidation/any-link-attribute-removal-ref.html
 crashtest	dom/nodes/crashtests/childNodes-last_visited-unwrap-crash.html
 crashtest	dom/nodes/crashtests/document-replaceChild-input-documentElement.html
@@ -2409,6 +2927,7 @@ reftest	css/selectors/selectors-4/lang-023.html	==css/selectors/selectors-4/lang
 reftest	css/selectors/selectors-4/lang-024.html	==css/selectors/selectors-4/lang-000-ref.html
 reftest	css/selectors/selectors-4/lang-025.html	==css/selectors/selectors-4/lang-000-ref.html
 reftest	css/selectors/selectors-attr-many.html	==css/selectors/selectors-attr-many-ref.html
+reftest	css/selectors/sharing-in-svg-use.html	==css/selectors/sharing-in-svg-use-ref.html
 reftest	css/selectors/user-invalid-form-submission-invalidation.html	==css/selectors/user-invalid-form-submission-invalidation-ref.html
 reftest	html/semantics/forms/the-input-element/auto-direction-dynamic.html	==html/semantics/forms/the-input-element/auto-direction-ref.html
 reftest	html/semantics/forms/the-input-element/dynamic-value-update.html	==html/semantics/forms/the-input-element/dynamic-value-update-ref.html
@@ -2433,6 +2952,136 @@ reftest	html/semantics/forms/the-select-element/select-toggle-multiple.html	==ht
 reftest	html/semantics/forms/the-textarea-element/textarea-newline-bidi.html	==html/semantics/forms/the-textarea-element/textarea-newline-bidi-ref.html
 reftest	html/semantics/forms/the-textarea-element/wrap-reflect-1a.html	==html/semantics/forms/the-textarea-element/wrap-reflect-1-ref.html
 reftest	html/semantics/forms/the-textarea-element/wrap-reflect-1b.html	==html/semantics/forms/the-textarea-element/wrap-reflect-1-ref.html
+reftest	svg/painting/reftests/fallback-001.svg	==svg/pservers/reftests/reference/green-100x100.svg
+reftest	svg/painting/reftests/fallback-002.svg	==svg/pservers/reftests/reference/green-100x100.svg
+reftest	svg/painting/reftests/large-transform-001.html	==svg/painting/reftests/large-transform-ref.html
+reftest	svg/painting/reftests/non-scaling-stroke-001.html	==svg/painting/reftests/green-100x100.svg
+reftest	svg/painting/reftests/non-scaling-stroke-002.html	==svg/painting/reftests/green-100x100.svg
+reftest	svg/painting/reftests/non-scaling-stroke-004.html	==svg/painting/reftests/green-100x100.svg
+reftest	svg/painting/reftests/non-scaling-stroke-007.html	==svg/painting/reftests/non-scaling-stroke-007-ref.html
+reftest	svg/painting/reftests/paint-context-003.svg	==svg/painting/reftests/paint-context-003-ref.svg
+reftest	svg/painting/reftests/paint-context-007.svg	==svg/painting/reftests/paint-context-007-ref.svg
+reftest	svg/painting/reftests/percentage-attribute.svg	==svg/painting/reftests/percentage-ref.svg
+reftest	svg/painting/reftests/percentage.svg	==svg/painting/reftests/percentage-ref.svg
+reftest	svg/painting/reftests/small-nested-viewbox.html	==svg/painting/reftests/small-nested-viewbox-ref.html
+reftest	svg/painting/reftests/svg-percent-stroke-dasharray-line-viewbox-update.html	==svg/struct/reftests/reference/green-100x100.html
+reftest	svg/painting/reftests/svg-percent-stroke-dasharray-path-viewbox-update.html	==svg/struct/reftests/reference/green-100x100.html
+reftest	svg/painting/reftests/svg-percent-stroke-dasharray-rect-viewbox-update.html	==svg/struct/reftests/reference/green-100x100.html
+reftest	svg/painting/reftests/zero-scale-svg-transform-inside-g-tag.html	==svg/struct/reftests/reference/green-100x100.html
+reftest	svg/shapes/reftests/ellipse-auto-rx-clip-path.html	==svg/shapes/reftests/ellipse-auto-rx-clip-path-ref.html
+reftest	svg/shapes/reftests/ellipse-auto-rx-css-clip-path.html	==svg/shapes/reftests/ellipse-auto-rx-css-clip-path-ref.html
+reftest	svg/shapes/reftests/ellipse-auto-rx-percent-clip-path.html	==svg/shapes/reftests/ellipse-auto-rx-percent-clip-path-ref.html
+reftest	svg/shapes/reftests/pathlength-001.svg	==svg/shapes/reftests/pathlength-001-ref.svg
+reftest	svg/shapes/reftests/pathlength-002.svg	==svg/shapes/reftests/pathlength-002-ref.svg	fuzzy=:0-1;0-50
+reftest	svg/shapes/reftests/pathlength-004a.svg	==svg/shapes/reftests/pathlength-004-ref.svg
+reftest	svg/shapes/reftests/pathlength-004b.svg	==svg/shapes/reftests/pathlength-004-ref.svg
+reftest	svg/struct/reftests/currentScale-change-repaint.html	==svg/struct/reftests/reference/green-100x100.html
+reftest	svg/struct/reftests/gradient-in-symbol.svg	==svg/struct/reftests/reference/green-100x100.svg
+reftest	svg/struct/reftests/inner-svg-css-transform.svg	==svg/struct/reftests/reference/inner-svg-transform-ref.svg
+reftest	svg/struct/reftests/inner-svg-rotate-transform.svg	==svg/struct/reftests/reference/inner-svg-rotate-transform-ref.svg
+reftest	svg/struct/reftests/inner-svg-transform-and-viewbox.svg	==svg/struct/reftests/reference/inner-svg-transform-and-viewbox-ref.svg
+reftest	svg/struct/reftests/inner-svg-transform.svg	==svg/struct/reftests/reference/inner-svg-transform-ref.svg
+reftest	svg/struct/reftests/outer-svg-transform.svg	==svg/struct/reftests/reference/outer-svg-transform-ref.svg
+reftest	svg/struct/reftests/requiredextensions-empty-string.svg	==svg/struct/scripted/support/blank.svg
+reftest	svg/struct/reftests/sync-svg-attributes.svg	==svg/struct/reftests/sync-svg-attributes-ref.svg
+reftest	svg/struct/reftests/use-a.svg	==svg/struct/reftests/reference/green-100x100.svg
+reftest	svg/struct/reftests/use-data-url-setAttribute.tentative.html	==svg/struct/reftests/reference/green-100x100.html
+reftest	svg/struct/reftests/use-encoding.svg	==svg/struct/reftests/reference/green-100x100.svg
+reftest	svg/struct/reftests/use-inheritance-001.svg	==svg/struct/reftests/reference/green-100x100.svg
+reftest	svg/struct/reftests/use-inheritance-nth-child-of.svg	==svg/struct/reftests/reference/green-100x100.svg
+reftest	svg/struct/reftests/use-no-tspan.svg	==svg/struct/reftests/reference/green-100x100.svg
+reftest	svg/struct/reftests/use-referencing-non-svg-fragment-element.html	==svg/struct/reftests/reference/green-100x100.html
+reftest	svg/struct/reftests/use-svg-dimensions-override-001.svg	==svg/struct/reftests/reference/green-100x100.svg
+reftest	svg/struct/reftests/use-svg-dimensions-override-002.svg	==svg/struct/reftests/reference/green-100x100.svg
+reftest	svg/struct/reftests/use-svg-inline-css.svg	==svg/struct/reftests/reference/green-100x100.svg
+reftest	svg/struct/reftests/use-switch.svg	==svg/struct/reftests/reference/green-100x100.svg
+reftest	svg/struct/reftests/use-symbol-dimensions-override-001.svg	==svg/struct/reftests/reference/green-100x100.svg
+reftest	svg/struct/reftests/use-symbol-dimensions-override-002.svg	==svg/struct/reftests/reference/green-100x100.svg
+reftest	svg/struct/reftests/use-symbol-display-none.svg	==svg/struct/reftests/reference/green-100x100.svg
+reftest	svg/struct/reftests/use-symbol-inline-css-001.svg	==svg/struct/reftests/reference/green-100x100.svg
+reftest	svg/struct/reftests/use-symbol-inline-css-002.svg	==svg/struct/reftests/reference/green-100x100.svg
+reftest	svg/struct/reftests/use-symbol-inline-css-003.svg	==svg/struct/reftests/reference/green-100x100.svg
+reftest	svg/pservers/reftests/fill-fallback-currentcolor-1.svg	==svg/pservers/reftests/reference/green-100x100.svg	fuzzy=:0-1;0-5000
+reftest	svg/pservers/reftests/fill-fallback-currentcolor-2.svg	==svg/pservers/reftests/reference/green-100x100.svg
+reftest	svg/pservers/reftests/fill-fallback-invalid-uri.svg	==svg/pservers/reftests/reference/green-100x100.svg
+reftest	svg/pservers/reftests/fill-fallback-none-1.svg	==svg/pservers/reftests/reference/green-100x100.svg	fuzzy=:0-1;0-5000
+reftest	svg/pservers/reftests/fill-fallback-none-2.svg	==svg/pservers/reftests/reference/green-100x100.svg
+reftest	svg/pservers/reftests/fill-fallback-none-3.svg	==svg/pservers/reftests/reference/green-100x100.svg
+reftest	svg/pservers/reftests/gradient-inheritance-not-in-rendertree-01.tentative.svg	==svg/pservers/reftests/reference/green-100x100.svg
+reftest	svg/pservers/reftests/gradient-inheritance-not-in-rendertree-02.tentative.svg	==svg/pservers/reftests/reference/green-100x100.svg
+reftest	svg/pservers/reftests/gradient-objectBoundingBox-absolute-units.svg	==svg/pservers/reftests/reference/gradient-objectBoundingBox-absolute-units-ref.svg
+reftest	svg/pservers/reftests/gradient-transform-01.svg	==svg/pservers/reftests/reference/green-100x100.svg
+reftest	svg/pservers/reftests/gradient-transform-02.svg	==svg/pservers/reftests/reference/green-100x100.svg
+reftest	svg/pservers/reftests/gradient-transform-03.svg	==svg/pservers/reftests/reference/green-100x100.svg
+reftest	svg/pservers/reftests/gradient-transform-template-inheritance.svg	==svg/pservers/reftests/reference/gradient-transform-template-inheritance-ref.svg
+reftest	svg/pservers/reftests/linear-gradient-transform-empty-attr.svg	==svg/pservers/reftests/reference/green-100x100.svg	fuzzy=:0-1;0-40000
+reftest	svg/pservers/reftests/percent-encoded-fragment-fill-stroke.html	==svg/pservers/reftests/percent-encoded-fragment-fill-stroke-ref.html
+reftest	svg/pservers/reftests/radial-gradient-transform-empty-attr.svg	==svg/pservers/reftests/reference/green-100x100.svg	fuzzy=:0-1;0-40000
+reftest	svg/pservers/reftests/radialgradient-fully-overlapping.svg	==svg/pservers/reftests/reference/green-100x100.svg	fuzzy=:0-1;0-4500
+reftest	svg/pservers/reftests/stroke-fallback-invalid-uri.svg	==svg/pservers/reftests/reference/green-100x100.svg
+reftest	svg/coordinate-systems/abspos.html	==svg/coordinate-systems/support/abspos-ref.html
+reftest	svg/coordinate-systems/out-of-flow-svg-root.html	==svg/coordinate-systems/out-of-flow-svg-root-ref.html
+reftest	svg/coordinate-systems/view-invalid-viewBox.html	==svg/struct/reftests/reference/green-100x100.html
+reftest	svg/coordinate-systems/view-transform-viewBox.html	==svg/struct/reftests/reference/green-100x100.html
+reftest	svg/coordinate-systems/viewBox-change-repaint-001.html	==svg/coordinate-systems/support/viewBox-change-repaint-001-ref.html
+reftest	svg/coordinate-systems/viewBox-fractional-valid.html	==svg/coordinate-systems/viewBox-fractional-valid-ref.html
+reftest	svg/coordinate-systems/viewBox-zero-disables-rendering-001.svg	==svg/coordinate-systems/viewBox-zero-disables-rendering-ref.svg
+reftest	svg/coordinate-systems/viewBox-zero-disables-rendering-002.svg	==svg/coordinate-systems/viewBox-zero-disables-rendering-ref.svg
+reftest	svg/coordinate-systems/viewBox-zero-disables-rendering-003.svg	==svg/coordinate-systems/viewBox-zero-disables-rendering-ref.svg
+reftest	svg/coordinate-systems/viewBox-zero-disables-rendering-contexts.html	==svg/coordinate-systems/viewBox-zero-disables-rendering-contexts-ref.html
+reftest	svg/coordinate-systems/viewBox-zero-disables-rendering-symbol.svg	==svg/coordinate-systems/viewBox-zero-disables-rendering-ref.svg
+reftest	svg/styling/color-inherit-link-visited.svg	==svg/styling/color-inherit-link-visited-ref.svg
+reftest	svg/styling/css-linked-parameters/img-with-url-fragment-identifiers-1.html	==svg/styling/css-linked-parameters/circle-green-ref.html
+reftest	svg/styling/css-linked-parameters/img-with-url-fragment-identifiers-2.html	==svg/styling/css-linked-parameters/circle-green-with-stroke-ref.html
+reftest	svg/styling/css-var-on-length-attributes-01.svg	==svg/embedded/reference/green-rect-100x100.svg
+reftest	svg/styling/css-var-on-length-attributes-03.svg	==svg/embedded/reference/green-rect-100x100.svg
+reftest	svg/styling/css-var-on-length-attributes-06.html	==svg/styling/css-linked-parameters/circle-green-ref.html
+reftest	svg/styling/css-var-on-length-attributes-quirk.html	==svg/styling/css-linked-parameters/circle-green-ref.html
+crashtest	svg/styling/font-size-number-calc-crash.svg
+reftest	svg/styling/invalidation/nth-child-of-class.svg	==svg/styling/invalidation/nth-child-of-class-ref.svg
+reftest	svg/styling/nested-svg-sizing-auto.tentative.svg	==svg/styling/nested-svg-sizing-expected.svg
+reftest	svg/styling/nested-svg-sizing-calc.tentative.svg	==svg/styling/nested-svg-sizing-full-circle-ref.svg
+reftest	svg/styling/nested-svg-sizing-ems.tentative.svg	==svg/styling/nested-svg-sizing-full-circle-ref.svg
+reftest	svg/styling/nested-svg-sizing-fit-content.tentative.svg	==svg/styling/nested-svg-sizing-expected.svg
+reftest	svg/styling/nested-svg-sizing-inherit.tentative.svg	==svg/styling/nested-svg-sizing-expected.svg
+reftest	svg/styling/nested-svg-sizing-initial.tentative.svg	==svg/styling/nested-svg-sizing-expected.svg
+reftest	svg/styling/nested-svg-sizing-max-content.tentative.svg	==svg/styling/nested-svg-sizing-expected.svg
+reftest	svg/styling/nested-svg-sizing-min-content.tentative.svg	==svg/styling/nested-svg-sizing-expected.svg
+reftest	svg/styling/nested-svg-sizing-percent.tentative.svg	==svg/styling/nested-svg-sizing-full-circle-ref.svg
+reftest	svg/styling/nested-svg-sizing-rems.tentative.svg	==svg/styling/nested-svg-sizing-full-circle-ref.svg
+reftest	svg/styling/nested-svg-sizing-viewport-units-with-ICB.tentative.html	==svg/styling/nested-svg-sizing-viewport-units-with-ICB-expected.html
+reftest	svg/styling/nested-svg-sizing-viewport-units.tentative.svg	==svg/styling/nested-svg-sizing-viewport-units-expected.svg
+reftest	svg/styling/nested-svg-sizing-with-use.svg	==svg/styling/nested-svg-sizing-with-use-expected.svg
+reftest	svg/styling/nested-svg-sizing.svg	==svg/styling/nested-svg-sizing-full-circle-ref.svg
+reftest	svg/styling/outermost-svg-sizing-viewport-units.svg	==svg/styling/outermost-svg-sizing-viewport-units-expected.svg
+reftest	svg/styling/padding-on-svg-via-img.tentative.html	==svg/styling/padding-on-svg-via-img-ref.tentative.html
+reftest	svg/styling/rect-sizing-viewport-units.svg	==svg/styling/rect-sizing-viewport-units-expected.svg
+reftest	svg/styling/render/transform-box.svg	==svg/styling/render/transform-box-ref.svg
+reftest	svg/styling/render/transform-origin.svg	==svg/styling/render/transform-origin-ref.svg
+reftest	svg/styling/render/transform.svg	==svg/styling/render/transform-ref.svg
+reftest	svg/styling/stroke-color-inherit-link-visited.svg	==svg/styling/stroke-color-inherit-link-visited-ref.svg
+reftest	svg/styling/use-element-animations.html	==svg/styling/use-element-transitions-ref.html
+reftest	svg/styling/use-element-non-rendered-sibling-selector.html	==svg/styling/use-element-selector-ref.html
+reftest	svg/text/reftests/gradient-after-reposition.html	==svg/text/reftests/gradient-after-reposition-ref.html
+reftest	svg/text/reftests/lang-attribute-dynamic.svg	==svg/text/reftests/lang-attribute-dynamic-ref.svg
+reftest	svg/text/reftests/lang-attribute.svg	!=svg/text/reftests/lang-attribute-ref.svg
+reftest	svg/text/reftests/no-background.svg	==svg/text/reftests/no-background-ref.svg
+reftest	svg/text/reftests/no-margin-border-padding.svg	==svg/text/reftests/no-margin-border-padding-ref.svg
+reftest	svg/text/reftests/text-bidi-controls-anchors-1.svg	==svg/text/reftests/text-bidi-controls-anchors-1-ref.svg
+reftest	svg/text/reftests/text-bidi-controls-anchors-2.svg	==svg/text/reftests/text-bidi-controls-anchors-2-ref.svg
+reftest	svg/text/reftests/text-transform-001.html	==svg/text/reftests/text-transform-001-ref.html
+reftest	svg/text/reftests/text-transform-002.html	==svg/text/reftests/text-transform-002-ref.html
+reftest	svg/text/reftests/text-xml-space-001.svg	==svg/text/reftests/text-xml-space-001-ref.svg
+reftest	svg/text/reftests/transform-dynamic-change.html	==svg/text/reftests/transform-dynamic-change-ref.html
+reftest	svg/text/reftests/xml-lang-attribute.svg	!=svg/text/reftests/lang-attribute-ref.svg
+reftest	svg/render/reftests/nested-svg-overflow-clip.html	==svg/render/reftests/rect-ref.html
+reftest	svg/render/reftests/overflow-clip.html	==svg/render/reftests/rect-ref.html
+reftest	svg/render/reftests/render-sync-with-font-size.html	==svg/render/reftests/render-sync-with-font-size-ref.html
+reftest	svg/as-image/sprite-sheet-fractional-size.html	==svg/as-image/sprite-sheet-fractional-size-ref.html
+crashtest	svg/crashtests/chrome-bug-1205852.html
+crashtest	svg/crashtests/chrome-bug-1207590.html
+crashtest	svg/crashtests/chrome-bug-1345806.html
+crashtest	svg/crashtests/chrome-bug-485819134.html
 testharness	fetch/api/headers/header-setcookie.any.html
 testharness	fetch/api/headers/header-setcookie.any.worker.html
 testharness	fetch/api/headers/headers-basic.any.html

@@ -1405,6 +1405,7 @@ fn an_svg_document_is_the_xml_parsers_drawn_whole_its_scripts_run() {
             "image/svg+xml",
             b"<svg xmlns='http://www.w3.org/2000/svg'>\
               <rect width='50' height='50' fill='red'/>\
+              <style>.s { fill: blue }</style><rect class='s' x='60' width='9' height='9'/>\
               <script><![CDATA[ console.log(document.contentType, document.body === null, \
               document.documentElement.localName, 1 < 2) ]]></script></svg>",
         )),
@@ -1445,6 +1446,7 @@ fn an_svg_document_is_the_xml_parsers_drawn_whole_its_scripts_run() {
     };
     assert_eq!(at(25, 25), [255, 0, 0]);
     assert_eq!(at(100, 100), [255, 255, 255]);
+    assert_eq!(at(64, 4), [0, 0, 255], "its own style sheet");
     // Not well formed: the parser's error, its line and column.
     load_all(&mut tab, server.url("/bad.svg"));
     let text = crate::testing::text(&tab.engine);

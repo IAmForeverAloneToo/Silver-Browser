@@ -822,8 +822,12 @@ fn scan(document: &Document, context: &Context) -> (Vec<Found>, Option<Url>) {
     let mut base_seen = false;
     let mut before_body = true;
     for node in document.subtree(document.root()) {
-        let Some(tag) = document.tag(node) else {
-            continue;
+        let tag = match document.tag(node) {
+            Some(tag) => tag,
+            // SVG's `<style>` owns a sheet as HTML's does (SVG 2 section
+            // 6.3, M32).
+            None if is_svg_style(document, node) => "style",
+            None => continue,
         };
         let attr = |name: &str| document.attr(node, name).map(str::to_owned);
         let title = || attr("title").unwrap_or_default();
@@ -883,14 +887,20 @@ fn frozen_base_url(href: &str, context: &Context) -> Option<Url> {
     }
 }
 
+/// Whether `node` is SVG's `<style>`.
+fn is_svg_style(document: &Document, node: NodeId) -> bool {
+    document.svg_tag(node) == Some("style")
+}
+
 /// Whether `change` can change a document's sheets: something inserted
 /// or removed holds a `<link>` or `<style>`, or a `<style>`'s text
 /// changed, or one of those elements' attributes did. A `<base>` alone
 /// changes no sheet: those already made keep their URLs, and the next
 /// sheet made reads the base URL as it then stands.
 pub(crate) fn may_touch_sheets(document: &Document, change: &Change) -> bool {
-    let owns = |node: NodeId| matches!(document.tag(node), Some("link" | "style"));
-    let is_style = |node: NodeId| document.tag(node) == Some("style");
+    let is_style =
+        |node: NodeId| document.tag(node) == Some("style") || is_svg_style(document, node);
+    let owns = |node: NodeId| document.tag(node) == Some("link") || is_style(node);
     match change {
         Change::Inserted { parent, child } | Change::Removed { parent, child, .. } => {
             is_style(*parent)

@@ -1499,3 +1499,61 @@ xhr/xmlhttprequest-timeout-worker-twice.html	Timeout test: timeout fires normall
 fetch/api/basic/stream-safe-creation.any.worker.html  no streams (G67)
 fetch/api/response/response-error-from-stream.any.worker.html  no streams (G67)
 workers/constructors/Worker/constructor-utf16-bom.html  a script with null bytes is no string QuickJS takes: an error, an ErrorEvent at the Worker, which goes on to the window as the reference browser's did in probe p3, and the harness takes it for its own
+
+# Tests taken at M32 (docs/design/svg.md, step 13): the reftests and crash
+# tests of svg's painting, shapes, struct, pservers, coordinate-systems,
+# styling, text, render, as-image and path directories, an .svg test read
+# as an SVG document; and the tests of the subset's directories the rule
+# left out before for an <svg> element or an SVG image. A test using an
+# SVG element past v1, or a reference into another document, is left out
+# (G87); these fail by a gap of SVG's past v1 (G87), one named at its
+# milestone, where the reference browser and the test differ, or where
+# two rasterizations of one edge do.
+css/css-flexbox/image-nested-within-definite-column-flexbox.html                 an img's min-height of 100% is not carried through its ratio into the column flex container's min-content width (css-sizing-4 section 5.1), so the container is the image's 1 pixel wide
+css/css-transforms/css-skew-002.html                                             the red SVG path under the skewed green box shows along their shared slanted edges, by up to 45: the path's coverage and the transformed box's are two rasterizations of one edge
+css/css-transforms/ttwf-transform-skewx-001.html                                 the red SVG polygon under the skewed box shows along their shared slanted edges, by up to 80: two rasterizations of one edge
+css/css-transforms/transforms-rotate-degree-45.html                              the rotated box and the reference's SVG polygon are anti-aliased apart along their diagonal edges, by up to 27: two rasterizations of one edge
+css/css-transforms/css-transforms-transformlist.html                             the script reads transform.baseVal, the SVG DOM's animated values (G87)
+css/css-transforms/perspective-svg-child-001.html                                a perspective on the svg and a 3D transform of its rect: SVG content is drawn in 2D, its transforms flattened (G87)
+css/css-transforms/perspective-svg-child-002.html                                as perspective-svg-child-001.html: SVG content is drawn in 2D, its transforms flattened (G87)
+css/css-transforms/transform-background-005.html                                 the root's overflow is not carried to the viewport (css-overflow-3 3.3), so the viewport shows a scrollbar for the transformed root's overflow
+css/css-transforms/transform-background-007.html                                 the root's overflow is not carried to the viewport (css-overflow-3 3.3), so the viewport shows a scrollbar for the rotated root's overflow, which its `overflow: hidden` hides in the reference browser
+css/css-transforms/transform-background-008.html                                 as transform-background-007.html: the root's overflow is not carried to the viewport (css-overflow-3 3.3)
+css/css-transforms/transform-fixed-bg-006.html                                   the body's overflow is not carried to the viewport (css-overflow-3 3.3), so the viewport shows a scrollbar for the rotated body and the body clips the fixed background's box
+css/css-transforms/transform-fixed-bg-007.html                                   as transform-fixed-bg-006.html: the body's overflow is not carried to the viewport (css-overflow-3 3.3)
+css/css-transforms/transform-fixed-bg-008.tentative.html                         as transform-fixed-bg-006.html: the body's overflow is not carried to the viewport (css-overflow-3 3.3)
+css/css-transforms/transform-box/stroke-box-mutation-003.html                    a group's reference box is its viewport's here, not its children's stroke box (step 5, recorded)
+css/css-transforms/transform-box/stroke-box-mutation-004.html                    as stroke-box-mutation-003.html: a group's reference box is its viewport's here
+css/css-transforms/transform-box/svgbox-stroke-box-003.html                      vector-effect: non-scaling-stroke, whose stroke box is of the stroke in the screen's units (G87)
+css/css-transforms/transform-box/svgbox-stroke-box-004.html                      as svgbox-stroke-box-003.html: vector-effect: non-scaling-stroke (G87)
+css/css-transforms/transform-box/svgbox-stroke-box-005.html                      a group's reference box is its viewport's here, and its rect's stroke non-scaling (G87)
+css/mediaqueries/prefers-color-scheme-svg-image-normal-with-meta-dark.html       an SVG image's media queries are evaluated with no color scheme of its page's: its prefers-color-scheme is light, the page's meta dark
+css/css-values/svg-attr-case-sensitivity.html                                    attr() with a type (css-values-5) is not parsed here, so the fill falls back to black
+css/css-lists/list-item-definition.html                                          a ::before or ::after of display: list-item makes no list item here: no marker, and not counted
+css/css-lists/list-style-image-gradients.html                                    the reference's marker is an SVG image of no natural size, which a marker shows at the default object size (300 by 150) here, where the reference browser shows it as small as the gradient markers the test has
+css/css-content/element-replacement-dynamic.html                                 a class change after the first frame that makes content: url() replace the element is not shown by the screenshot; the same replacement at the load is (element-replacement.html)
+css/css-backgrounds/background-size/background-size-cover-svg-view.html          an SVG image's fragment naming a view (#svgView, the view element) is not read (G87)
+css/css-backgrounds/border-image-image-type-001.htm                              a border image of an SVG image of no natural size is cut from its 300 by 150 default here, not from an image sized by the border image area (CSS Backgrounds 3 section 6.2)
+css/css-backgrounds/border-image-image-type-002.htm                              as border-image-image-type-001.htm: an SVG border image of no natural size is cut from its 300 by 150 default
+css/css-backgrounds/border-image-image-type-004.htm                              as border-image-image-type-001.htm: an SVG border image of no natural size is cut from its 300 by 150 default
+css/css-backgrounds/border-image-image-type-005.htm                              as border-image-image-type-001.htm: an SVG border image of no natural size is cut from its 300 by 150 default
+css/css-backgrounds/border-image-repeat-1.html                                   the border image's pieces, the SVG image drawn at its natural 48 by 48 and scaled to the 16-pixel border, are resampled at their edges, by up to 112, where the reference browser draws the vector at the border's size
+html/semantics/embedded-content/the-img-element/image-loading-lazy-data-url-to-https.html   a lazy img whose src is changed in the load event shows neither its first image nor its second by the screenshot (lazy loading, M23)
+svg/painting/reftests/paint-context-003.svg                                      context-fill and context-stroke, a use's context paint, draw nothing in v1 (G87)
+svg/painting/reftests/paint-context-007.svg                                      as paint-context-003.svg: context-fill and context-stroke draw nothing in v1 (G87)
+svg/shapes/reftests/pathlength-004b.svg                                          pathLength (G87); the test's helpers are loaded by SVG script elements' href, and its change is made after the first frame
+svg/struct/reftests/use-inheritance-001.svg                                      a use's instance is matched by selectors where its element is in the document, not as a shadow tree's root (SVG 2 section 5.6.3), so `use rect` and `.container rect` style it
+svg/struct/reftests/use-inheritance-nth-child-of.svg                             as use-inheritance-001.svg: a use's instance is matched by selectors where its element is in the document
+svg/pservers/reftests/gradient-inheritance-not-in-rendertree-01.tentative.svg    tentative: a gradient in a text, where no element is rendered, is still a template here; the reference browser takes nothing from it
+svg/pservers/reftests/gradient-transform-03.svg                                  a gradient's transform property set by its style (gradientTransform's property) is not read, the attribute alone is
+svg/pservers/reftests/gradient-transform-template-inheritance.svg               its fifth square's gradientTransform is set through the SVG DOM (G87)
+svg/coordinate-systems/view-transform-viewBox.html                               an SVG image's fragment naming a view element is not read (G87)
+svg/styling/css-linked-parameters/img-with-url-fragment-identifiers-1.html       an SVG image's URL fragment of parameters (css-linked-parameters) is not read (G87)
+svg/styling/css-linked-parameters/img-with-url-fragment-identifiers-2.html       as img-with-url-fragment-identifiers-1.html: an SVG image's URL fragment of parameters is not read (G87)
+svg/styling/nested-svg-sizing-viewport-units-with-ICB.tentative.html            tentative: a nested svg's CSS width in viewport units, which the other nested-svg-sizing tests have not apply to it (svgwg pull 1059)
+svg/styling/nested-svg-sizing-viewport-units.tentative.svg                       as nested-svg-sizing-viewport-units-with-ICB.tentative.html: tentative, CSS sizes do not apply to a nested svg here
+svg/text/reftests/lang-attribute.svg                                             lang chooses no localized forms here (the engine's one face has none), so the text matches the reference it must not
+svg/text/reftests/xml-lang-attribute.svg                                         as lang-attribute.svg: xml:lang chooses no localized forms here
+svg/text/reftests/text-bidi-controls-anchors-1.svg                               bidirectional SVG text (G87)
+svg/text/reftests/text-bidi-controls-anchors-2.svg                               bidirectional SVG text (G87)
+svg/render/reftests/render-sync-with-font-size.html                              the svg element's load event (SVG 2's SVGLoad) is not fired, so its onload never removes reftest-wait

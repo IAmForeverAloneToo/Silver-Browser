@@ -318,6 +318,10 @@ impl<'a> Builder<'a> {
     /// The element a fragment reference (`#id`) names in the document.
     fn referenced(&self, reference: &str) -> Option<NodeId> {
         let id = reference.trim().strip_prefix('#')?;
+        // A fragment is percent-decoded before it is looked up (the URL
+        // Standard's fragment; `url(#%66oo)` is `#foo`).
+        let decoded = id.contains('%').then(|| percent_decoded(id));
+        let id = decoded.as_deref().unwrap_or(id);
         let document = self.document;
         self.ids
             .get_or_init(|| {
@@ -430,8 +434,10 @@ impl<'a> Builder<'a> {
                 let own = style.svg_own();
                 let x = resolve(&own.x, Axis::X, viewport);
                 let y = resolve(&own.y, Axis::Y, viewport);
-                let w = size_or_all(&style.width, Axis::X, viewport);
-                let h = size_or_all(&style.height, Axis::Y, viewport);
+                let w = self.side(node, "width", viewport).unwrap_or(viewport.width);
+                let h = self
+                    .side(node, "height", viewport)
+                    .unwrap_or(viewport.height);
                 self.viewport_element(node, &style, viewport, inherit, [x, y, w, h])
             }
             "use" => self.instance(node, &style, viewport),
@@ -535,7 +541,7 @@ impl<'a> Builder<'a> {
         let host = self.host;
         self.host = Some(host.unwrap_or(node));
         let instance = match tag {
-            "symbol" | "svg" => self.viewport_instance(target, tag, style, viewport),
+            "symbol" | "svg" => self.viewport_instance(node, target, tag, style, viewport),
             _ => self.item(target, viewport, Some(style)),
         };
         self.host = host;
@@ -557,11 +563,22 @@ impl<'a> Builder<'a> {
         )))
     }
 
+    /// A nested `<svg>`'s, a `<symbol>`'s or a `<use>`'s `width` or
+    /// `height`: its attribute alone, as the reference browser has it
+    /// (the properties do not apply to them, svgwg pull 1059); `None`
+    /// where it is missing, `auto`, negative or in error.
+    fn side(&self, node: NodeId, name: &str, viewport: &Viewport) -> Option<f64> {
+        let length = parse_length(self.document.attr(node, name)?)?;
+        let axis = if name == "width" { Axis::X } else { Axis::Y };
+        Some(length.resolve(axis, viewport)).filter(|v| *v >= 0.0)
+    }
+
     /// An instanced `<symbol>` or `<svg>`: the `<use>`'s `width` and
-    /// `height` where they are not `auto`, else the `<svg>`'s, else all
-    /// of the viewport.
+    /// `height` where it has them, else the target's, else all of the
+    /// viewport.
     fn viewport_instance(
         &mut self,
+        using: NodeId,
         target: NodeId,
         tag: &str,
         user: &ComputedStyle,
@@ -576,15 +593,13 @@ impl<'a> Builder<'a> {
         }
         self.elements += 1;
         self.depth += 1;
-        let pick = |own: &Size, theirs: &Size, axis| {
-            if own.is_auto() {
-                size_or_all(theirs, axis, viewport)
-            } else {
-                size_or_all(own, axis, viewport)
-            }
+        let pick = |name: &str, all: f64| {
+            self.side(using, name, viewport)
+                .or_else(|| self.side(target, name, viewport))
+                .unwrap_or(all)
         };
-        let w = pick(&user.width, &style.width, Axis::X);
-        let h = pick(&user.height, &style.height, Axis::Y);
+        let w = pick("width", viewport.width);
+        let h = pick("height", viewport.height);
         let (x, y) = if tag == "svg" {
             let own = style.svg_own();
             (
@@ -781,9 +796,10 @@ impl<'a> Builder<'a> {
                 Some("linearGradient" | "radialGradient")
             )
         });
+        let fallback = fallback.as_deref().and_then(|f| plain_paint(f, color));
         match server {
-            Some(gradient) => self.gradient(gradient, bounds, viewport),
-            None => fallback.as_deref().and_then(|f| plain_paint(f, color)),
+            Some(gradient) => self.gradient(gradient, bounds, viewport, fallback),
+            None => fallback,
         }
     }
 
@@ -791,8 +807,15 @@ impl<'a> Builder<'a> {
     /// attributes and stops its own or, where it has none, its
     /// templates' through `href`; one stop paints its colour (the
     /// canvas's gradients do), a gradient of no length or radius its
-    /// last stop's.
-    fn gradient(&mut self, node: NodeId, bounds: [f64; 4], viewport: &Viewport) -> Option<Paint> {
+    /// last stop's, start and end circles that coincide too; one whose
+    /// `gradientTransform` cannot be inverted the `fallback`.
+    fn gradient(
+        &mut self,
+        node: NodeId,
+        bounds: [f64; 4],
+        viewport: &Viewport,
+        fallback: Option<Paint>,
+    ) -> Option<Paint> {
         let document = self.document;
         let tag = document.svg_tag(node)?;
         let mut chain = vec![node];
@@ -826,9 +849,24 @@ impl<'a> Builder<'a> {
         let stops = self.stops_of(with_stops);
         let last = stops.last()?.1;
         let bounding = attr("gradientUnits") != Some("userSpaceOnUse");
-        let own = attr("gradientTransform")
-            .and_then(parse_transform_list)
-            .map_or(Matrix::IDENTITY, matrix);
+        // A `gradientTransform` that is empty or does not parse is not
+        // specified: a template's is taken (it is the `transform`
+        // property's presentation attribute).
+        let own = chain
+            .iter()
+            .find_map(|&n| {
+                document
+                    .attr(n, "gradientTransform")
+                    .filter(|v| !v.trim().is_empty())
+                    .and_then(parse_transform_list)
+            })
+            .unwrap_or([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+        let [a, b, c, d, ..] = own;
+        let determinant = a * d - b * c;
+        if !(determinant.is_finite() && determinant != 0.0) {
+            return fallback;
+        }
+        let own = matrix(own);
         let (space, transform) = if bounding {
             let [x, y, w, h] = bounds;
             if !(w > 0.0 && h > 0.0) {
@@ -887,7 +925,7 @@ impl<'a> Builder<'a> {
             if r < 0.0 || fr < 0.0 {
                 return None;
             }
-            if r == 0.0 {
+            if r == 0.0 || (fr >= r && fx == cx && fy == cy) {
                 return Some(Paint::Color(last));
             }
             GradientKind::Radial {
@@ -1126,8 +1164,9 @@ pub(crate) fn item_bounds(item: &Item) -> Option<[f64; 4]> {
 /// An element's transform (CSS Transforms 1, the `transform` attribute
 /// among it): `None` for none. Its reference box is the nearest
 /// viewport at the user origin (`view-box`, the initial value), or the
-/// shape's geometry for the other boxes (a group's is its viewport's
-/// too, recorded).
+/// shape's geometry for the other boxes, grown by half its stroke's
+/// width for `stroke-box` and `border-box` where it is stroked (a
+/// group's is its viewport's too, recorded).
 fn transform_of(
     style: &ComputedStyle,
     viewport: &Viewport,
@@ -1144,12 +1183,22 @@ fn transform_of(
             width: viewport.width as f32,
             height: viewport.height as f32,
         },
-        (_, Some([x, y, w, h])) => ReferenceBox {
-            x: x as f32,
-            y: y as f32,
-            width: w as f32,
-            height: h as f32,
-        },
+        (by, Some([x, y, w, h])) => {
+            let svg = style.svg();
+            let stroked = matches!(by, TransformBox::StrokeBox | TransformBox::BorderBox)
+                && !matches!(svg.stroke, SvgPaint::None);
+            let half = if stroked {
+                resolve(&svg.stroke_width, Axis::Diagonal, viewport).max(0.0) / 2.0
+            } else {
+                0.0
+            };
+            ReferenceBox {
+                x: (x - half) as f32,
+                y: (y - half) as f32,
+                width: (w + 2.0 * half) as f32,
+                height: (h + 2.0 * half) as f32,
+            }
+        }
     };
     let m = effects.matrix(&reference)?;
     let [a, b, c, d, e, f] = flattened_2d(&m).to_2d()?;
@@ -1161,6 +1210,32 @@ fn transform_of(
 pub(crate) fn rgba(c: computed::Color) -> Rgba {
     let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     Rgba::new(byte(c.r), byte(c.g), byte(c.b), byte(c.a))
+}
+
+/// `text` with each `%` and two hexadecimal digits made the byte they
+/// name, read as UTF-8 (lossily); any other `%` kept.
+fn percent_decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| char::from(b).to_digit(16);
+        match (
+            bytes[i],
+            bytes.get(i + 1).copied().and_then(hex),
+            bytes.get(i + 2).copied().and_then(hex),
+        ) {
+            (b'%', Some(high), Some(low)) => {
+                out.push((high * 16 + low) as u8);
+                i += 3;
+            }
+            (b, ..) => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// A paint that is no reference.
@@ -1189,14 +1264,6 @@ fn size(value: &Size, axis: Axis, viewport: &Viewport) -> f64 {
     value
         .length_percentage()
         .map_or(0.0, |v| resolve(&v, axis, viewport))
-}
-
-/// A `width` or `height` of a viewport: `auto` is all of the one it is
-/// in (100%).
-fn size_or_all(value: &Size, axis: Axis, viewport: &Viewport) -> f64 {
-    value
-        .length_percentage()
-        .map_or(viewport.along(axis), |v| resolve(&v, axis, viewport))
 }
 
 /// An attribute's length (`x1` and the rest), 0 when it is missing or

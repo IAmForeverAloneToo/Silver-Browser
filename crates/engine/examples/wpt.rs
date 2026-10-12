@@ -28,13 +28,16 @@
 //!   no `data-*` name the runner does not check and no `style` property
 //!   the cascade does not take named in them (M25); a test that keeps
 //!   `reftest-wait` on is drawn when its scripts take it off (M26);
-//! - no element that makes no box here: SVG, canvases, frames, media,
+//! - no element that makes no box here: canvases, frames, media,
 //!   fieldsets, meters and `br`, and no `input` of a type that needs a
-//!   picker (G61); an `img` is taken (M23) but one with a
+//!   picker (G61); no SVG element past M32's v1 and no SVG reference
+//!   into another document (G87); an `img` is taken (M23) but one with a
 //!   `srcset` or `sizes`, which this engine does not read (G35), and the
 //!   images it and its page's stylesheets name, by `url()` or
 //!   `image-set()`, are copied with it where they are on the checkout;
-//!   no SVG image (M32) and no AVIF one (G34);
+//!   no compressed SVG image and no AVIF one (G34); an `.svg` test is
+//!   read as an SVG document, and an XHTML one needs no namespace the
+//!   HTML parser does not give (M32);
 //! - every stylesheet only qualified rules whose selectors the matcher
 //!   parses, and every declaration one the cascade accepts, as
 //!   `style::supports` says, custom properties and declarations with
@@ -114,6 +117,17 @@ const DIRECTORIES: &[&str] = &[
     "html/dom",
     "css/selectors",
     "html/semantics/forms",
+    // SVG (M32): its reftests of what v1 draws, and its crash tests.
+    "svg/painting/reftests",
+    "svg/shapes/reftests",
+    "svg/struct/reftests",
+    "svg/pservers/reftests",
+    "svg/coordinate-systems",
+    "svg/styling",
+    "svg/text/reftests",
+    "svg/render/reftests",
+    "svg/as-image",
+    "svg/crashtests",
 ];
 
 /// The directories whose testharness.js tests are taken (M27), each with
@@ -200,9 +214,28 @@ const MAX_IMPORT_DEPTH: usize = 16;
 
 /// Elements that make no box here, or not the box the tests mean.
 const NO_BOX: &[&str] = &[
-    "svg", "canvas", "iframe", "frame", "frameset", "object", "embed", "video", "audio", "picture",
+    "canvas", "iframe", "frame", "frameset", "object", "embed", "video", "audio", "picture",
     "math", "fieldset", "legend", "meter", "progress", "output", "details", "summary", "dialog",
     "marquee", "br", "hr",
+];
+
+/// SVG's elements past v1 (M32, G87), by their local names: a test using
+/// one is left out. Filter primitives (`fe...`) too.
+const SVG_LEFT_OUT: &[&str] = &[
+    "filter",
+    "mask",
+    "marker",
+    "pattern",
+    "image",
+    "foreignobject",
+    "textpath",
+    "animate",
+    "animatemotion",
+    "animatetransform",
+    "set",
+    "mpath",
+    "discard",
+    "view",
 ];
 
 /// The `input` types drawn as text fields until G61 gives them pickers
@@ -805,7 +838,7 @@ fn relative(checkout: &Path, path: &Path) -> Result<String, String> {
 /// does not say it is one.
 fn is_test(rel: &str) -> bool {
     let name = rel.rsplit('/').next().unwrap_or(rel);
-    let page = [".html", ".htm", ".xht", ".xhtml"]
+    let page = [".html", ".htm", ".xht", ".xhtml", ".svg"]
         .iter()
         .any(|ext| name.ends_with(ext));
     let stem = name.split('.').next().unwrap_or(name);
@@ -868,13 +901,18 @@ fn take(checkout: &Path, rel: &str) -> Result<(Kind, Vec<String>), String> {
 
 /// Reads the page at `rel` and checks it against the rule.
 fn read_page(checkout: &Path, rel: &str) -> Result<Page, String> {
-    let source = fs::read(checkout.join(rel)).map_err(|_| format!("missing file {rel}"))?;
-    let source = String::from_utf8_lossy(&source);
-    if rel.ends_with(".xht") || rel.ends_with(".xhtml") {
-        xml_only(&source)?;
-    }
-    let node = html::parse_document(&source).map_err(|e| format!("unparsed page: {e:?}"))?;
-    let document = Document::from_node(&node);
+    let bytes = fs::read(checkout.join(rel)).map_err(|_| format!("missing file {rel}"))?;
+    // An SVG document is the XML parser's (M32), as the engine reads one.
+    let document = if rel.ends_with(".svg") {
+        html::xml::parse_xml(&bytes).map_err(|e| format!("not well-formed XML: {e}"))?
+    } else {
+        let source = String::from_utf8_lossy(&bytes);
+        if rel.ends_with(".xht") || rel.ends_with(".xhtml") {
+            xml_only(&source)?;
+        }
+        let node = html::parse_document(&source).map_err(|e| format!("unparsed page: {e:?}"))?;
+        Document::from_node(&node)
+    };
     let mut page = Page {
         declared: page_declarations(&document),
         ..Page::default()
@@ -901,6 +939,31 @@ fn element(
     let tag = document.local_name(id).unwrap_or("").to_ascii_lowercase();
     if NO_BOX.contains(&tag.as_str()) {
         return Err(format!("element <{tag}>"));
+    }
+    if document.svg_tag(id).is_some()
+        && (SVG_LEFT_OUT.contains(&tag.as_str()) || (tag.starts_with("fe") && tag.len() > 2))
+    {
+        return Err(format!("SVG <{tag}> (G87)"));
+    }
+    // A use or a gradient referring into another document, or a paint,
+    // a clip or a marker by a URL into one (G87).
+    if document.svg_tag(id).is_some()
+        && (matches!(tag.as_str(), "use" | "lineargradient" | "radialgradient")
+            && ["href", "xlink:href"].iter().any(|name| {
+                document
+                    .attr(id, name)
+                    .is_some_and(|href| !href.trim().starts_with('#'))
+            })
+            || document.attrs(id).unwrap_or(&[]).iter().any(|(_, value)| {
+                value.split("url(").skip(1).any(|inner| {
+                    !inner
+                        .trim_start()
+                        .trim_start_matches(['"', '\''])
+                        .starts_with('#')
+                })
+            }))
+    {
+        return Err("external SVG reference (G87)".to_string());
     }
     if tag == "input"
         && let Some(kind) = document.attr(id, "type")
@@ -1030,6 +1093,29 @@ fn element(
 fn xml_only(source: &str) -> Result<(), String> {
     if source.contains("<![CDATA[") {
         return Err("CDATA section in XHTML".to_string());
+    }
+    // The engine reads XHTML with the HTML parser (the XML parser is an
+    // SVG document's, M32): an element named with a prefix, or put in a
+    // namespace other than the ones HTML gives, is not namespaced there.
+    for (at, _) in source.match_indices('<') {
+        let name: String = source[at + 1..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '-' | '_' | '.'))
+            .collect();
+        if name.starts_with(|c: char| c.is_ascii_alphabetic()) && name.contains(':') {
+            return Err("namespaces in XHTML".to_string());
+        }
+    }
+    for (at, _) in source.match_indices("xmlns=") {
+        let value = source[at + 6..].trim_start_matches(['"', '\'']);
+        let known = [
+            "http://www.w3.org/1999/xhtml",
+            "http://www.w3.org/2000/svg",
+            "http://www.w3.org/1998/Math/MathML",
+        ];
+        if !known.iter().any(|ns| value.starts_with(ns)) {
+            return Err("namespaces in XHTML".to_string());
+        }
     }
     let mut rest = source;
     while let Some(at) = rest.find("/>") {
@@ -1870,13 +1956,14 @@ fn is_data(url: &str) -> bool {
         .is_some_and(|s| s.eq_ignore_ascii_case("data:"))
 }
 
-/// Fails on an image this engine does not read: an SVG one (M32) or an
-/// AVIF one (G34), by its name or its data URL's type.
+/// Fails on an image this engine does not read: a compressed SVG one
+/// (SVG images are M32's) or an AVIF one (G34), by its name or its data
+/// URL's type.
 fn unsupported_image(url: &str) -> Result<(), String> {
     let url = url.trim().to_ascii_lowercase();
     let path = url.split(['?', '#']).next().unwrap_or(&url);
-    if path.ends_with(".svg") || path.ends_with(".svgz") || url.starts_with("data:image/svg") {
-        return Err("SVG image".to_string());
+    if path.ends_with(".svgz") {
+        return Err("compressed SVG image".to_string());
     }
     if path.ends_with(".avif") || url.starts_with("data:image/avif") {
         return Err("AVIF image".to_string());
@@ -2512,16 +2599,27 @@ mod tests {
         let reftest = |body: &str| format!("<link rel=match href=r.html>{body}");
         let pages = [
             (reftest("<img srcset='a.png 2x'>"), "img srcset"),
-            (reftest("<img src=a.svg>"), "SVG image"),
+            (reftest("<img src=a.svgz>"), "compressed SVG image"),
             (
-                reftest("<div style='background: url(\"data:image/svg+xml,<svg/>\")'></div>"),
-                "SVG image",
+                reftest("<svg><filter id=f></filter></svg>"),
+                "SVG <filter> (G87)",
+            ),
+            (
+                reftest("<svg><feFlood></feFlood></svg>"),
+                "SVG <feflood> (G87)",
+            ),
+            (
+                reftest("<svg><use href='o.svg#a'></use></svg>"),
+                "external SVG reference (G87)",
+            ),
+            (
+                reftest("<svg><rect fill='url(o.svg#g) red'></rect></svg>"),
+                "external SVG reference (G87)",
             ),
             (
                 reftest("<style>.a { list-style-image: url(b.avif) }</style>"),
                 "AVIF image",
             ),
-            (reftest("<svg></svg>"), "element <svg>"),
             (reftest("<div onanimationend=go()></div>"), "script"),
             (reftest("<img onerror=go()>"), "script"),
             (reftest("<script>go()</script>"), "script"),
@@ -2627,6 +2725,22 @@ mod tests {
             "css/x/y.xht".to_string(),
             "<html><style><![CDATA[ .a {} ]]></style></html>".to_string(),
         ));
+        files.push((
+            "css/x/z.xht".to_string(),
+            "<html><link rel=match href=r.html></link><p xmlns='urn:x'>a</p></html>".to_string(),
+        ));
+        // Taken since M32: an inline svg, an SVG image and an SVG
+        // document, its reference linked from the XHTML namespace.
+        files.push((
+            "css/x/s.html".to_string(),
+            reftest("<svg><rect width=5 height=5 fill='url(#g)'></rect></svg><img src=a.svg>"),
+        ));
+        files.push((
+            "css/x/d.svg".to_string(),
+            "<svg xmlns='http://www.w3.org/2000/svg' xmlns:h='http://www.w3.org/1999/xhtml'>\
+             <h:link rel='match' href='r.html'/><rect width='5' height='5'/></svg>"
+                .to_string(),
+        ));
         let files: Vec<(&str, &str)> = files
             .iter()
             .map(|(p, c)| (p.as_str(), c.as_str()))
@@ -2647,6 +2761,12 @@ mod tests {
             checkout.take("css/x/y.xht").err().as_deref(),
             Some("CDATA section in XHTML")
         );
+        assert_eq!(
+            checkout.take("css/x/z.xht").err().as_deref(),
+            Some("namespaces in XHTML")
+        );
+        assert!(checkout.take("css/x/s.html").is_ok());
+        assert!(checkout.take("css/x/d.svg").is_ok());
     }
 
     #[test]

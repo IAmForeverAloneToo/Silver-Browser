@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use canvas::{Matrix, Path};
 use dom::NodeId;
-use style::computed::{ComputedStyle, Display, DominantBaseline, TextAnchor, WhiteSpace};
+use style::computed::{
+    ComputedStyle, Display, DominantBaseline, TextAnchor, TextTransform, WhiteSpace,
+};
 use text::FontCollection;
 
 use crate::syntax::{Axis, Viewport, parse_lengths};
@@ -248,7 +250,20 @@ impl<'a> Builder<'a> {
         let document = self.document;
         for child in document.children(node) {
             if let Some(text) = document.text(child) {
-                chars.extend(text.chars().map(|c| (c, me)));
+                // `text-transform` (as HTML's text has it): a word starts
+                // after white space, or at the text's start.
+                let mut word_start = chars.last().is_none_or(|(c, _)| c.is_whitespace());
+                for c in text.chars() {
+                    match owners[me].style.text_transform {
+                        TextTransform::Uppercase => chars.extend(c.to_uppercase().map(|c| (c, me))),
+                        TextTransform::Lowercase => chars.extend(c.to_lowercase().map(|c| (c, me))),
+                        TextTransform::Capitalize if word_start && !c.is_whitespace() => {
+                            chars.extend(c.to_uppercase().map(|c| (c, me)));
+                        }
+                        _ => chars.push((c, me)),
+                    }
+                    word_start = c.is_whitespace();
+                }
                 continue;
             }
             if !matches!(document.svg_tag(child), Some("tspan" | "a")) || !self.passes(child) {

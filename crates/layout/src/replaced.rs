@@ -12,7 +12,9 @@
 //! given, [`used_height`], unless a flex or grid container stretches it.
 
 use style::ComputedStyle;
-use style::computed::{AspectRatio, BOTTOM, BoxSizing, ImageOrientation, LEFT, MaxSize, Size, TOP};
+use style::computed::{
+    AspectRatio, BOTTOM, BoxSizing, ImageOrientation, LEFT, MaxSize, RIGHT, Size, TOP,
+};
 
 use crate::block::{
     AdjoiningMargins, BlockLayout, Edges, FragmentKind, Imposed, box_fragment, clamp_height,
@@ -137,9 +139,9 @@ struct Sizing<'a> {
     /// whatever its style says.
     fixed: bool,
     /// The width a ratio with no size takes, an outer `<svg>`'s: its
-    /// containing block's, its border and padding taken off (CSS 2
-    /// section 10.3.2 suggests it, and the reference browser does), when
-    /// that is known.
+    /// containing block's, its margins, border and padding taken off
+    /// (CSS 2 section 10.3.2 suggests the block's constraint, and the
+    /// reference browser does), when that is known.
     fills: Option<f32>,
 }
 
@@ -158,10 +160,10 @@ impl<'a> Sizing<'a> {
             Replaced::Image { header, .. } => header.vector.is_some(),
             _ => false,
         };
-        let fills = vector
-            .then_some(cb_width)
-            .flatten()
-            .map(|w| (w - edges.horizontal()).max(0.0));
+        let fills = vector.then_some(cb_width).flatten().map(|w| {
+            let margins = style.margin[LEFT].resolve(w, 0.0) + style.margin[RIGHT].resolve(w, 0.0);
+            (w - edges.horizontal() - margins).max(0.0)
+        });
         Sizing {
             style,
             natural,
@@ -375,6 +377,23 @@ pub(crate) fn natural_width(b: &LayoutBox, replaced: &Replaced) -> f32 {
         return ICON_SIZE;
     }
     natural_fit(&s, (0.0, None), (0.0, None)).0
+}
+
+/// The content width the replaced box `b` of a ratio and no natural
+/// size, an outer `<svg>`'s or an SVG image's of a `viewBox` alone
+/// (M32), takes given `room`: all of it, as a block's would, kept
+/// within its `min-height` and `max-height` through the ratio; `None`
+/// for another box.
+pub(crate) fn filled_width(b: &LayoutBox, replaced: &Replaced, room: f32) -> Option<f32> {
+    let mut s = Sizing::of(b, replaced, Some(0.0));
+    let natural = s.natural;
+    if s.fills.is_none() || natural.width.is_some() || natural.height.is_some() || s.ratio.is_none()
+    {
+        return None;
+    }
+    s.fills = Some(room);
+    let bounds = height_bounds(s.style, None, s.vertical, None);
+    Some(natural_fit(&s, (0.0, None), bounds).0)
 }
 
 /// The content-box width the replaced box `b`'s ratio makes of the

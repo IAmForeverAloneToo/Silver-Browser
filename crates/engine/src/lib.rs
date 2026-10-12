@@ -6135,7 +6135,12 @@ mod tests {
              <div class=box><svg id=i style='width: 77px' width=10 height=10></svg></div>\
              <div class=box><svg id=j width=-5 height=abc></svg></div>\
              <div class=box><svg id=k viewBox='0 0 0 0' width=10 height=10></svg></div>\
-             <div class=box><svg id=l viewBox='0 0 2 1' style='padding: 10px'></svg></div>",
+             <div class=box><svg id=l viewBox='0 0 2 1' style='padding: 10px'></svg></div>\
+             <div class=box><svg id=o viewBox='0 0 2 1' style='margin: 0 30px'></svg></div>\
+             <div style='display: flex; width: 150px'>\
+             <svg id=m viewBox='0 0 1 1' style='margin-right: 50px; flex: 1 0 auto'></svg></div>\
+             <div style='display: flex; align-items: flex-start'>\
+             <svg id=n viewBox='0 0 1 1' style='max-height: 60px'></svg></div>",
         );
         let fragments = engine.fragments(800.0);
         let mut sizes = Vec::new();
@@ -6175,6 +6180,21 @@ mod tests {
             Some((380.0, 190.0)),
             "its padding off the width it has"
         );
+        assert_eq!(
+            size("m"),
+            Some((100.0, 100.0)),
+            "its margins off the width it has, a flex item's base size"
+        );
+        assert_eq!(
+            size("n"),
+            Some((60.0, 60.0)),
+            "its max-height through its ratio"
+        );
+        assert_eq!(
+            size("o"),
+            Some((340.0, 170.0)),
+            "its margins off a block's width"
+        );
     }
 
     #[test]
@@ -6197,6 +6217,13 @@ mod tests {
         assert_eq!(engine.hit_test(10.0, 10.0), r);
         assert_eq!(engine.hit_test(30.0, 10.0), c);
         assert_eq!(engine.hit_test(38.0, 2.0), s, "between the shapes, the svg");
+        // Styled by a sheet of SVG's own `<style>`.
+        engine.load_document(
+            "<body style='margin: 0'><svg width=40 height=20 style='display: block'>\
+             <style>rect { fill: blue }</style><rect width=20 height=20 fill=red></rect></svg>",
+        );
+        let frame = engine.frame(100, 40);
+        assert_eq!(frame[(10 * 100 + 10) * 4..][..3], [0, 0, 255]);
         // Drawn again at a larger raster when scaled: a sharp edge.
         engine.load_document(
             "<body style='margin: 0'><svg width=10 height=10 viewBox='0 0 10 10' \

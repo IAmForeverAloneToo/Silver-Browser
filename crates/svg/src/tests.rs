@@ -799,6 +799,22 @@ fn spacing_and_baselines_move_the_glyphs() {
         close(middle[0][1] - auto[0][1], f64::from(f.x_height(16.0)) / 2.0),
         "{auto:?} {middle:?}"
     );
+    // Transformed as HTML's text is.
+    let upper = runs("<svg><text style='text-transform: uppercase'>ab</text></svg>");
+    assert!(
+        close(upper[0][2], f64::from(f.measure("AB", 16.0))),
+        "{upper:?}"
+    );
+    let words =
+        runs("<svg><text style='text-transform: capitalize'>ab <tspan>cd</tspan></text></svg>");
+    assert!(
+        close(words[0][2], f64::from(f.measure("Ab ", 16.0))),
+        "{words:?}"
+    );
+    assert!(
+        close(words[1][2], f64::from(f.measure("Cd", 16.0))),
+        "{words:?}"
+    );
     // Without fonts, no text.
     assert!(
         tree_with("<svg><text>a</text></svg>", 10.0, 10.0, None)
@@ -948,4 +964,110 @@ fn scripts_questions_are_answered_from_the_geometry() {
     assert_eq!(at("n", Query::BBox), Some(vec![0.0, 0.0, 10.0, 10.0]));
     // Nothing for an element drawn in no svg.
     assert_eq!(at("html", Query::BBox), None);
+}
+
+#[test]
+fn a_nested_svgs_and_a_uses_sizes_are_their_attributes_alone() {
+    // The CSS width and height do not apply to a nested svg, a symbol or
+    // a use, as in the reference browser (svgwg pull 1059).
+    let green = [0, 128, 0, 255];
+    let canvas = drawn(
+        "<svg width=100 height=100><svg style='width: 10px; height: 10px'>\
+         <rect width=100 height=100 fill='#008000'/></svg></svg>",
+        100,
+        100,
+    );
+    assert!(near(px(&canvas, 50, 50), green));
+    let canvas = drawn(
+        "<svg width=100 height=100>\
+         <svg width=10 height=10 style='width: auto; height: 100px'>\
+         <rect width=100 height=100 fill='#008000'/></svg></svg>",
+        100,
+        100,
+    );
+    assert!(near(px(&canvas, 5, 5), green));
+    assert_eq!(px(&canvas, 50, 50), [0, 0, 0, 0]);
+    // A use's attributes size its symbol, its CSS not; without them the
+    // symbol's own do.
+    let canvas = drawn(
+        "<svg width=100 height=100><symbol id=s width=10 height=10>\
+         <rect width=100% height=100% fill='#008000'/></symbol>\
+         <use href='#s' width=50 height=40 style='width: 90px; height: 90px'/>\
+         <use href='#s' x=60 y=60 /></svg>",
+        100,
+        100,
+    );
+    assert!(near(px(&canvas, 45, 35), green));
+    assert_eq!(px(&canvas, 45, 45), [0, 0, 0, 0]);
+    assert!(near(px(&canvas, 65, 65), green));
+    assert_eq!(px(&canvas, 75, 75), [0, 0, 0, 0]);
+}
+
+#[test]
+fn a_stroke_box_is_the_shapes_grown_by_half_its_stroke() {
+    // transform-box: stroke-box, scaled about its origin: the rect's
+    // stroke box starts 10 before its fill box, so its left edge's
+    // stroke lands at 90 to 130, not 80 to 120 as by its fill box.
+    let shape = |by: &str| {
+        drawn(
+            &format!(
+                "<svg width=400 height=300><rect x=100 y=100 width=100 height=50 \
+                 stroke=black stroke-width=20 fill=none \
+                 style='transform-box: {by}; transform-origin: 0 0; transform: scale(2)'/></svg>"
+            ),
+            400,
+            300,
+        )
+    };
+    let stroke = shape("stroke-box");
+    assert_eq!(px(&stroke, 85, 150), [0, 0, 0, 0]);
+    assert_eq!(px(&stroke, 95, 150), [0, 0, 0, 255]);
+    let fill = shape("fill-box");
+    assert_eq!(px(&fill, 85, 150), [0, 0, 0, 255]);
+}
+
+#[test]
+fn a_gradients_transform_falls_back_and_its_reference_is_decoded() {
+    let green = [0, 128, 0, 255];
+    // A gradientTransform that cannot be inverted paints the fallback,
+    // or nothing without one.
+    let canvas = drawn(
+        "<svg width=20 height=10><linearGradient id=g gradientTransform='scale(0)'>\
+         <stop stop-color=red /><stop offset=1 stop-color=yellow /></linearGradient>\
+         <rect width=10 height=10 fill='url(#g) #008000'/>\
+         <rect x=10 width=10 height=10 fill='url(#g)'/></svg>",
+        20,
+        10,
+    );
+    assert!(near(px(&canvas, 5, 5), green));
+    assert_eq!(px(&canvas, 15, 5), [0, 0, 0, 0]);
+    // One empty or that does not parse is not specified: the template's
+    // is taken.
+    let canvas = drawn(
+        "<svg width=20 height=10>\
+         <linearGradient id=base gradientTransform='translate(1 0)'>\
+         <stop stop-color='#008000'/><stop offset=1 stop-color=red /></linearGradient>\
+         <linearGradient id=e href='#base' gradientTransform=''/>\
+         <linearGradient id=b href='#base' gradientTransform='bogus'/>\
+         <rect width=10 height=10 fill='url(#e)'/>\
+         <rect x=10 width=10 height=10 fill='url(#b)'/></svg>",
+        20,
+        10,
+    );
+    assert!(near(px(&canvas, 8, 5), green));
+    assert!(near(px(&canvas, 18, 5), green));
+    // A fragment is percent-decoded; a radial gradient's circles that
+    // coincide paint its last stop.
+    let canvas = drawn(
+        "<svg width=20 height=10><linearGradient id=foo><stop stop-color='#008000'/>\
+         <stop offset=1 stop-color='#008000'/></linearGradient>\
+         <radialGradient id=r r=1 fr=1><stop stop-color=red />\
+         <stop offset=1 stop-color='#008000'/></radialGradient>\
+         <rect width=10 height=10 fill='url(#%66%6f%6f) red'/>\
+         <rect x=10 width=10 height=10 fill='url(#r)'/></svg>",
+        20,
+        10,
+    );
+    assert!(near(px(&canvas, 5, 5), green));
+    assert!(near(px(&canvas, 15, 5), green));
 }

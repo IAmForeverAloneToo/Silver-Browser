@@ -66,8 +66,9 @@ fn parsed(bytes: &[u8]) -> Option<(Document, NodeId)> {
 
 /// The natural size of the SVG image whose root is `svg`: its `width`
 /// and `height` where they are absolute lengths (`em` of the initial
-/// 16 pixels), its `viewBox`'s ratio or else theirs, a side it lacks
-/// from the other through the ratio.
+/// 16 pixels), their ratio where it has both or else its `viewBox`'s
+/// (SVG 2 section 8.2), a side it lacks from the other through the
+/// ratio.
 fn natural(document: &Document, svg: NodeId) -> Vector {
     let side = |name: &str| {
         let length = svg::parse_length(document.attr(svg, name)?)?;
@@ -84,16 +85,15 @@ fn natural(document: &Document, svg: NodeId) -> Vector {
         px.is_finite().then_some(px)
     };
     let (mut width, mut height) = (side("width"), side("height"));
-    let ratio = document
-        .attr(svg, "viewBox")
-        .and_then(svg::parse_view_box)
-        .filter(svg::ViewBox::has_area)
-        .map(|v| (v.width / v.height) as f32)
-        .or_else(|| match (width, height) {
-            (Some(w), Some(h)) if w > 0.0 && h > 0.0 => Some(w / h),
-            _ => None,
-        })
-        .filter(|r| r.is_finite() && *r > 0.0);
+    let ratio = match (width, height) {
+        (Some(w), Some(h)) => (w > 0.0 && h > 0.0).then(|| w / h),
+        _ => document
+            .attr(svg, "viewBox")
+            .and_then(svg::parse_view_box)
+            .filter(svg::ViewBox::has_area)
+            .map(|v| (v.width / v.height) as f32),
+    }
+    .filter(|r| r.is_finite() && *r > 0.0);
     if let Some(r) = ratio {
         match (width, height) {
             (Some(w), None) => height = Some(w / r),
@@ -140,9 +140,11 @@ pub(crate) fn draw(
         (Some(vw), Some(vh)) if vw > 0.0 && vh > 0.0 => (f64::from(vw), f64::from(vh)),
         _ => (f64::from(w), f64::from(h)),
     };
+    // Its own sheets, SVG's `<style>`s and HTML's among it; an image
+    // loads nothing more, so a `<link>`'s sheet is not.
     let sheets: Vec<css::Stylesheet> = document
         .subtree(document.root())
-        .filter(|&n| document.svg_tag(n) == Some("style"))
+        .filter(|&n| document.svg_tag(n) == Some("style") || document.tag(n) == Some("style"))
         .filter_map(|n| css::parse_stylesheet(&document.text_content(n)).ok())
         .collect();
     let sheets = Stylesheets::new(sheets);
@@ -165,6 +167,22 @@ pub(crate) fn draw(
         viewport.1,
     );
     let mut canvas = canvas::Canvas::new(w, h, false);
+    // The root's background, under all of it, as a page's canvas has
+    // its root's.
+    if let Some(color) = styles
+        .get(svg)
+        .map(|s| s.background_color)
+        .filter(|c| c.a > 0.0)
+    {
+        let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        canvas.state_mut().fill = canvas::Paint::Color(canvas::Rgba::new(
+            byte(color.r),
+            byte(color.g),
+            byte(color.b),
+            byte(color.a),
+        ));
+        canvas.fill_rect(0.0, 0.0, f64::from(w), f64::from(h));
+    }
     let base = canvas::Matrix::new(
         f64::from(w) / viewport.0,
         0.0,
@@ -230,6 +248,15 @@ mod tests {
             .vector
             .expect("a vector");
         assert_eq!(sized.ratio, Some(2.0), "its size's ratio, with no viewBox");
+        let both = super::header(svg("width='40' height='20' viewBox='0 0 1 4'").as_bytes())
+            .expect("a header")
+            .vector
+            .expect("a vector");
+        assert_eq!(
+            both.ratio,
+            Some(2.0),
+            "its size's ratio before its viewBox's"
+        );
         // Drawn at the size asked, its own sheet styling it, a natural
         // size scaled to fill it.
         let bytes = b"<svg xmlns='http://www.w3.org/2000/svg' width='2' height='1'>\
@@ -242,5 +269,17 @@ mod tests {
         };
         assert_eq!(at(5, 5), [0, 255, 0, 255]);
         assert_eq!(at(15, 5), [0, 0, 0, 0]);
+        // An HTML `<style>` among it styles it too; its root's background
+        // is under all of it.
+        let bytes = b"<svg xmlns='http://www.w3.org/2000/svg' width='2' height='1'>\
+                      <style xmlns='http://www.w3.org/1999/xhtml'>:root { background: blue }</style>\
+                      <rect width='1' height='1' fill='lime'/></svg>";
+        let image = draw(bytes, (20, 10), None).expect("drawn");
+        let at = |x: usize, y: usize| {
+            let i = (y * 20 + x) * 4;
+            image.frames[0].pixels[i..i + 4].to_vec()
+        };
+        assert_eq!(at(5, 5), [0, 255, 0, 255]);
+        assert_eq!(at(15, 5), [0, 0, 255, 255]);
     }
 }
