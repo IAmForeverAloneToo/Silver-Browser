@@ -92,6 +92,10 @@ pub(crate) struct Session {
     mods: Modifiers,
     /// The window's size.
     size: (u32, u32),
+    /// The window's scale factor (M32.4): device pixels to a CSS pixel.
+    /// The session's own positions and sizes are CSS pixels; the window's
+    /// are device pixels, divided by it on the way in.
+    scale: f32,
     /// Where the pointer was last, in the window, and whether it is in
     /// the window still.
     pointer: (f32, f32),
@@ -138,6 +142,7 @@ impl Session {
             platform,
             mods: Modifiers::default(),
             size: (0, 0),
+            scale: 1.0,
             pointer: (0.0, 0.0),
             inside: false,
             held: None,
@@ -280,12 +285,31 @@ impl Session {
         self.sync();
     }
 
-    /// The window has a new size: the page's viewport, under the toolbar,
-    /// has too, as a page loading before the next frame reads it (M25).
+    /// The window has a new size, in device pixels: the page's viewport,
+    /// under the toolbar, has too, as a page loading before the next
+    /// frame reads it (M25).
     pub(crate) fn resized(&mut self, width: u32, height: u32) {
-        self.size = (width, height);
+        let css = |v: u32| (v as f32 / self.scale).round() as u32;
+        self.size = (css(width), css(height));
+        let (width, height) = self.size;
         self.engine
             .set_viewport(width, height - ui::HEIGHT.min(height));
+    }
+
+    /// The window's scale factor changed (M32.4): the page is drawn under
+    /// it, its viewport and the pointer taken in CSS pixels by it.
+    pub(crate) fn set_scale(&mut self, scale: f32, width: u32, height: u32) {
+        if !(scale.is_finite() && scale > 0.0) {
+            return;
+        }
+        self.engine.set_scale_factor(scale);
+        self.scale = self.engine.scale_factor();
+        self.resized(width, height);
+    }
+
+    /// The window's scale factor.
+    pub(crate) fn scale(&self) -> f32 {
+        self.scale
     }
 
     /// The user's preferences, as the shell now reads them (M20.3).
@@ -401,8 +425,9 @@ impl Session {
         self.sync();
     }
 
-    /// The pointer moved to `(x, y)` in the window.
+    /// The pointer moved to `(x, y)` in the window, in device pixels.
     pub(crate) fn pointer_moved(&mut self, x: f32, y: f32) {
+        let (x, y) = (x / self.scale, y / self.scale);
         self.pointer = (x, y);
         self.inside = true;
         if let Some(Held::Thumb(grab)) = self.held {
@@ -517,9 +542,10 @@ impl Session {
         if out.len() < w * height as usize {
             return;
         }
-        self.size = (width, height);
-        let bar_rows = (ui::HEIGHT.min(height)) as usize;
-        let bar = self.toolbar.frame(width);
+        let css = |v: u32| (v as f32 / self.scale).round() as u32;
+        self.size = (css(width), css(height));
+        let bar_rows = (ui::rows(ui::HEIGHT, self.scale).min(height)) as usize;
+        let bar = self.toolbar.frame(width, self.scale);
         put(&bar[..bar_rows * w * 4], &mut out[..bar_rows * w]);
         let page_height = height - bar_rows as u32;
         if page_height > 0 {
@@ -535,11 +561,12 @@ impl Session {
             print_console(&mut self.engine);
         }
         self.drawn_bubble = self.bubble_text().map(str::to_owned);
+        let bubble_rows = ui::rows(ui::status::HEIGHT, self.scale);
         if let Some(text) = &self.drawn_bubble
-            && page_height >= ui::status::HEIGHT
-            && let Some((bubble_w, pixels)) = self.bubble.frame(text, width / 2)
+            && page_height >= bubble_rows
+            && let Some((bubble_w, pixels)) = self.bubble.frame(text, width / 2, self.scale)
         {
-            let (bubble_w, top) = (bubble_w as usize, (height - ui::status::HEIGHT) as usize);
+            let (bubble_w, top) = (bubble_w as usize, (height - bubble_rows) as usize);
             for (row, line) in pixels.chunks_exact(bubble_w * 4).enumerate() {
                 let at = (top + row) * w;
                 put(line, &mut out[at..at + bubble_w]);

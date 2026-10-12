@@ -1080,3 +1080,38 @@ fn a_sheet_just_before_a_script_holds_it_and_the_script_reads_it() {
     load_all(&mut tab, server.url("/page.html"));
     assert_eq!(lines(&mut tab), ["rgb(255, 0, 0) none"]);
 }
+
+#[test]
+fn device_pixel_ratio_is_the_displays_scale() {
+    // M32.4: a script reads the display's scale, and the viewport in
+    // CSS pixels.
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<script>console.log(devicePixelRatio, innerWidth); \
+             requestAnimationFrame(() => console.log('frame', innerWidth))</script>",
+        )),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.set_scale_factor(1.25);
+    tab.engine.set_viewport(400, 300);
+    load_all(&mut tab, server.url("/page.html"));
+    let console: Vec<String> = tab
+        .engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .collect();
+    assert_eq!(console, ["1.25 400"]);
+    // A frame 800 device pixels wide is 640 CSS pixels to its callbacks.
+    tab.engine
+        .frame_at(800, 600, crate::FrameTime::at(Duration::from_secs(1)));
+    let console: Vec<String> = tab
+        .engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .collect();
+    assert_eq!(console, ["frame 640"]);
+}

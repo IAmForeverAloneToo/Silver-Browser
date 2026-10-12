@@ -46,10 +46,12 @@ impl StatusBubble {
         format!("{}{ELLIPSIS}", &text[..end])
     }
 
-    /// Draws the bubble for `text`, at most `max_width` pixels wide:
-    /// its width, and its RGBA8 pixels, [`HEIGHT`] high, lent until the
-    /// next frame. Nothing for an empty text or no room.
-    pub fn frame(&mut self, text: &str, max_width: u32) -> Option<(u32, &[u8])> {
+    /// Draws the bubble for `text`, at most `max_width` device pixels
+    /// wide at the display's `scale` (M32.4): its width in device
+    /// pixels, and its RGBA8 pixels, [`HEIGHT`] CSS pixels high, lent
+    /// until the next frame. Nothing for an empty text or no room.
+    pub fn frame(&mut self, text: &str, max_width: u32, scale: f32) -> Option<(u32, &[u8])> {
+        let max_width = (max_width as f32 / scale).floor() as u32;
         if text.is_empty() || (max_width as f32) < 2.0 * PADDING + 8.0 {
             return None;
         }
@@ -83,7 +85,12 @@ impl StatusBubble {
                 },
             ],
         };
-        let pixels = self.backend.rasterize(&list, width, HEIGHT);
-        Some((width, pixels))
+        let mut list = list;
+        paint::scaled(&mut list.items, scale, paint::GroupKey::Document(0));
+        let device = ((width as f32 * scale).ceil() as u32).max(1);
+        let pixels = self
+            .backend
+            .rasterize(&list, device, crate::rows(HEIGHT, scale));
+        Some((device, pixels))
     }
 }

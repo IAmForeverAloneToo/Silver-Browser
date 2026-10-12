@@ -21,7 +21,7 @@ fn toolbar(url: &str, back: bool, forward: bool, loading: bool) -> Toolbar {
         can_go_forward: forward,
         loading,
     });
-    toolbar.frame(WIDTH);
+    toolbar.frame(WIDTH, 1.0);
     toolbar
 }
 
@@ -73,7 +73,7 @@ fn the_buttons_act_when_the_history_and_the_load_let_them() {
 fn a_button_the_history_cannot_use_is_dimmed_and_one_under_the_pointer_lights() {
     let shaft = |n: f32| (button(n).0 as u32 + 3, 19);
     let mut bar = toolbar("https://example.com/", false, true, false);
-    let frame = bar.frame(WIDTH).to_vec();
+    let frame = bar.frame(WIDTH, 1.0).to_vec();
     let (x, y) = shaft(0.0);
     assert_eq!(px(&frame, x, y), [0xAA; 3], "back, dimmed");
     let (x, y) = (button(1.0).0 as u32 - 3, 19);
@@ -85,12 +85,12 @@ fn a_button_the_history_cannot_use_is_dimmed_and_one_under_the_pointer_lights() 
     );
     bar.pointer_moved(button(1.0).0, 20.0);
     assert!(bar.needs_frame());
-    let frame = bar.frame(WIDTH).to_vec();
+    let frame = bar.frame(WIDTH, 1.0).to_vec();
     assert_eq!(px(&frame, button(1.0).0 as u32 - 14, 7), [0xDA; 3], "lit");
     assert!(!bar.needs_frame());
     // A dimmed button does not light.
     bar.pointer_moved(button(0.0).0, 20.0);
-    let frame = bar.frame(WIDTH).to_vec();
+    let frame = bar.frame(WIDTH, 1.0).to_vec();
     assert_eq!(px(&frame, button(0.0).0 as u32 - 14, 7), [0xED; 3]);
 }
 
@@ -144,7 +144,7 @@ fn a_drag_from_the_click_that_focuses_the_field_selects_what_it_covers() {
     let mut bar = toolbar(&long, false, false, false);
     bar.focus();
     bar.command(Command::End { extend: false });
-    bar.frame(WIDTH);
+    bar.frame(WIDTH, 1.0);
     bar.blur();
     bar.press(x(8), 20.0, 1, false);
     bar.pointer_moved(x(15), 20.0);
@@ -159,11 +159,11 @@ fn the_selection_is_drawn_while_the_field_has_the_keyboard() {
     let stops = fonts().caret_stops(text, FONT_SIZE);
     let x = (FIELD_X + PADDING + (stops[1] + stops[11]) / 2.0) as u32;
     let row = (FIELD_Y + FIELD_H / 2.0) as u32;
-    assert_eq!(px(bar.frame(WIDTH), x, row), [0xFF; 3]);
+    assert_eq!(px(bar.frame(WIDTH, 1.0), x, row), [0xFF; 3]);
     bar.focus();
-    assert_eq!(px(bar.frame(WIDTH), x, row), [0xB4, 0xD2, 0xFA]);
+    assert_eq!(px(bar.frame(WIDTH, 1.0), x, row), [0xB4, 0xD2, 0xFA]);
     bar.blur();
-    assert_eq!(px(bar.frame(WIDTH), x, row), [0xFF; 3]);
+    assert_eq!(px(bar.frame(WIDTH, 1.0), x, row), [0xFF; 3]);
 }
 
 #[test]
@@ -266,7 +266,7 @@ fn the_caret_is_drawn_where_the_text_ends_and_a_long_url_scrolls_to_it() {
     let mut bar = toolbar("abc", false, false, false);
     bar.focus();
     bar.command(Command::End { extend: false });
-    let frame = bar.frame(WIDTH).to_vec();
+    let frame = bar.frame(WIDTH, 1.0).to_vec();
     let stops = fonts().caret_stops("abc", FONT_SIZE);
     let caret = (FIELD_X + PADDING + stops[3]).round() as u32;
     let row = (FIELD_Y + FIELD_H / 2.0) as u32;
@@ -276,7 +276,7 @@ fn the_caret_is_drawn_where_the_text_ends_and_a_long_url_scrolls_to_it() {
     assert_eq!(px(&frame, caret, top), [0x1F; 3]);
     bar.blur();
     assert_eq!(
-        px(bar.frame(WIDTH), caret, top),
+        px(bar.frame(WIDTH, 1.0), caret, top),
         [0xFF; 3],
         "no caret unfocused"
     );
@@ -288,7 +288,7 @@ fn the_caret_is_drawn_where_the_text_ends_and_a_long_url_scrolls_to_it() {
     assert!(x > WIDTH as f32, "unfocused, the end is out of view: {x}");
     bar.focus();
     bar.command(Command::End { extend: false });
-    bar.frame(WIDTH);
+    bar.frame(WIDTH, 1.0);
     let (x, ..) = bar.caret_area();
     assert!(
         x <= WIDTH as f32 - 8.0 - PADDING + 0.5 && x > FIELD_X,
@@ -299,7 +299,7 @@ fn the_caret_is_drawn_where_the_text_ends_and_a_long_url_scrolls_to_it() {
     let (x, ..) = bar.caret_area();
     assert!((x - 300.0).abs() < 6.0, "{x}");
     bar.command(Command::Home { extend: false });
-    bar.frame(WIDTH);
+    bar.frame(WIDTH, 1.0);
     let (x, ..) = bar.caret_area();
     assert_eq!(x, FIELD_X + PADDING);
     // A caret moved past the field's end scrolls the text just enough
@@ -307,7 +307,7 @@ fn the_caret_is_drawn_where_the_text_ends_and_a_long_url_scrolls_to_it() {
     for _ in 0..80 {
         bar.command(Command::Right { extend: false });
     }
-    bar.frame(WIDTH);
+    bar.frame(WIDTH, 1.0);
     let (x, ..) = bar.caret_area();
     assert!((x - (WIDTH as f32 - 8.0 - PADDING)).abs() < 0.01, "{x}");
 }
@@ -384,8 +384,8 @@ fn the_status_bubble_fits_its_text_and_keeps_its_start() {
         "{fitted}"
     );
     assert!(fonts().measure(&fitted, 13.0) <= 120.0 - 12.0 + 0.01);
-    let (width, pixels) = bubble.frame(url, 120).expect("a bubble");
+    let (width, pixels) = bubble.frame(url, 120, 1.0).expect("a bubble");
     assert!(width <= 120);
     assert_eq!(pixels.len(), (width * status::HEIGHT * 4) as usize);
-    assert!(bubble.frame("", 400).is_none());
+    assert!(bubble.frame("", 400, 1.0).is_none());
 }

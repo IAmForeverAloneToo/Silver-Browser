@@ -199,7 +199,10 @@ impl Browser {
                 Shape::Page(cursor) => cursor_icon(cursor),
             });
         }
+        // The session's CSS pixels as the window's device pixels.
+        let scale = self.session.scale();
         let ime = self.session.ime_area().map(|(x, y, w, h)| {
+            let (x, y, w, h) = (x * scale, y * scale, w * scale, h * scale);
             (
                 x.round() as i32,
                 y.round() as i32,
@@ -294,7 +297,11 @@ impl ApplicationHandler<NetworkWake> for Browser {
                     Ok(context) => match softbuffer::Surface::new(&context, window.clone()) {
                         Ok(surface) => {
                             let size = window.inner_size();
-                            self.session.resized(size.width, size.height);
+                            self.session.set_scale(
+                                window.scale_factor() as f32,
+                                size.width,
+                                size.height,
+                            );
                             self.theme = window.theme();
                             self.read_preferences();
                             self.context = Some(context);
@@ -350,6 +357,14 @@ impl ApplicationHandler<NetworkWake> for Browser {
                 self.session.resized(size.width, size.height);
                 window.request_redraw();
             }
+            // The window moved to a display of another scale, or the
+            // display's changed (M32.4); its new size comes as a resize.
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                let size = window.inner_size();
+                self.session
+                    .set_scale(scale_factor as f32, size.width, size.height);
+                window.request_redraw();
+            }
             WindowEvent::ThemeChanged(theme) => {
                 self.theme = Some(theme);
                 self.read_preferences();
@@ -393,7 +408,8 @@ impl ApplicationHandler<NetworkWake> for Browser {
                 // moves down), so the scroll offset decreases.
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, lines) => -lines * session::LINE_PX,
-                    MouseScrollDelta::PixelDelta(p) => -p.y as f32,
+                    // Device pixels, taken as CSS pixels by the scale.
+                    MouseScrollDelta::PixelDelta(p) => -p.y as f32 / self.session.scale(),
                 };
                 self.session.wheel(dy);
             }

@@ -338,6 +338,9 @@ pub struct Engine {
     boxes_reused: u64,
     /// The last frame's size: what scrolling is clamped to.
     viewport: (u32, u32),
+    /// The display's scale (M32.4): device pixels to a CSS pixel, 1
+    /// unless the shell says otherwise.
+    scale: f32,
     /// The user's preferences that media queries ask about (M20).
     preferences: Preferences,
     /// The medium the shown document is styled for: `screen` unless
@@ -998,6 +1001,7 @@ impl Engine {
             boxes_laid_out: 0,
             boxes_reused: 0,
             viewport: (0, 0),
+            scale: 1.0,
             preferences: Preferences::default(),
             media_type: MediaType::Screen,
             animation_clock: None,
@@ -2512,7 +2516,8 @@ impl Engine {
     /// frame's time on the document's clock. The first frame fires none
     /// of the first two: it sets what the next compares with.
     fn update_the_rendering(&mut self, width: u32, height: u32, now: Duration) {
-        // The window's size is the frame's from now on.
+        // The window's size is the frame's from now on, in CSS pixels.
+        let (width, height) = self.css_size(width, height);
         self.viewport = (width, height);
         let events = std::mem::take(&mut self.pending_events);
         self.focus_fixup();
@@ -4602,8 +4607,43 @@ impl Engine {
             media_type: self.media_type,
             preferences: self.preferences,
             scripting: self.scripting,
+            resolution: self.scale,
             ..Media::screen(viewport.0 as f32, viewport.1 as f32)
         }
+    }
+
+    /// The display's scale (M32.4): how many device pixels a CSS pixel
+    /// takes, the window's scale factor. A frame's size is in device
+    /// pixels; the viewport, layout and every position the engine takes
+    /// or gives are in CSS pixels. The page is drawn under the scale, its
+    /// images and SVG drawn at the pixels they land on; the `resolution`
+    /// media feature and `devicePixelRatio` say it. A value not finite
+    /// or not above 0 changes nothing; one is kept within [1/4, 8].
+    pub fn set_scale_factor(&mut self, scale: f32) {
+        if scale.is_finite() && scale > 0.0 {
+            let scale = scale.clamp(0.25, 8.0);
+            if scale != self.scale {
+                self.scale = scale;
+                self.changed = true;
+            }
+        }
+    }
+
+    /// The display's scale.
+    pub fn scale_factor(&self) -> f32 {
+        self.scale
+    }
+
+    /// The viewport's size in CSS pixels, as the last frame or the shell
+    /// set it.
+    pub fn viewport(&self) -> (u32, u32) {
+        self.viewport
+    }
+
+    /// A frame's size in device pixels as the viewport's in CSS pixels.
+    fn css_size(&self, width: u32, height: u32) -> (u32, u32) {
+        let css = |v: u32| (v as f32 / self.scale).round() as u32;
+        (css(width), css(height))
     }
 
     /// The document cascaded whole for `viewport`, its animations and
@@ -5056,6 +5096,9 @@ impl Engine {
         }
         self.changed = false;
         self.shown.scripts.take_canvases_changed();
+        // Drawn in device pixels, laid out in CSS pixels (M32.4).
+        let (device_width, device_height) = (width, height);
+        let (width, height) = self.css_size(width, height);
         self.viewport = (width, height);
         // The frame's animations (M22.3): those made since the last frame
         // start at its time, and the elements whose animations give
@@ -5120,7 +5163,6 @@ impl Engine {
         self.layout(width as f32);
         let layout = &self.shown.layout.as_ref().expect("just laid out").layout;
         let mut list = paint_fragments_with(&layout.roots, viewport, &offsets, &self.shown.images);
-        self.show_pixels(&mut list.items, width as f32, height as f32);
         let caret = self.caret_items();
         list.items.extend(caret);
         let popup = self.popup_items();
@@ -5141,9 +5183,18 @@ impl Engine {
                 color: SCROLLBAR_THUMB,
             });
         }
+        // The page under the display's scale (M32.4): its images and SVG
+        // drawn at the pixels they land on.
+        paint::scaled(
+            &mut list.items,
+            self.scale,
+            paint::GroupKey::Document(u32::MAX),
+        );
+        self.show_pixels(&mut list.items, device_width as f32, device_height as f32);
         let paint = stage.elapsed();
         let stage = Instant::now();
-        self.backend.rasterize_owned(list, width, height);
+        self.backend
+            .rasterize_owned(list, device_width, device_height);
         let raster = stage.elapsed();
         let total = start.elapsed();
         self.stats = FrameStats {
@@ -6256,6 +6307,64 @@ mod tests {
         assert!(u64::from(w) * u64::from(h) <= svg::MAX_SVG_PIXELS);
         assert_eq!(w, h, "in its ratio");
         assert_eq!(svg_raster_size((10.4, 0.0)), (11, 1));
+    }
+
+    #[test]
+    fn a_page_is_drawn_at_the_displays_scale() {
+        // M32.4: laid out in CSS pixels, drawn in device pixels, its
+        // SVG drawn at the pixels it lands on, its media and
+        // `devicePixelRatio` saying the scale.
+        let mut engine = test_engine();
+        engine.set_scale_factor(2.0);
+        engine.load_document(
+            "<style>body { margin: 0 } div { width: 10px; height: 10px; background: red }\
+             @media (min-resolution: 2dppx) { div { background: blue } }</style>\
+             <div></div><svg id=s width=10 height=10 style='display: block'>\
+             <rect id=r width=5 height=10 fill=lime></rect></svg>",
+        );
+        let frame = engine.frame(40, 60);
+        let at = |x: usize, y: usize| {
+            let i = (y * 40 + x) * 4;
+            [frame[i], frame[i + 1], frame[i + 2]]
+        };
+        assert_eq!(
+            at(19, 19),
+            [0, 0, 255],
+            "the div twice as large, its media at 2dppx"
+        );
+        assert_eq!(at(21, 5), [255, 255, 255]);
+        assert_eq!(at(9, 21), [0, 255, 0], "the svg below it");
+        assert_eq!(at(11, 21), [255, 255, 255]);
+        // Positions are CSS pixels.
+        let r = crate::testing::by_id(&engine, "r");
+        assert_eq!(engine.hit_test(2.0, 12.0), Some(r));
+        assert_eq!(engine.viewport(), (20, 30), "the viewport in CSS pixels");
+        // The svg's drawing has the device's pixels; at another scale it
+        // is drawn again, its styles as they were (no rule reads the
+        // resolution here).
+        engine.load_document(
+            "<body style='margin: 0'><svg id=s width=10 height=10 style='display: block'>\
+             <rect width=5 height=10 fill=lime></rect></svg>",
+        );
+        engine.frame(40, 60);
+        let s = crate::testing::by_id(&engine, "s");
+        let raster = |engine: &Engine| {
+            engine
+                .shown
+                .svgs
+                .get(&s)
+                .and_then(|d| d.drawn.as_ref())
+                .map(|(size, ..)| *size)
+        };
+        assert_eq!(raster(&engine), Some((20, 20)));
+        engine.set_scale_factor(3.0);
+        engine.frame(60, 90);
+        assert_eq!(raster(&engine), Some((30, 30)));
+        // Out of range, or no number: kept within or ignored.
+        engine.set_scale_factor(f32::NAN);
+        assert_eq!(engine.scale_factor(), 3.0);
+        engine.set_scale_factor(100.0);
+        assert_eq!(engine.scale_factor(), 8.0);
     }
 
     #[test]

@@ -420,13 +420,17 @@ impl Toolbar {
         self.changed
     }
 
-    /// Draws the toolbar `width` pixels wide and [`HEIGHT`] high: RGBA8
-    /// pixels, lent until the next frame.
-    pub fn frame(&mut self, width: u32) -> &[u8] {
-        self.width = width;
+    /// Draws the toolbar `width` device pixels wide at the display's
+    /// `scale` (M32.4), [`HEIGHT`] CSS pixels high: RGBA8 pixels,
+    /// [`crate::rows`] of them, lent until the next frame. Its own sizes,
+    /// and the positions it is given, are CSS pixels.
+    pub fn frame(&mut self, width: u32, scale: f32) -> &[u8] {
+        self.width = (width as f32 / scale).round() as u32;
         self.changed = false;
-        let list = self.display_list();
-        self.backend.rasterize(&list, width, HEIGHT)
+        let mut list = self.display_list();
+        paint::scaled(&mut list.items, scale, paint::GroupKey::Document(0));
+        self.backend
+            .rasterize(&list, width, crate::rows(HEIGHT, scale))
     }
 
     /// The display list of the toolbar as it stands.

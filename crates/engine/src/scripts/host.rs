@@ -1207,10 +1207,11 @@ impl DocumentHost {
             }
             Call::Viewport => {
                 let (width, height) = self.window.viewport;
+                // `devicePixelRatio`: the display's scale (M32.4).
                 Ok(Answer::Numbers(vec![
                     f64::from(width),
                     f64::from(height),
-                    1.0,
+                    f64::from(self.window.media.resolution),
                 ]))
             }
             Call::DocumentInfo => {

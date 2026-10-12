@@ -1969,11 +1969,18 @@ impl SoftwareBackend {
             old = None;
         }
         let shape = old.as_ref().map(Layer::shape);
+        // Tiles are drawn at a pixel to a pixel: a scrolled group under a
+        // display's scale (M32.4) is kept whole at its scale instead, or
+        // drawn through when too large to keep, rather than drawn small
+        // and stretched (its scrolling then repaints, recorded).
         let kept = match reason {
-            LayerReason::Scrolled => self.update_tiles(key, reason, old, items, visible, extra),
-            LayerReason::Transformed | LayerReason::WillChange | LayerReason::Canvas => {
-                self.update_whole(key, reason, old, items, composed, extra)
+            LayerReason::Scrolled if raster_scale(composed) == (1.0, 1.0) => {
+                self.update_tiles(key, reason, old, items, visible, extra)
             }
+            LayerReason::Scrolled
+            | LayerReason::Transformed
+            | LayerReason::WillChange
+            | LayerReason::Canvas => self.update_whole(key, reason, old, items, composed, extra),
         };
         match kept {
             Some(layer) => {

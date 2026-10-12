@@ -15,5 +15,11 @@ pub use status::StatusBubble;
 pub use title::window_title;
 pub use toolbar::{Action, Cursor, Escape, HEIGHT, PageState, Part, Toolbar};
 
+/// The device pixels `css` CSS pixels take at the display's `scale`
+/// (M32.4), rounded up: the rows a bar of that height is drawn in.
+pub fn rows(css: u32, scale: f32) -> u32 {
+    (css as f32 * scale).ceil() as u32
+}
+
 #[cfg(test)]
 mod tests;

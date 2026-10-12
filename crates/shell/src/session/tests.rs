@@ -1299,3 +1299,30 @@ fn a_page_signs_in_by_fetch_and_reads_another_origin_by_cors_with_credentials() 
             .all(|r| r.header("Origin") == Some(origin.as_str()))
     );
 }
+
+#[test]
+fn the_window_is_drawn_at_its_scale_and_its_pointer_taken_by_it() {
+    // M32.4: the toolbar and the page at twice the pixels, the
+    // positions the session takes in CSS pixels.
+    let mut window = Window::new(None, Platform::Other);
+    let once = window.frame();
+    window.session.set_scale(2.0, WIDTH, HEIGHT);
+    let twice = window.frame();
+    let w = WIDTH as usize;
+    let edge = ui::HEIGHT as usize - 1;
+    // The toolbar's bottom edge, a row at 1, two rows twice as far down
+    // at 2.
+    assert_eq!(twice[(2 * edge) * w], once[edge * w]);
+    assert_eq!(twice[(2 * edge + 1) * w], once[edge * w]);
+    assert_ne!(twice[edge * w], once[edge * w]);
+    // The field ends short of the toolbar's right edge, in CSS pixels:
+    // the bar's own colour there, as above the buttons.
+    assert_eq!(twice[40 * w + w - 4], once[2 * w + 10]);
+    // The page's viewport is the window's CSS pixels under the toolbar.
+    let (vw, vh) = window.session.engine().viewport();
+    assert_eq!((vw, vh), (WIDTH / 2, HEIGHT / 2 - ui::HEIGHT));
+    // A pointer at device (700, 40) is at CSS (350, 20): over the
+    // address field, where at a pixel to a pixel it would be on the page.
+    window.session.pointer_moved(700.0, 40.0);
+    assert_eq!(window.session.shape(), Shape::Text);
+}

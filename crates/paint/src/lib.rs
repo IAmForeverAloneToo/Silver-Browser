@@ -80,6 +80,25 @@ pub fn canvas_node(id: u64) -> Option<NodeId> {
     NodeId::from_bits(id & !CANVAS_IMAGE)
 }
 
+/// Puts `items` under a uniform `scale` (M32.4: a display's, device
+/// pixels to a CSS pixel): in a group of their own that `key` names,
+/// drawn through, kept as no layer; nothing for a scale of 1.
+pub fn scaled(items: &mut Vec<DisplayItem>, scale: f32, key: GroupKey) {
+    if scale == 1.0 {
+        return;
+    }
+    items.insert(
+        0,
+        DisplayItem::PushGroup {
+            matrix: Matrix::scale(scale, scale, 1.0),
+            opacity: 1.0,
+            key,
+            layer: None,
+        },
+    );
+    items.push(DisplayItem::PopGroup);
+}
+
 /// The bit an outer `<svg>`'s image number has (M32), apart from the
 /// canvases' and gradients' bits: the rest is the element's node.
 pub const SVG_IMAGE: u64 = 1 << 61;
