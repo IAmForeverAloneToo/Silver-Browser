@@ -57,6 +57,37 @@ struct Context {
     /// URL's for a network URL, else an opaque origin of its own, so
     /// that it is same origin with itself and with nothing else.
     origin: Origin,
+    /// For a frame's `about:blank` or `about:srcdoc` document (M33.2),
+    /// what it took from the document that made the frame: the base URL
+    /// its own URL cannot give (HTML's "about base URL"), the URL its
+    /// requests are made from, and whether it is a secure context.
+    fallback_base: Option<Url>,
+    creator_url: Option<Url>,
+    secure: Option<bool>,
+}
+
+impl Context {
+    /// The document's fallback base URL (HTML section 2.4.1): the about
+    /// base URL a frame's document took, or its own URL.
+    fn fallback(&self) -> Option<Url> {
+        self.fallback_base.clone().or_else(|| self.url.clone())
+    }
+}
+
+/// What a frame's document takes from the document that made the frame
+/// (M33.2, `docs/design/hardening.md`): an `about:blank` or
+/// `about:srcdoc` document its origin, its base URL, the URL its
+/// requests are made from and its being a secure context; every local
+/// document, a `data:` URL's too, its Content Security Policy (HTML's
+/// policy container).
+#[derive(Debug, Clone)]
+pub(crate) struct Creator {
+    pub(crate) origin: Origin,
+    pub(crate) url: Option<Url>,
+    pub(crate) base_url: Option<Url>,
+    pub(crate) address_space: AddressSpace,
+    pub(crate) secure: bool,
+    pub(crate) csp: Csp,
 }
 
 /// An element that may own a sheet.
@@ -157,6 +188,9 @@ impl Page {
                 encoding: encoding::UTF_8,
                 address_space: AddressSpace::Public,
                 origin: origin.clone(),
+                fallback_base: None,
+                creator_url: None,
+                secure: None,
             },
             undecodable: None,
             language: None,
@@ -186,6 +220,9 @@ impl Page {
                 encoding,
                 address_space,
                 origin,
+                fallback_base: None,
+                creator_url: None,
+                secure: None,
             },
             undecodable,
             language: None,
@@ -199,6 +236,45 @@ impl Page {
     /// The page, its document under `csp`, its response's policies.
     pub(crate) fn with_csp(mut self, csp: Csp) -> Page {
         self.csp = csp;
+        self
+    }
+
+    /// What the document gives the documents of the frames it makes
+    /// (M33.2).
+    pub(crate) fn creator(&mut self, document: &Document) -> Creator {
+        Creator {
+            origin: self.context.origin.clone(),
+            url: self
+                .context
+                .creator_url
+                .clone()
+                .or_else(|| self.context.url.clone()),
+            base_url: self.base_url(document),
+            address_space: self.context.address_space,
+            secure: self.is_secure_context(),
+            csp: self.csp(document).clone(),
+        }
+    }
+
+    /// The page of a frame's document that `creator` made (M33.2): an
+    /// `about:` document takes its origin, base URL, the URL its
+    /// requests come from and its being a secure context; every one its
+    /// policies.
+    pub(crate) fn inheriting(mut self, creator: &Creator) -> Page {
+        if self
+            .context
+            .url
+            .as_ref()
+            .is_some_and(|url| url.scheme() == "about")
+        {
+            self.context.origin = creator.origin.clone();
+            self.context.address_space = creator.address_space;
+            self.context.fallback_base = creator.base_url.clone();
+            self.context.creator_url = creator.url.clone();
+            self.context.secure = Some(creator.secure);
+        }
+        self.csp = creator.csp.clone();
+        self.metas.clear();
         self
     }
 
@@ -271,10 +347,13 @@ impl Page {
     /// potentially trustworthy, as a document with none, an
     /// `about:blank`, is.
     pub(crate) fn is_secure_context(&self) -> bool {
-        self.context
-            .url
-            .as_ref()
-            .is_none_or(Url::is_potentially_trustworthy)
+        // A frame's `about:` document is as its creator (M33.2).
+        self.context.secure.unwrap_or_else(|| {
+            self.context
+                .url
+                .as_ref()
+                .is_none_or(Url::is_potentially_trustworthy)
+        })
     }
 
     /// The encoding of the page's document.
@@ -306,7 +385,7 @@ impl Page {
         });
         match first_base.and_then(|node| document.attr(node, "href")) {
             Some(href) => frozen_base_url(href, &self.context),
-            None => self.context.url.clone(),
+            None => self.context.fallback(),
         }
     }
 
@@ -321,14 +400,24 @@ impl Page {
     /// `href` parsed against the document's own URL, its fallback base
     /// URL, as a `<base>`'s `href` is read (M27).
     pub(crate) fn resolve_from_document(&self, href: &str) -> Option<Url> {
-        Url::parse_with(href, self.context.url.as_ref(), self.context.encoding).ok()
+        Url::parse_with(
+            href,
+            self.context.fallback().as_ref(),
+            self.context.encoding,
+        )
+        .ok()
     }
 
     /// What a request of the page's is initiated by; none for a page
-    /// with no URL, which fetches nothing.
+    /// with no URL, which fetches nothing. A frame's `about:` document's
+    /// requests are made from its creator's URL (M33.2).
     pub(crate) fn initiator(&self) -> Option<Initiator> {
         Some(Initiator {
-            url: self.context.url.clone()?,
+            url: self
+                .context
+                .creator_url
+                .clone()
+                .or_else(|| self.context.url.clone())?,
             address_space: self.context.address_space,
             origin: self.context.origin.clone(),
         })
@@ -818,7 +907,7 @@ fn is_ascii_whitespace(c: char) -> bool {
 fn scan(document: &Document, context: &Context) -> (Vec<Found>, Option<Url>) {
     let html = document.document_element();
     let mut found = Vec::new();
-    let mut base = context.url.clone();
+    let mut base = context.fallback();
     let mut base_seen = false;
     let mut before_body = true;
     for node in document.subtree(document.root()) {
@@ -880,7 +969,7 @@ fn scan(document: &Document, context: &Context) -> (Vec<Found>, Option<Url>) {
 /// the document's URL, or that URL when it fails to parse or is
 /// `data:` or `javascript:`.
 fn frozen_base_url(href: &str, context: &Context) -> Option<Url> {
-    let fallback = context.url.clone()?;
+    let fallback = context.fallback()?;
     match Url::parse_with(href, Some(&fallback), context.encoding) {
         Ok(url) if !matches!(url.scheme(), "data" | "javascript") => Some(url),
         _ => Some(fallback),

@@ -1143,6 +1143,12 @@ impl Scripts {
         });
     }
 
+    /// Writes `text` to the console at `level`: what the engine says of
+    /// the document (M33.2: an iframe left empty).
+    pub(crate) fn say(&mut self, level: ConsoleLevel, text: String) {
+        self.push(ConsoleEntry { level, text });
+    }
+
     fn push(&mut self, entry: ConsoleEntry) {
         if self.console.len() == MAX_CONSOLE_ENTRIES {
             self.console.pop_front();

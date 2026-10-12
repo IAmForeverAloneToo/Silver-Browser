@@ -1904,7 +1904,9 @@ fn declarations_for<'a>(
     // overrides them.
     let hints = document.tag(element).map_or_else(String::new, |tag| {
         let attr = |name: &str| document.attr(element, name).map(str::to_string);
-        lists::list_hints(tag, attr) + &images::img_hints(tag, attr)
+        lists::list_hints(tag, attr)
+            + &images::img_hints(tag, attr)
+            + &images::frame_hints(tag, attr)
     });
     // SVG's presentation attributes (M32), built as declarations, never
     // as text a value could add another to.

@@ -127,6 +127,8 @@ impl Method {
 pub enum Destination {
     /// A document to show.
     Document,
+    /// A frame's document (M33.2): an `iframe`'s navigation.
+    Iframe,
     /// A stylesheet.
     Style,
     /// An image: a document's icon, for now (M15).
@@ -144,6 +146,7 @@ impl Destination {
     pub fn name(self) -> &'static str {
         match self {
             Destination::Document => "document",
+            Destination::Iframe => "iframe",
             Destination::Style => "style",
             Destination::Image => "image",
             Destination::Script => "script",
@@ -155,7 +158,7 @@ impl Destination {
     /// The `Accept` value Fetch lists for the destination.
     fn accept(self) -> &'static [u8] {
         match self {
-            Destination::Document => {
+            Destination::Document | Destination::Iframe => {
                 b"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
             }
             Destination::Style => b"text/css,*/*;q=0.1",
@@ -296,7 +299,7 @@ impl Request {
             body: None,
             destination,
             mode: match destination {
-                Destination::Document => Mode::Navigate,
+                Destination::Document | Destination::Iframe => Mode::Navigate,
                 Destination::Empty => Mode::Cors,
                 Destination::Worker => Mode::SameOrigin,
                 Destination::Style | Destination::Image | Destination::Script => Mode::NoCors,
@@ -1091,7 +1094,8 @@ fn cookie_context(request: &Request, hop: &Hop) -> cookies::Context {
                 .iter()
                 .all(|url| origin.same_site(&url.origin()))
         }),
-        top_level: request.mode == Mode::Navigate,
+        // A frame's navigation is no top-level one (M33.2).
+        top_level: request.destination == Destination::Document,
         safe_method: matches!(hop.method.as_str(), "GET" | "HEAD" | "OPTIONS" | "TRACE"),
     }
 }

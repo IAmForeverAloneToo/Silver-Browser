@@ -21,6 +21,8 @@ mod fetch_tests;
 #[cfg(test)]
 mod focus_tests;
 #[cfg(test)]
+mod frame_tests;
+#[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]
 mod mixed_tests;
@@ -81,12 +83,16 @@ use encoding::Encoding;
 use net::{AbortHandle, Client, Delivery, NetworkError, Request, Response};
 
 pub(crate) use pool::{JobId, Lost, Pool, Waker};
-pub(crate) use sheets::{Page, is_stylesheet, may_touch_sheets};
+pub(crate) use sheets::{Creator, Page, is_stylesheet, may_touch_sheets};
 
 /// The most fetches in flight at once; further ones wait in the order
 /// they were made (docs/design/net.md, "Threads, not an asynchronous
 /// runtime").
 pub const MAX_FETCH_THREADS: usize = 32;
+
+/// The most threads a frame's engine fetches on (M33.2): a frame is one
+/// of up to `MAX_FRAMES` a tab, each with its own.
+pub const MAX_FRAME_FETCH_THREADS: usize = 6;
 
 /// A page's number: what its fetches' results are matched to.
 pub(crate) type PageId = u64;
@@ -238,6 +244,23 @@ impl Network {
     /// The engine's cookie jar.
     pub(crate) fn cookies(&self) -> Arc<Mutex<net::cookies::Jar>> {
         self.cookies.clone()
+    }
+
+    /// The fetches of a frame's engine (M33.2): threads of its own, at
+    /// most [`MAX_FRAME_FETCH_THREADS`], and this network's client, so
+    /// its cookies and cache.
+    pub(crate) fn for_frame(&mut self) -> Network {
+        let mut network = Network::new();
+        network.pool = Pool::new(MAX_FRAME_FETCH_THREADS);
+        network.client = Some(self.client());
+        network.cookies = self.cookies.clone();
+        network.cache = self.cache.clone();
+        network
+    }
+
+    /// Fetches from now on with `client`, a frame's parent's (M33.2).
+    pub(crate) fn share_client(&mut self, client: Arc<Client>) {
+        self.client = Some(client);
     }
 
     pub(crate) fn set_waker(&self, waker: Waker) {
@@ -506,6 +529,9 @@ pub(crate) struct Parsing {
     /// The document's scripts until it is shown, when they go with it
     /// (M24).
     pub(crate) scripts: crate::scripts::Scripts,
+    /// What a frame's local document takes from its creator (M33.2),
+    /// again when its parse starts over.
+    pub(crate) creator: Option<Creator>,
 }
 
 /// The language the response's `Content-Language` gives its document,

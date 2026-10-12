@@ -133,6 +133,28 @@ pub(super) fn img_hints(tag: &str, attr: impl Fn(&str) -> Option<String>) -> Str
     out
 }
 
+/// The presentational hints of an `iframe` (M33.2, HTML sections 15.4.3
+/// and 15.4.4): its `width` and `height` map to the dimension
+/// properties, with no ratio, and a `frameborder` that parses as the
+/// integer 0, or does not parse, takes its border's widths to 0.
+pub(super) fn frame_hints(tag: &str, attr: impl Fn(&str) -> Option<String>) -> String {
+    if tag != "iframe" {
+        return String::new();
+    }
+    let mut out = String::new();
+    for name in ["width", "height"] {
+        match attr(name).and_then(|value| dom::parse_dimension(&value)) {
+            Some(dom::Dimension::Length(px)) => out.push_str(&format!("{name}: {px}px;")),
+            Some(dom::Dimension::Percentage(p)) => out.push_str(&format!("{name}: {p}%;")),
+            None => {}
+        }
+    }
+    if attr("frameborder").is_some_and(|value| dom::parse_integer(&value).is_none_or(|n| n == 0)) {
+        out.push_str("border-width: 0;");
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::tests::with_bases;
@@ -144,6 +166,29 @@ mod tests {
 
     fn aspect_ratio(css: &str) -> Option<AspectRatio> {
         with_bases(|bases| parse_aspect_ratio(&tokens(css), bases))
+    }
+
+    #[test]
+    fn an_iframes_hints_are_its_size_and_frameborder() {
+        // M33.2: no ratio, and a frameborder of 0 or of no integer takes
+        // the border off.
+        let hints = |attrs: &[(&str, &str)]| {
+            frame_hints("iframe", |name| {
+                attrs
+                    .iter()
+                    .find(|(n, _)| *n == name)
+                    .map(|(_, v)| (*v).to_owned())
+            })
+        };
+        assert_eq!(
+            hints(&[("width", "100"), ("height", "50%")]),
+            "width: 100px;height: 50%;"
+        );
+        assert_eq!(hints(&[("frameborder", "0")]), "border-width: 0;");
+        assert_eq!(hints(&[("frameborder", "no")]), "border-width: 0;");
+        assert_eq!(hints(&[("frameborder", " 1")]), "");
+        assert_eq!(hints(&[]), "");
+        assert_eq!(frame_hints("img", |_| Some("0".to_owned())), "");
     }
 
     #[test]

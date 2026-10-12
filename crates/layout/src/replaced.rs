@@ -103,9 +103,10 @@ fn natural(style: &ComputedStyle, replaced: &Replaced) -> Natural {
             height: None,
             ratio: *ratio,
         },
-        // A gradient has no natural size nor ratio: the default object
-        // size stands in (CSS Images 3 section 4.3).
-        Replaced::Gradient(_) => Natural {
+        // A gradient has no natural size nor ratio, nor has a frame
+        // (M33.2): the default object size stands in (CSS Images 3
+        // section 4.3).
+        Replaced::Gradient(_) | Replaced::Frame { .. } => Natural {
             width: None,
             height: None,
             ratio: None,

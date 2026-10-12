@@ -219,6 +219,10 @@ pub enum Replaced {
     /// has no natural size: its `width` and `height` attributes are its
     /// style's.
     Svg { node: NodeId, ratio: Option<f32> },
+    /// An `iframe` (M33.2, HTML section 4.8.5): the element, whose frame's
+    /// document the engine draws into the content box. It has no natural
+    /// size and no ratio: 300 by 150 unless its style sizes it.
+    Frame { node: NodeId },
 }
 
 /// Whether `node` is an outer `<svg>` (SVG 2 section 5.1.2): an SVG
@@ -1328,6 +1332,11 @@ impl<'a> Styled<'a> {
             if !(img && broken) {
                 return Some(self.content_box(item, style, image));
             }
+        }
+        // An iframe shows its frame's document (M33.2), never its
+        // content, which is no fallback.
+        if self.document.tag(node) == Some("iframe") {
+            return Some(self.replaced_box(item, style, Replaced::Frame { node }));
         }
         // A canvas shows its bitmap with scripts on (HTML section
         // 15.4.1), its fallback content off.
@@ -2663,6 +2672,17 @@ mod tests {
 
     fn pairs(items: &[(&str, usize)]) -> Vec<(String, usize)> {
         items.iter().map(|(k, n)| (k.to_string(), *n)).collect()
+    }
+
+    #[test]
+    fn an_iframe_is_a_frame_box_of_no_children() {
+        // M33.2: its content, which the tokenizer reads as text, is no
+        // fallback, and its box shows its frame's document alone.
+        let root = Element::new("div").push(Element::new("iframe").text("inside"));
+        let tree = built(root, "iframe { display: inline-block }");
+        let frame = &tree[0].children[0].children[0];
+        assert!(matches!(frame.replaced, Some(Replaced::Frame { .. })));
+        assert!(frame.children.is_empty());
     }
 
     #[test]

@@ -909,14 +909,17 @@ impl<'a> Walk<'a, '_> {
     fn content_within(&mut self, f: &'a Fragment, emit: Emit, body: impl FnOnce(&mut Self, Rect)) {
         let rect = self.rect_of(f);
         // An outer `<svg>`'s box holds its drawing alone, which is its
-        // content box (M32): its clip clips nothing, and is left out so
-        // that the drawing may land on whole device pixels.
+        // content box (M32), and a frame's its document (M33.2): its clip
+        // clips nothing, and is left out so that the drawing may land on
+        // whole device pixels.
         let svg_only = || {
             !f.children.is_empty()
                 && f.children.iter().all(|c| {
                     matches!(
                         c.kind,
-                        layout::FragmentKind::Replaced(layout::Replaced::Svg { .. })
+                        layout::FragmentKind::Replaced(
+                            layout::Replaced::Svg { .. } | layout::Replaced::Frame { .. }
+                        )
                     )
                 })
         };

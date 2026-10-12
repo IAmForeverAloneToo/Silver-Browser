@@ -96,6 +96,7 @@ pub mod address;
 pub mod differential;
 mod editing;
 mod focus;
+mod frames;
 mod image_store;
 mod keys;
 mod loader;
@@ -116,6 +117,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
 pub use dom::ElementState;
+pub use frames::{MAX_FRAME_DEPTH, MAX_FRAME_HEAP, MAX_FRAMES};
 pub use image_store::MAX_DECODE_THREADS;
 pub use js::ConsoleLevel;
 pub use keys::{Key, KeyOutcome};
@@ -395,6 +397,11 @@ pub struct Engine {
     /// input was a key rather than the pointer (M26.6).
     window_focused: bool,
     keyboard: bool,
+    /// Where the engine is among its tab's frames (M33.2): the top, or a
+    /// frame's document under another engine's.
+    frame: frames::FrameContext,
+    /// The time of the frame being drawn, for the frames drawn into it.
+    drawing_at: Option<FrameTime>,
 }
 
 /// A document and everything the engine made from it (M15): what the
@@ -503,6 +510,8 @@ struct Shown {
     selecting: Option<NodeId>,
     /// A drop-down's list while it is open (M26.8).
     popup: Option<select::Popup>,
+    /// The frames of its `iframe`s (M33.2), by element.
+    frames: HashMap<NodeId, frames::Frame>,
 }
 
 /// The lifecycle events a document has had (HTML section 8.4.6, "the
@@ -569,6 +578,7 @@ impl Shown {
             autofocus_seen: None,
             selecting: None,
             popup: None,
+            frames: HashMap::new(),
         }
     }
 
@@ -602,6 +612,8 @@ struct Navigation {
     handling: Handling,
     /// When it started: its document's time origin (M26).
     started: scripts::TimeOrigin,
+    /// What a frame's local document takes from its creator (M33.2).
+    creator: Option<loader::Creator>,
 }
 
 /// The document that starts a navigation (M27): its origin, which the
@@ -657,11 +669,17 @@ const SCRIPTS_STOPPED: &str = "Scripts stopped on this page: out of memory";
 const PARSE_SLICE: usize = 4096;
 
 /// The page of a document parsed from `head`'s response with `load`,
-/// its encoding as the load has found it (M24.8).
-fn parsed_page(id: PageId, head: &net::Response, load: &html::Load) -> Page {
+/// its encoding as the load has found it (M24.8), what it takes from a
+/// `creator` for a frame's local document (M33.2).
+fn parsed_page(
+    id: PageId,
+    head: &net::Response,
+    load: &html::Load,
+    creator: Option<&loader::Creator>,
+) -> Page {
     let address_space = head.address_space.unwrap_or(net::AddressSpace::Public);
     let encoding = load.encoding().unwrap_or(encoding::UTF_8);
-    Page::fetched(
+    let page = Page::fetched(
         id,
         head.url().clone(),
         encoding,
@@ -669,7 +687,11 @@ fn parsed_page(id: PageId, head: &net::Response, load: &html::Load) -> Page {
         address_space,
     )
     .with_language(loader::content_language(head))
-    .with_csp(net::csp::Csp::from_headers(&head.headers, head.url()))
+    .with_csp(net::csp::Csp::from_headers(&head.headers, head.url()));
+    match creator {
+        Some(creator) => page.inheriting(creator),
+        None => page,
+    }
 }
 
 /// Whether `document` has a body: HTML's "allows adding render-blocking
@@ -1046,6 +1068,8 @@ impl Engine {
             posting: false,
             window_focused: true,
             keyboard: false,
+            frame: frames::FrameContext::top(),
+            drawing_at: None,
         }
     }
 
@@ -1085,6 +1109,12 @@ impl Engine {
         self.history = History::new(None);
         self.goal = None;
         self.load_state = LoadState::Loaded;
+        // Its `srcdoc` frames (M33.2), which its load waits for; one with
+        // a `src` fetches nothing.
+        self.update_frames();
+        if !self.shown.frames.is_empty() {
+            self.load_state = LoadState::Loading;
+        }
     }
 
     /// Shows `shown` in place of the document shown, which it returns:
@@ -1111,12 +1141,16 @@ impl Engine {
         let aborted = self.network.cancel(left.page.id(), None);
         let decoding = self.decoder.busy(left.page.id());
         self.decoder.forget(left.page.id());
+        // A frame's history keeps no document, and a document is kept
+        // with its frames only when they loaded (M33.2).
         let kept = left.salvageable
             && !aborted
             && !decoding
             && !left.initial
             && left.parsing.is_none()
-            && left.scripts.keepable();
+            && left.scripts.keepable()
+            && !self.frame.is_frame()
+            && left.frames.values().all(|frame| frame.told);
         self.unload(&mut left, kept);
         if kept {
             left.scripts.collect();
@@ -1130,6 +1164,15 @@ impl Engine {
     /// if not; what it writes to its console as it goes reaches the
     /// engine's.
     fn unload(&mut self, left: &mut Shown, kept: bool) {
+        // Its frames' documents first, as HTML unloads a document's
+        // descendants (M33.2); they stop with it.
+        for frame in left.frames.values_mut() {
+            frame.engine.unload_shown(kept);
+            if !kept {
+                frame.engine.stop();
+            }
+            self.departed.extend(frame.engine.take_console());
+        }
         if !self.scripting || left.made {
             return;
         }
@@ -1157,7 +1200,9 @@ impl Engine {
             );
         }
         left.document.take_changes();
-        self.departed.extend(left.scripts.take_console());
+        let lines = left.scripts.take_console();
+        let lines = self.frame_lines(lines, left.page.url());
+        self.departed.extend(lines);
     }
 
     fn new_page_id(&mut self) -> PageId {
@@ -1398,6 +1443,7 @@ impl Engine {
             },
             handling: Handling::Replace,
             started: self.time_origin(),
+            creator: None,
         });
         self.load_state = LoadState::Loading;
         self.sniff_incoming(true);
@@ -2520,6 +2566,7 @@ impl Engine {
         if self.hidden == hidden {
             return;
         }
+        self.for_each_frame(&mut |frame| frame.set_hidden(hidden));
         self.hidden = hidden;
         self.hidden_ran = None;
         let document = self.document_target();
@@ -2618,6 +2665,7 @@ impl Engine {
     /// Gives the engine the clock its tasks, timers and scripts read
     /// (M26): the shell's, which its frames' times come from too.
     pub fn set_clock(&mut self, clock: Clock) {
+        self.for_each_frame(&mut |frame| frame.clock = clock.clone());
         self.clock = clock;
     }
 
@@ -2675,6 +2723,8 @@ impl Engine {
                 (_, Some(_)) => self.run_incoming_timer(),
             }
         }
+        // The frames' tasks (M33.2).
+        self.run_frame_tasks();
         self.keep();
         self.needs_frame()
     }
@@ -2691,7 +2741,12 @@ impl Engine {
         let flush = storage.flush_at(&self.network.cookies());
         let events =
             (!self.storage_events.is_empty() || storage.has_changes()).then_some(Duration::ZERO);
-        [shown, incoming, flush, events].into_iter().flatten().min()
+        drop(storage);
+        let frames = self.frames_next_task_at();
+        [shown, incoming, flush, events, frames]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     /// The engine's storage, locked.
@@ -2991,6 +3046,7 @@ impl Engine {
             incoming: Incoming::Fetching(id),
             handling,
             started: self.time_origin(),
+            creator: None,
         });
         self.load_state = LoadState::Loading;
     }
@@ -3051,6 +3107,7 @@ impl Engine {
     /// M33 and M34 (roadmap risk R2). A document already loaded keeps how
     /// it was parsed; the `scripting` media feature follows at once.
     pub fn set_scripting(&mut self, on: bool) {
+        self.for_each_frame(&mut |frame| frame.set_scripting(on));
         self.scripting = on;
         let media = self.media(self.viewport);
         if self
@@ -3081,6 +3138,11 @@ impl Engine {
         };
         self.network
             .set_client(net::Client::default().with_user_agent(agent));
+        let client = self.network.client();
+        self.for_each_frame(&mut |frame| {
+            frame.compat_user_agent = on;
+            frame.network.share_client(client.clone());
+        });
     }
 
     /// The shown document's console since it was last taken (M24.7):
@@ -3088,7 +3150,10 @@ impl Engine {
     /// a document left wrote as it was left (M26).
     pub fn take_console(&mut self) -> Vec<ConsoleEntry> {
         let mut entries = std::mem::take(&mut self.departed);
-        entries.extend(self.shown.scripts.take_console());
+        let own = self.shown.scripts.take_console();
+        let own = self.frame_lines(own, self.shown.page.url());
+        entries.extend(own);
+        entries.extend(self.take_frame_console());
         entries
     }
 
@@ -3105,7 +3170,7 @@ impl Engine {
     /// showed no page, once: a download this version cannot save. The
     /// shell shows it in the status bubble.
     pub fn take_notice(&mut self) -> Option<String> {
-        self.notice.take()
+        self.notice.take().or_else(|| self.take_frame_notice())
     }
 
     /// Aborts the navigation under way, if there is one.
@@ -3214,6 +3279,7 @@ impl Engine {
     /// fetches were aborted is not kept by the back-forward cache.
     pub fn stop(&mut self) {
         self.cancel_navigation();
+        self.for_each_frame(&mut |frame| frame.stop());
         if let Some(parsing) = &mut self.shown.parsing {
             parsing.load.end();
             self.wake();
@@ -3247,6 +3313,8 @@ impl Engine {
         while let Some(finished) = self.decoder.take() {
             self.image_read(finished);
         }
+        // The frames' (M33.2).
+        self.poll_frames();
         self.needs_frame()
     }
 
@@ -3290,7 +3358,7 @@ impl Engine {
     /// drawn once it is shows it, as one drawn now does not. The waker
     /// wakes the caller when it is done.
     pub fn decoding(&self) -> bool {
-        self.shown.images.decoding()
+        self.shown.images.decoding() || self.frames_busy(Engine::decoding)
     }
 
     /// Fetches the images the shown document's `img` elements show that
@@ -3517,6 +3585,10 @@ impl Engine {
                         snap_svg(groups.last().expect("the viewport's"), [x, y, w, h]);
                         svgs.push(node);
                     }
+                    // A frame's drawing lands on whole pixels too (M33.2).
+                    if paint::frame_node(image.id).is_some() {
+                        snap_svg(groups.last().expect("the viewport's"), [x, y, w, h]);
+                    }
                     (&*image, [*x, *y, *w, *h], [*x, *y, *w, *h])
                 }
                 DisplayItem::Pattern {
@@ -3538,7 +3610,10 @@ impl Engine {
             );
             let size = drawn_size(matrix, tile, image);
             sizes.push(size);
-            if paint::canvas_node(image.id).is_none() && paint::svg_node(image.id).is_none() {
+            if paint::canvas_node(image.id).is_none()
+                && paint::svg_node(image.id).is_none()
+                && paint::frame_node(image.id).is_none()
+            {
                 self.shown.images.drew(image.id, frame, size);
             }
         }
@@ -3560,6 +3635,15 @@ impl Engine {
             // An outer `<svg>`'s drawing (M32), at the size it lands on.
             if let Some(node) = paint::svg_node(image.id) {
                 if let Some((frame, pixels)) = self.svg_pixels(node, place, size) {
+                    image.pixels = Some(pixels);
+                    image.frame = frame;
+                }
+                continue;
+            }
+            // A frame's document (M33.2), drawn at the size it lands on.
+            if let Some(node) = paint::frame_node(image.id) {
+                let time = self.drawing_at;
+                if let Some((frame, pixels)) = self.frame_pixels(node, place, size, time) {
                     image.pixels = Some(pixels);
                     image.frame = frame;
                 }
@@ -3811,7 +3895,11 @@ impl Engine {
             load.end();
         }
         response.body = Vec::new();
-        let page = parsed_page(id, &response, &load);
+        let creator = self
+            .navigation
+            .as_ref()
+            .and_then(|navigation| navigation.creator.clone());
+        let page = parsed_page(id, &response, &load, creator.as_ref());
         if let Some(navigation) = &mut self.navigation {
             let mut scripts = scripts::Scripts::with_limits(self.script_limits);
             scripts.set_time_origin(navigation.started);
@@ -3822,6 +3910,7 @@ impl Engine {
                     load,
                     head: response,
                     scripts,
+                    creator,
                 }),
             };
         }
@@ -3871,7 +3960,12 @@ impl Engine {
             html::Progress::Restarted => {
                 // The sheets found so far go, the document fetch stays.
                 page.rescan(&Document::new(), &mut self.network, None);
-                **page = parsed_page(page.id(), &parsing.head, &parsing.load);
+                **page = parsed_page(
+                    page.id(),
+                    &parsing.head,
+                    &parsing.load,
+                    parsing.creator.as_ref(),
+                );
                 **document = Document::new();
                 parsing.scripts.restart();
                 self.wake();
@@ -3956,7 +4050,12 @@ impl Engine {
             html::Progress::Restarted => {
                 // Shown already: the document starts again in place.
                 let head = parsing.head.clone();
-                let page = parsed_page(self.shown.page.id(), &head, &parsing.load);
+                let page = parsed_page(
+                    self.shown.page.id(),
+                    &head,
+                    &parsing.load,
+                    parsing.creator.as_ref(),
+                );
                 self.shown
                     .page
                     .rescan(&Document::new(), &mut self.network, None);
@@ -4118,6 +4217,7 @@ impl Engine {
             url,
             handling,
             started,
+            creator,
             ..
         } = navigation;
         let response = match result {
@@ -4136,6 +4236,9 @@ impl Engine {
                     Page::fetched(page, at, parsed.encoding, parsed.undecodable, address_space)
                         .with_language(parsed.language)
                         .with_content_type(parsed.content_type);
+                if let Some(creator) = &creator {
+                    incoming = incoming.inheriting(creator);
+                }
                 let media = self.media(self.viewport);
                 incoming.begin(&parsed.document, &mut self.network, &media);
                 self.navigation = Some(Navigation {
@@ -4146,6 +4249,7 @@ impl Engine {
                     },
                     handling,
                     started,
+                    creator,
                 });
                 self.commit_if_ready();
             }
@@ -4301,6 +4405,7 @@ impl Engine {
                 .fetch(self.shown.page.id(), Target::Icon, request);
         }
         self.request_images();
+        self.update_frames();
         if handling == Handling::Reload {
             // The entry's state has the new document; the old one is
             // gone, not kept.
@@ -4324,6 +4429,7 @@ impl Engine {
             && self.shown.scripts.settled()
             && self.shown.page.settled()
             && self.shown.images.settled()
+            && self.frames_settled()
         {
             // The images the styles name are waited for too (M23.3): the
             // styles are computed now, if no frame has, to find them.
@@ -4344,6 +4450,7 @@ impl Engine {
             || self.shown.parsing.is_some()
             || !self.shown.page.settled()
             || !self.shown.images.settled()
+            || !self.frames_settled()
         {
             LoadState::Loading
         } else if let Some(failure) = &self.shown.failure {
@@ -4400,6 +4507,13 @@ impl Engine {
     /// the shell's way to be woken to call [`Engine::poll_network`].
     pub fn set_waker(&mut self, waker: impl Fn() + Send + Sync + 'static) {
         let waker: loader::Waker = std::sync::Arc::new(waker);
+        self.use_waker(waker.clone());
+        self.for_each_frame(&mut |frame| frame.use_waker(waker.clone()));
+    }
+
+    /// Wakes the caller with `waker` from now on: [`Engine::set_waker`]'s,
+    /// a frame's its parent's (M33.2).
+    fn use_waker(&mut self, waker: loader::Waker) {
         self.network.set_waker(waker.clone());
         self.decoder.set_waker(waker.clone());
         self.waker = Some(waker);
@@ -4419,19 +4533,21 @@ impl Engine {
     /// with the client they began with.
     pub fn set_network(&mut self, client: Client) {
         self.network.set_client(client);
+        let client = self.network.client();
+        self.for_each_frame(&mut |frame| frame.network.share_client(client.clone()));
     }
 
     /// Whether the document shown has a worker that has not ended (M31):
     /// a runner on a hand's clock waits for what it sends, which comes in
     /// real time.
     pub fn has_workers(&self) -> bool {
-        self.shown.scripts.has_workers()
+        self.shown.scripts.has_workers() || self.frames_busy(Engine::has_workers)
     }
 
     /// Whether a fetch is in flight (M27): a runner on a hand's clock
     /// waits for the network before it moves the clock on.
     pub fn fetching(&self) -> bool {
-        self.network.in_flight() > 0
+        self.network.in_flight() > 0 || self.frames_busy(Engine::fetching)
     }
 
     /// The current document.
@@ -4501,6 +4617,17 @@ impl Engine {
         if changes.iter().any(may_touch_images) {
             self.request_images();
         }
+        // An `iframe` in, out or navigated (M33.2): one taken out loses
+        // its frame, put back or not.
+        if changes
+            .iter()
+            .any(|change| frames::may_touch_frames(&self.shown.document, change))
+        {
+            for node in frames::removed_frames(&self.shown.document, &changes) {
+                self.drop_frame(node);
+            }
+            self.update_frames();
+        }
         // A change layout reads whatever the styles drops the layout now,
         // between frames, as every change did before M22: only the others
         // wait for the restyle to say what they reach (M22.4). One within
@@ -4550,6 +4677,7 @@ impl Engine {
             || (self.scripting
                 && !self.hidden
                 && (self.shown.scripts.wants_frame() || !self.pending_events.is_empty()))
+            || self.frames_need_frame()
     }
 
     /// When a frame is next wanted, on the clock [`Engine::frame_at`] is
@@ -4563,14 +4691,18 @@ impl Engine {
         if self.needs_frame() {
             return None;
         }
-        let origin = self.shown.timeline_origin?;
-        // An animated image's next frame too (M23.1).
-        let animation = self.shown.animations.borrow().next_change();
-        let at = match (animation, self.shown.next_image_frame) {
-            (Some(a), Some(b)) => a.min(b),
-            (a, b) => a.or(b)?,
-        };
-        Some(origin + Duration::try_from_secs_f64(at).unwrap_or(Duration::MAX))
+        let frames = self.frames_next_frame_at();
+        let own = self.shown.timeline_origin.and_then(|origin| {
+            // An animated image's next frame too (M23.1).
+            let animation = self.shown.animations.borrow().next_change();
+            let at = match (animation, self.shown.next_image_frame) {
+                (Some(a), Some(b)) => a.min(b),
+                (a, b) => a.or(b)?,
+            };
+            Some(origin + Duration::try_from_secs_f64(at).unwrap_or(Duration::MAX))
+        });
+        // The frames' too (M33.2).
+        [own, frames].into_iter().flatten().min()
     }
 
     /// Finishes every transition running, as a script's `finish()` of
@@ -4995,6 +5127,7 @@ impl Engine {
     /// as the page wrote them, which the page's own
     /// `prefers-reduced-motion` query is the means to change.
     pub fn set_preferences(&mut self, preferences: Preferences) {
+        self.for_each_frame(&mut |frame| frame.set_preferences(preferences));
         self.preferences = preferences;
         let media = self.media(self.viewport);
         if self
@@ -5021,6 +5154,7 @@ impl Engine {
     /// wanted when an `@media` list of the document answers otherwise;
     /// [`Engine::print`] is unaffected.
     pub fn set_media_type(&mut self, media_type: MediaType) {
+        self.for_each_frame(&mut |frame| frame.set_media_type(media_type));
         self.media_type = media_type;
         let media = self.media(self.viewport);
         if self
@@ -5081,7 +5215,15 @@ impl Engine {
         let origin = *self.shown.timeline_origin.get_or_insert(time.now);
         let timeline = time.now.saturating_sub(origin).as_secs_f64();
         self.shown.animations.get_mut().set_time(timeline);
-        self.draw(width, height, time.deadline.saturating_sub(time.now))
+        // The frames drawn into it are drawn for its time (M33.2).
+        self.drawing_at = Some(time);
+        let budget = time.deadline.saturating_sub(time.now);
+        let empty = self.draw(width, height, budget).is_empty();
+        self.drawing_at = None;
+        if empty {
+            return &[];
+        }
+        self.backend.last_frame()
     }
 
     /// Renders the current document into an RGBA8 framebuffer for a
@@ -5188,6 +5330,12 @@ impl Engine {
         self.layout(width as f32);
         let layout = &self.shown.layout.as_ref().expect("just laid out").layout;
         let mut list = paint_fragments_with(&layout.roots, viewport, &offsets, &self.shown.images);
+        // A frame's canvas is clear where its document gives it no
+        // background, its parent's showing through (M33.2), as in the
+        // reference browser.
+        if self.frame.is_frame() && paint::canvas_color(&layout.roots).is_none() {
+            list.items.remove(0);
+        }
         let caret = self.caret_items();
         list.items.extend(caret);
         let popup = self.popup_items();

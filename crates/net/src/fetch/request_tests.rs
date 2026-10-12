@@ -951,3 +951,38 @@ fn a_cross_site_post_navigation_carries_no_lax_cookie() {
     .from_document(from_elsewhere, true);
     assert_eq!(read(&post), "");
 }
+
+#[test]
+fn a_frames_navigation_is_no_top_level_one_for_cookies_and_says_iframe() {
+    // A cross-site frame's navigation carries no Lax cookie, where the
+    // top-level navigation from the same page does (M33.2).
+    let server = cookie_server();
+    let client = Client::default();
+    client
+        .fetch(&Request::get(
+            server.url("/set?lax=1"),
+            Destination::Document,
+        ))
+        .unwrap();
+    let elsewhere = url("http://a.localhost/page");
+    let read = |request: &Request| String::from_utf8(client.fetch(request).unwrap().body).unwrap();
+    let frame = Request::get(server.url("/x"), Destination::Iframe).initiated_by(Initiator {
+        url: elsewhere.clone(),
+        address_space: AddressSpace::Loopback,
+        origin: elsewhere.origin(),
+    });
+    assert_eq!(frame.mode, Mode::Navigate);
+    assert!(!frame.user_activated);
+    assert_eq!(read(&frame), "");
+    let sent = server.requests().last().cloned().expect("a request");
+    assert_eq!(sent.header("Sec-Fetch-Dest"), Some("iframe"));
+    assert_eq!(sent.header("Sec-Fetch-Mode"), Some("navigate"));
+    assert_eq!(sent.header("Sec-Fetch-Site"), Some("cross-site"));
+    assert_eq!(
+        sent.header("Accept"),
+        Some("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+    );
+    let top = Request::get(server.url("/x"), Destination::Document)
+        .from_document(elsewhere.origin(), true);
+    assert_eq!(read(&top), "lax=1");
+}

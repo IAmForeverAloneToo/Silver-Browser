@@ -116,6 +116,25 @@ pub fn svg_node(id: u64) -> Option<NodeId> {
     NodeId::from_bits(id & !SVG_IMAGE)
 }
 
+/// The bit a frame's image number has (M33.2), apart from the outer
+/// `<svg>`s', canvases' and gradients' bits: the rest is the `iframe`
+/// element's node.
+pub const FRAME_IMAGE: u64 = 1 << 60;
+
+/// The image number the document of the frame of the `iframe` `node`
+/// is shown by.
+pub fn frame_image(node: NodeId) -> u64 {
+    FRAME_IMAGE | node.to_bits()
+}
+
+/// The `iframe` an image number names, if it names one.
+pub fn frame_node(id: u64) -> Option<NodeId> {
+    if id & (7 << 61) != 0 || id & FRAME_IMAGE == 0 {
+        return None;
+    }
+    NodeId::from_bits(id & !FRAME_IMAGE)
+}
+
 /// Why a group is a layer (M19): the compositing note's policy, which
 /// is a function of the computed style and the matrix alone, so that a
 /// page's layers are the same from frame to frame until its styles
@@ -732,6 +751,16 @@ pub fn paint_fragments_in(
 
 /// [`paint_fragments_in`] with the background images `pictures` knows
 /// (M23.3).
+/// The colour the document gives its canvas (CSS2 section 14.2): the
+/// root's background, else the body's, when it is not transparent;
+/// `None` where the canvas is the white a browser paints under a document
+/// that gives none, which a frame's leaves clear (M33.2).
+pub fn canvas_color(roots: &[Fragment]) -> Option<Rgba8> {
+    canvas_background(roots)
+        .map(|f| to_rgba8(f.style.background_color))
+        .filter(|c| c.a > 0)
+}
+
 pub fn paint_fragments_with(
     roots: &[Fragment],
     viewport: Viewport,
@@ -1141,6 +1170,26 @@ fn push_replaced(
                     h: rect.h,
                     image: ImageRef {
                         id: svg_image(*node),
+                        frame: 0,
+                        orientation: images::Orientation::Normal,
+                        crop: None,
+                        pixels: None,
+                    },
+                    sharp: false,
+                });
+            }
+        }
+        // A frame (M33.2) fills its content box with its document, an
+        // image the engine draws at the size it lands on.
+        Replaced::Frame { node } => {
+            if rect.w > 0.0 && rect.h > 0.0 {
+                items.push(DisplayItem::Image {
+                    x: rect.x,
+                    y: rect.y,
+                    w: rect.w,
+                    h: rect.h,
+                    image: ImageRef {
+                        id: frame_image(*node),
                         frame: 0,
                         orientation: images::Orientation::Normal,
                         crop: None,
@@ -4449,6 +4498,22 @@ mod tests {
         assert_eq!(canvas_node(1), None);
         assert_eq!(canvas_node(42 | 1 << 63), None);
         assert_eq!(canvas_node(CANVAS_IMAGE | 1 << 63), None);
+    }
+
+    #[test]
+    fn a_frames_image_number_names_its_iframe_and_no_other_image() {
+        // M33.2: bit 60, apart from the svg's, the canvas's and the
+        // gradients' bits, and from the engine's images counted from 1.
+        let node = NodeId::from_bits((5 << 32) | 9).expect("an id");
+        let id = frame_image(node);
+        assert_eq!(frame_node(id), Some(node));
+        assert_eq!(svg_node(id), None);
+        assert_eq!(canvas_node(id), None);
+        assert_eq!(frame_node(svg_image(node)), None);
+        assert_eq!(frame_node(canvas_image(node)), None);
+        assert_eq!(frame_node(1), None);
+        assert_eq!(frame_node(FRAME_IMAGE | 1 << 63), None);
+        assert_eq!(frame_node(FRAME_IMAGE | SVG_IMAGE | 5), None);
     }
     use dom::Element;
 
