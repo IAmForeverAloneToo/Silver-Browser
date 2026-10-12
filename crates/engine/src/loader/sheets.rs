@@ -29,6 +29,9 @@ pub(crate) struct Page {
     /// The language the response's `Content-Language` gave the
     /// document, when it named one (M16).
     language: Option<String>,
+    /// The document's type when it is no HTML document (M32: an SVG
+    /// document's `image/svg+xml`).
+    content_type: Option<String>,
     /// The elements that may own a sheet, `<link>` and `<style>`, in
     /// tree order.
     owners: Vec<Owner>,
@@ -157,6 +160,7 @@ impl Page {
             },
             undecodable: None,
             language: None,
+            content_type: None,
             owners: Vec::new(),
             csp: Csp::none(origin),
             metas: Vec::new(),
@@ -185,6 +189,7 @@ impl Page {
             },
             undecodable,
             language: None,
+            content_type: None,
             owners: Vec::new(),
             csp,
             metas: Vec::new(),
@@ -235,6 +240,17 @@ impl Page {
     /// The language the response gave the document, if it named one.
     pub(crate) fn language(&self) -> Option<&str> {
         self.language.as_deref()
+    }
+
+    /// The page, its document of type `content_type` (M32).
+    pub(crate) fn with_content_type(mut self, content_type: Option<String>) -> Page {
+        self.content_type = content_type;
+        self
+    }
+
+    /// The document's type when it is no HTML document.
+    pub(crate) fn content_type(&self) -> Option<&str> {
+        self.content_type.as_deref()
     }
 
     pub(crate) fn id(&self) -> PageId {

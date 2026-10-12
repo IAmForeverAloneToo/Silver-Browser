@@ -1219,10 +1219,13 @@ impl DocumentHost {
                     .and_then(|page| page.url())
                     .map_or_else(|| "about:blank".to_owned(), ToString::to_string);
                 let encoding = page.map_or(encoding::UTF_8, |page| page.encoding());
+                let content_type = page
+                    .and_then(|page| page.content_type())
+                    .unwrap_or("text/html");
                 Ok(Answer::Strings(vec![
                     url,
                     encoding.name().to_owned(),
-                    "text/html".to_owned(),
+                    content_type.to_owned(),
                     "CSS1Compat".to_owned(),
                 ]))
             }

@@ -374,6 +374,8 @@ pub(crate) struct Parsed {
     pub(crate) undecodable: Option<Encoding>,
     /// The language the response's `Content-Language` names, if one.
     pub(crate) language: Option<String>,
+    /// Its type when it is no HTML document (M32).
+    pub(crate) content_type: Option<String>,
 }
 
 /// What a navigation's response becomes (docs/design/navigation.md,
@@ -423,6 +425,24 @@ pub(crate) fn outcome(response: &Response) -> Outcome {
             encoding: decoded.encoding,
             undecodable: decoded.undecodable,
             language: content_language(response),
+            content_type: None,
+        })
+    } else if essence == "image/svg+xml" {
+        // An SVG document (M32): the XML parser's, or the page naming its
+        // first error, as the reference browser shows one.
+        let (document, content_type) = match html::xml::parse_xml(&response.body) {
+            Ok(document) => (document, Some(essence.to_owned())),
+            Err(error) => (
+                crate::pages::xml_error(response.url(), &error.to_string()),
+                None,
+            ),
+        };
+        Outcome::Document(Parsed {
+            document,
+            encoding: encoding::UTF_8,
+            undecodable: None,
+            language: content_language(response),
+            content_type,
         })
     } else if computed.is_xml()
         || computed.is_javascript()
@@ -438,6 +458,7 @@ pub(crate) fn outcome(response: &Response) -> Outcome {
             encoding: decoded_with,
             undecodable: (!encoding.can_decode()).then_some(encoding),
             language: content_language(response),
+            content_type: None,
         })
     } else if computed.is_image() || computed.is_audio_or_video() {
         Outcome::Unshowable(essence.to_owned())

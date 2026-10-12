@@ -1396,6 +1396,66 @@ fn an_svg_image_is_drawn_at_the_size_it_lands_on() {
 }
 
 #[test]
+fn an_svg_document_is_the_xml_parsers_drawn_whole_its_scripts_run() {
+    // M32, the probe of a top-level SVG file: an XML document of its
+    // type, no body, its root as large as the viewport, its scripts
+    // run inside a CDATA section.
+    let server = serve(|path| match path {
+        "/a.svg" => Some(Reply::ok(
+            "image/svg+xml",
+            b"<svg xmlns='http://www.w3.org/2000/svg'>\
+              <rect width='50' height='50' fill='red'/>\
+              <script><![CDATA[ console.log(document.contentType, document.body === null, \
+              document.documentElement.localName, 1 < 2) ]]></script></svg>",
+        )),
+        "/bad.svg" => Some(Reply::ok(
+            "image/svg+xml",
+            b"<svg xmlns='http://www.w3.org/2000/svg'><g></svg>",
+        )),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, server.url("/a.svg"));
+    let lines = tab.run_until(|lines| !lines.is_empty());
+    assert_eq!(lines, ["image/svg+xml true svg true"]);
+    let document = tab.engine.document();
+    let root = document
+        .element_children(document.root())
+        .next()
+        .expect("a root");
+    assert_eq!(document.svg_tag(root), Some("svg"));
+    tab.engine.set_viewport(800, 600);
+    let fragments = tab.engine.fragments(800.0);
+    fn find(fragments: &[layout::Fragment]) -> Option<(f32, f32)> {
+        fragments.iter().find_map(|f| match &f.kind {
+            layout::FragmentKind::Replaced(layout::Replaced::Svg { .. }) => Some((f.w, f.h)),
+            _ => find(&f.children),
+        })
+    }
+    assert_eq!(
+        find(&fragments),
+        Some((800.0, 600.0)),
+        "the viewport's size"
+    );
+    let frame = tab.engine.frame(800, 600);
+    let at = |x: usize, y: usize| {
+        let i = (y * 800 + x) * 4;
+        [frame[i], frame[i + 1], frame[i + 2]]
+    };
+    assert_eq!(at(25, 25), [255, 0, 0]);
+    assert_eq!(at(100, 100), [255, 255, 255]);
+    // Not well formed: the parser's error, its line and column.
+    load_all(&mut tab, server.url("/bad.svg"));
+    let text = crate::testing::text(&tab.engine);
+    assert!(
+        text.contains("This page contains the following errors:"),
+        "{text}"
+    );
+    assert!(text.contains("error on line 1 at column"), "{text}");
+}
+
+#[test]
 fn what_is_no_image_is_broken() {
     use crate::image_store::ImageState;
     let server = serve(|path| match path {

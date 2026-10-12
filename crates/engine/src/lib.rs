@@ -4104,7 +4104,8 @@ impl Engine {
                 let address_space = response.address_space.unwrap_or(net::AddressSpace::Public);
                 let mut incoming =
                     Page::fetched(page, at, parsed.encoding, parsed.undecodable, address_space)
-                        .with_language(parsed.language);
+                        .with_language(parsed.language)
+                        .with_content_type(parsed.content_type);
                 let media = self.media(self.viewport);
                 incoming.begin(&parsed.document, &mut self.network, &media);
                 self.navigation = Some(Navigation {
@@ -4188,6 +4189,39 @@ impl Engine {
         };
         let url = page.url().cloned();
         self.commit(Shown::new(*document, *page), url, handling);
+        // An SVG document's scripts (M32), which no HTML parser met: each
+        // prepared in tree order, as if its parser had just closed it.
+        if self.scripting && self.shown.page.content_type() == Some("image/svg+xml") {
+            self.prepare_parsed_scripts();
+        }
+    }
+
+    /// Prepares each script of the shown document in tree order, then
+    /// runs what is ready (M32: an SVG document's, parsed whole). An
+    /// inline one runs at once; one with a `src` when it comes, not in
+    /// order with the rest: recorded.
+    fn prepare_parsed_scripts(&mut self) {
+        let document = &self.shown.document;
+        let elements: Vec<NodeId> = document
+            .subtree(document.root())
+            .filter(|&node| scripts::is_script(document, node))
+            .collect();
+        let window = self.window_env();
+        let ready = self.ready_state();
+        for element in elements {
+            let shown = &mut self.shown;
+            let mut lent = scripts::Lent {
+                document: &mut shown.document,
+                page: &mut shown.page,
+                parser: None,
+                network: &mut self.network,
+                ready,
+                window: window.clone(),
+            };
+            shown.scripts.prepare(&mut lent, element, 1);
+            self.scripts_ran();
+        }
+        self.run_scripts();
     }
 
     /// Shows a navigation's document, `shown`, at `url`, and puts it in

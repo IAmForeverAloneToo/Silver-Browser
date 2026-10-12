@@ -178,6 +178,17 @@ pub(crate) fn status(url: &Url, status: u16, message: &[u8]) -> Document {
     )
 }
 
+/// The page shown, under `url`, for an XML document that is not well
+/// formed (M32): the parser's first error, in the reference browser's
+/// words.
+pub(crate) fn xml_error(url: &Url, error: &str) -> Document {
+    page(
+        &place(url),
+        "This page contains the following errors:",
+        vec![paragraph("detail", error.to_owned())],
+    )
+}
+
 /// The page shown, under `url`, for a response of a type this version
 /// cannot show yet: an image, audio or video.
 pub(crate) fn unshowable(url: &Url, essence: &str) -> Document {
