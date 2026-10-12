@@ -10,7 +10,7 @@
 # the profile, and the HTTP cache; and for WebAssembly modules, valid
 # ones made by wasm-smith and any bytes besides; and for the 2D canvas
 # context alone; and for a message's serialized form, made again in a
-# realm.
+# realm; and for the XML parser and SVG, read, drawn, hit and asked (M32).
 # Not a workspace member: libfuzzer needs nightly, and the normal build
 # must not.
 # `cargo +nightly fuzz run <target>` from the repository root; CI runs
@@ -46,6 +46,7 @@ paint = { path = "../crates/paint" }
 profile = { path = "../crates/profile" }
 render = { path = "../crates/render", default-features = false }
 style = { path = "../crates/style" }
+svg = { path = "../crates/svg" }
 text = { path = "../crates/text" }
 
 # The fuzz build checks overflow everywhere; not in tiny-skia, whose
@@ -58,6 +59,20 @@ overflow-checks = false
 [[bin]]
 name = "clone"
 path = "fuzz_targets/clone.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "xml_parse"
+path = "fuzz_targets/xml_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "svg"
+path = "fuzz_targets/svg.rs"
 test = false
 doc = false
 bench = false

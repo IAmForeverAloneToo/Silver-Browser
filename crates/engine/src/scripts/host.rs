@@ -213,6 +213,11 @@ pub(crate) struct DocumentHost {
     window: WindowEnv,
     /// The styles a run's `getComputedStyle` computed, kept for the run.
     computed: Option<ComputedStyles>,
+    /// The tree the last SVG geometry question was answered from (M32):
+    /// its outer `<svg>`, the document's version it was built at, kept
+    /// for the run, so that a script asking of many elements builds it
+    /// once.
+    svg_questions: Option<(NodeId, u64, Arc<svg::Tree>)>,
     /// The document's timers (M26).
     pub(crate) timers: Timers,
     /// The timer nesting level of the task the run is (HTML section
@@ -1989,6 +1994,7 @@ impl DocumentHost {
         self.too_deep = false;
         self.window = std::mem::take(&mut lent.window);
         self.computed = None;
+        self.svg_questions = None;
         self.nesting = how.nesting;
         self.frames = vec![Frame {
             element: how.element,
@@ -2009,6 +2015,7 @@ impl DocumentHost {
         self.frames.clear();
         self.now.clear();
         self.computed = None;
+        self.svg_questions = None;
         std::mem::take(&mut self.outputs)
     }
 
@@ -2406,9 +2413,19 @@ impl DocumentHost {
             recascade: Some(&recascade),
             fonts: self.window.fonts.as_ref(),
         };
-        let answer = svg::query(context, node, question);
-        self.work += self.document.len() as u64 / 16 + 1;
-        answer
+        let outer = svg::outer_svg(context, node)?;
+        let version = self.document.version();
+        let tree = match &self.svg_questions {
+            Some((svg, built, tree)) if *svg == outer && *built == version => Arc::clone(tree),
+            _ => {
+                let tree = Arc::new(svg::query_tree(context, outer)?);
+                self.work += self.document.len() as u64 / 16;
+                self.svg_questions = Some((outer, version, Arc::clone(&tree)));
+                tree
+            }
+        };
+        self.work += 1;
+        svg::query_in(context, &tree, node, question)
     }
 
     /// The document's styles as they stand, for `getComputedStyle`

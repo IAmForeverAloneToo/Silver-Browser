@@ -7,6 +7,7 @@
 //! bidirectional text are G87's.
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use canvas::{Matrix, Path};
 use dom::NodeId;
@@ -14,7 +15,7 @@ use style::computed::{ComputedStyle, Display, DominantBaseline, TextAnchor, Whit
 use text::FontCollection;
 
 use crate::syntax::{Axis, Viewport, parse_lengths};
-use crate::tree::Builder;
+use crate::tree::{Builder, Glyphs, Outline};
 
 /// One run of a text's characters laid out: an element's, shaped
 /// together, its glyphs' outlines in `path` in the text's user units.
@@ -174,9 +175,8 @@ impl<'a> Builder<'a> {
                 };
             let x = run.x + by;
             let mut path = Path::new();
-            for (script, glyph) in fonts.shape(&run.text, size) {
-                let font = fonts.font_for(script).glyph_font();
-                let Some(curves) = text::glyph_outline(font, glyph.glyph_id, size) else {
+            for &(script, glyph) in self.shaped(fonts, &run.text, size).iter() {
+                let Some(curves) = self.outline(fonts, script, glyph.glyph_id, size) else {
                     continue;
                 };
                 let at = Matrix::new(
@@ -197,6 +197,35 @@ impl<'a> Builder<'a> {
             });
         }
         Some(out)
+    }
+
+    /// `text`'s glyphs at `size`, shaped once.
+    fn shaped(&mut self, fonts: &FontCollection, text: &str, size: f32) -> Glyphs {
+        let key = (text.to_owned(), size.to_bits());
+        if let Some(glyphs) = self.glyphs.get(&key) {
+            return Arc::clone(glyphs);
+        }
+        let glyphs: Glyphs = fonts.shape(text, size).into();
+        self.glyphs.insert(key, Arc::clone(&glyphs));
+        glyphs
+    }
+
+    /// The outline of the glyph `id` of `script`'s font at `size`, made
+    /// once; `None` for one with none.
+    fn outline(
+        &mut self,
+        fonts: &FontCollection,
+        script: text::Script,
+        id: u16,
+        size: f32,
+    ) -> Outline {
+        self.outlines
+            .entry((script, id, size.to_bits()))
+            .or_insert_with(|| {
+                let font = fonts.font_for(script).glyph_font();
+                text::glyph_outline(font, id, size).map(Arc::from)
+            })
+            .clone()
     }
 
     /// The characters of `node` and of the `tspan`s and `a`s in it, each

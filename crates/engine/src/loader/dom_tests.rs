@@ -1522,6 +1522,24 @@ fn svgs_geometry_answers_scripts_as_the_reference_browser_does() {
 }
 
 #[test]
+fn svgs_geometry_is_asked_again_after_a_change_and_of_another_svg() {
+    // M32: the tree a question is answered from is kept while nothing
+    // changes; a change, or an element of another svg, asks again.
+    let (_tab, console) = scripted(
+        "<svg><rect id=r width=10 height=5></rect><text id=t>ab</text></svg>\
+         <svg><g transform='translate(7 0)'><rect id=s x=2 width=4 height=3></rect></g></svg>\
+         <script>var r = document.getElementById('r'); \
+         var a = r.getBBox().width; var t = document.getElementById('t'); \
+         var l = t.getComputedTextLength(); r.setAttribute('width', '30'); \
+         t.textContent = 'abab'; \
+         console.log(a, r.getBBox().width, t.getComputedTextLength() > l, \
+         document.getElementById('s').getCTM().e, r.getCTM().e)</script>",
+        true,
+    );
+    assert_eq!(console, ["10 30 true 7 0"]);
+}
+
+#[test]
 fn svgs_properties_reach_scripts_through_computed_styles_and_style() {
     // M32: SVG's properties are the cascade's, presentation attributes
     // among its declarations, and CSSOM's.

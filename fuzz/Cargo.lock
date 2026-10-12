@@ -215,6 +215,7 @@ dependencies = [
  "profile",
  "render",
  "style",
+ "svg",
  "text",
 ]
 
@@ -524,6 +525,7 @@ dependencies = [
  "dom",
  "images",
  "style",
+ "svg",
  "text",
  "unicode-properties",
 ]
@@ -940,6 +942,7 @@ dependencies = [
  "profile",
  "render",
  "style",
+ "svg",
  "text",
  "wasm-smith",
 ]
@@ -1006,6 +1009,16 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+
+[[package]]
+name = "svg"
+version = "0.0.1"
+dependencies = [
+ "canvas",
+ "dom",
+ "style",
+ "text",
+]
 
 [[package]]
 name = "syn"

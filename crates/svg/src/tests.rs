@@ -809,6 +809,38 @@ fn spacing_and_baselines_move_the_glyphs() {
 }
 
 #[test]
+fn glyphs_shaped_once_a_tree_keep_their_size_and_place() {
+    // A text's characters set apart are shaped and outlined once a
+    // character and size (M32's fuzzing): the same one at another size
+    // is another outline, at another place the same one moved.
+    let fonts = fonts();
+    let tree = tree_with(
+        "<svg><text y=40 font-size=10>Hi<tspan font-size=40>Hi</tspan>\
+         <tspan letter-spacing=1>HH</tspan></text></svg>",
+        200.0,
+        100.0,
+        Some(&fonts),
+    );
+    fn outlines(items: &[Item], out: &mut Vec<[f64; 4]>) {
+        for item in items {
+            match item {
+                Item::Group(g) => outlines(&g.children, out),
+                Item::Shape(s) => out.extend(s.path.bounds()),
+            }
+        }
+    }
+    let mut got = Vec::new();
+    outlines(&tree.root.children, &mut got);
+    // "Hi" at 10 and at 40, then two "H"s at 10 a pixel apart.
+    assert_eq!(got.len(), 4, "{got:?}");
+    assert!(got[1][2] > 3.5 * got[0][2], "{got:?}");
+    assert!(got[0][2] > got[2][2], "Hi is wider than H: {got:?}");
+    assert!(close(got[2][2], got[3][2]), "{got:?}");
+    let advance = f64::from(fonts.measure("H", 10.0)) + 1.0;
+    assert!(close(got[3][0], got[2][0] + advance), "{got:?}");
+}
+
+#[test]
 fn text_is_filled_and_stroked_as_a_shape_is() {
     let fonts = fonts();
     let tree = tree_with(

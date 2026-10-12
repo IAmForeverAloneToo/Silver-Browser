@@ -43,6 +43,13 @@
 //! `MessageChannel`, the answers changing the document as they come
 //! (from the worker's thread: whenever they do), and `terminate` and
 //! `close`.
+//!
+//! M32's: SVG in the pages and the markup (a `<use>` of its own ancestor
+//! among it), elements of SVG's made with `createElementNS`, its
+//! presentation attributes set and removed, and the geometry
+//! scripts ask of it (`getBBox()`, `getCTM()`, `isPointInFill()`,
+//! `getTotalLength()`), the frame drawing each outer `<svg>` as a fresh
+//! engine does.
 
 #![no_main]
 
@@ -97,6 +104,56 @@ const TAGS: &[&str] = &[
     "style", "script", "template", "noscript", "select", "option", "h1", "svg", "x-y", "input",
     "textarea", "button", "form", "label", "fieldset",
 ];
+// SVG's (M32): its elements, its presentation and geometry attributes,
+// and values they take or refuse.
+const SVG_TAGS: &[&str] = &[
+    "svg",
+    "g",
+    "rect",
+    "circle",
+    "path",
+    "text",
+    "tspan",
+    "use",
+    "linearGradient",
+    "stop",
+    "clipPath",
+];
+const SVG_ATTRIBUTES: &[&str] = &[
+    "viewBox",
+    "width",
+    "height",
+    "x",
+    "r",
+    "d",
+    "fill",
+    "stroke",
+    "stroke-width",
+    "transform",
+    "opacity",
+    "href",
+    "clip-path",
+    "offset",
+    "stop-color",
+    "points",
+];
+const SVG_VALUES: &[&str] = &[
+    "0 0 10 10",
+    "5",
+    "50%",
+    "-1",
+    "red",
+    "url(#c) blue",
+    "none",
+    "M0 0 L5 5 Z",
+    "rotate(45 2 2)",
+    "scale(2) foo",
+    "0.5",
+    "#c",
+    "url(#k)",
+    "currentColor",
+    "1e9",
+];
 const ATTRIBUTES: &[&str] = &[
     "id",
     "class",
@@ -150,6 +207,10 @@ const VALUES: &[&str] = &[
     "[a-z]+",
 ];
 const MARKUP: &[&str] = &[
+    "<svg viewBox='0 0 10 10' width=20><rect width=5 height=5 fill=red></rect>\
+     <circle id=c cx=5 cy=5 r=3 stroke=blue></circle><text x=1 y=8>t</text>\
+     <use href='#c' x=2></use></svg>",
+    "<svg><g id=u><use href='#u'></use><path id=p d='M0 0 H9'></path></g></svg>",
     "<p>p</p>",
     "<table><tr><td>1</td></tr></table>",
     "<b><i>x</b></i>",
@@ -430,7 +491,7 @@ fn body(input: &mut Input, nested: bool) -> String {
 /// One call, read from `input`, as a statement; `nested` in a
 /// listener's or a callback's body.
 fn call(input: &mut Input, nested: bool) -> String {
-    let op = input.byte() % 72;
+    let op = input.byte() % 75;
     let a = input.node();
     match op {
         0 => format!("p(document.createElement({}))", input.pick(TAGS)),
@@ -808,6 +869,24 @@ fn call(input: &mut Input, nested: bool) -> String {
             input.pick(MESSAGES),
             input.byte() % 2 == 0,
             input.pick(MESSAGES)
+        ),
+        72 => format!(
+            "p(document.createElementNS('http://www.w3.org/2000/svg', {}))",
+            input.pick(SVG_TAGS)
+        ),
+        73 => {
+            let name = input.pick(SVG_ATTRIBUTES);
+            if input.byte() % 4 == 0 {
+                format!("{a}.removeAttribute({name})")
+            } else {
+                format!("{a}.setAttribute({name}, {})", input.text(SVG_VALUES))
+            }
+        }
+        74 => format!(
+            "if ({a}.getBBox) {{ var b = {a}.getBBox(); {a}.dataset && ({a}.dataset.b = \
+             [b.x, b.width, {a}.getCTM() && {a}.getCTM().e].join()); }} \
+             if ({a}.getTotalLength) {{ {a}.isPointInFill({{x: 1, y: 1}}); \
+             {a}.isPointInStroke(new DOMPoint(2, 2)); {a}.getPointAtLength({a}.getTotalLength() / 2); }}"
         ),
         _ => {
             let property = ["disabled", "required", "readOnly", "multiple", "noValidate"]

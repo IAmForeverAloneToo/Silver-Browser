@@ -12,7 +12,7 @@ use dom::NodeId;
 use style::computed::Size;
 
 use crate::syntax::Viewport;
-use crate::tree::{Context, Group, Item, build_queries, geometry, item_bounds};
+use crate::tree::{Context, Group, Item, Tree, build_queries, geometry, item_bounds};
 
 /// A question about an element's geometry.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -53,18 +53,38 @@ pub fn outer_svg(context: Context<'_>, node: NodeId) -> Option<NodeId> {
     None
 }
 
-/// The answer to `query` about `node`: `None` when it is drawn in no
-/// outer `<svg>`, or draws nothing that answers (an element under
-/// `display: none`, a path of no point).
-pub fn query(context: Context<'_>, node: NodeId, query: Query) -> Option<Vec<f64>> {
-    let svg = outer_svg(context, node)?;
+/// The size the outer `<svg>` `svg` is asked at: its style's, else 300
+/// by 150.
+fn asked_size(context: Context<'_>, svg: NodeId) -> Option<(f64, f64)> {
     let style = context.styles.get(svg)?;
     let side = |size: &Size, default: f64| match size {
         Size::Px(px) => f64::from(*px),
         _ => default,
     };
-    let (width, height) = (side(&style.width, 300.0), side(&style.height, 150.0));
-    let tree = build_queries(context, svg, width, height);
+    Some((side(&style.width, 300.0), side(&style.height, 150.0)))
+}
+
+/// The tree the questions about the elements drawn in the outer `<svg>`
+/// `svg` are answered from (a caller asking many keeps it while nothing
+/// changes): `None` for one with no style.
+pub fn query_tree(context: Context<'_>, svg: NodeId) -> Option<Tree> {
+    let (width, height) = asked_size(context, svg)?;
+    Some(build_queries(context, svg, width, height))
+}
+
+/// The answer to `query` about `node`: `None` when it is drawn in no
+/// outer `<svg>`, or draws nothing that answers (an element under
+/// `display: none`, a path of no point).
+pub fn query(context: Context<'_>, node: NodeId, query: Query) -> Option<Vec<f64>> {
+    let tree = query_tree(context, outer_svg(context, node)?)?;
+    query_in(context, &tree, node, query)
+}
+
+/// [`query`] answered from `tree`, the [`query_tree`] of `node`'s outer
+/// `<svg>`.
+pub fn query_in(context: Context<'_>, tree: &Tree, node: NodeId, query: Query) -> Option<Vec<f64>> {
+    let svg = tree.root.node?;
+    let (width, height) = (tree.width, tree.height);
     if node == svg {
         return match query {
             Query::BBox => {

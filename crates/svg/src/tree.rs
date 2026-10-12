@@ -229,6 +229,8 @@ fn build_with(
         host: None,
         depth: 0,
         stops: HashMap::new(),
+        glyphs: HashMap::new(),
+        outlines: HashMap::new(),
     };
     let mut root = Group {
         node: Some(svg),
@@ -298,7 +300,19 @@ pub(crate) struct Builder<'a> {
     depth: usize,
     /// Each gradient's stops, once read.
     stops: HashMap<NodeId, Arc<[(f64, Rgba)]>>,
+    /// Each run's glyphs by its text and size, and each glyph's outline
+    /// by its font, id and size, once made: a text whose characters are
+    /// set apart (spaced, placed) is shaped once a character it has,
+    /// not once a character it shows.
+    pub(crate) glyphs: HashMap<(String, u32), Glyphs>,
+    pub(crate) outlines: HashMap<(text::Script, u16, u32), Outline>,
 }
+
+/// A run's glyphs as shaped, each with the script whose font made it.
+pub(crate) type Glyphs = Arc<[(text::Script, text::ShapedGlyph)]>;
+
+/// A glyph's outline; `None` for a glyph with none.
+pub(crate) type Outline = Option<Arc<[text::Curve]>>;
 
 impl<'a> Builder<'a> {
     /// The element a fragment reference (`#id`) names in the document.

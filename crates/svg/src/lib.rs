@@ -19,7 +19,7 @@ mod tree;
 mod tests;
 
 pub use draw::draw;
-pub use query::{Query, outer_svg, query};
+pub use query::{Query, outer_svg, query, query_in, query_tree};
 pub use syntax::{
     Align, AspectRatio, Axis, Length, Unit, ViewBox, Viewport, parse_length, parse_number,
     parse_numbers, parse_points, parse_preserve_aspect_ratio, parse_view_box, view_box_matrix,
