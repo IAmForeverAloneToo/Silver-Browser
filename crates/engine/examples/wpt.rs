@@ -897,7 +897,8 @@ fn element(
     id: NodeId,
     page: &mut Page,
 ) -> Result<(), String> {
-    let tag = document.tag(id).unwrap_or("").to_ascii_lowercase();
+    // Any namespace's: an `<svg>` is SVG's, a `<math>` MathML's.
+    let tag = document.local_name(id).unwrap_or("").to_ascii_lowercase();
     if NO_BOX.contains(&tag.as_str()) {
         return Err(format!("element <{tag}>"));
     }

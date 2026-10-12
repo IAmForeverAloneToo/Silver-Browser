@@ -53,15 +53,24 @@
 //! caller decoding the bytes acts on (HTML section 13.2.3.4, see
 //! [`crate::parse_document_from_bytes`]).
 //!
+//! Foreign content is taken as section 13.2.6.5 writes it (M32,
+//! `docs/design/svg.md`): an `<svg>` or `<math>` start tag inserts an
+//! element of its namespace, and what follows is inserted in the
+//! namespace of the innermost open element, SVG's names and attributes
+//! given back their case (`linearGradient`, `viewBox`), a self-closing
+//! tag closing its element, until a breakout tag (`<p>`, `<div>`, ...)
+//! closes the foreign elements; the HTML integration points
+//! (`foreignObject`, `desc` and `title` in SVG, an `annotation-xml` of
+//! HTML in MathML) and MathML's text integration points take HTML
+//! within them. CDATA sections are read in foreign content.
+//!
 //! What the full tree construction algorithm has and this does not:
 //! the table insertion modes (a table's cells are not wrapped in a
 //! `tbody`, a stray `<td>` outside a table is an ordinary element), the
 //! active formatting elements list (misnested `<b><i></b></i>` is not
-//! reconstructed), foster parenting, "in head noscript", and foreign
-//! content beyond a self-closing tag inside `<svg>` or `<math>` being
-//! honoured (G44).
+//! reconstructed), foster parenting, and "in head noscript" (G44).
 
-use dom::{Document, NodeId};
+use dom::{Document, Namespace, NodeId};
 use encoding::Encoding;
 
 use crate::encoding_sniffing::extract_from_meta_content;
@@ -159,12 +168,50 @@ enum Phase {
     InBody,
 }
 
-/// An element on the stack of open elements: its node, and its tag,
-/// kept to scan the stack without the document.
+/// An element on the stack of open elements: its node, its tag and
+/// namespace, kept to scan the stack without the document, and whether
+/// it is one of foreign content's integration points (section
+/// 13.2.6.5).
 #[derive(Debug, Clone)]
 struct Open {
     id: NodeId,
     tag: String,
+    ns: Namespace,
+    /// An HTML integration point: HTML is parsed within it.
+    html_point: bool,
+    /// A MathML text integration point: its text and most start tags
+    /// are HTML's.
+    text_point: bool,
+}
+
+impl Open {
+    /// An HTML element on the stack.
+    fn html(id: NodeId, tag: impl Into<String>) -> Open {
+        Open {
+            id,
+            tag: tag.into(),
+            ns: Namespace::Html,
+            html_point: false,
+            text_point: false,
+        }
+    }
+
+    /// Whether it ends a scope search as the spec's "has an element in
+    /// scope" lists do for foreign elements: MathML's text integration
+    /// points and `annotation-xml`, SVG's `foreignObject`, `desc` and
+    /// `title`.
+    fn bounds_scope(&self) -> bool {
+        match self.ns {
+            Namespace::MathMl => {
+                matches!(
+                    self.tag.as_str(),
+                    "mi" | "mo" | "mn" | "ms" | "mtext" | "annotation-xml"
+                )
+            }
+            Namespace::Svg => matches!(self.tag.as_str(), "foreignObject" | "desc" | "title"),
+            _ => false,
+        }
+    }
 }
 
 /// Builds a document's tree from a token stream.
@@ -215,19 +262,29 @@ impl TreeBuilder {
     /// children of `container`, a detached element standing for the
     /// fragment parser's root `html` element: in the body, or, for the
     /// context `html`, before the head, so that the head and body are
-    /// made as a document's are. At most `max_depth` elements, the
-    /// container among them, are open at once.
+    /// made as a document's are. A foreign context (an SVG or MathML
+    /// element of local name `context`, of namespace `ns`) stands in as
+    /// the adjusted current node, so that its fragment is foreign
+    /// content. At most `max_depth` elements, the container among them,
+    /// are open at once.
     pub fn fragment(
         container: NodeId,
         context: &str,
+        ns: &Namespace,
         scripting: bool,
         max_depth: usize,
     ) -> TreeBuilder {
+        let root = if *ns == Namespace::Html {
+            Open::html(container, "html")
+        } else {
+            let mut open = Open::html(container, context);
+            open.ns = ns.clone();
+            open.html_point = integration_point(ns, context, &[]);
+            open.text_point = text_integration_point(ns, context);
+            open
+        };
         TreeBuilder {
-            open: vec![Open {
-                id: container,
-                tag: "html".to_owned(),
-            }],
+            open: vec![root],
             phase: if context == "html" {
                 Phase::BeforeHead
             } else {
@@ -256,6 +313,20 @@ impl TreeBuilder {
     /// the state the tokenizer is to read what follows in, when the
     /// token opened an element whose content is text.
     pub fn process(
+        &mut self,
+        document: &mut Document,
+        token: Token,
+        line: u32,
+    ) -> Option<TextState> {
+        if self.foreign_rules_apply(&token) {
+            self.skip_leading_newline = false;
+            return self.foreign_token(document, token, line);
+        }
+        self.html_token(document, token, line)
+    }
+
+    /// A token by the rules for HTML content.
+    fn html_token(
         &mut self,
         document: &mut Document,
         token: Token,
@@ -297,28 +368,230 @@ impl TreeBuilder {
                 }
                 return state;
             }
-            Token::EndTag(name) => match name.as_str() {
-                // The skeleton stays open to the end: content after
-                // `</body>` or `</html>` is still body content.
-                "html" | "body" => {}
-                "head" => {
-                    if self.phase == Phase::InHead {
-                        self.close_through("head", &[]);
-                        self.phase = Phase::AfterHead;
-                    }
+            Token::EndTag(name) => self.end_tag(document, &name),
+        }
+        None
+    }
+
+    /// An end tag in HTML content; `document` takes the element an
+    /// unmatched `</p>` or a `</br>` makes ("in body").
+    fn end_tag(&mut self, document: &mut Document, name: &str) {
+        match name {
+            // The skeleton stays open to the end: content after
+            // `</body>` or `</html>` is still body content.
+            "html" | "body" => {}
+            "head" => {
+                if self.phase == Phase::InHead {
+                    self.close_through("head", &[]);
+                    self.phase = Phase::AfterHead;
                 }
-                // A script's end tag: the parser stops after it.
-                "script" if self.current_is(&["script"]) && !self.in_foreign_content() => {
+            }
+            // A script's end tag: the parser stops after it.
+            "script" if self.current_is(&["script"]) => {
+                if let Some(open) = self.open.pop() {
+                    self.script = Some((open.id, self.script_line));
+                }
+            }
+            // A `</p>` with no `p` open makes an empty one, and `</br>`
+            // a `br` ("in body").
+            "p" if self.phase == Phase::InBody
+                && self.rposition_before(&["p"], &P_SCOPE_STOPS).is_none() =>
+            {
+                self.insert(document, "p", Vec::new());
+            }
+            "br" if self.phase == Phase::InBody => {
+                self.insert(document, "br", Vec::new());
+            }
+            // Unmatched end tags are dropped (recovery); a matched one
+            // closes everything opened after its element too.
+            _ => self.close_through(name, &[]),
+        }
+    }
+
+    /// Whether `token` is processed by the rules for foreign content
+    /// (section 13.2.6, the tree construction dispatcher): the adjusted
+    /// current node is a foreign element, and not an integration point
+    /// the token is HTML's at.
+    fn foreign_rules_apply(&self, token: &Token) -> bool {
+        let Some(current) = self.open.last() else {
+            return false;
+        };
+        if current.ns == Namespace::Html {
+            return false;
+        }
+        match token {
+            Token::StartTag { name, .. } => {
+                if current.text_point && name != "mglyph" && name != "malignmark" {
+                    return false;
+                }
+                if current.ns == Namespace::MathMl
+                    && current.tag == "annotation-xml"
+                    && name == "svg"
+                {
+                    return false;
+                }
+                !current.html_point
+            }
+            Token::Text(_) => !(current.text_point || current.html_point),
+            _ => true,
+        }
+    }
+
+    /// Whether the tokenizer is to read CDATA sections (section
+    /// 13.2.5.42): the adjusted current node is a foreign element.
+    pub fn cdata_allowed(&self) -> bool {
+        self.open
+            .last()
+            .is_some_and(|open| open.ns != Namespace::Html)
+    }
+
+    /// A token by the rules for parsing tokens in foreign content
+    /// (section 13.2.6.5).
+    fn foreign_token(
+        &mut self,
+        document: &mut Document,
+        token: Token,
+        line: u32,
+    ) -> Option<TextState> {
+        match token {
+            Token::Doctype(_) | Token::Comment(_) | Token::ProcessingInstruction { .. } => None,
+            Token::Text(text) => {
+                self.push_text(document, &text.replace('\0', "\u{fffd}"));
+                None
+            }
+            Token::StartTag {
+                name,
+                attrs,
+                self_closing,
+            } => {
+                // A breakout tag is taken again by HTML's rules, whatever
+                // stands in as the adjusted current node then.
+                if breaks_out(&name, &attrs) {
+                    self.pop_foreign();
+                    return self.html_token(
+                        document,
+                        Token::StartTag {
+                            name,
+                            attrs,
+                            self_closing,
+                        },
+                        line,
+                    );
+                }
+                let ns = self.open.last()?.ns.clone();
+                self.insert_foreign(document, ns, &name, attrs, self_closing, line);
+                None
+            }
+            Token::EndTag(name) => {
+                if name == "br" || name == "p" {
+                    self.pop_foreign();
+                    return self.html_token(document, Token::EndTag(name), line);
+                }
+                if name == "script"
+                    && self
+                        .open
+                        .last()
+                        .is_some_and(|open| open.ns == Namespace::Svg && open.tag == "script")
+                {
                     if let Some(open) = self.open.pop() {
                         self.script = Some((open.id, self.script_line));
                     }
+                    return None;
                 }
-                // Unmatched end tags are dropped (recovery); a matched one
-                // closes everything opened after its element too.
-                _ => self.close_through(&name, &[]),
-            },
+                // Up the stack: the innermost element of that name
+                // closes, unless an HTML element comes first, whose rules
+                // then take the end tag.
+                let mut at = self.open.len().checked_sub(1)?;
+                loop {
+                    if at == 0 {
+                        return None;
+                    }
+                    if self.open[at].tag.eq_ignore_ascii_case(&name) {
+                        self.open.truncate(at);
+                        return None;
+                    }
+                    at -= 1;
+                    if self.open[at].ns == Namespace::Html {
+                        self.end_tag(document, &name);
+                        return None;
+                    }
+                }
+            }
         }
-        None
+    }
+
+    /// Closes foreign elements until the current node is an HTML
+    /// element or an integration point (a breakout tag's rule).
+    fn pop_foreign(&mut self) {
+        while let Some(current) = self.open.last() {
+            if current.ns == Namespace::Html || current.html_point || current.text_point {
+                break;
+            }
+            if self.open.len() == 1 {
+                break;
+            }
+            self.open.pop();
+        }
+    }
+
+    /// Inserts a foreign element of the namespace `ns` (section
+    /// 13.2.6.1, "insert a foreign element"): SVG's names and attributes
+    /// given back their case, MathML's `definitionURL`; a self-closing
+    /// one closed at once, an SVG `script` then processed as its end tag
+    /// would be.
+    fn insert_foreign(
+        &mut self,
+        document: &mut Document,
+        ns: Namespace,
+        name: &str,
+        attrs: Vec<(String, String)>,
+        self_closing: bool,
+        line: u32,
+    ) {
+        let tag = match ns {
+            Namespace::Svg => svg_tag_name(name),
+            _ => name,
+        };
+        let attrs: Vec<(String, String)> = attrs
+            .into_iter()
+            .map(|(attr, value)| {
+                let attr = match ns {
+                    Namespace::Svg => svg_attribute_name(&attr).to_owned(),
+                    Namespace::MathMl if attr == "definitionurl" => "definitionURL".to_owned(),
+                    _ => attr,
+                };
+                (attr, value)
+            })
+            .collect();
+        let html_point = integration_point(&ns, tag, &attrs);
+        let text_point = text_integration_point(&ns, tag);
+        if !self_closing {
+            self.pop_at_the_cap();
+        }
+        let parent = self.open.last().map_or(document.root(), |open| open.id);
+        let Ok(id) = document.create_element_ns(ns.clone(), tag, attrs) else {
+            return;
+        };
+        if document.append_new(parent, id).is_err() {
+            let _ = document.free(id);
+            return;
+        }
+        if ns == Namespace::Svg && tag == "script" {
+            self.script_line = line;
+            if self_closing {
+                self.script = Some((id, line));
+                return;
+            }
+        }
+        if !self_closing {
+            self.open.push(Open {
+                id,
+                tag: tag.to_owned(),
+                ns,
+                html_point,
+                text_point,
+            });
+        }
     }
 
     /// Places a start tag: the skeleton elements by name, head-only
@@ -396,14 +669,22 @@ impl TreeBuilder {
             self.ensure_body(document);
         }
 
+        // An `<svg>` or `<math>` opens foreign content (the "in body"
+        // rules for them).
+        let foreign = match name.as_str() {
+            "svg" => Some(Namespace::Svg),
+            "math" => Some(Namespace::MathMl),
+            _ => None,
+        };
+        if let Some(ns) = foreign {
+            self.insert_foreign(document, ns, &name, attrs, self_closing, 0);
+            return None;
+        }
         self.imply_end_tags_before(&name);
-        let is_void = VOID_ELEMENTS.contains(&name.as_str());
         // The self-closing flag means nothing on an HTML element (the
         // spec ignores it with a parse error): `<div/>` is an open
-        // `<div>`. It is honoured in foreign content, where `<path/>`
-        // really is empty.
-        let foreign = self.in_foreign_content();
-        if is_void || (self_closing && foreign) {
+        // `<div>`.
+        if VOID_ELEMENTS.contains(&name.as_str()) {
             self.insert(document, &name, attrs);
             return None;
         }
@@ -411,15 +692,13 @@ impl TreeBuilder {
         if SKIPS_LEADING_NEWLINE.contains(&name.as_str()) {
             self.skip_leading_newline = true;
         }
-        let state = if foreign {
-            None
-        } else if name == "noscript" && self.scripting {
+        let state = if name == "noscript" && self.scripting {
             Some(TextState::Rawtext)
         } else {
             content_state(&name)
         };
         if let Some(id) = self.insert(document, &name, attrs) {
-            self.open.push(Open { id, tag: name });
+            self.open.push(Open::html(id, name));
         }
         state
     }
@@ -448,10 +727,7 @@ impl TreeBuilder {
     fn open_skeleton(&mut self, document: &mut Document, tag: &str, attrs: Vec<(String, String)>) {
         self.pop_at_the_cap();
         if let Some(id) = self.insert(document, tag, attrs) {
-            self.open.push(Open {
-                id,
-                tag: tag.to_string(),
-            });
+            self.open.push(Open::html(id, tag));
         }
     }
 
@@ -560,24 +836,25 @@ impl TreeBuilder {
         }
     }
 
-    /// Whether the innermost open element is one of `names`.
+    /// Whether the innermost open element is one of the HTML elements
+    /// `names`.
     fn current_is(&self, names: &[&str]) -> bool {
         self.open
             .last()
-            .is_some_and(|el| names.contains(&el.tag.as_str()))
+            .is_some_and(|el| el.ns == Namespace::Html && names.contains(&el.tag.as_str()))
     }
 
-    /// Whether an `svg` or `math` element is open.
-    fn in_foreign_content(&self) -> bool {
-        self.open
-            .iter()
-            .any(|el| el.tag == "svg" || el.tag == "math")
-    }
-
-    /// The index of the innermost open element named one of `names`,
-    /// unless one of `stops` is open above it.
+    /// The index of the innermost open HTML element named one of
+    /// `names`, unless one of `stops` is open above it, or a foreign
+    /// element that bounds a scope (section 13.2.4.2).
     fn rposition_before(&self, names: &[&str], stops: &[&str]) -> Option<usize> {
         for (idx, el) in self.open.iter().enumerate().rev() {
+            if el.ns != Namespace::Html {
+                if el.bounds_scope() {
+                    return None;
+                }
+                continue;
+            }
             let tag = el.tag.as_str();
             if names.contains(&tag) {
                 return Some(idx);
@@ -623,6 +900,205 @@ fn meta_encoding_declaration(attrs: &[(String, String)]) -> Option<Encoding> {
         return attr("content").and_then(extract_from_meta_content);
     }
     None
+}
+
+/// Whether a start tag in foreign content breaks out of it (section
+/// 13.2.6.5): one of HTML's elements that never appear in SVG or MathML,
+/// or `font` with a presentational attribute.
+fn breaks_out(name: &str, attrs: &[(String, String)]) -> bool {
+    const BREAKOUT: [&str; 44] = [
+        "b",
+        "big",
+        "blockquote",
+        "body",
+        "br",
+        "center",
+        "code",
+        "dd",
+        "div",
+        "dl",
+        "dt",
+        "em",
+        "embed",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "head",
+        "hr",
+        "i",
+        "img",
+        "li",
+        "listing",
+        "menu",
+        "meta",
+        "nobr",
+        "ol",
+        "p",
+        "pre",
+        "ruby",
+        "s",
+        "small",
+        "span",
+        "strong",
+        "strike",
+        "sub",
+        "sup",
+        "table",
+        "tt",
+        "u",
+        "ul",
+        "var",
+    ];
+    BREAKOUT.contains(&name)
+        || (name == "font"
+            && attrs
+                .iter()
+                .any(|(attr, _)| matches!(attr.as_str(), "color" | "face" | "size")))
+}
+
+/// Whether an element of `ns` named `tag` with `attrs` is an HTML
+/// integration point (section 13.2.6.5): an `annotation-xml` whose
+/// `encoding` is HTML's or XHTML's, an SVG `foreignObject`, `desc` or
+/// `title`.
+fn integration_point(ns: &Namespace, tag: &str, attrs: &[(String, String)]) -> bool {
+    match ns {
+        Namespace::MathMl => {
+            tag == "annotation-xml"
+                && attrs.iter().any(|(attr, value)| {
+                    attr == "encoding"
+                        && (value.eq_ignore_ascii_case("text/html")
+                            || value.eq_ignore_ascii_case("application/xhtml+xml"))
+                })
+        }
+        Namespace::Svg => matches!(tag, "foreignObject" | "desc" | "title"),
+        _ => false,
+    }
+}
+
+/// Whether an element of `ns` named `tag` is a MathML text integration
+/// point: `mi`, `mo`, `mn`, `ms` or `mtext`.
+fn text_integration_point(ns: &Namespace, tag: &str) -> bool {
+    *ns == Namespace::MathMl && matches!(tag, "mi" | "mo" | "mn" | "ms" | "mtext")
+}
+
+/// An SVG element's name in its case, from the lowercase one the
+/// tokenizer gives (section 13.2.6.5's table).
+fn svg_tag_name(name: &str) -> &str {
+    const NAMES: [(&str, &str); 37] = [
+        ("altglyph", "altGlyph"),
+        ("altglyphdef", "altGlyphDef"),
+        ("altglyphitem", "altGlyphItem"),
+        ("animatecolor", "animateColor"),
+        ("animatemotion", "animateMotion"),
+        ("animatetransform", "animateTransform"),
+        ("clippath", "clipPath"),
+        ("feblend", "feBlend"),
+        ("fecolormatrix", "feColorMatrix"),
+        ("fecomponenttransfer", "feComponentTransfer"),
+        ("fecomposite", "feComposite"),
+        ("feconvolvematrix", "feConvolveMatrix"),
+        ("fediffuselighting", "feDiffuseLighting"),
+        ("fedisplacementmap", "feDisplacementMap"),
+        ("fedistantlight", "feDistantLight"),
+        ("fedropshadow", "feDropShadow"),
+        ("feflood", "feFlood"),
+        ("fefunca", "feFuncA"),
+        ("fefuncb", "feFuncB"),
+        ("fefuncg", "feFuncG"),
+        ("fefuncr", "feFuncR"),
+        ("fegaussianblur", "feGaussianBlur"),
+        ("feimage", "feImage"),
+        ("femerge", "feMerge"),
+        ("femergenode", "feMergeNode"),
+        ("femorphology", "feMorphology"),
+        ("feoffset", "feOffset"),
+        ("fepointlight", "fePointLight"),
+        ("fespecularlighting", "feSpecularLighting"),
+        ("fespotlight", "feSpotLight"),
+        ("fetile", "feTile"),
+        ("feturbulence", "feTurbulence"),
+        ("foreignobject", "foreignObject"),
+        ("glyphref", "glyphRef"),
+        ("lineargradient", "linearGradient"),
+        ("radialgradient", "radialGradient"),
+        ("textpath", "textPath"),
+    ];
+    NAMES
+        .iter()
+        .find(|(lower, _)| *lower == name)
+        .map_or(name, |(_, adjusted)| adjusted)
+}
+
+/// An SVG attribute's name in its case (section 13.2.6.1, "adjust SVG
+/// attributes").
+pub fn svg_attribute_name(name: &str) -> &str {
+    const NAMES: [(&str, &str); 58] = [
+        ("attributename", "attributeName"),
+        ("attributetype", "attributeType"),
+        ("basefrequency", "baseFrequency"),
+        ("baseprofile", "baseProfile"),
+        ("calcmode", "calcMode"),
+        ("clippathunits", "clipPathUnits"),
+        ("diffuseconstant", "diffuseConstant"),
+        ("edgemode", "edgeMode"),
+        ("filterunits", "filterUnits"),
+        ("glyphref", "glyphRef"),
+        ("gradienttransform", "gradientTransform"),
+        ("gradientunits", "gradientUnits"),
+        ("kernelmatrix", "kernelMatrix"),
+        ("kernelunitlength", "kernelUnitLength"),
+        ("keypoints", "keyPoints"),
+        ("keysplines", "keySplines"),
+        ("keytimes", "keyTimes"),
+        ("lengthadjust", "lengthAdjust"),
+        ("limitingconeangle", "limitingConeAngle"),
+        ("markerheight", "markerHeight"),
+        ("markerunits", "markerUnits"),
+        ("markerwidth", "markerWidth"),
+        ("maskcontentunits", "maskContentUnits"),
+        ("maskunits", "maskUnits"),
+        ("numoctaves", "numOctaves"),
+        ("pathlength", "pathLength"),
+        ("patterncontentunits", "patternContentUnits"),
+        ("patterntransform", "patternTransform"),
+        ("patternunits", "patternUnits"),
+        ("pointsatx", "pointsAtX"),
+        ("pointsaty", "pointsAtY"),
+        ("pointsatz", "pointsAtZ"),
+        ("preservealpha", "preserveAlpha"),
+        ("preserveaspectratio", "preserveAspectRatio"),
+        ("primitiveunits", "primitiveUnits"),
+        ("refx", "refX"),
+        ("refy", "refY"),
+        ("repeatcount", "repeatCount"),
+        ("repeatdur", "repeatDur"),
+        ("requiredextensions", "requiredExtensions"),
+        ("requiredfeatures", "requiredFeatures"),
+        ("specularconstant", "specularConstant"),
+        ("specularexponent", "specularExponent"),
+        ("spreadmethod", "spreadMethod"),
+        ("startoffset", "startOffset"),
+        ("stddeviation", "stdDeviation"),
+        ("stitchtiles", "stitchTiles"),
+        ("surfacescale", "surfaceScale"),
+        ("systemlanguage", "systemLanguage"),
+        ("tablevalues", "tableValues"),
+        ("targetx", "targetX"),
+        ("targety", "targetY"),
+        ("textlength", "textLength"),
+        ("viewbox", "viewBox"),
+        ("viewtarget", "viewTarget"),
+        ("xchannelselector", "xChannelSelector"),
+        ("ychannelselector", "yChannelSelector"),
+        ("zoomandpan", "zoomAndPan"),
+    ];
+    NAMES
+        .iter()
+        .find(|(lower, _)| *lower == name)
+        .map_or(name, |(_, adjusted)| adjusted)
 }
 
 /// A repeated `<html>` or `<body>` start tag adds the attributes the
@@ -885,9 +1361,10 @@ mod tests {
     fn a_block_inside_a_table_cell_does_not_close_a_p_outside_the_table() {
         let root = build("<p>x<table><tr><td><div>y</div></table>z</p>");
         // The `p` is closed by the `table` start tag itself (a block),
-        // but the `div` inside the cell does not reach out past it.
+        // but the `div` inside the cell does not reach out past it; the
+        // `</p>` with no `p` open makes an empty one ("in body").
         let children = body_children(&root);
-        assert_eq!(tags(children), vec!["p", "table", "#text"]);
+        assert_eq!(tags(children), vec!["p", "table", "#text", "p"]);
         let table = expect_element(children, 1);
         let tr = expect_element(&table.children, 0);
         let td = expect_element(&tr.children, 0);
@@ -917,6 +1394,123 @@ mod tests {
         assert_eq!(tags(children), vec!["svg", "#text"]);
         let svg = expect_element(children, 0);
         assert_eq!(tags(&svg.children), vec!["path", "circle"]);
+    }
+
+    #[test]
+    fn svg_elements_are_svgs_their_names_and_attributes_in_their_case() {
+        let (_, document) = parsed(
+            "<svg viewbox='0 0 1 1' PreserveAspectRatio=none xlink:href=a><lineargradient              gradientunits=x><stop/></lineargradient><clippath/></svg><math definitionurl=u><mi/></math>",
+        );
+        let elements: Vec<_> = document
+            .subtree(document.root())
+            .filter_map(|node| document.element_name(node))
+            .map(|(ns, tag)| format!("{ns:?} {tag}"))
+            .collect();
+        assert_eq!(
+            elements,
+            [
+                "Html html",
+                "Html head",
+                "Html body",
+                "Svg svg",
+                "Svg linearGradient",
+                "Svg stop",
+                "Svg clipPath",
+                "MathMl math",
+                "MathMl mi"
+            ]
+        );
+        let svg = document
+            .subtree(document.root())
+            .find(|&node| document.svg_tag(node) == Some("svg"))
+            .unwrap();
+        let names: Vec<_> = document
+            .attrs(svg)
+            .unwrap()
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        assert_eq!(names, ["viewBox", "preserveAspectRatio", "xlink:href"]);
+        let gradient = document.first_child(svg).unwrap();
+        assert_eq!(document.attr(gradient, "gradientUnits"), Some("x"));
+        let math = document
+            .subtree(document.root())
+            .find(|&node| document.local_name(node) == Some("math"))
+            .unwrap();
+        assert_eq!(document.attr(math, "definitionURL"), Some("u"));
+    }
+
+    #[test]
+    fn cdata_is_text_in_svg_and_a_bogus_comment_in_html() {
+        let (_, document) = parsed("<svg><style><![CDATA[a<b]]></style></svg><p><![CDATA[c]]>d");
+        let texts: Vec<_> = document
+            .subtree(document.root())
+            .filter_map(|node| document.text(node))
+            .collect();
+        assert_eq!(texts, ["a<b", "d"]);
+    }
+
+    #[test]
+    fn an_integration_point_takes_html_and_a_breakout_tag_leaves_svg() {
+        let (_, document) = parsed(
+            "<svg><foreignObject><div>x</div></foreignObject><desc><b>y</b></desc>             <g><font size=2>z</font></g></svg>",
+        );
+        let named: Vec<_> = document
+            .subtree(document.root())
+            .filter_map(|node| document.element_name(node))
+            .map(|(ns, tag)| format!("{ns:?} {tag}"))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                "Html html",
+                "Html head",
+                "Html body",
+                "Svg svg",
+                "Svg foreignObject",
+                "Html div",
+                "Svg desc",
+                "Html b",
+                "Svg g",
+                "Html font"
+            ]
+        );
+        // A `font` without a presentational attribute stays SVG's, and a
+        // MathML text integration point takes HTML.
+        let (_, document) = parsed("<svg><font>a</font></svg><math><mi><b>c</b></mi></math>");
+        let named: Vec<_> = document
+            .subtree(document.root())
+            .filter_map(|node| document.element_name(node))
+            .map(|(ns, tag)| format!("{ns:?} {tag}"))
+            .collect();
+        assert_eq!(
+            &named[3..],
+            ["Svg svg", "Svg font", "MathMl math", "MathMl mi", "Html b"]
+        );
+    }
+
+    #[test]
+    fn a_fragment_in_an_svg_context_is_svg_and_serializes_in_its_case() {
+        let mut document = Document::new();
+        let container = document.create_element("html").unwrap();
+        crate::parse_fragment(
+            &mut document,
+            container,
+            (&Namespace::Svg, "svg"),
+            false,
+            dom::MAX_DEPTH,
+            "<lineargradient id=g><stop offset=1 /></lineargradient><![CDATA[t]]><p>x",
+        );
+        let kids: Vec<_> = document
+            .children(container)
+            .filter_map(|node| document.element_name(node))
+            .map(|(ns, tag)| format!("{ns:?} {tag}"))
+            .collect();
+        assert_eq!(kids, ["Svg linearGradient", "Html p"]);
+        assert_eq!(
+            crate::serialize_children(&document, container, true),
+            "<linearGradient id=\"g\"><stop offset=\"1\"></stop></linearGradient>t<p>x</p>"
+        );
     }
 
     #[test]
@@ -1048,12 +1642,16 @@ mod tests {
 
     #[test]
     fn an_element_in_svg_has_its_content_parsed_as_markup() {
-        // Foreign content's `style` is not raw text (section 13.2.6.5).
-        let root = build("<svg><style><b>x</b></style></svg>");
+        // Foreign content's `style` is not raw text (section 13.2.6.5),
+        // and HTML's `<b>` breaks out of it, closing the SVG elements.
+        let root = build("<svg><style><g>x</g></style></svg>");
         let (_, _, body) = skeleton(&root);
         let svg = expect_element(&body.children, 0);
         let style = expect_element(&svg.children, 0);
-        assert_eq!(tags(&style.children), vec!["b"]);
+        assert_eq!(tags(&style.children), vec!["g"]);
+        let root = build("<svg><style><b>x</b></style></svg>");
+        let (_, _, body) = skeleton(&root);
+        assert_eq!(tags(&body.children), vec!["svg", "b"]);
     }
 
     #[test]

@@ -936,7 +936,7 @@ impl<'a> Styled<'a> {
     /// when that is `normal` and the type not `none`;
     /// `list-style-image` never gives one until images (M23).
     fn generates(&self, node: NodeId, side: Side) -> bool {
-        if self.document.tag(node).is_none_or(is_replaced) {
+        if !self.document.is_element(node) || self.document.tag(node).is_some_and(is_replaced) {
             return false;
         }
         let Some(style) = self.styles.pseudo(node, side.pseudo_element()) else {

@@ -26,11 +26,13 @@
 //! it, and [`Matcher::matches_pseudo_element`] matches its compounds
 //! against the originating element.
 //!
-//! Every element is an HTML element in an HTML document (the DOM has no
-//! namespaces), so HTML's case rules always apply: an attribute
-//! selector without a flag compares the values of the attributes HTML
-//! lists ASCII case-insensitively, and every other value identically.
-//! Values are compared in place, with nothing allocated.
+//! The document is an HTML document, so HTML's case rules apply: an
+//! attribute selector without a flag compares the values of the
+//! attributes HTML lists ASCII case-insensitively, and every other value
+//! identically. Type selectors and attribute names match an element of
+//! any namespace in any case, an SVG `linearGradient` and its `viewBox`
+//! among them, as the reference browser matches them in an HTML document
+//! (M32). Values are compared in place, with nothing allocated.
 //!
 //! `:lang()` reads the language HTML gives an element: the `lang`
 //! attribute of the element or its nearest ancestor that has one; else
@@ -303,7 +305,12 @@ impl<'a> Matcher<'a> {
     fn matches_simple(&mut self, element: NodeId, simple: &'a SimpleSelector) -> bool {
         let document = self.document;
         match simple {
-            SimpleSelector::Type(t) => document.tag(element) == Some(t.as_str()),
+            // In an HTML document a type selector matches any element's
+            // local name in any case, an SVG one's too, as the reference
+            // browser matches `lineargradient` (M32).
+            SimpleSelector::Type(t) => document
+                .local_name(element)
+                .is_some_and(|name| name.eq_ignore_ascii_case(t)),
             SimpleSelector::Universal => true,
             SimpleSelector::Id(v) => document.attr(element, "id") == Some(v.as_str()),
             // HTML splits `class` on ASCII white space only.
@@ -340,18 +347,18 @@ impl<'a> Matcher<'a> {
             };
         };
         let children: Vec<NodeId> = document.element_children(parent).collect();
-        let mut of_type: HashMap<&str, u32> = HashMap::new();
+        // An element's type is its namespace and local name.
+        let type_of = |child| document.element_name(child);
+        let mut of_type: HashMap<Option<(&dom::Namespace, &str)>, u32> = HashMap::new();
         let mut type_indices = Vec::with_capacity(children.len());
         for &child in &children {
-            let seen = of_type
-                .entry(document.tag(child).unwrap_or(""))
-                .or_insert(0);
+            let seen = of_type.entry(type_of(child)).or_insert(0);
             type_indices.push(*seen);
             *seen += 1;
         }
         let count = children.len() as u32;
         for (i, (&child, type_index)) in children.iter().zip(type_indices).enumerate() {
-            let type_count = of_type[document.tag(child).unwrap_or("")];
+            let type_count = of_type[&type_of(child)];
             self.positions[child.index()] = Some(Position {
                 index: i as u32,
                 count,
@@ -819,7 +826,20 @@ fn matches_attribute(
     value: &str,
     case: CaseFlag,
 ) -> bool {
-    let Some(actual) = document.attr(element, name) else {
+    // An HTML element's attributes are kept lowercase; a foreign one's
+    // in their case (`viewBox`), which the selector's lowercased name
+    // matches in any case.
+    let actual = if document.is_html(element) {
+        document.attr(element, name)
+    } else {
+        document.attrs(element).and_then(|attrs| {
+            attrs
+                .iter()
+                .find(|(attr, _)| attr.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.as_str())
+        })
+    };
+    let Some(actual) = actual else {
         return false;
     };
     let fold = match case {
@@ -933,7 +953,7 @@ mod tests {
         let mut out = Vec::new();
         for id in elements(&document) {
             if matches_selector_list(&document, id, &list) {
-                out.push(document.tag(id).unwrap().to_string());
+                out.push(document.local_name(id).unwrap().to_string());
             }
         }
         out
@@ -974,6 +994,42 @@ mod tests {
         let mut matcher = Matcher::new(&document).with_scope(Some(outer));
         assert!(!matcher.matches_list(outer, &list));
         assert!(matcher.matches_list(inner, &list));
+    }
+
+    #[test]
+    fn an_svg_element_is_matched_in_any_case_and_counted_apart_from_htmls() {
+        let svg = |tag: &str| Element::in_namespace(dom::Namespace::Svg, tag);
+        let doc = p(vec![
+            e("div")
+                .push(e("a"))
+                .push(
+                    svg("svg")
+                        .attr("viewBox", "0 0 1 1")
+                        .push(svg("linearGradient"))
+                        .push(svg("a"))
+                        .push(e("a")),
+                )
+                .push(e("a"))
+                .into(),
+        ]);
+        // A type selector and an attribute's name match an SVG element's
+        // in any case, as in the reference browser's HTML documents.
+        assert_eq!(matched_tags(&doc, "linearGradient"), vec!["linearGradient"]);
+        assert_eq!(matched_tags(&doc, "lineargradient"), vec!["linearGradient"]);
+        assert_eq!(matched_tags(&doc, "[viewBox]"), vec!["svg"]);
+        assert_eq!(matched_tags(&doc, "[viewbox='0 0 1 1']"), vec!["svg"]);
+        // The HTML `a`s are of one type, the SVG `a` of another, siblings
+        // or not: in the `svg` each is the only one of its type.
+        assert_eq!(matched_tags(&doc, "a:nth-of-type(2)"), vec!["a"]);
+        assert_eq!(matched_tags(&doc, "div > a:last-of-type"), vec!["a"]);
+        let document = Document::from_node(&doc);
+        let list = parse_selector_list(&css::tokenize("svg > a:only-of-type")).unwrap();
+        let only: Vec<_> = elements(&document)
+            .into_iter()
+            .filter(|&id| matches_selector_list(&document, id, &list))
+            .map(|id| document.svg_tag(id).is_some())
+            .collect();
+        assert_eq!(only, [true, false]);
     }
 
     #[test]

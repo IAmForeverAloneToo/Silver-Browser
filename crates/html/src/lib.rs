@@ -25,7 +25,7 @@ pub use serialize::{serialize_children, serialize_node};
 pub use tokenizer::{Doctype, TextState, Token, Tokenizer, content_state, tokenize};
 pub use tree_builder::TreeBuilder;
 
-use dom::{Document, Node, NodeId};
+use dom::{Document, Namespace, Node, NodeId};
 use encoding::Encoding;
 
 /// Why [`Parser::parse`] stopped.
@@ -65,14 +65,23 @@ impl Parser {
     }
 
     /// A parser for a fragment (HTML section 13.4) in the context of an
-    /// element with local name `context`, building into the children of
-    /// `container` (see [`TreeBuilder::fragment`]). The tokenizer starts
-    /// in the state the context's content is read in; no start tag has
-    /// been emitted, so no end tag ends that state (`a</textarea>b` in a
-    /// `textarea` is all text).
-    pub fn fragment(container: NodeId, context: &str, scripting: bool, max_depth: usize) -> Parser {
+    /// element of namespace `ns` with local name `context`, building
+    /// into the children of `container` (see [`TreeBuilder::fragment`]).
+    /// The tokenizer starts in the state an HTML context's content is
+    /// read in; no start tag has been emitted, so no end tag ends that
+    /// state (`a</textarea>b` in a `textarea` is all text). A foreign
+    /// context's content is read as foreign content, CDATA and all.
+    pub fn fragment(
+        container: NodeId,
+        context: &str,
+        ns: &Namespace,
+        scripting: bool,
+        max_depth: usize,
+    ) -> Parser {
         let mut tokenizer = Tokenizer::streaming();
-        let state = if context == "noscript" && scripting {
+        let state = if *ns != Namespace::Html {
+            None
+        } else if context == "noscript" && scripting {
             Some(TextState::Rawtext)
         } else {
             content_state(context)
@@ -80,9 +89,11 @@ impl Parser {
         if let Some(state) = state {
             tokenizer.set_state(state);
         }
+        let builder = TreeBuilder::fragment(container, context, ns, scripting, max_depth);
+        tokenizer.set_cdata_allowed(builder.cdata_allowed());
         Parser {
             tokenizer,
-            builder: TreeBuilder::fragment(container, context, scripting, max_depth),
+            builder,
             done: false,
         }
     }
@@ -164,6 +175,9 @@ impl Parser {
             if let Some(state) = self.builder.process(document, token, line) {
                 self.tokenizer.set_state(state);
             }
+            // CDATA sections are read in foreign content alone.
+            self.tokenizer
+                .set_cdata_allowed(self.builder.cdata_allowed());
             if let Some((element, line)) = self.builder.take_script() {
                 return Stop::Script { element, line };
             }
@@ -178,20 +192,21 @@ fn parse_whole(parser: &mut Parser, document: &mut Document) {
 }
 
 /// Parses `markup` as a fragment (HTML section 13.4, M25's `innerHTML`)
-/// for a context element with local name `context`, into the children
-/// of `container`, a detached element of `document` that its caller
-/// made and moves them out of. At most `max_depth` elements nest, the
-/// container counted. Its scripts are the caller's to mark as already
-/// started: this runs none.
+/// for a context element of namespace `ns` with local name `context`,
+/// into the children of `container`, a detached element of `document`
+/// that its caller made and moves them out of. At most `max_depth`
+/// elements nest, the container counted. Its scripts are the caller's
+/// to mark as already started: this runs none.
 pub fn parse_fragment(
     document: &mut Document,
     container: NodeId,
-    context: &str,
+    context: (&Namespace, &str),
     scripting: bool,
     max_depth: usize,
     markup: &str,
 ) {
-    let mut parser = Parser::fragment(container, context, scripting, max_depth);
+    let (ns, context) = context;
+    let mut parser = Parser::fragment(container, context, ns, scripting, max_depth);
     parser.feed(markup);
     parser.end();
     parse_whole(&mut parser, document);
@@ -285,7 +300,7 @@ mod tests {
         parse_fragment(
             &mut document,
             container,
-            context,
+            (&Namespace::Html, context),
             true,
             dom::MAX_DEPTH,
             markup,
@@ -415,7 +430,14 @@ mod tests {
     fn a_fragment_nests_no_deeper_than_it_is_let() {
         let mut document = Document::new();
         let container = document.create_element("html").unwrap();
-        parse_fragment(&mut document, container, "div", false, 4, &"<b>".repeat(10));
+        parse_fragment(
+            &mut document,
+            container,
+            (&Namespace::Html, "div"),
+            false,
+            4,
+            &"<b>".repeat(10),
+        );
         let depth = document
             .subtree(container)
             .map(|n| document.ancestors(n).count())
@@ -424,7 +446,14 @@ mod tests {
         assert_eq!(depth, 3, "the container and three elements down");
         // Even a budget of one keeps the container open.
         let container = document.create_element("html").unwrap();
-        parse_fragment(&mut document, container, "div", false, 1, "<b><i>x");
+        parse_fragment(
+            &mut document,
+            container,
+            (&Namespace::Html, "div"),
+            false,
+            1,
+            "<b><i>x",
+        );
         assert_eq!(document.children(container).count(), 2);
         assert!(
             document
@@ -625,17 +654,27 @@ mod tests {
     }
 
     #[test]
-    fn a_script_the_input_ends_in_or_in_svg_is_no_stop() {
-        for source in ["<script>never closed", "<svg><script>x</script></svg>"] {
+    fn a_script_the_input_ends_in_is_no_stop_and_an_svg_script_is_one() {
+        let mut parser = Parser::new(false);
+        parser.feed("<script>never closed");
+        parser.end();
+        let mut document = Document::new();
+        assert_eq!(parser.parse(&mut document, usize::MAX), Stop::Done);
+        // An SVG `script`'s end tag is processed as HTML's is (section
+        // 13.2.6.5), and so is a self-closing one.
+        for source in [
+            "<svg><script>x</script></svg>",
+            "<svg><script href=a.js /></svg>",
+        ] {
             let mut parser = Parser::new(false);
             parser.feed(source);
             parser.end();
             let mut document = Document::new();
-            assert_eq!(
-                parser.parse(&mut document, usize::MAX),
-                Stop::Done,
-                "{source}"
-            );
+            let Stop::Script { element, .. } = parser.parse(&mut document, usize::MAX) else {
+                panic!("{source} stops at its script");
+            };
+            assert_eq!(document.svg_tag(element), Some("script"), "{source}");
+            assert_eq!(parser.parse(&mut document, usize::MAX), Stop::Done);
         }
     }
 

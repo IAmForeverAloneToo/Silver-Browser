@@ -1442,3 +1442,46 @@ fn a_page_nested_as_deep_as_the_parser_lets_is_drawn_within_the_engines_stack() 
         .join()
         .expect("drawn within the stack");
 }
+
+#[test]
+fn svg_markup_is_svgs_through_inner_html_clones_and_tag_name_lookups() {
+    // M32: the parser's SVG keeps its case and namespace, and so does
+    // what scripts make of it.
+    let (tab, console) = scripted(
+        "<svg id=s><lineargradient id=g gradientunits=x></lineargradient></svg>\
+         <script>var s = document.getElementById('s'); \
+         s.innerHTML = '<clippath id=c><rect/></clippath>'; \
+         var c = s.firstChild; \
+         console.log(c.localName, s.innerHTML); \
+         console.log(document.getElementsByTagName('clipPath').length, \
+         document.getElementsByTagName('clippath').length, \
+         document.getElementsByTagName('RECT').length); \
+         var copy = c.cloneNode(true); s.appendChild(copy); \
+         console.log(copy.localName, document.getElementsByTagName('clipPath').length); \
+         s.insertAdjacentHTML('beforeend', '<script>console.log(\"ran\")<\\/script>'); \
+         console.log(s.lastChild.localName)</script>",
+        true,
+    );
+    assert_eq!(
+        console,
+        [
+            "clipPath <clipPath id=\"c\"><rect></rect></clipPath>",
+            "1 0 0",
+            "clipPath 2",
+            // An SVG script a fragment made never runs.
+            "script"
+        ]
+    );
+    let document = tab.engine.document();
+    let svg = document
+        .subtree(document.root())
+        .find(|&node| document.svg_tag(node) == Some("svg"))
+        .unwrap();
+    let kids: Vec<_> = document
+        .children(svg)
+        .filter_map(|node| document.element_name(node))
+        .map(|(ns, tag)| format!("{ns:?} {tag}"))
+        .collect();
+    assert_eq!(kids, ["Svg clipPath", "Svg clipPath", "Svg script"]);
+    document.validate().unwrap();
+}

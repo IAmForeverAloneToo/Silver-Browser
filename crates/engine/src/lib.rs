@@ -5557,7 +5557,7 @@ fn potential_indicated_element(document: &Document, fragment: &str) -> Option<No
     let root = document.root();
     document
         .subtree(root)
-        .find(|&node| document.tag(node).is_some() && document.attr(node, "id") == Some(fragment))
+        .find(|&node| document.is_element(node) && document.attr(node, "id") == Some(fragment))
         .or_else(|| {
             document.subtree(root).find(|&node| {
                 document.tag(node) == Some("a") && document.attr(node, "name") == Some(fragment)

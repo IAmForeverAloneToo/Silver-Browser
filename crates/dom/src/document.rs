@@ -32,7 +32,7 @@
 use std::fmt;
 
 use crate::forms::ControlState;
-use crate::{Element, Node, Text};
+use crate::{Element, Namespace, Node, Text, local_part};
 
 /// The deepest elements may nest: 512, the HTML parser's cap on its
 /// stack of open elements (`html::MAX_DEPTH` is this constant), which
@@ -124,10 +124,13 @@ impl fmt::Display for NodeId {
 pub enum NodeData {
     /// The document node, the root; there is one per document.
     Document,
-    /// An element: its lowercase tag name and its attributes, in order.
+    /// An element: its tag name (lowercase for an HTML element, a
+    /// foreign one's qualified name in its own case), its attributes, in
+    /// order, and its namespace (M32).
     Element {
         tag: String,
         attrs: Vec<(String, String)>,
+        ns: Namespace,
     },
     /// Character data.
     Text(String),
@@ -344,9 +347,10 @@ impl Document {
                     pending.extend(children.iter().rev().map(|c| (c, parent)));
                     continue;
                 }
-                Node::Element(Element { tag, attrs, .. }) => NodeData::Element {
+                Node::Element(Element { tag, attrs, ns, .. }) => NodeData::Element {
                     tag: tag.clone(),
                     attrs: attrs.clone(),
+                    ns: ns.clone(),
                 },
                 Node::Text(Text { data }) => NodeData::Text(data.clone()),
             };
@@ -387,10 +391,11 @@ impl Document {
             let children = finished.pop()?;
             let node = match &record.data {
                 NodeData::Document => Node::Document(children),
-                NodeData::Element { tag, attrs } => Node::Element(Element {
+                NodeData::Element { tag, attrs, ns } => Node::Element(Element {
                     tag: tag.clone(),
                     attrs: attrs.clone(),
                     children,
+                    ns: ns.clone(),
                 }),
                 NodeData::Text(data) => Node::Text(Text { data: data.clone() }),
             };
@@ -465,11 +470,54 @@ impl Document {
         matches!(self.data(id), Some(NodeData::Text(_)))
     }
 
-    /// An element's tag name.
+    /// An HTML element's tag name; `None` for an element of another
+    /// namespace (M32), so that asking whether a node is an HTML `a`, an
+    /// `img` or a `title` never takes an SVG one for it.
     #[inline]
     pub fn tag(&self, id: NodeId) -> Option<&str> {
         match self.data(id)? {
-            NodeData::Element { tag, .. } => Some(tag),
+            NodeData::Element {
+                tag,
+                ns: Namespace::Html,
+                ..
+            } => Some(tag),
+            _ => None,
+        }
+    }
+
+    /// Any element's namespace and qualified name, as stored.
+    #[inline]
+    pub fn element_name(&self, id: NodeId) -> Option<(&Namespace, &str)> {
+        match self.data(id)? {
+            NodeData::Element { tag, ns, .. } => Some((ns, tag)),
+            _ => None,
+        }
+    }
+
+    /// Any element's local name: an HTML element's tag, another's
+    /// qualified name without its prefix.
+    #[inline]
+    pub fn local_name(&self, id: NodeId) -> Option<&str> {
+        self.element_name(id).map(|(_, tag)| local_part(tag))
+    }
+
+    /// An element's namespace.
+    #[inline]
+    pub fn namespace(&self, id: NodeId) -> Option<&Namespace> {
+        self.element_name(id).map(|(ns, _)| ns)
+    }
+
+    /// Whether `id` is an element of the HTML namespace.
+    #[inline]
+    pub fn is_html(&self, id: NodeId) -> bool {
+        self.namespace(id) == Some(&Namespace::Html)
+    }
+
+    /// An SVG element's local name; `None` for any other node.
+    #[inline]
+    pub fn svg_tag(&self, id: NodeId) -> Option<&str> {
+        match self.element_name(id)? {
+            (Namespace::Svg, tag) => Some(local_part(tag)),
             _ => None,
         }
     }
@@ -750,6 +798,7 @@ impl Document {
         Ok(self.allocate(NodeData::Element {
             tag: tag.to_ascii_lowercase(),
             attrs: Vec::new(),
+            ns: Namespace::Html,
         }))
     }
 
@@ -768,7 +817,30 @@ impl Document {
         Ok(self.allocate(NodeData::Element {
             tag: tag.to_ascii_lowercase(),
             attrs,
+            ns: Namespace::Html,
         }))
+    }
+
+    /// A new, detached element of the namespace `ns`, named `qualified`
+    /// and given `attrs` as they are: an HTML element's name lowercased,
+    /// another's kept in its case, as the parsers and `createElementNS`
+    /// make them (M32).
+    pub fn create_element_ns(
+        &mut self,
+        ns: Namespace,
+        qualified: &str,
+        attrs: Vec<(String, String)>,
+    ) -> Result<NodeId, MutationError> {
+        self.check_room()?;
+        self.check_data(
+            qualified.len() + attrs.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>(),
+        )?;
+        let tag = if ns == Namespace::Html {
+            qualified.to_ascii_lowercase()
+        } else {
+            qualified.to_owned()
+        };
+        Ok(self.allocate(NodeData::Element { tag, attrs, ns }))
     }
 
     /// A new, detached text node.
@@ -869,16 +941,17 @@ impl Document {
         Ok(())
     }
 
-    /// Sets attribute `name` (lowercased) of `element` to `value`,
-    /// adding it last when the element has none; setting the value it
-    /// already has changes nothing and records nothing.
+    /// Sets attribute `name` (lowercased on an HTML element, as an HTML
+    /// document's `setAttribute` does) of `element` to `value`, adding
+    /// it last when the element has none; setting the value it already
+    /// has changes nothing and records nothing.
     pub fn set_attribute(
         &mut self,
         element: NodeId,
         name: &str,
         value: &str,
     ) -> Result<(), MutationError> {
-        let name = name.to_ascii_lowercase();
+        let name = self.attribute_name(element, name);
         let had = match self.attrs_mut(element)?.iter().find(|(k, _)| *k == name) {
             Some((_, v)) if v == value => return Ok(()),
             Some((_, v)) => Some(v.len()),
@@ -906,10 +979,20 @@ impl Document {
         Ok(())
     }
 
-    /// Removes attribute `name` (lowercased) of `element`; removing one
-    /// it does not have changes nothing.
+    /// An attribute's name as `element` keeps it: lowercased on an HTML
+    /// element, as given on another.
+    fn attribute_name(&self, element: NodeId, name: &str) -> String {
+        if self.is_html(element) {
+            name.to_ascii_lowercase()
+        } else {
+            name.to_owned()
+        }
+    }
+
+    /// Removes attribute `name` (lowercased on an HTML element) of
+    /// `element`; removing one it does not have changes nothing.
     pub fn remove_attribute(&mut self, element: NodeId, name: &str) -> Result<(), MutationError> {
-        let name = name.to_ascii_lowercase();
+        let name = self.attribute_name(element, name);
         let attrs = self.attrs_mut(element)?;
         let Some(at) = attrs.iter().position(|(k, _)| *k == name) else {
             return Ok(());
@@ -1337,7 +1420,7 @@ impl Document {
 fn data_size(data: &NodeData) -> usize {
     match data {
         NodeData::Document => 0,
-        NodeData::Element { tag, attrs } => {
+        NodeData::Element { tag, attrs, .. } => {
             tag.len() + attrs.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>()
         }
         NodeData::Text(text) => text.len(),
@@ -1418,6 +1501,64 @@ mod tests {
             None => "?".into(),
         })
         .collect()
+    }
+
+    #[test]
+    fn an_svg_element_keeps_its_namespace_and_case_and_is_no_html_element() {
+        let mut document = Document::new();
+        let root = document.root();
+        let svg = document
+            .create_element_ns(Namespace::Svg, "linearGradient", Vec::new())
+            .unwrap();
+        document.append_child(root, svg).unwrap();
+        let a = document
+            .create_element_ns(Namespace::Svg, "a", Vec::new())
+            .unwrap();
+        document.append_child(svg, a).unwrap();
+        // Asking for an HTML `a` never finds SVG's.
+        assert_eq!(document.tag(a), None);
+        assert_eq!(document.svg_tag(a), Some("a"));
+        assert_eq!(document.local_name(svg), Some("linearGradient"));
+        assert_eq!(
+            document.element_name(svg),
+            Some((&Namespace::Svg, "linearGradient"))
+        );
+        assert!(!document.is_html(svg) && document.is_element(svg));
+        // An SVG element's attributes keep their case; an HTML one's are
+        // lowercased.
+        document
+            .set_attribute(svg, "gradientUnits", "userSpaceOnUse")
+            .unwrap();
+        assert_eq!(document.attr(svg, "gradientUnits"), Some("userSpaceOnUse"));
+        document.remove_attribute(svg, "gradientunits").unwrap();
+        assert_eq!(document.attr(svg, "gradientUnits"), Some("userSpaceOnUse"));
+        let div = document
+            .create_element_ns(Namespace::Html, "DIV", Vec::new())
+            .unwrap();
+        document.set_attribute(div, "ClassName", "x").unwrap();
+        assert_eq!(document.tag(div), Some("div"));
+        assert_eq!(document.attr(div, "classname"), Some("x"));
+        // A prefixed name's local part.
+        let other = document
+            .create_element_ns(Namespace::from_uri(Some("urn:x")), "x:item", Vec::new())
+            .unwrap();
+        assert_eq!(document.local_name(other), Some("item"));
+        assert_eq!(
+            document.namespace(other).and_then(Namespace::uri),
+            Some("urn:x")
+        );
+        // The owned tree keeps the namespace both ways.
+        let copy = Document::from_node(&document.to_node());
+        let first = copy.document_element().unwrap();
+        assert_eq!(
+            copy.element_name(first),
+            Some((&Namespace::Svg, "linearGradient"))
+        );
+        assert_eq!(
+            Namespace::from_uri(Some(crate::SVG_NAMESPACE)),
+            Namespace::Svg
+        );
+        assert_eq!(Namespace::from_uri(Some("")), Namespace::Other(None));
     }
 
     fn element(document: &Document, tag: &str) -> NodeId {

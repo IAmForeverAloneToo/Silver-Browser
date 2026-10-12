@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
-use dom::{Document, MutationError, NodeData, NodeId, forms};
+use dom::{Document, MutationError, Namespace, NodeData, NodeId, forms};
 use js::{Answer, Call, ConsoleLevel, DomError, Handle, NestedScript, ScriptError, ScriptingHost};
 use net::cookies::{Api, Context};
 use style::animation::Animations;
@@ -442,7 +442,10 @@ impl DocumentHost {
                 Ok(Answer::Number(kind))
             }
             Call::Tag(node) => {
-                let tag = self.document.tag(self.node(node)?).unwrap_or_default();
+                let tag = self
+                    .document
+                    .element_name(self.node(node)?)
+                    .map_or("", |(_, tag)| tag);
                 Ok(Answer::String(tag.to_owned()))
             }
             Call::Parent(node) => {
@@ -680,11 +683,20 @@ impl DocumentHost {
             }
             Call::ElementsByTagName(root, name) => {
                 let root = self.node(root)?;
-                let name = name.to_ascii_lowercase();
+                // An HTML element's name is matched lowercased, another's
+                // as given (DOM section 4.2.6).
+                let lower = name.to_ascii_lowercase();
                 let found = self
                     .elements_under(root)
                     .into_iter()
-                    .filter(|&e| name == "*" || self.document.tag(e) == Some(name.as_str()))
+                    .filter(|&e| {
+                        name == "*"
+                            || self.document.tag(e) == Some(lower.as_str())
+                            || self
+                                .document
+                                .element_name(e)
+                                .is_some_and(|(ns, tag)| *ns != Namespace::Html && tag == name)
+                    })
                     .map(handle)
                     .collect();
                 Ok(Answer::Nodes(found))
@@ -726,7 +738,7 @@ impl DocumentHost {
             }
             Call::SetInnerHtml(node, markup) => {
                 let node = self.node(node)?;
-                let context = self.document.tag(node).unwrap_or("body").to_owned();
+                let context = self.fragment_context(node);
                 let container = self.parse_fragment(&context, node, &markup)?;
                 while let Some(child) = self.document.first_child(node) {
                     self.work += 1;
@@ -749,7 +761,7 @@ impl DocumentHost {
                         "This element's parent is a Document, which may not be modified.",
                     ));
                 }
-                let context = self.document.tag(parent).unwrap_or("body").to_owned();
+                let context = self.fragment_context(parent);
                 let container = self.parse_fragment(&context, parent, &markup)?;
                 self.adopt(container, parent, Some(node))?;
                 self.document.remove_child(parent, node).map_err(refused)?;
@@ -786,8 +798,8 @@ impl DocumentHost {
                 };
                 // An `html` context is taken for a body (HTML section 8.5.6).
                 let context = match self.document.tag(parent) {
-                    Some("html") | None => "body".to_owned(),
-                    Some(tag) => tag.to_owned(),
+                    Some("html") => (Namespace::Html, "body".to_owned()),
+                    _ => self.fragment_context(parent),
                 };
                 let container = self.parse_fragment(&context, parent, &markup)?;
                 self.adopt(container, parent, before)?;
@@ -2134,18 +2146,28 @@ impl DocumentHost {
             .ok_or_else(|| DomError::new("NotFoundError", "The node is no longer there."))
     }
 
+    /// The context a fragment parsed for `element` has: its namespace
+    /// and local name, a `body` for what is no element.
+    fn fragment_context(&self, element: NodeId) -> (Namespace, String) {
+        match self.document.element_name(element) {
+            Some((ns, tag)) => (ns.clone(), dom::local_part(tag).to_owned()),
+            None => (Namespace::Html, "body".to_owned()),
+        }
+    }
+
     /// `node`'s handle, given to a script. The script holds the node once
     /// it makes an object for it ([`Call::Wrap`]).
     fn give(&mut self, node: Option<NodeId>) -> Answer {
         Answer::Node(node.map(handle))
     }
 
-    /// `markup` parsed as a fragment in the context of an element with
-    /// local name `context` (HTML section 13.4) into a new detached
-    /// container, nested no deeper than lets it go under `under`.
+    /// `markup` parsed as a fragment in the context of an element of
+    /// namespace and local name `context` (HTML section 13.4) into a new
+    /// detached container, nested no deeper than lets it go under
+    /// `under`.
     fn parse_fragment(
         &mut self,
-        context: &str,
+        context: &(Namespace, String),
         under: NodeId,
         markup: &str,
     ) -> Result<NodeId, DomError> {
@@ -2159,7 +2181,7 @@ impl DocumentHost {
         html::parse_fragment(
             &mut self.document,
             container,
-            context,
+            (&context.0, &context.1),
             true,
             (dom::MAX_DEPTH + 1).saturating_sub(depth),
             markup,
@@ -2429,9 +2451,9 @@ impl DocumentHost {
     fn clone_node(&mut self, node: NodeId, deep: bool) -> Result<NodeId, DomError> {
         let copy = |document: &mut Document, from: NodeId| -> Result<NodeId, MutationError> {
             match document.data(from) {
-                Some(NodeData::Element { tag, attrs }) => {
-                    let (tag, attrs) = (tag.clone(), attrs.clone());
-                    let made = document.create_element_with(&tag, attrs)?;
+                Some(NodeData::Element { tag, attrs, ns }) => {
+                    let (tag, attrs, ns) = (tag.clone(), attrs.clone(), ns.clone());
+                    let made = document.create_element_ns(ns, &tag, attrs)?;
                     if let Some(state) = document.control(from) {
                         let state = forms::ControlState {
                             selection: forms::Selection::default(),

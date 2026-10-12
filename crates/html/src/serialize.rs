@@ -2,7 +2,7 @@
 //! children as markup, what `innerHTML` and `outerHTML` read. Iterative
 //! at any depth.
 
-use dom::{Document, NodeData, NodeId};
+use dom::{Document, Namespace, NodeData, NodeId};
 
 /// The elements that serialize as void: HTML's void elements, and
 /// `basefont`, `bgsound`, `frame`, `keygen` and `param`.
@@ -40,9 +40,9 @@ pub fn serialize_children(document: &Document, node: NodeId, scripting: bool) ->
 pub fn serialize_node(document: &Document, node: NodeId, scripting: bool) -> String {
     let mut out = String::new();
     match document.data(node) {
-        Some(NodeData::Element { tag, attrs }) => {
+        Some(NodeData::Element { tag, attrs, ns }) => {
             start_tag(tag, attrs, &mut out);
-            if !VOID.contains(&tag.as_str()) {
+            if !(*ns == Namespace::Html && VOID.contains(&tag.as_str())) {
                 write_children(document, node, scripting, &mut out);
                 end_tag(tag, &mut out);
             }
@@ -74,9 +74,11 @@ fn write_children(document: &Document, node: NodeId, scripting: bool, out: &mut 
                     escape(text, false, out);
                 }
             }
-            Some(NodeData::Element { tag, attrs }) => {
+            Some(NodeData::Element { tag, attrs, ns }) => {
                 start_tag(tag, attrs, out);
-                if !VOID.contains(&tag.as_str()) {
+                // Only HTML's void elements have no end tag: a foreign
+                // element empty or not has one (`<rect></rect>`).
+                if !(*ns == Namespace::Html && VOID.contains(&tag.as_str())) {
                     if document.first_child(at).is_some() {
                         descend = true;
                     } else {
@@ -99,7 +101,7 @@ fn write_children(document: &Document, node: NodeId, scripting: bool, out: &mut 
             }
             match document.parent(at) {
                 Some(parent) if parent != node => {
-                    if let Some(tag) = document.tag(parent) {
+                    if let Some((_, tag)) = document.element_name(parent) {
                         end_tag(tag, out);
                     }
                     at = parent;

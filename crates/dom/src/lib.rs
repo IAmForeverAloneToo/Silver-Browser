@@ -22,6 +22,66 @@ pub use document::{
 };
 pub use microsyntax::{Dimension, parse_dimension, parse_integer, parse_non_negative_integer};
 
+/// The HTML namespace (Infra 8).
+pub const HTML_NAMESPACE: &str = "http://www.w3.org/1999/xhtml";
+/// The SVG namespace.
+pub const SVG_NAMESPACE: &str = "http://www.w3.org/2000/svg";
+/// The MathML namespace.
+pub const MATHML_NAMESPACE: &str = "http://www.w3.org/1998/Math/MathML";
+/// The XLink namespace, of SVG's `xlink:href`.
+pub const XLINK_NAMESPACE: &str = "http://www.w3.org/1999/xlink";
+/// The XML namespace, of `xml:space` and `xml:lang`.
+pub const XML_NAMESPACE: &str = "http://www.w3.org/XML/1998/namespace";
+/// The XMLNS namespace, of `xmlns` and `xmlns:` attributes.
+pub const XMLNS_NAMESPACE: &str = "http://www.w3.org/2000/xmlns/";
+
+/// An element's namespace (M32, `docs/design/svg.md`): HTML's, SVG's,
+/// MathML's, or another, which an XML document or `createElementNS`
+/// gives (`None` for no namespace).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub enum Namespace {
+    /// The HTML namespace: an HTML document's elements.
+    #[default]
+    Html,
+    /// The SVG namespace.
+    Svg,
+    /// The MathML namespace.
+    MathMl,
+    /// Another namespace's URI, or none.
+    Other(Option<Box<str>>),
+}
+
+impl Namespace {
+    /// The namespace named by `uri`; `None` or an empty URI is no
+    /// namespace (DOM Standard's "validate and extract").
+    pub fn from_uri(uri: Option<&str>) -> Namespace {
+        match uri {
+            Some(HTML_NAMESPACE) => Namespace::Html,
+            Some(SVG_NAMESPACE) => Namespace::Svg,
+            Some(MATHML_NAMESPACE) => Namespace::MathMl,
+            None | Some("") => Namespace::Other(None),
+            Some(other) => Namespace::Other(Some(other.into())),
+        }
+    }
+
+    /// The namespace's URI; `None` for no namespace.
+    pub fn uri(&self) -> Option<&str> {
+        match self {
+            Namespace::Html => Some(HTML_NAMESPACE),
+            Namespace::Svg => Some(SVG_NAMESPACE),
+            Namespace::MathMl => Some(MATHML_NAMESPACE),
+            Namespace::Other(uri) => uri.as_deref(),
+        }
+    }
+}
+
+/// The local part of a qualified name: what follows its prefix's colon.
+pub fn local_part(qualified: &str) -> &str {
+    qualified
+        .split_once(':')
+        .map_or(qualified, |(_, local)| local)
+}
+
 /// A text node's payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Text {
@@ -32,12 +92,15 @@ pub struct Text {
 /// An element node's payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Element {
-    /// Lowercased tag name, e.g. `"h1"`.
+    /// Tag name: lowercased for an HTML element, e.g. `"h1"`; another's
+    /// qualified name in its own case, e.g. `"linearGradient"`.
     pub tag: String,
     /// Attribute list, order preserved.
     pub attrs: Vec<(String, String)>,
     /// Child nodes.
     pub children: Vec<Node>,
+    /// The element's namespace.
+    pub ns: Namespace,
 }
 
 /// A node in the document tree.
@@ -54,10 +117,16 @@ pub enum Node {
 impl Element {
     /// Creates an empty element with the given tag name.
     pub fn new(tag: impl Into<String>) -> Self {
+        Element::in_namespace(Namespace::Html, tag)
+    }
+
+    /// Creates an empty element of the namespace `ns`.
+    pub fn in_namespace(ns: Namespace, tag: impl Into<String>) -> Self {
         Element {
             tag: tag.into(),
             attrs: Vec::new(),
             children: Vec::new(),
+            ns,
         }
     }
 
