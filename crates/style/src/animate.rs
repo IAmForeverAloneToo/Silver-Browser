@@ -219,6 +219,33 @@ longhands! {
     TextDecorationThickness = "text-decoration-thickness": ByComputedValue,
     TextUnderlineOffset = "text-underline-offset": ByComputedValue,
     TextUnderlinePosition = "text-underline-position": Discrete,
+    Fill = "fill": ByComputedValue,
+    FillOpacity = "fill-opacity": ByComputedValue,
+    FillRule = "fill-rule": Discrete,
+    Stroke = "stroke": ByComputedValue,
+    StrokeOpacity = "stroke-opacity": ByComputedValue,
+    StrokeWidth = "stroke-width": ByComputedValue,
+    StrokeLinecap = "stroke-linecap": Discrete,
+    StrokeLinejoin = "stroke-linejoin": Discrete,
+    StrokeMiterlimit = "stroke-miterlimit": ByComputedValue,
+    StrokeDasharray = "stroke-dasharray": ByComputedValue,
+    StrokeDashoffset = "stroke-dashoffset": ByComputedValue,
+    ClipRule = "clip-rule": Discrete,
+    TextAnchor = "text-anchor": Discrete,
+    DominantBaseline = "dominant-baseline": Discrete,
+    PaintOrder = "paint-order": Discrete,
+    ShapeRendering = "shape-rendering": Discrete,
+    StopColor = "stop-color": ByComputedValue,
+    StopOpacity = "stop-opacity": ByComputedValue,
+    VectorEffect = "vector-effect": Discrete,
+    ClipPath = "clip-path": Discrete,
+    X = "x": ByComputedValue,
+    Y = "y": ByComputedValue,
+    Cx = "cx": ByComputedValue,
+    Cy = "cy": ByComputedValue,
+    R = "r": ByComputedValue,
+    Rx = "rx": ByComputedValue,
+    Ry = "ry": ByComputedValue,
     BackgroundImage = "background-image": Discrete,
     BackgroundRepeat = "background-repeat": Discrete,
     BackgroundPosition = "background-position": ByComputedValue,
@@ -693,6 +720,33 @@ pub fn copy(property: Longhand, from: &ComputedStyle, to: &mut ComputedStyle) {
                 underline_position
             )
         }
+        Fill => copy_group!(to, from, svg, svg, svg_mut, fill),
+        FillOpacity => copy_group!(to, from, svg, svg, svg_mut, fill_opacity),
+        FillRule => copy_group!(to, from, svg, svg, svg_mut, fill_rule),
+        Stroke => copy_group!(to, from, svg, svg, svg_mut, stroke),
+        StrokeOpacity => copy_group!(to, from, svg, svg, svg_mut, stroke_opacity),
+        StrokeWidth => copy_group!(to, from, svg, svg, svg_mut, stroke_width),
+        StrokeLinecap => copy_group!(to, from, svg, svg, svg_mut, stroke_linecap),
+        StrokeLinejoin => copy_group!(to, from, svg, svg, svg_mut, stroke_linejoin),
+        StrokeMiterlimit => copy_group!(to, from, svg, svg, svg_mut, stroke_miterlimit),
+        StrokeDasharray => copy_group!(to, from, svg, svg, svg_mut, stroke_dasharray),
+        StrokeDashoffset => copy_group!(to, from, svg, svg, svg_mut, stroke_dashoffset),
+        ClipRule => copy_group!(to, from, svg, svg, svg_mut, clip_rule),
+        TextAnchor => copy_group!(to, from, svg, svg, svg_mut, text_anchor),
+        DominantBaseline => copy_group!(to, from, svg, svg, svg_mut, dominant_baseline),
+        PaintOrder => copy_group!(to, from, svg, svg, svg_mut, paint_order),
+        ShapeRendering => copy_group!(to, from, svg, svg, svg_mut, shape_rendering),
+        StopColor => copy_group!(to, from, svg, svg_own, svg_own_mut, stop_color),
+        StopOpacity => copy_group!(to, from, svg, svg_own, svg_own_mut, stop_opacity),
+        VectorEffect => copy_group!(to, from, svg, svg_own, svg_own_mut, vector_effect),
+        ClipPath => copy_group!(to, from, svg, svg_own, svg_own_mut, clip_path),
+        X => copy_group!(to, from, svg, svg_own, svg_own_mut, x),
+        Y => copy_group!(to, from, svg, svg_own, svg_own_mut, y),
+        Cx => copy_group!(to, from, svg, svg_own, svg_own_mut, cx),
+        Cy => copy_group!(to, from, svg, svg_own, svg_own_mut, cy),
+        R => copy_group!(to, from, svg, svg_own, svg_own_mut, r),
+        Rx => copy_group!(to, from, svg, svg_own, svg_own_mut, rx),
+        Ry => copy_group!(to, from, svg, svg_own, svg_own_mut, ry),
     }
 }
 
@@ -858,6 +912,33 @@ pub fn same(property: Longhand, a: &ComputedStyle, b: &ComputedStyle) -> bool {
         TextUnderlinePosition => {
             a.decoration().underline_position == b.decoration().underline_position
         }
+        Fill => a.svg().fill == b.svg().fill,
+        FillOpacity => a.svg().fill_opacity == b.svg().fill_opacity,
+        FillRule => a.svg().fill_rule == b.svg().fill_rule,
+        Stroke => a.svg().stroke == b.svg().stroke,
+        StrokeOpacity => a.svg().stroke_opacity == b.svg().stroke_opacity,
+        StrokeWidth => a.svg().stroke_width == b.svg().stroke_width,
+        StrokeLinecap => a.svg().stroke_linecap == b.svg().stroke_linecap,
+        StrokeLinejoin => a.svg().stroke_linejoin == b.svg().stroke_linejoin,
+        StrokeMiterlimit => a.svg().stroke_miterlimit == b.svg().stroke_miterlimit,
+        StrokeDasharray => a.svg().stroke_dasharray == b.svg().stroke_dasharray,
+        StrokeDashoffset => a.svg().stroke_dashoffset == b.svg().stroke_dashoffset,
+        ClipRule => a.svg().clip_rule == b.svg().clip_rule,
+        TextAnchor => a.svg().text_anchor == b.svg().text_anchor,
+        DominantBaseline => a.svg().dominant_baseline == b.svg().dominant_baseline,
+        PaintOrder => a.svg().paint_order == b.svg().paint_order,
+        ShapeRendering => a.svg().shape_rendering == b.svg().shape_rendering,
+        StopColor => a.svg_own().stop_color == b.svg_own().stop_color,
+        StopOpacity => a.svg_own().stop_opacity == b.svg_own().stop_opacity,
+        VectorEffect => a.svg_own().vector_effect == b.svg_own().vector_effect,
+        ClipPath => a.svg_own().clip_path == b.svg_own().clip_path,
+        X => a.svg_own().x == b.svg_own().x,
+        Y => a.svg_own().y == b.svg_own().y,
+        Cx => a.svg_own().cx == b.svg_own().cx,
+        Cy => a.svg_own().cy == b.svg_own().cy,
+        R => a.svg_own().r == b.svg_own().r,
+        Rx => a.svg_own().rx == b.svg_own().rx,
+        Ry => a.svg_own().ry == b.svg_own().ry,
     }
 }
 
@@ -1697,7 +1778,146 @@ pub fn interpolate(
             position.y = oy;
             true
         }
+        Fill | Stroke | StopColor => {
+            // Two colours interpolate, `currentcolor` being the style's
+            // colour; a paint server or `none` goes discretely.
+            let (x, y) = match property {
+                Fill => (&a.svg().fill, &b.svg().fill),
+                Stroke => (&a.svg().stroke, &b.svg().stroke),
+                _ => (&a.svg_own().stop_color, &b.svg_own().stop_color),
+            };
+            let (Some(x), Some(y)) = (paint_color(x, a), paint_color(y, b)) else {
+                return false;
+            };
+            let value = computed::SvgPaint::Color(color(x, y, p));
+            match property {
+                Fill => to.svg_mut().fill = value,
+                Stroke => to.svg_mut().stroke = value,
+                _ => to.svg_own_mut().stop_color = value,
+            }
+            true
+        }
+        FillOpacity => {
+            to.svg_mut().fill_opacity =
+                number(a.svg().fill_opacity, b.svg().fill_opacity, p, 0.0, 1.0);
+            true
+        }
+        StrokeOpacity => {
+            to.svg_mut().stroke_opacity =
+                number(a.svg().stroke_opacity, b.svg().stroke_opacity, p, 0.0, 1.0);
+            true
+        }
+        StopOpacity => {
+            to.svg_own_mut().stop_opacity = number(
+                a.svg_own().stop_opacity,
+                b.svg_own().stop_opacity,
+                p,
+                0.0,
+                1.0,
+            );
+            true
+        }
+        StrokeMiterlimit => {
+            to.svg_mut().stroke_miterlimit = number(
+                a.svg().stroke_miterlimit,
+                b.svg().stroke_miterlimit,
+                p,
+                0.0,
+                f32::MAX,
+            );
+            true
+        }
+        StrokeWidth => set!(
+            to.svg_mut().stroke_width,
+            length_percentage(&a.svg().stroke_width, &b.svg().stroke_width, p, true)
+        ),
+        StrokeDashoffset => set!(
+            to.svg_mut().stroke_dashoffset,
+            length_percentage(
+                &a.svg().stroke_dashoffset,
+                &b.svg().stroke_dashoffset,
+                p,
+                false
+            )
+        ),
+        StrokeDasharray => {
+            // Lists of one length interpolate dash by dash; others go
+            // discretely.
+            let (Some(x), Some(y)) = (&a.svg().stroke_dasharray, &b.svg().stroke_dasharray) else {
+                return false;
+            };
+            if x.len() != y.len() {
+                return false;
+            }
+            let Some(dashes) = x
+                .iter()
+                .zip(y.iter())
+                .map(|(x, y)| length_percentage(x, y, p, true))
+                .collect::<Option<Vec<_>>>()
+            else {
+                return false;
+            };
+            to.svg_mut().stroke_dasharray = Some(Arc::from(dashes));
+            true
+        }
+        X | Y | Cx | Cy | R => {
+            let read = |s: &ComputedStyle| {
+                let own = s.svg_own();
+                match property {
+                    X => own.x.clone(),
+                    Y => own.y.clone(),
+                    Cx => own.cx.clone(),
+                    Cy => own.cy.clone(),
+                    _ => own.r.clone(),
+                }
+            };
+            let Some(value) = length_percentage(&read(a), &read(b), p, property == R) else {
+                return false;
+            };
+            let own = to.svg_own_mut();
+            match property {
+                X => own.x = value,
+                Y => own.y = value,
+                Cx => own.cx = value,
+                Cy => own.cy = value,
+                _ => own.r = value,
+            }
+            true
+        }
+        Rx | Ry => {
+            let read = |s: &ComputedStyle| {
+                let own = s.svg_own();
+                auto_value(if property == Rx { &own.rx } else { &own.ry })
+            };
+            let (Some(x), Some(y)) = (read(a), read(b)) else {
+                return false;
+            };
+            let Some(value) = length_percentage(&x, &y, p, true) else {
+                return false;
+            };
+            let value = match value {
+                LengthPercentage::Px(v) => LengthPercentageAuto::Px(v),
+                LengthPercentage::Percent(v) => LengthPercentageAuto::Percent(v),
+                LengthPercentage::Calc(c) => LengthPercentageAuto::Calc(c),
+            };
+            if property == Rx {
+                to.svg_own_mut().rx = value;
+            } else {
+                to.svg_own_mut().ry = value;
+            }
+            true
+        }
         _ => false,
+    }
+}
+
+/// A paint's colour, `currentcolor` being `style`'s; `None` for a paint
+/// that is no colour.
+fn paint_color(paint: &computed::SvgPaint, style: &ComputedStyle) -> Option<computed::Color> {
+    match paint {
+        computed::SvgPaint::Color(c) => Some(*c),
+        computed::SvgPaint::CurrentColor => Some(style.color),
+        _ => None,
     }
 }
 
@@ -1910,6 +2130,56 @@ mod tests {
         a.0.iter()
             .zip(b.0.iter())
             .all(|(x, y)| (x - y).abs() < 1e-4)
+    }
+
+    #[test]
+    fn svgs_paints_lengths_and_dashes_interpolate() {
+        // M32: two colours, `currentcolor` among them, mix; a paint
+        // server goes discretely; dashes of one count go dash by dash.
+        use computed::SvgPaint;
+        let fill =
+            |from: &str, to: &str, p| blended(Longhand::Fill, from, to, p).svg().fill.clone();
+        assert_eq!(
+            fill("fill: rgb(0, 0, 0)", "fill: rgb(200, 100, 0)", 0.5),
+            SvgPaint::Color(computed::Color::rgb8(100, 50, 0))
+        );
+        assert_eq!(
+            fill(
+                "fill: currentcolor; color: rgb(0, 0, 0)",
+                "fill: rgb(200, 0, 0)",
+                0.5
+            ),
+            SvgPaint::Color(computed::Color::rgb8(100, 0, 0))
+        );
+        assert_eq!(
+            fill("fill: url(#a)", "fill: red", 0.25),
+            SvgPaint::Url("#a".into(), None)
+        );
+        let width = blended(
+            Longhand::StrokeWidth,
+            "stroke-width: 2",
+            "stroke-width: 0",
+            1.5,
+        );
+        assert_eq!(
+            width.svg().stroke_width,
+            LengthPercentage::Px(0.0),
+            "not negative"
+        );
+        let dashes = blended(
+            Longhand::StrokeDasharray,
+            "stroke-dasharray: 2 4",
+            "stroke-dasharray: 4 8",
+            0.5,
+        );
+        assert_eq!(
+            dashes.svg().stroke_dasharray.as_deref(),
+            Some(&[LengthPercentage::Px(3.0), LengthPercentage::Px(6.0)][..])
+        );
+        let r = blended(Longhand::R, "r: 2px", "r: 4px", 0.5);
+        assert_eq!(r.svg_own().r, LengthPercentage::Px(3.0));
+        let rx = blended(Longhand::Rx, "rx: auto", "rx: 4px", 0.25);
+        assert_eq!(rx.svg_own().rx, LengthPercentageAuto::Auto);
     }
 
     #[test]

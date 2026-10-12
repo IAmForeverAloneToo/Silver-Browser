@@ -105,6 +105,10 @@ pub mod serialize;
 /// paint and hit testing share.
 pub mod transform;
 
+/// SVG's transform list (M32): the grammar of the `transform`,
+/// `gradientTransform` and `patternTransform` attributes, as a matrix.
+pub mod svg_transform;
+
 pub use selector_matching::{matches_selector, matches_selector_list, parse_selector_list};
 
 pub use cascade::{

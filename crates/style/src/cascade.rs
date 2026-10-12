@@ -123,7 +123,7 @@ use crate::computed::{
 };
 use crate::computed::{
     AnimationPlayState, Backgrounds, BorderImage, Calc, Decoration, Effects, Fragmentation,
-    GridStyle, ImageStyle, JustifyItems, Lists, Motion, WillChange,
+    GridStyle, ImageStyle, JustifyItems, Lists, Motion, Svg, WillChange,
 };
 use crate::custom::{self, CustomProperties, DataType, Substituted, Substitutions};
 use crate::invalidation::{Reach, SelectorFeatures, invalidate};
@@ -144,10 +144,12 @@ mod images;
 mod lists;
 mod motion;
 mod page;
+mod svg;
 
 use animated::Animated;
 pub(crate) use images::is_img_hint;
 pub(crate) use lists::is_list_hint;
+pub(crate) use svg::is_svg_hint;
 
 /// The built-in default stylesheet (M5.6), compiled in — loading it is
 /// not resource fetching (no I/O at runtime), so it doesn't bend the
@@ -1900,19 +1902,26 @@ fn declarations_for<'a>(
         let attr = |name: &str| document.attr(element, name).map(str::to_string);
         lists::list_hints(tag, attr) + &images::img_hints(tag, attr)
     });
-    if !hints.is_empty()
-        && let Ok(decls) = css::parse_style_attribute(&hints)
-    {
-        for decl in decls {
-            out.element().push(Applied {
-                tier: tier(TierBase::AuthorSheet, false),
-                layer: 0,
-                specificity: Specificity::default(),
-                order,
-                decl: Cow::Owned(decl),
-            });
-            order += 1;
-        }
+    // SVG's presentation attributes (M32), built as declarations, never
+    // as text a value could add another to.
+    let svg_hints = match (document.svg_tag(element), document.attrs(element)) {
+        (Some(tag), Some(attrs)) => svg::svg_hints(tag, attrs),
+        _ => Vec::new(),
+    };
+    let html_hints = if hints.is_empty() {
+        Vec::new()
+    } else {
+        css::parse_style_attribute(&hints).unwrap_or_default()
+    };
+    for decl in html_hints.into_iter().chain(svg_hints) {
+        out.element().push(Applied {
+            tier: tier(TierBase::AuthorSheet, false),
+            layer: 0,
+            specificity: Specificity::default(),
+            order,
+            decl: Cow::Owned(decl),
+        });
+        order += 1;
     }
     collect_from_sheet(
         matcher,
@@ -2305,6 +2314,9 @@ fn compute_style(
         .is_some_and(|m| *m == Motion::default())
     {
         style.motion = None;
+    }
+    if style.svg.as_deref().is_some_and(|s| *s == Svg::default()) {
+        style.svg = None;
     }
     style
 }
@@ -3155,9 +3167,9 @@ fn apply_declaration(
             decoration::parse_underline_position(value),
             |d, v| d.underline_position = v,
         ),
-        // Not in the v1 property set, or not a real property: ignored,
-        // never an error.
-        _ => false,
+        // SVG's (M32); else not in the property set, or not a real
+        // property: ignored, never an error.
+        _ => svg::apply(style, name, value, bases).unwrap_or(false),
     }
 }
 
@@ -3541,7 +3553,7 @@ fn is_inherited(name: &str) -> bool {
             | "text-justify"
             | "image-orientation"
             | "image-rendering"
-    )
+    ) || svg::is_inherited(name)
 }
 
 /// Applies `name: <keyword>`: the parent's computed value for
@@ -3932,7 +3944,9 @@ fn apply_css_wide(
             }
             *border_color_set = [from_parent; 4];
         }
-        _ => return false, // a property this engine does not know: ignored, as ever
+        // SVG's (M32); else a property this engine does not know:
+        // ignored, as ever.
+        _ => return svg::copy(style, src, name),
     }
     true
 }
@@ -10925,6 +10939,150 @@ mod tests {
         assert_eq!(p.image().image_rendering, ImageRendering::Auto);
         // Nothing set, nothing allocated.
         assert!(style_of("<p>x</p>", &[], "p").image.is_none());
+    }
+
+    #[test]
+    fn svgs_properties_cascade_from_presentation_attributes_and_sheets() {
+        // The reference browser's computed values (M32, the design
+        // note's probes).
+        use crate::computed::TransformFunction;
+        use crate::serialize::computed_value;
+        let html = r##"<div fill="red" id="d"></div><svg id="s" width="200" height="100">
+  <rect id="r1" width="10" height="10"/>
+  <rect id="r2" fill="red"/>
+  <rect id="r2b" fill="red"/>
+  <rect id="r3" fill="red" style="fill: blue"/>
+  <rect id="r4" x="5" y="6" width="7" height="8" rx="2" fill="#00f" stroke="red"
+    stroke-width="3" opacity="0.5" fill-opacity=".25" transform="translate(3 4)"/>
+  <circle id="ci" cx="10" cy="10%" r="5" fill="currentColor" color="orange" x="9"/>
+  <g id="gr" fill="purple" style="x: 5px"><rect id="r5"/><rect id="r9" fill="inherit"/>
+    <rect id="r13" fill="blue" style="fill: unset"/></g>
+  <text id="t" x="10" y="20" font-size="12" text-anchor="middle"
+    dominant-baseline="central">Hi</text>
+  <text id="t2" font-size="calc(2 * 6px)" paint-order="stroke">Hi</text>
+  <rect id="r12" fill="black"/>
+  <rect id="r6" fill="url(#nope) yellow" stroke="url(#nope)"/>
+  <rect id="r7" fill="bogus" stroke="red !important" stroke-width="-1"/>
+  <rect id="r8" stroke-dasharray="1, 2 3" stroke-width="2em" opacity="2"
+    fill-opacity="-1" stroke-linejoin="miter-clip"/>
+  <rect id="r10" fill="red;stroke:blue" transform="scale(2) foo"
+    stroke-miterlimit="0.5" paint-order="markers stroke fill"/>
+  <rect id="r11" fill="var(--c)" style="--c: green" width="-5" rx="auto"/>
+  <stop id="st" stop-color="blue" stop-opacity="2"/>
+</svg>"##;
+        let css = "body { color: rgb(10, 20, 30) } #r2b { fill: green }
+                   #gr { stroke-width: 4 } #r9 { stroke-width: initial }";
+        let of = |id: &str| style_of(html, &[sheet(css)], &format!("#{id}"));
+        let value = |id: &str, name: &str| computed_value(&of(id), name).unwrap();
+        let r1 = of("r1");
+        for (name, want) in [
+            ("fill", "rgb(0, 0, 0)"),
+            ("stroke", "none"),
+            ("stroke-width", "1px"),
+            ("fill-opacity", "1"),
+            ("fill-rule", "nonzero"),
+            ("stroke-linecap", "butt"),
+            ("stroke-linejoin", "miter"),
+            ("stroke-miterlimit", "4"),
+            ("stroke-dasharray", "none"),
+            ("stroke-dashoffset", "0px"),
+            ("x", "0px"),
+            ("rx", "auto"),
+            ("paint-order", "normal"),
+            ("width", "10px"),
+        ] {
+            assert_eq!(computed_value(&r1, name).unwrap(), want, "{name}");
+        }
+        assert!(r1.svg.is_none(), "nothing set, nothing kept");
+        // The lowest of the author's: any rule wins, `style` over both.
+        assert_eq!(value("r2", "fill"), "rgb(255, 0, 0)");
+        assert_eq!(value("r2b", "fill"), "rgb(0, 128, 0)");
+        assert_eq!(value("r3", "fill"), "rgb(0, 0, 255)");
+        let r4 = of("r4");
+        for (name, want) in [
+            ("fill", "rgb(0, 0, 255)"),
+            ("stroke", "rgb(255, 0, 0)"),
+            ("stroke-width", "3px"),
+            ("opacity", "0.5"),
+            ("fill-opacity", "0.25"),
+            ("x", "5px"),
+            ("y", "6px"),
+            ("width", "7px"),
+            ("rx", "2px"),
+            ("ry", "auto"),
+        ] {
+            assert_eq!(computed_value(&r4, name).unwrap(), want, "{name}");
+        }
+        assert_eq!(
+            r4.effects().transform,
+            vec![TransformFunction::Matrix([1.0, 0.0, 0.0, 1.0, 3.0, 4.0])]
+        );
+        // `currentcolor` is the element's colour, from its own attribute
+        // too; the geometry is the element's own.
+        assert_eq!(value("ci", "fill"), "rgb(255, 165, 0)");
+        assert_eq!(value("ci", "cy"), "10%");
+        assert_eq!(value("ci", "r"), "5px");
+        assert_eq!(value("ci", "x"), "0px");
+        // Inherited, `inherit` too; a CSS-wide keyword in a sheet.
+        assert_eq!(value("r5", "fill"), "rgb(128, 0, 128)");
+        assert_eq!(value("r5", "stroke-width"), "4px");
+        assert_eq!(value("r9", "fill"), "rgb(128, 0, 128)");
+        assert_eq!(value("r9", "stroke-width"), "1px");
+        assert_eq!(value("r13", "fill"), "rgb(128, 0, 128)", "unset inherits");
+        // What a child does not inherit is not its parent's.
+        assert_eq!(value("gr", "x"), "5px");
+        assert_eq!(value("r5", "x"), "0px");
+        // A value at its initial value keeps nothing.
+        assert!(of("r12").svg.is_none());
+        let t2 = of("t2");
+        assert_eq!(t2.font_size_px, 12.0, "a number in a function is no pixels");
+        assert_eq!(computed_value(&t2, "paint-order").unwrap(), "stroke");
+        let t = of("t");
+        assert_eq!(t.font_size_px, 12.0);
+        assert_eq!(computed_value(&t, "text-anchor").unwrap(), "middle");
+        assert_eq!(computed_value(&t, "dominant-baseline").unwrap(), "central");
+        assert_eq!(
+            computed_value(&t, "x").unwrap(),
+            "0px",
+            "a text's x is a list"
+        );
+        assert_eq!(computed_value(&t, "display").unwrap(), "block");
+        assert_eq!(value("r6", "fill"), "url(\"#nope\") rgb(255, 255, 0)");
+        assert_eq!(value("r6", "stroke"), "url(\"#nope\")");
+        // A value the property does not take is ignored.
+        assert_eq!(value("r7", "fill"), "rgb(0, 0, 0)");
+        assert_eq!(value("r7", "stroke"), "none");
+        assert_eq!(value("r7", "stroke-width"), "1px");
+        assert_eq!(value("r8", "stroke-dasharray"), "1px, 2px, 3px");
+        assert_eq!(value("r8", "stroke-width"), "32px");
+        assert_eq!(value("r8", "opacity"), "1");
+        assert_eq!(value("r8", "fill-opacity"), "0");
+        assert_eq!(value("r8", "stroke-linejoin"), "miter");
+        let r10 = of("r10");
+        assert_eq!(computed_value(&r10, "fill").unwrap(), "rgb(0, 0, 0)");
+        assert_eq!(computed_value(&r10, "stroke").unwrap(), "none");
+        assert!(r10.effects().transform.is_empty());
+        assert_eq!(computed_value(&r10, "stroke-miterlimit").unwrap(), "0.5");
+        assert_eq!(
+            computed_value(&r10, "paint-order").unwrap(),
+            "markers stroke"
+        );
+        let r11 = of("r11");
+        assert_eq!(computed_value(&r11, "fill").unwrap(), "rgb(0, 128, 0)");
+        assert_eq!(r11.width, Size::Px(0.0));
+        assert_eq!(computed_value(&r11, "rx").unwrap(), "auto");
+        assert_eq!(value("st", "stop-color"), "rgb(0, 0, 255)");
+        assert_eq!(value("st", "stop-opacity"), "1");
+        let s = of("s");
+        assert_eq!(
+            (s.width.clone(), s.height.clone()),
+            (Size::Px(200.0), Size::Px(100.0))
+        );
+        // An HTML element's attribute is no hint; its properties are
+        // there all the same.
+        assert_eq!(value("d", "fill"), "rgb(0, 0, 0)");
+        let div = style_of("<div>x</div>", &[sheet("div { fill: red }")], "div");
+        assert_eq!(computed_value(&div, "fill").unwrap(), "rgb(255, 0, 0)");
     }
 
     #[test]

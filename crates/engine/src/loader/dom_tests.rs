@@ -1488,6 +1488,31 @@ fn svg_markup_is_svgs_through_inner_html_clones_and_tag_name_lookups() {
 }
 
 #[test]
+fn svgs_properties_reach_scripts_through_computed_styles_and_style() {
+    // M32: SVG's properties are the cascade's, presentation attributes
+    // among its declarations, and CSSOM's.
+    let (_tab, console) = scripted(
+        "<svg><rect id=r fill=red stroke-width=2 transform='translate(3 4)'></rect></svg>\
+         <script>var r = document.getElementById('r'); var cs = getComputedStyle(r); \
+         console.log(cs.fill, cs.strokeWidth, cs.getPropertyValue('stroke-miterlimit')); \
+         r.style.fill = 'url(#g) blue'; r.setAttribute('stroke-width', '5'); \
+         console.log(r.style.fill, getComputedStyle(r).fill, getComputedStyle(r).strokeWidth); \
+         r.style.paintOrder = 'stroke stroke'; r.style.r = '2'; \
+         console.log(r.style.paintOrder === '', r.style.r)</script>",
+        true,
+    );
+    assert_eq!(
+        console,
+        [
+            "rgb(255, 0, 0) 2px 4",
+            // The specified value as written (G50).
+            "url(#g) blue url(\"#g\") rgb(0, 0, 255) 5px",
+            "true 2"
+        ]
+    );
+}
+
+#[test]
 fn create_element_ns_makes_svgs_interfaces_and_refuses_as_the_reference_browser() {
     // Chrome 154's answers (scratchpad m32/p9-ns.html).
     let console = logged(

@@ -621,6 +621,9 @@ pub(crate) fn invalidate(
             || tag.is_some_and(|tag| {
                 crate::cascade::is_list_hint(tag, name) || crate::cascade::is_img_hint(tag, name)
             })
+            || document
+                .svg_tag(element)
+                .is_some_and(|tag| crate::cascade::is_svg_hint(tag, name))
             || inline_reads_attributes(document, element)
         {
             out.mark(document, element, Reach::Element);
@@ -1049,6 +1052,32 @@ mod tests {
         assert_eq!(r.computed, 0);
         let r = change(&mut d, &sheets, &mut styles, |d| {
             d.set_attribute(z, "height", "4").unwrap();
+        });
+        assert_eq!(r.computed, 0);
+    }
+
+    #[test]
+    fn an_svg_presentation_attribute_restyles_its_element() {
+        // SVG's presentation attributes (M32): any SVG element's, the
+        // geometry's on the elements that have it; an inherited value
+        // changed restyles the children too.
+        let (mut d, sheets, mut styles) =
+            setup("<svg><g id=x><rect id=y></rect></g></svg><p id=z>b</p>", "");
+        let (x, y, z) = (by_id(&d, "x"), by_id(&d, "y"), by_id(&d, "z"));
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(x, "fill", "red").unwrap();
+        });
+        assert_eq!((r.computed, r.changed.len()), (2, 2));
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(y, "rx", "4").unwrap();
+        });
+        assert_eq!((r.computed, r.changed.len()), (1, 1));
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(x, "rx", "4").unwrap();
+        });
+        assert_eq!(r.computed, 0);
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(z, "fill", "red").unwrap();
         });
         assert_eq!(r.computed, 0);
     }

@@ -16,6 +16,10 @@ use crate::computed::{
     OverflowAlign, Position, SelfAlignment, Size, TableLayout, TextAlign, TextTransform,
     TransformBox, VerticalAlign, WhiteSpace,
 };
+use crate::computed::{
+    DominantBaseline, FillRule, PaintLayer, ShapeRendering, StrokeLinecap, StrokeLinejoin,
+    SvgPaint, TextAnchor, VectorEffect,
+};
 
 /// The properties [`computed_value`] gives, in the order a computed
 /// style's declaration block lists them (alphabetical, as the reference
@@ -42,12 +46,20 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "box-sizing",
     "caption-side",
     "clear",
+    "clip-path",
+    "clip-rule",
     "color",
     "column-gap",
     "cursor",
+    "cx",
+    "cy",
     "direction",
     "display",
+    "dominant-baseline",
     "empty-cells",
+    "fill",
+    "fill-opacity",
+    "fill-rule",
     "flex-basis",
     "flex-direction",
     "flex-grow",
@@ -80,18 +92,37 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "padding-left",
     "padding-right",
     "padding-top",
+    "paint-order",
     "position",
+    "r",
     "right",
     "row-gap",
+    "rx",
+    "ry",
+    "shape-rendering",
+    "stop-color",
+    "stop-opacity",
+    "stroke",
+    "stroke-dasharray",
+    "stroke-dashoffset",
+    "stroke-linecap",
+    "stroke-linejoin",
+    "stroke-miterlimit",
+    "stroke-opacity",
+    "stroke-width",
     "table-layout",
     "text-align",
+    "text-anchor",
     "text-transform",
     "top",
     "transform-box",
+    "vector-effect",
     "vertical-align",
     "white-space",
     "width",
     "word-spacing",
+    "x",
+    "y",
     "z-index",
 ];
 
@@ -271,6 +302,134 @@ pub fn computed_value(style: &ComputedStyle, name: &str) -> Option<String> {
             TransformBox::ViewBox => "view-box",
         }
         .to_owned(),
+        _ => return svg(style, name),
+    })
+}
+
+/// SVG's properties (M32), as the reference browser writes them:
+/// `currentcolor` as the colour it is, a reference as a `url()` of a
+/// string, `paint-order` as the layers it names.
+fn svg(style: &ComputedStyle, name: &str) -> Option<String> {
+    let (s, own) = (style.svg(), style.svg_own());
+    let reference = |r: &str| {
+        let quoted = tokens(&[Token::String {
+            value: r.to_owned(),
+            bad: false,
+        }]);
+        format!("url({quoted})")
+    };
+    let paint = |paint: &SvgPaint| -> String {
+        match paint {
+            SvgPaint::None => "none".to_owned(),
+            SvgPaint::Color(c) => color(*c),
+            SvgPaint::CurrentColor => color(style.color),
+            SvgPaint::ContextFill => "context-fill".to_owned(),
+            SvgPaint::ContextStroke => "context-stroke".to_owned(),
+            SvgPaint::Url(r, None) => reference(r),
+            SvgPaint::Url(r, Some(fallback)) => {
+                let fallback = match &**fallback {
+                    SvgPaint::None => "none".to_owned(),
+                    SvgPaint::Color(c) => color(*c),
+                    _ => color(style.color),
+                };
+                format!("{} {fallback}", reference(r))
+            }
+        }
+    };
+    let rule = |r: FillRule| match r {
+        FillRule::NonZero => "nonzero",
+        FillRule::EvenOdd => "evenodd",
+    };
+    Some(match name {
+        "fill" => paint(&s.fill),
+        "stroke" => paint(&s.stroke),
+        "stop-color" => paint(&own.stop_color),
+        "fill-opacity" => number(s.fill_opacity),
+        "stroke-opacity" => number(s.stroke_opacity),
+        "stop-opacity" => number(own.stop_opacity),
+        "fill-rule" => rule(s.fill_rule).to_owned(),
+        "clip-rule" => rule(s.clip_rule).to_owned(),
+        "stroke-width" => length_percentage(&s.stroke_width)?,
+        "stroke-dashoffset" => length_percentage(&s.stroke_dashoffset)?,
+        "stroke-miterlimit" => number(s.stroke_miterlimit),
+        "stroke-dasharray" => match &s.stroke_dasharray {
+            None => "none".to_owned(),
+            Some(dashes) => dashes
+                .iter()
+                .map(length_percentage)
+                .collect::<Option<Vec<_>>>()?
+                .join(", "),
+        },
+        "stroke-linecap" => match s.stroke_linecap {
+            StrokeLinecap::Butt => "butt",
+            StrokeLinecap::Round => "round",
+            StrokeLinecap::Square => "square",
+        }
+        .to_owned(),
+        "stroke-linejoin" => match s.stroke_linejoin {
+            StrokeLinejoin::Miter => "miter",
+            StrokeLinejoin::Round => "round",
+            StrokeLinejoin::Bevel => "bevel",
+        }
+        .to_owned(),
+        "text-anchor" => match s.text_anchor {
+            TextAnchor::Start => "start",
+            TextAnchor::Middle => "middle",
+            TextAnchor::End => "end",
+        }
+        .to_owned(),
+        "dominant-baseline" => match s.dominant_baseline {
+            DominantBaseline::Auto => "auto",
+            DominantBaseline::TextBottom => "text-bottom",
+            DominantBaseline::Alphabetic => "alphabetic",
+            DominantBaseline::Ideographic => "ideographic",
+            DominantBaseline::Middle => "middle",
+            DominantBaseline::Central => "central",
+            DominantBaseline::Mathematical => "mathematical",
+            DominantBaseline::Hanging => "hanging",
+            DominantBaseline::TextTop => "text-top",
+        }
+        .to_owned(),
+        "paint-order" => match s.paint_order.0 {
+            None => "normal".to_owned(),
+            Some(layers) => {
+                let word = |l: PaintLayer| match l {
+                    PaintLayer::Fill => "fill",
+                    PaintLayer::Stroke => "stroke",
+                    PaintLayer::Markers => "markers",
+                };
+                // The first layer alone when the other two follow in
+                // their usual order, else the first two.
+                if (layers[1] as u8) < (layers[2] as u8) {
+                    word(layers[0]).to_owned()
+                } else {
+                    format!("{} {}", word(layers[0]), word(layers[1]))
+                }
+            }
+        },
+        "shape-rendering" => match s.shape_rendering {
+            ShapeRendering::Auto => "auto",
+            ShapeRendering::OptimizeSpeed => "optimizespeed",
+            ShapeRendering::CrispEdges => "crispedges",
+            ShapeRendering::GeometricPrecision => "geometricprecision",
+        }
+        .to_owned(),
+        "vector-effect" => match own.vector_effect {
+            VectorEffect::None => "none",
+            VectorEffect::NonScalingStroke => "non-scaling-stroke",
+        }
+        .to_owned(),
+        "clip-path" => match &own.clip_path {
+            None => "none".to_owned(),
+            Some(r) => reference(r),
+        },
+        "x" => length_percentage(&own.x)?,
+        "y" => length_percentage(&own.y)?,
+        "cx" => length_percentage(&own.cx)?,
+        "cy" => length_percentage(&own.cy)?,
+        "r" => length_percentage(&own.r)?,
+        "rx" => auto_length(&own.rx),
+        "ry" => auto_length(&own.ry),
         _ => return None,
     })
 }
@@ -572,6 +731,11 @@ mod tests {
         };
         assert_eq!(color(half), "rgb(128, 26, 255)");
         assert_eq!(value("--x"), None);
+        assert_eq!(value("fill").as_deref(), Some("rgb(0, 0, 0)"));
+        assert_eq!(value("stroke").as_deref(), Some("none"));
+        assert_eq!(value("stroke-miterlimit").as_deref(), Some("4"));
+        assert_eq!(value("paint-order").as_deref(), Some("normal"));
+        assert_eq!(value("rx").as_deref(), Some("auto"));
         // Every property listed is given.
         for name in COMPUTED_PROPERTIES {
             assert!(value(name).is_some(), "{name}");

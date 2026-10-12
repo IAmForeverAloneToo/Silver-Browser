@@ -1698,6 +1698,272 @@ impl Effects {
 /// [`ComputedStyle::effects`] gives a style that sets none of them.
 static INITIAL_EFFECTS: LazyLock<Effects> = LazyLock::new(Effects::default);
 
+// ---- SVG (M32, docs/design/svg.md) ----------------------------------------
+
+/// An SVG paint (`fill`, `stroke`, SVG 2 section 13.2), as computed:
+/// `currentcolor` kept as the keyword, the element's `color` where it is
+/// used, as a colour's `currentcolor` is.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SvgPaint {
+    /// `none`.
+    None,
+    /// A colour.
+    Color(Color),
+    /// `currentcolor`.
+    CurrentColor,
+    /// `context-fill`: kept, and drawn as `none` (G87).
+    ContextFill,
+    /// `context-stroke`: kept, and drawn as `none` (G87).
+    ContextStroke,
+    /// `url(...)`, the reference as written, and what stands in when it
+    /// names no paint server: `None` when no fallback is written, else
+    /// `none`, a colour or `currentcolor`.
+    Url(Arc<str>, Option<Box<SvgPaint>>),
+}
+
+/// `fill-rule` and `clip-rule`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FillRule {
+    /// `nonzero`.
+    #[default]
+    NonZero,
+    /// `evenodd`.
+    EvenOdd,
+}
+
+/// `stroke-linecap`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StrokeLinecap {
+    /// `butt`.
+    #[default]
+    Butt,
+    /// `round`.
+    Round,
+    /// `square`.
+    Square,
+}
+
+/// `stroke-linejoin`: SVG 2's `miter-clip` and `arcs` are no values, as
+/// the reference browser has them (G87).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StrokeLinejoin {
+    /// `miter`.
+    #[default]
+    Miter,
+    /// `round`.
+    Round,
+    /// `bevel`.
+    Bevel,
+}
+
+/// `text-anchor`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextAnchor {
+    /// `start`.
+    #[default]
+    Start,
+    /// `middle`.
+    Middle,
+    /// `end`.
+    End,
+}
+
+/// `dominant-baseline` (CSS Inline 3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DominantBaseline {
+    /// `auto`.
+    #[default]
+    Auto,
+    /// `text-bottom`.
+    TextBottom,
+    /// `alphabetic`.
+    Alphabetic,
+    /// `ideographic`.
+    Ideographic,
+    /// `middle`.
+    Middle,
+    /// `central`.
+    Central,
+    /// `mathematical`.
+    Mathematical,
+    /// `hanging`.
+    Hanging,
+    /// `text-top`.
+    TextTop,
+}
+
+/// `shape-rendering`: `crispEdges` draws without anti-aliasing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ShapeRendering {
+    /// `auto`.
+    #[default]
+    Auto,
+    /// `optimizeSpeed`.
+    OptimizeSpeed,
+    /// `crispEdges`.
+    CrispEdges,
+    /// `geometricPrecision`.
+    GeometricPrecision,
+}
+
+/// `vector-effect`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VectorEffect {
+    /// `none`.
+    #[default]
+    None,
+    /// `non-scaling-stroke`.
+    NonScalingStroke,
+}
+
+/// One of the layers `paint-order` orders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaintLayer {
+    /// The fill.
+    Fill,
+    /// The stroke.
+    Stroke,
+    /// The markers.
+    Markers,
+}
+
+/// `paint-order`: the three layers in the order painted, or `None` for
+/// `normal`, which paints them as `fill stroke markers` does and is
+/// told from it, as the reference browser serializes the two apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PaintOrder(pub Option<[PaintLayer; 3]>);
+
+impl PaintOrder {
+    /// The layers in the order painted.
+    pub fn layers(self) -> [PaintLayer; 3] {
+        self.0
+            .unwrap_or([PaintLayer::Fill, PaintLayer::Stroke, PaintLayer::Markers])
+    }
+}
+
+/// SVG's inherited properties (M32), behind one pointer a child shares
+/// with its parent: what [`ComputedStyle::svg`] points to when any is not
+/// its initial value.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SvgInherited {
+    /// `fill`.
+    pub fill: SvgPaint,
+    /// `fill-opacity`, in `[0, 1]`.
+    pub fill_opacity: f32,
+    /// `fill-rule`.
+    pub fill_rule: FillRule,
+    /// `stroke`.
+    pub stroke: SvgPaint,
+    /// `stroke-opacity`, in `[0, 1]`.
+    pub stroke_opacity: f32,
+    /// `stroke-width`, not negative.
+    pub stroke_width: LengthPercentage,
+    /// `stroke-linecap`.
+    pub stroke_linecap: StrokeLinecap,
+    /// `stroke-linejoin`.
+    pub stroke_linejoin: StrokeLinejoin,
+    /// `stroke-miterlimit`, at least 1.
+    pub stroke_miterlimit: f32,
+    /// `stroke-dasharray`; `None` is `none`.
+    pub stroke_dasharray: Option<Arc<[LengthPercentage]>>,
+    /// `stroke-dashoffset`.
+    pub stroke_dashoffset: LengthPercentage,
+    /// `clip-rule`.
+    pub clip_rule: FillRule,
+    /// `text-anchor`.
+    pub text_anchor: TextAnchor,
+    /// `dominant-baseline`.
+    pub dominant_baseline: DominantBaseline,
+    /// `paint-order`.
+    pub paint_order: PaintOrder,
+    /// `shape-rendering`.
+    pub shape_rendering: ShapeRendering,
+}
+
+impl Default for SvgInherited {
+    fn default() -> Self {
+        SvgInherited {
+            fill: SvgPaint::Color(Color::BLACK),
+            fill_opacity: 1.0,
+            fill_rule: FillRule::NonZero,
+            stroke: SvgPaint::None,
+            stroke_opacity: 1.0,
+            stroke_width: LengthPercentage::Px(1.0),
+            stroke_linecap: StrokeLinecap::Butt,
+            stroke_linejoin: StrokeLinejoin::Miter,
+            stroke_miterlimit: 4.0,
+            stroke_dasharray: None,
+            stroke_dashoffset: LengthPercentage::Px(0.0),
+            clip_rule: FillRule::NonZero,
+            text_anchor: TextAnchor::Start,
+            dominant_baseline: DominantBaseline::Auto,
+            paint_order: PaintOrder::default(),
+            shape_rendering: ShapeRendering::Auto,
+        }
+    }
+}
+
+static INITIAL_SVG: LazyLock<SvgInherited> = LazyLock::new(SvgInherited::default);
+
+/// SVG's properties an element does not inherit (M32): the stops', the
+/// clipping path, `vector-effect` and the geometry properties (SVG 2
+/// section 7; `width` and `height` are CSS's own).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SvgOwn {
+    /// `stop-color`: a colour or `currentcolor`.
+    pub stop_color: SvgPaint,
+    /// `stop-opacity`, in `[0, 1]`.
+    pub stop_opacity: f32,
+    /// `vector-effect`.
+    pub vector_effect: VectorEffect,
+    /// `clip-path`: the reference of a `url()`; `None` is `none`.
+    pub clip_path: Option<Arc<str>>,
+    /// `x`.
+    pub x: LengthPercentage,
+    /// `y`.
+    pub y: LengthPercentage,
+    /// `cx`.
+    pub cx: LengthPercentage,
+    /// `cy`.
+    pub cy: LengthPercentage,
+    /// `r`, not negative.
+    pub r: LengthPercentage,
+    /// `rx`, not negative.
+    pub rx: LengthPercentageAuto,
+    /// `ry`, not negative.
+    pub ry: LengthPercentageAuto,
+}
+
+impl Default for SvgOwn {
+    fn default() -> Self {
+        SvgOwn {
+            stop_color: SvgPaint::Color(Color::BLACK),
+            stop_opacity: 1.0,
+            vector_effect: VectorEffect::None,
+            clip_path: None,
+            x: LengthPercentage::Px(0.0),
+            y: LengthPercentage::Px(0.0),
+            cx: LengthPercentage::Px(0.0),
+            cy: LengthPercentage::Px(0.0),
+            r: LengthPercentage::Px(0.0),
+            rx: LengthPercentageAuto::Auto,
+            ry: LengthPercentageAuto::Auto,
+        }
+    }
+}
+
+static INITIAL_SVG_OWN: LazyLock<SvgOwn> = LazyLock::new(SvgOwn::default);
+
+/// SVG's properties (M32), behind the one pointer of
+/// [`ComputedStyle::svg`]: those an element inherits and its own.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Svg {
+    /// The inherited ones.
+    pub inherited: SvgInherited,
+    /// The ones an element does not inherit.
+    pub own: SvgOwn,
+}
+
 /// `break-before` and `break-after` (css-break-3 §3.1; M20): whether a
 /// break may, must or should not come between two boxes. The column and
 /// region values are taken and mean nothing on a page, which has no
@@ -2919,6 +3185,10 @@ pub struct ComputedStyle {
     /// The border image properties (M23.3): `None` while all are their
     /// initial values.
     pub border_image: Option<Arc<BorderImage>>,
+    /// SVG's properties (M32): `None` while all are their initial
+    /// values. Read through [`ComputedStyle::svg`] and
+    /// [`ComputedStyle::svg_own`].
+    pub svg: Option<Arc<Svg>>,
 }
 
 /// `font-family`'s initial value, one for every style that has it.
@@ -2995,6 +3265,7 @@ impl Default for ComputedStyle {
             image: None,
             background: None,
             border_image: None,
+            svg: None,
         }
     }
 }
@@ -3165,6 +3436,30 @@ impl ComputedStyle {
         Arc::make_mut(self.border_image.get_or_insert_with(Default::default))
     }
 
+    /// SVG's inherited properties (M32): this style's, or their initial
+    /// values.
+    pub fn svg(&self) -> &SvgInherited {
+        self.svg.as_deref().map_or(&INITIAL_SVG, |s| &s.inherited)
+    }
+
+    /// SVG's inherited properties to change, this style's own copy made
+    /// first if it shares them or has none.
+    pub fn svg_mut(&mut self) -> &mut SvgInherited {
+        &mut Arc::make_mut(self.svg.get_or_insert_with(Default::default)).inherited
+    }
+
+    /// SVG's properties an element does not inherit (M32): this style's,
+    /// or their initial values.
+    pub fn svg_own(&self) -> &SvgOwn {
+        self.svg.as_deref().map_or(&INITIAL_SVG_OWN, |s| &s.own)
+    }
+
+    /// SVG's own properties to change, this style's copy made first if
+    /// it shares them or has none.
+    pub fn svg_own_mut(&mut self) -> &mut SvgOwn {
+        &mut Arc::make_mut(self.svg.get_or_insert_with(Default::default)).own
+    }
+
     /// `aspect-ratio` and the image properties (M23.2), the initial
     /// values when the style sets none of them.
     pub fn image(&self) -> &ImageStyle {
@@ -3242,6 +3537,7 @@ impl ComputedStyle {
             lists: inherited_lists(from),
             decoration: inherited_decoration(from),
             image: inherited_image(from),
+            svg: inherited_svg(from),
             custom: from.custom.clone(),
             inert: from.inert,
             ..self
@@ -3261,6 +3557,22 @@ fn inherited_fragmentation(from: &ComputedStyle) -> Option<Arc<Fragmentation>> {
         Some(Arc::clone(own))
     } else {
         Some(Arc::new(inherited))
+    }
+}
+
+/// SVG's properties a child of `from` inherits, as
+/// [`inherited_fragmentation`] gives the fragmentation properties.
+fn inherited_svg(from: &ComputedStyle) -> Option<Arc<Svg>> {
+    let own = from.svg.as_ref()?;
+    if own.inherited == SvgInherited::default() {
+        None
+    } else if own.own == SvgOwn::default() {
+        Some(Arc::clone(own))
+    } else {
+        Some(Arc::new(Svg {
+            inherited: own.inherited.clone(),
+            own: SvgOwn::default(),
+        }))
     }
 }
 
@@ -3385,9 +3697,10 @@ mod tests {
         // them. `aspect-ratio` and the image properties (M23.2) another,
         // 656 before them, and the background properties (M23.3) another,
         // 664 before them. The outline properties (M26.4) another, and
-        // `cursor` a byte in the padding, 680 before them. Growing this is
-        // a decision, not an accident; say why where the number changes.
-        assert_eq!(std::mem::size_of::<ComputedStyle>(), 688);
+        // `cursor` a byte in the padding, 680 before them. SVG's
+        // properties (M32) another, 688 before them. Growing this is a
+        // decision, not an accident; say why where the number changes.
+        assert_eq!(std::mem::size_of::<ComputedStyle>(), 696);
         assert_eq!(ComputedStyle::default().grid, None);
         assert_eq!(*ComputedStyle::default().grid(), GridStyle::default());
         assert_eq!(ComputedStyle::default().effects, None);
