@@ -235,12 +235,29 @@ pub enum GradientKind {
     },
 }
 
+/// How a gradient paints past its ends: a 2D context's pad; SVG's
+/// `spreadMethod` may reflect or repeat (M32).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Spread {
+    /// The end colours on.
+    #[default]
+    Pad,
+    /// Back and forth.
+    Reflect,
+    /// Over again.
+    Repeat,
+}
+
 /// A `CanvasGradient`: its geometry and its colour stops, in offset
-/// order, those of one offset in the order they were added.
+/// order, those of one offset in the order they were added; and, for
+/// SVG's (M32), its spread and its own transform, from its geometry's
+/// coordinates to those it is used in.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Gradient {
     pub kind: GradientKind,
     pub stops: Vec<(f64, Rgba)>,
+    pub spread: Spread,
+    pub transform: Matrix,
 }
 
 impl Gradient {
@@ -248,6 +265,8 @@ impl Gradient {
         Gradient {
             kind,
             stops: Vec::new(),
+            spread: Spread::Pad,
+            transform: Matrix::IDENTITY,
         }
     }
 

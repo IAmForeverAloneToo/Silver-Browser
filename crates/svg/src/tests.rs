@@ -3,7 +3,7 @@
 
 use canvas::{Canvas, Matrix};
 use dom::Document;
-use style::CascadeContext;
+use style::{CascadeContext, Stylesheets};
 
 use crate::draw::draw_within;
 use crate::tree::build_within;
@@ -12,24 +12,34 @@ use crate::{Item, MAX_SVG_ELEMENTS, MAX_SVG_LAYERS, Paint, Tree, build, draw};
 /// The tree of the first `<svg>` in `markup`, for a viewport `w` by `h`.
 fn tree_of(markup: &str, w: f64, h: f64) -> Tree {
     let document = Document::from_node(&html::parse_document(markup).expect("never fails"));
-    let styles = style::cascade_document(&document, &[], &CascadeContext::default());
+    let sheets = Stylesheets::new(Vec::new());
+    let context = CascadeContext::default();
+    let styles = sheets.cascade(&document, &context);
+    let recascade = sheets.recascader(&document, &styles, &context);
     let svg = document
         .subtree(document.root())
         .find(|&n| document.svg_tag(n) == Some("svg"))
         .expect("an svg");
-    build(&document, &styles, svg, w, h)
+    build(&document, &styles, Some(&recascade), svg, w, h)
 }
 
 /// The tree of the first `<svg>` in `markup`, at most `limit` elements
 /// built.
-fn tree_within(markup: &str, limit: usize) -> Tree {
+fn tree_within(markup: &str, limit: usize, max_depth: usize) -> Tree {
     let document = Document::from_node(&html::parse_document(markup).expect("never fails"));
     let styles = style::cascade_document(&document, &[], &CascadeContext::default());
     let svg = document
         .subtree(document.root())
         .find(|&n| document.svg_tag(n) == Some("svg"))
         .expect("an svg");
-    build_within(&document, &styles, svg, (10.0, 10.0), limit)
+    build_within(
+        &document,
+        &styles,
+        None,
+        svg,
+        (10.0, 10.0),
+        (limit, max_depth),
+    )
 }
 
 /// `markup`'s first `<svg>` drawn on a canvas `w` by `h`.
@@ -332,13 +342,21 @@ fn the_bounds_hold_what_a_hostile_drawing_asks() {
     // and the first rect are three.
     let markup = "<svg><g><rect width=1 height=1></rect><rect width=2 height=2></rect></g>\
                   <rect width=3 height=3></rect></svg>";
-    let tree = tree_within(markup, 3);
+    let tree = tree_within(markup, 3, dom::MAX_DEPTH);
     assert_eq!(tree.elements, 3);
     let Item::Group(group) = &tree.root.children[0] else {
         panic!("a group");
     };
     assert_eq!((tree.root.children.len(), group.children.len()), (1, 1));
-    assert_eq!(tree_within(markup, MAX_SVG_ELEMENTS).elements, 5);
+    assert_eq!(
+        tree_within(markup, MAX_SVG_ELEMENTS, dom::MAX_DEPTH).elements,
+        5
+    );
+    // Past the depth, what is deeper is left out: three groups open,
+    // the rect in them is not built.
+    let deep = "<svg><g><g><g><rect width=1 height=1></rect></g></g></g></svg>";
+    assert_eq!(tree_within(deep, MAX_SVG_ELEMENTS, 3).elements, 4);
+    assert_eq!(tree_within(deep, MAX_SVG_ELEMENTS, 4).elements, 5);
     // Groups nested past the layers' depth take their opacity to each
     // child: red and blue at half mix there, where a layer shows blue.
     let pair = "<g opacity=0.5><rect width=10 height=10 fill=red></rect>\
@@ -366,4 +384,303 @@ fn the_bounds_hold_what_a_hostile_drawing_asks() {
     let mut canvas = Canvas::new(10, 10, false);
     draw_within(&tree, &mut canvas, &Matrix::IDENTITY, 200);
     assert!(blue(&canvas));
+}
+
+#[test]
+fn gradients_interpolate_unpremultiplied_and_spread() {
+    // The reference browser's middle of opaque red to transparent blue.
+    let canvas = drawn(
+        "<svg><linearGradient id=g><stop offset=0 stop-color=red></stop>\
+         <stop offset=1 stop-color=blue stop-opacity=0></stop></linearGradient>\
+         <rect width=100 height=10 fill='url(#g)'></rect></svg>",
+        100,
+        10,
+    );
+    let middle = px(&canvas, 50, 5);
+    assert_eq!(middle, [128, 0, 130, 126]);
+    assert!(
+        near(px(&canvas, 0, 5), [255, 0, 0, 255]),
+        "{:?}",
+        px(&canvas, 0, 5)
+    );
+    // Past its end at 60%: padded, repeated, reflected.
+    let spread = |method: &str| {
+        let canvas = drawn(
+            &format!(
+                "<svg><linearGradient id=g x2=0.5 spreadMethod={method}>\
+                 <stop stop-color=red></stop><stop offset=1 stop-color=blue></stop>\
+                 </linearGradient><rect width=100 height=10 fill='url(#g)'></rect></svg>"
+            ),
+            100,
+            10,
+        );
+        px(&canvas, 60, 5)
+    };
+    assert!(near(spread("pad"), [0, 0, 255, 255]), "{:?}", spread("pad"));
+    let repeat = spread("repeat");
+    assert!(repeat[0] > 180 && repeat[2] < 75, "{repeat:?}");
+    let reflect = spread("reflect");
+    assert!(
+        reflect[0] < 75 && reflect[0] > 30 && reflect[2] > 180,
+        "{reflect:?}"
+    );
+    // Offsets out of order are each the one before's: blue from 0.8 on,
+    // red before it.
+    let canvas = drawn(
+        "<svg><linearGradient id=g><stop offset=0.8 stop-color=red></stop>\
+         <stop offset=0.2 stop-color=blue></stop></linearGradient>\
+         <linearGradient id=d x2=0><stop stop-color=red></stop>\
+         <stop offset=1 stop-color=lime></stop></linearGradient>\
+         <rect width=100 height=10 fill='url(#g)'></rect>\
+         <rect y=10 width=100 height=10 fill='url(#d)'></rect></svg>",
+        100,
+        20,
+    );
+    assert!(
+        near(px(&canvas, 50, 5), [255, 0, 0, 255]),
+        "{:?}",
+        px(&canvas, 50, 5)
+    );
+    assert!(
+        near(px(&canvas, 90, 5), [0, 0, 255, 255]),
+        "{:?}",
+        px(&canvas, 90, 5)
+    );
+    // A gradient of no length paints its last stop.
+    assert!(
+        near(px(&canvas, 50, 15), [0, 255, 0, 255]),
+        "{:?}",
+        px(&canvas, 50, 15)
+    );
+}
+
+#[test]
+fn a_gradient_takes_its_units_transform_and_templates() {
+    let stops = "<stop stop-color=red></stop><stop offset=1 stop-color=blue></stop>";
+    // The bounding box's units: the rect's own left is red.
+    let canvas = drawn(
+        &format!(
+            "<svg><linearGradient id=g>{stops}</linearGradient>\
+             <linearGradient id=u gradientUnits=userSpaceOnUse x2=100>{stops}</linearGradient>\
+             <rect x=50 width=50 height=10 fill='url(#g)'></rect>\
+             <rect x=50 y=10 width=50 height=10 fill='url(#u)'></rect></svg>"
+        ),
+        100,
+        20,
+    );
+    assert!(px(&canvas, 51, 5)[0] > 240, "{:?}", px(&canvas, 51, 5));
+    let user = px(&canvas, 51, 15);
+    assert!(user[0] < 140 && user[2] > 115, "{user:?}");
+    // Turned a quarter: red at the top, blue at the bottom.
+    let canvas = drawn(
+        &format!(
+            "<svg><linearGradient id=g gradientTransform='rotate(90 .5 .5)'>{stops}\
+             </linearGradient><rect width=20 height=20 fill='url(#g)'></rect></svg>"
+        ),
+        20,
+        20,
+    );
+    assert!(px(&canvas, 10, 1)[0] > 220 && px(&canvas, 10, 18)[2] > 220);
+    // A template's stops and spread, the gradient's own end.
+    let canvas = drawn(
+        &format!(
+            "<svg><linearGradient id=a spreadMethod=repeat x2=2>{stops}</linearGradient>\
+             <linearGradient id=b href='#a' x2=0.5></linearGradient>\
+             <rect width=100 height=10 fill='url(#b)'></rect></svg>"
+        ),
+        100,
+        10,
+    );
+    let repeated = px(&canvas, 60, 5);
+    assert!(repeated[0] > 180 && repeated[2] < 75, "{repeated:?}");
+    // One stop paints its colour, none paints nothing; a box of no
+    // height none either.
+    let canvas = drawn(
+        &format!(
+            "<svg><linearGradient id=one><stop stop-color=lime></stop></linearGradient>\
+             <linearGradient id=none></linearGradient>\
+             <rect width=10 height=10 fill='url(#one)'></rect>\
+             <rect x=10 width=10 height=10 fill='url(#none) red'></rect>\
+             <linearGradient id=two>{stops}</linearGradient>\
+             <line x1=0 y1=15 x2=20 y2=15 stroke='url(#two)' stroke-width=4></line></svg>"
+        ),
+        20,
+        20,
+    );
+    assert!(near(px(&canvas, 5, 5), [0, 255, 0, 255]));
+    assert_eq!(px(&canvas, 15, 5), [0, 0, 0, 0]);
+    assert_eq!(px(&canvas, 5, 15), [0, 0, 0, 0]);
+}
+
+#[test]
+fn a_radial_gradient_goes_from_its_focus_to_its_circle() {
+    let canvas = drawn(
+        "<svg><radialGradient id=g><stop stop-color=red></stop>\
+         <stop offset=1 stop-color=blue></stop></radialGradient>\
+         <radialGradient id=z r=0><stop stop-color=red></stop>\
+         <stop offset=1 stop-color=lime></stop></radialGradient>\
+         <rect width=40 height=40 fill='url(#g)'></rect>\
+         <rect x=40 width=40 height=40 fill='url(#z)'></rect></svg>",
+        80,
+        40,
+    );
+    assert!(px(&canvas, 20, 20)[0] > 240, "{:?}", px(&canvas, 20, 20));
+    assert!(
+        near(px(&canvas, 1, 1), [0, 0, 255, 255]),
+        "{:?}",
+        px(&canvas, 1, 1)
+    );
+    assert!(near(px(&canvas, 60, 20), [0, 255, 0, 255]));
+}
+
+#[test]
+fn a_use_instantiates_its_reference_inheriting_from_itself() {
+    let markup = "<svg><defs><rect id=r width=10 height=10></rect>\
+                  <symbol id=s viewBox='0 0 10 10'><rect width=10 height=10></rect></symbol>\
+                  </defs><use href='#r' x=10 fill=red></use>\
+                  <use xlink:href='#s' y=10 width=20 height=20 fill=blue></use></svg>";
+    let canvas = drawn(markup, 40, 40);
+    assert_eq!(px(&canvas, 5, 5), [0, 0, 0, 0], "defs draw nothing");
+    assert!(
+        near(px(&canvas, 15, 5), [255, 0, 0, 255]),
+        "{:?}",
+        px(&canvas, 15, 5)
+    );
+    assert!(
+        near(px(&canvas, 19, 29), [0, 0, 255, 255]),
+        "{:?}",
+        px(&canvas, 19, 29)
+    );
+    assert_eq!(px(&canvas, 21, 29), [0, 0, 0, 0]);
+    // What a point on an instance hits is its use.
+    let document = Document::from_node(&html::parse_document(markup).expect("never fails"));
+    let uses: Vec<_> = document
+        .subtree(document.root())
+        .filter(|&n| document.svg_tag(n) == Some("use"))
+        .collect();
+    let tree = tree_of(markup, 40.0, 40.0);
+    let mut nodes = Vec::new();
+    collect_nodes(&tree.root.children, &mut nodes);
+    assert_eq!(nodes, uses);
+    // Within uses within uses, the outermost.
+    let markup = "<svg><defs><rect id=r width=10 height=10></rect>\
+                  <g id=w><use href='#r'></use></g></defs><use href='#w'></use></svg>";
+    let document = Document::from_node(&html::parse_document(markup).expect("never fails"));
+    let outer = document
+        .subtree(document.root())
+        .filter(|&n| document.svg_tag(n) == Some("use"))
+        .last();
+    let mut nodes = Vec::new();
+    collect_nodes(&tree_of(markup, 10.0, 10.0).root.children, &mut nodes);
+    assert_eq!(nodes.first().copied(), outer);
+    // A reference to itself, to an ancestor, or round a loop draws
+    // nothing, and ends.
+    let canvas = drawn(
+        "<svg><g id=a><use href='#a' x=5></use><rect width=5 height=5></rect></g>\
+         <use id=u1 href='#u2'></use><use id=u2 href='#u1'></use></svg>",
+        10,
+        10,
+    );
+    assert_eq!(px(&canvas, 2, 2)[3], 255);
+    assert_eq!(px(&canvas, 7, 2)[3], 0, "no instance of its ancestor");
+}
+
+fn collect_nodes(items: &[Item], out: &mut Vec<dom::NodeId>) {
+    for item in items {
+        match item {
+            Item::Group(g) => collect_nodes(&g.children, out),
+            Item::Shape(s) => out.push(s.node),
+        }
+    }
+}
+
+#[test]
+fn uses_nest_no_deeper_than_the_bound() {
+    // Each group uses the one before; the last use instantiates
+    // `depth` groups in all.
+    let nested = |depth: usize| {
+        let mut markup = String::from("<svg><defs><g id=g0><rect width=5 height=5></rect></g>");
+        for i in 1..depth {
+            markup.push_str(&format!("<g id=g{i}><use href='#g{}'></use></g>", i - 1));
+        }
+        markup.push_str(&format!("</defs><use href='#g{}'></use></svg>", depth - 1));
+        drawn(&markup, 10, 10)
+    };
+    assert_eq!(px(&nested(crate::MAX_USE_DEPTH), 2, 2)[3], 255);
+    assert_eq!(px(&nested(crate::MAX_USE_DEPTH + 1), 2, 2)[3], 0);
+}
+
+#[test]
+fn a_nested_svg_is_a_viewport_clipped_unless_its_overflow_shows() {
+    let canvas = drawn(
+        "<svg><svg x=10 y=10 width=10 height=10><rect width=100 height=100 fill=red></rect>\
+         </svg><svg x=30 width=5 height=5 overflow=visible viewBox='0 0 1 1'>\
+         <rect width=2 height=2 fill=blue></rect></svg></svg>",
+        40,
+        40,
+    );
+    assert!(near(px(&canvas, 15, 15), [255, 0, 0, 255]));
+    assert_eq!(px(&canvas, 25, 15), [0, 0, 0, 0]);
+    assert_eq!(px(&canvas, 5, 5), [0, 0, 0, 0]);
+    // Its viewBox scales by 5, its content shows past it.
+    assert!(
+        near(px(&canvas, 38, 8), [0, 0, 255, 255]),
+        "{:?}",
+        px(&canvas, 38, 8)
+    );
+}
+
+#[test]
+fn a_clip_path_clips_to_its_childrens_union() {
+    let canvas = drawn(
+        "<svg><clipPath id=c><rect width=10 height=10></rect><rect x=20 width=10 height=10>\
+         </rect></clipPath><clipPath id=o clipPathUnits=objectBoundingBox>\
+         <rect width=.5 height=1></rect></clipPath><clipPath id=e></clipPath>\
+         <rect width=40 height=10 clip-path='url(#c)'></rect>\
+         <rect y=10 width=40 height=10 clip-path='url(#o)'></rect>\
+         <rect y=20 width=40 height=10 clip-path='url(#e)'></rect>\
+         <rect y=30 width=40 height=10 clip-path='url(#nothing)'></rect>\
+         <line x1=0 y1=45 x2=40 y2=45 stroke=black stroke-width=4 clip-path='url(#o)'></line>\
+         <svg y=50 width=20 height=10><rect width=40 height=10 clip-path='url(#c)'></rect>\
+         </svg></svg>",
+        40,
+        60,
+    );
+    let row = |y| -> Vec<u8> {
+        [5, 15, 25, 35]
+            .iter()
+            .map(|&x| px(&canvas, x, y)[3])
+            .collect()
+    };
+    assert_eq!(row(5), [255, 0, 255, 0], "the union");
+    assert_eq!(row(15), [255, 255, 0, 0], "the bounding box's left half");
+    assert_eq!(row(25), [0, 0, 0, 0], "an empty clipPath clips all");
+    assert_eq!(
+        row(35),
+        [255, 255, 255, 255],
+        "a reference to nothing clips nothing"
+    );
+    assert_eq!(row(45), [0, 0, 0, 0], "a box of no area clips all");
+    assert_eq!(row(55), [255, 0, 0, 0], "within the viewport's clip");
+}
+
+#[test]
+fn conditions_choose_what_draws() {
+    let canvas = drawn(
+        "<svg><switch><rect width=10 height=10 fill=red systemLanguage=fr></rect>\
+         <rect width=10 height=10 fill=red requiredExtensions=x></rect>\
+         <rect width=10 height=10 fill=blue systemLanguage='fr, en-GB'></rect>\
+         <rect width=10 height=10 fill=red></rect></switch>\
+         <rect x=10 width=10 height=10 systemLanguage=de></rect>\
+         <rect x=20 width=10 height=10 systemLanguage=en></rect></svg>",
+        30,
+        10,
+    );
+    assert!(
+        near(px(&canvas, 5, 5), [0, 0, 255, 255]),
+        "{:?}",
+        px(&canvas, 5, 5)
+    );
+    assert_eq!(px(&canvas, 15, 5), [0, 0, 0, 0]);
+    assert_eq!(px(&canvas, 25, 5)[3], 255);
 }

@@ -20,11 +20,16 @@ pub use syntax::{
     Align, AspectRatio, Axis, Length, Unit, ViewBox, Viewport, parse_length, parse_number,
     parse_numbers, parse_points, parse_preserve_aspect_ratio, parse_view_box, view_box_matrix,
 };
-pub use tree::{Fill, Group, Item, Paint, Shape, Stroke, Tree, build};
+pub use tree::{Clip, Fill, Group, Item, Paint, Shape, Stroke, Tree, build};
 
 /// The most elements a render tree is built from, `<use>`s' instances
 /// counted; past it, what was built is drawn.
 pub const MAX_SVG_ELEMENTS: usize = 1 << 18;
+/// The most `<use>`s within one another, and the longest chain of
+/// gradients' templates; a `<use>` past it draws nothing.
+pub const MAX_USE_DEPTH: usize = 32;
+/// The most stops a gradient takes; the rest are left out.
+pub const MAX_GRADIENT_STOPS: usize = 1_024;
 /// The most groups drawn into layers of their own, nested; past it, an
 /// opacity goes to each child.
 pub const MAX_SVG_LAYERS: usize = 16;

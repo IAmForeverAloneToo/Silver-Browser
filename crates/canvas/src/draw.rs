@@ -17,7 +17,7 @@ use tiny_skia::{
 use crate::blur::blur;
 use crate::path::Path;
 use crate::reach::within;
-use crate::state::{Gradient, GradientKind, LineCap, LineJoin, Matrix, Paint, Repetition};
+use crate::state::{Gradient, GradientKind, LineCap, LineJoin, Matrix, Paint, Repetition, Spread};
 use crate::{Canvas, MAX_SHADOW_BLUR};
 
 /// What a shape is painted with: either style, or the image a
@@ -101,14 +101,16 @@ fn gradient_shader(gradient: &Gradient, alpha: f64, m: &Matrix) -> Shader<'stati
         .map(|&(offset, color)| GradientStop::new(offset as f32, color.faded(alpha).to_skia()))
         .collect();
     let point = |x: f64, y: f64| Point::from_xy(x as f32, y as f32);
+    let spread = match gradient.spread {
+        Spread::Pad => SpreadMode::Pad,
+        Spread::Reflect => SpreadMode::Reflect,
+        Spread::Repeat => SpreadMode::Repeat,
+    };
+    let m = &m.then(&gradient.transform);
     let shader = match gradient.kind {
-        GradientKind::Linear { x0, y0, x1, y1 } => LinearGradient::new(
-            point(x0, y0),
-            point(x1, y1),
-            stops,
-            SpreadMode::Pad,
-            m.to_skia(),
-        ),
+        GradientKind::Linear { x0, y0, x1, y1 } => {
+            LinearGradient::new(point(x0, y0), point(x1, y1), stops, spread, m.to_skia())
+        }
         GradientKind::Radial {
             x0,
             y0,
@@ -122,20 +124,13 @@ fn gradient_shader(gradient: &Gradient, alpha: f64, m: &Matrix) -> Shader<'stati
             point(x1, y1),
             r1 as f32,
             stops,
-            SpreadMode::Pad,
+            spread,
             m.to_skia(),
         ),
         GradientKind::Conic { angle, x, y } => {
             let (sin, cos) = angle.sin_cos();
             let at = m.then(&Matrix::new(cos, sin, -sin, cos, x, y));
-            SweepGradient::new(
-                point(0.0, 0.0),
-                0.0,
-                360.0,
-                stops,
-                SpreadMode::Pad,
-                at.to_skia(),
-            )
+            SweepGradient::new(point(0.0, 0.0), 0.0, 360.0, stops, spread, at.to_skia())
         }
     };
     shader.unwrap_or(TRANSPARENT)
@@ -301,6 +296,31 @@ impl Canvas {
                 }
                 *clip = Some(Arc::new(mask));
             }
+        }
+    }
+
+    /// The clipping region intersected with the union of `paths`, each
+    /// filled by its own rule under the current transform (M32: an SVG
+    /// `clipPath`'s children); none of them clips everything away.
+    pub fn clip_union(&mut self, paths: &[(Path, FillRule)]) {
+        if self.pixmap.is_none() {
+            return;
+        }
+        let Some(mut union) = Mask::new(self.width, self.height) else {
+            return;
+        };
+        for (path, rule) in paths {
+            let device = path.transformed(&self.state.transform).to_skia();
+            if let Some(skia) = device
+                .as_ref()
+                .and_then(|skia| within(skia, self.bitmap_area()))
+            {
+                union.fill_path(&skia, *rule, self.state.anti_alias, Transform::identity());
+            }
+        }
+        match &mut self.state.clip {
+            Some(mask) => intersect(Arc::make_mut(mask), &union),
+            clip @ None => *clip = Some(Arc::new(union)),
         }
     }
 

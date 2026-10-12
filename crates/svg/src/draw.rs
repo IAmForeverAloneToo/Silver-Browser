@@ -3,11 +3,11 @@
 //! layer of its own and composited at it, as the reference browser
 //! does; each shape's fill and stroke in `paint-order`.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use canvas::{Canvas, Matrix, Source};
+use canvas::{Canvas, FillRule, Matrix, Path, Source};
 
-use crate::tree::{Group, Item, Paint, Shape, Tree};
+use crate::tree::{Clip, Group, Item, Paint, Shape, Tree};
 use crate::{MAX_SVG_LAYER_PIXELS, MAX_SVG_LAYERS};
 
 /// Draws `tree` on `canvas`, its viewport's CSS pixels mapped to the
@@ -48,6 +48,35 @@ impl Drawer {
         if group.opacity <= 0.0 || alpha <= 0.0 || !ctm.is_finite() {
             return;
         }
+        if let Some(clip) = &group.clip {
+            canvas.save();
+            canvas.state_mut().transform = ctm;
+            match clip {
+                Clip::Rect([x, y, w, h]) => {
+                    let mut rect = Path::new();
+                    rect.rect(*x, *y, *w, *h, &Matrix::IDENTITY);
+                    canvas.clip(Some(&rect), FillRule::Winding);
+                }
+                Clip::Paths(paths) => canvas.clip_union(paths),
+            }
+            self.content(group, canvas, &ctm, alpha, depth);
+            canvas.restore();
+        } else {
+            self.content(group, canvas, &ctm, alpha, depth);
+        }
+    }
+
+    /// A group's children under `ctm`, its own transform taken: in a
+    /// layer composited at its opacity, or past the bounds each at it.
+    fn content(
+        &mut self,
+        group: &Group,
+        canvas: &mut Canvas,
+        ctm: &Matrix,
+        alpha: f64,
+        depth: usize,
+    ) {
+        let ctm = *ctm;
         let area = u64::from(canvas.width()) * u64::from(canvas.height());
         let layered = group.opacity < 1.0
             && depth < MAX_SVG_LAYERS
@@ -84,7 +113,7 @@ impl Drawer {
         let fill = |canvas: &mut Canvas| {
             if let Some(fill) = &shape.fill {
                 let state = canvas.state_mut();
-                set_paint(&mut state.fill, &fill.paint);
+                set_paint(&mut state.fill, &fill.paint, None);
                 state.set_global_alpha(alpha * fill.opacity);
                 if state.global_alpha > 0.0 {
                     canvas.fill(Some(&shape.path), fill.rule);
@@ -96,7 +125,6 @@ impl Drawer {
                 return;
             };
             let state = canvas.state_mut();
-            set_paint(&mut state.stroke, &stroke.paint);
             state.set_global_alpha(alpha * stroke.opacity);
             state.set_line_width(stroke.width);
             state.line_cap = stroke.cap;
@@ -109,14 +137,18 @@ impl Drawer {
             }
             if stroke.non_scaling {
                 // Traced where the drawing is placed: the path taken
-                // there, the transforms within it left out.
+                // there, the transforms within it left out, a gradient
+                // kept where it was.
                 let Some(inverse) = self.base.invert() else {
                     return;
                 };
                 let host = inverse.then(ctm);
-                canvas.state_mut().transform = self.base;
+                let state = canvas.state_mut();
+                set_paint(&mut state.stroke, &stroke.paint, Some(&host));
+                state.transform = self.base;
                 canvas.stroke(Some(&shape.path.transformed(&host)));
             } else {
+                set_paint(&mut canvas.state_mut().stroke, &stroke.paint, None);
                 canvas.stroke(Some(&shape.path));
             }
         };
@@ -131,10 +163,19 @@ impl Drawer {
     }
 }
 
-fn set_paint(slot: &mut canvas::Paint, paint: &Paint) {
-    match paint {
-        Paint::Color(color) => *slot = canvas::Paint::Color(*color),
-    }
+/// `paint` as the canvas paints with it; a gradient's coordinates
+/// mapped by `within` first, where the path is.
+fn set_paint(slot: &mut canvas::Paint, paint: &Paint, within: Option<&Matrix>) {
+    *slot = match paint {
+        Paint::Color(color) => canvas::Paint::Color(*color),
+        Paint::Gradient(gradient) => {
+            let mut gradient = gradient.clone();
+            if let Some(m) = within {
+                gradient.transform = m.then(&gradient.transform);
+            }
+            canvas::Paint::Gradient(Arc::new(Mutex::new(gradient)))
+        }
+    };
 }
 
 /// `layer`, a canvas of `canvas`'s size, composited on it at `alpha`.

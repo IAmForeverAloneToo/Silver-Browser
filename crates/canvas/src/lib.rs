@@ -34,7 +34,7 @@ pub use path::Path;
 pub use pixels::{blank_image_data, premultiplied, too_large};
 pub use state::{
     Caps, Composite, Dash, Direction, Gradient, GradientKind, Kerning, LineCap, LineJoin, Matrix,
-    Paint, Pattern, Quality, Rendering, Repetition, State, TextAlign, TextBaseline,
+    Paint, Pattern, Quality, Rendering, Repetition, Spread, State, TextAlign, TextBaseline,
 };
 pub use text::TextMetrics;
 pub use tiny_skia::FillRule;
