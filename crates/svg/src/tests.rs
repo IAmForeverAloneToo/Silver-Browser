@@ -678,6 +678,43 @@ fn a_clip_path_clips_to_its_childrens_union() {
 }
 
 #[test]
+fn a_clip_paths_own_clip_and_a_uses_place_clip_with_it() {
+    // M32's golden case 137, as the reference browser draws it.
+    let green = [0, 128, 0, 255];
+    // A clipPath clipped by another clips by both.
+    let canvas = drawn(
+        "<svg width=40 height=20><clipPath id=l><rect width=10 height=20 /></clipPath>\
+         <clipPath id=c clip-path='url(#l)'><rect width=30 height=20 /></clipPath>\
+         <rect width=40 height=20 fill='#008000' clip-path='url(#c)' /></svg>",
+        40,
+        20,
+    );
+    assert!(near(px(&canvas, 5, 10), green));
+    assert_eq!(px(&canvas, 20, 10), [0, 0, 0, 0]);
+    // A use's x and y move its user units, its clip's among them.
+    let canvas = drawn(
+        "<svg width=40 height=20><clipPath id=k><rect width=10 height=20 /></clipPath>\
+         <defs><rect id=r width=10 height=20 fill='#008000' /></defs>\
+         <use href='#r' x=20 clip-path='url(#k)' /></svg>",
+        40,
+        20,
+    );
+    assert!(near(px(&canvas, 25, 10), green));
+    assert_eq!(px(&canvas, 5, 10), [0, 0, 0, 0]);
+    // A transformed group's bounding box is in its own units.
+    let canvas = drawn(
+        "<svg width=40 height=20><clipPath id=h clipPathUnits=objectBoundingBox>\
+         <rect width=0.5 height=1 /></clipPath>\
+         <g transform='translate(20 0)' clip-path='url(#h)'>\
+         <rect width=10 height=20 fill='#008000' /></g></svg>",
+        40,
+        20,
+    );
+    assert!(near(px(&canvas, 22, 10), green));
+    assert_eq!(px(&canvas, 28, 10), [0, 0, 0, 0]);
+}
+
+#[test]
 fn conditions_choose_what_draws() {
     let canvas = drawn(
         "<svg><switch><rect width=10 height=10 fill=red systemLanguage=fr></rect>\

@@ -1,0 +1,82 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-tolerance" content="2">
+<meta name="reference-edge-tolerance" content="80">
+<title>SVG (M32): linear and radial gradients, by the bounding box and in user space, their three spreads, a gradient's transform, a focal point and a focal radius, stops with opacity and out of order, one gradient taking its stops from another by its href, a stroke painted with a gradient, and a fallback colour for a missing one; no text</title>
+<style>
+  html { background-color: #eef0f3; }
+  body { margin: 10px; }
+  svg { display: block; float: left; margin: 0 10px 10px 0; background-color: #ffffff; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position: absolute">
+  <defs>
+    <linearGradient id="base">
+      <stop offset="0" stop-color="#2f4f6f"/>
+      <stop offset="0.5" stop-color="#7f9fbf"/>
+      <stop offset="1" stop-color="#8f3f2f"/>
+    </linearGradient>
+  </defs>
+</svg>
+<svg width="240" height="120">
+  <linearGradient id="pad" x1="0.3" x2="0.7" href="#base"/>
+  <linearGradient id="reflect" x1="0.3" x2="0.7" spreadMethod="reflect" href="#base"/>
+  <linearGradient id="repeat" x1="0.3" x2="0.7" spreadMethod="repeat" href="#base"/>
+  <rect x="10" y="10" width="220" height="30" fill="url(#pad)"/>
+  <rect x="10" y="45" width="220" height="30" fill="url(#reflect)"/>
+  <rect x="10" y="80" width="220" height="30" fill="url(#repeat)"/>
+</svg>
+<svg width="240" height="120">
+  <linearGradient id="user" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="240" y2="0">
+    <stop offset="0" stop-color="#2f4f6f"/>
+    <stop offset="1" stop-color="#eef0f3"/>
+  </linearGradient>
+  <linearGradient id="down" x2="0" y2="1">
+    <stop offset="0" stop-color="#8f3f2f"/>
+    <stop offset="1" stop-color="#8f3f2f" stop-opacity="0"/>
+  </linearGradient>
+  <rect x="10" y="10" width="100" height="45" fill="url(#user)"/>
+  <rect x="130" y="10" width="100" height="45" fill="url(#user)"/>
+  <rect x="10" y="65" width="220" height="45" fill="url(#down)"/>
+</svg>
+<svg width="240" height="120">
+  <linearGradient id="turned" gradientTransform="rotate(45 0.5 0.5)">
+    <stop offset="0.2" stop-color="#2f4f6f"/>
+    <stop offset="0.1" stop-color="#ffffff"/>
+    <stop offset="0.8" stop-color="#7f9fbf"/>
+  </linearGradient>
+  <rect x="10" y="10" width="100" height="100" fill="url(#turned)"/>
+  <rect x="130" y="10" width="100" height="100" fill="url(#missing) #5f7f9f"/>
+</svg>
+<svg width="240" height="120">
+  <radialGradient id="radial">
+    <stop offset="0" stop-color="#ffffff"/>
+    <stop offset="1" stop-color="#2f4f6f"/>
+  </radialGradient>
+  <radialGradient id="focal" fx="0.3" fy="0.3" r="0.6" href="#radial"/>
+  <circle cx="60" cy="60" r="50" fill="url(#radial)"/>
+  <rect x="130" y="10" width="100" height="100" fill="url(#focal)"/>
+</svg>
+<svg width="240" height="120">
+  <radialGradient id="rings" r="0.25" spreadMethod="repeat">
+    <stop offset="0" stop-color="#8f3f2f"/>
+    <stop offset="1" stop-color="#eef0f3"/>
+  </radialGradient>
+  <radialGradient id="fr" fr="0.2" r="0.5" gradientUnits="objectBoundingBox">
+    <stop offset="0" stop-color="#2f4f6f"/>
+    <stop offset="1" stop-color="#7f9fbf"/>
+  </radialGradient>
+  <rect x="10" y="10" width="100" height="100" fill="url(#rings)"/>
+  <ellipse cx="180" cy="60" rx="50" ry="40" fill="url(#fr)"/>
+</svg>
+<svg width="240" height="120">
+  <linearGradient id="edge" gradientUnits="userSpaceOnUse" x1="20" y1="0" x2="220" y2="0">
+    <stop offset="0" stop-color="#2f4f6f"/>
+    <stop offset="1" stop-color="#8f3f2f"/>
+  </linearGradient>
+  <rect x="20" y="20" width="200" height="80" fill="none" stroke="url(#edge)" stroke-width="16"/>
+</svg>
+</body>
+</html>

@@ -12,7 +12,9 @@ use dom::NodeId;
 use style::computed::Size;
 
 use crate::syntax::Viewport;
-use crate::tree::{Context, Group, Item, Tree, build_queries, geometry, item_bounds};
+use crate::tree::{
+    Context, Item, Tree, build_queries, children_bounds, geometry, item_bounds, use_offset,
+};
 
 /// A question about an element's geometry.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -118,11 +120,23 @@ pub fn query_in(context: Context<'_>, tree: &Tree, node: NodeId, query: Query) -
     match (query, item) {
         (Query::BBox, Item::Shape(shape)) => Some(shape.bounds.to_vec()),
         (Query::BBox, Item::Group(group)) => {
-            let own = Group {
-                transform: Matrix::IDENTITY,
-                ..group.clone()
-            };
-            Some(item_bounds(&Item::Group(own)).map_or(vec![0.0; 4], Vec::from))
+            let mut bounds = children_bounds(&group.children);
+            // A use's box is where its `x` and `y` put its instance, as
+            // the reference browser has it, though they move it after
+            // its transform.
+            if context.document.svg_tag(node) == Some("use")
+                && let (Some(style), Some([x, y, w, h])) = (context.styles.get(node), bounds)
+            {
+                let viewport = Viewport {
+                    width,
+                    height,
+                    font_size: f64::from(style.font_size_px),
+                    root_font_size: 16.0,
+                };
+                let (dx, dy) = use_offset(style, &viewport);
+                bounds = Some([x + dx, y + dy, w, h]);
+            }
+            Some(bounds.map_or(vec![0.0; 4], Vec::from))
         }
         (Query::Ctm, Item::Shape(_)) => Some(matrix(&parent)),
         (Query::Ctm, Item::Group(group)) => Some(matrix(&parent.then(&group.transform))),

@@ -86,7 +86,10 @@
 //! for a gradient's rounding, for the edges of curves and strokes whose
 //! coverage tiny-skia's four-by-four samples put apart from the
 //! browser's (a slice of a pie at 18 against 0 percent where the exact
-//! coverage is 12). Every other page is exact; M21's pages of
+//! coverage is 12); M32's SVG pages, as M30's, a level or two inside for
+//! a group's opacity and a gradient's rounding, and on the edges of
+//! shapes, strokes and dashes (96 where a tiled SVG image's stroke
+//! crosses a pixel's corner). Every other page is exact; M21's pages of
 //! markers and decorations give the reference browser the engine's own
 //! font by `@font-face`, whose metrics place them, their text
 //! transparent. A page may declare
@@ -548,12 +551,12 @@ fn every_reference_page_renders_as_its_capture() {
     let pages = pages();
     assert_eq!(
         pages.len(),
-        132,
+        138,
         "the ten cases of M10's design note, the eleven of M11's, the five of M12's, the three of M16's, \
          the twenty of M17's, the twenty of M18's, the ten of M19's, the eleven of M20's, the nine \
          of M21's, the ten of M22's, the six of M23's, the three of M24's, the four of M25's, \
          the three of M26's, the two of M27's, the one of M28's, the one of M29's \
-         the two of M30's and the one of M31's"
+         the two of M30's, the one of M31's and the six of M32's"
     );
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/reference");
     let mut failures = Vec::new();

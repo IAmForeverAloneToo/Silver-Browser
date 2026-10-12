@@ -1,0 +1,77 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-tolerance" content="1">
+<meta name="reference-edge-tolerance" content="80">
+<title>SVG (M32): use and symbol, a symbol drawn at three sizes through its viewBox and coloured by currentColor and inherited fill, a use of a group of another svg moved by x and y, a use of a use, clip paths in user space and by the bounding box, of several shapes and of a transformed one, on a group and on a use, a clip path clipped by another, and switch taking its first child that passes; no text</title>
+<style>
+  html { background-color: #eef0f3; }
+  body { margin: 10px; }
+  svg { display: block; float: left; margin: 0 10px 10px 0; background-color: #ffffff; }
+  .icons { color: #8f3f2f; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position: absolute">
+  <symbol id="star" viewBox="0 0 20 20">
+    <path d="M10 1 L12.5 7.5 L19 7.5 L14 12 L16 19 L10 15 L4 19 L6 12 L1 7.5 L7.5 7.5 Z"/>
+    <circle cx="10" cy="10" r="2" fill="currentColor"/>
+  </symbol>
+  <g id="pair">
+    <rect width="30" height="30" fill="#2f4f6f"/>
+    <rect x="35" width="30" height="30" fill="#7f9fbf"/>
+  </g>
+</svg>
+<svg class="icons" width="240" height="120">
+  <use href="#star" x="10" y="10" width="20" height="20" fill="#2f4f6f"/>
+  <use href="#star" x="40" y="10" width="40" height="40" fill="#5f7f9f"/>
+  <use href="#star" x="90" y="10" width="100" height="100" fill="#7f9fbf" style="color: #2f4f6f"/>
+  <use href="#star" x="10" y="60" width="50" height="30" fill="#8f3f2f" style="color: #ffffff"/>
+</svg>
+<svg width="240" height="120">
+  <use href="#pair" x="10" y="10"/>
+  <use id="again" href="#pair" x="10" y="50" transform="translate(20 0)"/>
+  <use href="#again" x="100" y="0" opacity="0.5"/>
+</svg>
+<svg width="240" height="120">
+  <clipPath id="circle">
+    <circle cx="60" cy="60" r="45"/>
+  </clipPath>
+  <clipPath id="bars" clipPathUnits="objectBoundingBox">
+    <rect x="0" y="0" width="0.25" height="1"/>
+    <rect x="0.5" y="0" width="0.25" height="1"/>
+    <rect x="0" y="0.7" width="1" height="0.3" transform="rotate(-10 0.5 0.85)"/>
+  </clipPath>
+  <g clip-path="url(#circle)">
+    <rect x="10" y="10" width="100" height="100" fill="#2f4f6f"/>
+    <rect x="60" y="10" width="50" height="50" fill="#8f3f2f"/>
+  </g>
+  <rect x="130" y="10" width="100" height="100" fill="#5f7f9f" clip-path="url(#bars)"/>
+</svg>
+<svg width="240" height="120">
+  <clipPath id="left">
+    <rect x="0" y="0" width="70" height="120"/>
+  </clipPath>
+  <clipPath id="round" clip-path="url(#left)">
+    <circle cx="60" cy="60" r="50"/>
+  </clipPath>
+  <rect width="120" height="120" fill="#7f9fbf" clip-path="url(#round)"/>
+  <clipPath id="turned">
+    <rect x="150" y="20" width="60" height="60" transform="rotate(45 180 50)"/>
+  </clipPath>
+  <use href="#pair" x="140" y="30" clip-path="url(#turned)" transform="scale(1 1.5)"/>
+</svg>
+<svg width="240" height="120">
+  <switch>
+    <rect x="10" y="10" width="100" height="100" fill="#8f3f2f" requiredExtensions="http://example.com/none"/>
+    <rect x="10" y="10" width="100" height="100" fill="#2f4f6f" systemLanguage="xx-none"/>
+    <rect x="10" y="10" width="100" height="100" fill="#5f7f9f"/>
+    <rect x="10" y="10" width="100" height="50" fill="#8f3f2f"/>
+  </switch>
+  <switch>
+    <g systemLanguage="en"><rect x="130" y="10" width="100" height="100" fill="#7f9fbf"/></g>
+    <rect x="130" y="10" width="100" height="100" fill="#8f3f2f"/>
+  </switch>
+</svg>
+</body>
+</html>

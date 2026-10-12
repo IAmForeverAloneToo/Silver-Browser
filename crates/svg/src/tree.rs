@@ -532,11 +532,7 @@ impl<'a> Builder<'a> {
         if self.using.len() >= MAX_USE_DEPTH || self.using.contains(&target) {
             return None;
         }
-        let own = style.svg_own();
-        let (x, y) = (
-            resolve(&own.x, Axis::X, viewport),
-            resolve(&own.y, Axis::Y, viewport),
-        );
+        let (x, y) = use_offset(style, viewport);
         self.using.push(target);
         let host = self.host;
         self.host = Some(host.unwrap_or(node));
@@ -546,21 +542,12 @@ impl<'a> Builder<'a> {
         };
         self.host = host;
         self.using.pop();
-        // Its `x` and `y` a group of their own, so that the use's own
-        // user units are its transform's alone.
-        let moved = Group {
-            node: None,
-            transform: translate(x, y),
-            opacity: 1.0,
-            clip: None,
-            children: vec![instance?],
-        };
-        Some(Item::Group(group(
-            node,
-            style,
-            viewport,
-            vec![Item::Group(moved)],
-        )))
+        // Its `x` and `y` after its transform, as SVG 2 has them (section
+        // 5.6.2): the use's user units, its clip's among them, are moved
+        // by them as the reference browser's are.
+        let mut used = group(node, style, viewport, vec![instance?]);
+        used.transform = used.transform.then(&translate(x, y));
+        Some(Item::Group(used))
     }
 
     /// A nested `<svg>`'s, a `<symbol>`'s or a `<use>`'s `width` or
@@ -1003,10 +990,42 @@ impl<'a> Builder<'a> {
         let Some(reference) = style.svg_own().clip_path.clone() else {
             return item;
         };
-        let bounds = item_bounds(&item);
+        // In the element's own user units: a group's children's.
+        let bounds = match &item {
+            Item::Group(group) => children_bounds(&group.children),
+            Item::Shape(shape) => Some(shape.bounds),
+        };
         let Some(clip) = self.clip_path(&reference, bounds, viewport) else {
             return item;
         };
+        // A `clipPath` clipped by another (CSS Masking 1 section 6.2):
+        // each a group's clip around the last, at most MAX_USE_DEPTH.
+        let mut outer = Vec::new();
+        let mut at = self.referenced(&reference);
+        let mut seen = Vec::new();
+        while let Some(node) = at.filter(|n| !seen.contains(n) && seen.len() < MAX_USE_DEPTH) {
+            seen.push(node);
+            let next = self
+                .styles
+                .get(node)
+                .and_then(|s| s.svg_own().clip_path.clone());
+            let Some(next) = next else {
+                break;
+            };
+            match self.clip_path(&next, bounds, viewport) {
+                Some(clip) => outer.push(clip),
+                None => break,
+            }
+            at = self.referenced(&next);
+        }
+        let item = self.clipped_by(item, clip);
+        outer
+            .into_iter()
+            .fold(item, |item, clip| self.clipped_by(item, clip))
+    }
+
+    /// `item` clipped by `clip` in its own user units.
+    fn clipped_by(&mut self, item: Item, clip: Clip) -> Item {
         match item {
             // The element's own group: clipped in its user units.
             Item::Group(mut group) if group.clip.is_none() => {
@@ -1136,29 +1155,47 @@ fn group(node: NodeId, style: &ComputedStyle, viewport: &Viewport, children: Vec
     }
 }
 
+/// A `<use>`'s `x` and `y`, which move its instance after its own
+/// transform.
+pub(crate) fn use_offset(style: &ComputedStyle, viewport: &Viewport) -> (f64, f64) {
+    let own = style.svg_own();
+    (
+        resolve(&own.x, Axis::X, viewport),
+        resolve(&own.y, Axis::Y, viewport),
+    )
+}
+
 /// What an item covers in its parent's user units, `[x, y, width,
-/// height]`, its transforms taken: the bounding box `objectBoundingBox`
-/// units are of.
+/// height]`, its transforms taken.
 pub(crate) fn item_bounds(item: &Item) -> Option<[f64; 4]> {
     match item {
         Item::Shape(shape) => Some(shape.bounds),
         Item::Group(group) => {
+            let [x, y, w, h] = children_bounds(&group.children)?;
             let mut out: Option<[f64; 4]> = None;
-            for child in &group.children {
-                let Some([x, y, w, h]) = item_bounds(child) else {
-                    continue;
-                };
-                for (px, py) in [(x, y), (x + w, y), (x, y + h), (x + w, y + h)] {
-                    let (px, py) = group.transform.apply(px, py);
-                    out = Some(match out {
-                        None => [px, py, px, py],
-                        Some([l, t, r, b]) => [l.min(px), t.min(py), r.max(px), b.max(py)],
-                    });
-                }
+            for (px, py) in [(x, y), (x + w, y), (x, y + h), (x + w, y + h)] {
+                let (px, py) = group.transform.apply(px, py);
+                out = Some(match out {
+                    None => [px, py, px, py],
+                    Some([l, t, r, b]) => [l.min(px), t.min(py), r.max(px), b.max(py)],
+                });
             }
             out.map(|[l, t, r, b]| [l, t, r - l, b - t])
         }
     }
+}
+
+/// What `children` cover in their parent's own user units: the bounding
+/// box `objectBoundingBox` units are of.
+pub(crate) fn children_bounds(children: &[Item]) -> Option<[f64; 4]> {
+    let mut out: Option<[f64; 4]> = None;
+    for [x, y, w, h] in children.iter().filter_map(item_bounds) {
+        out = Some(match out {
+            None => [x, y, x + w, y + h],
+            Some([l, t, r, b]) => [l.min(x), t.min(y), r.max(x + w), b.max(y + h)],
+        });
+    }
+    out.map(|[l, t, r, b]| [l, t, r - l, b - t])
 }
 
 /// An element's transform (CSS Transforms 1, the `transform` attribute

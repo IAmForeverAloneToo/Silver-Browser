@@ -462,9 +462,6 @@ struct Shown {
     drawables: scripts::canvas::SharedDrawables,
     /// Its outer `<svg>`s' render trees and drawings (M32).
     svgs: HashMap<NodeId, SvgDrawing>,
-    /// Moved on by each drawing of an `<svg>`: the frame its image is
-    /// shown as, so that a new drawing is never taken for the last.
-    svg_frames: u32,
     /// When on the timeline the next frame of an animated image the last
     /// frame showed in the viewport comes (M23.1).
     next_image_frame: Option<f64>,
@@ -555,7 +552,6 @@ impl Shown {
             images: ImageStore::default(),
             drawables: Default::default(),
             svgs: HashMap::new(),
-            svg_frames: 0,
             next_image_frame: None,
             parsing: None,
             scripts: scripts::Scripts::default(),
@@ -757,6 +753,12 @@ struct SvgDrawing {
 /// A point on an outer `<svg>`'s drawing (M32): the svg, the point in
 /// its content box, and that box's size.
 type SvgPoint = (NodeId, (f32, f32), (f32, f32));
+
+/// Moved on by each drawing of an outer `<svg>`, in any document of any
+/// engine: the frame its image is shown as, so that a new drawing is
+/// never taken for the last, nor another document's of a node of the
+/// same number (the GPU's textures are kept by image and frame).
+static SVG_FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// The raster size an `<svg>` landing on `(w, h)` raster pixels is
 /// drawn at: whole pixels, at least one each way, and at most
@@ -5697,8 +5699,9 @@ impl Engine {
         );
         svg::draw(&tree, &mut bitmap, &base);
         let pixels = bitmap.snapshot()?;
-        self.shown.svg_frames = self.shown.svg_frames.wrapping_add(1);
-        let frame = self.shown.svg_frames;
+        let frame = SVG_FRAMES
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .wrapping_add(1);
         drawing.drawn = Some((raster, frame, Arc::clone(&pixels)));
         Some((frame, pixels))
     }
