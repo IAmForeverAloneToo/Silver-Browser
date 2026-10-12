@@ -31,6 +31,8 @@ pub fn header(bytes: &[u8]) -> Result<Header, Error> {
     }
     let format = Format::of(bytes).ok_or(Error::Unsupported)?;
     let (width, height, orientation) = match format {
+        // Never a signature's: the engine reads SVG.
+        Format::Svg => return Err(Error::Unsupported),
         Format::Png => {
             let reader = png_reader(bytes)?;
             let info = reader.info();
@@ -71,6 +73,7 @@ pub fn header(bytes: &[u8]) -> Result<Header, Error> {
         width,
         height,
         orientation,
+        vector: None,
     })
 }
 
@@ -81,6 +84,7 @@ pub fn decode(bytes: &[u8]) -> Result<Image, Error> {
         Format::Jpeg => decode_jpeg(bytes)?,
         Format::Gif => decode_gif(bytes)?,
         Format::WebP => decode_webp(bytes)?,
+        Format::Svg => return Err(Error::Unsupported),
     };
     let (width, height) = decoded.orientation.size(decoded.width, decoded.height);
     let frames = decoded

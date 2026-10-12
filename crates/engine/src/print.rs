@@ -192,16 +192,44 @@ impl Engine {
                 // A print waits for no decode: its images are decoded
                 // now (M23.2).
                 for item in &mut list.items {
-                    if let DisplayItem::Image { image, .. } | DisplayItem::Pattern { image, .. } =
-                        item
-                        && image.pixels.is_none()
-                    {
-                        // A canvas prints its bitmap (M30.3).
-                        image.pixels = match paint::canvas_node(image.id) {
-                            Some(node) => self.shown.scripts.canvas_image(node),
-                            None => self.shown.images.decoded_now(image.id),
-                        };
+                    let (image, place) = match item {
+                        DisplayItem::Image { image, w, h, .. } => (image, (*w, *h)),
+                        DisplayItem::Pattern { image, w, h, .. } => (image, (*w, *h)),
+                        _ => continue,
+                    };
+                    if image.pixels.is_some() {
+                        continue;
                     }
+                    // A canvas prints its bitmap (M30.3); an outer svg its
+                    // drawing at the print's resolution, in its styles
+                    // (M32).
+                    image.pixels = if let Some(node) = paint::canvas_node(image.id) {
+                        self.shown.scripts.canvas_image(node)
+                    } else if let Some(node) = paint::svg_node(image.id) {
+                        let context = svg::Context {
+                            document,
+                            styles: &styles,
+                            recascade: Some(&recascade),
+                            fonts: Some(&self.layout_fonts),
+                        };
+                        let tree =
+                            svg::build(context, node, f64::from(place.0), f64::from(place.1));
+                        let scale = options.dpi / 96.0;
+                        let (w, h) = crate::svg_raster_size((place.0 * scale, place.1 * scale));
+                        let mut bitmap = canvas::Canvas::new(w, h, false);
+                        let base = canvas::Matrix::new(
+                            f64::from(w) / f64::from(place.0.max(f32::EPSILON)),
+                            0.0,
+                            0.0,
+                            f64::from(h) / f64::from(place.1.max(f32::EPSILON)),
+                            0.0,
+                            0.0,
+                        );
+                        svg::draw(&tree, &mut bitmap, &base);
+                        bitmap.snapshot()
+                    } else {
+                        self.shown.images.decoded_now(image.id)
+                    };
                 }
                 PrintedPage {
                     page_box: page_box(rem, page.position),
@@ -381,6 +409,36 @@ mod tests {
         assert_eq!(at(&pages[0], 150.0, below + 20.0), WHITE);
         // A gradient, rendered as paint rendered it.
         assert_eq!(at(&pages[0], 150.0, below + 70.0), RED);
+    }
+
+    #[test]
+    fn an_svg_prints_inline_and_as_an_image() {
+        // M32: an inline svg's drawing and an SVG image, both at the
+        // print's resolution.
+        use crate::testing::{Tab, html, serve};
+        let server = serve(move |path| match path {
+            "/page.html" => Some(html(
+                "<body style='margin: 0'><svg width=100 height=50 style='display: block'>\
+                 <rect width=100 height=50 fill=red></rect></svg>\
+                 <img src=a.svg style='display: block'></body>",
+            )),
+            "/a.svg" => Some(net::test_server::Reply::ok(
+                "image/svg+xml",
+                b"<svg xmlns='http://www.w3.org/2000/svg' width='100' height='50'>\
+                  <rect width='100' height='50' fill='blue'/></svg>",
+            )),
+            _ => None,
+        });
+        let mut tab = Tab::new();
+        let url = server.url("/page.html");
+        tab.engine.navigate(url.clone());
+        tab.wait_until(|engine| {
+            engine.url() == Some(&url) && engine.load_state() == &crate::LoadState::Loaded
+        });
+        let pages = tab.engine.print_pages(&small()).expect("printed");
+        assert_eq!(at(&pages[0], 50.0, 25.0), RED);
+        assert_eq!(at(&pages[0], 50.0, 75.0), BLUE);
+        assert_eq!(at(&pages[0], 150.0, 25.0), WHITE);
     }
 
     #[test]

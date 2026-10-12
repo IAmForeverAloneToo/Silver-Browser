@@ -1245,6 +1245,156 @@ fn an_image_is_fetched_once_read_and_waited_for() {
     assert_eq!(pages.count(), 1);
 }
 
+// SVG images (M32): read by the XML parser, sized by their attributes,
+// drawn at the size they land on.
+
+/// An SVG document filled red, its root's attributes `attrs`.
+fn svg_image(attrs: &str) -> Vec<u8> {
+    format!(
+        "<svg xmlns='http://www.w3.org/2000/svg' {attrs}>\
+         <rect width='100%' height='100%' fill='red'/></svg>"
+    )
+    .into_bytes()
+}
+
+/// The size each replaced fragment of an `img` was laid out at, by the
+/// `img`'s id.
+fn img_sizes(engine: &mut Engine) -> Vec<(String, f32, f32)> {
+    fn walk(engine: &Engine, fragments: &[layout::Fragment], out: &mut Vec<(String, f32, f32)>) {
+        for f in fragments {
+            if let layout::FragmentKind::Replaced(_) = f.kind
+                && let Some(id) = engine.document().attr(f.node, "id")
+            {
+                out.push((id.to_owned(), f.w, f.h));
+            }
+            walk(engine, &f.children, out);
+        }
+    }
+    let fragments = engine.fragments(800.0);
+    let mut out = Vec::new();
+    walk(engine, &fragments, &mut out);
+    out
+}
+
+#[test]
+fn an_svg_image_is_sized_as_the_reference_browser_sizes_it() {
+    use crate::image_store::ImageState;
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<body style='margin: 0'><img id=a src=a.svg><img id=b src=b.svg>\
+             <img id=c src=c.svg><img id=d src=d.svg>\
+             <div style='width: 800px'><img id=e src=e.svg></div>\
+             <img id=f src=f.svg><img id=g src=g.svg><img id=h src=h.svg>\
+             <img id=i src=i.svg></body>",
+        )),
+        "/a.svg" => Some(Reply::ok(
+            "image/svg+xml",
+            &svg_image("width='40' height='20'"),
+        )),
+        "/b.svg" => Some(Reply::ok(
+            "image/svg+xml",
+            &svg_image("width='2em' height='1in'"),
+        )),
+        "/c.svg" => Some(Reply::ok("image/svg+xml", &svg_image(""))),
+        "/d.svg" => Some(Reply::ok("image/svg+xml", &svg_image("width='50%'"))),
+        "/e.svg" => Some(Reply::ok("image/svg+xml", &svg_image("viewBox='0 0 2 1'"))),
+        "/f.svg" => Some(Reply::ok(
+            "image/svg+xml",
+            b"<svg xmlns='http://www.w3.org/2000/svg'>",
+        )),
+        "/g.svg" => Some(Reply::ok("image/svg+xml", b"<svg width='4' height='4'/>")),
+        "/h.svg" => Some(Reply::ok(
+            "image/svg+xml",
+            b"<g xmlns='http://www.w3.org/2000/svg' width='4'/>",
+        )),
+        // Typed nothing an image is known by: sniffed.
+        "/i.svg" => Some(Reply::ok(
+            "application/octet-stream",
+            &svg_image("width='7' height='9'"),
+        )),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    load_all(&mut tab, server.url("/page.html"));
+    let header = |name: &str| match image_state(&tab.engine, &server.url(name)) {
+        Some(ImageState::Ready(ready)) => Some((ready.header.width, ready.header.height)),
+        _ => None,
+    };
+    assert_eq!(header("/a.svg"), Some((40, 20)));
+    assert_eq!(header("/b.svg"), Some((32, 96)), "2em, 1in");
+    assert_eq!(header("/c.svg"), Some((300, 150)));
+    assert_eq!(
+        header("/d.svg"),
+        Some((300, 150)),
+        "a percentage is no size"
+    );
+    assert_eq!(
+        header("/e.svg"),
+        Some((300, 150)),
+        "a ratio alone reads 300 by 150"
+    );
+    for broken in ["/f.svg", "/g.svg", "/h.svg"] {
+        assert_eq!(
+            image_state(&tab.engine, &server.url(broken)),
+            Some(ImageState::Broken),
+            "{broken}"
+        );
+    }
+    assert_eq!(header("/i.svg"), Some((7, 9)));
+    let sizes = img_sizes(&mut tab.engine);
+    let size = |id: &str| {
+        sizes
+            .iter()
+            .find(|(i, ..)| i == id)
+            .map(|&(_, w, h)| (w, h))
+    };
+    assert_eq!(size("a"), Some((40.0, 20.0)));
+    assert_eq!(size("c"), Some((300.0, 150.0)));
+    assert_eq!(
+        size("e"),
+        Some((800.0, 400.0)),
+        "laid out by its ratio alone"
+    );
+}
+
+#[test]
+fn an_svg_image_is_drawn_at_the_size_it_lands_on() {
+    use crate::image_store::{ImageState, Pixels};
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<body style='margin: 0'><img src=a.svg style='width: 200px; height: 100px'>\
+             <div style='width: 50px; height: 50px; background: url(a.svg) 0 0 / 25px 25px'>\
+             </div></body>",
+        )),
+        "/a.svg" => Some(Reply::ok(
+            "image/svg+xml",
+            b"<svg xmlns='http://www.w3.org/2000/svg' width='20' height='10'>\
+              <style>rect { fill: blue }</style><rect width='10' height='10'/></svg>",
+        )),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    load_all(&mut tab, server.url("/page.html"));
+    // The first frame asks for the drawing; the next shows it.
+    tab.engine.frame(300, 200);
+    tab.wait_until(|engine| !engine.shown.images.decoding());
+    let frame = tab.engine.frame(300, 200);
+    let at = |x: usize, y: usize| {
+        let i = (y * 300 + x) * 4;
+        [frame[i], frame[i + 1], frame[i + 2]]
+    };
+    // Its own sheet styles it; its left half blue, scaled ten times.
+    assert_eq!(at(50, 50), [0, 0, 255]);
+    assert_eq!(at(150, 50), [255, 255, 255]);
+    match image_state(&tab.engine, &server.url("/a.svg")) {
+        Some(ImageState::Ready(ready)) => match &ready.pixels {
+            Pixels::Decoded(image) => assert_eq!((image.width, image.height), (200, 100)),
+            other => panic!("{other:?}"),
+        },
+        other => panic!("{other:?}"),
+    }
+}
+
 #[test]
 fn what_is_no_image_is_broken() {
     use crate::image_store::ImageState;
@@ -1255,10 +1405,8 @@ fn what_is_no_image_is_broken() {
         )),
         "/text.png" => Some(html("not an image")),
         "/empty.png" => Some(Reply::ok("image/png", b"")),
-        "/picture.svg" => Some(Reply::ok(
-            "image/svg+xml",
-            b"<svg xmlns='http://www.w3.org/2000/svg'/>",
-        )),
+        // Since M32 an image; one that is no SVG document is broken.
+        "/picture.svg" => Some(Reply::ok("image/svg+xml", b"<html/>")),
         _ => None,
     });
     let mut tab = Tab::new();

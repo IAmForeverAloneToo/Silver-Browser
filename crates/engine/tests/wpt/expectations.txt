@@ -201,7 +201,6 @@ css/css-flexbox/aspect-ratio-intrinsic-size-014.html                            
 css/css-grid/grid-items/aspect-ratio-grid-item-dynamic-container-shrink-001.html  `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
 css/css-grid/grid-definition/grid-auto-repeat-dynamic-001.html                    `repeat(auto-fill)` in a container with a minimum width and no width repeats as few tracks as fill the minimum (css-grid-2 7.2.3.2), two here; this engine repeats one and the container is its minimum wide
 css/css-grid/grid-definition/grid-auto-repeat-dynamic-003.html                    as grid-auto-repeat-dynamic-001.html, with the container's width from `aspect-ratio` on a box that is not replaced (G36)
-css/css-grid/grid-with-dynamic-img.html                                           the script gives the image an SVG source, and SVG images are M23.4's
 css/css-backgrounds/background-color-body-propagation-003.html                    the script makes the body `display: inline` with a green background, which this engine does not carry to the canvas as the reference browser does (css-backgrounds-3 2.11.2); the same declarations in the markup render the same here
 html/dom/directionality/bdi-element-invalid-dir.html                              an invalid `dir` on a `bdi` is `auto` (HTML 3.2.6.4), right to left by its Hebrew letter; this engine has no `dir=auto` and lays the `bdi` out left to right
 
@@ -651,7 +650,6 @@ wasm/jsapi/table/type.tentative.any.html	Non-zero maximum	type(), of the type re
 # they fail by a gap named at its milestone, a proposal past the
 # standard, or where the reference browser and the test or the two
 # rasterizers differ.
-html/canvas/element/drawing-images-to-the-canvas/2d.drawImage.svg.html	drawImage() of an SVG image	SVG images and SVG's image element (M32.1)
 html/canvas/element/drawing-images-to-the-canvas/2d.drawImage.zerosource.image.html	drawImage with zero-sized source rectangle from image draws nothing without exception	SVG images and SVG's image element (M32.1)
 html/canvas/element/fill-and-stroke-styles/2d.fillStyle.CSSHSL.html	CSSHSL works as color input	a style given as a CSS Typed OM colour, a proposal past the standard (G81)
 html/canvas/element/fill-and-stroke-styles/2d.fillStyle.CSSRGB.html	CSSRGB works as color input	a style given as a CSS Typed OM colour, a proposal past the standard (G81)
@@ -822,7 +820,6 @@ html/canvas/element/text/2d.text.measure.width.nullCharacter.html	Null character
 html/canvas/element/text/2d.text.measure.width.space.html	Space characters are converted to U+0020 and NOT collapsed	@font-face, FontFace and document.fonts (G12)
 html/canvas/element/text/2d.text.variationSelectors.html	Variation selectors (VS15/VS16) affect text width	variation selectors choose no other face, the engine having one (G22)
 html/canvas/element/text/parent-style-relative-units.html	Font-size based on canvas element line-height	the lh unit: the engine has no line-height property (G22)
-html/canvas/offscreen/drawing-images-to-the-canvas/2d.drawImage.svg.html	drawImage() of an SVG image	SVG images and SVG's image element (M32.1)
 html/canvas/offscreen/drawing-images-to-the-canvas/2d.drawImage.zerosource.image.html	drawImage with zero-sized source rectangle from image draws nothing without exception	SVG images and SVG's image element (M32.1)
 html/canvas/offscreen/fill-and-stroke-styles/2d.fillStyle.CSSHSL.html	CSSHSL works as color input	a style given as a CSS Typed OM colour, a proposal past the standard (G81)
 html/canvas/offscreen/fill-and-stroke-styles/2d.fillStyle.CSSRGB.html	CSSRGB works as color input	a style given as a CSS Typed OM colour, a proposal past the standard (G81)

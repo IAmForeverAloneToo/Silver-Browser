@@ -34,6 +34,9 @@ pub enum Format {
     Jpeg,
     Gif,
     WebP,
+    /// An SVG image (M32): read and drawn by the engine, which knows
+    /// its document; never by this crate.
+    Svg,
 }
 
 impl Format {
@@ -70,12 +73,32 @@ pub enum Error {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Header {
     pub format: Format,
-    /// The width once oriented.
+    /// The width once oriented; an SVG image's reported natural width,
+    /// 300 where it has none.
     pub width: u32,
-    /// The height once oriented.
+    /// The height once oriented; 150 for an SVG image with none.
     pub height: u32,
     pub orientation: Orientation,
+    /// An SVG image's natural size as it is (M32), a side or both
+    /// possibly missing; `None` for the raster formats.
+    pub vector: Option<Vector>,
 }
+
+/// A vector image's natural size and ratio, each possibly missing (M32,
+/// CSS Images 3 section 4.1): what layout fits it by, where its header's
+/// width and height are what a script reads.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Vector {
+    /// The natural width in CSS pixels, if any.
+    pub width: Option<f32>,
+    /// The natural height, if any.
+    pub height: Option<f32>,
+    /// The natural ratio, width over height, if any.
+    pub ratio: Option<f32>,
+}
+
+// Its numbers are finite, never NaN: equal to themselves.
+impl Eq for Vector {}
 
 /// How many times an animation plays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -111,14 +111,14 @@ impl Drawables {
         let Some(drawable) = self.of(node, now) else {
             return Drawn::Coming;
         };
-        let (bytes, decoded, clean) = match drawable {
+        let (bytes, decoded, clean, size) = match drawable {
             Drawable::Broken => return Drawn::Broken,
             Drawable::Ready {
                 bytes,
                 decoded,
                 clean,
-                ..
-            } => (bytes, decoded, *clean),
+                size,
+            } => (bytes, decoded, *clean, *size),
         };
         if let Some(image) = decoded {
             return Drawn::Pixels(Arc::clone(image), clean);
@@ -127,8 +127,14 @@ impl Drawables {
         if let Some(image) = self.decoded.get(&key) {
             return Drawn::Pixels(Arc::clone(image), clean);
         }
-        let Ok(image) = images::decode(bytes) else {
-            return Drawn::Broken;
+        // An SVG image at its natural size (M32), its text in no face:
+        // recorded.
+        let image = match images::decode(bytes) {
+            Ok(image) => image,
+            Err(_) => match crate::svg_images::draw(bytes, size, None) {
+                Ok(image) => image,
+                Err(_) => return Drawn::Broken,
+            },
         };
         let image = Arc::new(image);
         let size = image_bytes(&image);

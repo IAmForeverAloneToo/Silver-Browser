@@ -2532,6 +2532,7 @@ mod fragment_tests {
                         width,
                         height,
                         orientation: self.0,
+                        vector: None,
                     },
                 }
             }
@@ -2688,6 +2689,7 @@ mod fragment_tests {
                     width: 20,
                     height: 10,
                     orientation: images::Orientation::Normal,
+                    vector: None,
                 },
             ))
         }
@@ -2735,6 +2737,7 @@ mod fragment_tests {
                     width: 20,
                     height: 10,
                     orientation: images::Orientation::Rotate90,
+                    vector: None,
                 },
             ))
         }

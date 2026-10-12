@@ -45,6 +45,13 @@ struct Natural {
 /// 0 by 0 with no ratio.
 fn natural(style: &ComputedStyle, replaced: &Replaced) -> Natural {
     match replaced {
+        // An SVG image's natural size as it has it (M32): a side or both
+        // may be missing.
+        Replaced::Image { header, .. } if let Some(vector) = header.vector => Natural {
+            width: vector.width,
+            height: vector.height,
+            ratio: vector.ratio,
+        },
         Replaced::Image { header, .. } => {
             let (w, h) = if style.image().image_orientation == ImageOrientation::None
                 && header.orientation.swaps_sides()
@@ -144,7 +151,14 @@ impl<'a> Sizing<'a> {
         let fixed = *replaced == Replaced::Icon
             && !(style.width.length_percentage().is_some()
                 && style.height.length_percentage().is_some());
-        let fills = matches!(replaced, Replaced::Svg { .. })
+        // An outer `<svg>`, or an SVG image with a ratio and no size
+        // (M32): laid out by the ratio alone.
+        let vector = match replaced {
+            Replaced::Svg { .. } => true,
+            Replaced::Image { header, .. } => header.vector.is_some(),
+            _ => false,
+        };
+        let fills = vector
             .then_some(cb_width)
             .flatten()
             .map(|w| (w - edges.horizontal()).max(0.0));
@@ -513,6 +527,7 @@ mod tests {
             width,
             height,
             orientation,
+            vector: None,
         };
         match src {
             Some("200x100.png") => ImageState::Ready {

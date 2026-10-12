@@ -106,6 +106,7 @@ mod scripts;
 mod select;
 mod storage;
 mod submit;
+mod svg_images;
 #[cfg(test)]
 mod testing;
 
@@ -976,6 +977,7 @@ impl Engine {
         let blank = Url::parse("about:blank").expect("about:blank parses");
         Engine {
             backend,
+            decoder: Decoder::new(Some(fonts.clone())),
             layout_fonts: fonts,
             shown,
             history: History::new(Some(blank)),
@@ -1002,7 +1004,6 @@ impl Engine {
             stats: FrameStats::default(),
             changed: true,
             events: Vec::new(),
-            decoder: Decoder::new(),
             next_image: 0,
             clock: {
                 let made = Instant::now();
@@ -3349,10 +3350,16 @@ impl Engine {
         let clean = result
             .as_ref()
             .is_ok_and(|response| response.response_type != net::ResponseType::Opaque);
+        // An SVG image (M32): typed so, or typed nothing an image is known
+        // by and beginning like one.
+        let svg = result.as_ref().is_ok_and(|response| {
+            let mime = response.mime_type.as_ref().map(|m| m.essence().to_owned());
+            svg_images::is_svg(mime.as_deref(), &response.body)
+        });
         match self
             .shown
             .images
-            .fetched(url, result.ok().map(|response| response.body), clean)
+            .fetched(url, result.ok().map(|response| response.body), clean, svg)
         {
             Some(work) => self.decoder.start(page, url.to_owned(), work),
             None => self.image_changed(url),

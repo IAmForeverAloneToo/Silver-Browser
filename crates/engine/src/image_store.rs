@@ -64,6 +64,10 @@ impl Ready {
     /// size both ways, else the natural size.
     fn wanted(&self) -> Option<(f32, f32)> {
         let (w, h) = self.largest;
+        // An SVG image is drawn at the size it lands on (M32).
+        if self.header.format == images::Format::Svg {
+            return (w > 0.0 && h > 0.0).then_some((w, h));
+        }
         (w > 0.0
             && h > 0.0
             && w * 2.0 < self.header.width as f32
@@ -75,6 +79,20 @@ impl Ready {
     /// size for a copy.
     fn work(&mut self, wanted: Option<(f32, f32)>) -> Work {
         self.asked = Some(wanted);
+        if self.header.format == images::Format::Svg {
+            let (w, h) = wanted.unwrap_or((self.header.width as f32, self.header.height as f32));
+            let side = |v: f32| (v.ceil().max(1.0) as u32).min(canvas::MAX_CANVAS_SIDE);
+            let (mut w, mut h) = (side(w), side(h));
+            // Within the pixels a canvas may have, in its ratio.
+            let most = svg::MAX_SVG_PIXELS as f64;
+            let area = f64::from(w) * f64::from(h);
+            if area > most {
+                let scale = (most / area).sqrt();
+                w = ((f64::from(w) * scale).floor() as u32).max(1);
+                h = ((f64::from(h) * scale).floor() as u32).max(1);
+            }
+            return Work::Svg(self.bytes.clone(), (w, h));
+        }
         let size = wanted.map(|(w, h)| ((w * 2.0).ceil() as u32, (h * 2.0).ceil() as u32));
         Work::Pixels(self.bytes.clone(), size)
     }
@@ -174,10 +192,13 @@ impl ImageEntry {
 }
 
 /// What a decode thread is given: bytes whose header to read, or whose
-/// pixels to decode, downscaled to a size where one is given (M23.5).
+/// pixels to decode, downscaled to a size where one is given (M23.5); an
+/// SVG image's (M32) to read as one, or to draw at a size.
 pub(crate) enum Work {
     Header(Arc<[u8]>),
     Pixels(Arc<[u8]>, Option<(u32, u32)>),
+    SvgHeader(Arc<[u8]>),
+    Svg(Arc<[u8]>, (u32, u32)),
 }
 
 /// What a decode thread gives back.
@@ -456,10 +477,15 @@ impl ImageStore {
         url: &str,
         body: Option<Vec<u8>>,
         clean: bool,
+        svg: bool,
     ) -> Option<Work> {
         let entry = self.entries.get_mut(url)?;
         entry.clean = clean;
         match body {
+            Some(body) if svg => {
+                entry.state = ImageState::Reading;
+                Some(Work::SvgHeader(Arc::from(body)))
+            }
             Some(body) => {
                 entry.state = ImageState::Reading;
                 Some(Work::Header(Arc::from(body)))
@@ -543,6 +569,16 @@ impl ImageStore {
             Pixels::Decoded(image) if ready.kept_for.is_none() => Some(image.clone()),
             Pixels::Failed => None,
             // A downscaled copy is for the screen: the page has it whole.
+            // An SVG image at its natural size (M32), its text in no
+            // face: recorded.
+            Pixels::Decoded(_) | Pixels::NotDecoded | Pixels::Decoding
+                if ready.header.format == images::Format::Svg =>
+            {
+                let size = (ready.header.width.max(1), ready.header.height.max(1));
+                crate::svg_images::draw(&ready.bytes, size, None)
+                    .ok()
+                    .map(Arc::new)
+            }
             Pixels::Decoded(_) | Pixels::NotDecoded | Pixels::Decoding => {
                 images::decode(&ready.bytes).ok().map(Arc::new)
             }
@@ -766,6 +802,8 @@ pub(crate) struct Decoder {
     pool: Pool<Done>,
     jobs: HashMap<JobId, Job>,
     next: JobId,
+    /// The engine's fonts, an SVG image's text shaped in them (M32).
+    fonts: Option<text::FontCollection>,
 }
 
 struct Job {
@@ -784,11 +822,12 @@ pub(crate) struct Finished {
 }
 
 impl Decoder {
-    pub(crate) fn new() -> Decoder {
+    pub(crate) fn new(fonts: Option<text::FontCollection>) -> Decoder {
         Decoder {
             pool: Pool::new(MAX_DECODE_THREADS),
             jobs: HashMap::new(),
             next: 0,
+            fonts,
         }
     }
 
@@ -801,11 +840,19 @@ impl Decoder {
         let id = self.next;
         self.next += 1;
         let bytes = match &work {
-            Work::Header(bytes) | Work::Pixels(bytes, _) => bytes.clone(),
+            Work::Header(bytes)
+            | Work::Pixels(bytes, _)
+            | Work::SvgHeader(bytes)
+            | Work::Svg(bytes, _) => bytes.clone(),
         };
         self.jobs.insert(id, Job { page, url, bytes });
+        let fonts = self.fonts.clone();
         self.pool.run(id, move |_| match work {
             Work::Header(bytes) => Done::Header(images::read_header(&bytes)),
+            Work::SvgHeader(bytes) => Done::Header(crate::svg_images::header(&bytes)),
+            Work::Svg(bytes, size) => {
+                Done::Pixels(crate::svg_images::draw(&bytes, size, fonts.as_ref()))
+            }
             Work::Pixels(bytes, size) => {
                 Done::Pixels(images::decode(&bytes).map(|image| match size {
                     Some((w, h)) if w < image.width && h < image.height => {
@@ -856,6 +903,7 @@ mod tests {
                 width: 100,
                 height: 50,
                 orientation: images::Orientation::Normal,
+                vector: None,
             },
             bytes: Arc::from(Vec::new()),
             pixels: Pixels::NotDecoded,
@@ -870,7 +918,7 @@ mod tests {
             let wanted = ready.wanted();
             match ready.work(wanted) {
                 Work::Pixels(_, size) => size,
-                Work::Header(_) => unreachable!("pixels"),
+                _ => unreachable!("a raster image's pixels"),
             }
         };
         assert_eq!(size(&mut ready, (0.0, 0.0)), None, "never drawn: whole");
