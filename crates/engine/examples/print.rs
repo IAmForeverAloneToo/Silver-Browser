@@ -25,6 +25,8 @@
 //! many words differ from the capture before; look at what changed
 //! before committing it.
 
+#![forbid(unsafe_code)]
+
 #[path = "../tests/print/reader.rs"]
 mod reader;
 

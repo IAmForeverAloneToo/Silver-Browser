@@ -29,6 +29,8 @@
 //! cargo bench -p engine --bench composite
 //! ```
 
+#![forbid(unsafe_code)]
+
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 

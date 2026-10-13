@@ -12,6 +12,8 @@
 //! Parsers here never perform I/O — resource loading is `net` +
 //! `engine`'s job.
 
+#![forbid(unsafe_code)]
+
 pub mod encoding_sniffing;
 mod load;
 mod named_references;

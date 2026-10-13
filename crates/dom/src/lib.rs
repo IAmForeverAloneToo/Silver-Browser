@@ -9,6 +9,8 @@
 //! convert between the two. See `docs/architecture.md` for the layering
 //! contract and `docs/design/incremental.md` for the live document.
 
+#![forbid(unsafe_code)]
+
 use std::fmt;
 
 mod document;

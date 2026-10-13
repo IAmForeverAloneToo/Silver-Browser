@@ -18,6 +18,8 @@
 //! a change to the document lays out what the change reached and
 //! reuses the rest.
 
+#![forbid(unsafe_code)]
+
 mod align;
 pub mod block;
 pub mod box_tree;

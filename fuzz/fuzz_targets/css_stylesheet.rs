@@ -3,6 +3,7 @@
 //! are, `@charset` and all, then parsed.
 
 #![no_main]
+#![forbid(unsafe_code)]
 
 use libfuzzer_sys::fuzz_target;
 

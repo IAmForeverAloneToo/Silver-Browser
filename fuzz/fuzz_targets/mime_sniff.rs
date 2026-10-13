@@ -6,6 +6,7 @@
 //! never gives more than three bytes for four characters.
 
 #![no_main]
+#![forbid(unsafe_code)]
 
 use libfuzzer_sys::fuzz_target;
 use net::mime::{MimeType, extract_mime_type, sniff};

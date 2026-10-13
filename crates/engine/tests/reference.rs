@@ -99,6 +99,8 @@
 //! viewport's right edge is left out of the comparison, and the test
 //! holds the page to scrolling at all.
 
+#![forbid(unsafe_code)]
+
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

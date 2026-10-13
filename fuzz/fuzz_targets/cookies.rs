@@ -12,6 +12,7 @@
 //! bytes read with them give a jar that keeps the same rules.
 
 #![no_main]
+#![forbid(unsafe_code)]
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

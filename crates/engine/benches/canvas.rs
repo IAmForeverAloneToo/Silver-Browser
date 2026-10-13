@@ -18,6 +18,8 @@
 //! cargo bench -p engine --bench canvas
 //! ```
 
+#![forbid(unsafe_code)]
+
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 

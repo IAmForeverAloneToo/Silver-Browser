@@ -21,6 +21,8 @@
 //! Criterion-tracked, CI-enforced regression budgets are a T4
 //! (performance track) commitment for later (M35+).
 
+#![forbid(unsafe_code)]
+
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 

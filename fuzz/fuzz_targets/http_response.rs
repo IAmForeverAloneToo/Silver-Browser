@@ -5,6 +5,7 @@
 //! chunked coding's framing, and at most one buffer's fill beyond.
 
 #![no_main]
+#![forbid(unsafe_code)]
 
 use std::io::{BufReader, Read};
 

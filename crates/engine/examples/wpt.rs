@@ -79,6 +79,8 @@
 //! `!=path` and each fuzziness as `fuzzy=ref:a-b;c-d` (an empty `ref`
 //! applying to every reference), for a check-layout test its selectors.
 
+#![forbid(unsafe_code)]
+
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::env;
 use std::fs;

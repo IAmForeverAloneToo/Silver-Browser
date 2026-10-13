@@ -8,6 +8,7 @@
 //! bitmap stays the size it was made, four bytes a pixel.
 
 #![no_main]
+#![forbid(unsafe_code)]
 
 use std::sync::OnceLock;
 

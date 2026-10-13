@@ -10,6 +10,7 @@
 //! for the table's directives; and the cache keeps within its bounds.
 
 #![no_main]
+#![forbid(unsafe_code)]
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

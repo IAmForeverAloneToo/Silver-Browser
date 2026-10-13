@@ -3,6 +3,7 @@
 //! having to produce a well-formed `<style>` element.
 
 #![no_main]
+#![forbid(unsafe_code)]
 
 use libfuzzer_sys::fuzz_target;
 

@@ -7,6 +7,8 @@
 //! not compared; `xmlViolation.test` is for the infoset coercion, which
 //! is not this tokenizer's, and is not run.
 
+#![forbid(unsafe_code)]
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;

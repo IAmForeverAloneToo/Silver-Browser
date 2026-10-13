@@ -6,6 +6,8 @@
 //! composites the same layers. Only this crate (and `shell`) touches
 //! pixel buffers — per the layering contract in `docs/architecture.md`.
 
+#![forbid(unsafe_code)]
+
 #[cfg(feature = "gpu")]
 pub mod gpu;
 

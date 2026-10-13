@@ -8,6 +8,7 @@
 //! budget; and the realm runs a script after.
 
 #![no_main]
+#![forbid(unsafe_code)]
 
 use arbitrary::Unstructured;
 use js::{ConsoleLevel, ErrorKind, Limits, QuickJs, Script, ScriptEngine, ScriptingHost};

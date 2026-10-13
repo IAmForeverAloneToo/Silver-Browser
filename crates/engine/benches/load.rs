@@ -18,6 +18,8 @@
 //! cargo bench -p engine --bench load
 //! ```
 
+#![forbid(unsafe_code)]
+
 use std::hint::black_box;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};

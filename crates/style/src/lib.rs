@@ -9,6 +9,8 @@
 //! inline `style` attributes, with inheritance resolved. `layout` (M6)
 //! builds its box tree from the document and those styles.
 
+#![forbid(unsafe_code)]
+
 use std::fmt;
 
 /// Errors produced by style parsing.

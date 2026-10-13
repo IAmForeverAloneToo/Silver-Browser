@@ -29,6 +29,8 @@
 //! than putting a box's numbers on another element. Look at what
 //! changed before committing it.
 
+#![forbid(unsafe_code)]
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};

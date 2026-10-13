@@ -13,6 +13,8 @@
 //! the same pictures as the pages drawn that many times larger at 1;
 //! `benches/svg.rs` times them.
 
+#![forbid(unsafe_code)]
+
 use std::path::Path;
 use std::time::{Duration, Instant};
 

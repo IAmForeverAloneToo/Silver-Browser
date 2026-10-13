@@ -11,6 +11,8 @@
 //! baseline number, run by hand with `cargo bench -p style` and eyeballed
 //! against the milestone's <100ms (debug) budget.
 
+#![forbid(unsafe_code)]
+
 use std::hint::black_box;
 use std::time::Instant;
 

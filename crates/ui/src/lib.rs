@@ -7,6 +7,8 @@
 //!
 //! The permission prompt (M33.4) is drawn and given input the same way.
 
+#![forbid(unsafe_code)]
+
 pub mod field;
 pub mod prompt;
 pub mod status;

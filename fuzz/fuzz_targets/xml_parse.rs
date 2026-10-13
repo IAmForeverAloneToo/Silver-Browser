@@ -6,6 +6,7 @@
 //! error names a line and a column from 1.
 
 #![no_main]
+#![forbid(unsafe_code)]
 
 use html::xml::{MAX_XML_DEPTH, parse_xml};
 use libfuzzer_sys::fuzz_target;

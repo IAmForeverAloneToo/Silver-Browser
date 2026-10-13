@@ -19,6 +19,8 @@
 //! never does. `font-feature-settings` (CSS, to add/remove specific
 //! features beyond the defaults) is M21 scope, per that item's own note.
 
+#![forbid(unsafe_code)]
+
 pub mod edit;
 
 use std::collections::HashMap;

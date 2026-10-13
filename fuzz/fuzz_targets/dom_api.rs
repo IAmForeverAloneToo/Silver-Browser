@@ -52,6 +52,7 @@
 //! engine does.
 
 #![no_main]
+#![forbid(unsafe_code)]
 
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};

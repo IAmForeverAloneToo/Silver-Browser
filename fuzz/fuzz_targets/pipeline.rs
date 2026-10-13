@@ -18,6 +18,7 @@
 //! another from the top, at least one and [`layout::MAX_PAGES`] at most.
 
 #![no_main]
+#![forbid(unsafe_code)]
 
 use libfuzzer_sys::fuzz_target;
 use render::RenderBackend as _;

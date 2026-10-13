@@ -18,6 +18,8 @@
 //! The suite runs where an adapter exists, on Mesa's software Vulkan
 //! driver in CI's Linux job; where none does it says so and passes.
 
+#![forbid(unsafe_code)]
+
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 

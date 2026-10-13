@@ -5,6 +5,7 @@
 //! the engine's again after every run and checkpoint.
 
 #![no_main]
+#![forbid(unsafe_code)]
 
 use js::{ConsoleLevel, ErrorKind, Limits, QuickJs, Script, ScriptEngine, ScriptingHost};
 use libfuzzer_sys::fuzz_target;

@@ -5,6 +5,8 @@
 //! crate's public API only — it complements, rather than replaces, the
 //! inline unit tests in `selector_matching::{parse, matcher}`.
 
+#![forbid(unsafe_code)]
+
 struct Case {
     name: &'static str,
     html: &'static str,

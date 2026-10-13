@@ -92,6 +92,8 @@
 //! of style, a change of the sheets or of the medium among them, a
 //! change that transitions; a print takes them as they stand.
 
+#![forbid(unsafe_code)]
+
 pub mod address;
 pub mod differential;
 mod editing;

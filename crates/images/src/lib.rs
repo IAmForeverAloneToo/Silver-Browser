@@ -2,6 +2,8 @@
 //! WebP decoded to premultiplied 8-bit sRGB, under bounds a hostile image
 //! cannot exceed. A leaf crate: it is given bytes and opens nothing.
 
+#![forbid(unsafe_code)]
+
 mod compose;
 mod exif;
 mod formats;

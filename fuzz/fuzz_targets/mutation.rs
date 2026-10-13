@@ -8,6 +8,7 @@
 //! document as it then stands.
 
 #![no_main]
+#![forbid(unsafe_code)]
 
 use std::cell::RefCell;
 use std::sync::OnceLock;

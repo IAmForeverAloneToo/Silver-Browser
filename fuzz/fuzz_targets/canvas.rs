@@ -9,6 +9,7 @@
 //! decodes to its size.
 
 #![no_main]
+#![forbid(unsafe_code)]
 
 use std::sync::{Arc, Mutex, OnceLock};
 

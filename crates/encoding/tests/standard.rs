@@ -3,6 +3,8 @@
 //! they must match. Random inputs come from a fixed-seed generator, so
 //! a failure replays.
 
+#![forbid(unsafe_code)]
+
 use std::path::{Path, PathBuf};
 
 use encoding::{DecodeError, DecoderMode, EncoderMode, Encoding, Unmappable};

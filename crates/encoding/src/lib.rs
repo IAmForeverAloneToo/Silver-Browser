@@ -29,6 +29,8 @@
 //! they still match. The standard licenses the portions of it carried
 //! into source code under BSD-3-Clause; see `LICENSE-WHATWG`.
 
+#![forbid(unsafe_code)]
+
 use std::fmt;
 
 mod decoder;

@@ -5,6 +5,7 @@
 //! to the same URL: the round trip the URL Standard promises.
 
 #![no_main]
+#![forbid(unsafe_code)]
 
 use libfuzzer_sys::fuzz_target;
 use net::url::Url;

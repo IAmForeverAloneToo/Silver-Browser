@@ -13,6 +13,8 @@
 //! cargo bench -p engine --bench svg
 //! ```
 
+#![forbid(unsafe_code)]
+
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};

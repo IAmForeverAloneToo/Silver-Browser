@@ -24,6 +24,8 @@
 //! cargo bench -p engine --bench images
 //! ```
 
+#![forbid(unsafe_code)]
+
 use std::hint::black_box;
 use std::path::Path;
 use std::sync::mpsc::{Receiver, channel};

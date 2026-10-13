@@ -22,6 +22,8 @@
 //! a page for each page printed, at its box's size, with its area's
 //! raster over its area and nothing else.
 
+#![forbid(unsafe_code)]
+
 #[path = "print/reader.rs"]
 mod reader;
 

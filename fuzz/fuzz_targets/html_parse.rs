@@ -10,6 +10,7 @@
 //! never panics either.
 
 #![no_main]
+#![forbid(unsafe_code)]
 
 use html::{Parser, Stop};
 use libfuzzer_sys::fuzz_target;

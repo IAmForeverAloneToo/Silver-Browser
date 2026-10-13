@@ -9,6 +9,8 @@
 //! the pins, the entries of no mode and the test domains are left out.
 //! The file is JSON with `//` comment lines, which are dropped first.
 
+#![forbid(unsafe_code)]
+
 use std::path::Path;
 
 fn main() {

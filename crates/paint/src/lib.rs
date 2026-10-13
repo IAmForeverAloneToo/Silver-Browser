@@ -23,6 +23,8 @@
 //! `dom::Document` with its `style::Styles`, real cascaded
 //! colors/font-sizes but still no real box model.
 
+#![forbid(unsafe_code)]
+
 /// Gradients rendered (M23.3).
 pub mod gradient;
 pub mod order;

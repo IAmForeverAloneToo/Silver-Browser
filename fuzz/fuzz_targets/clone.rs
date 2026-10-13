@@ -6,6 +6,7 @@
 //! being stopped by its step budget; and the heap stays under its limit.
 
 #![no_main]
+#![forbid(unsafe_code)]
 
 use std::cell::RefCell;
 

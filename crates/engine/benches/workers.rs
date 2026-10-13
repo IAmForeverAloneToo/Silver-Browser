@@ -13,6 +13,8 @@
 //! cargo bench -p engine --bench workers
 //! ```
 
+#![forbid(unsafe_code)]
+
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};

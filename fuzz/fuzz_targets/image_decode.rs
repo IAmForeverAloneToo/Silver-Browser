@@ -5,6 +5,7 @@
 //! each exactly its image's size, premultiplied, no delay under 11ms.
 
 #![no_main]
+#![forbid(unsafe_code)]
 
 use images::{Error, MAX_FRAMES, MAX_IMAGE_PIXELS, MAX_IMAGE_SIDE};
 use libfuzzer_sys::fuzz_target;

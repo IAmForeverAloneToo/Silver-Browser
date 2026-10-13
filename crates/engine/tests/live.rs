@@ -13,6 +13,8 @@
 //! one: the root of a network that intercepts TLS. The browser itself
 //! has no such option.
 
+#![forbid(unsafe_code)]
+
 use std::sync::mpsc::channel;
 use std::time::{Duration, Instant};
 

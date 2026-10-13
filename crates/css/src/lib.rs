@@ -13,6 +13,8 @@
 //! Selectors are not parsed yet: rule preludes are kept as token
 //! vectors for the future `style` crate to consume.
 
+#![forbid(unsafe_code)]
+
 pub mod decode;
 pub mod parser;
 pub mod tokenizer;

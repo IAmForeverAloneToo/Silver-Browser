@@ -5,6 +5,7 @@
 //! give what std's lossy decoding gives.
 
 #![no_main]
+#![forbid(unsafe_code)]
 
 use encoding::{DecoderMode, Encoding};
 use libfuzzer_sys::fuzz_target;

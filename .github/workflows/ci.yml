@@ -49,6 +49,19 @@ jobs:
             echo "::error::network code outside crates/net"
             exit 1
           fi
+      # T3.2 (M33.5): `unsafe` only in the shell's platform module, which
+      # the shell's own test also holds each block of to its argument.
+      # Strings and line comments are cut first; M29's module, a crate
+      # of its own built to WebAssembly, marks its exports `no_mangle`.
+      - name: unsafe only in the platform module
+        run: |
+          if grep -rn --include='*.rs' unsafe crates fuzz/fuzz_targets \
+              | grep -v -e '^crates/shell/src/platform.rs:' -e '^crates/engine/tests/wasm/' \
+              | sed -E 's/"([^"\\]|\\.)*"//g; s#//.*##' \
+              | grep -E '(^|[^[:alnum:]_-])unsafe[[:space:]]*(\{|fn|impl|trait|extern)|#\[unsafe\('; then
+            echo "::error::unsafe outside crates/shell/src/platform.rs"
+            exit 1
+          fi
 
   audit:
     name: advisories + licenses

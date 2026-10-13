@@ -24,6 +24,7 @@
 //!   markers no more than their styles' prefixes and suffixes longer.
 
 #![no_main]
+#![forbid(unsafe_code)]
 
 use std::sync::OnceLock;
 

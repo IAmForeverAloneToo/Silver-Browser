@@ -94,7 +94,10 @@ pub(crate) fn reduced_motion() -> Option<bool> {
     }
 }
 
+// The workspace's one module that writes `unsafe` (M33.5): each block
+// with its `// SAFETY:` argument above it.
 #[cfg(windows)]
+#[allow(unsafe_code)]
 mod windows {
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Cryptography::{

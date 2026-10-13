@@ -31,6 +31,9 @@
 //! fails shows the engine's error page, and is reported on standard
 //! error.
 
+// `unsafe` in the platform module alone (M33.5), which allows it.
+#![deny(unsafe_code)]
+
 mod keys;
 mod platform;
 mod session;
@@ -964,6 +967,143 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    /// `line` without its string literals and its line comment.
+    fn code_of(line: &str) -> String {
+        let (mut code, mut quoted, mut escaped) = (String::new(), false, false);
+        for c in line.chars() {
+            match (quoted, c) {
+                (false, '"') => quoted = true,
+                (false, _) => code.push(c),
+                (true, _) if escaped => escaped = false,
+                (true, '\\') => escaped = true,
+                (true, '"') => quoted = false,
+                (true, _) => {}
+            }
+        }
+        code.split("//").next().unwrap_or_default().to_owned()
+    }
+
+    /// Whether `code`, a line with its strings and comment cut off,
+    /// writes `unsafe`: a block, a function, a trait or an impl, an
+    /// extern block, or an unsafe attribute; not a word that only begins
+    /// with it, as CSP's `'unsafe-inline'`.
+    fn writes_unsafe(code: &str) -> bool {
+        if code.contains(concat!("#[", "unsafe(")) {
+            return true;
+        }
+        let mut rest = code;
+        while let Some(at) = rest.find("unsafe") {
+            let before = rest[..at].chars().next_back();
+            let after = &rest[at + "unsafe".len()..];
+            rest = after;
+            let word = |c: char| c.is_alphanumeric() || c == '_' || c == '-' || c == '\'';
+            if before.is_some_and(word) || after.starts_with(word) {
+                continue;
+            }
+            let next = after.trim_start();
+            if ["{", "fn", "impl", "trait", "extern"]
+                .iter()
+                .any(|kind| next.starts_with(kind))
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The `.rs` files under `dir`.
+    fn sources(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                sources(&path, files);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                files.push(path);
+            }
+        }
+    }
+
+    /// T3.2 (M33.5, docs/architecture.md): the workspace writes `unsafe`
+    /// in the shell's platform module alone, each block with its
+    /// `// SAFETY:` argument just above it; every other crate root, test,
+    /// bench, example and fuzz target forbids it.
+    #[test]
+    fn unsafe_is_written_in_the_platform_module_alone_each_block_argued() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut files = Vec::new();
+        sources(&root.join("crates"), &mut files);
+        sources(&root.join("fuzz").join("fuzz_targets"), &mut files);
+        assert!(files.len() > 100, "the workspace's sources found");
+        let mut blocks = 0;
+        for file in &files {
+            let name = file
+                .strip_prefix(&root)
+                .unwrap_or(file)
+                .to_string_lossy()
+                .replace('\\', "/");
+            // M29's module is a crate of its own, built to WebAssembly
+            // and run in the interpreter, whose exports `no_mangle` marks.
+            if name.starts_with("crates/engine/tests/wasm/") {
+                continue;
+            }
+            let text = std::fs::read_to_string(file).unwrap_or_default();
+            let lines: Vec<&str> = text.lines().collect();
+            for (n, line) in lines.iter().enumerate() {
+                let code = code_of(line);
+                if !writes_unsafe(&code) {
+                    continue;
+                }
+                assert_eq!(
+                    name,
+                    "crates/shell/src/platform.rs",
+                    "unsafe at line {}",
+                    n + 1
+                );
+                // Its argument: the nearest comment above it, a statement
+                // of a few lines at most between, begins `// SAFETY:`.
+                let comment = |line: &str| line.trim_start().starts_with("//");
+                let above = lines[..n]
+                    .iter()
+                    .rev()
+                    .take(4)
+                    .position(|line| comment(line));
+                let argued = above.is_some_and(|skip| {
+                    lines[..n - skip]
+                        .iter()
+                        .rev()
+                        .take_while(|line| comment(line))
+                        .last()
+                        .is_some_and(|first| first.trim_start().starts_with("// SAFETY:"))
+                });
+                assert!(
+                    argued,
+                    "{name}:{}: an unsafe block without its argument",
+                    n + 1
+                );
+                blocks += 1;
+            }
+            let root_file = name.ends_with("/src/lib.rs")
+                || name.starts_with("fuzz/")
+                || ["tests", "benches", "examples"].iter().any(|kind| {
+                    let parts: Vec<&str> = name.split('/').collect();
+                    parts.len() == 4 && parts[2] == *kind
+                });
+            if root_file {
+                assert!(
+                    text.contains("#![forbid(unsafe_code)]"),
+                    "{name} does not forbid unsafe code"
+                );
+            }
+        }
+        assert!(blocks >= 4, "the platform module's blocks found: {blocks}");
+        // The shell denies it but where the platform module allows it.
+        let shell = std::fs::read_to_string(root.join("crates/shell/src/main.rs")).unwrap();
+        assert!(shell.contains("\n#![deny(unsafe_code)]\n"));
+    }
+
     use super::*;
 
     #[test]

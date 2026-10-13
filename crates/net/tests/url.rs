@@ -2,6 +2,8 @@
 //! (see `data/README.md`): every case is run, and the count of cases is
 //! checked so that none is skipped without saying so.
 
+#![forbid(unsafe_code)]
+
 mod support;
 
 use net::url::{Host, Url};

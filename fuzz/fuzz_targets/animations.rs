@@ -23,6 +23,7 @@
 //!   element's computed style, and every pixel.
 
 #![no_main]
+#![forbid(unsafe_code)]
 
 use std::cell::RefCell;
 use std::sync::OnceLock;

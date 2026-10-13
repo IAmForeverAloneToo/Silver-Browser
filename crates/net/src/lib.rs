@@ -11,6 +11,8 @@
 //! Content Security Policy and checks its scripts against it. Only
 //! `engine` orchestrates fetching.
 
+#![forbid(unsafe_code)]
+
 mod address_space;
 pub mod cache;
 mod content_coding;

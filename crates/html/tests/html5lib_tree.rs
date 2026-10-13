@@ -11,6 +11,8 @@
 //! beside the files with its reason; a test named there that passes is a
 //! failure too.
 
+#![forbid(unsafe_code)]
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;

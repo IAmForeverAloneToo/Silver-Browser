@@ -14,6 +14,8 @@
 //! cargo bench -p engine --bench storage
 //! ```
 
+#![forbid(unsafe_code)]
+
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant, SystemTime};
 

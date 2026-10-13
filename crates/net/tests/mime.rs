@@ -3,6 +3,8 @@
 //! them. Every case is run, and the counts are checked so that none is
 //! skipped without saying so.
 
+#![forbid(unsafe_code)]
+
 mod support;
 
 use encoding::UTF_8;

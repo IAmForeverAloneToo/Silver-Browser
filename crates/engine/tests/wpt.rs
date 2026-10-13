@@ -59,6 +59,8 @@
 //! each testharness test and subtest that failed, for keeping the
 //! expectations.
 
+#![forbid(unsafe_code)]
+
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::fs::{self, File};
