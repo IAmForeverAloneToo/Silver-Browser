@@ -11,18 +11,19 @@ mod tls;
 
 use std::collections::HashMap;
 use std::io::{self, BufReader};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rustls::ClientConfig;
 use rustls::pki_types::CertificateDer;
 
-use crate::Url;
 use crate::address_space::AddressSpace;
 use crate::content_coding;
 use crate::error::{AbortHandle, NetworkError};
 use crate::headers::HeaderList;
 use crate::http::{self, BodySink, Limits, ReadError, RequestMessage, Response};
+use crate::{Host, Url};
 
 use pool::{Connection, OriginKey, Pool};
 use stream::{Socket, Stream, Waiter};
@@ -52,6 +53,8 @@ pub struct Config {
     pub limits: Limits,
     /// Roots trusted beside Mozilla's: only tests add one.
     pub(crate) extra_roots: Vec<CertificateDer<'static>>,
+    /// Names resolved without the resolver: only tests give one.
+    pub(crate) hosts: Vec<(String, IpAddr)>,
 }
 
 impl Default for Config {
@@ -63,6 +66,7 @@ impl Default for Config {
             max_per_origin: MAX_CONNECTIONS_PER_ORIGIN,
             limits: Limits::default(),
             extra_roots: Vec::new(),
+            hosts: Vec::new(),
         }
     }
 }
@@ -95,6 +99,16 @@ impl Config {
             return Err("no certificate in it can be a root".to_owned());
         }
         Ok(self)
+    }
+
+    /// Resolves the domain `host` to `address` without asking the
+    /// resolver (M33.3): a test's names for its servers on this machine,
+    /// as the reference browser's resolver rules give them. There is no
+    /// such option outside tests.
+    #[cfg(any(test, feature = "test-server"))]
+    pub fn resolve(mut self, host: &str, address: IpAddr) -> Config {
+        self.hosts.push((host.to_ascii_lowercase(), address));
+        self
     }
 }
 
@@ -445,7 +459,19 @@ impl Transport {
     ) -> Result<Connection, NetworkError> {
         let host = url.host().expect("an http: or https: URL has a host");
         let port = url.port_or_default().expect("and a port");
-        let addresses = connect::resolve_abortable(host, port, abort)?;
+        let given = match host {
+            Host::Domain(name) => self
+                .config
+                .hosts
+                .iter()
+                .find(|(known, _)| known == name)
+                .map(|&(_, address)| vec![SocketAddr::new(address, port)]),
+            _ => None,
+        };
+        let addresses = match given {
+            Some(addresses) => addresses,
+            None => connect::resolve_abortable(host, port, abort)?,
+        };
         let allowed = |address| {
             let target = AddressSpace::of(address);
             match initiator {

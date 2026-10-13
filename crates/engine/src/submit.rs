@@ -273,7 +273,7 @@ impl crate::Engine {
                     Ok(Some(frame)) => {
                         self.navigate_other(frame, url, false, submission.post, source.origin);
                     }
-                    Ok(None) => self.navigate_with(url, submission.post, source),
+                    Ok(None) => self.submit_to(url, submission.post, source),
                     Err(line) => self.shown.scripts.say(js::ConsoleLevel::Error, line),
                 }
             }
@@ -299,6 +299,37 @@ impl crate::Engine {
             crate::Handling::Push
         };
         self.start_navigation_with(url, handling, Some(post), Some(source));
+    }
+
+    /// Sends a form's submission to `url` in this navigable, as
+    /// [`crate::Engine::navigate_with`] does, unless it would go from a
+    /// secure document to an `http:` URL that is not potentially
+    /// trustworthy (M33.3): then the browser's page says so in its place,
+    /// in an entry of its own that is never fetched again, and keeps the
+    /// submission for that page's "Send anyway".
+    pub(crate) fn submit_to(
+        &mut self,
+        url: Url,
+        post: Option<Post>,
+        source: crate::NavigationSource,
+    ) {
+        // Any URL that is not potentially trustworthy: `http:`, the
+        // other schemes being refused before.
+        let mixed = self.shown.page.is_secure_context() && !url.is_potentially_trustworthy();
+        if !mixed {
+            self.navigate_with(url, post, source);
+            return;
+        }
+        self.cancel_navigation();
+        let handling = if self.shown.initial {
+            crate::Handling::Replace
+        } else {
+            crate::Handling::Push
+        };
+        let shown = self.made(crate::pages::mixed_form(&url), None);
+        self.posting = true;
+        self.commit(shown, Some(url.clone()), handling);
+        self.pending_form = Some(crate::PendingForm { url, post, source });
     }
 
     /// Resets `form` (HTML section 4.10.22) when no script runs its

@@ -394,6 +394,9 @@ pub struct Engine {
     /// Whether the navigation under way sends a form's POST (M26.9): the
     /// entry its document gets is a posted one.
     posting: bool,
+    /// The submission a mixed form page holds back, for its "Send
+    /// anyway" (M33.3): dropped by any other navigation.
+    pending_form: Option<PendingForm>,
     /// Whether the window has the system's focus, and whether the last
     /// input was a key rather than the pointer (M26.6).
     window_focused: bool,
@@ -643,6 +646,13 @@ struct NavigationSource {
     /// (M33.3); none for a link with `rel=noreferrer`.
     referrer: Option<Url>,
     referrer_policy: net::ReferrerPolicy,
+}
+
+/// A form's submission a mixed form page holds back (M33.3).
+struct PendingForm {
+    url: Url,
+    post: Option<submit::Post>,
+    source: NavigationSource,
 }
 
 /// What a navigation's document does to the session history when it is
@@ -1092,6 +1102,7 @@ impl Engine {
             buttons: 0,
             modifiers: Modifiers::default(),
             posting: false,
+            pending_form: None,
             window_focused: true,
             keyboard: false,
             frame: frames::FrameContext::top(),
@@ -1465,6 +1476,7 @@ impl Engine {
                     Ok(Some(frame)) => {
                         self.navigate_other(frame, url, false, navigation.post, source.origin);
                     }
+                    Ok(None) if navigation.form => self.submit_to(url, navigation.post, source),
                     Ok(None) => self.navigate_with(url, navigation.post, source),
                     Err(line) => self.shown.scripts.say(js::ConsoleLevel::Error, line),
                 }
@@ -3220,6 +3232,7 @@ impl Engine {
     /// the profile cannot be read.
     pub fn set_profile(&mut self, profile: Profile) -> Result<(), profile::Error> {
         let cookies = self.network.cookies();
+        self.storage().set_hsts(self.network.hsts());
         self.storage().set_profile(profile, &cookies)
     }
 
@@ -3366,7 +3379,29 @@ impl Engine {
     ) {
         self.cancel_navigation();
         self.posting = post.is_some();
+        let pending_form = self.pending_form.take();
         if url.scheme() == "about" && url.path_str() != "blank" {
+            // A mixed form page's links, followed from that page alone
+            // (M33.3): "Send anyway" sends what it held back, in its
+            // entry's place; "Go back" goes back.
+            if self.shown.made && source.is_some() {
+                match (url.path_str().as_str(), pending_form) {
+                    ("silver-send-form", Some(form)) => {
+                        self.start_navigation_with(
+                            form.url,
+                            Handling::Replace,
+                            form.post,
+                            Some(form.source),
+                        );
+                        return;
+                    }
+                    ("silver-go-back", _) => {
+                        self.go_back();
+                        return;
+                    }
+                    _ => {}
+                }
+            }
             let shown = if url.path_str() == "silver" {
                 let mut page = Page::fetched(
                     self.new_page_id(),

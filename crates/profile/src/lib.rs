@@ -50,6 +50,9 @@ const LOCAL_STORAGE: TableDefinition<(&str, &str), (u64, &str)> =
 /// The cookies kept, in the order given, as `net` encodes them.
 const COOKIES: TableDefinition<u64, &[u8]> = TableDefinition::new("cookies");
 
+/// The HSTS hosts kept (M33.3), as `net` encodes them.
+const HSTS: TableDefinition<u64, &[u8]> = TableDefinition::new("hsts");
+
 /// A profile open: one database, one writer.
 pub struct Profile {
     /// `None` once the store was found damaged: never used again, nor
@@ -127,6 +130,7 @@ pub struct Item {
 pub struct Changes {
     local: Vec<Local>,
     cookies: Option<Vec<Vec<u8>>>,
+    hsts: Option<Vec<Vec<u8>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,7 +158,7 @@ impl Changes {
 
     /// Whether there is nothing to commit.
     pub fn is_empty(&self) -> bool {
-        self.local.is_empty() && self.cookies.is_none()
+        self.local.is_empty() && self.cookies.is_none() && self.hsts.is_none()
     }
 
     /// Sets `origin`'s item `key` to `value`, `order` its place.
@@ -186,6 +190,12 @@ impl Changes {
     /// encoding, in their order.
     pub fn cookies(&mut self, cookies: Vec<Vec<u8>>) {
         self.cookies = Some(cookies);
+    }
+
+    /// Replaces the HSTS hosts kept with `hosts`, records of `net`'s
+    /// encoding (M33.3).
+    pub fn hsts(&mut self, hosts: Vec<Vec<u8>>) {
+        self.hsts = Some(hosts);
     }
 }
 
@@ -276,6 +286,7 @@ impl Profile {
             txn.open_table(LOCAL_STORAGE)
                 .map_err(|e| unreadable(failed(e)))?;
             txn.open_table(COOKIES).map_err(|e| unreadable(failed(e)))?;
+            txn.open_table(HSTS).map_err(|e| unreadable(failed(e)))?;
         }
         txn.commit().map_err(|e| unreadable(failed(e)))?;
         Ok(())
@@ -309,18 +320,27 @@ impl Profile {
 
     /// The cookies kept, records of `net`'s encoding, in their order.
     pub fn cookies(&self) -> Result<Vec<Vec<u8>>, Error> {
-        self.guarded(Profile::read_cookies)
+        self.guarded(|db| Profile::read_records(db, COOKIES))
     }
 
-    fn read_cookies(db: &Database) -> Result<Vec<Vec<u8>>, Error> {
+    /// The HSTS hosts kept (M33.3), records of `net`'s encoding.
+    pub fn hsts(&self) -> Result<Vec<Vec<u8>>, Error> {
+        self.guarded(|db| Profile::read_records(db, HSTS))
+    }
+
+    /// The records of `table`, in their order.
+    fn read_records(
+        db: &Database,
+        table: TableDefinition<u64, &[u8]>,
+    ) -> Result<Vec<Vec<u8>>, Error> {
         let txn = db.begin_read().map_err(failed)?;
-        let table = txn.open_table(COOKIES).map_err(failed)?;
-        let mut cookies = Vec::new();
+        let table = txn.open_table(table).map_err(failed)?;
+        let mut records = Vec::new();
         for entry in table.iter().map_err(failed)? {
             let (_, record) = entry.map_err(failed)?;
-            cookies.push(record.value().to_vec());
+            records.push(record.value().to_vec());
         }
-        Ok(cookies)
+        Ok(records)
     }
 
     /// Writes `changes` in one transaction, durable when this returns.
@@ -375,6 +395,13 @@ impl Profile {
             let mut table = txn.open_table(COOKIES).map_err(failed)?;
             table.retain(|_, _| false).map_err(failed)?;
             for (index, record) in (0u64..).zip(cookies) {
+                table.insert(index, record.as_slice()).map_err(failed)?;
+            }
+        }
+        if let Some(hosts) = &changes.hsts {
+            let mut table = txn.open_table(HSTS).map_err(failed)?;
+            table.retain(|_, _| false).map_err(failed)?;
+            for (index, record) in (0u64..).zip(hosts) {
                 table.insert(index, record.as_slice()).map_err(failed)?;
             }
         }

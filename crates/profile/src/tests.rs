@@ -98,6 +98,30 @@ fn keys_and_values_keep_every_character() {
 }
 
 #[test]
+fn hsts_hosts_are_replaced_whole_apart_from_the_cookies() {
+    let profile = Profile::in_memory(&Memory::new()).unwrap();
+    assert!(profile.hsts().unwrap().is_empty());
+    let mut changes = Changes::new();
+    changes.hsts(vec![b"b.test".to_vec(), b"a.test".to_vec()]);
+    changes.cookies(vec![b"c".to_vec()]);
+    profile.commit(&changes).unwrap();
+    assert_eq!(
+        profile.hsts().unwrap(),
+        [b"b.test".to_vec(), b"a.test".to_vec()]
+    );
+    let mut changes = Changes::new();
+    changes.hsts(vec![b"only.test".to_vec()]);
+    profile.commit(&changes).unwrap();
+    assert_eq!(profile.hsts().unwrap(), [b"only.test".to_vec()]);
+    assert_eq!(profile.cookies().unwrap(), [b"c".to_vec()]);
+    // Cookies alone leave the hosts.
+    let mut changes = Changes::new();
+    changes.cookies(Vec::new());
+    profile.commit(&changes).unwrap();
+    assert_eq!(profile.hsts().unwrap(), [b"only.test".to_vec()]);
+}
+
+#[test]
 fn cookies_are_replaced_whole_and_keep_their_order() {
     let profile = Profile::in_memory(&Memory::new()).unwrap();
     assert!(profile.cookies().unwrap().is_empty());

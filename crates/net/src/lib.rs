@@ -20,6 +20,7 @@ pub mod data_url;
 mod error;
 pub mod fetch;
 pub mod headers;
+pub mod hsts;
 pub mod http;
 mod infra;
 pub mod mime;
@@ -37,6 +38,7 @@ pub use fetch::{
     Mode, Redirect, Request, Response, ResponseType, USER_AGENT,
 };
 pub use headers::HeaderList;
+pub use hsts::Hsts;
 pub use mime::MimeType;
 pub use referrer::{Referrer, ReferrerPolicy};
 pub use url::Partition;

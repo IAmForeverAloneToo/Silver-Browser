@@ -7,7 +7,7 @@
 //! one transaction no more than once in [`FLUSH_INTERVAL`].
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use net::cookies::Jar;
@@ -54,6 +54,10 @@ pub(crate) struct Storage {
     /// The changes other documents are to hear of in a `storage` event,
     /// for the engine to fire.
     changes: Vec<Change>,
+    /// The engine's HSTS hosts (M33.3), and their count of changes when
+    /// they were last written.
+    hsts: Option<Arc<Mutex<net::Hsts>>>,
+    hsts_written: Option<u64>,
 }
 
 /// An area (HTML 12.2.1's storage map): its items, and their order, the
@@ -290,7 +294,25 @@ impl Storage {
             session: HashMap::new(),
             unwritten: HashMap::new(),
             changes: Vec::new(),
+            hsts: None,
+            hsts_written: None,
         }
+    }
+
+    /// Keeps `hsts`, the engine's HSTS hosts, in the profile too
+    /// (M33.3): read in when one is given, written as they change.
+    pub(crate) fn set_hsts(&mut self, hsts: Arc<Mutex<net::Hsts>>) {
+        self.hsts = Some(hsts);
+    }
+
+    /// The HSTS hosts' count of changes, when there are hosts to keep.
+    fn hsts_changes(&self) -> Option<u64> {
+        let hsts = self.hsts.as_ref()?;
+        Some(
+            hsts.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .changes(),
+        )
     }
 
     /// Keeps what changes in `profile` from now on, and takes its
@@ -305,6 +327,12 @@ impl Storage {
         let mut jar = jar.lock().unwrap_or_else(PoisonError::into_inner);
         let other = jar.restore(&records, SystemTime::now());
         self.cookies_written = (!other).then(|| jar.kept_changes());
+        if let Some(hsts) = &self.hsts {
+            let records = profile.hsts()?;
+            let mut hsts = hsts.lock().unwrap_or_else(PoisonError::into_inner);
+            hsts.restore(&records, SystemTime::now());
+            self.hsts_written = Some(hsts.changes());
+        }
         self.profile = Some(profile);
         self.local.clear();
         self.unwritten.clear();
@@ -405,7 +433,8 @@ impl Storage {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .kept_changes();
-        (self.cookies_written != Some(count) || !self.unwritten.is_empty()).then(|| {
+        let hsts = self.hsts_changes() != self.hsts_written;
+        (self.cookies_written != Some(count) || !self.unwritten.is_empty() || hsts).then(|| {
             self.flushed
                 .map_or(Duration::ZERO, |at| at + FLUSH_INTERVAL)
         })
@@ -426,6 +455,13 @@ impl Storage {
             }
             count
         };
+        let hsts_count = self.hsts_changes();
+        if hsts_count != self.hsts_written
+            && let Some(hsts) = &self.hsts
+        {
+            let hsts = hsts.lock().unwrap_or_else(PoisonError::into_inner);
+            changes.hsts(hsts.export(SystemTime::now()));
+        }
         for (origin, unwritten) in &self.unwritten {
             if unwritten.cleared {
                 changes.clear(origin);
@@ -444,6 +480,7 @@ impl Storage {
         self.flushed = Some(now);
         profile.commit(&changes)?;
         self.cookies_written = Some(count);
+        self.hsts_written = hsts_count;
         self.unwritten.clear();
         Ok(())
     }

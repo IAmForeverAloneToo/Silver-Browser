@@ -27,6 +27,8 @@ mod frame_script_tests;
 #[cfg(test)]
 mod frame_tests;
 #[cfg(test)]
+mod hsts_tests;
+#[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]
 mod mixed_tests;
@@ -221,6 +223,8 @@ pub(crate) struct Network {
     cookies: Arc<Mutex<net::cookies::Jar>>,
     /// The HTTP cache every client of the engine keeps (M28.4).
     cache: Arc<net::Cache>,
+    /// The HSTS hosts every client of the engine keeps (M33.3).
+    hsts: Arc<Mutex<net::Hsts>>,
     flights: HashMap<FetchId, Flight>,
     next: FetchId,
     /// Where each page's document is in its tab (M33.2): what a frame's
@@ -241,6 +245,7 @@ impl Network {
             client: None,
             cookies: Arc::default(),
             cache: Arc::default(),
+            hsts: Arc::default(),
             flights: HashMap::new(),
             next: 0,
             partitions: HashMap::new(),
@@ -291,6 +296,7 @@ impl Network {
         client
             .with_cookies(self.cookies.clone())
             .with_cache(self.cache.clone())
+            .with_hsts(self.hsts.clone())
     }
 
     /// The client fetches are made with, made now if none is yet.
@@ -316,6 +322,11 @@ impl Network {
         network.cookies = self.cookies.clone();
         network.cache = self.cache.clone();
         network
+    }
+
+    /// The engine's HSTS hosts (M33.3).
+    pub(crate) fn hsts(&self) -> Arc<Mutex<net::Hsts>> {
+        self.hsts.clone()
     }
 
     /// Fetches from now on with `client`, a frame's parent's (M33.2).

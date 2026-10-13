@@ -12,7 +12,7 @@ mod file;
 mod ports;
 
 use std::borrow::Cow;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::SystemTime;
 
 use crate::cache::{Cache, CacheMode, Stored};
@@ -21,6 +21,7 @@ use crate::csp::Csp;
 use crate::data_url;
 use crate::error::{AbortHandle, NetworkError};
 use crate::headers::{self, HeaderList};
+use crate::hsts::Hsts;
 use crate::mime::{self, MimeType};
 use crate::referrer::{Referrer, ReferrerPolicy};
 use crate::transport::{self, Exchange, Transport};
@@ -532,6 +533,9 @@ pub struct Client {
     cookies: Arc<Mutex<Jar>>,
     /// The HTTP cache (M28.4), which an engine's clients share.
     cache: Arc<Cache>,
+    /// The hosts known to be HTTPS only (M33.3), which an engine's
+    /// clients share as they share the cookies.
+    hsts: Arc<Mutex<Hsts>>,
     /// The time, by which the cache reckons ages.
     clock: WallClock,
 }
@@ -554,6 +558,7 @@ impl Client {
             preflights: cors::PreflightCache::default(),
             cookies: Arc::default(),
             cache: Arc::default(),
+            hsts: Arc::default(),
             clock: Arc::new(SystemTime::now),
         }
     }
@@ -567,6 +572,17 @@ impl Client {
 
     /// The client, its fetches keeping their cookies in `jar` (M27.4):
     /// an engine's, which outlives the clients it is given.
+    /// The client, keeping the HSTS hosts of `hsts` (M33.3).
+    pub fn with_hsts(mut self, hsts: Arc<Mutex<Hsts>>) -> Client {
+        self.hsts = hsts;
+        self
+    }
+
+    /// Its HSTS hosts.
+    pub fn hsts(&self) -> &Arc<Mutex<Hsts>> {
+        &self.hsts
+    }
+
     pub fn with_cookies(mut self, jar: Arc<Mutex<Jar>>) -> Client {
         self.cookies = jar;
         self
@@ -633,8 +649,16 @@ impl Client {
             if request.abort.is_aborted() {
                 return Err(NetworkError::Aborted);
             }
-            if let Some(upgraded) =
-                upgrade_insecure(request, &url).or_else(|| upgrade_mixed_content(request, &url))
+            // A known HSTS host goes over https: before anything else
+            // looks at the URL (M33.3, Fetch's main fetch).
+            let known = self
+                .hsts
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .upgrade(&url, (self.clock)());
+            if let Some(upgraded) = known
+                .or_else(|| upgrade_insecure(request, &url))
+                .or_else(|| upgrade_mixed_content(request, &url))
             {
                 url = upgraded;
                 *hop.url_list.last_mut().expect("never empty") = url.clone();
@@ -645,6 +669,7 @@ impl Client {
                 self.preflight(request, &url, &hop)?;
             }
             let mut response = self.scheme_fetch(request, &url, &hop, deliver.as_deref_mut())?;
+            self.take_hsts(&url, &response.headers);
             match hop.tainting {
                 ResponseType::Cors => cors_check(request, &response.headers, hop.tainted_origin)?,
                 ResponseType::Opaque => resource_policy_check(request, &response.headers, &url)?,
@@ -905,6 +930,22 @@ impl Client {
 
     /// Stores the cookies of a hop's response from `url` (RFC 6265bis
     /// 5.7), when the request includes credentials.
+    /// Takes in the first `Strict-Transport-Security` field of a
+    /// response from `url` (M33.3, RFC 6797 8.1): the store takes an
+    /// `https:` one's alone, its certificate verified as every
+    /// connection's is here.
+    fn take_hsts(&self, url: &Url, headers: &HeaderList) {
+        let Some(value) = headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(b"Strict-Transport-Security"))
+            .and_then(|(_, value)| std::str::from_utf8(value).ok())
+        else {
+            return;
+        };
+        let mut hsts = self.hsts.lock().unwrap_or_else(PoisonError::into_inner);
+        hsts.store(url, value, (self.clock)());
+    }
+
     fn take_cookies(&self, request: &Request, url: &Url, hop: &Hop, headers: &HeaderList) {
         if !includes_credentials(request, hop) {
             return;
@@ -951,6 +992,11 @@ impl Client {
         }
         if let Some(referrer) = referrer_field(request, url, hop) {
             headers.append(b"Referer", referrer.as_bytes());
+        }
+        // Every navigation says it would take https:, as the reference
+        // browser's do (M33.3, p1).
+        if request.mode == Mode::Navigate && !author.contains(b"Upgrade-Insecure-Requests") {
+            headers.append(b"Upgrade-Insecure-Requests", b"1");
         }
         // What a cache mode asks of the caches on the way (Fetch 4.6).
         match cache_mode(request, hop) {

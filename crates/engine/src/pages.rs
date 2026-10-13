@@ -231,6 +231,40 @@ pub(crate) fn resubmission(url: &Url) -> Document {
     )
 }
 
+/// The address of a mixed form page's "Send anyway" (M33.3), which the
+/// engine follows only from that page.
+pub(crate) const SEND_FORM: &str = "about:silver-send-form";
+
+/// And of its "Go back".
+pub(crate) const GO_BACK: &str = "about:silver-go-back";
+
+/// The page shown, under `url`, in place of a form's submission from a
+/// secure document to `url`, which is not (M33.3): the reference
+/// browser's warning, with its "Send anyway" and its "Go back".
+pub(crate) fn mixed_form(url: &Url) -> Document {
+    page(
+        "Form Not Secure",
+        "This form is not secure",
+        vec![
+            paragraph(
+                "",
+                "What this form holds would be sent over a connection that is not \
+                 encrypted, where others could read or change it. It was not sent."
+                    .to_owned(),
+            ),
+            paragraph("detail", url.as_str().to_owned()),
+            Element::new("p")
+                .push(
+                    Element::new("a")
+                        .attr("href", SEND_FORM)
+                        .text("Send anyway"),
+                )
+                .text(" ")
+                .push(Element::new("a").attr("href", GO_BACK).text("Go back")),
+        ],
+    )
+}
+
 /// A text document, as HTML's "load a text document" makes one: one
 /// `<pre>` holding `text`, with the style HTML lets the user agent add.
 /// The text is what an HTML parser in its PLAINTEXT state would put in
