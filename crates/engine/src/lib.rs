@@ -1186,6 +1186,7 @@ impl Engine {
             drop(self.history.keep(state, Box::new(left)));
         } else {
             self.network.set_partition(left.page.id(), None);
+            self.network.set_csp(left.page.id(), None);
         }
     }
 
@@ -1479,9 +1480,16 @@ impl Engine {
         if self.shown.page.sandbox().has(sandbox::Sandbox::SCRIPTS) {
             return;
         }
-        let csp = self.shown.page.csp(&self.shown.document);
-        if let Err(violation) = csp.check_javascript_url() {
-            self.shown.scripts.refused("a javascript: URL", &violation);
+        let violations = self
+            .shown
+            .page
+            .csp(&self.shown.document)
+            .javascript_url_violations();
+        let refused = violations
+            .iter()
+            .any(|violation| violation.disposition == net::csp::Disposition::Enforce);
+        self.shown.scripts.report_violations(violations);
+        if refused {
             return;
         }
         let encoded = url.as_str().get("javascript:".len()..).unwrap_or_default();
@@ -1500,6 +1508,8 @@ impl Engine {
         let Some(url) = self.shown.page.url().cloned() else {
             return;
         };
+        // It takes the document's policies (M33.1).
+        let creator = self.shown.page.creator(&self.shown.document);
         self.cancel_navigation();
         let response = net::Response {
             url_list: vec![url.clone()],
@@ -1523,7 +1533,7 @@ impl Engine {
             },
             handling: Handling::Replace,
             started: self.time_origin(),
-            creator: None,
+            creator: Some(creator),
             sandbox: self.creation_sandbox(),
         });
         self.load_state = LoadState::Loading;
@@ -2955,6 +2965,23 @@ impl Engine {
         self.needs_frame()
     }
 
+    /// Gives the network the shown document's policies as they stand,
+    /// its `<meta>` elements' taken in, for the requests it makes next
+    /// (M33.1).
+    fn sync_csp(&mut self) {
+        let csp = self.shown.page.csp(&self.shown.document).clone();
+        self.network.set_csp(self.shown.page.id(), Some(csp));
+    }
+
+    /// Says on the console what the shown document's policies refused,
+    /// or would have, at its requests' hops (M33.1).
+    fn report_violations(&mut self) {
+        let violations = self.shown.page.take_violations();
+        if !violations.is_empty() {
+            self.shown.scripts.report_violations(violations);
+        }
+    }
+
     /// When the next task is due (M26): the soonest timer of the
     /// document shown or of the one on its way, for the caller to wake
     /// at and call [`Engine::run_tasks`].
@@ -3280,8 +3307,10 @@ impl Engine {
                 request.origin = Some(container.origin.clone());
             }
             request.initiator = Some(container);
-            // Its site for cookies is its ancestors' (M33.2).
+            // Its site for cookies is its ancestors' (M33.2), and its
+            // container's `frame-src` decides (M33.1).
             request.partition = self.frame_partition();
+            request.csp.clone_from(&self.frame.container_csp);
         }
         self.network.fetch(id, Target::Document, request);
         self.navigation = Some(Navigation {
@@ -3560,6 +3589,7 @@ impl Engine {
         self.parse_incoming();
         self.parse_shown();
         self.run_scripts();
+        self.report_violations();
         while let Some(finished) = self.decoder.take() {
             self.image_read(finished);
         }
@@ -3618,6 +3648,7 @@ impl Engine {
         if self.shown.made {
             return;
         }
+        self.sync_csp();
         let Some(initiator) = self.shown.page.initiator() else {
             return;
         };
@@ -3660,6 +3691,7 @@ impl Engine {
         if self.shown.made {
             return;
         }
+        self.sync_csp();
         let Some(initiator) = self.shown.page.initiator() else {
             return;
         };
@@ -4525,10 +4557,14 @@ impl Engine {
         match loader::outcome(&response) {
             loader::Outcome::Document(parsed) => {
                 let address_space = response.address_space.unwrap_or(net::AddressSpace::Public);
+                // Every kind of document has its response's policies
+                // (M33.1), but one that inherits its creator's.
+                let csp = net::csp::Csp::from_headers(&response.headers, &at);
                 let mut incoming =
                     Page::fetched(page, at, parsed.encoding, parsed.undecodable, address_space)
                         .with_language(parsed.language)
-                        .with_content_type(parsed.content_type);
+                        .with_content_type(parsed.content_type)
+                        .with_csp(csp);
                 if let Some(creator) = &creator {
                     incoming = incoming.inheriting(creator);
                 }
@@ -4706,6 +4742,7 @@ impl Engine {
             }
         }
         let left = self.show(shown);
+        self.sync_csp();
         if !self.shown.made
             && let Some(request) = self.shown.page.icon_request(&self.shown.document)
         {

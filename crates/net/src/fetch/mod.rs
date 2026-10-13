@@ -276,10 +276,16 @@ pub struct Request {
     /// The most the response's body may hold, when less than the
     /// client's limit: an image's bound (M23).
     pub body_limit: Option<usize>,
-    /// The policies of the document that asked, for a script: Fetch's
-    /// "should request be blocked by Content Security Policy" at each
-    /// hop (M24.6).
+    /// The policies of the document that asked: Fetch's "should request
+    /// be blocked by Content Security Policy" at each hop, by its
+    /// destination's fetch directive (M24.6, M33.1), the violations
+    /// recorded for that document.
     pub csp: Option<Csp>,
+    /// The nonce of the element that asked, a script's or a stylesheet
+    /// link's, empty for none; and whether the parser inserted that
+    /// element (Fetch's cryptographic nonce and parser metadata, M33.1).
+    pub nonce: String,
+    pub parser_inserted: bool,
     /// How it uses the HTTP cache (M28.4).
     pub cache: CacheMode,
     /// Where its document is in its tab (M33.2): a frame's requests are
@@ -320,6 +326,8 @@ impl Request {
             abort: AbortHandle::new(),
             body_limit: None,
             csp: None,
+            nonce: String::new(),
+            parser_inserted: false,
             cache: CacheMode::Default,
             partition: None,
         }
@@ -346,8 +354,7 @@ impl Request {
         self
     }
 
-    /// The request, checked against `csp` at each hop if it is for a
-    /// script.
+    /// The request, checked against `csp` at each hop.
     pub fn with_csp(mut self, csp: Csp) -> Request {
         self.csp = Some(csp);
         self
@@ -1352,10 +1359,22 @@ fn check(request: &Request, url: &Url, redirects: usize) -> Result<(), NetworkEr
             return Err(NetworkError::MixedContent);
         }
     }
-    if request.destination == Destination::Script
-        && let Some(csp) = &request.csp
-    {
-        csp.check_script_url(url, redirects)
+    if let Some(csp) = &request.csp {
+        // A report names the first URL after a redirect to another
+        // origin (M33.1).
+        let reported = match redirects > 0 && url.origin() != request.url.origin() {
+            true => &request.url,
+            false => url,
+        };
+        let violations = csp.request_violations(
+            request.destination,
+            (url, reported),
+            redirects,
+            &request.nonce,
+            request.parser_inserted,
+        );
+        csp.record(&violations);
+        crate::csp::enforced(violations)
             .map_err(|violation| NetworkError::Csp(violation.to_string()))?;
     }
     Ok(())

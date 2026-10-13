@@ -476,8 +476,10 @@ pub(crate) struct FrameContext {
     /// guard against a frame embedding itself).
     pub(crate) ancestors: Vec<String>,
     /// Its parent's document, which its navigations are made from for
-    /// mixed content and the address spaces (none at the top).
+    /// mixed content and the address spaces (none at the top), and that
+    /// document's policies, whose `frame-src` they pass (M33.1).
     pub(crate) container: Option<net::Initiator>,
+    pub(crate) container_csp: Option<net::csp::Csp>,
 }
 
 /// What a run's scripts are lent of the tab's frames (M33.2): the tree,
@@ -499,6 +501,7 @@ impl FrameContext {
             depth: 0,
             ancestors: Vec::new(),
             container: None,
+            container_csp: None,
         }
     }
 
@@ -654,6 +657,7 @@ impl Engine {
             depth: self.frame.depth + 1,
             ancestors,
             container: self.shown.page.initiator(),
+            container_csp: Some(self.shown.page.csp(&self.shown.document).clone()),
         };
         child
     }
@@ -802,6 +806,7 @@ impl Engine {
             return;
         };
         frame.engine.frame.container.clone_from(&initiator);
+        frame.engine.frame.container_csp = Some(creator.csp.clone());
         frame.source = source.clone();
         frame.told = false;
         frame.drawn = None;
@@ -930,6 +935,8 @@ impl Engine {
         let mut request =
             net::Request::get(url.clone(), net::Destination::Iframe).initiated_by(initiator);
         request.partition = self.frame_partition();
+        // Its container's `frame-src` decides (M33.1).
+        request.csp = Some(creator.csp.clone());
         self.network.fetch(id, Target::Document, request);
         self.navigation = Some(Navigation {
             url,

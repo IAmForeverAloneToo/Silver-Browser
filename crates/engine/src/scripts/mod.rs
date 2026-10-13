@@ -261,9 +261,9 @@ pub(crate) enum Prepared {
     /// Started, and nothing runs, its `src` empty or not a URL: the
     /// element gets an `error` event (M26).
     Failed,
-    /// Started, and refused by the document's policy: the console says
-    /// which `what` was refused, and why.
-    Refused(&'static str, Violation),
+    /// Started, and refused by the document's policies, whose violations
+    /// its page has (M33.1).
+    Refused,
     /// An inline classic script.
     Inline(Source),
     /// A classic script to fetch.
@@ -288,6 +288,7 @@ pub(crate) fn prepare_element(
     document: &Document,
     element: NodeId,
     line: u32,
+    parser_inserted: bool,
 ) -> Prepared {
     let Some(kind) = script_type(document, element) else {
         return Prepared::NotYet;
@@ -311,8 +312,11 @@ pub(crate) fn prepare_element(
         return Prepared::Nothing;
     }
     let Some(src) = src else {
-        if let Err(violation) = page.csp(document).check_inline_script() {
-            return Prepared::Refused("an inline script", violation);
+        let csp = page.csp(document);
+        let violations = csp.inline_script_violations();
+        csp.record(&violations);
+        if net::csp::enforced(violations).is_err() {
+            return Prepared::Refused;
         }
         return Prepared::Inline(Source {
             text,
@@ -333,9 +337,15 @@ pub(crate) fn prepare_element(
         return Prepared::Failed;
     };
     let csp = page.csp(document).clone();
-    let Some(request) = script_request(page, url.clone(), csp) else {
+    let Some(mut request) = script_request(page, url.clone(), csp) else {
         return Prepared::Nothing;
     };
+    // Its nonce and who inserted it, for its directive (M33.1).
+    request.nonce = document
+        .attr(element, "nonce")
+        .unwrap_or_default()
+        .to_owned();
+    request.parser_inserted = parser_inserted;
     let request = crate::loader::with_cors_settings(request, document.attr(element, "crossorigin"));
     let fallback = document
         .attr(element, "charset")
@@ -492,10 +502,11 @@ impl Scripts {
         if self.aborted || self.stopped {
             return;
         }
-        match prepare_element(lent.page, lent.document, element, line) {
-            Prepared::NotYet | Prepared::Nothing => {}
+        let prepared = prepare_element(lent.page, lent.document, element, line, true);
+        self.report_violations(lent.page.take_violations());
+        match prepared {
+            Prepared::NotYet | Prepared::Nothing | Prepared::Refused => {}
             Prepared::Failed => self.events.push_back((element, "error")),
-            Prepared::Refused(what, violation) => self.refused(what, &violation),
             Prepared::Inline(source) => {
                 if lent.page.blocks_scripts() {
                     self.blocking = Some(Pending::Ready(Some(source)));
@@ -567,6 +578,8 @@ impl Scripts {
             unreachable!("found fetching");
         };
         let element = *element;
+        // A refusal by the policies says so itself (M33.1).
+        let refused = matches!(result, Err(LoadError::Network(net::NetworkError::Csp(_))));
         let failed = match result
             .map_err(|error| error.to_string())
             .and_then(|response| script_source(&response, *fallback))
@@ -579,7 +592,7 @@ impl Scripts {
             Err(why) => {
                 let text = format!("Failed to load script {url}: {why}");
                 *pending = Pending::Ready(Some(Source::failed(element)));
-                Some(text)
+                (!refused).then_some(text)
             }
         };
         if let Some(text) = failed {
@@ -670,13 +683,15 @@ impl Scripts {
         self.aborted = true;
     }
 
-    /// Says on the console that the document's Content Security Policy
-    /// refused `what` to run (M24.6).
-    pub(crate) fn refused(&mut self, what: &str, violation: &Violation) {
-        self.push(ConsoleEntry {
-            level: ConsoleLevel::Error,
-            text: refusal_text(what, violation),
-        });
+    /// Says on the console what the document's policies refused, or would
+    /// have (M24.6, M33.1).
+    pub(crate) fn report_violations(&mut self, violations: Vec<Violation>) {
+        for violation in violations {
+            self.push(ConsoleEntry {
+                level: violation_level(&violation),
+                text: violation_text(&violation),
+            });
+        }
     }
 
     /// Runs `source`, a script element's; `at_insertion_point` for a
@@ -1046,8 +1061,10 @@ impl Scripts {
         fetches: Vec<(u32, Request)>,
         aborted: Vec<u32>,
     ) {
-        for (id, request) in fetches {
+        for (id, mut request) in fetches {
             let url = request.url.clone();
+            // Held to the document's policies as they stand (M33.1).
+            request.csp = Some(lent.page.csp(lent.document).clone());
             let fetch = lent.network.fetch(lent.page.id(), Target::Fetch, request);
             self.fetching.insert(fetch, (id, url));
         }
@@ -1283,6 +1300,27 @@ pub(crate) fn report_text(error: &ScriptError) -> Option<String> {
 /// The console's text for a policy's refusal of `what`.
 pub(crate) fn refusal_text(what: &str, violation: &Violation) -> String {
     format!("Content-Security-Policy refused {what}: {violation}")
+}
+
+/// What the console says of `violation` (M33.1): a refusal, or what a
+/// report-only policy would have refused.
+pub(crate) fn violation_text(violation: &Violation) -> String {
+    match violation.disposition {
+        net::csp::Disposition::Enforce => refusal_text(&violation.what, violation),
+        net::csp::Disposition::Report => format!(
+            "Content-Security-Policy (report-only) would refuse {}: {violation}",
+            violation.what
+        ),
+    }
+}
+
+/// The console's level for `violation`: an error for a refusal, a
+/// warning for a report.
+pub(crate) fn violation_level(violation: &Violation) -> ConsoleLevel {
+    match violation.disposition {
+        net::csp::Disposition::Enforce => ConsoleLevel::Error,
+        net::csp::Disposition::Report => ConsoleLevel::Warn,
+    }
 }
 
 /// `document.title`'s getter (HTML section 3.1.7): the text of the

@@ -36,6 +36,7 @@ fn media() -> Vec<Media> {
                         device_width: width,
                         device_height: height,
                         resolution,
+                        scripting: reduced_motion,
                         preferences: Preferences {
                             color_scheme,
                             reduced_motion,

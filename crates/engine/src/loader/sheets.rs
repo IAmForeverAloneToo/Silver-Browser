@@ -177,6 +177,8 @@ struct Found {
     /// of the first `<base href>` before it in tree order.
     base_here: Option<Url>,
     before_body: bool,
+    /// Its `nonce`, which its request carries (M33.1).
+    nonce: String,
 }
 
 impl Page {
@@ -199,7 +201,7 @@ impl Page {
             language: None,
             content_type: None,
             owners: Vec::new(),
-            csp: Csp::none(origin),
+            csp: Csp::none(origin).with_sink(),
             metas: Vec::new(),
             sandbox: Sandbox::NONE,
         }
@@ -216,7 +218,7 @@ impl Page {
         address_space: AddressSpace,
     ) -> Page {
         let origin = url.origin();
-        let csp = Csp::none(origin.clone());
+        let csp = Csp::none(origin.clone()).with_sink();
         Page {
             context: Context {
                 id,
@@ -238,10 +240,23 @@ impl Page {
         }
     }
 
-    /// The page, its document under `csp`, its response's policies.
+    /// The page, its document under `csp`, its response's policies, the
+    /// violations of its checks recorded for it.
     pub(crate) fn with_csp(mut self, csp: Csp) -> Page {
-        self.csp = csp;
+        self.csp = csp.with_sink();
         self
+    }
+
+    /// The document's policies as they stood when last looked at, its
+    /// `<meta>` elements' since then aside.
+    pub(crate) fn policies(&self) -> &Csp {
+        &self.csp
+    }
+
+    /// What the document's policies refused, or would have, since the
+    /// last time (M33.1), oldest first.
+    pub(crate) fn take_violations(&self) -> Vec<net::csp::Violation> {
+        self.csp.take_violations()
     }
 
     /// The page, its document sandboxed by `sandbox` (M33.2): of a new
@@ -293,7 +308,7 @@ impl Page {
             self.context.creator_url = creator.url.clone();
             self.context.secure = Some(creator.secure);
         }
-        self.csp = creator.csp.clone();
+        self.csp = creator.csp.inherited();
         self.metas.clear();
         self
     }
@@ -498,6 +513,9 @@ impl Page {
     /// media holds for `media` blocking (HTML: a sheet for another
     /// medium is applied when it comes, the page not held for it).
     pub(crate) fn begin(&mut self, document: &Document, network: &mut Network, media: &Media) {
+        // Its requests are checked against its policies (M33.1).
+        let csp = self.csp(document).clone();
+        network.set_csp(self.context.id, Some(csp));
         let (found, _) = scan(document, &self.context);
         let context = &self.context;
         self.owners = found
@@ -529,6 +547,8 @@ impl Page {
         network: &mut Network,
         media: Option<&Media>,
     ) {
+        let csp = self.csp(document).clone();
+        network.set_csp(self.context.id, Some(csp));
         let (found, base) = scan(document, &self.context);
         let mut old: HashMap<NodeId, Owner> = self
             .owners
@@ -800,6 +820,11 @@ fn start(context: &Context, found: Found, base: Option<&Url>, network: &mut Netw
             .and_then(|(href, base)| Url::parse_with(href, Some(base), context.encoding).ok())
             .and_then(|url| context.request(url))
             .map(|request| super::with_cors_settings(request, crossorigin.as_deref()))
+            .map(|mut request| {
+                // Its element's nonce (M33.1).
+                request.nonce.clone_from(&found.nonce);
+                request
+            })
             .map_or(Slot::None, |request| {
                 let target = Target::Sheet {
                     owner: found.node,
@@ -963,6 +988,7 @@ fn scan(document: &Document, context: &Context) -> (Vec<Found>, Option<Url>) {
                 charset: attr("charset"),
                 base_here: base.clone(),
                 before_body,
+                nonce: attr("nonce").unwrap_or_default(),
             }),
             "style" => found.push(Found {
                 node,
@@ -978,6 +1004,7 @@ fn scan(document: &Document, context: &Context) -> (Vec<Found>, Option<Url>) {
                 charset: None,
                 base_here: base.clone(),
                 before_body,
+                nonce: attr("nonce").unwrap_or_default(),
             }),
             _ => {}
         }

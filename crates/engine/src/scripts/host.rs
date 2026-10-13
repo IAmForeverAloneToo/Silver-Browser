@@ -21,7 +21,7 @@ use super::workers::{DocumentWorkers, Start, credentials_mode, worker_url};
 use super::{
     ConsoleEntry, How, Lent, MAX_SCRIPT_NESTING, MAX_TIMERS, Place, Prepared, ReadyState,
     ScriptNavigation, Source, TimeOrigin, Wanted, WindowEnv, cut, document_title, is_script,
-    parser_place, prepare_element, refusal_text, report_text,
+    parser_place, prepare_element, report_text,
 };
 use crate::loader::Page;
 use crate::sandbox::{NO_SAME_ORIGIN, Sandbox};
@@ -415,6 +415,14 @@ impl DocumentHost {
                     .map(|page| page.origin().site().serialization()),
                 ..Context::SAME_SITE
             },
+        }
+    }
+
+    /// Says each of `violations` on the console (M33.1).
+    fn say_violations(&mut self, violations: Vec<net::csp::Violation>) {
+        for violation in violations {
+            let level = super::violation_level(&violation);
+            self.say(level, super::violation_text(&violation));
         }
     }
 
@@ -1014,6 +1022,7 @@ impl DocumentHost {
                     fonts: self.window.fonts.clone(),
                     compat: self.window.compat,
                     partition: self.partition(),
+                    csp: page.policies().clone(),
                 };
                 Ok(Answer::Number(f64::from(self.workers.workers.start(start))))
             }
@@ -1058,12 +1067,15 @@ impl DocumentHost {
                     .ok_or_else(|| DomError::new("TypeError", "Failed to fetch"))?;
                 let mut request = super::fetch::request(page.initiator(), &call)?;
                 request.partition = self.partition();
+                request.csp = Some(page.policies().clone());
                 let Some(client) = &self.client else {
                     return Ok(Answer::Fetched(None));
                 };
                 // The run, and the page, wait for it, as the reference
                 // browser's does.
                 let result = client.fetch(&request);
+                let violations = page.take_violations();
+                self.say_violations(violations);
                 Ok(Answer::Fetched(match result {
                     Ok(response) => Some(Box::new(super::fetch::answer(&response))),
                     Err(error) => {
@@ -2336,12 +2348,13 @@ impl DocumentHost {
         let Some(page) = self.page.as_mut() else {
             return;
         };
-        match prepare_element(page, &self.document, element, line) {
-            Prepared::NotYet | Prepared::Nothing => {}
+        // `document.write`'s scripts are the parser's.
+        let prepared = prepare_element(page, &self.document, element, line, true);
+        let violations = page.take_violations();
+        self.say_violations(violations);
+        match prepared {
+            Prepared::NotYet | Prepared::Nothing | Prepared::Refused => {}
             Prepared::Failed => self.outputs.events.push((element, "error")),
-            Prepared::Refused(what, violation) => {
-                self.say(ConsoleLevel::Error, refusal_text(what, &violation));
-            }
             Prepared::Inline(source) => {
                 if self.may_nest()
                     && let Some(parser) = self.parser.as_mut().and_then(html::Load::parser)
@@ -2399,18 +2412,17 @@ impl DocumentHost {
             let Some(page) = self.page.as_mut() else {
                 return;
             };
-            let prepared = prepare_element(page, &self.document, script, 1);
+            let prepared = prepare_element(page, &self.document, script, 1, false);
+            let violations = page.take_violations();
+            self.say_violations(violations);
             if matches!(prepared, Prepared::NotYet) {
                 continue;
             }
             self.pending.retain(|&pending| pending != script);
             self.started.insert(script);
             match prepared {
-                Prepared::NotYet | Prepared::Nothing => {}
+                Prepared::NotYet | Prepared::Nothing | Prepared::Refused => {}
                 Prepared::Failed => self.outputs.events.push((script, "error")),
-                Prepared::Refused(what, violation) => {
-                    self.say(ConsoleLevel::Error, refusal_text(what, &violation));
-                }
                 Prepared::Inline(source) => {
                     if self.may_nest() {
                         self.now.push_back(source);

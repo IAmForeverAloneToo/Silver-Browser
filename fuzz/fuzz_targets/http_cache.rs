@@ -14,7 +14,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use libfuzzer_sys::fuzz_target;
-use net::cache::{Cache, MAX_CACHE_BYTES, MAX_CACHE_ENTRIES, Stored};
+use net::cache::{Cache, MAX_CACHE_BYTES, MAX_CACHE_ENTRIES, Partition, Stored};
 use net::url::Site;
 use net::{HeaderList, Url};
 
@@ -208,7 +208,7 @@ fuzz_target!(|data: &[u8]| {
                     _ => usize::from(input.byte()) << 16,
                 };
                 cache.store(
-                    &site,
+                    &Partition::from(site.clone()),
                     &url,
                     &request,
                     Stored {
@@ -238,7 +238,9 @@ fuzz_target!(|data: &[u8]| {
             }
             2 => {
                 let stale = input.byte() & 1 != 0;
-                if let Some(stored) = cache.lookup(&site, &url, &request, now, stale) {
+                if let Some(stored) =
+                    cache.lookup(&Partition::from(site.clone()), &url, &request, now, stale)
+                {
                     let id: usize = String::from_utf8(stored.headers.get(b"x-id").unwrap())
                         .unwrap()
                         .parse()
@@ -264,7 +266,7 @@ fuzz_target!(|data: &[u8]| {
                     }
                 }
             }
-            _ => cache.invalidate(&site, &url),
+            _ => cache.invalidate(&Partition::from(site.clone()), &url),
         }
         let (count, bytes) = cache.size();
         assert!(count <= MAX_CACHE_ENTRIES && bytes <= MAX_CACHE_BYTES);

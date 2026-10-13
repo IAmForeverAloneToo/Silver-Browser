@@ -11,6 +11,8 @@ mod control_tests;
 #[cfg(test)]
 mod cookie_tests;
 #[cfg(test)]
+mod csp_tests;
+#[cfg(test)]
 mod dom_tests;
 #[cfg(test)]
 mod editing_tests;
@@ -219,6 +221,9 @@ pub(crate) struct Network {
     /// Where each page's document is in its tab (M33.2): what a frame's
     /// requests but its navigations are made in.
     partitions: HashMap<PageId, net::Partition>,
+    /// Each page's document's policies (M33.1): what its requests are
+    /// checked against, unless they carry their own.
+    csps: HashMap<PageId, net::csp::Csp>,
 }
 
 impl Network {
@@ -231,7 +236,17 @@ impl Network {
             flights: HashMap::new(),
             next: 0,
             partitions: HashMap::new(),
+            csps: HashMap::new(),
         }
+    }
+
+    /// Page `page`'s requests are checked against `csp` from now on
+    /// (M33.1); none once the page is left.
+    pub(crate) fn set_csp(&mut self, page: PageId, csp: Option<net::csp::Csp>) {
+        match csp {
+            Some(csp) => self.csps.insert(page, csp),
+            None => self.csps.remove(&page),
+        };
     }
 
     /// Page `page`'s requests are made in `partition` from now on (M33.2);
@@ -301,6 +316,9 @@ impl Network {
     pub(crate) fn fetch(&mut self, page: PageId, target: Target, mut request: Request) -> FetchId {
         if request.partition.is_none() && request.mode != net::Mode::Navigate {
             request.partition = self.partitions.get(&page).cloned();
+        }
+        if request.csp.is_none() && request.mode != net::Mode::Navigate {
+            request.csp = self.csps.get(&page).cloned();
         }
         let streamed = target == Target::Document;
         let client = self.client();

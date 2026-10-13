@@ -202,6 +202,9 @@ pub(crate) struct Start {
     /// Where its creator is in its tab (M33.2), which its requests are
     /// made in.
     pub(crate) partition: Option<net::Partition>,
+    /// Its creator's policies (M33.1): its script's request passes their
+    /// `worker-src`, and a worker of a local URL has them as its own.
+    pub(crate) csp: net::csp::Csp,
 }
 
 /// A worker its owner knows of: how to reach it and stop it.
@@ -532,7 +535,7 @@ fn run(setup: Setup) {
         }
         owner.send(WorkerMessage::FromWorker(id, FromWorker::Ended));
     };
-    let Some((source, url)) = fetch_script(&start) else {
+    let Some((source, url, csp)) = fetch_script(&start) else {
         return ended(Some(None));
     };
     if stop.load(Ordering::SeqCst) {
@@ -582,6 +585,7 @@ fn run(setup: Setup) {
         realm: realm_id,
         document,
         partition: start.partition.clone(),
+        csp: Some(csp),
         workers: Some(Workers::new(me, live, depth, router.clone(), document)),
         ..WorkerHost::default()
     };
@@ -693,13 +697,14 @@ fn work(
 /// The worker's script (HTML's "fetch a classic worker script"): its
 /// text, decoded as UTF-8, and the URL it came from; none when the
 /// fetch fails, the status is not ok or the type is not a script's.
-fn fetch_script(start: &Start) -> Option<(String, Url)> {
+fn fetch_script(start: &Start) -> Option<(String, Url, net::csp::Csp)> {
     if start.module {
         return None;
     }
     let mut request = Request::get(start.url.clone(), Destination::Worker)
         .initiated_by(start.initiator.clone())
-        .with_body_limit(MAX_SCRIPT_BYTES);
+        .with_body_limit(MAX_SCRIPT_BYTES)
+        .with_csp(start.csp.clone());
     request.partition.clone_from(&start.partition);
     request.credentials = start.credentials;
     let response = start.client.fetch(&request).ok()?;
@@ -708,7 +713,13 @@ fn fetch_script(start: &Start) -> Option<(String, Url)> {
     {
         return None;
     }
-    Some((utf8_decode(&response.body), response.url().clone()))
+    // Its own policies (M33.1): its response's, or its creator's for a
+    // local URL.
+    let csp = match start.url.scheme() {
+        "data" | "blob" => start.csp.inherited(),
+        _ => net::csp::Csp::from_headers(&response.headers, response.url()).with_sink(),
+    };
+    Some((utf8_decode(&response.body), response.url().clone(), csp))
 }
 
 /// Encoding's "UTF-8 decode": a UTF-8 byte order mark taken away and the
@@ -771,6 +782,8 @@ pub(crate) struct WorkerHost {
     document: u32,
     /// Where its creator is in its tab (M33.2).
     partition: Option<net::Partition>,
+    /// Its own policies (M33.1), which its requests pass.
+    csp: Option<net::csp::Csp>,
     realm: u32,
     work: u64,
 }
@@ -804,6 +817,7 @@ impl Default for WorkerHost {
             realm: 0,
             document: 0,
             partition: None,
+            csp: None,
             work: 0,
         }
     }
@@ -881,6 +895,7 @@ impl ScriptingHost for WorkerHost {
             Call::Fetch(call) => {
                 let mut request = super::fetch::request(self.initiator.clone(), &call)?;
                 request.partition.clone_from(&self.partition);
+                request.csp.clone_from(&self.csp);
                 if self.fetching.len() >= super::fetch::MAX_SCRIPT_FETCHES {
                     return Err(DomError::new("TypeError", "Too many requests in flight."));
                 }
@@ -897,10 +912,13 @@ impl ScriptingHost for WorkerHost {
             Call::FetchNow(call) => {
                 let mut request = super::fetch::request(self.initiator.clone(), &call)?;
                 request.partition.clone_from(&self.partition);
+                request.csp.clone_from(&self.csp);
                 let Some(client) = &self.client else {
                     return Ok(Answer::Fetched(None));
                 };
-                Ok(Answer::Fetched(match client.fetch(&request) {
+                let result = client.fetch(&request);
+                self.report_violations();
+                Ok(Answer::Fetched(match result {
                     Ok(response) => Some(Box::new(super::fetch::answer(&response))),
                     Err(error) => {
                         let text = super::fetch::failure_text(&request.url, error);
@@ -966,19 +984,25 @@ impl ScriptingHost for WorkerHost {
                 else {
                     return Err(DomError::not_supported());
                 };
-                Ok(Answer::Number(f64::from(workers.start(Start {
-                    url,
-                    name,
-                    module,
-                    credentials: credentials_mode(&credentials),
-                    client: client.clone(),
-                    initiator: initiator.clone(),
-                    secure: self.secure,
-                    viewport: self.viewport,
-                    fonts: self.fonts.clone(),
-                    compat: self.compat,
-                    partition: self.partition.clone(),
-                }))))
+                Ok(Answer::Number(f64::from(
+                    workers.start(Start {
+                        url,
+                        name,
+                        module,
+                        credentials: credentials_mode(&credentials),
+                        client: client.clone(),
+                        initiator: initiator.clone(),
+                        secure: self.secure,
+                        viewport: self.viewport,
+                        fonts: self.fonts.clone(),
+                        compat: self.compat,
+                        partition: self.partition.clone(),
+                        csp: self
+                            .csp
+                            .clone()
+                            .unwrap_or_else(|| net::csp::Csp::none(self.origin.clone())),
+                    }),
+                )))
             }
             Call::WorkerPost { worker, data } => {
                 if let Some(workers) = self.workers.as_mut() {
@@ -1006,9 +1030,25 @@ impl ScriptingHost for WorkerHost {
 }
 
 impl WorkerHost {
+    /// Says on its document's console what its policies refused, or
+    /// would have, at its requests' hops (M33.1).
+    fn report_violations(&self) {
+        let Some(csp) = &self.csp else {
+            return;
+        };
+        for violation in csp.take_violations() {
+            let level = super::violation_level(&violation);
+            self.tell(FromWorker::Console(
+                level,
+                cut(super::violation_text(&violation)),
+            ));
+        }
+    }
+
     /// The answers of the worker's fetches that finished, as tasks; why
     /// one failed goes to the console. Those aborted are dropped.
     fn take_fetched(&mut self) -> Vec<Task> {
+        self.report_violations();
         let mut tasks = Vec::new();
         while let Some((job, result)) = self.pool.as_ref().and_then(Pool::try_take) {
             let Some((id, url, _)) = self.fetching.remove(&job) else {
@@ -1037,7 +1077,10 @@ impl WorkerHost {
             .initiated_by(self.initiator.clone()?)
             .with_body_limit(MAX_SCRIPT_BYTES);
         request.partition.clone_from(&self.partition);
-        let response = self.client.as_ref()?.fetch(&request).ok()?;
+        request.csp.clone_from(&self.csp);
+        let result = self.client.as_ref()?.fetch(&request);
+        self.report_violations();
+        let response = result.ok()?;
         if !response.ok()
             || !response
                 .mime_type

@@ -697,11 +697,10 @@ fn a_pages_policy_decides_which_of_its_scripts_run() {
     });
     let mut tab = scripting();
     load_all(&mut tab, server.url("/page.html"));
-    let blocked = |url: &str| {
-        format!(
-            "Failed to load script {url}: blocked by Content-Security-Policy: script-src 'self'"
-        )
-    };
+    // The refusal says it once (M33.1), naming the first URL after a
+    // redirect to another origin.
+    let blocked =
+        |url: &str| format!("Content-Security-Policy refused the script {url}: script-src 'self'");
     assert_eq!(
         lines(&mut tab),
         [
@@ -739,7 +738,12 @@ fn unsafe_inline_lets_inline_scripts_run_unless_a_nonce_takes_its_place() {
             true => "inline".to_owned(),
             false => format!("Content-Security-Policy refused an inline script: {policy}"),
         };
-        assert_eq!(lines(&mut tab), [expected], "{policy}");
+        // The icon `img-src 'none'` refuses is not this test's (M33.1).
+        let lines: Vec<String> = lines(&mut tab)
+            .into_iter()
+            .filter(|line| !line.contains("favicon.ico"))
+            .collect();
+        assert_eq!(lines, [expected], "{policy}");
     }
 }
 
@@ -774,7 +778,7 @@ fn a_meta_policy_in_the_head_holds_for_the_scripts_after_it() {
             "before".to_owned(),
             "Content-Security-Policy refused an inline script: script-src 'none'".to_owned(),
             format!(
-                "Failed to load script {}: blocked by Content-Security-Policy: script-src 'none'",
+                "Content-Security-Policy refused the script {}: script-src 'none'",
                 server.url("/a.js")
             ),
         ]
@@ -791,11 +795,18 @@ fn a_meta_policy_in_the_head_holds_for_the_scripts_after_it() {
     load_all(&mut tab, crowd.url("/many.html"));
     assert_eq!(lines(&mut tab), ["1"; net::csp::MAX_POLICIES + 2]);
     // Outside the head, a meta says nothing; a policy that only reports
-    // blocks nothing.
-    for page in ["/body.html", "/report.html"] {
-        load_all(&mut tab, server.url(page));
-        assert_eq!(lines(&mut tab), ["runs"], "{page}");
-    }
+    // blocks nothing, and reports (M33.1).
+    load_all(&mut tab, server.url("/body.html"));
+    assert_eq!(lines(&mut tab), ["runs"]);
+    load_all(&mut tab, server.url("/report.html"));
+    assert_eq!(
+        lines(&mut tab),
+        [
+            "Content-Security-Policy (report-only) would refuse an inline script: \
+             script-src 'none'",
+            "runs"
+        ]
+    );
 }
 
 // ---- Scripts that scripts insert, and document.write (M25) -----------------
