@@ -205,6 +205,9 @@ impl Engine {
                     // (M32).
                     image.pixels = if let Some(node) = paint::canvas_node(image.id) {
                         self.shown.scripts.canvas_image(node)
+                    } else if let Some(node) = paint::frame_node(image.id) {
+                        // A frame prints as it is on the screen (M33.2).
+                        self.frame_drawing(node)
                     } else if let Some(node) = paint::svg_node(image.id) {
                         let context = svg::Context {
                             document,

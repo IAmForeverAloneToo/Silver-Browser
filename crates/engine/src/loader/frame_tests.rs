@@ -3,6 +3,8 @@
 //! into its parent, waited for by its parent's load, and kept within
 //! the tab's limits.
 
+use std::time::Duration;
+
 use dom::NodeId;
 use net::Url;
 use net::test_server::{Reply, ServerRequest, TestServer};
@@ -532,4 +534,278 @@ fn a_frames_own_history_keeps_no_document() {
     let child = frame(&tab.engine, 0);
     assert_eq!(child.history.kept_len(), 0);
     assert!(!tab.engine.can_go_back(), "no entry of the tab's");
+}
+
+// ---- Step 2: the pointer, the wheel, focus and keys in frames ----
+
+/// A tab showing `parent`, scripts on, its frames loaded and drawn at
+/// 800 by 600; the console taken.
+fn framed(parent: &str) -> Tab {
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.load_document(parent);
+    settle_frames(&mut tab);
+    tab.engine
+        .frame_at(800, 600, crate::FrameTime::at(Duration::ZERO));
+    tab.engine.take_console();
+    tab
+}
+
+/// The console's lines since it was last taken.
+fn console(tab: &mut Tab) -> Vec<String> {
+    tab.engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .collect()
+}
+
+/// A click of the primary button at `(x, y)`.
+fn click(tab: &mut Tab, x: f32, y: f32) {
+    tab.engine.pointer_move(x, y);
+    tab.engine.pointer_down(x, y, crate::Button::Primary, 1);
+    tab.engine.pointer_up(x, y, crate::Button::Primary, 1);
+}
+
+#[test]
+fn a_click_in_a_frame_is_the_frames_and_focuses_its_iframe() {
+    let mut tab = framed(
+        "<body style='margin:0' onclick=\"console.log('parent click')\">\
+         <iframe style='border:0; margin: 20px' srcdoc=\"<body style='margin:0'>\
+         <button style='display:block; width:100px; height:50px' \
+         onmousedown='console.log(event.clientX, event.clientY)' \
+         onclick='console.log(this.tagName)'>b</button>\"></iframe>",
+    );
+    click(&mut tab, 30.0, 25.0);
+    assert_eq!(
+        console(&mut tab),
+        ["[frame about:srcdoc] 10 5", "[frame about:srcdoc] BUTTON"]
+    );
+    assert_eq!(tab.engine.focused(), Some(iframes(&tab.engine)[0]));
+    // Outside the frame, the parent's.
+    click(&mut tab, 500.0, 100.0);
+    assert_eq!(console(&mut tab), ["parent click"]);
+}
+
+#[test]
+fn a_transformed_frame_takes_the_point_in_its_own_coordinates() {
+    let mut tab = framed(
+        "<body style='margin:0'><iframe style='border:0; transform: scale(2); \
+         transform-origin: 0 0' srcdoc=\"<body style='margin:0; height:150px' \
+         onmousedown='console.log(event.clientX, event.clientY)'>\"></iframe>",
+    );
+    click(&mut tab, 60.0, 40.0);
+    assert_eq!(console(&mut tab), ["[frame about:srcdoc] 30 20"]);
+}
+
+#[test]
+fn the_pointer_hovers_in_a_frame_and_leaves_it() {
+    let mut tab = framed(
+        "<body style='margin:0'><iframe style='border:0' srcdoc=\"<body style='margin:0'>\
+         <div style='height:100px'></div>\"></iframe>",
+    );
+    let hovered = |engine: &Engine| {
+        let child = frame(engine, 0);
+        let document = child.document();
+        document
+            .subtree(document.root())
+            .filter(|&node| document.state(node).contains(dom::ElementState::HOVER))
+            .filter_map(|node| document.tag(node).map(str::to_owned))
+            .collect::<Vec<_>>()
+    };
+    tab.engine.pointer_move(10.0, 10.0);
+    assert_eq!(hovered(&tab.engine), ["html", "body", "div"]);
+    let iframe = iframes(&tab.engine)[0];
+    assert!(
+        tab.engine
+            .document()
+            .state(iframe)
+            .contains(dom::ElementState::HOVER)
+    );
+    tab.engine.pointer_move(500.0, 400.0);
+    assert!(hovered(&tab.engine).is_empty(), "left");
+}
+
+#[test]
+fn a_press_in_a_frame_comes_up_in_it_wherever_it_is_released() {
+    let mut tab = framed(
+        "<body style='margin:0' onmouseup=\"console.log('parent up')\">\
+         <iframe style='border:0' srcdoc=\"<body style='margin:0; height:100px'>\
+         <script>onmouseup = e => console.log(e.clientX)</script>\"></iframe>",
+    );
+    tab.engine.pointer_move(10.0, 10.0);
+    tab.engine
+        .pointer_down(10.0, 10.0, crate::Button::Primary, 1);
+    tab.engine.pointer_move(600.0, 10.0);
+    tab.engine
+        .pointer_up(600.0, 10.0, crate::Button::Primary, 1);
+    assert_eq!(console(&mut tab), ["[frame about:srcdoc] 600"]);
+    // The next press is the parent's again.
+    click(&mut tab, 600.0, 100.0);
+    assert_eq!(console(&mut tab), ["parent up"]);
+}
+
+#[test]
+fn the_wheel_scrolls_a_frame_and_then_its_parent() {
+    let mut tab = framed(
+        "<body style='margin:0; height:2000px'><iframe style='border:0' \
+         srcdoc=\"<body style='margin:0; height:250px'>\"></iframe>",
+    );
+    tab.engine.wheel(10.0, 10.0, 60.0);
+    let child_target = |engine: &Engine| frame(engine, 0).shown.scroll_target;
+    assert_eq!(child_target(&tab.engine), 60.0);
+    assert_eq!(tab.engine.shown.scroll_target, 0.0);
+    // The frame holds 100 more; past them the parent takes the wheel.
+    tab.engine.wheel(10.0, 10.0, 60.0);
+    assert_eq!(child_target(&tab.engine), 100.0);
+    tab.engine.wheel(10.0, 10.0, 60.0);
+    assert_eq!(child_target(&tab.engine), 100.0);
+    assert_eq!(tab.engine.shown.scroll_target, 60.0);
+}
+
+#[test]
+fn links_and_cursors_in_a_frame_are_its_documents() {
+    let server = two_pages(
+        "<body style='margin:0'><iframe style='border:0' src=child.html></iframe>",
+        "<body style='margin:0'><a href=x.html style='display:block; height:40px; \
+         cursor: pointer'>x</a>",
+    );
+    let mut tab = Tab::new();
+    load_all(&mut tab, server.url("/page.html"));
+    settle_frames(&mut tab);
+    tab.engine.frame(800, 600);
+    let link = tab.engine.link_at(10.0, 10.0).expect("a link");
+    assert_eq!(link.url(), &server.url("/x.html"));
+    assert_eq!(tab.engine.cursor_at(10.0, 10.0), crate::Cursor::Pointer);
+    assert_eq!(tab.engine.cursor_at(10.0, 100.0), crate::Cursor::Default);
+}
+
+#[test]
+fn keys_and_text_go_to_the_frame_focused() {
+    let mut tab = framed(
+        "<body style='margin:0'><iframe style='border:0; margin-left:100px' \
+         srcdoc=\"<body style='margin:0'><input style='display:block'>\"></iframe>",
+    );
+    click(&mut tab, 110.0, 10.0);
+    assert!(tab.engine.insert_text("ab"));
+    let key = |name: &str| crate::Key {
+        key: name.to_owned(),
+        code: name.to_owned(),
+        text: None,
+        location: 0,
+        repeat: false,
+    };
+    assert_eq!(
+        tab.engine.key_down(&key("Backspace")),
+        crate::KeyOutcome::Taken
+    );
+    tab.engine.key_up(&key("Backspace"));
+    let child = frame(&tab.engine, 0);
+    let document = child.document();
+    let input = document
+        .subtree(document.root())
+        .find(|&node| document.tag(node) == Some("input"))
+        .expect("an input");
+    assert_eq!(dom::forms::value(document, input), "a");
+    // The caret where the frame's content box lands here.
+    let (x, _, _, _) = tab.engine.caret_area().expect("a caret");
+    assert!((100.0..150.0).contains(&x), "{x}");
+}
+
+#[test]
+fn tab_goes_through_a_frames_areas_and_passes_an_empty_one() {
+    let mut tab = framed(
+        "<input id=a><iframe srcdoc=\"<input id=b><input id=c>\"></iframe>\
+         <iframe srcdoc='<p>nothing</p>'></iframe><input id=d>",
+    );
+    let at = |engine: &Engine| {
+        let focused = engine.focused()?;
+        if engine.document().tag(focused) == Some("iframe") {
+            let child = &engine.shown.frames.get(&focused)?.engine;
+            let inner = child.focused()?;
+            return child.document().attr(inner, "id").map(str::to_owned);
+        }
+        engine.document().attr(focused, "id").map(str::to_owned)
+    };
+    let mut seen = Vec::new();
+    while tab.engine.focus_next(false) {
+        seen.push(at(&tab.engine).unwrap_or_default());
+    }
+    assert_eq!(seen, ["a", "b", "c", "d"]);
+    let mut back = Vec::new();
+    while tab.engine.focus_next(true) {
+        back.push(at(&tab.engine).unwrap_or_default());
+    }
+    assert_eq!(back, ["d", "c", "b", "a"]);
+}
+
+#[test]
+fn a_frames_window_hears_the_focus_come_and_go() {
+    let mut tab = framed(
+        "<body style='margin:0'><iframe style='border:0' srcdoc=\"<script>\
+         onfocus = () => console.log('focus'); onblur = () => console.log('blur')</script>\
+         <input>\"></iframe><p>parent</p>",
+    );
+    click(&mut tab, 20.0, 20.0);
+    assert_eq!(console(&mut tab), ["[frame about:srcdoc] focus"]);
+    click(&mut tab, 500.0, 400.0);
+    assert_eq!(console(&mut tab), ["[frame about:srcdoc] blur"]);
+}
+
+#[test]
+fn a_frames_viewport_is_its_box() {
+    let mut tab = framed(
+        "<body style='margin:0'><iframe style='border:0' srcdoc=\"<script>\
+         onresize = () => console.log(innerWidth, innerHeight)</script>\"></iframe>",
+    );
+    assert_eq!(frame(&tab.engine, 0).viewport(), (300, 150));
+    // Frames drawn for a time run the frame's rendering steps.
+    let at = |engine: &mut Engine, ms: u64| {
+        engine.frame_at(800, 600, crate::FrameTime::at(Duration::from_millis(ms)));
+    };
+    at(&mut tab.engine, 16);
+    let node = iframes(&tab.engine)[0];
+    tab.engine.mutate(|document| {
+        document
+            .set_attribute(node, "style", "border:0; width:200px; height:80px")
+            .expect("set");
+    });
+    at(&mut tab.engine, 32);
+    assert_eq!(frame(&tab.engine, 0).viewport(), (200, 80));
+    assert_eq!(console(&mut tab), ["[frame about:srcdoc] 200 80"]);
+}
+
+#[test]
+fn a_frame_prints_as_it_is_drawn() {
+    let tab = framed(
+        "<body style='margin:0'><iframe style='border:0' \
+         srcdoc=\"<body style='background: rgb(255, 0, 0)'>\"></iframe>",
+    );
+    let pages = tab
+        .engine
+        .printed_pages(&crate::PrintOptions::default())
+        .expect("printed");
+    let pixels = pages[0].list.items.iter().find_map(|item| match item {
+        paint::DisplayItem::Image { image, .. } if paint::frame_node(image.id).is_some() => {
+            image.pixels.clone()
+        }
+        _ => None,
+    });
+    let pixels = pixels.expect("the frame's pixels");
+    assert_eq!(&pixels.frames[0].pixels[0..4], &[255, 0, 0, 255]);
+}
+
+#[test]
+fn a_frames_border_and_padding_are_its_parents() {
+    // The point in the frame is from its content box; a press on the
+    // iframe's border or padding is the parent's.
+    let mut tab = framed(
+        "<body style='margin:0' onmousedown=\"console.log('parent')\">\
+         <iframe style='border: 5px solid; padding: 10px' srcdoc=\"<body style='margin:0; \
+         height:150px' onmousedown='console.log(event.clientX, event.clientY)'>\"></iframe>",
+    );
+    click(&mut tab, 30.0, 40.0);
+    assert_eq!(console(&mut tab), ["[frame about:srcdoc] 15 25"]);
+    click(&mut tab, 8.0, 40.0);
+    assert_eq!(console(&mut tab), ["parent"]);
 }

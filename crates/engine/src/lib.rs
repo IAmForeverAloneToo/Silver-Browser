@@ -512,6 +512,10 @@ struct Shown {
     popup: Option<select::Popup>,
     /// The frames of its `iframe`s (M33.2), by element.
     frames: HashMap<NodeId, frames::Frame>,
+    /// The `iframe` whose frame the pointer is over, and the one a press
+    /// began in while a button is held (M33.2).
+    pointer_frame: Option<NodeId>,
+    pressed_frame: Option<NodeId>,
 }
 
 /// The lifecycle events a document has had (HTML section 8.4.6, "the
@@ -579,6 +583,8 @@ impl Shown {
             selecting: None,
             popup: None,
             frames: HashMap::new(),
+            pointer_frame: None,
+            pressed_frame: None,
         }
     }
 
@@ -1521,6 +1527,7 @@ impl Engine {
     /// The modifier keys held from now on (M26.5), which the pointer's
     /// events say.
     pub fn set_modifiers(&mut self, modifiers: Modifiers) {
+        self.for_each_frame(&mut |frame| frame.modifiers = modifiers);
         self.modifiers = modifiers;
     }
 
@@ -1533,7 +1540,16 @@ impl Engine {
         if self.popup_move(x, y) {
             return;
         }
-        let target = self.pointer_at(x, y);
+        // Over a frame (M33.2): its iframe is hovered here, and its
+        // document hears the pointer.
+        if let Some((node, fx, fy)) = self.pointer_frame(x, y) {
+            self.pointer_at(x, y);
+            if let Some(child) = self.frame_engine(node) {
+                child.pointer_move(fx, fy);
+            }
+            return;
+        }
+        let target = self.pointer_at(x, y).or_else(|| self.held_outside(x, y));
         if self.buttons & Button::Primary.bit() != 0 {
             self.drag_in(x, y);
         }
@@ -1550,6 +1566,11 @@ impl Engine {
     /// The pointer left the page: nothing is hovered, and the elements it
     /// was over hear it leave.
     pub fn pointer_leave(&mut self) {
+        if let Some(node) = self.shown.pointer_frame.take()
+            && let Some(child) = self.frame_engine(node)
+        {
+            child.pointer_leave();
+        }
         let left = self.shown.hovered.clone();
         self.set_hovered(Vec::new());
         self.boundary(&left, &[]);
@@ -1565,6 +1586,20 @@ impl Engine {
         // An open list takes the press (M26.8).
         if self.popup_press(x, y) {
             self.buttons |= button.bit();
+            return;
+        }
+        // In a frame (M33.2): the frame takes the focus and the press, and
+        // keeps the pointer until the buttons are all up.
+        if let Some((node, fx, fy)) = self.pointer_frame(x, y) {
+            self.pointer_at(x, y);
+            self.buttons |= button.bit();
+            self.shown.pressed_frame = Some(node);
+            if matches!(button, Button::Primary | Button::Secondary) {
+                self.focus_frame(node);
+            }
+            if let Some(child) = self.frame_engine(node) {
+                child.pointer_down(fx, fy, button, count);
+            }
             return;
         }
         let target = self.pointer_at(x, y);
@@ -1660,6 +1695,13 @@ impl Engine {
         if old == area {
             return;
         }
+        // A frame the focus leaves loses it (M33.2): its window hears
+        // `blur`.
+        if let Some(old) = old
+            && let Some(child) = self.frame_engine(old)
+        {
+            child.set_window_focus(false);
+        }
         if let Some(old) = old {
             if self.popup_open() == Some(old) {
                 self.close_popup();
@@ -1700,6 +1742,14 @@ impl Engine {
                 let event = focus_event(kind, bubbles, old);
                 self.fire(js::Target::Node(scripts::handle(area)), event);
             }
+        }
+        // A frame the focus enters gains it (M33.2): its window hears
+        // `focus`, with the window's own.
+        let focused = self.window_focused;
+        if self.shown.document.focused() == Some(area)
+            && let Some(child) = self.frame_engine(area)
+        {
+            child.set_window_focus(focused);
         }
     }
 
@@ -1747,34 +1797,66 @@ impl Engine {
     /// browser's own interface is to take it.
     pub fn focus_next(&mut self, backward: bool) -> bool {
         self.keyboard = true;
+        // In a frame (M33.2): its next area, or past its last the next
+        // here.
+        if let Some(node) = self.focused_frame() {
+            if self
+                .frame_engine(node)
+                .is_some_and(|child| child.focus_next(backward))
+            {
+                return true;
+            }
+            return self.focus_after_frame(node, backward);
+        }
+        let current = self.shown.document.focused();
+        self.focus_from(current, backward)
+    }
+
+    /// Moves the focus from `current` to the next area of the sequential
+    /// order, or the previous for `backward`: an `iframe` with a frame
+    /// passed to the frame's first or last area (M33.2), or passed over
+    /// when it has none. Past the end, the page gives up the focus.
+    fn focus_from(&mut self, current: Option<NodeId>, backward: bool) -> bool {
         self.cached_styles();
         let styles = self.shown.styled.as_ref().map(|styled| &styled.styles);
         let order = focus::sequential_order(&self.shown.document, styles);
-        let current = self.shown.document.focused();
-        let at = current.and_then(|current| order.iter().position(|&node| node == current));
-        let next = match (at, backward) {
-            (Some(i), false) => order.get(i + 1).copied(),
-            (Some(i), true) => i.checked_sub(1).map(|i| order[i]),
-            (None, false) => order.first().copied(),
-            (None, true) => order.last().copied(),
-        };
-        match next {
-            Some(next) => {
-                self.focus(Some(next), true, true);
-                // A text field Tab reaches has its text selected, as in
-                // the reference browser (M26.8).
-                if self.text_control() == Some(next)
-                    && self.shown.document.tag(next) == Some("input")
-                {
-                    self.move_in(next, text::edit::Command::SelectAll);
-                }
-                true
-            }
-            None => {
+        let mut at = current.and_then(|current| order.iter().position(|&node| node == current));
+        loop {
+            let next = match (at, backward) {
+                (Some(i), false) => order.get(i + 1).copied(),
+                (Some(i), true) => i.checked_sub(1).map(|i| order[i]),
+                (None, false) => order.first().copied(),
+                (None, true) => order.last().copied(),
+            };
+            let Some(next) = next else {
                 self.focus(None, false, false);
-                false
+                return false;
+            };
+            if self.shown.frames.contains_key(&next) {
+                let entered = self.frame_engine(next).is_some_and(|child| {
+                    child.focus(None, false, false);
+                    child.focus_next(backward)
+                });
+                if entered {
+                    self.focus_frame(next);
+                    return true;
+                }
+                at = order.iter().position(|&node| node == next);
+                continue;
             }
+            return self.focus_area(next);
         }
+    }
+
+    /// Gives `next`, an area Tab reached, the focus.
+    fn focus_area(&mut self, next: NodeId) -> bool {
+        self.focus(Some(next), true, true);
+        // A text field Tab reaches has its text selected, as in the
+        // reference browser (M26.8).
+        if self.text_control() == Some(next) && self.shown.document.tag(next) == Some("input") {
+            self.move_in(next, text::edit::Command::SelectAll);
+        }
+        true
     }
 
     /// Whether the window has the system's focus (M26.6): when it loses it,
@@ -1786,6 +1868,13 @@ impl Engine {
         }
         self.window_focused = focused;
         self.close_popup();
+        // With the focus in a frame (M33.2), its window hears it alone.
+        if let Some(node) = self.focused_frame() {
+            if let Some(child) = self.frame_engine(node) {
+                child.set_window_focus(focused);
+            }
+            return;
+        }
         let element = self.shown.document.focused();
         let kind = if focused { "focus" } else { "blur" };
         let at_element = |engine: &mut Engine| {
@@ -1812,6 +1901,22 @@ impl Engine {
         self.keyboard = true;
         if self.shown.popup.is_some() {
             return self.popup_key(key);
+        }
+        // The frame focused takes it (M33.2); Tab past its last area goes
+        // on here.
+        if let Some(node) = self.focused_frame() {
+            let outcome = self.frame_engine(node).map(|child| child.key_down(key));
+            match outcome {
+                Some(KeyOutcome::FocusLeft) => {
+                    return if self.focus_after_frame(node, self.modifiers.shift) {
+                        KeyOutcome::Taken
+                    } else {
+                        KeyOutcome::FocusLeft
+                    };
+                }
+                Some(outcome) => return outcome,
+                None => {}
+            }
         }
         if let Some(target) = self.key_target() {
             let event = self.key_event("keydown", key, None);
@@ -1941,6 +2046,12 @@ impl Engine {
     /// A key came up (M26.6): `keyup`; Space's release clicks the button
     /// its press armed.
     pub fn key_up(&mut self, key: &Key) {
+        if let Some(node) = self.focused_frame()
+            && let Some(child) = self.frame_engine(node)
+        {
+            child.key_up(key);
+            return;
+        }
         if let Some(target) = self.key_target() {
             let event = self.key_event("keyup", key, None);
             self.fire(js::Target::Node(scripts::handle(target)), event);
@@ -2016,7 +2127,21 @@ impl Engine {
     /// press; `auxclick` for another, and `contextmenu` after it for the
     /// secondary one. With scripts off, the activation alone.
     pub fn pointer_up(&mut self, x: f32, y: f32, button: Button, count: u32) {
-        let target = self.pointer_at(x, y);
+        // A press a frame took (M33.2) comes up in it, wherever.
+        if self.shown.pressed_frame.is_some()
+            && let Some((node, fx, fy)) = self.pointer_frame(x, y)
+        {
+            self.pointer_at(x, y);
+            self.buttons &= !button.bit();
+            if self.buttons == 0 {
+                self.shown.pressed_frame = None;
+            }
+            if let Some(child) = self.frame_engine(node) {
+                child.pointer_up(fx, fy, button, count);
+            }
+            return;
+        }
+        let target = self.pointer_at(x, y).or_else(|| self.held_outside(x, y));
         self.buttons &= !button.bit();
         let pressed = self.shown.pressed[button.number() as usize].take();
         if button == Button::Primary {
@@ -2092,6 +2217,19 @@ impl Engine {
             }
             Button::Back | Button::Forward => {}
         }
+    }
+
+    /// Where the events of a press held past the viewport go, the point
+    /// `(x, y)` outside it: the document's element, as the reference
+    /// browser keeps a frame's pointer while a press that began in it is
+    /// held (M33.2).
+    fn held_outside(&self, x: f32, y: f32) -> Option<NodeId> {
+        let (w, h) = self.viewport;
+        let outside = x < 0.0 || y < 0.0 || x >= w as f32 || y >= h as f32;
+        if self.buttons == 0 || !outside {
+            return None;
+        }
+        self.shown.document.document_element()
     }
 
     /// The element under `(x, y)`, the pointer moved there: the hovered
@@ -2453,6 +2591,11 @@ impl Engine {
     /// the `cursor` of the element there; `auto` an I-beam over a text
     /// control, the arrow elsewhere and off the page.
     pub fn cursor_at(&mut self, x: f32, y: f32) -> Cursor {
+        if let Some((node, fx, fy)) = self.frame_under(x, y)
+            && let Some(child) = self.frame_engine(node)
+        {
+            return child.cursor_at(fx, fy);
+        }
         let Some(node) = self.hit_test(x, y) else {
             return Cursor::Default;
         };
@@ -5593,18 +5736,33 @@ impl Engine {
     /// else the next one out, else the viewport. Only `overflow: auto`
     /// and `scroll` containers take the wheel.
     pub fn wheel(&mut self, x: f32, y: f32, dy: f32) {
+        self.wheel_taken(x, y, dy);
+    }
+
+    /// [`Engine::wheel`], saying whether the wheel was taken: its event
+    /// canceled, or something scrolled. Over a frame (M33.2), the frame
+    /// takes it first, and what it cannot take goes to the scroll chain
+    /// around its `iframe`.
+    fn wheel_taken(&mut self, x: f32, y: f32, dy: f32) -> bool {
         if !dy.is_finite() || dy == 0.0 {
-            return;
+            return false;
         }
         // A scroll closes an open list, as the reference browser's does.
         self.close_popup();
-        // A `wheel` event first (M26.5): canceled, nothing scrolls.
-        if let Some(target) = self.pointer_at(x, y) {
+        if let Some((node, fx, fy)) = self.frame_under(x, y) {
+            if self
+                .frame_engine(node)
+                .is_some_and(|child| child.wheel_taken(fx, fy, dy))
+            {
+                return true;
+            }
+        } else if let Some(target) = self.pointer_at(x, y) {
+            // A `wheel` event first (M26.5): canceled, nothing scrolls.
             let event = self
                 .mouse_event("WheelEvent", "wheel", target, 0, 0, None)
                 .with("deltaY", js::Field::Number(f64::from(dy)));
             if self.fire(js::Target::Node(scripts::handle(target)), event) == Some(true) {
-                return;
+                return true;
             }
         }
         for node in self.scroll_chain_at(x, y).into_iter().rev() {
@@ -5612,10 +5770,12 @@ impl Engine {
             let target = self.element_scroll_target(node);
             if (dy > 0.0 && target < max) || (dy < 0.0 && target > 0.0) {
                 self.scroll_element_by(node, dy);
-                return;
+                return true;
             }
         }
+        let before = self.shown.scroll_target;
         self.scroll_by(dy);
+        self.shown.scroll_target != before
     }
 
     /// The scroll containers that take the wheel under the viewport
@@ -5883,6 +6043,9 @@ impl Engine {
     /// with the document's encoding, as HTML's "follow the hyperlink"
     /// parses it. An `href` that does not parse is no link to follow.
     pub fn link_at(&mut self, x: f32, y: f32) -> Option<Link> {
+        if let Some((node, fx, fy)) = self.frame_under(x, y) {
+            return self.frame_engine(node)?.link_at(fx, fy);
+        }
         let hit = self.hit_test(x, y)?;
         let document = &self.shown.document;
         let (node, href) = std::iter::successors(Some(hit), |&node| document.parent_element(node))

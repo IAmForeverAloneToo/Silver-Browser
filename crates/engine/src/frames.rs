@@ -18,7 +18,9 @@ use dom::{Change, Document, NodeId};
 use net::Url;
 
 use crate::loader::{Creator, Incoming, LoadState, Page, Target};
-use crate::{Engine, FrameTime, Handling, Navigation, Shown, parsed_or_empty, scripts};
+use crate::{
+    Engine, FrameTime, Handling, Navigation, Shown, fragment_of, parsed_or_empty, scripts,
+};
 
 /// The most frames a tab has, those of the documents its history keeps
 /// included: past them an `iframe` stays empty (the reference browser
@@ -251,7 +253,10 @@ impl Engine {
         child.media_type = self.media_type;
         child.scale = self.scale;
         child.hidden = self.hidden;
-        child.window_focused = self.window_focused;
+        // A frame's window has the focus only while the focus is in it.
+        child.window_focused = false;
+        child.viewport = (300, 150);
+        child.modifiers = self.modifiers;
         if let Some(waker) = self.waker.clone() {
             child.use_waker(waker);
         }
@@ -665,6 +670,100 @@ impl Engine {
             .subtree(document.root())
             .filter(|node| self.shown.frames.contains_key(node))
             .collect()
+    }
+
+    /// The `iframe` whose frame the viewport point `(x, y)` is over, and
+    /// the point in that frame's viewport (M33.2): within its content
+    /// box, the border and padding around it being the parent's.
+    pub(crate) fn frame_under(&mut self, x: f32, y: f32) -> Option<(NodeId, f32, f32)> {
+        let node = self.hit_test(x, y)?;
+        if !self.shown.frames.contains_key(&node) {
+            return None;
+        }
+        let (fx, fy) = self.frame_point(node, x, y)?;
+        let (w, h) = self.frame_engine(node)?.viewport;
+        (fx >= 0.0 && fy >= 0.0 && fx < w as f32 && fy < h as f32).then_some((node, fx, fy))
+    }
+
+    /// The viewport point `(x, y)` in the viewport of the frame of the
+    /// `iframe` `node`: from its content box's top left, through the
+    /// transforms around it.
+    pub(crate) fn frame_point(&mut self, node: NodeId, x: f32, y: f32) -> Option<(f32, f32)> {
+        let (px, py) = self.padding_offset(node, x, y);
+        let layout = self.layout(self.viewport.0 as f32);
+        let f = fragment_of(&layout.roots, node)?;
+        let content = f.children.first()?;
+        let border = f.style.border_width;
+        Some((
+            px - (content.x - f.x - border[3]),
+            py - (content.y - f.y - border[0]),
+        ))
+    }
+
+    /// The engine of the frame of the `iframe` `node`, if it has one.
+    pub(crate) fn frame_engine(&mut self, node: NodeId) -> Option<&mut Engine> {
+        self.shown
+            .frames
+            .get_mut(&node)
+            .map(|frame| &mut *frame.engine)
+    }
+
+    /// The `iframe` focused, when it has a frame: the frame the keys go
+    /// to (M33.2).
+    pub(crate) fn focused_frame(&self) -> Option<NodeId> {
+        self.shown
+            .document
+            .focused()
+            .filter(|node| self.shown.frames.contains_key(node))
+    }
+
+    /// The frame the pointer's events go to at `(x, y)`, and the point in
+    /// it: the one a press began in while a button is held, as capture
+    /// would; none while a press that began here is held; else the one
+    /// under the pointer. The frame it was over before hears it leave.
+    pub(crate) fn pointer_frame(&mut self, x: f32, y: f32) -> Option<(NodeId, f32, f32)> {
+        let at = match self.shown.pressed_frame {
+            Some(node) => self
+                .frame_point(node, x, y)
+                .map(|(fx, fy)| (node, fx, fy))
+                .filter(|_| self.shown.frames.contains_key(&node)),
+            None if self.buttons != 0 => None,
+            None => self.frame_under(x, y),
+        };
+        let now = at.map(|(node, _, _)| node);
+        if self.shown.pointer_frame != now {
+            if let Some(old) = self.shown.pointer_frame
+                && let Some(child) = self.frame_engine(old)
+            {
+                child.pointer_leave();
+            }
+            self.shown.pointer_frame = now;
+        }
+        at
+    }
+
+    /// Moves the focus into the frame of the `iframe` `node`, whose
+    /// document's own focus is the child's to keep (M33.2): its window
+    /// hears `focus`; this document's element focused and window lose it.
+    pub(crate) fn focus_frame(&mut self, node: NodeId) {
+        if self.shown.document.focused() == Some(node) {
+            return;
+        }
+        self.focus(Some(node), false, false);
+    }
+
+    /// Moves the focus to the area after (before, `backward`) the
+    /// `iframe` `node` in the sequential order, the frame's own areas
+    /// passed: Tab past a frame's last.
+    pub(crate) fn focus_after_frame(&mut self, node: NodeId, backward: bool) -> bool {
+        self.focus_from(Some(node), backward)
+    }
+
+    /// The pixels the frame of the `iframe` `node` last drew, for a print
+    /// (M33.2): a frame prints as it is on the screen.
+    pub(crate) fn frame_drawing(&self, node: NodeId) -> Option<Arc<images::Image>> {
+        let frame = self.shown.frames.get(&node)?;
+        frame.drawn.as_ref().map(|drawn| drawn.pixels.clone())
     }
 
     /// The pixels of the frame of the `iframe` `node`, its content box

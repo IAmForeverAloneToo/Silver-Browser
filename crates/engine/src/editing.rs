@@ -172,6 +172,12 @@ impl Engine {
     /// inserted into the text control focused, with its events. Whether
     /// one took it.
     pub fn insert_text(&mut self, text: &str) -> bool {
+        // The frame focused takes it (M33.2).
+        if let Some(node) = self.focused_frame() {
+            return self
+                .frame_engine(node)
+                .is_some_and(|child| child.insert_text(text));
+        }
         match self.text_control() {
             Some(control) => {
                 self.insert_in(control, text, "insertText");
@@ -183,12 +189,22 @@ impl Engine {
 
     /// Whether a text control has the focus, to paste into (M26.8).
     pub fn can_paste(&self) -> bool {
-        self.text_control().is_some()
+        match self.focused_frame() {
+            Some(node) => self
+                .shown
+                .frames
+                .get(&node)
+                .is_some_and(|frame| frame.engine.can_paste()),
+            None => self.text_control().is_some(),
+        }
     }
 
     /// The text selected in the text control focused, for the clipboard
     /// (M26.8); none in a password field, nor with nothing selected.
     pub fn copy(&self) -> Option<String> {
+        if let Some(node) = self.focused_frame() {
+            return self.shown.frames.get(&node)?.engine.copy();
+        }
         let control = self.text_control()?;
         if forms::input_type(&self.shown.document, control) == "password"
             && self.shown.document.tag(control) == Some("input")
@@ -201,6 +217,9 @@ impl Engine {
 
     /// [`Engine::copy`], the selection then cut out (`deleteByCut`).
     pub fn cut(&mut self) -> Option<String> {
+        if let Some(node) = self.focused_frame() {
+            return self.frame_engine(node)?.cut();
+        }
         let control = self.text_control()?;
         let text = self.copy()?;
         if self.editable(control) {
@@ -214,6 +233,11 @@ impl Engine {
     /// `text` pasted into the text control focused (`insertFromPaste`).
     /// Whether one took it.
     pub fn paste(&mut self, text: &str) -> bool {
+        if let Some(node) = self.focused_frame() {
+            return self
+                .frame_engine(node)
+                .is_some_and(|child| child.paste(text));
+        }
         match self.text_control() {
             Some(control) => {
                 self.insert_in(control, text, "insertFromPaste");
@@ -669,6 +693,12 @@ impl Engine {
     /// Where the caret of the text control focused is in the viewport,
     /// `(x, y, w, h)`, for an input method's window to stand by (M26.8).
     pub fn caret_area(&mut self) -> Option<(f32, f32, f32, f32)> {
+        // A frame's, where its content box lands here (M33.2).
+        if let Some(node) = self.focused_frame() {
+            let (x, y, w, h) = self.frame_engine(node)?.caret_area()?;
+            let (ox, oy) = self.frame_point(node, 0.0, 0.0)?;
+            return Some((x - ox, y - oy, w, h));
+        }
         let control = self.text_control()?;
         let placed = self.placed(control)?;
         let value = forms::value(&self.shown.document, control);

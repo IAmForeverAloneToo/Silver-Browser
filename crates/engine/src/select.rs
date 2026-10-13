@@ -100,7 +100,16 @@ impl Popup {
 impl Engine {
     /// The select whose list is open, if any.
     pub fn popup_open(&self) -> Option<NodeId> {
-        self.shown.popup.as_ref().map(|popup| popup.select)
+        // A frame's list, the frame focused (M33.2).
+        let frame = || {
+            let node = self.focused_frame()?;
+            self.shown.frames.get(&node)?.engine.popup_open()
+        };
+        self.shown
+            .popup
+            .as_ref()
+            .map(|popup| popup.select)
+            .or_else(frame)
     }
 
     /// The border box of an element in the viewport, from the layout
