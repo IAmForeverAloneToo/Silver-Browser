@@ -163,6 +163,8 @@ pub(crate) enum Target {
     Script,
     /// A script's `fetch()` (M27.1).
     Fetch,
+    /// A violation's report (M33.1), whose answer nobody reads.
+    Report,
 }
 
 /// A fetch in flight.

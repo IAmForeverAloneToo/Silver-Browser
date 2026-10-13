@@ -1314,7 +1314,13 @@ impl Engine {
             .csp(&self.shown.document)
             .form_action_violations((url, url), 0);
         let allowed = net::csp::enforced(violations.clone()).is_ok();
-        self.shown.scripts.report_violations(violations);
+        let Shown {
+            scripts,
+            page,
+            document,
+            ..
+        } = &mut self.shown;
+        scripts.report_violations(page, document, violations, (None, 0));
         allowed
     }
 
@@ -1516,7 +1522,13 @@ impl Engine {
         let refused = violations
             .iter()
             .any(|violation| violation.disposition == net::csp::Disposition::Enforce);
-        self.shown.scripts.report_violations(violations);
+        let Shown {
+            scripts,
+            page,
+            document,
+            ..
+        } = &mut self.shown;
+        scripts.report_violations(page, document, violations, (None, 0));
         if refused {
             return;
         }
@@ -3006,7 +3018,35 @@ impl Engine {
     fn report_violations(&mut self) {
         let violations = self.shown.page.take_violations();
         if !violations.is_empty() {
-            self.shown.scripts.report_violations(violations);
+            let Shown {
+                scripts,
+                page,
+                document,
+                ..
+            } = &mut self.shown;
+            scripts.report_violations(page, document, violations, (None, 0));
+        }
+        self.send_reports();
+    }
+
+    /// Sends the reports the shown document's violations made (M33.1):
+    /// each a POST of `application/csp-report`, its answer unread.
+    fn send_reports(&mut self) {
+        let id = self.shown.page.id();
+        let origin = self.shown.page.origin().clone();
+        let initiator = self.shown.page.initiator();
+        for (url, body) in self.shown.scripts.take_reports() {
+            let mut request = net::Request::post(
+                url,
+                net::Destination::Report,
+                body.into_bytes(),
+                "application/csp-report",
+            );
+            request.initiator.clone_from(&initiator);
+            request.origin = Some(origin.clone());
+            // Held to no fetch directive (a report's has none).
+            request.csp = Some(net::csp::Csp::none(origin.clone()));
+            self.network.fetch(id, Target::Report, request);
         }
     }
 
@@ -4007,6 +4047,7 @@ impl Engine {
         match target {
             Target::Document => self.document_arrived(page, result),
             Target::Icon => self.icon_arrived(page, result),
+            Target::Report => {}
             Target::Image { url } => self.image_arrived(page, &url, result),
             Target::Fetch => {
                 // A task, run when tasks are (M27.1).

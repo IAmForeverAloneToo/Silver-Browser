@@ -62,6 +62,9 @@ pub(crate) struct Outputs {
     pub(crate) messages: Vec<(Duration, js::Task)>,
     /// The workers terminated, whose tasks not yet run are dropped.
     pub(crate) terminated: Vec<u32>,
+    /// What the document's policies refused, or would have, in the run
+    /// (M33.1), each with the element to blame.
+    pub(crate) violations: Vec<(net::csp::Violation, Option<NodeId>)>,
 }
 
 /// The document's styles as a run's `getComputedStyle` sees them: the
@@ -418,11 +421,14 @@ impl DocumentHost {
         }
     }
 
-    /// Says each of `violations` on the console (M33.1).
-    fn say_violations(&mut self, violations: Vec<net::csp::Violation>) {
+    /// Says `violations` on the console as they come and hands them to
+    /// the run's outputs (M33.1), `element` the one to blame: their
+    /// events and reports are made after the run.
+    fn say_violations(&mut self, violations: Vec<net::csp::Violation>, element: Option<NodeId>) {
         for violation in violations {
             let level = super::violation_level(&violation);
             self.say(level, super::violation_text(&violation));
+            self.outputs.violations.push((violation, element));
         }
     }
 
@@ -1081,7 +1087,7 @@ impl DocumentHost {
                 // browser's does.
                 let result = client.fetch(&request);
                 let violations = page.take_violations();
-                self.say_violations(violations);
+                self.say_violations(violations, None);
                 Ok(Answer::Fetched(match result {
                     Ok(response) => Some(Box::new(super::fetch::answer(&response))),
                     Err(error) => {
@@ -1744,8 +1750,9 @@ impl DocumentHost {
             Call::CodeAllowed {
                 kind,
                 source,
-                element: _,
+                element,
             } => {
+                let element = element.and_then(|element| self.node(element).ok());
                 let Some(page) = self.page.as_mut() else {
                     return Ok(Answer::String(String::new()));
                 };
@@ -1758,7 +1765,7 @@ impl DocumentHost {
                     _ => csp.eval_violations(&source),
                 };
                 let refused = net::csp::enforced(violations.clone()).err();
-                self.say_violations(violations);
+                self.say_violations(violations, element);
                 Ok(Answer::String(
                     refused.map_or_else(String::new, |violation| code_refusal(&kind, &violation)),
                 ))
@@ -2405,7 +2412,7 @@ impl DocumentHost {
         // `document.write`'s scripts are the parser's.
         let prepared = prepare_element(page, &self.document, element, line, true);
         let violations = page.take_violations();
-        self.say_violations(violations);
+        self.say_violations(violations, Some(element));
         match prepared {
             Prepared::NotYet | Prepared::Nothing | Prepared::Refused => {}
             Prepared::Failed => self.outputs.events.push((element, "error")),
@@ -2468,7 +2475,7 @@ impl DocumentHost {
             };
             let prepared = prepare_element(page, &self.document, script, 1, false);
             let violations = page.take_violations();
-            self.say_violations(violations);
+            self.say_violations(violations, Some(script));
             if matches!(prepared, Prepared::NotYet) {
                 continue;
             }

@@ -98,6 +98,8 @@ pub struct Violation {
     /// attribute, `javascript:` URL or code string, when its directive
     /// has `'report-sample'`; empty otherwise.
     pub sample: String,
+    /// Where its policy's `report-uri` sends reports, as it wrote them.
+    pub report_uri: Vec<String>,
 }
 
 /// How many characters of what was blocked a violation's sample keeps.
@@ -191,7 +193,7 @@ fn fetch_directives(destination: Destination) -> (&'static [&'static str], &'sta
             "the worker",
         ),
         Destination::Empty => (&["connect-src", "default-src"], "the connection to"),
-        Destination::Document => (&[], ""),
+        Destination::Document | Destination::Report => (&[], ""),
     }
 }
 
@@ -576,6 +578,10 @@ fn violation(
         disposition: policy.disposition,
         policy: policy.serialization.clone(),
         sample: String::new(),
+        report_uri: policy
+            .directive(&["report-uri"])
+            .map(|directive| directive.value.clone())
+            .unwrap_or_default(),
     }
 }
 
@@ -590,6 +596,7 @@ fn too_many(effective: &str, blocked: &str, what: &str) -> Violation {
         disposition: Disposition::Enforce,
         policy: String::new(),
         sample: String::new(),
+        report_uri: Vec::new(),
     }
 }
 

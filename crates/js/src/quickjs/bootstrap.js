@@ -1522,6 +1522,85 @@
     }
   }
 
+  // SecurityPolicyViolationEvent (CSP section 5.1, M33.1).
+  const SECURITY = 131072;
+  const SECURITY_INIT = members(EVENT_INIT, [
+    ["blockedURI", "USVString", ""],
+    ["columnNumber", "unsigned long", 0],
+    ["disposition", "DOMString", "enforce"],
+    ["documentURI", "USVString", ""],
+    ["effectiveDirective", "DOMString", ""],
+    ["lineNumber", "unsigned long", 0],
+    ["originalPolicy", "DOMString", ""],
+    ["referrer", "USVString", ""],
+    ["sample", "DOMString", ""],
+    ["sourceFile", "USVString", ""],
+    ["statusCode", "unsigned short", 0],
+    ["violatedDirective", "DOMString", ""],
+  ], "SecurityPolicyViolationEventInit");
+
+  class SecurityPolicyViolationEvent extends Event {
+    constructor(type, eventInitDict = undefined) {
+      const args = eventArgs(
+        arguments.length,
+        type,
+        eventInitDict,
+        SECURITY_INIT,
+        "SecurityPolicyViolationEvent",
+      );
+      super(args[0], args[1]);
+      eventState(this).kinds |= SECURITY;
+    }
+
+    get documentURI() {
+      return fieldsOf(this, SECURITY).documentURI;
+    }
+
+    get referrer() {
+      return fieldsOf(this, SECURITY).referrer;
+    }
+
+    get blockedURI() {
+      return fieldsOf(this, SECURITY).blockedURI;
+    }
+
+    get effectiveDirective() {
+      return fieldsOf(this, SECURITY).effectiveDirective;
+    }
+
+    get violatedDirective() {
+      return fieldsOf(this, SECURITY).violatedDirective;
+    }
+
+    get originalPolicy() {
+      return fieldsOf(this, SECURITY).originalPolicy;
+    }
+
+    get sourceFile() {
+      return fieldsOf(this, SECURITY).sourceFile;
+    }
+
+    get sample() {
+      return fieldsOf(this, SECURITY).sample;
+    }
+
+    get disposition() {
+      return fieldsOf(this, SECURITY).disposition;
+    }
+
+    get statusCode() {
+      return fieldsOf(this, SECURITY).statusCode;
+    }
+
+    get lineNumber() {
+      return fieldsOf(this, SECURITY).lineNumber;
+    }
+
+    get columnNumber() {
+      return fieldsOf(this, SECURITY).columnNumber;
+    }
+  }
+
   // ProgressEvent (XMLHttpRequest 5, M27.6).
   const PROGRESS = 16384;
   const PROGRESS_INIT = members(EVENT_INIT, [
@@ -1649,6 +1728,7 @@
     ["TransitionEvent", TransitionEvent, TRANSITION_INIT],
     ["ProgressEvent", ProgressEvent, PROGRESS_INIT],
     ["StorageEvent", StorageEvent, STORAGE_INIT],
+    ["SecurityPolicyViolationEvent", SecurityPolicyViolationEvent, SECURITY_INIT],
   ];
   for (let i = 0; i < EVENT_INTERFACES.length; i++) {
     const entry = EVENT_INTERFACES[i];

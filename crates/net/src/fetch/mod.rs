@@ -139,6 +139,8 @@ pub enum Destination {
     Worker,
     /// No destination: a script's `fetch` or `XMLHttpRequest` (M27).
     Empty,
+    /// A violation's report (M33.1): a policy's `report-uri`'s POST.
+    Report,
 }
 
 impl Destination {
@@ -152,6 +154,7 @@ impl Destination {
             Destination::Script => "script",
             Destination::Worker => "worker",
             Destination::Empty => "empty",
+            Destination::Report => "report",
         }
     }
 
@@ -163,7 +166,10 @@ impl Destination {
             }
             Destination::Style => b"text/css,*/*;q=0.1",
             Destination::Image => b"image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5",
-            Destination::Script | Destination::Worker | Destination::Empty => b"*/*",
+            Destination::Script
+            | Destination::Worker
+            | Destination::Empty
+            | Destination::Report => b"*/*",
         }
     }
 }
@@ -315,10 +321,15 @@ impl Request {
                 Destination::Document | Destination::Iframe => Mode::Navigate,
                 Destination::Empty => Mode::Cors,
                 Destination::Worker => Mode::SameOrigin,
-                Destination::Style | Destination::Image | Destination::Script => Mode::NoCors,
+                Destination::Style
+                | Destination::Image
+                | Destination::Script
+                | Destination::Report => Mode::NoCors,
             },
             credentials: match destination {
-                Destination::Empty | Destination::Worker => Credentials::SameOrigin,
+                Destination::Empty | Destination::Worker | Destination::Report => {
+                    Credentials::SameOrigin
+                }
                 _ => Credentials::Include,
             },
             redirect: Redirect::Follow,

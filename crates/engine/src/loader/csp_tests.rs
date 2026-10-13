@@ -872,3 +872,189 @@ fn a_refused_style_of_a_document_taken_whole_hears_error() {
         ]
     );
 }
+
+#[test]
+fn a_violation_is_an_event_at_its_element_or_its_document_and_a_report() {
+    static PAGES: Pages = &[
+        (
+            "/page.html",
+            &[(
+                "Content-Security-Policy",
+                "script-src 'nonce-n1' 'report-sample'; img-src 'none'; report-uri /report",
+            )],
+            "<script nonce=n1>\
+             document.addEventListener('securitypolicyviolation', e => console.log([\
+               e.target.nodeName, e.blockedURI.replace(location.origin, ''),\
+               e.violatedDirective, e.effectiveDirective, e.disposition, e.sample,\
+               e.statusCode, e.lineNumber > 0, e.sourceFile === location.href,\
+               e.originalPolicy === 'script-src \\'nonce-n1\\' \\'report-sample\\'; \
+img-src \\'none\\'; report-uri /report', e.bubbles, e.composed, e.cancelable,\
+               e instanceof SecurityPolicyViolationEvent].join(' | ')));\
+             </script>\
+             <script>console.log('refused')</script>\
+             <img src=/i.png>\
+             <script nonce=n1>onload = () => setTimeout(() => console.log('loaded'), 50)</script>",
+        ),
+        ("/report", &[], ""),
+    ];
+    let server = sites(PAGES);
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine
+        .navigate(at(&server, "a.localhost", "/page.html"));
+    let reported = || {
+        server
+            .requests()
+            .into_iter()
+            .filter(|request| request.target == "/report")
+            .count()
+    };
+    // Until it loaded and its three reports were sent.
+    let port = server.url("/").port().expect("a port").to_string();
+    let mut lines: Vec<String> = tab
+        .run_until(|lines| lines.iter().any(|line| line == "loaded") && reported() == 3)
+        .into_iter()
+        .map(|line| line.replace(&port, "PORT"))
+        .collect();
+    lines.sort();
+    let refused = |what: &str| {
+        format!("Content-Security-Policy refused {what}: script-src 'nonce-n1' 'report-sample'")
+    };
+    assert_eq!(
+        lines,
+        [
+            "#document | /favicon.ico | img-src | img-src | enforce |  | 200 | false | false | \
+             true | true | true | false | true"
+                .to_owned(),
+            "#document | /i.png | img-src | img-src | enforce |  | 200 | false | false | true | \
+             true | true | false | true"
+                .to_owned(),
+            refused("an inline script"),
+            "Content-Security-Policy refused the image http://a.localhost:PORT/favicon.ico: \
+             img-src 'none'"
+                .to_owned(),
+            "Content-Security-Policy refused the image http://a.localhost:PORT/i.png: \
+             img-src 'none'"
+                .to_owned(),
+            "SCRIPT | inline | script-src-elem | script-src-elem | enforce | \
+             console.log('refused') | 200 | true | true | true | true | true | false | true"
+                .to_owned(),
+            "loaded".to_owned(),
+        ]
+    );
+    // Each sent to the policy's report-uri.
+    let mut reports: Vec<String> = server
+        .requests()
+        .into_iter()
+        .filter(|request| request.target == "/report")
+        .map(|request| {
+            assert_eq!(request.method, "POST");
+            assert_eq!(
+                request.header("Content-Type"),
+                Some("application/csp-report")
+            );
+            assert_eq!(request.header("Sec-Fetch-Dest"), Some("report"));
+            String::from_utf8_lossy(&request.body).replace(&port, "PORT")
+        })
+        .collect();
+    reports.sort();
+    assert_eq!(reports.len(), 3);
+    assert_eq!(
+        reports[2],
+        "{\"csp-report\":{\"document-uri\":\"http://a.localhost:PORT/page.html\",\
+         \"referrer\":\"\",\"violated-directive\":\"script-src-elem\",\
+         \"effective-directive\":\"script-src-elem\",\"original-policy\":\"script-src \
+         'nonce-n1' 'report-sample'; img-src 'none'; report-uri /report\",\
+         \"disposition\":\"enforce\",\"blocked-uri\":\"inline\",\"line-number\":1,\
+         \"source-file\":\"http://a.localhost:PORT/page.html\",\"status-code\":200,\
+         \"script-sample\":\"console.log('refused')\"}}"
+    );
+}
+
+#[test]
+fn a_script_makes_a_violation_event_of_its_own() {
+    static PAGES: Pages = &[(
+        "/page.html",
+        &[],
+        "<script>\
+         const e = new SecurityPolicyViolationEvent('securitypolicyviolation',\
+           { blockedURI: 'x', statusCode: 7, disposition: 'report', bubbles: true });\
+         console.log(e.type, e.blockedURI, e.statusCode, e.disposition, e.bubbles,\
+           e.documentURI === '', e.lineNumber, e instanceof Event);\
+         </script>",
+    )];
+    let server = sites(PAGES);
+    let lines = run_in_order(&server, at(&server, "a.localhost", "/page.html"), "true");
+    assert_eq!(
+        lines,
+        ["securitypolicyviolation x 7 report true true 0 true"]
+    );
+}
+
+#[test]
+fn code_handlers_and_report_only_violations_are_events_too() {
+    static PAGES: Pages = &[(
+        "/page.html",
+        &[
+            ("Content-Security-Policy", "script-src 'nonce-n1'"),
+            ("Content-Security-Policy-Report-Only", "img-src 'none'"),
+        ],
+        "<button onclick=\"console.log('clicked')\">b</button>\
+         <script nonce=n1>\
+         document.addEventListener('securitypolicyviolation', e => console.log([\
+           e.target.nodeName, e.blockedURI.replace(location.origin, ''), e.disposition\
+         ].join(' | ')));\
+         try { eval('1') } catch (e) {}\
+         setTimeout(() => document.querySelector('button').click(), 0);\
+         onload = () => setTimeout(() => console.log('loaded'), 50);\
+         </script>\
+         <img src=/i.png>",
+    )];
+    let server = sites(PAGES);
+    let lines = run_to(&server, at(&server, "a.localhost", "/page.html"), "loaded");
+    let events: Vec<&String> = lines.iter().filter(|line| line.contains(" | ")).collect();
+    assert_eq!(
+        events,
+        [
+            "#document | /favicon.ico | report",
+            "#document | /i.png | report",
+            "#document | eval | enforce",
+            "BUTTON | inline | enforce",
+        ]
+    );
+}
+
+#[test]
+fn a_document_sends_a_hundred_reports_at_most() {
+    static PAGES: Pages = &[
+        (
+            "/page.html",
+            &[(
+                "Content-Security-Policy",
+                "script-src 'none'; report-uri /report",
+            )],
+            "<p>many</p>",
+        ),
+        ("/report", &[], ""),
+    ];
+    let server = sites(PAGES);
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.load(at(&server, "a.localhost", "/page.html"));
+    // A hundred and five refused handlers, each a violation and a report.
+    let handlers = "<b onclick=1></b>".repeat(105);
+    tab.engine.run_classic(&format!(
+        "document.body.insertAdjacentHTML('beforeend', '{handlers}');\
+         for (const b of document.querySelectorAll('b')) b.click();"
+    ));
+    let reported = || {
+        server
+            .requests()
+            .into_iter()
+            .filter(|request| request.target == "/report")
+            .count()
+    };
+    tab.run_until(|_| reported() >= 100);
+    tab.settle();
+    assert_eq!(reported(), 100);
+}

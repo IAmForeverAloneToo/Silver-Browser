@@ -439,6 +439,10 @@ pub(crate) struct Scripts {
     frame_list: Vec<String>,
     /// Whether the realm's code from strings asks the host (M33.1).
     code_guarded: bool,
+    /// The reports of violations to send, and how many were queued
+    /// (M33.1).
+    reports: Vec<(Url, String)>,
+    reports_queued: usize,
 }
 
 impl Default for Scripts {
@@ -473,6 +477,8 @@ impl Scripts {
             posted: VecDeque::new(),
             frame_list: Vec::new(),
             code_guarded: false,
+            reports: Vec::new(),
+            reports_queued: 0,
         }
     }
 
@@ -507,7 +513,8 @@ impl Scripts {
             return;
         }
         let prepared = prepare_element(lent.page, lent.document, element, line, true);
-        self.report_violations(lent.page.take_violations());
+        let violations = lent.page.take_violations();
+        self.report_violations(lent.page, lent.document, violations, (Some(element), line));
         match prepared {
             Prepared::NotYet | Prepared::Nothing | Prepared::Refused => {}
             Prepared::Failed => self.events.push_back((element, "error")),
@@ -687,15 +694,74 @@ impl Scripts {
         self.aborted = true;
     }
 
-    /// Says on the console what the document's policies refused, or would
-    /// have (M24.6, M33.1).
-    pub(crate) fn report_violations(&mut self, violations: Vec<Violation>) {
+    /// Says what the document's policies refused, or would have (M24.6,
+    /// M33.1): each violation on the console, as a
+    /// `securitypolicyviolation` event (a task) at `element` when it is
+    /// connected and else at the document, and in a report to its
+    /// policy's `report-uri`, at most [`MAX_REPORTS`] a document; `line`
+    /// is where in the document it happened, 0 for no place.
+    pub(crate) fn report_violations(
+        &mut self,
+        page: &Page,
+        document: &Document,
+        violations: Vec<Violation>,
+        (element, line): (Option<NodeId>, u32),
+    ) {
         for violation in violations {
             self.push(ConsoleEntry {
                 level: violation_level(&violation),
                 text: violation_text(&violation),
             });
+            self.announce(page, document, &violation, (element, line));
         }
+    }
+
+    /// `violation`'s event and reports, as [`Scripts::report_violations`]
+    /// makes them, its console line said already.
+    fn announce(
+        &mut self,
+        page: &Page,
+        document: &Document,
+        violation: &Violation,
+        (element, line): (Option<NodeId>, u32),
+    ) {
+        {
+            let target = element
+                .filter(|&node| document.is_inclusive_ancestor(document.root(), node))
+                .unwrap_or_else(|| document.root());
+            let event = violation_event(violation, page, line);
+            self.post(
+                Duration::ZERO,
+                js::Task::Dispatch {
+                    target: js::Target::Node(handle(target)),
+                    event,
+                },
+            );
+            self.queue_reports(violation, page, line);
+        }
+    }
+
+    /// Queues `violation`'s report to each URL of its policy's
+    /// `report-uri`, resolved against the document's URL.
+    fn queue_reports(&mut self, violation: &Violation, page: &Page, line: u32) {
+        let Some(document) = page.url() else {
+            return;
+        };
+        for uri in &violation.report_uri {
+            if self.reports_queued >= MAX_REPORTS {
+                return;
+            }
+            if let Ok(url) = document.join(uri) {
+                self.reports_queued += 1;
+                self.reports.push((url, report_body(violation, page, line)));
+            }
+        }
+    }
+
+    /// The reports queued since the last time, each with the URL it goes
+    /// to (M33.1).
+    pub(crate) fn take_reports(&mut self) -> Vec<(Url, String)> {
+        std::mem::take(&mut self.reports)
     }
 
     /// Runs `source`, a script element's; `at_insertion_point` for a
@@ -900,7 +966,12 @@ impl Scripts {
             self.push(entry);
         }
         // What its policies refused while it ran, in order (M33.1).
-        self.report_violations(lent.page.take_violations());
+        // The host said them on the console as they came.
+        for (violation, element) in outputs.violations {
+            self.announce(lent.page, lent.document, &violation, (element, 0));
+        }
+        let violations = lent.page.take_violations();
+        self.report_violations(lent.page, lent.document, violations, (None, 0));
         self.errors += outputs.errors;
         let completion = match result {
             Ok(completion) => Some(completion),
@@ -963,7 +1034,12 @@ impl Scripts {
             self.push(entry);
         }
         // What its policies refused while it ran, in order (M33.1).
-        self.report_violations(lent.page.take_violations());
+        // The host said them on the console as they came.
+        for (violation, element) in outputs.violations {
+            self.announce(lent.page, lent.document, &violation, (element, 0));
+        }
+        let violations = lent.page.take_violations();
+        self.report_violations(lent.page, lent.document, violations, (None, 0));
         self.errors += outputs.errors;
         let canceled = match result {
             Ok(canceled) => canceled,
@@ -1345,6 +1421,124 @@ pub(crate) fn violation_text(violation: &Violation) -> String {
 
 /// The console's level for `violation`: an error for a refusal, a
 /// warning for a report.
+/// The most reports of violations a document sends (M33.1).
+pub(crate) const MAX_REPORTS: usize = 100;
+
+/// A URL as a report or an event gives it (CSP's "strip URL for use in
+/// reports"): without its fragment; anything that is no URL as it is
+/// (`inline`, `eval`, `wasm-eval`).
+fn report_url(text: &str) -> String {
+    match Url::parse(text) {
+        Ok(url) => url.without_fragment().to_owned(),
+        Err(_) => text.to_owned(),
+    }
+}
+
+/// Whether `violation` was of something at a URL, a request, rather
+/// than of the document's own content: then it names no source file.
+fn of_a_request(violation: &Violation) -> bool {
+    !matches!(violation.blocked.as_str(), "inline" | "eval" | "wasm-eval")
+}
+
+/// The `securitypolicyviolation` event of `violation` in the document
+/// of `page`, at `line` (CSP section 5.3, M33.1): bubbling and composed,
+/// its violated directive the effective one, as the reference browser
+/// has it.
+fn violation_event(violation: &Violation, page: &Page, line: u32) -> js::EventInit {
+    let document = page
+        .url()
+        .map(|url| report_url(url.as_str()))
+        .unwrap_or_default();
+    let source = match of_a_request(violation) {
+        true => String::new(),
+        false => document.clone(),
+    };
+    let status = match page.url().map(Url::scheme) {
+        Some("http" | "https") => 200.0,
+        _ => 0.0,
+    };
+    js::EventInit::new("SecurityPolicyViolationEvent", "securitypolicyviolation")
+        .with("bubbles", js::Field::Bool(true))
+        .with("composed", js::Field::Bool(true))
+        .with("documentURI", js::Field::String(document))
+        .with(
+            "blockedURI",
+            js::Field::String(report_url(&violation.blocked)),
+        )
+        .with(
+            "violatedDirective",
+            js::Field::String(violation.effective.clone()),
+        )
+        .with(
+            "effectiveDirective",
+            js::Field::String(violation.effective.clone()),
+        )
+        .with(
+            "originalPolicy",
+            js::Field::String(violation.policy.clone()),
+        )
+        .with("sourceFile", js::Field::String(source))
+        .with("sample", js::Field::String(violation.sample.clone()))
+        .with(
+            "disposition",
+            js::Field::String(violation.disposition.name().to_owned()),
+        )
+        .with("statusCode", js::Field::Number(status))
+        .with("lineNumber", js::Field::Number(f64::from(line)))
+}
+
+/// `violation`'s report, as `report-uri` sends it (CSP section 5.2,
+/// `application/csp-report`): the reference browser's JSON.
+fn report_body(violation: &Violation, page: &Page, line: u32) -> String {
+    let document = page
+        .url()
+        .map(|url| report_url(url.as_str()))
+        .unwrap_or_default();
+    let source = match of_a_request(violation) {
+        true => String::new(),
+        false => document.clone(),
+    };
+    let status = match page.url().map(Url::scheme) {
+        Some("http" | "https") => 200,
+        _ => 0,
+    };
+    let text = [
+        ("document-uri", document),
+        ("referrer", String::new()),
+        ("violated-directive", violation.effective.clone()),
+        ("effective-directive", violation.effective.clone()),
+        ("original-policy", violation.policy.clone()),
+        ("disposition", violation.disposition.name().to_owned()),
+        ("blocked-uri", report_url(&violation.blocked)),
+    ]
+    .iter()
+    .map(|(name, value)| format!("\"{name}\":{}", json_string(value)))
+    .collect::<Vec<_>>()
+    .join(",");
+    format!(
+        "{{\"csp-report\":{{{text},\"line-number\":{line},\"source-file\":{},\
+         \"status-code\":{status},\"script-sample\":{}}}}}",
+        json_string(&source),
+        json_string(&violation.sample)
+    )
+}
+
+/// `text` as a JSON string.
+fn json_string(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if u32::from(c) < 0x20 => out.push_str(&format!("\\u{:04x}", u32::from(c))),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 pub(crate) fn violation_level(violation: &Violation) -> ConsoleLevel {
     match violation.disposition {
         net::csp::Disposition::Enforce => ConsoleLevel::Error,
@@ -1477,6 +1671,15 @@ fn is_javascript_essence(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_strings_escape_quotes_backslashes_and_controls() {
+        assert_eq!(
+            json_string("a\"b\\c\nd\u{1}"),
+            "\"a\\\"b\\\\c\\u000ad\\u0001\""
+        );
+        assert_eq!(json_string("caf\u{e9}"), "\"caf\u{e9}\"");
+    }
 
     fn parsed(source: &str) -> Document {
         Document::from_node(&html::parse_document(source).expect("parsing never fails"))
