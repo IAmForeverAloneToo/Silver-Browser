@@ -769,3 +769,91 @@ fn a_scripts_policy_is_checked_before_each_hop() {
         Ok(())
     );
 }
+
+#[test]
+fn upgrade_insecure_requests_upgrades_but_localhost_and_another_origins_navigation() {
+    let page = url("http://example.test/page.html");
+    let mut headers = HeaderList::new();
+    headers.append(b"Content-Security-Policy", b"upgrade-insecure-requests");
+    let csp = Csp::from_headers(&headers, &page);
+    let request = |destination: Destination| {
+        let mut request = Request::get(page.clone(), destination).with_csp(csp.clone());
+        request.origin = Some(page.origin());
+        request
+    };
+    let upgraded = |destination, target: &str| {
+        upgrade_insecure(&request(destination), &url(target)).map(|url| url.to_string())
+    };
+    assert_eq!(
+        upgraded(Destination::Image, "http://cdn.test/a.png").as_deref(),
+        Some("https://cdn.test/a.png")
+    );
+    assert_eq!(
+        upgraded(Destination::Image, "http://cdn.test:80/a.png").as_deref(),
+        Some("https://cdn.test/a.png")
+    );
+    assert_eq!(
+        upgraded(Destination::Image, "http://cdn.test:8080/a.png").as_deref(),
+        Some("https://cdn.test:8080/a.png")
+    );
+    assert_eq!(upgraded(Destination::Image, "http://localhost/a.png"), None);
+    assert_eq!(
+        upgraded(Destination::Image, "http://a.localhost/a.png"),
+        None
+    );
+    assert_eq!(upgraded(Destination::Image, "http://127.0.0.1/a.png"), None);
+    assert_eq!(upgraded(Destination::Image, "https://cdn.test/a.png"), None);
+    // A navigation of the top: to the document's own origin alone.
+    assert_eq!(
+        upgraded(Destination::Document, "http://example.test/next").as_deref(),
+        Some("https://example.test/next")
+    );
+    assert_eq!(upgraded(Destination::Document, "http://other.test/"), None);
+    assert!(upgraded(Destination::Iframe, "http://other.test/").is_some());
+    // Without the directive, or with it only reported, nothing.
+    let mut report = HeaderList::new();
+    report.append(
+        b"Content-Security-Policy-Report-Only",
+        b"upgrade-insecure-requests",
+    );
+    let quiet =
+        Request::get(page.clone(), Destination::Image).with_csp(Csp::from_headers(&report, &page));
+    assert_eq!(
+        upgrade_insecure(&quiet, &url("http://cdn.test/a.png")),
+        None
+    );
+}
+
+#[test]
+fn a_forms_submission_is_held_to_form_action_at_each_hop() {
+    let other = TestServer::plain(|_| hello());
+    let away = other.url("/landing").to_string();
+    let server = TestServer::plain(move |request| match request.target.as_str() {
+        "/redirect" => Reply::with_fields(302, &[("Location", away.as_str())], b""),
+        _ => hello(),
+    });
+    let page = server.url("/page.html");
+    let mut headers = HeaderList::new();
+    headers.append(
+        b"Content-Security-Policy",
+        b"form-action 'self'; default-src 'none'",
+    );
+    let csp = Csp::from_headers(&headers, &page).with_sink();
+    let submit = |path: &str| {
+        let mut request = Request::get(server.url(path), Destination::Document)
+            .from_document(page.origin(), true)
+            .with_csp(csp.clone());
+        request.form_submission = true;
+        client().fetch(&request).map(|_| ())
+    };
+    assert_eq!(submit("/self"), Ok(()));
+    assert_eq!(
+        submit("/redirect"),
+        Err(NetworkError::Csp("form-action 'self'".to_owned()))
+    );
+    assert!(other.requests().is_empty());
+    let recorded = csp.take_violations();
+    assert_eq!(recorded.len(), 1);
+    // A report names the first URL after a redirect to another origin.
+    assert_eq!(recorded[0].blocked, server.url("/redirect").as_str());
+}

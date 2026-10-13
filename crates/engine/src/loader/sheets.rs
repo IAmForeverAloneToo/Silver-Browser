@@ -6,11 +6,12 @@
 //! evaluate (docs/design/media.md); only one whose media holds when the
 //! parser meets it holds the page back.
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 
 use dom::{Change, Document, NodeId};
 use encoding::Encoding;
-use net::csp::Csp;
+use net::csp::{Csp, Inline};
 use net::{AddressSpace, Destination, Initiator, MimeType, Origin, Request, Response, Url};
 use style::Media;
 
@@ -46,6 +47,14 @@ pub(crate) struct Page {
     /// Each element's nonce once its attribute was hidden or a script set
     /// it (M33.1, HTML's `[[CryptographicNonce]]`).
     nonces: HashMap<NodeId, String>,
+    /// The elements whose `style` attribute the CSSOM wrote last, which
+    /// the policies do not look at (M33.1); what they said of each other
+    /// element's, by its value; the `<style>` elements they refused,
+    /// whose `error` is to fire; and the `<base>` URL they last refused.
+    cssom_styles: HashSet<NodeId>,
+    style_checks: RefCell<HashMap<NodeId, (String, bool)>>,
+    refused_styles: Vec<NodeId>,
+    refused_base: RefCell<Option<Url>>,
 }
 
 /// What a page's fetches are made with.
@@ -121,6 +130,14 @@ struct Owner {
     sheet: Slot,
 }
 
+impl Owner {
+    /// Whether it is a `<style>` its document's policies refused (M33.1):
+    /// the only one that fails with no fetch.
+    fn refused(&self) -> bool {
+        matches!((&self.key, &self.sheet), (Key::Style { .. }, Slot::Failed))
+    }
+}
+
 /// The attributes, and for `<style>` the text, that decide an element's
 /// sheet.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -184,6 +201,31 @@ struct Found {
     nonce: String,
 }
 
+/// A document's `style` attributes, as its policies allow them (M33.1):
+/// one the CSSOM wrote always; another as `style-src-attr` allows it by
+/// `'unsafe-inline'` or its hash with `'unsafe-hashes'`, a refusal
+/// recorded once for each value.
+impl style::InlineStyles for Page {
+    fn allowed(&self, element: NodeId, value: &str) -> bool {
+        if self.cssom_styles.contains(&element) || self.csp.is_empty() {
+            return true;
+        }
+        let mut checks = self.style_checks.borrow_mut();
+        if let Some((checked, allowed)) = checks.get(&element)
+            && checked == value
+        {
+            return *allowed;
+        }
+        let violations = self
+            .csp
+            .inline_violations(Inline::StyleAttribute, "", value);
+        self.csp.record(&violations);
+        let allowed = net::csp::enforced(violations).is_ok();
+        checks.insert(element, (value.to_owned(), allowed));
+        allowed
+    }
+}
+
 impl Page {
     /// The page of a document given to the engine: its `<style>`
     /// elements make sheets, and nothing is fetched.
@@ -208,6 +250,10 @@ impl Page {
             metas: Vec::new(),
             sandbox: Sandbox::NONE,
             nonces: HashMap::new(),
+            cssom_styles: HashSet::new(),
+            style_checks: RefCell::default(),
+            refused_styles: Vec::new(),
+            refused_base: RefCell::default(),
         }
     }
 
@@ -242,6 +288,10 @@ impl Page {
             metas: Vec::new(),
             sandbox: Sandbox::NONE,
             nonces: HashMap::new(),
+            cssom_styles: HashSet::new(),
+            style_checks: RefCell::default(),
+            refused_styles: Vec::new(),
+            refused_base: RefCell::default(),
         }
     }
 
@@ -287,6 +337,37 @@ impl Page {
             .cloned()
             .or_else(|| document.attr(node, "nonce").map(str::to_owned))
             .unwrap_or_default()
+    }
+
+    /// Whether element `node`'s `style` attribute was last written by the
+    /// CSSOM (M33.1), which the policies let through, as the reference
+    /// browser does; markup's and `setAttribute`'s are theirs to allow.
+    pub(crate) fn set_cssom_style(&mut self, node: NodeId, cssom: bool) {
+        match cssom {
+            true => self.cssom_styles.insert(node),
+            false => self.cssom_styles.remove(&node),
+        };
+    }
+
+    /// The `<style>` elements the policies refused since the last time
+    /// (M33.1): each hears `error`.
+    pub(crate) fn take_refused_styles(&mut self) -> Vec<NodeId> {
+        std::mem::take(&mut self.refused_styles)
+    }
+
+    /// Whether the policies allow `url` as the document's base URL
+    /// (`base-uri`, M33.1): a refusal recorded once for each URL in turn.
+    fn base_allowed(&self, url: &Url) -> bool {
+        let violations = self.csp.base_uri_violations(url);
+        if violations.is_empty() {
+            return true;
+        }
+        let mut refused = self.refused_base.borrow_mut();
+        if refused.as_ref() != Some(url) {
+            self.csp.record(&violations);
+            *refused = Some(url.clone());
+        }
+        net::csp::enforced(violations).is_ok()
     }
 
     /// Element `node`'s nonce is `nonce` from now on, its attribute
@@ -471,7 +552,10 @@ impl Page {
             document.tag(node) == Some("base") && document.attr(node, "href").is_some()
         });
         match first_base.and_then(|node| document.attr(node, "href")) {
-            Some(href) => frozen_base_url(href, &self.context),
+            // One the policies' `base-uri` refuses is not used (M33.1).
+            Some(href) => frozen_base_url(href, &self.context)
+                .filter(|url| self.base_allowed(url))
+                .or_else(|| self.context.fallback()),
             None => self.context.fallback(),
         }
     }
@@ -567,7 +651,7 @@ impl Page {
     pub(crate) fn begin(&mut self, document: &Document, network: &mut Network, media: &Media) {
         // Its requests are checked against its policies (M33.1).
         let csp = self.csp(document).clone();
-        network.set_csp(self.context.id, Some(csp));
+        network.set_csp(self.context.id, Some(csp.clone()));
         let (found, _) = scan(document, &self.context, &self.nonces);
         let context = &self.context;
         self.owners = found
@@ -576,11 +660,17 @@ impl Page {
                 let base = found.base_here.clone();
                 let blocking = found.before_body
                     && rules::media_attribute_holds(found.media.as_deref(), media);
-                let mut owner = start(context, found, base.as_ref(), network);
+                let mut owner = start(context, found, base.as_ref(), network, &csp);
                 owner.blocking = blocking;
                 owner
             })
             .collect();
+        let refused = self
+            .owners
+            .iter()
+            .filter(|owner| owner.refused())
+            .map(|owner| owner.node);
+        self.refused_styles.extend(refused);
     }
 
     /// Finds the sheets of `document` again after it changed, keeping
@@ -600,7 +690,7 @@ impl Page {
         media: Option<&Media>,
     ) {
         let csp = self.csp(document).clone();
-        network.set_csp(self.context.id, Some(csp));
+        network.set_csp(self.context.id, Some(csp.clone()));
         let (found, base) = scan(document, &self.context, &self.nonces);
         let mut old: HashMap<NodeId, Owner> = self
             .owners
@@ -629,9 +719,12 @@ impl Page {
                         Some(_) => found.base_here.clone(),
                         None => base.clone(),
                     };
-                    let mut owner = start(&self.context, found, base.as_ref(), network);
+                    let mut owner = start(&self.context, found, base.as_ref(), network, &csp);
                     owner.blocking = blocking;
                     owner.blocks_scripts = holds;
+                    if owner.refused() {
+                        self.refused_styles.push(owner.node);
+                    }
                     owners.push(owner);
                 }
             }
@@ -857,7 +950,13 @@ pub(crate) fn is_stylesheet(response: &Response) -> bool {
 /// The owner `found` describes, its sheet begun: a `<link>`'s fetched,
 /// its URL resolved against `base`, and a `<style>`'s parsed, with its
 /// imports fetched.
-fn start(context: &Context, found: Found, base: Option<&Url>, network: &mut Network) -> Owner {
+fn start(
+    context: &Context,
+    found: Found,
+    base: Option<&Url>,
+    network: &mut Network,
+    csp: &Csp,
+) -> Owner {
     let environment = found
         .charset
         .as_deref()
@@ -884,6 +983,16 @@ fn start(context: &Context, found: Found, base: Option<&Url>, network: &mut Netw
                 };
                 Slot::Waiting(network.fetch(context.id, target, request))
             }),
+        // By nonce, hash or 'unsafe-inline' (M33.1): refused, no sheet.
+        key @ Key::Style { text, .. }
+            if style_makes_sheet(key) && {
+                let violations = csp.inline_violations(Inline::Style, &found.nonce, text);
+                csp.record(&violations);
+                net::csp::enforced(violations).is_err()
+            } =>
+        {
+            Slot::Failed
+        }
         key @ Key::Style { text, .. } if style_makes_sheet(key) => {
             let mut sheet = Sheet {
                 rules: css::parse_stylesheet(text).unwrap_or_default(),

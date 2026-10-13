@@ -69,6 +69,7 @@ fn print(doc: &dom::Document, sheets: &style::Stylesheets) {
         language: None,
         media,
         animations: None,
+        inline_styles: None,
     };
     let styles = sheets.cascade(doc, &context);
     let recascade = sheets.recascader(doc, &styles, &context);
@@ -132,6 +133,7 @@ fuzz_target!(|data: &[u8]| {
             language: None,
             media: style::Media::screen(width, 64.0),
             animations: None,
+            inline_styles: None,
         };
         let styles = sheets.cascade(&doc, &context);
         let recascade = sheets.recascader(&doc, &styles, &context);

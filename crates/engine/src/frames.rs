@@ -1117,6 +1117,8 @@ impl Engine {
                     let source = crate::NavigationSource {
                         origin,
                         activated: false,
+                        csp: None,
+                        form: false,
                     };
                     match post {
                         Some(post) => self.navigate_with(url, Some(post), source),

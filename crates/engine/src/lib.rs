@@ -632,6 +632,10 @@ struct Navigation {
 struct NavigationSource {
     origin: net::Origin,
     activated: bool,
+    /// Its document's policies (M33.1): `upgrade-insecure-requests` for
+    /// its navigations, and for a form's, `form-action` at each hop.
+    csp: Option<net::csp::Csp>,
+    form: bool,
 }
 
 /// What a navigation's document does to the session history when it is
@@ -920,7 +924,7 @@ fn change_in_svg(document: &Document, change: &Change) -> bool {
 fn cascade_context<'a>(
     viewport: (u32, u32),
     fonts: &'a FontMeasurer<'a>,
-    language: Option<&'a str>,
+    page: &'a Page,
     media: Media,
     animations: &'a RefCell<Animations>,
 ) -> CascadeContext<'a> {
@@ -928,9 +932,11 @@ fn cascade_context<'a>(
         viewport_width: viewport.0 as f32,
         viewport_height: viewport.1 as f32,
         fonts: Some(fonts),
-        language,
+        language: page.language(),
         media,
         animations: Some(animations),
+        // Its `style` attributes as its policies allow them (M33.1).
+        inline_styles: Some(page),
     }
 }
 
@@ -1294,7 +1300,22 @@ impl Engine {
         NavigationSource {
             origin: self.shown.page.origin().clone(),
             activated,
+            csp: Some(self.shown.page.policies().clone()),
+            form: false,
         }
+    }
+
+    /// Whether the shown document's `form-action` lets a form be
+    /// submitted to `url` (M33.1): its violations on the console.
+    pub(crate) fn form_action_allows(&mut self, url: &Url) -> bool {
+        let violations = self
+            .shown
+            .page
+            .csp(&self.shown.document)
+            .form_action_violations((url, url), 0);
+        let allowed = net::csp::enforced(violations.clone()).is_ok();
+        self.shown.scripts.report_violations(violations);
+        allowed
     }
 
     /// HTML's "navigate to a fragment": a new entry for `url`, pushed or
@@ -1397,8 +1418,12 @@ impl Engine {
             // a submitted form, with its body (M26.9); a script's is no
             // activation by the user (M27); its target may be another
             // frame (M33.2).
+            None if navigation.form && !self.form_action_allows(&url) => {}
             None if navigation.link => {
-                let source = self.navigation_source(false);
+                let source = NavigationSource {
+                    form: navigation.form,
+                    ..self.navigation_source(false)
+                };
                 match self.other_navigable(&navigation.target, &url, false) {
                     Ok(Some(frame)) => {
                         self.navigate_other(frame, url, false, navigation.post, source.origin);
@@ -1435,6 +1460,8 @@ impl Engine {
         let from = NavigationSource {
             origin: current.url.origin(),
             activated: false,
+            csp: None,
+            form: false,
         };
         // A link or form of the document on its way may name another
         // frame (M33.2), chosen as that document would.
@@ -3299,9 +3326,15 @@ impl Engine {
             }
             None => net::Request::get(url.clone(), destination),
         };
-        let mut request = match source {
-            Some(source) => request.from_document(source.origin, source.activated),
-            None => request,
+        let (mut request, form) = match source {
+            Some(source) => {
+                let mut request = request.from_document(source.origin, source.activated);
+                // Its document's policies go with it (M33.1).
+                request.csp = source.csp;
+                request.form_submission = source.form;
+                (request, source.form)
+            }
+            None => (request, false),
         };
         if let Some(container) = self.frame.container.clone() {
             if request.origin.is_none() {
@@ -3309,9 +3342,12 @@ impl Engine {
             }
             request.initiator = Some(container);
             // Its site for cookies is its ancestors' (M33.2), and its
-            // container's `frame-src` decides (M33.1).
+            // container's `frame-src` decides (M33.1), but for a form's,
+            // which its own `form-action` does.
             request.partition = self.frame_partition();
-            request.csp.clone_from(&self.frame.container_csp);
+            if !form {
+                request.csp.clone_from(&self.frame.container_csp);
+            }
         }
         self.network.fetch(id, Target::Document, request);
         self.navigation = Some(Navigation {
@@ -4452,6 +4488,16 @@ impl Engine {
     fn scripts_ran(&mut self) {
         // What the parser and the scripts inserted hides its nonces.
         self.shown.page.hide_nonces(&mut self.shown.document);
+        // A `<style>` its policies refused hears `error` (M33.1), as a
+        // task, after what runs now.
+        let now = self.now();
+        for node in self.shown.page.take_refused_styles() {
+            let task = js::Task::Dispatch {
+                target: js::Target::Node(scripts::handle(node)),
+                event: js::EventInit::new("Event", "error"),
+            };
+            self.shown.scripts.post(now, task);
+        }
         let changes = self.shown.document.take_changes();
         if !changes.is_empty() {
             self.document_changed(changes);
@@ -5166,7 +5212,7 @@ impl Engine {
         let context = cascade_context(
             viewport,
             &fonts,
-            self.shown.page.language(),
+            &self.shown.page,
             self.media(viewport),
             animations,
         );
@@ -5201,7 +5247,7 @@ impl Engine {
         let context = cascade_context(
             viewport,
             &fonts,
-            self.shown.page.language(),
+            &self.shown.page,
             self.media(viewport),
             &animations,
         );
@@ -5271,7 +5317,7 @@ impl Engine {
             let context = cascade_context(
                 self.viewport,
                 &fonts,
-                self.shown.page.language(),
+                &self.shown.page,
                 self.media(self.viewport),
                 &self.shown.animations,
             );
@@ -5371,7 +5417,7 @@ impl Engine {
             let context = cascade_context(
                 self.viewport,
                 &fonts,
-                self.shown.page.language(),
+                &self.shown.page,
                 self.media(self.viewport),
                 &self.shown.animations,
             );
@@ -6176,7 +6222,7 @@ impl Engine {
             let context = cascade_context(
                 self.viewport,
                 &fonts,
-                self.shown.page.language(),
+                &self.shown.page,
                 self.media(self.viewport),
                 &self.shown.animations,
             );

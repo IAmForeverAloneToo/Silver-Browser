@@ -24,11 +24,24 @@ fn sites(pages: Pages) -> TestServer {
     let server = serve(move |target| {
         let path = target.split('?').next().unwrap_or_default();
         let (_, fields, body) = pages.iter().find(|(at, ..)| *at == path)?;
-        let mut all = vec![("Content-Type", "text/html")];
-        all.extend_from_slice(fields);
         let port = seen.get().map(u16::to_string).unwrap_or_default();
+        let mut all: Vec<(&str, String)> = vec![("Content-Type", "text/html".to_owned())];
+        all.extend(
+            fields
+                .iter()
+                .map(|(name, value)| (*name, value.replace("PORT", &port))),
+        );
+        let all: Vec<(&str, &str)> = all
+            .iter()
+            .map(|(name, value)| (*name, value.as_str()))
+            .collect();
         let body = body.replace("PORT", &port);
-        Some(Reply::with_fields(200, &all, body.as_bytes()))
+        // A page that names a `Location` redirects there.
+        let status = match fields.iter().any(|(name, _)| *name == "Location") {
+            true => 302,
+            false => 200,
+        };
+        Some(Reply::with_fields(status, &all, body.as_bytes()))
     });
     let _ = port.set(server.url("/").port().expect("a port"));
     server
@@ -662,4 +675,200 @@ fn a_nonce_a_script_gives_an_element_it_inserts_is_hidden_too() {
     let server = sites(PAGES);
     let lines = run_in_order(&server, at(&server, "a.localhost", "/page.html"), "n7");
     assert_eq!(lines, ["later \"\" n7"]);
+}
+
+#[test]
+fn style_elements_and_attributes_need_their_policies_but_the_cssoms_do_not() {
+    static PAGES: Pages = &[(
+        "/page.html",
+        &[(
+            "Content-Security-Policy",
+            "style-src 'nonce-n1' 'sha256-UdqSmaP+1+d0YpEy973aWKtl4nh10A0YuPeHnGIWjI8='",
+        )],
+        "<style nonce=n1>#a { color: rgb(255, 0, 0) }</style>\
+         <style onerror=\"console.log('style error')\">#b { color: rgb(0, 0, 255) }</style>\
+         <style>#h { color: rgb(1, 2, 3) }</style>\
+         <p id=a>a</p><p id=b>b</p><p id=h>h</p>\
+         <p id=c style='color: rgb(0, 128, 0)'>c</p><p id=d>d</p><p id=e>e</p><p id=f>f</p>\
+         <script>\
+         document.getElementById('d').style.color = 'rgb(0, 0, 128)';\
+         document.getElementById('e').setAttribute('style', 'color: rgb(0, 0, 64)');\
+         const f = document.getElementById('f');\
+         f.style.color = 'rgb(9, 9, 9)'; f.setAttribute('style', 'color: rgb(0, 0, 32)');\
+         onload = () => console.log(['a', 'b', 'h', 'c', 'd', 'e', 'f']\
+           .map(id => getComputedStyle(document.getElementById(id)).color).join(' | '));\
+         </script>",
+    )];
+    let server = sites(PAGES);
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine
+        .navigate(at(&server, "a.localhost", "/page.html"));
+    let mut lines = tab.run_until(|lines| lines.iter().any(|line| line == "style error"));
+    lines.sort();
+    // The layout's cascade holds to them as `getComputedStyle`'s does.
+
+    assert_eq!(color(&mut tab.engine, "c"), color(&mut tab.engine, "b"));
+    assert_ne!(color(&mut tab.engine, "d"), color(&mut tab.engine, "b"));
+    let policy = "style-src 'nonce-n1' 'sha256-UdqSmaP+1+d0YpEy973aWKtl4nh10A0YuPeHnGIWjI8='";
+    assert_eq!(
+        lines,
+        [
+            format!("Content-Security-Policy refused a style attribute: {policy}"),
+            format!("Content-Security-Policy refused a style attribute: {policy}"),
+            format!("Content-Security-Policy refused a style attribute: {policy}"),
+            format!("Content-Security-Policy refused an inline style: {policy}"),
+            "rgb(255, 0, 0) | rgb(0, 0, 0) | rgb(1, 2, 3) | rgb(0, 0, 0) | rgb(0, 0, 128) | \
+             rgb(0, 0, 0) | rgb(0, 0, 0)"
+                .to_owned(),
+            "style error".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn base_uri_and_form_action_hold() {
+    static PAGES: Pages = &[
+        (
+            "/page.html",
+            &[(
+                "Content-Security-Policy",
+                "base-uri 'self'; form-action 'self'",
+            )],
+            "<base href='http://b.localhost:PORT/elsewhere/'>\
+             <a href=rel>rel</a>\
+             <form id=away action='http://b.localhost:PORT/x'><button>go</button></form>\
+             <form id=here action=/landed.html><input name=q value=1></form>\
+             <script>\
+             console.log(document.querySelector('a').href);\
+             onload = () => {\
+               document.querySelector('button').click();\
+               setTimeout(() => document.getElementById('here').submit(), 10);\
+             };\
+             </script>",
+        ),
+        (
+            "/landed.html",
+            &[],
+            "<script>console.log('landed', location.search)</script>",
+        ),
+    ];
+    let server = sites(PAGES);
+    let lines = run_in_order(&server, at(&server, "a.localhost", "/page.html"), "?q=1");
+    assert_eq!(
+        lines,
+        [
+            // A run's lines first, then what its policies refused in it.
+            "http://a.localhost:PORT/rel",
+            "Content-Security-Policy refused the base URL http://b.localhost:PORT/elsewhere/: \
+             base-uri 'self'",
+            "Content-Security-Policy refused the form submission to http://b.localhost:PORT/x?: \
+             form-action 'self'",
+            "landed ?q=1",
+        ]
+    );
+    assert!(!asked(&server).iter().any(|path| path.starts_with("/x")));
+}
+
+#[test]
+fn form_action_holds_at_a_redirect() {
+    static PAGES: Pages = &[
+        (
+            "/page.html",
+            &[("Content-Security-Policy", "form-action 'self'")],
+            "<form action=/redirect></form>\
+             <script>onload = () => document.forms[0].submit()</script>",
+        ),
+        (
+            "/redirect",
+            &[("Location", "http://b.localhost:PORT/x")],
+            "",
+        ),
+    ];
+    let server = sites(PAGES);
+    let lines = run_to(&server, at(&server, "a.localhost", "/page.html"), "'self'");
+    assert_eq!(
+        lines,
+        ["Content-Security-Policy refused the form submission to \
+             http://a.localhost:PORT/redirect?: form-action 'self'"]
+    );
+    assert!(!asked(&server).iter().any(|path| path.starts_with("/x")));
+}
+
+#[test]
+fn upgrade_insecure_requests_leaves_localhost_as_it_is() {
+    static PAGES: Pages = &[
+        (
+            "/page.html",
+            &[("Content-Security-Policy", "upgrade-insecure-requests")],
+            "<img src=/i.png onerror=\"console.log('image done')\">",
+        ),
+        ("/i.png", &[("Content-Type", "image/png")], "not a png"),
+    ];
+    let server = sites(PAGES);
+    run_to(
+        &server,
+        at(&server, "a.localhost", "/page.html"),
+        "image done",
+    );
+    assert!(asked(&server).contains(&"/i.png".to_owned()));
+}
+
+#[test]
+fn the_users_submission_is_held_to_form_action_before_it_goes() {
+    static PAGES: Pages = &[(
+        "/page.html",
+        &[("Content-Security-Policy", "form-action 'self'")],
+        "<form action='http://b.localhost:PORT/x'><input id=q name=q value=1></form>",
+    )];
+    let server = sites(PAGES);
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.load(at(&server, "a.localhost", "/page.html"));
+    tab.engine
+        .run_classic("document.getElementById('q').focus();");
+    tab.engine
+        .key_down(&crate::Key::new("Enter", "Enter").with_text("\r"));
+    tab.settle();
+    let port = server.url("/").port().expect("a port").to_string();
+    let lines: Vec<String> = tab
+        .engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text.replace(&port, "PORT"))
+        .collect();
+    assert_eq!(
+        lines,
+        ["Content-Security-Policy refused the form submission to \
+          http://b.localhost:PORT/x?q=1: form-action 'self'"]
+    );
+    assert_eq!(tab.engine.load_state(), &crate::LoadState::Loaded);
+    assert!(!asked(&server).iter().any(|path| path.starts_with("/x")));
+}
+
+#[test]
+fn a_refused_style_of_a_document_taken_whole_hears_error() {
+    static PAGES: Pages = &[(
+        "/image.svg",
+        &[
+            ("Content-Type", "image/svg+xml"),
+            ("Content-Security-Policy", "style-src 'none'"),
+        ],
+        "<svg xmlns='http://www.w3.org/2000/svg'><style>rect { fill: red }</style>\
+         <script>document.querySelector('style').addEventListener('error',\
+           () => console.log('style error'))</script></svg>",
+    )];
+    let server = sites(PAGES);
+    let lines = run_to(
+        &server,
+        at(&server, "a.localhost", "/image.svg"),
+        "style error",
+    );
+    assert_eq!(
+        lines,
+        [
+            "Content-Security-Policy refused an inline style: style-src 'none'",
+            "style error"
+        ]
+    );
 }

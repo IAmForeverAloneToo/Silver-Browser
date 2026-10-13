@@ -260,8 +260,14 @@ impl crate::Engine {
         let scheme = self.shown.page.url().map(Url::scheme);
         match crate::refusal(&url, scheme, self.shown.made) {
             Some(why) => self.notice = Some(why),
+            // Its policies' `form-action` decides, before and at each
+            // redirect (M33.1).
+            None if !self.form_action_allows(&url) => {}
             None => {
-                let source = self.navigation_source(true);
+                let source = crate::NavigationSource {
+                    form: true,
+                    ..self.navigation_source(true)
+                };
                 // Another frame named by its target (M33.2).
                 match self.other_navigable(&submission.target, &url, true) {
                     Ok(Some(frame)) => {

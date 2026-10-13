@@ -604,6 +604,8 @@ pub enum Call {
     /// its `nonce` attribute no longer shows once hidden.
     Nonce(Handle),
     SetNonce(Handle, String),
+    /// The CSSOM just wrote the element's `style` attribute (M33.1).
+    CssomStyled(Handle),
     /// A canvas's operation (M30): one variant for them all.
     Canvas(Box<CanvasCall>),
 }

@@ -160,6 +160,7 @@ impl Engine {
                 language: self.shown.page.language(),
                 media,
                 animations: Some(&animations),
+                inline_styles: None,
             }
         };
         let mut styles = sheets.cascade(document, &context(&first_box));

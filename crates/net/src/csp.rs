@@ -419,6 +419,42 @@ impl Csp {
         )
     }
 
+    /// The violations of a form's submission to `url`, after `redirects`
+    /// redirects (section 6.4.1): each policy whose `form-action`, which
+    /// falls back to nothing, does not match it.
+    pub fn form_action_violations(
+        &self,
+        (url, reported): (&Url, &Url),
+        redirects: usize,
+    ) -> Vec<Violation> {
+        let what = format!("the form submission to {reported}");
+        self.violations(&["form-action"], (reported.as_str(), ""), &what, |list| {
+            url_matches_list(url, list, &self.self_origin, redirects)
+        })
+    }
+
+    /// The violations of a `<base>` whose URL is `url` (section 6.3.1):
+    /// each policy whose `base-uri`, which falls back to nothing, does not
+    /// match it.
+    pub fn base_uri_violations(&self, url: &Url) -> Vec<Violation> {
+        let what = format!("the base URL {url}");
+        self.violations(&["base-uri"], (url.as_str(), ""), &what, |list| {
+            url_matches_list(url, list, &self.self_origin, 0)
+        })
+    }
+
+    /// Whether an enforced policy has `upgrade-insecure-requests`
+    /// (Upgrade Insecure Requests section 3).
+    pub fn upgrades_insecure_requests(&self) -> bool {
+        self.enforcing()
+            .any(|policy| policy.directive(&["upgrade-insecure-requests"]).is_some())
+    }
+
+    /// Whether the document has no policy: no check refuses or reports.
+    pub fn is_empty(&self) -> bool {
+        self.policies.is_empty() && !self.overflowed
+    }
+
     /// Whether a policy came from a response's header rather than a
     /// `<meta>` (HTML's nonce attribute steps hide nonces only then).
     pub fn has_header_policy(&self) -> bool {
@@ -1439,6 +1475,14 @@ mod tests {
         assert!(
             csp(&["script-src-elem 'none'"])
                 .eval_violations("1")
+                .is_empty()
+        );
+        // base-uri and form-action fall back to nothing.
+        let none = csp(&["default-src 'none'"]);
+        let elsewhere = url("https://other.example/");
+        assert!(none.base_uri_violations(&elsewhere).is_empty());
+        assert!(
+            none.form_action_violations((&elsewhere, &elsewhere), 0)
                 .is_empty()
         );
         // A policy from a <meta> is no header's.

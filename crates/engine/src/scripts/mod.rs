@@ -229,6 +229,8 @@ pub(crate) struct ScriptNavigation {
     /// The navigable a link or a form named (M33.2): its `target`, empty
     /// for the document's own.
     pub(crate) target: String,
+    /// Whether a form was submitted (M33.1): its `form-action` decides.
+    pub(crate) form: bool,
 }
 
 /// How a script is run.
@@ -897,6 +899,8 @@ impl Scripts {
         for entry in outputs.console {
             self.push(entry);
         }
+        // What its policies refused while it ran, in order (M33.1).
+        self.report_violations(lent.page.take_violations());
         self.errors += outputs.errors;
         let completion = match result {
             Ok(completion) => Some(completion),
@@ -958,6 +962,8 @@ impl Scripts {
         for entry in outputs.console {
             self.push(entry);
         }
+        // What its policies refused while it ran, in order (M33.1).
+        self.report_violations(lent.page.take_violations());
         self.errors += outputs.errors;
         let canceled = match result {
             Ok(canceled) => canceled,

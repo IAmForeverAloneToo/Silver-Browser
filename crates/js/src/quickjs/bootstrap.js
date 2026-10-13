@@ -6858,6 +6858,8 @@
       text += (flat[i + 2] === "" ? "" : " !important") + ";";
     }
     setAttribute(state.handle, "style", text, method);
+    // The CSSOM's, which the policies let through (M33.1).
+    native.cssomStyled(state.handle);
   }
 
   // A property's name as a block keeps it: lowercase, but a custom one.

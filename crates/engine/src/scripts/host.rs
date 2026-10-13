@@ -637,6 +637,12 @@ impl DocumentHost {
                     .set_attribute(node, &name, &value)
                     .map_err(refused)?;
                 self.canvas_attribute(node, &name);
+                // Its policies look at a `style` set so (M33.1).
+                if name.eq_ignore_ascii_case("style")
+                    && let Some(page) = self.page.as_mut()
+                {
+                    page.set_cssom_style(node, false);
+                }
                 Ok(Answer::Nothing)
             }
             Call::RemoveAttribute(node, name) => {
@@ -1296,6 +1302,7 @@ impl DocumentHost {
                     link: false,
                     post: None,
                     target: String::new(),
+                    form: false,
                 });
                 Ok(Answer::Nothing)
             }
@@ -1307,6 +1314,7 @@ impl DocumentHost {
                     link: false,
                     post: None,
                     target: String::new(),
+                    form: false,
                 });
                 Ok(Answer::Nothing)
             }
@@ -1668,6 +1676,7 @@ impl DocumentHost {
                         link: true,
                         post: submission.post,
                         target: submission.target,
+                        form: true,
                     });
                 }
                 Ok(Answer::Nothing)
@@ -1753,6 +1762,13 @@ impl DocumentHost {
                 Ok(Answer::String(
                     refused.map_or_else(String::new, |violation| code_refusal(&kind, &violation)),
                 ))
+            }
+            Call::CssomStyled(node) => {
+                let node = self.node(node)?;
+                if let Some(page) = self.page.as_mut() {
+                    page.set_cssom_style(node, true);
+                }
+                Ok(Answer::Nothing)
             }
             Call::Nonce(node) => {
                 let node = self.node(node)?;
@@ -2126,6 +2142,7 @@ impl DocumentHost {
             link: true,
             post: None,
             target: crate::frames::element_target(&self.document, element),
+            form: false,
         });
     }
 
@@ -2705,6 +2722,7 @@ impl DocumentHost {
             language: page.language(),
             media: self.window.media,
             animations: Some(&animations),
+            inline_styles: Some(page),
         };
         let recascade = computed
             .sheets
@@ -2747,6 +2765,7 @@ impl DocumentHost {
             language: page.language(),
             media: self.window.media,
             animations: Some(&animations),
+            inline_styles: Some(page),
         };
         let version = self.document.version();
         let changes = self.document.changes();

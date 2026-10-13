@@ -286,6 +286,9 @@ pub struct Request {
     /// element (Fetch's cryptographic nonce and parser metadata, M33.1).
     pub nonce: String,
     pub parser_inserted: bool,
+    /// Whether it is a form's submission (M33.1), which `form-action`
+    /// decides at each hop, its other directives none.
+    pub form_submission: bool,
     /// How it uses the HTTP cache (M28.4).
     pub cache: CacheMode,
     /// Where its document is in its tab (M33.2): a frame's requests are
@@ -328,6 +331,7 @@ impl Request {
             csp: None,
             nonce: String::new(),
             parser_inserted: false,
+            form_submission: false,
             cache: CacheMode::Default,
             partition: None,
         }
@@ -609,7 +613,9 @@ impl Client {
             if request.abort.is_aborted() {
                 return Err(NetworkError::Aborted);
             }
-            if let Some(upgraded) = upgrade_mixed_content(request, &url) {
+            if let Some(upgraded) =
+                upgrade_insecure(request, &url).or_else(|| upgrade_mixed_content(request, &url))
+            {
                 url = upgraded;
                 *hop.url_list.last_mut().expect("never empty") = url.clone();
             }
@@ -1366,13 +1372,16 @@ fn check(request: &Request, url: &Url, redirects: usize) -> Result<(), NetworkEr
             true => &request.url,
             false => url,
         };
-        let violations = csp.request_violations(
-            request.destination,
-            (url, reported),
-            redirects,
-            &request.nonce,
-            request.parser_inserted,
-        );
+        let violations = match request.form_submission {
+            true => csp.form_action_violations((url, reported), redirects),
+            false => csp.request_violations(
+                request.destination,
+                (url, reported),
+                redirects,
+                &request.nonce,
+                request.parser_inserted,
+            ),
+        };
         csp.record(&violations);
         crate::csp::enforced(violations)
             .map_err(|violation| NetworkError::Csp(violation.to_string()))?;
@@ -1396,6 +1405,34 @@ fn upgrade_mixed_content(request: &Request, url: &Url) -> Option<Url> {
         return None;
     }
     // The default port goes with the scheme; another is kept.
+    Url::parse(&format!("https{}", &url.as_str()["http".len()..])).ok()
+}
+
+/// Upgrade Insecure Requests section 4.1 (M33.1): an `http:` request of
+/// a document whose policies have `upgrade-insecure-requests` goes over
+/// `https:`, a navigation of the top only to the document's own origin,
+/// and never to a `localhost` name or a loopback address, as the
+/// reference browser leaves them.
+fn upgrade_insecure(request: &Request, url: &Url) -> Option<Url> {
+    let csp = request.csp.as_ref()?;
+    if url.scheme() != "http" || !csp.upgrades_insecure_requests() {
+        return None;
+    }
+    let local = match url.host() {
+        Some(Host::Domain(name)) => name == "localhost" || name.ends_with(".localhost"),
+        Some(Host::Ipv4(address)) => address.is_loopback(),
+        Some(Host::Ipv6(address)) => address.is_loopback(),
+        _ => true,
+    };
+    let elsewhere = request.destination == Destination::Document
+        && request
+            .origin
+            .as_ref()
+            .is_none_or(|origin| *origin != url.origin());
+    if local || elsewhere {
+        return None;
+    }
+    // A URL keeps no port 80 of http:'s: https:'s default goes with it.
     Url::parse(&format!("https{}", &url.as_str()["http".len()..])).ok()
 }
 

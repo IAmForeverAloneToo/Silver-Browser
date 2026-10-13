@@ -475,6 +475,14 @@ pub trait FontMeasure {
     fn zero_advance(&self, font_size_px: f32) -> f32;
 }
 
+/// Whether an element's `style` attribute styles it (M33.1): a document's
+/// Content Security Policy may refuse it.
+pub trait InlineStyles {
+    /// Whether `element`'s `style` attribute, whose value is `value`,
+    /// applies.
+    fn allowed(&self, element: NodeId, value: &str) -> bool;
+}
+
 /// What the cascade resolves relative units against (M10.1), and what
 /// it knows of the document from outside it (M16).
 #[derive(Clone, Copy, Default)]
@@ -500,6 +508,9 @@ pub struct CascadeContext<'a> {
     /// the cascade of a test or a fuzz target. A [`Recascader`] reads
     /// them and changes nothing.
     pub animations: Option<&'a RefCell<Animations>>,
+    /// What decides whether an element's `style` attribute applies
+    /// (M33.1); `None` applies every one.
+    pub inline_styles: Option<&'a dyn InlineStyles>,
 }
 
 /// Resolves the computed style of every element under `document`'s
@@ -984,8 +995,8 @@ impl Recascader<'_> {
             self.document,
             &mut cascader.matcher,
             element,
-            &cascader.ua,
-            &cascader.author,
+            (&cascader.ua, &cascader.author),
+            cascader.context.inline_styles,
         );
         let rem = if self.document.document_element() == Some(element) {
             ComputedStyle::default().font_size_px
@@ -1401,8 +1412,8 @@ impl<'a> Cascader<'a> {
             self.document,
             &mut self.matcher,
             element,
-            &self.ua,
-            &self.author,
+            (&self.ua, &self.author),
+            self.context.inline_styles,
         );
         let resolution = Resolution {
             rem,
@@ -1885,8 +1896,8 @@ fn declarations_for<'a>(
     document: &Document,
     matcher: &mut Matcher<'a>,
     element: NodeId,
-    ua: &[ParsedRule<'a>],
-    author: &[ParsedRule<'a>],
+    (ua, author): (&[ParsedRule<'a>], &[ParsedRule<'a>]),
+    inline_styles: Option<&dyn InlineStyles>,
 ) -> Matched<'a> {
     let mut order = 0u32;
     let mut out = Matched::default();
@@ -1937,8 +1948,10 @@ fn declarations_for<'a>(
         &mut order,
         &mut out,
     );
-    // An inline `style` styles the element alone.
+    // An inline `style` styles the element alone, if its document's
+    // policies allow it (M33.1).
     if let Some(style_attr) = document.attr(element, "style")
+        && inline_styles.is_none_or(|inline| inline.allowed(element, style_attr))
         && let Ok(decls) = css::parse_style_attribute(style_attr)
     {
         for decl in decls {
@@ -6122,6 +6135,7 @@ mod tests {
             language: None,
             media: Media::screen(800.0, 600.0),
             animations: None,
+            inline_styles: None,
         };
         let viewport_used = Cell::new(false);
         let substitutions = Substitutions::new(0);
@@ -6963,6 +6977,7 @@ mod tests {
             language: None,
             media: Media::screen(800.0, 600.0),
             animations: None,
+            inline_styles: None,
         };
         let sheets = [sheet(
             "html { font-size: 20px }
