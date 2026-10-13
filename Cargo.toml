@@ -109,7 +109,11 @@ pdf-writer = "0.15"
 # accessibility settings, through the versions of the crates winit and
 # its neighbours already bring there, with the features those calls
 # need alone.
-windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+    "Win32_UI_WindowsAndMessaging",
+] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSAccessibility", "NSWorkspace"] }
 
 # The JavaScript engine (M24, roadmap D1, docs/design/scripting.md):

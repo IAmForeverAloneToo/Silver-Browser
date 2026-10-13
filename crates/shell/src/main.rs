@@ -604,7 +604,8 @@ fn open_profile(engine: &mut Engine, keep: &Keep, default: Option<PathBuf>) -> O
             dir.display()
         ))
     };
-    match Profile::open(&dir) {
+    // Its values sealed under a key the system keeps for the user (D27).
+    match Profile::open_with(&dir, platform::key_wrap()) {
         Ok(profile) => engine
             .set_profile(profile)
             .err()
@@ -1188,7 +1189,17 @@ mod tests {
         assert_eq!(print(&Keep::Default), 0);
         assert!(!profile.exists());
         assert_eq!(print(&Keep::In(profile.clone())), 0);
-        let kept = Profile::open(&profile).unwrap();
+        // Sealed under the key the platform keeps (D27): a copy opened
+        // without it reads nothing.
+        #[cfg(windows)]
+        {
+            let copy = dir.join("copy");
+            std::fs::create_dir_all(&copy).unwrap();
+            std::fs::copy(profile.join(profile::FILE), copy.join(profile::FILE)).unwrap();
+            let unwrapped = Profile::open(&copy).unwrap();
+            assert!(unwrapped.cookies().unwrap().is_empty());
+        }
+        let kept = Profile::open_with(&profile, platform::key_wrap()).unwrap();
         assert_eq!(kept.cookies().unwrap().len(), 1);
         drop(kept);
         std::fs::remove_dir_all(&dir).unwrap();

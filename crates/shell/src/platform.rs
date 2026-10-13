@@ -4,7 +4,8 @@
 //! module asks for the rest. Each platform's call is its own; where
 //! there is none to make, the answer is `None`, and the shell's options
 //! are the way to say it. And where the platform keeps an application's
-//! data, for the profile (M28).
+//! data, for the profile (M28), and the key that keeps the profile's
+//! (M33, D27).
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -54,6 +55,25 @@ fn profile_directory_in(var: impl Fn(&str) -> Option<OsString>) -> Option<PathBu
     }
 }
 
+/// What keeps the profile's data key (M33, D27): on Windows, DPAPI for
+/// the user (`CryptProtectData`), which only the same user on the same
+/// machine can undo; elsewhere the key is kept as it is, macOS's
+/// Keychain and Linux's Secret Service not bridged (G98).
+pub(crate) fn key_wrap() -> engine::KeyWrap {
+    #[cfg(windows)]
+    {
+        engine::KeyWrap {
+            name: "dpapi",
+            wrap: windows::protect,
+            unwrap: windows::unprotect,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        engine::KeyWrap::NONE
+    }
+}
+
 /// Whether the user asked the system for less motion: on Windows, the
 /// client area animations turned off (`SPI_GETCLIENTAREAANIMATION`); on
 /// macOS, the accessibility setting to reduce motion. `None` where the
@@ -76,10 +96,76 @@ pub(crate) fn reduced_motion() -> Option<bool> {
 
 #[cfg(windows)]
 mod windows {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Cryptography::{
+        CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
+    };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW,
     };
     use windows_sys::core::BOOL;
+
+    /// `data` wrapped by DPAPI for the user, with no prompt; `None` when
+    /// the system refuses.
+    pub(super) fn protect(data: &[u8]) -> Option<Vec<u8>> {
+        crypt(data, true)
+    }
+
+    /// What `protect` wrapped, unwrapped; `None` for what this user on
+    /// this machine did not wrap, or that is not DPAPI's.
+    pub(super) fn unprotect(data: &[u8]) -> Option<Vec<u8>> {
+        crypt(data, false)
+    }
+
+    fn crypt(data: &[u8], protect: bool) -> Option<Vec<u8>> {
+        let input = CRYPT_INTEGER_BLOB {
+            cbData: u32::try_from(data.len()).ok()?,
+            pbData: data.as_ptr().cast_mut(),
+        };
+        let mut output = CRYPT_INTEGER_BLOB {
+            cbData: 0,
+            pbData: std::ptr::null_mut(),
+        };
+        let none = std::ptr::null::<core::ffi::c_void>();
+        // SAFETY: `input` points at `data`'s `cbData` bytes, alive for the
+        // call, which only reads them; the description, entropy, reserved
+        // and prompt pointers are null, which both calls take; `output`
+        // is ours, for the call to fill.
+        let done = unsafe {
+            if protect {
+                CryptProtectData(
+                    &input,
+                    none.cast(),
+                    none.cast(),
+                    none,
+                    none.cast(),
+                    CRYPTPROTECT_UI_FORBIDDEN,
+                    &mut output,
+                )
+            } else {
+                CryptUnprotectData(
+                    &input,
+                    std::ptr::null_mut(),
+                    none.cast(),
+                    none,
+                    none.cast(),
+                    CRYPTPROTECT_UI_FORBIDDEN,
+                    &mut output,
+                )
+            }
+        };
+        if done == 0 || output.pbData.is_null() {
+            return None;
+        }
+        // SAFETY: on success `pbData` holds the `cbData` bytes the call
+        // wrote, allocated by it with `LocalAlloc`, alive until freed.
+        let bytes =
+            unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize) }.to_vec();
+        // SAFETY: `pbData` is the call's `LocalAlloc` allocation, freed
+        // once, here, and not used after.
+        unsafe { LocalFree(output.pbData.cast()) };
+        Some(bytes)
+    }
 
     pub(super) fn reduced_motion() -> Option<bool> {
         let mut animations: BOOL = 1;
@@ -111,6 +197,22 @@ mod macos {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn dpapi_wraps_what_only_it_unwraps() {
+        let key = [7u8; 32];
+        let wrap = key_wrap();
+        assert_eq!(wrap.name, "dpapi");
+        let wrapped = (wrap.wrap)(&key).expect("DPAPI wraps it");
+        assert_ne!(wrapped.as_slice(), key.as_slice());
+        assert_eq!((wrap.unwrap)(&wrapped).as_deref(), Some(key.as_slice()));
+        assert_eq!((wrap.unwrap)(&key), None, "not DPAPI's");
+        let mut damaged = wrapped.clone();
+        let last = damaged.len() - 1;
+        damaged[last] ^= 1;
+        assert_eq!((wrap.unwrap)(&damaged), None);
+    }
 
     /// An environment of the variables `pairs` gives.
     fn env(pairs: &'static [(&str, &str)]) -> impl Fn(&str) -> Option<OsString> {

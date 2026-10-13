@@ -8,3 +8,5 @@ license.workspace = true
 # docs/architecture.md and docs/design/storage.md.
 [dependencies]
 redb.workspace = true
+# The values kept, sealed with AES-256-GCM (M33, D27).
+aws-lc-rs.workspace = true

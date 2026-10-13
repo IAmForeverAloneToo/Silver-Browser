@@ -14,6 +14,15 @@
 //!
 //! The cookies are records of `net`'s encoding, which this crate keeps
 //! without reading: their type is `net`'s.
+//!
+//! The values are encrypted at rest (M33, D27): each sealed with
+//! AES-256-GCM under the profile's data key, a random nonce of its own,
+//! and its table and key as associated data, so that a value cannot be
+//! moved to another key. The data key is made with the profile and kept
+//! in it wrapped by a [`KeyWrap`], the operating system's key for the
+//! user where the shell has one. The keys of the tables, origins and
+//! item keys, stay readable. A value that does not open, of a profile
+//! copied to another user or machine, is left out.
 
 #![forbid(unsafe_code)]
 
@@ -23,7 +32,11 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
-use redb::{Database, ReadableDatabase, ReadableTable, StorageBackend, TableDefinition};
+use aws_lc_rs::aead::{AES_256_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
+use redb::{
+    Database, ReadableDatabase, ReadableTable, StorageBackend, TableDefinition, TableHandle,
+    WriteTransaction,
+};
 
 #[cfg(test)]
 mod tests;
@@ -32,8 +45,12 @@ mod tests;
 pub const FILE: &str = "profile.redb";
 
 /// The version of the tables' layout this code writes. A profile of a
-/// newer one is refused, one of an older one upgraded.
-pub const SCHEMA: u64 = 1;
+/// newer one is refused, one of an older one upgraded: 2 seals the
+/// values (M33).
+pub const SCHEMA: u64 = 2;
+
+/// The length of the data key: AES-256's.
+const KEY_BYTES: usize = 32;
 
 /// The memory `redb` may keep of the file's pages.
 const CACHE_BYTES: usize = 16 << 20;
@@ -43,9 +60,17 @@ const META: TableDefinition<&str, u64> = TableDefinition::new("meta");
 
 /// Each origin's `localStorage` items: keyed by the origin's
 /// serialization and the item's key, each the order of its first
-/// setting and its value.
-const LOCAL_STORAGE: TableDefinition<(&str, &str), (u64, &str)> =
+/// setting and its value, sealed.
+const LOCAL_STORAGE: TableDefinition<(&str, &str), (u64, &[u8])> =
+    TableDefinition::new("local_items");
+
+/// Schema 1's, the values in the clear: read once, to be sealed.
+const LOCAL_STORAGE_1: TableDefinition<(&str, &str), (u64, &str)> =
     TableDefinition::new("local_storage");
+
+/// The data key, wrapped, under `"data"`, and the name of what wrapped
+/// it under `"wrap"`.
+const KEY: TableDefinition<&str, &[u8]> = TableDefinition::new("key");
 
 /// The cookies kept, in the order given, as `net` encodes them.
 const COOKIES: TableDefinition<u64, &[u8]> = TableDefinition::new("cookies");
@@ -61,6 +86,89 @@ pub struct Profile {
     /// `None` once the store was found damaged: never used again, nor
     /// dropped, what it holds being past trusting.
     db: Mutex<Option<Database>>,
+    key: DataKey,
+}
+
+/// How the profile's data key is kept (D27): wrapped by the operating
+/// system's key for the user, which the shell's platform module reaches,
+/// or as it is where there is none (G98).
+#[derive(Debug, Clone, Copy)]
+pub struct KeyWrap {
+    /// Its name, kept with the wrapped key: what can unwrap it.
+    pub name: &'static str,
+    pub wrap: fn(&[u8]) -> Option<Vec<u8>>,
+    pub unwrap: fn(&[u8]) -> Option<Vec<u8>>,
+}
+
+fn as_it_is(key: &[u8]) -> Option<Vec<u8>> {
+    Some(key.to_vec())
+}
+
+impl KeyWrap {
+    /// The key kept as it is: what hides the values from a search of the
+    /// disk, and nothing more.
+    pub const NONE: KeyWrap = KeyWrap {
+        name: "none",
+        wrap: as_it_is,
+        unwrap: as_it_is,
+    };
+}
+
+/// The data key, which seals and opens the values.
+struct DataKey(LessSafeKey);
+
+impl DataKey {
+    fn new(bytes: &[u8]) -> Option<DataKey> {
+        let key = UnboundKey::new(&AES_256_GCM, bytes).ok()?;
+        Some(DataKey(LessSafeKey::new(key)))
+    }
+
+    /// `value` sealed for `table` and the key `at`: the nonce, then the
+    /// ciphertext and its tag.
+    fn seal(&self, table: &str, at: &[u8], value: &[u8]) -> Result<Vec<u8>, Error> {
+        let sealing = || Error("the value could not be sealed".to_owned());
+        let mut nonce = [0u8; NONCE_LEN];
+        aws_lc_rs::rand::fill(&mut nonce).map_err(|_| sealing())?;
+        let mut sealed = value.to_vec();
+        self.0
+            .seal_in_place_append_tag(
+                Nonce::assume_unique_for_key(nonce),
+                Aad::from(associated(table, at)),
+                &mut sealed,
+            )
+            .map_err(|_| sealing())?;
+        let mut out = nonce.to_vec();
+        out.extend_from_slice(&sealed);
+        Ok(out)
+    }
+
+    /// The value `sealed` holds, if it opens for `table` and `at`.
+    fn open(&self, table: &str, at: &[u8], sealed: &[u8]) -> Option<Vec<u8>> {
+        let nonce = Nonce::try_assume_unique_for_key(sealed.get(..NONCE_LEN)?).ok()?;
+        let mut value = sealed[NONCE_LEN..].to_vec();
+        let opened = self
+            .0
+            .open_in_place(nonce, Aad::from(associated(table, at)), &mut value)
+            .ok()?;
+        Some(opened.to_vec())
+    }
+}
+
+/// What a value is sealed with beside the key: its table's name and its
+/// key in that table.
+fn associated(table: &str, at: &[u8]) -> Vec<u8> {
+    let mut data = table.as_bytes().to_vec();
+    data.push(0);
+    data.extend_from_slice(at);
+    data
+}
+
+/// A local item's key as associated data: its origin, a NUL, its key.
+fn item_at(origin: &str, key: &str) -> Vec<u8> {
+    let mut at = origin.as_bytes().to_vec();
+    at.push(0);
+    at.extend_from_slice(key.as_bytes());
+    at
 }
 
 /// The error of a profile whose store panicked.
@@ -214,42 +322,54 @@ impl Changes {
 
 impl Profile {
     /// Opens the profile in the directory `dir`, making the directory
-    /// and the file if they are not there.
-    pub fn open(dir: &Path) -> Result<Profile, OpenError> {
+    /// and the file if they are not there, its data key kept by `wrap`.
+    pub fn open_with(dir: &Path, wrap: KeyWrap) -> Result<Profile, OpenError> {
         std::fs::create_dir_all(dir).map_err(|e| OpenError::Unreadable(e.to_string()))?;
         let path = dir.join(FILE);
-        Profile::opened(|| {
+        Profile::opened(wrap, || {
             Database::builder()
                 .set_cache_size(CACHE_BYTES)
                 .create(&path)
         })
     }
 
+    /// [`Profile::open_with`], the data key kept as it is.
+    pub fn open(dir: &Path) -> Result<Profile, OpenError> {
+        Profile::open_with(dir, KeyWrap::NONE)
+    }
+
     /// Opens the profile in `memory`, empty or as an earlier profile
-    /// left it. The profile before must have been dropped: memory has
-    /// no lock to say it is open.
-    pub fn in_memory(memory: &Memory) -> Result<Profile, OpenError> {
+    /// left it, its data key kept by `wrap`. The profile before must have
+    /// been dropped: memory has no lock to say it is open.
+    pub fn in_memory_with(memory: &Memory, wrap: KeyWrap) -> Result<Profile, OpenError> {
         let memory = memory.clone();
-        Profile::opened(move || {
+        Profile::opened(wrap, move || {
             Database::builder()
                 .set_cache_size(CACHE_BYTES)
                 .create_with_backend(memory)
         })
     }
 
+    /// [`Profile::in_memory_with`], the data key kept as it is.
+    pub fn in_memory(memory: &Memory) -> Result<Profile, OpenError> {
+        Profile::in_memory_with(memory, KeyWrap::NONE)
+    }
+
     /// The profile `open` opens, its schema checked: refused as damaged
     /// when `redb` panics, as it does on damage its checksums do not
     /// reach (it unwraps some of what it reads).
     fn opened(
+        wrap: KeyWrap,
         open: impl FnOnce() -> Result<Database, redb::DatabaseError>,
     ) -> Result<Profile, OpenError> {
         let damaged = || OpenError::Unreadable("it is damaged".to_owned());
         let db = catch_unwind(AssertUnwindSafe(open))
             .map_err(|_| damaged())?
             .map_err(refused)?;
-        match catch_unwind(AssertUnwindSafe(|| Profile::prepare(&db))) {
-            Ok(Ok(())) => Ok(Profile {
+        match catch_unwind(AssertUnwindSafe(|| Profile::prepare(&db, wrap))) {
+            Ok(Ok(key)) => Ok(Profile {
                 db: Mutex::new(Some(db)),
+                key,
             }),
             Ok(Err(error)) => Err(error),
             Err(_) => {
@@ -278,23 +398,26 @@ impl Profile {
     }
 
     /// Checks the schema of a profile just opened, writes it into a
-    /// new one, and makes the tables, so that a reader finds them.
-    fn prepare(db: &Database) -> Result<(), OpenError> {
+    /// new one, and makes the tables, so that a reader finds them; reads
+    /// the data key, or makes it; and seals the values of a profile of
+    /// schema 1 in place.
+    fn prepare(db: &Database, wrap: KeyWrap) -> Result<DataKey, OpenError> {
         let unreadable = |error: Error| OpenError::Unreadable(error.0);
         let txn = db.begin_write().map_err(|e| unreadable(failed(e)))?;
-        {
+        let key = {
             let mut meta = txn.open_table(META).map_err(|e| unreadable(failed(e)))?;
             let schema = meta
                 .get("schema")
                 .map_err(|e| unreadable(failed(e)))?
                 .map(|guard| guard.value());
-            match schema {
-                Some(schema) if schema > SCHEMA => return Err(OpenError::Newer(schema)),
-                Some(_) => {}
-                None => {
-                    meta.insert("schema", SCHEMA)
-                        .map_err(|e| unreadable(failed(e)))?;
-                }
+            if let Some(schema) = schema.filter(|&schema| schema > SCHEMA) {
+                return Err(OpenError::Newer(schema));
+            }
+            meta.insert("schema", SCHEMA)
+                .map_err(|e| unreadable(failed(e)))?;
+            let key = Profile::data_key(&txn, wrap).map_err(unreadable)?;
+            if schema == Some(1) {
+                Profile::seal_schema_1(&txn, &key).map_err(unreadable)?;
             }
             txn.open_table(LOCAL_STORAGE)
                 .map_err(|e| unreadable(failed(e)))?;
@@ -302,17 +425,103 @@ impl Profile {
             txn.open_table(HSTS).map_err(|e| unreadable(failed(e)))?;
             txn.open_table(PERMISSIONS)
                 .map_err(|e| unreadable(failed(e)))?;
-        }
+            key
+        };
         txn.commit().map_err(|e| unreadable(failed(e)))?;
+        Ok(key)
+    }
+
+    /// The profile's data key: unwrapped by `wrap`, or by nothing when it
+    /// was kept as it is; else a new one, kept wrapped. A key wrapped by
+    /// something else, or that does not unwrap, is replaced: what it
+    /// sealed will not open, and is left out.
+    fn data_key(txn: &WriteTransaction, wrap: KeyWrap) -> Result<DataKey, Error> {
+        let mut table = txn.open_table(KEY).map_err(failed)?;
+        let stored = |name: &str| -> Result<Option<Vec<u8>>, Error> {
+            Ok(table.get(name).map_err(failed)?.map(|v| v.value().to_vec()))
+        };
+        let (data, by) = (stored("data")?, stored("wrap")?);
+        let unwrapped = match (&data, by.as_deref()) {
+            (Some(data), Some(by)) if by == wrap.name.as_bytes() => (wrap.unwrap)(data),
+            (Some(data), Some(b"none")) => Some(data.clone()),
+            _ => None,
+        };
+        let bytes = match unwrapped.filter(|bytes| bytes.len() == KEY_BYTES) {
+            Some(bytes) if by.as_deref() == Some(wrap.name.as_bytes()) => bytes,
+            unwrapped => {
+                let bytes = match unwrapped {
+                    // Kept as it was: wrapped now.
+                    Some(bytes) => bytes,
+                    None => {
+                        let mut bytes = vec![0u8; KEY_BYTES];
+                        aws_lc_rs::rand::fill(&mut bytes)
+                            .map_err(|_| Error("no random key could be made".to_owned()))?;
+                        bytes
+                    }
+                };
+                let (wrapped, by) = match (wrap.wrap)(&bytes) {
+                    Some(wrapped) => (wrapped, wrap.name),
+                    None => (bytes.clone(), KeyWrap::NONE.name),
+                };
+                table.insert("data", wrapped.as_slice()).map_err(failed)?;
+                table.insert("wrap", by.as_bytes()).map_err(failed)?;
+                bytes
+            }
+        };
+        DataKey::new(&bytes).ok_or_else(|| Error("the key is not one".to_owned()))
+    }
+
+    /// Seals the values of a profile of schema 1 (M28's), in the clear
+    /// until now: its `localStorage` items into the table that holds
+    /// them sealed, and its records in place.
+    fn seal_schema_1(txn: &WriteTransaction, key: &DataKey) -> Result<(), Error> {
+        let mut items = Vec::new();
+        {
+            let old = txn.open_table(LOCAL_STORAGE_1).map_err(failed)?;
+            for entry in old.iter().map_err(failed)? {
+                let (at, value) = entry.map_err(failed)?;
+                let (origin, item) = at.value();
+                let (order, value) = value.value();
+                let sealed = key.seal(
+                    LOCAL_STORAGE.name(),
+                    &item_at(origin, item),
+                    value.as_bytes(),
+                )?;
+                items.push((origin.to_owned(), item.to_owned(), order, sealed));
+            }
+        }
+        txn.delete_table(LOCAL_STORAGE_1).map_err(failed)?;
+        let mut table = txn.open_table(LOCAL_STORAGE).map_err(failed)?;
+        for (origin, item, order, sealed) in &items {
+            table
+                .insert(
+                    (origin.as_str(), item.as_str()),
+                    (*order, sealed.as_slice()),
+                )
+                .map_err(failed)?;
+        }
+        for definition in [COOKIES, HSTS, PERMISSIONS] {
+            let mut table = txn.open_table(definition).map_err(failed)?;
+            let mut records = Vec::new();
+            for entry in table.iter().map_err(failed)? {
+                let (index, record) = entry.map_err(failed)?;
+                records.push((index.value(), record.value().to_vec()));
+            }
+            for (index, record) in records {
+                let sealed = key.seal(definition.name(), &index.to_le_bytes(), &record)?;
+                table.insert(index, sealed.as_slice()).map_err(failed)?;
+            }
+        }
         Ok(())
     }
 
-    /// The `localStorage` items of `origin`, in their order.
+    /// The `localStorage` items of `origin`, in their order; an item
+    /// whose value does not open is left out.
     pub fn local_storage(&self, origin: &str) -> Result<Vec<Item>, Error> {
-        self.guarded(|db| Profile::read_local(db, origin))
+        self.guarded(|db| self.read_local(db, origin))
     }
 
-    fn read_local(db: &Database, origin: &str) -> Result<Vec<Item>, Error> {
+    fn read_local(&self, db: &Database, origin: &str) -> Result<Vec<Item>, Error> {
         let txn = db.begin_read().map_err(failed)?;
         let table = txn.open_table(LOCAL_STORAGE).map_err(failed)?;
         let mut items = Vec::new();
@@ -322,12 +531,18 @@ impl Profile {
             if owner != origin {
                 break;
             }
-            let (order, value) = value.value();
-            items.push(Item {
-                key: key.to_owned(),
-                value: value.to_owned(),
-                order,
-            });
+            let (order, sealed) = value.value();
+            let opened = self
+                .key
+                .open(LOCAL_STORAGE.name(), &item_at(owner, key), sealed)
+                .and_then(|value| String::from_utf8(value).ok());
+            if let Some(value) = opened {
+                items.push(Item {
+                    key: key.to_owned(),
+                    value,
+                    order,
+                });
+            }
         }
         items.sort_by_key(|item| item.order);
         Ok(items)
@@ -335,31 +550,36 @@ impl Profile {
 
     /// The cookies kept, records of `net`'s encoding, in their order.
     pub fn cookies(&self) -> Result<Vec<Vec<u8>>, Error> {
-        self.guarded(|db| Profile::read_records(db, COOKIES))
+        self.guarded(|db| self.read_records(db, COOKIES))
     }
 
     /// The HSTS hosts kept (M33.3), records of `net`'s encoding.
     pub fn hsts(&self) -> Result<Vec<Vec<u8>>, Error> {
-        self.guarded(|db| Profile::read_records(db, HSTS))
+        self.guarded(|db| self.read_records(db, HSTS))
     }
 
     /// The permissions sites were given (M33.4), records of the engine's
     /// encoding.
     pub fn permissions(&self) -> Result<Vec<Vec<u8>>, Error> {
-        self.guarded(|db| Profile::read_records(db, PERMISSIONS))
+        self.guarded(|db| self.read_records(db, PERMISSIONS))
     }
 
-    /// The records of `table`, in their order.
+    /// The records of `definition`, in their order; one that does not
+    /// open is left out.
     fn read_records(
+        &self,
         db: &Database,
-        table: TableDefinition<u64, &[u8]>,
+        definition: TableDefinition<u64, &[u8]>,
     ) -> Result<Vec<Vec<u8>>, Error> {
         let txn = db.begin_read().map_err(failed)?;
-        let table = txn.open_table(table).map_err(failed)?;
+        let table = txn.open_table(definition).map_err(failed)?;
         let mut records = Vec::new();
         for entry in table.iter().map_err(failed)? {
-            let (_, record) = entry.map_err(failed)?;
-            records.push(record.value().to_vec());
+            let (index, sealed) = entry.map_err(failed)?;
+            let at = index.value().to_le_bytes();
+            if let Some(record) = self.key.open(definition.name(), &at, sealed.value()) {
+                records.push(record);
+            }
         }
         Ok(records)
     }
@@ -369,10 +589,10 @@ impl Profile {
         if changes.is_empty() {
             return Ok(());
         }
-        self.guarded(|db| Profile::write(db, changes))
+        self.guarded(|db| self.write(db, changes))
     }
 
-    fn write(db: &Database, changes: &Changes) -> Result<(), Error> {
+    fn write(&self, db: &Database, changes: &Changes) -> Result<(), Error> {
         let txn = db.begin_write().map_err(failed)?;
         {
             let mut table = txn.open_table(LOCAL_STORAGE).map_err(failed)?;
@@ -384,8 +604,10 @@ impl Profile {
                         value,
                         order,
                     } => {
+                        let at = item_at(origin, key);
+                        let sealed = self.key.seal(LOCAL_STORAGE.name(), &at, value.as_bytes())?;
                         table
-                            .insert((origin.as_str(), key.as_str()), (*order, value.as_str()))
+                            .insert((origin.as_str(), key.as_str()), (*order, sealed.as_slice()))
                             .map_err(failed)?;
                     }
                     Local::Remove { origin, key } => {
@@ -412,21 +634,22 @@ impl Profile {
                 }
             }
         }
-        if let Some(cookies) = &changes.cookies {
-            let mut table = txn.open_table(COOKIES).map_err(failed)?;
-            table.retain(|_, _| false).map_err(failed)?;
-            for (index, record) in (0u64..).zip(cookies) {
-                table.insert(index, record.as_slice()).map_err(failed)?;
-            }
-        }
-        for (definition, records) in [(HSTS, &changes.hsts), (PERMISSIONS, &changes.permissions)] {
+        let replaced = [
+            (COOKIES, &changes.cookies),
+            (HSTS, &changes.hsts),
+            (PERMISSIONS, &changes.permissions),
+        ];
+        for (definition, records) in replaced {
             let Some(records) = records else {
                 continue;
             };
             let mut table = txn.open_table(definition).map_err(failed)?;
             table.retain(|_, _| false).map_err(failed)?;
             for (index, record) in (0u64..).zip(records) {
-                table.insert(index, record.as_slice()).map_err(failed)?;
+                let sealed = self
+                    .key
+                    .seal(definition.name(), &index.to_le_bytes(), record)?;
+                table.insert(index, sealed.as_slice()).map_err(failed)?;
             }
         }
         txn.commit().map_err(failed)

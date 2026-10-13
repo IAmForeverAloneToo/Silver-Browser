@@ -358,3 +358,245 @@ fn a_store_that_panics_is_the_profiles_error_and_used_no_more() {
     changes.clear("o");
     assert_eq!(profile.commit(&changes), Err(damaged()));
 }
+
+/// A wrap of the tests' own: the key turned over bit by bit, under the
+/// name `test`; and one of the same name that unwraps nothing, as a
+/// profile copied to another user meets.
+fn turned(key: &[u8]) -> Option<Vec<u8>> {
+    Some(key.iter().map(|byte| !byte).collect())
+}
+
+fn nothing(_: &[u8]) -> Option<Vec<u8>> {
+    None
+}
+
+const TEST_WRAP: KeyWrap = KeyWrap {
+    name: "test",
+    wrap: turned,
+    unwrap: turned,
+};
+
+const OTHER_USER: KeyWrap = KeyWrap {
+    name: "test",
+    wrap: turned,
+    unwrap: nothing,
+};
+
+fn short(_: &[u8]) -> Option<Vec<u8>> {
+    Some(vec![1; 5])
+}
+
+/// One that unwraps to what is not a key.
+const NOT_A_KEY: KeyWrap = KeyWrap {
+    name: "test",
+    wrap: turned,
+    unwrap: short,
+};
+
+/// Whether `needle` is anywhere in `memory`'s bytes.
+fn in_the_clear(memory: &Memory, needle: &[u8]) -> bool {
+    let bytes = memory.0.read().unwrap();
+    bytes.windows(needle.len()).any(|window| window == needle)
+}
+
+/// A profile in `memory` with an item and a cookie, its key kept by
+/// `wrap`.
+fn written(memory: &Memory, wrap: KeyWrap) {
+    let profile = Profile::in_memory_with(memory, wrap).unwrap();
+    let mut changes = Changes::new();
+    changes.set_item("https://a.test", "token", "secret-item-value", 0);
+    changes.cookies(vec![b"secret-cookie-record".to_vec()]);
+    changes.hsts(vec![b"secret-hsts-record".to_vec()]);
+    profile.commit(&changes).unwrap();
+}
+
+fn read(memory: &Memory, wrap: KeyWrap) -> (Vec<Item>, Vec<Vec<u8>>) {
+    let profile = Profile::in_memory_with(memory, wrap).unwrap();
+    (
+        profile.local_storage("https://a.test").unwrap(),
+        profile.cookies().unwrap(),
+    )
+}
+
+#[test]
+fn the_values_are_sealed_on_disk_and_open_again() {
+    let memory = Memory::new();
+    written(&memory, TEST_WRAP);
+    for value in [
+        &b"secret-item-value"[..],
+        b"secret-cookie-record",
+        b"secret-hsts-record",
+    ] {
+        assert!(
+            !in_the_clear(&memory, value),
+            "{:?}",
+            String::from_utf8_lossy(value)
+        );
+    }
+    // The keys of the tables stay readable.
+    assert!(in_the_clear(&memory, b"https://a.test"));
+    // Each value its own nonce: the same value twice is two sealings.
+    let profile = Profile::in_memory_with(&memory, TEST_WRAP).unwrap();
+    let mut changes = Changes::new();
+    changes.cookies(vec![b"same".to_vec(), b"same".to_vec()]);
+    profile.commit(&changes).unwrap();
+    drop(profile);
+    {
+        let db = Database::builder()
+            .create_with_backend(memory.clone())
+            .unwrap();
+        let txn = db.begin_read().unwrap();
+        let cookies = txn.open_table(COOKIES).unwrap();
+        let sealed = |at: u64| {
+            cookies
+                .get(at)
+                .unwrap()
+                .unwrap()
+                .value()
+                .get(..12)
+                .map(<[u8]>::to_vec)
+        };
+        assert_ne!(sealed(0), sealed(1));
+    }
+    let profile = Profile::in_memory_with(&memory, TEST_WRAP).unwrap();
+    let mut changes = Changes::new();
+    changes.cookies(vec![b"secret-cookie-record".to_vec()]);
+    profile.commit(&changes).unwrap();
+    drop(profile);
+    let (items, cookies) = read(&memory, TEST_WRAP);
+    assert_eq!(items, [item("token", "secret-item-value", 0)]);
+    assert_eq!(cookies, [b"secret-cookie-record".to_vec()]);
+    // The key itself is kept wrapped.
+    let db = Database::builder()
+        .create_with_backend(memory.clone())
+        .unwrap();
+    let txn = db.begin_read().unwrap();
+    let table = txn.open_table(KEY).unwrap();
+    assert_eq!(table.get("wrap").unwrap().unwrap().value(), b"test");
+    let wrapped = table.get("data").unwrap().unwrap().value().to_vec();
+    assert_eq!(wrapped.len(), 32);
+    let key = turned(&wrapped).unwrap();
+    assert!(!in_the_clear(&memory, &key), "never unwrapped on disk");
+}
+
+#[test]
+fn a_key_that_does_not_unwrap_leaves_the_values_out() {
+    let memory = Memory::new();
+    written(&memory, TEST_WRAP);
+    let (items, cookies) = read(&memory, OTHER_USER);
+    assert!(items.is_empty() && cookies.is_empty());
+    written(&memory, TEST_WRAP);
+    let (items, cookies) = read(&memory, NOT_A_KEY);
+    assert!(items.is_empty() && cookies.is_empty());
+    // A new key: what is written now opens again.
+    let profile = Profile::in_memory_with(&memory, OTHER_USER).unwrap();
+    let mut changes = Changes::new();
+    changes.set_item("https://a.test", "again", "v", 1);
+    profile.commit(&changes).unwrap();
+    drop(profile);
+    let profile = Profile::in_memory_with(&memory, TEST_WRAP).unwrap();
+    assert_eq!(
+        profile.local_storage("https://a.test").unwrap(),
+        [item("again", "v", 1)]
+    );
+}
+
+#[test]
+fn a_key_kept_as_it_is_is_wrapped_when_a_wrap_comes() {
+    let memory = Memory::new();
+    written(&memory, KeyWrap::NONE);
+    assert_eq!(read(&memory, TEST_WRAP).0.len(), 1);
+    assert_eq!(read(&memory, TEST_WRAP).0.len(), 1);
+    // Wrapped now: a profile that cannot unwrap it reads nothing.
+    assert!(read(&memory, KeyWrap::NONE).0.is_empty());
+}
+
+#[test]
+fn a_value_moved_to_another_key_does_not_open() {
+    let memory = Memory::new();
+    let profile = Profile::in_memory(&memory).unwrap();
+    let mut changes = Changes::new();
+    changes.set_item("https://a.test", "one", "1", 0);
+    changes.set_item("https://a.test", "two", "2", 1);
+    changes.cookies(vec![b"first".to_vec(), b"second".to_vec()]);
+    profile.commit(&changes).unwrap();
+    drop(profile);
+    {
+        let db = Database::builder()
+            .create_with_backend(memory.clone())
+            .unwrap();
+        let txn = db.begin_write().unwrap();
+        {
+            let mut table = txn.open_table(LOCAL_STORAGE).unwrap();
+            let one = table
+                .get(("https://a.test", "one"))
+                .unwrap()
+                .unwrap()
+                .value()
+                .1
+                .to_vec();
+            table
+                .insert(("https://a.test", "two"), (1, one.as_slice()))
+                .unwrap();
+            let mut cookies = txn.open_table(COOKIES).unwrap();
+            let first = cookies.get(0).unwrap().unwrap().value().to_vec();
+            cookies.insert(1, first.as_slice()).unwrap();
+        }
+        txn.commit().unwrap();
+    }
+    let profile = Profile::in_memory(&memory).unwrap();
+    assert_eq!(
+        profile.local_storage("https://a.test").unwrap(),
+        [item("one", "1", 0)]
+    );
+    assert_eq!(profile.cookies().unwrap(), [b"first".to_vec()]);
+}
+
+#[test]
+fn a_schema_1_profile_is_sealed_in_place() {
+    let memory = Memory::new();
+    {
+        let db = Database::builder()
+            .create_with_backend(memory.clone())
+            .unwrap();
+        let txn = db.begin_write().unwrap();
+        {
+            txn.open_table(META).unwrap().insert("schema", 1).unwrap();
+            let mut items = txn.open_table(LOCAL_STORAGE_1).unwrap();
+            items
+                .insert(("https://a.test", "k"), (3, "kept-in-the-clear"))
+                .unwrap();
+            let mut cookies = txn.open_table(COOKIES).unwrap();
+            cookies.insert(0, &b"cookie-in-the-clear"[..]).unwrap();
+        }
+        txn.commit().unwrap();
+    }
+    let (items, cookies) = read(&memory, TEST_WRAP);
+    assert_eq!(items, [item("k", "kept-in-the-clear", 3)]);
+    assert_eq!(cookies, [b"cookie-in-the-clear".to_vec()]);
+    let db = Database::builder()
+        .create_with_backend(memory.clone())
+        .unwrap();
+    let txn = db.begin_read().unwrap();
+    let schema = txn
+        .open_table(META)
+        .unwrap()
+        .get("schema")
+        .unwrap()
+        .unwrap()
+        .value();
+    assert_eq!(schema, SCHEMA);
+    let sealed = txn
+        .open_table(COOKIES)
+        .unwrap()
+        .get(0)
+        .unwrap()
+        .unwrap()
+        .value()
+        .to_vec();
+    assert_ne!(sealed, b"cookie-in-the-clear");
+    assert!(
+        txn.open_table(LOCAL_STORAGE_1).is_err(),
+        "the old table gone"
+    );
+}

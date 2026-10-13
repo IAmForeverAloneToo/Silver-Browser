@@ -127,7 +127,7 @@ pub use loader::{LoadError, LoadState};
 pub use net::{Client, NetworkError, Url};
 pub use permissions::{PROMPT_TIMEOUT, Permission, PermissionPrompt};
 pub use print::{PrintError, PrintOptions, PrintedPage};
-pub use profile::Profile;
+pub use profile::{KeyWrap, Profile};
 pub use scripts::{
     ConsoleEntry, MAX_CONSOLE_ENTRIES, MAX_CONSOLE_MESSAGE, MAX_SCRIPT_BYTES, ScriptState,
 };
