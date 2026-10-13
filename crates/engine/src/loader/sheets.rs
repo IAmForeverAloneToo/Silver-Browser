@@ -697,18 +697,24 @@ impl Page {
             .filter(|href| !href.is_empty())
             .filter_map(|href| self.resolve(document, href))
             .last();
+        let implicit = linked.is_none();
         let icon = match linked {
             Some(icon) => icon,
             None if matches!(url.scheme(), "http" | "https") => url.join("/favicon.ico").ok()?,
             None => return None,
         };
-        Some(
-            Request::get(icon, Destination::Image).initiated_by(Initiator {
-                url,
-                address_space: self.context.address_space,
-                origin: self.context.origin.clone(),
-            }),
-        )
+        let mut request = Request::get(icon, Destination::Image).initiated_by(Initiator {
+            url,
+            address_space: self.context.address_space,
+            origin: self.context.origin.clone(),
+        });
+        // The reference browser fetches the `/favicon.ico` no link names
+        // outside the page: the page's policies neither hold it nor
+        // report it (M33).
+        if implicit {
+            request.csp = Some(Csp::none(self.context.origin.clone()));
+        }
+        Some(request)
     }
 
     /// Aborts the fetches of the page's sheets, as HTML's "stop loading"

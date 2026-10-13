@@ -119,10 +119,6 @@ fn each_request_is_held_to_its_destinations_directive() {
                 "the frame http://b.localhost:PORT/f.html",
                 "default-src 'self'"
             ),
-            refused(
-                "the image http://a.localhost:PORT/favicon.ico",
-                "img-src 'none'"
-            ),
             refused("the image http://a.localhost:PORT/i.png", "img-src 'none'"),
             refused(
                 "the stylesheet http://b.localhost:PORT/s.css",
@@ -137,10 +133,11 @@ fn each_request_is_held_to_its_destinations_directive() {
             "loaded".to_owned(),
         ]
     );
-    // None of them was asked for.
+    // None of them was asked for; the /favicon.ico no link names is held
+    // to no policy of the page (M33).
     let mut paths = asked(&server);
     paths.sort();
-    assert_eq!(paths, ["/own.css", "/page.html"]);
+    assert_eq!(paths, ["/favicon.ico", "/own.css", "/page.html"]);
 }
 
 #[test]
@@ -166,8 +163,6 @@ fn a_report_only_policy_reports_and_lets_everything_through() {
              script-src 'none'",
             "Content-Security-Policy (report-only) would refuse an inline script: \
              script-src 'none'",
-            "Content-Security-Policy (report-only) would refuse the image \
-             http://a.localhost:PORT/favicon.ico: img-src 'none'",
             "Content-Security-Policy (report-only) would refuse the image \
              http://a.localhost:PORT/i.png: img-src 'none'",
             "image done",
@@ -909,10 +904,11 @@ img-src \\'none\\'; report-uri /report', e.bubbles, e.composed, e.cancelable,\
             .filter(|request| request.target == "/report")
             .count()
     };
-    // Until it loaded and its three reports were sent.
+    // Until it loaded and its two reports were sent (the favicon is held
+    // to no policy of the page, M33).
     let port = server.url("/").port().expect("a port").to_string();
     let mut lines: Vec<String> = tab
-        .run_until(|lines| lines.iter().any(|line| line == "loaded") && reported() == 3)
+        .run_until(|lines| lines.iter().any(|line| line == "loaded") && reported() == 2)
         .into_iter()
         .map(|line| line.replace(&port, "PORT"))
         .collect();
@@ -923,16 +919,10 @@ img-src \\'none\\'; report-uri /report', e.bubbles, e.composed, e.cancelable,\
     assert_eq!(
         lines,
         [
-            "#document | /favicon.ico | img-src | img-src | enforce |  | 200 | false | false | \
-             true | true | true | false | true"
-                .to_owned(),
             "#document | /i.png | img-src | img-src | enforce |  | 200 | false | false | true | \
              true | true | false | true"
                 .to_owned(),
             refused("an inline script"),
-            "Content-Security-Policy refused the image http://a.localhost:PORT/favicon.ico: \
-             img-src 'none'"
-                .to_owned(),
             "Content-Security-Policy refused the image http://a.localhost:PORT/i.png: \
              img-src 'none'"
                 .to_owned(),
@@ -958,9 +948,9 @@ img-src \\'none\\'; report-uri /report', e.bubbles, e.composed, e.cancelable,\
         })
         .collect();
     reports.sort();
-    assert_eq!(reports.len(), 3);
+    assert_eq!(reports.len(), 2);
     assert_eq!(
-        reports[2],
+        reports[1],
         "{\"csp-report\":{\"document-uri\":\"http://a.localhost:PORT/page.html\",\
          \"referrer\":\"\",\"violated-directive\":\"script-src-elem\",\
          \"effective-directive\":\"script-src-elem\",\"original-policy\":\"script-src \
@@ -1016,7 +1006,6 @@ fn code_handlers_and_report_only_violations_are_events_too() {
     assert_eq!(
         events,
         [
-            "#document | /favicon.ico | report",
             "#document | /i.png | report",
             "#document | eval | enforce",
             "BUTTON | inline | enforce",
@@ -1057,4 +1046,54 @@ fn a_document_sends_a_hundred_reports_at_most() {
     tab.run_until(|_| reported() >= 100);
     tab.settle();
     assert_eq!(reported(), 100);
+}
+
+#[test]
+fn the_implicit_favicon_is_held_to_no_policy_of_the_page() {
+    // The reference browser fetches the /favicon.ico no link names
+    // outside the page (M33): img-src does not refuse it, nor report it;
+    // an icon a link names is the page's image, and is held to it.
+    static PAGES: Pages = &[
+        (
+            "/page.html",
+            &[("Content-Security-Policy", "img-src 'none'")],
+            "<body><img src=/i.png>",
+        ),
+        (
+            "/linked.html",
+            &[("Content-Security-Policy", "img-src 'none'")],
+            "<link rel=icon href=/icon.png><body><img src=/i.png>",
+        ),
+        ("/favicon.ico", &[], ""),
+    ];
+    let server = sites(PAGES);
+    let refused = |path: &str, count: usize| {
+        let mut tab = Tab::new();
+        tab.engine.set_scripting(true);
+        tab.engine.navigate(at(&server, "a.localhost", path));
+        let mut lines = tab.run_until(|lines| {
+            lines
+                .iter()
+                .filter(|line| line.starts_with("Content-Security-Policy refused"))
+                .count()
+                >= count
+        });
+        lines.retain(|line| line.starts_with("Content-Security-Policy refused"));
+        lines.sort();
+        lines
+            .iter()
+            .map(|line| {
+                line.split(' ')
+                    .nth(4)
+                    .unwrap_or("")
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("")
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(refused("/page.html", 1), ["i.png:"]);
+    assert!(asked(&server).iter().any(|path| path == "/favicon.ico"));
+    assert_eq!(refused("/linked.html", 2), ["i.png:", "icon.png:"]);
 }

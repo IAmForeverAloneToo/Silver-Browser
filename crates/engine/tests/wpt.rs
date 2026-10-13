@@ -268,6 +268,172 @@ fn unescape(name: &str) -> String {
     out
 }
 
+/// The runner's host, as wptserve's `{{host}}` (M33): a name under
+/// `localhost`, which the engine resolves to this machine, so that its
+/// subdomains are hosts of the same site and `ALT_HOST`'s of another.
+const HOST: &str = "web-platform.localhost";
+const ALT_HOST: &str = "not-web-platform.localhost";
+
+/// The client's configuration with the runner's hosts and their
+/// subdomains at 127.0.0.1, where its one server listens: a name under
+/// `localhost` would try `::1` first, which on Windows takes a while to
+/// be refused at each new connection.
+fn runner_hosts() -> net::transport::Config {
+    let mut config = net::transport::Config::default();
+    let here = std::net::IpAddr::from([127, 0, 0, 1]);
+    for site in [HOST, ALT_HOST] {
+        for sub in ["", "www.", "www1.", "www2."] {
+            config = config.resolve(&format!("{sub}{site}"), here);
+        }
+    }
+    config
+}
+
+/// The URL the runner loads `path` at: on [`HOST`], the server's port.
+fn test_url(server: &TestServer, path: &str) -> net::Url {
+    let port = server.url("/").port().expect("the server's port");
+    net::Url::parse(&format!("http://{HOST}:{port}/{path}")).expect("a test's URL")
+}
+
+/// `text`, a `.sub` template, filled as wptserve fills one (M33): the
+/// hosts and their subdomains, the ports (the server's for `http`, and
+/// for what the runner does not serve, `https` and the WebSockets, a
+/// port the engine never connects to), the request's location, query
+/// (a parameter it does not have empty) and fields, a new UUID each time
+/// one is asked for, and the variables a template sets (`{{$id:...}}`)
+/// and reads (`{{$id}}`). What it does not know stays as written.
+fn substitute(text: &str, request: &net::test_server::ServerRequest, port: u16) -> String {
+    static UUIDS: AtomicU64 = AtomicU64::new(1);
+    let mut variables: HashMap<String, String> = HashMap::new();
+    let host_of = |site: &str, sub: &str| match sub {
+        "" => site.to_owned(),
+        sub => format!("{sub}.{site}"),
+    };
+    let header = request.header("Host").unwrap_or(HOST);
+    let (path, query) = request
+        .target
+        .split_once('?')
+        .unwrap_or((request.target.as_str(), ""));
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("{{") {
+        out.push_str(&rest[..at]);
+        let Some(end) = rest[at..].find("}}") else {
+            rest = &rest[at..];
+            break;
+        };
+        let mut inner = rest[at + 2..at + end].trim();
+        // `$name:expression` sets a variable to what the expression
+        // gives; `$name` alone reads it.
+        let mut set = None;
+        if let Some(variable) = inner.strip_prefix('$') {
+            match variable.split_once(':') {
+                Some((name, expression)) => {
+                    set = Some(name.to_owned());
+                    inner = expression.trim();
+                }
+                None => {
+                    let value = variables.get(variable).cloned().unwrap_or_default();
+                    out.push_str(&value);
+                    rest = &rest[at + end + 2..];
+                    continue;
+                }
+            }
+        }
+        let key = |name: &str| {
+            inner
+                .strip_prefix(name)
+                .and_then(|r| r.strip_prefix('['))
+                .and_then(|r| r.strip_suffix(']'))
+        };
+        let filled = if inner == "host" {
+            Some(HOST.to_owned())
+        } else if let Some(sub) = key("domains") {
+            Some(host_of(HOST, sub))
+        } else if let Some(pair) = key("hosts") {
+            pair.split_once("][").map(|(site, sub)| match site {
+                "alt" => host_of(ALT_HOST, sub),
+                _ => host_of(HOST, sub),
+            })
+        } else if let Some(pair) = key("ports") {
+            pair.split_once("][").map(|(scheme, _)| match scheme {
+                "http" => port.to_string(),
+                _ => "1".to_owned(),
+            })
+        } else if let Some(part) = key("location") {
+            let hostname = header.rsplit_once(':').map_or(header, |(name, _)| name);
+            match part {
+                "host" => Some(header.to_owned()),
+                "hostname" => Some(hostname.to_owned()),
+                "port" => Some(port.to_string()),
+                "scheme" => Some("http".to_owned()),
+                "server" => Some(format!("http://{header}")),
+                "path" | "pathname" => Some(path.to_owned()),
+                "query" => Some(if query.is_empty() {
+                    String::new()
+                } else {
+                    format!("?{query}")
+                }),
+                _ => None,
+            }
+        } else if let Some(name) = key("GET") {
+            let found = query.split('&').find_map(|pair| {
+                let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+                (form_decoded(key) == name).then(|| form_decoded(value))
+            });
+            Some(found.unwrap_or_default())
+        } else if let Some(name) = key("headers") {
+            request.header(name).map(str::to_owned)
+        } else if inner == "uuid()" {
+            let n = UUIDS.fetch_add(1, Ordering::Relaxed);
+            Some(format!("00000000-0000-4000-8000-{n:012x}"))
+        } else {
+            None
+        };
+        match filled {
+            Some(value) => {
+                if let Some(name) = set {
+                    variables.insert(name, value.clone());
+                }
+                out.push_str(&value);
+            }
+            None => out.push_str(&rest[at..at + end + 2]),
+        }
+        rest = &rest[at + end + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `text` of a query, `application/x-www-form-urlencoded`: `+` a space,
+/// each `%XX` its byte, read as UTF-8.
+fn form_decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes
+            .get(i + 1..i + 3)
+            .and_then(|pair| std::str::from_utf8(pair).ok())
+            .and_then(|pair| u8::from_str_radix(pair, 16).ok());
+        match (bytes[i], hex) {
+            (b'%', Some(byte)) => {
+                out.push(byte);
+                i += 3;
+            }
+            (b'+', _) => {
+                out.push(b' ');
+                i += 1;
+            }
+            (byte, _) => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// The content type a vendored file is served with.
 fn content_type(path: &str) -> &'static str {
     match path.rsplit('.').next() {
@@ -451,19 +617,24 @@ fn serve(root: PathBuf, harness: bool) -> TestServer {
                     file.strip_suffix(".worker.html")
                         .map(|stem| (stem, ".worker.js", ".worker.js"))
                 });
+            // The test's `.headers` go with the pages and scripts made of
+            // it, as wptserve sends them (M33: a policy's tests).
+            let headers_of = |test: &str| fs::read_to_string(root.join(format!("{test}.headers")));
             if let Some((stem, test, script)) = worker
                 && let Ok(source) = read_lossy(&root.join(format!("{stem}{test}")))
             {
                 let name = format!("{}{script}", stem.rsplit('/').next().unwrap_or(stem));
                 let page = worker_page(&name, &source);
-                return Reply::ok("text/html; charset=utf-8", page.as_bytes());
+                let headers = headers_of(&format!("{stem}{test}")).ok();
+                return reply("text/html; charset=utf-8", page.into_bytes(), headers);
             }
             if let Some(stem) = file.strip_suffix(".any.worker.js")
                 && let Ok(source) = read_lossy(&root.join(format!("{stem}.any.js")))
             {
                 let name = format!("{}.any.js", stem.rsplit('/').next().unwrap_or(stem));
                 let script = worker_script(&name, &source);
-                return Reply::ok("text/javascript", script.as_bytes());
+                let headers = headers_of(&format!("{stem}.any.js")).ok();
+                return reply("text/javascript", script.into_bytes(), headers);
             }
             for (page, script, any) in [
                 (".any.html", ".any.js", true),
@@ -474,32 +645,54 @@ fn serve(root: PathBuf, harness: bool) -> TestServer {
                 {
                     let name = format!("{}{script}", stem.rsplit('/').next().unwrap_or(stem));
                     let page = wrapper(&name, &source, any);
-                    return Reply::ok("text/html; charset=utf-8", page.as_bytes());
+                    let headers = headers_of(&format!("{stem}{script}")).ok();
+                    return reply("text/html; charset=utf-8", page.into_bytes(), headers);
                 }
             }
         }
-        let Ok(body) = fs::read(root.join(file)) else {
+        let Ok(mut body) = fs::read(root.join(file)) else {
             return not_found();
         };
+        // The request's port, as its Host says, for a template (M33).
+        let port = request
+            .header("Host")
+            .and_then(|host| host.rsplit_once(':'))
+            .and_then(|(_, port)| port.parse().ok())
+            .unwrap_or(80);
+        if file.contains(".sub.") {
+            body = substitute(&String::from_utf8_lossy(&body), request, port).into_bytes();
+        }
         if file.ends_with(".asis") {
             return Reply::SendAndClose(body);
         }
-        let mut fields = vec![("Content-Type".to_string(), content_type(file).to_string())];
-        if let Ok(headers) = fs::read_to_string(root.join(format!("{file}.headers"))) {
-            for (name, value) in headers.lines().filter_map(|line| line.split_once(':')) {
-                let (name, value) = (name.trim(), value.trim());
-                fields.retain(|(old, _)| !old.eq_ignore_ascii_case(name));
-                fields.push((name.to_string(), value.to_string()));
-            }
-        }
-        let mut bytes = b"HTTP/1.1 200 OK\r\n".to_vec();
-        for (name, value) in &fields {
-            bytes.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
-        }
-        bytes.extend_from_slice(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes());
-        bytes.extend_from_slice(&body);
-        Reply::Send(bytes)
+        let headers = fs::read_to_string(root.join(format!("{file}.headers"))).or_else(|_| {
+            fs::read_to_string(root.join(format!("{file}.sub.headers")))
+                .map(|text| substitute(&text, request, port))
+        });
+        reply(content_type(file), body, headers.ok())
     })
+}
+
+/// A response of `body` as `content_type`, with the fields of a
+/// `.headers` file's text, each in place of one of its name before.
+fn reply(content_type: &str, body: Vec<u8>, headers: Option<String>) -> Reply {
+    let mut fields = vec![("Content-Type".to_string(), content_type.to_string())];
+    for (name, value) in headers
+        .iter()
+        .flat_map(|text| text.lines())
+        .filter_map(|line| line.split_once(':'))
+    {
+        let (name, value) = (name.trim(), value.trim());
+        fields.retain(|(old, _)| !old.eq_ignore_ascii_case(name));
+        fields.push((name.to_string(), value.to_string()));
+    }
+    let mut bytes = b"HTTP/1.1 200 OK\r\n".to_vec();
+    for (name, value) in &fields {
+        bytes.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
+    }
+    bytes.extend_from_slice(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes());
+    bytes.extend_from_slice(&body);
+    Reply::Send(bytes)
 }
 
 /// A page's clock, in nanoseconds since it was made: moved only by the
@@ -533,6 +726,7 @@ fn load_waking(server: &TestServer, path: &str) -> Result<Loaded, String> {
             .expect("the bundled font parses"),
     );
     engine.set_scripting(true);
+    engine.set_network(net::Client::new(runner_hosts()));
     let clock = HandClock::default();
     let hand = clock.clone();
     engine.set_clock(Arc::new(move || hand.now()));
@@ -540,7 +734,7 @@ fn load_waking(server: &TestServer, path: &str) -> Result<Loaded, String> {
     engine.set_waker(move || {
         let _ = wake.send(());
     });
-    engine.navigate(server.url(&format!("/{path}")));
+    engine.navigate(test_url(server, path));
     let deadline = Instant::now() + LOAD;
     loop {
         engine.poll_network();
@@ -642,6 +836,55 @@ fn an_expectation_names_a_subtest_in_ascii() {
 }
 
 #[test]
+fn a_template_is_filled_as_wptserve_fills_it() {
+    let request = net::test_server::ServerRequest {
+        method: "GET".to_string(),
+        target: "/dir/t.sub.html?logs=%5B%22a+b%22%5D&x=1".to_string(),
+        headers: vec![
+            ("Host".to_string(), format!("{HOST}:8000")),
+            ("X-Y".to_string(), "z".to_string()),
+        ],
+        body: Vec::new(),
+        connection: 0,
+        index: 0,
+        sni: None,
+    };
+    let filled = substitute(
+        "{{host}} {{domains[www1]}} {{hosts[alt][]}} {{hosts[][www2]}} \
+         {{ports[http][0]}} {{ports[https][0]}} {{location[server]}} \
+         {{location[path]}}{{location[query]}} {{GET[logs]}} [{{GET[none]}}] \
+         {{headers[x-y]}} {{$id:uuid()}} {{$id}} {{unknown}}",
+        &request,
+        8000,
+    );
+    let words: Vec<&str> = filled.split(' ').collect();
+    assert_eq!(
+        &words[..9],
+        [
+            HOST,
+            &format!("www1.{HOST}"),
+            ALT_HOST,
+            &format!("www2.{HOST}"),
+            "8000",
+            "1",
+            &format!("http://{HOST}:8000"),
+            "/dir/t.sub.html?logs=%5B%22a+b%22%5D&x=1",
+            "[\"a",
+        ]
+    );
+    assert_eq!(words[9], "b\"]");
+    assert_eq!(words[10], "[]");
+    assert_eq!(words[11], "z");
+    assert_eq!(
+        words[12], words[13],
+        "a variable is the value it was set to"
+    );
+    assert!(words[12].starts_with("00000000-0000-4000-8000-"));
+    assert_eq!(words[14], "{{unknown}}");
+    assert_eq!(form_decoded("a%2Fb+c%zz"), "a/b c%zz");
+}
+
+#[test]
 fn the_clock_moves_on_to_the_next_frame_or_task() {
     let ms = Duration::from_millis;
     assert_eq!(
@@ -716,6 +959,16 @@ fn wait_for(loaded: &mut Loaded, path: &str, class: &str) -> Result<(), String> 
         }
         if !waits(engine, class) {
             break;
+        }
+        // The clock waits for the network and the decoders, as a
+        // testharness test's does (M33): an image a timer's screenshot
+        // waits for is there however fast the machine fetched it.
+        if engine.fetching() || engine.decoding() {
+            let left = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or_else(nothing)?;
+            let _ = woken.recv_timeout(left.min(Duration::from_millis(100)));
+            continue;
         }
         match next_time(
             now,
@@ -871,8 +1124,18 @@ const HARNESS_WAIT_LONG: Duration = Duration::from_secs(60);
 /// clock (M31).
 const WORKER_SLICE: Duration = Duration::from_millis(20);
 
-/// The results the report wrote into the page, once it has.
+/// The most real time a page with workers waits out a move of its clock
+/// (M33).
+const WORKER_WAIT: Duration = Duration::from_secs(1);
+
+/// The results the report wrote into the page, once it has; a subtest
+/// that names the server's port, which each run's server chooses, has it
+/// as `PORT` (M33).
 fn harness_results(engine: &Engine) -> Option<Harness> {
+    let port = engine
+        .url()
+        .and_then(net::Url::port)
+        .map(|port| port.to_string());
     let document = engine.document();
     let out = document
         .subtree(document.root())
@@ -885,6 +1148,10 @@ fn harness_results(engine: &Engine) -> Option<Harness> {
             let mut fields = line.splitn(3, '\t');
             let status = fields.next()?.parse().ok()?;
             let name = fields.next()?.to_string();
+            let name = match &port {
+                Some(port) => name.replace(port.as_str(), "PORT"),
+                None => name,
+            };
             Some((name, status, fields.next().unwrap_or("").to_string()))
         })
         .collect();
@@ -955,20 +1222,27 @@ fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
             let _ = woken.recv_timeout(left.min(Duration::from_millis(100)));
             continue;
         }
-        // A page's workers run in real time (M31): what they send is
-        // taken for a slice of real time before the page's clock moves
-        // on, however often they send.
-        let slice = moved.elapsed();
-        if engine.has_workers() && slice < WORKER_SLICE {
-            let _ = woken.recv_timeout(WORKER_SLICE - slice);
-            continue;
-        }
-        match next_time(
+        let next = next_time(
             now,
             engine.needs_frame(),
             engine.next_frame_at(),
             engine.next_task_at(),
-        ) {
+        );
+        // A page's workers run in real time (M31): what they send is
+        // taken for a slice of real time before the page's clock moves
+        // on, however often they send; and a move longer than a slice is
+        // waited out in real time, up to a second (M33), so that a worker
+        // the page's own timeout waits for has the time it would have.
+        let slice = moved.elapsed();
+        if engine.has_workers() {
+            let jump = next.map_or(Duration::ZERO, |at| at.saturating_sub(now));
+            let real = jump.clamp(WORKER_SLICE, WORKER_WAIT);
+            if slice < real {
+                let _ = woken.recv_timeout(real - slice);
+                continue;
+            }
+        }
+        match next {
             Some(at) => {
                 clock.set(at);
                 moved = Instant::now();

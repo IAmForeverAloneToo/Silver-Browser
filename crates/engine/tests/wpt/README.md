@@ -20,7 +20,7 @@ cargo run -p engine --example wpt -- pull <checkout>
 which rewrites them, `MANIFEST` and this file. `tests/wpt.rs` runs
 them; `expectations.txt` names those expected to fail, and why.
 
-With them are the testharness.js tests of `fetch/api/headers`, `fetch/api/request`, `fetch/api/response`, `fetch/api/basic`, `xhr`, `url` (the `urlsearchparams-*` tests), `FileAPI/blob`, `webstorage`, `wasm/jsapi` (the `interface.*` tests), `wasm/jsapi` (the `prototypes.*` tests), `wasm/jsapi/constructor`, `wasm/jsapi/global`, `wasm/jsapi/instance`, `wasm/jsapi/memory`, `wasm/jsapi/module`, `wasm/jsapi/table`, `html/canvas/element`, `html/canvas/offscreen`, `workers`, `webmessaging`, `html/infrastructure/safe-passing-of-structured-data`, `html/webappapis/structured-clone` (M27, M29, M31)
+With them are the testharness.js tests of `fetch/api/headers`, `fetch/api/request`, `fetch/api/response`, `fetch/api/basic`, `xhr`, `url` (the `urlsearchparams-*` tests), `FileAPI/blob`, `webstorage`, `wasm/jsapi` (the `interface.*` tests), `wasm/jsapi` (the `prototypes.*` tests), `wasm/jsapi/constructor`, `wasm/jsapi/global`, `wasm/jsapi/instance`, `wasm/jsapi/memory`, `wasm/jsapi/module`, `wasm/jsapi/table`, `html/canvas/element`, `html/canvas/offscreen`, `workers`, `webmessaging`, `html/infrastructure/safe-passing-of-structured-data`, `html/webappapis/structured-clone`, `content-security-policy`, `html/browsers/sandboxing`, `referrer-policy`, `html/semantics/embedded-content/the-iframe-element` (M27, M29, M31)
 that the runner's one server can serve: no Python handler, no `.sub`
 template, no other host, nothing over `https:`, no shared or
 service worker and no module worker. `resources/testharness.js` is
@@ -37,8 +37,8 @@ subtest they fail is named in `expectations.txt`, and why.
 | checklayout | 70 |
 | crashtest | 101 |
 | reftest | 2910 |
-| testharness | 3654 |
-| all | 6735 |
+| testharness | 4278 |
+| all | 7359 |
 
 ## Left out
 
@@ -47,6 +47,7 @@ The first reason the rule found for each test it left out:
 | Reason | Tests |
 | --- | ---: |
 | script | 3152 |
+| Python handler | 1867 |
 | @font-face | 902 |
 | declaration of font | 713 |
 | CDATA section in XHTML | 550 |
@@ -54,28 +55,28 @@ The first reason the rule found for each test it left out:
 | the manual reftests (by the reftest rule) | 407 |
 | layers (beginLayer, not in the standard) | 374 |
 | not a reftest, a check-layout test or a crashtest | 292 |
-| Python handler | 254 |
+| https: | 270 |
+| not a testharness test | 260 |
 | selector | 241 |
 | declaration of line-height | 230 |
-| not a testharness test | 229 |
 | declaration of writing-mode | 207 |
 | element <br> | 179 |
 | canvas filters (G81) | 150 |
-| wptserve substitution (.sub) | 133 |
+| a shared or service worker | 126 |
 | dir=rtl | 113 |
 | element <iframe> | 101 |
 | declaration of direction | 91 |
-| a frame | 89 |
 | SVG <pattern> (G87) | 87 |
 | declaration of border-radius | 85 |
 | declaration of white-space | 81 |
-| a shared or service worker | 80 |
 | declaration of container-type | 78 |
+| wptserve substitution (.sub) | 69 |
 | declaration of background-image | 65 |
 | element <object> | 56 |
 | declaration of font-weight | 54 |
 | element <canvas> | 52 |
 | self-closing <div/> in XHTML | 48 |
+| a window | 47 |
 | element <video> | 47 |
 | element <embed> | 46 |
 | declaration of background | 44 |
@@ -83,9 +84,9 @@ The first reason the rule found for each test it left out:
 | declaration of flex-wrap | 38 |
 | SVG <textpath> (G87) | 37 |
 | declaration of transform | 36 |
-| https: | 36 |
 | nested rule | 36 |
 | element <hr> | 35 |
+| wptserve pipe | 35 |
 | @counter-style | 34 |
 | @scope | 32 |
 | declaration of visibility | 32 |
@@ -107,14 +108,15 @@ The first reason the rule found for each test it left out:
 | declaration of background-color | 20 |
 | declaration of contain | 20 |
 | input type=range | 18 |
+| a frame of another kind than iframe | 17 |
 | external SVG reference (G87) | 17 |
 | declaration of filter | 16 |
-| wptserve pipe | 16 |
 | @namespace | 15 |
 | declaration of border-top-left-radius | 14 |
 | declaration of link-parameters | 14 |
 | declaration of object-view-box | 14 |
 | declaration of zoom | 14 |
+| BroadcastChannel (G84) | 13 |
 | SVG <image> (G87) | 13 |
 | declaration of block-size | 13 |
 | declaration of columns | 13 |
@@ -133,7 +135,6 @@ The first reason the rule found for each test it left out:
 | declaration of text-decoration-skip-spaces | 10 |
 | declaration of text-decoration-skip-ink | 9 |
 | unchecked attribute data-expected | 9 |
-| BroadcastChannel (G84) | 8 |
 | a blob: URL (G68) | 8 |
 | element <meter> | 8 |
 | declaration of break-after | 7 |
@@ -172,7 +173,6 @@ The first reason the rule found for each test it left out:
 | @starting-style | 3 |
 | HDR (G81) | 3 |
 | SVG <filter> (G87) | 3 |
-| another host | 3 |
 | declaration of -webkit-text-fill-color | 3 |
 | declaration of accent-color | 3 |
 | declaration of background-position-x | 3 |
@@ -190,6 +190,7 @@ The first reason the rule found for each test it left out:
 | element <marquee> | 3 |
 | input type=datetime-local | 3 |
 | input type=file | 3 |
+| missing file resources/WebIDLParser.js | 3 |
 | missing file svg/styling/about:blank | 3 |
 | not for a window or a dedicated worker | 3 |
 | SVG <mask> (G87) | 2 |
@@ -219,6 +220,7 @@ The first reason the rule found for each test it left out:
 | declaration of text-size-adjust | 2 |
 | declaration of translate | 2 |
 | declaration of unicode-bidi | 2 |
+| missing file content-security-policy/script-src/data:text/javascript;charset=utf-8;base64,ZGF0YVNjcmlwdFJhbiA9IHRydWU7 | 2 |
 | missing file css/css-transforms/about:blank | 2 |
 | namespaces in XHTML | 2 |
 | self-closing <fieldset/> in XHTML | 2 |
@@ -310,8 +312,10 @@ The first reason the rule found for each test it left out:
 | element <frameset> | 1 |
 | input type=color | 1 |
 | input type=week | 1 |
+| its frame's page asks a Python handler (delay.py): on the runner's server the request ends at once, before the navigation or after it by chance | 1 |
 | link to  | 1 |
 | link to //[ | 1 |
+| link to {{location[scheme]}}://{{location[host]}}/content-security-policy/support/checkReport.sub.js | 1 |
 | missing file css/css-cascade/data:text/css,@layer foo;@media(all){} | 1 |
 | missing file css/css-cascade/data:text/css,@layer{target{background-color:green !important}} | 1 |
 | missing file css/css-cascade/data:text/css,@layer{target{background-color:green}} | 1 |
@@ -321,13 +325,13 @@ The first reason the rule found for each test it left out:
 | missing file css/selectors/data:text/css,.a{--x:%22%EF%89%BB%22;}.b{} | 1 |
 | missing file css/selectors/data:text/css,a{xyz | 1 |
 | missing file dom/nodes/insertion-removing-steps/data:text/css,%23div{display:none} | 1 |
-| missing file resources/WebIDLParser.js | 1 |
 | missing file svg/painting/reftests/about:blank | 1 |
 | missing file svg/styling/render/transform-origin-not-explicit-style-ref.svg | 1 |
 | not well-formed XML: error on line 1 at column 1: Start tag expected, '<' not found | 1 |
 | not well-formed XML: error on line 1 at column 1: StartTag: invalid element name | 1 |
 | self-closing <rect/> in XHTML | 1 |
 | self-closing <span/> in XHTML | 1 |
+| two frames race for its one result, and a same-origin frame's location is unreadable here (G90): it passes or fails as their responses come | 1 |
 | unchecked attribute data-bar | 1 |
 | unchecked attribute data-crash | 1 |
 | unchecked attribute data-e2 | 1 |

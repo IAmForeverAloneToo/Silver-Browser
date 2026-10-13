@@ -487,6 +487,18 @@ impl FrameTree {
     pub(crate) fn frames(&self) -> usize {
         self.nodes.len() - 1
     }
+
+    /// How deep the tab's frames nest: 0 with none.
+    pub(crate) fn depth(&self) -> usize {
+        let depth_of = |mut at: FrameId| {
+            let mut depth = 0;
+            while let Some(parent) = self.parent(at) {
+                (depth, at) = (depth + 1, parent);
+            }
+            depth
+        };
+        self.nodes.keys().map(|&id| depth_of(id)).max().unwrap_or(0)
+    }
 }
 
 /// The tree, locked.
@@ -1366,8 +1378,10 @@ impl Engine {
     /// the elements of those that loaded. Whether one wants a frame.
     pub(crate) fn poll_frames(&mut self) -> bool {
         let mut wants = false;
-        for frame in self.shown.frames.values_mut() {
-            wants |= frame.engine.poll_network();
+        for node in self.frames_in_run_order() {
+            if let Some(frame) = self.shown.frames.get_mut(&node) {
+                wants |= frame.engine.poll_network();
+            }
         }
         self.tell_frame_loads();
         wants
@@ -1377,8 +1391,10 @@ impl Engine {
     /// those that loaded. Whether one wants a frame.
     pub(crate) fn run_frame_tasks(&mut self) -> bool {
         let mut wants = false;
-        for frame in self.shown.frames.values_mut() {
-            wants |= frame.engine.run_tasks();
+        for node in self.frames_in_run_order() {
+            if let Some(frame) = self.shown.frames.get_mut(&node) {
+                wants |= frame.engine.run_tasks();
+            }
         }
         self.tell_frame_loads();
         wants
@@ -1476,6 +1492,23 @@ impl Engine {
             .subtree(document.root())
             .filter(|node| self.shown.frames.contains_key(node))
             .collect()
+    }
+
+    /// Every frame, in the order their work is done (M33): their
+    /// elements' tree order, then any whose element has left, so that
+    /// what they post one another comes in the same order every run.
+    fn frames_in_run_order(&self) -> Vec<NodeId> {
+        let mut order = self.frames_in_order();
+        let mut rest: Vec<NodeId> = self
+            .shown
+            .frames
+            .keys()
+            .filter(|node| !order.contains(node))
+            .copied()
+            .collect();
+        rest.sort_unstable();
+        order.extend(rest);
+        order
     }
 
     /// The `iframe` whose frame the viewport point `(x, y)` is over, and

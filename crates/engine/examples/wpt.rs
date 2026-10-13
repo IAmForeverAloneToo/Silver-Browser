@@ -166,6 +166,37 @@ const TESTHARNESS_DIRECTORIES: &[(&str, &str)] = &[
     ("webmessaging", ""),
     ("html/infrastructure/safe-passing-of-structured-data", ""),
     ("html/webappapis/structured-clone", ""),
+    // Frames and the policies about them (M33): served on the runner's
+    // host and its subdomains, `.sub` templates filled.
+    ("content-security-policy", ""),
+    ("html/browsers/sandboxing", ""),
+    ("referrer-policy", ""),
+    ("html/semantics/embedded-content/the-iframe-element", ""),
+];
+
+/// Tests the rule would take that are left out by name, and why: what the
+/// rule's look at a test's own text cannot see (M33).
+const TESTS_LEFT_OUT: &[(&str, &str)] = &[
+    (
+        "xhr/abort-during-navigation.window.js",
+        "its frame's page asks a Python handler (delay.py): on the runner's server the \
+         request ends at once, before the navigation or after it by chance",
+    ),
+    (
+        "content-security-policy/frame-ancestors/frame-ancestors-path-ignored.window.js",
+        "two frames race for its one result, and a same-origin frame's location is \
+         unreadable here (G90): it passes or fails as their responses come",
+    ),
+];
+
+/// M33's directories, whose `support` and `resources` pages and scripts
+/// are copied whole, but for Python handlers: the pages their frames
+/// load are named by scripts, not by the tests' markup.
+const FRAME_DIRECTORIES: &[&str] = &[
+    "content-security-policy",
+    "html/browsers/sandboxing",
+    "referrer-policy",
+    "html/semantics/embedded-content/the-iframe-element",
 ];
 
 /// The directories of the canvas's tests left out, and why: what the
@@ -209,6 +240,16 @@ const SUPPORT_DIRECTORIES: &[&str] = &[
     "webmessaging",
     "html/infrastructure/safe-passing-of-structured-data",
     "html/webappapis/structured-clone",
+    // M33's: the pages their frames load, and `/common/`'s helpers
+    // (`get-host-info.sub.js` among them).
+    "common",
+    "content-security-policy/support",
+    "content-security-policy/resources",
+    "html/browsers/sandboxing/resources",
+    "x-frame-options/support",
+    "referrer-policy/generic",
+    "html/semantics/embedded-content/the-iframe-element/support",
+    "html/semantics/embedded-content/the-iframe-element/resources",
 ];
 
 /// How deep `@import`s may go; the engine fetches no deeper.
@@ -415,7 +456,10 @@ fn pull(checkout: &Path) -> Result<(), String> {
         // script, a Python handler or a template.
         for (directory, _) in TESTHARNESS_DIRECTORIES {
             let mut data = Vec::new();
-            walk(&checkout.join(directory), &mut data)?;
+            match FRAME_DIRECTORIES.contains(directory) {
+                true => walk_all(&checkout.join(directory), &mut data)?,
+                false => walk(&checkout.join(directory), &mut data)?,
+            }
             for path in data {
                 let rel = relative(checkout, &path)?;
                 let name = rel.rsplit('/').next().unwrap_or(&rel);
@@ -425,9 +469,14 @@ fn pull(checkout: &Path) -> Result<(), String> {
                 let expected = kind == "png"
                     && path.with_extension("html").is_file()
                     && rel.starts_with("html/canvas/");
-                if !matches!(kind, "html" | "htm" | "xhtml" | "js" | "py" | "yml" | "md")
-                    && !name.contains(".sub.")
-                    && !expected
+                let frames_support = FRAME_DIRECTORIES
+                    .iter()
+                    .any(|d| rel.starts_with(&format!("{d}/")))
+                    && (rel.contains("/support/") || rel.contains("/resources/"))
+                    && !matches!(kind, "py" | "yml" | "md");
+                if frames_support
+                    || (!matches!(kind, "html" | "htm" | "xhtml" | "js" | "py" | "yml" | "md")
+                        && !expected)
                 {
                     files.insert(rel);
                 }
@@ -439,7 +488,7 @@ fn pull(checkout: &Path) -> Result<(), String> {
             for path in support {
                 let rel = relative(checkout, &path)?;
                 let name = rel.rsplit('/').next().unwrap_or(&rel);
-                if !name.ends_with(".py") && !name.contains(".sub.") {
+                if !name.ends_with(".py") {
                     files.insert(rel);
                 }
             }
@@ -654,32 +703,11 @@ fn served_here(text: &str) -> Result<(), String> {
     {
         return Err("a shared or service worker".to_string());
     }
-    // In any case: a tag name is (`createElement("IFRAME")`, M28).
-    let lower = text.to_ascii_lowercase();
-    if [
-        "createelement(\"iframe\")",
-        "createelement('iframe')",
-        "window.open(",
-        ".contentwindow",
-    ]
-    .iter()
-    .any(|frame| lower.contains(frame))
-    {
-        return Err("a frame".to_string());
-    }
-    let hosts = [
-        "get_host_info",
-        "{{host",
-        "{{domains",
-        "{{hosts",
-        "REMOTE_ORIGIN",
-        "REMOTE_HOST",
-        "OTHER_ORIGIN",
-        "www1.",
-        "www2.",
-    ];
-    if hosts.iter().any(|host| text.contains(host)) {
-        return Err("another host".to_string());
+    // A window a script opens, which this version has none of (M37);
+    // frames are taken since M33, and other hosts, the runner serving
+    // its host's subdomains and another site's.
+    if text.to_ascii_lowercase().contains("window.open(") {
+        return Err("a window".to_string());
     }
     Ok(())
 }
@@ -693,10 +721,10 @@ fn take_testharness(
     checkout: &Path,
     rel: &str,
 ) -> Result<(Vec<String>, bool, Vec<String>), String> {
-    let name = rel.rsplit('/').next().unwrap_or(rel);
-    if name.contains(".sub.") {
-        return Err("wptserve substitution (.sub)".to_string());
+    if let Some((_, why)) = TESTS_LEFT_OUT.iter().find(|(test, _)| *test == rel) {
+        return Err((*why).to_string());
     }
+    let name = rel.rsplit('/').next().unwrap_or(rel);
     if name.contains(".https.") || name.contains(".h2.") {
         return Err("https:".to_string());
     }
@@ -793,8 +821,8 @@ fn take_testharness(
                         .is_some_and(|n| n.eq_ignore_ascii_case("timeout"))
                         && document.attr(id, "content") == Some("long");
                 }
-                Some("iframe" | "frame" | "object" | "embed") => {
-                    return Err("a frame".to_string());
+                Some("frame" | "object" | "embed") => {
+                    return Err("a frame of another kind than iframe".to_string());
                 }
                 _ => {}
             }
@@ -805,9 +833,6 @@ fn take_testharness(
         (vec![rel.to_string()], long)
     };
     for script in &scripts {
-        if script.contains(".sub.") {
-            return Err("wptserve substitution (.sub)".to_string());
-        }
         if let Some((_, functions)) = HOST_HELPERS.iter().find(|(helper, _)| helper == script) {
             if functions.iter().any(|function| source.contains(function)) {
                 return Err("another host".to_string());
@@ -2411,6 +2436,8 @@ mod tests {
                 ),
                 ("fetch/a/s.https.any.js", "test(() => {});"),
                 ("fetch/a/t.sub.any.js", "test(() => {});"),
+                ("fetch/a/open.any.js", "window.open('x.html');"),
+                ("fetch/a/fs.html", &format!("{harness}<frame src=x.html>")),
                 ("fetch/a/none.html", "<p>no harness</p>"),
                 // M31's: workers.
                 ("fetch/a/shared.any.js", "new SharedWorker('w.js');"),
@@ -2510,7 +2537,6 @@ mod tests {
         for (rel, why) in [
             ("fetch/a/py.any.js", "Python handler"),
             ("fetch/a/inc.any.js", "Python handler"),
-            ("fetch/a/host.any.js", "another host"),
             ("fetch/a/pipe.any.js", "wptserve pipe"),
             ("fetch/a/shared.any.js", "a shared or service worker"),
             (
@@ -2522,14 +2548,22 @@ mod tests {
             ("workers/a/module.html", "a module worker (G41)"),
             ("workers/a/sab.any.js", "SharedArrayBuffer (G83)"),
             ("workers/a/bc.any.js", "BroadcastChannel (G84)"),
-            ("fetch/a/frame.any.js", "a frame"),
-            ("fetch/a/upper.any.js", "a frame"),
-            ("fetch/a/f.html", "a frame"),
+            ("fetch/a/open.any.js", "a window"),
+            ("fetch/a/fs.html", "a frame of another kind than iframe"),
             ("fetch/a/s.https.any.js", "https:"),
-            ("fetch/a/t.sub.any.js", "wptserve substitution (.sub)"),
             ("fetch/a/none.html", "not a testharness test"),
         ] {
             assert_eq!(take(rel), Err(why.to_string()), "{rel}");
+        }
+        // Since M33: frames, other hosts and templates.
+        for rel in [
+            "fetch/a/host.any.js",
+            "fetch/a/frame.any.js",
+            "fetch/a/upper.any.js",
+            "fetch/a/f.html",
+            "fetch/a/t.sub.any.js",
+        ] {
+            assert!(take(rel).is_ok(), "{rel}: {:?}", take(rel));
         }
         assert!(is_testharness_test("t.any.js") && is_testharness_test("p.html"));
         assert!(is_testharness_test("t.worker.js"));

@@ -330,3 +330,31 @@ fn a_form_submits_into_the_frame_its_target_names() {
         .replace(&server.url("/").port().unwrap().to_string(), "PORT");
     assert_eq!(lines, [format!("[frame {formed}] formed ?q=1")]);
 }
+
+#[test]
+fn frames_answer_in_tree_order_every_time() {
+    // Six frames each answer their parent's message; their work is done
+    // in their elements' order (M33), so the answers come in it, as the
+    // web-platform tests of messages between frames expect.
+    static PAGES: &[(&str, &str)] = &[
+        (
+            "/top.html",
+            "<script>var got = []; addEventListener('message', e => { got.push(e.data); \
+             if (got.length === 6) console.log(got.join(' ')); }); \
+             onload = () => { for (var i = 0; i < 6; i++) frames[i].postMessage(i, '*'); };</script>\
+             <iframe src=/f.html></iframe><iframe src=/f.html></iframe><iframe src=/f.html></iframe>\
+             <iframe src=/f.html></iframe><iframe src=/f.html></iframe><iframe src=/f.html></iframe>",
+        ),
+        (
+            "/f.html",
+            "<script>addEventListener('message', e => parent.postMessage(e.data, '*'));</script>",
+        ),
+    ];
+    let server = sites(PAGES);
+    for _ in 0..3 {
+        assert_eq!(
+            run(&server, at(&server, "a.localhost", "/top.html"), 1),
+            ["0 1 2 3 4 5"]
+        );
+    }
+}

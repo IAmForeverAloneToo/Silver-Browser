@@ -1556,3 +1556,462 @@ svg/text/reftests/xml-lang-attribute.svg                                        
 svg/text/reftests/text-bidi-controls-anchors-1.svg                               bidirectional SVG text (G87)
 svg/text/reftests/text-bidi-controls-anchors-2.svg                               bidirectional SVG text (G87)
 svg/render/reftests/render-sync-with-font-size.html                              the svg element's load event (SVG 2's SVGLoad) is not fired, so its onload never removes reftest-wait
+
+# Tests taken at M33 (docs/design/hardening.md, step 15): the
+# testharness.js tests of content-security-policy, html/browsers/sandboxing,
+# x-frame-options, referrer-policy, the iframe element's and
+# upgrade-insecure-requests, and the tests of the subset's directories the
+# rule left out before for a frame, another host or a .sub template. The
+# runner serves its host and its subdomains (web-platform.localhost, its
+# www, www1 and www2, and not-web-platform.localhost for another site) on
+# its one port, fills the templates, and sends a test's .headers with the
+# pages it makes of it. These fail by a gap named at its milestone, by what
+# the runner's one server cannot serve, or for a cause not diagnosed at
+# M33, said so and registered in its notes.
+fetch/api/request/multi-globals/construct-in-detached-frame.window.html	creating a request from another request in a detached realm should work	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+fetch/api/request/multi-globals/url-parsing.html	should parse the URL relative to the current settings object	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+fetch/api/request/request-keepalive.any.html	keepalive flag with stream body	no streams (G67)
+fetch/api/request/request-keepalive.any.worker.html	keepalive flag with stream body	no streams (G67)
+fetch/api/response/multi-globals/url-parsing.html	should parse the redirect Location URL relative to the current settings object	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+fetch/api/response/response-arraybuffer-realm.window.html	realm of the ArrayBuffer from Response arrayBuffer()	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+fetch/api/response/response-blob-realm.any.html	realm of the Uint8Array from Response bytes()	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+xhr/open-url-about-blank-window.htm	XMLHttpRequest: open() resolving URLs (about:blank iframe)	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+xhr/open-url-javascript-window-2.htm                                                     a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+xhr/open-url-javascript-window.htm                                                       a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+xhr/open-url-multi-window-2.htm                                                          a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+xhr/open-url-multi-window-3.htm                                                          a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+xhr/open-url-multi-window-4.htm                                                          a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+xhr/open-url-multi-window-5.htm                                                          a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+xhr/open-url-multi-window.htm                                                            a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+xhr/security-consideration.sub.html	ProgressEvent: security consideration	another origin's error fires progress events here, where the standard sends none; not diagnosed at M33 (registered)
+xhr/xmlhttprequest-sync-block-defer-scripts.html                                         times out; not diagnosed at M33 (registered)
+xhr/xmlhttprequest-sync-not-hang-scriptloader.html                                       times out; not diagnosed at M33 (registered)
+webstorage/document-domain.html	localStorage and document.domain	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+webstorage/event_basic.html                                                              a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+webstorage/event_body_attribute.html	sessionStorage mutations fire StorageEvents that are caught by the event listener specified as an attribute on the body.	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+webstorage/event_body_attribute.html	localStorage mutations fire StorageEvents that are caught by the event listener specified as an attribute on the body.	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+webstorage/event_case_sensitive.html                                                     a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+webstorage/event_local_removeitem.html                                                   a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+webstorage/event_no_duplicates.html                                                      a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+webstorage/event_session_removeitem.html                                                 a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+webstorage/event_setattribute.html	sessionStorage mutations fire StorageEvents that are caught by the event listener attached via setattribute.	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+webstorage/event_setattribute.html	localStorage mutations fire StorageEvents that are caught by the event listener attached via setattribute.	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+webstorage/localstorage-about-blank-3P-iframe-opens-3P-window.partitioned.html           a window a script opens or a link targets, popups being M37's
+webstorage/localstorage-share-data-unrelated-origins.html	Ensure two about:srcdoc origins cannot share localstorage	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+workers/Worker-location.sub.any.worker.html	Test WorkerLocation properties.	an interface object's string is its class's source here, not [native code]
+workers/WorkerLocation-origin.sub.window.html	workerLocation.origin must use ASCII code points	no URL class (G68)
+workers/interfaces/WorkerUtils/importScripts/report-error-cross-origin.sub.any.worker.html	WorkerGlobalScope error event: filename	another origin's imported script's error is not muted to the worker's own location and line here
+workers/interfaces/WorkerUtils/importScripts/report-error-cross-origin.sub.any.worker.html	WorkerGlobalScope error event: lineno	another origin's imported script's error is not muted to the worker's own location and line here
+workers/interfaces/WorkerUtils/importScripts/report-error-setTimeout-cross-origin.sub.any.worker.html	WorkerGlobalScope error event: filename	another origin's imported script's error is not muted to the worker's own location and line here
+workers/interfaces/WorkerUtils/importScripts/report-error-setTimeout-cross-origin.sub.any.worker.html	WorkerGlobalScope error event: lineno	another origin's imported script's error is not muted to the worker's own location and line here
+workers/multi-globals/url-parsing.html	Multiple globals for Worker constructor: parsing scriptURL	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+workers/semantics/navigation/001.html                                                    a frame's navigations in the tab's session history, the joint session history (G92)
+workers/semantics/navigation/002.html                                                    a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+webmessaging/Channel_postMessage_transfer_xsite_incoming_messages.window.html            a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+webmessaging/event.origin.sub.htm	Test Description: event.origin returns the origin of the message.	a host with a non-ASCII label (IDNA) is not resolved by the runner's names under localhost
+webmessaging/event.source.htm	Test Description: Same-origin: event.source returns the WindowProxy of the source window.	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+webmessaging/multi-globals/messageport-current.html	Making the current page become non-active must prevent message transmission	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+webmessaging/multi-globals/messageport-incumbent.html	Making the incumbent page become non-active must not prevent message transmission	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+webmessaging/postMessage-to-target-not-fully-active-on-reload.html	postMessage() to a target whose document is no longer fully active (after a reload) is not delivered	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+webmessaging/postMessage_Document.htm	Test Description: postMessage with Document object: Throw a DataCloneError if message could not be cloned.	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+webmessaging/postMessage_Function.htm	Test Description: postMessage with Function object: Throw a DataCloneError if message could not be cloned.	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+webmessaging/postMessage_cross_domain_image_transfer_2d.sub.htm	sending 2D canvas ImageBitmap to http://web-platform.localhost:PORT	an ImageBitmap in a transfer list (G85)
+webmessaging/postMessage_cross_domain_image_transfer_2d.sub.htm	sending 2D canvas ImageBitmap to http://www1.web-platform.localhost:PORT	an ImageBitmap in a transfer list (G85)
+webmessaging/postMessage_cross_domain_image_transfer_2d.sub.htm	sending 2D canvas ImageBitmap to http://not-web-platform.localhost:PORT	an ImageBitmap in a transfer list (G85)
+webmessaging/postMessage_crosssite.sub.htm	cross-site windows can send transferred ArrayBuffer	no URL class (G68)
+webmessaging/postMessage_dup_transfer_objects.htm	Test Description: postMessage with duplicate transfer objects raises DataCloneError exception.	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+webmessaging/postMessage_invalid_targetOrigin.htm	Test Description: If the value of the targetOrigin argument is neither a single U+002A ASTERISK character (*), a single U+002F SOLIDUS character (/), nor an absolute URL, then throw a SyntaxError exception and abort the overall set of steps.	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+webmessaging/with-ports/017.html	origin of the script that invoked the method, about:blank	a javascript: URL or about:blank window opened by the test (popups, M37)
+webmessaging/with-ports/018.html	origin of the script that invoked the method, javascript:	a javascript: URL or about:blank window opened by the test (popups, M37)
+webmessaging/with-ports/019.html	origin of the script that invoked the method, scheme/host/port	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+webmessaging/without-ports/017.html	origin of the script that invoked the method, about:blank	a javascript: URL or about:blank window opened by the test (popups, M37)
+webmessaging/without-ports/018.html	origin of the script that invoked the method, javascript:	a javascript: URL or about:blank window opened by the test (popups, M37)
+webmessaging/without-ports/019.html	origin of the script that invoked the method, scheme/host/port	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/infrastructure/safe-passing-of-structured-data/cross-origin-transfer-resizable-arraybuffer.html a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/infrastructure/safe-passing-of-structured-data/structured-cloning-error-extra.html  a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/infrastructure/safe-passing-of-structured-data/structured-cloning-error-stack-optional.sub.window.html	page-created Error (cross-site iframe)	an error's stack is QuickJS-ng's, not in the reference browser's format
+html/infrastructure/safe-passing-of-structured-data/structured-cloning-error-stack-optional.sub.window.html	page-created Error (same-origin iframe)	an error's stack is QuickJS-ng's, not in the reference browser's format
+html/infrastructure/safe-passing-of-structured-data/structured-cloning-error-stack-optional.sub.window.html	page-created DOMException (structuredClone())	an error's stack is QuickJS-ng's, not in the reference browser's format
+html/infrastructure/safe-passing-of-structured-data/structured-cloning-error-stack-optional.sub.window.html	page-created DOMException (worker)	an error's stack is QuickJS-ng's, not in the reference browser's format
+html/infrastructure/safe-passing-of-structured-data/structured-cloning-error-stack-optional.sub.window.html	page-created DOMException (cross-site iframe)	an error's stack is QuickJS-ng's, not in the reference browser's format
+html/infrastructure/safe-passing-of-structured-data/structured-cloning-error-stack-optional.sub.window.html	page-created DOMException (same-origin iframe)	an error's stack is QuickJS-ng's, not in the reference browser's format
+html/infrastructure/safe-passing-of-structured-data/structured-cloning-error-stack-optional.sub.window.html	JS-engine-created TypeError (cross-site iframe)	an error's stack is QuickJS-ng's, not in the reference browser's format
+html/infrastructure/safe-passing-of-structured-data/structured-cloning-error-stack-optional.sub.window.html	JS-engine-created TypeError (same-origin iframe)	an error's stack is QuickJS-ng's, not in the reference browser's format
+html/infrastructure/safe-passing-of-structured-data/structured-cloning-error-stack-optional.sub.window.html	web API-created TypeError (structuredClone())	an error's stack is QuickJS-ng's, not in the reference browser's format
+html/infrastructure/safe-passing-of-structured-data/structured-cloning-error-stack-optional.sub.window.html	web API-created TypeError (worker)	an error's stack is QuickJS-ng's, not in the reference browser's format
+html/infrastructure/safe-passing-of-structured-data/structured-cloning-error-stack-optional.sub.window.html	web API-created TypeError (cross-site iframe)	an error's stack is QuickJS-ng's, not in the reference browser's format
+html/infrastructure/safe-passing-of-structured-data/structured-cloning-error-stack-optional.sub.window.html	web API-created TypeError (same-origin iframe)	an error's stack is QuickJS-ng's, not in the reference browser's format
+html/infrastructure/safe-passing-of-structured-data/structured-cloning-error-stack-optional.sub.window.html	web API-created DOMException (structuredClone())	an error's stack is QuickJS-ng's, not in the reference browser's format
+html/infrastructure/safe-passing-of-structured-data/structured-cloning-error-stack-optional.sub.window.html	web API-created DOMException (worker)	an error's stack is QuickJS-ng's, not in the reference browser's format
+html/infrastructure/safe-passing-of-structured-data/structured-cloning-error-stack-optional.sub.window.html	web API-created DOMException (cross-site iframe)	an error's stack is QuickJS-ng's, not in the reference browser's format
+html/infrastructure/safe-passing-of-structured-data/structured-cloning-error-stack-optional.sub.window.html	web API-created DOMException (same-origin iframe)	an error's stack is QuickJS-ng's, not in the reference browser's format
+html/infrastructure/safe-passing-of-structured-data/structuredclone_0.html	URIError objects from other realms are treated as URIError	no QuotaExceededError interface (a DOMException's subclass, new to the standard)
+html/infrastructure/safe-passing-of-structured-data/structuredclone_0.html	QuotaExceededError objects can be cloned	no QuotaExceededError interface (a DOMException's subclass, new to the standard)
+html/infrastructure/safe-passing-of-structured-data/structuredclone_0.html	QuotaExceededError objects with empty quota/requested can be cloned	no QuotaExceededError interface (a DOMException's subclass, new to the standard)
+html/webappapis/structured-clone/structured-clone-cross-realm-method.html	Object instance	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/webappapis/structured-clone/structured-clone-cross-realm-method.html	Array instance	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/webappapis/structured-clone/structured-clone-cross-realm-method.html	Date instance	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/webappapis/structured-clone/structured-clone-cross-realm-method.html	RegExp instance	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+content-security-policy/base-uri/base-uri-allow-leading-zero-port.sub.html	Check that base URIs can be set if they do not violate the page's policy because leading 0s are stripped from the port.	no Node.baseURI, which M25's surface left out
+content-security-policy/base-uri/base-uri-allow.sub.html	Check that base URIs can be set if they do not violate the page's policy.	no Node.baseURI, which M25's surface left out
+content-security-policy/base-uri/base-uri-deny-url-encoded-host.sub.html	Check that the baseURI is not set when it does not match the csp directive	no Node.baseURI, which M25's surface left out
+content-security-policy/base-uri/base-uri-deny.sub.html	Check that the baseURI is not set when it does not match the csp directive	no Node.baseURI, which M25's surface left out
+content-security-policy/base-uri/base-uri_iframe_sandbox.sub.html	base-uri 'self' works with same-origin sandboxed iframes.	no Node.baseURI, which M25's surface left out
+content-security-policy/base-uri/base-uri_iframe_sandbox.sub.html	base-uri 'self' blocks foreign-origin sandboxed iframes.	no Node.baseURI, which M25's surface left out
+content-security-policy/blob/blob-urls-do-not-match-self.sub.html                        no URL class (G68)
+content-security-policy/blob/blob-urls-match-blob.sub.html                               no URL class (G68)
+content-security-policy/blob/frame-src-blob-matches-blob.sub.html                        no URL class (G68)
+content-security-policy/blob/frame-src-self-does-not-match-blob.sub.html                 no URL class (G68)
+content-security-policy/blob/self-doesnt-match-blob.sub.html	Expecting logs: ["violated-directive=worker-src","TEST COMPLETE"]	no URL class (G68)
+content-security-policy/blob/star-doesnt-match-blob.sub.html	Expecting logs: ["violated-directive=worker-src","TEST COMPLETE"]	no URL class (G68)
+content-security-policy/connect-src/connect-src-beacon-blocked.sub.html	Expecting logs: ["Pass", "violated-directive=connect-src"]	no navigator.sendBeacon, which no milestone holds
+content-security-policy/connect-src/connect-src-eventsource-allowed.sub.html	Expecting logs: ["allowed"]	no WebSocket or EventSource (G74)
+content-security-policy/connect-src/connect-src-eventsource-blocked.sub.html	Expecting logs: ["blocked","violated-directive=connect-src"]	no WebSocket or EventSource (G74)
+content-security-policy/connect-src/connect-src-json-import-allowed.sub.html	import should be allowed	no module scripts (G41)
+content-security-policy/connect-src/connect-src-json-import-blocked.sub.html	connect-src-json-import-blocked	no module scripts (G41)
+content-security-policy/connect-src/connect-src-text-import-allowed.sub.html	import should be allowed	no module scripts (G41)
+content-security-policy/connect-src/connect-src-text-import-blocked.sub.html	connect-src-text-import-blocked	no module scripts (G41)
+content-security-policy/connect-src/connect-src-websocket-allowed.sub.html	Expecting logs: ["allowed"]	no WebSocket or EventSource (G74)
+content-security-policy/connect-src/connect-src-websocket-blocked.sub.html	Expecting logs: ["blocked","violated-directive=connect-src"]	no WebSocket or EventSource (G74)
+content-security-policy/connect-src/connect-src-websocket-self.sub.html	Expecting logs: ["allowed", "allowed"]	no WebSocket or EventSource (G74)
+content-security-policy/connect-src/worker-connect-src-allowed.sub.html	Expecting logs: ["xhr allowed"]	a worker's XMLHttpRequest that its policy allows fails here; not diagnosed at M33 (registered)
+content-security-policy/connect-src/worker-from-guid.sub.html	Expecting logs: ["violated-directive=connect-src","xhr blocked","TEST COMPLETE"]	no URL class (G68)
+content-security-policy/default-src/default-src-sri_hash.sub.html	matching integrity	Subresource Integrity (G43)
+content-security-policy/default-src/default-src-sri_hash.sub.html	matching integrity (case-insensitive algorithm)	Subresource Integrity (G43)
+content-security-policy/default-src/default-src-sri_hash.sub.html	multiple matching integrity	Subresource Integrity (G43)
+content-security-policy/default-src/default-src-sri_hash.sub.html	matching plus unsupported integrity	Subresource Integrity (G43)
+content-security-policy/default-src/default-src-sri_hash.sub.html	crossorigin no integrity but allowed host	Subresource Integrity (G43)
+content-security-policy/default-src/default-src-sri_hash.sub.html	crossorigin mismatched integrity but allowed host	Subresource Integrity (G43)
+content-security-policy/default-src/default-src-sri_hash.sub.html	External script in a script tag with matching SRI hash should run.	Subresource Integrity (G43)
+content-security-policy/embedded-enforcement/change-csp-attribute-and-history-navigation.html no URL class (G68)
+content-security-policy/embedded-enforcement/iframe-csp-attribute.html	<iframe> has a 'csp' attibute which is an empty string if undefined.	the csp attribute, embedded enforcement (G103)
+content-security-policy/embedded-enforcement/iframe-csp-attribute.html	<iframe>'s csp attribute is always a string.	the csp attribute, embedded enforcement (G103)
+content-security-policy/embedded-enforcement/iframe-csp-attribute.html	<iframe>'s 'csp content attribute reflects the IDL attribute.	the csp attribute, embedded enforcement (G103)
+content-security-policy/embedded-enforcement/iframe-csp-attribute.html	<iframe>'s IDL attribute reflects the DOM attribute.	the csp attribute, embedded enforcement (G103)
+content-security-policy/font-src/font-match-allowed.sub.html                             @font-face, FontFace and document.fonts (G12)
+content-security-policy/font-src/font-mismatch-blocked.sub.html                          @font-face, FontFace and document.fonts (G12)
+content-security-policy/font-src/font-none-blocked.sub.html                              @font-face, FontFace and document.fonts (G12)
+content-security-policy/font-src/font-self-allowed.html                                  @font-face, FontFace and document.fonts (G12)
+content-security-policy/font-src/font-stylesheet-font-blocked.sub.html                   @font-face, FontFace and document.fonts (G12)
+content-security-policy/form-action/form-action-self-allowed-target-blank.html           a window a script opens or a link targets, popups being M37's
+content-security-policy/form-action/form-action-src-allowed-target-blank.sub.html        a window a script opens or a link targets, popups being M37's
+content-security-policy/form-action/form-action-src-javascript-blocked.sub.html	Expecting logs: ["violated-directive=form-action","TEST COMPLETE"]	a javascript: form action is checked by script-src-elem before form-action here, so the violation names script-src-elem
+content-security-policy/frame-ancestors/frame-ancestors-nested-cross-in-cross-star-allow.html	A 'frame-ancestors' CSP directive with a value '*' should render in nested frames.	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+content-security-policy/frame-ancestors/frame-ancestors-nested-cross-in-cross-url-allow.html	A 'frame-ancestors' CSP directive with a URL value should block or allow rendering in nested frames as appropriate.	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+content-security-policy/frame-ancestors/frame-ancestors-nested-same-in-cross-star-allow.html	A 'frame-ancestors' CSP directive with a value '*' should render in nested frames.	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+content-security-policy/frame-ancestors/frame-ancestors-nested-same-in-cross-url-allow.html	A 'frame-ancestors' CSP directive with a URL value should block or allow rendering in nested frames as appropriate.	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+content-security-policy/frame-ancestors/frame-ancestors-nested-same-in-same-self-allow.html	A 'frame-ancestors' CSP directive with a value 'self' should block render in same-origin nested frames.	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+content-security-policy/frame-ancestors/frame-ancestors-nested-same-in-same-star-allow.html	A 'frame-ancestors' CSP directive with a value '*' should render in nested frames.	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+content-security-policy/frame-ancestors/frame-ancestors-nested-same-in-same-url-allow.html	A 'frame-ancestors' CSP directive with a URL value should block or allow rendering in nested frames as appropriate.	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+content-security-policy/frame-ancestors/frame-ancestors-overrides-xfo.html	A 'frame-ancestors' CSP directive overrides an 'x-frame-options' header which would block the page.	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+content-security-policy/frame-ancestors/frame-ancestors-self-allow.html	A 'frame-ancestors' CSP directive with a value 'self' should allow rendering.	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+content-security-policy/frame-ancestors/frame-ancestors-star-allow-sameorigin.html	A 'frame-ancestors' CSP directive with '*' should allow rendering.	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+content-security-policy/frame-ancestors/frame-ancestors-url-allow.sub.html	A 'frame-ancestors' CSP directive with a URL matching this origin should allow rendering.	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+content-security-policy/frame-src/frame-src-blocked-path-matching.sub.html               times out waiting for the blocked frame's signal; not diagnosed at M33 (registered)
+content-security-policy/generic/filesystem-urls-do-not-match-self.sub.html               no filesystem: URLs, the reference browser's alone
+content-security-policy/generic/filesystem-urls-match-filesystem.sub.html	Expecting logs: ["PASS (1/1)"]	no filesystem: URLs, the reference browser's alone
+content-security-policy/generic/generic-0_2_2.sub.html                                   times out; not diagnosed at M33 (registered)
+content-security-policy/generic/generic-0_8.sub.html	Test that script does not fire violation event	the runner serves one http port, where wptserve has two: the test's two ports are one here, so a port it means to differ matches
+content-security-policy/generic/generic-0_8.sub.html	Wildcard host matching works.	the runner serves one http port, where wptserve has two: the test's two ports are one here, so a port it means to differ matches
+content-security-policy/generic/generic-0_9.sub.html	Wildcard port matching works.	the runner serves one http port, where wptserve has two: the test's two ports are one here, so a port it means to differ matches
+content-security-policy/generic/no-default-src.sub.html	Violation report status OK.	the test's report check needs a Python handler the runner's server has not (its template is left unfilled)
+content-security-policy/generic/only-valid-whitespaces-are-allowed.html	U+000B VT    should not be parsed inside directive value - meta tag	U+000B in a directive's value splits it here, where the standard keeps it in the value; not diagnosed at M33 (registered)
+content-security-policy/generic/only-valid-whitespaces-are-allowed.html	U+000B VT    should not be parsed inside directive value - HTTP header	U+000B in a directive's value splits it here, where the standard keeps it in the value; not diagnosed at M33 (registered)
+content-security-policy/generic/policy-inherited-correctly-by-plznavigate.html           a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+content-security-policy/generic/wildcard-host-part-002.sub.window.html	Host wildcard doesn't affect port matching (port PORT).	the runner serves one http port, where wptserve has two: the test's two ports are one here, so a port it means to differ matches
+content-security-policy/generic/wildcard-host-part.sub.window.html	Host wildcard doesn't affect port matching (port PORT).	the runner serves one http port, where wptserve has two: the test's two ports are one here, so a port it means to differ matches
+content-security-policy/img-src/css-filter-blocked.tentative.html                        CSS filters (G81) and SVG's filter element (G87): the violation it waits for never comes
+content-security-policy/img-src/icon-blocked.sub.html                                    a refused icon's violation reaches no listener here; not diagnosed at M33 (registered)
+content-security-policy/img-src/img-src-wildcard-allowed.html	img-src with wildcard should not match blob	no URL class (G68)
+content-security-policy/img-src/svg-use-blocked.tentative.html                           a use of another document's element (G87): the violation it waits for never comes
+content-security-policy/inheritance/blob-inherits-from-meta-http-equiv-with-invalid-characters.html	blob: URL inherits CSP from a meta tag whose contents have newline characters.	no URL class (G68)
+content-security-policy/inheritance/document-write-iframe.html	document.open() keeps inherited CSPs on initial about:blank.	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+content-security-policy/inheritance/document-write-iframe.html	document.open() does not change delivered CSPs.	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+content-security-policy/inheritance/document-write-iframe.html	document.open() keeps inherited CSPs on transient about:blank.	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+content-security-policy/inheritance/frame-src-javascript-url.html                        no URL class (G68)
+content-security-policy/inheritance/history-iframe.sub.html                              no URL class (G68)
+content-security-policy/inheritance/iframe-all-local-schemes-inherit-self.sub.html	<iframe>'s about:blank inherits policy.	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+content-security-policy/inheritance/iframe-all-local-schemes-inherit-self.sub.html	<iframe src='blob:...'>'s inherits policy.	no URL class (G68)
+content-security-policy/inheritance/iframe-all-local-schemes-inherit-self.sub.html	<iframe src='data:...'>'s inherits policy.	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+content-security-policy/inheritance/iframe-all-local-schemes-inherit-self.sub.html	<iframe sandbox src='blob:...'>'s inherits policy. (opaque origin sandbox)	no URL class (G68)
+content-security-policy/inheritance/iframe-srcdoc-history-inheritance.html               a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+content-security-policy/inheritance/iframe-srcdoc-inheritance.html                       times out waiting for the frame's report; not diagnosed at M33 (registered)
+content-security-policy/inheritance/javascript-url-srcdoc-cross-origin-iframe-inheritance.html times out waiting for the frame's report; not diagnosed at M33 (registered)
+content-security-policy/inheritance/location-reload.html                                 no URL class (G68)
+content-security-policy/inside-worker/dedicatedworker-report-only.html                   a worker's violations fire no securitypolicyviolation event and send no report (M33 step 8, registered)
+content-security-policy/media-src/media-src-7_1.html                                     no audio or video, media being a later milestone's
+content-security-policy/media-src/media-src-7_1_2.sub.html                               no audio or video, media being a later milestone's
+content-security-policy/media-src/media-src-7_2.html                                     no audio or video, media being a later milestone's
+content-security-policy/media-src/media-src-7_2_2.sub.html                               no audio or video, media being a later milestone's
+content-security-policy/media-src/media-src-7_3.sub.html                                 no audio or video, media being a later milestone's
+content-security-policy/media-src/media-src-7_3_2.sub.html                               no audio or video, media being a later milestone's
+content-security-policy/media-src/media-src-blocked-blob-url.html	Video with blob: URL blocked when blob: not in media-src	no URL class (G68)
+content-security-policy/media-src/media-src-blocked-blob-url.html	Audio with blob: URL blocked when blob: not in media-src	no URL class (G68)
+content-security-policy/media-src/media-src-blocked-data-url.html                        no audio or video, media being a later milestone's
+content-security-policy/media-src/media-src-blocked.sub.html                             no audio or video, media being a later milestone's
+content-security-policy/navigation/to-javascript-url-frame-src.html                      a javascript: URL a frame navigates to is not run (registered)
+content-security-policy/nonce-hiding/dangling-html-or-body.html	Nonces don't leak via CSS side-channels when a dangling body is injected.	getComputedStyle gives '' for background-image read by its hyphenated name here, so the test cannot see whether the nonce leaked
+content-security-policy/nonce-hiding/dangling-html-or-body.html	Nonces don't leak via CSS side-channels when a dangling html is injected.	getComputedStyle gives '' for background-image read by its hyphenated name here, so the test cannot see whether the nonce leaked
+content-security-policy/nonce-hiding/nonce-hiding-move-document.html	Nonce isn't lost on document move	no document.implementation.createDocument (G70: no second document)
+content-security-policy/nonce-hiding/nonces-css-selector.html	Nonce on BODY tag don't leak via CSS side-channels.	getComputedStyle gives '' for background-image read by its hyphenated name here, so the test cannot see whether the nonce leaked
+content-security-policy/nonce-hiding/nonces-css-selector.html	Nonce on DIV tag don't leak via CSS side-channels.	getComputedStyle gives '' for background-image read by its hyphenated name here, so the test cannot see whether the nonce leaked
+content-security-policy/nonce-hiding/nonces-css-selector.html	Nonce on SCRIPT tag don't leak via CSS side-channels.	getComputedStyle gives '' for background-image read by its hyphenated name here, so the test cannot see whether the nonce leaked
+content-security-policy/nonce-hiding/nonces-css-selector.html	Nonce on svg tag don't leak via CSS side-channels.	getComputedStyle gives '' for background-image read by its hyphenated name here, so the test cannot see whether the nonce leaked
+content-security-policy/nonce-hiding/nonces-css-selector.html	Nonce on g tag don't leak via CSS side-channels.	getComputedStyle gives '' for background-image read by its hyphenated name here, so the test cannot see whether the nonce leaked
+content-security-policy/nonce-hiding/nonces-css-selector.html	Nonce on script tag don't leak via CSS side-channels.	getComputedStyle gives '' for background-image read by its hyphenated name here, so the test cannot see whether the nonce leaked
+content-security-policy/nonce-hiding/nonces-css-selector.html	Nonce on math tag don't leak via CSS side-channels.	getComputedStyle gives '' for background-image read by its hyphenated name here, so the test cannot see whether the nonce leaked
+content-security-policy/nonce-hiding/nonces-css-selector.html	Nonce on mrow tag don't leak via CSS side-channels.	getComputedStyle gives '' for background-image read by its hyphenated name here, so the test cannot see whether the nonce leaked
+content-security-policy/nonce-hiding/nonces-css-selector.html	Nonce on mtext tag don't leak via CSS side-channels.	getComputedStyle gives '' for background-image read by its hyphenated name here, so the test cannot see whether the nonce leaked
+content-security-policy/nonce-hiding/nonces.html	Basic nonce tests for meh in HTML namespace	a nonce's content attribute is hidden when the parser inserts its element, not when a script inserts it (M33 step 7)
+content-security-policy/nonce-hiding/nonces.html	Basic nonce tests for div in HTML namespace	a nonce's content attribute is hidden when the parser inserts its element, not when a script inserts it (M33 step 7)
+content-security-policy/nonce-hiding/nonces.html	Basic nonce tests for script in HTML namespace	a nonce's content attribute is hidden when the parser inserts its element, not when a script inserts it (M33 step 7)
+content-security-policy/nonce-hiding/nonces.html	Basic nonce tests for meh in SVG namespace	a nonce's content attribute is hidden when the parser inserts its element, not when a script inserts it (M33 step 7)
+content-security-policy/nonce-hiding/nonces.html	Basic nonce tests for svg in SVG namespace	a nonce's content attribute is hidden when the parser inserts its element, not when a script inserts it (M33 step 7)
+content-security-policy/nonce-hiding/nonces.html	Basic nonce tests for script in SVG namespace	a nonce's content attribute is hidden when the parser inserts its element, not when a script inserts it (M33 step 7)
+content-security-policy/nonce-hiding/nonces.html	Basic nonce tests for style in HTML namespace	a nonce's content attribute is hidden when the parser inserts its element, not when a script inserts it (M33 step 7)
+content-security-policy/nonce-hiding/nonces.html	Basic nonce tests for link in HTML namespace	a nonce's content attribute is hidden when the parser inserts its element, not when a script inserts it (M33 step 7)
+content-security-policy/nonce-hiding/nonces.html	Basic nonce tests for math in MathML namespace	no MathMLElement interface, so no nonce IDL attribute on a MathML element (MathML, no milestone)
+content-security-policy/nonce-hiding/nonces.html	Ensure that removal of content attribute does not affect IDL attribute for math in MathML namespace	no MathMLElement interface, so no nonce IDL attribute on a MathML element (MathML, no milestone)
+content-security-policy/nonce-hiding/nonces.html	Test empty nonces for math in MathML namespace	no MathMLElement interface, so no nonce IDL attribute on a MathML element (MathML, no milestone)
+content-security-policy/nonce-hiding/nonces.html	Ensure that cloned node retains nonce for math in MathML namespace	no MathMLElement interface, so no nonce IDL attribute on a MathML element (MathML, no milestone)
+content-security-policy/nonce-hiding/nonces.html	Basic nonce tests for mrow in MathML namespace	no MathMLElement interface, so no nonce IDL attribute on a MathML element (MathML, no milestone)
+content-security-policy/nonce-hiding/nonces.html	Ensure that removal of content attribute does not affect IDL attribute for mrow in MathML namespace	no MathMLElement interface, so no nonce IDL attribute on a MathML element (MathML, no milestone)
+content-security-policy/nonce-hiding/nonces.html	Test empty nonces for mrow in MathML namespace	no MathMLElement interface, so no nonce IDL attribute on a MathML element (MathML, no milestone)
+content-security-policy/nonce-hiding/nonces.html	Ensure that cloned node retains nonce for mrow in MathML namespace	no MathMLElement interface, so no nonce IDL attribute on a MathML element (MathML, no milestone)
+content-security-policy/nonce-hiding/nonces.html	Basic nonce tests for mtext in MathML namespace	no MathMLElement interface, so no nonce IDL attribute on a MathML element (MathML, no milestone)
+content-security-policy/nonce-hiding/nonces.html	Ensure that removal of content attribute does not affect IDL attribute for mtext in MathML namespace	no MathMLElement interface, so no nonce IDL attribute on a MathML element (MathML, no milestone)
+content-security-policy/nonce-hiding/nonces.html	Test empty nonces for mtext in MathML namespace	no MathMLElement interface, so no nonce IDL attribute on a MathML element (MathML, no milestone)
+content-security-policy/nonce-hiding/nonces.html	Ensure that cloned node retains nonce for mtext in MathML namespace	no MathMLElement interface, so no nonce IDL attribute on a MathML element (MathML, no milestone)
+content-security-policy/nonce-hiding/script-nonces-hidden-meta.sub.html	createElement.nonce.	a nonce's content attribute is hidden when the parser inserts its element, not when a script inserts it (M33 step 7)
+content-security-policy/nonce-hiding/script-nonces-hidden-meta.sub.html	setAttribute('nonce') overwrites '.nonce' upon insertion.	a nonce's content attribute is hidden when the parser inserts its element, not when a script inserts it (M33 step 7)
+content-security-policy/nonce-hiding/script-nonces-hidden-meta.sub.html	createElement.setAttribute.	a nonce's content attribute is hidden when the parser inserts its element, not when a script inserts it (M33 step 7)
+content-security-policy/nonce-hiding/script-nonces-hidden-meta.sub.html	Nonces leak via CSS side-channels.	getComputedStyle gives '' for background-image read by its hyphenated name here, so the test cannot see whether the nonce leaked
+content-security-policy/nonce-hiding/script-nonces-hidden.html                           no custom elements, which no milestone holds
+content-security-policy/nonce-hiding/svgscript-nonces-hidden.html	Cloned node retains nonce.	a nonce's content attribute is hidden when the parser inserts its element, not when a script inserts it (M33 step 7)
+content-security-policy/nonce-hiding/svgscript-nonces-hidden.html	Cloned node retains nonce when inserted.	a nonce's content attribute is hidden when the parser inserts its element, not when a script inserts it (M33 step 7)
+content-security-policy/nonce-hiding/svgscript-nonces-hidden.html	Writing 'nonce' content attribute.	a nonce's content attribute is hidden when the parser inserts its element, not when a script inserts it (M33 step 7)
+content-security-policy/nonce-hiding/svgscript-nonces-hidden.html	Document-written script's nonce value.	a nonce's content attribute is hidden when the parser inserts its element, not when a script inserts it (M33 step 7)
+content-security-policy/nonce-hiding/svgscript-nonces-hidden.html	createElement.setAttribute.	a nonce's content attribute is hidden when the parser inserts its element, not when a script inserts it (M33 step 7)
+content-security-policy/reporting/link-preload-from-header-report-only-nonce.sub.html	Report should not be sent for an allowed link preload	report-to and the Reporting API (G95)
+content-security-policy/reporting/link-preload-report-only-nonce.sub.html	Report should not be sent for an allowed link preload	report-to and the Reporting API (G95)
+content-security-policy/reporting/report-uri-from-child-frame.html	Violation report status OK.	report-to and the Reporting API (G95)
+content-security-policy/sandbox/autoplay-disabled-by-csp.html	Expecting logs: ["Loaded iframe"]	no audio or video, media being a later milestone's
+content-security-policy/sandbox/autoplay-disabled-by-csp.html	csp-derived sandboxing flags prevent autoplay.	no audio or video, media being a later milestone's
+content-security-policy/sandbox/iframe-self-all-directives.sub.html	Expecting logs: ["PASS script-src self", "PASS img-src self", "PASS style-src self", "PASS frame-src self"]	a sandboxed frame's stylesheet check sends no message here; not diagnosed at M33 (registered)
+content-security-policy/sandbox/meta-element.sub.html	Worker shouldn't be sandboxed when created <iframe> inheriting parent's CSP with sandbox <meta>	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+content-security-policy/script-src/non-nonceable-elements.html	Non-nonceable script element 5	a script with an attribute naming '<link' is still nonceable here: the check looks for '<script' and '<style' alone
+content-security-policy/script-src/non-nonceable-elements.html	Non-nonceable script element 6	a script with an attribute naming '<link' is still nonceable here: the check looks for '<script' and '<style' alone
+content-security-policy/script-src/non-nonceable-elements.html	Non-nonceable script element 9	a script with an attribute naming '<link' is still nonceable here: the check looks for '<script' and '<style' alone
+content-security-policy/script-src/nonce-enforce-blocked.html	Unnonced scripts generate reports.	a nonce given twice (a duplicate attribute, a parse error) is still honoured here
+content-security-policy/script-src/script-src-report-only-policy-works-with-external-hash-policy.html	Should fire securitypolicyviolation event	a report-only policy's violation is reported as enforced when an enforced policy with a hash is beside it; not diagnosed at M33 (registered)
+content-security-policy/script-src/script-src-report-only-policy-works-with-external-hash-policy.html	External script in a script tag with matching SRI hash should run.	Subresource Integrity (G43)
+content-security-policy/script-src/script-src-sri_hash.sub.html	matching integrity	Subresource Integrity (G43)
+content-security-policy/script-src/script-src-sri_hash.sub.html	matching integrity (case-insensitive algorithm)	Subresource Integrity (G43)
+content-security-policy/script-src/script-src-sri_hash.sub.html	multiple matching integrity	Subresource Integrity (G43)
+content-security-policy/script-src/script-src-sri_hash.sub.html	matching plus unsupported integrity	Subresource Integrity (G43)
+content-security-policy/script-src/script-src-sri_hash.sub.html	crossorigin no integrity but allowed host	Subresource Integrity (G43)
+content-security-policy/script-src/script-src-sri_hash.sub.html	crossorigin mismatched integrity but allowed host	Subresource Integrity (G43)
+content-security-policy/script-src/script-src-sri_hash.sub.html	External script in a script tag with matching SRI hash should run.	Subresource Integrity (G43)
+content-security-policy/script-src/script-src-strict_dynamic_hashes.html                 a violation is reported for a script strict-dynamic's hash allows; not diagnosed at M33 (registered)
+content-security-policy/script-src/script-src-strict_dynamic_javascript_uri.html         times out waiting for the script strict-dynamic allows to post its message; not diagnosed at M33 (registered)
+content-security-policy/script-src/script-src-strict_dynamic_meta_tag.html               times out waiting for the script strict-dynamic allows to post its message; not diagnosed at M33 (registered)
+content-security-policy/script-src/script-src-strict_dynamic_modulepreload_parser_inserted_module.html no module scripts (G41)
+content-security-policy/script-src/script-src-strict_dynamic_non_parser_inserted.html    times out waiting for the script strict-dynamic allows to post its message; not diagnosed at M33 (registered)
+content-security-policy/script-src/script-src-strict_dynamic_non_parser_inserted_module.html no module scripts (G41)
+content-security-policy/script-src/script-src-strict_dynamic_parser_inserted_module.html no module scripts (G41)
+content-security-policy/script-src/script-src-strict_dynamic_parser_inserted_module_empty_hash.html no module scripts (G41)
+content-security-policy/script-src/script-src-trusted_types_eval_DedicatedWorker.html    no Trusted Types (G94)
+content-security-policy/script-src/script-src-trusted_types_eval_with_report_only_require_trusted_types_eval.html no Trusted Types (G94)
+content-security-policy/script-src/script-src-trusted_types_eval_with_require_trusted_types_eval.html no Trusted Types (G94)
+content-security-policy/script-src/script-src-wildcards-disallowed.html	blob: URIs should not match *	no URL class (G68)
+content-security-policy/securitypolicyviolation/blockeduri-eval.html	Eval violations have a blockedURI of 'eval'	a violation's lineNumber and columnNumber are 0 here, its source position not kept (M33 step 8)
+content-security-policy/securitypolicyviolation/blockeduri-inline.html	Inline violations have a blockedURI of 'inline'	a violation's lineNumber and columnNumber are 0 here, its source position not kept (M33 step 8)
+content-security-policy/securitypolicyviolation/inside-dedicated-worker.html             a worker's violations fire no securitypolicyviolation event and send no report (M33 step 8, registered)
+content-security-policy/securitypolicyviolation/inside-nested-dedicated-worker.html      a worker's violations fire no securitypolicyviolation event and send no report (M33 step 8, registered)
+content-security-policy/securitypolicyviolation/linenumber.tentative.html                a violation's lineNumber and columnNumber are 0 here, its source position not kept (M33 step 8)
+content-security-policy/securitypolicyviolation/script-sample-no-opt-in.html             no innerText, which M25's surface left out: the test's inline script or style has no text
+content-security-policy/securitypolicyviolation/script-sample.html                       no innerText, which M25's surface left out: the test's inline script or style has no text
+content-security-policy/securitypolicyviolation/source-file-blob-scheme.html	Violations from data:-URL scripts have a sourceFile of 'blob'	no URL class (G68)
+content-security-policy/securitypolicyviolation/source-file-data-scheme.html	Violations from data:-URL scripts have a sourceFile of 'data'	a violation's sourceFile is the document's URL, not its script's (M33 step 8, registered)
+content-security-policy/securitypolicyviolation/source-file.html                         no Trusted Types (G94)
+content-security-policy/securitypolicyviolation/style-sample-no-opt-in.html              no innerText, which M25's surface left out: the test's inline script or style has no text
+content-security-policy/securitypolicyviolation/style-sample.html                        no innerText, which M25's surface left out: the test's inline script or style has no text
+content-security-policy/securitypolicyviolation/targeting-for-inline-handler-connected-after-set.html	targeting-for-inline-handler-connected-after-set	the violation of a handler on an element that is or was out of the document reaches no listener the test has; not diagnosed at M33 (registered)
+content-security-policy/securitypolicyviolation/targeting-for-inline-handler-in-markup-disconnected-after-set.html	targeting-for-inline-handler-in-markup-disconnected-after-set	the violation of a handler on an element that is or was out of the document reaches no listener the test has; not diagnosed at M33 (registered)
+content-security-policy/securitypolicyviolation/targeting-for-inline-handler-in-markup-then-disconnected.html the violation of a handler on an element that is or was out of the document reaches no listener the test has; not diagnosed at M33 (registered)
+content-security-policy/securitypolicyviolation/targeting-for-inline-handler-in-markup.html the violation of a handler on an element that is or was out of the document reaches no listener the test has; not diagnosed at M33 (registered)
+content-security-policy/securitypolicyviolation/targeting-for-inline-handler-in-shadow-dom.html	targeting-for-inline-handler-in-shadow-dom	the violation of a handler on an element that is or was out of the document reaches no listener the test has; not diagnosed at M33 (registered)
+content-security-policy/securitypolicyviolation/targeting-for-inline-handler-on-disconnected-element.html	targeting-for-inline-handler-on-disconnected-element	the violation of a handler on an element that is or was out of the document reaches no listener the test has; not diagnosed at M33 (registered)
+content-security-policy/securitypolicyviolation/targeting-for-inline-handler-on-element-in-disconnected-document-fragment.html	targeting-for-inline-handler-on-element-in-disconnected-document-fragment	the violation of a handler on an element that is or was out of the document reaches no listener the test has; not diagnosed at M33 (registered)
+content-security-policy/securitypolicyviolation/targeting-for-inline-handler-on-main-frame-element-moved-to-subframe.html	targeting-for-inline-handler-on-main-frame-element-moved-to-subframe	the violation of a handler on an element that is or was out of the document reaches no listener the test has; not diagnosed at M33 (registered)
+content-security-policy/securitypolicyviolation/targeting-for-inline-handler-on-subframe-element.html	targeting-for-inline-handler-on-subframe-element	the violation of a handler on an element that is or was out of the document reaches no listener the test has; not diagnosed at M33 (registered)
+content-security-policy/securitypolicyviolation/targeting-for-inline-script-without-nonce.html	assert_in_array(e.columnNumber, [1, 21])	a violation's lineNumber and columnNumber are 0 here, its source position not kept (M33 step 8)
+content-security-policy/securitypolicyviolation/targeting-for-inline-style-in-shadow-dom.html	targeting-for-inline-style-in-shadow-dom	no document.styleSheets or a sheet's cssRules: the CSSOM's sheets are not exposed (M25's surface)
+content-security-policy/securitypolicyviolation/targeting-for-inline-style.html	assert_equals(e.lineNumber, 20)	a violation's lineNumber and columnNumber are 0 here, its source position not kept (M33 step 8)
+content-security-policy/securitypolicyviolation/targeting-for-inline-style.html	assert_in_array(e.columnNumber, [1, 20])	a violation's lineNumber and columnNumber are 0 here, its source position not kept (M33 step 8)
+content-security-policy/securitypolicyviolation/targeting-for-inline-style.html	assert_equals(e.target, document.getElementById("target"))	no document.styleSheets or a sheet's cssRules: the CSSOM's sheets are not exposed (M25's surface)
+content-security-policy/style-src/import-style-allowed.sub.html	import should be allowed	no document.styleSheets or a sheet's cssRules: the CSSOM's sheets are not exposed (M25's surface)
+content-security-policy/style-src/import-style-blocked.sub.html	import-style-blocked	no document.styleSheets or a sheet's cssRules: the CSSOM's sheets are not exposed (M25's surface)
+content-security-policy/style-src/injected-inline-style-allowed.sub.html                 no document.styleSheets or a sheet's cssRules: the CSSOM's sheets are not exposed (M25's surface)
+content-security-policy/style-src/injected-inline-style-blocked.sub.html                 no document.styleSheets or a sheet's cssRules: the CSSOM's sheets are not exposed (M25's surface)
+content-security-policy/style-src/inline-style-allowed-while-cloning-objects.sub.html	inline-style-allowed-while-cloning-objects 10	a cloned element's style attribute is checked against the policy again on insertion here; not diagnosed at M33 (registered)
+content-security-policy/style-src/inline-style-allowed-while-cloning-objects.sub.html	inline-style-allowed-while-cloning-objects 11	a cloned element's style attribute is checked against the policy again on insertion here; not diagnosed at M33 (registered)
+content-security-policy/style-src/inline-style-allowed-while-cloning-objects.sub.html	inline-style-allowed-while-cloning-objects 12	a cloned element's style attribute is checked against the policy again on insertion here; not diagnosed at M33 (registered)
+content-security-policy/style-src/inline-style-allowed-while-cloning-objects.sub.html	inline-style-allowed-while-cloning-objects 14	a cloned element's style attribute is checked against the policy again on insertion here; not diagnosed at M33 (registered)
+content-security-policy/style-src/inline-style-allowed-while-cloning-objects.sub.html	inline-style-allowed-while-cloning-objects 18	a cloned element's style attribute is checked against the policy again on insertion here; not diagnosed at M33 (registered)
+content-security-policy/style-src/inline-style-allowed-while-cloning-objects.sub.html	non-HTML namespace	a cloned element's style attribute is checked against the policy again on insertion here; not diagnosed at M33 (registered)
+content-security-policy/style-src/inline-style-allowed.sub.html                          no document.styleSheets or a sheet's cssRules: the CSSOM's sheets are not exposed (M25's surface)
+content-security-policy/style-src/inline-style-attribute-blocked.sub.html	Expecting logs: ["violated-directive=style-src-attr","PASS"]	a style attribute the policy blocks is reported, but the test's check of the style finds it applied; not diagnosed at M33 (registered)
+content-security-policy/style-src/inline-style-blocked.sub.html	Inline style element is blocked by CSP.	no document.styleSheets or a sheet's cssRules: the CSSOM's sheets are not exposed (M25's surface)
+content-security-policy/style-src/style-allowed.sub.html                                 no document.styleSheets or a sheet's cssRules: the CSSOM's sheets are not exposed (M25's surface)
+content-security-policy/style-src/style-blocked.html	document.styleSheets should contain an item for the blocked CSS.	no document.styleSheets or a sheet's cssRules: the CSSOM's sheets are not exposed (M25's surface)
+content-security-policy/style-src/style-src-injected-inline-style-allowed-with-content-hash.html no document.styleSheets or a sheet's cssRules: the CSSOM's sheets are not exposed (M25's surface)
+content-security-policy/style-src/style-src-injected-inline-style-allowed.html	Injected inline style should load with 'unsafe-inline'	a style element a script inserts with 'unsafe-inline' is not applied to the test's element by the time it looks; not diagnosed at M33 (registered)
+content-security-policy/style-src-attr-elem/style-src-attr-blocked-src-allowed.html	The attribute style should not be applied	no document.styleSheets or a sheet's cssRules: the CSSOM's sheets are not exposed (M25's surface)
+content-security-policy/style-src-attr-elem/style-src-elem-allowed-attr-blocked.html	The attribute style should not be applied and the inline style should be applied	no document.styleSheets or a sheet's cssRules: the CSSOM's sheets are not exposed (M25's surface)
+content-security-policy/style-src-attr-elem/style-src-elem-allowed-src-blocked-link.html	Inline style should be applied	no document.styleSheets or a sheet's cssRules: the CSSOM's sheets are not exposed (M25's surface)
+content-security-policy/style-src-attr-elem/style-src-elem-allowed-src-blocked.html	Inline style should be applied	no document.styleSheets or a sheet's cssRules: the CSSOM's sheets are not exposed (M25's surface)
+content-security-policy/style-src-attr-elem/style-src-elem-blocked-attr-allowed.html	The inline style should not be applied and the attribute style should be applied	no document.styleSheets or a sheet's cssRules: the CSSOM's sheets are not exposed (M25's surface)
+content-security-policy/style-src-attr-elem/style-src-elem-blocked-src-allowed.html	The inline style should not be applied	no document.styleSheets or a sheet's cssRules: the CSSOM's sheets are not exposed (M25's surface)
+content-security-policy/unsafe-eval/eval-blocked-in-about-blank-iframe.html	eval-blocked-in-about-blank-iframe	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+content-security-policy/unsafe-eval/eval-scripts-setInterval-blocked.sub.html	Expecting logs: ["PASS","violated-directive=script-src"]	a timer's string the policy refuses still makes the timer here: its id is returned, not 0; not diagnosed at M33 (registered)
+content-security-policy/unsafe-eval/eval-scripts-setTimeout-blocked.sub.html	Expecting logs: ["PASS","violated-directive=script-src"]	a timer's string the policy refuses still makes the timer here: its id is returned, not 0; not diagnosed at M33 (registered)
+content-security-policy/unsafe-eval/tentative/eval-allowed-by-hash-long-script.sub.html  hashes for eval, a tentative proposal past the standard
+content-security-policy/unsafe-eval/tentative/eval-allowed-by-hash.sub.html              hashes for eval, a tentative proposal past the standard
+content-security-policy/unsafe-eval/tentative/eval-hashes-override-unsafe-eval.sub.html	Expecting logs: ["PASS EvalError","PASS EvalError", "violated-directive=script-src"]	hashes for eval, a tentative proposal past the standard
+content-security-policy/unsafe-eval/tentative/eval-hashes-override-unsafe-eval.sub.html	eval-blocked	hashes for eval, a tentative proposal past the standard
+content-security-policy/unsafe-eval/tentative/eval-hashes-override-unsafe-eval.sub.html	eval-blocked 1	hashes for eval, a tentative proposal past the standard
+content-security-policy/unsafe-hashes/javascript_src_allowed-href.html                   a window a script opens or a link targets, popups being M37's
+content-security-policy/unsafe-hashes/javascript_src_allowed-href_blank-script-src-attr.html a window a script opens or a link targets, popups being M37's
+content-security-policy/unsafe-hashes/javascript_src_allowed-href_blank-script-src-elem.html a window a script opens or a link targets, popups being M37's
+content-security-policy/unsafe-hashes/javascript_src_allowed-href_blank.html             a window a script opens or a link targets, popups being M37's
+content-security-policy/unsafe-hashes/javascript_src_denied_missing_unsafe_hashes-href.html a window a script opens or a link targets, popups being M37's
+content-security-policy/unsafe-hashes/javascript_src_denied_missing_unsafe_hashes-href_blank-script-src-attr.html a window a script opens or a link targets, popups being M37's
+content-security-policy/unsafe-hashes/javascript_src_denied_missing_unsafe_hashes-href_blank-script-src-elem.html a window a script opens or a link targets, popups being M37's
+content-security-policy/unsafe-hashes/javascript_src_denied_missing_unsafe_hashes-href_blank.html a window a script opens or a link targets, popups being M37's
+content-security-policy/unsafe-hashes/javascript_src_denied_wrong_hash-href.html         a window a script opens or a link targets, popups being M37's
+content-security-policy/unsafe-hashes/javascript_src_denied_wrong_hash-href_blank-script-src-attr.html a window a script opens or a link targets, popups being M37's
+content-security-policy/unsafe-hashes/javascript_src_denied_wrong_hash-href_blank-script-src-elem.html a window a script opens or a link targets, popups being M37's
+content-security-policy/unsafe-hashes/javascript_src_denied_wrong_hash-href_blank.html   a window a script opens or a link targets, popups being M37's
+content-security-policy/wasm-unsafe-eval/postMessage-wasm-module.html                    a WebAssembly module posted to a frame is not a module there (G85's transfer of modules), so no violation comes
+content-security-policy/wasm-unsafe-eval/script-src-spv-asynch.any.worker.html           a worker's violations fire no securitypolicyviolation event and send no report (M33 step 8, registered)
+content-security-policy/webrtc/webrtc-allowed-default-src-none.html	webrtc allowed with default-src 'none'	no WebRTC, which no milestone holds
+content-security-policy/webrtc/webrtc-allowed-explicit.html	webrtc allowed with an explicit webrtc allowed policy	no WebRTC, which no milestone holds
+content-security-policy/webrtc/webrtc-allowed-nopolicy.html	webrtc allowed with no policy	no WebRTC, which no milestone holds
+content-security-policy/webrtc/webrtc-blocked-explicit.html	webrtc blocked with an explicit webrtc blocked policy	no WebRTC, which no milestone holds
+content-security-policy/webrtc/webrtc-blocked-unknown.html	webrtc blocked with an unrecognized explicit webrtc policy	no WebRTC, which no milestone holds
+content-security-policy/xslt/xslt-strict-dynamic-blocked.html	XSLT stylesheet is blocked by 'strict-dynamic'	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/browsers/sandboxing/sandbox-allow-same-origin.html                                  a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/browsers/sandboxing/sandbox-allow-scripts.html                                      times out; not diagnosed at M33 (registered)
+html/browsers/sandboxing/sandbox-disallow-scripts-via-unsandboxed-popup.tentative.html   a window a script opens or a link targets, popups being M37's
+html/browsers/sandboxing/sandbox-document-open-mutation.window.html                      a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/browsers/sandboxing/sandbox-document-open.html                                      a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/browsers/sandboxing/sandbox-inherited-from-initiator-frame.html                     a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/browsers/sandboxing/sandbox-inherited-from-initiator-response.html                  a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/browsers/sandboxing/sandbox-javascript-window-open.html                             a window a script opens or a link targets, popups being M37's
+html/browsers/sandboxing/sandbox-navigation-timing.tentative.html	setting sandbox attribute should not affect current document in iframe	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/browsers/sandboxing/sandbox-new-execution-context.html	iframe with sandbox should load with new execution context	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+referrer-policy/generic/subresource-test/attr-referrer-invalid-value.html	Invalid referrerpolicy values not reflected	no referrerPolicy IDL attribute on elements: the engine reads the content attribute alone (M33 step 9)
+html/semantics/embedded-content/the-iframe-element/bad-src-means-about-blank.html	Testing location href of iframe with input src: null	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/bad-src-means-about-blank.html	Testing location href of iframe with input src: about:blank	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/bad-src-means-about-blank.html	Testing location href of iframe with input src: 	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/bad-src-means-about-blank.html	Testing location href of iframe with input src: http://:80/invalid-url	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/change_parentage.html                 times out; not diagnosed at M33 (registered)
+html/semantics/embedded-content/the-iframe-element/cross-origin-to-whom-part-2.window.html	Test embed/frame/iframe/object nested document APIs for same origin-domain and cross origin-domain embedder document	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/cross-origin-to-whom.window.html	Test embed/frame/iframe/object nested document APIs for same origin-domain and cross origin-domain current settings object	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/cross-site/iframe-loading-lazy-in-scroller-far-cross-site.sub.html	Test that lazy-loaded iframes do not load when far from viewport.	loading=lazy frames (G103)
+html/semantics/embedded-content/the-iframe-element/cross-site/iframe-loading-lazy-multiple-queued-navigations-cross-site.sub.html	A below-viewport lazy cross-site iframe navigates only to the latest src mutation	loading=lazy frames (G103)
+html/semantics/embedded-content/the-iframe-element/document-getters-return-null-for-cross-origin.html	HTMLIFrameElement.getSVGDocument() for cross-origin document	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/iframe-allow.html	iframe-cross-origin-allow	no Permissions Policy (document.permissionsPolicy, G96)
+html/semantics/embedded-content/the-iframe-element/iframe-allowfullscreen.html	iframe-same-origin-allowfullscreen	no Permissions Policy (document.permissionsPolicy, G96)
+html/semantics/embedded-content/the-iframe-element/iframe-allowfullscreen.html	iframe-cross-origin-allowfullscreen	no Permissions Policy (document.permissionsPolicy, G96)
+html/semantics/embedded-content/the-iframe-element/iframe-allowfullscreen.html	iframe-noload-noallowfullscreen	no Permissions Policy (document.permissionsPolicy, G96)
+html/semantics/embedded-content/the-iframe-element/iframe-allowfullscreen.html	iframe-noload-allowfullscreen	no Permissions Policy (document.permissionsPolicy, G96)
+html/semantics/embedded-content/the-iframe-element/iframe-append-to-child-document.html	Append iframe element to its own child document	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/iframe-load-event.html	load event of blob URL	no URL class (G68)
+html/semantics/embedded-content/the-iframe-element/iframe-loading-lazy-adopt-lazy-iframe-from-script-disabled-document.html	Test lazy loading iframe remains lazy loading originally createdin a script-disabled document, then got adopted to a regular document	loading=lazy frames (G103)
+html/semantics/embedded-content/the-iframe-element/iframe-loading-lazy-base-url-2.html   loading=lazy frames (G103)
+html/semantics/embedded-content/the-iframe-element/iframe-loading-lazy-base-url-3.html	When a loading=lazy iframe is changed to eager later before loading, it loads relative to the document's base URL computed at parse-time.	loading=lazy frames (G103)
+html/semantics/embedded-content/the-iframe-element/iframe-loading-lazy-base-url.html	When a loading=lazy iframe is loaded, it loads relative to the document's base URL computed at parse-time.	loading=lazy frames (G103)
+html/semantics/embedded-content/the-iframe-element/iframe-loading-lazy-history-pushState.html	History state change for iframe loading='lazy' before it is loaded: history.pushState	loading=lazy frames (G103)
+html/semantics/embedded-content/the-iframe-element/iframe-loading-lazy-history-replaceState.html	History state change for iframe loading='lazy' before it is loaded: history.replaceState	loading=lazy frames (G103)
+html/semantics/embedded-content/the-iframe-element/iframe-loading-lazy-in-script-disabled-iframe.html	Iframes with loading='lazy' in script disabled iframe are not handled        as 'lazy'	loading=lazy frames (G103)
+html/semantics/embedded-content/the-iframe-element/iframe-loading-lazy-in-scroller-far.html	Test that lazy-loaded iframes do not load when far from viewport.	loading=lazy frames (G103)
+html/semantics/embedded-content/the-iframe-element/iframe-loading-lazy-in-scroller-horizontal-far.html loading=lazy frames (G103)
+html/semantics/embedded-content/the-iframe-element/iframe-loading-lazy-multiple-queued-navigations.html	Multiple queued lazy load navigations do not crash the page	loading=lazy frames (G103)
+html/semantics/embedded-content/the-iframe-element/iframe-loading-lazy-multiple-times.html	Iframes with loading='lazy' can be lazy loaded multiple times	loading=lazy frames (G103)
+html/semantics/embedded-content/the-iframe-element/iframe-loading-lazy-nav-form-submit.html loading=lazy frames (G103)
+html/semantics/embedded-content/the-iframe-element/iframe-loading-lazy-nav-link-click-fragment.html loading=lazy frames (G103)
+html/semantics/embedded-content/the-iframe-element/iframe-loading-lazy-nav-link-click.html loading=lazy frames (G103)
+html/semantics/embedded-content/the-iframe-element/iframe-loading-lazy-nav-location-assign.html	Navigating iframe loading='lazy' before it is loaded: location.assign	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/iframe-loading-lazy-nav-location-replace-set-src.html	Navigating iframe loading='lazy' and then setting src: location.replace	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/iframe-loading-lazy-nav-location-replace.html	Navigating iframe loading='lazy' before it is loaded: location.replace	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/iframe-loading-lazy-nav-meta-refresh.optional.html	Navigating iframe loading='lazy' before it is loaded: meta refresh	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/iframe-loading-lazy-nav-navigation-navigate.html	Navigating iframe loading='lazy' before it is loaded: navigation.navigate	loading=lazy frames (G103)
+html/semantics/embedded-content/the-iframe-element/iframe-loading-lazy-reload-location-reload.html	Reloading iframe loading='lazy' before it is loaded: location.reload	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/iframe-loading-lazy-reload-navigation-reload.html	Reloading iframe loading='lazy' before it is loaded: navigation.reload	loading=lazy frames (G103)
+html/semantics/embedded-content/the-iframe-element/iframe-loading-lazy-to-eager-srcdoc.html	Below-viewport srcdoc iframes with loading='lazy' load when set to loading='eager' or the `loading` attribute is removed	loading=lazy frames (G103)
+html/semantics/embedded-content/the-iframe-element/iframe-loading-lazy-to-eager.html	Below-viewport iframes with loading='lazy' load when set to loading='eager' or the `loading` attribute is removed	loading=lazy frames (G103)
+html/semantics/embedded-content/the-iframe-element/iframe-network-error.sub.html         a frame whose navigation fails shows an error page, and the test's load event check of it times out; not diagnosed at M33 (registered)
+html/semantics/embedded-content/the-iframe-element/iframe-nosrc.html	load event of iframe should not be fired after processing the element	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/iframe-src-encoding.html	iframe src URL is parsed using document encoding	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/iframe-synchronously-discard.html	IFrame discards are processed synchronously	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/iframe_javascript_url_01.htm	javascript: URL creating a document in an about:blank iframe	a javascript: URL as a frame's src is not run (registered)
+html/semantics/embedded-content/the-iframe-element/iframe_javascript_url_form_submission.html	javascript: URL in form submission, initial src is not about:blank	a javascript: URL as a frame's src is not run (registered)
+html/semantics/embedded-content/the-iframe-element/iframe_javascript_url_in_src.htm	string: javascript:"foo"	a javascript: URL as a frame's src is not run (registered)
+html/semantics/embedded-content/the-iframe-element/iframe_javascript_url_in_src.htm	empty string: javascript:""	a javascript: URL as a frame's src is not run (registered)
+html/semantics/embedded-content/the-iframe-element/iframe_javascript_url_in_src.htm	String object: javascript:new String("foo")	a javascript: URL as a frame's src is not run (registered)
+html/semantics/embedded-content/the-iframe-element/iframe_javascript_url_in_src.htm	undefined: javascript:void(0)	a javascript: URL as a frame's src is not run (registered)
+html/semantics/embedded-content/the-iframe-element/iframe_javascript_url_in_src.htm	number: javascript:1	a javascript: URL as a frame's src is not run (registered)
+html/semantics/embedded-content/the-iframe-element/iframe_javascript_url_in_src.htm	boolean: javascript:true	a javascript: URL as a frame's src is not run (registered)
+html/semantics/embedded-content/the-iframe-element/iframe_javascript_url_in_src.htm	null: javascript:null	a javascript: URL as a frame's src is not run (registered)
+html/semantics/embedded-content/the-iframe-element/iframe_javascript_url_in_src.htm	global: javascript:window	a javascript: URL as a frame's src is not run (registered)
+html/semantics/embedded-content/the-iframe-element/iframe_javascript_url_in_src.htm	host object: javascript:document	a javascript: URL as a frame's src is not run (registered)
+html/semantics/embedded-content/the-iframe-element/iframe_javascript_url_in_src.htm	function: javascript:(() => { return function() {}; })()	a javascript: URL as a frame's src is not run (registered)
+html/semantics/embedded-content/the-iframe-element/iframe_javascript_url_in_src.htm	regexp: javascript:/foo/	a javascript: URL as a frame's src is not run (registered)
+html/semantics/embedded-content/the-iframe-element/iframe_javascript_url_in_src.htm	array: javascript:["foo"]	a javascript: URL as a frame's src is not run (registered)
+html/semantics/embedded-content/the-iframe-element/iframe_javascript_url_in_src.htm	object: javascript:{"foo": "bar"}	a javascript: URL as a frame's src is not run (registered)
+html/semantics/embedded-content/the-iframe-element/iframe_javascript_url_in_src.htm	ArrayBuffer: javascript:new ArrayBuffer(8)	a javascript: URL as a frame's src is not run (registered)
+html/semantics/embedded-content/the-iframe-element/iframe_javascript_url_in_src.htm	TypeError: javascript:new TypeError("foo")	a javascript: URL as a frame's src is not run (registered)
+html/semantics/embedded-content/the-iframe-element/iframe_javascript_url_initial_insertion.html	javascript: URL in iframe src, initial insertion check	a javascript: URL as a frame's src is not run (registered)
+html/semantics/embedded-content/the-iframe-element/iframe_javascript_url_loading_lazy.htm	javascript: URL in iframe src and loading="lazy"	a javascript: URL as a frame's src is not run (registered)
+html/semantics/embedded-content/the-iframe-element/iframe_javascript_url_not_about_blank.html	javascript: URL in iframe src, initial src is not about:blank	a javascript: URL as a frame's src is not run (registered)
+html/semantics/embedded-content/the-iframe-element/iframe_javascript_url_remove_srcdoc.html	javascript: URL in iframe src, removing srcdoc	a javascript: URL as a frame's src is not run (registered)
+html/semantics/embedded-content/the-iframe-element/iframe_navigate_ancestor-1.sub.html   a window a script opens or a link targets, popups being M37's
+html/semantics/embedded-content/the-iframe-element/iframe_navigate_javascript_url.htm	location.href = 'javascript:"foo"' should fire a load event	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/iframe_remove_src.html	Test that removing the src attribute of an iframe loads about:blank   instead of whatever was loaded previously.	no URL class (G68)
+html/semantics/embedded-content/the-iframe-element/iframe_sandbox_allow_script.html      a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/iframe_sandbox_allow_top_navigation_by_user_activation_with_user_gesture.html	iframe_sandbox_allow_top_navigation_by_user_activation_with_user_gesture	a window a script opens or a link targets, popups being M37's
+html/semantics/embedded-content/the-iframe-element/iframe_sandbox_allow_top_navigation_by_user_activation_without_user_gesture.html	iframe_sandbox_allow_top_navigation_by_user_activation_without_user_gesture	a window a script opens or a link targets, popups being M37's
+html/semantics/embedded-content/the-iframe-element/iframe_sandbox_block_modals-4.html    times out; not diagnosed at M33 (registered)
+html/semantics/embedded-content/the-iframe-element/iframe_sandbox_navigate_history_go_back-2.html a frame's navigations in the tab's session history, the joint session history (G92)
+html/semantics/embedded-content/the-iframe-element/iframe_sandbox_navigate_history_go_back.html a frame's navigations in the tab's session history, the joint session history (G92)
+html/semantics/embedded-content/the-iframe-element/iframe_sandbox_navigate_history_go_forward.html a frame's navigations in the tab's session history, the joint session history (G92)
+html/semantics/embedded-content/the-iframe-element/iframe_sandbox_navigate_itself.html   times out; not diagnosed at M33 (registered)
+html/semantics/embedded-content/the-iframe-element/iframe_sandbox_popups_escaping-1.html a window a script opens or a link targets, popups being M37's
+html/semantics/embedded-content/the-iframe-element/iframe_sandbox_popups_escaping-2.html a window a script opens or a link targets, popups being M37's
+html/semantics/embedded-content/the-iframe-element/iframe_sandbox_popups_escaping-3.html a window a script opens or a link targets, popups being M37's
+html/semantics/embedded-content/the-iframe-element/iframe_sandbox_popups_nonescaping-1.html a window a script opens or a link targets, popups being M37's
+html/semantics/embedded-content/the-iframe-element/iframe_sandbox_popups_nonescaping-2.html a window a script opens or a link targets, popups being M37's
+html/semantics/embedded-content/the-iframe-element/iframe_sandbox_popups_nonescaping-3.html a window a script opens or a link targets, popups being M37's
+html/semantics/embedded-content/the-iframe-element/move-node-local-root-events-still-fire.html	Event handler-bearing node moved across local roots and its event listeners still work	no URL class (G68)
+html/semantics/embedded-content/the-iframe-element/move-node-local-root.html	Event handler-bearing node moved across local roots in the same tab/page	no URL class (G68)
+html/semantics/embedded-content/the-iframe-element/move_iframe_in_dom_01.html	moving modified IFRAME in document (original page about:blank, DOM modification)	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/move_iframe_in_dom_02.html	moving modified IFRAME in document (original page about:blank, document.write modification)	a window a script opens or a link targets, popups being M37's
+html/semantics/embedded-content/the-iframe-element/move_iframe_in_dom_03.html	moving modified IFRAME in document (original page from server, DOM modification)	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/move_iframe_in_dom_04.html	moving modified IFRAME in document (original page from server, document.write modification)	a window a script opens or a link targets, popups being M37's
+html/semantics/embedded-content/the-iframe-element/same-origin-contextual-fragment.html	       HTML5 Sandbox: an iframe with same-origin and no allow-scripts does not       run scripts from a contextual fragment.     	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/sandbox_002.htm                       times out; not diagnosed at M33 (registered)
+html/semantics/embedded-content/the-iframe-element/sandbox_004.htm	Fallback content is always displayed for sandboxed PDFs	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/sandbox_023.htm	Allow sandbox iframe to access other content from the same origin if sandbox='allow-same-origin'	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/sandbox_025.htm	Allow parent content to access sandbox child iframe content when sandbox='allow-same-origin'	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/src-repeated-in-ancestor.html	different path name	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/src-repeated-in-ancestor.html	same path name, no document fragment	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/src-repeated-in-ancestor.html	same path name, different document fragment	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/src-repeated-in-ancestor.html	same path name, no document fragement (intermediary browsing context)	a window a script opens or a link targets, popups being M37's
+html/semantics/embedded-content/the-iframe-element/srcdoc-anchor.html	Verify srcdoc content loads when src is about:srcdoc#foo.	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/srcdoc-attribute-reset.html           a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/srcdoc_change_hash.html	same-document navigation inside an srcdoc iframe using location.hash	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
+html/semantics/embedded-content/the-iframe-element/srcdoc_process_attributes.html	Adding `srcdoc` attribute triggers attributes processing	no URL class (G68)
+html/semantics/embedded-content/the-iframe-element/srcdoc_process_attributes.html	Setting `srcdoc` (via property) triggers attributes processing	no URL class (G68)
+html/semantics/embedded-content/the-iframe-element/srcdoc_process_attributes.html	Removing `srcdoc` attribute triggers attributes processing	no URL class (G68)

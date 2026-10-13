@@ -216,6 +216,13 @@ impl Mutator {
     }
 }
 
+/// How many frames `engine`'s tab has, and how deep they nest (M33.2):
+/// what the frames target holds to the limits.
+pub fn frames_of(engine: &Engine) -> (usize, usize) {
+    let tree = crate::frames::lock(&engine.frame.tree);
+    (tree.frames(), tree.depth())
+}
+
 /// Runs `source` in the document `engine` shows as a classic script, as
 /// a `javascript:` URL's runs (M24), the page's policy aside, and takes
 /// what it changed for the next frame: a script's changes after a frame

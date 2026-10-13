@@ -315,6 +315,11 @@ fn frames_nest_to_a_depth_and_a_tab_holds_so_many() {
         engine = &frame.engine;
     }
     assert_eq!(depth, MAX_FRAME_DEPTH);
+    // As the frames target counts them (M33.6).
+    assert_eq!(
+        crate::differential::frames_of(&tab.engine),
+        (MAX_FRAME_DEPTH, MAX_FRAME_DEPTH)
+    );
     let lines: Vec<String> = tab
         .engine
         .take_console()
