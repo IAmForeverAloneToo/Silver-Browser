@@ -1967,3 +1967,65 @@ animated DOM values and what else G87 lists; the `CSS` namespace
 object (G88); what M32's web-platform tests found outside SVG (G89);
 XHTML through the XML parser. 2,449 tests pass workspace-wide, two
 ignored. Next milestone: the security hardening sweep (M33).
+
+Milestone 33 (the security hardening sweep; `docs/design/hardening.md`,
+`docs/security.md`): what a page can reach is held to the web's rules.
+Frames (steps 1 to 3): an `iframe` a replaced box of 300 by 150 with
+its inset border, its frame an engine of its own under its parent's
+(D24, `engine::frames`), drawn into it as a canvas is, loading `src`,
+`srcdoc` and `about:blank`, its parent's load waiting for it, 100 a
+tab and 16 deep; input, focus, the wheel, scale and printing passed
+through; `WindowProxy`, `postMessage`, names, targets and frames
+navigating one another through a frame tree the tab shares, every
+frame cross-origin to every other until M34 (G90). Partitions (step 4,
+D25): a frame's cookies' same-site context, partitioned cookies,
+storage, the cache, the pools and TLS sessions kept by the top-level
+site. Sandboxing (step 5): the attribute's flags and CSP's `sandbox`,
+`X-Frame-Options` and `frame-ancestors`. Content Security Policy
+(steps 6 to 8, `net::csp`): every document's policies, enforced and
+report-only, the fetch directives by destination, inline code by
+nonce, hash and `'unsafe-inline'`, `'strict-dynamic'`, code from
+strings and WebAssembly, `base-uri`, `form-action`, nonces hidden from
+selectors, violations as events, console lines and reports. Referrer
+Policy (step 9), HSTS kept in the profile with a preload list's slot
+(D26) and `Upgrade-Insecure-Requests` (step 10), Local Network
+Access's prompt with its answers kept (step 11). The profile encrypted
+at rest, AES-256-GCM under a key DPAPI wraps on Windows (step 12,
+D27). `unsafe` in the shell's platform module alone, four blocks
+argued, the third-party inventory in `docs/security.md` (step 13).
+Fuzzing (step 14): `csp` whole, `referrer`, `hsts` and `frames` new,
+`dom_api` making frames, 29 targets whose minimized corpora are
+committed as seeds (50,653 inputs, 14.6 MB) and fuzzed nightly by CI;
+merging them found a hostless realm refusing `eval`, the differential
+comparison blind to canvases and to frames' documents, and a canvas a
+script resized not laid out again since M30. The web-platform tests
+(step 15): the runner serves `.headers`, fills `.sub` templates' hosts
+and ports and runs tests in frames; CSP, sandboxing, referrer policy
+and the iframe element's, 7,358 tests in all, 6,415 passing. Pages 139
+to 142 (step 16) match the reference browser, finding 3D borders toned
+as its are and `currentcolor`'s grey for them, the keyword refused in
+border colours, the viewport taking the root's or the body's overflow
+for its scrollbar, and a sandboxed frame styled with scripting on. An
+adversarial site of 56 attacks (step 17), each failing with the
+defences on and succeeding with its defence taken away but the nine
+across frames G90 keeps closed; it found a parsing document's form
+sent as a GET, an iframe deaf to its frame's later documents and a
+frame's fragment fetched again. `docs/security.md` (step 18) holds the
+threat model, the limits and the inventory. The acceptance (step 19):
+twenty `srcdoc` frames loaded and drawn in 40ms at a scale of 1 and
+128ms at 2, scrolled in 1.5ms; T4.3 within 8% of M32 by its medians,
+the one row past it (a flex grid's first frame, bimodal) the same in
+runs by turns; final fuzz runs of the targets
+the last steps touched found nothing. Not
+in this milestone, said rather than hidden and registered (G90 to
+G109): same-origin scripting across frames, GPU-composited frames, the
+joint session history, a setting blocking third-party cookies, Trusted
+Types, the Reporting API, Permissions Policy and its API, the profile's
+key on macOS and Linux, OSS-Fuzz, revocation and Certificate
+Transparency, Encrypted Client Hello, `<frame>` and `<object>`
+documents, lazy frames and the frame attributes past `sandbox` and
+`allow`, CSP's edges and the interfaces the tests found missing, the
+web-platform tests failing undiagnosed, and Referrer Policy's and the
+profile encryption's edges; the HSTS preload list itself waits for
+the maintainer's leave to fetch it. 2,606 tests pass workspace-wide,
+two ignored. Next milestone: the multi-process architecture (M34).

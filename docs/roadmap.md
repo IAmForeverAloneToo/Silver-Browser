@@ -433,13 +433,24 @@ images, the last item on T0's list, come with M23.
   engine and the shell drawing at a display's scale; an icon set and a
   chart the same pictures at every ratio, in the engine and in the
   shell at this machine's 125%.
+- **M33, Security hardening sweep** (done 2026-10-13, designed in
+  `docs/design/hardening.md`): frames, each an engine of its own under
+  its parent's (D24), with `srcdoc`, sandboxing, `X-Frame-Options` and
+  `frame-ancestors`; what a frame keeps partitioned by the top-level
+  site (D25); Content Security Policy in full, its violations and
+  reports; Referrer Policy, HSTS (D26) and `Upgrade-Insecure-Requests`;
+  Local Network Access's prompt; the profile encrypted at rest (D27);
+  `unsafe` in the shell's platform module alone; 29 fuzz targets with
+  committed seeds; the web-platform tests of CSP, sandboxing, referrers
+  and iframes; an adversarial site of 56 attacks; and
+  `docs/security.md`, the threat model.
 
 Each milestone's fuller writeup and stated gaps are in
 `docs/architecture.md` "Current state", and the gaps no milestone holds
 on the G list (M39+, below).
 
 Verified per the vertical-slice rule at each milestone, by the gate:
-the workspace's tests (2,449 at M32, two ignored), clippy clean (`-D
+the workspace's tests (2,606 at M33, two ignored), clippy clean (`-D
 warnings`, every target), `cargo deny`, the fuzz targets, and a smoke
 run of the shell. Toolchain: 1.98.1, pinned by `rust-toolchain.toml`.
 The checkout lives outside OneDrive since 2026-10-08
@@ -2050,30 +2061,96 @@ cascade's computed styles, and layout reads its `viewBox` grammar.)*
 
 ## M33 — Security hardening sweep  ·  all crates  ·  Effort: XL  ·  Depends: M27
 
-- [ ] M33.1 CSP: fetch directives (`default-src`, `script-src`,
+- [x] M33.1 CSP: fetch directives (`default-src`, `script-src`,
        `style-src`, `img-src`, `frame-src`, `connect-src`, ...),
        report-only mode, violation events, `nonce`/`hash` sources.
-- [ ] M33.2 Frame isolation: `X-Frame-Options`, `frame-ancestors`,
+       Done 2026-10-13 (`docs/design/hardening.md`): every document's
+       policies from fields and `<meta>`, enforced and report-only
+       (`net::csp`, 64 at most, failing closed past them); the fetch
+       directives for every destination with their fallbacks; inline
+       scripts, styles, handlers and `javascript:` URLs by
+       `'unsafe-inline'`, nonces (hidden from selectors under a header
+       policy), hashes with `'unsafe-hashes'`, `'strict-dynamic'`;
+       `eval`, `Function` and string timers by `'unsafe-eval'`,
+       WebAssembly by `'wasm-unsafe-eval'`; `base-uri`, `form-action`,
+       `frame-ancestors`, `sandbox`, `upgrade-insecure-requests`;
+       violations as `securitypolicyviolation` events, console lines and
+       `report-uri` reports; workers and frames under their own (steps
+       6 to 8).
+- [x] M33.2 Frame isolation: `X-Frame-Options`, `frame-ancestors`,
        iframe `sandbox` attribute (all flags), `srcdoc` (M24's raw-text
        debt: iframes parse nested documents through the same pipeline).
-- [ ] M33.3 `Referrer-Policy`, HSTS (max-age/includeSubDomains, preload
+       Done 2026-10-13: `iframe` as a replaced box of 300 by 150 with
+       its inset border, its frame an engine of its own under its
+       parent's (D24), drawn into it as a canvas is, with `src`,
+       `srcdoc` and `about:blank`, its parent's load waiting for it,
+       100 frames a tab and 16 deep; input, focus, scrolling, scale and
+       printing through it; `WindowProxy`, `postMessage`, names and
+       targets, navigating frames; the sandbox's flags as the reference
+       browser has them, CSP's `sandbox`, `X-Frame-Options` and
+       `frame-ancestors`; what a frame keeps kept apart by the
+       top-level site: its cookies' same-site context, partitioned
+       cookies (CHIPS), storage, the cache, the pools and TLS sessions
+       (D25). Every frame is cross-origin to every other until M34
+       (G90) (steps 1 to 5).
+- [x] M33.3 `Referrer-Policy`, HSTS (max-age/includeSubDomains, preload
        list shipped read-only), `Upgrade-Insecure-Requests`.
-- [ ] M33.4 Private Network Access: block public→local requests
+       Done 2026-10-13: referrers by every policy, from the field,
+       `<meta>`, `referrerpolicy` and the defaults (step 9); HSTS kept
+       in the profile, 10,000 hosts and a year each at most, with
+       `includeSubDomains`; the preload list read from
+       `crates/net/data/hsts_preload.txt` (D26), which ships empty until
+       the reference browser's list is fetched with the maintainer's
+       leave; `Upgrade-Insecure-Requests` sent on navigations; a form
+       from a secure page to `http:` held on a warning page (step 10).
+- [x] M33.4 Private Network Access: block public->local requests
        (pre-flight posture v1: block outright). Begun at M14 (D19):
        public→local and local→loopback requests are refused outright
        from then on; this item adds Local Network Access's permission
        prompt.
-- [ ] M33.5 Memory-safety audit pass: `unsafe` inventory across the
+       Done 2026-10-13: a secure page's request across spaces waits for
+       the user's answer on a bar under the toolbar (60 seconds at
+       most), kept in the profile for the site; an insecure page's is
+       refused at once; a frame asks as its top-level site when its
+       origin or its element's `allow` lets it, a worker as its
+       creator; `fetch`'s `targetAddressSpace` (step 11).
+- [x] M33.5 Memory-safety audit pass: `unsafe` inventory across the
        workspace (target: unsafe exists only in FFI crates, each block
        has a written safety argument — policy lives in architecture.md).
-- [ ] M33.6 Parser fuzzing graduation (T2): continuous fuzzing, corpus
+       Done 2026-10-13: `#![forbid(unsafe_code)]` in every crate, test,
+       bench, example and fuzz target but the shell, whose platform
+       module alone writes it, four blocks each argued; a test and CI
+       hold it (T3.2); the third-party inventory (261 of 379 locked
+       packages write some) is `docs/security.md`'s, its example
+       `unsafe_inventory` (step 13). Besides: the profile encrypted at
+       rest, AES-256-GCM under a key DPAPI wraps on Windows (D27, step
+       12).
+- [x] M33.6 Parser fuzzing graduation (T2): continuous fuzzing, corpus
        committed, OSS-Fuzz application (Rust targets).
-- [ ] M33.7 Threat-model doc `docs/security.md`: assets, boundaries,
+       Done 2026-10-13: `csp` made whole, `referrer`, `hsts` and
+       `frames` new, `dom_api` making frames: 29 targets; each one's
+       corpus minimized into `fuzz/seeds/` and committed (50,653 files,
+       14.6 MB);
+       CI fuzzes every target nightly from the seeds. The OSS-Fuzz
+       application waits for the repository to be public (G99) (step
+       14).
+- [x] M33.7 Threat-model doc `docs/security.md`: assets, boundaries,
        trust levels; updated per milestone from here on.
-- [ ] M33.8 Adversarial test-site v2: the M27.7 page + CSP violations +
+       Done 2026-10-13: assets, adversaries, trust levels, each
+       boundary and what holds it, the unsafe code, the fuzzing, the
+       adversarial site, the limits (133 constants) and the known gaps
+       (step 18).
+- [x] M33.8 Adversarial test-site v2: the M27.7 page + CSP violations +
        cookie exfil attempts, all must fail closed.
 
 ---
+       Done 2026-10-13: four pages beside M27.7's, 56 attacks on frames,
+       CSP, cookies and storage and the network, each failing with the
+       defences on and succeeding with its defence taken away (but the
+       nine that reach across frames, G90); they found a parsing
+       document's form sent as a GET, an iframe deaf to its frame's
+       later documents and a frame's fragment fetched again, all mended
+       (step 17).
 
 ## M34 — Multi-process architecture  ·  `shell`/`engine`  ·  Effort: XR  ·  Depends: M33, M31
 
@@ -2382,7 +2459,9 @@ Deferred from the milestones above, each with what it waits on:
        shadow trees, declarative shadow roots among them, which no
        milestone holds; and the root's or the body's overflow carried
        to the viewport (css-overflow-3 §3.3), which tests since M17
-       have asked for. Found at M22.
+       have asked for. Found at M22. *(M33: the viewport takes it for
+       its scrollbar and the user's scrolling; the element still clips
+       as its own box.)*
 - [ ] G32 `border-radius`, `box-shadow` and `filter`, which no
        milestone holds: M22's spinner is a square ring for want of the
        first. Found at M22.
@@ -2603,6 +2682,84 @@ Deferred from the milestones above, each with what it waits on:
        container's min-content width; a scrolled layer's tiles at a
        display's scale (it is kept whole there, and repaints as it
        scrolls). Found at M32.
+- [ ] G90 Same-origin scripting across frames: a parent reaching into
+       its own origin's frame (`contentDocument`,
+       `contentWindow.document`, `parent.someFunction()`),
+       `document.domain` relaxing it, `opener`; `storage` events to
+       other frames' documents of the same key. Every frame is
+       cross-origin to every other until M34's site instances share a
+       runtime (D24). Found at M33.
+- [ ] G91 A frame's layers composited on the GPU: its pixels are drawn
+       in software and uploaded. With M34's out-of-process frames.
+       Found at M33.
+- [ ] G92 The joint session history: a frame's navigations as entries
+       of the tab's history. Found at M33.
+- [ ] G93 Blocking third-party cookies as a setting (D25). With M37.3's
+       settings. Found at M33.
+- [ ] G94 Trusted Types (`require-trusted-types-for`,
+       `trusted-types`). Found at M33.
+- [ ] G95 `report-to` and the Reporting API (`Reporting-Endpoints`),
+       which carries other reports too. Found at M33.
+- [ ] G96 Permissions Policy past Local Network Access's features: the
+       `Permissions-Policy` field, `allow` for the other features.
+       Found at M33.
+- [ ] G97 The Permissions API (`navigator.permissions.query`). Found at
+       M33.
+- [ ] G98 The profile's key on macOS and Linux (Keychain, Secret
+       Service): unwrapped there (D27). Found at M33.
+- [ ] G99 The OSS-Fuzz application and continuous fuzzing on its
+       machines, for when the repository is public;
+       `docs/security.md` says what it would hold. Found at M33.
+- [ ] G100 Revocation and Certificate Transparency: the reference
+       browser checks neither online; it enforces CT and revokes by
+       lists it pushes to itself, which go stale without an update
+       service, a CT check with a stale list to be switched off after
+       70 days as its own is. With T6.3's auto-update. Found at M33.
+- [ ] G101 Encrypted Client Hello, which needs a DNS client of the
+       browser's own for HTTPS records (DNS over HTTPS). Found at M33.
+- [ ] G102 `<frame>`, `<frameset>`, and HTML in `<object>` and
+       `<embed>`. Found at M33.
+- [ ] G103 `loading=lazy` frames, `credentialless`, the `csp` attribute
+       (embedded enforcement), `allowfullscreen` and the Fullscreen
+       API. Found at M33.
+- [ ] G104 CSP's edges the web-platform tests found: a nonce hidden
+       only when the parser inserted its element; a script whose
+       attribute names `<link` still nonceable, and a nonce given twice
+       honoured; a violation's line and column zero, a worker's firing
+       no event, and an icon's named by a `<link>` reaching no
+       listener; a report-only violation beside an enforced hash
+       reported as enforced; a violation reported for a script
+       `'strict-dynamic'`'s hash allows; a string a timer was refused
+       still making a timer; U+000B in a directive's value; a frame's
+       own subresources not upgraded by its parent's
+       `upgrade-insecure-requests`, its navigations alone. Found at
+       M33.
+- [ ] G105 Interfaces the M33 pages and tests found missing:
+       `document.scripts`, `document.links`, `document.styleSheets`
+       and `cssRules`, `baseURI`; named access to an element by its id
+       on `window`; `getComputedStyle` by a hyphenated name for
+       `background-image`; an image `new Image()` makes, which fetches
+       nothing (one `createElement` makes does). Found at M33.
+- [ ] G106 Frames' edges: a `javascript:` URL as a frame's `src` is not
+       run; a target naming a frame of a document still parsing finds
+       none, and the navigation goes to the top; popups (`window.open`,
+       `_blank` as a new tab, `opener`, `allow-popups-to-escape-sandbox`)
+       wait for M37's tabs. Found at M33.
+- [ ] G107 The web-platform tests M33 added that fail undiagnosed: 41
+       entries across 35 tests, each named in `expectations.txt` as not
+       diagnosed at M33. Found at M33.
+- [ ] G108 Referrer Policy's and the mixed form's edges:
+       `document.referrer` is the referrer the first hop sent; a
+       stylesheet's own requests carry the document's URL, and a
+       worker's its own by the default policy, its response's field not
+       read; a form submitted into another frame by its target, or
+       redirected to `http:`, is not held on the warning page. Found at
+       M33.
+- [ ] G109 The profile's encryption's edges: the pages `redb` freed when
+       a profile of schema 1 was sealed keep their values in the clear
+       until written again; a profile opened with a wrap that cannot
+       unwrap its key starts over with a new one, its values lost.
+       Found at M33.
 
 ---
 
@@ -2678,10 +2835,15 @@ Deferred from the milestones above, each with what it waits on:
 ## T3 — Security cadence
 - [ ] T3.1 Quarterly dependency audit (`cargo audit`), pinned Cargo.lock,
        `cargo deny` (advisories + licenses).
-- [ ] T3.2 `unsafe` review gate: any PR adding `unsafe` carries a safety
+- [x] T3.2 `unsafe` review gate: any PR adding `unsafe` carries a safety
        argument in code (enforced by convention + grep in CI).
+       Done 2026-10-13 (M33.5): `#![forbid(unsafe_code)]` everywhere but
+       the shell's platform module, each block argued, held by the
+       shell's test and CI's grep.
 - [ ] T3.3 `docs/security.md` updated with every milestone (threat model
        lives there from M33 on; before that, in architecture.md notes).
+       Begun 2026-10-13 (M33.7): each milestone's documents step updates
+       it.
 - [x] T3.4 Secret-handling rule: no network egress anywhere except the
        `net` crate's fetch path. CI grep-enforced. Done 2026-10-02
        (M14): CI's check job fails when `TcpStream`, `UdpSocket`,
@@ -2745,6 +2907,10 @@ Deferred from the milestones above, each with what it waits on:
 | D21 | WebAssembly | M29 | a `wasmi` bridge / a `wasmtime` bridge / the change of JavaScript engine D1 left open | `wasmi` 2.0 in `js` beside QuickJS-ng: an interpreter, validating every module, metered by fuel, bounded by a resource limiter, calls resumable at a host function; no JIT before M34's sandbox (see `docs/design/wasm.md`) |
 | D22 | The 2D canvas's rasterizer | M30 | `tiny-skia` on the processor / the GPU through `wgpu` / a rasterizer of our own | `tiny-skia` 0.12 in a `canvas` crate below `engine`: a port of Skia, the reference browser's, on every machine and read back without a stall; the bitmap shown as an image by both backends; drawing on the GPU left to G81 (see `docs/design/canvas.md`) |
 | D23 | SVG's renderer | M32 | `resvg` and `usvg` / an `svg` crate of our own drawing through `canvas` | an `svg` crate of our own: a render tree from the engine's DOM and its cascade's computed styles, drawn through the canvas crate's `tiny-skia` context, so that an inline `<svg>` is styled by the page's CSS and its shapes hit; `resvg` brings its own XML, CSS, fonts and a second `tiny-skia` (see `docs/design/svg.md`) |
+| D24 | Frames | M33 | a tab of navigables in one engine / a process per frame now / an engine of its own for each frame, under its parent's | an engine for each frame, drawn into its parent as a canvas is and reached through a frame tree the tab shares, so that M34 can move it into a process of its own behind the same seam; its price, every frame cross-origin to every other until then, is G90 (see `docs/design/hardening.md`) |
+| D25 | Third-party cookies | M33 | blocked / all partitioned / sent, the rest partitioned | the reference browser's: a frame of another site sends and reads its `SameSite=None; Secure` cookies, and its partitioned cookies, storage, cache, pools and TLS sessions are kept by the top-level site; blocking them as a setting is G93 |
+| D26 | The HSTS preload list | M33 | none / fetched at run time / Chromium's, generated into a file of the repository and read-only | Chromium's list, its `force-https` entries generated by `crates/net/examples/hsts_preload.rs` into `crates/net/data/hsts_preload.txt` and read once; shipped empty until the list is fetched with the maintainer's leave |
+| D27 | The profile's encryption | M33 | none / a password of the user's / a data key the operating system wraps | AES-256-GCM under a data key the operating system wraps for the user (DPAPI on Windows); Keychain and Secret Service are G98 |
 
 ---
 

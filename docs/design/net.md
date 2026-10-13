@@ -460,6 +460,10 @@ Not sent:
 - The `Sec-Fetch-*` metadata fields. `Sec-Fetch-Site` needs the
   Public Suffix List, which arrives with cookies (M27).
 
+*(corrected at M33: each is sent now: `Cookie`, `Origin` and the
+`Sec-Fetch-*` fields since M27 (`docs/design/fetch.md`), `Referer` by
+the referrer policy since M33.3.)*
+
 **Address spaces (D19, M14.7).** Every address a connection would be
 made to is classified by Local Network Access's table:
 

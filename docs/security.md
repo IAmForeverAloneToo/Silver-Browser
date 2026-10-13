@@ -445,10 +445,17 @@ seconds (`PROMPT_TIMEOUT`).
 - **The profile's key is not wrapped on macOS and Linux** (G98).
 - **OSS-Fuzz** (G99).
 - **CSP's edges** found by the web-platform tests and registered at
-  M33: a nonce hidden only when the parser inserted its element; a
+  M33 (G104): a nonce hidden only when the parser inserted its element; a
   violation's line and column zero and a worker's violation firing no
   event; a report-only violation beside an enforced hash reported as
   enforced; a violation reported for a script `'strict-dynamic'`'s
   hash allows; a string a timer was refused still making a timer.
 - **Popups** (`window.open`, `opener`) wait for M37's tabs; until then
   `_blank` navigates the tab itself.
+- **Referrer Policy's edges** (G108): `document.referrer` the first
+  hop's, a stylesheet's and a worker's own requests' referrers, and the
+  mixed form not held when sent into another frame or redirected to
+  `http:`.
+- **The profile encryption's edges** (G109): pages freed when an older
+  profile was sealed keep their values in the clear until written
+  again.

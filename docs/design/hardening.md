@@ -2,7 +2,8 @@
 
 Roadmap M33. Written before the code, as the record of the decisions,
 and corrected to the code when the milestone ends: where they
-disagree, the code wins, and the places are marked *(corrected)*. What
+disagree, the code wins, and section 4 lists the places, marked
+*(corrected)*. What
 ships is described in `docs/architecture.md` "Current state", and the
 threat model this milestone starts lives in `docs/security.md`.
 
@@ -1027,3 +1028,89 @@ gate.
 18. *`docs/security.md`*.
 19. *Acceptance*: `benches/frames.rs`, T4.3, the fuzz runs.
 20. *The documents*.
+
+## 4. Corrected to the code
+
+Where the milestone's code came out otherwise than the sections above
+planned, *(corrected)*, by section. The step notes say how each was
+found.
+
+*Frames.* *(corrected)* A document given to the engine with frames is
+`Loading` until its frames are told. The window's frames by index and
+name are a plain object between `Window.prototype` and
+`EventTarget.prototype`, made again when the engine's list changes:
+the Proxy planned made QuickJS-ng answer `undefined` for a global it
+did not know rather than throw. An `iframe` hears `load` for each
+document its frame completes, whatever navigated it (its `src`, its
+parent's form or link by target, its own script) and even when that
+document's own `load` listener navigates on (`Engine::completed`), but
+not for a fragment, nor for the initial `about:blank` when its
+element's navigation follows; a `src` naming the frame's document with
+another fragment goes to the fragment rather than fetching it again,
+as the reference browser does (steps 1 and 17).
+
+*Sandboxing and refusing to be framed.* *(corrected)* Several
+`X-Frame-Options` values refuse only when `deny`, `allowall` or
+`sameorigin` is among them; several others allow, as HTML says. A
+frame's first navigation takes its element's sandbox flags as they are
+when the frame is made, after the parser's next script; the reference
+browser takes them at insertion. A sandbox without `allow-scripts`
+styles its document with scripting off too: `noscript` makes boxes and
+the `scripting` media feature is `none` (step 16).
+
+*Partitions by top-level site.* *(corrected)* The partition is per
+page, not per engine: an incoming document's scripts run while the
+shown one is still the initial `about:blank` (`Network::set_partition`).
+
+*Content Security Policy.* *(corrected)* Source lists stay the policy's
+tokens, each matched by its kind when a check needs it, rather than
+expressions parsed once. More than 64 report-only policies refuse
+everything (`MAX_POLICIES`), failing closed. A form a document submits
+while it is still parsing is held to that document's `form-action`
+and sent with its body (step 17).
+
+*Referrer Policy.* *(corrected)* `document.referrer` is the referrer
+the first hop sent; a stylesheet's own requests carry the document's
+URL, and a worker's its own by the default policy, its response's
+field not read (registered).
+
+*HSTS and Upgrade-Insecure-Requests.* *(corrected)* The preload list's
+file ships empty, the reference browser's list waiting for the
+maintainer's leave to fetch it, and is read into a hash map; a
+field's `max-age` counts for a year at most; a form submitted into
+another frame by its target, or redirected to `http:`, is not held on
+the warning page (registered).
+
+*Local Network Access.* *(corrected)* An `allow` attribute's
+allowlist is not matched against the frame's origin, which Permissions
+Policy (G96) would do.
+
+*The profile at rest.* *(corrected)* A cookie's record is sealed whole,
+its domain, path and name with it; pages `redb` freed when a profile
+of schema 1 was sealed keep their values in the clear until written
+again; opening a profile with a wrap that cannot unwrap its key
+replaces the key.
+
+*The memory-safety audit.* *(corrected)* M29's WebAssembly fixture
+(`crates/engine/tests/wasm/numbers/lib.rs`), a crate built to
+WebAssembly whose exports `#[unsafe(no_mangle)]` marks, is left out of
+the check, which cuts strings before it reads.
+
+*Fuzzing graduation.* *(corrected)* The seeds are cut to 1,024 bytes
+for six targets to keep them under 30 MB together, and marked binary.
+Their merge found what the runs had not: a realm with no document
+refusing code from strings, and the differential comparison naming a
+frame's box by node number, missing canvases' bitmaps and drawing the
+fresh engine's frames unloaded; and a canvas a script resized not laid
+out again, since M30.
+
+*The adversarial site.* *(corrected)* The reads across frames fail
+with the defences taken away too, every frame being of an origin of
+its own (G90); the test names them, to succeed once that closes.
+
+*Tests and measures.* *(corrected)* `x-frame-options` and
+`upgrade-insecure-requests` give no web-platform test the runner can
+serve, and are not pulled; two racing tests are left out by name.
+The golden pages have no frame scrolled by its own script, which the
+engine cannot do (G46); 3D borders and the viewport's overflow came
+with them (step 16).
