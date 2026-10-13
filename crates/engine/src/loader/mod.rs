@@ -39,6 +39,8 @@ pub(crate) mod pool;
 mod request_tests;
 mod rules;
 #[cfg(test)]
+mod sandbox_tests;
+#[cfg(test)]
 mod script_tests;
 #[cfg(test)]
 mod security_tests;
@@ -126,6 +128,9 @@ pub enum LoadError {
     /// No thread could be started to fetch on, or the fetch's thread
     /// failed.
     Lost,
+    /// A frame's response refused to be shown in it (M33.2): its
+    /// `frame-ancestors` or `X-Frame-Options`.
+    Framed,
 }
 
 impl fmt::Display for LoadError {
@@ -133,6 +138,7 @@ impl fmt::Display for LoadError {
         match self {
             LoadError::Network(error) => error.fmt(f),
             LoadError::Lost => f.write_str("the fetch's thread failed"),
+            LoadError::Framed => f.write_str("the page refused to be shown in a frame"),
         }
     }
 }
@@ -550,8 +556,9 @@ pub(crate) struct Parsing {
     /// (M24).
     pub(crate) scripts: crate::scripts::Scripts,
     /// What a frame's local document takes from its creator (M33.2),
-    /// again when its parse starts over.
+    /// again when its parse starts over, and its sandboxing flags.
     pub(crate) creator: Option<Creator>,
+    pub(crate) sandbox: crate::sandbox::Sandbox,
 }
 
 /// The language the response's `Content-Language` gives its document,

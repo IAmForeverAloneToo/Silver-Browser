@@ -141,6 +141,24 @@ pub(crate) fn plan(
     })
 }
 
+/// Why `form` of a sandboxed document is not submitted (M33.2): its
+/// flags without `allow-forms`, the console's line saying so; `None`
+/// when it may be.
+pub(crate) fn blocked(document: &Document, page: &Page, form: NodeId) -> Option<String> {
+    if !page.sandbox().has(crate::sandbox::Sandbox::FORMS) {
+        return None;
+    }
+    let action = document.attr(form, "action").unwrap_or_default();
+    let action = page
+        .resolve(document, action)
+        .map(|url| url.to_string())
+        .unwrap_or_default();
+    Some(format!(
+        "Blocked form submission to '{action}' because the form's frame is sandboxed and the \
+         'allow-forms' permission is not set."
+    ))
+}
+
 /// A submission's target (HTML section 4.10.21.3): the submitter's
 /// `formtarget`, else the form's `target`, else the document's base
 /// target (M33.2).
@@ -162,6 +180,10 @@ impl crate::Engine {
         submitter: Option<NodeId>,
         from_method: bool,
     ) {
+        if let Some(line) = blocked(&self.shown.document, &self.shown.page, form) {
+            self.shown.scripts.say(js::ConsoleLevel::Error, line);
+            return;
+        }
         if !from_method && !self.validate_interactively(form, submitter) {
             return;
         }
@@ -230,7 +252,7 @@ impl crate::Engine {
     fn follow_submission(&mut self, submission: Submission) {
         let url = submission.url;
         if url.scheme() == "javascript" {
-            if self.scripting {
+            if self.scripts_run() {
                 self.run_javascript_url(&url);
             }
             return;
@@ -241,11 +263,13 @@ impl crate::Engine {
             None => {
                 let source = self.navigation_source(true);
                 // Another frame named by its target (M33.2).
-                if let Some(frame) = self.other_navigable(&submission.target) {
-                    self.navigate_other(frame, url, false, submission.post, source.origin);
-                    return;
+                match self.other_navigable(&submission.target, &url, true) {
+                    Ok(Some(frame)) => {
+                        self.navigate_other(frame, url, false, submission.post, source.origin);
+                    }
+                    Ok(None) => self.navigate_with(url, submission.post, source),
+                    Err(line) => self.shown.scripts.say(js::ConsoleLevel::Error, line),
                 }
-                self.navigate_with(url, submission.post, source);
             }
         }
     }

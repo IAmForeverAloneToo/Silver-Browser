@@ -10,6 +10,8 @@
 //! `'unsafe-inline'`, as section 6.7.3.2 says; an expression not
 //! understood matches nothing. A policy is never looser than the page
 //! asked for. `-Report-Only` policies block nothing and are not kept.
+//! A response's `sandbox` and `frame-ancestors` directives are read for
+//! its frame (M33.2).
 
 use crate::headers::HeaderList;
 use crate::url::{Host, Origin, Url, default_port, percent_decode};
@@ -186,6 +188,56 @@ impl Csp {
     /// bring in (M33.1).
     pub fn check_javascript_url(&self) -> Result<(), Violation> {
         self.check(allows_all_inline)
+    }
+
+    /// The values of the policies' `sandbox` directives (section 6.3.2,
+    /// M33.2): a response's, as no `<meta>` delivers one.
+    pub fn sandboxes(&self) -> Vec<String> {
+        self.policies
+            .iter()
+            .filter_map(|policy| {
+                let directive = policy.directives.iter().find(|d| d.name == "sandbox")?;
+                Some(directive.value.join(" "))
+            })
+            .collect()
+    }
+
+    /// Whether a frame may show the response these policies came with,
+    /// under ancestors of `ancestors`' origins, the parent's first
+    /// (section 4.2.5, "does a navigation response violate
+    /// frame-ancestors", M33.2): each policy's `frame-ancestors` must
+    /// match every ancestor's origin as a URL, which an opaque one is
+    /// not. `None` when no policy has the directive; the first that
+    /// refuses, if one.
+    pub fn check_frame_ancestors(&self, ancestors: &[Origin]) -> Option<Result<(), Violation>> {
+        let mut found = None;
+        for policy in &self.policies {
+            let Some(directive) = policy
+                .directives
+                .iter()
+                .find(|d| d.name == "frame-ancestors")
+            else {
+                continue;
+            };
+            found = Some(Ok(()));
+            let refused = ancestors.iter().any(|ancestor| {
+                Url::parse(&ancestor.serialization())
+                    .ok()
+                    .is_none_or(|url| {
+                        !url_matches_list(&url, &directive.value, &self.self_origin, 0)
+                    })
+            });
+            if refused {
+                return Some(Err(directive.violation()));
+            }
+        }
+        if found.is_some() && self.overflowed {
+            return Some(Err(Violation {
+                directive: "too many policies".to_owned(),
+                value: String::new(),
+            }));
+        }
+        found
     }
 
     fn check(&self, allows: impl Fn(&[String]) -> bool) -> Result<(), Violation> {

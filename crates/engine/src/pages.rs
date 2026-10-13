@@ -40,6 +40,10 @@ pub(crate) fn error(url: &Url, error: &LoadError) -> Document {
             format!("Can't load {place}"),
             "Something went wrong in the browser while loading this page.".to_owned(),
         ),
+        LoadError::Framed => (
+            "This page refused to be shown in a frame".to_owned(),
+            format!("{place} does not allow this page to show it in a frame."),
+        ),
     };
     page(
         &heading,

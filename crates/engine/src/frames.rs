@@ -17,7 +17,8 @@ use std::time::Duration;
 use dom::{Change, Document, NodeId};
 use net::Url;
 
-use crate::loader::{Creator, Incoming, LoadState, Page, Target, Waker};
+use crate::loader::{Creator, Incoming, LoadState, Page, PageId, Target, Waker};
+use crate::sandbox::Sandbox;
 use crate::scripts::ports::SharedRouter;
 use crate::submit::Post;
 use crate::{
@@ -83,8 +84,12 @@ struct TreeNode {
     /// it by, and `window.name` as its scripts set it.
     name: String,
     window_name: Option<String>,
-    /// Its document's origin.
+    /// Its document's origin and sandboxing flags.
     origin: Option<net::Origin>,
+    sandbox: Sandbox,
+    /// Its element's `sandbox` attribute's flags as it now stands, which
+    /// its next navigation takes (M33.2).
+    element_sandbox: Sandbox,
     /// Its child frames, in the tree order of their elements.
     children: Vec<FrameId>,
     inbox: VecDeque<FrameTask>,
@@ -230,11 +235,51 @@ impl FrameTree {
         self.add(parent)
     }
 
-    /// Frame `id`'s document's origin, a new document shown.
-    pub(crate) fn set_origin(&mut self, id: FrameId, origin: net::Origin) {
+    /// Frame `id`'s document's origin and sandboxing flags, a new
+    /// document shown.
+    pub(crate) fn set_document(&mut self, id: FrameId, origin: net::Origin, sandbox: Sandbox) {
         if let Some(node) = self.nodes.get_mut(&id) {
             node.origin = Some(origin);
+            node.sandbox = sandbox;
         }
+    }
+
+    /// Frame `id`'s element's `sandbox` attribute's flags.
+    pub(crate) fn set_element_sandbox(&mut self, id: FrameId, sandbox: Sandbox) {
+        if let Some(node) = self.nodes.get_mut(&id) {
+            node.element_sandbox = sandbox;
+        }
+    }
+
+    /// The flags a new document of frame `id` is made with (HTML's
+    /// "determine the creation sandboxing flags", M33.2): its element's
+    /// and its parent's document's; none for the top's.
+    pub(crate) fn creation_sandbox(&self, id: FrameId) -> Sandbox {
+        let Some(node) = self.nodes.get(&id) else {
+            return Sandbox::NONE;
+        };
+        let parent = node
+            .parent
+            .and_then(|parent| self.nodes.get(&parent))
+            .map_or(Sandbox::NONE, |parent| parent.sandbox);
+        node.element_sandbox.with(parent)
+    }
+
+    /// The origins of frame `id`'s ancestors' documents, its parent's
+    /// first (M33.2): what `frame-ancestors` and `X-Frame-Options` check.
+    pub(crate) fn ancestor_origins(&self, id: FrameId) -> Vec<net::Origin> {
+        let mut origins = Vec::new();
+        let mut at = self.parent(id);
+        while let Some(ancestor) = at {
+            let origin = self
+                .nodes
+                .get(&ancestor)
+                .and_then(|node| node.origin.clone())
+                .unwrap_or_else(net::Origin::new_opaque);
+            origins.push(origin);
+            at = self.parent(ancestor);
+        }
+        origins
     }
 
     pub(crate) fn contains(&self, id: FrameId) -> bool {
@@ -320,28 +365,40 @@ impl FrameTree {
             .is_some_and(|node| !node.inbox.is_empty())
     }
 
-    /// Whether frame `source`, whose document is of `origin`, may navigate
-    /// frame `target` (M33.2), as the reference browser allows: itself,
+    /// Whether frame `source`, whose document is of `origin` and has the
+    /// flags `sandbox`, may navigate frame `target` (M33.2), as the
+    /// reference browser allows: itself,
     /// one of its descendants, its top, or a frame some ancestor of which,
-    /// itself included, is of its origin.
+    /// itself included, is of its origin. A sandboxed document only
+    /// itself, its descendants, and its top as its flags allow, by the
+    /// user's activation or not (HTML's "allowed by sandboxing to
+    /// navigate").
     pub(crate) fn may_navigate(
         &self,
         source: FrameId,
         target: FrameId,
-        origin: &net::Origin,
+        (origin, sandbox): (&net::Origin, Sandbox),
+        activated: bool,
     ) -> bool {
         if !self.contains(target) {
             return false;
         }
-        if target == source || target == self.top(source) {
+        if target == source {
             return true;
+        }
+        if target == self.top(source) {
+            return !sandbox.has(match activated {
+                true => Sandbox::TOP_NAVIGATION_BY_USER,
+                false => Sandbox::TOP_NAVIGATION,
+            });
         }
         let mut at = Some(target);
         while let Some(id) = at {
             if id == source {
                 return true;
             }
-            if !origin.is_opaque()
+            if !sandbox.has(Sandbox::NAVIGATION)
+                && !origin.is_opaque()
                 && self
                     .nodes
                     .get(&id)
@@ -532,7 +589,8 @@ pub(crate) fn may_touch_frames(document: &Document, change: &Change) -> bool {
             .subtree(*child)
             .any(|node| is_iframe(document, node)),
         Change::AttributeChanged { element, name, .. } => {
-            is_iframe(document, *element) && matches!(name.as_str(), "src" | "srcdoc" | "name")
+            is_iframe(document, *element)
+                && matches!(name.as_str(), "src" | "srcdoc" | "name" | "sandbox")
         }
         Change::Everything => true,
         Change::TextChanged { .. }
@@ -600,6 +658,21 @@ impl Engine {
         child
     }
 
+    /// The flags of the `iframe` `node`'s `sandbox` attribute (M33.2):
+    /// none without one.
+    fn element_sandbox(&self, node: NodeId) -> Sandbox {
+        self.shown
+            .document
+            .attr(node, "sandbox")
+            .map_or(Sandbox::NONE, Sandbox::parse)
+    }
+
+    /// The sandboxing flags this engine's frame's next document is made
+    /// with (M33.2): none at the top.
+    pub(crate) fn creation_sandbox(&self) -> Sandbox {
+        lock(&self.frame.tree).creation_sandbox(self.frame.id)
+    }
+
     /// What the `iframe` `node`'s attributes navigate its frame to.
     fn frame_source(&self, node: NodeId) -> Source {
         let document = &self.shown.document;
@@ -642,6 +715,12 @@ impl Engine {
         }
         for node in iframes {
             let source = self.frame_source(node);
+            // A change of its `sandbox` applies at the frame's next
+            // navigation (M33.2).
+            if let Some(frame) = self.shown.frames.get(&node) {
+                let sandbox = self.element_sandbox(node);
+                lock(&self.frame.tree).set_element_sandbox(frame.id, sandbox);
+            }
             match self.shown.frames.get(&node) {
                 Some(frame) if frame.source == source => continue,
                 Some(_) => {}
@@ -694,6 +773,8 @@ impl Engine {
                 return None;
             }
         };
+        let sandbox = self.element_sandbox(node);
+        lock(&self.frame.tree).set_element_sandbox(id, sandbox);
         let mut engine = Box::new(self.child_engine(id));
         let creator = self.shown.page.creator(&self.shown.document);
         engine.show_blank(&creator, true);
@@ -774,7 +855,8 @@ impl Engine {
             None,
             creator.address_space,
         )
-        .inheriting(creator);
+        .inheriting(creator)
+        .with_sandbox(self.creation_sandbox());
         let partition = self.partition_for(page.origin());
         self.network.set_partition(id, partition);
         let document = parsed_or_empty("");
@@ -814,6 +896,7 @@ impl Engine {
             handling: Handling::Replace,
             started: self.time_origin(),
             creator: Some(creator),
+            sandbox: self.creation_sandbox(),
         });
         self.load_state = LoadState::Loading;
         self.sniff_incoming(true);
@@ -828,7 +911,7 @@ impl Engine {
     fn navigate_as_frame(&mut self, url: Url, creator: Creator, initiator: Option<net::Initiator>) {
         self.cancel_navigation();
         if url.scheme() == "javascript" {
-            if self.scripting {
+            if self.scripts_run() {
                 self.run_javascript_url(&url);
             }
             return;
@@ -854,6 +937,7 @@ impl Engine {
             handling: Handling::Replace,
             started: self.time_origin(),
             creator: local.then_some(creator),
+            sandbox: self.creation_sandbox(),
         });
         self.load_state = LoadState::Loading;
     }
@@ -863,21 +947,110 @@ impl Engine {
     /// choosing a navigable", M33.2): `_parent`, `_top`, or a frame named
     /// so that this one may navigate; `_blank`, or a name found nowhere,
     /// which ask for a new tab the browser has not (M37), go to the top
-    /// from a frame. `None` for this frame's own.
-    pub(crate) fn other_navigable(&self, name: &str) -> Option<FrameId> {
+    /// from a frame. `None` for this frame's own. A sandboxed document's
+    /// navigation to `url` its flags refuse, by the user's activation or
+    /// not, goes nowhere: the console's line saying so.
+    pub(crate) fn other_navigable(
+        &self,
+        name: &str,
+        url: &Url,
+        activated: bool,
+    ) -> Result<Option<FrameId>, String> {
+        self.navigable_for(&self.shown.page, name, url, activated)
+    }
+
+    /// [`Engine::other_navigable`] for the document of `page` in this
+    /// engine's frame, the one shown or the one on its way.
+    pub(crate) fn navigable_for(
+        &self,
+        page: &Page,
+        name: &str,
+        url: &Url,
+        activated: bool,
+    ) -> Result<Option<FrameId>, String> {
         let me = self.frame.id;
         let tree = lock(&self.frame.tree);
+        let origin = page.origin();
+        let sandbox = page.sandbox();
+        let new_tab = || match sandbox.has(Sandbox::AUXILIARY_NAVIGATION) {
+            true => Err(format!(
+                "Blocked opening '{url}' in a new window because the request was made in a \
+                 sandboxed frame whose 'allow-popups' permission is not set."
+            )),
+            false => Ok(tree.top(me)),
+        };
         let chosen = match name.to_ascii_lowercase().as_str() {
             "" | "_self" => me,
             "_parent" => tree.parent(me).unwrap_or(me),
-            "_top" | "_blank" => tree.top(me),
+            "_top" => tree.top(me),
+            "_blank" => new_tab()?,
             _ => match tree.find_named(name) {
-                Some(id) if tree.may_navigate(me, id, self.shown.page.origin()) => id,
+                Some(id) if tree.may_navigate(me, id, (origin, sandbox), activated) => id,
+                Some(id) if sandbox.any() => id,
                 Some(_) => me,
-                None => tree.top(me),
+                None => new_tab()?,
             },
         };
-        (chosen != me).then_some(chosen)
+        if chosen == me {
+            return Ok(None);
+        }
+        if !sandbox.any()
+            || name.eq_ignore_ascii_case("_blank")
+            || tree.may_navigate(me, chosen, (origin, sandbox), activated)
+        {
+            return Ok(Some(chosen));
+        }
+        let target = tree
+            .nodes
+            .get(&chosen)
+            .and_then(|node| node.origin.as_ref())
+            .map_or_else(|| "null".to_owned(), net::Origin::serialization);
+        let from = page.url().map_or("", Url::as_str);
+        let why = match chosen == tree.top(me) {
+            true => {
+                "The frame attempting navigation of the top-level window is sandboxed, but the \
+                 flag of 'allow-top-navigation' or 'allow-top-navigation-by-user-activation' is \
+                 not set."
+            }
+            false => {
+                "The frame attempting navigation is sandboxed, and is therefore disallowed from \
+                 navigating its ancestors."
+            }
+        };
+        Err(format!(
+            "Unsafe attempt to initiate navigation for frame with origin '{target}' from frame \
+             with URL '{from}'. {why}"
+        ))
+    }
+
+    /// Whether the frame's response `response` to the navigation of page
+    /// `page` may not be shown in it (M33.2): then the navigation is
+    /// over, the engine's error page shown in its place, of an opaque
+    /// origin, and the console says why.
+    pub(crate) fn refuse_framing(&mut self, page: PageId, response: &net::Response) -> bool {
+        if !self.frame.is_frame() {
+            return false;
+        }
+        let ancestors = lock(&self.frame.tree).ancestor_origins(self.frame.id);
+        let at = response.url();
+        let Some(line) = crate::sandbox::framing_refused(at, &response.headers, &ancestors) else {
+            return false;
+        };
+        let Some(navigation) = self.navigation.take() else {
+            return false;
+        };
+        self.network.cancel(page, None);
+        let error = crate::LoadError::Framed;
+        let shown = self.made(crate::pages::error(at, &error), Some(error));
+        self.commit(shown, Some(navigation.url), navigation.handling);
+        // The page made has no URL: the line names the one refused.
+        let entry = scripts::ConsoleEntry {
+            level: js::ConsoleLevel::Error,
+            text: line,
+        };
+        let lines = self.frame_lines(vec![entry], Some(at));
+        self.departed.extend(lines);
+        true
     }
 
     /// Asks frame `frame` to navigate to `url` (M33.2): it does at its
@@ -915,7 +1088,7 @@ impl Engine {
                     target_origin,
                 } => {
                     let own = self.shown.page.origin().serialization();
-                    if self.scripting && (target_origin == "*" || target_origin == own) {
+                    if self.scripts_run() && (target_origin == "*" || target_origin == own) {
                         let now = self.now();
                         self.shown.scripts.post(
                             now,

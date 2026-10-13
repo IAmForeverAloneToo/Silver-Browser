@@ -15,6 +15,7 @@ use net::{AddressSpace, Destination, Initiator, MimeType, Origin, Request, Respo
 use style::Media;
 
 use super::{FetchId, LoadError, Network, PageId, Target, rules};
+use crate::sandbox::Sandbox;
 
 /// How deep imports go: a sheet's imports are one deeper than it, and
 /// one deeper than this is not fetched.
@@ -40,6 +41,8 @@ pub(crate) struct Page {
     csp: Csp,
     /// The `<meta>` elements whose policies are in `csp`.
     metas: Vec<NodeId>,
+    /// The document's sandboxing flags (M33.2).
+    sandbox: Sandbox,
 }
 
 /// What a page's fetches are made with.
@@ -198,6 +201,7 @@ impl Page {
             owners: Vec::new(),
             csp: Csp::none(origin),
             metas: Vec::new(),
+            sandbox: Sandbox::NONE,
         }
     }
 
@@ -230,6 +234,7 @@ impl Page {
             owners: Vec::new(),
             csp,
             metas: Vec::new(),
+            sandbox: Sandbox::NONE,
         }
     }
 
@@ -237,6 +242,21 @@ impl Page {
     pub(crate) fn with_csp(mut self, csp: Csp) -> Page {
         self.csp = csp;
         self
+    }
+
+    /// The page, its document sandboxed by `sandbox` (M33.2): of a new
+    /// opaque origin unless `allow-same-origin` lifted that flag.
+    pub(crate) fn with_sandbox(mut self, sandbox: Sandbox) -> Page {
+        if sandbox.has(Sandbox::ORIGIN) {
+            self.context.origin = Origin::new_opaque();
+        }
+        self.sandbox = sandbox;
+        self
+    }
+
+    /// The document's sandboxing flags.
+    pub(crate) fn sandbox(&self) -> Sandbox {
+        self.sandbox
     }
 
     /// What the document gives the documents of the frames it makes

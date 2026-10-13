@@ -103,6 +103,7 @@ mod loader;
 mod navigation;
 mod pages;
 mod print;
+mod sandbox;
 mod scripts;
 mod select;
 mod storage;
@@ -620,6 +621,9 @@ struct Navigation {
     started: scripts::TimeOrigin,
     /// What a frame's local document takes from its creator (M33.2).
     creator: Option<loader::Creator>,
+    /// The sandboxing flags its document is made with, its response's
+    /// own apart (M33.2): its frame's when it began.
+    sandbox: sandbox::Sandbox,
 }
 
 /// The document that starts a navigation (M27): its origin, which the
@@ -682,6 +686,7 @@ fn parsed_page(
     head: &net::Response,
     load: &html::Load,
     creator: Option<&loader::Creator>,
+    sandbox: sandbox::Sandbox,
 ) -> Page {
     let address_space = head.address_space.unwrap_or(net::AddressSpace::Public);
     let encoding = load.encoding().unwrap_or(encoding::UTF_8);
@@ -698,6 +703,7 @@ fn parsed_page(
         Some(creator) => page.inheriting(creator),
         None => page,
     }
+    .with_sandbox(sandbox)
 }
 
 /// Whether `document` has a body: HTML's "allows adding render-blocking
@@ -1131,7 +1137,11 @@ impl Engine {
         // The tab knows the frame's document's origin, and its ports are
         // the tab's (M33.2).
         let mut tree = frames::lock(&self.frame.tree);
-        tree.set_origin(self.frame.id, self.shown.page.origin().clone());
+        tree.set_document(
+            self.frame.id,
+            self.shown.page.origin().clone(),
+            self.shown.page.sandbox(),
+        );
         let router = tree.router();
         drop(tree);
         self.shown.scripts.use_router(router);
@@ -1193,7 +1203,12 @@ impl Engine {
             }
             self.departed.extend(frame.engine.take_console());
         }
-        if !self.scripting || left.made {
+        // What the engine said to a document whose scripts do not run
+        // is the tab's too (M33.2: a sandboxed one's).
+        if !self.scripting || left.made || left.page.sandbox().has(sandbox::Sandbox::SCRIPTS) {
+            let lines = left.scripts.take_console();
+            let lines = self.frame_lines(lines, left.page.url());
+            self.departed.extend(lines);
             return;
         }
         let window = self.window_env();
@@ -1340,7 +1355,7 @@ impl Engine {
             return;
         };
         if url.scheme() == "javascript" {
-            if self.scripting {
+            if self.scripts_run() {
                 self.run_javascript_url(&url);
             }
             return;
@@ -1352,11 +1367,11 @@ impl Engine {
                 let source = self.navigation_source(true);
                 // Another frame named by its target (M33.2).
                 let target = frames::element_target(&self.shown.document, link.node);
-                if let Some(frame) = self.other_navigable(&target) {
-                    self.navigate_other(frame, url, false, None, source.origin);
-                    return;
+                match self.other_navigable(&target, &url, true) {
+                    Ok(Some(frame)) => self.navigate_other(frame, url, false, None, source.origin),
+                    Ok(None) => self.navigate_replacing(url, false, Some(source)),
+                    Err(line) => self.shown.scripts.say(js::ConsoleLevel::Error, line),
                 }
-                self.navigate_replacing(url, false, Some(source));
             }
         }
     }
@@ -1383,11 +1398,13 @@ impl Engine {
             // frame (M33.2).
             None if navigation.link => {
                 let source = self.navigation_source(false);
-                if let Some(frame) = self.other_navigable(&navigation.target) {
-                    self.navigate_other(frame, url, false, navigation.post, source.origin);
-                    return;
+                match self.other_navigable(&navigation.target, &url, false) {
+                    Ok(Some(frame)) => {
+                        self.navigate_other(frame, url, false, navigation.post, source.origin);
+                    }
+                    Ok(None) => self.navigate_with(url, navigation.post, source),
+                    Err(line) => self.shown.scripts.say(js::ConsoleLevel::Error, line),
                 }
-                self.navigate_with(url, navigation.post, source);
             }
             None => {
                 let replace = navigation.replace || self.load_state != LoadState::Loaded;
@@ -1418,6 +1435,34 @@ impl Engine {
             origin: current.url.origin(),
             activated: false,
         };
+        // A link or form of the document on its way may name another
+        // frame (M33.2), chosen as that document would.
+        if navigation.link
+            && refusal(&url, Some(&source), false).is_none()
+            && let Some(Navigation {
+                incoming: Incoming::Parsing { page, .. },
+                ..
+            }) = &self.navigation
+        {
+            let origin = page.origin().clone();
+            let at = page.url().cloned();
+            match self.navigable_for(page, &navigation.target, &url, false) {
+                Ok(Some(frame)) => {
+                    self.navigate_other(frame, url, false, navigation.post, origin);
+                    return;
+                }
+                Ok(None) => {}
+                Err(line) => {
+                    let entry = ConsoleEntry {
+                        level: js::ConsoleLevel::Error,
+                        text: line,
+                    };
+                    let lines = self.frame_lines(vec![entry], at.as_ref());
+                    self.departed.extend(lines);
+                    return;
+                }
+            }
+        }
         match refusal(&url, Some(&source), false) {
             Some(why) => self.notice = Some(why),
             None => self.start_navigation_with(url, handling, None, Some(from)),
@@ -1430,6 +1475,10 @@ impl Engine {
     /// its own, its errors naming the document. A string it ends with
     /// would replace the document, which waits for M26.6.
     fn run_javascript_url(&mut self, url: &Url) {
+        // A sandboxed document runs none (M33.2).
+        if self.shown.page.sandbox().has(sandbox::Sandbox::SCRIPTS) {
+            return;
+        }
         let csp = self.shown.page.csp(&self.shown.document);
         if let Err(violation) = csp.check_javascript_url() {
             self.shown.scripts.refused("a javascript: URL", &violation);
@@ -1475,6 +1524,7 @@ impl Engine {
             handling: Handling::Replace,
             started: self.time_origin(),
             creator: None,
+            sandbox: self.creation_sandbox(),
         });
         self.load_state = LoadState::Loading;
         self.sniff_incoming(true);
@@ -1543,7 +1593,7 @@ impl Engine {
     /// listener canceled it; `None` when nothing was dispatched, scripts
     /// being off or the document having no listener at all.
     fn fire(&mut self, target: js::Target, event: js::EventInit) -> Option<bool> {
-        if !self.scripting || self.shown.made {
+        if !self.scripts_run() || self.shown.made {
             return None;
         }
         let ready = self.ready_state();
@@ -2289,7 +2339,7 @@ impl Engine {
     /// `pointerenter` at each entered, outermost first; then the mouse
     /// events of the same.
     fn boundary(&mut self, before: &[NodeId], after: &[NodeId]) {
-        if !self.scripting {
+        if !self.scripts_run() {
             return;
         }
         let (old, new) = (before.first().copied(), after.first().copied());
@@ -2701,7 +2751,7 @@ impl Engine {
     /// it has loaded, `readystatechange` again, `load` at the window, its
     /// target the document, and `pageshow`.
     fn lifecycle(&mut self) {
-        if !self.scripting || self.shown.made || self.shown.parsing.is_some() {
+        if !self.scripts_run() || self.shown.made || self.shown.parsing.is_some() {
             return;
         }
         let document = self.document_target();
@@ -2764,7 +2814,7 @@ impl Engine {
         let events = std::mem::take(&mut self.pending_events);
         self.focus_fixup();
         self.autofocus();
-        if !self.scripting || self.shown.made {
+        if !self.scripts_run() || self.shown.made {
             return;
         }
         let rendered = Rendered {
@@ -2988,7 +3038,10 @@ impl Engine {
         else {
             return;
         };
-        if incoming.id() != page || !self.scripting {
+        if incoming.id() != page
+            || !self.scripting
+            || incoming.sandbox().has(sandbox::Sandbox::SCRIPTS)
+        {
             return;
         }
         let loader::Parsing { load, scripts, .. } = &mut **parsing;
@@ -3153,7 +3206,7 @@ impl Engine {
         if self.shown.parsing.is_some() {
             scripts::ReadyState::Loading
         } else if self.shown.lifecycle.loaded
-            || (!self.scripting && self.load_state == LoadState::Loaded)
+            || (!self.scripts_run() && self.load_state == LoadState::Loaded)
         {
             scripts::ReadyState::Complete
         } else {
@@ -3237,6 +3290,7 @@ impl Engine {
             handling,
             started: self.time_origin(),
             creator: None,
+            sandbox: self.creation_sandbox(),
         });
         self.load_state = LoadState::Loading;
     }
@@ -3315,6 +3369,12 @@ impl Engine {
         self.scripting
     }
 
+    /// Whether the shown document's scripts run: scripting is on, and
+    /// its sandbox does not stop them (M33.2).
+    fn scripts_run(&self) -> bool {
+        self.scripting && !self.shown.page.sandbox().has(sandbox::Sandbox::SCRIPTS)
+    }
+
     /// Sends D12's compatibility user agent string in requests and
     /// `navigator`, for a page that refuses an engine it does not know
     /// (the shell's `--compat-user-agent`); never the default. Takes the
@@ -3349,7 +3409,7 @@ impl Engine {
 
     /// Where the shown document's scripting stands (M24.7).
     pub fn scripts(&self) -> ScriptState {
-        if self.scripting {
+        if self.scripts_run() {
             self.shown.scripts.state()
         } else {
             ScriptState::Off
@@ -3977,7 +4037,12 @@ impl Engine {
                 let ok = result.as_ref().is_ok_and(loader::is_stylesheet);
                 let wanted = incoming.awaits(owner, path, id);
                 incoming.sheet_arrived(owner, path, id, result, &mut self.network);
-                if scripting && wanted && path.is_empty() && document.tag(owner) == Some("link") {
+                if scripting
+                    && !incoming.sandbox().has(sandbox::Sandbox::SCRIPTS)
+                    && wanted
+                    && path.is_empty()
+                    && document.tag(owner) == Some("link")
+                {
                     let loader::Parsing { load, scripts, .. } = &mut **parsing;
                     let mut lent = scripts::Lent {
                         document,
@@ -4008,6 +4073,14 @@ impl Engine {
     /// The head of the response to the navigation under way's document
     /// fetch: its body is to come (M24.8).
     fn document_head(&mut self, page: PageId, response: net::Response) {
+        // A frame's response refused to be framed goes no further (M33.2).
+        let fetching = matches!(
+            &self.navigation,
+            Some(Navigation { incoming: Incoming::Fetching(id), .. }) if *id == page
+        );
+        if fetching && self.refuse_framing(page, &response) {
+            return;
+        }
         if let Some(navigation) = &mut self.navigation
             && matches!(navigation.incoming, Incoming::Fetching(id) if id == page)
         {
@@ -4079,7 +4152,18 @@ impl Engine {
             return;
         };
         let id = *id;
-        let mut load = html::Load::new(transport, self.scripting);
+        // Its flags, its frame's and its response's (M33.2): a sandboxed
+        // document is parsed as with scripts off.
+        let sandbox = self
+            .navigation
+            .as_ref()
+            .map_or(sandbox::Sandbox::NONE, |navigation| navigation.sandbox)
+            .with(sandbox::Sandbox::from_csp(&net::csp::Csp::from_headers(
+                &response.headers,
+                response.url(),
+            )));
+        let scripting = self.scripting && !sandbox.has(sandbox::Sandbox::SCRIPTS);
+        let mut load = html::Load::new(transport, scripting);
         load.push(&response.body);
         if ended {
             load.end();
@@ -4089,7 +4173,7 @@ impl Engine {
             .navigation
             .as_ref()
             .and_then(|navigation| navigation.creator.clone());
-        let page = parsed_page(id, &response, &load, creator.as_ref());
+        let page = parsed_page(id, &response, &load, creator.as_ref(), sandbox);
         // A frame's document's requests are made where it is (M33.2).
         let partition = self.partition_for(page.origin());
         self.network.set_partition(id, partition);
@@ -4105,6 +4189,7 @@ impl Engine {
                     head: response,
                     scripts,
                     creator,
+                    sandbox,
                 }),
             };
         }
@@ -4159,6 +4244,7 @@ impl Engine {
                     &parsing.head,
                     &parsing.load,
                     parsing.creator.as_ref(),
+                    parsing.sandbox,
                 );
                 **document = Document::new();
                 parsing.scripts.restart();
@@ -4167,6 +4253,7 @@ impl Engine {
             html::Progress::Parsed(stop) => {
                 if let html::Stop::Script { element, line } = stop
                     && self.scripting
+                    && !page.sandbox().has(sandbox::Sandbox::SCRIPTS)
                 {
                     // The sheets the parser made before the script are
                     // found first: one on its way blocks it, and its
@@ -4249,6 +4336,7 @@ impl Engine {
                     &head,
                     &parsing.load,
                     parsing.creator.as_ref(),
+                    parsing.sandbox,
                 );
                 self.shown
                     .page
@@ -4262,14 +4350,14 @@ impl Engine {
                 self.wake();
             }
             html::Progress::Parsed(stop) => {
-                if matches!(stop, html::Stop::Script { .. }) && self.scripting {
+                if matches!(stop, html::Stop::Script { .. }) && self.scripts_run() {
                     // The parser's changes are taken before the script is
                     // prepared: the sheets it made may block it, and its
                     // `getComputedStyle` reads them (M25).
                     self.scripts_ran();
                 }
                 if let html::Stop::Script { element, line } = stop
-                    && self.scripting
+                    && self.scripts_run()
                     && let Shown {
                         document,
                         page,
@@ -4377,6 +4465,16 @@ impl Engine {
             self.wake();
             return;
         }
+        // A frame's response that came whole, refused to be framed (M33.2).
+        if let Ok(response) = &result
+            && matches!(
+                &self.navigation,
+                Some(Navigation { incoming: Incoming::Fetching(id), .. }) if *id == page
+            )
+            && self.refuse_framing(page, response)
+        {
+            return;
+        }
         if result.is_ok() {
             self.sniff_incoming(true);
             if matches!(
@@ -4412,6 +4510,7 @@ impl Engine {
             handling,
             started,
             creator,
+            sandbox,
             ..
         } = navigation;
         let response = match result {
@@ -4433,6 +4532,8 @@ impl Engine {
                 if let Some(creator) = &creator {
                     incoming = incoming.inheriting(creator);
                 }
+                let csp = net::csp::Csp::from_headers(&response.headers, response.url());
+                incoming = incoming.with_sandbox(sandbox.with(sandbox::Sandbox::from_csp(&csp)));
                 let partition = self.partition_for(incoming.origin());
                 self.network.set_partition(page, partition);
                 let media = self.media(self.viewport);
@@ -4446,6 +4547,7 @@ impl Engine {
                     handling,
                     started,
                     creator,
+                    sandbox,
                 });
                 self.commit_if_ready();
             }
@@ -4457,6 +4559,16 @@ impl Engine {
             loader::Outcome::Unshowable(essence) => {
                 let shown = self.made(pages::unshowable(&at, &essence), None);
                 self.commit(shown, Some(at), handling);
+            }
+            // A sandboxed frame starts none (M33.2).
+            loader::Outcome::Download(_) if sandbox.has(sandbox::Sandbox::DOWNLOADS) => {
+                self.shown.scripts.say(
+                    js::ConsoleLevel::Error,
+                    "Download is disallowed. The frame initiating or instantiating the download \
+                     is sandboxed, but the flag 'allow-downloads' is not set."
+                        .to_owned(),
+                );
+                self.settle_load_state();
             }
             loader::Outcome::Download(essence) => {
                 self.notice = Some(format!(
@@ -4521,7 +4633,7 @@ impl Engine {
         self.commit(Shown::new(*document, *page), url, handling);
         // An SVG document's scripts (M32), which no HTML parser met: each
         // prepared in tree order, as if its parser had just closed it.
-        if self.scripting && self.shown.page.content_type() == Some("image/svg+xml") {
+        if self.scripts_run() && self.shown.page.content_type() == Some("image/svg+xml") {
             self.prepare_parsed_scripts();
         }
     }
@@ -4870,7 +4982,7 @@ impl Engine {
             || self.shown.scripts.canvases_changed()
             || self.animating()
             || self.shown.animations.borrow().needs_frame()
-            || (self.scripting
+            || (self.scripts_run()
                 && !self.hidden
                 && (self.shown.scripts.wants_frame() || !self.pending_events.is_empty()))
             || self.frames_need_frame()
@@ -5483,7 +5595,7 @@ impl Engine {
         // The values are the restyle's already.
         let _ = animations.sample();
         self.events = animations.take_events();
-        if self.scripting {
+        if self.scripts_run() {
             self.pending_events.extend(self.events.iter().cloned());
         }
         let style_time = start.elapsed();

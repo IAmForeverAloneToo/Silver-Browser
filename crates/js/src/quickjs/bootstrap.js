@@ -6556,9 +6556,11 @@
   // A token list's state: its element and attribute.
   const tokenLists = new $WeakMap();
 
-  function tokenList(owner, handle, attribute) {
+  // `supported` the tokens `supports()` knows, lowercase; none for a
+  // list that has no supported tokens.
+  function tokenList(owner, handle, attribute, supported) {
     const target = new DOMTokenList(KEY);
-    const state = { owner, handle, attribute };
+    const state = { owner, handle, attribute, supported };
     const proxy = new $Proxy(target, tokenHandlers);
     WeakMapSet(tokenLists, proxy, state);
     WeakMapSet(tokenLists, target, state);
@@ -6715,10 +6717,20 @@
     }
 
     supports(token) {
-      tokenState(this);
-      throw new $TypeError(
-        prefix("supports", "DOMTokenList") + "DOMTokenList has no supported tokens.",
-      );
+      const state = tokenState(this);
+      need(arguments.length, 1, "supports", "DOMTokenList");
+      if (state.supported === undefined) {
+        throw new $TypeError(
+          prefix("supports", "DOMTokenList") + "DOMTokenList has no supported tokens.",
+        );
+      }
+      const lower = ToLowerCase(str(token));
+      for (let i = 0; i < state.supported.length; i++) {
+        if (state.supported[i] === lower) {
+          return true;
+        }
+      }
+      return false;
     }
 
     get value() {
@@ -9006,8 +9018,27 @@
     return nothing();
   }
 
+  // The `sandbox` tokens the reference browser knows (M33.2, p2).
+  const SANDBOX_TOKENS = [
+    "allow-downloads",
+    "allow-forms",
+    "allow-modals",
+    "allow-orientation-lock",
+    "allow-pointer-lock",
+    "allow-popups",
+    "allow-popups-to-escape-sandbox",
+    "allow-presentation",
+    "allow-same-origin",
+    "allow-scripts",
+    "allow-top-navigation",
+    "allow-top-navigation-by-user-activation",
+    "allow-storage-access-by-user-activation",
+  ];
+  const sandboxLists = new $WeakMap();
+
   // An iframe's frame's window, another origin's to this realm (D24),
-  // and its document, which no realm here reaches into.
+  // and its document, which no realm here reaches into; its `sandbox`,
+  // the same list at every reading, which setting sets its value.
   include(
     {
       get contentWindow() {
@@ -9016,6 +9047,19 @@
       get contentDocument() {
         self(this);
         return null;
+      },
+      get sandbox() {
+        const handle = self(this);
+        let list = WeakMapGet(sandboxLists, this);
+        if (list === undefined) {
+          list = tokenList(this, handle, "sandbox", SANDBOX_TOKENS);
+          WeakMapSet(sandboxLists, this, list);
+        }
+        return list;
+      },
+      set sandbox(value) {
+        const handle = self(this);
+        setAttribute(handle, "sandbox", str(value), "sandbox");
       },
     },
     [MapGet(interfaces, "iframe").prototype],

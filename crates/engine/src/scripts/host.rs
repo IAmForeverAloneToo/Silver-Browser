@@ -24,6 +24,7 @@ use super::{
     parser_place, prepare_element, refusal_text, report_text,
 };
 use crate::loader::Page;
+use crate::sandbox::{NO_SAME_ORIGIN, Sandbox};
 use crate::storage;
 
 /// A script running, innermost last.
@@ -335,6 +336,9 @@ impl DocumentHost {
         let Some(page) = &self.page else {
             return "Access is denied for this document.".to_owned();
         };
+        if page.sandbox().has(Sandbox::ORIGIN) {
+            return NO_SAME_ORIGIN.to_owned();
+        }
         if !page.origin().is_opaque() && self.window.storage.is_some() {
             return String::new();
         }
@@ -411,6 +415,26 @@ impl DocumentHost {
                     .map(|page| page.origin().site().serialization()),
                 ..Context::SAME_SITE
             },
+        }
+    }
+
+    /// Whether the document's flags, all of `flags`, are set (M33.2).
+    fn sandboxed(&self, flags: Sandbox) -> bool {
+        self.page
+            .as_ref()
+            .is_some_and(|page| page.sandbox().has(flags))
+    }
+
+    /// The `SecurityError` a sandboxed document's `document.cookie`
+    /// throws without `allow-same-origin` (M33.2), `doing` what the
+    /// script tried.
+    fn cookie_refused(&self, doing: &str) -> Result<(), DomError> {
+        match self.sandboxed(Sandbox::ORIGIN) {
+            true => Err(DomError::new(
+                "SecurityError",
+                format!("Failed to {doing} 'Document': {NO_SAME_ORIGIN}"),
+            )),
+            false => Ok(()),
         }
     }
 
@@ -1144,6 +1168,7 @@ impl DocumentHost {
                 if cfg!(windows) { "\r\n" } else { "\n" }.to_owned(),
             )),
             Call::Cookie => {
+                self.cookie_refused("read the 'cookie' property from")?;
                 let cookies = self.cookie_url().and_then(|url| {
                     let jar = self.cookies.as_ref()?;
                     let mut jar = jar.lock().expect("never poisoned");
@@ -1154,6 +1179,7 @@ impl DocumentHost {
                 })))
             }
             Call::SetCookie(value) => {
+                self.cookie_refused("set the 'cookie' property on")?;
                 if let (Some(url), Some(jar)) = (self.cookie_url(), &self.cookies) {
                     let mut jar = jar.lock().expect("never poisoned");
                     jar.store(
@@ -1183,6 +1209,13 @@ impl DocumentHost {
                     Some(net::Origin::Tuple { host, .. }) => host.to_string(),
                     _ => String::new(),
                 }))
+            }
+            Call::SetDocumentDomain(_) if self.sandboxed(Sandbox::DOCUMENT_DOMAIN) => {
+                Err(DomError::new(
+                    "SecurityError",
+                    "Failed to set the 'domain' property on 'Document': Assignment is forbidden \
+                     for sandboxed iframes.",
+                ))
             }
             Call::SetDocumentDomain(value) => match self.page.as_ref().map(Page::origin) {
                 Some(net::Origin::Tuple { host, .. }) if host.has_registrable_suffix(&value) => {
@@ -1602,6 +1635,15 @@ impl DocumentHost {
                 if !self.connected(form) {
                     return Ok(Answer::Nothing);
                 }
+                // A sandboxed document submits none (M33.2).
+                let blocked = self
+                    .page
+                    .as_ref()
+                    .and_then(|page| crate::submit::blocked(&self.document, page, form));
+                if let Some(line) = blocked {
+                    self.say(ConsoleLevel::Error, line);
+                    return Ok(Answer::Nothing);
+                }
                 let seed = self.document.version() ^ (self.work << 20);
                 let planned = self.page.as_ref().and_then(|page| {
                     crate::submit::plan(&self.document, page, form, submitter, seed)
@@ -1677,6 +1719,16 @@ impl DocumentHost {
                 let node = self.node(node)?;
                 let group = forms::radio_group(&self.document, node);
                 Ok(Answer::Nodes(group.into_iter().map(handle).collect()))
+            }
+            Call::Dialog { kind, .. } if self.sandboxed(Sandbox::MODALS) => {
+                self.say(
+                    ConsoleLevel::Error,
+                    format!(
+                        "Ignored call to '{kind}()'. The document is sandboxed, and the \
+                         'allow-modals' keyword is not set."
+                    ),
+                );
+                Ok(Answer::Nothing)
             }
             Call::Dialog { kind, message } => {
                 self.say(ConsoleLevel::Info, format!("{kind}: {message}"));
@@ -2131,7 +2183,8 @@ impl DocumentHost {
                     .as_ref()
                     .map_or_else(net::Origin::new_opaque, |page| page.origin().clone());
                 let mut tree = crate::frames::lock(&env.tree);
-                if !tree.may_navigate(me, frame, &origin) {
+                let sandbox = self.page.as_ref().map_or(Sandbox::NONE, Page::sandbox);
+                if !tree.may_navigate(me, frame, (&origin, sandbox), false) {
                     return Err(DomError::new(
                         "SecurityError",
                         format!(
