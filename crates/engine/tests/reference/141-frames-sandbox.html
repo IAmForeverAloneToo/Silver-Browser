@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-scripts" content="on">
+<title>Frames (M33): a sandboxed frame, whose scripts do not run and whose noscript shows, beside one allowed scripts, whose script runs and whose noscript does not show, and an unsandboxed one likewise; no text</title>
+<style>
+  html { background-color: #eef0f3; }
+  body { margin: 10px; }
+  iframe { display: block; float: left; margin: 0 10px 10px 0; width: 120px; height: 80px; }
+</style>
+</head>
+<body>
+<iframe sandbox="" srcdoc="<body style='margin:0;background-color:#7fbf9f'><noscript><div style='width:60px;height:40px;background-color:#2f6f4f'></div></noscript><script>document.body.style.backgroundColor = '#bf3f3f'</script>"></iframe>
+<iframe sandbox="allow-scripts" srcdoc="<body style='margin:0;background-color:#bf3f3f'><noscript><div style='width:60px;height:40px;background-color:#6f2f2f'></div></noscript><script>document.body.style.backgroundColor = '#7f9fbf'</script>"></iframe>
+<iframe srcdoc="<body style='margin:0;background-color:#bf3f3f'><noscript><div style='width:60px;height:40px;background-color:#6f2f2f'></div></noscript><script>document.body.style.backgroundColor = '#bf9f7f'</script>"></iframe>
+</body>
+</html>

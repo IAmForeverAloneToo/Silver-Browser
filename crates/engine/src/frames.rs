@@ -1334,8 +1334,8 @@ impl Engine {
 
     /// Whether every frame's element was told its document loaded: what
     /// the document's own load waits for (HTML's "delaying the load
-    /// event").
-    pub(crate) fn frames_settled(&self) -> bool {
+    /// event"), and a runner waits for once a frame is put back.
+    pub fn frames_settled(&self) -> bool {
         self.shown.frames.values().all(|frame| frame.told)
     }
 

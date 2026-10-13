@@ -1628,6 +1628,8 @@ struct Candidate {
     width: f32,
     style: BorderStyle,
     color: Color,
+    /// Whether `color` is the owner's `currentcolor` (M33).
+    current: bool,
     /// What the border belongs to, the most specific first: a cell 0, a
     /// row 1, a row group 2, a column 3, a column group 4, the table 5.
     owner: u8,
@@ -1642,6 +1644,7 @@ impl Candidate {
             width: b.style.used_border_width()[side],
             style: b.style.border_style[side],
             color: b.style.border_color[side],
+            current: b.style.border_color_is_current(side),
             owner,
             order,
         }
@@ -2007,6 +2010,9 @@ fn segment_fragment(table: &LayoutBox, border: Candidate, side: usize, rect: Rec
     fragment.style.border_width = [0.0; 4];
     fragment.style.border_width[side] = border.width;
     fragment.style.border_color[side] = border.color;
+    fragment
+        .style
+        .set_border_color_current(side, border.current);
     fragment
 }
 
@@ -2729,6 +2735,7 @@ mod tests {
             width,
             style,
             color: Color::BLACK,
+            current: false,
             owner,
             order,
         }
@@ -2852,6 +2859,34 @@ mod tests {
             .unwrap();
         assert_eq!(rect(middle), (49.0, 4.0, 2.0, 22.0));
         assert_eq!(middle.style.border_color[LEFT], red);
+    }
+
+    #[test]
+    fn a_collapsed_segment_keeps_whether_its_colour_is_currentcolor() {
+        // The outer lines are the table's blue, the inner ones the
+        // cells' `currentcolor` (M33): each segment says which, for the
+        // tones of a 3D style. Nodes: table 4.
+        let layout = document_of(
+            COLLAPSED,
+            "body { margin: 0; }
+             table { border-collapse: collapse; border: 4px solid #0000ff; table-layout: fixed; width: 100px; }
+             td { padding: 0; height: 20px; border: 2px inset; }",
+        );
+        let segments = &fragments_of(&layout, 4)[2..];
+        assert_eq!(segments.len(), 12);
+        for f in segments {
+            let side = (0..4)
+                .find(|&side| f.style.used_border_width()[side] > 0.0)
+                .expect("a segment paints a side");
+            let width = f.style.used_border_width()[side];
+            assert_eq!(
+                f.style.border_color_is_current(side),
+                width == 2.0,
+                "{side} {width}"
+            );
+            let ridge = f.style.border_style[side] == BorderStyle::Ridge;
+            assert_eq!(ridge, width == 2.0, "an inset line is collapsed as a ridge");
+        }
     }
 
     #[test]

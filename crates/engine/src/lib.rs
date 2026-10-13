@@ -2138,6 +2138,7 @@ impl Engine {
         }
         let m = self.modifiers;
         let plain = !m.ctrl && !m.alt && !m.meta;
+        let scrolls = self.viewport_takes_user_scrolls();
         let focused = self.shown.document.focused();
         let document = &self.shown.document;
         let text_control = focused.is_some_and(|node| dom::forms::is_text_control(document, node));
@@ -2162,7 +2163,7 @@ impl Engine {
             }
             _ if text_control => KeyOutcome::Ignored,
             "ArrowDown" | "ArrowUp" | "PageDown" | "PageUp" | " " | "Home" | "End"
-                if plain || m.shift =>
+                if (plain || m.shift) && scrolls =>
             {
                 let page = self.page_step();
                 match key.key.as_str() {
@@ -5330,7 +5331,9 @@ impl Engine {
         Media {
             media_type: self.media_type,
             preferences: self.preferences,
-            scripting: self.scripting,
+            // A sandbox that stops the document's scripts turns scripting
+            // off for it (HTML section 8.1.3.4, M33.2).
+            scripting: self.scripts_run(),
             resolution: self.scale,
             ..Media::screen(viewport.0 as f32, viewport.1 as f32)
         }
@@ -6077,11 +6080,12 @@ impl Engine {
     }
 
     /// The scrollbar for the last frame's viewport, or `None` when the
-    /// document fits in it (or no frame has been drawn).
+    /// document fits in it (or no frame has been drawn), or the user
+    /// does not scroll it.
     pub fn scrollbar(&mut self) -> Option<Scrollbar> {
         let (width, height) = self.viewport;
         let max = self.max_scroll();
-        if max <= 0.0 {
+        if max <= 0.0 || !self.viewport_takes_user_scrolls() {
             return None;
         }
         let (width, height) = (width as f32, height as f32);
@@ -6093,6 +6097,28 @@ impl Engine {
             thumb_y,
             thumb_h,
         })
+    }
+
+    /// Whether the user scrolls the viewport (M33.2): not when the
+    /// overflow it takes, the root element's, or the body's when the
+    /// root's is `visible` (css-overflow-3 section 3.3), is `hidden` or
+    /// `clip`. A fragment still scrolls it, as a program does an
+    /// `overflow: hidden` box.
+    fn viewport_takes_user_scrolls(&mut self) -> bool {
+        let document = &self.shown.document;
+        let Some(root) = document.document_element() else {
+            return true;
+        };
+        let body = document
+            .element_children(root)
+            .find(|&child| document.tag(child) == Some("body"));
+        let styles = self.cached_styles();
+        let overflow = |node: NodeId| styles.get(node).map(|style| style.overflow);
+        let taken = match overflow(root) {
+            Some(Overflow::Visible) | None => body.and_then(overflow),
+            own => own,
+        };
+        !matches!(taken, Some(Overflow::Hidden | Overflow::Clip))
     }
 
     // ---- Element scrolling (M10.5) ------------------------------------------
@@ -6196,6 +6222,9 @@ impl Engine {
                 self.scroll_element_by(node, dy);
                 return true;
             }
+        }
+        if !self.viewport_takes_user_scrolls() {
+            return false;
         }
         let before = self.shown.scroll_target;
         self.scroll_by(dy);
@@ -6818,6 +6847,27 @@ mod tests {
             &mut engine,
             "var s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); \
              document.body.insertBefore(s, document.body.firstChild);",
+        );
+        engine.frame(200, 100);
+        let mut fresh = test_engine();
+        fresh.set_scripting(true);
+        if let Err(difference) = differential::compare_with_fresh(&mut engine, &mut fresh, 200, 100)
+        {
+            panic!("{difference}");
+        }
+    }
+
+    #[test]
+    fn a_frame_a_script_made_compares_with_a_fresh_engine_by_its_place() {
+        // As a canvas's: a frame's box names its element, which the two
+        // engines number apart (found by dom_api at M33).
+        let mut engine = test_engine();
+        engine.set_scripting(true);
+        engine.load_document("<p>a</p><p>b</p>");
+        differential::run_script(
+            &mut engine,
+            "var f = document.createElement('iframe'); \
+             document.body.insertBefore(f, document.body.firstChild);",
         );
         engine.frame(200, 100);
         let mut fresh = test_engine();
@@ -9460,6 +9510,40 @@ mod tests {
         // The frame draws it: the track column differs from the background.
         let frame = engine.frame(200, 100);
         assert_eq!(px(&frame, 200, 194, 50), [0x31, 0x32, 0x44, 0xff]);
+    }
+
+    #[test]
+    fn a_viewport_whose_overflow_is_hidden_has_no_scrollbar_and_takes_no_user_scroll() {
+        // The root's overflow is the viewport's, or the body's when the
+        // root's is `visible` (css-overflow-3 section 3.3), as a frame's
+        // `html { overflow: hidden }` asks (M33.2).
+        for style in [
+            "html { overflow: hidden }",
+            "body { overflow: hidden }",
+            "html { overflow: clip }",
+        ] {
+            let mut engine = test_engine();
+            engine.load_document(&format!("<style>{style}</style>{TALL}"));
+            engine.frame(200, 100);
+            assert!(engine.max_scroll() > 0.0, "{style}");
+            assert_eq!(engine.scrollbar(), None, "{style}");
+            engine.wheel(50.0, 50.0, 40.0);
+            assert_eq!(
+                engine.key_down(&Key::new("ArrowDown", "")),
+                KeyOutcome::Ignored,
+                "{style}"
+            );
+            assert_eq!(engine.scroll_target(), 0.0, "{style}");
+        }
+        // The root's own overflow, not `visible`, is taken over the body's.
+        let mut engine = test_engine();
+        engine.load_document(&format!(
+            "<style>html {{ overflow: auto }} body {{ overflow: hidden }}</style>{TALL}"
+        ));
+        engine.frame(200, 100);
+        assert!(engine.scrollbar().is_some());
+        engine.wheel(50.0, 50.0, 40.0);
+        assert!(engine.scroll_target() > 0.0);
     }
 
     #[test]

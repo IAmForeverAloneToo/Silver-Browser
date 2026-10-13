@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-edge-tolerance" content="1">
+<title>Borders in 3D (M33): inset, outset, groove and ridge in black, a dark grey, a colour, a light grey and white, toned as the reference browser tones them, and of currentcolor, which it draws in a light grey whatever the colour; no text</title>
+<style>
+  html { background-color: #eef0f3; }
+  body { margin: 10px; }
+  div { float: left; width: 40px; height: 24px; margin: 0 10px 10px 0; border-width: 10px; background-color: #d8dce2; }
+  .row { clear: left; }
+  .inset { border-style: inset; }
+  .outset { border-style: outset; }
+  .groove { border-style: groove; }
+  .ridge { border-style: ridge; }
+  .black { border-color: #000000; }
+  .dark { border-color: #181818; }
+  .colour { border-color: #8f3f2f; }
+  .blue { border-color: #7f9fbf; }
+  .light { border-color: #e0e0e0; }
+  .white { border-color: #ffffff; }
+  .current { color: #2f8f3f; }
+  .thin { border-width: 4px; width: 52px; height: 36px; }
+  .side { border-top-color: currentcolor; border-left-color: #8f3f2f; }
+</style>
+</head>
+<body>
+<div class="inset black row"></div><div class="inset dark"></div><div class="inset colour"></div><div class="inset blue"></div><div class="inset light"></div><div class="inset white"></div><div class="inset current"></div>
+<div class="outset black row"></div><div class="outset dark"></div><div class="outset colour"></div><div class="outset blue"></div><div class="outset light"></div><div class="outset white"></div><div class="outset current"></div>
+<div class="groove black row"></div><div class="groove dark"></div><div class="groove colour"></div><div class="groove blue"></div><div class="groove light"></div><div class="groove white"></div><div class="groove current"></div>
+<div class="ridge black row"></div><div class="ridge dark"></div><div class="ridge colour"></div><div class="ridge blue"></div><div class="ridge light"></div><div class="ridge white"></div><div class="ridge current"></div>
+<div class="inset thin row"></div><div class="outset thin colour"></div><div class="groove thin blue"></div><div class="ridge thin current"></div><div class="inset blue side current"></div><div class="ridge colour side current"></div>
+</body>
+</html>

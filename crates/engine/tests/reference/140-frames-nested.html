@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+<title>Frames (M33): srcdoc frames nested three deep, each a size of its own inside the last, and a frame whose document overflows it, its overflow hidden, so that it is clipped and no scrollbar is drawn; no text</title>
+<style>
+  html { background-color: #eef0f3; }
+  body { margin: 10px; }
+  iframe { display: block; float: left; margin: 0 10px 10px 0; }
+</style>
+</head>
+<body>
+<iframe width="260" height="160" srcdoc="<body style=&quot;margin:8px;background-color:#7f9fbf&quot;><iframe width=&quot;180&quot; height=&quot;100&quot; style=&quot;display:block;border:3px solid #2f4f6f&quot; srcdoc=&quot;<body style=&amp;quot;margin:6px;background-color:#bf9f7f&amp;quot;><iframe width=&amp;quot;90&amp;quot; height=&amp;quot;50&amp;quot; style=&amp;quot;display:block&amp;quot; srcdoc=&amp;quot;<body style=&amp;amp;quot;margin:0;background-color:#3f8f4f&amp;amp;quot;>&amp;quot;></iframe>&quot;></iframe>"></iframe>
+<iframe width="120" height="90" srcdoc="<html style=&quot;overflow:hidden&quot;><body style=&quot;margin:0&quot;><div style=&quot;height:60px;background-color:#8f3f2f&quot;></div><div style=&quot;height:60px;background-color:#2f4f6f&quot;></div><div style=&quot;height:60px;background-color:#bfbf7f&quot;></div>"></iframe>
+</body>
+</html>

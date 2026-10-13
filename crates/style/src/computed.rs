@@ -3050,6 +3050,13 @@ pub struct ComputedStyle {
     /// the spec initial value) — resolved once the rest of the cascade
     /// for this element has been applied, see `cascade::compute_style`.
     pub border_color: [Color; 4],
+    /// Which sides' `border-*-color` is `currentcolor`, resolved into
+    /// `border_color`, a bit each, `1 << side` (M33): the reference
+    /// browser draws an `inset`, `outset`, `groove` or `ridge` side of
+    /// that colour in rgb(238, 238, 238) whatever `color` is. A byte in
+    /// the padding; read and written by side through
+    /// [`ComputedStyle::border_color_is_current`].
+    pub border_current_color: u8,
     /// `border-{top,right,bottom,left}-style` (per side since M10) —
     /// not inherited.
     pub border_style: [BorderStyle; 4],
@@ -3217,6 +3224,7 @@ impl Default for ComputedStyle {
             padding: [const { LengthPercentage::Px(0.0) }; 4],
             border_width: [3.0; 4],          // `medium`
             border_color: [Color::BLACK; 4], // corrected to `color` post-cascade
+            border_current_color: 0b1111,
             border_style: [BorderStyle::None; 4],
             overflow: Overflow::Visible,
             box_sizing: BoxSizing::ContentBox,
@@ -3271,6 +3279,20 @@ impl Default for ComputedStyle {
 }
 
 impl ComputedStyle {
+    /// Whether side `side`'s `border-*-color` is `currentcolor` (M33).
+    pub fn border_color_is_current(&self, side: usize) -> bool {
+        self.border_current_color & (1 << side) != 0
+    }
+
+    /// Sets whether side `side`'s `border-*-color` is `currentcolor`.
+    pub fn set_border_color_current(&mut self, side: usize, current: bool) {
+        if current {
+            self.border_current_color |= 1 << side;
+        } else {
+            self.border_current_color &= !(1 << side);
+        }
+    }
+
     /// The border widths that count, per side: `border-width` where the
     /// side's style paints, zero where it is `none` or `hidden` (CSS2
     /// §8.5.3), and whole device pixels either way (css-backgrounds-3
@@ -3698,9 +3720,11 @@ mod tests {
         // 656 before them, and the background properties (M23.3) another,
         // 664 before them. The outline properties (M26.4) another, and
         // `cursor` a byte in the padding, 680 before them. SVG's
-        // properties (M32) another, 688 before them. Growing this is a
+        // properties (M32) another, 688 before them. Which border colours
+        // are `currentcolor` (M33), a byte that found no padding: 696
+        // before it, and seven bytes free now. Growing this is a
         // decision, not an accident; say why where the number changes.
-        assert_eq!(std::mem::size_of::<ComputedStyle>(), 696);
+        assert_eq!(std::mem::size_of::<ComputedStyle>(), 704);
         assert_eq!(ComputedStyle::default().grid, None);
         assert_eq!(*ComputedStyle::default().grid(), GridStyle::default());
         assert_eq!(ComputedStyle::default().effects, None);

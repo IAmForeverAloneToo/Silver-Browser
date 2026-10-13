@@ -127,7 +127,7 @@ impl Engine {
             device_height: height,
             resolution: options.dpi / 96.0,
             preferences: self.preferences,
-            scripting: self.scripting,
+            scripting: self.scripts_run(),
         };
         let sheets = &self.shown.stylesheets;
         let document = &self.shown.document;

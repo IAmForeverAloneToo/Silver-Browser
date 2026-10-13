@@ -2181,12 +2181,83 @@ pub fn place(
     }
 }
 
-/// The colour a border's darker tone is: two thirds of each channel.
-fn darker(c: Rgba8) -> Rgba8 {
+/// The colour an `inset`, `outset`, `groove` or `ridge` side of
+/// `currentcolor` is drawn in, whatever `color` is, as the reference
+/// browser draws it (M33).
+const CURRENT_3D: Rgba8 = Rgba8::rgb(238, 238, 238);
+
+/// The dark and the light tone of a 3D side of `color`, as the
+/// reference browser makes them (M33): the colour darkened, and the
+/// colour itself when it is lighter than rgb(235, 235, 235), lightened
+/// otherwise; a colour no lighter than rgb(32, 32, 32) is lightened once
+/// for the dark tone and twice for the light one.
+fn tones(color: Rgba8) -> (Rgba8, Rgba8) {
+    let luminance = relative_luminance(color);
+    if luminance <= relative_luminance(Rgba8::rgb(32, 32, 32)) {
+        let light = lighten(color);
+        return (light, lighten(light));
+    }
+    let light = if luminance > relative_luminance(Rgba8::rgb(235, 235, 235)) {
+        color
+    } else {
+        lighten(color)
+    };
+    (darken(color), light)
+}
+
+/// The relative luminance of `c` (WCAG 2): its channels made linear and
+/// weighted.
+fn relative_luminance(c: Rgba8) -> f64 {
+    let linear = |v: u8| {
+        let v = f64::from(v) / 255.0;
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * linear(c.r) + 0.7152 * linear(c.g) + 0.0722 * linear(c.b)
+}
+
+/// `c` darkened: its largest channel a third of the range lower, the
+/// others in proportion; white is rgb(171, 171, 171).
+fn darken(c: Rgba8) -> Rgba8 {
+    if (c.r, c.g, c.b) == (255, 255, 255) {
+        return Rgba8 {
+            a: c.a,
+            ..Rgba8::rgb(171, 171, 171)
+        };
+    }
+    let v = f32::from(c.r.max(c.g).max(c.b)) / 255.0;
+    let k = if v == 0.0 {
+        0.0
+    } else {
+        ((v - 0.33) / v).max(0.0)
+    };
+    scale_channels(c, k)
+}
+
+/// `c` lightened: its largest channel a third of the range higher, at
+/// most the top, the others in proportion; black is rgb(84, 84, 84).
+fn lighten(c: Rgba8) -> Rgba8 {
+    let v = f32::from(c.r.max(c.g).max(c.b)) / 255.0;
+    if v == 0.0 {
+        return Rgba8 {
+            a: c.a,
+            ..Rgba8::rgb(84, 84, 84)
+        };
+    }
+    scale_channels(c, (v + 0.33).min(1.0) / v)
+}
+
+/// `c`'s channels times `k`, cut to 8 bits as the reference browser cuts
+/// them, its alpha kept.
+fn scale_channels(c: Rgba8, k: f32) -> Rgba8 {
+    let channel = |v: u8| ((f32::from(v) / 255.0 * k) * 255.999_98).clamp(0.0, 255.0) as u8;
     Rgba8 {
-        r: (c.r as u16 * 2 / 3) as u8,
-        g: (c.g as u16 * 2 / 3) as u8,
-        b: (c.b as u16 * 2 / 3) as u8,
+        r: channel(c.r),
+        g: channel(c.g),
+        b: channel(c.b),
         a: c.a,
     }
 }
@@ -2210,8 +2281,9 @@ fn darker(c: Rgba8) -> Rgba8 {
 /// thirds; `dashed` and `dotted` are dashes of three times the width
 /// and dots of the width, with equal gaps, from each side's start, drawn
 /// as plain strips without the fitting adjustment real browsers make;
-/// `inset`, `outset`, `groove` and `ridge` use the colour and its
-/// darker tone — the last four are approximations, said so here.
+/// `inset`, `outset`, `groove` and `ridge` use the colour's dark and
+/// light [`tones`], the halves of the last two in opposite tones, a
+/// side of `currentcolor` toned from [`CURRENT_3D`] (M33).
 fn push_border(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, widths: [f32; 4]) {
     let uniform = f
         .style
@@ -2236,7 +2308,13 @@ fn push_border(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, widths: [
             continue;
         }
         let color = to_rgba8(f.style.border_color[side]);
-        let dark = darker(color);
+        let toned = || {
+            tones(if f.style.border_color_is_current(side) {
+                CURRENT_3D
+            } else {
+                color
+            })
+        };
         // Which tone the outer and inner halves of a 3D style get: the
         // top and left sides of an `outset` box catch the light.
         let lit = side == TOP || side == LEFT;
@@ -2253,14 +2331,22 @@ fn push_border(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, widths: [
                 push_dashes(items, side, geometry, width, color);
                 Vec::new()
             }
-            BorderStyle::Inset => vec![band(0.0, 1.0, if lit { dark } else { color })],
-            BorderStyle::Outset => vec![band(0.0, 1.0, if lit { color } else { dark })],
+            BorderStyle::Inset => {
+                let (dark, light) = toned();
+                vec![band(0.0, 1.0, if lit { dark } else { light })]
+            }
+            BorderStyle::Outset => {
+                let (dark, light) = toned();
+                vec![band(0.0, 1.0, if lit { light } else { dark })]
+            }
             BorderStyle::Groove => {
-                let (outer, inner) = if lit { (dark, color) } else { (color, dark) };
+                let (dark, light) = toned();
+                let (outer, inner) = if lit { (dark, light) } else { (light, dark) };
                 vec![band(0.0, 0.5, outer), band(0.5, 1.0, inner)]
             }
             BorderStyle::Ridge => {
-                let (outer, inner) = if lit { (color, dark) } else { (dark, color) };
+                let (dark, light) = toned();
+                let (outer, inner) = if lit { (light, dark) } else { (dark, light) };
                 vec![band(0.0, 0.5, outer), band(0.5, 1.0, inner)]
             }
         };
@@ -3773,10 +3859,25 @@ mod fragment_tests {
         assert_eq!(shapes.len(), 2);
         assert_eq!(
             shapes[0].1,
-            Rgba8::rgb(0xc0, 0xc0, 0xc0),
-            "right and bottom lit"
+            Rgba8::rgb(0xff, 0xff, 0xff),
+            "right and bottom lightened"
         );
-        assert_eq!(shapes[1].1, darker(Rgba8::rgb(0xc0, 0xc0, 0xc0)));
+        assert_eq!(shapes[1].1, Rgba8::rgb(0x6c, 0x6c, 0x6c), "darkened");
+        // A side of `currentcolor` is toned from rgb(238, 238, 238)
+        // whatever `color` is (M33), and one given its colour is not.
+        for (rule, light, dark) in [
+            ("color: #ff0000; border: 4px inset", 0xee, 0x9a),
+            ("color: #ff0000; border: 4px inset currentcolor", 0xee, 0x9a),
+            ("border: 4px inset #000000", 0xa8, 0x54),
+        ] {
+            let list = display_list_of(
+                Element::new("div"),
+                &format!("div {{ width: 100px; height: 50px; margin: 0; {rule}; }}"),
+            );
+            let shapes = polygons(&list);
+            assert_eq!(shapes[0].1, Rgba8::rgb(light, light, light), "{rule}");
+            assert_eq!(shapes[1].1, Rgba8::rgb(dark, dark, dark), "{rule}");
+        }
         // Four double sides in one colour: two bands all round, eight
         // quads tiling exactly, no polygon.
         let list = display_list_of(
@@ -3785,6 +3886,23 @@ mod fragment_tests {
         );
         assert!(polygons(&list).is_empty());
         assert_eq!(quads(&list).len(), 8);
+    }
+
+    #[test]
+    fn three_d_tones_are_the_reference_browsers() {
+        // The dark and light tones Chrome 154 drew for these colours.
+        let rgb = |c: u32| Rgba8::rgb((c >> 16) as u8, (c >> 8) as u8, c as u8);
+        for (color, dark, light) in [
+            (0x000000, 0x545454, 0xa8a8a8),
+            (0x101010, 0x646464, 0xb8b8b8),
+            (0x202020, 0x747474, 0xc8c8c8),
+            (0x8f3f2f, 0x3b1a13, 0xe4644a),
+            (0x7f9fbf, 0x47596b, 0xaad5ff),
+            (0xeeeeee, 0x9a9a9a, 0xeeeeee),
+            (0xffffff, 0xababab, 0xffffff),
+        ] {
+            assert_eq!(tones(rgb(color)), (rgb(dark), rgb(light)), "{color:06x}");
+        }
     }
 
     #[test]

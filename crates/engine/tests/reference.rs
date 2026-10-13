@@ -326,12 +326,15 @@ fn render(
         }
     }
     change(&mut engine);
+    // Frames load as the network is polled (M33.2), at first and again
+    // when one is taken out and put back.
+    let done = |engine: &Engine| engine.frames_settled() && (!by_url || !engine.decoding());
     let frame = loop {
         let frame = engine.frame(setting.width, setting.height);
-        if !by_url || !engine.decoding() {
+        if done(&engine) {
             break frame;
         }
-        wait(&mut engine, &woken, page, |engine| !engine.decoding());
+        wait(&mut engine, &woken, page, done);
     };
     let rgb = frame.chunks(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
     (engine, rgb)
@@ -553,12 +556,12 @@ fn every_reference_page_renders_as_its_capture() {
     let pages = pages();
     assert_eq!(
         pages.len(),
-        138,
+        142,
         "the ten cases of M10's design note, the eleven of M11's, the five of M12's, the three of M16's, \
          the twenty of M17's, the twenty of M18's, the ten of M19's, the eleven of M20's, the nine \
          of M21's, the ten of M22's, the six of M23's, the three of M24's, the four of M25's, \
          the three of M26's, the two of M27's, the one of M28's, the one of M29's \
-         the two of M30's, the one of M31's and the six of M32's"
+         the two of M30's, the one of M31's, the six of M32's and the four of M33's"
     );
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/reference");
     let mut failures = Vec::new();

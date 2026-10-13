@@ -584,6 +584,31 @@ fn a_sandboxed_frames_requests_are_an_opaque_origins_and_it_parses_as_with_scrip
 }
 
 #[test]
+fn a_sandboxed_frame_is_styled_as_with_scripts_off() {
+    // Its `noscript` makes boxes and its media queries see `scripting`
+    // as `none` (M33.2), where a frame allowed scripts sees neither.
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    let frame = "<style>@media (scripting: none) { body { background: rgb(0, 0, 255) } }</style>\
+                 <body style='margin:0'><noscript>\
+                 <div style='height:20px; background: rgb(255, 0, 0)'></div></noscript>";
+    tab.engine.load_document(&format!(
+        "<body style='margin:0; background: rgb(0, 128, 0)'>\
+         <iframe sandbox style='display:block; border:0' srcdoc=\"{frame}\"></iframe>\
+         <iframe sandbox=allow-scripts style='display:block; border:0' srcdoc=\"{frame}\"></iframe>"
+    ));
+    tab.wait_until(|engine| engine.frames_settled());
+    let shown = tab.engine.frame(400, 400);
+    let pixel = |x: usize, y: usize| {
+        let at = (y * 400 + x) * 4;
+        [shown[at], shown[at + 1], shown[at + 2]]
+    };
+    assert_eq!(pixel(10, 10), [255, 0, 0], "the noscript's div");
+    assert_eq!(pixel(10, 100), [0, 0, 255], "scripting: none");
+    assert_eq!(pixel(10, 160), [0, 128, 0], "allowed scripts: neither");
+}
+
+#[test]
 fn a_sandboxed_frame_navigates_no_frame_but_its_own_and_its_descendants() {
     // Of its parent's origin and allowed its origin, it still may not
     // navigate its sibling, which an unsandboxed one may.

@@ -2260,12 +2260,13 @@ fn compute_style(
     {
         style.content = Content::Normal;
     }
-    for (color, set) in style.border_color.iter_mut().zip(border_color_set) {
+    for (side, set) in border_color_set.into_iter().enumerate() {
         if !set {
             // `border-color`'s initial value is `currentcolor` (css-color-4
             // §4.4) — resolved here now that `color` itself is final.
-            *color = style.color;
+            style.border_color[side] = style.color;
         }
+        style.set_border_color_current(side, !set);
     }
     // CSS2 §9.7, the relationships between `display`, `position` and
     // `float` (M11): an absolutely positioned box does not float, and
@@ -2720,13 +2721,15 @@ fn apply_declaration(
         "border-right-width" => set_border_width(style, RIGHT, value, bases),
         "border-bottom-width" => set_border_width(style, BOTTOM, value, bases),
         "border-left-width" => set_border_width(style, LEFT, value, bases),
-        "border-color" => {
-            let set_colors = set(&mut style.border_color, parse_1_to_4(value, parse_color));
-            if set_colors {
-                *border_color_set = [true; 4];
+        "border-color" => match parse_1_to_4(value, parse_border_color) {
+            Some(values) => {
+                for (side, value) in values.into_iter().enumerate() {
+                    write_border_color(style, side, value, border_color_set);
+                }
+                true
             }
-            set_colors
-        }
+            None => false,
+        },
         "border-top-color" => set_border_color(style, TOP, value, border_color_set),
         "border-right-color" => set_border_color(style, RIGHT, value, border_color_set),
         "border-bottom-color" => set_border_color(style, BOTTOM, value, border_color_set),
@@ -3471,9 +3474,33 @@ fn set_border_color(
     tokens: &[Token],
     color_set: &mut [bool; 4],
 ) -> bool {
-    let applied = set(&mut style.border_color[side], parse_color(tokens));
-    color_set[side] |= applied;
-    applied
+    let Some(value) = parse_border_color(tokens) else {
+        return false;
+    };
+    write_border_color(style, side, value, color_set);
+    true
+}
+
+/// A `border-*-color` value: a colour, or `None` for `currentcolor`
+/// (M33), which the cascade resolves once `color` is final.
+fn parse_border_color(tokens: &[Token]) -> Option<Option<Color>> {
+    match single_ident(tokens) {
+        Some(ident) if ident.eq_ignore_ascii_case("currentcolor") => Some(None),
+        _ => parse_color(tokens).map(Some),
+    }
+}
+
+/// Writes one side's `border-*-color`, `None` being `currentcolor`.
+fn write_border_color(
+    style: &mut ComputedStyle,
+    side: usize,
+    value: Option<Color>,
+    color_set: &mut [bool; 4],
+) {
+    if let Some(color) = value {
+        style.border_color[side] = color;
+    }
+    color_set[side] = value.is_some();
 }
 
 /// Writes a `border-*-style` longhand.
@@ -4054,7 +4081,7 @@ fn apply_border_shorthand(
         {
             border_style = Some(s);
         } else if color.is_none()
-            && let Some(c) = parse_color(&g)
+            && let Some(c) = parse_border_color(&g)
         {
             color = Some(c);
         } else {
@@ -4064,13 +4091,7 @@ fn apply_border_shorthand(
     for &side in sides {
         style.border_width[side] = width.unwrap_or(3.0);
         style.border_style[side] = border_style.unwrap_or(BorderStyle::None);
-        match color {
-            Some(c) => {
-                style.border_color[side] = c;
-                border_color_set[side] = true;
-            }
-            None => border_color_set[side] = false,
-        }
+        write_border_color(style, side, color.flatten(), border_color_set);
     }
     true
 }
@@ -7099,6 +7120,29 @@ mod tests {
         let s = style_of("<p>x</p>", &sheets, "p");
         assert_eq!(s.border_color[LEFT], Color::rgb8(0, 0, 255));
         assert_eq!(s.border_color[TOP], Color::rgb8(255, 0, 0));
+        let current = |s: &ComputedStyle| {
+            (0..4)
+                .map(|side| s.border_color_is_current(side))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(current(&s), [true, true, true, false]);
+        // The keyword itself (M33), in the shorthands and a longhand, a
+        // colour set before it given up.
+        for rule in [
+            "border: 1px inset currentcolor",
+            "border: 1px inset blue; border-color: currentColor",
+            "border: 1px inset blue; border-color: currentcolor blue; \
+             border-right-color: currentcolor; border-left-color: currentcolor",
+            "border: 1px inset blue; border-top: 1px inset currentcolor; \
+             border-right-color: currentcolor; border-bottom-color: currentcolor; \
+             border-left-color: currentcolor",
+        ] {
+            let sheets = [sheet(&format!("p {{ color: red; {rule} }}"))];
+            let s = style_of("<p>x</p>", &sheets, "p");
+            assert_eq!(s.border_color, [Color::rgb8(255, 0, 0); 4], "{rule}");
+            assert_eq!(current(&s), [true; 4], "{rule}");
+            assert_eq!(s.border_style[TOP], BorderStyle::Inset, "{rule}");
+        }
     }
 
     #[test]
