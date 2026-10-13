@@ -22,6 +22,7 @@ use crate::data_url;
 use crate::error::{AbortHandle, NetworkError};
 use crate::headers::{self, HeaderList};
 use crate::mime::{self, MimeType};
+use crate::referrer::{Referrer, ReferrerPolicy};
 use crate::transport::{self, Exchange, Transport};
 use crate::{AddressSpace, Host, Origin, Partition, Url};
 
@@ -295,6 +296,11 @@ pub struct Request {
     /// Whether it is a form's submission (M33.1), which `form-action`
     /// decides at each hop, its other directives none.
     pub form_submission: bool,
+    /// Its referrer and the policy that decides what of it is sent
+    /// (M33.3): the client's, its initiator's URL, by default; the
+    /// policy, when none, the client's document's, else the default.
+    pub referrer: Referrer,
+    pub referrer_policy: Option<ReferrerPolicy>,
     /// How it uses the HTTP cache (M28.4).
     pub cache: CacheMode,
     /// Where its document is in its tab (M33.2): a frame's requests are
@@ -343,6 +349,8 @@ impl Request {
             nonce: String::new(),
             parser_inserted: false,
             form_submission: false,
+            referrer: Referrer::Client,
+            referrer_policy: None,
             cache: CacheMode::Default,
             partition: None,
         }
@@ -619,6 +627,7 @@ impl Client {
             url_list: vec![url.clone()],
             tainting: ResponseType::Basic,
             tainted_origin: false,
+            referrer_policy: request.referrer_policy.unwrap_or_default(),
         };
         loop {
             if request.abort.is_aborted() {
@@ -663,6 +672,9 @@ impl Client {
                 return Err(NetworkError::RedirectLimit);
             }
             hop.redirect(request, &url, &location, response.status)?;
+            if let Some(policy) = ReferrerPolicy::from_headers(&response.headers) {
+                hop.referrer_policy = policy;
+            }
             url = location;
             hop.url_list.push(url.clone());
         }
@@ -843,6 +855,7 @@ impl Client {
             url_list: hop.url_list.clone(),
             tainting: ResponseType::Cors,
             tainted_origin: hop.tainted_origin,
+            referrer_policy: hop.referrer_policy,
         };
         let response = self.scheme_fetch(&preflight, url, &preflight_hop, None)?;
         cors_check(request, &response.headers, hop.tainted_origin)?;
@@ -915,8 +928,8 @@ impl Client {
     /// The fields a hop to `url` sends besides `Host`, which the message
     /// writer adds: `User-Agent`, `Accept` and `Accept-Language` unless
     /// the author set them, `Accept-Encoding`, the author's fields, then
-    /// `Origin`, the `Sec-Fetch-*` fields and `Cookie`, when the request
-    /// includes credentials. Not sent: `Referer` (M33.3).
+    /// `Origin`, `Referer` (M33.3), the `Sec-Fetch-*` fields and
+    /// `Cookie`, when the request includes credentials.
     fn request_headers(&self, request: &Request, url: &Url, hop: &Hop) -> HeaderList {
         let mut headers = HeaderList::new();
         let author = &hop.author;
@@ -935,6 +948,9 @@ impl Client {
         }
         if let Some(origin) = origin_field(request, url, hop) {
             headers.append(b"Origin", origin.as_bytes());
+        }
+        if let Some(referrer) = referrer_field(request, url, hop) {
+            headers.append(b"Referer", referrer.as_bytes());
         }
         // What a cache mode asks of the caches on the way (Fetch 4.6).
         match cache_mode(request, hop) {
@@ -1006,6 +1022,9 @@ struct Hop {
     /// Fetch's tainted origin flag: a redirect left another origin for a
     /// third, and the request's origin is `null` from then on.
     tainted_origin: bool,
+    /// The referrer policy, which a redirect's `Referrer-Policy` changes
+    /// for the hops after it (Fetch 4.4, M33.3).
+    referrer_policy: ReferrerPolicy,
 }
 
 impl Hop {
@@ -1163,6 +1182,24 @@ fn serialized_origin(request: &Request, tainted: bool) -> String {
     match &request.origin {
         Some(origin) if !tainted => origin.serialization(),
         _ => "null".to_owned(),
+    }
+}
+
+/// The `Referer` a hop to `url` sends (M33.3, Fetch 4.1 and Referrer
+/// Policy 8.3): the request's referrer as its policy at that hop lets it
+/// go, the client's its initiator's URL; none for a request no document
+/// made.
+fn referrer_field(request: &Request, url: &Url, hop: &Hop) -> Option<String> {
+    match &request.referrer {
+        Referrer::None => None,
+        Referrer::Client => {
+            let client = request.initiator.as_ref()?;
+            crate::referrer::determine(&client.url, &client.origin, hop.referrer_policy, url)
+        }
+        Referrer::Url(referrer) => {
+            let origin = request.origin.clone().unwrap_or_else(|| referrer.origin());
+            crate::referrer::determine(referrer, &origin, hop.referrer_policy, url)
+        }
     }
 }
 

@@ -12,7 +12,10 @@ use std::collections::{HashMap, HashSet};
 use dom::{Change, Document, NodeId};
 use encoding::Encoding;
 use net::csp::{Csp, Inline};
-use net::{AddressSpace, Destination, Initiator, MimeType, Origin, Request, Response, Url};
+use net::{
+    AddressSpace, Destination, Initiator, MimeType, Origin, Referrer, ReferrerPolicy, Request,
+    Response, Url,
+};
 use style::Media;
 
 use super::{FetchId, LoadError, Network, PageId, Target, rules};
@@ -55,6 +58,11 @@ pub(crate) struct Page {
     style_checks: RefCell<HashMap<NodeId, (String, bool)>>,
     refused_styles: Vec<NodeId>,
     refused_base: RefCell<Option<Url>>,
+    /// Its response's `Referrer-Policy` (M33.3), or its creator's for a
+    /// local document; and the referrer of the request that brought it,
+    /// `document.referrer`.
+    referrer_policy: Option<ReferrerPolicy>,
+    referrer: String,
 }
 
 /// What a page's fetches are made with.
@@ -103,6 +111,8 @@ pub(crate) struct Creator {
     pub(crate) address_space: AddressSpace,
     pub(crate) secure: bool,
     pub(crate) csp: Csp,
+    /// Its referrer policy (M33.3), which a local document takes.
+    pub(crate) referrer_policy: ReferrerPolicy,
 }
 
 /// An element that may own a sheet.
@@ -199,6 +209,10 @@ struct Found {
     before_body: bool,
     /// Its `nonce`, which its request carries (M33.1).
     nonce: String,
+    /// Its `referrerpolicy`, and whether its `rel` says `noreferrer`
+    /// (M33.3).
+    referrer_policy: Option<ReferrerPolicy>,
+    noreferrer: bool,
 }
 
 /// A document's `style` attributes, as its policies allow them (M33.1):
@@ -254,6 +268,8 @@ impl Page {
             style_checks: RefCell::default(),
             refused_styles: Vec::new(),
             refused_base: RefCell::default(),
+            referrer_policy: None,
+            referrer: String::new(),
         }
     }
 
@@ -292,6 +308,8 @@ impl Page {
             style_checks: RefCell::default(),
             refused_styles: Vec::new(),
             refused_base: RefCell::default(),
+            referrer_policy: None,
+            referrer: String::new(),
         }
     }
 
@@ -327,6 +345,48 @@ impl Page {
     /// The document's sandboxing flags.
     pub(crate) fn sandbox(&self) -> Sandbox {
         self.sandbox
+    }
+
+    /// The page, its response's `Referrer-Policy` given (M33.3).
+    pub(crate) fn with_referrer_policy(mut self, policy: Option<ReferrerPolicy>) -> Page {
+        if policy.is_some() {
+            self.referrer_policy = policy;
+        }
+        self
+    }
+
+    /// The page, `referrer` the referrer of the request that brought it.
+    pub(crate) fn with_referrer(mut self, referrer: String) -> Page {
+        self.referrer = referrer;
+        self
+    }
+
+    /// `document.referrer` (M33.3).
+    pub(crate) fn referrer(&self) -> &str {
+        &self.referrer
+    }
+
+    /// The document's referrer policy as it stands (M33.3): that of the
+    /// last `<meta name=referrer>` in tree order that names one (HTML
+    /// section 4.2.5.1, applied as the parser meets it, legacy names
+    /// mapped), else its response's or its creator's, else the default.
+    pub(crate) fn referrer_policy(&self, document: &Document) -> ReferrerPolicy {
+        document
+            .subtree(document.root())
+            .filter(|&node| {
+                document.tag(node) == Some("meta")
+                    && document
+                        .attr(node, "name")
+                        .is_some_and(|name| name.eq_ignore_ascii_case("referrer"))
+            })
+            .filter_map(|node| {
+                document
+                    .attr(node, "content")
+                    .and_then(ReferrerPolicy::from_meta)
+            })
+            .last()
+            .or(self.referrer_policy)
+            .unwrap_or_default()
     }
 
     /// Element `node`'s nonce (M33.1): the one kept when its attribute
@@ -421,6 +481,7 @@ impl Page {
             address_space: self.context.address_space,
             secure: self.is_secure_context(),
             csp: self.csp(document).clone(),
+            referrer_policy: self.referrer_policy(document),
         }
     }
 
@@ -440,8 +501,11 @@ impl Page {
             self.context.fallback_base = creator.base_url.clone();
             self.context.creator_url = creator.url.clone();
             self.context.secure = Some(creator.secure);
+            // Its referrer its creator's URL (M33.3).
+            self.referrer = creator.url.as_ref().map(Url::to_string).unwrap_or_default();
         }
         self.csp = creator.csp.inherited();
+        self.referrer_policy = Some(creator.referrer_policy);
         self.metas.clear();
         self
     }
@@ -652,6 +716,7 @@ impl Page {
         // Its requests are checked against its policies (M33.1).
         let csp = self.csp(document).clone();
         network.set_csp(self.context.id, Some(csp.clone()));
+        network.set_referrer_policy(self.context.id, Some(self.referrer_policy(document)));
         let (found, _) = scan(document, &self.context, &self.nonces);
         let context = &self.context;
         self.owners = found
@@ -691,6 +756,7 @@ impl Page {
     ) {
         let csp = self.csp(document).clone();
         network.set_csp(self.context.id, Some(csp.clone()));
+        network.set_referrer_policy(self.context.id, Some(self.referrer_policy(document)));
         let (found, base) = scan(document, &self.context, &self.nonces);
         let mut old: HashMap<NodeId, Owner> = self
             .owners
@@ -972,8 +1038,12 @@ fn start(
             .and_then(|url| context.request(url))
             .map(|request| super::with_cors_settings(request, crossorigin.as_deref()))
             .map(|mut request| {
-                // Its element's nonce (M33.1).
+                // Its element's nonce (M33.1), and referrer (M33.3).
                 request.nonce.clone_from(&found.nonce);
+                request.referrer_policy = found.referrer_policy;
+                if found.noreferrer {
+                    request.referrer = Referrer::None;
+                }
                 request
             })
             .map_or(Slot::None, |request| {
@@ -1155,6 +1225,10 @@ fn scan(
                 base_here: base.clone(),
                 before_body,
                 nonce: nonce(node),
+                referrer_policy: document
+                    .attr(node, "referrerpolicy")
+                    .and_then(ReferrerPolicy::parse),
+                noreferrer: has_token(document.attr(node, "rel"), "noreferrer"),
             }),
             "style" => found.push(Found {
                 node,
@@ -1171,11 +1245,22 @@ fn scan(
                 base_here: base.clone(),
                 before_body,
                 nonce: nonce(node),
+                referrer_policy: None,
+                noreferrer: false,
             }),
             _ => {}
         }
     }
     (found, base)
+}
+
+/// Whether the token list `value` has `token`, in any case.
+pub(crate) fn has_token(value: Option<&str>, token: &str) -> bool {
+    value.is_some_and(|value| {
+        value
+            .split(is_ascii_whitespace)
+            .any(|each| each.eq_ignore_ascii_case(token))
+    })
 }
 
 /// The nonce element `node` of `document` is checked by (CSP section

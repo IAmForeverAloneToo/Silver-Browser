@@ -38,6 +38,8 @@ mod partition_tests;
 mod pointer_tests;
 pub(crate) mod pool;
 #[cfg(test)]
+mod referrer_tests;
+#[cfg(test)]
 mod request_tests;
 mod rules;
 #[cfg(test)]
@@ -91,6 +93,7 @@ use encoding::Encoding;
 use net::{AbortHandle, Client, Delivery, NetworkError, Request, Response};
 
 pub(crate) use pool::{JobId, Lost, Pool, Waker};
+pub(crate) use sheets::has_token;
 pub(crate) use sheets::{Creator, Page, is_stylesheet, may_touch_sheets};
 
 /// The most fetches in flight at once; further ones wait in the order
@@ -226,6 +229,9 @@ pub(crate) struct Network {
     /// Each page's document's policies (M33.1): what its requests are
     /// checked against, unless they carry their own.
     csps: HashMap<PageId, net::csp::Csp>,
+    /// Each page's document's referrer policy (M33.3), for its requests
+    /// that name none.
+    referrer_policies: HashMap<PageId, net::ReferrerPolicy>,
 }
 
 impl Network {
@@ -239,7 +245,21 @@ impl Network {
             next: 0,
             partitions: HashMap::new(),
             csps: HashMap::new(),
+            referrer_policies: HashMap::new(),
         }
+    }
+
+    /// Page `page`'s requests that name no referrer policy use `policy`
+    /// from now on (M33.3); none once the page is left.
+    pub(crate) fn set_referrer_policy(
+        &mut self,
+        page: PageId,
+        policy: Option<net::ReferrerPolicy>,
+    ) {
+        match policy {
+            Some(policy) => self.referrer_policies.insert(page, policy),
+            None => self.referrer_policies.remove(&page),
+        };
     }
 
     /// Page `page`'s requests are checked against `csp` from now on
@@ -321,6 +341,9 @@ impl Network {
         }
         if request.csp.is_none() && request.mode != net::Mode::Navigate {
             request.csp = self.csps.get(&page).cloned();
+        }
+        if request.referrer_policy.is_none() {
+            request.referrer_policy = self.referrer_policies.get(&page).copied();
         }
         let streamed = target == Target::Document;
         let client = self.client();
@@ -579,6 +602,8 @@ pub(crate) struct Parsing {
     /// again when its parse starts over, and its sandboxing flags.
     pub(crate) creator: Option<Creator>,
     pub(crate) sandbox: crate::sandbox::Sandbox,
+    /// The referrer of the request that brought it (M33.3).
+    pub(crate) referrer: String,
 }
 
 /// The language the response's `Content-Language` gives its document,

@@ -48,6 +48,11 @@ pub struct FetchCall {
     pub preflight: bool,
     /// The request's cache mode (M28.4): `default`, `no-store`, ...
     pub cache: String,
+    /// Its referrer (`about:client`, `no-referrer`, or a URL of the
+    /// document's origin) and its referrer policy, empty for the
+    /// document's (M33.3).
+    pub referrer: String,
+    pub referrer_policy: String,
 }
 
 /// A call of a canvas's 2D context, or of an object scripts make for

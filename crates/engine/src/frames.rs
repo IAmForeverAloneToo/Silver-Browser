@@ -796,6 +796,12 @@ impl Engine {
     fn navigate_frame(&mut self, node: NodeId, source: Source) {
         let creator = self.shown.page.creator(&self.shown.document);
         let initiator = self.shown.page.initiator();
+        // Its element's `referrerpolicy` (M33.3).
+        let policy = self
+            .shown
+            .document
+            .attr(node, "referrerpolicy")
+            .and_then(net::ReferrerPolicy::parse);
         let current = self
             .shown
             .page
@@ -821,7 +827,9 @@ impl Engine {
                     frame.engine.show_blank(&creator, false);
                     return;
                 }
-                frame.engine.navigate_as_frame(url, creator, initiator);
+                frame
+                    .engine
+                    .navigate_as_frame(url, creator, initiator, policy);
             }
         }
     }
@@ -902,6 +910,7 @@ impl Engine {
             started: self.time_origin(),
             creator: Some(creator),
             sandbox: self.creation_sandbox(),
+            referrer: String::new(),
         });
         self.load_state = LoadState::Loading;
         self.sniff_incoming(true);
@@ -913,7 +922,13 @@ impl Engine {
     /// checked for it. A local URL's document takes `creator`'s policies;
     /// `about:` URLs but `about:blank` are refused, and a parent with no
     /// URL fetches nothing.
-    fn navigate_as_frame(&mut self, url: Url, creator: Creator, initiator: Option<net::Initiator>) {
+    fn navigate_as_frame(
+        &mut self,
+        url: Url,
+        creator: Creator,
+        initiator: Option<net::Initiator>,
+        policy: Option<net::ReferrerPolicy>,
+    ) {
         self.cancel_navigation();
         if url.scheme() == "javascript" {
             if self.scripts_run() {
@@ -932,9 +947,16 @@ impl Engine {
         };
         let local = matches!(url.scheme(), "data" | "blob");
         let id = self.new_page_id();
+        // Its container's referrer, by its element's policy or the
+        // container's (M33.3).
+        let referrer_policy = policy.unwrap_or(creator.referrer_policy);
+        let referrer =
+            net::referrer::determine(&initiator.url, &initiator.origin, referrer_policy, &url)
+                .unwrap_or_default();
         let mut request =
             net::Request::get(url.clone(), net::Destination::Iframe).initiated_by(initiator);
         request.partition = self.frame_partition();
+        request.referrer_policy = Some(referrer_policy);
         // Its container's `frame-src` decides (M33.1).
         request.csp = Some(creator.csp.clone());
         self.network.fetch(id, Target::Document, request);
@@ -945,6 +967,7 @@ impl Engine {
             started: self.time_origin(),
             creator: local.then_some(creator),
             sandbox: self.creation_sandbox(),
+            referrer,
         });
         self.load_state = LoadState::Loading;
     }
@@ -1119,6 +1142,8 @@ impl Engine {
                         activated: false,
                         csp: None,
                         form: false,
+                        referrer: None,
+                        referrer_policy: net::ReferrerPolicy::default(),
                     };
                     match post {
                         Some(post) => self.navigate_with(url, Some(post), source),

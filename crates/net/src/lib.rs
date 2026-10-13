@@ -23,6 +23,7 @@ pub mod headers;
 pub mod http;
 mod infra;
 pub mod mime;
+pub mod referrer;
 #[cfg(any(test, feature = "test-server"))]
 pub mod test_server;
 pub mod transport;
@@ -37,5 +38,6 @@ pub use fetch::{
 };
 pub use headers::HeaderList;
 pub use mime::MimeType;
+pub use referrer::{Referrer, ReferrerPolicy};
 pub use url::Partition;
 pub use url::{Host, Origin, Url};

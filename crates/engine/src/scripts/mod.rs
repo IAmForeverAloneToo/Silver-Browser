@@ -231,6 +231,9 @@ pub(crate) struct ScriptNavigation {
     pub(crate) target: String,
     /// Whether a form was submitted (M33.1): its `form-action` decides.
     pub(crate) form: bool,
+    /// The link or form followed, whose `referrerpolicy` and `rel` say
+    /// what referrer goes (M33.3).
+    pub(crate) element: Option<NodeId>,
 }
 
 /// How a script is run.
@@ -347,6 +350,10 @@ pub(crate) fn prepare_element(
     // Its nonce and who inserted it, for its directive (M33.1).
     request.nonce = page.checked_nonce(document, element);
     request.parser_inserted = parser_inserted;
+    // Its `referrerpolicy` (M33.3), else the document's.
+    request.referrer_policy = document
+        .attr(element, "referrerpolicy")
+        .and_then(net::ReferrerPolicy::parse);
     let request = crate::loader::with_cors_settings(request, document.attr(element, "crossorigin"));
     let fallback = document
         .attr(element, "charset")
@@ -1461,6 +1468,7 @@ fn violation_event(violation: &Violation, page: &Page, line: u32) -> js::EventIn
         .with("bubbles", js::Field::Bool(true))
         .with("composed", js::Field::Bool(true))
         .with("documentURI", js::Field::String(document))
+        .with("referrer", js::Field::String(page.referrer().to_owned()))
         .with(
             "blockedURI",
             js::Field::String(report_url(&violation.blocked)),
@@ -1504,7 +1512,7 @@ fn report_body(violation: &Violation, page: &Page, line: u32) -> String {
     };
     let text = [
         ("document-uri", document),
-        ("referrer", String::new()),
+        ("referrer", page.referrer().to_owned()),
         ("violated-directive", violation.effective.clone()),
         ("effective-directive", violation.effective.clone()),
         ("original-policy", violation.policy.clone()),

@@ -205,6 +205,9 @@ pub(crate) struct Start {
     /// Its creator's policies (M33.1): its script's request passes their
     /// `worker-src`, and a worker of a local URL has them as its own.
     pub(crate) csp: net::csp::Csp,
+    /// Its creator's referrer policy (M33.3), which its script's request
+    /// is made with.
+    pub(crate) referrer_policy: net::ReferrerPolicy,
 }
 
 /// A worker its owner knows of: how to reach it and stop it.
@@ -714,6 +717,7 @@ fn fetch_script(start: &Start) -> Option<(String, Url, net::csp::Csp)> {
         .with_body_limit(MAX_SCRIPT_BYTES)
         .with_csp(start.csp.clone());
     request.partition.clone_from(&start.partition);
+    request.referrer_policy = Some(start.referrer_policy);
     request.credentials = start.credentials;
     let response = start.client.fetch(&request).ok()?;
     if !response.ok()
@@ -1032,6 +1036,7 @@ impl ScriptingHost for WorkerHost {
                             .csp
                             .clone()
                             .unwrap_or_else(|| net::csp::Csp::none(self.origin.clone())),
+                        referrer_policy: net::ReferrerPolicy::default(),
                     }),
                 )))
             }

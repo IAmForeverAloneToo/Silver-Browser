@@ -298,7 +298,7 @@ impl ImageStore {
         document: &Document,
         page: &Page,
         next: &mut u64,
-    ) -> Vec<(net::Url, CrossOrigin)> {
+    ) -> Vec<(net::Url, CrossOrigin, Option<net::ReferrerPolicy>)> {
         self.sources.clear();
         self.scanned.clear();
         let mut wanted = Vec::new();
@@ -330,7 +330,10 @@ impl ImageStore {
                 );
                 self.ids.insert(*next, key.clone());
                 *next += 1;
-                wanted.push((url, cross));
+                let policy = document
+                    .attr(node, "referrerpolicy")
+                    .and_then(net::ReferrerPolicy::parse);
+                wanted.push((url, cross, policy));
             }
             self.sources.insert(node, key);
             self.scanned.insert(node, scanned(document, node));

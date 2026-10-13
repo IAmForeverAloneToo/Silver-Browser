@@ -750,6 +750,7 @@ fn origin_is_null_from_an_https_document_to_http_for_an_unsafe_method() {
         url_list: vec![url("http://a.example/x")],
         tainting: ResponseType::Opaque,
         tainted_origin: false,
+        referrer_policy: crate::ReferrerPolicy::default(),
     };
     assert_eq!(
         origin_field(&request, &url("http://a.example/x"), &hop).as_deref(),
@@ -779,6 +780,7 @@ fn metadata_goes_to_trustworthy_urls_and_user_only_with_navigations() {
         url_list: vec![url.clone()],
         tainting: ResponseType::Basic,
         tainted_origin: false,
+        referrer_policy: crate::ReferrerPolicy::default(),
     };
     let names = |headers: HeaderList| {
         headers

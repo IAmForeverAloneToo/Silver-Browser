@@ -4274,6 +4274,7 @@
           id, state.method, state.url, flatten(headersState(state.headers).list),
           body === null ? null : binaryString(body),
           state.mode, state.credentials, state.redirect, false, state.cache,
+          state.referrer, state.referrerPolicy,
         );
       } catch (e) {
         reject(failed(e, "fetch", GLOBAL_INTERFACE));
@@ -4586,7 +4587,7 @@
         native.fetch(
           id, this.#method, this.#url, flatten(this.#headers),
           bytes === null ? null : binaryString(bytes), "cors", credentials, "follow",
-          this.#uploadListened, "default",
+          this.#uploadListened, "default", "about:client", "",
         );
       } catch (e) {
         this.#fetch = 0;
@@ -6194,6 +6195,12 @@
     get compatMode() {
       self(this);
       return native.documentInfo()[3];
+    }
+
+    // The referrer of the request that brought the document (M33.3).
+    get referrer() {
+      self(this);
+      return native.documentInfo()[4];
     }
 
     get cookie() {

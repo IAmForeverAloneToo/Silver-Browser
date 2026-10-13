@@ -1035,6 +1035,7 @@ impl DocumentHost {
                     compat: self.window.compat,
                     partition: self.partition(),
                     csp: page.policies().clone(),
+                    referrer_policy: page.referrer_policy(&self.document),
                 };
                 Ok(Answer::Number(f64::from(self.workers.workers.start(start))))
             }
@@ -1080,6 +1081,9 @@ impl DocumentHost {
                 let mut request = super::fetch::request(page.initiator(), &call)?;
                 request.partition = self.partition();
                 request.csp = Some(page.policies().clone());
+                if request.referrer_policy.is_none() {
+                    request.referrer_policy = Some(page.referrer_policy(&self.document));
+                }
                 let Some(client) = &self.client else {
                     return Ok(Answer::Fetched(None));
                 };
@@ -1309,6 +1313,7 @@ impl DocumentHost {
                     post: None,
                     target: String::new(),
                     form: false,
+                    element: None,
                 });
                 Ok(Answer::Nothing)
             }
@@ -1321,6 +1326,7 @@ impl DocumentHost {
                     post: None,
                     target: String::new(),
                     form: false,
+                    element: None,
                 });
                 Ok(Answer::Nothing)
             }
@@ -1359,6 +1365,7 @@ impl DocumentHost {
                     encoding.name().to_owned(),
                     content_type.to_owned(),
                     "CSS1Compat".to_owned(),
+                    page.map(Page::referrer).unwrap_or_default().to_owned(),
                 ]))
             }
             Call::ComputedValue {
@@ -1683,6 +1690,7 @@ impl DocumentHost {
                         post: submission.post,
                         target: submission.target,
                         form: true,
+                        element: Some(form),
                     });
                 }
                 Ok(Answer::Nothing)
@@ -2150,6 +2158,7 @@ impl DocumentHost {
             post: None,
             target: crate::frames::element_target(&self.document, element),
             form: false,
+            element: Some(element),
         });
     }
 

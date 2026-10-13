@@ -117,7 +117,19 @@ pub(crate) fn request(
         fields.append(name.as_bytes(), value);
     }
     let initiator = initiator.ok_or_else(|| type_error("Failed to fetch"))?;
+    // Its referrer as the `Request` has it (M33.3): the client's, none, or
+    // a URL the bindings checked is of the document's origin.
+    let referrer = match call.referrer.as_str() {
+        "about:client" | "" => net::Referrer::Client,
+        "no-referrer" => net::Referrer::None,
+        text => Url::parse(text).map_or(net::Referrer::Client, |url| {
+            net::Referrer::Url(Box::new(url))
+        }),
+    };
+    let referrer_policy = net::ReferrerPolicy::parse(&call.referrer_policy);
     let mut request = net::Request::get(url, Destination::Empty).initiated_by(initiator);
+    request.referrer = referrer;
+    request.referrer_policy = referrer_policy;
     request.method = method;
     request.headers = fields;
     request.body = call.body.clone();
@@ -178,6 +190,8 @@ mod tests {
             redirect: "follow".to_owned(),
             preflight: false,
             cache: "default".to_owned(),
+            referrer: "about:client".to_owned(),
+            referrer_policy: String::new(),
         };
         change(&mut call);
         call

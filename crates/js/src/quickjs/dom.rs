@@ -324,6 +324,8 @@ const NATIVES: &[(&str, Decode)] = &[
             redirect: a.string(7)?,
             preflight: a.bool(8),
             cache: a.string(9)?,
+            referrer: a.string(10)?,
+            referrer_policy: a.string(11)?,
         })))
     }),
     ("fetchNow", |a| {
@@ -338,6 +340,8 @@ const NATIVES: &[(&str, Decode)] = &[
             redirect: a.string(6)?,
             preflight: a.bool(7),
             cache: "default".to_owned(),
+            referrer: "about:client".to_owned(),
+            referrer_policy: String::new(),
         })))
     }),
     ("decode", |a| {

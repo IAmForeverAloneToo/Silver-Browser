@@ -624,6 +624,9 @@ struct Navigation {
     /// The sandboxing flags its document is made with, its response's
     /// own apart (M33.2): its frame's when it began.
     sandbox: sandbox::Sandbox,
+    /// The referrer its request was made with (M33.3), as its first hop
+    /// sent it: `document.referrer`.
+    referrer: String,
 }
 
 /// The document that starts a navigation (M27): its origin, which the
@@ -636,6 +639,10 @@ struct NavigationSource {
     /// its navigations, and for a form's, `form-action` at each hop.
     csp: Option<net::csp::Csp>,
     form: bool,
+    /// Its document's URL as the referrer, and the referrer policy
+    /// (M33.3); none for a link with `rel=noreferrer`.
+    referrer: Option<Url>,
+    referrer_policy: net::ReferrerPolicy,
 }
 
 /// What a navigation's document does to the session history when it is
@@ -702,7 +709,8 @@ fn parsed_page(
         address_space,
     )
     .with_language(loader::content_language(head))
-    .with_csp(net::csp::Csp::from_headers(&head.headers, head.url()));
+    .with_csp(net::csp::Csp::from_headers(&head.headers, head.url()))
+    .with_referrer_policy(net::ReferrerPolicy::from_headers(&head.headers));
     match creator {
         Some(creator) => page.inheriting(creator),
         None => page,
@@ -1193,6 +1201,7 @@ impl Engine {
         } else {
             self.network.set_partition(left.page.id(), None);
             self.network.set_csp(left.page.id(), None);
+            self.network.set_referrer_policy(left.page.id(), None);
         }
     }
 
@@ -1302,7 +1311,25 @@ impl Engine {
             activated,
             csp: Some(self.shown.page.policies().clone()),
             form: false,
+            referrer: self.shown.page.url().cloned(),
+            referrer_policy: self.shown.page.referrer_policy(&self.shown.document),
         }
+    }
+
+    /// `source` as element `element`'s `referrerpolicy` and `rel` have it
+    /// (M33.3): a link's own policy, and no referrer for `noreferrer`.
+    fn element_referrer(&self, mut source: NavigationSource, element: NodeId) -> NavigationSource {
+        let document = &self.shown.document;
+        if let Some(policy) = document
+            .attr(element, "referrerpolicy")
+            .and_then(net::ReferrerPolicy::parse)
+        {
+            source.referrer_policy = policy;
+        }
+        if loader::has_token(document.attr(element, "rel"), "noreferrer") {
+            source.referrer = None;
+        }
+        source
     }
 
     /// Whether the shown document's `form-action` lets a form be
@@ -1393,6 +1420,7 @@ impl Engine {
             Some(why) => self.notice = Some(why),
             None => {
                 let source = self.navigation_source(true);
+                let source = self.element_referrer(source, link.node);
                 // Another frame named by its target (M33.2).
                 let target = frames::element_target(&self.shown.document, link.node);
                 match self.other_navigable(&target, &url, true) {
@@ -1426,10 +1454,13 @@ impl Engine {
             // frame (M33.2).
             None if navigation.form && !self.form_action_allows(&url) => {}
             None if navigation.link => {
-                let source = NavigationSource {
+                let mut source = NavigationSource {
                     form: navigation.form,
                     ..self.navigation_source(false)
                 };
+                if let Some(element) = navigation.element {
+                    source = self.element_referrer(source, element);
+                }
                 match self.other_navigable(&navigation.target, &url, false) {
                     Ok(Some(frame)) => {
                         self.navigate_other(frame, url, false, navigation.post, source.origin);
@@ -1468,6 +1499,8 @@ impl Engine {
             activated: false,
             csp: None,
             form: false,
+            referrer: None,
+            referrer_policy: net::ReferrerPolicy::default(),
         };
         // A link or form of the document on its way may name another
         // frame (M33.2), chosen as that document would.
@@ -1575,6 +1608,7 @@ impl Engine {
             started: self.time_origin(),
             creator: Some(creator),
             sandbox: self.creation_sandbox(),
+            referrer: String::new(),
         });
         self.load_state = LoadState::Loading;
         self.sniff_incoming(true);
@@ -3011,6 +3045,9 @@ impl Engine {
     fn sync_csp(&mut self) {
         let csp = self.shown.page.csp(&self.shown.document).clone();
         self.network.set_csp(self.shown.page.id(), Some(csp));
+        let policy = self.shown.page.referrer_policy(&self.shown.document);
+        self.network
+            .set_referrer_policy(self.shown.page.id(), Some(policy));
     }
 
     /// Says on the console what the shown document's policies refused,
@@ -3366,15 +3403,33 @@ impl Engine {
             }
             None => net::Request::get(url.clone(), destination),
         };
-        let (mut request, form) = match source {
+        let (mut request, form, referrer) = match source {
             Some(source) => {
+                // What its first hop sends as the referrer (M33.3).
+                let referrer = source
+                    .referrer
+                    .as_ref()
+                    .and_then(|from| {
+                        net::referrer::determine(from, &source.origin, source.referrer_policy, &url)
+                    })
+                    .unwrap_or_default();
                 let mut request = request.from_document(source.origin, source.activated);
-                // Its document's policies go with it (M33.1).
+                // Its document's policies go with it (M33.1), and its
+                // referrer (M33.3).
                 request.csp = source.csp;
                 request.form_submission = source.form;
-                (request, source.form)
+                request.referrer = source
+                    .referrer
+                    .map_or(net::Referrer::None, |url| net::Referrer::Url(Box::new(url)));
+                request.referrer_policy = Some(source.referrer_policy);
+                (request, source.form, referrer)
             }
-            None => (request, false),
+            // The user's own navigation has none.
+            None => {
+                let mut request = request;
+                request.referrer = net::Referrer::None;
+                (request, false, String::new())
+            }
         };
         if let Some(container) = self.frame.container.clone() {
             if request.origin.is_none() {
@@ -3397,6 +3452,7 @@ impl Engine {
             started: self.time_origin(),
             creator: None,
             sandbox: self.creation_sandbox(),
+            referrer,
         });
         self.load_state = LoadState::Loading;
     }
@@ -3733,11 +3789,13 @@ impl Engine {
         let wanted = shown
             .images
             .scan(&shown.document, &shown.page, &mut self.next_image);
-        for (url, cross) in wanted {
+        for (url, cross, referrer_policy) in wanted {
             let key = cross.key(&url);
             let mut request = net::Request::get(url, net::Destination::Image)
                 .initiated_by(initiator.clone())
                 .with_body_limit(images::MAX_IMAGE_BYTES);
+            // Its `referrerpolicy` (M33.3), else the document's.
+            request.referrer_policy = referrer_policy;
             // `crossorigin` asks in CORS mode (M30): an answer another
             // origin does not allow is a network error, a broken image.
             match cross {
@@ -4283,7 +4341,13 @@ impl Engine {
             .navigation
             .as_ref()
             .and_then(|navigation| navigation.creator.clone());
-        let page = parsed_page(id, &response, &load, creator.as_ref(), sandbox);
+        let referrer = self
+            .navigation
+            .as_ref()
+            .map(|navigation| navigation.referrer.clone())
+            .unwrap_or_default();
+        let page = parsed_page(id, &response, &load, creator.as_ref(), sandbox)
+            .with_referrer(referrer.clone());
         // A frame's document's requests are made where it is (M33.2).
         let partition = self.partition_for(page.origin());
         self.network.set_partition(id, partition);
@@ -4300,6 +4364,7 @@ impl Engine {
                     scripts,
                     creator,
                     sandbox,
+                    referrer,
                 }),
             };
         }
@@ -4355,7 +4420,8 @@ impl Engine {
                     &parsing.load,
                     parsing.creator.as_ref(),
                     parsing.sandbox,
-                );
+                )
+                .with_referrer(parsing.referrer.clone());
                 **document = Document::new();
                 parsing.scripts.restart();
                 self.wake();
@@ -4449,7 +4515,8 @@ impl Engine {
                     &parsing.load,
                     parsing.creator.as_ref(),
                     parsing.sandbox,
-                );
+                )
+                .with_referrer(parsing.referrer.clone());
                 self.shown
                     .page
                     .rescan(&Document::new(), &mut self.network, None);
@@ -4635,6 +4702,7 @@ impl Engine {
             started,
             creator,
             sandbox,
+            referrer,
             ..
         } = navigation;
         let response = match result {
@@ -4656,7 +4724,9 @@ impl Engine {
                     Page::fetched(page, at, parsed.encoding, parsed.undecodable, address_space)
                         .with_language(parsed.language)
                         .with_content_type(parsed.content_type)
-                        .with_csp(csp);
+                        .with_csp(csp)
+                        .with_referrer_policy(net::ReferrerPolicy::from_headers(&response.headers))
+                        .with_referrer(referrer.clone());
                 if let Some(creator) = &creator {
                     incoming = incoming.inheriting(creator);
                 }
@@ -4676,6 +4746,7 @@ impl Engine {
                     started,
                     creator,
                     sandbox,
+                    referrer,
                 });
                 self.commit_if_ready();
             }
