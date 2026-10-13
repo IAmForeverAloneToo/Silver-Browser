@@ -221,6 +221,7 @@ struct Setup {
     depth: u32,
     live: Arc<AtomicUsize>,
     router: SharedRouter,
+    document: u32,
 }
 
 /// The workers a realm made (M31.1), by number, and those waiting for
@@ -237,6 +238,9 @@ pub(crate) struct Workers {
     depth: u32,
     /// The ports of the document and its workers.
     router: SharedRouter,
+    /// The document's realm in the router, which its workers' frames go
+    /// to.
+    document: u32,
 }
 
 /// What a worker's message is for its owner's realm.
@@ -256,6 +260,7 @@ impl Workers {
         live: Arc<AtomicUsize>,
         depth: u32,
         router: SharedRouter,
+        document: u32,
     ) -> Workers {
         Workers {
             inbox,
@@ -265,6 +270,7 @@ impl Workers {
             live,
             depth,
             router,
+            document,
         }
     }
 
@@ -309,6 +315,7 @@ impl Workers {
             depth: self.depth + 1,
             live: self.live.clone(),
             router: self.router.clone(),
+            document: self.document,
         });
         self.start_waiting();
         id
@@ -440,11 +447,17 @@ pub(crate) struct DocumentWorkers {
 
 impl Default for DocumentWorkers {
     fn default() -> DocumentWorkers {
+        DocumentWorkers::with_router(SharedRouter::default())
+    }
+}
+
+impl DocumentWorkers {
+    /// A document's, its realm one of `router`'s: the tab's (M33.2).
+    pub(crate) fn with_router(router: SharedRouter) -> DocumentWorkers {
         let (inbox, mailbox) = inbox(None);
-        let router = SharedRouter::default();
         let realm = lock(&router).add_realm(inbox.clone());
         DocumentWorkers {
-            workers: Workers::new(inbox.clone(), Arc::default(), 0, router.clone()),
+            workers: Workers::new(inbox.clone(), Arc::default(), 0, router.clone(), realm),
             mailbox,
             inbox,
             router,
@@ -508,6 +521,7 @@ fn run(setup: Setup) {
         depth,
         live,
         router,
+        document,
     } = setup;
     let ended = |error: Option<Option<ScriptError>>| {
         if let Some(error) = error {
@@ -563,7 +577,8 @@ fn run(setup: Setup) {
             * 1000.0,
         router: Some(router.clone()),
         realm: realm_id,
-        workers: Some(Workers::new(me, live, depth, router.clone())),
+        document,
+        workers: Some(Workers::new(me, live, depth, router.clone(), document)),
         ..WorkerHost::default()
     };
     let script = Script {
@@ -745,8 +760,10 @@ pub(crate) struct WorkerHost {
     frame_wanted: bool,
     last_frame: Option<Duration>,
     workers: Option<Workers>,
-    /// The router of its document's ports, and its realm's number there.
+    /// The router of its document's ports, and its realm's number there,
+    /// and its document's.
     router: Option<SharedRouter>,
+    document: u32,
     realm: u32,
     work: u64,
 }
@@ -778,6 +795,7 @@ impl Default for WorkerHost {
             workers: None,
             router: None,
             realm: 0,
+            document: 0,
             work: 0,
         }
     }
@@ -1110,7 +1128,7 @@ impl WorkerHost {
         // goes to the document, which shows it at its next frame.
         if let Some(router) = &self.router {
             for commit in self.canvases.commits() {
-                lock(router).send_document(WorkerMessage::Frame(commit));
+                lock(router).send_to(self.document, WorkerMessage::Frame(commit));
             }
         }
     }

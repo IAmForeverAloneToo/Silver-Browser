@@ -349,6 +349,40 @@ const NATIVES: &[(&str, Decode)] = &[
     }),
     ("sameOriginUrl", |a| Ok(Call::SameOriginUrl(a.string(0)?))),
     ("targetOrigin", |a| Ok(Call::TargetOrigin(a.string(0)?))),
+    ("frameSelf", |_| Ok(Call::FrameSelf)),
+    ("frameParent", |a| {
+        Ok(Call::FrameParent(a.integer(0) as u32))
+    }),
+    ("frameTop", |a| Ok(Call::FrameTop(a.integer(0) as u32))),
+    ("frameLength", |a| {
+        Ok(Call::FrameLength(a.integer(0) as u32))
+    }),
+    ("frameChild", |a| {
+        Ok(Call::FrameChild(a.integer(0) as u32, a.integer(1) as u32))
+    }),
+    ("frameNamed", |a| {
+        Ok(Call::FrameNamed(a.integer(0) as u32, a.string(1)?))
+    }),
+    ("frameClosed", |a| {
+        Ok(Call::FrameClosed(a.integer(0) as u32))
+    }),
+    ("frameOf", |a| Ok(Call::FrameOf(a.handle(0)?))),
+    ("framePost", |a| {
+        Ok(Call::FramePost {
+            frame: a.integer(0) as u32,
+            target_origin: a.string(1)?,
+            data: a.string(2)?,
+        })
+    }),
+    ("frameNavigate", |a| {
+        Ok(Call::FrameNavigate {
+            frame: a.integer(0) as u32,
+            url: a.string(1)?,
+            replace: a.bool(2),
+        })
+    }),
+    ("windowName", |_| Ok(Call::WindowName)),
+    ("setWindowName", |a| Ok(Call::SetWindowName(a.string(0)?))),
     ("workerStart", |a| {
         Ok(Call::WorkerStart {
             url: a.string(0)?,

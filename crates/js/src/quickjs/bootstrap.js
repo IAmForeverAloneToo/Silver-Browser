@@ -7810,6 +7810,7 @@
     ]],
     ["HTMLIFrameElement", [
       ["src", "src", "url"],
+      ["srcdoc", "srcdoc", "string"],
       ["name", "name", "string"],
       ["width", "width", "string"],
       ["height", "height", "string"],
@@ -8617,13 +8618,15 @@
       return native.viewport()[2];
     }
 
-    // No frames yet: the window is its own top and parent.
+    // The window's relatives among the tab's frames (M33.2): itself at
+    // the top.
     get top() {
-      return global;
+      return windowFor(native.frameTop(selfFrame()));
     }
 
     get parent() {
-      return global;
+      const parent = native.frameParent(selfFrame());
+      return parent < 0 ? global : windowFor(parent);
     }
 
     get frames() {
@@ -8631,11 +8634,25 @@
     }
 
     get length() {
-      return 0;
+      return native.frameLength(selfFrame());
     }
 
     get opener() {
       return null;
+    }
+
+    // No realm here holds another frame's element (D24).
+    get frameElement() {
+      return null;
+    }
+
+    // The navigable's name: its iframe's `name`, until a script sets it.
+    get name() {
+      return native.windowName();
+    }
+
+    set name(value) {
+      native.setWindowName(str(value));
     }
 
     get closed() {
@@ -8674,6 +8691,335 @@
     }
   }
   expose(Window, "Window");
+
+  // ---- Frames (M33.2, docs/design/hardening.md) -------------------------
+
+  // Every frame is another origin's to this realm, its own origin's
+  // too (D24): its window answers what HTML 7.2.3 lets another origin
+  // ask, and nothing else. A frame is named by its number in the tab;
+  // a native answers -1 for none.
+
+  const hasInstanceSymbol = Symbol.hasInstance;
+  const concatSpreadableSymbol = Symbol.isConcatSpreadable;
+
+  // This window's frame.
+  let selfFrameId;
+  function selfFrame() {
+    if (selfFrameId === undefined) {
+      try {
+        selfFrameId = native.frameSelf();
+      } catch {
+        // A host that has no frames: the top.
+        selfFrameId = 0;
+      }
+    }
+    return selfFrameId;
+  }
+
+  // The windows of other frames, one object a frame.
+  const frameWindows = new $Map();
+  const frameLocations = new $Map();
+
+  // The window of frame `id`: this one's own, another's object, or
+  // `null` for none.
+  function windowFor(id) {
+    if (id < 0) {
+      return null;
+    }
+    if (id === selfFrame()) {
+      return global;
+    }
+    let window = MapGet(frameWindows, id);
+    if (window === undefined) {
+      window = frameWindow(id);
+      MapSet(frameWindows, id, window);
+    }
+    return window;
+  }
+
+  // The reference browser's words for what another origin may not do.
+  function blocked(verb, name, iface) {
+    const what = typeof name === "symbol" ? "a named property" : "a named property '" + name + "'";
+    const where = verb === "read" ? " from '" : " on '";
+    return new $DOMException(
+      "Failed to " + verb + " " + what + where + iface + "': Blocked a frame with origin \"" +
+        native.origin() + "\" from accessing a cross-origin frame.",
+      "SecurityError",
+    );
+  }
+
+  // Navigates frame `id` to `url`, as setting its location does: a
+  // `SecurityError` when this window may not navigate it.
+  function navigateFrame(id, url, replace, method) {
+    try {
+      native.frameNavigate(id, str(url), replace);
+    } catch (error) {
+      if (method !== undefined) {
+        throw failed(error, method, "Location");
+      }
+      if (error instanceof $DOMException) {
+        throw new $DOMException(
+          "Failed to set a named property 'href' on 'Location': " + error.message,
+          error.name,
+        );
+      }
+      throw error;
+    }
+  }
+
+  // A cross-origin Location (HTML 7.2.3): `href` to set and `replace`.
+  function frameLocation(id) {
+    let location = MapGet(frameLocations, id);
+    if (location !== undefined) {
+      return location;
+    }
+    const replace = function replace(url) {
+      need(arguments.length, 1, "replace", "Location");
+      navigateFrame(id, url, true, "replace");
+    };
+    const target = ObjectCreate(null);
+    const read = (prop) => {
+      if (prop === "replace") {
+        return replace;
+      }
+      if (prop === "then" || prop === toStringTag || prop === hasInstanceSymbol ||
+        prop === concatSpreadableSymbol) {
+        return undefined;
+      }
+      throw blocked("read", prop, "Location");
+    };
+    location = new $Proxy(target, {
+      get(_, prop) {
+        return read(prop);
+      },
+      set(_, prop, value) {
+        if (prop === "href") {
+          navigateFrame(id, value, false);
+          return true;
+        }
+        throw blocked("set", prop, "Location");
+      },
+      has(_, prop) {
+        if (prop === "href" || prop === "replace" || prop === "then") {
+          return true;
+        }
+        throw blocked("read", prop, "Location");
+      },
+      getOwnPropertyDescriptor(_, prop) {
+        if (prop === "href") {
+          return {
+            get: undefined,
+            set: function (value) {
+              navigateFrame(id, value, false);
+            },
+            enumerable: false,
+            configurable: true,
+          };
+        }
+        return { value: read(prop), writable: false, enumerable: false, configurable: true };
+      },
+      ownKeys() {
+        return ["href", "replace", "then", toStringTag, hasInstanceSymbol,
+          concatSpreadableSymbol];
+      },
+      defineProperty(_, prop) {
+        throw blocked("set", prop, "Location");
+      },
+      deleteProperty(_, prop) {
+        throw blocked("set", prop, "Location");
+      },
+      getPrototypeOf() {
+        return null;
+      },
+      setPrototypeOf(_, prototype) {
+        return prototype === null;
+      },
+      preventExtensions() {
+        return false;
+      },
+    });
+    MapSet(frameLocations, id, location);
+    return location;
+  }
+
+  // The names another origin's window has (the reference browser's
+  // order).
+  const FRAME_WINDOW_KEYS = ["window", "self", "location", "closed", "frames", "length", "top",
+    "opener", "parent", "blur", "close", "focus", "postMessage", "then"];
+
+  // A cross-origin WindowProxy (HTML 7.2.3) for frame `id`.
+  function frameWindow(id) {
+    const methods = {
+      blur: function blur() {},
+      close: function close() {},
+      focus: function focus() {},
+      postMessage: function postMessage(message) {
+        const posted = postArguments(arguments, "postMessage", "Window");
+        native.framePost(id, posted[0], posted[1]);
+      },
+    };
+    let window;
+    const read = (prop) => {
+      switch (prop) {
+        case "window":
+        case "self":
+        case "frames":
+          return window;
+        case "location":
+          return frameLocation(id);
+        case "closed":
+          return native.frameClosed(id);
+        case "length":
+          return native.frameLength(id);
+        case "top":
+          return windowFor(native.frameTop(id));
+        case "parent": {
+          const parent = native.frameParent(id);
+          return windowFor(parent < 0 ? id : parent);
+        }
+        case "opener":
+          return null;
+        case "then":
+          return undefined;
+        case "blur":
+        case "close":
+        case "focus":
+        case "postMessage":
+          return methods[prop];
+      }
+      if (prop === toStringTag || prop === hasInstanceSymbol ||
+        prop === concatSpreadableSymbol) {
+        return undefined;
+      }
+      if (typeof prop === "string") {
+        const index = arrayIndex(prop);
+        const child = index >= 0 ? native.frameChild(id, index) : native.frameNamed(id, prop);
+        if (child >= 0) {
+          return windowFor(child);
+        }
+      }
+      throw blocked("read", prop, "Window");
+    };
+    window = new $Proxy(ObjectCreate(null), {
+      get(_, prop) {
+        return read(prop);
+      },
+      set(_, prop, value) {
+        if (prop === "location") {
+          navigateFrame(id, value, false);
+          return true;
+        }
+        throw blocked("set", prop, "Window");
+      },
+      has(_, prop) {
+        if (typeof prop === "string" && includesString(FRAME_WINDOW_KEYS, prop)) {
+          return true;
+        }
+        return read(prop) !== undefined;
+      },
+      getOwnPropertyDescriptor(_, prop) {
+        if (prop === "location") {
+          return {
+            get: function () {
+              return frameLocation(id);
+            },
+            set: function (value) {
+              navigateFrame(id, value, false);
+            },
+            enumerable: false,
+            configurable: true,
+          };
+        }
+        return { value: read(prop), writable: false, enumerable: false, configurable: true };
+      },
+      ownKeys() {
+        const keys = [];
+        const length = native.frameLength(id);
+        for (let i = 0; i < length; i++) {
+          ArrayPush(keys, $String(i));
+        }
+        for (let i = 0; i < FRAME_WINDOW_KEYS.length; i++) {
+          ArrayPush(keys, FRAME_WINDOW_KEYS[i]);
+        }
+        ArrayPush(keys, toStringTag, hasInstanceSymbol, concatSpreadableSymbol);
+        return keys;
+      },
+      defineProperty(_, prop) {
+        throw blocked("set", prop, "Window");
+      },
+      deleteProperty(_, prop) {
+        throw blocked("set", prop, "Window");
+      },
+      getPrototypeOf() {
+        return null;
+      },
+      setPrototypeOf(_, prototype) {
+        return prototype === null;
+      },
+      preventExtensions() {
+        return false;
+      },
+    });
+    return window;
+  }
+
+  // This window's frames by index and by name (HTML's WindowProperties
+  // object, between Window.prototype and EventTarget.prototype): its
+  // properties the engine's list of the window's child frames makes
+  // after each change (`frameList`), each answering as the tab now is.
+  const windowProperties = ObjectCreate(EventTarget.prototype);
+  let frameKeys = [];
+  if (!WORKER) {
+    setPrototypeOf(Window.prototype, windowProperties);
+  }
+
+  // The window's child frames are now as many as `names`, those names
+  // their elements' (M33.2).
+  function frameList(names) {
+    for (let i = 0; i < frameKeys.length; i++) {
+      ReflectDeleteProperty(windowProperties, frameKeys[i]);
+    }
+    frameKeys = [];
+    const property = (key, ask) => {
+      if (ReflectGetOwnPropertyDescriptor(windowProperties, key) !== undefined) {
+        return;
+      }
+      defineProperty(windowProperties, key, {
+        get: function () {
+          const id = ask();
+          return id < 0 ? undefined : windowFor(id);
+        },
+        enumerable: false,
+        configurable: true,
+      });
+      ArrayPush(frameKeys, key);
+    };
+    for (let i = 0; i < names.length; i++) {
+      property($String(i), () => native.frameChild(selfFrame(), i));
+    }
+    for (let i = 0; i < names.length; i++) {
+      const name = names[i];
+      if (name !== "" && arrayIndex(name) < 0) {
+        property(name, () => native.frameNamed(selfFrame(), name));
+      }
+    }
+    return nothing();
+  }
+
+  // An iframe's frame's window, another origin's to this realm (D24),
+  // and its document, which no realm here reaches into.
+  include(
+    {
+      get contentWindow() {
+        return windowFor(native.frameOf(self(this)));
+      },
+      get contentDocument() {
+        self(this);
+        return null;
+      },
+    },
+    [MapGet(interfaces, "iframe").prototype],
+  );
 
   // ---- A dedicated worker's global scope (M31, HTML section 10.2) -----
 
@@ -13609,7 +13955,7 @@
   // made again, or, when it cannot be, a `messageerror` (HTML section
   // 9.5.3); `origin` the sender's, `source` the window for a message
   // to the window.
-  function messageEvent(target, text, origin) {
+  function messageEvent(target, text, origin, source) {
     let data = null;
     let ports = [];
     let type = "message";
@@ -13623,7 +13969,7 @@
     const event = new MessageEvent(type, made(MESSAGE_INIT, [
       "data", data,
       "origin", origin,
-      "source", target === global && !WORKER ? global : null,
+      "source", source !== undefined ? source : target === global && !WORKER ? global : null,
       "ports", ports,
     ]));
     eventState(event).trusted = true;
@@ -13636,40 +13982,47 @@
   // message dropped when it is not.
   defineProperty(Window.prototype, "postMessage", {
     value: function postMessage(message) {
-      const a = arguments;
-      const where = prefix("postMessage", "Window");
-      if (a.length < 1) {
-        throw new $TypeError(where + "1 argument required, but only 0 present.");
-      }
-      let targetOrigin;
-      let transfer;
-      const second = a[1];
-      if (a.length >= 3 || (a.length === 2 && second !== undefined && second !== null &&
-        typeof second !== "object" && typeof second !== "function")) {
-        targetOrigin = str(second);
-        transfer = transferList(a[2], "postMessage", "Window", undefined);
-      } else {
-        if (second !== undefined && second !== null && typeof second !== "object" &&
-          typeof second !== "function") {
-          throw new $TypeError(where + "The provided value is not of type 'WindowPostMessageOptions'.");
-        }
-        transfer = serializeOptions(second, "postMessage", "Window", "WindowPostMessageOptions");
-        const given = second === undefined || second === null ? undefined : second.targetOrigin;
-        targetOrigin = given === undefined ? "/" : str(given);
-      }
-      let origin;
-      try {
-        origin = native.targetOrigin(targetOrigin);
-      } catch (error) {
-        throw failed(error, "postMessage", "Window");
-      }
-      const record = serialize(message, transfer, where, global);
-      native.postMessage(origin, wire(record));
+      const posted = postArguments(arguments, "postMessage", "Window");
+      native.postMessage(posted[0], posted[1]);
     },
     writable: true,
     configurable: true,
     enumerable: true,
   });
+
+  // A window's `postMessage`'s arguments (HTML section 9.4.3): the target
+  // origin serialized, and the message's record wired; this window's
+  // and another frame's (M33.2).
+  function postArguments(a, method, iface) {
+    const where = prefix(method, iface);
+    if (a.length < 1) {
+      throw new $TypeError(where + "1 argument required, but only 0 present.");
+    }
+    let targetOrigin;
+    let transfer;
+    const second = a[1];
+    if (a.length >= 3 || (a.length === 2 && second !== undefined && second !== null &&
+      typeof second !== "object" && typeof second !== "function")) {
+      targetOrigin = str(second);
+      transfer = transferList(a[2], "postMessage", "Window", undefined);
+    } else {
+      if (second !== undefined && second !== null && typeof second !== "object" &&
+        typeof second !== "function") {
+        throw new $TypeError(where + "The provided value is not of type 'WindowPostMessageOptions'.");
+      }
+      transfer = serializeOptions(second, "postMessage", "Window", "WindowPostMessageOptions");
+      const given = second === undefined || second === null ? undefined : second.targetOrigin;
+      targetOrigin = given === undefined ? "/" : str(given);
+    }
+    let origin;
+    try {
+      origin = native.targetOrigin(targetOrigin);
+    } catch (error) {
+      throw failed(error, method, iface);
+    }
+    const record = serialize(a[0], transfer, where, global);
+    return [origin, wire(record)];
+  }
 
   // ---- Dedicated workers (M31, HTML section 10.2.6) ----------------------
 
@@ -15358,10 +15711,15 @@
       return dispatching(wrap(handle), event);
     },
     frames: runFrames,
+    frameList,
     fetched,
     // A message's arrival (M31): at the global (`kind` 0), at worker
     // `n`'s object (1) or at port `n` (2).
     message(kind, n, text, origin) {
+      // From frame `n`'s window (3, M33.2): at the window, its source.
+      if (kind === 3) {
+        return messageEvent(global, text, origin, windowFor(n));
+      }
       const target = kind === 0 ? global : MapGet(kind === 1 ? workerObjects : portObjects, n);
       return target === undefined ? nothing() : messageEvent(target, text, origin);
     },

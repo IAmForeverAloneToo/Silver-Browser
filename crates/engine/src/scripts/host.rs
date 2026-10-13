@@ -1113,6 +1113,18 @@ impl DocumentHost {
                 }
                 Ok(Answer::Nothing)
             }
+            call @ (Call::FrameSelf
+            | Call::FrameParent(_)
+            | Call::FrameTop(_)
+            | Call::FrameLength(_)
+            | Call::FrameChild(..)
+            | Call::FrameNamed(..)
+            | Call::FrameClosed(_)
+            | Call::FrameOf(_)
+            | Call::FramePost { .. }
+            | Call::FrameNavigate { .. }
+            | Call::WindowName
+            | Call::SetWindowName(_)) => self.frame_call(call),
             Call::DocumentDomain => {
                 Ok(Answer::String(match self.page.as_ref().map(Page::origin) {
                     Some(net::Origin::Tuple { host, .. }) => host.to_string(),
@@ -1185,6 +1197,7 @@ impl DocumentHost {
                     reload: false,
                     link: false,
                     post: None,
+                    target: String::new(),
                 });
                 Ok(Answer::Nothing)
             }
@@ -1195,6 +1208,7 @@ impl DocumentHost {
                     reload: true,
                     link: false,
                     post: None,
+                    target: String::new(),
                 });
                 Ok(Answer::Nothing)
             }
@@ -1546,6 +1560,7 @@ impl DocumentHost {
                         reload: false,
                         link: true,
                         post: submission.post,
+                        target: submission.target,
                     });
                 }
                 Ok(Answer::Nothing)
@@ -1956,6 +1971,7 @@ impl DocumentHost {
             reload: false,
             link: true,
             post: None,
+            target: crate::frames::element_target(&self.document, element),
         });
     }
 
@@ -1970,6 +1986,137 @@ impl DocumentHost {
 
     /// The serialization of the document's origin, `null` without a
     /// page.
+    /// Answers a call about the tab's frames (M33.2): from the tree, a
+    /// message or a navigation put in another frame's inbox. An engine
+    /// that has no frames answers as a top-level window with none.
+    fn frame_call(&mut self, call: Call) -> Result<Answer, DomError> {
+        let number =
+            |id: Option<crate::frames::FrameId>| Answer::Number(id.map_or(-1.0, f64::from));
+        let Some(env) = self.window.frames.clone() else {
+            return Ok(match call {
+                Call::FrameSelf | Call::FrameTop(_) => Answer::Number(0.0),
+                Call::FrameLength(_) => Answer::Number(0.0),
+                Call::FrameClosed(_) => Answer::Bool(false),
+                Call::WindowName => Answer::String(String::new()),
+                Call::FramePost { .. } | Call::FrameNavigate { .. } | Call::SetWindowName(_) => {
+                    Answer::Nothing
+                }
+                _ => Answer::Number(-1.0),
+            });
+        };
+        let me = env.id;
+        match call {
+            Call::FrameSelf => Ok(Answer::Number(f64::from(me))),
+            Call::FrameParent(id) => Ok(number(crate::frames::lock(&env.tree).parent(id))),
+            Call::FrameTop(id) => Ok(number(Some(crate::frames::lock(&env.tree).top(id)))),
+            Call::FrameLength(id) => Ok(Answer::Number(
+                crate::frames::lock(&env.tree).children(id).len() as f64,
+            )),
+            Call::FrameChild(id, index) => {
+                let tree = crate::frames::lock(&env.tree);
+                Ok(number(tree.children(id).get(index as usize).copied()))
+            }
+            Call::FrameNamed(id, name) => Ok(number(
+                crate::frames::lock(&env.tree).child_named(id, &name),
+            )),
+            Call::FrameClosed(id) => Ok(Answer::Bool(!crate::frames::lock(&env.tree).contains(id))),
+            Call::FrameOf(element) => {
+                // An iframe in the document has its frame now, made later
+                // by the engine under this number (M33.2).
+                let element = self.node(element)?;
+                let iframe =
+                    self.document.tag(element) == Some("iframe") && self.connected(element);
+                let mut tree = crate::frames::lock(&env.tree);
+                let id = match tree.of_element(me, element) {
+                    Some(id) => Some(id),
+                    None if iframe => {
+                        let name = self.document.attr(element, "name").unwrap_or_default();
+                        tree.reserve(me, element, name)
+                    }
+                    None => None,
+                };
+                Ok(number(id))
+            }
+            Call::FramePost {
+                frame,
+                target_origin,
+                data,
+            } => {
+                if data.len() > super::workers::MAX_MESSAGE_BYTES {
+                    return Err(DomError::new(
+                        "DataCloneError",
+                        "Data cannot be cloned, out of memory.",
+                    ));
+                }
+                let task = crate::frames::FrameTask::Message {
+                    data,
+                    origin: self.origin_text(),
+                    source: me,
+                    target_origin,
+                };
+                if crate::frames::lock(&env.tree).post(frame, task)
+                    && let Some(wake) = &env.wake
+                {
+                    wake();
+                }
+                Ok(Answer::Nothing)
+            }
+            Call::FrameNavigate {
+                frame,
+                url,
+                replace,
+            } => {
+                let parsed = self
+                    .page
+                    .as_ref()
+                    .and_then(|page| page.resolve(&self.document, &url))
+                    .ok_or_else(|| {
+                        DomError::new("SyntaxError", format!("'{url}' is not a valid URL."))
+                    })?;
+                let origin = self
+                    .page
+                    .as_ref()
+                    .map_or_else(net::Origin::new_opaque, |page| page.origin().clone());
+                let mut tree = crate::frames::lock(&env.tree);
+                if !tree.may_navigate(me, frame, &origin) {
+                    return Err(DomError::new(
+                        "SecurityError",
+                        format!(
+                            "The current window does not have permission to navigate the \
+                             target frame to '{parsed}'."
+                        ),
+                    ));
+                }
+                // Another frame's document runs no `javascript:` URL of
+                // this one's: every frame is another origin's (D24).
+                if parsed.scheme() == "javascript" {
+                    return Ok(Answer::Nothing);
+                }
+                let task =
+                    crate::frames::FrameTask::Navigate(Box::new(crate::frames::FrameNavigation {
+                        url: parsed,
+                        replace,
+                        post: None,
+                        origin,
+                    }));
+                if tree.post(frame, task)
+                    && let Some(wake) = &env.wake
+                {
+                    wake();
+                }
+                Ok(Answer::Nothing)
+            }
+            Call::WindowName => Ok(Answer::String(
+                crate::frames::lock(&env.tree).window_name(me),
+            )),
+            Call::SetWindowName(name) => {
+                crate::frames::lock(&env.tree).set_window_name(me, name);
+                Ok(Answer::Nothing)
+            }
+            _ => Err(DomError::not_supported()),
+        }
+    }
+
     fn origin_text(&self) -> String {
         self.page
             .as_ref()

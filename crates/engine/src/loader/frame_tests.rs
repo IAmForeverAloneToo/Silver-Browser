@@ -468,6 +468,9 @@ fn a_document_kept_by_the_cache_keeps_its_frames() {
         ["/a.html", "/child.html", "/b.html"],
         "nothing fetched again"
     );
+    // Its frame is the window's again.
+    let tree = frames::lock(&tab.engine.frame.tree);
+    assert_eq!(tree.children(frames::TOP).len(), 1);
 }
 
 #[test]
@@ -808,4 +811,41 @@ fn a_frames_border_and_padding_are_its_parents() {
     assert_eq!(console(&mut tab), ["[frame about:srcdoc] 15 25"]);
     click(&mut tab, 8.0, 40.0);
     assert_eq!(console(&mut tab), ["parent"]);
+}
+
+#[test]
+fn a_frames_own_navigation_is_made_from_its_container() {
+    // A link in a frame of an https: page to http: is mixed content, as
+    // the frame's first navigation was: its container's document makes
+    // every navigation of the frame's (M33.2).
+    let authority = net::test_server::TestAuthority::new();
+    let server = TestServer::tls(
+        authority.server(&["127.0.0.1"], net::test_server::VALID),
+        |request: &ServerRequest| match request.target.as_str() {
+            "/page.html" => Reply::ok(
+                "text/html",
+                b"<iframe srcdoc=\"<a id=l href='http://example.invalid/'>l</a>\
+                  <script>onload = () => document.getElementById('l').click()</script>\">\
+                  </iframe>",
+            ),
+            _ => Reply::with_fields(404, &[("Content-Type", "text/plain")], b"no"),
+        },
+    );
+    let mut tab = Tab::new();
+    tab.engine.set_network(net::Client::new(
+        net::transport::Config::default().trust(authority.root.clone()),
+    ));
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, server.url("/page.html"));
+    let deadline = std::time::Instant::now() + WAIT;
+    while !matches!(frame(&tab.engine, 0).load_state(), LoadState::Failed(_)) {
+        assert!(std::time::Instant::now() < deadline, "the link is followed");
+        tab.engine.poll_network();
+        tab.engine.run_tasks();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(
+        frame(&tab.engine, 0).load_state(),
+        &LoadState::Failed(crate::LoadError::Network(net::NetworkError::MixedContent))
+    );
 }

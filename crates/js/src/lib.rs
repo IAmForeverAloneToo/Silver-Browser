@@ -261,6 +261,9 @@ pub enum Task {
     },
     /// Worker `worker` ended: its object hears nothing more.
     WorkerEnded(u32),
+    /// The window's child frames are now as many as these names, their
+    /// elements' (M33.2): its frames by index and name, made again.
+    FrameList(Vec<String>),
 }
 
 /// Where a message is delivered (M31).
@@ -273,6 +276,8 @@ pub enum MessageTarget {
     Worker(u32),
     /// `MessagePort` `n` (M31.5), from its entangled port.
     Port(u32),
+    /// The window, from frame `n`'s (M33.2): its `source`.
+    Frame(u32),
 }
 
 /// What a script may see of a response (M27.1): `net`'s exposed view,

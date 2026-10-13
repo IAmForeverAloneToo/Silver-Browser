@@ -326,6 +326,42 @@ pub enum Call {
     /// `document.cookie` set: one cookie stored as a script stores it,
     /// nothing for a document whose URL is not `http:` or `https:`.
     SetCookie(String),
+    /// This window's frame (M33.2): its number in the tab, 0 at the top
+    /// and for an engine that has no frames.
+    FrameSelf,
+    /// Frame `n`'s parent's number, or -1 at the top.
+    FrameParent(u32),
+    /// Frame `n`'s top's number.
+    FrameTop(u32),
+    /// How many child frames frame `n` has.
+    FrameLength(u32),
+    /// Frame `n`'s `index`th child frame, in its document's tree order,
+    /// or -1.
+    FrameChild(u32, u32),
+    /// Frame `n`'s child frame whose element's `name` is `name`, or -1.
+    FrameNamed(u32, String),
+    /// Whether frame `n` is gone.
+    FrameClosed(u32),
+    /// The frame of this document's `iframe` `element`, or -1.
+    FrameOf(Handle),
+    /// A message for frame `frame`'s window, its data serialized, for the
+    /// target origin `TargetOrigin` gave.
+    FramePost {
+        frame: u32,
+        target_origin: String,
+        data: String,
+    },
+    /// Frame `frame` navigated to `url`, parsed against this document's
+    /// base URL, in place of its entry when `replace`: a `SecurityError`
+    /// when this window may not navigate it.
+    FrameNavigate {
+        frame: u32,
+        url: String,
+        replace: bool,
+    },
+    /// `window.name`, and it set.
+    WindowName,
+    SetWindowName(String),
     /// `document.domain`: the origin's host, or the empty string for an
     /// opaque origin.
     DocumentDomain,

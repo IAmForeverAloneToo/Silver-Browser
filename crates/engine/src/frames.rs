@@ -9,7 +9,7 @@
 //! pixels into its content box as it does a canvas's, waits for it in its
 //! own `load`, and drives it: its tasks, its network, its frames.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -17,7 +17,9 @@ use std::time::Duration;
 use dom::{Change, Document, NodeId};
 use net::Url;
 
-use crate::loader::{Creator, Incoming, LoadState, Page, Target};
+use crate::loader::{Creator, Incoming, LoadState, Page, Target, Waker};
+use crate::scripts::ports::SharedRouter;
+use crate::submit::Post;
 use crate::{
     Engine, FrameTime, Handling, Navigation, Shown, fragment_of, parsed_or_empty, scripts,
 };
@@ -40,17 +42,64 @@ pub(crate) type FrameId = u32;
 /// The top-level document's frame.
 pub(crate) const TOP: FrameId = 0;
 
-/// A frame in the tree: its parent.
-#[derive(Debug)]
+/// The most tasks a frame's inbox holds: past them what other frames
+/// send it is dropped.
+pub const MAX_FRAME_TASKS: usize = 1024;
+
+/// What one frame asked of another (M33.2), waiting in its inbox.
+#[derive(Debug, Clone)]
+pub(crate) enum FrameTask {
+    /// A message for its window: its data serialized, the sender's
+    /// origin serialized and its frame, and the target origin it was
+    /// posted for, `*` or an origin's serialization.
+    Message {
+        data: String,
+        origin: String,
+        source: FrameId,
+        target_origin: String,
+    },
+    /// A navigation.
+    Navigate(Box<FrameNavigation>),
+}
+
+/// A navigation one frame asked of another (M33.2): to `url`, in place of
+/// its entry when `replace`, with a form's POST, started by a document of
+/// `origin`.
+#[derive(Debug, Clone)]
+pub(crate) struct FrameNavigation {
+    pub(crate) url: Url,
+    pub(crate) replace: bool,
+    pub(crate) post: Option<Post>,
+    pub(crate) origin: net::Origin,
+}
+
+/// A frame in the tree.
+#[derive(Debug, Default)]
 struct TreeNode {
     parent: Option<FrameId>,
+    /// Its `iframe` in its parent's document.
+    element: Option<NodeId>,
+    /// Its element's `name`, which links, forms and named access find
+    /// it by, and `window.name` as its scripts set it.
+    name: String,
+    window_name: Option<String>,
+    /// Its document's origin.
+    origin: Option<net::Origin>,
+    /// Its child frames, in the tree order of their elements.
+    children: Vec<FrameId>,
+    inbox: VecDeque<FrameTask>,
+    /// Whether a script's question made it, which no engine has taken
+    /// yet.
+    reserved: bool,
 }
 
 /// The frames of a tab, which its engines share (M33.2).
-#[derive(Debug)]
 pub(crate) struct FrameTree {
     next: FrameId,
     nodes: HashMap<FrameId, TreeNode>,
+    /// The router of the ports of every frame's document and workers, so
+    /// that a port goes from one frame to another.
+    router: SharedRouter,
 }
 
 /// A tab's frame tree, as its engines hold it.
@@ -61,8 +110,14 @@ impl FrameTree {
     pub(crate) fn shared() -> SharedTree {
         Arc::new(Mutex::new(FrameTree {
             next: TOP + 1,
-            nodes: HashMap::from([(TOP, TreeNode { parent: None })]),
+            nodes: HashMap::from([(TOP, TreeNode::default())]),
+            router: SharedRouter::default(),
         }))
+    }
+
+    /// The tab's port router.
+    pub(crate) fn router(&self) -> SharedRouter {
+        self.router.clone()
     }
 
     /// A new frame under `parent`, unless the tab has [`MAX_FRAMES`].
@@ -79,8 +134,12 @@ impl FrameTree {
             id,
             TreeNode {
                 parent: Some(parent),
+                ..TreeNode::default()
             },
         );
+        if let Some(node) = self.nodes.get_mut(&parent) {
+            node.children.push(id);
+        }
         Some(id)
     }
 
@@ -101,9 +160,215 @@ impl FrameTree {
             );
             at += 1;
         }
-        for id in gone {
-            self.nodes.remove(&id);
+        for id in &gone {
+            self.nodes.remove(id);
         }
+        for node in self.nodes.values_mut() {
+            node.children.retain(|child| !gone.contains(child));
+        }
+    }
+
+    /// Frame `parent`'s children, in the tree order of their elements,
+    /// each with its element and that element's `name`.
+    pub(crate) fn set_children(&mut self, parent: FrameId, children: &[(FrameId, NodeId, String)]) {
+        for (id, element, name) in children {
+            if let Some(node) = self.nodes.get_mut(id) {
+                node.element = Some(*element);
+                node.name.clone_from(name);
+            }
+        }
+        // A frame reserved for an element that has none now goes.
+        let reserved: Vec<FrameId> = self
+            .children(parent)
+            .iter()
+            .copied()
+            .filter(|id| self.nodes.get(id).is_some_and(|node| node.reserved))
+            .filter(|id| !children.iter().any(|(child, ..)| child == id))
+            .collect();
+        for id in reserved {
+            self.remove(id);
+        }
+        // The document's frames alone: a document the history keeps
+        // keeps its own out of the list until it is shown again.
+        if let Some(node) = self.nodes.get_mut(&parent) {
+            node.children = children.iter().map(|(id, ..)| *id).collect();
+        }
+    }
+
+    /// The frame of `parent`'s `element`, made now in the tree when it
+    /// has none yet (M33.2): an iframe a script inserted has its window
+    /// before its parent's engine makes its frame, which takes the
+    /// number. `None` past [`MAX_FRAMES`].
+    pub(crate) fn reserve(
+        &mut self,
+        parent: FrameId,
+        element: NodeId,
+        name: &str,
+    ) -> Option<FrameId> {
+        if let Some(id) = self.of_element(parent, element) {
+            return Some(id);
+        }
+        let id = self.add(parent)?;
+        if let Some(node) = self.nodes.get_mut(&id) {
+            node.element = Some(element);
+            node.name = name.to_owned();
+            node.reserved = true;
+        }
+        Some(id)
+    }
+
+    /// The frame `parent`'s engine makes for `element`: the number a
+    /// script's question reserved for it, or a new one.
+    fn claim(&mut self, parent: FrameId, element: NodeId) -> Option<FrameId> {
+        if let Some(id) = self.of_element(parent, element)
+            && let Some(node) = self.nodes.get_mut(&id)
+            && node.reserved
+        {
+            node.reserved = false;
+            return Some(id);
+        }
+        self.add(parent)
+    }
+
+    /// Frame `id`'s document's origin, a new document shown.
+    pub(crate) fn set_origin(&mut self, id: FrameId, origin: net::Origin) {
+        if let Some(node) = self.nodes.get_mut(&id) {
+            node.origin = Some(origin);
+        }
+    }
+
+    pub(crate) fn contains(&self, id: FrameId) -> bool {
+        self.nodes.contains_key(&id)
+    }
+
+    pub(crate) fn parent(&self, id: FrameId) -> Option<FrameId> {
+        self.nodes.get(&id)?.parent
+    }
+
+    /// Frame `id`'s top: the tab's top-level frame.
+    pub(crate) fn top(&self, id: FrameId) -> FrameId {
+        let mut at = id;
+        while let Some(parent) = self.parent(at) {
+            at = parent;
+        }
+        at
+    }
+
+    pub(crate) fn children(&self, id: FrameId) -> &[FrameId] {
+        self.nodes.get(&id).map_or(&[], |node| &node.children)
+    }
+
+    /// Frame `id`'s child whose element is named `name`.
+    pub(crate) fn child_named(&self, id: FrameId, name: &str) -> Option<FrameId> {
+        if name.is_empty() {
+            return None;
+        }
+        self.children(id)
+            .iter()
+            .copied()
+            .find(|child| self.nodes.get(child).is_some_and(|node| node.name == name))
+    }
+
+    /// The child frame of frame `id` its document's `element` shows.
+    pub(crate) fn of_element(&self, id: FrameId, element: NodeId) -> Option<FrameId> {
+        self.children(id).iter().copied().find(|child| {
+            self.nodes
+                .get(child)
+                .is_some_and(|node| node.element == Some(element))
+        })
+    }
+
+    /// `window.name` of frame `id`: what its scripts set, else its
+    /// element's `name`.
+    pub(crate) fn window_name(&self, id: FrameId) -> String {
+        self.nodes.get(&id).map_or_else(String::new, |node| {
+            node.window_name
+                .clone()
+                .unwrap_or_else(|| node.name.clone())
+        })
+    }
+
+    pub(crate) fn set_window_name(&mut self, id: FrameId, name: String) {
+        if let Some(node) = self.nodes.get_mut(&id) {
+            node.window_name = Some(name);
+        }
+    }
+
+    /// Puts `task` in frame `id`'s inbox: false when the frame is gone or
+    /// its inbox full.
+    pub(crate) fn post(&mut self, id: FrameId, task: FrameTask) -> bool {
+        match self.nodes.get_mut(&id) {
+            Some(node) if node.inbox.len() < MAX_FRAME_TASKS => {
+                node.inbox.push_back(task);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// What other frames asked of frame `id` since it last looked.
+    pub(crate) fn take_inbox(&mut self, id: FrameId) -> Vec<FrameTask> {
+        self.nodes
+            .get_mut(&id)
+            .map_or_else(Vec::new, |node| node.inbox.drain(..).collect())
+    }
+
+    /// Whether frame `id` has tasks waiting.
+    pub(crate) fn has_tasks(&self, id: FrameId) -> bool {
+        self.nodes
+            .get(&id)
+            .is_some_and(|node| !node.inbox.is_empty())
+    }
+
+    /// Whether frame `source`, whose document is of `origin`, may navigate
+    /// frame `target` (M33.2), as the reference browser allows: itself,
+    /// one of its descendants, its top, or a frame some ancestor of which,
+    /// itself included, is of its origin.
+    pub(crate) fn may_navigate(
+        &self,
+        source: FrameId,
+        target: FrameId,
+        origin: &net::Origin,
+    ) -> bool {
+        if !self.contains(target) {
+            return false;
+        }
+        if target == source || target == self.top(source) {
+            return true;
+        }
+        let mut at = Some(target);
+        while let Some(id) = at {
+            if id == source {
+                return true;
+            }
+            if !origin.is_opaque()
+                && self
+                    .nodes
+                    .get(&id)
+                    .and_then(|node| node.origin.as_ref())
+                    .is_some_and(|other| other == origin)
+            {
+                return true;
+            }
+            at = self.parent(id);
+        }
+        false
+    }
+
+    /// The frame of the tab named `name` by its element, the nearest the
+    /// top first.
+    pub(crate) fn find_named(&self, name: &str) -> Option<FrameId> {
+        if name.is_empty() {
+            return None;
+        }
+        let mut queue = VecDeque::from([TOP]);
+        while let Some(id) = queue.pop_front() {
+            if id != TOP && self.nodes.get(&id).is_some_and(|node| node.name == name) {
+                return Some(id);
+            }
+            queue.extend(self.children(id).iter().copied());
+        }
+        None
     }
 
     /// How many frames the tab has, the top-level document's apart.
@@ -127,6 +392,19 @@ pub(crate) struct FrameContext {
     /// ancestors, its parent's first: none of them is loaded in it (HTML's
     /// guard against a frame embedding itself).
     pub(crate) ancestors: Vec<String>,
+    /// Its parent's document, which its navigations are made from for
+    /// mixed content and the address spaces.
+    pub(crate) container: Option<net::Initiator>,
+}
+
+/// What a run's scripts are lent of the tab's frames (M33.2): the tree,
+/// their window's frame, and what wakes the tab when they send another
+/// frame something.
+#[derive(Clone)]
+pub(crate) struct FramesEnv {
+    pub(crate) tree: SharedTree,
+    pub(crate) id: FrameId,
+    pub(crate) wake: Option<Waker>,
 }
 
 impl FrameContext {
@@ -137,6 +415,7 @@ impl FrameContext {
             id: TOP,
             depth: 0,
             ancestors: Vec::new(),
+            container: None,
         }
     }
 
@@ -194,6 +473,26 @@ pub(crate) struct Drawn {
 /// by image and frame).
 static FRAME_DRAWINGS: AtomicU32 = AtomicU32::new(0);
 
+/// The target of a link or a form's element (HTML section 4.6.4): its
+/// `target`, else the document's base target (M33.2).
+pub(crate) fn element_target(document: &Document, element: NodeId) -> String {
+    match document.attr(element, "target") {
+        Some(target) => target.to_owned(),
+        None => base_target(document),
+    }
+}
+
+/// The document's base target: the `target` of its first `<base>` that
+/// has one, else empty.
+pub(crate) fn base_target(document: &Document) -> String {
+    document
+        .subtree(document.root())
+        .find(|&node| document.tag(node) == Some("base") && document.attr(node, "target").is_some())
+        .and_then(|node| document.attr(node, "target"))
+        .unwrap_or_default()
+        .to_owned()
+}
+
 /// Whether `node` is an `iframe` in `document`.
 fn is_iframe(document: &Document, node: NodeId) -> bool {
     document.tag(node) == Some("iframe")
@@ -207,7 +506,7 @@ pub(crate) fn may_touch_frames(document: &Document, change: &Change) -> bool {
             .subtree(*child)
             .any(|node| is_iframe(document, node)),
         Change::AttributeChanged { element, name, .. } => {
-            is_iframe(document, *element) && matches!(name.as_str(), "src" | "srcdoc")
+            is_iframe(document, *element) && matches!(name.as_str(), "src" | "srcdoc" | "name")
         }
         Change::Everything => true,
         Change::TextChanged { .. }
@@ -270,6 +569,7 @@ impl Engine {
             id,
             depth: self.frame.depth + 1,
             ancestors,
+            container: self.shown.page.initiator(),
         };
         child
     }
@@ -320,7 +620,7 @@ impl Engine {
                 Some(frame) if frame.source == source => continue,
                 Some(_) => {}
                 None => {
-                    let Some(frame) = self.make_frame() else {
+                    let Some(frame) = self.make_frame(node) else {
                         continue;
                     };
                     self.shown.frames.insert(node, frame);
@@ -328,16 +628,36 @@ impl Engine {
             }
             self.navigate_frame(node, source);
         }
+        self.sync_frame_children();
+    }
+
+    /// Gives the tree this document's frames as its frame's children, in
+    /// tree order, with their elements' names, and its realm the same.
+    pub(crate) fn sync_frame_children(&mut self) {
+        let document = &self.shown.document;
+        let children: Vec<(FrameId, NodeId, String)> = self
+            .frames_in_order()
+            .into_iter()
+            .filter_map(|node| {
+                let frame = self.shown.frames.get(&node)?;
+                let name = document.attr(node, "name").unwrap_or_default().to_owned();
+                Some((frame.id, node, name))
+            })
+            .collect();
+        lock(&self.frame.tree).set_children(self.frame.id, &children);
+        let names = children.into_iter().map(|(.., name)| name).collect();
+        self.shown.scripts.set_frame_list(names);
     }
 
     /// A frame for the `iframe` `node`, showing the initial `about:blank`
     /// of this document's origin, unless the tab's limits refuse it.
-    fn make_frame(&mut self) -> Option<Frame> {
+    fn make_frame(&mut self, node: NodeId) -> Option<Frame> {
         let id = if self.frame.depth >= MAX_FRAME_DEPTH {
             Err(format!("frames nest {MAX_FRAME_DEPTH} deep at most"))
         } else {
+            // A number a script's question reserved for it, or a new one.
             lock(&self.frame.tree)
-                .add(self.frame.id)
+                .claim(self.frame.id, node)
                 .ok_or_else(|| format!("a tab has {MAX_FRAMES} frames at most"))
         };
         let id = match id {
@@ -374,6 +694,7 @@ impl Engine {
         let Some(frame) = self.shown.frames.get_mut(&node) else {
             return;
         };
+        frame.engine.frame.container.clone_from(&initiator);
         frame.source = source.clone();
         frame.told = false;
         frame.drawn = None;
@@ -506,6 +827,100 @@ impl Engine {
             creator: local.then_some(creator),
         });
         self.load_state = LoadState::Loading;
+    }
+
+    /// The navigable a link or form whose target is `name` goes to, when
+    /// it is another frame of the tab (HTML 7.3.1, "the rules for
+    /// choosing a navigable", M33.2): `_parent`, `_top`, or a frame named
+    /// so that this one may navigate; `_blank`, or a name found nowhere,
+    /// which ask for a new tab the browser has not (M37), go to the top
+    /// from a frame. `None` for this frame's own.
+    pub(crate) fn other_navigable(&self, name: &str) -> Option<FrameId> {
+        let me = self.frame.id;
+        let tree = lock(&self.frame.tree);
+        let chosen = match name.to_ascii_lowercase().as_str() {
+            "" | "_self" => me,
+            "_parent" => tree.parent(me).unwrap_or(me),
+            "_top" | "_blank" => tree.top(me),
+            _ => match tree.find_named(name) {
+                Some(id) if tree.may_navigate(me, id, self.shown.page.origin()) => id,
+                Some(_) => me,
+                None => tree.top(me),
+            },
+        };
+        (chosen != me).then_some(chosen)
+    }
+
+    /// Asks frame `frame` to navigate to `url` (M33.2): it does at its
+    /// next task, as started by a document of `origin`.
+    pub(crate) fn navigate_other(
+        &mut self,
+        frame: FrameId,
+        url: Url,
+        replace: bool,
+        post: Option<Post>,
+        origin: net::Origin,
+    ) {
+        let task = FrameTask::Navigate(Box::new(FrameNavigation {
+            url,
+            replace,
+            post,
+            origin,
+        }));
+        if lock(&self.frame.tree).post(frame, task) {
+            self.wake();
+        }
+    }
+
+    /// Takes what other frames asked of this one (M33.2): a message
+    /// delivered to its window as a task when its document is of the
+    /// origin it was posted for, scripts on; a navigation started.
+    pub(crate) fn take_frame_tasks(&mut self) {
+        let tasks = lock(&self.frame.tree).take_inbox(self.frame.id);
+        for task in tasks {
+            match task {
+                FrameTask::Message {
+                    data,
+                    origin,
+                    source,
+                    target_origin,
+                } => {
+                    let own = self.shown.page.origin().serialization();
+                    if self.scripting && (target_origin == "*" || target_origin == own) {
+                        let now = self.now();
+                        self.shown.scripts.post(
+                            now,
+                            js::Task::Message {
+                                target: js::MessageTarget::Frame(source),
+                                data,
+                                origin,
+                            },
+                        );
+                    }
+                }
+                FrameTask::Navigate(navigation) => {
+                    let FrameNavigation {
+                        url,
+                        replace,
+                        post,
+                        origin,
+                    } = *navigation;
+                    let source = crate::NavigationSource {
+                        origin,
+                        activated: false,
+                    };
+                    match post {
+                        Some(post) => self.navigate_with(url, Some(post), source),
+                        None => self.navigate_replacing(url, replace, Some(source)),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Whether other frames asked something of this one.
+    pub(crate) fn frame_tasks_waiting(&self) -> bool {
+        lock(&self.frame.tree).has_tasks(self.frame.id)
     }
 
     /// Whether the frame's document is loaded, or failed: what its

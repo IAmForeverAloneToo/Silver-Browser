@@ -389,6 +389,7 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                     crate::MessageTarget::Global => (0, 0),
                     crate::MessageTarget::Worker(n) => (1, *n),
                     crate::MessageTarget::Port(n) => (2, *n),
+                    crate::MessageTarget::Frame(n) => (3, *n),
                 };
                 entries
                     .get::<_, Function<'_>>("message")?
@@ -412,6 +413,11 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                 entries
                     .get::<_, Function<'_>>("workerEnded")?
                     .call::<_, Value<'_>>((*worker,))
+            }),
+            Task::FrameList(names) => self.stepped(&entries, |_, entries| {
+                entries
+                    .get::<_, Function<'_>>("frameList")?
+                    .call::<_, Value<'_>>((names.clone(),))
             }),
             Task::Fetched { id, answer } => self.context.with(|ctx| {
                 let called = entries.clone().restore(&ctx).and_then(|entries| {

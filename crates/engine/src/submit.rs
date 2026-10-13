@@ -22,6 +22,9 @@ pub(crate) struct Post {
 pub(crate) struct Submission {
     pub(crate) url: Url,
     pub(crate) post: Option<Post>,
+    /// The navigable it goes to (M33.2): the submitter's `formtarget`,
+    /// the form's `target`, or the document's base target.
+    pub(crate) target: String,
 }
 
 /// The submitter's `form*` attribute if it has it, else the form's.
@@ -91,7 +94,11 @@ pub(crate) fn plan(
         .collect();
     // A `javascript:` action runs as a link's does, the entries unsent.
     if url.scheme() == "javascript" {
-        return Some(Submission { url, post: None });
+        return Some(Submission {
+            url,
+            post: None,
+            target: target(document, form, submitter),
+        });
     }
     if !post {
         let query = form::urlencoded(&entries, encoding);
@@ -101,7 +108,11 @@ pub(crate) fn plan(
             .fragment()
             .map_or(String::new(), |fragment| format!("#{fragment}"));
         let url = Url::parse(&format!("{}?{query}{fragment}", &whole[..end])).ok()?;
-        return Some(Submission { url, post: None });
+        return Some(Submission {
+            url,
+            post: None,
+            target: target(document, form, submitter),
+        });
     }
     let enctype = attribute(document, form, submitter, "enctype")
         .unwrap_or("")
@@ -126,7 +137,18 @@ pub(crate) fn plan(
     Some(Submission {
         url,
         post: Some(post),
+        target: target(document, form, submitter),
     })
+}
+
+/// A submission's target (HTML section 4.10.21.3): the submitter's
+/// `formtarget`, else the form's `target`, else the document's base
+/// target (M33.2).
+fn target(document: &Document, form: NodeId, submitter: Option<NodeId>) -> String {
+    match attribute(document, form, submitter, "target") {
+        Some(target) => target.to_owned(),
+        None => crate::frames::base_target(document),
+    }
 }
 
 impl crate::Engine {
@@ -218,6 +240,11 @@ impl crate::Engine {
             Some(why) => self.notice = Some(why),
             None => {
                 let source = self.navigation_source(true);
+                // Another frame named by its target (M33.2).
+                if let Some(frame) = self.other_navigable(&submission.target) {
+                    self.navigate_other(frame, url, false, submission.post, source.origin);
+                    return;
+                }
                 self.navigate_with(url, submission.post, source);
             }
         }

@@ -1128,6 +1128,18 @@ impl Engine {
     /// animation's clock.
     fn show(&mut self, shown: Shown) -> Shown {
         let left = std::mem::replace(&mut self.shown, shown);
+        // The tab knows the frame's document's origin, and its ports are
+        // the tab's (M33.2).
+        let mut tree = frames::lock(&self.frame.tree);
+        tree.set_origin(self.frame.id, self.shown.page.origin().clone());
+        let router = tree.router();
+        drop(tree);
+        self.shown.scripts.use_router(router);
+        // A document shown again from the cache has its frames already
+        // (M33.2); a new one's are made after it is shown.
+        if !self.shown.frames.is_empty() {
+            self.sync_frame_children();
+        }
         let origin = self.time_origin();
         self.shown.scripts.set_time_origin(origin);
         self.backend.clear_glyph_cache();
@@ -1336,6 +1348,12 @@ impl Engine {
             Some(why) => self.notice = Some(why),
             None => {
                 let source = self.navigation_source(true);
+                // Another frame named by its target (M33.2).
+                let target = frames::element_target(&self.shown.document, link.node);
+                if let Some(frame) = self.other_navigable(&target) {
+                    self.navigate_other(frame, url, false, None, source.origin);
+                    return;
+                }
                 self.navigate_replacing(url, false, Some(source));
             }
         }
@@ -1359,9 +1377,14 @@ impl Engine {
             Some(why) => self.notice = Some(why),
             // A followed link navigates as a click on it does (M26), and
             // a submitted form, with its body (M26.9); a script's is no
-            // activation by the user (M27).
+            // activation by the user (M27); its target may be another
+            // frame (M33.2).
             None if navigation.link => {
                 let source = self.navigation_source(false);
+                if let Some(frame) = self.other_navigable(&navigation.target) {
+                    self.navigate_other(frame, url, false, navigation.post, source.origin);
+                    return;
+                }
                 self.navigate_with(url, navigation.post, source);
             }
             None => {
@@ -1504,6 +1527,11 @@ impl Engine {
             storage: Some(self.storage.clone()),
             storage_peer: self.storage_peers(),
             drawables: Some(self.shown.drawables.clone()),
+            frames: Some(frames::FramesEnv {
+                tree: self.frame.tree.clone(),
+                id: self.frame.id,
+                wake: self.waker.clone(),
+            }),
         }
     }
 
@@ -2842,6 +2870,8 @@ impl Engine {
     /// passed, the rest being left for the next call. Whether a frame is
     /// wanted.
     pub fn run_tasks(&mut self) -> bool {
+        // What other frames asked of this one (M33.2).
+        self.take_frame_tasks();
         let start = self.now();
         loop {
             let now = self.now();
@@ -2885,7 +2915,9 @@ impl Engine {
         let events =
             (!self.storage_events.is_empty() || storage.has_changes()).then_some(Duration::ZERO);
         drop(storage);
-        let frames = self.frames_next_task_at();
+        let frames = self
+            .frames_next_task_at()
+            .or_else(|| self.frame_tasks_waiting().then_some(Duration::ZERO));
         [shown, incoming, flush, events, frames]
             .into_iter()
             .flatten()
@@ -3170,19 +3202,29 @@ impl Engine {
             return;
         }
         let id = self.new_page_id();
-        let request = match post {
-            Some(post) => net::Request::post(
-                url.clone(),
-                net::Destination::Document,
-                post.body,
-                &post.content_type,
-            ),
-            None => net::Request::get(url.clone(), net::Destination::Document),
+        // A frame's navigation is an iframe's, made from its container's
+        // document for mixed content and the address spaces (M33.2).
+        let destination = if self.frame.is_frame() {
+            net::Destination::Iframe
+        } else {
+            net::Destination::Document
         };
-        let request = match source {
+        let request = match post {
+            Some(post) => {
+                net::Request::post(url.clone(), destination, post.body, &post.content_type)
+            }
+            None => net::Request::get(url.clone(), destination),
+        };
+        let mut request = match source {
             Some(source) => request.from_document(source.origin, source.activated),
             None => request,
         };
+        if let Some(container) = self.frame.container.clone() {
+            if request.origin.is_none() {
+                request.origin = Some(container.origin.clone());
+            }
+            request.initiator = Some(container);
+        }
         self.network.fetch(id, Target::Document, request);
         self.navigation = Some(Navigation {
             url,
@@ -4046,6 +4088,7 @@ impl Engine {
         if let Some(navigation) = &mut self.navigation {
             let mut scripts = scripts::Scripts::with_limits(self.script_limits);
             scripts.set_time_origin(navigation.started);
+            scripts.use_router(frames::lock(&self.frame.tree).router());
             navigation.incoming = Incoming::Parsing {
                 page: Box::new(page),
                 document: Box::new(Document::new()),

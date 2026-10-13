@@ -21,6 +21,8 @@ mod fetch_tests;
 #[cfg(test)]
 mod focus_tests;
 #[cfg(test)]
+mod frame_script_tests;
+#[cfg(test)]
 mod frame_tests;
 #[cfg(test)]
 mod lifecycle_tests;

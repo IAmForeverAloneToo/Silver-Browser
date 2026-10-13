@@ -193,6 +193,8 @@ pub(crate) struct WindowEnv {
     /// origin, to hear of its changes.
     pub(crate) storage: Option<Arc<Mutex<crate::storage::Storage>>>,
     pub(crate) storage_peer: bool,
+    /// The tab's frames and the window's own (M33.2).
+    pub(crate) frames: Option<crate::frames::FramesEnv>,
 }
 
 /// A document's time origin (High Resolution Time): the engine's clock
@@ -221,6 +223,9 @@ pub(crate) struct ScriptNavigation {
     /// A form submitted does too (M26.9), with its body for a POST.
     pub(crate) link: bool,
     pub(crate) post: Option<crate::submit::Post>,
+    /// The navigable a link or a form named (M33.2): its `target`, empty
+    /// for the document's own.
+    pub(crate) target: String,
 }
 
 /// How a script is run.
@@ -415,6 +420,9 @@ pub(crate) struct Scripts {
     /// The messages posted (M31), each a task from when it was (the
     /// posted message task source), in that order.
     posted: VecDeque<(Duration, js::Task)>,
+    /// The names of the window's child frames' elements, in tree order
+    /// (M33.2), which its realm's frames by index and name follow.
+    frame_list: Vec<String>,
 }
 
 impl Default for Scripts {
@@ -447,6 +455,7 @@ impl Scripts {
             fetching: HashMap::new(),
             answers: VecDeque::new(),
             posted: VecDeque::new(),
+            frame_list: Vec::new(),
         }
     }
 
@@ -721,8 +730,30 @@ impl Scripts {
                     return false;
                 }
             }
+            // The window's frames, made before it runs (M33.2).
+            if !self.frame_list.is_empty() {
+                self.apply_frame_list();
+            }
         }
         true
+    }
+
+    /// The window's child frames are now named `names`, their elements'
+    /// (M33.2): its realm's frames by index and name follow at once.
+    pub(crate) fn set_frame_list(&mut self, names: Vec<String>) {
+        if names != self.frame_list {
+            self.frame_list = names;
+            self.apply_frame_list();
+        }
+    }
+
+    /// Makes the realm's frames by index and name, if it has one: none of
+    /// it asks the host anything.
+    fn apply_frame_list(&mut self) {
+        if let Some(realm) = &mut self.realm {
+            let task = js::Task::FrameList(self.frame_list.clone());
+            let _ = realm.enter(&task, &mut self.host);
+        }
     }
 
     /// Dispatches `event` at `target` as a task (M26): whether a listener
@@ -1141,6 +1172,20 @@ impl Scripts {
             level: ConsoleLevel::Error,
             text,
         });
+    }
+
+    /// Queues `task`, which another frame posted (M33.2), from `at`.
+    pub(crate) fn post(&mut self, at: Duration, task: js::Task) {
+        self.posted.push_back((at, task));
+    }
+
+    /// Makes the document's ports and workers' known to the tab's
+    /// `router` (M33.2), so that a port may go to another frame: before
+    /// its realm is made, while it has none.
+    pub(crate) fn use_router(&mut self, router: ports::SharedRouter) {
+        if self.realm.is_none() && !self.host.workers.workers.any() {
+            self.host.workers = workers::DocumentWorkers::with_router(router);
+        }
     }
 
     /// Writes `text` to the console at `level`: what the engine says of
