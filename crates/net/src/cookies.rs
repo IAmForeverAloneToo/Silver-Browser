@@ -55,6 +55,9 @@ pub struct Cookie {
     pub secure: bool,
     pub http_only: bool,
     pub same_site: SameSite,
+    /// For a `Partitioned` cookie (CHIPS, M33.2), the top-level site it
+    /// is kept under; it goes to no context of another.
+    pub partition: Option<String>,
     /// The order of its making, kept when it is replaced.
     created: u64,
     /// The order of its last sending, for eviction.
@@ -72,11 +75,14 @@ pub enum Api {
 /// What a request is, to the cookies' rules (5.2): whether it is
 /// same-site with the site for cookies, and whether it is a top-level
 /// navigation, and by a safe method.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Context {
     pub same_site: bool,
     pub top_level: bool,
     pub safe_method: bool,
+    /// The top-level site's key (M33.2): which `Partitioned` cookies the
+    /// context has; none has none.
+    pub partition: Option<String>,
 }
 
 impl Context {
@@ -86,6 +92,7 @@ impl Context {
         same_site: true,
         top_level: true,
         safe_method: true,
+        partition: None,
     };
 }
 
@@ -100,7 +107,10 @@ pub struct Jar {
 }
 
 /// The version of the records [`Jar::export`] makes.
-const RECORD: u8 = 1;
+const RECORD: u8 = 2;
+
+/// M28's records, which have no partition.
+const RECORD_1: u8 = 1;
 
 /// A `Set-Cookie` value parsed (5.6): its name and value and the
 /// attributes the storage model reads, each the last of its kind.
@@ -115,6 +125,7 @@ struct Parsed {
     secure: bool,
     http_only: bool,
     same_site: Option<SameSite>,
+    partitioned: bool,
 }
 
 /// A control character a cookie may not hold: any but the tab.
@@ -203,6 +214,7 @@ fn parse(line: &[u8], now: SystemTime) -> Option<Parsed> {
             }
             b"secure" => parsed.secure = true,
             b"httponly" => parsed.http_only = true,
+            b"partitioned" => parsed.partitioned = true,
             b"samesite" => {
                 parsed.same_site = Some(match value.to_ascii_lowercase().as_slice() {
                     b"strict" => SameSite::Strict,
@@ -421,6 +433,11 @@ impl Jar {
         if parsed.http_only && api == Api::Script {
             return false;
         }
+        // A partitioned cookie is a secure one kept under the context's
+        // top-level site (CHIPS); a context with none keeps none.
+        if parsed.partitioned && (!parsed.secure || context.partition.is_none()) {
+            return false;
+        }
         let cookie = Cookie {
             domain: if host_only { host.clone() } else { domain },
             host_only,
@@ -429,6 +446,10 @@ impl Jar {
             secure: parsed.secure,
             http_only: parsed.http_only,
             same_site: parsed.same_site.unwrap_or(SameSite::Lax),
+            partition: parsed
+                .partitioned
+                .then(|| context.partition.clone())
+                .flatten(),
             name: parsed.name,
             value: parsed.value,
             created: 0,
@@ -467,6 +488,7 @@ impl Jar {
                 && old.domain == cookie.domain
                 && old.host_only == cookie.host_only
                 && old.path == cookie.path
+                && old.partition == cookie.partition
         });
         cookie.created = self.next;
         if let Some(index) = same {
@@ -485,7 +507,7 @@ impl Jar {
         if cookie.expires.is_some() {
             self.kept += 1;
         }
-        let domain = cookie.domain.clone();
+        let domain = (cookie.domain.clone(), cookie.partition.clone());
         self.cookies.push(cookie);
         self.evict(&domain);
         true
@@ -518,6 +540,7 @@ impl Jar {
                 };
                 domain
                     && path_match(&path, &cookie.path)
+                    && (cookie.partition.is_none() || cookie.partition == context.partition)
                     && (!cookie.secure || secure_url)
                     && (!cookie.http_only || api == Api::Http)
                     && match cookie.same_site {
@@ -629,6 +652,7 @@ impl Jar {
                 c.domain.clone(),
                 c.host_only,
                 c.path.clone(),
+                c.partition.clone(),
             )
         };
         let mut held: HashSet<_> = self.cookies.iter().map(identity).collect();
@@ -653,10 +677,11 @@ impl Jar {
     /// the jar's past [`MAX_COOKIES`]. A sort, not a search for each,
     /// however many a profile held. The orders of use are distinct.
     fn trim(&mut self) {
-        let mut by_domain: HashMap<&str, Vec<u64>> = HashMap::new();
+        // A partition's cookies count apart (CHIPS).
+        let mut by_domain: HashMap<(&str, Option<&str>), Vec<u64>> = HashMap::new();
         for cookie in &self.cookies {
             by_domain
-                .entry(&cookie.domain)
+                .entry((&cookie.domain, cookie.partition.as_deref()))
                 .or_default()
                 .push(cookie.accessed);
         }
@@ -695,25 +720,20 @@ impl Jar {
     /// Keeps the jar within its limits (5.7) once a cookie for `domain`
     /// came: past [`MAX_COOKIES_PER_DOMAIN`] for the domain, or
     /// [`MAX_COOKIES`] in all, the least recently used go first.
-    fn evict(&mut self, domain: &str) {
-        let oldest = |cookies: &[Cookie], domain: Option<&str>| {
+    fn evict(&mut self, domain: &(String, Option<String>)) {
+        let of = |cookie: &Cookie| cookie.domain == domain.0 && cookie.partition == domain.1;
+        let oldest = |cookies: &[Cookie], domain: bool| {
             (0..cookies.len())
-                .filter(|&index| domain.is_none_or(|domain| cookies[index].domain == domain))
+                .filter(|&index| !domain || of(&cookies[index]))
                 .min_by_key(|&index| cookies[index].accessed)
                 .expect("a cookie to evict")
         };
-        while self
-            .cookies
-            .iter()
-            .filter(|cookie| cookie.domain == domain)
-            .count()
-            > MAX_COOKIES_PER_DOMAIN
-        {
-            let index = oldest(&self.cookies, Some(domain));
+        while self.cookies.iter().filter(|cookie| of(cookie)).count() > MAX_COOKIES_PER_DOMAIN {
+            let index = oldest(&self.cookies, true);
             self.take(index);
         }
         while self.cookies.len() > MAX_COOKIES {
-            let index = oldest(&self.cookies, None);
+            let index = oldest(&self.cookies, false);
             self.take(index);
         }
     }
@@ -733,6 +753,7 @@ impl Cookie {
             &self.value,
             self.domain.as_bytes(),
             self.path.as_bytes(),
+            self.partition.as_deref().unwrap_or_default().as_bytes(),
         ] {
             record.extend_from_slice(&u32::try_from(field.len()).ok()?.to_le_bytes());
             record.extend_from_slice(field);
@@ -772,13 +793,19 @@ impl Cookie {
             Some(u64::from_le_bytes(split(rest, 8)?.try_into().ok()?))
         }
         let mut rest = record;
-        if split(&mut rest, 1)? != [RECORD] {
+        let version = split(&mut rest, 1)?[0];
+        if version != RECORD && version != RECORD_1 {
             return None;
         }
         let name = field(&mut rest)?.to_vec();
         let value = field(&mut rest)?.to_vec();
         let domain = String::from_utf8(field(&mut rest)?.to_vec()).ok()?;
         let path = String::from_utf8(field(&mut rest)?.to_vec()).ok()?;
+        let partition = match version {
+            RECORD_1 => None,
+            _ => Some(String::from_utf8(field(&mut rest)?.to_vec()).ok()?)
+                .filter(|partition| !partition.is_empty()),
+        };
         let flags = split(&mut rest, 1)?[0];
         let same_site = match split(&mut rest, 1)?[0] {
             0 => SameSite::Strict,
@@ -803,6 +830,7 @@ impl Cookie {
             secure: flags & 2 != 0,
             http_only: flags & 4 != 0,
             same_site,
+            partition,
             created,
             accessed,
         };
@@ -835,6 +863,7 @@ impl Cookie {
             && !self.domain.is_empty()
             && self.path.starts_with('/')
             && (self.same_site != SameSite::None || self.secure)
+            && (self.partition.is_none() || self.secure)
             && (!prefixed(&self.name, b"__Secure-") || self.secure)
             && (!prefixed(&self.name, b"__Host-")
                 || (self.secure && self.host_only && self.path == "/"))
@@ -860,6 +889,7 @@ mod tests {
         same_site: false,
         top_level: false,
         safe_method: true,
+        partition: None,
     };
 
     /// The jar after storing each line from `at` over HTTP, same-site.
@@ -1105,14 +1135,15 @@ mod tests {
             same_site: false,
             top_level: true,
             safe_method: true,
+            partition: None,
         };
         assert_eq!(
-            sent(&mut jar, "https://b.example/", navigation),
+            sent(&mut jar, "https://b.example/", navigation.clone()),
             "dflt=1; lax=1; none=1; odd=1"
         );
         let post = Context {
             safe_method: false,
-            ..navigation
+            ..navigation.clone()
         };
         assert_eq!(sent(&mut jar, "https://b.example/", post), "none=1");
         // None without Secure is not kept; a cross-site response keeps
@@ -1122,6 +1153,56 @@ mod tests {
         assert!(!jar.store(b"c=1", &at, Api::Http, CROSS, now()));
         assert!(jar.store(b"c=1; SameSite=None; Secure", &at, Api::Http, CROSS, now()));
         assert!(jar.store(b"d=1", &at, Api::Http, navigation, now()));
+    }
+
+    #[test]
+    fn a_partitioned_cookie_is_kept_and_sent_under_its_top_level_site() {
+        // CHIPS (M33.2): secure, kept under the context's top-level site,
+        // a namesake under another site another cookie.
+        let at = url("https://b.example/");
+        let under = |site: &str| Context {
+            partition: Some(site.to_owned()),
+            ..SAME
+        };
+        let a = under("https://a.example");
+        let c = under("https://c.example");
+        let mut jar = Jar::new();
+        let p1 = b"p=1; Secure; Partitioned; SameSite=None; Max-Age=60";
+        assert!(jar.store(p1, &at, Api::Http, a.clone(), now()));
+        assert!(!jar.store(b"q=1; Partitioned", &at, Api::Http, a.clone(), now()));
+        assert!(!jar.store(b"r=1; Secure; Partitioned", &at, Api::Http, SAME, now()));
+        assert!(jar.store(
+            b"u=1; Secure; SameSite=None",
+            &at,
+            Api::Http,
+            c.clone(),
+            now()
+        ));
+        let p2 = b"p=2; Secure; Partitioned; SameSite=None";
+        assert!(jar.store(p2, &at, Api::Http, c.clone(), now()));
+        assert_eq!(sent(&mut jar, "https://b.example/", a.clone()), "p=1; u=1");
+        assert_eq!(sent(&mut jar, "https://b.example/", c), "u=1; p=2");
+        assert_eq!(sent(&mut jar, "https://b.example/", SAME), "u=1");
+        // Its record keeps its partition; one of M28's has none.
+        let mut restored = Jar::new();
+        restored.restore(&jar.export(), now());
+        assert_eq!(sent(&mut restored, "https://b.example/", a.clone()), "p=1");
+        assert_eq!(sent(&mut restored, "https://b.example/", SAME), "");
+        let plain = jar_with("https://a.example/", &["n=v; Max-Age=60"]).export();
+        let mut old = plain[0].clone();
+        old[0] = RECORD_1;
+        // The fifth field, the partition, empty: its length alone.
+        let mut at = 1;
+        for _ in 0..4 {
+            let length = u32::from_le_bytes(old[at..at + 4].try_into().unwrap()) as usize;
+            at += 4 + length;
+        }
+        old.drain(at..at + 4);
+        let decoded = Cookie::decode(&old).expect("M28's record reads");
+        assert_eq!(
+            (decoded.name.as_slice(), decoded.partition),
+            (&b"n"[..], None)
+        );
     }
 
     #[test]

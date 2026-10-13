@@ -358,9 +358,60 @@ impl DocumentHost {
         let (Some(page), Some(storage)) = (&self.page, &self.window.storage) else {
             return Err(DomError::new("SecurityError", refused));
         };
-        let origin = page.origin().serialization();
+        let origin = self.storage_key(page);
         let mut storage = storage.lock().unwrap_or_else(PoisonError::into_inner);
         Ok(f(&mut storage, &origin))
+    }
+
+    /// Where the document is in its tab (M33.2): its frame's place, its
+    /// own origin making its context a cross-site one when it is of
+    /// another site than the top; none at the top.
+    fn partition(&self) -> Option<net::Partition> {
+        let frame = self.window.partition.as_ref()?;
+        let cross = self
+            .page
+            .as_ref()
+            .is_none_or(|page| !frame.top.same_site(page.origin()));
+        Some(net::Partition {
+            top: frame.top.clone(),
+            cross_site: frame.cross_site || cross,
+        })
+    }
+
+    /// The document's storage key (the Storage Standard's, M33.2): its
+    /// origin, and for a frame in a cross-site context the top-level
+    /// site too, so that a third party's areas are kept apart by the
+    /// site it is embedded under, as the reference browser keeps them.
+    fn storage_key(&self, page: &Page) -> String {
+        let origin = page.origin().serialization();
+        match &self.partition() {
+            Some(partition) if partition.cross_site => {
+                format!("{origin}^{}", partition.cookie_key())
+            }
+            _ => origin,
+        }
+    }
+
+    /// The context `document.cookie` reads and writes in (M33.2): a
+    /// top-level document's same-site, its partition its own site; a
+    /// frame's same-site unless it is in a cross-site context, its
+    /// partition the top-level site.
+    fn cookie_context(&self) -> Context {
+        match &self.partition() {
+            Some(partition) => Context {
+                same_site: !partition.cross_site,
+                top_level: false,
+                safe_method: true,
+                partition: Some(partition.cookie_key()),
+            },
+            None => Context {
+                partition: self
+                    .page
+                    .as_ref()
+                    .map(|page| page.origin().site().serialization()),
+                ..Context::SAME_SITE
+            },
+        }
     }
 
     /// `f` of the document's `localStorage` area if `local`, else its
@@ -385,7 +436,7 @@ impl DocumentHost {
         let (Some(page), Some(storage)) = (&self.page, &self.window.storage) else {
             return;
         };
-        let origin = page.origin().serialization();
+        let origin = self.storage_key(page);
         let mut storage = storage.lock().unwrap_or_else(PoisonError::into_inner);
         if self.window.storage_peer {
             storage.broadcast(storage::Change {
@@ -938,6 +989,7 @@ impl DocumentHost {
                     viewport: self.window.viewport,
                     fonts: self.window.fonts.clone(),
                     compat: self.window.compat,
+                    partition: self.partition(),
                 };
                 Ok(Answer::Number(f64::from(self.workers.workers.start(start))))
             }
@@ -980,7 +1032,8 @@ impl DocumentHost {
                     .page
                     .as_ref()
                     .ok_or_else(|| DomError::new("TypeError", "Failed to fetch"))?;
-                let request = super::fetch::request(page.initiator(), &call)?;
+                let mut request = super::fetch::request(page.initiator(), &call)?;
+                request.partition = self.partition();
                 let Some(client) = &self.client else {
                     return Ok(Answer::Fetched(None));
                 };
@@ -1094,7 +1147,7 @@ impl DocumentHost {
                 let cookies = self.cookie_url().and_then(|url| {
                     let jar = self.cookies.as_ref()?;
                     let mut jar = jar.lock().expect("never poisoned");
-                    jar.header(&url, Api::Script, Context::SAME_SITE, SystemTime::now())
+                    jar.header(&url, Api::Script, self.cookie_context(), SystemTime::now())
                 });
                 Ok(Answer::String(cookies.map_or_else(String::new, |bytes| {
                     String::from_utf8_lossy(&bytes).into_owned()
@@ -1107,7 +1160,7 @@ impl DocumentHost {
                         value.as_bytes(),
                         &url,
                         Api::Script,
-                        Context::SAME_SITE,
+                        self.cookie_context(),
                         SystemTime::now(),
                     );
                 }

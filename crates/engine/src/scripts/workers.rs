@@ -199,6 +199,9 @@ pub(crate) struct Start {
     pub(crate) fonts: Option<text::FontCollection>,
     /// Whether the user asked for D12's compatibility user agent.
     pub(crate) compat: bool,
+    /// Where its creator is in its tab (M33.2), which its requests are
+    /// made in.
+    pub(crate) partition: Option<net::Partition>,
 }
 
 /// A worker its owner knows of: how to reach it and stop it.
@@ -578,6 +581,7 @@ fn run(setup: Setup) {
         router: Some(router.clone()),
         realm: realm_id,
         document,
+        partition: start.partition.clone(),
         workers: Some(Workers::new(me, live, depth, router.clone(), document)),
         ..WorkerHost::default()
     };
@@ -696,6 +700,7 @@ fn fetch_script(start: &Start) -> Option<(String, Url)> {
     let mut request = Request::get(start.url.clone(), Destination::Worker)
         .initiated_by(start.initiator.clone())
         .with_body_limit(MAX_SCRIPT_BYTES);
+    request.partition.clone_from(&start.partition);
     request.credentials = start.credentials;
     let response = start.client.fetch(&request).ok()?;
     if !response.ok()
@@ -764,6 +769,8 @@ pub(crate) struct WorkerHost {
     /// and its document's.
     router: Option<SharedRouter>,
     document: u32,
+    /// Where its creator is in its tab (M33.2).
+    partition: Option<net::Partition>,
     realm: u32,
     work: u64,
 }
@@ -796,6 +803,7 @@ impl Default for WorkerHost {
             router: None,
             realm: 0,
             document: 0,
+            partition: None,
             work: 0,
         }
     }
@@ -871,7 +879,8 @@ impl ScriptingHost for WorkerHost {
                 if cfg!(windows) { "\r\n" } else { "\n" }.to_owned(),
             )),
             Call::Fetch(call) => {
-                let request = super::fetch::request(self.initiator.clone(), &call)?;
+                let mut request = super::fetch::request(self.initiator.clone(), &call)?;
+                request.partition.clone_from(&self.partition);
                 if self.fetching.len() >= super::fetch::MAX_SCRIPT_FETCHES {
                     return Err(DomError::new("TypeError", "Too many requests in flight."));
                 }
@@ -886,7 +895,8 @@ impl ScriptingHost for WorkerHost {
                 Ok(Answer::Nothing)
             }
             Call::FetchNow(call) => {
-                let request = super::fetch::request(self.initiator.clone(), &call)?;
+                let mut request = super::fetch::request(self.initiator.clone(), &call)?;
+                request.partition.clone_from(&self.partition);
                 let Some(client) = &self.client else {
                     return Ok(Answer::Fetched(None));
                 };
@@ -967,6 +977,7 @@ impl ScriptingHost for WorkerHost {
                     viewport: self.viewport,
                     fonts: self.fonts.clone(),
                     compat: self.compat,
+                    partition: self.partition.clone(),
                 }))))
             }
             Call::WorkerPost { worker, data } => {
@@ -1022,9 +1033,10 @@ impl WorkerHost {
     /// status and a JavaScript type, decoded as UTF-8; its text and URL.
     fn import_script(&self, url: &str) -> Option<(String, String)> {
         let url = Url::parse(url).ok()?;
-        let request = Request::get(url, Destination::Script)
+        let mut request = Request::get(url, Destination::Script)
             .initiated_by(self.initiator.clone()?)
             .with_body_limit(MAX_SCRIPT_BYTES);
+        request.partition.clone_from(&self.partition);
         let response = self.client.as_ref()?.fetch(&request).ok()?;
         if !response.ok()
             || !response

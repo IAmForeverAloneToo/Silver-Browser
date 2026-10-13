@@ -355,6 +355,32 @@ impl FrameTree {
         false
     }
 
+    /// The top-level document's origin.
+    pub(crate) fn top_origin(&self) -> net::Origin {
+        self.nodes
+            .get(&TOP)
+            .and_then(|node| node.origin.clone())
+            .unwrap_or_else(net::Origin::new_opaque)
+    }
+
+    /// Where frame `id`, whose document is of `origin`, is in the tab
+    /// (M33.2): the top-level document's origin, and whether its
+    /// document or an ancestor's is of another site.
+    pub(crate) fn partition(&self, id: FrameId, origin: &net::Origin) -> net::Partition {
+        let top = self.top_origin();
+        let mut cross_site = !top.same_site(origin);
+        let mut at = self.parent(id);
+        while let Some(ancestor) = at.filter(|&ancestor| ancestor != TOP) {
+            let other = self
+                .nodes
+                .get(&ancestor)
+                .and_then(|node| node.origin.as_ref());
+            cross_site |= other.is_none_or(|other| !top.same_site(other));
+            at = self.parent(ancestor);
+        }
+        net::Partition { top, cross_site }
+    }
+
     /// The frame of the tab named `name` by its element, the nearest the
     /// top first.
     pub(crate) fn find_named(&self, name: &str) -> Option<FrameId> {
@@ -393,7 +419,7 @@ pub(crate) struct FrameContext {
     /// guard against a frame embedding itself).
     pub(crate) ancestors: Vec<String>,
     /// Its parent's document, which its navigations are made from for
-    /// mixed content and the address spaces.
+    /// mixed content and the address spaces (none at the top).
     pub(crate) container: Option<net::Initiator>,
 }
 
@@ -749,6 +775,8 @@ impl Engine {
             creator.address_space,
         )
         .inheriting(creator);
+        let partition = self.partition_for(page.origin());
+        self.network.set_partition(id, partition);
         let document = parsed_or_empty("");
         let media = self.media(self.viewport);
         page.begin(&document, &mut self.network, &media);
@@ -816,8 +844,9 @@ impl Engine {
         };
         let local = matches!(url.scheme(), "data" | "blob");
         let id = self.new_page_id();
-        let request =
+        let mut request =
             net::Request::get(url.clone(), net::Destination::Iframe).initiated_by(initiator);
+        request.partition = self.frame_partition();
         self.network.fetch(id, Target::Document, request);
         self.navigation = Some(Navigation {
             url,
@@ -916,6 +945,27 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// Where a document of `origin` in this engine's frame is in its tab
+    /// (M33.2): its own origin may make its context a cross-site one; a
+    /// frame's requests, cookies and storage are kept apart by it, none
+    /// at the top.
+    pub(crate) fn partition_for(&self, origin: &net::Origin) -> Option<net::Partition> {
+        self.frame
+            .is_frame()
+            .then(|| lock(&self.frame.tree).partition(self.frame.id, origin))
+    }
+
+    /// Where this engine's frame is in its tab whatever its document: the
+    /// top-level document's origin, and whether an ancestor is of another
+    /// site; a run's host adds its document's own origin.
+    pub(crate) fn frame_partition(&self) -> Option<net::Partition> {
+        self.frame.is_frame().then(|| {
+            let tree = lock(&self.frame.tree);
+            let top = tree.top_origin();
+            tree.partition(self.frame.id, &top)
+        })
     }
 
     /// Whether other frames asked something of this one.

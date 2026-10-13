@@ -986,3 +986,43 @@ fn a_frames_navigation_is_no_top_level_one_for_cookies_and_says_iframe() {
         .from_document(elsewhere.origin(), true);
     assert_eq!(read(&top), "lax=1");
 }
+
+#[test]
+fn a_frames_requests_are_same_site_only_in_a_same_site_context() {
+    // M33.2: a frame under another site sends its own site no Lax cookie,
+    // and keeps and sends a partitioned cookie under that site alone.
+    let server = cookie_server();
+    let client = Client::default();
+    for set in ["/set?lax=1", "/set?n=1;%20SameSite=None;%20Secure"] {
+        client
+            .fetch(&Request::get(server.url(set), Destination::Document))
+            .unwrap();
+    }
+    let read = |request: &Request| String::from_utf8(client.fetch(request).unwrap().body).unwrap();
+    let own = server.url("/page");
+    let in_frame = |top: &str, cross_site: bool, path: &str| {
+        let mut request = from(&own, server.url(path), Mode::Cors);
+        request.partition = Some(Partition {
+            top: url(top).origin(),
+            cross_site,
+        });
+        request
+    };
+    assert_eq!(read(&in_frame("http://a.localhost/", true, "/x")), "n=1");
+    assert_eq!(
+        read(&in_frame(own.as_str(), false, "/x")),
+        "lax=1; n=1",
+        "a same-site frame"
+    );
+    let set = "/set?p=1;%20Secure;%20SameSite=None;%20Partitioned";
+    read(&in_frame("http://a.localhost/", true, set));
+    assert_eq!(
+        read(&in_frame("http://a.localhost/", true, "/x")),
+        "n=1; p=1"
+    );
+    assert_eq!(read(&in_frame("http://c.localhost/", true, "/x")), "n=1");
+    assert_eq!(
+        read(&from(&own, server.url("/x"), Mode::Cors)),
+        "lax=1; n=1"
+    );
+}

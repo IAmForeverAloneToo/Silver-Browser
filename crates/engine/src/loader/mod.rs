@@ -31,6 +31,8 @@ mod mixed_tests;
 #[cfg(test)]
 mod origin_tests;
 #[cfg(test)]
+mod partition_tests;
+#[cfg(test)]
 mod pointer_tests;
 pub(crate) mod pool;
 #[cfg(test)]
@@ -208,6 +210,9 @@ pub(crate) struct Network {
     cache: Arc<net::Cache>,
     flights: HashMap<FetchId, Flight>,
     next: FetchId,
+    /// Where each page's document is in its tab (M33.2): what a frame's
+    /// requests but its navigations are made in.
+    partitions: HashMap<PageId, net::Partition>,
 }
 
 impl Network {
@@ -219,7 +224,17 @@ impl Network {
             cache: Arc::default(),
             flights: HashMap::new(),
             next: 0,
+            partitions: HashMap::new(),
         }
+    }
+
+    /// Page `page`'s requests are made in `partition` from now on (M33.2);
+    /// none for a top-level document's.
+    pub(crate) fn set_partition(&mut self, page: PageId, partition: Option<net::Partition>) {
+        match partition {
+            Some(partition) => self.partitions.insert(page, partition),
+            None => self.partitions.remove(&page),
+        };
     }
 
     /// Fetches from now on with `client`; fetches in flight finish with
@@ -277,7 +292,10 @@ impl Network {
 
     /// Starts fetching `request` for `target` of `page`; a document's
     /// response comes in pieces as it arrives.
-    pub(crate) fn fetch(&mut self, page: PageId, target: Target, request: Request) -> FetchId {
+    pub(crate) fn fetch(&mut self, page: PageId, target: Target, mut request: Request) -> FetchId {
+        if request.partition.is_none() && request.mode != net::Mode::Navigate {
+            request.partition = self.partitions.get(&page).cloned();
+        }
         let streamed = target == Target::Document;
         let client = self.client();
         let id = self.next;

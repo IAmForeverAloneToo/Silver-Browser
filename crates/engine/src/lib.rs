@@ -1174,6 +1174,8 @@ impl Engine {
             left.scripts.collect();
             // What the cache lets go is dropped here.
             drop(self.history.keep(state, Box::new(left)));
+        } else {
+            self.network.set_partition(left.page.id(), None);
         }
     }
 
@@ -1532,6 +1534,7 @@ impl Engine {
                 id: self.frame.id,
                 wake: self.waker.clone(),
             }),
+            partition: self.frame_partition(),
         }
     }
 
@@ -3224,6 +3227,8 @@ impl Engine {
                 request.origin = Some(container.origin.clone());
             }
             request.initiator = Some(container);
+            // Its site for cookies is its ancestors' (M33.2).
+            request.partition = self.frame_partition();
         }
         self.network.fetch(id, Target::Document, request);
         self.navigation = Some(Navigation {
@@ -4085,6 +4090,9 @@ impl Engine {
             .as_ref()
             .and_then(|navigation| navigation.creator.clone());
         let page = parsed_page(id, &response, &load, creator.as_ref());
+        // A frame's document's requests are made where it is (M33.2).
+        let partition = self.partition_for(page.origin());
+        self.network.set_partition(id, partition);
         if let Some(navigation) = &mut self.navigation {
             let mut scripts = scripts::Scripts::with_limits(self.script_limits);
             scripts.set_time_origin(navigation.started);
@@ -4425,6 +4433,8 @@ impl Engine {
                 if let Some(creator) = &creator {
                     incoming = incoming.inheriting(creator);
                 }
+                let partition = self.partition_for(incoming.origin());
+                self.network.set_partition(page, partition);
                 let media = self.media(self.viewport);
                 incoming.begin(&parsed.document, &mut self.network, &media);
                 self.navigation = Some(Navigation {

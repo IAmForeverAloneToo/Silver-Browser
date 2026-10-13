@@ -195,6 +195,9 @@ pub(crate) struct WindowEnv {
     pub(crate) storage_peer: bool,
     /// The tab's frames and the window's own (M33.2).
     pub(crate) frames: Option<crate::frames::FramesEnv>,
+    /// Where the window's frame is in its tab (M33.2), its document
+    /// apart: none at the top.
+    pub(crate) partition: Option<net::Partition>,
 }
 
 /// A document's time origin (High Resolution Time): the engine's clock

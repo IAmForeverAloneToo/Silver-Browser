@@ -27,8 +27,21 @@ fn send(
     initiator: Option<AddressSpace>,
     abort: &AbortHandle,
 ) -> Result<Received, NetworkError> {
+    send_in(transport, method, url, initiator, None, abort)
+}
+
+/// [`send`] in `partition` (M33.2).
+fn send_in(
+    transport: &Transport,
+    method: &str,
+    url: &Url,
+    initiator: Option<AddressSpace>,
+    partition: Option<&str>,
+    abort: &AbortHandle,
+) -> Result<Received, NetworkError> {
     let headers = HeaderList::new();
     transport.exchange(&Exchange {
+        partition,
         method,
         url,
         headers: &headers,
@@ -311,6 +324,7 @@ fn idle_connections_are_closed_in_time() {
         scheme: "http".into(),
         host: "127.0.0.1".into(),
         port: server.port(),
+        partition: None,
     };
     assert_eq!(transport.pool.counts(&key), (1, 1));
     thread::sleep(Duration::from_millis(600));
@@ -381,6 +395,7 @@ fn a_server_that_takes_nothing_times_the_request_out() {
     let headers = HeaderList::new();
     let started = Instant::now();
     let result = transport.exchange(&Exchange {
+        partition: None,
         method: "POST",
         url: &url,
         headers: &headers,
@@ -680,4 +695,39 @@ fn certificate_faults_are_named() {
         fault(authority.server(&names, VALID), false),
         TlsFailure::UnknownIssuer
     );
+}
+
+#[test]
+fn a_partitions_connections_are_its_own() {
+    // M33.2: the same origin's connection is not reused across top-level
+    // sites.
+    let server = TestServer::plain(|_| hello());
+    let transport = transport();
+    let url = server.url("/");
+    let abort = AbortHandle::new();
+    send_in(&transport, "GET", &url, None, Some("http://a.test"), &abort).unwrap();
+    send_in(&transport, "GET", &url, None, Some("http://b.test"), &abort).unwrap();
+    send_in(&transport, "GET", &url, None, Some("http://a.test"), &abort).unwrap();
+    assert_eq!(server.connections(), 2);
+    let key = |partition: Option<&str>| OriginKey {
+        scheme: "http".into(),
+        host: "127.0.0.1".into(),
+        port: server.port(),
+        partition: partition.map(str::to_owned),
+    };
+    assert_eq!(transport.pool.counts(&key(Some("http://a.test"))), (1, 1));
+    assert_eq!(transport.pool.counts(&key(None)), (0, 0));
+}
+
+#[test]
+fn a_partitions_tls_sessions_are_its_own() {
+    // M33.2: each partition's configuration has a session cache of its
+    // own; a top-level document's requests share the transport's.
+    let transport = transport();
+    let a = transport.tls_for(Some("https://a.test"));
+    let b = transport.tls_for(Some("https://b.test"));
+    assert!(!Arc::ptr_eq(&a, &b));
+    assert!(Arc::ptr_eq(&a, &transport.tls_for(Some("https://a.test"))));
+    assert!(Arc::ptr_eq(&transport.tls_for(None), &transport.tls));
+    assert!(!Arc::ptr_eq(&a, &transport.tls));
 }

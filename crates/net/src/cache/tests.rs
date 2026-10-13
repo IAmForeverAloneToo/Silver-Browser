@@ -69,8 +69,8 @@ fn url(input: &str) -> Url {
     Url::parse(input).expect(input)
 }
 
-fn site(input: &str) -> Site {
-    url(input).origin().site()
+fn site(input: &str) -> Partition {
+    url(input).origin().site().into()
 }
 
 /// A cache holding the response of `pairs` to a GET of
@@ -643,6 +643,26 @@ fn a_site_does_not_see_what_another_site_fetched() {
 }
 
 #[test]
+fn frames_of_two_sites_under_one_top_level_site_do_not_share_it() {
+    // M33.2: the triple key, by the top-level site and the frame's.
+    let server = counting();
+    let client = Hand::default().client();
+    let from = |frame: &str| {
+        let mut request = get(&server, "/res?cc=max-age=60&cors");
+        request.mode = Mode::Cors;
+        request.origin = Some(url(frame).origin());
+        request.partition = Some(crate::url::Partition {
+            top: url("http://a.test/").origin(),
+            cross_site: true,
+        });
+        request
+    };
+    assert_eq!(body(client.fetch(&from("http://b.test/"))), "1");
+    assert_eq!(body(client.fetch(&from("http://b.test/"))), "1");
+    assert_eq!(body(client.fetch(&from("http://c.test/"))), "2");
+}
+
+#[test]
 fn a_response_from_the_cache_is_checked_as_one_from_the_network() {
     let server = counting();
     let client = Hand::default().client();
@@ -675,4 +695,40 @@ fn clients_given_one_cache_share_it() {
     assert_eq!(body(second.fetch(&get(&server, "/res?cc=max-age=60"))), "1");
     assert_eq!(cache.size().0, 1);
     assert!(Arc::ptr_eq(first.cache(), &cache));
+}
+
+#[test]
+fn what_one_top_level_site_cached_another_does_not_find() {
+    // M33.2: by the top-level site and the frame's (the triple key).
+    let cache = Cache::new();
+    let under = |top: &str, frame: &str| Partition {
+        top: url(top).origin().site(),
+        frame: url(frame).origin().site(),
+    };
+    cache.store(
+        &under("http://a.test/", "http://b.test/"),
+        &url("http://b.test/r"),
+        &HeaderList::new(),
+        stored(200, &[("Cache-Control", "max-age=60")], b"body"),
+        t0(),
+        t0(),
+    );
+    let finds = |partition: &Partition| {
+        cache
+            .lookup(
+                partition,
+                &url("http://b.test/r"),
+                &HeaderList::new(),
+                at(1),
+                false,
+            )
+            .is_some()
+    };
+    assert!(finds(&under("http://a.test/", "http://b.test/")));
+    assert!(!finds(&under("http://c.test/", "http://b.test/")));
+    assert!(
+        !finds(&under("http://b.test/", "http://b.test/")),
+        "b's own"
+    );
+    assert!(!finds(&under("http://a.test/", "http://a.test/")));
 }

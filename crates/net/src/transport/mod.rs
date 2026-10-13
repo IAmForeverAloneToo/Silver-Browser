@@ -9,8 +9,9 @@ mod pool;
 mod stream;
 mod tls;
 
+use std::collections::HashMap;
 use std::io::{self, BufReader};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rustls::ClientConfig;
@@ -100,6 +101,9 @@ impl Config {
 /// One request to send.
 #[derive(Debug, Clone, Copy)]
 pub struct Exchange<'a> {
+    /// The partition its request is made in (M33.2), whose connections
+    /// and TLS sessions are its own; none for a top-level document's.
+    pub partition: Option<&'a str>,
     pub method: &'a str,
     /// An `http:` or `https:` URL.
     pub url: &'a Url,
@@ -174,8 +178,16 @@ pub struct Received {
 pub struct Transport {
     config: Config,
     tls: Arc<ClientConfig>,
+    /// Each partition's TLS configuration (M33.2), with a session cache
+    /// of its own, so that a resumed session tells no top-level site
+    /// what another visited; at most [`MAX_TLS_PARTITIONS`].
+    partitioned: Mutex<HashMap<String, Arc<ClientConfig>>>,
     pool: Pool,
 }
+
+/// The most partitions whose TLS sessions are kept apart at once: past
+/// them, all are forgotten.
+pub const MAX_TLS_PARTITIONS: usize = 64;
 
 /// How an exchange on one connection failed.
 enum Failure {
@@ -247,9 +259,33 @@ impl Transport {
     pub fn new(config: Config) -> Transport {
         Transport {
             tls: tls::client_config(&config.extra_roots),
+            partitioned: Mutex::new(HashMap::new()),
             pool: Pool::new(config.max_per_origin, config.idle_timeout),
             config,
         }
+    }
+
+    /// The TLS configuration of `partition`'s connections: the shared
+    /// one for none, else one like it with a session cache of its own.
+    fn tls_for(&self, partition: Option<&str>) -> Arc<ClientConfig> {
+        let Some(partition) = partition else {
+            return self.tls.clone();
+        };
+        let mut configs = self
+            .partitioned
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !configs.contains_key(partition) && configs.len() >= MAX_TLS_PARTITIONS {
+            configs.clear();
+        }
+        configs
+            .entry(partition.to_owned())
+            .or_insert_with(|| {
+                let mut config = (*self.tls).clone();
+                config.resumption = rustls::client::Resumption::in_memory_sessions(256);
+                Arc::new(config)
+            })
+            .clone()
     }
 
     /// Sends `exchange`'s request and reads the response, its body whole
@@ -297,6 +333,7 @@ impl Transport {
             scheme: url.scheme().to_owned(),
             host: host.to_string(),
             port,
+            partition: exchange.partition.map(str::to_owned),
         };
         let message = RequestMessage {
             method: exchange.method,
@@ -310,7 +347,8 @@ impl Transport {
             let mut lease = self.pool.checkout(&key, fresh, exchange.abort)?;
             let reused = lease.connection.is_some();
             if !reused {
-                lease.connection = Some(self.open(url, exchange.initiator, exchange.abort)?);
+                lease.connection =
+                    Some(self.open(url, exchange.initiator, exchange.partition, exchange.abort)?);
             }
             let connection = lease.connection.as_mut().expect("a connection");
             if let Some(initiator) = exchange.initiator
@@ -402,6 +440,7 @@ impl Transport {
         &self,
         url: &Url,
         initiator: Option<AddressSpace>,
+        partition: Option<&str>,
         abort: &AbortHandle,
     ) -> Result<Connection, NetworkError> {
         let host = url.host().expect("an http: or https: URL has a host");
@@ -427,7 +466,7 @@ impl Transport {
         let timeout = self.config.read_timeout;
         let socket = if url.scheme() == "https" {
             Socket::Tls(Box::new(tls::handshake(
-                &self.tls,
+                &self.tls_for(partition),
                 host,
                 tcp,
                 &mut waiter,

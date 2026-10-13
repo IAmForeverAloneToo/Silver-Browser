@@ -26,6 +26,9 @@ pub(crate) struct OriginKey {
     pub(crate) scheme: String,
     pub(crate) host: String,
     pub(crate) port: u16,
+    /// The partition a frame's requests are made in (M33.2): its
+    /// connections are its own.
+    pub(crate) partition: Option<String>,
 }
 
 /// Each origin's connections.
@@ -245,6 +248,7 @@ mod tests {
             scheme: "http".into(),
             host: host.into(),
             port: 80,
+            partition: None,
         }
     }
 

@@ -23,7 +23,7 @@ use crate::error::{AbortHandle, NetworkError};
 use crate::headers::{self, HeaderList};
 use crate::mime::{self, MimeType};
 use crate::transport::{self, Exchange, Transport};
-use crate::{AddressSpace, Host, Origin, Url};
+use crate::{AddressSpace, Host, Origin, Partition, Url};
 
 pub use cors::{DEFAULT_PREFLIGHT_AGE, MAX_PREFLIGHT_AGE, MAX_PREFLIGHT_ENTRIES};
 pub use ports::{BAD_PORTS, is_bad as is_bad_port};
@@ -282,6 +282,10 @@ pub struct Request {
     pub csp: Option<Csp>,
     /// How it uses the HTTP cache (M28.4).
     pub cache: CacheMode,
+    /// Where its document is in its tab (M33.2): a frame's requests are
+    /// kept apart by its top-level site; a top-level document's have
+    /// none.
+    pub partition: Option<Partition>,
 }
 
 impl Request {
@@ -317,6 +321,7 @@ impl Request {
             body_limit: None,
             csp: None,
             cache: CacheMode::Default,
+            partition: None,
         }
     }
 
@@ -665,10 +670,7 @@ impl Client {
                 // site the request is for.
                 let mode = cache_mode(request, hop);
                 let cached = hop.method.as_str() == "GET" && deliver.is_none();
-                let site = request
-                    .origin
-                    .as_ref()
-                    .map_or_else(|| url.origin().site(), Origin::site);
+                let site = partition_key(request, hop).1;
                 if cached && let Some(stale) = mode.reads() {
                     let now = (self.clock)();
                     if let Some(stored) = self.cache.lookup(&site, url, &headers, now, stale) {
@@ -695,7 +697,9 @@ impl Client {
                     (None, "POST" | "PUT") => Some(&[][..]),
                     (None, _) => None,
                 };
+                let partition = request.partition.as_ref().map(Partition::key);
                 let exchange = Exchange {
+                    partition: partition.as_deref(),
                     method: hop.method.as_str(),
                     url,
                     headers: &headers,
@@ -1088,16 +1092,45 @@ fn includes_credentials(request: &Request, hop: &Hop) -> bool {
 /// the asking document; a navigation's is a top-level one, by a safe
 /// method or not.
 fn cookie_context(request: &Request, hop: &Hop) -> cookies::Context {
-    cookies::Context {
-        same_site: request.origin.as_ref().is_none_or(|origin| {
-            hop.url_list
+    // A frame's request is same-site only in a same-site context, to its
+    // top-level site (M33.2, RFC 6265bis's "site for cookies").
+    let in_frame = request.partition.as_ref().is_none_or(|partition| {
+        !partition.cross_site
+            && hop
+                .url_list
                 .iter()
-                .all(|url| origin.same_site(&url.origin()))
-        }),
+                .all(|url| partition.top.same_site(&url.origin()))
+    });
+    cookies::Context {
+        partition: Some(partition_key(request, hop).0),
+        same_site: in_frame
+            && request.origin.as_ref().is_none_or(|origin| {
+                hop.url_list
+                    .iter()
+                    .all(|url| origin.same_site(&url.origin()))
+            }),
         // A frame's navigation is no top-level one (M33.2).
         top_level: request.destination == Destination::Document,
         safe_method: matches!(hop.method.as_str(), "GET" | "HEAD" | "OPTIONS" | "TRACE"),
     }
+}
+
+/// What a request is kept apart by (M33.2): the key of its top-level
+/// site (its partition's, else its origin's, else the first URL's, for
+/// a load the user asked for), and the cache's key, that site and the
+/// site of the document asking, or the top-level site itself.
+fn partition_key(request: &Request, hop: &Hop) -> (String, crate::cache::Partition) {
+    let first = || hop.url_list[0].origin();
+    let asking = request.origin.clone().unwrap_or_else(first);
+    let top = request
+        .partition
+        .as_ref()
+        .map_or_else(|| asking.clone(), |partition| partition.top.clone());
+    let cache = crate::cache::Partition {
+        top: top.site(),
+        frame: asking.site(),
+    };
+    (top.site().serialization(), cache)
 }
 
 /// The request's origin as `Origin` and CORS name it: `null` once

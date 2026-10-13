@@ -495,6 +495,44 @@ pub enum Site {
     },
 }
 
+impl Site {
+    /// The site as text: `scheme://host`, or `null` with its number for
+    /// an opaque origin's, which is no other's (M33.2: what partitions
+    /// are keyed by).
+    pub fn serialization(&self) -> String {
+        match self {
+            Site::Opaque(id) => format!("null:{id}"),
+            Site::Schemeful { scheme, host } => format!("{scheme}://{host}"),
+        }
+    }
+}
+
+/// Where a request's document is in its tab (M33.2): the top-level
+/// document's origin, and whether the document, or one of its
+/// ancestors, is of another site than it. A top-level document's
+/// requests have none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Partition {
+    pub top: Origin,
+    pub cross_site: bool,
+}
+
+impl Partition {
+    /// The key its cookies of `Partitioned` are kept under (CHIPS): the
+    /// top-level site.
+    pub fn cookie_key(&self) -> String {
+        self.top.site().serialization()
+    }
+
+    /// The key what it keeps apart is kept under: the top-level site,
+    /// and whether the context is a cross-site one (the reference
+    /// browser's storage key's ancestor bit).
+    pub fn key(&self) -> String {
+        let cross = if self.cross_site { "^cross" } else { "" };
+        format!("{}{cross}", self.cookie_key())
+    }
+}
+
 impl PartialEq for Origin {
     /// Same origin: two tuples with the same scheme, host and port, or
     /// an opaque origin and itself.

@@ -37,4 +37,5 @@ pub use fetch::{
 };
 pub use headers::HeaderList;
 pub use mime::MimeType;
+pub use url::Partition;
 pub use url::{Host, Origin, Url};

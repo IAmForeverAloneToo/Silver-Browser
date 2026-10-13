@@ -70,6 +70,7 @@ type Kept = (
     bool,
     bool,
     SameSite,
+    Option<String>,
 );
 
 fn kept(cookie: &Cookie) -> Kept {
@@ -83,6 +84,7 @@ fn kept(cookie: &Cookie) -> Kept {
         cookie.secure,
         cookie.http_only,
         cookie.same_site,
+        cookie.partition.clone(),
     )
 }
 
@@ -146,7 +148,7 @@ fn check_kept(cookie: &Cookie, now: SystemTime) {
 
 /// Checks a cookie that a store from `url` through `api` in `context`
 /// just made.
-fn check_made(cookie: &Cookie, url: &Url, api: Api, context: Context) {
+fn check_made(cookie: &Cookie, url: &Url, api: Api, context: &Context) {
     let host = host(url);
     if cookie.host_only {
         assert_eq!(cookie.domain, host);
@@ -174,11 +176,17 @@ fn check_made(cookie: &Cookie, url: &Url, api: Api, context: Context) {
         cookie.same_site == SameSite::None || context.same_site || context.top_level,
         "a same-site cookie set across sites"
     );
+    // A partitioned cookie is a secure one under its context's top-level
+    // site (CHIPS, M33.2).
+    assert!(
+        cookie.partition.is_none() || (cookie.secure && cookie.partition == context.partition),
+        "a partitioned cookie insecure or under another site"
+    );
 }
 
 /// The header the jar should send to `url` through `api` in `context`:
 /// the matching cookies serialized, in any order.
-fn expected(jar: &Jar, url: &Url, api: Api, context: Context) -> Vec<Vec<u8>> {
+fn expected(jar: &Jar, url: &Url, api: Api, context: &Context) -> Vec<Vec<u8>> {
     let host = host(url);
     let path = url.path_str();
     let mut pieces: Vec<Vec<u8>> = jar
@@ -191,6 +199,7 @@ fn expected(jar: &Jar, url: &Url, api: Api, context: Context) -> Vec<Vec<u8>> {
             };
             domain
                 && path_matches(&path, &cookie.path)
+                && (cookie.partition.is_none() || cookie.partition == context.partition)
                 && (!cookie.secure || trustworthy(url))
                 && (!cookie.http_only || api == Api::Http)
                 && match cookie.same_site {
@@ -212,14 +221,21 @@ fn expected(jar: &Jar, url: &Url, api: Api, context: Context) -> Vec<Vec<u8>> {
 fn check_jar(jar: &Jar, now: SystemTime) {
     let cookies = jar.cookies();
     assert!(cookies.len() <= MAX_COOKIES);
-    let mut per_domain: HashMap<&str, usize> = HashMap::new();
+    let mut per_domain: HashMap<(&str, Option<&str>), usize> = HashMap::new();
     let mut keys = HashSet::new();
     for cookie in cookies {
         check_kept(cookie, now);
-        *per_domain.entry(&cookie.domain).or_default() += 1;
+        let partition = cookie.partition.as_deref();
+        *per_domain.entry((&cookie.domain, partition)).or_default() += 1;
         assert!(
-            keys.insert((&cookie.name, &cookie.domain, cookie.host_only, &cookie.path)),
-            "two cookies of one name, domain and path"
+            keys.insert((
+                &cookie.name,
+                &cookie.domain,
+                cookie.host_only,
+                &cookie.path,
+                partition
+            )),
+            "two cookies of one name, domain, path and partition"
         );
     }
     assert!(
@@ -248,6 +264,10 @@ fuzz_target!(|data: &[u8]| {
                 same_site: op & 2 != 0,
                 top_level: op & 4 != 0,
                 safe_method: op & 8 != 0,
+                // Two top-level sites' partitions, or none (M33.2).
+                partition: [None, Some("https://a.test"), Some("https://b.test")]
+                    [usize::from(op & 0x30 != 0) + usize::from(op & 0x40 != 0)]
+                .map(str::to_owned),
             },
         };
         // Time passes, from nothing to ten years.
@@ -255,7 +275,7 @@ fuzz_target!(|data: &[u8]| {
         match op >> 4 {
             // The header, or document.cookie, read.
             0..=3 => {
-                let sent = jar.header(&url, api, context, now);
+                let sent = jar.header(&url, api, context.clone(), now);
                 let mut pieces: Vec<Vec<u8>> = match &sent {
                     Some(header) => header
                         .split(|&b| b == b';')
@@ -267,7 +287,7 @@ fuzz_target!(|data: &[u8]| {
                 if let Some(header) = &sent {
                     assert!(!header.is_empty());
                 }
-                assert_eq!(pieces, expected(&jar, &url, api, context));
+                assert_eq!(pieces, expected(&jar, &url, api, &context));
                 looked = now;
             }
             // Written to the profile and read back, with records of the
@@ -313,10 +333,10 @@ fuzz_target!(|data: &[u8]| {
             _ => {
                 let line = input.bytes().to_vec();
                 let before: Vec<Kept> = jar.cookies().iter().map(kept).collect();
-                jar.store(&line, &url, api, context, now);
+                jar.store(&line, &url, api, context.clone(), now);
                 for cookie in jar.cookies() {
                     if !before.contains(&kept(cookie)) {
-                        check_made(cookie, &url, api, context);
+                        check_made(cookie, &url, api, &context);
                     }
                 }
                 looked = now;

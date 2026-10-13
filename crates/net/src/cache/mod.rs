@@ -202,6 +202,25 @@ impl Entry {
     }
 }
 
+/// What the cache keeps a response under besides its URL (M33.2): the
+/// top-level site a request is made for and the site of the document
+/// asking (the reference browser's "triple key"), the same site twice
+/// for a top-level document's.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Partition {
+    pub top: Site,
+    pub frame: Site,
+}
+
+impl From<Site> for Partition {
+    fn from(site: Site) -> Partition {
+        Partition {
+            top: site.clone(),
+            frame: site,
+        }
+    }
+}
+
 /// The cache: entries by partition and URL, each URL's variants.
 #[derive(Debug, Default)]
 pub struct Cache {
@@ -210,7 +229,7 @@ pub struct Cache {
 
 #[derive(Debug, Default)]
 struct Inner {
-    entries: HashMap<(Site, String), Vec<Entry>>,
+    entries: HashMap<(Partition, String), Vec<Entry>>,
     /// The bytes of the bodies, and the entries, in all.
     bytes: usize,
     count: usize,
@@ -219,7 +238,7 @@ struct Inner {
 }
 
 /// The cache's key of `url`: without its fragment.
-fn key(site: &Site, url: &Url) -> (Site, String) {
+fn key(site: &Partition, url: &Url) -> (Partition, String) {
     let text = url.as_str();
     let text = text.split_once('#').map_or(text, |(before, _)| before);
     (site.clone(), text.to_owned())
@@ -246,7 +265,7 @@ impl Cache {
     /// latest stored of those.
     pub fn lookup(
         &self,
-        site: &Site,
+        site: &Partition,
         url: &Url,
         request: &HeaderList,
         now: SystemTime,
@@ -277,7 +296,7 @@ impl Cache {
     /// past its bounds.
     pub fn store(
         &self,
-        site: &Site,
+        site: &Partition,
         url: &Url,
         request: &HeaderList,
         stored: Stored,
@@ -369,7 +388,7 @@ impl Cache {
 
     /// Removes what is stored for `url` for `site` (RFC 9111 4.4): an
     /// unsafe method's response that is not an error came.
-    pub fn invalidate(&self, site: &Site, url: &Url) {
+    pub fn invalidate(&self, site: &Partition, url: &Url) {
         let mut inner = self.lock();
         if let Some(variants) = inner.entries.remove(&key(site, url)) {
             inner.count -= variants.len();
