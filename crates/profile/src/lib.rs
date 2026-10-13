@@ -53,6 +53,9 @@ const COOKIES: TableDefinition<u64, &[u8]> = TableDefinition::new("cookies");
 /// The HSTS hosts kept (M33.3), as `net` encodes them.
 const HSTS: TableDefinition<u64, &[u8]> = TableDefinition::new("hsts");
 
+/// The permissions sites were given (M33.4), as the engine encodes them.
+const PERMISSIONS: TableDefinition<u64, &[u8]> = TableDefinition::new("permissions");
+
 /// A profile open: one database, one writer.
 pub struct Profile {
     /// `None` once the store was found damaged: never used again, nor
@@ -131,6 +134,7 @@ pub struct Changes {
     local: Vec<Local>,
     cookies: Option<Vec<Vec<u8>>>,
     hsts: Option<Vec<Vec<u8>>>,
+    permissions: Option<Vec<Vec<u8>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,7 +162,10 @@ impl Changes {
 
     /// Whether there is nothing to commit.
     pub fn is_empty(&self) -> bool {
-        self.local.is_empty() && self.cookies.is_none() && self.hsts.is_none()
+        self.local.is_empty()
+            && self.cookies.is_none()
+            && self.hsts.is_none()
+            && self.permissions.is_none()
     }
 
     /// Sets `origin`'s item `key` to `value`, `order` its place.
@@ -196,6 +203,12 @@ impl Changes {
     /// encoding (M33.3).
     pub fn hsts(&mut self, hosts: Vec<Vec<u8>>) {
         self.hsts = Some(hosts);
+    }
+
+    /// Replaces the permissions kept with `permissions`, records of the
+    /// engine's encoding (M33.4).
+    pub fn permissions(&mut self, permissions: Vec<Vec<u8>>) {
+        self.permissions = Some(permissions);
     }
 }
 
@@ -287,6 +300,8 @@ impl Profile {
                 .map_err(|e| unreadable(failed(e)))?;
             txn.open_table(COOKIES).map_err(|e| unreadable(failed(e)))?;
             txn.open_table(HSTS).map_err(|e| unreadable(failed(e)))?;
+            txn.open_table(PERMISSIONS)
+                .map_err(|e| unreadable(failed(e)))?;
         }
         txn.commit().map_err(|e| unreadable(failed(e)))?;
         Ok(())
@@ -326,6 +341,12 @@ impl Profile {
     /// The HSTS hosts kept (M33.3), records of `net`'s encoding.
     pub fn hsts(&self) -> Result<Vec<Vec<u8>>, Error> {
         self.guarded(|db| Profile::read_records(db, HSTS))
+    }
+
+    /// The permissions sites were given (M33.4), records of the engine's
+    /// encoding.
+    pub fn permissions(&self) -> Result<Vec<Vec<u8>>, Error> {
+        self.guarded(|db| Profile::read_records(db, PERMISSIONS))
     }
 
     /// The records of `table`, in their order.
@@ -398,10 +419,13 @@ impl Profile {
                 table.insert(index, record.as_slice()).map_err(failed)?;
             }
         }
-        if let Some(hosts) = &changes.hsts {
-            let mut table = txn.open_table(HSTS).map_err(failed)?;
+        for (definition, records) in [(HSTS, &changes.hsts), (PERMISSIONS, &changes.permissions)] {
+            let Some(records) = records else {
+                continue;
+            };
+            let mut table = txn.open_table(definition).map_err(failed)?;
             table.retain(|_, _| false).map_err(failed)?;
-            for (index, record) in (0u64..).zip(hosts) {
+            for (index, record) in (0u64..).zip(records) {
                 table.insert(index, record.as_slice()).map_err(failed)?;
             }
         }

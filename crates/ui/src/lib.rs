@@ -4,13 +4,17 @@
 //! parts — `paint`'s display list, `render`'s rasterizer and `text`'s
 //! shaping — and touches no OS: the shell gives it input and shows its
 //! pixels, and gives it what it shows of the page.
+//!
+//! The permission prompt (M33.4) is drawn and given input the same way.
 
 pub mod field;
+pub mod prompt;
 pub mod status;
 mod title;
 pub mod toolbar;
 
 pub use field::{Command, TextField, TooLong};
+pub use prompt::{Choice, PromptBar};
 pub use status::StatusBubble;
 pub use title::window_title;
 pub use toolbar::{Action, Cursor, Escape, HEIGHT, PageState, Part, Toolbar};

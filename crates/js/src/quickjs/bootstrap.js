@@ -3883,6 +3883,7 @@
   // nothing, the engine having no priorities to give.
   const REQUEST_PRIORITIES = ["high", "low", "auto"];
   const REQUEST_REDIRECTS = ["follow", "error", "manual"];
+  const ADDRESS_SPACES = ["public", "local", "loopback"];
   const REFERRER_POLICIES = [
     "", "no-referrer", "no-referrer-when-downgrade", "same-origin", "origin",
     "strict-origin", "origin-when-cross-origin", "strict-origin-when-cross-origin", "unsafe-url",
@@ -3935,7 +3936,7 @@
         state = {
           method: "GET", url, headers: null, body: null, mode: "cors", credentials: "same-origin",
           cache: "default", redirect: "follow", referrer: "about:client", referrerPolicy: "",
-          integrity: "", keepalive: false, duplex: "half",
+          integrity: "", keepalive: false, duplex: "half", targetAddressSpace: "",
         };
         fallbackMode = "cors";
       } else {
@@ -3944,7 +3945,7 @@
           method: from.method, url: from.url, headers: null, body: from.body, mode: from.mode,
           credentials: from.credentials, cache: from.cache, redirect: from.redirect,
           referrer: from.referrer, referrerPolicy: from.referrerPolicy, integrity: from.integrity,
-          keepalive: from.keepalive, duplex: "half",
+          keepalive: from.keepalive, duplex: "half", targetAddressSpace: from.targetAddressSpace,
         };
         signal = from.signal;
       }
@@ -3972,6 +3973,9 @@
       }
       const policy = enumMember(given, "referrerPolicy", REFERRER_POLICIES, "ReferrerPolicy");
       if (policy !== undefined) state.referrerPolicy = policy;
+      // Local Network Access (M33.4): the space the server is to be in.
+      const space = enumMember(given, "targetAddressSpace", ADDRESS_SPACES, "IPAddressSpace");
+      if (space !== undefined) state.targetAddressSpace = space;
       const mode = enumMember(given, "mode", REQUEST_MODES, "RequestMode");
       if (mode === "navigate") {
         throw fail("Cannot construct a Request with a RequestInit whose mode member is set as 'navigate'.");
@@ -4274,7 +4278,7 @@
           id, state.method, state.url, flatten(headersState(state.headers).list),
           body === null ? null : binaryString(body),
           state.mode, state.credentials, state.redirect, false, state.cache,
-          state.referrer, state.referrerPolicy,
+          state.referrer, state.referrerPolicy, state.targetAddressSpace,
         );
       } catch (e) {
         reject(failed(e, "fetch", GLOBAL_INTERFACE));
@@ -4587,7 +4591,7 @@
         native.fetch(
           id, this.#method, this.#url, flatten(this.#headers),
           bytes === null ? null : binaryString(bytes), "cors", credentials, "follow",
-          this.#uploadListened, "default", "about:client", "",
+          this.#uploadListened, "default", "about:client", "", "",
         );
       } catch (e) {
         this.#fetch = 0;

@@ -107,7 +107,7 @@ fn interleave(addresses: Vec<SocketAddr>) -> Vec<SocketAddr> {
 /// and close what they connect.
 pub(crate) fn connect(
     addresses: &[SocketAddr],
-    allowed: impl Fn(IpAddr) -> Result<(), NetworkError>,
+    allowed: impl Fn(SocketAddr) -> Result<(), NetworkError>,
     timeout: Duration,
     abort: &AbortHandle,
 ) -> Result<(TcpStream, SocketAddr), NetworkError> {
@@ -123,13 +123,13 @@ type Attempt = Arc<dyn Fn(SocketAddr, Duration) -> io::Result<TcpStream> + Send 
 /// [`connect`], trying each address with `attempt`.
 fn connect_with(
     addresses: &[SocketAddr],
-    allowed: impl Fn(IpAddr) -> Result<(), NetworkError>,
+    allowed: impl Fn(SocketAddr) -> Result<(), NetworkError>,
     timeout: Duration,
     abort: &AbortHandle,
     attempt: Attempt,
 ) -> Result<(TcpStream, SocketAddr), NetworkError> {
     let addresses = interleave(addresses.to_vec());
-    let deadline = Instant::now() + timeout;
+    let mut deadline = Instant::now() + timeout;
     let (sender, receiver) = mpsc::channel();
     let mut next = 0;
     let mut running = 0;
@@ -147,10 +147,16 @@ fn connect_with(
         if next < addresses.len() && now >= next_start {
             let address = addresses[next];
             next += 1;
-            if let Err(e) = allowed(address.ip()) {
+            // The time the user takes to answer a prompt (M33.4) is not
+            // the connection's.
+            let asked = Instant::now();
+            let verdict = allowed(address);
+            deadline += asked.elapsed();
+            if let Err(e) = verdict {
                 refused = Some(e);
                 continue;
             }
+            let now = Instant::now();
             let (sender, attempt) = (sender.clone(), attempt.clone());
             let remaining = deadline - now;
             thread::spawn(move || {

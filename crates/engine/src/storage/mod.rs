@@ -8,6 +8,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
+
+use crate::permissions::Permissions;
 use std::time::{Duration, SystemTime};
 
 use net::cookies::Jar;
@@ -58,6 +60,10 @@ pub(crate) struct Storage {
     /// they were last written.
     hsts: Option<Arc<Mutex<net::Hsts>>>,
     hsts_written: Option<u64>,
+    /// The permissions sites were given (M33.4), and their count of
+    /// changes when they were last written.
+    permissions: Option<Arc<Permissions>>,
+    permissions_written: Option<u64>,
 }
 
 /// An area (HTML 12.2.1's storage map): its items, and their order, the
@@ -296,7 +302,16 @@ impl Storage {
             changes: Vec::new(),
             hsts: None,
             hsts_written: None,
+            permissions: None,
+            permissions_written: None,
         }
+    }
+
+    /// Keeps `permissions`, the answers the user gave sites, in the
+    /// profile too (M33.4): read in when one is given, written as they
+    /// change.
+    pub(crate) fn set_permissions(&mut self, permissions: Arc<Permissions>) {
+        self.permissions = Some(permissions);
     }
 
     /// Keeps `hsts`, the engine's HSTS hosts, in the profile too
@@ -332,6 +347,10 @@ impl Storage {
             let mut hsts = hsts.lock().unwrap_or_else(PoisonError::into_inner);
             hsts.restore(&records, SystemTime::now());
             self.hsts_written = Some(hsts.changes());
+        }
+        if let Some(permissions) = &self.permissions {
+            permissions.restore(&profile.permissions()?);
+            self.permissions_written = Some(permissions.changes());
         }
         self.profile = Some(profile);
         self.local.clear();
@@ -434,7 +453,10 @@ impl Storage {
             .unwrap_or_else(PoisonError::into_inner)
             .kept_changes();
         let hsts = self.hsts_changes() != self.hsts_written;
-        (self.cookies_written != Some(count) || !self.unwritten.is_empty() || hsts).then(|| {
+        let permissions =
+            self.permissions.as_ref().map(|p| p.changes()) != self.permissions_written;
+        let waiting = self.cookies_written != Some(count) || !self.unwritten.is_empty();
+        (waiting || hsts || permissions).then(|| {
             self.flushed
                 .map_or(Duration::ZERO, |at| at + FLUSH_INTERVAL)
         })
@@ -462,6 +484,12 @@ impl Storage {
             let hsts = hsts.lock().unwrap_or_else(PoisonError::into_inner);
             changes.hsts(hsts.export(SystemTime::now()));
         }
+        let permissions_count = self.permissions.as_ref().map(|p| p.changes());
+        if permissions_count != self.permissions_written
+            && let Some(permissions) = &self.permissions
+        {
+            changes.permissions(permissions.export());
+        }
         for (origin, unwritten) in &self.unwritten {
             if unwritten.cleared {
                 changes.clear(origin);
@@ -481,6 +509,7 @@ impl Storage {
         profile.commit(&changes)?;
         self.cookies_written = Some(count);
         self.hsts_written = hsts_count;
+        self.permissions_written = permissions_count;
         self.unwritten.clear();
         Ok(())
     }

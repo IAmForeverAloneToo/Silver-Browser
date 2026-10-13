@@ -47,6 +47,9 @@ pub(crate) struct Page {
     metas: Vec<NodeId>,
     /// The document's sandboxing flags (M33.2).
     sandbox: Sandbox,
+    /// What lets its requests ask their way into a more private address
+    /// space (M33.4), which its engine works out.
+    local_network: Option<net::LocalNetworkAccess>,
     /// Each element's nonce once its attribute was hidden or a script set
     /// it (M33.1, HTML's `[[CryptographicNonce]]`).
     nonces: HashMap<NodeId, String>,
@@ -263,6 +266,7 @@ impl Page {
             csp: Csp::none(origin).with_sink(),
             metas: Vec::new(),
             sandbox: Sandbox::NONE,
+            local_network: None,
             nonces: HashMap::new(),
             cssom_styles: HashSet::new(),
             style_checks: RefCell::default(),
@@ -303,6 +307,7 @@ impl Page {
             csp,
             metas: Vec::new(),
             sandbox: Sandbox::NONE,
+            local_network: None,
             nonces: HashMap::new(),
             cssom_styles: HashSet::new(),
             style_checks: RefCell::default(),
@@ -345,6 +350,16 @@ impl Page {
     /// The document's sandboxing flags.
     pub(crate) fn sandbox(&self) -> Sandbox {
         self.sandbox
+    }
+
+    /// What lets its requests ask their way into a more private address
+    /// space (M33.4).
+    pub(crate) fn local_network(&self) -> Option<&net::LocalNetworkAccess> {
+        self.local_network.as_ref()
+    }
+
+    pub(crate) fn set_local_network(&mut self, access: Option<net::LocalNetworkAccess>) {
+        self.local_network = access;
     }
 
     /// The page, its response's `Referrer-Policy` given (M33.3).

@@ -208,6 +208,9 @@ pub(crate) struct Start {
     /// Its creator's referrer policy (M33.3), which its script's request
     /// is made with.
     pub(crate) referrer_policy: net::ReferrerPolicy,
+    /// What lets its creator's requests ask their way into a more private
+    /// address space (M33.4), which its requests do too.
+    pub(crate) local_network: Option<net::LocalNetworkAccess>,
 }
 
 /// A worker its owner knows of: how to reach it and stop it.
@@ -589,6 +592,7 @@ fn run(setup: Setup) {
         document,
         partition: start.partition.clone(),
         csp: Some(csp),
+        local_network: start.local_network.clone(),
         workers: Some(Workers::new(me, live, depth, router.clone(), document)),
         ..WorkerHost::default()
     };
@@ -718,6 +722,7 @@ fn fetch_script(start: &Start) -> Option<(String, Url, net::csp::Csp)> {
         .with_csp(start.csp.clone());
     request.partition.clone_from(&start.partition);
     request.referrer_policy = Some(start.referrer_policy);
+    request.local_network.clone_from(&start.local_network);
     request.credentials = start.credentials;
     let response = start.client.fetch(&request).ok()?;
     if !response.ok()
@@ -796,6 +801,9 @@ pub(crate) struct WorkerHost {
     partition: Option<net::Partition>,
     /// Its own policies (M33.1), which its requests pass.
     csp: Option<net::csp::Csp>,
+    /// What lets its requests ask their way into a more private address
+    /// space (M33.4): its creator's.
+    local_network: Option<net::LocalNetworkAccess>,
     realm: u32,
     work: u64,
 }
@@ -830,6 +838,7 @@ impl Default for WorkerHost {
             document: 0,
             partition: None,
             csp: None,
+            local_network: None,
             work: 0,
         }
     }
@@ -908,6 +917,7 @@ impl ScriptingHost for WorkerHost {
                 let mut request = super::fetch::request(self.initiator.clone(), &call)?;
                 request.partition.clone_from(&self.partition);
                 request.csp.clone_from(&self.csp);
+                request.local_network.clone_from(&self.local_network);
                 if self.fetching.len() >= super::fetch::MAX_SCRIPT_FETCHES {
                     return Err(DomError::new("TypeError", "Too many requests in flight."));
                 }
@@ -925,6 +935,7 @@ impl ScriptingHost for WorkerHost {
                 let mut request = super::fetch::request(self.initiator.clone(), &call)?;
                 request.partition.clone_from(&self.partition);
                 request.csp.clone_from(&self.csp);
+                request.local_network.clone_from(&self.local_network);
                 let Some(client) = &self.client else {
                     return Ok(Answer::Fetched(None));
                 };
@@ -1037,6 +1048,7 @@ impl ScriptingHost for WorkerHost {
                             .clone()
                             .unwrap_or_else(|| net::csp::Csp::none(self.origin.clone())),
                         referrer_policy: net::ReferrerPolicy::default(),
+                        local_network: self.local_network.clone(),
                     }),
                 )))
             }

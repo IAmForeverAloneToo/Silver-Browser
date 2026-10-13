@@ -1,6 +1,7 @@
 //! The window's contents and what input does to them (M15,
 //! docs/design/navigation.md, "The toolbar" and "Keys and the
-//! pointer"): the toolbar across the top, the page under it, the status
+//! pointer"): the toolbar across the top, the page under it, a site's
+//! permission prompt over the page's top (M33.4), the status
 //! bubble at the page's bottom left, and the keys, the pointer, the
 //! input method and the clipboard made calls on the engine and the
 //! toolbar. Its input comes in the shell's own small types rather than
@@ -10,8 +11,8 @@
 use std::time::{Duration, Instant};
 
 use engine::address::{self, Address};
-use engine::{Engine, FrameTime, Link, LoadState, Preferences, Url};
-use ui::{Action, PageState, StatusBubble, TooLong, Toolbar};
+use engine::{Engine, FrameTime, Link, LoadState, PermissionPrompt, Preferences, Url};
+use ui::{Action, Choice, PageState, PromptBar, StatusBubble, TooLong, Toolbar};
 
 use crate::keys::{self, Key, Modifiers, Platform, Shortcut};
 
@@ -87,6 +88,11 @@ pub(crate) struct Session {
     engine: Engine,
     toolbar: Toolbar,
     bubble: StatusBubble,
+    /// The permission prompt the engine wants shown (M33.4), its bar, and
+    /// which one the last frame showed.
+    prompt: Option<PermissionPrompt>,
+    prompt_bar: PromptBar,
+    drawn_prompt: Option<u64>,
     clipboard: Box<dyn Clipboard>,
     platform: Platform,
     mods: Modifiers,
@@ -137,6 +143,9 @@ impl Session {
         let mut session = Session {
             engine,
             toolbar: Toolbar::new(fonts.clone()),
+            prompt: None,
+            prompt_bar: PromptBar::new(fonts.clone()),
+            drawn_prompt: None,
             bubble: StatusBubble::new(fonts),
             clipboard,
             platform,
@@ -252,6 +261,13 @@ impl Session {
         self.engine.needs_frame()
             || self.toolbar.needs_frame()
             || self.drawn_bubble.as_deref() != self.bubble_text()
+            || self.drawn_prompt != self.prompt.as_ref().map(|prompt| prompt.id)
+    }
+
+    /// The permission prompt shown, if any (M33.4).
+    #[cfg(test)]
+    pub(crate) fn prompt(&self) -> Option<&PermissionPrompt> {
+        self.prompt.as_ref()
     }
 
     /// When a frame is next wanted, on the clock the frames are drawn
@@ -560,6 +576,16 @@ impl Session {
             // as a task's is.
             print_console(&mut self.engine);
         }
+        // The permission prompt over the top of the page (M33.4).
+        self.drawn_prompt = self.prompt.as_ref().map(|prompt| prompt.id);
+        let prompt_rows = ui::rows(ui::prompt::HEIGHT, self.scale) as usize;
+        if let Some(prompt) = &self.prompt
+            && page_height as usize >= prompt_rows
+        {
+            let pixels = self.prompt_bar.frame(&prompt.text(), width, self.scale);
+            let rows = bar_rows * w..(bar_rows + prompt_rows) * w;
+            put(&pixels[..prompt_rows * w * 4], &mut out[rows]);
+        }
         self.drawn_bubble = self.bubble_text().map(str::to_owned);
         let bubble_rows = ui::rows(ui::status::HEIGHT, self.scale);
         if let Some(text) = &self.drawn_bubble
@@ -591,8 +617,11 @@ impl Session {
             Shortcut::Escape if in_field => {
                 self.toolbar.escape();
             }
+            // Escape dismisses a prompt (M33.4), or else stops a load.
             Shortcut::Escape => {
-                if *self.engine.load_state() == LoadState::Loading {
+                if let Some(prompt) = &self.prompt {
+                    self.engine.answer_prompt(prompt.id, None);
+                } else if *self.engine.load_state() == LoadState::Loading {
                     self.engine.stop();
                 }
             }
@@ -720,6 +749,17 @@ impl Session {
             self.held = Some(Held::Toolbar);
             return;
         }
+        // The prompt's bar, over the page (M33.4): its buttons answer it.
+        if let Some(prompt) = &self.prompt
+            && y < TOP + ui::prompt::HEIGHT as f32
+        {
+            let width = self.size.0 as f32;
+            if let Some(choice) = PromptBar::choice_at(width, x, y - TOP) {
+                self.engine
+                    .answer_prompt(prompt.id, Some(choice == Choice::Allow));
+            }
+            return;
+        }
         self.toolbar.blur();
         self.sync_window_focus();
         let y = y - TOP;
@@ -785,6 +825,7 @@ impl Session {
         if let Some(notice) = self.engine.take_notice() {
             self.notice = Some(notice);
         }
+        self.prompt = self.engine.permission_prompt();
         let url = self.engine.url().map(|url| url.as_str().to_owned());
         self.toolbar.update(PageState {
             url: url.as_deref(),

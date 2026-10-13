@@ -102,6 +102,7 @@ mod keys;
 mod loader;
 mod navigation;
 mod pages;
+mod permissions;
 mod print;
 mod sandbox;
 mod scripts;
@@ -124,6 +125,7 @@ pub use js::ConsoleLevel;
 pub use keys::{Key, KeyOutcome};
 pub use loader::{LoadError, LoadState};
 pub use net::{Client, NetworkError, Url};
+pub use permissions::{PROMPT_TIMEOUT, Permission, PermissionPrompt};
 pub use print::{PrintError, PrintOptions, PrintedPage};
 pub use profile::Profile;
 pub use scripts::{
@@ -1213,6 +1215,7 @@ impl Engine {
             self.network.set_partition(left.page.id(), None);
             self.network.set_csp(left.page.id(), None);
             self.network.set_referrer_policy(left.page.id(), None);
+            self.network.set_local_network(left.page.id(), None);
         }
     }
 
@@ -3233,7 +3236,22 @@ impl Engine {
     pub fn set_profile(&mut self, profile: Profile) -> Result<(), profile::Error> {
         let cookies = self.network.cookies();
         self.storage().set_hsts(self.network.hsts());
+        self.storage()
+            .set_permissions(self.network.permissions().clone());
         self.storage().set_profile(profile, &cookies)
+    }
+
+    /// The prompt the shell is to show (M33.4): a site's request waits
+    /// for the user to let it reach the local network or this machine.
+    pub fn permission_prompt(&self) -> Option<PermissionPrompt> {
+        self.network.permissions().prompt()
+    }
+
+    /// The user's answer to the prompt `id` (M33.4): `Some(allow)`, kept
+    /// for its site, or `None` for one dismissed, which refuses the
+    /// requests waiting and keeps nothing.
+    pub fn answer_prompt(&mut self, id: u64, answer: Option<bool>) {
+        self.network.permissions().answer(id, answer);
     }
 
     /// Writes to the profile what changed since it was last written: the
@@ -3478,6 +3496,8 @@ impl Engine {
             if !form {
                 request.csp.clone_from(&self.frame.container_csp);
             }
+            // Its container's document asks for it (M33.4).
+            request.local_network = self.frame_local_network(&url);
         }
         self.network.fetch(id, Target::Document, request);
         self.navigation = Some(Navigation {
@@ -4381,11 +4401,12 @@ impl Engine {
             .as_ref()
             .map(|navigation| navigation.referrer.clone())
             .unwrap_or_default();
-        let page = parsed_page(id, &response, &load, creator.as_ref(), sandbox)
+        let mut page = parsed_page(id, &response, &load, creator.as_ref(), sandbox)
             .with_referrer(referrer.clone());
         // A frame's document's requests are made where it is (M33.2).
         let partition = self.partition_for(page.origin());
         self.network.set_partition(id, partition);
+        self.place_local_network(&mut page);
         if let Some(navigation) = &mut self.navigation {
             let mut scripts = scripts::Scripts::with_limits(self.script_limits);
             scripts.set_time_origin(navigation.started);
@@ -4769,6 +4790,7 @@ impl Engine {
                 incoming = incoming.with_sandbox(sandbox.with(sandbox::Sandbox::from_csp(&csp)));
                 let partition = self.partition_for(incoming.origin());
                 self.network.set_partition(page, partition);
+                self.place_local_network(&mut incoming);
                 let media = self.media(self.viewport);
                 incoming.begin(&parsed.document, &mut self.network, &media);
                 self.navigation = Some(Navigation {

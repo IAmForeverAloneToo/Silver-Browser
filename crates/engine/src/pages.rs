@@ -75,7 +75,9 @@ fn network_error(url: &Url, place: &str, error: &NetworkError) -> (String, Strin
                  use them to reach the other services that listen there."
             ),
         ),
-        NetworkError::AddressSpace { .. } | NetworkError::MixedContent => (
+        NetworkError::AddressSpace { .. }
+        | NetworkError::TargetAddressSpace { .. }
+        | NetworkError::MixedContent => (
             reach,
             "The page that asked for this one may not reach it.".to_owned(),
         ),

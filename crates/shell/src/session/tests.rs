@@ -1326,3 +1326,100 @@ fn the_window_is_drawn_at_its_scale_and_its_pointer_taken_by_it() {
     window.session.pointer_moved(700.0, 40.0);
     assert_eq!(window.session.shape(), Shape::Text);
 }
+
+#[test]
+fn a_sites_prompt_shows_under_the_toolbar_and_its_buttons_answer_it() {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    let printer = serve(|_| {
+        Some(Reply::with_fields(
+            200,
+            &[
+                ("Content-Type", "text/plain"),
+                ("Access-Control-Allow-Origin", "*"),
+            ],
+            b"local",
+        ))
+    });
+    // An app on this machine, its space its own.
+    let app = serve(|_| html("app"));
+    let (port, app_port) = (printer.port(), app.port());
+    let page = serve(move |path| match path {
+        "/" => html(&format!(
+            "<body style='margin:0;background-color:#00ff00'><script>\
+             const ask = (at) => fetch('http://' + at + '/s').catch(() => {{}});\
+             ask('printer.test:{port}').then(() => ask('127.0.0.1:{app_port}'));</script>"
+        )),
+        _ => None,
+    });
+    // The page's server public, the printer's local (M33.4).
+    let here = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let config = net::transport::Config::default()
+        .resolve("printer.test", here)
+        .treat_as(
+            SocketAddr::new(here, page.port()),
+            net::AddressSpace::Public,
+        )
+        .treat_as(SocketAddr::new(here, port), net::AddressSpace::Local);
+    let fonts = text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
+        .expect("the bundled font parses");
+    let mut engine = Engine::with_fonts(fonts);
+    engine.set_scripting(true);
+    engine.set_network(net::Client::new(config));
+    let (wake, woken) = channel();
+    engine.set_waker(move || {
+        let _ = wake.send(());
+    });
+    let board = Board::default();
+    let start = Some(page.url("/"));
+    let mut session = Session::new(engine, Box::new(board.clone()), Platform::Other, start);
+    session.resized(WIDTH, HEIGHT);
+    let mut window = Window {
+        session,
+        woken,
+        board,
+        clock: Duration::from_secs(1),
+    };
+    window.wait_until(|session| session.prompt().is_some());
+    let prompt = window.session.prompt().expect("a prompt").clone();
+    assert_eq!(prompt.permission, engine::Permission::LocalNetwork);
+    let frame = window.frame();
+    let at = |frame: &[u32], x: u32, y: u32| frame[(y * WIDTH + x) as usize];
+    let bar = ui::HEIGHT + ui::prompt::HEIGHT / 2;
+    assert_eq!(at(&frame, 3, bar), 0xFFF8E1, "the prompt's bar");
+    assert_eq!(
+        at(&frame, 3, ui::HEIGHT + ui::prompt::HEIGHT + 5),
+        0x00FF00,
+        "the page under it"
+    );
+    assert!(!window.session.needs_frame());
+    assert!(printer.requests().is_empty(), "nothing sent yet");
+    // Allow: the request goes, and the bar with the prompt.
+    window.click((WIDTH - 136) as f32, bar as f32);
+    assert!(window.session.prompt().is_none());
+    assert!(window.session.needs_frame(), "the bar goes");
+    window.wait_until(|_| !printer.requests().is_empty());
+    let frame = window.frame();
+    assert_eq!(at(&frame, 3, bar), 0x00FF00, "no bar");
+    // Escape dismisses the next, which the page's tasks ask for, the
+    // shell woken when it opens: nothing sent.
+    let deadline = Instant::now() + WAIT;
+    while window.session.prompt().is_none() {
+        if window.session.next_task_at().is_some() {
+            window.session.tick();
+            continue;
+        }
+        let left = deadline
+            .checked_duration_since(Instant::now())
+            .expect("the second prompt in time");
+        window.woken.recv_timeout(left).expect("woken in time");
+        window.session.network();
+    }
+    assert_eq!(
+        window.session.prompt().map(|prompt| prompt.permission),
+        Some(engine::Permission::LoopbackNetwork)
+    );
+    window.press_key(Key::Escape, NONE);
+    assert!(window.session.prompt().is_none());
+    assert_eq!(printer.requests().len(), 1);
+    assert!(app.requests().is_empty());
+}

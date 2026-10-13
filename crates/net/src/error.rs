@@ -23,6 +23,12 @@ pub enum NetworkError {
         initiator: AddressSpace,
         target: AddressSpace,
     },
+    /// A request that named the address space of its server (M33.4,
+    /// `targetAddressSpace`) reached a server in another.
+    TargetAddressSpace {
+        named: AddressSpace,
+        reached: AddressSpace,
+    },
     /// An `http:` request from an `https:` page.
     MixedContent,
     /// The host's name did not resolve.
@@ -97,6 +103,9 @@ impl fmt::Display for NetworkError {
             NetworkError::BadPort(port) => write!(f, "port {port} is not fetched"),
             NetworkError::AddressSpace { initiator, target } => {
                 write!(f, "a {initiator} page may not reach a {target} address")
+            }
+            NetworkError::TargetAddressSpace { named, reached } => {
+                write!(f, "a request for a {named} address reached a {reached} one")
             }
             NetworkError::MixedContent => f.write_str("an http: request from an https: page"),
             NetworkError::Resolve(why) => write!(f, "the name did not resolve: {why}"),

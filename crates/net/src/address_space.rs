@@ -1,9 +1,13 @@
 //! IP address spaces (Local Network Access, decision D19): every address
 //! a connection would be made to is loopback, local or public, and a
-//! page may not reach into a space less public than its own.
+//! page may not reach into a space less public than its own, unless the
+//! user lets its site (M33.4).
 
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+use crate::error::AbortHandle;
+use crate::url::Origin;
 
 /// Where an address is, from the most private to the most public.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -36,6 +40,38 @@ impl AddressSpace {
     pub fn may_request(self, target: AddressSpace) -> bool {
         target >= self
     }
+}
+
+/// What lets a request ask its way into an address space more private
+/// than its page's (M33.4, Local Network Access): the origin whose
+/// permission the user is asked for, the top-level document's, and the
+/// spaces its document's Permissions Policy lets it ask for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalNetworkAccess {
+    pub origin: Origin,
+    /// The `local-network` feature: the local network.
+    pub local: bool,
+    /// The `loopback-network` feature: this machine.
+    pub loopback: bool,
+}
+
+impl LocalNetworkAccess {
+    /// Whether its policy lets it ask for `target`.
+    pub fn may_ask(&self, target: AddressSpace) -> bool {
+        match target {
+            AddressSpace::Loopback => self.loopback,
+            AddressSpace::Local => self.local,
+            AddressSpace::Public => false,
+        }
+    }
+}
+
+/// The user's answer to a request into a more private address space
+/// (M33.4): the engine's prompt, which a fetch's thread waits on.
+pub trait LocalNetworkGate: Send + Sync + fmt::Debug {
+    /// Whether `origin` may reach addresses in `target`, as kept or as
+    /// the user answers now; `false` once `abort` is signalled.
+    fn allow(&self, origin: &Origin, target: AddressSpace, abort: &AbortHandle) -> bool;
 }
 
 impl fmt::Display for AddressSpace {

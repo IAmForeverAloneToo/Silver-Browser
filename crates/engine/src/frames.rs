@@ -90,6 +90,9 @@ struct TreeNode {
     /// Its element's `sandbox` attribute's flags as it now stands, which
     /// its next navigation takes (M33.2).
     element_sandbox: Sandbox,
+    /// The Local Network Access features its element's `allow` attribute
+    /// names (M33.4).
+    element_allow: Allowed,
     /// Its child frames, in the tree order of their elements.
     children: Vec<FrameId>,
     inbox: VecDeque<FrameTask>,
@@ -244,11 +247,37 @@ impl FrameTree {
         }
     }
 
-    /// Frame `id`'s element's `sandbox` attribute's flags.
-    pub(crate) fn set_element_sandbox(&mut self, id: FrameId, sandbox: Sandbox) {
+    /// Frame `id`'s element's `sandbox` attribute's flags, and the
+    /// features its `allow` attribute names (M33.4).
+    pub(crate) fn set_element_policy(&mut self, id: FrameId, sandbox: Sandbox, allow: Allowed) {
         if let Some(node) = self.nodes.get_mut(&id) {
             node.element_sandbox = sandbox;
+            node.element_allow = allow;
         }
+    }
+
+    /// The features a document of `origin` in frame `id` may use
+    /// (M33.4), by Permissions Policy's default allowlist `'self'`: all
+    /// at the top; in a frame, those its parent's document may use that
+    /// its element's `allow` names, or all of those when its document is
+    /// of its parent's document's origin.
+    pub(crate) fn allowed(&self, id: FrameId, origin: &net::Origin) -> Allowed {
+        let mut allowed = Allowed::ALL;
+        let (mut at, mut origin) = (id, origin.clone());
+        while let Some(parent) = self.parent(at) {
+            let node = self.nodes.get(&at);
+            let parents = self
+                .nodes
+                .get(&parent)
+                .and_then(|node| node.origin.clone())
+                .unwrap_or_else(net::Origin::new_opaque);
+            if origin.is_opaque() || origin != parents {
+                let named = node.map_or(Allowed::default(), |node| node.element_allow);
+                allowed = allowed.and(named);
+            }
+            (at, origin) = (parent, parents);
+        }
+        allowed
     }
 
     /// The flags a new document of frame `id` is made with (HTML's
@@ -477,9 +506,59 @@ pub(crate) struct FrameContext {
     pub(crate) ancestors: Vec<String>,
     /// Its parent's document, which its navigations are made from for
     /// mixed content and the address spaces (none at the top), and that
-    /// document's policies, whose `frame-src` they pass (M33.1).
+    /// document's policies, whose `frame-src` they pass (M33.1), and what
+    /// lets them ask their way into a more private space (M33.4).
     pub(crate) container: Option<net::Initiator>,
     pub(crate) container_csp: Option<net::csp::Csp>,
+    pub(crate) container_local_network: Option<net::LocalNetworkAccess>,
+}
+
+/// The Local Network Access features a document may use (M33.4), and
+/// those an `iframe`'s `allow` attribute names: Permissions Policy's for
+/// these alone (G96).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Allowed {
+    pub(crate) local: bool,
+    pub(crate) loopback: bool,
+}
+
+impl Allowed {
+    pub(crate) const ALL: Allowed = Allowed {
+        local: true,
+        loopback: true,
+    };
+
+    /// The features of an `allow` attribute's value: its directives split
+    /// on `;`, each a feature's name and an allowlist. A feature named
+    /// with any allowlist but `'none'` is taken, its origins not matched
+    /// against the frame's; `local-network-access`, the reference
+    /// browser's older name, is both.
+    pub(crate) fn parse(value: &str) -> Allowed {
+        let mut allowed = Allowed::default();
+        for directive in value.split(';') {
+            let mut tokens = directive.split_ascii_whitespace();
+            let Some(feature) = tokens.next() else {
+                continue;
+            };
+            if tokens.eq(["'none'"]) {
+                continue;
+            }
+            match feature {
+                "local-network" => allowed.local = true,
+                "loopback-network" => allowed.loopback = true,
+                "local-network-access" => allowed = Allowed::ALL,
+                _ => {}
+            }
+        }
+        allowed
+    }
+
+    fn and(self, other: Allowed) -> Allowed {
+        Allowed {
+            local: self.local && other.local,
+            loopback: self.loopback && other.loopback,
+        }
+    }
 }
 
 /// What a run's scripts are lent of the tab's frames (M33.2): the tree,
@@ -502,6 +581,7 @@ impl FrameContext {
             ancestors: Vec::new(),
             container: None,
             container_csp: None,
+            container_local_network: None,
         }
     }
 
@@ -658,8 +738,54 @@ impl Engine {
             ancestors,
             container: self.shown.page.initiator(),
             container_csp: Some(self.shown.page.csp(&self.shown.document).clone()),
+            container_local_network: self.shown.page.local_network().cloned(),
         };
         child
+    }
+
+    /// The features the `iframe` `node`'s `allow` attribute names (M33.4).
+    fn element_allow(&self, node: NodeId) -> Allowed {
+        self.shown
+            .document
+            .attr(node, "allow")
+            .map_or(Allowed::default(), Allowed::parse)
+    }
+
+    /// What lets a navigation of this engine's frame to `url` ask its way
+    /// into a more private address space (M33.4): its container's
+    /// document asks, by the features the frame's element and origins
+    /// give a document of the URL's origin there.
+    pub(crate) fn frame_local_network(&self, url: &Url) -> Option<net::LocalNetworkAccess> {
+        let access = self.frame.container_local_network.clone()?;
+        let allowed = lock(&self.frame.tree).allowed(self.frame.id, &url.origin());
+        Some(net::LocalNetworkAccess {
+            local: allowed.local,
+            loopback: allowed.loopback,
+            ..access
+        })
+    }
+
+    /// Gives `page`, a document coming to this engine's frame, what lets
+    /// its requests ask their way into a more private address space
+    /// (M33.4), and its network the same: a secure context's, by the
+    /// features its frames' origins and `allow` attributes give it; the
+    /// tab's top-level origin is the one the user is asked about.
+    pub(crate) fn place_local_network(&mut self, page: &mut Page) {
+        let access = page.is_secure_context().then(|| {
+            let tree = lock(&self.frame.tree);
+            let allowed = tree.allowed(self.frame.id, page.origin());
+            let origin = match self.frame.is_frame() {
+                true => tree.top_origin(),
+                false => page.origin().clone(),
+            };
+            net::LocalNetworkAccess {
+                origin,
+                local: allowed.local,
+                loopback: allowed.loopback,
+            }
+        });
+        self.network.set_local_network(page.id(), access.clone());
+        page.set_local_network(access);
     }
 
     /// The flags of the `iframe` `node`'s `sandbox` attribute (M33.2):
@@ -722,8 +848,8 @@ impl Engine {
             // A change of its `sandbox` applies at the frame's next
             // navigation (M33.2).
             if let Some(frame) = self.shown.frames.get(&node) {
-                let sandbox = self.element_sandbox(node);
-                lock(&self.frame.tree).set_element_sandbox(frame.id, sandbox);
+                let (sandbox, allow) = (self.element_sandbox(node), self.element_allow(node));
+                lock(&self.frame.tree).set_element_policy(frame.id, sandbox, allow);
             }
             match self.shown.frames.get(&node) {
                 Some(frame) if frame.source == source => continue,
@@ -777,8 +903,8 @@ impl Engine {
                 return None;
             }
         };
-        let sandbox = self.element_sandbox(node);
-        lock(&self.frame.tree).set_element_sandbox(id, sandbox);
+        let (sandbox, allow) = (self.element_sandbox(node), self.element_allow(node));
+        lock(&self.frame.tree).set_element_policy(id, sandbox, allow);
         let mut engine = Box::new(self.child_engine(id));
         let creator = self.shown.page.creator(&self.shown.document);
         engine.show_blank(&creator, true);
@@ -807,12 +933,18 @@ impl Engine {
             .page
             .url()
             .map(|url| url.without_fragment().to_owned());
+        let local_network = self.shown.page.local_network().cloned();
         let ancestors = &self.frame.ancestors;
         let Some(frame) = self.shown.frames.get_mut(&node) else {
             return;
         };
         frame.engine.frame.container.clone_from(&initiator);
         frame.engine.frame.container_csp = Some(creator.csp.clone());
+        frame
+            .engine
+            .frame
+            .container_local_network
+            .clone_from(&local_network);
         frame.source = source.clone();
         frame.told = false;
         frame.drawn = None;
@@ -872,6 +1004,7 @@ impl Engine {
         .with_sandbox(self.creation_sandbox());
         let partition = self.partition_for(page.origin());
         self.network.set_partition(id, partition);
+        self.place_local_network(&mut page);
         let document = parsed_or_empty("");
         let media = self.media(self.viewport);
         page.begin(&document, &mut self.network, &media);
@@ -959,6 +1092,7 @@ impl Engine {
         request.referrer_policy = Some(referrer_policy);
         // Its container's `frame-src` decides (M33.1).
         request.csp = Some(creator.csp.clone());
+        request.local_network = self.frame_local_network(&url);
         self.network.fetch(id, Target::Document, request);
         self.navigation = Some(Navigation {
             url,

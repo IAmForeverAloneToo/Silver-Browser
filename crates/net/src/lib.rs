@@ -30,7 +30,7 @@ pub mod test_server;
 pub mod transport;
 pub mod url;
 
-pub use address_space::AddressSpace;
+pub use address_space::{AddressSpace, LocalNetworkAccess, LocalNetworkGate};
 pub use cache::{Cache, CacheMode};
 pub use error::{AbortHandle, NetworkError, TlsFailure};
 pub use fetch::{

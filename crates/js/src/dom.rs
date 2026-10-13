@@ -53,6 +53,9 @@ pub struct FetchCall {
     /// document's (M33.3).
     pub referrer: String,
     pub referrer_policy: String,
+    /// The address space its server is to be in (M33.4,
+    /// `targetAddressSpace`): `local`, `loopback`, `public`, or empty.
+    pub target_address_space: String,
 }
 
 /// A call of a canvas's 2D context, or of an object scripts make for

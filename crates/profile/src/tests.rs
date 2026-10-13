@@ -122,6 +122,21 @@ fn hsts_hosts_are_replaced_whole_apart_from_the_cookies() {
 }
 
 #[test]
+fn permissions_are_replaced_whole_apart_from_the_hosts() {
+    let profile = Profile::in_memory(&Memory::new()).unwrap();
+    assert!(profile.permissions().unwrap().is_empty());
+    let mut changes = Changes::new();
+    changes.permissions(vec![b"p".to_vec(), b"o".to_vec()]);
+    changes.hsts(vec![b"h".to_vec()]);
+    profile.commit(&changes).unwrap();
+    let mut changes = Changes::new();
+    changes.permissions(vec![b"q".to_vec()]);
+    profile.commit(&changes).unwrap();
+    assert_eq!(profile.permissions().unwrap(), [b"q".to_vec()]);
+    assert_eq!(profile.hsts().unwrap(), [b"h".to_vec()]);
+}
+
+#[test]
 fn cookies_are_replaced_whole_and_keep_their_order() {
     let profile = Profile::in_memory(&Memory::new()).unwrap();
     assert!(profile.cookies().unwrap().is_empty());

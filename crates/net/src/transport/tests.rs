@@ -3,7 +3,8 @@
 //! TLS with certificates made for the test.
 
 use std::io::Write;
-use std::sync::{Arc, Barrier};
+use std::net::SocketAddr;
+use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -13,8 +14,8 @@ use flate2::write::GzEncoder;
 use rustls::ServerConfig;
 
 use super::*;
-use crate::TlsFailure;
 use crate::test_server::{Reply, ServerRequest, TestAuthority, TestServer};
+use crate::{Origin, TlsFailure};
 
 fn transport() -> Transport {
     Transport::new(Config::default())
@@ -47,6 +48,8 @@ fn send_in(
         headers: &headers,
         body: (method == "POST").then_some(&b"x"[..]),
         initiator,
+        ask: None,
+        target: None,
         abort,
         body_limit: None,
     })
@@ -401,6 +404,8 @@ fn a_server_that_takes_nothing_times_the_request_out() {
         headers: &headers,
         body: Some(&body),
         initiator: None,
+        ask: None,
+        target: None,
         abort: &AbortHandle::new(),
         body_limit: None,
     });
@@ -488,6 +493,107 @@ fn address_spaces() {
     ));
     assert!(send_from(None).is_ok());
     assert_eq!(server.connections(), 1);
+}
+
+/// A gate that answers `allow` after `wait`, counting what it was asked.
+#[derive(Debug)]
+struct Answering {
+    allow: bool,
+    wait: Duration,
+    asked: Mutex<Vec<(String, AddressSpace)>>,
+}
+
+impl LocalNetworkGate for Answering {
+    fn allow(&self, origin: &Origin, target: AddressSpace, _: &AbortHandle) -> bool {
+        std::thread::sleep(self.wait);
+        let asked = (origin.serialization(), target);
+        self.asked.lock().unwrap().push(asked);
+        self.allow
+    }
+}
+
+#[test]
+fn a_page_asks_the_user_for_a_more_private_space() {
+    let server = TestServer::plain(|_| hello());
+    let url = server.url("/");
+    let address = SocketAddr::from(([127, 0, 0, 1], server.port()));
+    let access = LocalNetworkAccess {
+        origin: Url::parse("https://page.test/").unwrap().origin(),
+        local: true,
+        loopback: true,
+    };
+    let send_asking = |transport: &Transport, gate: &Answering, access, target| {
+        let headers = HeaderList::new();
+        transport.exchange(&Exchange {
+            partition: None,
+            method: "GET",
+            url: &url,
+            headers: &headers,
+            body: None,
+            initiator: Some(AddressSpace::Public),
+            ask: Some(Ask { gate, access }),
+            target,
+            abort: &AbortHandle::new(),
+            body_limit: None,
+        })
+    };
+    let gate = |allow, wait| Answering {
+        allow,
+        wait,
+        asked: Mutex::new(Vec::new()),
+    };
+    // Let: through, after a wait longer than the connection may take.
+    let transport = Transport::new(Config {
+        connect_timeout: Duration::from_millis(200),
+        ..Config::default()
+    });
+    let yes = gate(true, Duration::from_millis(400));
+    assert!(send_asking(&transport, &yes, &access, None).is_ok());
+    assert_eq!(
+        *yes.asked.lock().unwrap(),
+        [("https://page.test".to_owned(), AddressSpace::Loopback)]
+    );
+    // Refused: D19's error.
+    let no = gate(false, Duration::ZERO);
+    assert_eq!(
+        send_asking(&transport, &no, &access, None).unwrap_err(),
+        NetworkError::AddressSpace {
+            initiator: AddressSpace::Public,
+            target: AddressSpace::Loopback,
+        }
+    );
+    // A policy that does not let it ask is refused without asking.
+    let unasked = gate(true, Duration::ZERO);
+    let local_only = LocalNetworkAccess {
+        loopback: false,
+        ..access.clone()
+    };
+    assert!(send_asking(&transport, &unasked, &local_only, None).is_err());
+    assert!(unasked.asked.lock().unwrap().is_empty());
+    // A server in another space than the one named.
+    assert_eq!(
+        send_asking(&transport, &yes, &access, Some(AddressSpace::Local)).unwrap_err(),
+        NetworkError::TargetAddressSpace {
+            named: AddressSpace::Local,
+            reached: AddressSpace::Loopback,
+        }
+    );
+    // A test's server put in the local network: asked for that.
+    let transport = Transport::new(Config::default().treat_as(address, AddressSpace::Local));
+    let yes = gate(true, Duration::ZERO);
+    assert!(send_asking(&transport, &yes, &access, Some(AddressSpace::Local)).is_ok());
+    assert_eq!(
+        *yes.asked.lock().unwrap(),
+        [("https://page.test".to_owned(), AddressSpace::Local)]
+    );
+    let from_local = send(
+        &transport,
+        "GET",
+        &url,
+        Some(AddressSpace::Local),
+        &AbortHandle::new(),
+    );
+    assert!(from_local.is_ok(), "a local page reaches it");
 }
 
 #[test]

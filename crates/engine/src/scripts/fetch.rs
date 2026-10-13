@@ -130,6 +130,12 @@ pub(crate) fn request(
     let mut request = net::Request::get(url, Destination::Empty).initiated_by(initiator);
     request.referrer = referrer;
     request.referrer_policy = referrer_policy;
+    // The space it names (M33.4); `public` asks nothing of it.
+    request.target_address_space = match call.target_address_space.as_str() {
+        "local" => Some(net::AddressSpace::Local),
+        "loopback" => Some(net::AddressSpace::Loopback),
+        _ => None,
+    };
     request.method = method;
     request.headers = fields;
     request.body = call.body.clone();
@@ -192,6 +198,7 @@ mod tests {
             cache: "default".to_owned(),
             referrer: "about:client".to_owned(),
             referrer_policy: String::new(),
+            target_address_space: String::new(),
         };
         change(&mut call);
         call

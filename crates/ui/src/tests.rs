@@ -389,3 +389,33 @@ fn the_status_bubble_fits_its_text_and_keeps_its_start() {
     assert_eq!(pixels.len(), (width * status::HEIGHT * 4) as usize);
     assert!(bubble.frame("", 400, 1.0).is_none());
 }
+
+#[test]
+fn the_prompt_bar_draws_its_text_and_its_buttons() {
+    let mut bar = PromptBar::new(fonts());
+    let text = "https://a.test wants to connect to devices on your local network";
+    let pixels = bar.frame(text, WIDTH, 1.0).to_vec();
+    assert_eq!(pixels.len(), (WIDTH * prompt::HEIGHT * 4) as usize);
+    // Block at the right, Allow before it, nothing elsewhere.
+    let (w, middle) = (WIDTH as f32, prompt::HEIGHT as f32 / 2.0);
+    assert_eq!(
+        PromptBar::choice_at(w, w - 20.0, middle),
+        Some(Choice::Block)
+    );
+    assert_eq!(
+        PromptBar::choice_at(w, w - 100.0, middle),
+        Some(Choice::Allow)
+    );
+    assert_eq!(PromptBar::choice_at(w, 20.0, middle), None);
+    assert_eq!(PromptBar::choice_at(w, w - 20.0, 1.0), None);
+    // The text is drawn at the left, the labels on the buttons.
+    let dark = |x0: u32, x1: u32| {
+        (0..prompt::HEIGHT).any(|y| (x0..x1).any(|x| pixels[((y * WIDTH + x) * 4) as usize] < 0x80))
+    };
+    assert!(dark(10, 60), "the text");
+    assert!(dark(WIDTH - 60, WIDTH - 30), "a label");
+    assert!(!dark(WIDTH - 9, WIDTH), "the margin");
+    // Twice the rows at twice the scale.
+    let doubled = bar.frame(text, WIDTH * 2, 2.0).len();
+    assert_eq!(doubled, (WIDTH * 2 * prompt::HEIGHT * 2 * 4) as usize);
+}

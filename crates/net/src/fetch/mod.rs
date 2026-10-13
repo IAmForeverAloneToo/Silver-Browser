@@ -25,7 +25,7 @@ use crate::hsts::Hsts;
 use crate::mime::{self, MimeType};
 use crate::referrer::{Referrer, ReferrerPolicy};
 use crate::transport::{self, Exchange, Transport};
-use crate::{AddressSpace, Host, Origin, Partition, Url};
+use crate::{AddressSpace, Host, LocalNetworkAccess, LocalNetworkGate, Origin, Partition, Url};
 
 pub use cors::{DEFAULT_PREFLIGHT_AGE, MAX_PREFLIGHT_AGE, MAX_PREFLIGHT_ENTRIES};
 pub use ports::{BAD_PORTS, is_bad as is_bad_port};
@@ -308,6 +308,13 @@ pub struct Request {
     /// kept apart by its top-level site; a top-level document's have
     /// none.
     pub partition: Option<Partition>,
+    /// What lets it ask the user for its way into a more private address
+    /// space than its page's (M33.4): none refuses it at once.
+    pub local_network: Option<LocalNetworkAccess>,
+    /// The space its server is to be in, which its script named (M33.4,
+    /// `targetAddressSpace`): a local or loopback one lets an `http:`
+    /// request of a secure page past mixed content.
+    pub target_address_space: Option<AddressSpace>,
 }
 
 impl Request {
@@ -354,6 +361,8 @@ impl Request {
             referrer_policy: None,
             cache: CacheMode::Default,
             partition: None,
+            local_network: None,
+            target_address_space: None,
         }
     }
 
@@ -536,6 +545,9 @@ pub struct Client {
     /// The hosts known to be HTTPS only (M33.3), which an engine's
     /// clients share as they share the cookies.
     hsts: Arc<Mutex<Hsts>>,
+    /// What asks the user for a request's way into a more private
+    /// address space (M33.4); with none, D19 refuses it.
+    gate: Option<Arc<dyn LocalNetworkGate>>,
     /// The time, by which the cache reckons ages.
     clock: WallClock,
 }
@@ -559,6 +571,7 @@ impl Client {
             cookies: Arc::default(),
             cache: Arc::default(),
             hsts: Arc::default(),
+            gate: None,
             clock: Arc::new(SystemTime::now),
         }
     }
@@ -572,6 +585,13 @@ impl Client {
 
     /// The client, its fetches keeping their cookies in `jar` (M27.4):
     /// an engine's, which outlives the clients it is given.
+    /// The client, asking `gate` for its requests' way into a more
+    /// private address space (M33.4).
+    pub fn with_local_network_gate(mut self, gate: Arc<dyn LocalNetworkGate>) -> Client {
+        self.gate = Some(gate);
+        self
+    }
+
     /// The client, keeping the HSTS hosts of `hsts` (M33.3).
     pub fn with_hsts(mut self, hsts: Arc<Mutex<Hsts>>) -> Client {
         self.hsts = hsts;
@@ -732,9 +752,32 @@ impl Client {
                 let mode = cache_mode(request, hop);
                 let cached = hop.method.as_str() == "GET" && deliver.is_none();
                 let site = partition_key(request, hop).1;
+                let initiator = request
+                    .initiator
+                    .as_ref()
+                    .map(|initiator| initiator.address_space);
+                let ask = match (&request.local_network, &self.gate) {
+                    (Some(access), Some(gate)) => Some(transport::Ask {
+                        gate: gate.as_ref(),
+                        access,
+                    }),
+                    _ => None,
+                };
                 if cached && let Some(stale) = mode.reads() {
                     let now = (self.clock)();
                     if let Some(stored) = self.cache.lookup(&site, url, &headers, now, stale) {
+                        // As the connection to its server would be (M33.4).
+                        if let Some(space) = stored.address_space {
+                            if let Some(named) = request.target_address_space
+                                && named != space
+                            {
+                                return Err(NetworkError::TargetAddressSpace {
+                                    named,
+                                    reached: space,
+                                });
+                            }
+                            transport::reachable(initiator, space, ask, &request.abort)?;
+                        }
                         return Ok(Response {
                             url_list: vec![url.clone()],
                             status: stored.status,
@@ -765,10 +808,9 @@ impl Client {
                     url,
                     headers: &headers,
                     body,
-                    initiator: request
-                        .initiator
-                        .as_ref()
-                        .map(|initiator| initiator.address_space),
+                    initiator,
+                    ask,
+                    target: request.target_address_space,
                     abort: &request.abort,
                     body_limit: request.body_limit,
                 };
@@ -1451,10 +1493,16 @@ fn check(request: &Request, url: &Url, redirects: usize) -> Result<(), NetworkEr
         if ports::is_bad(port) {
             return Err(NetworkError::BadPort(port));
         }
+        // A request that names a local or loopback server goes past it,
+        // to be checked where it connects (M33.4).
+        let named_private = request
+            .target_address_space
+            .is_some_and(|space| space != AddressSpace::Public);
         if let Some(initiator) = &request.initiator
             && initiator.url.scheme() == "https"
             && scheme == "http"
             && !url.is_potentially_trustworthy()
+            && !named_private
         {
             return Err(NetworkError::MixedContent);
         }

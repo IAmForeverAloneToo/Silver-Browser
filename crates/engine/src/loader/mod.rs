@@ -31,6 +31,8 @@ mod hsts_tests;
 #[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]
+mod lna_tests;
+#[cfg(test)]
 mod mixed_tests;
 #[cfg(test)]
 mod origin_tests;
@@ -225,6 +227,9 @@ pub(crate) struct Network {
     cache: Arc<net::Cache>,
     /// The HSTS hosts every client of the engine keeps (M33.3).
     hsts: Arc<Mutex<net::Hsts>>,
+    /// The answers its clients' requests into a more private address
+    /// space wait on (M33.4).
+    permissions: Arc<crate::permissions::Permissions>,
     flights: HashMap<FetchId, Flight>,
     next: FetchId,
     /// Where each page's document is in its tab (M33.2): what a frame's
@@ -236,6 +241,9 @@ pub(crate) struct Network {
     /// Each page's document's referrer policy (M33.3), for its requests
     /// that name none.
     referrer_policies: HashMap<PageId, net::ReferrerPolicy>,
+    /// What lets each page's requests ask their way into a more private
+    /// address space (M33.4); none for a page that may not.
+    local_networks: HashMap<PageId, net::LocalNetworkAccess>,
 }
 
 impl Network {
@@ -246,12 +254,34 @@ impl Network {
             cookies: Arc::default(),
             cache: Arc::default(),
             hsts: Arc::default(),
+            permissions: Arc::default(),
             flights: HashMap::new(),
             next: 0,
             partitions: HashMap::new(),
             csps: HashMap::new(),
             referrer_policies: HashMap::new(),
+            local_networks: HashMap::new(),
         }
+    }
+
+    /// What lets page `page`'s requests ask their way into a more private
+    /// address space from now on (M33.4); none refuses them, as when the
+    /// page is left.
+    pub(crate) fn set_local_network(
+        &mut self,
+        page: PageId,
+        access: Option<net::LocalNetworkAccess>,
+    ) {
+        match access {
+            Some(access) => self.local_networks.insert(page, access),
+            None => self.local_networks.remove(&page),
+        };
+    }
+
+    /// The answers the engine's requests into a more private address
+    /// space wait on (M33.4).
+    pub(crate) fn permissions(&self) -> &Arc<crate::permissions::Permissions> {
+        &self.permissions
     }
 
     /// Page `page`'s requests that name no referrer policy use `policy`
@@ -297,6 +327,7 @@ impl Network {
             .with_cookies(self.cookies.clone())
             .with_cache(self.cache.clone())
             .with_hsts(self.hsts.clone())
+            .with_local_network_gate(self.permissions.clone())
     }
 
     /// The client fetches are made with, made now if none is yet.
@@ -335,6 +366,7 @@ impl Network {
     }
 
     pub(crate) fn set_waker(&self, waker: Waker) {
+        self.permissions.set_waker(waker.clone());
         self.pool.set_waker(waker);
     }
 
@@ -355,6 +387,9 @@ impl Network {
         }
         if request.referrer_policy.is_none() {
             request.referrer_policy = self.referrer_policies.get(&page).copied();
+        }
+        if request.local_network.is_none() && request.mode != net::Mode::Navigate {
+            request.local_network = self.local_networks.get(&page).cloned();
         }
         let streamed = target == Target::Document;
         let client = self.client();

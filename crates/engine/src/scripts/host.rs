@@ -1036,6 +1036,7 @@ impl DocumentHost {
                     partition: self.partition(),
                     csp: page.policies().clone(),
                     referrer_policy: page.referrer_policy(&self.document),
+                    local_network: page.local_network().cloned(),
                 };
                 Ok(Answer::Number(f64::from(self.workers.workers.start(start))))
             }

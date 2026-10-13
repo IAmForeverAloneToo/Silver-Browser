@@ -857,3 +857,90 @@ fn a_forms_submission_is_held_to_form_action_at_each_hop() {
     // A report names the first URL after a redirect to another origin.
     assert_eq!(recorded[0].blocked, server.url("/redirect").as_str());
 }
+
+/// A gate whose answer the test sets, counting how often it was asked.
+#[derive(Debug, Default)]
+struct Switch {
+    allow: std::sync::atomic::AtomicBool,
+    asked: std::sync::atomic::AtomicUsize,
+}
+
+impl LocalNetworkGate for Switch {
+    fn allow(&self, _: &Origin, _: AddressSpace, _: &AbortHandle) -> bool {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.asked.fetch_add(1, SeqCst);
+        self.allow.load(SeqCst)
+    }
+}
+
+#[test]
+fn a_request_into_a_more_private_space_asks_and_the_cache_does_too() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let server = TestServer::plain(|_| {
+        Reply::with_fields(
+            200,
+            &[
+                ("Content-Type", "text/plain"),
+                ("Cache-Control", "max-age=600"),
+            ],
+            b"local",
+        )
+    });
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], server.port()));
+    let config = transport::Config::default()
+        .resolve("printer.test", std::net::IpAddr::from([127, 0, 0, 1]))
+        .treat_as(address, AddressSpace::Local);
+    let gate = Arc::new(Switch::default());
+    let client = Client::new(config).with_local_network_gate(gate.clone());
+    let target = url(&format!("http://printer.test:{}/status", server.port()));
+    let from_public = |target_space| {
+        let mut request = Request::get(target.clone(), Destination::Empty)
+            .initiated_by(page("https://page.test/", AddressSpace::Public));
+        request.local_network = Some(LocalNetworkAccess {
+            origin: url("https://page.test/").origin(),
+            local: true,
+            loopback: false,
+        });
+        request.target_address_space = target_space;
+        request.mode = Mode::NoCors;
+        request
+    };
+    // An https: page's request to http: is mixed content, unless it names
+    // the local space it is for.
+    assert_eq!(
+        client.fetch(&from_public(None)).unwrap_err(),
+        NetworkError::MixedContent
+    );
+    assert_eq!(gate.asked.load(SeqCst), 0);
+    // Let: fetched, and kept by the cache.
+    gate.allow.store(true, SeqCst);
+    let response = client
+        .fetch(&from_public(Some(AddressSpace::Local)))
+        .unwrap();
+    assert_eq!(response.body, b"local");
+    assert_eq!(gate.asked.load(SeqCst), 1);
+    // The cache's answer is asked for as the server's would be.
+    gate.allow.store(false, SeqCst);
+    assert_eq!(
+        client
+            .fetch(&from_public(Some(AddressSpace::Local)))
+            .unwrap_err(),
+        NetworkError::AddressSpace {
+            initiator: AddressSpace::Public,
+            target: AddressSpace::Local,
+        }
+    );
+    assert_eq!(gate.asked.load(SeqCst), 2);
+    assert_eq!(server.requests().len(), 1, "the cache answered");
+    // Naming another space than the server's fails, the cache's too.
+    gate.allow.store(true, SeqCst);
+    assert_eq!(
+        client
+            .fetch(&from_public(Some(AddressSpace::Loopback)))
+            .unwrap_err(),
+        NetworkError::TargetAddressSpace {
+            named: AddressSpace::Loopback,
+            reached: AddressSpace::Local,
+        }
+    );
+}

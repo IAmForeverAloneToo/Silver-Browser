@@ -18,7 +18,7 @@ use std::time::Duration;
 use rustls::ClientConfig;
 use rustls::pki_types::CertificateDer;
 
-use crate::address_space::AddressSpace;
+use crate::address_space::{AddressSpace, LocalNetworkAccess, LocalNetworkGate};
 use crate::content_coding;
 use crate::error::{AbortHandle, NetworkError};
 use crate::headers::HeaderList;
@@ -55,6 +55,9 @@ pub struct Config {
     pub(crate) extra_roots: Vec<CertificateDer<'static>>,
     /// Names resolved without the resolver: only tests give one.
     pub(crate) hosts: Vec<(String, IpAddr)>,
+    /// Address spaces given to addresses in place of their own: only
+    /// tests give one.
+    pub(crate) spaces: Vec<(SocketAddr, AddressSpace)>,
 }
 
 impl Default for Config {
@@ -67,6 +70,7 @@ impl Default for Config {
             limits: Limits::default(),
             extra_roots: Vec::new(),
             hosts: Vec::new(),
+            spaces: Vec::new(),
         }
     }
 }
@@ -110,6 +114,24 @@ impl Config {
         self.hosts.push((host.to_ascii_lowercase(), address));
         self
     }
+
+    /// Puts the server at `address` in `space` (M33.4): a test's server on
+    /// this machine as a public or a local one, as the reference
+    /// browser's address space overrides do. There is no such option
+    /// outside tests.
+    #[cfg(any(test, feature = "test-server"))]
+    pub fn treat_as(mut self, address: SocketAddr, space: AddressSpace) -> Config {
+        self.spaces.push((address, space));
+        self
+    }
+
+    /// The space of the server at `address`.
+    fn space_of(&self, address: SocketAddr) -> AddressSpace {
+        self.spaces
+            .iter()
+            .find(|(given, _)| *given == address)
+            .map_or_else(|| AddressSpace::of(address.ip()), |&(_, space)| space)
+    }
 }
 
 /// One request to send.
@@ -126,9 +148,49 @@ pub struct Exchange<'a> {
     /// The address space of the page asking, or `None` for a load the
     /// user asked for, which may go anywhere.
     pub initiator: Option<AddressSpace>,
+    /// What it asks the user with, when its page may ask its way into a
+    /// more private space (M33.4); none refuses at once.
+    pub ask: Option<Ask<'a>>,
+    /// The space its server is to be in, when the request named one
+    /// (M33.4, `targetAddressSpace`).
+    pub target: Option<AddressSpace>,
     pub abort: &'a AbortHandle,
     /// The most the body may hold, when less than the configured limit.
     pub body_limit: Option<usize>,
+}
+
+/// What a request asks the user with for its way into a more private
+/// address space (M33.4): the gate, and what its page may ask for.
+#[derive(Debug, Clone, Copy)]
+pub struct Ask<'a> {
+    pub gate: &'a dyn LocalNetworkGate,
+    pub access: &'a LocalNetworkAccess,
+}
+
+/// Whether a request from a page in `initiator`'s space may reach an
+/// address in `target`: by D19's rule, or by the user's answer when its
+/// page may ask for that space (M33.4); a load the user asked for goes
+/// anywhere.
+pub(crate) fn reachable(
+    initiator: Option<AddressSpace>,
+    target: AddressSpace,
+    ask: Option<Ask<'_>>,
+    abort: &AbortHandle,
+) -> Result<(), NetworkError> {
+    let Some(initiator) = initiator else {
+        return Ok(());
+    };
+    if initiator.may_request(target) {
+        return Ok(());
+    }
+    match ask {
+        Some(ask)
+            if ask.access.may_ask(target) && ask.gate.allow(&ask.access.origin, target, abort) =>
+        {
+            Ok(())
+        }
+        _ => Err(NetworkError::AddressSpace { initiator, target }),
+    }
 }
 
 /// Where a streamed exchange's response goes as it is read (M24.8).
@@ -361,19 +423,26 @@ impl Transport {
             let mut lease = self.pool.checkout(&key, fresh, exchange.abort)?;
             let reused = lease.connection.is_some();
             if !reused {
-                lease.connection =
-                    Some(self.open(url, exchange.initiator, exchange.partition, exchange.abort)?);
+                lease.connection = Some(self.open(exchange)?);
             }
             let connection = lease.connection.as_mut().expect("a connection");
-            if let Some(initiator) = exchange.initiator
-                && !initiator.may_request(connection.space)
-            {
+            let space = connection.space;
+            let named = exchange.target.filter(|&named| named != space);
+            let refused = match named {
+                Some(named) => Err(NetworkError::TargetAddressSpace {
+                    named,
+                    reached: space,
+                }),
+                // A new connection's address was checked as it was made.
+                None if reused => {
+                    reachable(exchange.initiator, space, exchange.ask, exchange.abort)
+                }
+                None => Ok(()),
+            };
+            if let Err(error) = refused {
                 // The connection itself is fine for another request.
                 lease.keep = true;
-                return Err(NetworkError::AddressSpace {
-                    initiator,
-                    target: connection.space,
-                });
+                return Err(error);
             }
             connection.reader.get_mut().lend(exchange.abort);
             let mut decoding = stream.as_deref_mut().map(|stream| Decoding {
@@ -448,15 +517,11 @@ impl Transport {
         }
     }
 
-    /// A new connection to `url`'s host: resolved, connected to an
-    /// address the initiator may reach, and over TLS for `https:`.
-    fn open(
-        &self,
-        url: &Url,
-        initiator: Option<AddressSpace>,
-        partition: Option<&str>,
-        abort: &AbortHandle,
-    ) -> Result<Connection, NetworkError> {
+    /// A new connection to the exchange's URL's host: resolved,
+    /// connected to an address its page may reach, or that the user lets
+    /// it (M33.4), and over TLS for `https:`.
+    fn open(&self, exchange: &Exchange) -> Result<Connection, NetworkError> {
+        let (url, partition, abort) = (exchange.url, exchange.partition, exchange.abort);
         let host = url.host().expect("an http: or https: URL has a host");
         let port = url.port_or_default().expect("and a port");
         let given = match host {
@@ -473,13 +538,8 @@ impl Transport {
             None => connect::resolve_abortable(host, port, abort)?,
         };
         let allowed = |address| {
-            let target = AddressSpace::of(address);
-            match initiator {
-                Some(initiator) if !initiator.may_request(target) => {
-                    Err(NetworkError::AddressSpace { initiator, target })
-                }
-                _ => Ok(()),
-            }
+            let target = self.config.space_of(address);
+            reachable(exchange.initiator, target, exchange.ask, abort)
         };
         let (tcp, address) =
             connect::connect(&addresses, allowed, self.config.connect_timeout, abort)?;
@@ -504,7 +564,7 @@ impl Transport {
         };
         Ok(Connection {
             reader: BufReader::new(Stream::new(socket, waiter, timeout)),
-            space: AddressSpace::of(address.ip()),
+            space: self.config.space_of(address),
         })
     }
 }
