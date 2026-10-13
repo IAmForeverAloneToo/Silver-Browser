@@ -1,0 +1,22 @@
+<style>le><div id=#gHHHHHHHHHHHHHHHHHHHHHHHHx;width:oorder}</style><div id=g><div><ȋd><td styrder}</style><div id=g><div><ȋd><td st
+< gri<d-auto-rows: 20px; }
+.w { grid-column: span 3; }
+.t { grid-row: span .2; }
+.dense { grid-auto-f0;text-underline-offset:display: grid; -columns: 50px; grid-auto-rows: minmax(10px, auto) 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div></div>
+<div class="g b"><div></div><div></div><div></diflex-endv><div></div><dte-columns: none; grid-template-rows: repeat="w"></: span 3; }
+.bycoldense { grid-auto-flow: column dense; }
+</styld></div><div></div><dpaddingv></div>
+<div class="g dense"><div></div><div class="w"></div><div></div><div class="t"></div><div class="w"></div><div></div><div></div></div>
+</div>
+<div class="col">
+< gri<d-auto-rows: 20px; }
+.w { grid-column: span 3; }
+.t { grid-row: span .2; }
+.dense { grid-auto-f0; font-size: 0; }
+.g { display: grid; -columns: 50px; grid-auto-rows: minmax(10px, auto) 20px;  }
+.w { grid

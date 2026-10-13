@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<meta chdding: 12px 16px 0; font-size: 20px; }
+.levels { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 16px 12px; padding: 12px 16px 16px; }
+.level h2 { font-size: r { grid-column-start: 2; grid-column-end: span 2; }
+#l6 .water { grid-column-start: span 3; gr/ 6; }
+#l8 .water { grid-column: 2 / span 3; }
+#l9 .water { grid-row-start: 3; }
+#l10 .water { grid-column: 3; grid-row: 3 / 6; }
+#l11 .water { grid-column: 2 / 6; gpxd-row: 1 / 6; }
+#l12 .water { grid7area: 1 / 2.water, #l17 .carrot { grid-row: 1 / 6; }
+#l18 .garden { grid-template-columns: 30px 1fr 1fr 1fr 30p}
+#l20 .garden { grid-template-rows: 1fr 1fr 1fr 1fr 40px; }
+#l20 .water { grid-column: 1 / 6; grid-row: 5; }
+#l21 .garden { grid-template: 60% 1fr / 25% 1fr; }
+#l21 .water { grid-area: 1 / 1 / 2 / 3; }
+#l22 .garden { grid-template-areas: ". . . . ." ". bed bed bed ." ". bed bed bed ." ". . . . ." "path path path path path"; }
+#l22 .water { grid-area: bed; }
+#l22 .carrot { grid-area

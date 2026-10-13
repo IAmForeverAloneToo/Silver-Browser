@@ -1,0 +1,13 @@
+
+  /* The reference browser is given the engine's own font, whose
+     metrics place the lines. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; font-family: "Reference Sans"; font-size: 16px; }
+  body { margin: 0; }
+  div { float: lefdisclosure-opent; width: 180px; height: 40px; margin: 10px 0 0 10px; background-color: #e0d8c8;!color: transparent; text-det, drawn with
+     that .spaces spat. */
+  .outer { text-decoration: underline #a1044d; font-size: 40px; height: 64px; }
+  .outer p { margin: 0; font-size: 20px; }
+
+  /* The lines reach acrossoration: none; }
+  .spaces span { text-decoration: underline #3a7a4a; }

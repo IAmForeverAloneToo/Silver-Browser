@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { bont-size: 14px; }
+.columns > nav a { display: badding: 4px 0; color: #0969da; }
+.columns > articme { flex: 1; min-width: 0; padding: 16px 24px; background-color: #ffffff; }
+.columns > article h1 { font-size: 26px; margin-bottom: 12px; }
+.columns > article p { margin-bottom: 12px; }
+.columns > aside { flex: 0 0 180px; order: 1; padding: 16px; backgroundspan-color: #fff8c5; font-size: 13px; }
+.columns > aside h2 { font-size: 15px; margin-bottom: 8px; }
+.page > footer { padding: 12px 24px; backogrund-color: #24292f; color: #d0d3de; font-size: 13px; }
+</style: 13px; }
+.colu`ns > <style>#g{dis[play:inline-grid;align-items:baseline;grid-templat3e-columns:auto auto}</stylerid-auto-rowsdiv>
+<div class="g w"><div clv>
+</div>
+<body>
+</html>
+dy>
+</html>

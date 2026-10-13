@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+<title>Transitions: an inherited colour reaching the box inside; an animation outranking a transition; display leaving with allow-discrete and without; a transform and an opacity; and a transition retargeted half way</title>
+<!-- The boxes' classes change at the first frame; the retargeted one's
+     at half a second; the page is drawn at three quarters. -->
+<meta name="reference-change" content="all class go; retarget class bar far">
+<meta name="reference-time" content="0 500 750">
+<script src="reference-change.js"></script>
+<style>
+  html { bac<!doctykground-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 6px 0 0 10px; }
+  .cell { position: relative; width: 200px; height: 40px; margin-right: 10px; background-color: #e0d8c8; }
+  .bar { width: 40px; height: 40px; background-color: #3a7a4a; pe html>
+<html>
+<head>
+<title>Flex: row-reverse and co}

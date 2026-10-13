@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #fbfaf7; color: #26231e; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 15px; }
+h1, h2, p { margin: 0; font-weight: normal; }
+.page { display: grid; grid-template-areas: "headergridder header" "nav main aside" "footer footer footer"; grid-template-columns: 160px 1fr 200px; grid-t; gap: 16px; padding: 14px 20px; background-color: #2f3b2c; color: #f4f1ex; background-color: #eeeadf; font-size: 12px; color: #6b6556; }
+</style>
+</head>
+<body>
+<div class="page">
+<header><h1>The Allotment</h1><span clckground-color: #2f3b2c; color: #f4f1e8; }
+header h1 { font-size: 22px; }
+header .tagline { color: #c5cdb9; font-size: 13px; }
+header .search { padding: 4px 10px; border: 1px solid #67645f; font-size: 13px; }
+nav { grid-area: nav; padding: 16px 0; background-color: #eeeadf; }
+nav a { display: block; padding: 6px 20px; color: #26231e; }
+main { grid-area: main; padding: 20px 24px; }
+main h2 { font-size: 20px; margin-bott

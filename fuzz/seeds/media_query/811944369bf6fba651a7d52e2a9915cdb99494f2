@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+<meta namex < width <= 640px) { .c8 { background-color: #8a3a5a; } }
+  @media (640px <= width < 700px) { .c9 { background-colo<!doctype html>
+<html>
+<head>
+<title>@supports with declarations, not, and, or and selector(), unknown properties, values and functions, a malformed condition, and nested in @media and around it</title>
+<style>r: #3a7a4a; } }
+  @media (640px > width) { .c10 { background-color: #3a5a7a; } }
+  @media (min-height: 480px) { .c11 { background-color: #a0522d; } }
+  @mebackground-color: #8a6a2a; } }
+  @media (width = 640px) { .c7 { background-color: #4a6a2a; } }
+  @media (600p
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { x < width <= 640px) { .c8 { background-color: #8a3a5a; } }
+  @media (640px <= width < 700px) { float: left; width: 50px;. he

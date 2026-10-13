@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-size" content="480x640">
+<title>Orientation and aspect ratio in a portrait viewport of 480 by 640 pixels: ratios exact, reduced and as a number, in min-, max- and range syntax and in a boolean contes a number, in min-, max- and range syntax and in a boolean context</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10p x 10 00px; background-color: #b8b0a0; }
+  @media (orientation: portrait) { <!doctype html>
+h1tml>
+<head>
+<title>Cascade layers: the .c7 { background-color: #4a6a2a; } }
+  @media (aspect-ratio < 1) { .c8 { background-color: #8a3a5a; } }
+  @medi/a (aspect-ratio > 2/3) { .c9 { background-color: #3a7a4a; } }
+  @media (1/2 < aspect-ratio < 1) { .c10 { background-color: #3a5a7a; } }
+  @media (aspect-ratio: 6/8) { .c11 {  0; }
+  @layer cells, base, them%;
+  @layer cells { .c { float: left; width: 50px; height: 50px; mar #3a7a4a; } }
+  @layer outer.inner2 { .c6 { backgroun

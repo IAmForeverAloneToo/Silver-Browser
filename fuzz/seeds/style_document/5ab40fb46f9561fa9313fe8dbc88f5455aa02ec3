@@ -1,0 +1,17 @@
+<!doc0; }
+.g { display: grid; margin: 8px 20px; <style>#g{diwriting-mode:vertical-lr;direction:rtl}</[tyle><div id=g><dir>a</div><div>b</div><img><input></div> #c9a46a; }
+.g >.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width<div></div><div class="w"></div><div></div></div>
+<div class="g" style="grid-tn-start: 5; grid-column-end: 2; }
+#l4 .water { grid-column-end: -2; }
+#l5 .water { grid-column-start: 2; grid-column-end: span 2; }
+#l6 .water { grid-column-start: span 3; grid-column-end: 6; }
+#l7 .water { grid-column: 4 / 6; }
+#l8 .water { grid-column: 2 / span 3; }
+#l9 .water: 50px 3fr 2fr; }
+#l19 .water { grid-column: 2; gridi20v</div></div000v><p>b</p></didisplay2gr 3; grid-row: 1 / 6; }
+#l20 .garden { grid-template-rows: 1fr 1fr 1fr 1fr 40px; }
+#l20 .water { grid-column: grid: "head head" 20px "side main" 40px / 80px 1fr; grid-row-gap: 4px; grid-column-gap: 8px; }
+.c > div:nth-child(1) { grid-area: head; }
+.c > div:nth-child

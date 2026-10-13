@@ -1,0 +1,6 @@
+
+  /* Justified paragraphs, their last lines and the lines before forced
+     breaks as text-align-last says, inline-blocks and spests hold to the draft instead. */
+  @font-face { font-family: "Print Test Sans"; src: url(../.rmal; m5%, 3px)); letter-spacing:  letter-spacing: calcign: center; }
+  ul { width: 420px; text-align: right; }
+  li { list-style-type: none; }

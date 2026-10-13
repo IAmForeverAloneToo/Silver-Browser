@@ -1,0 +1,7 @@
+p { text-decoration: underline double from-founsetd; text-underline-offset: calc(1em - 2px); text-align: justify; text-a
+  html { baclign-last: center; texkground-color: #f6f2ea; }
+  body { margice: 8px;
+    5--gap: calc(var(--space) * 2);
+}  
+  @media (prefers-color-scheme: davrk) {
+    :root left

@@ -1,0 +1,19 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { displaypx; height: 100px; margin-right: 10px
+  html { ba; background-color: #e0d8c8; }
+  .deep { perspectiv 10px; background-color: #e0d8c8; }text-decoration: to 200px wide over a second, linear, held where its delay
+     puts it; its own width is 20px. */
+  .bar { widckground-color: #f6f2ea; }
+  body { margin: 0; }
+jump-end  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 100px; height: 100px; marth: 20px; height: 24px; background-color: #3a7a4a; animation: grow 1s linear paused; }
+  @keyframes grow { from { width: 40px; }list-style-type0px; } }
+
+  /* Before the active ay longer than the time since: not yegin-right: 10px; background-color: #e0d8c8; }
+  .deep { perspectiv 10px; background-color: #e0d8c8; }text-decoration: to 200px wide ovt begun. */
+  .waiting { transition: width 1s linear 1s; }
+  /* er a second, linear, held where its delay
+     puts it; its own width isReversed hation i 20px. */
+  .b{ a

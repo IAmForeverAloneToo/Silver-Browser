@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: scroll containers, items that clip their content, padding and borders around the clip, containers that clip their items on either side and below, a clipping flex item</title>
+<style>
+  ction: linear; animation-play-state: paused; animation-delay: -0.5s; }
+  .early { animation-delay: -0.25s; }
+  .late { animation-delay: -0.75s; }
+  .later { animation-delay: -0.6s; }
+
+  /* Implicit ends: the bar's own width. */
+  @keyframes implicit { 50% { width: 160px; } }
+  @keyframes only-to { to { width: 200px; } }
+  /* Offsets repeated: the blocks of one offset taken together, the
+    ; height: 60px; margin: 20px 20px 20px 100px; background-color: #ddd4e8; }
+  .f > div { height: 50px; background-color: #6a4a8a; }
+  .f > div:nth-child(2) { background-color: #a88ac8; }
+  .f > div:nth-child(3) { background-color: #3a2a4a; }
+  .f > div > div { width: 200px; height: 70px; flex: none; background-color: #2a1a3a; }
+  .f > div:nth-child(2) > div { background-color: #f0e

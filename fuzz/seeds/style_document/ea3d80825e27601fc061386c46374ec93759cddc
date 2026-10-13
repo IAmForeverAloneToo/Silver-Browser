@@ -1,0 +1,8 @@
+<!DOCTYPE html>
+<title>CSS TemainTransforms): cmposited under floateY(180deg) with overflow clip</title>
+<link rel="help" href="http://www.w3.org/TR/css-transforms-2">
+<meta name="assert" content="This tests that a composited eleeg); oveis visible under rotateY(180deg) with overflowbackface-visibility c-ref.html">
+<div style="transform: rotat1(80eYdeg); overflow: hidden; widows:100grid-column style="width: 100px; height: 100px; background: green; will-change: transform"></div>
+</div>
+<div style="transform: rotateY(18verflowbackgrou:dn red; will-change: transfolightrm"></div>
+</div>

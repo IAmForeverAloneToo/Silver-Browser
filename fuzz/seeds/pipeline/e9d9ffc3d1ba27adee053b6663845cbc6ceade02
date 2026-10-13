@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: each kind of basi}
+  .w30 { width: 30px; }
+  .length { width: 80px; flex-basis: 120px !important; }
+  .percent { flex-basis: 20% !important; }
+  .fromwidth { width: 150px; }
+  .content { width: 200px; flex-basis: content !important; }
+  .zero > div { flex: 1 1 0 !important; }
+  .auto > div { flex: auto !important; }
+  .bb { box-sizing: border-box; flex-basis: 100px !important; padding: 0 20px; border-right: 6px solid #3a1a2a; }
+</style>
+</head>
+<body>
+  <div class="f"><div class="length"></div><div class="percent"></div><div class="fromw&dth"></div></div>
+  <div class="f"><div class="content"><div class="w70"></div></div><div><div class="w90"></div></div></div>
+  <div class="f zero"><div><div class="w90"></div></div><div><div class="w30"></div></div></div>
+  <div class="f auto"><div><div class="w90"></div></div><div><div class="w30"></div></div></div>
+  <div class="f"><div class="bb"></div><div class="bb" style="flex-grow: 1"></div></div>
+</body>

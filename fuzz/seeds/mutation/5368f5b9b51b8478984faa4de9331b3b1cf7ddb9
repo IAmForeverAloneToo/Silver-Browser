@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<title>Grid: grids among other layouts — beside a float, after clearance, between collapsing margins, as a flex item, around a flex item, a table and inline items blockified, in a table cell, and in an absolutely positioned box with both insets</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; font-size: 0; }
+  .g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+  .g > div, .g > span { background-color: #a07a3a; }
+  .g > :nth-child(2n) { background-color: #c8a46a; }
+  .g > :nth-child(3n) { background-color: #604a20; }
+  .col { float: left; width: 400px; }
+  i { display: block; background-color: #3a5a7a; }
+  .box { margin: 8px 20px; background-d-template-columns: 1fr 1fr 1fr; grid-auto-rows: 20px; }
+</style>
+</head>
+<body>
+  <div class="col">
+    <div class="box"><div class="fl"></div><div class="g three" style="margin: 0"><div></div><div></div><div></div><div></div></div></div>
+    <div class="box"><div class="fl"></div>

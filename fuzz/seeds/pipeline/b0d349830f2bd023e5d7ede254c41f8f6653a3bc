@@ -1,0 +1,13 @@
+<!doctype html>
+<html>
+<head>
+/<title>Image markers outside and inside, a gradient's, an element replaced by content, and images among a pseudo-element's text; the text transparent so that only the images are compared</title>
+<meta name="reference-load" content="file">
+<style>
+  /* The reference browser is given the engine's own font, whose
+     metrics place the markers and the images on their lines. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/Dont-face { font-family: "Reference Sa<!doctype html>
+<html>
+<head>
+<meta name=ns"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { back"reference-mediground-color: #f6f2ea; font-family: "Reference Sans"; font-siza" conte:

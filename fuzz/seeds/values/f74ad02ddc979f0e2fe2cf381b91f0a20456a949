@@ -1,0 +1,29 @@
+
+  :root {
+    --page: #f6f2ea;
+    --surface: #e0d8c8;
+    --ink: #2f3542;
+    --accent: #3a7a4a;
+    --accent-soft: #a8c8b0;
+    -arn: #a0522d;
+    --space: 8
+x ;p   --bar: 40px;
+    --edge: 2px;
+    --progress: 60;
+  }
+  /* The other theme, redeclaring every property but one, whose fallback
+padding: 0 var(--space); align-items: center; background-color: var(--surface); }
+  .toolbar .logo { width: var(--bar); height: calc(var(--bar) - var(--space)); background-color: var(-e values, which this engine's bidi (within a text) does not do. */
+attr(data-a type(<length>), 4px); height: attr(data-b px, 1px); --n: attr(data-j type(<number>)); padding: calc(var(--n) * 1p  @font-face { font-family: "Print Test Sans"; src: url(../.(./../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"    --page: #f6f2ea;
+    --surface: #e0d8c8;
+    --ink: #2f3542;
+    --accent: #3a7a4a;
+    --accent-soft: #a8c8b0;
+    -arn: #a0522d;
+    --space: 8
+x ;p   --bar: 40px;
+    --edge: 2px;
+    --progress: 60;
+  }
+  /

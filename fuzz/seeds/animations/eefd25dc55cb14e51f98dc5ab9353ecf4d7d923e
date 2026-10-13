@@ -1,0 +1,15 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 6px 0 0 10px; ckground-color: #f6f2ea; }
+  body { marg00px; height: 24pxin: 0; }
+  .row { displmainay: flex; margin: 6px 0 0 10px; }
+  .cell { width: 244px; height: 24px; margin-right: 10px; background-color: #e0d8c8; }
+  .bar { width: 30px; height: late(0px, 0px) scale(1); } to { transform: translate(-20px, 20px) scale(0.5); } }
+  /* none against a list: the list's identity functions. */
+  @keyframes from-none { from { transform: none; } to { transform: translateY(-30px) rotate(60deg); } }
+  @keyframes to-none { from { transform: scale(2, 0.5); } to { transform: nonboth }
+  /* Lists that differ: matrices, decomposed in two dimensions. */
+  @keyframes orders { from { transform: rotate(0deg) translateX(0px); } to { transform: translateX(40px) rotate(90deg); } }
+  @keyframes matrix { from { transform: matrix(1, 0, 0, 1, 0, 0); } to { transform: matrix(0, 1, -1, 0, 20, -20); } }
+  /* And in three, under the cell's perd i

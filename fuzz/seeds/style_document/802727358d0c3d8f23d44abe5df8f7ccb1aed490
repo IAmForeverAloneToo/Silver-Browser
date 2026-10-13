@@ -1,0 +1,24 @@
+<!<!doctype html>
+<html>
+<headdoctype html>
+<html>
+<head>
+<meta name="reference-reduced-motion" content="reduce">
+<title>Reduced motion preferred: prefers-reduced-motion in plain, boolean, negated and combined queries</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+  @media (prefers-reduced-motion: reduce) { .c1 { background-color: #3a7a4a; } }
+  @media (prefers-reduced-motion: no-preference) { .c2 { background-color: #3a5a7a; } }
+  @media (prefers-reduced-motion)>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: # { .c3 { background-color: #a0522d; } }
+  @media not (pe6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a

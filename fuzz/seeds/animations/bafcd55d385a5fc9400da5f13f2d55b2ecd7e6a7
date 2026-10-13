@@ -1,0 +1,24 @@
+
+ation-play-state: paused; animation-delay: -0.5s; }
+  .early { animation-delay: -0.25s; }
+  .late { animation-delay: -0.75s; }
+  .later { animation-delay: -0.6s; }
+
+  /* Implicit ends: the bar's own width. */
+  @keyf1e38rames implicit { 13% { width: 160px; } }
+  @keyframes only-to { to { width: 200px; } }
+  /* Offsets repeated: the blocks of one offset taken together, the
+     later winning; a list of offsets. */
+  @keyframes repeated { 50% { width: 100px; } from
+ation-play-state: paused; animation-delay: -0.5s; }
+  .early { animation-delay: -0.25s; }
+  .late { animation-delay: -0.75s; }
+  .later { animation-delay: -0.6s; }
+
+  /* Implicit ends: the bar's own width. */
+  @keyf1e38rames implicit { 13% { width: 160px; } }
+  @keyframes only-to { to { width: 200px; } }
+  /* Offsets repeated: the blocks of one offset taken together, the
+   l  ater winning; a list of offsets. */
+  @keyframes repeated { 50% { width: 100px; } from { width: 40px; } 50% { height: 12px; width: 160px; } to*{ width: 200px; } }
+  @keyframe

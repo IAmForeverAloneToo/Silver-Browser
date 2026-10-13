@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { backgrould-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display backow: -3 /] -1; }
+.b { width: 360px; grid-template-areas: 'head d head' 'side main main' 'side foot foot'; grid-templaterid-row: 1; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div></div>
+<div class="g b"><div:</div><div></div><div></div><div></div></div>
+<div class="g c"><div></div><div></div><div></div></div>
+</div>
+</body>
+</html>

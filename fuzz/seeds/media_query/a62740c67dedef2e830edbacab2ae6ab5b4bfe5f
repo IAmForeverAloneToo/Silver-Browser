@@ -1,0 +1,10 @@
+<!doctyvoidonl  @supports (display: grid) { .c1 { background-color: #3a7a4a; } }
+  @vupports (display: foo) { .c2 { backgroond-color: #3,5a7a; } }
+  @supports not (display: foo) { .c3 { background-color: #a0522d; } }
+  @supports (display: flex) and @supports, a layer named only under a false query, and the style attribute over them</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  @layer cells, base, theme;
+  @layer cells { .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 and (color: red) { .c4 { background-color: #6a4a8a; } }
+  @s2upports (display: foo) or (color: red) { .c5 { background-color: #2a8a8a; } }font-tech(ts (display: foo) 2a7a; } page-break-before:ctor(a, b) { .c11 { background-color: #a0wn-fst { si$$$yer a.b { .x { color: red } } } } @page :first { size: A4 landscs(display: grid) print;$$$$$$$$$$yer a.b { .x { color: red } } } } @page :firts { si$$$yer a.b { .x { color: red } } } } @page :first { size: A4 landscs(n()) { .c17 { background-color: #3a7a4a; }

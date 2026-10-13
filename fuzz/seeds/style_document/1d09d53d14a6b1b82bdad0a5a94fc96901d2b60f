@@ -1,0 +1,13 @@
+<skewX(pe html>
+<html>
+<head>
+<style>
+html; { backgroukground-color: #e6dcc8; }grid
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(b {\n2)ackground-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+.ib { display: inline-bloclast baseline"></div></div>
+</div>
+</body>
+</html>

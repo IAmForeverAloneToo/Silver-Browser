@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head>
+<title>Background images: repeated, placed, sized, spaced and rounded, by origin and clip, layered, and fixed to the viewport, drawn pixelated</title>
+<meta name="reference-load" content="file">
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  div { position: absolute; image-rendering: pixelated; }
+  .grey { background-color: #b8b0a0; }
+</style>
+</head>
+<body>
+  <!-- quad.png is 20 by 10; stripes.png 4 by 4, red over blue; bars.png
+       4 by 4, green beside purple; dot.png 6 by 6, "></div><h2>Flexible boxes<<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin:an 2; }
+.s3 { grid-column: 2 / span 3; }
+.sa { margin-left: span a / 4; }
+.sb { grid-column: 1 /h2><p>Itemsgrow into the room theirv></div></div>
+</div>
+</b line leaves and shrink when there is too little of it.</p><div class=/ span b 2; }
+.justify-selfw: span 2; }
+.end { grid-column: span 2 / -1; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div class=

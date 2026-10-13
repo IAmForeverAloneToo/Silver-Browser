@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: .bycoldense { grid-auto-flow: column dense; }
+</style>
+</head>
+<body>
+<div<div class="w"></div><div></div><div class="t"></div><div class="w"></div><div></div><div></div></div>
+</div>
+<div class="col">
+<div class="g bycol"><div></div><div class="w"></div><div></div><div class="w"></div><div></div><zdiv></div></div>
+<div class="g bycol bycoldense"><div></div><divjustify-content class="w"></div><div></div><div class="w"></: span 2; }
+.bycoldense { grid-auto-flow: column dense; }
+</styldiv><div></div><div></div></div>
+</div>
+</body>
+</html>

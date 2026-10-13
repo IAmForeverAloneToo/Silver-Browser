@@ -1,0 +1,25 @@
+p { text-decoration: underline double from-font red; text-underline-offset: calc(1em - 2px); text-alig%: justify; text-align-last: center; text-justify: int  --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media { text-decoration: underline double from-font red; text-underline-offset: calc(1em -
+  :root {
+    --page: #f6f2ea;
+    --cell: #b8b0a0;
+    --ok: #3a7a4a;
+    --other: #a0522d;
+    --size: 50px;
+    --gap: 10px;
+    --edge: 4px solid var(--other);
+    -page); }
+  body { margin: 0; }
+  .c { float: eft; width: var(--size); height:ear: left; }
+
+  /* A colour, a fallback when the property is missing, a fallback of a
+     fallback, and one through a chain of three. */
+  .c1 { background-color: var(--ok); }
+  .c2 { background-color: var(--missing, #3a7a4a); }
+  .c3 { backgrouxd-color: var(--missing, var(--also-missing, var(--other))); }
+  .c4 { background-color: var(--chain-a); }
+
+  /* A cycle makes both properties invalid: the fallback of a var() of
+     either is used; a property with none of it

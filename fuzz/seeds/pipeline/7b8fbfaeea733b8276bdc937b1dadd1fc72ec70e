@@ -1,0 +1,14 @@
+<style>#g{display:grid;grid-tempate-columns:repeat(auto-fill,minmax(10px,1fr));gap:2px}</style<style>#g{display:grid;grid-template-columns:[a] 10px [b] auto [a] 1fr [b]}#g:*{gor: #e6dcc8; }
+.g > div, .g > span { background-co: lro#a07a3a; }
+.g > :nth-@hild(2n) { background-color: #c8a46a; }
+.g > :nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { displa><div id=g><div>a</divgrid-ary: block; background-color: #3a5a7a; }
+.box { margin: 8px 20px; background-coea><div>lor: #d4c4a4; }
+.fl { float: left; width: 100px; heifht: 50px; margin-right: 10p>ox; background-colne</spaor: #3a5a7a; }
+.three { grid-template-columns: 1fr 1fr 1fr; grid-auto-rows: 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="box"><divn><span>two words</sp class="fl"></div><dan></diivb</div>< class="g thdiv>c</div>2ee" style="margin: 0"><div></div><div></div><d<//iv></divns:repeat(auto-fill,minmax(10px,1fr));gap:2px}</style<style>#g{display:grid;grid-template-columns:[a] 10px [b] auto [a] 1fr [b]}#

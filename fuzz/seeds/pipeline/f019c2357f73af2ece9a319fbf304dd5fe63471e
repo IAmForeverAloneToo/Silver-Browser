@@ -1,0 +1,1 @@
+<style>#g{display:grid;grid-template-columns:[a] 10px [b] auto [a] 1fr [b]}#g:*{grid-column:a 2/b:grid;grid-template-columns:[a] 10px [b] auto [a] 1fr [b]}#g:*{gv>

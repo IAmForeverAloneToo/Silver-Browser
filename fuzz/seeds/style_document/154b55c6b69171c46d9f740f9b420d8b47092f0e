@@ -1,0 +1,10 @@
+<style>#g{display:_rid;grid-template-areas:'a a' 'b c';grid-template-columns:1fr 2fr}#g>:first-child{grid-area:a}</style><div class="g f h"><div></div><div></div><div><</div><div></div><div></div><div></div><div></div><div></div></div>
+<div class="g k"><div class="h"><i style="width: 200px; height: 60px"></i></div><div><i style="width: 60px; height: 20px"></i></div></div>
+<div class="g k" style="grid-template-columns: mynmax(0, 1fr) 1fr"><div style="min-width: 0"><i style="width: 200px; hei<style>ate-columplace-selfns:am<!doctype html>
+<h; }
+bod/div><div></div><div></div><div></div></div>
+<div class="g k"><div class="h"><i style="width: 200px; height: 60px"></i></div><div><i style="width: 60px; height: 20px"></i></div></div>
+<div class="g k" style="grid-template-columns: mynmax(0, 1fr) 1fr"><div style="min-width: 0"><i style="width: 200px; hei<style>ate-columplace-selfns:am<!doctype html>
+<h; }
+bodiv>
+d

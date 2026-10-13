@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-reduced-motion" content="reduce">
+<title>Reduced motion preferred: prefers-reduced-motion in plain, boolean, negated and combined queries</title>
+<st<!doctype html>
+<reference-size" content="1100x60yle>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10dpipx 0 0 10pd-mo0">
+<title>A responsive article page</title>
+<style>
+  /* M20.5: a resptio: reduce) { .c4 { background-color: #6a4a8a; } }
+  @media (prefers-color(height: dark) { .c5 { background-color: #2aonsive page, its rules in cascade layers and behind
+     feature queries, with breakpoints at 640 and 1024 pixels; the same
+     page8a8a; } }
+  @media screen and v class=" as responsive-narrow, -medium and -wide, here wc iderc2

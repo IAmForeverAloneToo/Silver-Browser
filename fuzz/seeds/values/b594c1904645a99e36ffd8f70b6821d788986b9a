@@ -1,0 +1,7 @@
+
+  :root {
+    --paa;
+    --accent-soft: #45475a;
+; grid-template-columns: repeat(3, 1fr); gap: calc(var(--space) *2 ); padding: calc(var(--spa@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+ { margin: 0; }
+  .g { @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@float: le@

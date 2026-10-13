@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<title>Grid: auto-placement by column, sparse and dense, wi grid-auto-flow: column dense; }
+  .t { grid-row: span 2; }
+  .w { grid-column: span 2; }
+  .big { grid-row: span 3; }
+</style>
+</head>
+<body>
+  <div class="col">
+    <div class="g"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div></div><div class="w"></div></div>
+    <div class="g dense"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div></div><div class="w"></div></div>
+    <div class="g"><div></div><div style="grid-row: 2"></div><div></div><div style="grid-row: 1"></div><div style="grid-column: 2"></div><div></div><div style="grid-column: 6; grid-row: 3"></div><div></div></div>
+    <div class="g dense"><div></div><div style="grid-row: 2"></div><div></div><div style="grid-row: 1"></div><div style="grid-column: 2"></div><div></div><div style="grid-column: 6; grid-row: 3"></div><div></div></div>
+  </div

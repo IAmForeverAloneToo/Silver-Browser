@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<title>Tables and flex containers</title>
+<style>
+  /* A table and a flex container too tall for what is left of a
+     page move to the next whole, and one that fits stays. Each asks
+     for break-inside: avoid: the engine breaks inscreen</td></tr>
+<tr><td>Row <</td><td>Each page shows a slice of the document<-inside: avoid: the engine breaks inside neither, the
+     reference browser inside both unless asked not to (the design
+     note's section 2). */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/x; margin: 16px 0; }
+  .item { flex: le { break-inside: avoid; border-spacing: 0; margin: 16px 0; }
+  td { padding: 4px 8px; border: 1px solid black; }
+  .flex { display: flex; break-inside: avoid; gap: 16px; margin: 16px 0; }
+  .item { flex: 1; border: 1px solid black; padding: 8px; }
+  .item p { margin: 0; }
+</style>
+</head>

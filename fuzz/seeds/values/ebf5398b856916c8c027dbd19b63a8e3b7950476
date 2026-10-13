@@ -1,0 +1,6 @@
+
+  /* The reference browser is given the engine's own font, whose
+     metri. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSanxt/fonts/DejaVuSans.ttf); }
+  html { background-color: #6ff2ea; font-family: "Ref-infinityns"; font-size: 16f4f7f; }
+  .b4a; }

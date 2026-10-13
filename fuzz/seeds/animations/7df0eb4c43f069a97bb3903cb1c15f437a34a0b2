@@ -1,0 +1,10 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: scale:0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 1
+  html { backgroundze: 16px; }
+  body { margin: 0; }
+  header { height: 56px; background-color: #24292f; }
+  main { width: 720px; margin: 32px auto 0 auto; }
+  .card { margin: 0 0 16px 0; padding: 20px 200px; height: 100px; type(<percentage>)fu4px; bordencr:t 1px s

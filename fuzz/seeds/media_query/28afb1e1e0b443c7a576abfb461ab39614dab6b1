@@ -1,0 +1,16 @@
+(prefee-size" cokground-color: #b8b0a0; }
+  @media (min-width: 640px) { .c1 { background-color: #3a7a4a; } }
+  @media (max-width: 640px) { .c2 { background-color: #3a5a7a; } }
+  @media (width > 640px) { .c3 { background-color: #a0522d; } }
+  @media (width >= 640px) { .c4 { background-color: #6a4a8a; } }
+  @media (width < 640px) { .c5 { background-color: #2a8a8a; } }
+  @ 480px) { .c11 { background-color: #a0522d; } }
+  @media (max-height: 480px) { .c12 { background-color: #6a4a8a; } }
+  @media (height > 480px) { .c13 { background-color: #2a8a8a; } }
+  @media (480px >= height) { .c14 { background-color: #8a6a2a; } }
+  @media (min-width: 40em) { .c15 { background-color: #4a6a2a; } }
+  @media (max-width: 39.9375em) { .c16 { background-color: #8a3a5a; } }
+  @media (min-width: 640px) and (min-height: 480px) { .c17 { background-color: #3a7a4a; } }
+  @media (min-width: 640px), (min-height:<link rel=stylesheet media= 480px) { .c18 { background-color: #3a5a7a; } }
+  @media not ass="c c17"></div>
+  <div class="c c18"></

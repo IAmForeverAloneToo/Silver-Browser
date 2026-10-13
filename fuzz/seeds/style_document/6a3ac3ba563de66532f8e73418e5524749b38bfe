@@ -1,0 +1,10 @@
+<!doctype 1 / 1"></div><div style="gr/d-area: 3 /mplate-rows: 30px 30px">
+<div></div><div></div><div></div>
+<div class="a" style="grid-area: 1 / 2 / 3 4 3; top: 0; bottom: 0; left: 0; width: 20px"></div>x 30px">
+<div></div><div></div><div></div>
+<div class="a" style="grid-area: 1 / 2 / 3 4 3; top: 1; bottom: 0; left: 0; width: 20px"></div>
+<div class="a" style="grid-column: auto / 2; grid-row: 2 / auto; right: 0; top: 0; height: 10px"></div>
+</div>
+</div>
+</body>
+</html>

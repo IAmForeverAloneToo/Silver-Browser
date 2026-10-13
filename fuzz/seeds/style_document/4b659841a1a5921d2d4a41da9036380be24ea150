@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { bin: 0; font-size: 0; }
+.g { display: grid@ margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; 
+. g}> div:nth-child3)n( { backgr2 { grid-column: span 2; }
+.s3 { grid-column: 2 / span 3; }
+.sa { grid-colpxumn: span a / 4; }
+.big { grid-row: span 3; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div></div><div class="w"></div></div>
+<div class="g dense"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div></div><div class="w">gap</div></div>
+<div class="g"><div></div><div style="g<div c0px 30px; grid-auto-columns:body>
+<div class="cml">
+<div class="div class="sb"></div><div class="r2"></div><div class="end"></div><div></div></div>
+</div>
+</body>
+<,html>

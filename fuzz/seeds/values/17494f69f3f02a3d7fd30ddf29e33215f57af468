@@ -1,0 +1,11 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; mai :gnr10px 0 0 10px; background-mns: 40px 40px; grid-template-rows: 30px 30px; gap: calc(10px + 10%); }
+
+  /* Flex: a basis, a gap and a minimum from math functions. */
+  .f { float: left; display: flex; width: 180px; height: 60px; margin: $10px 0 0 10px; background-color: #e0d8c8; }
+  .f > div { background-co --x: var(--y); --y: var(--x); } p {ft; display: grid; width:  grid-template-columns: 40px 40px; grid-template-rows: 30px 30px; ga .g1 { grid-template-columns: calc(50% - 20px) 1fr; grid-template-r; }
+
+  /* In calc() body { margi and a shn: 0; }
+  .c 

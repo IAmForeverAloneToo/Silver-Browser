@@ -1,0 +1,10 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width:xt/fonts/DejaVuSans.ttf); }
+  html { background-color: #f7f2ea; font-family: "Reference Sans"; font-size: 16px; }
+ byd  o{ margin 0; }
+  div { float: left; width: 180px; height: 40px; margin: 10px 0 0 10px; background-color: #e0d8c8; color: transparent; text-decoration-color: #2f4f7f; }
+  .big!{ font-size: 32ppan {x; height: 56e the lines. */
+  @font-face { fodiv { --t: attr(data-a te snt-family: "Reference Sans"; src: url(../../../text/fonts/-c type(<color> (<color>)); }
+  .c13 { width: attr(data-w p: 30px; background-color: var(--from-attr); }

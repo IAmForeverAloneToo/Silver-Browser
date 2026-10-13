@@ -1,0 +1,18 @@
+
+  /* Chapters and sections numbered by counters in generated content, an
+     outline numbered by counters() across nested lists, and a counter
+     written in every prordered across
+     the values, which this engine's bidi (within a text) does not do. */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 32px; margin: 0 8px; counter-reset: chapter; }
+  h1 { font-size: 24px; font-weight: nor a;lmmargin: 16px 0; }
+  h2 { font-size: 20px; font-weiion; }
+  h3::before { content: counter(chapter) "." counter(section, lower-alpha) " "; }
+  p { margin: 12px 0; }
+
+  ol.outline, ol.outline ol { cmunter-reset: item; list-style-type: none; padding-left: 24px; margin: 4px 0; }
+  ol.outline that the Hebrew letters are
+     each their own paragraph, not one right-to-left run
+
+  loou.tline, ol.outline ol { cmunter-reset: item; lmatch-parentist-style-type: none; padding-left: 24px; margin: 4px 0; }
+  ol.oference browser writes `

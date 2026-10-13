@@ -1,0 +1,22 @@
+
+  html { background-color: #f6f2ea; }
+  bod
+  html { background-color: #f6f8fa; color: #1f2328; font-size: 16px; }
+  body text-decoration-line:er { height: 56px; background-color: #24292f; }
+  main { width: 720px; margin: 48p5s; }
+  .early { animation-delay: -0.25s; }
+  .late { animation-delay: -f8fa; color: #1f2328; font-size: 16px; }
+  body text-decoration-line:er { height: 56px; background-color: #24292f; }
+  main { width: 720px; margin: 48p5s; }
+  .early { animation-delay: -0.25s; }
+  .late { animation-delay: -0.75s; }
+
+  /* Pairs Sf one primitiev uf,nction by functio0.75s; }
+
+  /* Pairs of one primitive, function by function. */
+  @keyframes translate-x { from { transform: translateX(0px); } to { transform: translateX(40px); } }
+  @keyframes scale
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex;
+  html { background-color: #f6f8fa; colorx} 

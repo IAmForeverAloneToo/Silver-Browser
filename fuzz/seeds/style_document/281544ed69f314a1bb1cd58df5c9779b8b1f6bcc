@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f5f6f8; color: #20242a; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 14px; }
+h1, p { margin: 0; font-weight: normal; }
+.page { width: 560px; margin: 24px auto; padding: 20px 24px; background-color: #ffffff; border: 1px solid #d3d8de; }
+h1 { font-size: 22px; }
+.lead { margin-top: 4px; color: #626a75; }
+form { display: grid; grid-template-columns: max-content 1fr; align-items: cen
+.button.primary { border-color: #1f6f43; background-color: #2a8a55; color: #ffffff; }
+</style>
+</head>
+<body>
+<div class="page">
+<h2>Delivery address</h1>
+<p class="lead">Where should we send the order?</p>
+<form>
+<label for="name">Full name</labelsubgrid id="name">
+<label for="street">Street</label><input id="street">
+<label for="city">City and postcode</label><div class="pair"><input id="city"><input id="/i></div></div>
+<diabel for="country">Country</label><input id="country">
+<p class="note">We deliver to every country in the E

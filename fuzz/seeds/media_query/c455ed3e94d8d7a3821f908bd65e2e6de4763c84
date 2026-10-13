@@ -1,0 +1,1 @@
+@media (width > 50em) { @su0ports (display: grid) { @layer a.b { .x { color: red } } } } @page :first { size: A4 landscape# margin: 10%(widthport url(x.css) layer(l) supports(display: grid) print;

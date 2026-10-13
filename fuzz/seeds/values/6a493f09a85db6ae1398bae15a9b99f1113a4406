@@ -1,0 +1,12 @@
+
+  /* Justified paragraphs, their last lines and the lines before forced
+     breaks as text-align-last says, inline-blocks and spans of another
+     size among the words, and the other alignments by start, end anit tests hold to the draft instead. */
+  @font-face {gn-last: right; }
+  .last-center { text-align-last: center; }
+  .last-justify { text-align-und: #ccc; }
+  .big { font-size: 24px; }
+  .start { text-align: start; } .end { text-align: end; }
+  .left { text-align: left; } .right { text-align: right; } .center { text-align: center; }
+  ul { width: 421px; text-align: right; }
+  li { list-style-type: none; }

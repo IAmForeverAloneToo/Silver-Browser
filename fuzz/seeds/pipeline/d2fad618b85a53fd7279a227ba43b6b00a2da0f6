@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<hea<stmax(0,1fr) fit-content(40%) min-content max-content}#g>*{overflow:hidden}</style><divgrid-costmax(0,1fr) fit-content(40%) min-contlumn-end long long te<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #fbfaf7; color: #26231e; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 15px; }
+h1, h2, p { margin: 0; font-weight: normal; }
+.page { display: grid; grid-template-areas<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Layout: a stack of panels rotated about an edge</title>
+<style>
+  @font-face { font-family: "Layout Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f4f5f7; color: #1f2328; }
+  body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px;: "header header header" "nav main aside" "footer footer footer"; grid-temp max-content}#g>*{overflow:hidden}</style><divgrid-costmax(0,1fr) fit-content(40%) min-contlumn-end long long te<!doctype html>
+<html>
+<head>
+<meta charse

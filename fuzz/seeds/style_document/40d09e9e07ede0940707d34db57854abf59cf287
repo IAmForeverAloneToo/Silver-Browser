@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<titlkface visibility: hidden scrolling contents if backface-invisible</title>
+<link rel="author" title="Chris Harrelson" href="mailto:chrishtr@chromium.org">
+<link rel="help" href="htisibility-hidden-006-ref.html">
+<div style="transform: rotateY(180deg); backface-visibility: hidden; overflow: scroll; height: 300px;">
+  <p stylty">"backface-visibility-hidden-006-ref.html">
+<div style="transform: rotateY(180deg); backface-visibility: hidden; overflow: scroll; height: 300px;">
+  <p style="display: inline-block; heiginsideht: 300px">
+    This text should be invisible
+  </p>
+</div>

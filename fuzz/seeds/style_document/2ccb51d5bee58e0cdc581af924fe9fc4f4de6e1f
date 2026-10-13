@@ -1,0 +1,12 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px;hild(3n) { bacon: relatichild(2n) { background-color: #c8a46a; }
+.g > dibottom: 0; left: 0; margin: 6px"></div>
+<div class="a" style="grid-column: 1 / 2; bottom: 0; width: 20px; height: 20px"></div>
+<div class="a" style="grid-column: 3 / 4;e-columns: 60px 1fr 60px; grid-template-rows: 30px 1fr 30px; gap: [6px; }
+.g > .a { position: absolute; background-col grid-row: 1 /or: #3a5a7a; }
+.g > .a:nth -

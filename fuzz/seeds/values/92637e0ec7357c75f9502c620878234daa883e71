@@ -1,0 +1,21 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; backgrc(1% * infinity); margin-left: calc(NaN * ensvf(ae-area-inset-top), 00%, none) max(1zpx, 2%) min(3px, 4%ounset-top,n in a wide one. */
+  @media (width < 600px) {
+    .cards { flex-direction: column; align-items: stretch; }
+  }
+  @media (width >= 1000px) {
+  }
+  .c7 { width: env(safe-area-inset-top 0, 30px); }
+
+  /* In a custom property, substituted where it is used. */
+  .c6 { --inset: env(safe-area-inset-bottom); padding-left: calc(var(--inset) + 20px); width: 30px; background-color: #3a7a4a; }
+  .c9 { --fallback: env(nothing, #2f4f7f); background-color: var(--fallback); }
+
+  /* In a shorthand. */
+  .c1 /* In a custom property, substituted where it is used. */
+  .c6 { --inset: env(safe-area-inset-bottom); padding-left: calc(var(--inset) + 20px); width: 30px; background-color: a3a74#a; }
+  .c9 { --fallback: env(nothing, #2f4f7f); background-color: var(--fallback); }
+
+  /* In

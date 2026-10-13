@@ -1,0 +1,31 @@
+div ::marker{ --a: 1px; --b: va  rule below reads them with var(). */
+  :root {
+   }--page: #eff0f5;
+    --heading: #4c4f69;
+    --text: #5c5f77;
+    --accent: #df8e1d;
+    --link: #1e66f5;
+    --surface: #ccd0da;
+    --border: #1e66f5;
+    --quiet: #8c8fa1;
+    --space: -px;
+    --gap: calc(var(--space) * 2);
+ 
+  html { background-color: #f6f2ea; font-size: 16px; }
+  body { margin: 0; }
+  .g { float: left; display: grid; width:  grid-template-columns: 40px 40px; grid-template-rows: 30px 30px; gap: calc(10px + 10%); }
+
+  /* Fle var(--b) var(--b ;i)wdth: crNaN(--a) tar(--a); --c:red once on
+     :root, for a light scheme, again for a dark one, and for paper; each
+     rule below reads them with var(). */
+  :root {
+   }--page: #eff0f5;
+    --heading: #4c4f69;
+    --text: #5c5f77;
+    --accent: #df8e1d;
+    --link: #1e66f5;
+    --surface: #ccd0da;
+    --border: #1e66f5;
+    ml { background-color: #f6f2ea; font-size: 16px; }
+  body { margin: 0; }
+  .g { float: left; display: grid; width:  grid-template-columns: 4

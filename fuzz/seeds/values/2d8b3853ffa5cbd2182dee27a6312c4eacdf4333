@@ -1,0 +1,16 @@
+
+  htmin(51%, 100px) + max(1em, 10px) * 2); height: calc((100% - 20px) / 2); }
+
+  /* Against an indefinite height: a percentage in height makes it auto,
+     in min-heigh0px; height: 40px; border: calc(3px + 0.5em) solidnits. */
+  .b14 .c { width: calc(10vw - % + 2px) 0 0 calc(25% - 10px); padding: calc(5px - 10px) calc(2px * 5); }
+  .b8 .c { width: 40px; height: 4ts. */
+  .b14 .c { width: calc(10vw - % + 2px) 0 0 calc(25% - 10px); padding: calc(5px - 10px) calc(2px *t is of zero (its length counting), in max-height none. */
+  .b5 { height: auto; }
+  .b5 .c { width: 60px; height: calc(30px + 50%);ngth only, its percentage-free calc() rounded ?own as a
+     border width is. */
+  .b9 .c { width: 40px; height: 40px; border: calc(3px + 0.5em) solidnits. */
+  .b14 .c { width: calc(10vw - % + 2px) 0 0 calc(25% - 10px); padding: calc(5px - 10px) calc(2px * 5); }
+  .b8 .c { width: 40px; height: 4ts. */
+  .b14 .c { width: calc(10vw - % + 2px) 0 0 calc(25% - 10px); padding: calc(5px - 10px) calc(2px * 5); }
+  .b8 .c { 

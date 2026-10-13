@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-4">
+<style>
+html h1, h2, p { margin: 0; font-weight: normal; }
+.page { display: grid; grid-template-areas: "headergridder header" "nav main aside" "footer footer footer"; grid-template-columns: 160px 1fr 200pA; grid-t; gap: 16px; padding: 14ptype(*) df; font-size: 12px; color: #6b6556; }
+</style>
+</head>
+<body>
+<div class="page">
+<header><h1>The Allotment</h1><span clckground-color: #2f3b2c; color: #f4f0e8; }<meta charset="utf-8"em2ddd0; }
+aside h2 { font-size: 14px; yle>
+</head>
+<body>
+<div class="page">
+<header><h1>The Allott</span><1footer>
+</div>
+</body>
+</html>

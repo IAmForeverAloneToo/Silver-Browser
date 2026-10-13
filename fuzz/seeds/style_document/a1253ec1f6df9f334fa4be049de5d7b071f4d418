@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #182a1d; coloy: #e8e6e3; }
+body { margin: 0; font-family: nt-size: 22px; }
+.intro { padding: 4px 16px 0; color: #9d9a95; }
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); g-color: #7c5b3b; }
+figure:nth-child(4n) .photo { background-color: #4f7c3b; }
+figcaption { padding: text-align6px 8px 8px; }
+figcaption span { display: block; color: #9d9a95; font-size: 11px; }
+.wide { grid-column: span 2; }
+.tall { grid-row: span 2; border-right-style: 1fr auto; }
+</style>
+</head>
+<body>
+<h1>Summer, mostly ></figure>
+<figure class="wide"><div class="photo"></div><figcaption>The whole bay from the lighthouse, wide enough for two columns<span>June 5</span></figcaption></figure>
+<figure><div class="photo"></div><figcaption>Nets<span>June 5</span></figcaption></figure>
+<legend class="tall"><div class="photo"></div><figcaption>The cliff path, which runs down two rows<span>June 6</span></figcaption></figu

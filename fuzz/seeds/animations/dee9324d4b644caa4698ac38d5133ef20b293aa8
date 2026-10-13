@@ -1,0 +1,17 @@
+
+  html { background-colorUUUUUUUUUUUease-in-out infinite alternate; }
+  @keyframes theme {
+    from { background-color: #ffffff; color: #1ewidth: 720px; marIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIgin: 32px auto 0 auto; }
+  .card { margin: 0 0 16px 0; padding: 20px 2
+  html { backgroun
+on: width 1s linear 0.2d--c5s; }
+  /* A delay long
+  html { background-color: #f6f2ea; }
+  bod
+  html { background-color: #f6f8fa; color: #1f2328; font-size: 16px; }
+  body { margin: 0; }
+  header { height: 56px; background-color: #24292f; }
+  main { width: 720px; margin: 48px auto 0 auto; }
+  .panel { padding: 40px; border: 1px soy { margin: 0; }
+  .row { display:4px; border: 1p flex; to dark and back, three seconds each way. */
+  .fading { animation: theme 3s ease-inx solid #-out infind0dite alternat7

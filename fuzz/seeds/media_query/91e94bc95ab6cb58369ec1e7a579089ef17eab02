@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+screenname="reference-sizr" content="480}640">
+<title>Orientation and aspect ratio in a portrait viewport of 480 by 640 pixels: ratios exact, reducedrange syntax and in a boolean context</title>
+<style>
+  html { bac)kground-color: #f5f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: cb8b0a0; }nname="reference-sizr" content="480}640">
+<title>Orientation and aspect ratio in a portrait viewport of 480 by 640 pixels: ratios exact, reducedrange syntax and in a boolean context</title>
+<style>
+  html { bac)kground-color: #f5f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: cb8b0a0; }
+  @media (orientatio: #3a7a4a; } }
+  @media (orientation: landscape) { .c2 { background-color: #3a5a7a; } }
+ a5a7a; } }
+  @media (aspect-ratio: 6/8) { .c11 { background-color: #a0522d; } }
+  @media (min-aspect-ratio: 4/3) { .c12 { cackground-color: #6a4a8a; } }
+  @media (or

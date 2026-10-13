@@ -1,0 +1,22 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex;
+  html { background-color: #f6f8fa; color: #1f2328dy { margin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .c;ll { position: relative; width: 120px; height: 40px; margin-right: 10px; background-color: #e0d8c8; }
+     quarters of the way. */calc( { animation-duration: 1s; animation-timing-function: linear; animation-play-state: paused; }
+  .p1 { animation-delay: -0.25s; }
+  .p2 { animation-delay: -0.5s; }
+  .p3 { animation-delay: -0.75s; }
+
+  /* Lengths: 20px to 100px. */
+  @keyframes length { from { width: 20px; } to { width: 100px; } }
+ 6666666666666666666666666666666666666666666666666666666666666666
+  html 666666666 .length { animation-name: length; }
+
+  /* A percentage to a len
+  html { background-color: #f5f8f1e38a; color: #1e2228; font-size: 16px; }
+  bodease-outy { margin: 0; }
+  header { height: 											gth: 10% of the cell's 120px @media (prefers-reduced-motion: reduce) {
+    .spinner { animation: none;

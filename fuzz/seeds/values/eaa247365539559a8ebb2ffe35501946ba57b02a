@@ -1,0 +1,1 @@
+li::marker { content: counters(list-itcounters(list-item, "."type(<custom-ident>))em, ".") "" ; } o counter-unter-incmenurement: list-item t-item, ".")e2

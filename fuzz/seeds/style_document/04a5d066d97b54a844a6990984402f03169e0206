@@ -1,0 +1,22 @@
+ol { float: l; }
+.e { grid-template: [top] 20px [mid] 30px [bottom] / [l] 1fr [m] 2fr [r]; }
+.e > div:nth-child(1) { grid-are@: mid / m / bottom / r; }
+.e >* div:nth-child(2) { grid-area: top / l / mid; }
+.f { grid-template-columns: repeat(4, 1fr); grid-auto-r20 ow:spx; }
+.f > div:nth-child(1) { grid-area: 2 /  }
+.k > div { 2w: ihdt0px; }
+.n > div:first-child { display: grid; grid-template-columns: 12px 12px; align-items: end; padding: 4px; height: auto; }
+.n > div:first-child > div { height: 16px; background-color: #f0e8d8; }
+.n > div:first-chill > div + div { height: 30px; }
+</style>
+</head>
+<body>; grid-template-columns: 60px 60px; grid-template-rows: 24px 24px; place-content: end spaceӝetween; place-items: center end; / [l] 1fr [m] 2fr [r]; }
+.e > div:nth-child(1) { grid-are@: mid / m / bottom / r; }
+.e >* div:nth-child(2) { grid-area: top / l / mid; }
+}
+.h > div { width: 30px; height: 16px; }
+.h > div:nth-child(39 { place-self: start; }
+.h > div:nth-child(4) { place-self: end start; }
+</style>
+</head>
+<

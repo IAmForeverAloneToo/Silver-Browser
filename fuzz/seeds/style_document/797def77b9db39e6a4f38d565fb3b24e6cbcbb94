@@ -1,0 +1,11 @@
+<!doctype html>
+<html>
+<(ead>
+<style>
+justify-contentnd-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { backgrof-8">
+<title>Layout: a carousel of cards translated along their row<class="g">
+<div style="justify-s{ backgroelunf

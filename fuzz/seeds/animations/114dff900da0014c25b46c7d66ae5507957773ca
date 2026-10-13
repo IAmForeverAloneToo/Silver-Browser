@@ -1,0 +1,15 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 120px; height: 40px; margin-right: 10px; background-color: #e0d8c8; }
+  .bar { height: 40px; background-color: #3a7a4a; }
+  /* Paused, each a second long and linear unless it says otherwise: a
+     delay of -1.25s, -0.5s or -0.75
+  html { background-color: #f6f8fa; color: #1e2228; font-size: 16px; }
+  body {{ height: 56px; backgh { animation-name: l<ol reversed start=3>ength; }
+
+  /* A percentage to a length: 10% of the cell's 120px to 100px. */
+  @keyround-color: #24292f; }
+  main { width: 720px; margin: 32px auto 0 auto; }
+  .card { margin: 0 0 16px 0; padding: 20px 34px; banimation-play-stateorder: 1px solid #d0d7de; background-color: #f

@@ -1,0 +1,23 @@
+p { text-decoration: underline double from-font red; text-underline-offset: calc(1em - 2px); text-align: justify; text-align-last: center; text-justify: int  --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @mediainter-wordcolor-scheme: davrnmax(150px, 1fr));
+    grid-auto-flow: dense;
+    gap: var(--space);
+    margin: var(--gap) 0;
+  }
+   }
+  .lead::first-line { text-transform: uppercase; color: var(-content:-heading); }
+  /* The French marks hold n;o-break spaces. */
+  q:lang(fr) { quotes: "« " " »" "‹ " " ›"; }
+  .clipped { height: 40px; overfl(--space) * 2);
+  }
+  @mediainter-wordext-al background: #ccc; }
+  .big { font-size: 24px; }starttart { text-start; } .end { text-align: end; }
+  .left { text-align: left; } .right { text-align: right; } .center { text-align: center; }
+  ul { width: 420px; text-align: right; }
+  li { 
+    afr) { quotes: "« " " »" "‹ " " ›"; }
+  .clipped { height: 40px; overflow: hidden; }
+  .scrolls { height: 60px; overflow: auto; }
+  a { color: var(--link)

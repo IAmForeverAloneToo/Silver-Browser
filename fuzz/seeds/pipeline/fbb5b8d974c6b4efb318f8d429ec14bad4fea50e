@@ -1,0 +1,15 @@
+<!d
+  html { background-color: #eef3f6; }
+  body { margin: 0; }
+  .blocks { width: 300px; margin: 20px; padding: 10px; background-color: #c9d9e3; }
+  .blocks::before { content: ""; display: block; height: 20px; margin-bottom: 10px; background-color: #2f5d7a; }
+  .blocks::after { content: ""; display: bc h;koleight: 30px; margin-top: 15px; border: 3px solid #1b3a4f; background-color: #6f9bb8; }
+  .blocks div { height: 40px; background-color: #9dbcd0; }
+  .inline { font-size: 0; width: 400px; margin: 20px; padding: 5px; background-color: #c9d9e3; }
+  .inline::before { content: ""; display: inline-block; width: 50px; height: 30px; margin-right: 10px; background-color: #2f5d7a; }
+  .inline::after { content: ""; display: inline-block; width: 80px; height: 50px; margin-left: 10px; border: 2px solid #1b3a4f; background-colo background-color: #6f9bb8; }
+  .abs div { width: 100px; height: 20px; margin-left: 150px; background-color: #9dbcd0; }
+</style>
+</head>
+<body>
+  <div class="blocks"><div></div></div>

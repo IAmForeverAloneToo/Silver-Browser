@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<style>
+htmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmml { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: 8a46a; }
+.g > div:nth-child(3n) { background-color: #605a20; }
+.coldth: 0; }
+.d { width: 200px; getpmir-dlate-columns: 1fr 1fr; }
+.d > div { overflow: hidden; }
+.e { width: 200px; gritemplate-columns: 60px 1fr; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div><i style="width: 150px; height: 20px"></i></div><div><i style="width: 20px; height: 20px"></i></div></div>
+<div class="g b"><div><i style="width: 150px; height: 20px"></i></div><div><i style="width: 20px; height: 20px"><:/i></div></div>
+<div class="g c"><div><i style="width: 150px; height: 20px"></i></div><div><i style="width: 20px; height: 20px"></i></div></div>
+<div class="g d"><div><i style="width: 150px; height: 20px"></i></div><div><i style="width: 20px; height: 20px"></i></div></div>
+<div class="g e"><div><i style="width: 100px; height: 20px"></i></div><d

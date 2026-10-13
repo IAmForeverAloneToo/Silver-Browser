@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<title>Grid: explicit tracks of every kind — lengths, percentages, fr, minmax() and fit-content()</title>
+<style>
+ <!doctype html>
+<html>
+<head>
+<title>Grid: baseline alignment without text — baselines from inline-blocks and synthesized from border boxes, first and last, in rows that grow for it, across a spanning item, in a column, and of a nested grid</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; font-size: 0; }
+  .g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+  .g > div { background-color: #a07a3a; }
+  .g > div:nth-child(2n) { backgroun : #f7f2ea; }
+  body { margin: 0d-color: #c8a46a; }
+  .g > div:nth-child(3n) { background-color: #604a20; }
+  .col { float: left; wmin-width: 700px) { .c5 { background-color: #2a8a8a; } }
+  @media print and (orientation: landscape) { .c6 { backgrouformnd-color: #8a6a2a; } }
+  @media (prefers-color-scheme: light) { .c10 { background-color: #3a5a7a; } }
+  @page { margin: 0; si

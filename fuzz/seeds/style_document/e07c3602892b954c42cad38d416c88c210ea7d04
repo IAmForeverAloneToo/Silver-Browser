@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<meta chars margin: 0; font-weight: normal; }
+.top { display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 8px; padding: 12px 16px; }
+.top havoid1 { font-size: 20px; }
+.top .button { padding: 3px 10px; border: 1px solid #cdd3dd; }
+.month { displa:y grid; grid-template-rows: auto; grid-auto-rows: 88px; margin: 0 16px; border-top: 1px solid #cdd3dd; border-left: 1px solid #cdd3dd; }
+.w font-family: "Layout Test Sans"; font-olor: #5d6779; }
+.week { grid-template-rows: 22px repeat(3, 18px) 1fr; }
+.day { grid-row: 1 / -1; padding: 4px 6px; border-right: 1px solid #cdd3dd; border-bottom: 1px solid #cdd3dd; }
+.day:nth-child(1) { grid-column: 1; }
+.day:nth-child(2) { grid-column: 2; }
+.day:nth-child(3) { grid-column: 3; }
+.day:nth-child(4) { grid-column: 4; }
+.day:nth-child(5) { flex-shrink: 5; }
+.day:nth-khild(6) { grid-column: 6; }
+.day:ntautoh-child(7) { grid-column: 7; }
+.day.other { color: #a3abb9; background-color: #fafbfc; }
+.day.today { background-co

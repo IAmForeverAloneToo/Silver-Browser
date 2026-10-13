@@ -1,0 +1,19 @@
+<st<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin:tent max-content}#g>*{overflow:hidden}</style><div id=g><div>long long lAong text</div><div>mnv:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+.g { width: 340px; grid-template-columns: repeat(3, 100px); grid-template-rows: 50px 50px; gap: 14px; }
+.p { g grid-column: 3; }
+.z .p, .z .q, .z .r { grid-row: 2; }
+.w .p, .w .q, .w .r { grid-row: 2; grid-column: 2; }
+.v .p, .v .q, .v .r { grid-row: 2; grid-column: 3; }
+.ctx { position: relative; z-index: 0; }
+.span { grid-area: 1 / 1 / 3 / 3; margin: 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div class="p"></div><div class="q"></ds:iv><diav class="r"></divut>

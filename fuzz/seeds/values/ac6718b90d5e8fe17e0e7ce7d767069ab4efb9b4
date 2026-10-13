@@ -1,0 +1,24 @@
+min(li::markeR { content: counters(list-item, ".")WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWlist-item, ".") " "; } ol { counter-reseT: l-peseT: list-item 1; } li { counter-increisallow-discreteline-ovfs } li { countsize: 52px;
+    padding-right: 6px;
+    color: var(--accent);
+  }
+  .lead::firsy-line { text-transform: uppercase; age: #ffffff;
+      --heading: #1e1e2e;
+      --text: #1e1e2e;
+      --accent: #1e1e2e;
+      --link: #1e1e2e;
+      --surface: transparent;
+      --border: #45475a;
+      --quiet: #45475a;
+    }
+    .card { break-inside:r-reseT: l-reseT: list-item 2; } li { counter-i<o-l reversed start=3>ine-ovfset: calclist-item, ".") " "; } ol { counter-reseT: l-peseT: list-item 1; } li { counter-increisallow-discreteline-ovfs } li { countsize: 52px;
+    padding-right: 6px;
+    color: var(--accent);
+  }
+  .lead::firsy-line { text-transform: uppercase; age: #ffffff;
+      --heading: #1e1e2e;
+      --text: #1e1e2e;
+      --accent: #1e1e2e;
+      --link: #1e1e2e;
+      --surface: transparent;
+      --bord

@@ -1,0 +1,15 @@
+<!doctype html>
+column-gapad>
+<style>
+hws: repeat(3, 20px); grid-auto-columns: 40px; gap: 4px; }
+.dense { grid-auto-flow: column dense; }
+.t { grid-row:= span 2; }
+.w { grid-column: span 2; z
+.big { grid-row: span 3; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div><d>di<iv/v class="t"></div><div class="t"></div><div></dv class<div class="g" style="grid-template-rows: 20px 20px; grid-auto-cv>
+</body>
+</html>

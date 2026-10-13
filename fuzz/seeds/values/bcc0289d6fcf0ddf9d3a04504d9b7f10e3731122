@@ -1,0 +1,22 @@
+
+  html { background-color: #f6f2ea; }
+  body { list-style-position:float: idth: 50%px; height: 50px; margin: 10px 0 0 10px; background-color: #b9b0a0; }
+
+  /* A length, a number with px for its unit, one with em, and a
+     percentage of the containing block. */
+  .c1 { width: attr(data-w type(<length>)); }
+  .c2 { width: attr<color> | <length>)); }
+  .c7 { height: attr(data-c typ0e(<color> | <length>), 20px); }
+
+  /* In calc()&and a shorthand. */
+  .c8 { width: calc(attr(data-n px) * 2 - 10px); }
+  .c9 { margin: attr(data-m type(<length>+)); }
+
+  /* Missing, empty, or not of the type: the fallback, or the property
+     unset without one. */
+ rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr .c10 { background-color: attr(data-missing type(<color>), #3a7a4a); }
+  .c11 { width: attr(data-w type(<length>), 20px); }
+  .c12 { background-color: #attr(data-a)ground-color: attr(data-c type(<color>)); }
+  .c13 { width: attr(data-w px, 30px); }
+
+  /* Through a custom property, read on the element that u

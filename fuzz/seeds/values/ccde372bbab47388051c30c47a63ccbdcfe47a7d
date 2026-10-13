@@ -1,0 +1,1 @@
+div { --t: attr(dctaem-a type(*)); margin: var(--t); } span { --u: att attr(dctaem-a type(*)); margin: attr(dctaem-a type(*)); margvar(decimal-leading-zerodc "q"

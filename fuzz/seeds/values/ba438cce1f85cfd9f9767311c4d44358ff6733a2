@@ -1,0 +1,16 @@
+
+  /* Chapters and sections numbered by counters in generated content, an
+     outline numbered by counters() across nested lists, and a counter
+     written in every predefined style the font draws, in range ano. */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 16px; margin: 0 8px; counter-reset: chapter; }
+  h1 { font-size: 24px; font-weight: normal; margin: 16px 0; }
+  h2 { font-size: 20px; font-weight: normal; margin: 20px 0 12px; counter-increment: chapter; counter-reset: section; }
+  h2::before { content: counter(chapter) ". "; }
+  h3 { font-size: 16px; font-weight: normal; margin: 12px 0; counter-increment: section; }
+  h3::before { content: counter(chapter) "." counter(section, lower-alpha) " "; }
+  p { margin: 12px 0; }
+
+  ol.outline, ol.outline ol { counter-reset: item; list-style-type: none; padding-left: 24px; margin: 4px 0; }
+  ol.outline li { counter-increment: item; }
+  ol.outline li::before { c

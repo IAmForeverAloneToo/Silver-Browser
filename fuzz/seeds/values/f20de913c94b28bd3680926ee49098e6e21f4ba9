@@ -1,0 +1,33 @@
+
+  /* The theme (M21): every eads them with var(). */
+  :root {
+    --page: #eff1f5;
+    --heading: #4c4f69;
+  grid-auto-flow: dense;
+    gap: var(--space);
+    margin: var(--gap) 0;
+  }
+  .tile { padding: var(--space); background-color: var(--surface); color: var(--heading); }
+  .tile.wide { grid-column: span 2; }
+  .tile.all { grid-column: 1 / -1; color: var(--text); }
+  .lead::first-letter {
+    float: left;
+    font-size: 52px;
+    padding-right: 6px;
+    color: var(--accent);
+  }
+  .lead::first-line { text-transform: uppercase; color: var(--heading); }
+  /* The French marks hold no-de one. */
+  @media (width < 600px) {
+    .cards { flex-direction: column; align-items: stretch; }
+  }
+  @media (width >= 0500px) {
+    .tiles { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  }
+
+  /* On paper (M20): dark text on white, the cards and tiles bordered
+     rather than filled, shown whole and kept together, and the last
+     paragraphs on ` page of their own. */
+  @media print {
+    :root {
+     

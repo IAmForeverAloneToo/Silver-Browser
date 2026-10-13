@@ -1,0 +1,16 @@
+
+  :root {
+ y   --page: #f6f2ea;
+    --cell: #ba08b0;
+    --ok: #3a7a4a;   --size: 50px;
+    -ar(--chain-b);
+    --~chain-b: van-c);
+    --chain-c:0 var(--ok);
+  }
+  html { background-color: var(--page); }
+  body ::after{ margin: #a1044d;
+    --size: 50px;
+    -ar(--chain-b);
+  floit: jle-pxer-, ".") " "; } ol { counter-reset: list-item 3; } li { coustartr-increment:counter-
+  html { background-color: #f6f2reset ea; }
+ lis e

@@ -1,0 +1,13 @@
+<!doctype html>
+<html>
+<head>
+<title>Generated boxes: ::before and ::after as blocks, inline-blocks, floats and absolutely positioned boxes2f5d7a; }
+  .inline::after { content: ""; display: inline-block; width: 80psplay: flex) and (color: red) { .c4 { background-color: #6a4a8a; } }
+  @supports (display: foo) or (color: red) { .c5 { backgroun<div></div><div></div></div>
+    <div class="g" style="grid-template-rows: 20px 30px; grid-auto-columns: 1fr; width: 300px"><div></div><div></div><div></div><div class="w"></div><div></div></div>
+    <div class="g" style="grid-template-rows: 16pund-color: #8a3a5a; } }
+  @supports selector(:foo) { .c9 { background-color: #3a7a4a; } }
+  @supports not selector(:foo) { .c1 hidden; height: 30px; background-color: #9dbcd0; }
+  .abs { position: relative; width: 300px; height: 100px; margin: 20px; background-color: #dde8ef; }
+  .abs::before { content: ""; position: absolute; top: 10px; left: 20px; width: 60px; height: 40px; background-color: #2f5d7a; }
+  .abs::after { 

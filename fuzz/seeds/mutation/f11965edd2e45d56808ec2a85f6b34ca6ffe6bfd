@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: growing by the factors, a maximum and a minimum frozen, factors below one, margins, borders and padding</title>
+<style>
+  html { background-color: #f3f1ea; }
+  body { margin: 0; }
+  .f { display: flex; width: 600px; height: 40px; margin: 20px; background-color: #e2ddcc; }
+  .f div { height: 30px; flex-basis: 50px; background-color: #8a7a4a; }
+  .f div:nth-child(2) { background-color: #b8a46a; }
+  .f div:nth-child(3) { background-color: #5c4f2c; }
+  .a div:nth-child(1) { flex-grow: 1; }
+  .a div:nth-child(2) { flex-grow: 2; }
+  .a div:nth-child(3) { flex-grow: 3; }
+  .b div { flex-grow: 1; }
+  .b div:first-child { max-width: 100px; }
+  .c div:nth-child(1) { flex-grow: 0.2; }
+  .c div:nth-child(2) { flex-grow: 0.3; }
+  .d div { flex-grow: 1; }
+  .d div:nth-child(3) { min-width: 300px; }
+  .e div { flex-grow: 1; margin: 0 10px; border-left: 5px solid #2e2716; padding-right: 7px; }
+  .g { height: 60px; }
+  .g div { flex: 1 0 0; height: auto; }
+  .g

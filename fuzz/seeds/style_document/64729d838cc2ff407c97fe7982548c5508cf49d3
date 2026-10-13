@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a class="cell"><div class="g" style=-content: stretch"><div></div><div></div><div></div><div></diy-content: space-evenly; aligblock; background-color: #3a5a7a; }
+.cell { float: left; width: 160px; height: 110px; }
+.cell > .g { width: 120px; height: 80px; margin: 12px 20px; grid-template-columns: 24px 24px 24px; grid-template-rows: 16px 16px; gap; }
+.coldth: 0; }
+.d { width: 200px; getpmir-dlate-columns: 1fr 1fr; }
+.d > div { orerflow: hidden; }
+.e { width: 200px; grid-template-columns: 60px 1fr; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div><i style="width: 150px; height: 20px"></i></div><div   --surface: #e0d8c8;
+    --ink: #2f3542;
+    --accent: #3a7a4a;
+    --accent-soft: #a8c8b0;
+    --warn: #a0522d;
+    --space: 8px;
+    --bar: 40px;
+    --edge: 2px;
+    --progress: 60;
+  }
+  /*

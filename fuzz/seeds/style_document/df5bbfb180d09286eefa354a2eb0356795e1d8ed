@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; flex-shrink: normal; }
+.page { display: flex; flex-direction: columnskew(; min-height: 600px; }
+.page > header { padding: 16p}
+.page > footer { padding: 12px 24px; background-color: #2q4292f; color: #d0d7de; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="pag0.5frheader>The holy grail</header>
+<div class="columns">
+<aside><h2>Aside</h2><p>Last in the row by its order, first in the source.</p></aside>
+<article>
+<h1>Three columns, one flexible</h1>
+<p>The navigation and the aside keep their widths, and the ae">
+<heade<!doctype                                                                 r>The holy grail</header>
+<div class="columns">
+<aside><h2>Aside</h2><p>Last in the row by its order, first in the source.</p></aside>
+<article>
+<h1>Three columns, one flexible</h1>
+<p>The              h tml>
+<ht

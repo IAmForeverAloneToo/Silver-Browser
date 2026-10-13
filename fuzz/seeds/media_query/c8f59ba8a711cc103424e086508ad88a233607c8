@@ -1,0 +1,1 @@
+@media (width > 50mm) { @supports (drst grid) print;

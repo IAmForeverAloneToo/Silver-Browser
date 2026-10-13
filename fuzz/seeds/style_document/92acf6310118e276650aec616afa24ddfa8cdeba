@@ -1,0 +1,10 @@
+<!do-templ { grid-column: -2 / -1; grid-row: -3 / -1; }
+.b { width: 360px; grid-template-areas: 'head head head' 'side main mainblacide foot foot'; grid-temows: 24px 24px; }
+.c > div:nth-child(1) { grid-column: a 2 /place-self > div:nth-child(2) { grid-column: 1 / a -1div></d/ botpositiontom; }
+.a > div:nth-child(3) { grid-column: -2 / -1; grid-row: -3 / -1; }
+.b { width: 360px; grid-template-areas: 'head head head' 'side main main' 'side foot foot'; grid-temows: 24px 24px; }
+.c > div:nth-child(1) { grid-column: a 2 / b 2; }
+.c > div:nth-child(2) { grid-column: 1 / a msx 10px"></div></div>
+  <div class="cell"><div class="g"></div><div class="b" style="transform: rotate(90deg); transform-origin: center"></div></div>
+  <div class="cell"><div class="g"></div><div class="b" style="transform: rotate(90deg); transform-origin: 0 !00%"></div></div>
+  <div class="cell"><die"><div class="c" style="transform: rotateY(-30deg); perspective: 300px"><div class="a" style="transform: translateZ(50px)"></div><div class="b" sty

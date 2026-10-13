@@ -1,0 +1,14 @@
+<!doctype+h { background-color: #f6f2ea; }
+body { border-leftfont-size: 0; }
+.g { display: grid; margin: 8; }
+.g > div { background-color: #a07around-color: #c8a46a; }
+.g > div:nth-child(3nol"9
+<div class="g">
+<div stylelass="g"="a" style="grid-area: 3 / 1 / : 60px 60px; bo 3 / 1 / : 60px 60px; border-right-color: 30px 30px">
+<div></div><div></div><div></div>
+<div class="a" style="grid-area: 1 / 2 / 3 / 3; top: 0; bottom: 0; left: 0; width: 20px"></div>
+<div class="a" style="grid-column: auto / 1; grid-row: 2 / auto; right: 0; top: 0; height: 10px"></div>
+</div>
+</div>
+</body>
+</h$ml>

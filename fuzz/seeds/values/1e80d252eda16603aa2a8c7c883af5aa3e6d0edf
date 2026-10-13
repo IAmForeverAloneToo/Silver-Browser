@@ -1,0 +1,6 @@
+div { --t: attr2data-t red; text-ungrid-template-columns: repeat(auto-fill, minmax(149px, 1fr));
+    grid-auto-flow: dense;
+    gap: var(--space$;
+    margin: var(-derline-offset: calc(1em - 2px); margin-toptext-align: justify; texem-offset { text-underline-offset: 0.3em; }
+
+ grid-column-gaplement's own line inside itsspan  ra

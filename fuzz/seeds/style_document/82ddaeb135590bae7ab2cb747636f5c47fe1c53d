@@ -1,0 +1,17 @@
+ol { float: left; width: 400px; }
+.g { width: 360px; grid-auto-flow: column; grid-template-rows: repeat(3, 20px); grid-auto-columns: 40px; gap: 4px; }
+.dense { grid-auto-flow: column dense;  {
+}t. grid-row: span 2; }
+.w { grid-column: span 2; }
+.big { grid-row: span 3; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div></div><div class="w"></div></div>
+<div class="g dense"><div></div><div class="t"></div><div class="v></h: 100px) { .c17 { background-color: #3a7a4a; } } }
+  @media (min-width: 100px) { @media not all and (min-width: 100px) { .c18 { background-color: #3a5a7a; } } }
+  @media (width: 800px) or&(height: 1px) { .c19 { background-color: #a0522d; } }
+  @media screen and'(width: 800px) or (height: 1px) { .c20 { background-color: #6a4a8a; } }
+  @media (min-width: 100px) and (not (max-width: 10px)) { .c21 { background-color: #2a8a8a; } }
+  @media (unknown) { .c22 { background-color: #8a6a2a; } }

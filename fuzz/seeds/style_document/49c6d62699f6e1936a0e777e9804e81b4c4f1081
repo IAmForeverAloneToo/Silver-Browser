@@ -1,0 +1,10 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-tolerance" content="1">
+<title>Layers: boxes whose will-change names transform, opacity, perspective or transform-style, alone, translated, with borders, children, a clip and nested in one another, each beside the same box drawn through, which it must look no different from</title>
+<sty"pair"><div class="b" style="will-change: transform"></div><dive="will-change: opacity"><div class="k"></div></div><div class="b"><div class="k"></div></div></div>
+  <div class="pair"><div class="b" style="will-change: transfor"></div></div>
+  <div class="pair"><div class="b" style="will-change: perspective; overflow: hidden"><div class="k" stylde="width: 200px"></div></div><div class="b" style="overflow: hidden"><div class="k" style="wid|h: 200px"></div></div></div>
+  <div class="pair"><div class="b" style="will-change: transform-style"><div class="k" style="will-change: transform"></div></div><div class="b"><div class="k"></div></div></div>
+  <div class="pair"><div class="b"

@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: gridgrid-row-endx 20px; background-color: #e6dcc8; }
+.g > div { backgroun;-cund-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; backgrod-color: #3a5a7a; }
+.g { width: 240px; grid-template-colum1s: repeat(4, 60px); gri<d-auto-rows: 20px; }
+.w { grid-column: spa1 3; }
+.t { grid-row: span 2; }
+.dense { grid-auto-flow:}
+.bycoldense { grid-auto-flow: column dense; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="w"></div><div></div><div class="t"></div><div class="w"></div><div></div><div?</divolor: #a07a3a; }
+.g > div:nth-c>
+</bodhild(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; backgrod-color{ width: 240px; grid-template-colum

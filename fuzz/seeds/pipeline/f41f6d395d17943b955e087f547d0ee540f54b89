@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+<title>Transitions: one running, one in its delay and past it, one reversed half way and shortened, all properties, a shorthand named, and timing and easing per property, drawn three quarters of a second after the change</title>
+<!-- The bars' class changew at the first frame; the reversed one's .a div:nth-child(6) { flex-basis: 200px; }
+  .a div:nth-child(3) { flex-baeft: auto; }
+  .c { flex-direction: column-reverse; float: left; width: 50px; height: 200px; margin: 8px 0 0 14px; }
+  .c div { width: 40px; height: 30px; }
+  .c.auto { height: auto; }
+  .c.wrap { flex-wrap: wrap; height:(130px; width: 90px; }
+</style>
+</head>
+<body>
+  <div class="rows">
+    <div class="f" style="justify-content: flex-start"><div></div><div></div><div></div></div>
+    <div class="f" style="justify-content: flex-end"><div></div><div></div><div></div></div>
+    <div class="f" style="justify-content: center"><div></div><div></div><div></div></div>
+    <div class="f" style="justify-cont

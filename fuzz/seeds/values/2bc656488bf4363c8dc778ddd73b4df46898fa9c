@@ -1,0 +1,7 @@
+
+  html { background-color: #f6f2ea; font-size: 15px; }
+  body { margin: 0; }
+  .g { float: left; display: grid; width:  grid-template-columns: 40px 40px; grid-te% + 10px), calc(50% - 5px)); }
+  .t2 > div { transSSSSSSSSSSSSSSSSSSSSSSSx 0 0 10px; background-color: #e0d8c8; }
+  .f > div { backgrntent(), and gaps. */
+  .g1 { grid-template-columns: calc(50% - 20in(60px, 150%)) scale; transform: translateY(clamp(10px, 100%, 70px)); }

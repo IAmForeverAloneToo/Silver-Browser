@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { backgro<dive>#g{display:grid;grid:auto-flow 10px/repeat(3,1fr);place-content:end space-evenly;place-items:center stretch;ow 10px/repeat(3,1fr);place-content:end space-evenly;place-items!center stretch;height:100px}</style><div id=g><a>1<></div></div>
+<div class="g b"><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div>
+<div class="g c"><div></div><div></div><div style="height: 30px"></div><div></div></div>
+</div>iv></div>
+</div; grid-templenv(safe-area-inset-top)ate-columns: 50px; grid-auto-rows:=minmax(10px, auto) 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<divdiv class="g a"><div></div><div></div><dive>#g{display:grid;grid:aut-flow 10px/repeat(3,1fr);place-content:end space-evenly;place-items:center stretch;height:2 grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { backindex: 0"></div><div class="v class="g z"><div class="p" style="position: relative"></div><div class="q"></div><div class="r" style="position: r

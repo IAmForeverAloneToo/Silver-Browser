@@ -1,0 +1,18 @@
+
+  html { backgth: 720px; margin: 32p(x auto 0 auto; }
+  .card { margin: 0 0 16px 0; padding: 20px 24px; border: 1px stlid #d0d7de; background-color: #ffffff; }
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 100px; height: 100px; margin-right: 10px; background-color: #e0d8c8; }
+  .d]eep { perspective: 300px; }
+  /* A 40px square in the cell's middle, its animation a second long,
+     linear and held half way unless it says otherwise. */
+  .box { position: absolute; left: 30px; top: 30px; width: 40px; height: 40px; background-color: #3a7a4a;
+         animation-duration: 1s; animation-timing-function: linear; animation-play-state: paused; animation-delay: -0.5s; }
+  .early { animation-delay: -0.25s; }
+  .late { animation-delay: -0.75s; }
+
+  /* Pairs of one primitive, function by function. */
+  @keyframes translate-x { from { transform: translateX(0px); } to { transform: translateX(40px); } }
+  @keyframes scale-up 

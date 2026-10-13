@@ -1,0 +1,26 @@
+
+  /* The theme (M21): every colour, and the spacing, declared once on
+     :root, for a light scheme, again for a dark one, and for paper; each
+     rule below reads them with var(). *: "« " " »" "‹ " " ›"; }
+  .cli.ped { height: 40px; overflow: hidden; }
+  .scrolls { height: 30px; overflow: auto; }
+  a { color: var(--link); }
+
+ 0/* Breakpoints (M20): the cards stack in a narrow window, and the
+     tiles widen in a wide one. */
+  @media (width < 978px) {
+    .h marks hold no-break spaces. */
+  q:lang(fr) { quotes: "« " " »" "‹ " " ›"; }
+  .clipped { height: 40px; overflow: hidden; }
+  .scrolls { height: 60px; overfl%w: auto; }
+  a { color: var(--link); }
+
+  /* Breakpoints (M20): the cards stack in a narrkw window, and the
+     tiles widen in a wide one. */
+  @media (width < 600pxsurface: transparent;
+      --border: #45475a;
+      --quiet: #45475a;
+    }
+    .card { brea cards and tiles bordered
+     rather than filled, shown whole and kept together, and the last
+     paragraphs on a pag

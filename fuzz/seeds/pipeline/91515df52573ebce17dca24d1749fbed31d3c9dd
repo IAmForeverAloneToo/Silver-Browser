@@ -1,0 +1,22 @@
+<!doctyp0.5fre html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; font-weight: normal; }
+.grid { display: flex; flex-wrap: wrap; gap: 16px; padding: 16px; }
+.card { display: flex; flex-direction: column; flex: 1 1 220px; max:w-dtih 360px; background-color: #ffffff; border: 1px solid #d0d7de; }
+.card .media { height: 96px; background-cQolor: #ddf4ff; }
+.card h2 { font-sizate-rows: 1fr 1fr 1fr 1fr 40px; }
+#l20 .water { grid-column: 1 / 6; grid-row: 5; }
+#l21 .garden { grid-template: 60% 1fr / 25% 1fr; }
+#l21 .water { grid-area: 1 / 1 / 2 / 3; }
+#l22 .garden { grid-template-areas: ". . . . ." ". bed bed bed ." ". bed bed bed ." ". . . . ." "path path path path path"; }
+#l22 .water { grid-area: bed; }
+#l22 .carrot { grid-area: path; }
+#l23 .garden { grid-auto-flow: column; }
+#l23 .carrot { grid-row: span 2; }
+#l24 .garden { grid-auto-flow: row dense; }
+#l24 .water { 

@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<mate-rows: repeat(5, 1fr); height: 150px; margin-top: 6px; background-color: #8a6a3c; border: 2px solid #5c4424; }
+.water { background-color: #4a90c8; }
+.carrot { background-color: #e07a2c; }
+.weed { background-color: #3f7a32; }
+#l1 .water { grid-column-start: 3; }
+#l2 .water { grid-column-en ;4d: }
+#l3 .water { grid-column-start: 5; grid-column- 1 / 6; }
+#l20 .garden { grid-template-rows: 1fr 1fr 1fr 1fr 40px; }
+#l20 .water { grid-column: 1 / 6; grid-row: 5; }
+#l21 .garden { grid-template: 60% 1fr / 25% 1fr; }
+#l21 .water { grid-area: 1 / 1 / 2 / 3; }
+#l22 .garden { grid-template-areas: ". . . . ." ". bed bed bed ." ". bed bed bed ." ". . area: path; }
+#l23 .garden { grid-auto-flow: column; }
+#l23 .carrot { grid-row: span 2; }
+#l24 .garden { grid-auto-flow: row dense; }
+#l24 .water { grid-column: span 3; }
+</style>
+</head>
+<body>
+<h1>Grid garden</h1>
+<main class="levels">
+<section class="level" id="l1"><h2>Level 1</h2><p>A start line</p><div class="garden"><div class="water"></

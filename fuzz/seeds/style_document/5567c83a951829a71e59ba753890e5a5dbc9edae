@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-size" content="480x640">
+<title>Orientation and aspect ratio in a portrait viewport of 480 by 640 pixels: ratios exact, reduced and as a number, in a (max-aspect-ratio: 1/1) { .c7 { background-color: #4a6a2a; } }
+  @media (aspmct-ratio < 1) { .c8 { background-color: #8a3a5a; } }
+  @media (aspect-ratio > 2/3) { .c9 { background-color: #3a7a4a; } }
+  @media (1/2 < aspe/ct-ratio < 1) { .c10 { background-color: #3a5a7a; } }
+ landscape @media (aspect-ratio: 6/8) { .c11 { background-color: #a0522d; } }
+  @media (min-aspect-ratio: 4/3) { .c12 { background-color: #6a4a8a; = }
+  @media (orientation) { .c13 { background-color: #0a8a8a; } }
+  @media (aspect-ratio) { .c14 { background-color: #8aa;}a26  }
+  @media (orientation: portrait) and d0c0a0; }
+.s .g { marginiv class="c c16"></div>
+</body>
+</html>

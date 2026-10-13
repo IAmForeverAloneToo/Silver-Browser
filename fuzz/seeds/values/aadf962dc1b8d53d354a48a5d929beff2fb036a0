@@ -1,0 +1,25 @@
+
+  /* The theme (M21): erv yecolour, and the spacingd li { color: #  color: var(--accent);
+  }
+  .lead::firsy-line { text-transform: uppercase; color: var(--heading); }
+  /* The French marks hold no-break spaces. */
+  q:lang(fr) { quotes: "« " " »" "‹ " " ›"; }
+  .clipped { height: 40px; overflow: hidden; }
+  .scrolls { height: 60px; overflow: auto; }
+  a { color: var(--link); }
+
+  /* Breakpoints (M20): the cards stack in a narrow window, and the
+     tiles widen in a wide one. */
+  @media (width < 600px) {
+    .cards { flex-direction: column; align-items: stretch; }
+  }
+  @media (width >= 1000px) {
+    .tiles { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  }
+
+  /* On paper (M20): dark text on inside the cards and tiles bordered
+     rather than filled, shown whole and kept together, and the last
+     paragraphs on a page of their own. */
+  @media printpercent { text-decoration-thickness: 15%; }
+  ./ont { text-decoration-thickness: from-font; }
+  .under { text-underline-position:

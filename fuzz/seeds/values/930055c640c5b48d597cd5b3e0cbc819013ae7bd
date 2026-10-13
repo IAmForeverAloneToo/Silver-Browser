@@ -1,0 +1,17 @@
+pini margin-left: calc(Naspan1px); padding: clamp(1px, 50%, non() max(90x, 2%) min(8ini margin-left: calc(Naspan1&px); padding { w: clamp(1px, 50%, non() max(90x, 2%) min(8ptype(<percentageadding: clampter-character; ptype(argin-left: calc(Naspan1px); padding: clamp(1px, 50%, non() max(90x, 2%) min(8ini margin-left: calc(Naspan
+  html { background-color: #fr> | <length>), 20px); }
+
+  /* In calc() and a zhorthand. */
+  .c8 { w^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^idth: calc(e(<length>+)); }
+
+  /* Missing, empty, or not of the type: the fallback, or the  .c2 { width: attr(data-n px); }
+  .c3 { width: attr(datwavya-n em, 10px); }
+  .c2 { width: attr(data-p %); }
+
+type(<num1&px); paber>)and one of a choice 
+  :root {
+    --p    --size: 50px;
+    --gap: 10px;
+    --edge: 4px solid var(--other);
+    --chain-a: var(--chain-b);
+    --chain-b: .c5 { background-color: attr(vd

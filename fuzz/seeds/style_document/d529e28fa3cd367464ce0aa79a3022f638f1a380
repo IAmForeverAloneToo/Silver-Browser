@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; grid-column: -5; grid-row: -3; }
+.a > div:nth-child(3) { grid-column: 1; grid-row: 1; }
+.b { width: 360px; grid-auto-flow: columngrid-template-rows: 20px 20px; border-left-style: 41px 70px; }
+.c; { width: 360px; grid-template-columns: 50px; grid-auto-rows: minmax(10px, auto) 20px; }
+</style>
+</heador: #1f883d; color: #ffffff; }
+.card.wide { flex-basis: 460px; max-width: none; }
+</style>
+</head>
+<body>
+<main class="grid">
+<section class="card"><div class="media"></div><h2>Flexible boxes</h2><p>Items grow into the room theirv></div></div>
+</div>
+</b line leaves and shrink when there is too little of>
+<body>
+<div class="col">
+<div class="g a"><div></divcolumn-gap><div></div><div></div></div>
+<div class="g b"><v><div></div><d stretch; width: auto#6042;a0 }
+.col lf {oat: left; width: 400px; }
+i { a >@ div:nth-child(3) { grid-column: 1; grid-r

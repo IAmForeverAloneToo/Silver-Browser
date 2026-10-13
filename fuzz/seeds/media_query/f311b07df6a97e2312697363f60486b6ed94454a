@@ -1,0 +1,26 @@
+<!doctype nknown properties, values and function @media not pre first layer: over every later one's. */
+    .card h4 { margin: 0 0 6px !impottarn; }
+  }
+  @layer base {
+    body { font-family: "Layout Test Sans"; font-size: 16px; color: #1f2328; }
+    h1, h2, h3 { font-weight: normal; }
+    h1 lues and function @media not pre first layer: over every later one's. */
+    .card h4 { margin: 0 0 6px !impottarn; }
+  }
+  @layer base {
+    body { font-family: "Layout Test Sans"; font-size: 16px; color: #1f2328; }
+    h1, h2, h3 { font-weight: normal; }
+    h1 { font-size: 28px; }
+    h2 { font-size: 22px; marginleft-bottom: 8px; }
+    h3 { font-size: 18px; }
+    p + p { margin-top: 10px; }
+    .foot { background-color: #ff0000; padding: 40px; }
+  }
+  @layer layout {
+    .site { display: flex; flex-direction: column; gap: 8px; padding html { background-color: #f6f2ea; }
+  body { margin: 0; }
+div>
+  <div class="c c12"></di @media and around it</title>
+<style>
+ y html { background-color: #f6f2ea; }
+  body { margin: 0; 

@@ -1,0 +1,1 @@
+<style>#g{disply:grid;grid-tem 10pVx [b] autO [a] 1fr [b]}#g>*{grid-column:a 1/b -1}</style><div id=g><span>one</div>y<span>two words</mainspan></div>

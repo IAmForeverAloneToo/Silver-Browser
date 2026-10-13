@@ -1,0 +1,10 @@
+
+  :root {
+    -var(--chain-b);
+    --chain-b: var(--chain-c);
+    --chain-c: var(--ok);
+  }
+  html { background-comor: var(--pa--gap) 0 0 var(--gap); background-col an absolutely positioned box agajnst its containing
+     block, and a negative inset. */
+  .b10 .c { position: absolute; left: calc(50% - 25px); top: max(10px, 20%); width: 50px; height: 50px; }
+  .b11 .c { position: an); }

@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<title>Media queries combined with and, or, not and only, nested in one another, with unknown types and features and malformed queries</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c k floaa tv { .c7 { background-color: #4a6a2a; } }
+  @media foo { .c8 { background-color: #8a3a5a; } }
+  @media (not (max-width: 100px)) { .c9 { background-color: #3a7a4a; } }
+  @media ((min-width: 100px) or (foo: bar)) { .c10 { background-color: #3a5a7a; } }
+  @media ((min-width: 100px) and (foo: bar)) { .c11 { background-color: #a0522d; } }
+  @media not (foo: bar) { .c12 { background-color: #6a4a8a; } }
+  @media (foo: bar), screen { .c13 { background-color: #2a8a8a; } }
+  @media(min-width: 10px) and (max-width: 5px) { .c14 { background-color: #8a6a2a; } }
+  @media (min-width: 10px) and { .c15 { background-color: #4: 800px) or (height: 1px) { .c00 { background-color: #6a4a8a; } }
+  @media (min-width: 100px) a>
+  <div class="c c14"></div>
+  <div class="c c15"></div>
+ 

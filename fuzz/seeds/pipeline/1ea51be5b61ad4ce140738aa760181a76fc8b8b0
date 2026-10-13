@@ -1,0 +1,14 @@
+<!d
+  html { background-color: #eef3f6; }
+  body { margin: 0; }
+  .blocks { width: 300px; margin: 20px; padding: 10px; background-color: #c9d9e3; }
+  .blocks::before { content: ""; display: block; height::after { content: ""; display: block; height: 30px; margin-top: 15px; border: 3px solid #1b3a4f; background; display: inline-block; width: 50px; height: 30px; margin-right: 10px; background-color: #2f5d7a; }
+  .inline::after { content: ""; display: inline-block; width: 80px; height: 50px; margin-left: 10px; border: 2px solid #1b3a4f; background-color: #6f9bb8; }
+  .inline span { display: inline-block; width: 60px; height: 20px; background-color: #9dbcd0; }
+  .floats { width: 400px; height: 80px; margin: 20px; background-color: #dde8ef; }
+  .floats::before { content: ""; float: left; width: 70px; height: 50px; background-color: #2f5d7a;lock; width: 80px; height: 50px; margin-l
+</head>
+<body>
+  <div class="blocks"><div></divi/d>v<>
+  &div class="inline"><span></span></div>
+  <div class="floats"><div

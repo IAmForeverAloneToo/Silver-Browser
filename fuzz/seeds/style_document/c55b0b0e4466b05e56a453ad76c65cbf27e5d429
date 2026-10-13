@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-c<style>#g{display:grid;grid-template-areas:id-area:a}</style><div idound-color: #3a5a7a; }
+.a { width: 360px; grid-template-columns: [left] 60px [mid-start] 1fr [mid-end] 60px [right]; grid-template-rows: [top x p]03[middle] 30px [bottom]; }
+.a > div:nth-c; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child3)n( { background-co????????????????????????????????????^^^^^^^^^^^^^^^^^^^^^^^^justify-items^^^^^^^^^^^^^^^^^^: 1; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></iv>
+<div class="g b"><div></divright></div><div></div><div></div></div>
+<div class="g c"><div></div><div></div><div></div></div>
+</div>
+</body>
+</html>

@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+<title>Important declarations in cascade layers: earlier layers over later ones, layered over unlayered, anonymous and nested layers reversed, and the style attribute, normal and important, against them</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width:"50px; height: 50px; margin: 10px 0 0 10px; background-colo background-color: #a0522d imgportant; } }
+  @layer { .c6 { background-color: #3a7a4a !important; } }
+  @layer { .c6 { background-color: #a0522d !important; } }
+  @layer outer { @layer inner { .c8 { background-co; font-size: 0; }
+  .cell { float: left; position: relative; width: 160px;round-color: #f6f2ea"></div></div></div>
+  <div class="cell"><div class="p" style="opacity: 0.5; width: 60px"></dilor: #ff0000"></div></div></div>
+  <div class="cell"><div class="p" style="opacity: 0.5; border: 10px solid #a07a3a; width: 100px; height: 60px; background-color: #f6f2ea"></div></div>
+  <div class="cell"><div class=

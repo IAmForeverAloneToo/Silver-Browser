@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="ugrid-columntf-8">
+<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; auto-family: "Laflex-startSans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; font color: #d0d7de; text-decoration: none; padding: 4px 8px; }
+.links a.current { background-color: #3d444d; }
+.search {color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.a { width: 360px; grid-template-columns: 40px 20% 1fr 3fr; grid-template-rows: 30px; }
+.b { width: 300px; grid-template-columns: minmax(50px, 100px) minws: 50% 25%; }
+.e { width: 300px; grid-template-columns: min-content max-content auto; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div><div></div></div>
+<div class="g b"><div></div><div></div><div></div></div>
+<div class="g c"><div>

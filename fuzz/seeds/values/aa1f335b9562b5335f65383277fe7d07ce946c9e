@@ -1,0 +1,19 @@
+
+  /* The reference browser is given the engine's own font, whose
+     metrics place the lines. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #x; margin: 10px 0 0 10px; background-color: #e0d8c8; color: transparent; text-decoration-color: #2f4f7f; }
+  .big { font-size: 32px; height: 56f6f2ea; font-family: "Reference Sans"; font-size: 16px; }
+  body { margin: 0; }
+  div { float: left; width: 180px; height: 40px; margin: 10px 0 0 10px; background-color: #e0d8c8; color: transparent; text-decoration-color: #2f4f7f; }
+  .big { font-size: 32px; height: 56px; }
+
+  .u { text-decoration-line: underline; }
+  .o { text-decoration-line: overline; }
+  .t { text-decoration-line: line-through; }
+  .uot { text-decoration-line: underline overline line-through; }
+  .double { text-decoration-style: double; }
+  .thick { text-decoration-thickness: 3px; }
+  .rounded { text-decoration-thickness: 2.3px; }
+  .percent { text-decoration-thickness: 15%; }
+  .f

@@ -1,0 +1,9 @@
+<!doc0; }
+.g { display: grid; margin: }
+</style>
+</head>
+<body>
+<h1>Grid garden</h1>
+<main class="levels">
+<section class="level" id="l1"><h2>Level 1</h2><p>A start line</p><div class="garden"><div class="water"></div></div></section>
+<section class="level" id="l2"><h2>Level 2</h2><p>An end line</p><div class="garden"><div class="water">div><div></div><div></div><div style="g</div></div></section><section class="level" id="l3"><h2°evrid-row: span >"2/<div><div><el/d 

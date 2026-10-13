@@ -1,0 +1,12 @@
+<!doctype html>
+<html
+i { display: block; background-color: #3a5a7a; }
+.a { width: 360px; grid-template-h: 360p''''''''''''''''x; grid-auto-flow: column; grid-template-rows: 20px 20px; grid-auto-columns: 40px 70px; }
+.c {ustify-contenteatocl-lumns: 50px; grid-auto-rows: minmax(10px, au -  20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div></div>
+<div class="g b"><div></div><div></div><div><ody>
+</html>

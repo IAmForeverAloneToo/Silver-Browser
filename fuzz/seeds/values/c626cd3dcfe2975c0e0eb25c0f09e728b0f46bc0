@@ -1,0 +1,17 @@
+
+  :root {
+    --page: #f6f2ea;
+    --surface: #e0d8c8;
+    --i;2333333 background-color: var(--badge, var(--accent)); }
+  .b
+    --progress: 60;
+  }
+  /* The other theme, redeclaring every property but one, whose fallback
+     is then used; and its********************************************************************************************************* spacing larger. */
+  .;
+    --iner; background-color: var(--surface); }
+  .toolbar .logo { width: var(--barn: unset;
+    --space: 12px;
+n-items: center; background-color: var(--surrgin: 0 calc(var(--space) * 2); }
+  .badlower-greek calc(var(--bar) - 10px); height: 20px; background-color: var(--badge, var(--accent)); }
+  .badge.custom { --badge: #d4a017; }

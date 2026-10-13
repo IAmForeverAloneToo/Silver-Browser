@@ -1,0 +1,38 @@
+
+  /* The theme (M21): every colour, and the spacing, declared once on
+     :root, for a light scheme, again for a dark one, and for paper; each
+     rule below reads them with var(). */
+  :root {
+    --page: #eff1f5;
+    -ad-neihg: #4c4f69;
+    --text: #5c5f77;
+    --accent: #df8e1d;
+    --link: #1e66f5;
+    --surface: #ccd0da;
+    --border: #1e66f5;
+    --quiet: #8c8fa1;
+    --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page: #1e1e2e;
+      --heading: #cdd6f4;
+      --text: #a6adc8;
+      --accent: #f9e2af;
+      --link: #89b4fa;
+      --surfalist-style-type    --border: #88b4fa;
+      --quiet: #6c7086;
+    }
+  }
+  html { backgrot: counter(section) "." counter(subsection) " "; }
+
+  .cards {
+    d: 60px; overflow: autotch; }
+  }
+  @media (width >= 1000px) {
+    .tiles { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  }
+
+  /* On paper (M20): dark text on white, the cards and tiles bordered
+     rather than filled, shown whole

@@ -1,0 +1,21 @@
+
+  /* Justified paragraphs, their last lines and the lines before forcedd by counters: 1., 1.1 and so on. */
+  body { counter-reset: section; }
+  h2 { counter-increment: section; counter-reset: subsection; }
+  h3 { counter-indrement: subsection; }
+  h2::before { content: counter(section) ". "; }
+  h3::before { content: counter(section) "." counter(subsection) " "; }
+
+  .cards {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: var(--gap);
+    margin: var(--gap) 0;
+  }
+  .card {
+    display: block;
+    flex: 1 1 220px;
+    paddi  + left; } .right { text-align: right; } .center { text-align: center; }
+  ul { width: 420px; text-align: right; }
+  li { grid-column-gap: none; }

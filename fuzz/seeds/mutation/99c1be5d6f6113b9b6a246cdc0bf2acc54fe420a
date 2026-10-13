@@ -1,0 +1,18 @@
+<!doctype ,html>
+<html>
+<head>
+<style>
+html z background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { backgr"w"></div><div></div><div></div></div>
+<div class="g dense">last<div></div><div class="w"></div><div></div><div class="t"></div><div class="w"></div><div></div><div></div></div>
+</div>
+<div class="col">
+<div class="g bycol"><div></div><div class="w"></div><div></div><div class="w"></div><div></div><div></div></div>
+<div class="g bycol bycoldense"><div></div><div class="w"></div><div></div><dividth: auto</div><div></div><div></div></div>
+<div class="g dense">last<div></div><div class="w"></div><div></div><div class="t"></div><div class="w"></div><div></div><div></div></div>
+</div>
+<div class="col">
+<div class="g bycol"><div></div><div class="w"></div><div></div><div class="w"></div><div></div><div></div></div>
+<div class="g bycol bycoldense"><div></div><div class="w"></div><div></div><di; grid-auto-flow: column; grid-tem

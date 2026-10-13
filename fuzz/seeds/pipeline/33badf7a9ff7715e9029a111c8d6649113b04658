@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<h width: 40px; height: auto; }
+  .col > div > div { width: 20px; height: 69px; }
+</style>
+</head>
+<body>
+  <div class="f grow"><div><div></div></div><div></div></div>
+  <div class="f clip"><div><div></div></div><div></div></div>
+  <div class="f spec"><div><div></div></div><div></div></div>
+  <div class="f zero"><div><div></div></div><div></div></div>
+  <div class="f max"><div><div></div></div><div></div></div>
+  <div class="f col"><div><div></div></div><div></div></div>
+</body>
+</html>

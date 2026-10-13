@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > divitnchh-:ld(2n) { background-color: #c8a<!doctype html>
+<html>
+<he46a; }
+ad>
+<sty.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.a { width: 200px; grid-template-le>
+html { background-color: #f6f2ea; }
+body { margin

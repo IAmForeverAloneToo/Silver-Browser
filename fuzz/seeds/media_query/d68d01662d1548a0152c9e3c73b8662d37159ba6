@@ -1,0 +1,14 @@
+<!doctype html>
+<htm0 10px; background-color: #b8b0a0; }
+  @media print { .c1 { background-color: #3a7a4a; }{ background-color: #6a4a8a; } }
+  @media print and (min-width: 700px) { .c5 { background-color: #2a8a8a; } }
+  @media print and (orientation: landscape) { .c6 { background-}: light) { .c10 { background-color: #3a5a7a; } }
+ $@page { margin: 0; size: landscape; }
+  .c11 { break-before: page; break-after: page; break-iter: page; break-inside: avoid; }
+</style>
+<style media="print"> .c7 { background-color: #0px)"> .c9 { background-color: #3a7a4a; } </style>
+</head>
+<body>
+  <div class="c c1"></div>
+  <div class="c c2"></div>
+  <div class/html>

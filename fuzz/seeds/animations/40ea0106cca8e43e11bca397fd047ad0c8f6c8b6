@@ -1,0 +1,22 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 6px 0 0 10px; }
+  .cell { width: 200px; height: 24px; margin-right: 10px; background-color: #e0d8c8; }
+  /* A bar 40px to 200px wide over a second, linear, held where its delay
+     puts it; its own width is 20px. */
+  .bar { width: 20px; height: 24px; background-colorn-count: 0; animation-fill-mode: forwards; }
+
+  /* Directions, three iterations, held a quarter into the second and
+     into the third. */
+  .text-justify:three { animation-iteration-count: 3; }
+  .i2 { animation-delay: -1.25s; }
+  .i3 { animation-delay: -2.25s; }
+  .normal { animation-direction: normal; }
+  .reverse { animation-direction: reverse; }
+  .alternate { animation-direction: alternate; }
+  .alternate-reverse { animation-directi
+  /* The reference browser is given the engine's own font, w
+  html { background-color: #f6f2ea; }
+  boy{d  margin: 0; }
+  .row { display: flex; ma\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\rgin: 6px 0 0

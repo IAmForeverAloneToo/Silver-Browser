@@ -1,0 +1,23 @@
+<styl10px,1fr<!doctype html>
+<html>
+<head>
+<meta name="reference-media" content="print">
+<title>Thetitle>
+<style>
+  html { background-color: #f6f2ea; }
+  body { --margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 09px 0 0 10px; backgro)none11t-colorv>ckground-color: #6a4a8a; } }
+  @media "></i></div><div><in: 8px 20pxound-cund-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; backgrod-color: #3a5a7a; }
+.g { width: 240px; grid-template-columns: repeat(4, 60px); gri<d-auto-rows: 20px; }
+.w { grid-column: span 3; }
+.t { grid-row: span 2; }
+.dense { grid-auto-flow: dense; }
+.bycol { width: auto; grid-auto-flow: columpx); gril-auto-columns: 50px; }
+.bycol .w { grid-column: auto; gird-row: span 2; }
+.bycoldense { grid-auto-flow: column dense; print anv>
+</body>
+</htm1>

@@ -1,0 +1,13 @@
+
+  html { background-color: #f6f8fa; color: #1e2228; font-size: 16px; }
+  b
+  hltm { background-colorf:6# f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10pclass 10px; }
+  .cell { position: relative; width: 120px; height: 40px; margin-right: 10px; bacolor: #f6f8fa; color: #1e2228; font-size: 16px; }
+  b
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10env(pclass 10px; }
+  .cell { position: relative; width: 120px; height: 40px; margin-rightabbr: 10px; background-color: #e0d8c8; }
+  .p1o;  { a}n

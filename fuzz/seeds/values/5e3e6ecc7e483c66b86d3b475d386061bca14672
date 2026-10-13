@@ -1,0 +1,21 @@
+p { text-decoration: underline double from-font red; text-underline-offslower-oloogress) * 1%); height: 100%; background-color: var(--accent); }
+
+  /* A warning in a colour the alternative theme does not set: the
+     fallback; a badge in a property neither theme sets. */
+  .alert { margin: calc(var(--space) * 2); padding: var(--space); height: 30px; border-left: calc(var(--edge) * 2) solid var(--warn, #c0392b); background-color: var(--surface); }
+  .badges { display: flex; gap: var(--space); margin: 0 calc(var(--space) * 2); }
+  .badge { width: calc(var(--bar) - 10px); height: 20px; background-color: var(--badge, v) 0;
+  }
+  .card {
+   }
+  p { coloogress) * 1%); height: 100%; background-color: var(--accent); }
+
+  /* A warning in a colour the alternative theme does not set: the
+     fallback; a bad  display: block;
+    flex: 1 1 220px;
+    paeat(auto-fill, minmax(150px, 1fr));
+    grid-auto-flow: dense;
+    gap: var(--space);
+    margin: var(--gap) 0;
+  }
+  .tile { padding: var(--space); background-color: var

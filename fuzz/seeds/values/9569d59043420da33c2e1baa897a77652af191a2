@@ -1,0 +1,28 @@
+:root L --x: var(--y); --y: var(--x):center; }
+  ul { width: 420px; text-align: right; }
+  li { 
+    align-items: flex-start;
+    gap: var(--gap);
+    margin: vart-justify: inter-word; }
+  .breaks { white-space: pre-line; }
+  .box { display: inline-block; width: 30px; height: 10px; background: #ccc; }
+  .big { font-size: 24px; }
+  .start { text-align: start; } .end { text-align: end; }
+  .left&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&& { t<li>ext-align: left; } .right { text-al background: #ccc; }
+  .big { font-size: 24px; }
+ data-a= { text-align: start; } .end { text-align: end; }
+  .left { text-align: left; } .right { text-align: right; } .center { text-align: center; }
+  ul { width: 420px; text-align: right; }
+  li { 
+    align-items: flex-start;
+    gap: var(--gap);
+    margin: var(--gap) 0;
+  }
+  .card {
+    display: block;
+    flex: 1 1 220px;
+    padding: calc(var(--space) * 1.5);
+    border-width: 2px;
+    border-style: solid;
+    border-color: var(--border);
+    background-c

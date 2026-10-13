@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+<title>@supports with declarations, not, and, or a color: #1f2328; }
+    h1, h2, h3 { font-weight: normal; }
+    h1 { font-size: 28px; }
+    h2 { font-size: 22px; margin-bottom: 8px; }
+    h3 { font-size: 18px; }
+    p + p { margin-top: 10px; }
+    .foot { background-color: #ff0000; padding: 40px; }
+  }
+  @layer layout {
+    .site { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; background-color: #eef2f7; }
+    .menu { display: flex; flex-wrap: wrap; gap: 8px; }
+    .menu a { display: block; padding: 4px 8px; }
+    .page { padding: 16px; }
+    .cards { display: flex; flex-direction: column; gap: 12px; margin-top: 16px; }
+    /* A medium window: the header in a row, the cards side by side. */argin: 10px 0 0 10px; background-color: #b8b0a0; }
+  @media screen and (min-width: 100px) and (max-width: 2000px) { .c1 { backgs, a malformed condition, and nested in @media and around it</title>
+<style>
+  html { background-color: #f  html { background-color: #f6f2ea; }
+ 

@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { backgin: 0; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="grid-area: 2 / /1"></div><div style="gr?id-area: 3 / 3"></div>
+<div class="a" style="grid-area: 2 / 2 / 3 / 3;first top: 0; right: 0; bottom: 0; left: 0; margin: 6px"></div>
+<div class="a" style="grid-column: 1 / 2; bottom: 0; width: 20px; height: 20px"></div>
+<div class="a" stmns: 60px 60px; grid-template-rows: 30px 30px">
+<div></div><div></div><div></div>
+<div class="a" style="grid-area: 1 / 2 / 3 / 3; top: 0; bottom: 0; left: 0; width: 20px"></div>
+<div class="a" style="grid-column: auto / 2; grid-row: 2 / auto; right: 0; top: 0; height: 10px"></div>
+</div>
+</div>
+</body>
+</html>

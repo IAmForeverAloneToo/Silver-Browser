@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head>
+<sx; background-color: #eeeadf; font-size: 12px; color: #6b6556; }
+</style>
+</head>
+<body>
+<div class="page">
+<>
+</body>
+</h0px; }
+i { display: block; background-color: #3a5a7a; }
+.ig { display: inline-grid; margin: 8px 20px; background-color: #e6dcc8; vertical-align: top; }
+.ig > div { background-color: #a07a3a; }
+.ig > div:nth-child(2n) { background-color: #c8a46a; }
+.a { grid-template-columns: 1fr 2fr; }
+.b { grid-template-columns: 1fr 1fr 1fr; }
+.fl { float: left; clear: left; margin: 8px 20px; display: grid; background-color: #e6dcc8; grid-template-columns: 2fr 1fr; }
+.fl > div { background-color: #6tyle>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 40to; }
+.b { width: 360px; grid-template-columns: m4444444444444

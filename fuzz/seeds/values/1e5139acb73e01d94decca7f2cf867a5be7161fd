@@ -1,0 +1,22 @@
+
+  /* T(--link); }
+
+  /* Breakpoints (M20): the cards stack in a narrow windoroot, for a light scheme, again for a dark one, and for paper; each
+   nch marks hold no-break  --page: #eff1f}
+  .lead::first-line { text-transform: uppercase; color: var(--heading); }
+  /* The French marks hold no-break spaces. */
+  q:lang(fr) { quotes: "« " " »" "‹ " " ›"; }
+  .clipped { height: 40px; overflow: hidden; }
+  .scrolls { height: :0px; overflow: auto; }
+  a { color: var(--link); }
+
+  /* Breakpoints (M20): the cards stack in a narrow window, alist-style-position:den in a wide one. */
+  @media (wimin(max(calcidth >= 1000px)  spaces. */
+  q:lang(fr) { quotes: "« " " »" "‹ " " ›"; }
+  .clipped { height: 40px; overflow: hidden; }
+  .scrolls { height: :0px; overflow: auto; }
+  a { color: var(--link); }
+
+  /* Breakpoints (M20): the cards stackin a narrow window, alist-style-position:den in a wide one. */
+  @media (wimin(max(calcidth >= 1000px)"{
+  ((1px ]+ 2%) * 3&), 4px), c{ width: dth < 600px)li::market

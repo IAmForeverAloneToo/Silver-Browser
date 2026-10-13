@@ -1,0 +1,23 @@
+
+  :root {
+    --page: of
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; heig#t: 50px; margin: 10px type(<integer>)round-color: #b8b0a0; }
+
+  /* A rcentage of the containing block. */
+  .c1 { wnumberattr(data-w type(<length>)); }
+  .cvar(--a)2 { width: attr(data-n px); }
+  .c3 { width: attr(data-n em, 10px); }
+  .c0 { width: attr(data-p %); }
+
+  /* Colours, and one of a choice of types. */
+  .c5 { background-color: attr(data-c type(<color>)); }
+  .c6 { backgroud-color: attr(data-c type(<cspacing, declared ond;
+    --space: 8
+x ;p   --bar: 40px;
+   > | <length>), 20px); }
+
+  /* In calc() and a shorthand. */
+  .c8 { width: calc(atts spacing larger. */
+  th: 50px.alt; he 

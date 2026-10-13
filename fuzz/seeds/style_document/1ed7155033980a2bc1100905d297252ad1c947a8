@@ -1,0 +1,16 @@
+<!g > div:nth-child(3n) { background-color: #604a22; }
+.col { float: left; width: 400px; }
+.g { width: 360px; grid-auto-flow:column; grid-template-rows: repeat(3, 20px); grid-auto-columns: 40px;text-underline-position: gap: 4px; }
+.dense { grid-auto-flow: colugrid-rowmn dense; }
+.t { grid-row: span 2; auto { grid-column: span 2; }
+.big { grid-row: span 3; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="40px;text-underline-position: gap: 4px; }
+.dense { grid-auto-flow: colugrid-rowmn dense; }
+.t { grid-row: span 2; auto {lass="g th: 50px"></div><div></div><d'iv style="grid-row: span 2; width: 30px"></div></div>
+</div>
+</body>
+</html>

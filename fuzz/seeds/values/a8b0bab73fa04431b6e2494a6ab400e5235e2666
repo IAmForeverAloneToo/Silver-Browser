@@ -1,0 +1,40 @@
+:root { --xnnnnnnnn: var(--y); --y:  --(--x); } p { color: varnk: #1e66f5;
+    --surface: #ccd0da;
+    --border: #1e66f5;
+    --quiet: #8c8fa1;
+    --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page: #1e1e2e;
+      --heading: #cdd6f4;
+      --text: #a6adc8;
+      --accent: #f9e2af;
+      --link: #89b4fa;
+      --surface: #313244;
+      --border: #88b4fa;
+      --quiet: #6c7086;
+    }
+  }
+  html { background-color: var(--page); }
+  h1, h2, h3 { color: var(--heading); subsection; }
+  h3 { counter-increment: subsection; }
+  h2::before { content: counter(section) ". "; }
+  h3::before { content: counter(section) "." counter(subsection) " "; }
+
+  .car!ds {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: var(--gap);
+    margin: var(--gap) 0;
+  }
+  .card {
+    display: block;
+    flex: 1 1 220px;
+    padding: calc(var(--space) * 1.5);
+    border-width: 2px;
+    border-style: solid;
+    border-color: var(--border);
+  & bac

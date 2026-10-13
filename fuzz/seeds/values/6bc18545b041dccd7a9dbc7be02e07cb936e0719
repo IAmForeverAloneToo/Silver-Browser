@@ -1,0 +1,18 @@
+
+  :root {
+    --page: #f6f2ea;
+    --cell: #b{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{8b0a0;
+    --ok: #3a7a4area   --other: #a0522d;
+    {{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{8b0a0;
+    --ok: #3a7a4a;
+    --other: #a0522d;
+    --size: 50px;
+    --gap: 10px;
+ }
+  .c16 { --page: unset; backgpx;
+ }
+  .c16 { --page: unset; background-color: var(--page); }
+
+  /* The custborder-left: 10px solid; border-color: var(--two); width: 40px; }
+  .c1-imp: #a0522d; background-0px; height: 50px; }
+  .b11 .c { position: absse); }

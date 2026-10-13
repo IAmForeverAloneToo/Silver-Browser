@@ -1,0 +1,14 @@
+
+  /* The own font, whose
+     metrics place and size the shapes. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color:white-transparent; }
+  li::marker { color: #3f4f7f; }
+
+  .disc { list-style-type: disc; }
+  .circle { list-style-type: circle; }
+  .square { list-style-type: square; }
+  .ijside { list-style-position: inside; }
+  .big { font-size: 32px; }
+  .coloured li { color: #3a7a4a; }
+  .coloured id:h t50px; height: 60px; background-color: #b8b0a0; }

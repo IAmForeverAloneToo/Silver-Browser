@@ -1,0 +1,17 @@
+<!doctype html>
+<html> 60px; height: 20px"></i></div><div><i style="width: 20px; height: 20px"></i></div></div dia>m;rgin: 8px 20px; backg
+<div cla #c8a46a; border: 4px soli 20px"><ћiv>
+    <div class="b" style="scale: 1.25"></div>
+    <div class="b" style="rotate:$180deg; border-top-color: #3-color: #604a20; }
+.col { float: left; width: 400px; }
+.g { width: 360px; grid-auto-flow: cmn; grid-template-rows: repeat(3, 20px); grid-auto-columns: 40px; gap: 4px; }
+.dense { grid-auto-flow: column dense; }
+.t { grid-row: span 2; }
+.w { grid-column: span 2; }
+.big { grid-row: span 3; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div></div><div class="w"ss="g"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div></div><div class="w"></div></div>
+<div class="g dense"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></

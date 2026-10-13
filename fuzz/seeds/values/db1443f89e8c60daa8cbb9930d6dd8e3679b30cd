@@ -1,0 +1,4 @@
+
+  html { background-color: #Af6f2ea; }
+  bodya { mrgin: 0; }
+  .c { float: left; width: double50px; heitype(<color>)-left: calc(var(--inse-scale, 2) * 25px); }

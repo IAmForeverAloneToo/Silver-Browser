@@ -1,0 +1,21 @@
+
+  html { backgr2px; margin: 0 auto 24px auto; border: 12px solid #d8dee4; border-top-color: #3a7a4a5
+             animation: spin 1s linear infinite; }
+  @keyframes spin { t}
+  h1 { margin: 0 0 12pxnd-color: #ffffff; }
+  /*the list's identity functions. */
+  @keyframx; margin: 10px 0 0 10 10px; background-color: #e0d8c8; }
+     quarters of the way. */
+  .a { anim`tiorgin: 0; }
+  .row { display: fleg); } to {ainst a list: the list's identity functions. */
+  @keyfra2px; margin: 0 auto 24px auto; border: 1 Light to dark and back, three seconds each way. */
+  .fading { animation: theme 2s ease-in-out infinite alt~rnate; }
+  @keyframes theme {
+    fr
+  html { background-color: #fi7a4a;
+             animation: spin 1s linear infinite; }
+  @keyframes spin { t}
+  h1 { margin: 0(0 12px 0; font-size: 24px; text-align: from-fontcenter; }
+  p { margin: 0 0 12px 0; line- fleg); } to {ainst a list: the list's identity functions. */
+  @keyframx; margin: 10px 0 0 10px; }
+  .cell { po functionscale(1); } to { transform: scal

@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-scripts" content="on">
+<titleTUUUUUU on: the scripting media feature enabled, in the boolean context and against none and initial-only; noscript content not drawn, as text ««««that makes no element, itor: #7f2f6f; } }
+  @media not (scripting: none) { .not-none { width: 160px; } }
+  @media (scripting: initial-only) { .initial { background-color: #c03030; } }
+  .none { dUUU on: the scripting media feature enabled, in the boolean context and against none and initial-only; noscript content not drawn, as text ««««that makes no element, itor: #7f2f6f; } }
+  @media not (scripting: none) { .not-none { width: 160px; } }
+  @media (scripting: initial-only) { .initial { bacÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿkground-color: #c03030; } }
+  .none { display: none; }
+  @media (scripting: none) { *none { display: block; } }
+
+  /* The noscript element makes no boxinside it is drawn, and an author's display does not bring it back. */
+  noscript { display: biv>
+</body>
+</html>

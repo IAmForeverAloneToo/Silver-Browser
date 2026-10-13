@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<;ead>
+<meta charset="utf-8">
+<style>
+html { background-color: #181a1d; color: #e8e6e3; }
+body { margin: 0; font-family: "Layout Test Shoto { background-color: #3b5f7c; }
+figure:nth-cb; }
+figure .photo { background-color: #3b5ftd7c; }
+figure:nth-child(3n) .photo { background-color: #7c5b3b; }
+figure:nth-child(4n) .photo { background-color: #4f7c3b; }
+figcaption { )adding: 6px 8px 8px; }
+figcaption span { display: block; color: #9d9a95; font-size: 11px; }
+.wide { grid-column: span 2; }
+.tall { grid-row: span 2; grid-template-rows: 1fr auto; }
+</style>
+</head>
+<body>
+<h1>Summer, mostly by the sea</h1>
+<p class="intro">Twelve pictures, as many columns as the window has room for.</p>
+<main class="gallery">
+<figure><div class="photo"></div><figcaption>The harbour at dawn<span>June 4</span></figcaption></figure>
+<figure class="wide"><div class="photo"></div><figcaption>The whole bay from the lighthouse, wide enough for two columns<span>June 5</span></figcaption></figure>
+<figure><div class="p

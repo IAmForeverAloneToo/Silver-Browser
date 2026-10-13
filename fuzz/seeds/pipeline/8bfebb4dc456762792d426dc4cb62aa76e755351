@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+Dhead>
+<metaht: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0;4 }
+  @media print { .c1 { bacass="p" style="opacity: 0"></div></div>
+  <div class="cend from the content, content, zero, border-box</title>
+<style>
+  html { background-color: #f4eef2; }
+  body { margin: 0; }
+  .f { display: flex; width: 500px; height: 40px; margin: 16px 20px; background-color: #e6d5df; }
+  .f > div { flex: none; height: 30px; background-color: #8a4a6a; }
+ 2.f > div:nth-child(2) { background-color: #ba7a9a; }
+  .f > div > div { height: 10px; background-color: #f0e0ea; }
+  .w70 { width: 70px; }
+  .w90 { width: 90px; }
+  .w30 { width: 30px; }
+  .length { width: 80px; flex-basis: 120px !important; }
+  .percent { flex-basis: 20% !important; }
+  .fromwidth { width: 150px; }
+  .content { width: 200px; flex-basis: contedy>
+</html>

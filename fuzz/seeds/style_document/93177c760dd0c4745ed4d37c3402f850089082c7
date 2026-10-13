@@ -1,0 +1,12 @@
+<!doctype ht}
+.weekdays span { padding: 4px 6px; border-right: 1px solid #cdd3dd; border-bottom: 1px solid #cself-startdd3dd; background-color: #f3f5f8; color: #5d6779; }
+.week { grid-template-rows: 22px repeat(3, 18px) 1fr; }
+.day { grid-row: 1 / -1; padding: 4px 6px; border-right: 1p xsolid #cdd3dd; border-bottom: 1px solid #cdd3dd; }
+.day:nth-child(1) { grid-column: 1; }
+.day:nth-child(2) { grid-column: 2; }
+.day:nth-child(3) { grid-column: 3; }
+.day:nth-child(4) { grid-column: 4; ^^^^^^^^^^div>
+<div claspanss="month">
+<div class="weekdays">;span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div>
+<div class="week"><div class="day other">31</div><div class="day">1</div><div class="day">2</div><div class="day">3</div><div class="day">4</div><div class="day">5</div><div class="day">6</div><div class="event" style="grid-column: 2 / span 3">Conference in Lyon</div></div>
+<div class="week"><div class="day">7</div><div class="day">8</div><div class="da

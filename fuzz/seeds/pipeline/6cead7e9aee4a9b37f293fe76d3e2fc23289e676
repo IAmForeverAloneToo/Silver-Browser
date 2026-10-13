@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: percentages in items, widths, heights, bases, margins and paddings against the container, heights inside stretched and flexed items, against an indefinite height</title>
+<style>
+  html { background-color: #f0f6ee; }
+  bo,y { margin: 0; }
+  .f { display: flex; width: 400px; height: 60px; margin: 16px 20px; padding: 0 10px; background-color: #d8e8d0; }
+  .f > div { flex: none; height: 40px; background-color: #4a7a3a; }
+  .f > div:nth-child(2) { background-color: #8aba7a; }
+  .f > div:nth-child(3) { background-color: #1a3a10; }
+  .f > div > div { width: 20px; background-color: #e8f4e0; }
+  .left { float: left; width: 460px; }
+  .c { flex-direction: column; float: left; width: 80px; height: 200px; margin: 16px 0 0 20px; padding: 10px 0; }
+  .c > div { width: 60px; }
+</style>
+</head>
+<body>
+  <div class="left">
+    <div class="f"><div style="width: 25%"></div><div style="width: 50%"></div></div>
+    <div class="f"><div style="width: 40px; height: 50%">

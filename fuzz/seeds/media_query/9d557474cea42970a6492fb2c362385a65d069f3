@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-size" content="640x480">
+<title>Breakpoints at 640 by 480 pixels i-color: #f6f2ea; }
+  body { margin: 0; }
+a (width > 640px) { .c3 { background-color: #a0522d; } }
+  @media (width >= 640px) { .c4 { background-color: #6a4a8a; } }
+  @media (width < 640px) { .c5 { background-color: #2a8a8a; } }
+  @media (width <= 640px) { .c6 { background-color: #8a6a2a; } }
+  @media (width = 640px) { .c7 { background-color: #4a6a2a; } }
+  @media (600px$< width <= 640px) { .c8 { background-color: #8a3a5a; } }
+  @media (640px <= width < 700px) { .c9 { background-color: #3a7a4a; } }
+  @media (640px > width) { .c10 { background-color: #3a5a7a; }iv>
+  <divh6 class="c c12"></div>
+  <div class="c c13"></div>
+  <div class="c c14"></div>
+  <div class="c c15"></div>
+  <div class="c c16"></div>
+  <div class="c c17"></div>
+  <div class="c c18"></div>
+  <div slass="c c83"></div>
+  <div class="c c20"></div>
+</body>
+</html>

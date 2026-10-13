@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<s+yle>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color:#c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 657px; }
+i { display: block; background-color: #3a5a7a; }
+.g { width: 240px; grid-template-columns: repeatlumn; grid-template-columns: none; grid-template-rows: repeat(3, 20px); grid-auto-columns: 50px; }
+.bycol .w { grid-column: auto; grid-row@: span 2; }
+.bycoldense { grid-auto-flow: column dense; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="w"></div><div></div><div class="t"></div><div class=((((((((((((((((((((((((((((((((((((((((((((><div></div><div class="w"></div><div></div><div class="w"></div><div></div><div></div></div>
+<ss= class="g bycol byradcoldense"><div></div><div class="w"></div><div></di dv<>ivclass="w"></div><div></div><div></div></div>
+</div>
+</body>
+</html>

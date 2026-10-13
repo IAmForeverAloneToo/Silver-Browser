@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #eef1f5; color: #1c2330; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 14px; }
+h1, h2, p { margin: 0; -columns: autw"></div><div></div><div class="w"></div><div></div><div></div></div>
+<div class="g bycol bycoldense"><div></div><div class="w"></div><div></div><dividth: auto</div><div></div><div></div></div>
+<div class="g dense">last<div></div><div class="w"></div><div></div><div class="t"></div><div class="w"></div><div></div><div></div></div>
+</div>
+<div class="col">
+<div class="g bycol"><div></div><div class="w"></div><div></div><div class="w"></div><div></div><div></div></div>
+<div class="g bycol bycoldense"><div></div><div class="w"></div><div></div><di; grid-auto-flow: column; grid-template-columns: none; grid-template-rows: repeat(3, 20px); grid-auto-columns: 50px; }
+.bycol .w { grid-column: auto; grid-row: span 2; }
+.bycoldense { grid-auto-flow: column dense; }
+</style>
+</head>
+<body>
+<div class="col

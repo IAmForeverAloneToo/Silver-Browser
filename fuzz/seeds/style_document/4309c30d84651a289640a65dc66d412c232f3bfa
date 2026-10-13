@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f9f2ea; }
+body { margin: 0#3a5a7a; }
+.a { width: 360px; grid-template-columns: 60px 60px; grid-template-rows: 20px; grid-auto-columns: 30px 50px; grid-auto-rows: 10px 30px; }
+.a > div:nth-child(1) { grid-column: 5; grid-row: 3;</style/a
+he<>d>
+<body>
+<div clas=s="col">
+<div class="g"><div class="p"></div><div class="q"></di<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-chil><div style="grid-grid-auto-flow3 / 4">kground-color: #604a20; }</div><div c/bolass="span" 
+.col { float: left; widstyle="zth:- 

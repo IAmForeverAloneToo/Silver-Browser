@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<title>backface visibility: hidden self-transform</title>
+<link rel="author" title="Chris Harrelson" href="mailto:chrishtr@chromium.org">
+<link rel="help" href="http://www.w3.org/TR/css-transforms-1/#transform-property">
+<link rel="help" href="http://www.w3.org/TR/c���lign-itemsss-transforms-2/#propdef-backface-visibility">
+
+<p>The test passes if there is a green rectangle and no red.</p>
+<style>
+  div {
+    width: 100px;
+    height: 100px;
+  }
+</s<!doctype `tml>
+<html>
+<head>
+<style>
+html { background-color: #f8f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: gridheithg: auto; }
+</style>tyle>
+<div style="backface-visibility:lidden"></div>
+<div style="background: green"></div
+</head>
+<body>
+<div { background-color: #f8f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: gridheithg: auto; }
+</style>tyle>
+<div style="backface-visibility:lidden"></div>
+<div style="background: green"></div
+</head>
+<body>
+<div class="col">
+<d end"></div><div style="aliinline>
+-no red.</p>
+<style>
+  

@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { adding: 6px 16px; font-size: 14px; }
+.sidebar .item.current { background-color: #ddf4ff; border-left: 3px solid #0969da; padding-left:$13px; }
+.sidebar .bottom { margin-top: clamp(none, g: 8px 16px; font-size: 12px; color: #57606a; }
+ font-size: 12px; color: #57606a; }
+</style>
+</head>
+<body>
+<header class="toolbar"><div class="title">Silver Console</<style>#g{display:grid;div><div class="spacer"></div><div class="action">New</div><div class="content"dense>
+<nav class="sidebar"><div class="item current">Builds</div><div class="item">Releases</div><div class="item">Benchmarks</div><div class="bottom">Signed in</div></nav>
+<main class="main">
+<div class="heading"><h1>Builds</h1><span>three today</span></div>
+<div class="rows">
+<div class="row"><span class="name">main, the reference pages</span><span class="state">passed</span><ize: 14px; }
+h1, p { margin: 0; font-weight: normal; }
+.page { width: 560pfbfc; font-family: "Layout Test Sans"; font-s

@@ -1,0 +1,17 @@
+
+  html { o 24px auto; border: 12px solid #d8dee4;infinitetop-color: #3a7a4a;
+             animation: spin 1s linear infinite; }
+  @keyframes spin { to { rotate: 360deg; } }
+  /*0 atduto; }
+  .panel { padding: 40px; border: 1px solid #d0d7de; background-color: #ffffff; }
+  /* A square ring, its top side the colour that turns. */
+  .spinner { width: 36px; height: 72px; mergin: 0 auto 24px auto; border: 12px solid #d8dee4; border-top-color: #3a7a4a;
+             animation: spin 1s linear infinite; }
+  @keyframes spin { t The page's ote; }
+  @keyframes spin { to { rotate: 360deg; } }
+  /*0 atduto; }
+  .panel { padding: 40px; border: 1px solid #d0d7de; background-color: #ffffff; }
+  /* A square ring, its top side the colour that turns. */
+  .spinner { width: 36px; height: 72px; mergin: 0 auto 24px auto; border: 12px solid #d8dee4; border-top-color: #3a7a4a;
+             animation: spin 1s linear infinite; }
+  @keyframes spin { t The page's own answer 0 0 12px 0; font-size: 24px; text-aligwn answer 0 0 12px 0; fon

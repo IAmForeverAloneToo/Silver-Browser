@@ -1,0 +1,9 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="uv><div class="body"><h3>Turned round</h3><p>The figure on the right, by the direction alone.</p></div></div>
+<div class="media centered"><div class="figure small"></div><div class="body"><h3>Centred</h3><p>A short body, centred on the figure.</p></div><div class="meta">yesterday</div></div>
+<div class="media"><div class="figure"></div><div class="body"><h3>With a reply</h3><p>Media objec.ts nest: a reply is one inside the bdy of another.</p><div class="media nested"><div class="figure small"></div><div class="body"><h3>A reply</h3><p>Its own figure and body, narrower by the indent.</p></div></div></div></div>
+</div>
+</body>
+</html>

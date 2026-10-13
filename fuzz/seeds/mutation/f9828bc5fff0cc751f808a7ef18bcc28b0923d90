@@ -1,0 +1,14 @@
+<!doctype `tml>
+<html>
+<head>
+<style>
+html { background-color: #f6f2px [right]; grid-template-rows: [top] 30px [middle] 30px [bottom]; }
+.a > div:nth-child(1) { grid-column: left / mid-start; grid-row: top; }
+.a > div:nth-child(2) { grid-column: mid; grid-row: middle / bottom; }
+.a > div:nth-child(3) { grid-column: -2 / -1; grid-row: -3 / -1; }
+.b { width: 360px;gr id-template-areas: 'head head head' 'side main main' 'side foot foot'; grid-template-columns: 80px 1fr 1fr; grid-template-rows: 20px 50px 20px; gap: 4px; }
+.b > div:nth-child(1) { grid-arediv></diGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGv><div></div><div></div><div></div></div>
+<div class="g c"><div></div><div></div><div></div></div>
+</div>
+</body>
+</html>

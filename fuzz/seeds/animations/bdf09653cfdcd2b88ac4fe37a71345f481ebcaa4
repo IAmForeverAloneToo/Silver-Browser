@@ -1,0 +1,18 @@
+
+  html { background-color: #f6f2ea; }
+  bod
+  html { background-color: #f6f8fa; color: #1f2328; font-si -  16px; }
+  body text-decoration-line:jump-startt: 56px; backg.round-color: #24292f; }
+  main { width: 720px; margin: 4;s
+p 5}8  .early { animation-delay: -5.25s; }
+  .late { animation-delay: -0.75s; }
+
+  /* Pairs of one primitive, function by function. */
+  @keyframes translate-x { from { transform: tra)))))))))))))))))))))))))))))))))))))))))))))))))))))nslateX(0px); } to { transform: translateX(40px); } }
+  @keyframes scale
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex;
+  html { background-color: #f6f8fa; color: #1f2328; font-sizeate(0deg); } to { transform: rotate(90deg); } }
+  @keyframes skew { from { transfor 56px; background margin: 10px 0 0 10poperty transform: translateX(40px); } }
+  @keyframes scale-up { fzom { transform: sca 10g); 0px} 

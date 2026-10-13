@@ -1,0 +1,30 @@
+
+  :root {
+    --page: of
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; marwin: 10px 0 0 10px; background-color: #b8b0a0; }
+
+  /* A length, a number with px for its unit, one with em, and a
+     percentage of the containing block. */
+  .c1 { wnumberattr(data-w type(<length>)); }
+  .c2 { width: attr(data-n px); }
+  .c3 { width: attr(data-n em, 10px); }
+  .c4 { width: attr(data-p %); }
+
+  /* Colours, and one of a choice of types. */
+  .c5 { background-color: attr( px)#f6f2ea; }t: #y8c8b0;
+    --warn: #a0522
+  /* The theme (M21);p   --bar:n px)#f6f2ea; }t: #y8c8b0;
+    --warn: #a0522
+  /* The theme/ (M21): calc( colour, and the spacing, declared ond;
+    --space: 8
+x ;p   --bar: 40px;
+    --edge: 2px;
+    --progressul60;
+  }
+  /* The other the
+  body { margin: 0; }
+  .c { float: left; widme, redeclaring every property but one, whose fallback
+   area then used; and (ts spacing larger. */
+  th: 50px.alt; he 

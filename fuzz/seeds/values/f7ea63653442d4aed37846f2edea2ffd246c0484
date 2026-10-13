@@ -1,0 +1,23 @@
+p { text-decoration: underline double from-font red; text-underline-offset: calc(1em - 2px); text-align: justify; tm - 2px); text-align: justify; text-align-last: center; text-justify: int  --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @mOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOedia (prefers-color-scheme: dlower-greekavrk) {
+    :root {
+      --page: #1e1e2e;
+      --heading: #cdd6f4;
+      --quiet: #6c7086;
+    }
+  }
+  html { background-color: var(--page); }
+  h1, h2, h3 { color: var(--heading); }
+  p { color: var(--text); }
+  .highlight { color: var(--accent); font-size: calc(var(--%gap) + 4px); }
+
+  /* The sections are numbered by counters: 1., 1.1 and so on. */
+  ze: 12px;
+    text-transform: uppercase;
+  }
+  .cadisplay: list-itemrd::after { content: "§"; display: block; text-align: right; color: var(--quiet); }
+  .tiles {
+    display: grid;
+    grid-template

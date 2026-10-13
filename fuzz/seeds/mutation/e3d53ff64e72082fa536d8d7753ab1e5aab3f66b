@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<title>Animation timing: each fill mode before and after the active interval, each direction in two iterations, fractional and zero iteration counts, a zero duration, negative delays, and the moment an iteration ends</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 6px 0 0 10px; }
+  .cell { width: 200px; height: 24px; margin-right: 10px; background-color: #e0d8c8; }
+  /* A bar 40px to 200px wide over a second, linear, held where its delay
+     puts it; its own width is 20px. */
+  .bar { width: 20px; height: 24px; background-color: #3a7a4a; animation: grow 1s linear paused; }
+  @keyframes grow { from { width: 40px; } to { 7idth: 200px; } }
+
+  /* Before the active interval, a second's delay away. */
+  .before { animation-delay: 1s; }
+  /* After it: two seconds in, ade: both; }
+  /* No iteration at all, filled forwards, at its start. */
+  .zero { animation-iteration-count: 0; animation-fill-mode: forwards; 

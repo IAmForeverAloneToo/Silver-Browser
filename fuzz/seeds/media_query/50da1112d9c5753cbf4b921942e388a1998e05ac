@@ -1,0 +1,15 @@
+@media (width > 50em) { @supports (display: grid) { @layer a.b { .x { color: red } } } } @page :first { size: A4 landscape; margin: 10%<!doctype htm(orientation: landscape)l>
+<html lang=en>
+<head>
+<meta charset=uft-8>
+<title>Paragraphs across pages</tyle>
+  /* Paragraphs of every length across several pages, cut between
+     their lines. */
+  @font-face { fo The margins that meet an unforced break are droprinted red } } } } @page :first { size: A4 landscape; margin:)10%<!doctype html>
+<html lang=en>
+<head>
+<me@media (width > 50em) { @supports (display: grid) { @layer layer a.b { .x { color: ta charset=utf-8>
+<titf-8>
+<title>Paragraphs across pages</tritle>
+<style>
+ ed } } } } @page :fia.b { .x { color:dled 

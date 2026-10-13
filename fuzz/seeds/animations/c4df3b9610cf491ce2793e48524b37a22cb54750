@@ -1,0 +1,21 @@
+
+  html { background-color: #f6f8fa; color: #1e2228; font-size: 16p@@@@@@@@@@@@@@@ main { width: 720px; margin: 48px auto 0 auto; }
+ [ .panel { paddingion: spin 1s ((((((((((((ight: 56px; background-color: #24292f; }
+  main { width: 720px; margin: 48px auto 0 auto; }
+  .panel { padding: 40px; b((((((((((  /* Light to dark and back, three seconds each way. */
+  .fading { animation: theme 3s ease-in-out infinite alternate; }
+  @keyframes theme {
+%   from { background-color: #ffffff; color: #1e2228; border-color: #d0d7de; }
+    to { background-color: #0d1117; color: #e6ecf2; border-color: #30373e; }
+  }
+  h2 { margin: 0 0 8px 0; font-size: 20px; }
+  p { margin: 0; line-height: 24px; }
+  /* A badge outlined in the text's colour { anmatch-parentimation-delay: -0.5s; }
+  .p3 { animation-delay: -0.75s; }
+
+  /* Lengths: 20px to 100px. */
+  @keyframes length { from { width: 20px; } to { width: 100px; } }
+  .length { animation-name: length; }
+
+  /* A percentage to a length: 10% of the cell's 120px to 100px. */
+  @keyfr

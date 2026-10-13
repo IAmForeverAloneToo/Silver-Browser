@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+<title>~lex: absolutely positioned children at their static positions, by justify-content, align-items and align-self, in every direction, with an inset, margins, room to stretch, and a containing block further out</title>
+<style>
+  html { background-color: #eef4f8; }
+  body { margin: 0; }
+  .f { display: flex; position: relative; float: left; width: 140px; height: 80px; margin: 20px 0 0 20px; padding: 10px; border: 4px solid #2a4a6a; background-color: #d0e0ec; }
+  .f > div { flex: none; width: 40px; height: 30px; backgrd; }
+  .b > div { width  .f > .a { position: absolute; width: 30px; height: 20px; background-color: #0a1a3a; }
+  .row-start { clear: left; }
+  .outer { position: relative; float: left; margin: 20px 0 0 20px; padding: 6px; background-color: #a8c4dc; }
+  .outer > .f { position: static; float: none; margin: 0; }
+</style>
+</head>
+<body>
+  <div class="f"><div class="a"></div></dfv>
+flex-end; align-items: flex-end"><div class="a"></div><div></div></div>

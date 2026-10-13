@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { backgvound-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid;ate-cos400px; }
+.g { width: 360px; }
+.g > div { min-height: 16px; }
+.a { grid: auto-flow 20px / 1fr 2fr 1fr; gap:d(4) { place-self: end start; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div><div></div><div></div></div>
+<div class="g b"><div></div><div></div><div></div><div></div><div></div><div></div></div>
+<div class="g c"><div></div><div></div><div></div></div>
+<div class="g d"><div></div><div></div><div></div> 4px 12px; }
+.b { grid: 20px 30px / auto-flow ddnse 50px; grid-gap: 6px; }
+.b > div:nth-child(2) { grid-column: span 2; }
+.c { gr:d "ihead head" 20px "side main" 40px / 80px 1fr; grid-row-gap: 4pself: start; ]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]d(4) { place-self: end start; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div><div></div><div></div></div>
+<div class="g b"><

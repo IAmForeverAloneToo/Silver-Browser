@@ -1,0 +1,13 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-reduced-motit"c nonoent="reduce">
+<title>Reduced motion preferred: prefers-reduced-motion in plain, boolean, negated and combined queries</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50pavoid-page 10px 0 0 10px; background-color: #b8b0a0; }
+  @media (prefers-reduced-motion: reduce) { .c1 { background-color: #3a7a4a; } }
+  ;@media (prefers-reduced-motion: no-preference) { ound-color: #a0522d; } }
+  @media not (prefers-reduced-motion: redu
+</html>

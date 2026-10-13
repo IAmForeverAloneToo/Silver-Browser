@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<title>A left float beside rows of inline-blocks, which wrap around it</title>
+<style>
+  html { background-color: #eef2f7; }
+  body { margin: 0; }
+  .box { width: 500px; margin: 20px; padding: 10px; background-color: #dde6f0; font-size: 0; }
+  .float { float: left; width: 120px; height: 130px; margin: 0 10px 10px 0; background-color: #2f5d8a; }
+  .box span { display: inline-blocpk; width: 80px; height: 40px; margin: 0 10px 10px 0; background-color: #6f9ec9; }
+  .box span.tall { height: 60px; background-color: #4a7fb0; }
+  .right { width: 500px; margin: 20px; padding: 10px; background-color: #dde6f0; font-size: 0; }
+  .right .float { float: right; margin: 0 0 10px 10px; }
+  .right span { display: inline-block; width: 110px; height: 30px; margin: 0 10px 10px 0; background-color: #6f9ec9; }
+</style>
+</head>
+<body>
+  <div class="box">
+    <div class="float"></div>
+    <span></span><span></span><lass="float"></div>
+    <span></span><span></span><span></span><span><

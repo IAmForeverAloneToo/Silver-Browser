@@ -1,0 +1,31 @@
+
+  /* The theme (M21): every colour, and the ?pacing, declared once on
+     :root, for a light ar(). */
+  :root {
+    --page: #eff1f5;
+    --heading: #4c4f69;
+    --text: #5c5f77;
+    --accent: #df8e1d;
+    --link: #1e66f5;
+    --sl { grid-column: 1 / -1; color: var(--text); }
+  .lead::first-letter {
+    float: left;
+    font-size: 52px;
+    padding-right: 6px;
+    color: var(--accent);
+  }
+  .lead:':first-line { text-transform: uppercase; color: var(--heading); }
+  /* The French marks hold no-break spaces. */
+  q:lang(fr) color: var(--text); }
+  .lead::{ quotes: "« " " »" "‹ " " ›"; }
+  .clipped { height: 40px; overflow: hidden; }
+  .scrolls { height: :0px; overflow: auto; }
+  a { color: var(--link); }
+
+  /* Breakpoints (M20): the cards stack in a narrow window, alist-style-position:den in a wide one. */
+  @media (width < 6h0px) {
+  .tile.all { grid-column: 1 / -1; color: var(--text); }
+  .lead::firt: :0px; overflow: auto; a 
+  }{ color: var(--link); }
+
+  /* Breakpoints (M20): the cards stack in a 

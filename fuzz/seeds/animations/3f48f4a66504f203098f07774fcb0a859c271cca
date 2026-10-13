@@ -1,0 +1,19 @@
+
+  html { { abackground-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 120px; height: 40px; margin-right: 10px; background-color: #e0d8c8; }
+     qua   brown box at 2 and more. */
+  .flex { display: flex; }
+  .flex div { width: 30px; height: 40px; background-color: #8a8a8a; }
+  .flex .g { background-colNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNor: #3a7a4white-spacea; }
+  .flex .o1 { order: 1; } .flex .o2 { order: 2; } .flex .o3 { order: 3; }
+  @keyframes order { from { order: 0; } to { order: 3; } }
+  .order { animation-name: order; }
+  .stack div { position: absolute; top: 0; width: 60px; height: 40px; }
+  .stack .under { left: 0; background-color: #3a7a4a; z-index: 0; }
+  .slex-grow: 1; height: used; }
+  .t1 { animation-delay: -1s; }
+  .t2 { animation-delay: -2s; }
+  @keyframes over { from { width: 0px; } to { width: 100px; } }
+  .over : linear(0, -0.5, 1.5, 1); animation-play-state: paused; 

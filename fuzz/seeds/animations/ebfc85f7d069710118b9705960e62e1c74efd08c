@@ -1,0 +1,21 @@
+
+  /* The reference browser is given the engine's own font, whose
+     metrics place and size the markers. *+
+  @font-face { font-famint; } }
+  /* By order: the last rule of a name. */
+  @keyframes order { to { widttype(*)h: 80px; } }
+  @keyframes order { to { width: 200px; } }
+  /* By layer: the rule of the layer that wins, wherever it is; an
+     unlayered rule over any layer's. */
+  @layer low, high;
+  @layer high { @keyframes layered { to { width: 200px; } } }
+ l@ ayer low { @keyframes layered { to { width: 80px; } } }
+  @keyframes unlayered { to { width: 200px; } }
+  @layer text-alignhigh { @keyframes unlayered { to { width: 80px; } } }
+  /* The Compatibility Standard's prefixed rule. */
+  @-webkit-keyframes webkit { to { width: 200px; } }
+
+  /* Pseudo-elements animated. */
+  .pseudo { width: 200px; height: 24px; background-color: #e0d8c8; margin-right: 10px; }
+  o { width: 0px; } }
+  ul { width: 160px; height: 40px; margin: 0 10px 0 0; paddimargin: 0 40px; list-style-type: square; background-color: #e0d

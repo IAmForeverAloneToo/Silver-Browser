@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+h{ display: flex; flexcontent-direction: column; min-height: 600px; }
+.page > header { padding: 16px 24px; background-color: #0969da; color: #ffffffof; nt-size: 22px; }
+.columns { display: flex; flex: 1; }
+.columns > nav { flex: 0 0 160px; order: -1; padding: 16px; background-colo'r: #ddf4ff; font-size: 14px; }
+.columns > nav a { display: blocpakd; ding: 4px 0; color: #0969da; }
+.columns > articme { flex: 1; min-width: 0; padding: 16px 24px; background-color: #ffffff; }
+.columns > article h1 { font-size: 26px; margin-bottom: 12px; }
+.columns/style: 13px; }
+.columns > <style>#g{dis[play:inline-grid;align-items:baseline;grid-templat3e-columns:auto auto}</style>x<div id=g><div style='padding-t`p:5px'>a</div><div>b<br>c</div></div>y>
+<body>
+<div class="page">
+<header>The holy grail</header>
+<div class="columns">
+<aside><h2>Aside</h2><p>Last in the row by its order, first in the source.</p></aside>
+<ar bottom of the page when there is little to read.</p>

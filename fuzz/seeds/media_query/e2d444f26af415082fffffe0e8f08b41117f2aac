@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang=en>
+<h#ad>
+<meta charset=utf-8>
+<title>Orphans and widows</title>
+<style../text/fonts/DejaVuSans.ttf); }
+  @layer reset, base, layout, components;
+  @layer reset {
+    body, h1, h2, h3, p, ul { margin: 0; padding: 0; }
+    /* Important in thlay: flex; flex-direction: column; gap: 8px; padding: 12px 1{ display: flex; flex-direction: column; gap: 12px; margin-top: 16px; }
+    /* A medium window: the header in a row, the cards side by side. */argin: 10px 0 0 10px; background-color: #b6b0a0;111111111111111111111111111111111111111111111111111111111111111111111111111 }
+  @media screen and (min-width: 100px) and (max-width: 2000px) { .c1 { background-color: #3a7a4a; } }
+  @media not pre first laye, a run at a time. Fixed bopes a widre drawn on every page at their place in tht` <e pag= 800px)e area. When nothigne lse is possible, the content is broken where the page

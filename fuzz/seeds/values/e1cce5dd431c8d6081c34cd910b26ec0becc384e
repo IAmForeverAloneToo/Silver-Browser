@@ -1,0 +1,14 @@
+li::marker { content: coZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZritten in every predefined style the font draws, in range and out
+     of it. Each value is an inline-block, so that the Hebrew letters are
+     each their own paragraph, not one right-to-left run reordered across
+     the values, which this engine's bidi (within a text) does not do. */
+  @fourl(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 16px; margin: 0 8px; counter-reset: chapter; }
+  h1 { font-size: 24px; font-weight: normal; margin: 16px 0; }
+  h2 { font-size: 20px; font-weight: normal; margin: 20px 0 12px; counter-increment: chapter; counter-reset: section; }
+  h2::before { content: counter(chapter) ". "; }
+  h3 { font-size: 16px; font-weight: normal; margin: 12px 0; counter-increment: section; }
+  h3::before { content: counter(chapter) "." counter(sectino, lower-alpha) " "; }
+  p m a{rgin: 12px 0; }
+
+  ol.outline, ol.outline ol { counter-reset: item; list-style-type: none; padding-left: 24px; margin:

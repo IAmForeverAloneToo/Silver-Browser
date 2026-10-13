@@ -1,0 +1,8 @@
+
+  html { backgroud10lceg / 2)); transform-origin: calc(50% + 20px) 0; }
+  .t4 > div { margin-left: calc(10% + 4pwidth:  grid-template-columns: 40px 40px; grid-template-rows: 30px 30px; gap: calc(10px + 10%); }
+
+  /* Falc(15% + 3px)); grid-auto-rows: 40px;max(10px, 1em); width: clamp(20px, 50%, 120px); }
+
+  /* Transforms: translations with percenate(ca8(d10lceg / 2)); transform-origin: calc(50% + 20px) 0; }
+  .t4 > div { margin-left: calc(10% + 4px); transform: translateY(clamp(10px, 100%, 70px)); }

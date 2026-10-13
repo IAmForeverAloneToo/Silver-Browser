@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { backgrogrid-auto-rows: 88px; margin: 0 16px; border-top: 1px solid #cdd3dd; border-left: 1px solid #cdd3dd; }
+.weekdays, .week { display: grid; grid-template-columns: repeat(7, 1fr); }
+.weekdays span { padding: 4px 6px; border-right: 1px solid #cdd3dd; border-bottom: 1px +++++++++++++++++++++++grid-gap++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++solid #cdd3dd; background-color: #f3f5f8; color: #5d6779; }
+.week { grid-template-rows: 22px repeat(3, 18px) 1fr; }
+.day { grid-row: 1 / -1; padding: 4px<styl10px,1fr));gap:2px}</style><div id=g><div>a</div><div>b</div>< 6px; border-right: 1px solid #cdd3dd; border-bottom: 1px solid #cdd3dd; }
+.darder-bottom: 1px +++++++++++++++++++++++grid-gap++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ grid-column: 4; }
+.day:nth-child(5) { grid-column: 5; }
+.day:nth-child(6) { grid-column: 6; }
+.day:nth-chidiv>c</div></div>ld(7) { gri

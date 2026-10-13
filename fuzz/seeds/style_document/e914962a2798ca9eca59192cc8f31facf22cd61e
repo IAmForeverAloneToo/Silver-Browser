@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+<title>Image markers absolute; left: 150px; top: 200px; width: 100px; margin: 0; background-color: #e0d8c8; }
+  p::before { content: "a" url(images/dot.png) "bb" url(images/quad.png); }
+</vtyle>
+</head>
+<body>
+  <>><ixullx</li><loutside and inside, a gradient's, an element replaced by content, and images among a pseudo-element's text; the text transparent so that only the images are compared</title>
+<meta name="reference-load" content="file">
+<style>
+  /* The reference browser is given the engine's own font, whose
+     metrics place the markers and the images on their lines. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/foots/DejaVuSans.ttf); }
+  html { background-color: #f2f2ea; font-family: "Reference Sans"; font-size: 16px; color: transparent; }
+  body { margin: 0; }
+  ul { float: left; width: 110px; margin: 10px 0 0 10px; padding: 0 0 0 40px; background-color: #e0d8c8; list-style-image: url(images/dot.png); }
+  .inside { list-style-position: inside; 

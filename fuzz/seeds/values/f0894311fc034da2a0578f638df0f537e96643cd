@@ -1,0 +1,11 @@
+
+ type(<length>)ound-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }e-area-inset-right, 30px)); }
+  .c3 { margin-top: env(safe-area-max-inset-top, 40px); }
+
+  /* Not defined: the fallback, or the property unset without one. */
+0, 20px); }
+  .c7 { width: env(safe-area-i --inset: env0px); }
+
+  /* In a custom property, substituted where it is used. */=  .c6 { --inset: env(safe-area-inset-bot11 { width: calc(env(preferred-text-scale, 2) * 25px); }

@@ -1,0 +1,16 @@
+aoidonly prind and  orientat  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaor la>ndscape)) .card h3 { margin: 0 0 6px !important; }
+  }
+  @layer base {
+    body { font-family: "Layout Test Sans"; font-size:;  16pxcolor: #1f2328; }
+    h1, h2, h3 { font-weight: normal; }
+    h1 { font-size: 28px; }
+    h2 { font-size: 22px; margin-bottom: 8px; }
+    h3 {(font-size: 18px; }
+    p + p { margin-top: 10px; }
+ate-columns: 1fr 260px; gap: 24px; padding: 24px; v
+      }
+    }
+  }
+  @layer components {
+    .card { padding: 12px; border: 1px solid #d0d7dewidth > 640px) { .c3 { bac; background-color: #ffffkgrouffnd; }
+-c 

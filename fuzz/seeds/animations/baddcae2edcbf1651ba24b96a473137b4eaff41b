@@ -1,0 +1,14 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .c;ll { position: relative; width: 120px; height: 40px; margin-right: 10px; background-color:lay: -0.5s; }
+  .p3 { animation-delay: -0.75s; }text-decoration-style:o 100px. */
+  @keyframes length { from { width: 20px; } to { width: 100px; } }
+ 6666666666666666666666666666666666666666666666666666666666666666666666666 .length { animation-name: length; }
+
+  /* A percentage to a len
+  html { background-color: #f5f8f1e38a; color: #1e2228; font-size: 16px; }
+  bodease-outy { margin: 0; }
+  header { height: 											gth: 10% of the cell's 120px 						to 100px. */
+  @				k

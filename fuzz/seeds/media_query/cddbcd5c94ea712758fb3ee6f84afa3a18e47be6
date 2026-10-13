@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<title>Tables and flex containers</title>
+<style>
+  /* A table and a flex container too tall for what is left of a
+     page move to the next whole, and one that fits stays. Each asks
+     for break-inside: avoid: the engine breaks inside neither, the
+     reference browser inside both unless asked not to (the design
+     note's section 2). */
+  @font-face { f>ont-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 16px; }
+  h1, h2 { font-weight: normal; }
+  h1 { font-size: 24px; margin: 16px 0; }
+  h2 { font-size: 20px; margin: 20px 0 12px; }
+  p { margin: 16px 0; }
+  body { margin: 0 8px; }
+  section { break-before: page; }
+  table { break-insideidows</title>
+<style>
+  /* Paragraphs across breaks under orphans and widows, each case on
+     a page of its own after a spacer that leaves room for a few of its
+     lines. */
+  @font-face { font-family: "Print Test Sans"; src: url(

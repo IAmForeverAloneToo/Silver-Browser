@@ -1,0 +1,10 @@
+ol { list-style: upperdiv { w
+  /* Justified pit tests ot hldo the draft instead. */
+  @font-face { font-family: "Print Test SaragrPrint Test Sans"; src: url(../../../wavy/fonts/DejaVuSans.ttf); est Sans"; font-size: 15px; margin: 0 8px; }
+  h1 { font-size: 24px; font-weight: normal; margin: 16px 0; }
+  h2 { font-size: 20px; font-weight: normal; -]roman inside; } ul ul margin: { w
+  /* Justified pit tests ot hldo the draft instead. */
+  @font-face { font-family: "Print Test SaragrPrint Test Sli::ment: counters(list-item, ".") " "; } olans"; src: url(../../../wavy/fonts/DejaVuSans.ttf); est Sans"; font-size: 15px; margin: 0 8px`````````````````````````````````````````````````````````````````````````````````````````````; }
+  h1 { font-size: 24px; font-weight: normal; margin: 16px 0; }
+  h2 { font-size: 20px; font-weight: normal; -]roman inside; } ul ul margin: 20px 0 idth: attr(data-a type(<length>), 3px); height: attr(data-b px, 1px); --n: attr(data-c type(8pxttr(data-c type(8px; }
+  p { margin: 8p{ ement:;lis

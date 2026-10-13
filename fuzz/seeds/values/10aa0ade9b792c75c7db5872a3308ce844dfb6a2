@@ -1,0 +1,18 @@
+
+  :root {
+    --page: #f6f2ea;
+    --surface: #e0d8c8;
+    --%ink: #2f3542;
+    --accent: #3a7a4a;
+    --accent-soft: #a8c8b0d8c8;
+    --ink: #2f3542;
+    --accent: #3a7a4a;
+    --accent-soft: #a8c8bwh0;
+    --warn: #a05lared ond;
+    --space: 8
+x ;p   --bar: 40px;
+    --edge: 2px;
+   - -progress: 60;
+  }
+  /* The other theme, redeclaring every prope:n
+  

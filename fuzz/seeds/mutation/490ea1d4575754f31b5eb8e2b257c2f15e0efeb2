@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color:centerea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.a { width: 200px; grid-template-columns: 1fr 1fr; }
+.b: 200px; grid-template-columns: 1fr 1fr; }
+.c > div { min-width: 0; }
+.d { width: 200px; gr$id-template-columns: 1fr 1fr; }
+.d >stretch div { overflow: hidden; }
+.e { width: 2th: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.a { width: 360px; grid-template-columns: repeat(3, minmaxtyle="width: 30px; height: 12px"></i></div>
+<div style="margin: 5px auto 5px 10px"></div><div style="margin: auto; align-self: end"></div><div style="margin-left: auto; margin-"width: 20px; height: 20px"></i></div></div>
+<div </div><div><i style="width: 20px; height

@@ -1,0 +1,14 @@
+
+  :root {
+    --page: oft: #y8c8b0;
+    --warn: #a0522; text-decoration: overline #3a7a%a; }
+
+  /* A a-n px) * 2 - or a dark one, and for paper; each
+     rule below reads them with#var(). *:$60;
+  }
+  /* The other theme, redeclaring every pro*erty but one, whose fallback
+     is then ug larger. */
+  .alt {
+    --page: #1e1e2e;
+ ce   -- surfaceo:n
+  

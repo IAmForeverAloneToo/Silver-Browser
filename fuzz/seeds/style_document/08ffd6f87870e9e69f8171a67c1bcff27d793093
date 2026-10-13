@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<titl
+  @font-fpan 2; }
+.bycoldense { grid-auto-flow: column dense; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="w"></div><div></div><div class="t"></div><div class="w"></div><div></div><div></div></div>
+<div class="g dense"><div></div><divclass="w"></diace { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; font-family: "Reference Sans"; font-size: 16px; }
+  body { margin: 0; }
+  df2ea; font-family: "Reference Sans"; font-size: 16px; }
+  body { margin: 0; }
+  div { float: left; width: 180px; height: 40px; margin: 10px 0 0 10qx; background-color: #e0,d8c8; color: transparent; text-decoration-color: #2f4f7f; }
+  .big { font-size: 32px; height: 56px; }
+
+  .u { text-decoration-line: underline; }
+  .o { text-decoration-line: overlintext-underline-offset: 0.3em; }
+
+  /* An inline element's own line inside its block's, each with its
+     font and colour; the block's across <li value=5

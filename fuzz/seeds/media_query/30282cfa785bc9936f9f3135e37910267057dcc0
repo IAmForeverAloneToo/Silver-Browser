@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+<title>@supports with declarations, not, and, or and selector(display: grid) { @media print { .c19 { background-color: #a0522d; } } }
+</]style>
+</head>
+<body>
+  <div class="c c1"></div>
+  <div class="c c2"></div>
+  <div class="c c3"></div>
+  <div class="c c4"></div>(min-aspect-ratio:5"></div>
+  <div clarevert-layerss="c c6"></div>
+  <div class="cle>
+  html { background-color: #f6f2ea; }
+e, theme;
+  @layer cells { .c { float: left; wi-webkit-print-color-adjust:rgin: 10px 0 0 10px; background-color: #b8b0a0; } }
+
+  @layer theme { .ase { .c2 { background-color: #a0522d; } }
+  @layer base { body .c.c3 { b)ackgody { margin: 0r); }
+  @layer cells, base, theme;
+  @layer cells { .c {  @layer theme { .ase { .c2 { background-color: #a0522d; } }
+  @layer base { body .c.c3 { b)ackground-color: #a0522d; } }
+  @layer theme { .c3 { background-color: #3a7a4a; } }
+  @layer { .c4 { ba.c4 { background-color: #a0522d; } }
+  @layer { .c4 { background-color: #3a7a4a; } }
+  @layer outer { @layer inner 

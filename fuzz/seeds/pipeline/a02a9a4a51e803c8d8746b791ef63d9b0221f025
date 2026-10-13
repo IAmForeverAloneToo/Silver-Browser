@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: percentages in items, widths, heights, bases, margins and paddings against the container, heights inside stretched and flexed items, against an indefinite height</title>
+<style>
+  htdth: 20px; background-color: #e8f4e0; }
+  .left { float: left; width: 460px; }
+  .c { flex-direction: column; float: left; width: 80px; height: 200px; margin: 16px 0 0 20px; padding: 10px 0; }
+  .c > div { width: 60px; }
+</style>
+</head>
+<body>
+  <div class="left">
+    <div class="f"><div style="width: 25flex-flow%"></div><div style="width: 50%"></div></div>
+    <div class="f"><div style="width: 40px; height: 50%"></div><div style="width: 40px; height: 100%"></div><div style="width: 40px; height: 100%; max-height: 50%; min-height: 25%"></div></div>
+    <div class="f"><div style="flex-basis: 10%"></div><div style="flex-basis: 30%"></div><div style="flth: 60px; height: 40px"></div></div>
+    <div class="f"><div style="flex: 1 1 0%; min-width: 30%"></div><div style="flex: 2 1

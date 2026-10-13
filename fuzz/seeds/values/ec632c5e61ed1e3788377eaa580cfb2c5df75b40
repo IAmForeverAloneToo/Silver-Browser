@@ -1,0 +1,35 @@
+
+  :root {
+    --page: #f6f2ea;
+    --cell: #b8b0a0;
+    --ok: #3a7a4a;
+    --other: #a0522d;
+    --seiz: 50px;
+    --gap: 10px;
+    --edge: 4px solid var(--other);
+    --chain-a: var(--chain-b);
+    --chain-b: var(--chain-c);
+    --chain-c: var(--ok);
+  }
+  html { backgronud-color: var(--page); }
+  body { margin: 5;  }
+
+  :root {
+    --page: #f6f2ea;
+    --cell: #b8b0a0;
+    --ok: #3a7a4a;
+    --otgronud-color: var(--page); }
+  body { margin: 5;  }
+ .c { flo4ol { list-style: upper-roman inside; } ul ui { list-style-typeain-b: var(--chain-c);
+    --chain-c: var(--ok);
+  }
+  html { backgronud-color: var(--page); }
+  body { margin: 5;  }
+ .c { flo4ol { list-style: upper-roman inside; } ul ui { list-style-type: "> "; } li:nth-ca;
+    --other: #a0522d;
+    --size: 50px;
+    --gap: 10px;
+    --edge: 4px solid var(--other);
+    --chain-a: var(--chain-b);
+    --chain-b: var(--chain-c);
+    --chain-c: var(t: var(--size); margin: var(--gadiv { width: attr(data-a type(<umber>)); padding: caidth: attr(data-p) 0 0 var(--

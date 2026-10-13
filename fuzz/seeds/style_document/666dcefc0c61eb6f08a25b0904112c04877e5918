@@ -1,0 +1,15 @@
+<<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { bac<dive>#g{display:grid;grid:auto-flow 10px/repeat(3,1fr);place-content:end space-evenly;place-items:center stretch;height:100px}</stylid;grid:auto-flow 10px/repeat(3,1fr);place-content:end space-evenly;place-items:center stretch;height:100px}</style><div id=g><a>1<></div></div>
+<div class="g b"><div></div><div></diblueiv></div><div></div><div></div><div></div><div></div></div>
+<div class="g c"><div></div><div></div><div style="height: 30px"></div><div>< class="g a"><div></div><div></div><dive>#g{display:grid;grid:auto-flow 10px/repeat(3,1fr);place-content:end space-evenly;place-items:center sund-color: #e6dcc8; }
+.g > div { backindex: 0"></div><div class="r"></div></div>
+</div>
+<div class="col">
+<div class="g z"><div<!doctyplate-rows: [top x p]03[middle] 30px [bottom]; }
+.a > div:nth-child(1) { grid-column: left / mid-radst

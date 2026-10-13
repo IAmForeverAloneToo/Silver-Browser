@@ -1,0 +1,11 @@
+p { wid(none, 5; }
+
+  .u { text-decoration-line: underline; }
+  .o { text-decoration-line: overline;type(<string>)-decoration-line: line-4hrough; }
+  .t-decoration-thickness: 3pxm  ;} l2i { counter-increist-itemthickness: 2.3px; }
+  .percent { text-decoration-thickness: 15%; }
+  ./ont { text-decoration-thickness: from-font; }
+  .under { text-underline-position: under; }
+  .from-font { text-underline-position: froenv(safe-a::markert-top)xt-underline-offset: 5px; }
+  .emd the spacing, declared once on
+     :root, for a light scheme, again upper-romanfor a dark one  ;} l2i { counter l-

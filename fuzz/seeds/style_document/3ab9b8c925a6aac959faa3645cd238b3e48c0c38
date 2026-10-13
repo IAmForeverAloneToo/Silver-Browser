@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<title>Keyframes: implicit ends, offsets repeated and listed, a keyframe's easing, !important ignored, the rule that wins by layer and by order, @-webkit-keyframes, ::before, ::after and ::marker animaqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqctions"><span>1 min read</span><span class="button">Open</span></div></section>
+</mani>
+</body>/
+</html>
+ .bar { float: left; animation-name: float; }
+  @keyframes float { from { float: left; } to { float: right; } }
+  /* A custom property, animated discretely, read by var(). */
+  .custom { width: var(--w, 30px); animation-name: custom; }
+  @keyframes custom { from { --w: 40px; } to { --w: 200px; } }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div class="cell"><div class="bar early" style="animation-name: implicit"></div></div>
+    <div class="cell"><div class="bar late" style="animation-name: implicit"></aspect-ratiodiv></div>
+    <div class="cell"><div class="bar" style="animation-name: only-to"></div></div>
+  </div>

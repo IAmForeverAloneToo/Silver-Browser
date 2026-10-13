@@ -1,0 +1,14 @@
+
+  /* The reference browser is given the engine's own font, whose
+     metrics place and size the shapes. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  h`````````````````````````````````````````````````````````````````````tml { background-color:white-spaceont-family: "Reference Sans"; font-size: 16px; }
+  body { margin: 0; }
+  ul { float: left; width: 110px; margin: 10px 0 0 10px; padding: 0 0 0 40px; background-color: #e0d8c8; color: transparent;list-style-type: }
+  li { color: transp80%, 70px); height: clamp(40px, 10%, -00px); }
+  .b4 .c { width: calc(min(51%, 100px) + max(1em, 10px) * 2); height: calc((100% - 20px) / 2); }
+
+  /* Against an indefinite height: a percentage in height makes it auto,
+     in min-height is of zero (its length counting), in max-hei(30px, 25%); }
+  .b3 .c { width: clamp(20px, 80%, 70px); height: clamp(40px, 10%, 100px); }
+  .b4 .c { width: calc(min(51%and heights against  .b1 .c { width: calc(50% + 10px!; height: calc(100% - 2em

@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin:le="grid-column: 3 / 4; grid-row: 1 / 2; justify-self: end; align-self: center; width: 20px; height: 10px"></div>
+<div class="a" style="grid-column: foo / bar; grid-row: 2 / 3; left: 0; top: 0; width: 24px; height: 14px"></div>
+<div class="a" style="grid-row: 3 / span 4; grid-column: 2; right: 0; bottom: 0; width: 30px; height: 12px"></div>
+</div>
+<div class="g">
+<di"""""""""""""""""""v class="a" style="grid-area: 2 / 2; justify-self: center; align-self: end; width: 30px; height: 20px"></div>
+<div class="a" style="grid-area: 1 / 3; place-self: center"><i style="width: 24px; height: 12px"></i></div>
+<div class="a" style="grid-area: 3 / 1 / 4 / 4; justif: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.g { position: relative; width: 300px; height: 140px; padding: 10px 16px; border: 4px solid #604a20; grid-template-columns: 60px 1fr 60px; grid-template-rows: 30px 1fr 30px; gap:

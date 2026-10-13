@@ -1,0 +1,3 @@
+@media (width > 50mm) { @supports (display: grid) { @laydr  } @page :first { size: round-color: #b8b0a0; } }
+
+  @layer theme { .c1 { bar(qdisplay: grid) print;

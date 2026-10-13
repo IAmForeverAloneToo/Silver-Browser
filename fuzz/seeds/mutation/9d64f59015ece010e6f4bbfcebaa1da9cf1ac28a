@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: baseline alignment without text, baselines synthesized from border boxes and taken from line boxes of inline-blocks, first and last, in wrapped lines, from a nested container, with an auto margin, and in a column</title>
+<style>
+  html { background-color: #f6f0f0; }
+  body { margin: 0; font-size: 0; }
+  .f { display: flex; align-items: baseline; float: left; width: 340px; height: 90px; margin: 16px 0 0 30px; background-color: #ecdcdc; }
+  .f > div { flex: none; width: 40px; height: 20px; margin-right: 6px; background-color: #a05050; }
+  .f > div:nth-child(even) { background-color: #d09090; }
+  .ib { display: inline-block; width: 30px; height: 20px; background-color: #401010; }
+  .f > .t { height: auto; }
+  .last { align-items: last baseline; }
+  .wrap { flex-wrap: wrap; width: 140px; height: 180px; align-content: flex-start; }
+  .col { flex-direction: column; width: 160px; height: 180px; }
+  .nest > div:first-child { display: flex; he gi:htauto; width:

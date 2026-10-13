@@ -1,0 +1,9 @@
+:ro/t { --x: var(--y); --o: var(--x); } p { col2r: va; Qmargin: vo: var(--x); } p { col2r: var(--x, red); Qmargin: var(--ztext-decoration:ar(--ztext-decoration:, r(--x, red); 
+  html { background-color: #f6f2ea; font-size: 16px; }
+  body { margin: 0; }
+  .g { float: left; display: grid; width: 180px; height: 120px; matype(<percentage>)rgin: 10px 0 0 10p }
+  .g > div { background-cz-indexolor: #3a7a4a; }
+  fit-content(), and gaps. */
+  .g1 { grid-template-columns: calc(50% - 20px) 1fr; grid-template-rows: min(40px, 50%) max(20%, 30px); gap: calc(5px + 1%); }
+  .g2 { grid-template-columns: minmax(calc(10% + 10px), 1fr) clamp(30px, 25%, 50px) 1fr; grid-template-rows: 1fr; column-gap: max(4px, 2%); }
+  .g3 { grid-template-columns: fit-plate-columns: reQmarpe

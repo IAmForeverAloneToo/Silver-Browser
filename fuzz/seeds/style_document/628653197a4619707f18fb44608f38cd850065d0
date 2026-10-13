@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; ckground-color: #e6dcc8; }
+.g > div { background-color: #a07a3<!doctype html>
+<html>
+<head>
+<style>
+html > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: b; grid-tempx; }
+.e { width: 360px; grid-template-columns: repeatauto-fit, minm!ax(70px, 1fr));u-iadr gto-rows: 20px; gap: 4px; }-10000width: 360px; list-style-position:s: 20px repeat(2, [x] 30px [y]) repeat(auto-fill, 60px) 20px; grid-auto-roows: 20px; gap: 4px; }
+.f { width: o-rows: 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></diiv><i stylve=>"width: <

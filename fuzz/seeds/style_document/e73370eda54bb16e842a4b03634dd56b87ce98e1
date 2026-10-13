@@ -1,0 +1,12 @@
+<styl10px,1fx,1fr));gap:2r 1fr; }
+.b { width: 200px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.c { width: 200px; grid-template-columns: 1fr 1fr; }
+.c > div { min-><div grid-aut--columns<div-bv><div>c</diwidth: 0; }
+.d { width: 200px; getpmir-dlate-columns: 1fr 1fr; }
+.d > div { overflow: hidden; }
+.e { width: 200 20px"></i></div></div>
+<div v></dclass="g d"><div><a style="width: 150px; heigiv>ht: 20px"></i></div><div><i style="width: 20px; height: 20px"></i></div></div>
+<div class="g e"><div><i style="width: 100px; height: 2`px"></i></div><div><i style="width: 150px; height: 20px"></i></div></div>
+</div>
+</body>
+</html>

@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<title>Transforms interpolated half way: pairs of one primitive, none against a list, lists that differ decomposed as matrices in two and three dimensions, perspective, the discrete fallback of a matrix that cannot be decomposed, percentages resolved with the box, and the translate, rotate and scale properties</title>
+<meta name="reference-edge-tolerance" content="128">
+<style>
+ <div></div><dstyle="hut></div>ransform: perspective(100px) rotateY(50deg); } }
+  /* A matrix that cannot be decomposed: discrete, the first half from,
+     the second to. */
+  @keyframes singular { from { transform: scale(0); } to { transform: translateX(30px) rotate(45deg); } }
+  /* Percentages, of the box: function by function, and in a matrix. */
+  @keyframes percent { from { transform: translateX(0%); } to { transform: translateX(100%); } }
+  @keyfr); } }
+  /* And in three, under the cell's perspective. */
+  @keyframes axes { from { transform: rotateX(0deg); } to { transform: rotateY(80deg); } }
+  @ke

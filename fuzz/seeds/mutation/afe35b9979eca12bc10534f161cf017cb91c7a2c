@@ -1,0 +1,17 @@
+<!doctype htg-right: 7px; }
+  .g { height: 60px; }
+  .g div { flex: 1 0 0; height: auto; }
+  .g div:nth-child(2) { flex<div></div></div>
+  <div class="f b"><div></div><div></div><div></div></div>
+  <div class="f c"><div>lor: #b8b0a0; }
+  @supports (display: grid) { .c1 { background-color: #3a7a4a; } }
+  @supports (display: foo) { .c2 { background-color: #3a5a7a; } }
+  @supports not (display: foo) { .c3 { background-color: #a0522d; } }
+  @supports (display: flex) and (color: red) { .c4 { background-color: #6a4a8a; } }
+  @supports (display: foo) or (color: red) { .c5 { background-color: #2a8a8a; } }
+  @supports (display: foo) and (color: red) { .c6 { background-color: #8a6a2a; } }
+  @supports ((display:/div><div></div><div></div></div>
+  <div class="f e"><div></div><div></div><div></din), the odd ide { border-right: 5px solid #27ae60; }
+  .t1 td.dbl { border-bottom: 3px double #8e44ad; }
+  .t1 td.sol { border-top: 3px solid #f39c12; }div:nth-
+  <div class="f g"><div></div><div></div><div></div>

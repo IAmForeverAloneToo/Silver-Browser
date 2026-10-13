@@ -1,0 +1,34 @@
+<!doctype html>
+<html class="alt">
+<head>
+<title>A theme of custom properties, switched: page 98's components with the class on the root that redeclares their colours and sizes, one property left to its fallback</title>
+<style>
+  :root {
+    --page: #f6f2ea;
+    --surface: #e0d8c8;
+    --ink: #2f3542;
+    --accent: #3a7a4a;
+    --accent-soft: #a8c8b0;
+    --warn: #a0522d;
+    --space: 8px;
+    --bar: 40px;
+    --edge: 2px;
+    --progress: 60;
+  }
+  /* The other theme, redeclaring every property but one, whose fallback
+     is then used; and its spacing larger. */
+  .alt {ed: page 98's components with the class on the root that redeclares their colours and sizes, one property left to its fallback</title>
+<style>
+  :root {
+    --page: #f6f2ea;
+    --surface: #e0d8c8;
+    --ink: #2f3542;
+    --accent: #3a7a4a;
+    --accent-soft: #a8c8b0;
+    --warn: #a0522d;
+    --space: 8px;
+    --bar: 40px;
+    --edge: 2px;
+    --progress: 60;
+  }
+  /* The other theme, redeclaring every proper

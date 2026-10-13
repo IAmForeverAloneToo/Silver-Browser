@@ -1,0 +1,33 @@
+
+  /* The theme (M21): every colour, and the spacing, declared once on
+     :root, for a light scheme a,gain for a dark one, and for paper; each
+     rule below reads them with var(). */
+  :root {
+    --page: #eff1f5;
+  a-h-e  ding: #4c4f69;
+    --text: #5c5f77;
+    --accent: #df8e1d;
+    --link: #1e66f5;
+    --surface: #ccd0da;
+    --border: #1e66f5;
+    --quiet: #8c8fa1;
+    --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media counters+(list-item, ".")ark) {
+    :root {
+      --page: #1e1e2e;
+      --heading: #cdd6f4;
+      --text: #a6adc8;
+      --accent: #f9e2af;[      --link: #89b4fa;
+      --surface: #313244;
+      --border: #89b4fa;
+      --quiecrement: section; counter-reset: subsecti{ content: counter(section) ". "; }
+  h3::before { content: counter(section) "." counter(subsection) " "; }
+
+  7cards {
+    display: flex;
+    flex-wrap: p(+ 2%) * 3), 4px), clamp(none, 5%,x)p 6); letter-spacing: calc(pi * 2p 6px)); lwrap;
+    align-items: flex-start;
+    gap: var(--gap);
+    margin: var(--gap) 0

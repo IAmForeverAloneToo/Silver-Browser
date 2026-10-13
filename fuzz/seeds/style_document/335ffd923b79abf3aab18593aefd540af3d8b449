@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+<style>
+htmlkground-colospace-evenly}
+body { man: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g - div { background-color: #a14a3a; }
+.g > div:nth-child(2n) { bhckground-color: #c8a46a; }
+.g > div:nth-child( class="r"></div></div>
+<div 20; }
+.col { floa,: left;ound-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { width: 400px; }
+.ib { display: inline-block; width: 30px; height: float: left20px; bac; wikg

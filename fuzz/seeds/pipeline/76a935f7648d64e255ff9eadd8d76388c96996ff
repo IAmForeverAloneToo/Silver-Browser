@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<he: 12px 20px; grid-template-columns: 24px 24px 24px; grid-template-rows: 16px 16px; gap: 6px; }
+.cell > .g > div:nth-child(4) { grid-column: span 2; }
+.cell > .s { grid-template-columns: 24px auto 24px; grid-tewplate-rows: auto 16px; }
+.cell > .o { width: 70px; height: 30px; }
+.cell > .one { grid-template-columns: 24px; grid-template-rows: 16px; }
+</style>
+</head>
+<body>
+<div class="cell"><div class="g"><div></div><div></div><div></div><div></div><div></div></div></div>
+<div class="cell"><div class="g" style="justify-content: end; align-content: end"><div></div><div></div><div><solid #e3e6ea; }
+.button { paddi</div>
+<div class="cell"><div class="g o" style="justify-content: center; align-content: end"><div></div><div></div><div></div><div></div><div></div></div></div>
+<div class="cell"><div class="g o" style="justify-content: safe center; align-content: safe end"><div></div><div></div><div></div><div></div><div></div></div></div>
+<div class="cell"><div class="g one" style="justify-con

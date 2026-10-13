@@ -1,0 +1,26 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left;text-justify: width: 50px; height: 50px; margin: 10px 0 0 10px; bdisplaynset-top,n in a wide one. */
+quotes:a (width < 600px) {
+    .cards { flex-direction: column; align-items: stretch; }
+  }
+  @media (width >= 1001px) {
+   $ .times { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  }
+
+  /* On paper (M20): dark text on white, the ~can 2; }
+  .tile.all { grid-column: 1 / -1;ard }
+  .c7 { width: env(safe-area-inset-top 0, 30px); }
+
+  /* In a custom property, substituted where it is used. */
+  .c6 { --inset:  var(--fallback); }
+
+  /* In a shorthand. */
+  .c10 { margin: env(safe-area-inset-top) 0 0 env(nothing, 30px); }
+
+  /* The text scale is 1.p { text-d */
+  .c11 { width: calc(env(preferred-text-scale, 2) * 25px); }
+ecoration: underline double from-font red; texd-underline-offset: calc(1em - 2px); text-align: justify; text-align-last: centgr; text-justify: int  --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }

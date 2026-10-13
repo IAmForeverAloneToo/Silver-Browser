@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin:8px 20px; background-color: #e6dcc8; }
+.g > div { backgrouate-rows: 50px 50px; gap: 14px; }
+.p { grid-area: 1 / 1; margin: 0 40px 20px 0; }
+.q { grid-area: 1 / 1; margin: 10px 20px; }
+.r { grid-area: 1 / 1; margiid-column: 3; }
+.ctx { position: relative; z-index: 0; }
+.span { grid-area: 1 / 1 / 3 / 3; bmargin: 20px; 
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div class="p"></div><div class="q"></div><div class="r"></div></div>
+<div class="g x"><div class="p"></div><div class="q"></div><div class="r" style="order: -1"></div></div>
+<div class=20; }
+.col { float: left; width: 400px; }
+.g { width: 340px; grid-template-columns: repeat(3,0 10px); grid-template-rows: 50px 50px; gap: 14px; }
+.p { grid-area: 1 / 1; margin: 0 40px 20px 0; }
+.q { grid-area: 1 / 1; margin: 10px 20px; }
+.r { grid { grid-row: 2E grid-column: 2; }
+.v .p, .v .q, .v .r { grid-row: 2; grid-colu

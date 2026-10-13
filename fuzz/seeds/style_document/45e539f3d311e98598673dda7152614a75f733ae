@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > dif { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+.it: 20px; }
+.a > .t { height: auto; }
+p: 6px; or: #e6dcc8; }
+.g > dif { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+.it: 20px; }
+.a > .t { height: auto; }
+p: 6px; }
+.s > div { align-self: baseline; height: 20p: #a07a3a; }
+.g > div:nth-child(2n) {auto; }
+.n > div:first-child > div { height: 16px; background-color: #f0e8d8; }
+.n > div:first-child > div + div { height: 30px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div style="height: 40px"></div><div styund-color: #c8a46a; }
+.g > div:nth-child(3n) { <

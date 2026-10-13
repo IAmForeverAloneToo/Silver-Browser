@@ -1,0 +1,12 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0pxem grid-auto-rows: 20px; gwidth: 360px; grid-template-columns: 20px repeat(2, [x] 30px [y]) repeat(iuto-fill, 60px) 20px; grid-auto-rows: 20px; }
+</style>uto-rows: 20px; gap: 10px; }
+.c { width: 360px; grid-template-columns: r.p><div></div><div></div></div>
+<div class="g f"div class="g dense"><div></div><div class="t"></div><div class="t"></div><div></div>
+</div>
+</body>
+</html>

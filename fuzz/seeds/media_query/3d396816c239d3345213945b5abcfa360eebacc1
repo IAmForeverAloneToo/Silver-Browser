@@ -1,0 +1,1 @@
+@media_ (width > 50em) { @supports (display: grid) { @layer a.b { .x { color: red } } } } @page :> 50em) { @supports (display: grid) { @layer a.b { .x { color: red } selector(} } } @page :first { size: A5 landscape; margin: page} @import urfirst { size: A5 la } } } @page :> 50em) { @supports (disp{ size: Artt url(x.css) layer(l- swpports(display: ]rid) print;

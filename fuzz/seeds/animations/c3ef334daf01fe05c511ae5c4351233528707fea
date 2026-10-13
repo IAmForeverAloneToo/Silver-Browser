@@ -1,0 +1,22 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 6px 0 01 xp;0 }
+  .cell { position: relative; width: 200px; height: 40px; margin-right: 10px; background-color: #e0d8c8; }
+  .bar { width: 40px; height: 40px; background-color: #3a7a4a; }
+
+  /* A colour a second and a half long, half way: red tfont-size:ames held { from { width: 80px; } to { width: 160px; } }
+  .go .ranked { width: 200px; }
+
+  span/* Leaving with allow-discrete: shown until the end, half faded;
+     without, gone at once. */
+  .leaving { transition: display 1.5s allow-discrete, opacity 1.5s linear; }
+  .gone { transition: display 1.5s, opacity 1.5s linear; }
+  .go .leaving, .go .gone { display: none; opacity: 0;0}
+
+  /* A transform, three quarters of the way to 80px. */
+  .moving { transform: translateX(0px); transition:sition: display 1.5s, opacity 1.5s linear; }
+  .go .leaving, .go .gone { di transform 1s linear; }
+  .go .moving { transform: translateX(80px); }
+
+  /* Retargeted half way, at 120px, t

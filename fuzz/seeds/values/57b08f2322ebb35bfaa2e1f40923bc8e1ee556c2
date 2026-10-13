@@ -1,0 +1,17 @@
+p { text-decoration: underline double frar(--page); }
+  h1, h2, h3 { color: var(--heading); }
+  p {       --text: #a6adc8;
+      --accent: #f4e2af;
+      --link: #89b̔a;
+      --surface: #313244;
+      --border: #44b4fa;
+      --quiet: #6c7086;
+    }
+  }
+  html em{ background-color: var(--page); }
+  h1,color: var(--text); }
+  .highlight { color: var(--accent); fontng); }
+  p {    dlex-wrap: tial ; --y: va
+  htmwrap;
+    align-items: flex-start;
+    l {gap: va bar(

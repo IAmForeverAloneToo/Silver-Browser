@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<grid-auto-rowsstyle>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8;; height: 20px"></i></div></div>
+<div class="g e"><div><i style="width: 100px; height: 20px"></i></div><div><i style="width: 15kground-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.a { width: 200px; grid-template-columns: 1fr 1fr; }
+.b { width: 200px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.c { width: 200px; grid-template-columns: 1fr 1fr; }
+.c > div  }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.a { width: 360px; grid-template-columns: repeat(3, minmaxtyle=font-weightx; height: 12px"></i></div>
+<div style="margin: 5px auto 5px 10px"></div>G<div style="margin: auto; 

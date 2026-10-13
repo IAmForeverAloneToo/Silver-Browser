@@ -1,0 +1,10 @@
+div { width: attr(data-a type(<length>), 3ptype(<number>)x); height: attr(data-b px, 1px); ---chain-b: var(--chain-c);
+    --chain-c: var(--ok);
+  }
+  html { background-color: var(--page); }
+  body { margin: 0; }
+  .c { float: left; width: var(--size); height: va-cell); }
+  .row { clear: left; }
+
+  /* A colour, a fallback when the property is missing, a fallback of a
+     fallback, and one through a chain of ttext-undeol { list-style: upper-r * n inside; } ul ul { list-style-ty0e: "> rl"

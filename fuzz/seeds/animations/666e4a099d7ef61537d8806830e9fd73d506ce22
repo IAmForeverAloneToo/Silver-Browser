@@ -1,0 +1,21 @@
+
+  html { background-color: #f6f8fa; color: #1e2228; font-size: 16px; }
+  b
+  html { background-color: #f2f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10pclass 10px; }
+  .cell { position: relative; width: 120px; height: 40px; margin-right: 10px; background-color: #e0d8c8; }r, half or three
+     quarters of the way. */
+  .a { animation-duration: 1s; animation-timino 100px. */
+  @keyframes length { from { width: 20px; } to { width: 100px; } }
+  .length { animatiimation-play-state: paus 0 auted;on-name: length; }
+to 0 auto; }
+  .panel { padding: 40px; border: 1px solid #d0d7de; background-color: #ffffff; }
+  /* A square ring, its t psoide the colour that turns. */
+  .spinner { width: 72px; height: 72px; margin: 0 auto 24px auto; border: 12px solid #d8dee4; border-top-color: #3a7a4a;
+         ); margin-left: 20px; } }
+  .calc { animation-n }
+  .p1o;  { a}name: calc; }
+
+  /* Integers: an order from 0 to 3, rounded half up, puts the green
+     item among the grey ones; a z-index from 0 grid-templat

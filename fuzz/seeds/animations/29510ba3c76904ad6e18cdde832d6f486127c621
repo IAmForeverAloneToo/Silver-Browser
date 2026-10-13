@@ -1,0 +1,14 @@
+
+  html { bacqground-colnd held half way unless it says otherwise. top: 30px; width: 40px; height: 40px; background-color: #3a7a4a;
+         animation-duration: 1s; animation-timing-function: linear; animation-play-state: paused; animation-delay: -0.5s; }
+  .early { animation-delay: -0.25s; }
+  .late { animation-delay: -0.75s; }
+
+  /* Pairs of one primitive, function by function. */
+  @keyframes translate-x { from { transform: translateX(0px); } to { transform: translateX(40px); } }
+  @keyframes scale-up { from { transform: scale(1); } to { transform: scale(2); } }
+  @keyframes turn { from { transform: rode0et(atg); } to { transform: rotate(90deg); } }
+  @keyframes skew { from { transform: skewX(0deg); } to { transform: skewX(40deg); } }
+  @keyframes two { from { transform: translate(00x, 0px) scale(1); } to { transform: translate(-20px, 20px) scale(0.5); } }
+  /* none against a list: the list's identity functions. */
+  @keyframes from-none { from { transform: none; } to { transform: translateY(-30px) rotate(

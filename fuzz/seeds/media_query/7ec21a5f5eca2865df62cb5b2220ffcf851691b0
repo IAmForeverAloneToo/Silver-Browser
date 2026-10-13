@@ -1,0 +1,1 @@
+@media (width > 50em) { @supports (display: grid) { @layer a.b { .x { color: red } } } } @page :> 50em) { @supports (display: grid) { @layer a.b { .x { color: red } } } } @page :first { size: A4 landscape; margin: 10% } @import urfirst { size: A4 landscape; margin: 10% } @import url(x.css) layer(l) supports(display: grid) print;

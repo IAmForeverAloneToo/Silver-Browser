@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<main>
+<stylsize: 0; }
+.g { display: grid; margin: 8px 2paddingckground-color: #e6dcc8; }
+.g > div { backgroundtargetilda0:a3a; }
+.g > div::nth-child(2n) { ba0:a3a; }
+.g > div::nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float<!do: lwidth: 360px; grid-template-columns: 80pxn-items: eckground-color: #c8a46a; }
+.g > div:targetild(3n) { backgrouor: #f0e8d8; }
+.n > div:first-child > div + div { height: 30px; }
+</style>
+</head>
+<bo"><div class="p"></div><div class="q"></div><div class="r"></div></div>
+<div class="g x"><div class="p"></div><div class="q"></div><div class="r" style="order: -1"></div></div>
+<div class="g y"><div class="p" style="z-index: 1"></div><div class="q" style="z-index: 0"></div><div class="r"></div></div>
+</div>
+<div class="col">
+<div class="g z"><div class="p" style="overflowposition: relative"></dis="t" style 1

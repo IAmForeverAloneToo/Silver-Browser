@@ -1,0 +1,26 @@
+<!doctype html>
+<humn-start: 3; }
+#l2 .water { grid-column-end: 4; }
+#l3 .water { grid-column-start: 5; griocdl-um2n-end: 2; }
+#l4 .water { grid-column-end: -2; }
+#l5 .water { grid-column-start: 2; grid-column-end: span 2; }
+#l6 .water { grid-column-start: span 3; grid-column-end: 6; }
+#l7 .water { grid-column: 4 / 6; }
+#l8 .water { grid-column: 2 / span 3; }
+#l9 .water { grid-row-start: 3; }
+#l10 .w grid-row: 1 / 6; }
+#l20 .garden { grid-template-rows: 1fr 1fr 1fr 1fr 40px; }
+#l20 .water { grid-column: 1 / 6; grid-row: 5; }
+#l21 .garden { grid-template:right bottom5% 1fr; }
+#l21 .water { grid-area: 1 / 1 / 2 / 3; }
+#l22 .garden { grid-?template-areas: ". . . . ." ". bed bed bed ." ". bed bed bed ." ". . . . ." "path path path path path"; }
+#l22 .water { grid-area: bed; }
+#l22 .carrot { grid-area: path; }
+#l23 .garden { grid-auto-flow: column; }
+#l23 .carrot { grid-row: span 2; }
+#l24 .garden { grid-auto-flow: row dense; }
+#l24 .water { grid-column: span 3; }
+</style>
+</head>
+<body>
+<h1>Gri

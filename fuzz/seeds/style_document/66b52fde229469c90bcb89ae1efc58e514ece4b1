@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-c<style>mid-end] 60pxefore the start< [right]; grid-template-rows: [top] 30px [middle] 30px [bottom]; }
+.a > div:nth-child(1) { grid-column: left/ mid-start; grid-row: top; }
+.a > div:nth-child(2) { grid-column: mid; grid-row: middlraw-string; }
+.a > div:ntaga: foot; }
+.c { width: 36g><div>e0px; grid-temprid-template-rows: [top] 30px [middle] 30px [bottom]; }
+.a > div:nth-child(1) { grid-column: left / mid-start; grid-row: top; }
+.a > div:nth-child(2) { grid-column: mid; grid-row: middle / bottom; }
+.a > div:nth-child(3) { grid-column: -2 / -1; grid-row: -3 / -1; }
+.b { width: 360px; grid-template-areas: 'head h\ad head' 'side main main' 'side foot foot'; grid-template-columns: 80px 1fr 2fr; grid-templh-child(3) { grid-column: -2 / -1; grid-row: -3 / -1; }
+.b { width: 360px; grid-template-areas: 'head h\ad head' 'side main main' 'side foot foot'; grid-te

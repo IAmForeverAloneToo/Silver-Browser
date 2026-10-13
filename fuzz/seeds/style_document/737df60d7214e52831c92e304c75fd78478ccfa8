@@ -1,0 +1,11 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div, .g > span { background-color: #a07a3a; }
+.g > :nth-child(2n) { background-color: #c8a46a; }
+.g > :ntx:1;margin:auto}</style><table><tr><td><div id=g><div>1</dan><div style="display: table; justify-self: stretch"><div style="display: table-cell; height: 10px; background-color: #3a5a7a"><</div></div>
+<div class="box" style="padding: 4px; display: inline-block"><table style="border-spacing: 4px; background-color: #b0a080"><tr><td style="padding: 0"><div class="g" style="margin: 0; grid-template-columns: auto 1fr"><div><i style="width: 40px; height: 16px"></i></div><div><i style="width: 30px; height: 16px"></i></div></div></td><td style="padding: 0; width: 120px"><div class="g" style="margin: 0; grid-template-columns: repeatgrid-template-areas(3, 1fr)"><div style="height: 16px"></div><div></div><div></div></div></td></tr>~/table></

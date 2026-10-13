@@ -1,0 +1,21 @@
+<!doctype html>
+<html>nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+.g { width: 360px; }
+.g > div { min-height: 16px; }
+.a { grid: auto-flow 20px / 1fr 2fr 1fr; gap:</span></div> 4px 12px; }
+.b { grid: 20px 30px / auto-flow dense 50px; grid-gap: 6px; }
+.b > div:nth-child(2) { grid-column: span 2; }
+.c { grid: "head head" 20px "side main" 40px / 80px 1fr; grid-row-gap: 4px; grid-column-gap: 8px; }
+.c > div:nth-child(1) { grid-area: head; }
+.c > div:nth-child(2) { grid-area: main; }
+.c > div:nth-child(3) { grid-area: side; }
+.d { grid-template: "a a b" 24px px [mid] "c d d" 36px / 60px 1fr 80px; }
+.d > div:nth-childiv>
+<div class="g c"><div></div><div></div><div></div></div>
+<div class="g d"><div></div><div></div><div></div><div></div></div>
+</div>ld(2) { grid-area: top / l / mid; }
+.f { grid-template-columns: repeat(4, 1fr); grid-auto-rows: 20px; }
+.f > div:nth-child(1) { grid-area: 2 / 1 / 3 / 3; }
+.f > div:nth-child(2) {

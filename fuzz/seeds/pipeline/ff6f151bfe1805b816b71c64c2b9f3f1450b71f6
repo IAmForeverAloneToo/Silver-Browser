@@ -1,0 +1,12 @@
+<style>#g{display:grid;gri none; font-size: 12px; color: #8c959f; }
+.reverse { flex-direction: row-reverse; }
+.centered { align-items: center; }
+.nested { margin-top: 8px; padding: 8px; margin-bottom: 0; background-color: #f6f8fa; }
+</style>
+</head>
+<##############################################################################################body>
+<div class="list">
+<div class="media"><div class="figure"></div><div class="body"><h3>A media object</h3><p>The figure keeps its size and the body takes the rest of the row, its text wrapping beside the figure rather than under it.</p></div><div class="meta">2 hours ago</div></div>
+<div class="media reverse"><div class="figure"></div><div class="body"><h3>Turned round</h3><p>The figure on the right, by the direction alone.</p></div></div>
+<div class="media centered"><div class="figure small"></div><div class="body"><h3>Centred</h3><p>A short body, centred on the figure.</p></div><div class="meta">yesterday</div></div>
+<div class="media"><div class="figure"></div><d

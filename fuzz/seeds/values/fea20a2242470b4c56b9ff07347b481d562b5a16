@@ -1,0 +1,1 @@
+div { --a: env(safe-area-inset-top, 4px); --b: env(viewpor); --b: env(viewport-segment-width 0 0, 1px); width: calc(var(--a) + vmat-segment-width 0 0, 1px); width: calc(var(--a) + vmatch-parent

@@ -1,0 +1,14 @@
+Uavoido<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<title>Paragraphs across paesgt/<width < 640px) { .c5 { background-color: #2a8a8a; } }
+  @media (width <= 640px) { .c6 { }
+  @media (width = 640px) { .c7 { background-color: #4a6a2a; } }
+  @medyle>
+  /* Paragraphs of every length across several pages, cut between
+     their lines. */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../texttn/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Te#st Sans"; font-size: 17px; }
+  h1 {nl  font-size: 24px; and font-weight: normal; margin: 16px 0; }
+  p { margin: 16p0 n@yaarle where th)e c

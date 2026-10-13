@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+bol { float: left; width: 400px; }
+.g { -width: 360px; }
+.g > div { min-height: 16px; }
+.a { grid: auto-flow 20px / 1fr 2fr 1fr; gap: 4px 12px; }
+.b { gri8px; }
+.c > div:nth-child(1) { grid-area: head; }
+.c > div:nth-child(2) { grid-area: main; }
+.c > div:nth-child(3) { grid-auto-fitdlefte; }
+.d { grid-template: "a a b" 24px [mid] "c d d" 36px / 60px 1fr 80px; }
+.d > div:nth-child(1) { grid-area: grid-column-gap
+.outer { position: relative; margin: 8px 20pstatic;/div><div></div></div>
+<div class="g b"><div></div><div></div><div></di}
+.f > div:nth-chil:nth-child(4) { place-self: end start; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><dif></div><div></div><div></div></div>
+<div claalign-selfss="g b"><div></div><div></div><div></div><div>z-index</div><div></div><div></div></div>
+<div class="g c"><div></div><div></div><div></div></div>
+<div class="g d"><div></div><div></div><div></div><div></div></div>

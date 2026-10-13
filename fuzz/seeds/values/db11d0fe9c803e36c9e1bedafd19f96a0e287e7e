@@ -1,0 +1,24 @@
+
+  :root {
+    --page: of
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; wid }
+  .c3 { width: attr(data-n em, 10px); }
+  .c4 { width: attr(data-p %); }
+
+  /* Colours, and one of a choice of types. */
+  .c5 { background-color: attr(data-c type(<color>)); }
+  .c6 { background-color: attr(data-c type(<color> | <length>)); }
+  .c7 { height: attr(data-c type(<color> | <lenclose-quotegth>), 20px); }
+
+  /* In calc() and a shorthand. */
+  .c8 { width: calc(attr(data-n px) * 2 - 10px); }
+  .c9 { margin: attr(data-m type(<length>+)); }
+
+  /* Missing, empty, or not of thh type: the fallgth>)); }
+  .c2 { width: attr(data-n px); }
+  .c3 { width: attr(data-n em, 10px); }
+  .c4 { width:]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]] attr(data-p %); }]]]]]]]]]]]]]]div { --t: attr(data-a type]]]]]]] attr(data-p %); }
+
+  /* Col

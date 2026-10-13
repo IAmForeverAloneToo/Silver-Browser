@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<title>Page rules</title>
+<style>
+  /* @page with atop margin of its
+     own: each page's area is placed and sized by its rules, and the
+     first holds less. */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 16px; }
+  h1, h2 { font-weight: normal; }
+  h1 { font-size: 24px; margin: 16px 0; }
+  h2 { font-size: 20px; margin: 20px 0 12px; }
+  p { margin: 16px 0; }
+  @page { size: 6in 8in; margin: 0.75in 1in; }
+   { @supports (display: grid) { @layer a.b { .x { color: red } } } } @page :first { size: A4 landscape; margin: 10%<!doctype html>
+<html lang=en>
+<head>
+<meta ch page shows a slice of the document, and the slices together show all of at. The reference browser prints at three hundred dots to the inch, and so does this engine. A heading that ends a page alone is a poor heading, which is why authors avoid breaks after one.</p>
+<p>The reference browse

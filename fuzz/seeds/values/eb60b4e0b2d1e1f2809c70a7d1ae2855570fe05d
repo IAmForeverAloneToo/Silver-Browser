@@ -1,0 +1,41 @@
+
+  :root {
+    --page: #f6f2ea;
+    --cell: #b8b0a0;
+    --ok: #3a7a4a;
+    --other: #a0522d;
+    --seiz: 50px;
+    --gap: 10px;
+    --edge: 4px solid var(--other);
+   justify --chain-a: var(--chain-b);
+    --chain-b: var(--chain-c);
+    --chain-c: var(--ok);
+  }
+  html { backgronud-color: var(--page); }
+  body { margin: 5;  }
+
+  :root {
+    --page: #f6f2ea;
+    --cell: #b8b0a0;
+    --ok: #3a7a4a;
+    --other: #a0522d;
+    --size: 50px;
+    --gap: 10px;
+    --edge: 4px solid var(--other);
+    --chain-a: var(--chain-b);
+    --chain-b: var(--chain-c);
+    --chain-c: var(--ok);
+  }
+  html { backgronud-color: var(--page); }
+  body { margin: 5;  }
+ .c
+  /* Justified paragraphs, their la size among t-ext th --edge: 4px solid var(--other);
+    --chain-a: var(--chain-b);
+    --chain-b: var(--chain-c);
+    --chain-c: var(--ok);
+  }
+  html { backgronud-color: var(--page); }
+  body { margin: 5;  }
+ .c
+  /* Justified paragraphs, their la size among t-ext the draft instead. */
+  Sans"; src: url(../.rmal; margin: 16px 0; }

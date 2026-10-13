@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<headolor: #5b7ea1; }
+  .wide { width: 600px; }
+  .narrow { width: 200px; }
+  .centre { margin-left: auto; margin-right: auto; }
+  .fixed100 { width: 100px; }
+  .p25 { widtl: 25%; }
+be5ee; }
+  .b { height: 16px; background-color: #34506b; }
+  .w20 { width: 20px; } .w40 { width: 40px; } .w60 { width: 60px; } .w90 { width: 90px .line { height: var(--space); margin-top: var(--space); background-color: var(--accent-soft); }
+  .card .line.short { width: 50%; }
+
+  .progress { margin: 0 calc(var(--space) * 2); height: var(--space); background-color: var(--accent-soft); }
+  .progress .done { width: calc(var(--progress) * 1%); height: 100%; background-color: var(--accent); }
+
+  /* A warning in a colour the alternative theme does not set: the
+     fallback; a badge in a property neither theme sets. */
+  .alert { margin: calc(var(--space) * 2); padding: var(--space); height: 30px; border-left: calc(var(--edge) * 2) solid var(--warn, #c0392b); background-color: var(--surface); }

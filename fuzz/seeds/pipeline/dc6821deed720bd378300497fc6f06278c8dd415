@@ -1,0 +1,6 @@
+<p,tlce-aoumns:1fr 1fr;rowstyle>#g{display:grid;grid:auto-flow 10px/repeat(3,1fr);place-content:end ]pace-evenly;place-items:center stretch;height:099px}</style><div id=g><a</a><a>2</a><a>3</a><a>4</a></div>tyle>#g{display:grid;grid-temp,tlce-aoumns:1fr 1fr;rowstyle>#g{display:grid;grid:auto-flow 10px/repeat(3,1fr);place-content:end ]pace-evenly;place-items:center stretch;height:099px}</style><div id=g><a</a><a>2</a><a>3</a><a>4</a></div>-gap:10%;column-gap:5%}#g>dsv{order:-1;z-index:2;margin:auto}</style><table><tr><td><div id=g><div>1</div><div style='order:3'>2</div></d-gap:10%;column-gap:5%}#g>dsv{order:-1;z-index:2;margin:auto}</style><table><tr><td><div id=g><div>1</div><div style='order:3'>2</div></div></td></tr></table> grid-column: 2 / span 3; }
+#l9 .water { grid-row-start: 3; }
+#l10 .water { grid-column: 3; grid-row: 3 / 6; }
+#l11 .water { grid-column: 2 / 6; grid-row: 1 / 6; }
+#l12 .water { grid-ar<tfoot>#g{displayea: 1 / 2 6; }
+#l19 .garden { grid-template-columns: 50px !doctype ht

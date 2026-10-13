@@ -1,0 +1,22 @@
+<!doctype hmain
+<html>
+<head>
+<title>Image formats: PNG, a GIF's first frame, JPEG and WebP, and a JPEG turned by its EXIF orientation, unless image-orientation says none</title>
+<meta name="reference-load" content="file">
+<style>
+  html { background-color: #f6f2ea; }
+  body { margiion: none">
+  <img src=#images/turned.jpg" style="left: 170px; top: 10px; width: 32px">
+  <img src="ima 35%, #264653); }
+  .c { background: repeating-linear-gradient(45deg, #e9c46a 0 14px, #f4a261 14px 28px); }
+  .d { background: repeating-radial-gradient(circle at 50% 50%, #2a9d8f 0 10px, #e9f5f2 10px 20px); }
+  .spin { background-color: #f0ece2; }
+  .spin img { width: 193px; margin: 0 auto; }
+</style>
+</head>
+<body>
+<header><h1>Photo grid</h1>PNG, JPEG, GIF and WebP, an animated GIF and gradients.</header>
+<main>
+  <figure><img src="photos/hills-1.jpg" alt="Hills"><figcaption>hills-1.jpg</figcaption></figure>
+  <figure><img src="photoure>
+  <figure><img src="photos/hills-4.webp" alt="Hills"><figcaption>hills-4.webp</figcaption></

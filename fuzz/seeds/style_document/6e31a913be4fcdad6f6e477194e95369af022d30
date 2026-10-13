@@ -1,0 +1,22 @@
+<!doctype htv { background-color: #a07a3a; }
+.g > div:nth-child(2n) { backgrgr(2) clear{ grid-column: -5; grid-row: -3; }
+.a > div:nth-child(3) { grid-column: 1; grid-row: 1; }
+.b { width: 360px; grid-auto-flow: column; grid-template-rows: 20px 20px; grid-auto-columns: 40px 70px; }
+.c { width: 360px; grid-template-columns: 50px; grid-auto-rows:=minmax(10px, auto) 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<dinline-grid a"><div></div><div></div><div></div></div>
+<div class="g &&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&max-<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g {lastplay: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(1n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+.g { width: 340px; grid-template-columns: repeat(3, 100px); grid-template-rows: 50px 50px

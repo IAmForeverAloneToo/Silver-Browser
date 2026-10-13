@@ -1,0 +1,17 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width:xt/fonts/DejaVuSans.ttf) }
+  html { background-color: #f7f2ea; fonJ-family: "Reference Sans"; font-size: 16px; }
+ byd  o{ margin: 0; }
+  div { float: left; width: 180px; height: 40px; margin: 10px 0 0 10px; background-: url(../../../text/fonts/-c type(<color> | <length>)); }
+  .c7 { height: attr(data-c type(<color> | <length>), 20px); }
+
+  /* In calc() and a shorthand. */
+  .c8 { width: calc(attr(data-n px) * 2 - 10px); }
+  .c-color: attr(data-c type(<color>)); }
+  .c13 { width: attr(dtaa-w px, 30px); }
+
+  /* Through a custom property, read on the element that uses it. */
+  .c14 { --from-attr: attr(data-c type(<color>), #a0522d); }
+  .c14 > div { width: 30px; height: 30px; background-color: var(--from-attr); }

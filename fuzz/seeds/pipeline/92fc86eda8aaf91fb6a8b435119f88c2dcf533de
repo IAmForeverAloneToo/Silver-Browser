@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-media" content="print">
+<title>The print medium drawn on the screen: @media and the media attribute of style elements for print and for the screen, @page and the break properties changing nothing there</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+  @media print { .c1 { background-color: #3a7a4a; } }
+  @media screen { .c2 { background-color: #3a5a7a; } }
+  @media not screen { .c3 { background-color: #a0522d; } }
+  @media only print { .c4 { background-color: #6a4a8a; } }
+  @media print and (min-width: 700px) { .c5 { background-color: #2a8a8a; } }
+  @media print and (orientation: landscape) { .c6 { backgrouformnd-color: #8a6a2a; } }
+  @media (prefers-color-scheme: light) { .c10 { background-color: #3a5a7a; } }
+  @page { margin: 0; size: landscape; }
+reak-before: page; break-after: page; break-inside: avoid; }
+</styl

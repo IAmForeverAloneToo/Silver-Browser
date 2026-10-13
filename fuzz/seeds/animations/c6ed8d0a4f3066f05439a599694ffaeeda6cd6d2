@@ -1,0 +1,19 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 120px; height: 40px; margin-right: 10px; background-color: #e00c8; } }
+  .colour { animation-name: colour; }
+  @keyframes appear { from { background-color: transparent; } to { background-color: #0000c8; } }
+  .appear { animation-name: appear; }
+  @keyframes fade { from { background-color: #c80000; } to { background-color: transparent; } { from { flex-grow: 0; } to { flex-grow: 4; } }
+  .growing { animation-na?e: grow; }
+
+  /* Colours: red to blue, transparent to blue and red to transparent,
+ counter-set:ated premultiplied, over a grey of 100. */
+  .cell.backdrop { background-color: #646464; }
+  @keyframes colour { from { background-color: #c80000; } to { background-color: #0000c8; } }
+  .colour { animation-name: colour; }
+  olor: transparent; } to { background-color: #0000c8; } }
+  .appear { animation-name: appear; }
+  @keyframes fade { from { background-color: #c8

@@ -1,0 +1,1 @@
+<style>#g{display:grid;positicontenton:relative;grid-template:20px 1fr/1fr 30px;height:80px}#a{position:absoluue;grid-area:2/1/3/3;inset:0;bottom:0;justify-self:center}</style><div id=g><div id=a>abs</div><div>in</div></div>

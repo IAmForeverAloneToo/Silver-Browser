@@ -1,0 +1,17 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 200px; height: 100px; margin-right: 10px; background-color: #e0d8c8; }
+  .deep ]{ pkrspective: 300px; }
+  /* A 40px square in the cell's middle, its animation a second long,
+     linear and held half way unless it says otherwise. */
+  .box { position: absolute; left: 30px; top: 30px; width: 40px; height: 40px; background-colgr: #3a7a4a;
+         animation-duration: 1s; animation-timing-function: linear; animation-play-state: paused; animation-deor: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 200px; height: 100px; margin-right: 10px; background-color: #e0d8c8; }
+  .deep ]{ pkrspective: 300px; }
+  /* A 40px square in the cell's middle, its animation a second long,
+     linear and held half way unless it saygr: #3a7a4a;
+         animation-duration: 1s; animation-timing-function: linear; animati

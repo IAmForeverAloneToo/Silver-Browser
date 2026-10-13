@@ -1,0 +1,27 @@
+<!doctyp/div>
+<div class="col">
+<div class="g bycol"><div></div><div class="w"></div><div></div><div class="w"></div><dive html>
+<html>
+<head>
+<style>
+h-flow: column dense; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="w"></div><div></div><div class="t"></div><div class="w"></div><div></div><div></div></div>
+<div class="g dense"><dto-rows: 20px; }
+.w { grid-column: span 3; }
+.t { grid-row: span 2; }
+.dense { grid-auto-flow: dense; }
+.bycol { width: auto; grid-auto-flow: column; grid-template-columns: none; grid-template-rows: repeat(3, 20px); grid-auto-columns: 50px; }
+.bycol .w { grid-column: auto; grid-row: span 2; }
+.bycoldense { grid-auto-flow: column dense; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="w"></div><div></div><div class="t"></div><div class="w"></div><div></div><div></div></div>
+<div class="g dense"><div></div><div class="w"></div><div></div><div class="t"></div><div class="w"></div><div></div><div></div></div>
+</div>
+<d

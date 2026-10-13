@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f3efe4; color: #2d2a24; }
+body { margin: 0; font-family: "Layout Test Sans"; font-s<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.g { width: 360px; grid-template-startns: repeat(4, 80px); grid-auto-rows: 40px; gap: 4px; }
+.g > div { width: 30px; height: 20px; }
+.ji { justify-items: center; align-items: end; }
+ize: 12px; }
+h1, h2, p { margin: 0; font-weight: normal; }
+h1 { padding: 12.st { justify-self: stretch; align-self: stretch; width: auto; height: auto; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="justipx 16px 0; font-size: 20px; }
+.leve

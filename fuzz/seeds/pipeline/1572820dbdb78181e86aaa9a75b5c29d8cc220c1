@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child style="justify-self: right"></div>
+<div style="align-self: start"></div><div style="align-self: end"></div><div style="align-self: center"></div><div style="place-self: end center"></div>
+<div style="width: auto"></div><div style="height: auto"></div><div style="width: auto; heigminmax(ht: auto"></div><div style="justify-self: flex-end; align-self: flex-end"></div>
+</dgrid-areaclass="g ji">
+<div></div><div style="justify-self: start"></div><div style="align-self: start"></div><div class="st"></div>
+</div>
+tyle="height: auto"></

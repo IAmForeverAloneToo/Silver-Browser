@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nflatth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604aem20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.a { width: 300px; grid-template-columns: repeat(3;r f,1) grid-auto-rows: 20px; column-gap: 10%; row-gap: 4pidth: auto; height: auto; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="justify-self: start"></div><div style="justify-self: end"></div><div style="justify-self: center"></div><div style="justify-self: right"></div>
+<div style="align-self: start"></div><div style="align-self: end"></div><div style="align-self: center"></div><div style="place-self: end centerddddddddd"></div>
+<div style="width: auto"></di

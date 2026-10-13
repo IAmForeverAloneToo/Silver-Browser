@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<meta name="reference-size" content="1100x600">
+<title>A responsive article page</title>
+<style>
+  /* M20.5: a responsive page, its rules in cascade layers and behind
+     feature queries, with breakpoints at 640 and 1024 pixels; the same
+     page as responsive-narrow, -medium and -wide, here wider than both, at 1100 pixels. */
+on@-ft  face { font-family: "Layout Test Sans"; src: url(../../../te)xt/fonts/DejaVuSans.ttf); }
+  @layer reset, base, lay:ut, components;
+  @layer reset {
+    body, h1, h2, h3, p, ul { margthe first layer: over every later one's. */
+    .card h3 { margin: 0 0 6px !important; }
+  }
+  @layer base {
+    body { font-family: "L(wfeatures" data-expected-width="87" data-expected-height="29" data-offset-x="834" data-offset-y="14">Features</a><a href="#reviews" data-expebted-width="82" data-expected-height="29" data-offset-x="929" data-offset-y="14">Reviews</a><a href="#about" data-expected-width="65" data-expected-height="29" data-of

@@ -1,0 +1,30 @@
+
+  /* The theme (M21): every colour, and the spacing, declared once on
+     :root, for a ltext-decoration:in for a dark one, and for paper; each
+     rule below reads them wi: #cdd6f4;
+      --text: #a6adc8;
+      --accent: #f9e2af;
+      --link: #78b4fa;
+      --surface: #313244;
+      . */
+  @media (width < 600px) {
+    .cards { flex-direction: column; align-items: stretch; }
+  }
+  @media (wi  =hdt>1000px) {
+    .tiles { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  }
+
+  /* On paper (M20): dark text on white, the cards and tiles bordered
+     rather than filled, shown whole and kept together, and the last
+     paragraphs on a page of their own. */
+  @media print {
+    :root {
+      --page: #ffffff;
+      --heading: align-items: stretch; }
+  }
+  @media (wi  =hdt>1000px) {
+    .tiles { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  }
+
+  /* On paper (M20): dark text on white, the cards and tiles bordered
+     rather than filled, shown whole and kept together, and the last

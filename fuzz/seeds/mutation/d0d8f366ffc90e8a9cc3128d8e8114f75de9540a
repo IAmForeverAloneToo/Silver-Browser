@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #fiv:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.a { width: 360px; grid-template-columns: 60px 60px; grid-template-rows: 20px; grid-auto-columns: 30px 50px; grid-auto-rows: 10px 30px; }
+.a > div:nth-child(1) { grid-column: 5; grid-row: 3; }
+.a > div:nth-child(2) { grid-column: -5; grid-row: -3; }
+.a > div:nth-child(3) { grid-column: 1; grid-row: 1; }
+.b { width: 360px;s="sb"></div><div class="r2"></div><div class="end"></div><div></div></div>
+</div>
+</body>
+</html>

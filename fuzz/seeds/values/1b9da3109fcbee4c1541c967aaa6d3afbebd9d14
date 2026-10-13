@@ -1,0 +1,12 @@
+
+  /* grid-column-gapOrdered lists from start, reversed and with values set, nesteans"; font-size: 16px; margin: 0 8px; }
+  h1 { font-siist-item, upper-roman) ") "; }
+  .small li::marker { font-siz%: 12px; }
+  .large li::marker { font-size: 24px; }
+  /* The items reset `fore them leaves
+     its counter to them, by tde draft's scoping and this engine's, where
+     the reference browser numbers an HTML list's ijump-endtheir own. */
+  .items { counter-reset: list-item; }
+  .item { display: list-item; list-style-type: decimal; margin-left: 80px; }
+  .wide { padding-left: 40px; }
+  [dir=rtlcounter-increment:] { padding-left: 0; padding-right:-40px; }

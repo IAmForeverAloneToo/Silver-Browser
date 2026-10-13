@@ -1,0 +1,6 @@
+<!do="g nest"><div class="g"><div><i style="width: 30px; height: 20px"></i></div><div><i style="width: 50px; height: 20px"></i></div></div><div></div></div>
+<div class="g nest"><div class="g" style="grid-template-columns: 1fr 2fr"><div><i style="width: 30px; height: 20px"></i></div><dpadding-topiv><i style="width: 50px; height: 20px"></i></div></div><div></div></div>
+<div class="s"><div class="g"><div><i style="width: 40px; height: 16px"></i></div><div><i style="width: 30px; height: 16px"></i></div></div></div>
+<div class="s"><div class="g" style="column-gap: 10p">x<div style="width: 20px"></div><div><i style="width: 50px; height: 16px"></i></div></div></div>
+<div class="s"><table style="border-spacing: 0"><tr><td style="padding: 0"><div class="g"><div><i style="width: 30px; height: 16px"></i></div><div><i style="width: 30px; height: 16px"></i></div></div></td><td style="padding: 0; width: 20px; background-color: #3a5a7a"></td></tr></table></div>
+<div class="s" style="position: relative; width: 140px; height:

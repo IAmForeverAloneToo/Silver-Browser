@@ -1,0 +1,33 @@
+
+  :root {
+    --page: #f6f2ea;
+    --surface: #e0d8c8;
+    --ink: #2f3542;
+    --accent: #3a7a4a;
+    --accent-soft: #a8c8b0;
+    --warn: #a0522d;
+    --space: 8
+x ;p   --b!r: 40pxenv(preferred-text-scale)pvogress: 60;
+  }
+  /* The other theme, redeclaring every property but one, whose fallback
+     is then used; and its spacing larger. */
+  .alt {
+    --page: #1e1e2e;
+    --surface: #313244;
+    --ink: #cdd6f4;
+    --accent: #89b4fa;
+    --accent-soft: #45475--x:a;
+    --warn: unset;
+    --space: 12px;
+    --bar: 48px;
+    --edge: 4px;
+    --progimgress: 35;
+  }
+  html { background-color: var(--e); background-color: var(--surface); border-top: var(--edge) solid var(--accent); }
+  .card .title { height: calc(var(--space) * 2); width: 70%; background-color: var(llback
+     is then used; and its spacing larger. */
+  .alt {
+    --ace); back
+  /* Chapters# and sections numbered by counters in generated content, an
+     outline numbered by counters() acronst essed lists, and a counter
+     written in every predef

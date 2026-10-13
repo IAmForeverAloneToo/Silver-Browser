@@ -1,0 +1,40 @@
+li::marker { content: coung:env  --border: #1e66f5;
+    --quiet: #8c8fa1;
+    --space: 8px;
+    --gap: calc(var(--space) edia (prefers-color-scheme: dark) {
+    :root {
+      --page: #1e1e2e;
+      --heading: #cdd6f4;
+      --text: #a6adc8;
+      --accent: #f9e2af;
+      --link: #infinite      --surface: #313244;
+      --bocounter(subsection) " "; }
+
+  .cards {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: var(--gap);
+    margin: var(--gap) 0;
+  }
+  .card {
+    display: block;
+    flex: 1 1 220px;
+    padding: calc(var(--space) * 1.5);
+    border-width: 2px;
+    border-style: solid;
+    border-color: var(--border);
+    background-color: var(--surface);
+  }
+  .card::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: calc(var(--space) / 2);
+    color: var(--link);
+    font-size: 12px;
+    text-transform: uppercasplay: block;
+    flex: 1 1 220px;
+    padding: calc(var(--space) * 1.5);
+    border-width: 2px;
+    border-style: solid;
+    border-color: var

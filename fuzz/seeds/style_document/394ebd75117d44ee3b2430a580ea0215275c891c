@@ -1,0 +1,13 @@
+<!DOCTYPE html>background-originvisibility: hidden scrlow: scroll; height: 300px;">
+  <p style="dispgcaption></figure>
+  <figure><img src="photos/hills-4.webp" alt="Hills"><figcaption>hills-4.webp, third</figcaption></figure>
+  <figure><div class="art d"></div><figcaption>repeating-radial-wradient again</figcaption></figure>
+  <figure class="spin"><img src="photos/spinner.gif" alt="A spinner"><figcaption>spinner.gif, third</figcaption></figure>
+  <figure><img src="photos/hills-2.jpg" alt="Hills"><figcaption>hills-2.jpg, third</figcaption></figure>
+  <figure><img src="photos/v.art { width: 290px; height: 193px; }
+  .a { background: linear-gradient(160deg, #264653, #2a9d8f 45%, #e9c46a); }
+  .b { background: radial-gradient(circle at 70% 40%, #f4a261, #e76f51 35%, #264653); }
+  .c { background: repeating-linear-gradient(45deg, #e9c46a 0 14px, #f4a261 14px 28px); }
+  .d { background: repeating-radial-gradient(circle at 50% 50%, #2a9d8f 0 10px, #e9f5f2 10px 20px); }
+  .spin { background-color: #f0ece2; }
+  .spin 

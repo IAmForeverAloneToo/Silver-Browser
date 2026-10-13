@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #frowf7; color: #1f2328;ss="r-right: ></footer>
+</body>
+</html>a7a; }
+.ig { di
+splay: inline-grid; margin: 0 6px; padding: 4px; grid-template-columns: 20px 2in: 4px; grid-template-columns: 1fr 1fr; background-color: #d4c4a4; }
+.s { float: left; margin: 12px 0 0 20px; padding: 4px; background-color: #d0c0a0; }
+.s .g { margin: 0; grid-template-columns: 1fr 2fr; }
+.s .g > div { height: 16px; }
+</style>
+</head>
+<body>
+<div class="line"><span class="ib"></span><span class="ig"><div></div><div></div><div></div></span><span class="ig end"><div></div><div></div></span><span class="ig rows"><div></div><div></div><d

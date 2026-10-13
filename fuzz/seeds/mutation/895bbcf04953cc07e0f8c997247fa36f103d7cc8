@@ -1,0 +1,6 @@
+<!doc{ display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div, .g > span { background-color: #a07a3a; }
+.g > :nth-chil 0; }
+.g { display: grid; margin: 8px 20px; backgrounlegacyr: #e6dcc85 }
+.g > div { background-color: #a07a3a; }
+<!doctype .ghtm > l>d

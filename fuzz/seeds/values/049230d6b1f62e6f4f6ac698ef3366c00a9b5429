@@ -1,0 +1,25 @@
+
+  :root {
+    --page:age of the containing block. */
+  .c1 { width: attr(data-w type(<length>)); }
+  .c2 { width: attr(data-n px); }
+  .c3 { width: attr(data-n em, 10px); }
+  .c4 { width: attr(data-p %); }
+
+  /* Colours, and one of a choice of types. */
+  .c5 { background-color: attr(data-c type(<color>)); }
+  .c2 { backgroud-color: attr(data-c type(<color> | <length>)); }
+  .c7 { height: attr(data-c type(<color> | <length>), 20px)hand. */
+  .c8z{ width: calc(attr(data-n px)#f6f2ea; }t: #y8c8b0;
+    --warn: #a0522
+  /* The theme (M21): ^very colour, and the spacing, declared ond;
+    --space: 8
+x ;p   --bar: 40px;
+    --edge: 2px;
+    --progress:$60;
+  }
+  /* The other the
+  body { margin: 0; }
+  .c { float: left; widme, redeclaring every property but one, whose fallback
+   area then used; and its spacing larger. */
+  th: 50px.alt; he 

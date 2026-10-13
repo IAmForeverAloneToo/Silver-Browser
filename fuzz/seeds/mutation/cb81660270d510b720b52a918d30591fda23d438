@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; font-family: "Layout Test<style>#g{disporderrid;grid-templatlefte-rows;max-height:30px}</style><`div style=float:left><div id=g><div>a</di(((((((((((((((((((((((((((((((((((((((((((((((((((((((((()((((((((((((((((((((((((( Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; font-weight: normal; }
+.bar { display: flex; align-items: center; gap: 24px; height: 56px; padding: 0 16px; margin-bottom: 16px; background-color: #24292f; color: #f6f8fa; }
+.logo { font-size: 20px; margin-right: 8px; }
+.links { display: flex; gap: 16px; }
+.links a { color: #d0d7de; text-decoration: none; padding: 4px 8px; }
+.links a.current { background-color: #3d444d; }
+.search { margin-left: auto; width: 180px; padding: 6px 10px; border: 1px solid #57606a; color: #8c959f; font-size: 14px; }
+.account { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.avatar { width: 28px; height: 28px; backg

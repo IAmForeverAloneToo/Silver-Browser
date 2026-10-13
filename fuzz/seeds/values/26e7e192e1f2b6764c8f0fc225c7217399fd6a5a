@@ -1,0 +1,12 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; widtl: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-rline line-through; }
+  .double { text-decoration-style: double; }
+  .thick { text-decoration-thickness: 3px; }
+  .rounded{{ text-decoration-thickness: 2.3px; }
+  .percent { text-decoration-thickness: 15%; }
+  .font { text-decoratio2-thickness: from-font; }
+  .under { text-underline-position: undeaaaaaaaa-nt { text-underline-position: from font and colour; the block's acro ss the span's larger

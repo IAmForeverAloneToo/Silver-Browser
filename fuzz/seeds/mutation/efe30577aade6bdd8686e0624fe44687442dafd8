@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+<title>Photo grid</title>
+<!-- M23.6's acceptance page: photos in PNG, JPEG, GIF and WebP, an
+     animated GIF, and gradients, in a grid several viewports tall.
+     benches/images.rs scrolls it at sixty frames a second. -->
+<style>
+  html { background: repeating-linear-gradient(135deg, #f4efe6 0 12px, #efe8dc 12px 24px); }
+  body { margin: 0; font-family: sans-serif; color: #2f3640; }
+  header { height: 160px; padding: 32px 48px; box-sizing: border-box;
+           background: radial-gradient(ellipse at 20% 30%, #ffd6a5, #e07a5f 60%, #3d405b); color: #fffaf0; }
+  h1 { margin: 0 0 8px 0; font-size: 36px; }
+  main { display: grid; grid-template-columns: repeat(4, 290px); gap: 18px; padding: 24px 48px; justify-content: center; }
+  figure { margin: 0; background-color: #fffdf8; border: 1px solid #d8cfc0; }
+  figure img { display: block; width: 290px; height: 193px; object-fit: cover; }
+  figcaption { height: 68px; padding: 6px 10px; box-sizing: border-box; font-size: 13px;
+         

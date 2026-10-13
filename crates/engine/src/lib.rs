@@ -897,14 +897,14 @@ fn may_touch_images(change: &Change) -> bool {
 }
 
 /// Whether layout reads `change` whatever the styles: a change of the
-/// document's structure or text, of a table's spans (M22.4), or of what
-/// a form control shows (M26.7).
+/// document's structure or text, of a table's spans (M22.4), of what a
+/// form control shows (M26.7), or of a canvas's size (M33).
 fn read_by_layout(change: &Change) -> bool {
     match change {
         Change::AttributeChanged { name, .. } => {
             matches!(
                 name.as_str(),
-                "colspan" | "rowspan" | "span" | "src" | "alt"
+                "colspan" | "rowspan" | "span" | "src" | "alt" | "width" | "height"
             ) || layout::shown_by_controls(name)
         }
         _ => true,
@@ -6872,6 +6872,88 @@ mod tests {
              document.body.insertBefore(s, document.body.firstChild);",
         );
         engine.frame(200, 100);
+        let mut fresh = test_engine();
+        fresh.set_scripting(true);
+        if let Err(difference) = differential::compare_with_fresh(&mut engine, &mut fresh, 200, 100)
+        {
+            panic!("{difference}");
+        }
+    }
+
+    #[test]
+    fn a_canvas_drawn_in_view_compares_with_a_fresh_engine_by_its_bitmap() {
+        // A canvas's bitmap is no markup's: the fresh engine is given the
+        // engine's (found by dom_api at M33, a canvas drawn in view).
+        let mut engine = test_engine();
+        engine.set_scripting(true);
+        engine.load_document("<body style='margin: 0'>");
+        differential::run_script(
+            &mut engine,
+            "var c = document.createElement('canvas'); c.width = 20; c.height = 10; \
+             document.body.append(c); var x = c.getContext('2d'); \
+             x.fillStyle = 'red'; x.fillRect(0, 0, 5, 5);",
+        );
+        engine.frame(200, 100);
+        let mut fresh = test_engine();
+        fresh.set_scripting(true);
+        if let Err(difference) = differential::compare_with_fresh(&mut engine, &mut fresh, 200, 100)
+        {
+            panic!("{difference}");
+        }
+    }
+
+    #[test]
+    fn a_canvas_a_script_resizes_is_laid_out_again() {
+        // Its size is its attributes', no style's: a change of them is
+        // laid out (found by dom_api at M33; so since M30).
+        for (change, size) in [
+            ("c.height = 150", (15.0, 150.0)),
+            ("c.setAttribute('height', '150')", (15.0, 150.0)),
+            ("c.removeAttribute('height')", (15.0, 150.0)),
+            ("c.removeAttribute('width')", (300.0, 0.0)),
+        ] {
+            let mut engine = test_engine();
+            engine.set_scripting(true);
+            engine.load_document("<p>a</p>");
+            differential::run_script(
+                &mut engine,
+                "var c = document.createElement('canvas'); c.width = 15; c.height = 0; \
+                 document.body.append(c);",
+            );
+            engine.frame(64, 48);
+            differential::run_script(&mut engine, change);
+            engine.frame(64, 48);
+            let canvas = engine
+                .fragments(64.0)
+                .into_iter()
+                .find(|f| matches!(f.kind, layout::FragmentKind::Replaced(_)))
+                .expect("the canvas");
+            assert_eq!((canvas.w, canvas.h), size, "{change}");
+            let mut fresh = test_engine();
+            fresh.set_scripting(true);
+            if let Err(difference) =
+                differential::compare_with_fresh(&mut engine, &mut fresh, 64, 48)
+            {
+                panic!("{change}: {difference}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_frames_document_is_loaded_in_the_fresh_engine_before_it_is_drawn() {
+        // The fresh engine's frames load their documents again, at a
+        // poll, before it draws (found by dom_api at M33).
+        let mut engine = test_engine();
+        engine.set_scripting(true);
+        engine.load_document(
+            "<body style='margin: 0'><iframe style='border: 0' srcdoc=\"<body style='margin: 0'>\
+             <div style='width: 20px; height: 20px; background: red'></div>\"></iframe>",
+        );
+        while !engine.frames_settled() {
+            engine.poll_network();
+        }
+        let shown = engine.frame(200, 100);
+        assert_eq!(px(&shown, 200, 5, 5), [255, 0, 0, 255], "the frame's div");
         let mut fresh = test_engine();
         fresh.set_scripting(true);
         if let Err(difference) = differential::compare_with_fresh(&mut engine, &mut fresh, 200, 100)

@@ -1,0 +1,29 @@
+
+  :root {
+    --page: #f6f2ea;
+    --surface: #e0d8c8;
+    --ink: #2f3542;
+    --accent: #3a7a4a;
+    --accent-soft: #a8c8b0;
+    --warn: #a0522d;
+    --space: ;
+x ;p   --bar: 40px;
+    --edge: 2px;
+    --progress: 60;
+ aaaaaaaaaaaaa????????????????aaaaa-a: 1px; --} li { counter-increist-item 2m 2; } li { counter-in: .card .line { heightFFFFFFFFFFFFFFFt)); }
+  .badge.FFFFFFFFFFFFFFFFFFFFFFFFFF: var(--space); margin-top: var(--space); background-colt-style: upper-roman insideor: var(--accent-soft); }
+  .card .line.short { width: 50%; }
+
+  .progress { margin: 0 ca, and the spacing, declared once on
+     :root, for a light scheme, again for a dark one, and for paper; each
+     rule below reads them with var(). */
+  :root {
+    --page: #eff0f5;
+    --heading: #4c4f69;
+    --text: #5c5f77;
+    --accent: #df8e1d;
+    --link: #1e66f5;
+    --sl { grid-column: 1 / -1; color: var(--text); }
+  .lead::first-letter {
+    float: left;
+    font

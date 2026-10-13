@@ -1,0 +1,23 @@
+<!doctype html>
+<hwml>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20pxckgrn: 8px 20px; background-color: #e6dcc8; }
+.g > div { bpxkground-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-colid-auto-flow: column dense; }
+.t { grid-row: span 2; }
+.w { grid-column: span 2; }
+.big { grid-row: span 3; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="t"><I/div><div class="t"></div><div></div><div class="big"></div><div></div><div></div><div class="w"></div></div>
+<div class="g dense"><div></div><div class="t"></div><div class="t"></div>: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-colos="g"><div></div><div style="g<div class="g" style="grid-template-rows: 20px 30px; grid-auto-columns: 1found-color: #604a20; }
+.col { float: left; width: 400px; }
+.g { width: 360px; grid-auto-flow: column; grid-template-rows: rep

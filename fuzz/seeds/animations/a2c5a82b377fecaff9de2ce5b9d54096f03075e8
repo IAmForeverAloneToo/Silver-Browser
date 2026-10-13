@@ -1,0 +1,17 @@
+
+  /* The reference browser is given the engine's own font, whose
+     metrics place and size the markers. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; font-family: "Reference Sans"; font-size: 16px; }
+  body { margin: 0; }
+  .row { display: fle 10px; }
+  .cell { width: 200px; height: 24px; margin-right: 10px; background-color: #e0d8c8; }
+  /* A bar 40px wide of its own, its animation a second long, linear and
+     held half way unless it says otherwise. */
+  .bar { width: 40px; height: 24px; backgrounpx solid #d0d7de; background-color: #ffffff; }
+  /* A square ring, its top side the colour that turns. */
+  .spinner { width: 72px; height: 72px; margin: 0 auto 24px auto; border: 1px solid #d8dee4; border-top-color: #3a7a4a;
+             animation: spin 1s linear infinite; }
+  @keyframes spin { to { rotate: 360          animation: spin 1s linear infinite; }
+  @keyframes spin { to { rotate: 360deg; } }
+  /* T the interval it

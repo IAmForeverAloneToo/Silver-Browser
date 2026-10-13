@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f5n 2; }
+.big { grid-row: span W3; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div></div><div class="w"></div></div>
+<div class="g dense"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+.g { width: 360px; grid-auto-flow: column; grid-template-rows: est Sans"; font-size: 14px; }
+texta2ea { background-color: #f0f2f4; }
+.button.primary { border-color: #1f6f43; background-color: #2a8a55; coea>
+<p class="wide">The courier will call if nobody answe srthe door, and leave the parcel with a neighbour only if you allow it here.</p>
+<div class="actions"><span class="button">Back</span><span class="button primary">Continue to payment</span></div>
+</form>
+</div>
+</body>
+</html>

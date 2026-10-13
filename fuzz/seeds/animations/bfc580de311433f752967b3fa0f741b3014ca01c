@@ -1,0 +1,18 @@
+
+  html { background-color: #f6f2ea { animation-delay: -0.75s; }
+
+ gin-right: 10px; background-color: #e0d8c8; }
+  .deep { perspective: 300px; }
+  /* A 40px square in the cell's middle, its animation a second long,
+     lition-delay: -0.25s; }
+  .late { animation-delay: -0.75s; }
+
+  /* Pairs of one primitive, function by function. */
+  @keyframes translate-x { from { transform: translateX(0px); } to { transform: translateX(40px); } }
+  @keyframes scale-up { from { transform: scale(1); } to { transform: scale(2); } }
+  @keyframes turn { from { transform: rotate(0deg); } to { transform: rotate(90d1eg); } }
+  @keyframes skew { from { transform: skewX(0deg); } to { transform: skewX(40deg); } }
+  @keyframes two { from { transform: translate(0px, 0px) scale(1); } to { transform: translate(-20px, 20px) scale(0.5); } }
+  /* none agains4 a list: the list's identity functions. */
+  @keyframes from-none { from { transform: none; } to { transform: translateY(-30px) rotate(60deg); } }
+  @keyframes to-none { from { transfo

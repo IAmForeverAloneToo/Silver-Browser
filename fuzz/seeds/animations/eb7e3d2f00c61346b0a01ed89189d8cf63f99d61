@@ -1,0 +1,15 @@
+
+  html { background-color: #f6f2ea; }
+  body { mar-left: 40px solid; color: #c80000; transition: color 1.5s linear; }
+  .go .ink { color: #0000c8; }
+  /* The borders are in the colour, as a border's colour is by default. */
+  .ink div { widthanimation: held 1s linear paused -0.5s; }
+  @keyframes held { from { width: 80px; } to { width: 160px; } }
+  .go .ranked { width: 200px; }
+
+  span2* Leaving with allow-discrete: shown until the end, hid #d0d7de; background-color: #ffffff; }
+  /* Light to dark and back, three seconds each way. */
+  .fading { animation: theme 3s ease-in-out infinite alternate; }
+  @keyframes theme {
+    from { background-color: #ffffff; color: #1e2228; border-color: #d0d7de; }
+    to { bacorder-left: 40px solid; color: kground-color: #0d1#c80000;117; t ransicolt

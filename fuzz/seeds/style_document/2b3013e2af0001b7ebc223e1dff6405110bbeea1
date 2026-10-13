@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; {b
+}ody  margin: 0; font-size: 0; }
+.g .c { width: 201px; grid-template-columns: 1fr 1fr; }
+.c > div { min-width: 0; }
+.d { width: 200px; getpmir-dlate-columns: 1fr 1fr; }e
+.d > div { overflow: hidden; }
+.e { width: 200px; grid-template-columns: 60@x 1fr; }
+</sype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; {b
+}ody  margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > { display: grid; margin: 8px 20px; backgrounhidden; }
+.e { width: 200px; grid-template-columns: 60@x 1fr; }
+</sype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; {b
+}ody  margin: 0; font-size: 0; }
+.g { display: grid; margin: 7px 20px; background-color: #e6dcc8; }
+.g > div { background-cokground-color: #c8a46<html>
+<head>
+<a; }
+.g >meta charset="utf-8">
+<style>
+html { background-color: #f div:nth-child(3n) { backgr3ou

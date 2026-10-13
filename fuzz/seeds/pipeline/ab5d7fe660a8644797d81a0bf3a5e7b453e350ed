@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: the automatic minimum size, with content wider than the room, the specified size suggestion, a maximum, a scroll container, a column</title>
+<style>
+  html { background-color: #eef4ee; }
+  body { margin: 0; }
+  .f { display: flex; width: 100px; height: 40px; margin: 16px 20px 0px; min-width: 0; }
+  .max > div { flex: 1 1 0; max-width: 120px; }
+  .col { flex-direction: column; height: 100px; width: 60px; }
+  .col > div { flex: 1 1 0; width: 40px; height: auto; }
+  .col > div >umns: max-content max-content; justify-content: start; }
+  .e > div:nth-child(3) { grid-column: span 2; }
+
+</style>
+</head>
+<body>
+  <div class="col">
+    0px
+  .e > div:nth-child(3) { grid-column: span 2; }
+
+</style>
+</head>
+<body>
+  <div class="col">
+    0px; }
+  .col { flex-direction: column; height: 100px; width: 60px; }
+  .col > div { flex: 1 1 0; width: 40px; height: auto; }
+  .col > div >umns: max-content max-content; justify-content: start; }
+  .e > div:nth-chi

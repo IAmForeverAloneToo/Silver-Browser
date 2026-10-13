@@ -1,0 +1,18 @@
+<!doctay1) { grid-column: 5; grid-row: 3; }
+.a >clamp(none, -gap) { grid-column: -5; grid-row: -3; }
+.a > div:nth-child(3) { grid-column: 1; grid-row: 1; }
+.b { width: 360p''''''''''''''''x; grid-auto-flow: column; grid-tp''''''''''''''''x; grid-auto-flow: div></div></div>
+<div class="g c"><div></div><div></div><div style="height: 30px"></div><div></div></div>
+</div>
+</emplate-rows2 20px 20px; grid-auto-columns: 40px 70px; }
+.c { width: 360px; grid-tempjustify-contentlate-columns: 50px; grid-auto-rows: minmax(10px, auto) 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div></div>
+<div class="g b"><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div>
+<div class="g c"><div></div><div></div><div style="height: 30px"></div><div></div></div>
+</div>
+</body>
+</html>

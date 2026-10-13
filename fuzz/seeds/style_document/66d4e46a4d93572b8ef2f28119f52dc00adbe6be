@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #ground-color: #eeeadf; font-size: 12px; color: #6b6556; }
+</style> 0displa
+</head>
+<body>
+<div class="page">
+<header><h1>The Allotment</h1><span class="tagline">Ngrid-row-gapotes from plot nineteen<h</span></header>
+<nav><a>This week</a><a>Sowing</a><a>Harvest</a><a>Pests</a><a>Tools</a><a>Archive</a></nav>
+<main>
+<h2>Beans at last</h2>
+<p>After three weeks of cold nights the runner beans have finally found the canes, and the in-y: gheight: 600px; }
+header { grid-area: header; display: grid; grid-template-columns: auto 1fr auto; align-items: baseline; gap: 16px; padding: 14px 20px; background-color:}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}} #2f3b2c; color: #f4f1e8; }
+header h1 { font-sizettom: 10px; }
+main x { margin-bottom: 12px; }
+aside { grid-area: aside; padding: 20px 16px; border-left: 1px solid #e2ddd0; }
+a

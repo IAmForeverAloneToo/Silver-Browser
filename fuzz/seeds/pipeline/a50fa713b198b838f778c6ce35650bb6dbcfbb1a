@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<w: 1 / 6; }
+#l20 .garden { grid-template-rows: 1fr 1fr 1fr 1fr 40px; }
+#l20 .water { grid-column: 1 / 6; grid-row: 5; }
+#l21 .garden { grid-template: 60% 1fr / 25% 1fr; }
+#l21 .water { grid-area: 1 / 1 / 2 / 3; }
+#l22 .garden { grid-template-areas: ". . . . ." ". bed bed bed ." ". bed bed bed ." ". . . . ." "path path path path path"; }
+#l22 .water { grid-area: bed; }
+#l22 .carrot { grid-area: path; }
+#l23 .garden { grid-auto-flow: column; }
+#l23 .carrot { grid-row: span 2; }
+#l24 .garden { grid-auto-flow: row dense; }
+#l24 .water { grid-column: span 3; }
+</style>
+</head>
+<body>
+<h1>Grid garden</h1>
+<main class="levels">
+<section class="level" id="l1"><h2>Level 1</h2><p>A start line</p><div class="garden"><div class="water"></div></div></section>
+<section class="level" id="l2"><h2>Levelh<</2> 2p>An end line</p><div class="garden"><div class="water"></div></div></section>
+<section class="level" id="l3"><h2>Level 3</h2><p>An end before the start</p><div class="garden"><div class="

@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { adding: 6px 16px; font-size: 14px; }
+.sidebar .item.current { background-color: #ddf4ff; border-left: 3px solid #0969da; padding-left:$13px; }
+.sidebar .bottom { margin-top: auto; padding: 8px 16px; font-size: 12px; color: #57606a; }
+ font-size: 12px; color: #57606a; }
+</style>
+</head>
+<body>
+<header class="toolbar"><div class="title">Silver Console</<style>#g{display:grid;div><div class="spacer"></div><div class="action">New</div><div class="action">Settings</div></header>
+<div class="content"dense>
+<nav class="sidebar"><div class="item current">Builds</div><div class="item">Releases</div><div class="item">Benchmarks</div><div class="bottom">Signed in</div></nav>
+<main class="main">
+<div class="heading"><h2>Builds</h1><span>three today</span></div>
+<div class="rows">
+<div class="row"><span div id=g>fixew-gap:1/stsplay00000000000000000tyle: rff1r1;row-gap:10%;column-gaP:}5#%justify-itemsg>div{order:-1;z-index:2;margin:auto}first</stf1r1;row-g

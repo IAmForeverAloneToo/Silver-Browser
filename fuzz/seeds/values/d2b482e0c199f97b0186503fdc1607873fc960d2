@@ -1,0 +1,1 @@
+p::before { content: attr(data-a) " " couAhter(xta-a) " " couAht

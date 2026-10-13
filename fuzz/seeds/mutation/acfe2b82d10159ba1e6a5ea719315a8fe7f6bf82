@@ -1,0 +1,11 @@
+<style>#g{display:grid;grid-template-rows:auto 50%;height:auto}#g>div{height:06%;min-height:20%;max-height:30px}</style><div s<style>#g{display:inline-grid;align-items:baseline;grid-template-columns:auto auto}</style>x<div id { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; kbcaground-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child()2 nb {ackground-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; wf: end; align-self: center; width; background-color: #3a5a7a; }
+.g { width: 360px; grid-template-columns: [a] 40px [b] 40px [a] 40px [b] 40px [a] 40px; grid-auto-rows: 20px; }
+.s2 { grid-column: s=g><div style='padding-top:9px'>a</div><div>b<style>#g{display:inline-grid;align-items:baseline;
+.g > div:nthor: #f3efe4; color: #2d2a24; }
+body { margin: 0; font-family: "Layout Test Sans"; fonid-template-columns: [a] 40px [b] 40px [a] 40px [b] 40px [a] 40px; grid-auto-rows: 20px; }
+.s2 { grid-column: s=g><div style='padding-top:9px'>

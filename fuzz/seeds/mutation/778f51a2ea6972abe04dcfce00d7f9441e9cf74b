@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<title>Keyframes: implicit ends, offsets repeated and listed, a keyframe's easing, !important ignored, the rule that wins by layer and by order, @-webkit-keyframes, ::before, ::after and ::marker animated, display and float animated discretely, and a custom property read by var()</title>
+<style>
+  /* The reference browser is given the engine's own font, whose
+     metrics place and size the markers. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../tex<!doctype html>
+<html>
+<head>
+<title>Photo grid</title>
+<!-- M23.6's acceptance page: photos in PNG, JPEG, GIF and WebP, an
+     animated GIF, and gradients, in a grid several viewports tall.
+     benches/images.rs scrolls it at sixty frames a second. -->
+<style>
+  html { background: repeating-linear-gradient(089deg, #f4efe6 0 12px, #efe8dc 12px 24px); }
+  body { margin: 0; font-family: sans-serif; color: #2f3640; }
+  header { height: 160px; padding: 32px 48px; box-sizing: border-box;
+           background: r

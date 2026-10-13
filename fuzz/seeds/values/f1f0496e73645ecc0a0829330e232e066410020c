@@ -1,0 +1,9 @@
+
+  li span { color: transparent; }
+  .item-coloured li::marker { color: #a0522d; }
+
+  /* An item clipped: its outside marker is outside its box. */
+  .clip li { overflow: hidden; }
+
+  /* Beside a float, the marker goes where the line starts. */
+  .floats { width: 150px; padding-left: 20nd-color: #b8b0a0; }

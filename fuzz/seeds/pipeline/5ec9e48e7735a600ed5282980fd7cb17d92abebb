@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0;a; }
+.g > div:nth-child([[[[[[[2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.g { width: 240px; grid-template-columns: repeat(4, 60px); grid-auto-rows: 20px; }
+.w { grid-column: span 3; }
+.t late: 60% 1fr / 25% 1fr; }
+#l21 .water { grid-area: 1 / 1 / 2 / 3; }
+#l22 .garden { grid-template-areas: ". . . . ." ". bed bed bed ." ". bed bed bed ." ". . . . ." "path path path path path"; }
+#l22 .water { grid-area: bed; }
+#l22 .carrot { grid-area: path; }
+#l23 .garden { grid-auto-flow: column; }
+#l23 .carrot { grid-row: span 2; }
+#l24 .garden { grid-auto-flow: row dense; }
+#l24 .water { grid-column: span 3; }
+</style>
+</head>
+<body>
+<h1>Grid garden</h1>
+<main class="levels">
+<section class="level" id="l1"><h2>Level 1</h2><p>A start lid-template-rows: 50px 50px; gap: 14px; }
+.p { grid-area: 1 / 1; margi

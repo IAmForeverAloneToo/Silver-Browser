@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<title>List markers: disc, circle and square, outside and inside, at two sizes, coloured by the item and by ::marker, beside floats, and clipped by the list item; the items' text transparent so that only the shapes are compared</title>
+<!-- The disc and the circle are where the reference browser draws them,
+     the same pixels inside, their edges anti-aliased by another
+     rasterizer: an edge pixel may differ by up to 36. -->
+<meta name="reference-edge-tolerance" content="36">
+<style>
+  /* The reference browser is given the engine's own font, whose
+     mex; padding-left: 20px; }
+  .floats i { float: left; width: 50px; height: 60px; background-color: #b8b0a0; }
+</style>
+</head>
+<body>
+  <ul class="disc"><li>xx</li><li>xx</li></ul>
+  <ul class="circle"><li>xx</li><li>xx</li></ul>
+  <ul class="square"><li>xx</li><li>xx</li></ul>
+  <ul class="disc inside"><li>xx</li><li>xx</li></ul>
+  <ul class="circle inside"><li>xx</li><li>xx</li></ul>
+  <u0 class="disc big"

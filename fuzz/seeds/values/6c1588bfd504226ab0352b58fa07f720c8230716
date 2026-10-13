@@ -1,0 +1,7 @@
+
+p { width: er:rom-font50px;
+    --gap: 10px;
+    --edge: 4px solid var(--other);
+    --chain-a: var(--chain-b);
+    --chain-b: var(--chain-c);
+    --chain-c: var(--ok);cing:* -1

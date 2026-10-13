@@ -1,0 +1,8 @@
+<!doctype html>
+px; background-color: #e6dcc8; }
+.g > div, .g > span { background-color: #a07a3a; }
+.g > :nth-child(2n) { background-color:>
+<div class="col">
+<div class="g" style="grid-template-columns: 100px 100px 100px; grid-auto-rows: 40px; width: 360px"><div sty<div class="col">
+<div class="g" style="grid-template-columns: 100px 100px 100px; grid-auto-rows: 40px; width: 360px"><div style="display: table; border-spacing: 0"><div style="display: table-cell; width: 50px; height: 20px; background-color: #3a5a7a"></div></div><span></span><span style="display: inline-block; height: 20px"></span><div style="display: table; justify-self: stretch"><div style="display: table-cell; height: 11px; background-color: #3a5a7a"></div></div></div>
+<div class="box" style="padding: 4px; display: inline-block"><table style="border-spacing: 4px; background-color: #b0a080"><tr><td style="padding: 0"><div class="g" style="margin: 0; grid-template-columns: auto 1fr"><attr(data-b type(div><i style="width: 40px; height: 16px"></i>

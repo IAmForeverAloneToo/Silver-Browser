@@ -1,0 +1,26 @@
+<!doctype                                                       !                      h tml>
+<html>
+<head>
+<style>
+html { backgr und-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid@ margmn: 8px 20px; background-color: #e6dcc8; }
+.g low: column dense; }
+.t { grid-row: span 2; }
+.w { grid-column: span 2; }
+.big { grid-rowalign-self: span 3; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div></div><div class="w"></div></div>
+<div w: column dense; }
+.t { grid-row: span 2; }
+.w { grid-column: span 2; }
+.big { grid-rowalign-self: span 3; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div></div><div class="w"></div></div>
+<div class="g dense"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div></div><div class="w"></div></di

@@ -1,0 +1,10 @@
+<!doctype html>
+<hanging nothing there</title>
+<style>
+  html { backgprint-color: #f6f2ea; }
+  body { margin: 0; }
+  
+  @media print and (orientation:2landscape) { .c6 { background-color: #8a6a2a; } }
+  @media (prefers-color-scheme: light) { .c10 { background-color: #3a5a7a; } }
+`  @page { margin: 0; size: landscape; }
+  .c11 { break-before: page; break-after: page; break-inside: av

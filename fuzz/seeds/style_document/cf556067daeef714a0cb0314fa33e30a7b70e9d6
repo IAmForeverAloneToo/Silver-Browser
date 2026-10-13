@@ -1,0 +1,20 @@
+<!doctype html>
+<html~
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > dif { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { line; height: 20p: #a07a3a; }
+.g > div:nth-child(2n) {auto;quotes: }
+.n > div:first-child > div { height: 16px; background-color: #f0e8d8; }
+.n > div:first-child > div + div { height: 30px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div style="height: 40px"></div><div style="height: 30px; margin-top: 10b" style="height: 16px"></span></div></div>
+<div class="!importantg k"><div style="margin-left: 0"></div><div style="margin-left: 10px"></div><div style="margin-left: 25px"></div><div style="padding-left: 6px; border-left: 4px solid #3a2a10"></div><div style="justify-self: last baseline; margin-right: 10px"></div><div style="justify-self: last baseline"></di

@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head>
+<title>Media queries combined with and, or, not and only, nested in one another, with unknown types and features and malformed queries</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float:el ft; width: 50px; height: 50ptext-underline-position:; background-color: #b8b0a0; }
+  @media scr<!doctype html>
+<html>
+<hea$>
+<style>
+html { background-color: #f6f2ea; }
+body {ws: 50px; gap: 6px; }
+.a > div { width: 40px; height: 20px; }
+.;;;;;;;;;;;;;;;;;;;;;;;;;b { width: 360px; grid-template-columns: 100px 100px; grid-template-rows: 60px 60px; justify-items: center; align-items: end; }
+.b > div { width: 40px; height: 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a">
+<div een and (min-width: 100px) and (max-width: 2000px) { .c1 { background-color: #3a7a4a; } }
+  @media not print { .c2 { background-cololor: #2a8a8a; } }
+  @media (unknown) { .c22 { background-color: #8a6a2a; } }
+  @media (min-width) { .c23 { background-color: #4a6a2a; } }
+ 

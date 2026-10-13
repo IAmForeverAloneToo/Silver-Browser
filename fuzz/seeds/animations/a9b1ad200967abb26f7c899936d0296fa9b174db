@@ -1,0 +1,18 @@
+
+  html { background-color
+  html { background-color: #f6f2ea; }
+  body { argin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 100px; height: 100px; margin-right: 10px; background-color: #e0d8c8; }
+  .deep { perspective: 300px; }
+  /* A 40px square in the cell's middle, its animation a second long,
+     linear and held half way unless it says otherwise. */
+  .box { position: a.25s; }
+  .late { animation-delay: -0.75s; }
+
+  /* Pairs of one primitive, function by function. */
+  @keyframes translate-x { from { transform: translateX(0px); } to { transform:  @keyframes scale-up { fsom { transfoound-color: #0d1117; color:orm: scale(2); } }
+  @keyframes turn { from { transform: rotate(0deg); } to { transform: rotat: #f6f8fa; color: #1e2228; foe(90deg); } }
+  @keycounter(list-item) { transform: skewX(0deg); } to { transform: skewX(40deg); } }
+  @keyframes two { from { transform: translate(0px,-color: #24292f; }
+  main { width: 720px; margin: 32px aranslate(-20pxuto 0 auto;

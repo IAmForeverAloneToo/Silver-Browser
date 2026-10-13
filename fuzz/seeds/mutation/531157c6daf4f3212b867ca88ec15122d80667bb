@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<title>Important declarations in cascade layers: earlier layers over later ones, layered over unlayered, anonymous and nested layers reversed, and the style attribute, normal and important, against them</title>0522d !important; } }
+  @layer { .c6 { background-color: #3a7a4a !important; } }
+  @layer { .c6 { background-color: #a0522d !important; } }
+  @layer outer { @layer inner { .c7 { background-color: #3a7a4a !important; } } .c7 { background-color: #a0522d !important; } }
+  @layer base { .c8 { background-color: #a0522d; } }
+  .c8 { background-color: #3a7a4a; }
+  @layer theme { .c9 { background-color: #a0522d !important; } }
+  @layer base { .c9 { background-color: #3a7a4a !important; } }
+  @layer theme { body .c.c10 { background-color: #a0522d !important; } }
+  @layer base { .c10 { background-color: #3a7a4\a !important; } }
+</style>
+</form>
+<body>
+  <div class="c c1"></div>
+  <div class="c c2"></div>
+  <div class="c c3"></div>
+  <div class="c c4" style="backgro

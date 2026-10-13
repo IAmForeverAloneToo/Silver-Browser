@@ -1,0 +1,21 @@
+
+  html { background-color: #f6f8fa; color: #1e2228; font-size: 16px; }
+  body { valuen: 0; }
+  header { height: 56px; background-color: #24292f; }
+  main { width: 720px; margin: 32px auto 0 auto; }
+  .card { margin: 0 0r: transparent; } }
+  .fade { animation-name: fade; }
+
+  /* An overshoot: linear(0, -0.5, 1.5, 1) over 3s, held at a third and
+     two thirds: a width of -50px is clamped to 0, one of 150px is not;
+     an opacity of 1.5 is 1, of -0.5 is 0. */
+  .o { animation-duration: 3s; animation-timing-function: linear(0, -05, 1.5, 1); animation-play-state: paused; }
+  .t1 { animation-delay: -1s; }
+  .t2 { animation-delay: -2s; }
+  @keyframes over { from { width: 0px; } to { width: 100px; } }
+  .over { animation-name: over; }
+  @keyframes opacity { from { opacity: 0; } to { opacity: 1; } }
+  .opacity { animationfinite alternate; }  .badge { width: 120px; margin: 6px 0 0-function: linear, ease; }
+  .go .each { height: 8px; }
+  /* Nk { width: 40px; }
+  #back { tr

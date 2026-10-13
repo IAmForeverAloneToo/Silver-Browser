@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-color-scheme" content="darred: prefers-color-scheme in plain, boolean, negated and combined queries, and a value it no longer has</title>
+<style>
+  html { backgrcoloror-scheme in plain, boolean, negated and combined queries, and a value it no longer has</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; he;ght: 50px; margin: 10px 0 0 10px; background-color: #[8b0a0; }
+  @media (prefers-color-scheme: dark) { .c1 { background-color: #3a7a4 }
+  @media (prefers-color-scheme: no-preference) {-color: #[8b0a0; }
+  @media (prefers-color-scheme: dark) { .c1 { background-col c7"></div>
+</body>
+</html>

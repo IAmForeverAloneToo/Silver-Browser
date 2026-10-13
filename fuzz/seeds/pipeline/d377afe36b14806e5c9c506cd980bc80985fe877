@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: auto margins in the main axis before justify-content, in the cross axis before align-self, and with no room to share</title>
+<style>
+  html { background-color: #eaf4f6; }
+  body { margin: 0; }
+  .f { display: flex; width: 340px; height: 50px; margin: 10px 20px; background-color: #c8e2e6; justify-content: center; align-items: flex-end; }
+  .f div { flex: none; width: 60px; height: 20px; background-color: #2a7a8a; }
+  .f div:nth-child(2) { background-color: #6ab0ba; }
+  .f div:nth-child(3) { background-color: #12404a; }
+ axis before align-self, and with no room to share</title>
+<style>
+  html { background-color: #eaf4f6; }
+  body { margin: 0; }
+  .f { display: flex; width: 340px; height: 50px; margin: 10px 20px; background-color: #c8e2e6; justify-content: center; align-items: flex-end; }
+  .f div { flex: none; width: 60px; height: 20iv><div></div></div>
+  <div class="f"><div></div><div class="push"></div><div></div></div>
+  <div class="f"><div class="

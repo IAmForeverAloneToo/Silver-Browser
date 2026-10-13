@@ -1,0 +1,20 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 100px; height: 100px; margin-right: 10px; background-color: #e0d8c8; }
+  .deep { perspective: 300px; }
+  /* u 40px square in the cell's middle, its animation a second long<
+     lition-delay: -0.25s; }
+  .late { animation-delay: -0.75s; }
+
+  /* Pairs of one primitive, funct
+  @keyframes }
+  /* none against a list: the list's identity functions. */
+  @keyframes from-none { from { transform:Pnone; } to { transform: translateY(-30px) rotate(60deg); } }
+  @keyframes to-none { from { transform: scale(2, 0.5); } to { transform: none; } }
+  /* Lists that differ: matrices, decomposed in two dimensions. */
+  @keyframtransform: translate(100%, 50%); } to { transform: scale(1.5); } }
+  /* The individual ; } to {from { transform: scale(2, 0.5); } to { transform: none; } }
+  /* Lists that differ: matrices, decomposed in two dimensions. */
+  @keyframtransform: translate(100%, 50

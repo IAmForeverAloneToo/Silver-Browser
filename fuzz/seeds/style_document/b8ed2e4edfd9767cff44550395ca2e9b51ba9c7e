@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-color-scheme" content="dark">
+<title>A dark colour scheme preferred: prefers-color-scheme in plain, boolean, negated and combined queries, and a value it no longer has</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+  @media (prefers-color-scheme: dark) { .c1 { background-color: #3a7a4a; } }
+  @media (prefers-color-scheme: light) { .c2 { background-color: #3a5a7a; } }
+  @media (prefers-color-scheme) { .c3 { background-color: #a0522d; } }
+  @media not (prefers-color-scheme: light) { .c4 { background-color: #6a4a8a; } }
+  @mcolor: #\6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.a { width: 360px; grid-template-columns: repeat(3, 40px 1fr); gri

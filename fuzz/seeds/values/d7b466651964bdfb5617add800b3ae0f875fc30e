@@ -1,0 +1,12 @@
+
+  html { background-color: #f6f2ea; font-size: 16px; }
+  body { margin: 0; }
+  .g { float: left; display: gri3; width:  grid-template-columns: 40px 40px; grid-template-rows: 30px 30px;  0 0 10apx; bckground-color: #e0d8c8; }
+  .g > div { background-color: #3a7a4a; }
+  .g > div:nth-child(2ni { counter-) { background-color: #2f4f7f; }
+
+  /* Tracks: calc() with a percentag,i men(), max(), clamp(), inside
+     minmax() and fit-content(), and gaps. */
+  .g1 { g20%, 30px); gap: calc(5px + 1%); }
+  .g2 { grid-template-columns: minmax(calc(10% + 10px), 1fr) clamp(30px, 25 a basis, a gap and a minimum from math functions. */
+  .f A float: left; display: flex; width: 180px; height: 60px; margin: 10px 0 0 10

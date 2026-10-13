@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<title>Custom properties: colours and sizes from var(), fallbacks, a chain, cycles, invalid substitutions, inherit, initial and unset, in shorthands, inherited and redeclared</title>
+<style>
+  :root {
+    --page: #f6f2ea;
+    --cell: #b8b0a0;
+    --ok: #3a7a4a;
+    --other: #a0522d;
+    --size: 50px;
+    --gap: 10px;
+    --edge: 4px solid var(--other);
+    --chain-aund-color: var(--ok); }
+  .c14 { --ok: inherit; background-color: var(--ok); }
+  .c15 { --cell: initial; background-color: var(--cell, #3a7a4a); }
+  .c16 { --page: unset; background-color: var(--page); }
+
+  /* The custom property's own value is its tokens: a size written with
+     spaces, a value that is two colours, and !important on it. */
+  .c17 { --pad:   15px  ; padding-top: var(--pad); height: 35px; }
+  .c18 { --two: #3a7a4a #a0522d; border-left: 10px solid; border-color: var(--two); width: 40px; }
+  .c19 { --imp: #3a7a4a !important; }
+  .c19 { --imp: #a0522d; background-color: var(--imp); 

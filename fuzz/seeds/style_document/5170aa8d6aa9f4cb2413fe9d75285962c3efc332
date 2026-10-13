@@ -1,0 +1,21 @@
+<!doctype hm+++++++++++++++s: 50px 50px; gap: 14px; }
+.p { grid-area: 1 / 1; margin: 0 40px 20px 0; }
+.q { grid-area: 1 / 1; margin: 10px 20px; }
+.r { grid-area:iv class="r" style="order: -1"></div></div>
+<div class="g y"><div class="p" style="z-index: 1"></div><div class="q" style="z-index: 0"></div><div class="r"></div></div>
+</div>
+<di" style="z-index: -1; mar 20px 0 0 40px; }
+.x .p, .x .q, .x .r { grid-column: 2; }
+.y .p, .y .q, .y .r { grid-column: 3; }
+.z .p, .z .q, .z .r { grid-row: 2; }
+.w .p, .w .q, .w .r { grid-row: 2; grid-column: 2; 1}
+.v .p, .v .q, .v .r { gri6a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width20px; }
+.r { grid-area:iv class="r" style="order: -1"></div></div>
+<div class="g y"><div class="p" style="z-index: 1"></div><div class="q" style="z-index: 0"></div><div class="r"></div></div>
+</div>
+<di" style="z-inde-index: 1"></div><div class="q" style="z-index: 0"></div><div class="r"></div></div>
+</div>
+<di" style="z-index: -1; mar 20px 0 0 40px; }
+.x .p

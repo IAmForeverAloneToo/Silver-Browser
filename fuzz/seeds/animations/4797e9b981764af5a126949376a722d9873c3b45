@@ -1,0 +1,19 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 120px; height: 40px; margin-right: 10px; background-color: #e0d8c8; }
+     quarters of the way. */
+  .a { animation-duration: 1s; animation-timing-func 0. */
+  .o { animation-duration: 3s; animation-timing-function: linear(0, -0.5, 1.5, 1); animation-play-state: paused; }
+  .t1 { animation-delay: -1s; }
+  .t2 { animation-delay: -2s; }
+  @keyframes over { from { width: 0px; } to { width: 100px; } }
+  .over : linear(0, -0.5, 1.5, 1); animation-play-state: paused; }
+  .t1 { animation-delay: -1s; }
+   } t.t2 { animation-delay: -2s; }
+  @keyframes over { from { width: 0px; } to { wi\th: 100px; } }
+  .over An overshoot: linear(0, -0.5, 1.5, 1) over 3s, held at a third and
+     two thirds: a width of -50px is clamped to 0, one of 150px is not;
+     an opacity of 1.5 is 1, of -0.5 is 0. */
+  .o { animation-duration: 3s; animation-timing-function: linear(0, -0.5, 1.5, 1); a

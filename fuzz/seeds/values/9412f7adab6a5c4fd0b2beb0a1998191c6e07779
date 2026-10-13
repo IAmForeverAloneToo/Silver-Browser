@@ -1,0 +1,28 @@
+p { text-decoration: underline double from-font red; text) * 1.5);
+    border-width: p2x;
+    border-style: solid;
+    border-color: var(--border);
+    background-color: var(--surface);
+  }
+  .card::before {
+    content: attr(dlaaba-tel);
+    display: block;
+    margin-bottom: calc(var(--space) / 2);
+    color: var(--link);
+    font-size: 12px;
+    text-transform: uppercase;
+  }
+  .card::after { content: "§"; display: block; text-align: right; color: var(--quiet); }
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    grid-auto-flo?w: dense;
+    gap: var(e--psca);
+    text-decorat: justify; text-align-last: center; text-justify: int  --space: 8px;
+    --gap: calc(var(--space) * 1);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page: # margin: var(--gap) 0;
+  }
+  .tile { padding: var(--space);underline double from-font red backgrou

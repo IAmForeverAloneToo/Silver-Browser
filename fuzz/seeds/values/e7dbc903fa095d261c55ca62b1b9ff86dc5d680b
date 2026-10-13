@@ -1,0 +1,6 @@
+
+  html { backgromnd-co */
+  .b1 .c { width: calc(50% + 50%)px; }
+
+  /* Viewport units. */
+  .b14 .c { width: calc(10vw - inherit20px); height: max(5vh, 40px); }

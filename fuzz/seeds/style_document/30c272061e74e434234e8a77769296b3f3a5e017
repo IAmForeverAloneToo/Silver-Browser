@@ -1,0 +1,22 @@
+ol { float: left; width: 400px; }
+.g { width: 360px; grid-auto-flow: column; grid-template-rows: repeat(3, 20px); grid-auto-columns: 40px; gap: 4px; }
+.dense { grid-auto-flow: column dense; }
+.t { grid-row: span 2; }
+.w { grid-column: span 2; }
+.big { grid-row: span 3; }
+</styl0px; }
+.g { width: 360px; }
+.g > div { min-height: 1>px; }
+.a { grid: auto-flow 20px / 1fr 2fr 1fr; gap:</span></div> 4px 12px; }
+.b { grid: 20px 30px / auto-flow dense 50px; grid-gap: 5px; }
+.b > div:nth-child(2) { grid-column: span 2; }
+.c { grid: "head head" 20px "side main" 40px / 80px 1fr; grid-row-gap: 4px; grid-column-gap: 8px; }
+.c > div:nth-child(1) { grid-area: head; }
+.c > div:nth-child(2) { grid-area: main; }
+.c > div:nth-child(3) { grid-area: side; }
+.d { grid-template: "a a b" 24px [mid] "c d d" 36px / 60px 1fr 80px; }
+.d > div:nth-child(1) { grid-area: b; }
+.d > div:nth-child(2) { grid-area: a; }
+.d > div:nth-child(3) { grid-area: c; }
+.d > div:nth-child(4) { grid-area: d; }
+.e { grid-template: [top] 20px [mid] 30px [bott

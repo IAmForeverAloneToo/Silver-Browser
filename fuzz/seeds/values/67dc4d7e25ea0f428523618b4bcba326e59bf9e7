@@ -1,0 +1,16 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; backgrc(1% * infinity); margin-left: calc(NaN * ensvf(ae-area-inset-top), 00%, none) max(1zpx, 2%) min(3px, 4%ounset-top,n in a wide one.!*/
+  @medcalc(Naspan1px); padding: clamp(1px, 50%, none) maia (width < 600px) {
+    .cards { flex-direction: column; align-items: stretch; }
+  }
+  @media (width >= 1000px) {
+    .tiles { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  }
+
+  /* On paper (M20): dark text on white, the card }
+  .c7 { teBBBBBBBBBBBBBBBBBBBBBBBBBBBBnothing, 30px); }
+
+  /* The text scale is 1. */
+  .c11 { width: calc(env(preferred-text-scale, 2) * 25px); }

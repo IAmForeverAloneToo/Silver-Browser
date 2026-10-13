@@ -1,0 +1,20 @@
+p { text-devar(--a)coration: underline double from-font redd6f4;
+   :root { --x: var(--y) ; --y: v   --text: #a6adc8;
+      --accent: #f9'2af;
+      --link;lisd; text-underline-mffset: calc(0em - 2px); t); }
+  vfs } li { counter-increist-item 2; nderte-columns: minmax(calc(10% + 10px), 1fr) clamp(30px, 25%, 50px) 1fr; grid-template-rows: 1fr; column-gap: max(4px, 2%); }
+  .g3 { grid-template-columns: fit-content(calc(20% + 4px)) 1fr; grid-template-rows: 50px 40px; }
+  .g3 > div:first-chilinheritth: 80px; }
+  .g4 ound-color:lif6f2ea; }
+chilinheritth: 80px; }
+  .gm, ".") " "; } ol { counter-reseT: l-reseT: list-item 1; } li { counter######4 ou~d-color: #f6f2ea; }
+  body { margi/n: 0; }
+  .c { float: leftepeat(auto-fill, calc(15%3px+  )); griext-align: justify; text-align-last: center; text-justify: int  --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media (prefers-color-scheme: davrk) {
+    :rod-auto-rows: 40px; gap: 4px; }
+
+  /* An auto-sized grid: percentageot {
+      --page: #1e1e2e;
+    : #89b4faar

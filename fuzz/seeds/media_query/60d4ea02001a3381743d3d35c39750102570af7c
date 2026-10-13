@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head> .menu { display: flex; flex-wrap: wrap; gap: 8px; }
+    .menu a { display: block; padding: 4px 8px; }
+    .page { padding: 16px; }
+    .cards { display: flex; flex-direction: column; gap: 12px; margin-top: 16px; }
+    /* A medium window: the header in a row, the cards side by<!doctype html>
+<html>
+<head>
+<meta name="reference-color-sdisplaycheme" content="dark">
+<title>A dark colour scheme preferred: prefe side. */argin: 10px 0 0 10px; background-color: #b8b0a0;11111111111111111111111111111111111111111111rs-color-scheme in pltle>A dark colour scheme preferred: prefers-color-scheme in plain, boolean, negated and combined queries, and a value it no longer has</title>
+<style>
+  html { background-@olor: #f6f2ea;1111111111111111111111111111111 }
+  @media screen and (m }
+  bin-width: 100px) and (max-width: 2000px) { .c1 { background-color: #3a7a4aody { margin: 0; }
+  .c { float: left; widt; } }
+  @media nh: 50pxot pre first layer: over e; hve

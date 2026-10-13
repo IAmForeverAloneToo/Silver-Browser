@@ -1,0 +1,7 @@
+<ont-size: 16px; }
+h1, h2, h3, p { margin: 0; font-weight: normal; }
+html, body { height: 100%; }
+body { display: flex; flex-direction: x; background-colass="content"dense>
+<nav class="sidebar"><div class="item current">Builds</div><div class="item">Releases</div/footer>
+</body>
+</html>

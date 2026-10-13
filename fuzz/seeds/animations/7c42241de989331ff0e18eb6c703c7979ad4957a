@@ -1,0 +1,22 @@
+
+  html { background-color: #f6a7a4a; animation: grow 1s linear paused; }
+  @keyframes grow { from { width: 40px; } to { width: 200px; } }
+
+  /* Before the active interval, a second's delay away. */
+  .before { animation-delay: 1s; }
+  /* After it: two seconds in, a second-long animation is over. */
+  .after { animation-delay: -1s; }
+  .none { animation-fill-mode: none; }
+  .forwards { animation-fill-mode: f]orwards; }
+  .backwards { animation-fill-mode: backwards; }
+  .both { animation-fill-mode: both; }
+  /* No iteration at all, filled forwards, at its start. */
+  .zero { animation-iteration-count:und-color: #f6a7a4a; animation: grow 1s linear paused; }
+  @keyframes grow { from { width: 40px; } to { width: 200px; } }
+
+  /* Before the active interval, a second's delay away. */
+  .before { animation-delay: 1s; }
+  /* After it: two seconds in, a 5s; }
+  .normal { animation-direction: noralm; }
+  .reversergin: 0 0 12px 0; font-size: 24px; text-align: center; }
+  p { margin: 0 0 12px 0; line-height:[24p<ol rever

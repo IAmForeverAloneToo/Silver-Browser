@@ -1,0 +1,14 @@
+
+  /* Justified paragraanimation-durationnes and the lines before forcedd by counters: 1., 1.1 and so on. */
+  body { counter-reset: section; }
+  h2 { coune-text-decoration-style:counter-reset: subsection; }
+  h3 { counter-increment: subsection; }
+  h2::before { content: counter(section) ". "; }
+  h3::before { content: counter(section) "." counter(subsection) " "; }rds {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flsplay: block;
+    flex: 1 1 220px;
+    paddi  + left; } .right { text-align: right; } .center { text-align: center; }
+  ul { width: 420px; text-align: right; }
+  li { list-style-type: none; r-

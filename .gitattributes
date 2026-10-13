@@ -1,0 +1,2 @@
+# Fuzz seeds are inputs byte for byte: never converted, never diffed.
+fuzz/seeds/** binary

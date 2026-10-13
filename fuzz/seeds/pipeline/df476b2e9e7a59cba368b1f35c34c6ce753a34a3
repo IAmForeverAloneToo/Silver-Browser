@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; auto-family: "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; font-weight: normal; }
+.bar { d[splay: flex; align-items: center; gap: 24px; height: 56px; padding: 0 16px; margin-bottom: 16px; background-color: #24292f; color: #f6f8fa; }
+.logo { font-size: 20px; margin-right: 8px; }
+.links { displaydisplay: flex; gap: 16px; }
+.links a { color: #d0d7de; text-decoration: none; padding: 4px 8px; }
+.links a.current { background-color 1fr; }
+#l21 .water { grid-area: 1 / 1 / 2 / 3; }
+#l22 .garden { grid-template-areas: ". . . . ." ". bed bed bed ." ". bed bed bed ." ". . . . ." "path path p<h2>Level 3</h2><p>An end b.water { grid-column: 4 / 6; }
+#l8 .water { grid-column: 2 / span 3; }
+#l9 .water { grid-row-start: 3; }><span>maintainer</span></diml>

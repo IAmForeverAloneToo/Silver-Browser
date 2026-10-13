@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; auto-family: "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; font-weight: normal; }
+.bar { display: flex; align-items: center; gap: 24px; height: 56px; padding: 0 1tion>The harbour at dawn<span>June 4</span></figcaption></figure>
+<figure class="wide"><div class="photo"></div><figcaption>The whole bay from the lighthouse, wide enough for two columns<span>June 5</span></figcaption></figure>
+<figure><div class="photo"></div><figcaption>Nets<span>June 5</span></figcaption></figure>
+<figure class="tall"><div class="photo"></div><figcaption>The cliff path, which runs dow>
+<nav class="links"><a class="current" href="#">Overview</a><a href="#">Projects</a><a href="#">Releases</a><a href="#">Settings</a></nav>
+<div class="search">Search</div>
+</header>
+<nav class="tabs"><a class="current" href="#">Code</a><a href="#">Issues</a><a href="#">Pull requests</a><a href="#">Wiki

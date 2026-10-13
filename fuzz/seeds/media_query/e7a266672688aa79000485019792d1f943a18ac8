@@ -1,0 +1,1 @@
+@media (width > 50em) { @supnorts (display: grid) { @layer a.b { .x { color: red } } } } @page :first { size: A4 land33333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333scape; margigin: 10% } @im) supports(dispxay: grid) print;

@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margd-template-columns: 60px 1fr 60px; grid-template-rows: 30px 1fr 30px; gap: 6px; }
+.g > .a { position: absolute; background-color: #3a5a7a; }
+.g > .a:nth-child(2n) { background-color: #7a9aba; }
+.g > .a:nth-child(3n) { background-color: #1a2a3a; }
+.outer { position: relative; margin:`8px 20px; padding: 6px; width: 340px; background-color: #d4c4a4; }
+.outer > .g { position: static; margin: 0; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="grid-area: 1 / /1"></div><div style="grid-area: 3 / 3"></div>
+<div cln: 0; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="grid-area: 1 / /1"></div><div style="grid-area: 3 / 3"></div>
+<div class="a" style="grid-area: 2 / 2 / 3 / 3;first top: 0; right: 0; bottom: 0; left: 0; margin: 6px"></div>
+<div class=right: 0; top: 0; height: 10px"></div>
+</div>
+</div>
+</body>
+</html>

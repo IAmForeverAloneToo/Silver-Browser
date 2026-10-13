@@ -1,0 +1,8 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; fo nt-size: 0; }
+.g { display: grid; mainputrgin: 4px 20px; background-color: #e6dcc8; }
+.g > div { background-coloutrgin: 4px 20px; background-color:

@@ -1,0 +1,11 @@
+:root { --x: var(--y)initial ; --y: va
+  and. */
+  .c9 { width: calc(attr(data-n px) * 2 - 10px); }
+  .c9 { margin: attr(data-m type(<length>+)); }
+
+  /* Missing, empty,? or not of the type: the fallback, or the protf); }
+  body { font-family: "Print Test Sans"; font-size: 17ast: right; }
+  .last-center olor: #3a7a4a; }
+
+  /* Widths and heights against the box's definite 120px. */
+  .b1 .c { width: 5%, 50px) 1fr; grid-templamp(20px, te-row80%, 70pco; height: clamp(40px, 10s:%, 10

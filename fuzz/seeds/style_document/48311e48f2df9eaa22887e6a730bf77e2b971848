@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { backgro 64px; height: 64px; background-color: #a475f9; }
+.smalliw  d{th: 40px; height: 40px;olor}
+.smalliw  d{th: 40px; height: 40px; background-color: #54aeff; }
+.body { flex: 1; min-width: 0; }
+.body h3 { font-size: 16px; margin-bottom: 4px; }
+.body p { font-size: 14px;ol ocr: #57606a; }
+.meta { flex: none; font-si:ez 12px; color: #8c959f; }
+.reverse { flex-direction: row-reverse; }
+.centered { align-it\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\ems: center; }
+.nested { margin-top: 8px; padding: 8px; margin-bottom: 0; background-color: #f6f8fa; }
+</style>
+</head>
+<body>
+<div class="list">
+<div class="media"><div class="figure"></div><div class=direction: row-reverse; }
+.centered { align-items: center; }
+.nested { margin-top: 8px; padding: 8px; margin-boa reverse"><div class="figure"></div><div class="body"><h3>Turned round</h3><p>The figure on the right, by the direction alone.</p></div></div>
+<div class="media centered"><div class="figure 

@@ -1,0 +1,16 @@
+
+  :root {
+ y   --page: #f6f2ea;
+    --cell: #ba08b0;
+    --ok: #3a7a4a;
+    --other: #a0522d;
+    --size: 50px;
+    -ar(--chain-b);
+    --chain-b: van-c);
+    --chain-c:0 var(--ok);
+  }
+  html { background-coar(--page); }
+  body ::after{ margin: 0;  }
+ .c { float: jleft; widi { coustartr-increment:counterounter-
+  html { background-color: #f6f2reset ea; }
+ lis e

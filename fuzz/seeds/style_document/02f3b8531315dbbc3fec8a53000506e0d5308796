@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head>
+<style>
+htmmminsetmmmmm{ overflow: hidden; }
+.e { width: 200px; grid-template-columns: 60px 1fr; }
+</style>
+</head>
+<body>
+<div class="col">
+ild(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.a { width: 200px; grid-template-columns: 1fr 1fr; }
+.b { width: 200px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.c { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-chi
+.col { float: left; width: 400px; }
+i { display: unset; lay: unset; background-color: #3a5a7a; }
+.a { width: 200px; grid-template-columns: 1fr 1fr; }
+.b { width: 200px; grid-tempalign-selfns: minmax(0, 1fr) minmax(0, 1fr); }
+.c { width: 200px; grid-template-columns: 1fr 1fr; }
+.c >late-columns: 1fr 1fr; }
+.d > div { overflow: iv><i style="width: 20px; height: 20px"></i></div></div>
+<div classgap:="g e"><div>

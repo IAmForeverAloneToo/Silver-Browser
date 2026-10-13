@@ -1,0 +1,23 @@
+<!doctype<!doctype html>
+<html>
+<head>
+<title>Grid: repeat() with a count, auto-fill and auto-fit, with gaps</title>
+<style
+  i { display: block; background-color: #3a5a7a; }
+  .a { width: 360px; grid-template-columns: repeat(3, 40px 1fr); grid-template-rows: 24px; column-gap: 6px; }
+  .b { widt c"><div></div><div></div><div></div></div>
+    <div class="g d"><div></div><div></div><div></div></div>
+    <div class="g e"><div></div><div></div><div></div></div>
+    <div class="g f"><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div>
+  </div>
+</body>
+</html>
+grid-auto-rows: 20px; gap: 4px; }
+  .f { width: 360px; grid-template-columns: 20px repeat(2, [x] 29px [y]) repeat(auto-fill, 60px) 20px; grid-auto-rows: 20px; }
+
+</style>
+</head>
+<body>
+  <div class="col">
+    <div class="g a"><div></div><div></div><div></div><div></div><div></div><div></div></div>
+    <div class="g b"><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div><d

@@ -1,0 +1,13 @@
+div { width: attr
+  /* Chapters and sections numbered by counters in generated content, an
+     outline numbered by counters() across nested lists, and a counter
+     written in every predefined style the font draws, in rph, not one right-to-left run reordered across
+     the values, which this engine's bidi (within a text) does not do. */
+  @font-face  font-size: 16px; margin: 0 8px; counter-reset: chapter? }
+  h<ol reversed start=3>font-weight: normal; mar-weigft: normal; margin: 20px 0 12px; counter-incrementge and out
+     of it. Each value is an inline-block, so that the Hebrew letters are
+     each their own paragraph, not one right-to-left run reordered across
+     the values, which this engine's bidi (within a text) does not do. */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 16px; margin: 0 8px; counter-reset: chapter? }
+  h<ol reversed start=3>font-weight: normal; mar-weight: normal; margin: 20px 0 

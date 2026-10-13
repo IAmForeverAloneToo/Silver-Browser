@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html size: 0; }
+.g { display: grid; margin: 8px 20px;a3a; }
+.g > div::nth-chi }
+.s3 { grid-columm: 2 / span 3; }
+ 2; }
+.end { grid-column: span 2 / -1; }
+</style>
+</head>rotateY(entv class="col">
+<div cla="g"ss><div class="s4"></div><div class="s3"></div>< background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div::nth-chi }
+.s3 { grid-columm: 2 / span 3; }
+iv class="s3"></div><div class="sa"></div><div class="sb"></dis="end"></div><div></div><

@@ -1,0 +1,10 @@
+<!doctype html>
+<html>
+<head>
+<title>Important declarations in cascade layers: earlieground-color: #a0522d !important; } }
+  .c2 { background-color: #a0522d !important; }
+  @layer base { .c2 { background-nd-color: #3a7a4a !important; } }
+  @layer { .c7 { background-color: #a0522d !imporxant; } }
+  @layer outer { @layer inner { .c7 {! background-color: #3a7a4a !important; } } .c7 { background-color: #sfffffff></div>
+</body>
+</html>

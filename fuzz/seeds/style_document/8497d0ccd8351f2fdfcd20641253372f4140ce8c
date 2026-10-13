@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div self-end{ background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-colo 60px; grid-template-columns: 50% 25%; grid-template-rows: 50% 25%; }
+.e { width: 300px; grid-template-columns: min-content max-content auto; }
+</style>
+</hdiv><div></div></div>
+<div class="g c"><div><i style="width: 40px; height: 20px"></i></div><div><i<div class="g a"><div></div><div></div><div></div><div></div></div>
+<div class="g b"><div></div><div></div><div>iv><div></d/iv></div>
+<div class="g d"><div></div><div></div><div></div><div></div>ead>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div><div></div></div>
+<div class="giv></div><div></div></div>
+<div class="g e"><div><i style="width: 30px; height: 20px"></i></div><di width: 300px; grid-template-columns: min-content max-content auv>
+</div>
+</body>
+</html>

@@ -1,0 +1,1 @@
+@media (width > 50em) { @supports (display: g?rid) { @layer a.b { .x { color: red } } } } @page :first { size: A4 lthescape; margin: 10% } @import urlrgin: 10% } @im) supports(display: grid) print;

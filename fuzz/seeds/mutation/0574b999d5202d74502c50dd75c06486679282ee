@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head>
+<title>overflow: hidden clips at the padding edge</title>
+<style>
+  html { background-color: #efe9f4; }
+  body { margin: 0; }
+  .clip {
+    overflow: hidden;
+    width: 200px;
+    height: 100px;
+    padding: 10px;
+    border: 5px solidauto-rows: 20px; }
+
+</style>
+</head>
+<body>
+  <div class="col">
+    <div class="g a"><div></div><div></div><div></div><div></div><div></div><div></div></div>
+    <div class<!doctype html>
+<html>
+<head>
+<title>Keyframes: implicit ends, offsets repeated and listed, a keyframe's easing, !important ignored, the rule that wins by layer and by order, @-webkit-keyframes, ::before, ::after and ::marker animated, display and float animated discretely, and a custom property read by var()</title>
+<style>
+  /* The reference browser is given the engine's own font, whose
+     metrics place and size the markers. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6

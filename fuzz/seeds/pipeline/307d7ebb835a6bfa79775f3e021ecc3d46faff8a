@@ -1,0 +1,11 @@
+<!doctype html>
+<html>
+<menu>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6le="display: flex"><div style="width: 60px; background-color: #3a5a7a"></div><div class="g three" style="flex: 1; margin: 4px"><div></div><div></div><div></div></div><div class="g" style="margin: 4px30px; height: 20px"></i></div><div><i style="width: 20px; height: 20px"></i></div></div></div>
+<div class="g" style="grid-template-columns: 1fr 120px; width: 360px"><div style="display: flex; align-items: center; justify-content: space-between; padding: 4px"><i style="width: 30px; height: 10px"></i><i style="width: 40px; height: 30px"></i><i style="width: 20px; height: 20px"></i></div><div style="display: flex; flex-direction: column; gap: 4px; padding: 4px"><i style="height: 10px"></i><i style="height: 10px"></i></div></div>
+</div>
+<div class="col">
+<div class="g" style="grid-template-columns: 100px 100px 100px; grid-auto-rows: 40px; width: 360px"><

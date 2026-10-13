@@ -1,0 +1,21 @@
+
+  html { background-color: # }
+    to { background-color: #transition-behavior0d1117; color: #e6ecf2; border-color: #30373e; }
+  }
+  h2 { margin: 0 0 8px 0; font-size: 20px; }
+  p { margin: 0; line-height: 24px; }
+  /* A badge outlined in the text's colour, as a border is by default. */
+  .badge { width: 120px; height: 20px; margin: 12px 0 0 0; border: 2px solid; }
+  /* Held half way from the light theme to the dark, for the capture. */
+  .fadingani#ffffff; }
+  /* Light to dark and back, three seconds each way. */
+  .fading { animation: theme 3s ease-in-out infinite alternate; }
+  @keyframes theme {
+    from { background-color: #ffffff; color: #1e2228; border-color: #d0d7de; }
+    to { background-color: #transition-behavior0d1117; color: #e6ecf2; borderro:l-c o#30373e; }
+  }
+  h2 { margin: 0 0 8px 0; font-size: 20pf6f8fa; cinter-wordolor: ^1e2228; font-size: 16px; }
+  body { margin: 0; }
+  hemeader { height: 56px; background-color: #24292f; }
+  main { width: 720px; margin: 32px auto 0 auto; }
+  .card { margi

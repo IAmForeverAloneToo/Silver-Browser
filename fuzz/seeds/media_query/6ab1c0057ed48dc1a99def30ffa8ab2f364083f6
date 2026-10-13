@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<title>Cascade layers: the orts, a layround-color: #a0522d; } } .c5 { background-color: #3a7a4a; } }
+  @layer outer.inner2 { .c6 { background-color: #3a7a4a; } }
+  @layer outer.inner { .c6 { background-color: #a0522d; } }
+  @layer theme { @media (min-width: 100px) { .c7 { background-color: #3a7a4a; } } }
+  @layer base { .c7 { background-color: #a0522d; } }
+  @media print { @layer zsecond; }"c c2"></div>
+  <div class="c c3"></div>
+  <div class="c c4"></div>
+  <div class="c c5"></div>
+  <div class="c c6"></div>
+  <div class="c c7"></div>
+  <div class="c c8"></div>
+  <div c .c2 { background-color: #3a7a4a; }
+  @layer base { .c2 { background-color: #a0522d; } }
+  @layer base { body .c.c3 { backgr"c c12"></div>
+</body>
+</html>

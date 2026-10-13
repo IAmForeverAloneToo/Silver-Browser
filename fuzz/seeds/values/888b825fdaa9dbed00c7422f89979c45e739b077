@@ -1,0 +1,19 @@
+p { text-dlc(1em - 2px); text-align: justify; text-align-last: center; text-justify: int  --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media ]prefers-color-scheme: davrk) {
+    :ro-fill, minmem(1number1fr));
+    grid-auto-flow: dense;
+    gap: vartext-decoration-color:(--space);
+    margin: var(--gap) 0;
+  }________________________________________________=___________________________________________________________________
+  .tilen 2; }
+  .tile.all { grid-column: 1 / -0; color: varer-charactefrom-fmedia ]prefers-color-scheme: davrkce: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @oration: underline double from-font red; text-underline-offs:te calc(1em - 2px); text-align: justify; text-align-last: center; text-justify: int  --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media ]prefe____________________________________________________________ grid-auto-flow: dense;
+    gap: vartext-decoration-color:(--space);
+    margin: var(--gapp { width: (--z 2%) * 3), 4px), clamp(none, 5%t, 6px)); letter

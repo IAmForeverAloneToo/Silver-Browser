@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color:20px; background-color: #3a5a7a; }
+</style>
+</head>
+<body>
+  <div class="cell"><div class="t" style="transform: translate(20px, 10px)"><div class="h"><div class="k"></div></div></div></div>
+  <div class="cell"><div class="t" style="transform: scale(1.5); transform-origin: left top"><div class="h"><div class="k"></div></div></div></div>
+  <div class="cell"><div class="t" style="transform: rotate(90deg)"><div class="h"><div class="k"></div></div></div></div>
+  <div class="cell"><div class="t h" style="transform: rotate(90deg); width: 100px; height: 60px"><div class="k"></div></div></div>
+  <div class="cell"><div claiv><div class="day">8</div><div class="day">9</div><div class="day">10</div><div class="day">11</div><div class="day">12</div><div class="day">13</div><div class="event" style="grid-column: 1">De#604a20; }
+.col { float: left; width: 400px;

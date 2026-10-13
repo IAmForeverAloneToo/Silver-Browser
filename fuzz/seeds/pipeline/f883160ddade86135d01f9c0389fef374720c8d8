@@ -1,0 +1,19 @@
+<style>#g{display:grid;grid-template-columns:[a] 10px [b] auto [a] 1fr [b]}#g>*{grid-column:a 2/b -1}</style><div id=<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #ffffff; color: #1d2433; }
+body { margin: 0; font-family: "Layout Test Safs"; font-size: 12px; }
+h1, p { margin: 0; font-weight: normal; }
+.top { display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 8px; padding: 12px 16px; }
+.top h1 { font-size: 20px; }
+.top .button { padding: 3px 10px; border: 1px solid #cddnt.second { grid-row: 3; background-color: #2f9467; }
+.event.third { grid-row: 4; background-color: #b45a2c; }
+</style>
+</head>
+<body>
+<div class="top"><h1>September 2026</h1><span></span><span class="button">Previous</span><span class="button">Next</span></div>
+<div class="month">
+<div class="weekdays"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div>
+<div class="week"><div class="day other">31</div><div c

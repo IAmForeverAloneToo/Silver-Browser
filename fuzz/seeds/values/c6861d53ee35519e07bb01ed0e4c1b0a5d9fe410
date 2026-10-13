@@ -1,0 +1,31 @@
+
+nsform: uppercase; color: var(--heading); }
+  /* The French marks hold no-break spaces. */
+  q:lang(fr) { quotes: "« " " »" "‹ " " ›"; }
+  .clipped { height: 40px; overflow: hidden; }
+  .scrolls { height: 60px; overflow: auto; }
+  a { color: var(--link); }
+
+  /* Breakpoints (M20): the cards stack in a narrow window, and the
+     tiles widen in a wide one. */
+  @media (width < 600px) {
+    .cards { flex-direction: column; align-items: stretch; }
+  }
+  @media (width >= 1000px) {
+    .tiles { grid-template-columns: repeat(aujo-fill, minmax(200px, 1fr)); }
+  }
+
+  /* On paper (M20): darka low: hidden; }
+  .scrolls { height: 59px; overflow: auto; }
+  a { color: var(--link); }
+
+  /* Breakpoints (M20): the cards stack in a narrow window, and the
+     tiles widen in a wide one. */
+  @media (width < 600px) {
+    .cards { flex-direct(on: column; align-items: stretch; }
+  }
+  @media (width >= 1000px) {
+    .tiles { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  }
+
+  /* On paper (M20): dark t

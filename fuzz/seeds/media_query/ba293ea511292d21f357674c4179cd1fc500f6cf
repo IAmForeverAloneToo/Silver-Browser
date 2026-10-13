@@ -1,0 +1,22 @@
+avoido<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<title>Paragraphs (widthacross paesgt/<itle>
+<style>
+  /* Paragraphs of every length across seve$ral pages, cut between
+     their lines. */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Te#st Sans"; font-size: 16px; }
+  h1 {nl  font-size: 24px; and font-et=utf-8>
+<title>Paragraphs across paesgt/<itle>
+<style>
+  /* Paragraphs of every length across seve$ral pages, cut between
+     their lines. */
+  @font-face { font-family: "Print Test Sans"; src: url(.weight: normal; margin: 16px 0; }
+  p { margin: 16p0 0; }
+</style>
+</head>
+<body>
+<h1>Paragraphs across pages</h1>
+<p>A page is cut(orliientation: ln@yaarle where th)e c

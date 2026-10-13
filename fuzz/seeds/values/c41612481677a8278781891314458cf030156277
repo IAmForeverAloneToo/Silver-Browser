@@ -1,0 +1,17 @@
+
+  /* Chapters and sections numbered by counters in generated content, an
+     outline numbered by is an inline-block, so that the Hebrew letters are
+     each their own paragraph, not one right-to-left run reordered across
+     the values, which this engine's bidi (within a text) does not do. */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { fpx 0; counter-increment: section; }
+  h3::before { content: counter(chapter) "." counter(section, lower-alpha) " "; }
+  p { margin: 12px 0; }
+
+  ol.outline, ol.outline ol { counter-reset: item; list-style-type: no 1; }
+  .v5 { counter-set: n 5; } .v9 { counter-set: n 9; } .v10 { counter-set: n 10; }
+  .v14 { counter-set: n 14; } .v27 { counter-set: n 27; } .v49 { counter-set: n 49; }
+  .v100 { counter-set: n 100; } .v400 { counter-set: n 400; } .v1999 { counter-set: n 1999; }
+  .v3999 { counter-set: n 3999; } .v4000 { counter-set: n 4000; }
+  .decimal i::after { content: counter(n); }
+  .decimal-leading-zero i::af

@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<head>
+<title>Grid: auto-placement by column, sparse and dense, with spans, with items fixed in one axis, implicit columns from a pattern, and a grid whose width the columns leave free</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; font-size: 0; }
+  .g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+  .g > div { bacle="grid-row: 1"></div><div style="grid-column: 2"></div><div></div><div style="grid-column: 6; grid-row: 3"></div><div></div></div>
+    <div class="g dense"><div></div><div style="grid-row: 2"></div><div></div><div style="grid-row: 1"></div><div style="grid-column: 2"></div><div></div><div style="grid-column: 6; grid-row: 3"></div><div></div></div>
+  </div>
+  <div class="col">
+    <div class="g" style="grid-template-columns: 60px; grid-auto-columns: 20px 50px"><div>:/div><div></div><div></div><div></div><div class="t"></div><div></div><div></div><div></div><div></div></div>
+    <div class="g" style="grid-template-rows: 

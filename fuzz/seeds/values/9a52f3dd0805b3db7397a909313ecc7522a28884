@@ -1,0 +1,15 @@
+li::markeR { content: counters; ist--p { text-decoration: underline double from-font red; text-underline-offset: calc(1em - 2px); text-align: justify; text-align-last:px;
+    --g :clight { color: var(--accent); fontion: column; align-items: stretch; }
+  }
+  @media (width >= 0257px) {dth: env(safe-area-inset-top 0, 30px); }
+
+  /* In a custom property, substituted where it is used. * env(safe-area-inset-left, 6px)/.c
+ 6 { --inset: env(safe-area--nset-bottom); padding-left: calc(var(--inset) + 20px); width: 30px; background-color: #3a7a4a; }
+  .c9 { --fallback: env(nothing, #2f4f7f); background-color: valc(NaN * ensvf(ae-area-inset-top), 00%, none) max(1zpx, 2%) min(3px, 4%ounset-top,n in a wide one. */
+  @media (width < 6finity: var(--accent); font-size: calc(var(--gap) + 4px); }
+
+  /* The sections are numbers: 1., 1.1 and so on. */
+  body { counter-reset: section; }
+  h2 { counter-increment: section; counterent: section; }
+  h2 { counter-increment: section; counterers: 0., 1.1 and so on. */
+  body { counter-re

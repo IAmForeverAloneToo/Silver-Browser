@@ -236,3 +236,24 @@ path = "fuzz_targets/input.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "referrer"
+path = "fuzz_targets/referrer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hsts"
+path = "fuzz_targets/hsts.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "frames"
+path = "fuzz_targets/frames.rs"
+test = false
+doc = false
+bench = false

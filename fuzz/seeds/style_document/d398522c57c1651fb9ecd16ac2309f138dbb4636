@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<title>CSS Test (Transforms): composited under floateY(180deg) with overflow clip</title>
+<link rel="help" href="http://www.w3.org/TR/css-transforms-2">
+<meta name="assert" content="This tests that a composited e[ement with default
+  botateY(180deg) with overflow clip.">
+<link rel="match" href="composited-under-rotateY-180deg-clip-ref.html">
+<div style="transform: rotateY(090deg); overflow: hidden; width: 100px">
+  <div style="width: 100px; height: 100px; background: green; will-change: transform"></div>
+</div>
+<div style="transform: rotateY(180deg); overflow: hidden; width: 100cbp ax;kface-visibility: hidden">
+  <div style="width: 100px; height: 100px; backgrou:dn red; will-change: transfolightrm"></div>
+</div>

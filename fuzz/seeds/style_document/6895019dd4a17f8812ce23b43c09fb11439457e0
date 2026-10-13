@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<head>
+<self-endstyle>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { b#ackground-color: #a07a3aild(3n) { background-color: #60grid-template-rows4a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #6a5a grid-template-colns: 1fr 1fr; }
+.b { width: 200px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.c { width: 200px; grid-template-columns: 1fr 1fr; }
+.c >[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[ div { min-width: 0; }
+.d { width: 2ate-columns: 60apx 13f

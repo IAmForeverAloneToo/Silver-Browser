@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: wrap-reverse, the lines from cross-end, flex-start and flex-end turned round with them, start and end not, align-content with them</title>
+<style>
+  html { background-color: #f6eef6; }
+  body { margin: 0; }
+  .f { display: flex; flex-wrap: wrap-reverse; float: left; width: 150px; height: 160px; margin: 20px 0 0 30px; background-color: #e8d4e8; }
+  .f div { flex: none; width: 40px; height: 20px; margin: 0 5px 0 0; background-color: #7a3a7a; }
+  .f div:nth-child(3n+2) { background-color: #ba7aba; }
+  .f div:nth-child(3n) { background-color: #4a1a4a; height: 30px; }
+  .col { flex-direction: column; width: 160px; height: 150px; }
+  .col div { width: 20px; height: 40px; margin: 0 0 5px 0; }
+  .col div:nth-child(3n) { width: 30px; height: 40px; }
+</style>
+</head>
+<body>
+  <div class="f"><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div>
+  <div class="f" style="align-content: flex-start"><div></div><div></div><div></div><di

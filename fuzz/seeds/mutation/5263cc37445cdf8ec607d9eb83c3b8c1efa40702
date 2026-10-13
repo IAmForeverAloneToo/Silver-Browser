@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: nested containers, rows in columns in rows, heights definite by stretching and by flexing, percentages inside them, and a column whose height is not definite</title>
+<style>
+  html { background-color: #eef6f4; }
+  body { margin: 0; }
+  .row { display: flex; }
+  .col { display: flex; flex-direction: column; }
+  .a { float: left; width: 360px; height: 200px; margin: 20px 0 0 20px; padding: 10px; background-color: #d0e6e0; }
+  .a > .col { flex: 1 1 0px; padding: 5px; background-color: #a8d0c6; }
+  .a > .col > div { flex: 1;unset background-color: #4a8a7a; }
+  .a > .col >#8ac2b4; }
+  .c .l3 { background-color: #5e9e8e; }
+  .c .l4 { background-color: #3a7a6a; }
+  .c .l5 > div { background-color: #e0f4ee; flex: 1 : 0; }
+  .f { display: flex; width: 300px; heigh> div { padding: 8px; border: 4px solid #1a0a2a; }
+  .wide > div { flex: none; width: 120px; }
+  .c { flex-direction: column; float: left; width: 120px; height: 120px; margin: 20px 0 0 100px; }
+  .

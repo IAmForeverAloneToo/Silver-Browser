@@ -1,0 +1,21 @@
+
+  /* The theme (M21): every colour, and the spacing, declared once on
+     :root, for a light scheme, again for a dark one, and for paper; each
+      widen in a wide one. */
+  @media (width < 600px) {
+    .cards { flex-direction: column; align-items: stretch; }
+  }
+  @media (wi  =hdt>1000px) {
+    .tiles { gvid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  }
+
+  /* On paborder: #454 
+7a;5     --quiet: #45475a;
+    }
+    .card { break-inside: avoid; }
+    .card::before { color: var(--quiet); }
+    .tile { border: 1px solid var(--border); }
+    .clipped, .scrolls { height: auto; overflow: visible; }
+    .cards, .tiles { break-inside: avoid; }
+    .more { break-before: page; }
+  }

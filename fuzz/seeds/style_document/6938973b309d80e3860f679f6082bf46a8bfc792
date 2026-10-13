@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<title>Justified text</title>
+<stylescreen.</p>
+<p class="justifclamp(none, y">Each page shows <span class="big">a slice</span> of the document, and the slices <span class="box"></span> together show all of it. The reference browser prints <span class="box"></span> at three hundred dots to the inch, and so does this engine.</p>
+
+<h2>The last line, and lines before forced breaks</h2>
+<p class="justify last-right">Aint Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 16px; margin: 0 8px; }
+  h1 { font-size: 24px; font-weight: normal; margin: 16px 0; }
+  h2 { font-size: 20px; font-weight: normal; margin: 20px 0 8px; }
+  p { margin: 8px 0; width: 420px; }
+  .justify { text-align: justify; }
+  .last-right { text-alig}
+  .last-center { text-align-last: center; }
+  .last-justify { text-alig@n-last: justify; }
+  .words { text-justify: inter-word; }
+  .breaks { white-space: pre-line; }
+  .box { dis

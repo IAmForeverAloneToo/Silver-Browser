@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display backow: -3 /] -1; }
+.b { width: 360px; grid-template-areas: 'head d head' 'side main main' 'side foot foot'; grid-template-cu:mlsno 69px 1fr 1fr; grid-thead head' 'side main main' 'side foot foot'; grid-template-columns: 69px 1fr 1fr; grid-template-rows: 20px 50px 20px; gap: 4px; }
+.b > div:nth-child(1) { grid-area: head; }
+a -1; grid-row: 2; }
+.c > div:nth-child(3) { grid-column: -1 / -3; grid-row: 1; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div></div>
+<div class="g b"><div:</div><div></div><div></div><div></div></div>
+<div class="g c"><div></div><div></div><div></div></div>
+</div>
+</body>
+</html>

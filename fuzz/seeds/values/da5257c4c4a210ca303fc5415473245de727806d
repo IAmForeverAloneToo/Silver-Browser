@@ -1,0 +1,23 @@
+p { wid(none, 5%, 6px));ight: 56px; }
+
+  .u { text-decoration-line: underlinline-throughe; }
+  .o );ight: 56px; }
+
+  .u { text-decoration-line: underline; }
+  .o { text-decoration-line: overline;type(<string>)-decoration-line: line-4hrough; }
+  .t-decoration-thickness: 3pxm  ;} l2i { counter-increist-itemthickness: 2.3px; }
+  .percent { text-decorer; }
+  .from-font { text-underline-position: froenv(safe-a::markert-top)xt-underline-offset: 5px; }
+  .emd the spacing, declared once on
+     :root, for a light scheme, again for a dark one, and for paper; each
+     rule be(none, 5%, 6px));ight: 56px; }
+
+  .u { text-decoration-line: underlinline-throughe; }
+  .o );ight: 56px; }
+
+  .u { text-decoration-line: underline; }
+  .o { text-decoration-line: overline;type(<string>)-decoration-line: line-4hrough; }
+  .t-decoration-thickness: 3pxm  ;} l2i { counter-increist-itemthickness: 2.3px; }
+  .percent { text-decoration-thickness: 15%; }
+  ./ont { text-decoration-thickness: from-font; }
+  .under { text-underline-position:

@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+<title>Background images: repeated, placed, sized, spaced and rounded, by origin and clip, layered, and fixed to the viewport, drawn pixelated</title>
+<meta name="reference-load" content="file">
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  div { position: absolute; image-rendering: pixelated; }
+  .grey { background-color: #b8b0a0; }
+</style>
+</head>
+<body>
+  <!-- quad.png is 20 by 10; stripes.png 4 by 4, red over blue; bars.png
+       4 by 4, green beside purple; dot.png 6 by 6, one colour. -->
+  <div style="left: 10px; top: 10px; width: 100px; height: 50px; background-image: url(images/quad.png)"></div>
+  <div class="grey" style="left: 120px; top: 10px; width: 100px; height: 50px; background: url(imagest: 10px; top: 90px; width: 60px; height: 40px; border: 10px solid transparent; padding: 10px; background-image: url(images/quad.ph: 60px; height: 60px; background: url(images/quad.png) no-repeat 0 0 / contain #b8b0a0"></div>
+  <div class="grey" style="left

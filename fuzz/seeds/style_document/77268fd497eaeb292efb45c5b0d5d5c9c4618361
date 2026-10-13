@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { mlock; background-color: #0a5a7a; }
+.a { w%%%%%%%%%%%%%%%%%%%%%idth: 360px; s: 50px; gap: 6px; }
+.a > div { width: 40px; height: 20px; }
+.b { width: 360px; grid-template-columns: 100px 100px; grid-template-rows: 60px 60px; justify-items: center; align-items: end; }
+.b > div { width: 40px; height: 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a">
+<div style="margi display: inline-grid; margin: 8px 20px; background-color: #e6dcc8; vertical-align: top; }
+.ig > div { background-color: #a07a3[; }
+.ig > div:nth-child(2n) { background-@color: #c8a46a; }
+.a { grid-template-columns: 1fr 2fr; le="width: 30px; height: i20px"v></>

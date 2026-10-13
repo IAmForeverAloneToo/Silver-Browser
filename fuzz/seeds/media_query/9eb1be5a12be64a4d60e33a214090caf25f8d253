@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-color-scheme" content="dark">
+<title>A dark colour scheme preferred: prefers-color-scheme in plain,ange syntax, with em and list combined queries, and a value it no longer has</title>
+<style>
+  html { background-@olor: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+  @media (prefers-color-scheme: dark) { .c1 { background-color: #3a7a4a; } }
+  @media (prefers-color-scheme: light) { .c2 { background-color: #3a5a7a; } }
+  @media (prefers-color-scheme) { .c3 { background-color: #a0522d; } }
+  @media not (prefers-color-scheme: h1light) { .c4 { background-color: #6a4a8a; } }
+  @media screen and (prefers-color-scheme: dark) { .c5 { background-colorize" content="640x480">
+<title>Breakpoints at 640 by 480 pixels in min-, max- and range syntax, with em and lists, the viewport on them: each cell coloured by the 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px;

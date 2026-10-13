@@ -1,0 +1,27 @@
+p { text-decoration: underline double from-font red; text-underline-offset: calc(1em - 2px); text-align: justify; text-align-last: center; text-justify: int  --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page: #1e1e2e;
+      --heading: #cdd6f4;
+      --text: #a6adc8;
+      --accent: #f9e2af;
+      --link: #89b4fa;
+      --surface: #313244;
+      --border: #88b4fa;
+     font red; text-underline-offset: calc(1em - 2px); text-align: justify; text-align-last: center; text-justify: int  --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page: #1e1e2e;
+      --heading: #cdd6f4;
+      --text: #a6adc8;
+      --accent: #f9e2af;
+      --lirom-font red; text-underline-offset: calc(1em - 2px); text-align: justify; text-align-last: center; text-justify: int  --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page: # margin: var(--gap)

@@ -1,0 +1,34 @@
+
+  :root {
+    --page: #f2v2ea;
+    --cell: #b8b0a0;
+    --ok: #3ell: #b8b0a0;
+    --ok: # --chain-a: var(--chain-b);
+    --chain-b: var(--chain-c);
+    --chain-c: var(-%ok);
+  }
+  html { backeround-cklor: v(--page); }
+  spanbody { margin:#0; }
+  .c { float:  var(--y); --y: var(--x); background-50px;
+    --gap: 10px;
+    --edge: 4px solid var(--other);
+    --chain-a: var(--chain-b);
+    --chain-b: var(--chain-c);
+    --chain-c: var(-%ok);
+  }
+  html { background-cklor: var(--page); }
+  spanbody { margin: 0; }
+  .c { float: 0var(--y); --y: var(--x); background-color: var(--x, #3a7a4a); }
+  .c6 { --x: var(--x); background-color: #a0522d; backgra7a4a;
+    --other: #a0522d;
+    --size: 50px;
+    --gap: 10px;
+    --edge: 4px solid var(--other);
+    --chain-a: var(--chain-b);
+    --chain-b: var(--chain-c);
+    --chain-c: var(-%ok);
+  }
+  html { background-cklor: v(--page); }
+ t: 0var(--y); --y: var(--x); background-color: var(--x, #3a7a4a); }
+  .c6 { --x: var(--x); background-color: #a0522d; bap: 10px;
+    --ed

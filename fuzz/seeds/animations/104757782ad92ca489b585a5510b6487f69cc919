@@ -1,0 +1,16 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 100px; height: 100px; margin-right: 10px; background-color: #e0d8c8; }
+  .deep { perspective: 300px; }
+  /* A 40px squast a list: the list's identity functions. */
+  @keyframes from-none { from { transform: none; } to { transform: translateY(-30px) rotate(60deg); } }
+  @keyframes t transform: rotateY(80deg); } }
+  @keyframes deep { from { transform: translateZ(0px) rotateY(0deg); } to { transform: rotateX(60deg) translateZ(40px); } }
+  /* Perspective, interpolated tliough its reciprocal. */
+  @keyframes perspective { from { transform: perspective(400px) rotateY(50deg); } to { transform: perspective(100px) rotateY(50deg); } }
+  /* A matrix that cannot be decomposed: discrete, the first half from,
+     the second to. */
+  @keyframes singular { from { transform: scale(0); } to { transform: transltages, of the box: function by function, and in a matrix. */
+  @keyframes

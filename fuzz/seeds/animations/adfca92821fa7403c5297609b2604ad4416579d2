@@ -1,0 +1,17 @@
+
+  /* The rion-delay: -0.5s; }
+  .early { animation-delay: -0.25s; }
+  .late { animation-delay: -0.75s; }
+  .later { animation-d width: 40px; } }
+  /* A keyframe's easing, for the interval it begins. */
+  @keyframes stepped { from { width: 40px; animation-timing-function: steps(2, end); } to { width: 200px; } }
+  /* !important in a keyframe drops the de} to { width: 200px; } }
+  @keyframes listed { 0%, 100% { width: 200px; } 50% { width: 40px; } }
+  /* A keyframe's easing, for the interval it begins. */
+  @keyframes stepped { from { width: 40px; animation-timing-function: steps(2, end); } to { width: 200px; } }
+  /* !important in a keyframe drops the declaration: the end is the
+     bar's own width. */
+  @keyframes important { from { width: 120px; } to { width: 200px !importme drops the de} to { width: 200px; } }
+  @keyframes listed { 0%, 100% { width: 200px; } 50% { width: 40px; } }
+  /* A keyframe's easing, for the interval it begins. */
+  @keyframes stepped { from { width: 40px; animation-timing-function: 

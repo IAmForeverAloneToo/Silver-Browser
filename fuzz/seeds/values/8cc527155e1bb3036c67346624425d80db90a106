@@ -1,0 +1,19 @@
+
+  /* The refedisplayrence browser is given the engine's own font, whose
+     metrics place and size the shapes. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { bacfamily: "Reference Sans"; font-size: 16px; }
+  body { margin: 0; }
+  ul { float: left; widt1 h1:0px; margin: 10pnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnx 0 0 10px; padding: 0 0 0 40px; background-color: #,e0d8c8; colinklor: transparent; }
+  li { color: transparent; }
+  li::marker { color: #2f4f7f; }
+
+  .d { width: calc(min(51%, 100px) + max(1em, 10px) * 2); height: calc((100% - 20px) / 2); }
+
+  /* Against an indefinite height: a percentage in height makes it auto,
+     in min-height is of zero (its length counting), in max-height none. */
+  .b5 { height: auto; }
+  .b5 .c { width: 60px; height: calc(30px + 50%); min-height: calc(40px + 10%); }
+  .b15 { height: auto; 0%); height: max(30px, 25%); }
+  .b3 .c { width: clamp(20px, 80%, 70px); hein: 0; }
+  .c { gap:fl

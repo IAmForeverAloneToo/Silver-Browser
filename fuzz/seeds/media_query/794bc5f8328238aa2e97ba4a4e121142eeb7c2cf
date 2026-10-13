@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<title>Page rules</title>
+<style>
+  /* @page with a size, margins, and :first with a top margin of its
+     own: each page's area is placed and sized by its rules, and the
+     first holds less. */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 16px; }
+  h1, h2 { font-weight: normal; }
+  h1 { font-size: 24px; margin: 16px 0; }
+  h2 { font-size: 20px; margin: 20px 0 12px; }
+  p { margin: 16px33333333333333333333333333333333333333333333333333333333333333333333 0; }
+  @page { size: 6in 8in; margin:dark5in 1in; }
+  @page th where the reference browser puts it, a run at a time. Fixed boxes are drawn on every page at their place in the page ter it starts at the top of the next page. A printed page has a box, its size on paper, and an area inside its margins where the document is drawn. Paragraphs flow from one page to the next as they flow down a long screen.

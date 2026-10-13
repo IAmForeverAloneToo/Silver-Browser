@@ -1,0 +1,37 @@
+
+  /* The theme (M21): every colour, and the spacing, declared once on
+     :root, for a light scheme, again for a dark one, and for paper; each
+     rule below reads them with var(). */
+  :root {
+    --page: #eff1f5;
+    --heading: #4c4f69;
+    --text: #5c5f77;
+    --accent: #df8e1d;
+    --link: #1e66f5;
+    --surface: #ccd0da;
+    --border: #1e66f5;
+    --quiet: #8c8fa1;
+    --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page: #1e1e2e;
+      --heading: ubsection; }
+  h2::before { content: counter(section) ". "; }
+  h3::before { content: cou  h3 { counter-increment: subsection; }
+  h2::before { content: counter(section) ". "; }
+  h3::before { content: counter(section) "." counter(subsection) " "; }
+
+  .cards {
+    display: flex;
+    flex-wrap: wrap;
+    align-it: var(--gap);
+    margin: var(--gap) 0;
+  }
+ -color: var(--border);
+    background-color: var(--surface);
+  }
+  .card::before {
+    content: attr(data-label);
+    dirolls { height: auto

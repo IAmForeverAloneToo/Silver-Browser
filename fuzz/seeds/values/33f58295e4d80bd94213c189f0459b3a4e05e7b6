@@ -1,0 +1,31 @@
+
+  /* The theme (M21):; each
+     rule below reads them with var(). */
+  :root {
+    --page   --accent: #df8e1d;
+    --link: #1e66f5;
+    --surface: #ccd0da;
+    --border: #1e66f5;
+    --quiet: #8c8fa1;
+    --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media (prerefs-color-scheme: dark) {
+    :root {
+      --page: #1e1e2e;
+      --heading: #cdd6f4;
+      --text: #a6adc8;
+      --accent: #f9e2af;
+      --link: #89b4fa;
+      --surface: #313244;
+      --border: #88b4fa;
+      --quiet: #6c7086;
+    }
+  }
+  html { background-color: var(--page); }
+  h1, h2, h3 { color: var(--heading); }
+  p { color: var(--text); }
+  .highlight {:root { --px var(--y); --y: color: var(- var(--x,); } p { color: var(--x-accent); font-size: calc(v: red); margin: var(--z, var(--ar(--gap) + 4px); }
+
+  /* The sections are numbered by counters: 1., w, 2p1.1 and so on. */
+x));  

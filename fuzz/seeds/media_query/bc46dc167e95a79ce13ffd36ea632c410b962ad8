@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<tit 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+  @media screen and (min-width: 100px) and (max-width: 2000px) { .c1 { background-color: #3a7a4a; } }
+  @media not print { .c2 { background-color: #3a5a7a; } }
+  @media not screen { .c3 { background-color: #a0522d; } }
+  @media only screen { .c4 { background-color: #6a4a8a; } }
+  @media only print { .c5 { background-color: #2a8a8a; } }
+  @media all { .c6 { background-color: #8a6a2a; } }
+  @media tv { .c7 { background-color: #4a6a2a; } }
+  @media foo { .c8 { background-color: #8a3a5a; } }
+  @media (not (max-width: 100px)) { .c9 { background-color: #3a7a4a; } }
+  @media ((min-width: 100px) or (foo: bar)) { .c10 { background-color: #3a5a7a; } }
+  @media ((min-width: 100px) and (foo: bar)) { .c11 { background-color: #a0522d; } }
+  @media not (foo: bar) { .c12 { background-color: #6a4a8a; } }
+  @media (foo: bar), screen { .c13 { background-color: #2a8a8a; } }
+  @media (min-widt

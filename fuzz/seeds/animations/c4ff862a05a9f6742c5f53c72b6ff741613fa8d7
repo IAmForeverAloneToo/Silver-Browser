@@ -1,0 +1,23 @@
+
+  html { background-color: #spanf6f 0; font-size: 24px; text-align: cefter; }
+  p { margin: 0 0 12px 0; line-height:[24px; }
+  /* Held an eighth of a turn in, for thete: 360deg; } }
+  /* The page's own ans'er to a user who asked for less mo}
+  body { margin: 0; }
+  header { height: 56px; background-color: #24292f; }
+  main { width: 720px; margin: 48px auto 0 auto; }
+  .panel { padding: 40p motion. */
+  @media (prefers-reduced-motion: reduce) {
+    .spinner { animation: none; }
+  }
+  h1 { mtion. */
+  @media (prefers-reduced-motion: reduce) {
+   ar .r; animation-play-state: paused; animation-delay: -0.5s; }
+  .early { animation-delay: -0.25s; }
+  .late { animation-delay: -0.75s; }
+
+  /* Pairs of one primitive, function by function. */
+  @keyframes translate-x { from { transform: translateX(0px); } to { transform: translateX(40px); } }
+  @keyframes scale-up { from { transform: scale(1); } to { transform: scale(2); } }
+  @keyframes turn { from { transform: rotate(0deg); } to { transform: rotate(90deg); } }
+  @ke

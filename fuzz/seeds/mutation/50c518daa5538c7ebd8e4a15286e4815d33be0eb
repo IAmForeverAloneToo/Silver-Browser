@@ -1,0 +1,21 @@
+<style>#g{display:grid;grid:auto-flow 10px/r$epeat(3,1fr);place-content:end space-evenly;place-items:centetsr retch;height:100px}</style><div id=g><a>1</a><a>2</a><a>3</a><a>4<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g {color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+.g { width: 360px; grid-auto-flow: column; grid-template-rows: repeat(3, 20px); grid-auto-columns: 40px; gap: 4px; }
+.dense { grid-auto-flow: column dense; }
+.t { grid-row: span 2; }
+.w { grid-column: span 2; }
+.big { grid-row: span 3; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="t"></div><div class="t"></div><div></div><</a></div>div class="big"></div><div></div><div></div><div class="w"></div></div>
+<div class="g dense"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div></div><div class="w"></div></div>
+<div class="g"><div></div><di

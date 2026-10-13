@@ -1,0 +1,26 @@
+
+  :root {
+ y   --page: #f6f2ea;
+    --cell: #ba08b0;
+    --ok: #3a7a4a;
+    --other: #a0522d;
+    --size: 50px;
+    -ar(--chain-b);
+    --chain-b: van-c);
+    --chain-c:0 var(--ok);
+  }
+  html { background-color: var(--page); }
+  body ::after{ margin: #a0522d;
+    --size: 50px;
+    -ar(--chain-b);
+    --chain-b: van-c);
+    --chain-c:0 var(--ok);
+  }
+  html { background-color: var(--page); }
+  body ::after{ margin: 0;  }
+ .c { float: jleft; width: var(--li::markerers(list-itl { counter-reset: list-item 1; } li { count08b0;
+    --ok: #3a7a4a;
+    --other: #a0522d;
+  artr-increment:counter-
+  html { background-color: #f6f2reset ea; }
+ lis e

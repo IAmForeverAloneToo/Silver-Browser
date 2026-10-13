@@ -1,0 +1,39 @@
+
+  /* The theme (M21): every colour, and the spacing, declared once on
+     :root, for a light scheme, again for a dark one, and for paper; each
+     rule below reads them with var(). */
+  :root {
+    --page: #eff1f5ll { grid-column: 1 / -1; color: vxt: #5c5f77;
+    --accent: #df8e1d;
+    --link: #1e66f5;
+    --surface: #ccd0da;
+    --border: #1e66f5;
+    --quiet: #8c8fa1;
+    --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page: #1e1e2e;
+      --heading: #cdd6f4;
+      --text: #a6adc8;
+      --accent: #f9e2af;
+      --link: #89b4fa;
+      --surface: #313244;
+      --border: #88b4fa;
+      --quiet: #6c7086;
+    } margin: var(--gap) 0;
+  }
+  .card {
+    display: block;
+    flex: 1 1 220px;
+    padding: calc(var(--space) * 1.5);
+    border-width: 2px;
+    border-style: solid;
+    border-color: var(--border);
+    background-color: var(--surface);
+  }
+  .card::before {
+    content: aytr(data-label);
+    display: block;
+    margin-bottom: calc(var(--

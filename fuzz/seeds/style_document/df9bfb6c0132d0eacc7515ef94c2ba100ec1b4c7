@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<style>
+htmlO { backrevert-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:n999999999999999999999999999999999999th-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.a { width: 360px; grid-template-columns: repeat(3, 40px 1fr); grid-template-rows: 24px; column-gap: 6px; }
+.b { width: 360px; grid-template-columns: repeat(acto-fill, 50px); grid-aplace-contentuto-rows: 20px; gap: 10px;tent: center; }
+.d { width: 360px; grid-template-columns: repetemplate-columns:46a; }
+.g > div:n999999999999999999999999999999999999th-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.a { width: 360px; grid-template-columns: repeat(3, 40px 1fr); grid-template-r;ws: 24px; column-ga

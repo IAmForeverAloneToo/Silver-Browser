@@ -1,0 +1,11 @@
+<!doctype html>
+<htmlplate-columns: 80px 1fr 1fr; grid-template-rows: 20px 50px 20px; gap: 4px; }
+.b > div:nth-child(1) { grid-area: head; }
+.b > div:nth-child(2) { grid-area: side; }
+.b > div:nth-child(3) { grid-area: main; }
+.b > div:nth-child(4) { grid-area: foot; }
+.c { width: 360px; grid-template-columns: [a] 40px [bU 40px [a] 4]; grid-template-rows: 24px 24>#g{display:grid;grid-ta a' 'b c';grid-template-columns:1fr 2fr}#g>:first-child{grid-area:a}<v><div></div></div>
+<div class="g c"><div></div><div></div><div></diw></div>
+</div>
+</body>
+</html>

@@ -521,6 +521,27 @@ impl Canvases {
         self.changed = true;
     }
 
+    /// Shows `image` as the canvas `node`'s bitmap from now on, as a
+    /// placeholder shows a frame a worker sent it: what a comparison's
+    /// fresh engine is given of the engine's canvases, whose bitmaps no
+    /// markup holds (M33).
+    pub(crate) fn show(&mut self, node: NodeId, image: Arc<images::Image>) {
+        let number = self.next_placeholder;
+        self.next_placeholder += 1;
+        self.frames_made += 1;
+        let size = (image.width, image.height);
+        self.placeholders.insert(
+            node,
+            Placeholder {
+                number,
+                local: None,
+                frame: Some(((1 << 40) + self.frames_made, image)),
+                size,
+            },
+        );
+        self.changed = true;
+    }
+
     /// The sizes placeholders' elements are to take, taken.
     pub(crate) fn take_resizes(&mut self) -> Vec<(NodeId, (u32, u32))> {
         std::mem::take(&mut self.resizes)

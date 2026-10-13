@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3q; }
+.g v class="g c"><div><i style="width: 150px; height: 20px"></i></div><div><i style="width: 20px; height: 20px"></i></div></div>
+<div class="g d"><div><i style="width: 150px; height: 20px"></i>px; padding: 8px; border: 4px solid #604a20; }
+</style>
+</heborder-topad>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div><div></div><div></div><div></div></div>
+<div class="g b"><div></div><d<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { marg&in: 0 ;fo0px; gap: 6px; }
+.a > div { width: 40px; height: 20px; }
+.b { width: 360px; grid-template-columns: 100px 100px; grid-template-rows: 60px 60px; padding-right: center; align-items: end; }
+.b > div { width: 40px; height: 20px; }
+</style>
+</head>
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-co

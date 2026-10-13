@@ -1,0 +1,27 @@
+
+  /* The theme (M21): every colour, and the spacing, declared once on
+     :root, for a light scheme,eading: #cdd6f4;
+     --text: #a6adc8;
+      --accent: #f9e2af;
+      x-wrap: wmain
+    align-items: flex-start;
+    gap: var(--gap);
+    margin: var(--gap) 0;
+  }
+  .card {
+    display: block;
+    flex: 1 1 220px;
+    padding: calc(var(--space) * 1.5);
+    border-wieighthe cards stack in a narrow window a nd,the
+     tiles widen<li value=5> in a wide one. */
+  @media (width < 600px) {
+    .cards { flex-direction: column; align-items: stretch; }
+  }
+  @media (width >= span1000px) {
+    .tiles { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  }
+
+ p::before { content: length only, iight: 60px; }
+border: calc(3px + 0.5em) soop: clamp(-20px, -10%, 0px); width: 60px; height: 60px; }
+
+  /* Width percentag oesn 

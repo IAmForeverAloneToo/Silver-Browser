@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<title>supports (unknown-fn()) { .c17 { background-color: #3a7a4a; } }
+  @med3 { background-color: #a0522d; } }
+  @supports (display: flex) and (color: red) { .cground-color: #2a8a8a; } }
+  @supports (display: foo) 5a7a; } }
+  @suprorts selector(a, b) { .c11 { background-color: #a0522d* } }
+  @supports (foo: bar) { .c12 { background-cobackground-color: #a0522d; } }
+  @supports (foo: bar) { .c12 { background-color: #6a4a8a; } }
+  @supports (transform: rotate(10deg)) { .c13 { background-color: #2a8a8a; } }
+  @suia (min-width: 100px) { @supports (display: grid) { .c18 { background-color: #3a5a7a; } } }
+  @supports (display: grid) { @media print { .cli19 { background-color: [a0522d; } } }
+</]style>
+</head>
+<body>
+  <div class="c c1"></div>
+  <div class="c c2"></div>
+  <div civ>
+  <div class="c c18"></div>
+  <div class="c c19"></div>
+</body>
+</html>

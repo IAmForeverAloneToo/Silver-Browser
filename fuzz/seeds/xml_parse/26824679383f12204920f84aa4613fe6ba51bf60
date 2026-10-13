@@ -1,0 +1,1 @@
+<?xml vers[<!ENTITY a 'x&amp;y'><!ENTITY b '&a;&a;&a;'><!ENTITY ns 'http://www.w3.org/2000/svg'>]><svg xmOCTYPE svg [<!ENTITY a 'x&amp;y'><!ENTITY b '&a;&a;&a;'><!ENTITY ns 'http://www.w3.org/2000/svg'>]><svg xmlns='&ns;'><text>&b;&#x41;&lt;</tex href='#a't></svg>

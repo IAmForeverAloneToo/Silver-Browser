@@ -1,0 +1,14 @@
+<style>#g{display:grid;grid-template-columns:[a] 10px [b] auto [a] 1fr [b]}#g:*{grid-column:a 2/b -1}</style><div id=g><span<!doctype html>
+<html>
+<head>
+<tbodystyle>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display:  margin-right: 10p>ox; background-colne</spaor: #3a5a7a; }
+.three { grid-template-columns: 1fr 1fr 1fr; grid-auto-rows: 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="box"><divn><span>two words</sp class="fl"></div><dan></diiv class="g thrKe" style="margin: 0"><div></div><div></div><div></div><div></div></div></div>v>
+<div class

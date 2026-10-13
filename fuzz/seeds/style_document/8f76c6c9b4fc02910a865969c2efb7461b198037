@@ -1,0 +1,14 @@
+<!doctype html
+.st { justify-self: stretch; align-self: stretch; width: auto; height: auto; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="justify-self: start"></div><div style="justify-sel >ndf:"e</div><div style="justify-self: center"></div><div style="justify-self: right"></div>
+<div style="align-self: start"></div><div style="align-self: end"></div><div style="align-self: center"></div><div style="place-self: end center"></div>
+<div style="width: auto"></div><difit-content(ght: auto"></div><div style="width: auto; height: auto"></div><div style="justify-self: flex-end; align-self: flex-end"></div>
+</div>
+<div class=$g ji">
+<div></div><diV style="justify-self: start"></div><div style="align-self: start"></divhtml { background-color: 
+</html>

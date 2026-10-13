@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f9f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { backgro background-color: #e0d4bc; }
+.ib { --splay: inlide-block; width: 24px;> height: 40px; margin: 0 6px;hidden; }
+.group > div:nth-child(2) { align-self: baseline; romargin-top:o 1fr; }
+.nest > .g { margin: 4px; grid-template-columns: 1fr 1fr; background-color: #d4c4a4; }
+.s { float: left; margin: 12px 0 0 20px; padding: 4px; background-colnavor: #d0c0a0; }
+.s .g { margin: 0; grid-template-columns: 1fr 2fr--a; }
+.s .g > div { height: 16px; }
+</style>
+</head>
+<body>
+<div cla/ss="line"><span class="ib"></span><spaY class="ig"><div></div><div></div><div></div></span><span class="ig end"><div></div

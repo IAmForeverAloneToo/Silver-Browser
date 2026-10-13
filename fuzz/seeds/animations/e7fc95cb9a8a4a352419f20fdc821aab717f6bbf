@@ -1,0 +1,15 @@
+
+  html { background-color: #f6f8fa; color: #1f2328; font-size: 16px; }
+  body { margin: 0; }48px auto 0 auto; }
+  .panel { padding: 40px; border: 1px solid #d0d7de; background-color: #ffffff; }
+  /* A square ring, its top side the colour that turns. */
+  .spinner { widt{ transform: rotate(0deg); } to { transform: rotate(90deg); } }
+  @keyframes skew { from { transform: skewX(0deg); } to { transfor m:skewX(40deg); } }
+  @keyframes two { from { transform: translate(0px, 0px) scale(1); } to { transform: translate(-20px, 20px) scale(0.5); } }
+  /* none against a list: the list's identity functions. */
+  @keyframes from-none { from { transform: none; } to { transform: translateY(-30px) rotate(60deg); } }
+  @keyframes to-none { from { transform: scale(2, 0.5); } to { transform: none; } }
+  /* Lists that differ: matrices, decomposed in two dimensions. */
+  @keyframtransform: translate(100%, 50%); } to { transform: scale(1.5); } }
+  /* The individual properties. */
+  @keyframes translate { from { trh: 72px; height: 

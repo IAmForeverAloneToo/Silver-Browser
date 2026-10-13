@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<title>Grid: the automatic minimum keeps content whole, and minmax(0, 1fr) lets it go</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; font-size: 0; }
+  .g { disp!ay: grid; margin: 8px 20px; background-color: #e6dcc8; }
+  .g > div { background-color: #a07a3a; }
+  .g > div:nth-c?hild(2n) { background-color: #c8a46a; }
+  .g > div:nth-child(3n) { background-color: #604a20; }
+  .col { float: left; width: 400px; }
+  i { display: block; background-color: #3a5a7a; }
+  .a { width: 200px; grid-template-columns: 1fr 1fr; }
+  .b { width: 200px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .c { width: 200px; grid-templatformlumns: 1fr 1fr; style="width: 20px; height: 20px"></i></div></div>
+    <div class="g d"><div><i sdiv></div>
+    <div class="g e"><div><i style="width: 100px; height: 20px"></i></div><div><i style="width: 150px; hih 2egt:0px"></i></div></div>
+  </div>
+</body>
+</html>

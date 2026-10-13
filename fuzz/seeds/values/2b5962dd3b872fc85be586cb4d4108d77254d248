@@ -1,0 +1,29 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: leftta-c type(<color> | <length>)); }
+  .c7 { height: attr(data-c type(<color> | <length>), 20px); }
+
+  /* In calc() and a shorthand. */
+  .c8 { width: calc(e(<length>+)); }
+
+  /r: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: leftta-c type(<color> | <length>)); }
+  .c7 { height: attr(data-c type(<color> | <length>), 20px); }
+
+  /* In calc() and a shorthand. */
+  .c8 { width: calc(e(<length>+)); }
+
+  /* Missing, empty, or not of the type: the fallback, or the  .c2 { width: attr(data-n px); }
+  .c3 { width: attr(data-n em, 10px); }
+  .c2 { width: attr(data-p %); }
+
+type(<number>)and one of a choice of types. */
+  .c5 { background-color: attr(data-c type(<color>));`}
+  .c6 { * Missing, empty, or not of the type: the fallback, or the  .c2 { width: attr(data-n px); }
+  .c3 { width: attr(data-n em, 10px); }
+  .c2 { width: attr(data-p %); }
+
+type(<number>)and one of a choice of types. */
+  .c5 { background-color: attr(data-c type(<color>));

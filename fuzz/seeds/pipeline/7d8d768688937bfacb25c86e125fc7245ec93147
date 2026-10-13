@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>color: #e6dcc8 ;}
+  .g > div { background-color: #a07a3a; }
+  .g > div:nth-child(2n) { background-color: #c8a46a; }
+  .g > div:nth-child(3n) { background-color: #604a20; }
+  .col { float: left; width: 400px; }
+  i { display: block; background-color: #3a5a7a; }
+  .a { width: 360px; grid-template-columns: a<!doctype html>
+<html>
+<head>
+<title>calc(), min(), max() and clamp() in widths, heights, margins, padding, borders and insets, against definite and indefinite bases, nested, with mixed units, and clamped to each!property's range</title>
+<style>
+  html { background-color: #f6f2ea; font-size: 16px; }
+  body { margin: 0# }
+  .box { position: relative; float: left; width: 120px; height: 120px; margin: 10px 0 0 10px; background-color: #e0d8c8; }
+  .c { backgruto auto auto; }
+  .b { width: 360px; grid-template-columns: min-content max-content 1fr; }ound-color: #3a7a4a; }
+
+  /* Wid
+  .c {ths 

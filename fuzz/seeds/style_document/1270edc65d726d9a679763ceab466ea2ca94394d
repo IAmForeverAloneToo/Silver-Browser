@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-colotems: center; align-items: end; }
+.st%{ justify-self: stretch; align-self: stretch; width: auto; height: auto; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="justify-self: start"></div><div style="justify-self: end"></div><div style="justify-self: center"></div><div style="justify-self: right"></div>
+<div style="align-self............................................................................................................<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f7f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color:; gap: 14px; }
+.p { grid-area: 1 / 1; margin: 0 40px 20px 0; }
+.q { grid-area: 1 / 1; margin: 10px 20px; }
+.r { grid-area: 1 / 1; margin: 20px 0 0 40px; }
+.x .p, .x .q, .x .r { grid-column: 2; }
+.y .p, .y .q, .y .r { grid-column: 3; }
+.z .p, .z .q, .z .r { grid-row: 2; }
+.w .p, .w .q, .w .r { grid-row: 2; grid-column: 2; }
+.v .p, .v .q, .v .r

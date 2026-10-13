@@ -271,6 +271,7 @@ pub fn compare_with_fresh(
     // their transitions, and they are finished too.
     engine.frame(width, height);
     engine.finish_transitions();
+    settle_frames(engine);
     let pixels = engine.frame(width, height);
     fresh.set_document(Document::from_node(&engine.shown.document.to_node()));
     let order = tree_order(&engine.shown.document);
@@ -284,6 +285,7 @@ pub fn compare_with_fresh(
     }
     give_state(engine, fresh, &order, &fresh_order);
     fresh.frame(width, height);
+    settle_frames(fresh);
     // The same offsets: the document's, and each scroll container's,
     // node for node in tree order.
     fresh.set_scroll(engine.scroll_y());
@@ -352,6 +354,18 @@ pub fn compare_with_fresh(
     Ok(())
 }
 
+/// Polls `engine`'s network until its frames' documents have loaded, a
+/// hundred times at most (M33): a `srcdoc` loads at a poll, and the
+/// fresh engine's frames load again what the engine's did.
+fn settle_frames(engine: &mut Engine) {
+    for _ in 0..100 {
+        if engine.frames_settled() {
+            return;
+        }
+        engine.poll_network();
+    }
+}
+
 /// Every node of `document`'s tree, in tree order.
 fn tree_order(document: &Document) -> Vec<NodeId> {
     document.subtree(document.root()).collect()
@@ -381,6 +395,13 @@ fn give_state(engine: &Engine, fresh: &mut Engine, order: &[NodeId], fresh_order
         let _ = snapshot.set_state(fresh_node, document.state(node));
         if let Some(control) = document.control(node) {
             let _ = snapshot.set_control(fresh_node, control.clone());
+        }
+    }
+    // A canvas's bitmap, which no markup holds, is the engine's (M33:
+    // found by dom_api, a canvas drawn in view).
+    for (&node, &fresh_node) in order.iter().zip(fresh_order) {
+        if let Some(image) = engine.shown.scripts.canvas_image(node) {
+            fresh.shown.scripts.show_canvas(fresh_node, image);
         }
     }
     fresh.window_focused = engine.window_focused;

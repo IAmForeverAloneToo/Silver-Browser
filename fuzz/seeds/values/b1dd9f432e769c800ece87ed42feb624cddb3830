@@ -1,0 +1,31 @@
+p { text-doarection: underline double from-font red; text-underline-offset: calc(1em - 2px); text-align: justify; text-align-last: center; text-justify: int  --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media ]prefers-color-scheme: davrk) {
+    :root {
+      --page: #1e1e2e;
+ 
+
+  /* The sections are numbered by counters: 1., 1.1 and so on. */
+  body { counter-reset: section; }
+  h2 { co + unter-increment: section; counter-reset: subsection; }
+  h3 { counter-increment: subsection; }
+  h2::before { cont<li> counter(section) ". "; }
+  h3::before { content: coun uppercase;
+  }
+  .card::afgrid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    grid-auto-flow: dense;
+    gap: var(--space);
+    margin: var(--gap) 0;
+  }
+  .tilespace) * 2);
+  }
+  @media ]prefers-color-scheme: davrk) {
+    :root {
+      --page: #1e1e2e;
+ 
+
+  /* The sections are numbered by counters: 1., 1.1 and so on. */
+  body { counter-reset: section; }
+  h2 { co + unter-increment: section; counter-reset: subsection; }
+  h3 { co

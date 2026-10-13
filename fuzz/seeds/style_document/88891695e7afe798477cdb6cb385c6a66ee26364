@@ -1,0 +1,8 @@
+<!doalign-items: end; padding: 4px; height: auto; }
+.n > div:first-child > div { height: 16px; background-color: #f0e8d8; }
+.n > div:first-child > div + div { height: 30px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div style="height: 40px"></div><div style="heans"; font-n: 8pxsi ze: 1

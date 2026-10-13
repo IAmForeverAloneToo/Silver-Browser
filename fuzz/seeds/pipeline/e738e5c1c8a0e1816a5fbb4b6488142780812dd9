@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: overlapping items painted in order-modified document order, z-index on items that are not positioned, relative items, an item under its container's background</title>
+<style>
+  2a10; }
+  .d { background-color: #f0c8a0; }
+  .r { position: relative; }
+  .up { margin-top: -20px; }
+  .context { position: relative; z-index: 0; }
+</style>
+</head>
+<body>
+  <div class="f"><div class="a" style="order: 3"></div><div class="b" style="order: 1"></div><div class="c" style="order: 2"></div><div class="d" style="order: 0"></div></div>
+  <div class="f"><div class="a" style="z-index: 2"></div><div class="b"></div><div class="c" style="z-index: 1"></div><div class="d"></div></div>
+  <div class="f"><div class="a"></div><div cla>s="b r" style="top: 10px"></div><div class="c"></div><div class="d r" style="order: -2"></div></div>
+  <div class7"f"><div class="a"></div><div class="b up" style="z-index: -1"></div><div class="c"></div><div class="d"></div></div>
+  <div class=

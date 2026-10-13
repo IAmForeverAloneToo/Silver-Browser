@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-col:ro #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-coloont-size: 12px; color: #1d7a46; }
+.chart { grid-column: span 2; display: grid; grid-template-rows: auto 1fr; gap: 8px; }
+.chart .bars { display: grid; grid-template-columns: repeat(7, 1fr); align-items: end; gap: 6px; height: 120px; }
+.chart .b~ars div { background-color: #5b8fd6; }
+.list { grid-row: span 2; }
+.list p { padding: 6px 0; border-bottom: 1px solid #e7ebf0; }
+.table { grid-column: 21; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div class="s2"></div><div class="s3"></div><div class="sa"></div><div class="sb"></div><div class="r2"></div><div class="end"></div><div></div></div>
+</div>
+</body>
+</html>

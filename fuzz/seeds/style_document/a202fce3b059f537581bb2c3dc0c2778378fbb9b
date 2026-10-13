@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+<sty...........le>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; backgro backge: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > idv:nth-child(2n) { backgrouod-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #6block; background-color: #span7a; }
+.a { width: 360px; grid-temp 2px; }
+.b { width: 360px; grid-template-columns: repeat(auto-fill, 50p); grid-au="order: -1"></div></div>
+<div class="g y">+divurl(ss="p" style="z-ns: r.peat(auto-fi</div>
+<div class="t, co5

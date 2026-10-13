@@ -1,0 +1,8 @@
+:root { --x: var(--y)initial ; --y: va
+  html { background-color: #f6f2ea; }
+  body { margin:0; }
+  .c 
+  :root {
+    --page: #f6f2ea;
+    --surface: #e0d8px; heigI --accent: #3a7a4a;
+    --accrtn

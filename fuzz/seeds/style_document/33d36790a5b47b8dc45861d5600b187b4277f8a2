@@ -1,0 +1,10 @@
+<!doctype html>
+<nd-color: #604a20; }
+.col { float: left; width: 400px; }
+.ib { display: inline-blockw;i dth: 30px; height: 20px; background-color: #1a2a3a; }
+.a { width: 360px; grid-template-columns: repeat(6, 50px);idth: 360px; grid-template-columns: repeat(6, 50px); gap: 6px; align-items: baseline; }
+.a > div { height: 20px; }
+.a > .t { height:: 0"></div><div style="margin-leftemplate-columns: 80px 80px; grid-auto-rows: 30px; gap: 6px; justify-items: baseline;iv { widle="padding-left: 6px; bw;i dth: 30px; height: 20px; background-color: #1a2a3a; }
+.a { width: 360px; grid-template-columns: repeat(6, 50px);idth: 360px; grid-template-columns: repeat(6, 50px); gap: 6px; align-items: baseline; }
+.a > div { height: 20px; }
+.a > .t { height:: 0"></div><div style="margin-leftemplate-columns: 80px 80px; grid-auto-rows: 30px; gap: 6px; justify-items: baseline;iv { widle="padding-left: 6px; border-left: 4px solid #3a2a10"></div><div style="justify-self: last baseline; margin-right: 10px"></div><div style="justify-sa;

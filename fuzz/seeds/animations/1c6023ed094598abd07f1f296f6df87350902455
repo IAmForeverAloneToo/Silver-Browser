@@ -1,0 +1,10 @@
+
+  html { background-coln: absolute; left: 30px; top: 3animation-iteration-count 40px; background-color: #3a7a4a;
+         animation-duration: 1s; animation-tispective(400px) rotateY(50deg); } to { transform: perspective(100px) rotateY(50deg); } }
+  /* A matrix that cannot be decomposed: discrete, the first half from,
+     the second to. */
+  @keyframes singular { from { transform: scale(0); } to { transform: translateX(30px) rotate(45deg); } }
+  /* Percentages, of the box: function by function, and in a matrix. */
+  @keyframes percent { from { transform: translateX(0%); } to { transform: translateX(100%); } }
+  @keyframes percent-matrix { from { transform: translate(100%, 50%)
+  h; } tot m

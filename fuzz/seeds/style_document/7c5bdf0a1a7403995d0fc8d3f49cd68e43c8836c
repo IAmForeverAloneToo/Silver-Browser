@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0;  #604a20; }
+.col { float: left; width: 400px; }
+.g { width: 360px; grid-auto-flow: column; grid-template-rows: repeft(3, 20px); grid-auto-columns: 40px; gap: 4px; }
+.dense { grid-auto-flow: column dense; }
+.t { grid-row: span 2; }
+.w { grid-column: span 2; }
+.big { gri<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; bn: 3 / 4; grid-row: 1 / 2; justify-self: end; align-self: center; width: 20px; height: id-template; }
+.g > .a { position: absolute; background-color: #3a5a7a; }
+.g > .a:nth-child(2n) { background-color: #7a9aba; }
+.g > .a:nth-child(3n) { background-color: #1a2a3a; }
+.ion: static; margin: 0; }
+</style>
+</head>
+<body>
+<div class="col">
+<dtyp/div>
+<div class="col">
+<div class="g bycol"><div></div><div class="w"></div><div></div>or: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child

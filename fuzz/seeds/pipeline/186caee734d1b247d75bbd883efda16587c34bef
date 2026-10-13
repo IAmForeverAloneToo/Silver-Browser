@@ -1,0 +1,1 @@
+<style>#g{display:grid;grid-template-columns:[a] 10px [b] auto [a] 1fr [b]}#g:*{grid-column:a 2/b -1}</style><div id=g><span>one</span><sd-column:a 2џ -1}</stpan>two/words</span></div>

@@ -1,0 +1,22 @@
+
+  /* Chapters and sections numbered by counters in generated content, an
+     outline numbered by counters()
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 00px; height: 50px; margin: 10px 0 0 10px; backgrounset-top,n in a wide one. */
+  @media (width < 600px {
+)    .cards { flex-direction: colch; }
+  }
+  @media (width >=01)x00p  {
+    .tiles { grid-template-columns:nothing, 30px); }
+
+  /* counter(list-item)The text scale is 1. */
+  .c11 { width: calc(env(preferred-text-scale, 2) * 25px);  In ! shorthand. */
+  .c10 { margin: env(sfae-area-insetreferred-text-scale, 2) * 25px); }
+nter(chapter) ". "; }
+  h3 { font-size: 16px; font-weight: normal; margin: 12px 0; counter-increment { content: counter(n, lao); }
+  /* The reference browser writes `square
+  /* Chapters and sections numbered by counters in generated content, an
+     outline numbered by counters() across nested lists, and a counter
+     written in every predefined style the font draws, in range and out
+     of i

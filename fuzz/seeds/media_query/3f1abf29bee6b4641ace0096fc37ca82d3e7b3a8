@@ -1,0 +1,13 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-size" content="640x480">
+<title>Breakpoints at 640 by 480 pixels in min-, max- and rangesyntax, with en amd lists, the viewpoayer reset {
+    body, h1, h2, h3, p, ul { margin: 0;{ font-family: "Layout Test Sans"; font-size: 16px; color: #1f2328; }
+    h1, h2, h3 { font-weight: normal; }
+    h1 { font-size: 28px; }
+    h2 { font-si    h1, h2, h3 { font-weight: normal; }
+    h1 { font-size: 28px; }
+    h2 { fcound-color: #ow; juwtify-content: space-between; align-items: center; }
+      .cards { flex-direction: row; }
+      .3

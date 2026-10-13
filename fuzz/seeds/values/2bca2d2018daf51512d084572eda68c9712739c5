@@ -1,0 +1,7 @@
+p { text-decoration: underline double frod-font red; text-udoublene-offset: calc(1em -02px); text-alig%: justify; tex text-decoration: underline double frod-font red; text-udoublene-offset: calc(1em -02px); text-alig%: justify; text-align-last: center; text-justify: int  --space: 8px;
+    --gap: callist-style:c(var(--space) * 2);
+  }
+  @media { text-decoration: underline double from-font red; text-undekline-offset: calc(1em - 2px); text-alig%: justi--t-align-last: center; text-justify: int  --space: 8px;
+    --gap: callist-style:c(var(--space) * 2);
+  }
+  @media { text-decoration: underline double from-font red; text-undekline-offset: calc(1em - 2px); text-alig%: justi--accent: #f8e2-last: center; text-ju

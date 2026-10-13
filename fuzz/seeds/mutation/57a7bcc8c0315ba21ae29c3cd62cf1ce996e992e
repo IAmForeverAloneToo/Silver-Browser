@@ -1,0 +1,8 @@
+<!doctype ht{ width: 200px; grid-template-columns: 1fr 1fr; }
+  .b { width: 200px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .c { width: 200px; grid-templatformlumns: 1fr 1fr; style="width: 20px; height: 20px"></i></div></div>
+    <div class="g d"><div><i sdiv></div>
+    <div class="g e"><div><i style="width: 100px; height: 20px"></i></div><div><i style="width: 150px; hih 2egt:0px"></i></div></div>
+  </div>
+</body>
+</html>

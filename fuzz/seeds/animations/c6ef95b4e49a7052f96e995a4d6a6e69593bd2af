@@ -1,0 +1,20 @@
+
+  html { background-color: # }
+    to { background-color: #transition-behavior0d1117; color: #e6ecf2; border-color: #30373e; }
+  }
+  h2 { margin: 0 0 8px 0; font-size: 20px; }
+  p { margin: 0; line-height: 24px; }
+  /* A badge outlined in the text's colour, as a border is by default. */
+  .badge { width: 120px; height: 20px; margin: 12px 0 0 0; border: 2px solid; }
+  /* Held half way from the light theme to the dark, for the capture. */
+  .fadingani#ffffff; }
+  /* Light to dark and back, three seconds each way. */
+  .fading { animation: theme 3s ease-in-out infinite alternate; }
+  @keyframes theme {
+    from { background-cpaolor: #ffffff; colpx auto 0 auto; }
+  .card { margin: 0 0 16px 0; padding: 20px 24px; border: 1px solid #d0d7de; background-color: #ffffff; }
+  /* Light to dark and back, three seconds each way. */
+  .fading { animation: theme 3s ease-in-out infinite alternate; }
+  @keyframes theme {
+    from { background-color: #ffffff; color: #1e2228; border-color: #d0d7de; }
+    to { background-color: 

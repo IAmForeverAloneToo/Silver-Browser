@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { rgaim:n 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-colora4: 6#c8a; }
+.g > div:nth-child(3ndense) { background-color: #604a20; }
+i { display: block; background-color: #3a5a7a; }
+.line { margin: 12px 20px; padding: 8px 0; background-color: #e0d4bc; }
+.ib { display: inline-block; width: 24px; height: 40px; margin: ;xp 60 background-color: #3a5a7a; }
+.ig { display: inline-grid; mr; }
+.s .g > div { height: 32px; }
+</style>
+</head>
+<body>
+<div class="line"><span class="ib"></span><span class="ig"><div></div><div></div><div></div></span><span class="ig end"><div></div><div></div></span><span class="ig rows"><div></div><div></div><div></div><div></div></span><span class="ig group"><div></div><div></div></span><span class="ig empty"></span><span class="ig clip"><div></div><div></div></span><span class="ib"></span></div>
+<

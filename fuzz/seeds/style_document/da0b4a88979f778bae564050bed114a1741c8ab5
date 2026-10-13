@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+< 360px; gd-auto-flow: column; grid-template-rows: 20px 20px; grid-auto-columns: 40px 70px; }
+.c { width: 360px; grid-template-columns: 50px; grid-auto-rows:=minmax(10px, auto) 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<dinline-grid a"><div></div><div></div><div></div></div>
+<div class="g &&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&b"><div></div><body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; ba@ckgdiv></div><div></div><div></div><div></div><div></div><div></div></div>
+<div class="g c"><div></div><div></div><div style="height: 30px"></dlate-rows: 20px 20px; grid-auto-columns: 40px 70px; }
+.c { width: 360px; grid-template-columns: 50px; grid-auto-rows:=minmax(10px, auto) 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<dinline-grid a"><div></div><div></div><div></div></div>
+<div class="g &&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&

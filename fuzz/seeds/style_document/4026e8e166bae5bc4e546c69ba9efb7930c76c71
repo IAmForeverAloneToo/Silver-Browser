@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<style>
+htm }
+i { display: block; backgrod-color: #3a5a7a; }
+.g { width: 240px; grid-template-columns: repeat(4, 60px); gri<d-auto-rows: 20px; }
+.w { grid-column: span 3; }}
+.col { float: left; width: 400px; }
+i { display: block; backgrod-color: #3a5a7a; }
+.g { width: 240px; grid-template-columns: repeat(4, 60px); gri<d-auto-rows: 20px; }
+.w { grid-column: span 3; }t { grid-row: span 2; }
+.dense { grid-auto-flow: dense; }
+.bycol { width: auto; grid-auto-flow: column; grid-template-columns: none; grid-template-rows: repeat(3, 20px); grid-auto-columns: 50px; }
+.bycol .w { grid-column: auto; grid-row: span '; }
+.bycoldense { grid-auto-flow: column dense; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="w"></div><div></div><div class="t"></div><div class="w"></div><div></div><div></div></div>
+<div class="g dense"><div></div><div class="w"></div><div></div><div class="t"></div><div class="w"></div><div></div><div></div></div>
+</div>
+<div class="col

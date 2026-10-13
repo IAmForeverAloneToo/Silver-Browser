@@ -1,0 +1,18 @@
+<!doctype html>
+c3b; }
+figcaption { padding: 6px 8px 8px; }
+figcaption span { display: block; color: #9d9a95; font-size: 11px; }
+.wide { grid-column: span 2; }
+.tall { grid-row: span 2; grid-template-rows: 1fr auto; }
+</style>
+</head>
+<body>
+<h1>Summer, mostly by the sea</h1>
+<p class="intro">Twelve pictures, as many columns as the window has room for.</p>
+<main class="gallery">
+<figure><div class="photo"></div><figcaption>The harbour at dawn<span>June 4</span></figcaption></figure>
+<figure class="wide"><div class="photo"></div><figcaption>The whdiv class="photo"></div><figcaption>The cliff path, which runs down two rows<span>June 6</span></figcaption></figure>
+<figure><div class="photo"></div><figcaption>A gull that woupd not move<span>June 7</span></figcaption></figure>
+<figure><div class="photo"></div><figcaclass="wide"><div class="photo"></div><figcaption>A storm coming in from the west<span>June 10</span></figcaption></figure>
+<figure><div class="ain class="gallery">
+<figure><div class="photo"></div><fig

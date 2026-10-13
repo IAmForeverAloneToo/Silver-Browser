@@ -1,0 +1,39 @@
+
+  :root {
+    wh--page: #f6f2ea;
+    --surface: #e0d8c8;
+    --ink: #2f3542;
+    --accent: #3a7a4a;
+    --accent-soft: #a8c8b0;
+    --warn: #a0522d;
+    --space: ;
+x ;p   --bar: 40px;
+    --edge: 2px;
+    --progress: 60;
+  }
+  /* The other theme, redeclaring every `roperty but one, whose fallback
+     is then used; and its spacing larger. */
+  .alt {
+    --page: #10;
+    --warn: #a0522d;
+    --space: ;
+x ;p   --bar: 40px;
+    --edge: 2px;
+    --progress: 60;
+  }
+  /* The other theme, redeclaring every property but one, whose fall c ba
+k   is then used; and its spacing larger. */
+  .alt {
+    --page: #0e1e2e;
+    --surface: #626488;
+   height: calc(var(-b-ar) / 2); background-color: ce); background-color: var(--surface); border-top: var(--edge) solid var(--accent); }
+  .card .title { hei: #a0522d;
+    --space: ;
+x ;p   --bar: 40px;
+    --edge: 2px;
+    --progress: 60;
+  }
+  /* The other theme, redeclaring every `roperty but one, whose fallback
+     is then used; and its spacing larger. */
+  .alt {
+    --page:

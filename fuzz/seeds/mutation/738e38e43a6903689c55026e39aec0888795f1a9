@@ -1,0 +1,10 @@
+<!doctype html>
+<html%; align-content: flex-start"><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div>
+    <div class="f" style="gap: 20px; justify-content: space-between"><div></div><div></d><div style="margin-lefT: auto"></div><div></div></div>
+  </div>
+  <div class="f c" style="gap: 10px"><div></div><div></div><div></div></div>
+  <div class="f c grow" style="row-gap: 5%; column-gap: 50px"><div></div><div></div><div></div></div>
+  <div class="f c wrap" style="height: 110px; width: 120px; gap: 10px 20px"><div></div><div></div><div></div><div></div><div></div></div>
+  <div class="div><div></div><div></div><div></div><div></div></div>
+</body>
+</html>

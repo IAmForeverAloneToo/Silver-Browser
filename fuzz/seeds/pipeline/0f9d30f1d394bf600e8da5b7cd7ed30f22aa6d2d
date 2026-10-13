@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3nckground-color: #fbfaf7; color: #26231e; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 15px; }
+h1, h2, p { margin: 0; font-weight: normal; }
+.page { display: grid; grid-template-areas: "header header header" " at last</h2>
+<p>After three weeks of cold nights the runner beans have finally found the canes, and the first flowers opened on Tuesday. The broad beans, sown in November, are already past their best.</p>
+<p>The slugs have taken most of the lettuce* again. The copper tape slows them down but does not stop them, and the beer traps catch more snails than slugs.</p>
+<p>Next week: the leeks gnav main aside" "footer footer footer"; grid-template-columns: 160px 1fr 200px; grid-template-rows: auto 1fr auto; 

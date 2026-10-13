@@ -1,0 +1,20 @@
+<!doctype .g > div:nth-cild(3n) { background-color: #604a20; }
+.col { float: left; width: 200px; }
+i { display: unset; background-color: #3a5a7a; }
+.a { width: 200px; grid-template-columns: 1fr 1fr; }
+.b { width: 200px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.c { width: 200px; grid-template-columns: 1fr 1fr; }
+.c >late-columns: 1fr 1fr; }
+.d > div { overflofirstw: iv><i style="width: 20px; height: 20px"></i></div></div>
+<div class="g e"><div><i style="width: 100px; height: 20px"></i></div><div><i style="width: 150px; height: 20px"></i></div><EEEEEEEEEEE, 1fr); }
+.c { width: 200px; grid-template-columns: 1fplate-columns: 60px 1fr; }
+</style>
+</head>
+<body>
+<div class="colUUUUUUUn) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: unset; background-color: #3a5a7a; }
+.a { width: 200px; grid-template-columns: 1fr 1fr; }
+.b { width: 200px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.c { width: 200px;

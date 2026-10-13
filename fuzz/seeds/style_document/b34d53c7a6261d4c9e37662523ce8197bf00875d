@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<title>CSS Test (Transforms): composited under rotateY(180deg)</title>
+<link rel="help" href="http://www.w3.org/TR/css-transforms-2">
+<meta name="assert" content="This tests that a composited element with ss="g b"><div><i style="width: 150px; height: 20px"></i></div><div><i style="width: 20px; height: 20px"></i></div></div>
+<div class="g c"><div><i style="width: 150px; height: 20px">tateY(180deg); width: 100px; backface-visibility: hidden">
+  <div style="width: 100px; height: 100px; background: red; will-change: trandefault
+  div><div><i style="widtzh: 20px; height: 20px"></i></div></didth: 100px; backface-visibility: hidden">
+  <div style="width: 100px; height: 100px; background: red; will-change: trandefault
+  div><div><i style="widtzh: 20px; height: 20px"></i></div></div>
+<div class="g b"><div><i style="width: 150px; height: 20px"></i></div><div><i style="width: 20px; height: 20px"></i></div></div>
+<div class="g c"><div><i style="width: 150px; height: 20px"></i></div><div>v>
+<div style="tra

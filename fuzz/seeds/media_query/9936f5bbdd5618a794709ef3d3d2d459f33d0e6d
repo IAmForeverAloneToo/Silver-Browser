@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8><
+title>Forced breaks</tite<ls>
+tyle>
+  /* Forced breaks before headingq, to each side, and after a block,
+     each keeping the margin after it. */
+ le>
+  html { background-color: #f6f2ea; }
+  body { margin:  h2.right { break-before: right; }
+  h2.verso { break-before: verso; }
+  h2.recto { break-before: recto; }
+  .aftepages, so a break falls between two of them. The margins that meet an unforced break are droppdppxand the content after it starts at the top Of the next page. A printed page has a box, its size on paper, and an area inside; height: 5</p>
+<h2 0px; margin: 10px 0 0 10px; b<!doctype htmlt; width: 50px; height: 5</p>
+<h2 0px; margin: 10p!importantter: page; border: 2px solid black; paddin>
+<heclas

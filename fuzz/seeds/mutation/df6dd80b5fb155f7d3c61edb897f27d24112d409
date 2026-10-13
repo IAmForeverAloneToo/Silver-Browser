@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<title>Generated boxes: ::before and ::after as tables and table cells, and the clearfix</title>
+<style>
+  html { background-color: #f5f1e8; }
+  body { margin: 0; }
+  .clearfix { width: 400px; margin: 20px; background-color: #e2d8c0; }
+  .clearfix::after { content: ""; display: table; clear: both; }
+  .clearfix div { float: left; width: 100px; height: 60px; margin-right: 10px; background-color: #8a7444; }
+  .open { width: 400px; margin: 20px; background-color: #e2d8c0; }
+  .open div { float: left; width: 100px; height: 40px; background-color: #8a7444; }
+  table {'s own width. */
+  @keyframes implicit { 50% { width: 160px; } }
+  @keyframes only-to { to { width: 200px; } }
+  /* Offsets repeated: the blocks of one offset taken together, the
+     later winning; a list of offsets. */
+  @keyframes repeated { 50% { width: 100px; } from { width: 40px; } 50% { height: 12px; width: 160px; } to { width: 200px; } }
+  @keyframes listed { 0%, 100% { width: 200px; } 50% { widt

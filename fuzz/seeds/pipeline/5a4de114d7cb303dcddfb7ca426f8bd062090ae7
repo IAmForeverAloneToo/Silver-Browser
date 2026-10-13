@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>color: #e6dcc8 ;}
+  .g > div { background-color: #a07a3a; }
+  .g > div:nth-child(2n) { background-color: #c8a46a; }
+  .g > div:nth-child(3n) { background-color: #604a20; }
+  .col { float: left; width: 400px; }
+  i { display: block; background-color: #3a5a7a; }
+  .a { width: 360px; grid-template-columns: auto auto auto; }
+  .b { width: 360px; grid-template-columns: min-content max-content 1fr; }
+  .c { width: 360px; grid-template-columns: auto auto 1fr; }
+  .c > div:nth-child(4) { gridoc-lumn: 1 / 3; }
+  .l { width: 360px; grid-template-columns: 40px auto auto; }
+  .d > div:nth-child(4) { grid-column: 2 / 4; }
+  .e { width: 360px; grid-template-columns: max-content max-content; justify-content: start; }
+  .e > div:nth-child(3) { grid-column: span 2; }
+
+</style>
+</head>
+<body>
+  <div class="col">
+    <div class="g a"><div><i style="width: 15px; height: 20px"></i></div><div><i style="width: 60px; height: 20px"></i></div><div><i style="width: 90px; height: 20px">

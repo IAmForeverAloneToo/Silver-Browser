@@ -1,0 +1,8 @@
+
+ 
+  html { background-co.lor: #f6f8fa; color: #1f2328; font-size: 16px; }
+  body { margin: 0; }48px auto 0 auto; }
+  .panel { padding: 40px; border: 1px solid #d0d7de; background-color: #ffffff; }
+  /*  /* The reference browser is given the engine's own font, whose
+     metrics place and size the markers. */
+  @font-face { font-family: "Reference Sans"; src: url(A square ../..r

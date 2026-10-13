@@ -1,0 +1,18 @@
+p { text-decoration: underline double from-font red; text-underlinewidth:-offset: calc(1em - 2px); text-align: justify; tm-font red; text-underline-offset: calc(1em - 2px); text-align: justify; tx); --b: env(viewpor); --b: env(viewport-segment-width 0 0, 1px); width: calc(var(--a) + vmat-segment-wOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOedia (prefers-color-scheme: dlower-greekavrk) {
+    :rooidth 0 0, 1px); width: calc(var(--a) + t {
+      --page: #1e1e2e;
+      --heading: #cdd6f4;
+      --quiet: #6c7086;
+    }
+  }
+  html { backgrounze: calc(var(--%gap) + 4px); }
+
+  /* The sections are numbered by couvmatch-parentnters: 1., 1.1 and so on. */
+  ze: 12px;
+  var(--a)  text-transform: uppercase;
+  }
+  .cadisplay: list-itemrd::after { content: "§"; display: block; text-align: right; color: var(--quiet); }
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    grid-au

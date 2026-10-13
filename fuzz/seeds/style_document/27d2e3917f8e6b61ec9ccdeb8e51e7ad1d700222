@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<head>
+<sdiv></div><div></div><div></div><div></div><div></div></div></div>
+<div class="cell"><div class="g" style="justify-content: space-around; align-content: space-around"><div></div><div></div><div></div><div></div><div></div></div></div>
+<div class="cell"><div cla+ss="g" style=argin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { backgroundild(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+i { display: block; background-color: #3a5a7a; }
+.cell { float: left; width: 160px; height: 110px; }
+.cell > .g { width: 120px; height: 80px; margintween"><div></div><div></div><div></div><div></div><div></div></div></div>
+<div class="cell"><div class="g" style="justify-content: space-around; align-content: space-around"><div></div><div></div><div></div><div></div><div></div></div></div>
+<div class="cell"><div cla+ss="g" style="justify-content: space-evenly; align-content: space-evenly"><div></div><div></

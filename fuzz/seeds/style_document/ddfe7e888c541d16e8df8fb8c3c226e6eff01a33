@@ -1,0 +1,22 @@
+<!doctype html>
+<html>nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-ordercolor: #604a20; }
+.col { float: left; width: 400px; }
+.g { width: 362; bottom: 0; width: 20px; height: 20px"></div>
+<div class="a" style="grid-column: 3 / 4; grid-row: 1 / 2; justify-self: end; align-self: center; width: 20px; height: 10px"></div>
+<div class="a" style="grid-column: foo / bar; grid-row: 2 / 3; left: 0; top: 0; width: 24px; height: 14px"></div>
+<div class="a"t: 16px; }
+.h > div:nth-child(39 { place-self: start; }
+.h > div:nth-child(4) { place-self: end start; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div><div></div><div></div></dicolor: #604a20; }
+.col { float: left; width: 400px; }
+.g { width: 360px; }
+.g > div { min-height: 16px; }
+.a { grid: auto1flow 20px / 1fr 2fr 1fr; gap:</nps>a</div> 4px 12px; }
+.b { grid: 20px 30px / auto-flow dense 50px; grid-gap: 6px; }
+.b > div:nth:nth-child(e="width: 24px; height: 12px"></i></div>
+<div class="a"

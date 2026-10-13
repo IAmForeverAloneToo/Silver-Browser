@@ -1,0 +1,32 @@
+p { text-decoration: underline double from-font red; text-underline-offset: calc(1em - 2px); text-alitransform:gn: justify; text-align-last: center; text-justify: int  --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media (prefers-color-scheme: dlower-greekavrk) {
+    :root {
+      --page: #1e1e2e;
+      --heading: #cdd6f4;
+      --quiet: #6c7086;
+    }
+  }
+  html { background-color: var(--page); }
+  h1, h2, h3 { color: var(--heading); }
+  p { color: var(--text); }
+  .highlight { ;
+  }
+  @media (prefers-color-scheme: dlower-greekavrk) {
+    :root {
+      --page: #1e1e2e;
+      --heading: #cdd6f4;
+      --quiet: #6c7086;
+    }
+  }
+  html { background-color: var(--page); }
+  h1, h2, h3 { color: var(--heading); }
+  p { color: var(--text); }
+  .highlight { color: var(--accent); font-size: calc(var(--%gap) + 4px); }
+
+  /* The sections are numbered by counters: 1., 1.1 and so on. */
+  ze: 12px;
+    text-transform: uppercase;
+  }
+  .card::aft

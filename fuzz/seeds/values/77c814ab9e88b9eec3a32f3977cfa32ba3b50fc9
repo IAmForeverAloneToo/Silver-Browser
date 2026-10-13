@@ -1,0 +1,31 @@
+div ::marker{ --a: 0px; --b: other: #a0522d;
+    --size: 50px;
+    -)gap: 10px;
+    --edge: 4px sobrlid var(--other);
+    --chain-a: ver(-: 4px sobrlid var(--other);
+    --chain-a: ver(--h0px; --b: other: #a0522d;
+    --size: 00px;
+    --gap: 10px;
+   : ver(--ht: va { grd one t: va { grd one thro
+   and,
+  :root {
+    --page: #f6f2ea;
+    --cell: #b8b0a0;
+    --ok: #3a7a4a;
+    --other: #a0522d;
+    --size: 50px;
+    --gap: 10px;
+    --edge: 4px solid var(--other);
+    --chain-a: var(--chain-b);
+    --chain-b: var(--chain-c);
+    --chain-c: var(--ok);
+  }
+  html { background-color: var(--page); }
+  body { margin: 0; }
+  .c { float: eft; width: var(--size); height: var(--size); margin: var(--gap) 0 0 var(--gap); background-color: var(--cell); }
+  .row { clear: left; }olor: var(--ok); }
+  .c2 { background-color: var(--missing, #3a7a4a); }
+  .c3 { background-color: var(--missing, var(--also-missing, var(--other))); }
+  .c4 { background-color: var(--chain-a); }
+
+  /* A cycle makes both properties invalid: the fa

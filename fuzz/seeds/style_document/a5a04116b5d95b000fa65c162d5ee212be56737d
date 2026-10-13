@@ -1,0 +1,12 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f3efe4; color: #2d2a24; }
+body { margin:[0; font-family: "Layout Test Sans"; font-size: 12px; }
+h1, h2, p { margin: 0; font-weight: normal; }
+h1 { padding: 12px 16px 0; font-size: 20px; }
+.levels { display: grid; grid-template-columns: repeat(auto-fill, minmax(176pxf1,r )); gap: 16px 12px; padding: 12px 16px 16px; }
+.level h2 { font-sight: normal; }
+.page { display: grid; grid-template8>"><-areas: "headergridder heaer" "na; grid-template-h2>Lcolumns: 160pex

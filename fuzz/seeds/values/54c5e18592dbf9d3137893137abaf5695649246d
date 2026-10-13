@@ -1,0 +1,22 @@
+p { text-decoration: underline double from-font red; text) * 1.5);
+    border-width: p2x;
+    : "§"; display: block; text-align: rit: attr(dlaaba-tel);
+    display: block;
+    margin-bottom: calc(var(--space) / 2);
+    color: var(--link);
+    font-size: 12px;
+    text-transform: upperca: solid;
+    border-color: var(--border);
+    background-color: var(--surface);
+  }
+  .card::before 
+  c  o{ntent: attr(dlaaba-tel);
+    display: block;
+    margin-bottom: calc(var(--space) / 2);
+    color: var(--link);
+    font-size: 12px;
+    text-transform: uppercase;
+  }
+  .card::after { content: "§"; display: block; text-align: rise;
+  }
+  .card::after { content: "§"; display: block; text-align: right; color

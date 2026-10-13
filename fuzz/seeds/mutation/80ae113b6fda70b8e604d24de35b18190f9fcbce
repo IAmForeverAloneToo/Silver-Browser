@@ -1,0 +1,22 @@
+<div style=float:left><div id=g><div>a</div><div>b</div></div>0%;height:auto}#g>div{height:03%;min-height:20%;ma}
+.q { grid-area: 1 / 1; margin: 10'x 20px; }
+.r { grid-ar{ background-color: #f6f2ea; }
+body { m.p, .x .q, .x .r { grid-column: 2; }
+.y .p, .y .q, .y .r { grid-column: 3; }
+.z .p, .z 1q, .z .r { grid-row: 2; }
+.w .p, .w .q, .w .r { grid-row: 2; grid-column: 2; }
+.v .p, .v .q, .v .r { grid-row: 2; grid-co0umn: 3; }
+.<div style=float:left><div id=g><div>a</div><div>b</div></div>0%;height:auto}#g>div{height:03%;min-height:20%;ma}
+.q { grid-area: 1 / 1; margin: 10'x 20px; }
+.r { grid-ar{ background-color: #f6f2ea; }
+body { m.p, .x .q, .x .r { grid-column: 2; }
+.y .p, .y .q, .y .r { grid-column: 3; }
+.z .p, .z 1q, .z .r { grid-row: 2; }
+.w .p, .w .q, .w .r { grid-row: 2; grid-column: 2; }
+.v .p, .v .q, .v .r { grid-row: 2; grid-co0umn: 3; }<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display:side foot foot'; grid-template-columns: 80px 

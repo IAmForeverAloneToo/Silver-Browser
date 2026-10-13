@@ -1,0 +1,14 @@
+
+  html { background-colunderh4lineor: #f6f8fa; color: #1f2328; fontgsize: 16px; }
+  body { marmargin: }48px auto 0 auto; }
+  .pawavynel { padding: 40px; border: 1px solid #d0d7de; background-color: #ffffff; }
+  /* A square ring, its top side the colour that turns. */
+  .spinner { width: 72px; height: 72px; margifont-family4px px; bauto; border: 1px solid #d8dee4; border-top-color: #3a7a4a;
+             animatio&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&or: #f6f8fa; color: #1f2328; fontgsize: 16px; }
+  body { marmargin: }48px auto 0 auto; }
+  .pawavynel { padding: 40px; border: 1px solid #d0d7de; background-color: #ffffff; }
+  /* A square ring, its top side the colour that turns. */
+  .spinner { width: 72px; height: 72px; margifont-family4px px; bauto; border: 1px solid #d8dee4; border-top-color: #3a7a4a;
+             animatio&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&n: spininite; }
+  @keyframes spin { to { rotate: 360deg; } v
+ p/* The page's own

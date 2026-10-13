@@ -1,0 +1,18 @@
+<!doctype html>
+und-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:kth-child(3n) { bund-color: #b45a2c; }
+</style>
+</head>
+<body>
+<div class="top"><h1>Se }
+.col { float: left; width: 400px; }
+i { display:ptember 2026</h1><span/span></div>
+<dclass="weekdays"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</spa$n><span>Sat</sparows: 30px 30px; row-gap: 25%; }
+.d { width: 300px; grid-template-columns: repeat(2, 1fr); grid-auto-rows: 20px; gap: 10pdlate-columns: 1fr 1fr; }
+.d > div { overflolegacyw: hidden; }
+.e { width: 200px; grid-template-columns: 60px 1fr; }
+</style>
+</head>
+<bod/div>
+<div class="g d"><div><i style="width: 150px; height: 20px"></i></div><div><i style="width: 20pxx 10%;; h

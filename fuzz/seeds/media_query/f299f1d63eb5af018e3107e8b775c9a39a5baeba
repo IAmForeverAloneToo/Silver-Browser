@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+<title>@supports with declarations, not, and, or and selector(), unknown properties, values and functions, a malformed condition, and nestedc2 { background-color: #3,5a7a; } }
+  @supports not (display: foo) { .c3 { background-color: #a0522d; } }
+  @supports (display: flex) and (color: red) { .c4 { background-color: #6a4a8a; } }
+  @supports (display: foo) or (color: rectored) { .c5 { background-color: #2a8a8a; } }
+  @supports (display: foo) and (color: red) { .c6 { background-color: #8a6a2a; } }
+  @supports ((display: grid) and (not (display: foo))) { .c6 { background-color: #4a6a2a; } }
+  @supports selector(.a > .b) { .c8 { background-color: #8a3a5a; } }
+  @supports selector(:foo) { .c9 { background-color: #3a7a4a; } }
+  @supports not selector(:<!doctype html>
+h1tml>
+<head>
+<title>Cascade layers: the .c7 foo) { .c10 { backg{r 

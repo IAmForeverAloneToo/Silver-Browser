@@ -1,0 +1,19 @@
+<style>#g{display:grid;gtre-dimplate-column: srff1r1;row-gap:10%;coluplace-selfmn-gap:5min-contentder:-1;z-index:2;margin:auto}</style><table><tr><td><div id=g><div>1</Div><div style='order:3'>2</row></div><<!doctype html>
+<html>
+<head>
+<style>
+htemplate-rows: repeat(3, 20px); grid-auto-columns: 40px; gap: 4px; }
+.dense { grid-auto-flow: column dense; }
+.t { grid-row: span 2; }
+.w { grid-column: span 2; }
+.big { grid-row: span 3; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div></div><div class="w"></div></div>
+<div class="g dense"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div div:nth-child(3n) { background-color: #604c20; }
+.col { float: left; width: 400px; }
+.g { width: 360px; grid-auto-flow: column; grid-template-rows: repeat(3, 20px/td></tr></t-blez); grid-auto-columns: 40px; gap: 4px; }
+.dense { grid-auto-flow: column dense; }
+.t { grid-

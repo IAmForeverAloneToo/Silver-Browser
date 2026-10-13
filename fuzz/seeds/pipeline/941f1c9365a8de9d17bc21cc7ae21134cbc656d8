@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { 
+<div style="justify-self: start"></div><div style="justify-self: end"></div><div style="justify-self: center"></div><div style="justify-self: right"></div>
+<div style="align-self: start"></div><div style="align-self: end"></div><div style="align-self: center"></div><div style="place-self: end center"></div>
+<div style="width: auto"></div><div style="he%ght: auto"></div><div style="width: auto; height: auto"></div><div styl}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}e="justify-self: flex-end; align-self: flex-end"></div>
+</div>
+<div class="g ji">
+<div></div><div style="jjustify-itemsustify-self: star

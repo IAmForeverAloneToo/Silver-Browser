@@ -1,0 +1,10 @@
+p { text-decoration: underline double from-font red; text-underlinewidth:-ofm-font red; text-underline-offset: calc(1em - 2px); text-align: justify; tul>-space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @mOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOdiv { --a: env(safe-a+rea-inset-top, 4px); --b: env(viele from-font red; text-underlinewidth:-offset: calc(1em - 2px); tevvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv: calc(1em - 2px); text-align: justify; text-align-last: center; text-justify: int  --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @mOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOdiv { --a: env(safset: calc(1em - 2px); text-align: justify; tm-font red; text-underline-offset: calc(1em - 2px); text-align: justify; tul>-space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @mOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOdiv { --a: env(safe-a+rea-inset

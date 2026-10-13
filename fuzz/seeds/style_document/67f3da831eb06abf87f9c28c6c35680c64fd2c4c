@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<title>backface visibility: hidden self-transform</title>
+<link rel="author" title="Chris Harrelson" href="mailto:chrishtr@chromium.org">
+<link rel="help" href="http://www.w3.org/<!doctype html>
+<html>'
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { mar<!doitems: 1baseline; }
+.k > div { width: 40px; }
+.n > div:first-child { display: grid; grid-template-columns: 12px 12px; align-items: eckground-color: #c8a46a; }
+.g > div:targetild(3n) { background-color: #6gin: 0; font-size: 0; }
+.g { display: grid;type(<angle>) margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { back); grmt-ideplate-r #45476a;
+    --warn: unset;
+    --space: 12px;
+    --bar: 48px;
+    --plate-columns: repeat(autof-it, minmax(70px, 1fr)); grid-auto-rows: 20px; gap: 4px; }
+.f { width: 360px; grid-template-columns: 20px -epeat(2, [x] 30px [y]) repeat auto-fill, 60px) 20px; grid-auto-rows: 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div><div></div><div></div><di

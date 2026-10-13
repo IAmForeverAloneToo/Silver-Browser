@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<title>Lists</title>
+<style>
+  /* Ordered lists from start, reversed and with ist-item; }
+  .item { display: list-item; list-style-type: decimal; margin-left: 40px; }
+  .wide { padding-left: 80px; }
+  [dir=rtl] { padding-left: 0; padding-right: 40px; }
+</style>
+</head>
+<body>
+<h1>Lists</h1>
+
+<h2>Where an ordered list starts</h2>
+<ol><li>One</li><li>Two</li><li>Three</li></ol>
+<ol start="8"><li>Eight</li><li>Nine</li><li>Ten</li><li>Eleven</li></ol>
+<ol start="-2"><li>Minus two</li><li>Minus one</li><li>Zero</li></ol>
+
+<h2>Reversed, and values set</h2>
+<ol reversed><li>Three</li><li>Two</li><li>One</li></ol>
+<ol reversed start="1values set, nested
+     lists and their markers, markers inside and outside, of strings and
+     of ::marker's own content, a list item that is not an li, and markers
+     of another size than their items, and right-to-left lists, padded on
+     the right here since the user agent sheet pads every list on the left
+     (HTML's 

@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: border-box; width: 100%; height: 32px; margin: 0; padding: 0 8px; border: 1p0x solid #b9c0c8; background-color: #fbfbfc; font-family: "Layout Test Sans"ight: 30px; }
+.cell > .one { grid-template-columns: 24px; grid-template-rows: 16px; }
+</style>
+</head>
+<body>
+<div class="cell<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div {id-template-rows: repeat(3, 20px); grid-auto-columns: 40px; gpa: 4px; }
+.dense { grid-auto-flow: column dense; }
+.t { grid-row: span 2; }
+.w { grid-column: span 2; }
+.big { grid-row: span 3; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div></di

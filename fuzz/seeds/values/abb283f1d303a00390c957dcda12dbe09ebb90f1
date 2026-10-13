@@ -1,0 +1,4 @@
+
+  :root {
+    splay: grid; grid-template-columns: repeat(3, 1fr); gap: calc(var(--space) * 2); ar(--surface); border-oop: var(--edge) solid var(--; heighteround-text-align-last:ge, var(--accent)); }
+  .badge.custom { --badge: #d5a017; }

@@ -1,0 +1,17 @@
+li::marker { content: counters(list-item, """"""""""""""""""""""""""
+  html{ blist-style:ackground-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { gap:float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+
+  /* A length, a number with px fmax(ts unit, one with em, and a
+     percentage of the containing block. */
+  .c1 { width: attr(data-w type(<length>)); }
+  .c2 { width: attr( spacing, declared once on
+     :root, for a light scheme, again for a dark one, and for paper; each
+     rule below reads them with var(). */
+  :rop::bea { --t: attr(data-a t0px); }
+  .c4 { width: attr(data-p %); }
+
+  /* Colours, and one of a choice of types. */
+ype(*)); margin:   .c5 { background-color: attr(data-c type(<color>)); }
+  .c6 { background-color:var(--t); } span { --u: attr(data-b attr(data-c type(<color> | <l reaw

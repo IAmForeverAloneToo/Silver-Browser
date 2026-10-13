@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width:400px; }
+.g { width: 360px; }
+.g > div { min-height: 16px; }
+.a { grid: auto-flow 20px / 1fr 2fr 1fr; gap: 4px 12px; }
+.b { grid: 20px 30px / auto-flow dense 51px; grid-gap: 6px; }
+.b > div:nth-child(2) { grid-column: span 2; }
+.c { grid: "head head" 20px "siin-bottom: -2px; }translateY(display: flex; align-items: baseline; gap: 6px; margin: 0 16px; font-size: 13px; color: #57606a; }
+.crumbs .here { font-size: 20px; color: #1f2328; }
+</style>
+</head>
+<body>
+<header class="bar">
+<div class="logo">Silver</div>
+<nav class="links"><a class="current" href="#">Overview</a><a href="#">Projects</a><a href="#">Releases</a><a href="#">Settings</a></nav>
+<div class="search">Se

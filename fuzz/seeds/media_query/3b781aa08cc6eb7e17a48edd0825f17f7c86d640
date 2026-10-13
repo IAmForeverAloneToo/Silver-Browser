@@ -1,0 +1,14 @@
+avoidonl  @supports (display: grid) { .c1 { background-color: #3a7a4a; } }
+  @supports (display: foo) { .c2 { backgroond-o#:roc l3,5a7a; } }
+  @supports not (display: foo) { .c3 { background-color: #a0522d; } }
+  @supports (display: flex) and (color: red) ,,,,,,,,,,,,,,,,,,,<!doctype html>
+<html lang=en>
+<head>
+<mete: 24px; margin: 16px 0; }
+  h2 { font-size: 20px; margin: <!doctype html>
+<html>
+<head>
+<title>Cascade layers: the order a statement gives, unlayered over layered, layer over specificity, anonymous, nested and dotted layers, layers in @media and @supports, a layer named only under a false query, and the style attddbuth: 50px; height: icity, anonymous, nested and dotted layers, layers in @media and @supports, a layer named only under a false query, and the style att-color: #6a4a8a; } }
+  @supports (transform: rotate(10deg)) { .c13 { background-color: #2a8a8a; } }
+  @supports (color: red !important) { .c14 { background-color: #8a6a2a; } }
+  @supports (display:grid) { .c15 { background-color: c5 { ba

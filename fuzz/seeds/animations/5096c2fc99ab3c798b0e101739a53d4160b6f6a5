@@ -1,0 +1,20 @@
+
+  html { b; }
+
+  /* Pairs of one primitive, function by function. */
+  @keyframes translate-x { from { transform: translateX(0px); } to { transform: translateX(40px); } }
+  @keyframes scale
+  html { background-color: #f6f2transform: translateX(0px); } to { transform: translateX(40px); } }
+  @keyframes scale
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row'{ display: flex;
+  html { background-color: #f6f8fa; color: #1f2328; font-size: 16px; }
+  body""""""""""""""fa; color: #1f2(0deg); } to { transform: skew"""""""""""""""""""""""""""""""""" { margin: 0; }
+  header { height: 56px; background margin: 10px 0 0 10px; }
+  .cell { positi/n: relative; width: 10type(<integer>)0p-up { from { tran.form: scale(1); } to { transform: scale(2); } }
+  @keyframes turn { from { transx; height: 100px background-color: #e0d8c8; }
+  .deep { perspective: 30ʏx; }
+  /* A 40px square in theight:form: rotate(0deg); } to { transform: rotate(90deg); } }
+  @keyframes skew { frames scale
+  html { background-color: #f6f

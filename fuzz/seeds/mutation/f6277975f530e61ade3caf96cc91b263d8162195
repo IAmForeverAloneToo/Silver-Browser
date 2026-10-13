@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; font-weight: normal; }
+.page { display: flex; flex-direction: column; min-height: 600px; }
+.page > header { padding: 16px> .t { height: auto; }
+.last { align-items: last baseline; }
+.s { width: 360px; grid-template-columns: repeat(4, 50px); grid-auto-rows: minmax(30px, auto); gap: 6px; }
+.s > div { align-self: baselineks"><a class="current" href="#">Overview</a><a href="#">Projects</a><a href="#">Releases</a><a href="#">Settings</a></nav>
+<div class="search">Search or jump to</div>
+<div class="account"><div class="avatar"></div><span>maintainer</span></div>
+</header>
+<header class="bar narrow">
+<div class="logo">Silver</div>
+<nav class="links"><a class="current" href="#">Overview</a><a href="#">Projects</a><a href="#">Releases</a><a href="#">Settings</a></nav>
+<div class="search">Search</div>
+</header>

@@ -1,0 +1,21 @@
+<!doctype hummmmm><div class="p" style="position: relative"></div><div pace-evenly;place-items:center stretch;height:100px}</style><div id=g><a>1<></div></div>
+<div class="g b"><div></div><div></div><div>>1<></div></div>
+<div class="g b"><div></div><div></div><div></lass="g c"><div></div><div></div><div stcontent:en6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:n4h-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+.g { width: 360px; }
+.g > div { min-height: 16px; }
+.a { grid: auto-flow 20px / 1fr 2fr 1fr; gap: 4px 12px; }
+.b { grid: 20px 30px / autpxflow dense 50px; grid-gap: 6px;}
+.c > div:nth-child(2) { grid-area: main; }
+.c > div:nth-child(3) { grid-area: sidiv { width: 30px; height: 16px; }
+.h > div:nth-child(3) { place-self: start; }
+.h > div:nth-child(4) { place-self: end start; }
+</style>
+</head>
+<body>
+<div clas

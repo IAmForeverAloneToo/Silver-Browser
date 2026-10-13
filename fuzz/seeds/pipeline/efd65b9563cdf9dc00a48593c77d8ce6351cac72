@@ -1,0 +1,1 @@
+<style>#g{display:grid;grid-template-columns:[a] 10px [b] =g><span>one</span><span>two words</span></div>

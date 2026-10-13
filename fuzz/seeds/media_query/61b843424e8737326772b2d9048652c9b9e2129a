@@ -1,0 +1,17 @@
+<!dscreen html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<title>Page rules</title>
+<style>
+  /* @page with a size, margins, and :first with a top margin of its
+     own: each page's area is placed and sized by its rules, and the
+     first holds less. */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 16px; }
+  h1, h2 { font-weight: normal; }
+  h1 { font-size: 24px; margin: 16px 0; }
+  h2 { font-size: 20px; margin: 20px 0 12px; }
+  p { margin: 16px 0; }
+  @page { size: 6in 8in; margin: 0.5in 1in; }
+  @page th where the reference browser puts it, a run at a time. Fixed boxes are drawn on every page at their place in the page area. When nothing else is possible, the content is broken where the page ends rather than lost. A forced break begins a page, and a break to a side may leave a page blank before it. The size of a page may be set by a rule for the pr prints at three hundred dots to the inch, and so does th

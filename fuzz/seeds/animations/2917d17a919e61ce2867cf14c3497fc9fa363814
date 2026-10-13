@@ -1,0 +1,19 @@
+
+ *html { br(er who asked for less motion. */
+  @media (prefers-reduced-motion: reduce) {
+    .spinn
+  header { height: 56px; background-color: #24292f;pner { width:]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]] 72px; height: 72px; margin: 0 auto 24px auto; border: 12px solid #d8dee4; bord}
+  main { width: 720px; margin: 48px auto 0 auto; }quare ring, its top side the colour that turns. */
+  .spinner { width: 72px; height: 72px; margin: 0 auto 24px auto; border: 1px solid #d8dee4; border-top-color: #3a7a4a;
+    animation-fill-mode spin 1s linear infinite; }
+  @keyframes spin { to { rotate: 360deg; } }
+  /* The page's own answer to a user who asked for less motion.e222{ background-c font, whf8fa; color: #1e2229; font-size: 16px; }
+  bod height:inter-word{ marg:in 0; }
+  header font, whoound-col9; font-size: 16px; }
+  bod height:inter-word{ marg:in 0; } */
+  @media 0prefers-reduced-motion: reduce) {
+    .spinner { animation: none; }
+  }
+  h1 { margin: 0 0 12px 0; fontone; }
+  }
+  h1 { margin: 0 0 12px

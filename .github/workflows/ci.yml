@@ -7,10 +7,11 @@ on:
   push:
     branches: [main]
   pull_request:
-  # Sunday at 04:17 UTC: the fuzz targets get a long run against the corpus
-  # they have grown, which a minute a push never reaches.
+  # Every night at 04:17 UTC (M33.6): the fuzz targets get a long run
+  # against the corpus they have grown, which a minute a push never
+  # reaches.
   schedule:
-    - cron: "17 4 * * 0"
+    - cron: "17 4 * * *"
   workflow_dispatch:
     inputs:
       fuzz_seconds:
@@ -113,8 +114,9 @@ jobs:
     runs-on: ubuntu-latest
     # A minute from an empty corpus explores very little, so each target's
     # corpus is carried between runs in the actions cache and every run
-    # starts from what the last one found. The weekly run gets half an
-    # hour a target on top of that; a cache entry no run has restored for
+    # starts from what the last one found, and from the seeds committed
+    # under fuzz/seeds (M33.6). The nightly run gets half an hour a
+    # target on top of that; a cache entry no run has restored for
     # a week is evicted, and the corpus then starts from nothing again,
     # which costs coverage but never correctness.
     # The repository pins the stable toolchain in rust-toolchain.toml, which
@@ -130,7 +132,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [html_parse, css_stylesheet, selector_parse, style_document, pipeline, mutation, encoding_decode, url_parse, mime_sniff, http_response, media_query, values, animations, image_decode, script, dom_api, input]
+        target: [html_parse, css_stylesheet, selector_parse, style_document, pipeline, mutation, encoding_decode, url_parse, mime_sniff, http_response, media_query, values, animations, image_decode, script, dom_api, input, csp, referrer, hsts, frames, cookies, storage, http_cache, wasm, canvas, clone, xml_parse, svg]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
@@ -159,8 +161,9 @@ jobs:
         # main thread's 8 MiB.
         run: |
           ulimit -s 65536
-          mkdir -p fuzz/corpus/${{ matrix.target }}
+          mkdir -p fuzz/corpus/${{ matrix.target }} fuzz/seeds/${{ matrix.target }}
           cargo fuzz run --target "$FUZZ_TARGET_TRIPLE" ${{ matrix.target }} \
+            fuzz/corpus/${{ matrix.target }} fuzz/seeds/${{ matrix.target }} \
             -- -max_total_time="$SECONDS_PER_TARGET" -max_len=4096 -rss_limit_mb=2048
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: failure()

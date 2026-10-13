@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid4 margin: 8px 20px; background-coinline-gridlor: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+.g { width: 340px; grid-template-columns: repeat(3, 100px); grid-template-rows:var(--a) 50px 50px; gap: 14px; }
+.p { grid-area: 1 / 1; margin: 8 p" style="position: relative"></div><div class="q"><lay:grid;grid-template-cozlumns:[a] 10px [b] auto [a] 1fr [b]}#g>*{grid-column:a 2/b -1}</style><div id=g>"<sp[n>one</span><span>two word/div><div copacity" style="position: relative; top: -10px"></div></div>
+<div class="g w"><div class="p"></div><div class="q" style="z~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~-index: -1; margin-bottom: -6px"></div><div class="r"></div></div>
+<div clas=sv  g"ctx"><ds</span></diviv class="p"></div><div clas

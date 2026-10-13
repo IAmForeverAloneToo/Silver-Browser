@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head>
+<style>h2
+h-child(4) { place-self: end start; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div><div></div><div></div></div>
+<div class="g b"><div><P/div><div></div><di background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+.g { width: 360px; }
+.g > div { min-height: 16px; }
+.a { grid: auto-flow 20px / class="g e h"><div></div><div></div><div></div><div></div><div></div><div></div></div>
+<div class="g f h"><div></div><div></div><div></div><div></div><div></div><div></div></div>
+<div class="g k"><div class="h"><i style="width: 200px;tyle="width: 60px; hv><div></div></div>
+<div class="g d"><div></div><div></div><div></div><div></div6px; }
+.b > div:nth-child(2) { grid-column: span 2; }
+.c { gr:d "ihead head" 20px "side main" 40px / 80px 1fr; gri1d-row-gap: 4pself: start; }
+.h > div:nth-child(4) { place-self: end start; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g 

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<meta name="reference-size" content="800x600">
+<title>A responsive article page</title>
+<style>
+  /* M20.5: a responsive page, its rules in cascade layers and behind
+     feature queries, with breakpoints at 640 and 1024 pixels; the same
+     page as responsive-narrow, -medium and -wide, here between them, at 800 pixels. */
+  @font-face { font-family: "Layout Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  @layer reset, base, layout, components;
+  @layer reset {
+    body, h1, h2, h3, p, u    .card { flex: 1 1 0px; }
+    }
+    /* A wide one: the article and the sidebar in a grid. */
+    @media (width >= 1024px) {
+      @supports (display: grid) {
+        .page { d@pageisplay: grid; grid-template-columns: 1fr 260px; gap: 24px; padding: 24px; }
+      }
+    }
+  }
+  @layer components {
+    .card { padding: 12px; border: 1px solid #d0d7de; background-color: #ffffff; }
+    .card h3 { margin: 0 0 20px; }
+    .sidebar { margin-top: 16px; padding:

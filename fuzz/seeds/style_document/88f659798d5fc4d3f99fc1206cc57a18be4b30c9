@@ -1,0 +1,16 @@
+<!doctype html>
+<px; }
+.f { width: 360px; grid-template-columns: 20px repeat(2, [x] 30px [y]) repeat(auto-fill, 60px) 20px; grid-auto-rows: 20px; }
+</style>
+</head>
+<body>
+<div clagrid-columnss="col">
+<div class="g ad-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; grid}
+.a { width: 360px; 400px; }
+i { display: block; background-color: #3a5a7a; }
+.a { width: 360px; grid-template-0px; grid-template-columns: 20px repeat(2, [xss="g f"><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div>
+</div>
+</body>
+</html>

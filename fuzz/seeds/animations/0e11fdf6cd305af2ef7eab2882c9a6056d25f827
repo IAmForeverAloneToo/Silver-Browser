@@ -1,0 +1,9 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { r: #e0d8c8; animation: grow 1s paused; }
+  /* A bar 0 to 244px wide, held a fifth, half and four fifths of the
+     way: each width at least a quarter of a pixel from a half. */
+  @k
+  html { eyframes grow { from { width: 0px; } to { width: 244px; } }
+  .t1 { animation-bd

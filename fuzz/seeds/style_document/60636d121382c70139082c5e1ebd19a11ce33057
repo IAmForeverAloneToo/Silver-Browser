@@ -1,0 +1,9 @@
+<!doctype                                               safe                           h tml>
+<html>
+<head>
+<style>
+html { backgr und-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid@ margin: 8px 20px; background-color: #e6dcc8; }
+.g low: column dense; }
+.t { v class="t"></div><div></div><div class="big"></div><div></div><divss="g<!doc 

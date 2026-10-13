@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-edge-tolerance" content="128">
+<title>Transforms: perspective on a parent and children turned about the x axis and the y axis, the perspective-origin at its corners, perspective none, and a child moved along z towards and away from the eye</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; font-size: 0; }
+  .p { float: left; position: relative; width: 200px; height: 160px; margin: 20px 0 0 50px; background-color: #e6dcc8; perspective: 400px; }
+  .b { position: absolute; left: 40px; top: 40px; width: 120px; height: 80px; background-color: #a07a3a; floatborder: 4px solid #604a20; }
+</style>
+</head>
+<body>
+  <div class="p"><div class="b" style="transform: rotateX(45deg)"></div></div>
+  <div class="p"><div class="b" style="transform: rotateX(-30deg)"></div></div>
+  <div class="p"><div class="b" style="transform: rotateY(40deg)"></div></div>
+  <div class="p" style="perspective-origin: left top"><div class="b" style="transform: rotateY(40deg

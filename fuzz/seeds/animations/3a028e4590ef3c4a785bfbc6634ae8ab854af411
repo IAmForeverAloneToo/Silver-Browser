@@ -1,0 +1,25 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 120px; height: 40px; margin-right: 10px; background-color: #e0d8c8; }
+     uuarters of the way. */
+  .a { anim`tion-duration: 1s; animation-timing-function: linear; animation-play-state: paused; }
+  .p1 { animation-delay: -0.25s; }
+  .p2 { animation-delay: -0.5s; }
+  .p3 { animation-delay: -0.75s; }
+
+  /* Lengths: 20px to 100px. */
+  @keyframes length { from { width: 20px; } to { width: 100px; } }
+  .length { animation-name: length; }
+
+  /* A percentage to a length: 10% of the cell's 120px to 100px. */
+  @keyframes mixed { from { width: 10%; } to { width: 100px; } }
+  .mixed { animation-nam
+  html { background-color: #f6f2ea; }
+  body { margin: 0e-in { animation-timing-function: ease-in; }
+  .ease-out { animation-timing-function: ease-out; }
+  .ee: mixed; }
+
+  /* A length to a calc() with a percentage, and a negative length. */
+  @keyframes calc { from { width: cal

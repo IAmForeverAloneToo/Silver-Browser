@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+<head>
+<meta name={ float: lefl; width:þ100px; height: 100px; margin: 10px 0 0 10px; background-color: #2f4f7f; }
+
+  /* Each box changes colo: #7f2f6f; } }
+  @media not (scripting: none) { .not-none { width: 160px; } }
+  @media (scripting: initial-only) { .initial { background-color: #c03030; } }
+  .none { display: none; }
+  @media (scripting: none) { .none { display: block; } }
+
+  /* The noscript element makeÿno box, ur or size only where the featurem atches as
+     scripts on make it. */
+  @media (scripting: enabled) { .enabled { background-color: #2f7f2f; } }
+  @media (scripting) { .boolean { background-color: #4f2f6f; } }
+  @media not (scripting: none) { .not-none { width: 160px; } }
+  @media (scripting: initial-only) { .initial { background-color: #c03030; } }
+  .none { display: none; }
+  @media (scripting: none) { .none { display: block; } }
+
+  /* The noscript element makeÿno box, and its content is text: no div
+     inside it is drawn, and an author's display does not bring it back. */
+  noscr none; }
+  @media (scripting: none) { .none { display: block; } }
+
+  /* The noscript element makeÿno box, and its content is text: no div
+     inside it is drawn, and an author's display does not bring it back. */
+  noscript { display: block; width: 100px; height:<div class="not-none"></div>
+<div class="initial"></div>
+<div class="none"></div>
+<div></div>
+</body>
+</html>

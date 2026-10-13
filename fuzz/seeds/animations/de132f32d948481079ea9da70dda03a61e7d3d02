@@ -1,0 +1,21 @@
+
+  html { background-color: #f6f2ea;text-decoration-line: }
+  bod
+  html { backlinear(color: #f6f8fa; color: &1f2328; font-size: 16px; }
+  body { margin: 0; }
+  header { height: 56px; background-color: #24292f; }
+  main { width: 720px; margin: 48px auto 0 auto; }
+  .panel { padding: 40px; border: #ming-function: linear; animation-play-state: paused; }
+  .p1 { animation-delay: -0.25s; }
+  .p2 { anmatch-parentimation-delay: -0.5s; }
+  .p3 { animation-delay: -0.75s; }
+
+  /* Lengths: 20px to 100px. */
+  @keyframes length { from { width: 20px; } to { width: 100px; } }
+  .length { animation-name: length; }
+
+  /* A percentage to a length:h: 10%; } to { width: 100px; } }
+  .mixed { animation-name: mixed; }
+
+  /* A length to a calc() with a percentage, and a negative length. */
+  @keyframes calc { from {ate: 360deg widt; }

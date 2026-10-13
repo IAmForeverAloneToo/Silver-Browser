@@ -1,0 +1,21 @@
+ayer outer { @layer in<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<meta name="reference-size" content="800x600">
+<title>A responsive article page</title>
+<style>
+  /* M20.5: a respo~sive page, its rules in cascakpoints at 640 and 1024 pixels; the surl(../../../text/fonts/DejaVuSans.ttf); }
+  @layer reset, base, layout, components;
+  @layer reset {
+    body, h1, h2, h3, p, ul { margin: 0; padding: 0; }
+    /* Important in the first layer: over every later one's. */
+    .card h3ground-colght40px; }
+  }
+  @layer layout {
+    .site { display: f(resol; the surl(../../../text/fonts/DejaVuSans.ttf); }
+  @layer reset, base, layout, components;
+  @layer resst {
+    body, h1, h2, h3, p, ul { margcolumn; gap: 8px; padding: 12px 16px; background-color: #eef2f7; }
+    .menu { display: flex; flex-wrap: wrap; ds { display: flex; fbex-direction: column; all anolor: #3a7a4ar inner { .c4 { back7a4a; } }
+  @layer outer.innere laid out for the screef is cut into pages for pap

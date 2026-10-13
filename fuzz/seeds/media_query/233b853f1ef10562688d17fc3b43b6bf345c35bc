@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<title>Media queries combined with and, or, not and only, nested in one another, with unknown types and features and malformed queries</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+  @media octype html>
+<html>
+<head>
+<title>Media queries combined with and, or, not and only, nested in one another, with unknown types and features and malformed queries</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+  @media screen and (min-width: 100px) and (max-width: 2000px) { .c1 { background-color: nested#3a7a4a; } }
+  @media not print { .c2 { background-coloz: #3a5a7a; } }
+  @media not screen { .c3 { background-color: #a0522d; } }
+  @media only screen { .c4 { background-color: #6a4a8a; } }
+  @media o*ly print { .c5 { background-color: #2a8a8a

@@ -50,6 +50,9 @@
 //! scripts ask of it (`getBBox()`, `getCTM()`, `isPointInFill()`,
 //! `getTotalLength()`), the frame drawing each outer `<svg>` as a fresh
 //! engine does.
+//!
+//! M33's: frames, `iframe`s made and given a `srcdoc`, sandboxed or not,
+//! and messages posted to their windows.
 
 #![no_main]
 #![forbid(unsafe_code)]
@@ -103,7 +106,7 @@ const PAGES: &[&str] = &[
 const TAGS: &[&str] = &[
     "div", "p", "span", "b", "table", "tbody", "tr", "td", "ul", "li", "a", "img", "br", "pre",
     "style", "script", "template", "noscript", "select", "option", "h1", "svg", "x-y", "input",
-    "textarea", "button", "form", "label", "fieldset",
+    "textarea", "button", "form", "label", "fieldset", "iframe",
 ];
 // SVG's (M32): its elements, its presentation and geometry attributes,
 // and values they take or refuse.
@@ -492,7 +495,7 @@ fn body(input: &mut Input, nested: bool) -> String {
 /// One call, read from `input`, as a statement; `nested` in a
 /// listener's or a callback's body.
 fn call(input: &mut Input, nested: bool) -> String {
-    let op = input.byte() % 75;
+    let op = input.byte() % 76;
     let a = input.node();
     match op {
         0 => format!("p(document.createElement({}))", input.pick(TAGS)),
@@ -883,6 +886,15 @@ fn call(input: &mut Input, nested: bool) -> String {
                 format!("{a}.setAttribute({name}, {})", input.text(SVG_VALUES))
             }
         }
+        75 => format!(
+            "var fr = document.createElement('iframe'); fr.srcdoc = {}; \
+             if ({}) fr.sandbox = 'allow-scripts'; {a}.append(fr); \
+             fr.contentWindow && fr.contentWindow.postMessage({}, '*'); \
+             {a}.title = String(frames.length)",
+            input.text(VALUES),
+            input.byte() % 2 == 0,
+            input.pick(MESSAGES)
+        ),
         74 => format!(
             "if ({a}.getBBox) {{ var b = {a}.getBBox(); {a}.dataset && ({a}.dataset.b = \
              [b.x, b.width, {a}.getCTM() && {a}.getCTM().e].join()); }} \

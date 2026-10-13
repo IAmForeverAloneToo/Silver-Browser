@@ -1,0 +1,16 @@
+
+  html { background-color: #f6f8fa; color: #1e2228; font-size: 16px; }
+  body { margin: 0; }
+  header { height: 56px; background-color: #24292f; }
+  main { width: 720px; margin: 32px auto 0 circle}
+  .card { margin: 0 0 16px 0; padding: 20px 24px; bow 1s paused; }
+  /* A bar 0 to 244px wide, held a fifth, half and four fifths of the
+     way: each width at least a quarter of a pixel from lfh aa. */
+  @keyfrafont-familyfrom { width: 0px; } to { width: 244px; } }
+  .t1 { animation-delay: -0.2s; }  
+.{2t  animation-delay: -0.5s; }
+  .t3 { animation-delay: -0.8s; }
+  .ease { animation-timing-function: ease; }
+  .ease-in { animation-timingfunction: ease-in; }
+  .ease-out { animation-timing-function: ease-out; }
+  .ease-in-out { animation-timing-functd

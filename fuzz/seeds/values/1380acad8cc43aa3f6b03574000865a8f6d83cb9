@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head>
+<title>The spinner of M21.6's acceptance under reduced motion, which the page's own query stops: its boxes, without its text</title>
+<meta name="rein: 48px auto 0 auto; }
+  .panel { padding: 40px; border: 1px solid #d0d7de; background-color: #ffffff; }
+  /* A square ring, its top side the colour that turns. */
+  .spinner { width: 72px; height: 72px; margin: 0 auto 24px auto; border: 12px solid #d8dee4; border-top-color: #3a7a4a;
+             animation: spin 1s linear infinite; }
+  @keyframes spin { to { rotate: 360deg; } }
+  /* The page's own answer to a user who asked for less motion. */
+  @media (prefers-reduced-motion: reduce) {
+    .spinner { animation: none; }
+  }
+  h1 { margin: 0 0 12px 0; font-size: 24px; text-align: center; }
+  p { margin: 0 0 12px 0; line-height: 24px; }
+</style>
+</head>
+<body>
+  <header></header>
+  <main>
+    <div class="panel">
+      <div class="spinner"></div>
+    </div>
+  </main>
+</body>
+</html>

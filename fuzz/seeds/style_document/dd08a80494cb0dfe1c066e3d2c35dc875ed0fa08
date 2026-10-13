@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-colotems: center; align-items: end; }
+.st%{ justify-self: stretch; align-self: stretch; width: auto; height: auto; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="justify-self: start"></div><div style="justify-self: end"></div><div style="justify-self: center"></div><div style="justify-self: right"></div>
+<div style="align-self............................................................................................................<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f7f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color:; gap: 14px; }
+.p { grid-area: 1 / 1; margin: 0 40px 20px 0; }
+.q { grid-area: 1 / 1; margin: 10px 20px; }
+.r { grid-area: 1 / 1; margin: 20px 0 0 40px; }
+.x .p, .xiv class="p"></div><div class="q" style="z-index: -1; margin-bottom: -6px"></div><div class="r"></div></div>
+<div class="g v ctx"><div class="p"></div><div class="q" style="z-index

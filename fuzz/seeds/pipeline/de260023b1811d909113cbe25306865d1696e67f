@@ -1,0 +1,25 @@
+<!doclipctype html>
+<html
+  @layer base, theme;
+  @layer base { .c1 { background-color: #3a7a4a !important; } }
+  @layer theme { .c1 { background-color: #a0522d !important; } }
+  .c2 { background-color: #a0522d !important; }
+  @layer base { .c2 { background-color: #3a7a4a !important; } }
+  @layer theme { .c3 { background-color: #3a7a4a !important; } }
+  .c3 { background-color: #a0522d; }
+  @layer theme { .c4 { background-color: #3a7a4a !important; } }
+  @ over unlayered, anonymagainst them</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+  @layer base, theme;
+  @layer base { .c1 { background-color: #3a7a4a !important;ortant; } }
+  @layer theme { body .c.c10 { background-color: #a0522d !important; } }
+  @layer base { .c10 { background-color: #3a7a4a !important; } }
+</style>
+</head>
+<body>
+  <div class="c c1"></div>
+  <div class="c c2"></div>
+  <div class="c c3"></

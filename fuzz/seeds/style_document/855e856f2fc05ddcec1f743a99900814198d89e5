@@ -1,0 +1,24 @@
+<style>#g{di<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g >d-color: #;4a8c6a }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.g { width: 360px; grid-template-columns: repeat(4, 80px); grid-auto)rows: 40px; gap: 4px; }
+.g > div { width: 30px; height: 20px; }
+.ji { justify-items: center; align-items: end; }
+.st { justify-self: stretch; align-self: stretch; width: auto; height: auto; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="justify-seelf: flefr [b]}#g>*{grid-column:a 2/b -1}</stylex-end; align-self: flex-end"></div>
+</div>
+<div class="g ji">
+<div></div><div style="justify-self: start"></div><div style="align-self: stan-self: end"></div><div style="align-selsplay:grid;grid-template-columns:[a] 10px [b] auto [a] 1f: center"></div><div style="place-self: end cente

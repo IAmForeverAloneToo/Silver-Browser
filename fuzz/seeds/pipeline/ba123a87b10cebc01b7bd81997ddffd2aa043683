@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { bacmn: -5; grid-row: -3; }
+.a > div:nth-child(3) { grid-column: 1; g-1d-row: 1; }
+.b { width: 360px; grid-auto-flow: column; grid-template-rows: 20px 20px; grid-auto-columns: 40px 70px; }
+.c { width: 360px; grid-template-columns: 50px; grid-auto-rows: minmax(10px, auto) 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div></div>
+<div class="g b"><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div>
+<div class="g c"><div></div><div></div><div style="height: 30px"></div><div></div></d 50px; grid-auto-rows: minmax(10px, auto) 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div></div>
+<div class="g b"><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div>
+<div class="g c"><div></div><div></div><div style="height: 29px"></div><div></div></div>
+</div>
+<

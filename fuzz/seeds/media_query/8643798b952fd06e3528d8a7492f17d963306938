@@ -1,0 +1,18 @@
+avoidonl  @supports (dflex) and (color: red) ,,,,,,,,,,,,,,,,,,,,vh,,,,,,,,,,,,,,,,,,{ .c4 { background-colo-color: #a0522d; } }
+  @supports (foo: bar) { .c12 { background-color: #6a4a8a; } }
+  @supports (transform: rotate(10deg)) { .c13 { background-color: #2a8a8a; } }
+  @supports (color: red !important) { .c14 { background-color: #8a6a2a; } }
+  @supports (display:grid) { .c14 { background-color: #4a6a2a; } }
+  @supports display: grid { .c16 { background-color: #8a3a5a; } }
+  @supp<!doctype html>
+<html>
+<head>
+<title>Important declarations in cascade layers: earlier layers over later ones, layered over unlayered, anonymous and nested layers reversed, and the style attribute, normal and important, agaiuylz z nd-color: #a0522d"></div>
+  <div class="c c5" style="background-color: #3a7a4a !important"></div>
+  <div class="c c6"></div>
+  <div classp\="c c7"></div>
+  <div class="c c8"></div>
+  <div class="c c9"></div>
+  <div class="c c10"></div>
+</body>
+</html>

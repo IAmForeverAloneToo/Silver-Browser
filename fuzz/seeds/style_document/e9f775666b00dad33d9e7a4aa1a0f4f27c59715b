@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; bn: 3 / 4; grid-row: 1 / 2; justify-self: end; align-self: center; width: 20pc; height: id-template; }
+.g >position: relative; mplace-items20px; padding: 6px; width: 340px; background-color: #d4c4a4; }
+.outer > .g { posi0tion: static; margin: 0; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="grid-area: 1 / 1"></div><div ste"rlyg=id-ard; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; margin: 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class=ss="a" style="width: 30px; height: 20px; left: 0"></div>
+<div>QQQQQQQQQQ"g"><div class="p"></div>nd-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; bn: 3 / 4; grid-row: 1 / 2; justify-self: end; align-self: center; width: 20pc; height: id-template; }
+.g >position:

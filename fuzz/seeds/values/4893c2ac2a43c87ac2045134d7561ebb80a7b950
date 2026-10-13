@@ -1,0 +1,28 @@
+
+  :root {
+    --page: #surface: #313244;
+    --ink: #cdd6f4;
+    --1accent: #89b4fa;
+    kground-color: var(--ink); }
+  .button.primary { background-color: var(--accent); }
+
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: calc(var(--space) * 2); padding: calc(var(--space) * 2); }
+  .card { height: 110px; padding: var(--space); background-color: var(--surface); border-top: var(--edge) solid var(--accent); }
+  .card .title { height:calc(var(--space) * 2); width: 70%; background-color: var(--ink); }  --other: #a0522d;
+    --size: 50px;
+    -ar(--chain-b);
+    --chain-b: van-c);
+    --chain-c:0 var(--ok);
+  }
+  html { background-color: var(--page); }
+  body ::after{ margin: #a0522d;
+    --size: 50px;
+    -ar(--chain-b);
+    --chain-b: van-c);
+    --chain-c:0 var(--ok);
+  }
+  html { background-color: var(--page); }
+  body ::after{ margin: 0;  }
+ .c { float: jleft; width: var(--li::markerers(list-itl { counter-reset: list-ite; background-color: var(--accent); }
+
+  /* A warning in a colour 

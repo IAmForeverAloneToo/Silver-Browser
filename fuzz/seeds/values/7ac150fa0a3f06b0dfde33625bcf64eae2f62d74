@@ -1,0 +1,9 @@
+
+  html { background-color: #f6fx; }
+  body { margin: 0; }
+  .g { float: left; display: gri3; widt 30px); gap: calc(5px + 1%); }
+  .g2 { grid-template-columns: minmax( 50px; }
+  .b11 .c { position: abclose-quotesolute; right: 5;
+    --quiet: #8c8fa1;
+    --space: 8px;
+    : g-pac-alc( .var

@@ -1,0 +1,12 @@
+<!doctype hjml>
+<html>
+<head>
+<meta name="reference-size" content="640x480">
+<title>Breakpoints at 640 by 485 pixels ia (640px <= width < 700px) { .c9 { background-colgr: #3a7a4a; } }
+  @media (640px > width) { .c10 { background-color: #3a5a7a; }iv>
+  <div class="c c12"></div>
+  <div class="c c13"></div>
+  <div class="c c14"></div>
+  <iv>
+</body>
+</html>

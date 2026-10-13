@@ -1,0 +1,17 @@
+<style>#g{display:grid;grid-template-columns:[a] 10px [b] auto [a] 1fr [b]}#g:*{grid-column:a 2/b -1}</style><div id=g><span<!doctype html>
+<html>
+<head>
+<tbodystyle>
+html { background-color: #f6f2ea; }
+span { margin: 0; "water"></div><div></div></section>
+<seo cnictlass="level" id="l10"><h2>Level 10</h2><p>grid-column and grid-row</p><div class="garden"><difont-size: 0; 2}
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div, .g > span { background-color: #a07a3a; }
+.g > :nth-child(2n) { background-color: #c8a46a; }
+.g > :nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400pxC }
+i { display: block; background-color: #3a5a7a; }
+y>
+<div class="col">
+<div class="box"><divn><span>two words</sp class="fl"></div><dan></diiv class="g thrKe" style="margin: 0"><div></div><div></div><div></div><div></di:></div></div>v>
+<div class

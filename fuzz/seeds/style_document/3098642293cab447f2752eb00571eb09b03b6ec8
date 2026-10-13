@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2b;a}
+ eody { margin: 0; font-size: 0; }
+.g { dound-templat: initial; width: auto; height: auto; }
+</style>
+</head>gn-self: center"></ class="g"><div class="p"></div><div class="q"></div><div class="r"></div>col">
+<div class="g">
+<div style="grid-area: 1 / 1"></div><div style="grid-area: 3 / 3"></div>
+<div class="a" style="grid-area: div>
+<div mn: 1 / 2; bottom: 0; width: 20px; height: 20px"></div>
+<div class="a" style="grid-column: 3 / 4; grid-row: 1 / 2; justify-self: end; alignv><div class="q"></div><div class="r" style="order: -1"></div></div>
+<div classargin: 8px 20matrix(ding: 6px; width: background-color: #d4="g y"><div class="p" style="z-index: 1"></div><div class="q" c4a4; }
+.outer > .g { position: static; margin: 0; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="grid-area: 1 / 1"></div><div style="grid-area: 3 / 3"></div>
+<div cidth: 24px; height: 14px"></div>
+<div class="a" style="grid-row: 3 / span 4; grid-

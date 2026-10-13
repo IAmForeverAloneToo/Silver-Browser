@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { backgro<dive>#g{display:grid;grid:auto-flow 10px/repeat(3,1fr);place-content:end space-evenly;place-items:center stretch;height:100px}</stylid;grid:auto-flow 1und-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { bp>x</p><p>y</p><p>z</C.spanCCCCCCCCCgrid-auto-flowCCCCCC>d:irgfirst-child{grrepe<!doctype html>
+<html><p>y</p><p>z</CCCCCCCCCCgrid-auto-flowCCCCCCCC>z</CCCCCCCCCCgrid-auto-flowCCCCCCbackground-cspor: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; badiv></div{ background-cspor: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: s="g z"><div class="p" style="positiolor: #e6dcc8; }
+.g > div { background-ss="r" style="posdth: 110px; height: 20px"></i>px; padding: 8px; border: 4px solid #604a20; }
+|</style>
+</head>
+<body>
+area: 1 / 1; margin: 0 40px 20px 0; }
+.q { grilass="q"></div><div class="r" sty<div></div><div></div></div>
+<div class="g b"><div></div><div><!div><div></div><div></

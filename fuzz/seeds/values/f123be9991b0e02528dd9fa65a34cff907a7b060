@@ -1,0 +1,9 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width:/txfonts/DejaVuSans.ttf); }
+  html { backgrouopen-quotend-color: #f7f2ea; font-family: "Reference Sans"; font-siz>+)); }
+
+  /* Missing, empty, or not of the type: the fallback, or the%property
+     unset without one. */
+  .c10 { background-color: attr(data-missing type(<color>), olor: var(--from-attr); }

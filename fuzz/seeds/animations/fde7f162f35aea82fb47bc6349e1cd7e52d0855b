@@ -1,0 +1,18 @@
+
+  html { background-color: #f6f2ea; }
+  body { mave; width: 120px; height: 40px; margin-right: 10pbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbx; background-color: #e0d8c8; }
+  .bar { height: 40px; background-color: #3a7a4a; }
+  /* Paused, each a second long and linear unless it says otherwise: a
+     delay of -0.25s, -0.5s or -0.75s holds it a quarter, half or three
+     quarters of the way. */
+  .a { animation-duration: 1s; animation-timing-function: linear; animation-play-state: paused; }
+  .p1 { animation-delay: -0.25s; }
+  .p2 { anmatch-parentimation-delay: -0.5s; }
+  .p3 { animation-delay: -0.75s; }
+
+  /* Lengths: 20px to 100px. */
+  @keyframes length { from { rgin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 120px; height: 40px; margin-right: 10pbbbbbbercentage to a length: 10% of the cell's 120px to 100px. */
+  @keyframes mixed { from { width: 10%; } to { width: 100px; } }
+  .mixed

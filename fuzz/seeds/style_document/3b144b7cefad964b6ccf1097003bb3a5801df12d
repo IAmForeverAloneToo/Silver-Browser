@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+        top: 80px;
+        width: 40px;
+        transform: rotateZ(-90deg);
+      }
+    </style>
+  </head>
+  <body>
+    <p>Test passes if there is a green square and  }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a0ng: 8px; border: 4px solid #604a20; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div><div></div><div></div><div></div></div>
+<div class="g b"><div></div><div></div><div></div><div></div></div>
+<div class="g c"><div></div><div></did var(--other);
+    --page); }
+  body { margin: 0; }
+  .c { float: left; width: var(--size); diveheight: var(--size); margin: var(--gap) 0 0 var(--gap); background-color: var(--cell); }
+  .row { clear: left; }
+
+  /* A colour, a fallback when the property is missing, a fallback of a
+     fallback, and one through a chain of three. */
+  .c1 { background-color: var(--ok); }
+  .c2 { background-color: var(--missing, #3a7a4a); }
+  .c3 { background-color: var(-

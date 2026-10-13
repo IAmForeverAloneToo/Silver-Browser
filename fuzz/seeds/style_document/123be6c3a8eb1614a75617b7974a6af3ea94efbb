@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; bn: 3 / 4; grid-row: 1 / 2; justify-self: end; align-self: ; width: 340px; background-color: #d4c4a4; }
+.outer > .g { position: static; margin: 0; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="grid-area: 1 / 1"></div><div style="grid-area: 3 / 3"></div>
+<div class="a" style="grid-area: 2 / 2 / 3 / 3; topd-area: 3 / 1 / 4 / 4; justify-self: stretch"><i style="width: 40px; grid-area: 1 / 2 / 3 / 3; top:<!doctype html>
+<html>
+<head>
+<stylegap>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { backgroun" style="z-QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQindex: 1"></div><div class="q" style="z-index: 0"></div><div class="r"></div></div>
+</div>

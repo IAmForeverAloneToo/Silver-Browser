@@ -1,0 +1,9 @@
+
+  html { background-co */
+  .b1 .c { width: calc(50% + 50%); }
+
+  /* Margins px; height: 20px; background-color: #a0522d; }
+  .b13 .c { width: calc(50% + 10px); height: 20px; }
+
+  /* Viewport units. */
+  .b14 .c { width: calc(10vw - 20px); height: max(5vh, 40px); }

@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f5f6f8; color: #20242a; }
+bod-color: #2a8a55; color: #ffffff; }7</style>
+</head>
+<body>
+<div class="page">
+<h2>Delivery address</h1>
+<p class="lead
+<label for="country">Country</label><input id="country">
+<p class="note">We deliver to every country in the European Union.</p>
+<label class="top" for="notes">Notes for the courier</label><textarea id="notes"></textarea>
+<p class="wide">The courier will call if nobody answers the door, and leave the parcel with a neighbour only if you allow it here.</p>
+<div class="actions"><span class="button">Bac #b9c0c8; background-color: #fbfbfc; font-family: "Layout Test Sans"; font-size: 14px; }
+textarea { he 22px; }
+.lead { margin-top: 4px; color: #626a75; }
+form { display: grid; grid-template-columns: max-content 1fr; align-items: center; gap: 12px 16px; margin-top: 16px; }
+label { color: #3b424c; }
+input, textarea { display: block; box-sizing: border-box; border-bottom-style: 100%; heig

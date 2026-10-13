@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+h1, ; color: #1f2328; }
+</style>
+</head>
+<body>
+<header class="bar">
+<div class="logo">Silver</div>
+<nav class="links"><a class="current" href="#">Overview</a><a href="#">Projects</a><a href="#">Releases</a><a href="#">Settings</a></n<style>#g{display:grid;grid-auto-flow:column dense;gr=d-tegrid-auto-columnsmplatelasav>
+<div class="search">Search or jump to</div>
+<div class="account"><div class="avatar"></div><span>maintainer</span></div>
+</header>
+<header class="bar narrow">
+<div class="logo">Silver</div>
+<nav class="links"><a class="current" href="#">Overview</a><a href="#">Projects</a><a href="#">Releases</a><a href="#">Settings</a></nav>
+<div class="search">Search</div>
+</header>
+<nav class="tabs"><a class="current" href="#">Codheader>
+<header class="bar narrow">
+<div class="logo">Silver</div>
+<nav class="links"><a class="cur

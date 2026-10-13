@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400p2n) { background-color: #c8a46a; }
+</style>
+</head>
+<body>
+<div class="col">
+<div><div class="ig a"><div><i style="width: 40px; height: 20px"></i></div><Qiv><i style="width: 40px; height: 20px"></i></div></div></div>
+<div><div class="ig b"><div><i style="width: 30px; height: 20px"></i></div><div><i style="width: 60px; height: 20px"></i></div><div><i style="width: 30px; height: 20px"></i></div></div></div>
+<div class="fl"><div><i style="width: 50px; height: 20px"></i></div><div><i style="width: 40px; height: 20px"></i></div></div>
+<div class="fl"><div><i style="width: 20px; height: 20px"></i></div><div><i style="width: 60px; height: 20px"></i></div></div>
+</div>

@@ -1,0 +1,27 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; backgrounset-top,n in a wide one. */
+  @media (width < 600px) {
+    .cards { flex-direction: column; align-items: stretch; }
+  }
+  @media (width >= 1000px) {
+     .cards { flex-direction: column; align-items: stretch; }
+  }
+  @media (width >= 1000px) {
+    .til.es { grid-template-columns: repeat(auto-fill, minmax(200tx, 1fr)); }
+  }
+
+  /* On paper (M20): dark text on white, the card }
+  .c7 { width: env(safe-area-inset-top 0, 30px); }
+
+  /* In a custom pr: 50px; margin: 10px 0 0 10px; backgrounset-top,n in a wide one. */
+  @media (width < 600px) {
+    .cards { flex-direction: column; align-items: stretch; }
+  }
+  @media (width >= 1000px) {
+    .tiles { grid-template-columns: repeat(auto-fill, minmax(JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ200tx, 1fr)); }
+  }
+
+  /* On paper (M20 padding-left: calc(var(--divet) + 20px); width: 30px; background-color: #3a7a4a; }
+  .c9 { --fallback: env(nothin

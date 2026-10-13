@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<title>Cascade layers: the order yer outer { @layer inner { .c5 { background-color: #a0522d; } } .c5 { background-color: #3a7a4a; } }
+  @layer outer.inner2 { .c6 { background-color: #3a7a4a; } }
+  @layer outer.inner { .c6 { background-color: #a0522d; } }
+  @layer theme { @media (min-width:portrait 100px) { .c7 { background-color: #3a7a4a; } } }
+  @layer base { .c7 { background-color: #a0522d; } }
+  @media print { @layer zsecond; }
+  @layer zfirst { .c8 { background-color: #3a7a4a; } }
+  @layer zsecond { .c8 { background-color: #a0522d; } }
+  @layer base { .c9 { background-color: #3a7a4a; } }
+  .c9 { border-color: #a0522d; }
+  @layer theme { .c10 { background-color: #a0522d; } }
+  @supports (display: grid) { @layer base { .c11 { background-color: #a0522d; } } }
+  @layer theme { .c11 { background-color: #3a7a4a; } }
+  @layer base { .c12 { background-color: #3a7a4a; } }
+  @layer base { .c12 { width: 30px; } }
+</style>
+</head>
+<body>
+  <div class="c c1"></div>
+  <div class="c c2"></d

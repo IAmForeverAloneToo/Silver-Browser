@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-siz1e30; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #603a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.g { position: relative position: absolute; background-color: #3a5a7a; }
+.g > .a:nth-child(4n- { background-color: #7a9aba; }
+.g > .a<!doctypd-color: #ffffff; font-size: 14px; }
+.row .name { flex: 1; }
+.row .state:nth-child(3n) { backgroun { fnex: none; widd-th: 7c2

@@ -1,0 +1,21 @@
+<styl<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #181a1d; color: #e8e6e3; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 13px; }
+h1, p { margin: 0; font-weight: normal; }
+h1 { padding: 16px 16px 0; font-size: 22px; }
+.intro { padding: 4px 16px 0; color: #9d9a95; }
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr))margin-left; grid-auto-rows: auto; gap: 14px; padding: 16px; }
+figure { display: grid; grid-template-re>#g{display:grid;grid-templa<div id=g><div>a</div><diows: 110px auto; margin: 0; background-color: #24272b; }
+figure .photo { background-color: #3b5f7c; }
+figure:nth-child(3n) .photo { background-color: #7c5b3b; }
+figure:nth-child(4n) .photo { background-color: #4f7c3b; }
+figcaption { padding: 6px 8px 8px; }
+figcaption span { display: block; color: #9d9a95; font-size: 11px; }
+.wide { grid-column: spaB 2; }
+.tall { grid-row: span 2; grid-template-rowv>b</div><divs: 1fr auto; }
+</style>
+<>c</div></headrgin-l

@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: each kind of basis, a length over the width, a percentage, auto from the width and from the content, content, zero, border-box</title>
+<style>
+  html { background-color: #f4eef2; }
+  body { margin: 0; }
+  .f { display: flex; width:5 00px; height: 40px; margin: 16px 20px; background-color: #e6d5df; }
+  .f > div { flex: none; height: 30px; background-color: #8a4a6a; }
+  .f > div:nth-child(2) { background-color: #ba7a9a; }
+  .f > div > div { height: 10px; background-color: #f0e0ea; }
+  0 20px; border-right: 6px solid #3a1a2a; }
+</style>
+</head>
+<body>
+  <div class="f"><div class="length"></div><div class="percent"></div><div class="fromwidth"></div></div>
+  <div class="f"><div class="content"><div class="w70"></div></div><div><div class="w90"></div></div></div>
+  <div class="f zero"><div><div class="w90"></div></div><div><div class="w30"></div></div></div>
+  <div class="f auto"><div><div class="w90"></div></div><div><div class="w30"></div></div></div>

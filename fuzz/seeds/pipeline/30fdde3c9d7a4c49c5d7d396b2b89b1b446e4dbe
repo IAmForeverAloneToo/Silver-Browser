@@ -1,0 +1,14 @@
+<tesl>y#g{display:grid;grmd-template-columns:minmax(0,1fr) fit-cAontent(4ow: row dense; }
+#l24 .water { grid-column: span 3; }
+</style>
+</head>
+<body>
+<h1>Grid garden</h1>
+<main class="levels">
+<section class="level" id="l1"><h2>Level 1</h2><p>A start line</p><div class="garden"><div class="water"></div></div></section>
+<section class="level" id="l2"><h2>Level 2</h2><p>An end line</p><div class="garden"><div class="water"></div></div></section>
+<section class="level" id="l3"><h2>Level 3</h2><p>An end before the start</p><div class="garden"><div class="water"></div></div></section>
+<section class="level" id="l4"><h2>Level 4</h2><p>A line counted from the end</p><div class="garden"><div class="water"></div></div></section>
+<section class="level" id="l5"><h2>Level 5</h2><p>A span after a start</p><div class="garden"><div class="water"></div></div></section>
+<section class="level" id="l6"><h2>Level 6</h2><p>A span before an end</p><div class="garden"><div class="water"></div></div></section>
+<section class="level

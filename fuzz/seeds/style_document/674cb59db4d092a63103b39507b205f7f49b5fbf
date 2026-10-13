@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0;text-align-last: }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a<!doct(3n) .photo { background-color: #7c5b3b; }
+figure:ntdi�playh-child(4n) .photo { n>A gull that wdln ouot move<span>June 7</span></figcaption; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; backgr></figure>ound-color
+<fi; grid-template

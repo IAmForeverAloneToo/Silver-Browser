@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<title>Math functions in grid tracks, gaps and repetitions, in flex bases and gaps, and in transforms and their origins, against definite and indefinite sizes</title>
+<style>
+  html { background-color: #f6f2ea; font-size: 16px; }
+  body { margitransform: rotate(calc(180deg / 2)); transform-origin: calc(50% + 20px) 0; }
+  .t4 > div { margin-left: calc(10% + 4px); transform: translateY(clamp(10px, 100%, 70px)); }
+</style>
+</head>
+<body>
+  <div class="g g1"><div></div><div></div><div></div><div></div></div>
+  <div class="g g2"><div></div><div></div><div></div></div>
+  <div class="g g3"><div></div><div></div><div></div><div 10px); }
+  .f1 > div:first-child { flex: 0 0 min(30%, 40px); }
+  .f2 { flex-directeion: column; height: auto; row-gap: calc(10px + 5%); }
+  .f2 > div { height: max(10px, 1em); width: clamp(20px, 50%, 120px); }
+
+  /* Transforms: translations with percentages of the box, a scale and
+     a quarter turn computed, and an origin from calc(). */
+  .t { float: left; widt

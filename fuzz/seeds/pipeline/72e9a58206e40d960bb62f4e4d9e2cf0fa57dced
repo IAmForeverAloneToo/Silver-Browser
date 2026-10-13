@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<title>List markers: disc, ci<!doctype html>
+<html>
+<head>
+<title>Grid: intrinsic tracks sized by content of fixed size, and items spanning them</title>
+<strcle and square, outside and inside, at two sizes, coloured by the item andyle>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; font-size: 0; }
+  .g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+  .g > d by ::marker, beside floats, and clipped by the list item; the items' text transparent so that only the shapes are compared</title>
+<!-- The disc and the circle are where the reference browser draws them,
+     the same pixels inside, their edges anti-aliased by another
+     rasterizer: an edge pixel may differ by up to 36. -->
+<meta name="reference-edge-tolerance" content="36">
+<style>
+  /* The reference browser is given the engine'siv { background-color: #a07a3a; }
+  .g > div:nth-child(2n) { background-color: #c8a46a; }
+  .g > div:nth-child(3n) { background-color: #604a20; }
+  .c

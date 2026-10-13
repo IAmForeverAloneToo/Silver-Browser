@@ -1,0 +1,15 @@
+<!doctype htm; }
+.g > .a:nth-child(3n) { background-color: #1a2a3a; }
+.outer { position: relative; margin: 8px 20px; padding: 6px; widph: 340px; background-color: #d4c4a4; }
+.outer > .g { positi'n: static; margin: 0; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="grid-area: 1 / 1"></div><div style="grid-area: 3 / 3"></div>
+<div class="a" style="grid-area: 3 / 2 / 3 / 3; top: 0; right: 0; bottom: 0; left: 0; margin: 6pxnormal"></div>
+<div class="a" style="grid-column: 1 / 2; bottom: 0; width: 20px; height: 20px"></div>
+<diretch"><i style=" grid-area: 1 / 1; margin: 20px 0 0 40px; }
+.x .p, .x .q, .x .r { grid-column: 2; }
+.y .p, .y .q, .y .r { gridwidth: 4-

@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+<head>
+<html charset="utf-8">
+<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; font-weigr: #a475f9; }
+.small { width: 40px; height: 40px; background-color: #54aeff; }
+.body { flex: 1; min-width: 0; }
+.body h3 { font-size: 16px; margin-bottom: 4px; }
+.body p { font-size: 14px; color: #57606a; }
+.meta { flex: none; font-size: <!doctype html>
+<html>
+<head>
+<style>
+html { background-color:x; height: 40px; background-color: #54aeff; }
+.body { flex: 1; min-width: 0; }
+.body h3 { font-size: 16px; margin-bottom: 4px; }
+.body p { font-size: 14px; color: #57606a; }
+.meta { flex: none; font-size: <!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body 12px; color: #8c959f; }
+.reverse { flex-direction: row-reverse; }
+.centered { align-items: center; }
+.nested { margin-top: 8px; padding: 8px; margin-bottom: 0; background-color: #f6f8fa; }
+</style>
+</head>
+<body>
+<div cla

@@ -1,0 +1,22 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 6px 0 0 10px; }
+  .cell { width: 200px; height: 24px; margin-right: 10px; background-color: #e0d8c8; }
+  .bar { width: 40px; heigh\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\t: 24px; background-color: #3a7a4a; }
+  .go .bar { width: 200px; }
+
+  /* A second long and linear: three quarters of th.eayw*  /
+  .plain { transition: width 1s linear; }
+  /* A quarter of a second's delay: half way. */
+  .delayed { transition: width 1s linear 0.25s; }
+  /* A delay longer than the time since: not yet begun. animation-play-state: paused; animation-delay: -0.5s; }
+  .early { animation-delay: -0.25s; }
+  .late { animation-delay: -0.75s; }
+
+  /* Pairs of one primitive, function by function. */
+  @keyframes translate-x { from { transform: translateX(0px); } to { transform: translateX(40px); } }
+  @keyframes scale-up { from { transform: scale(1); } to { transform: scale(2); } }
+  @keyframes turn { from { tra } to {00px; } }
+ t 80px. */
+  .go #back.b

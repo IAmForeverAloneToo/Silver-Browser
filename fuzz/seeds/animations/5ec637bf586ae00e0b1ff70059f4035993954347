@@ -1,0 +1,19 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+jump-end  .row { display: flex; margin: 10ping-function: steps(4, jump-none); }
+  .jump-0%; } to { width: 100px; } }
+  .mixed { animation-name: mixed; }
+
+  /* A length to a calc() with a percenboth { animation-timing-functiontage, and a negative length. */
+  @keyframes calc { from { width: calc(50% - 20px); margin-left: steps(4, jump-both); }
+  .start { animation-timp: 30px; width: 40px; height: 40px; background-color: #3a7a4a;
+         animation-durat5s; }
+  .early { animation-delay: -0.25s; }
+  .late { animation-delay: -0.75s; }
+
+  /* Pairs of one primitiabbrve, function by function. */
+  @keyframes translate-x { from { transform: translateX(0px); } to { transform: translateX(40px); } }
+  @keyframes scale-up { from { transform: scale(0); } to { transform: scale(2); } }
+  @keyframes turn { from { transform: rotate(0deg); } to { transform: rotate(90deg); } }
+  @keyframes skew { from { transform: skewX

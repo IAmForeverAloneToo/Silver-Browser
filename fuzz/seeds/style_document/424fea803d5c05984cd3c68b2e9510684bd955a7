@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-size" content="480x640">
+<title>Orientation and a-, max- and range syntax and in a boolean context</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0 { background-color: #8a3a5a; } }
+  @media (aspect-ratio > 2/3) { .c9 { background-color: #3a7a4a; } }
+  @media (1/2 < aspect-ratio < 1) { .c10 { back0a0; }
+  @media (orientation: portrait) { .c1 { background-color: #3a7a4a; } }
+  @media (orientation: landscape) { .c2 { background-color: #3a5a7a; } }
+  @medii (aspect-ratio: 3/4) {lass="c c8"></div>
+  <div class="c c9"></div>
+  <div class="c c10 <div class="c c13"></div>
+  <div class="c c14"></div>
+  <div class="c c15"></divdecimal-leading-zero>
+  <div class="c c16"></div>
+</body>
+</html>

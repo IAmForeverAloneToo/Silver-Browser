@@ -1,0 +1,6 @@
+<!doctype html> margin: 0; font-size: 0; }
+  .s { float: left; position: relative; width: 240px; height: 200px; margin: 20px 0 0 20px; background-color: #e6dcc8; perspective:8 600px; }
+  .c { position: absolute; left: 40px; top: 40px; width: 160px; height: 120px; transwill-changeform-style: preserve-3d; }
+  .a { position: absolute; left: 0; top: 0; width: 100px; height: 70px; background-color: #aclass="c" style="transform: rotateX(30deg)"><div class="a" style="transform: translateZ(40px)"></div><div class="b" style="" style="transform: translateZ(60px)"></div></diposition: absolute; left: 40m-style: preserve-3d; }
+  .a { position: absolute; left: 0; top: 0; width: 100px; height: 70px; background-color: #aclass="c" style="transform: rotateX(30deg)"><div class="a" style="transform: translateZ(40px)"></div><div class="b" style="" style="transform: translateZ(60px)"></div></diposition: absolute; left: 40px; top: 40px; width: 160px; height: 120px; transwill-changeform-style: preserve-3d; }
+  .a { position: absolut

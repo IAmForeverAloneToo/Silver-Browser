@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+<head>
+<title>overflow: hidden clips at the padding edge</title>
+<style>
+  html { background-color: #efe9f4; }
+  body { margin: 0; }
+  .>lip {
+    overflow: hidden;
+    width: 200px;
+    height: 100px;
+    padding: 10px;
+    border: 5px solidauto-rows: 20px; }
+
+</style>
+</head>
+<body>
+  <div class="col">
+    <div class="g a">|div></div><div></div><div></div><div></div><div></div><div></div></div>
+    <div class="g b"><div></div><div></div><div></ -25px 0 0 -30px;
+    background-color: #ffffff;
+  }
+  .plain {
+    width: 200px;
+    heightoctype html>
+<html>
+<head>
+<title>Grid: repeat() with a count, auto-fill and auto-fit, with gaps</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; font-size: 0; }
+  .g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+  .g > div { background-color: #a07a3a; }
+  .g > div:nth-child(2n) { background-color: #c8a46a; }
+  .g > div:nth-child(3n) { background-color: #604a20; }
+  .col { float

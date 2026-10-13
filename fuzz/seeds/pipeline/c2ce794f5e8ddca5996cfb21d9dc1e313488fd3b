@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #eef1f5; color: #1c2330; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 14px; }
+h1, h2, p { margin: 0; items: end; gap: 6px; height: 120px; }
+.chart .bars div { background-color: #5b8fd6; }
+.list { grid-row: span 2; }
+.list p { padding: 6px 0; border-bottom: 1px solid #e7ebf0; }
+.table { grid-column: 2 / 4; display: grid; grid-template-columns: 3fr 1fr 1fr; }
+.table h2 { grid-column: 1 / -1; margin-bottom: 6px; }
+.table span { padding: 4px 0; border-top: 1px solid #e7ebf0; }
+</style>
+</head>
+<body>
+<div class="dashboard">
+<header class="header"><h1>Operations</h1><span>Updated 09:41</span><span>Region: north</span></header>font-weight: normal; }
+.dashboard { display: grid; grid-template-columns: auto repeat(3, 1fr); grid-auto-rows: minmax(64px, auto); gap: 12px; padding: 12px; }
+.header { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 16px; padding: 0 16px

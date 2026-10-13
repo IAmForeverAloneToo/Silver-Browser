@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; bn: 3 / 4; grid-row: 1 / 2; justify-self: end; align-self: center; width: 20pc; height: id-template; }
+.g > .a { position: absdy fontolute; background-color: #3a5a7a; }
+.g > .a:nth-c4hild(2n) { background-color: #7a9abaS; }
+.g > .a:nth-child(3n) { background-color: #1a2a6a; }
+.baselineposition: relative; mplace-items20px; padding: 6px; width: 340px; background-color: #d4c4a4; }
+.outer > .g { position: static; margin: 0; }
+</style>
+</head>
+<body></div>
+<div class="g c"><div></div><div></div><div></div></div>
+<div class="g d"><div></div><div></div><div></div><div></div></div>
+</div>
+<div class="col">
+<div class="g e"><div></div><div></div></div>
+<div class="g f"><div></div><div></div><div></div><div></div></div>
+<div ><div></div><div></div></div>
+<div class="g b"><div></div><div></div><div></div><div></div><div></div><div></div></div>
+<div class="g c"><div></div><div>

@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: cross-axis alignment in a column, stretched widths with margins, a minimum and a maximum, every position, left and right</title>
+<style>
+  html { background-color: #f6f0ea; }
+  body { margin: 0; }
+  .f { display: flex; flex-direction: column; float: left; width: 160px; height width: 160px; height: 260px; margin: 20px 0 0 20px; background-color: #ecdccc; }
+  .f div { flex: none; width: 50px; height: 30px; background-color: #9a5a2a; }
+  .f div:nth-child(even) { background-color: #ca9a6a; }
+  .s div { width: auto; }
+  .s div:nth-child(2) { margin: 0 20px 0 10px; }
+  .s div:nth-child(3) { max-width: 90px; }
+  .s div:nth-child(4) { min-width: 200px; }
+  .s div:nth-child(5) { width: 70px; }
+  .sf { align-self: flex-start; }
+  .se { align-self: flex-end; }
+  .sc { align-self: center; }
+  .sl { align-self: start; }
+  .sr { align-self: end; }
+  .jc { justify-content: center; }
+  .je { justify-content: flex-end; }
+  .js { justify-content: space-between; }

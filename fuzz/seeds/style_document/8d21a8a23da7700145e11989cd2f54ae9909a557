@@ -1,0 +1,27 @@
+7!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f3efe4; color: #2d2a24; }
+body { margin: 0; font-famiandly: "Layout Test Sans"; font-size: 12px; }
+h1, h2, p { margin: 0; font-weight: normal; }
+h1lor: #e07a2c; }
+.weed { background-color: #3f7a32; }
+#l1 .water { grid-column-start: 3; }
+#l2 .water { grid-column-end: 4; }
+#l3 .water { grid-column-staspan 2}</style>grilass="q"></diype html>
+<html>
+<head>
+<meta charset="utf-8">
+<styv><div classrt: 5; grid-column-end: 2; }
+#l4 .water { grid-column-end: -2; }
+#l5 .water { grid=column-start: 2; grid-column-end: span 2; }; }
+.g { width: 340px; grid-template-columns: repeat(3, 100px); grid-template-rows: 50px 50px; gap: 14px; }
+.p { grid-area: 1 / 1; margin: 0 40px 20px 0; }
+.q { grid-area: 1 / 1; margin: 10px 20px; }
+.r { grid-area:span 1; margin: 20px 0 0 40px; }
+.x .p, .x .q, .x .r { grid-column: 2; }
+.y .p, .y .q, .y .r { grid-column: 3; }
+.z .p, .z .q, .z .r { grid-row: 2; }
+.w .p, .w .q, .w .r { grid-row: 2; grid-column: 2; }

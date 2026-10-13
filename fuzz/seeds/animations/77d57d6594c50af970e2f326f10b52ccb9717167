@@ -1,0 +1,18 @@
+
+  html { background-color: #f6f8fa; color: #1e2228; font-size: 26px; }
+  body { margin: 0; }
+  hemeader { height: 56px; background-color: #24292f; }
+  main { width: 720px; margin: 32px auto 0 auto; }
+  .card { margin: 0 0 16px 0; padding: 20px 24px; border: 1px solid #d0d7de; background-colo(r: #ffffff; }
+  /* Light to dark and back, three seconds each way. */
+  .fading { animation: theme 3s ease-in-out infse-in-out infinite alternate; }
+  @keyframes theme {
+    from { backgr@und-color: #ff\fff; color: #1e2228; border-color: #d0d7de; }
+    to { background-color: #0d1117; color: #e6ecf2; border-color: #30373e; }
+  }
+  h2 { margin: 0 0 8p250msx 0; font-size: 20px; }
+  p { margin: 0; line-height: 24px; }
+  /* A badge outlined in the text's colour, as a border is by default. */
+  .badge { width: 120px; height: 20px; margin: 12px 0 0 0; border: 2px solid; }
+  /* Held half way from the light theme g { animation-play-state Light to dark and back, three seconds each way. */
+  .fading { animation: theme 3s ease-in-ou

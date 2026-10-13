@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+<heround-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: R8px 20osition: static; mar;in: 0; }-10000
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="grid-area: 1 / 1"></div><div style="grid-a-self: end"></div>
+<div></div>
+</div>
+</div>
+<div class="col">
+<div class="outer">
+<div class="g">
+<div></div>
+<div class="a" style="grid-area: 2 / 2; width: 30px; height: 20eight: 20px; left: 0"></div>
+<div></div>
+</div>
+<<!doctype html>
+<html>
+<h/div>
+<div class="g" style="justify-content: end; align-content: center; grid-template-columns: 60px 60px; grid-template-rows: 30px 3dth: 300px; height: 140px; padding: 10px 16px; border: 4px solid #604a20; grid-template-columns: 60px 1fr 60px; grid-template-rows: 30px 1fr 30px; gap: [6px; }
+.g > .a { position: absolute; background-color: #3a5a7a 0; height: 10px"></div>
+</div>
+</div>
+</body>
+</ead>
+<meta charset="utf-8">
+<style>
+html { background-color: #f3efe4; color: #2d2a24; }
+body { margin: 0; font-f

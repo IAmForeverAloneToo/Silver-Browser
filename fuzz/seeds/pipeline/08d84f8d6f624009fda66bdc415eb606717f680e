@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0;bed bed bed ." ". bed bed bed ." ". . . . ." "path path path path path"; }
+#l22 .water { grid-area: bed; }
+#l22 .carrot { grid-area: path; }
+#l23 .garden { grid-auto-flow: column; }
+#l2vel 1</h2><p>A start lid-template-rows: 50px 50px; gap: 14px; }
+.p { grid-area: 1 / 1; margin: 0 40px 20px 0;: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+d-auto-columns: 50px; }
+.bycol .w { grid-column: auto; grid-row: span 2; }
+.bycoldense { grid-auto-flow: column dense; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></ { background-color: #a07a3a; }
+d-auto-columns: 50px; }
+.bycol .w { grid-column: auto; grid-row: span 2; }
+.bycoldense { grid-auto-flow: column dense; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="w"></div><div></div><div class="t"></div><div class="w"></div><div></div><div></div></div>
+<div class="g de

@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dc { position: relative; margin: 8px 20px; padding: 6px; width: 340px; background-color: #d4c4a4; }
+.outer > .g { position: static; margin: 0; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="grid-area: 1 / 1"></div><div style="grid-area: 3 / 3"></div>
+<div class="a" style="grid-area: 2 / 2 / 3 / 3; top: 0; right: 0; bottom: 0; left: 0; margin: 6px"></div>
+<div class="a" style="grid-column: 1 / 2; bottom: 0; width: 20px; height: 20px"></div>
+<div class="a" style="grid-column: 3 / 4; grid-row: 1 / 2; justify-self: end; align-self: center; width: 20px; height: 10px"></div>
+<div class="a" style="grid-column: foo / bar; grid-row: 2 / 3; left: 0; top: 0; width: 24px; height: 14px"></div>
+<div class="a" style="grid-row: 3 / span 4; grid-column: 2; right: 0; bottom: 0; width: 30px; height: 12px"></div>
+</div>
+<div class="g">
+<div

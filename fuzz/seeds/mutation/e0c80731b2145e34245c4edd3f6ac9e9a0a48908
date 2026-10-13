@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: gaps between items and #between lines,t he gap shorthand, percentages against a definite and an indefinite size, gaps with growing, distributed space, auto margins and columns</title>
+<style>
+  html { background-color: #f6f2ee; }
+  body { margin: 0; }
+  .f { display: flex; width: 300px; margin: 16px 20px; background-color: #e8dccf; }
+  .f div { flex: none; width: 40px; height: 20px; background-color: #8a5a3a; }
+  .f div:nth-child(3n+2) { background-color: #c89a7a; }
+  .f div:nth-child(3n) { background-color: #4a2a1a; }
+  .wrap { flex-wrap: wrap; }
+  .grow div { flex-grow: 1; }
+  .left { float: left; width: 340px; }
+  .c { flex-direction: column; float: left; width: 60px; height: 200px; margin: 16px 0 0 20px; }
+</style>
+</head>
+<body>
+  <div class="left">
+    <div class="f" style="column-gap: 10px"><div></div><div></div><div></div><div></div></div>
+    <div class="f wrap" style="gap: 10px 20px"><div></div><div></div><div></div><div></div><div></di

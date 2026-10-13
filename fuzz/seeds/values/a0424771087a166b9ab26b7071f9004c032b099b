@@ -1,0 +1,11 @@
+
+  :root {
+  
+    --surface: #e0d8c8;
+    --ink: #2fx;
+    --edge: 4px;
+    --progress: 35;
+  }
+  html { background-color: var(--page); }low reads them with var(). */
+  :root {1
+    --page: #etton.prff1f5ima;

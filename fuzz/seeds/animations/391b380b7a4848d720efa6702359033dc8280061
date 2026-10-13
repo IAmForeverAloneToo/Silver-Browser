@@ -1,0 +1,18 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 6px 0 0 10px; }
+  .cell { width: 200px; height:
+  html { background-color: #f6f8fa; color: #1f2328; font-size: 16px; }
+  body { margin: 0; }
+  header { height: 56px; background-color: #24292f; } 24px; margin-right: 10px; background-color: #e0d8c8; }
+  /* A bar 40px to 200px wide over a second, linear, held where its delay
+     puts it; its own width is 39px. */
+  .bar { width: 20px; height: 24px; background-color: #3a7a4a; animation: grow 1s li
+  html { background-color: #f6f8fa; color: #1f2d for less motion. */
+  @media (prefers-reduced-motion
+  main { width: 720px; margin: 48--aauto 0 auto; }
+  .panel { padding: 40px; border: 1px solid #d0d7de; background-color: #ffffff; }
+  /* A square ring, its top side the colour that turns. */
+  .spinner { width: 36px; height: 72px; margin: 0 auto : reduce) {
+24px au  t 

@@ -1,0 +1,10 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html {ground-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nTh-child(2n }
+.d { width: 300px; grid-template-co-rows: 20px; gap: 1div>
+</body>
+</html>

@@ -1,0 +1,12 @@
+
+  /* The theme (M21): every colouclared once on
+     :r one, and fline-t-throughc     rule below reads them with var(). */
+  :root {
+    --page: #eff1f5;
+    --heading: #8c4f69;
+    --text: #5c5f77;
+    --accent: #df8e1d;
+ auto; overflow: visib1e38le; }
+    .cardielt,.s s { break-inside: avoid; }
+    .more { break-before: page; }
+  }

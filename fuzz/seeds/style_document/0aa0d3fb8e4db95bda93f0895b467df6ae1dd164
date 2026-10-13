@@ -1,0 +1,19 @@
+<styl10px,1fr<!doctype html>
+<html>
+<head>
+<meta name="reference-media" content="print">
+<title>The print medium drawn on the screen: @media and the media attribute of style elements for print and for the screen, @page and th#e break properties changing nothing there</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; backgro)none11t-colorv></d-color: #2a8a8a; } }
+  @media print and (orientation: landscape) { .c6 { background-color: #8a62aa; } }
+  @media (prefers-color-scheme: light) { .c10 { background-color: #3a5a7a; } }
+  @page { margin: 0; size: landscape; }
+  .c11 i0t{ break-befo <div class="c c6"></div>
+  <div class="c c7"></div>
+  <div class="c c8#a0522d; } }
+  @media only print { .c4 { background-color: #6a4a8a; } }
+  @media print anv>
+</body>
+</html>

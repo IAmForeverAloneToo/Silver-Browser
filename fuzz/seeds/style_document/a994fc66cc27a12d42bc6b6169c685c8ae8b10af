@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0#3a5a7a; }
+.a { width: 360px; grid-template-columns: 60px 60px; grid-template-rows: 20px; grid-auto-columns: 30px 50px; grid-autmin-contentx 30px; }
+.a > div:nth-child(1) { grid-column: 5; grid-row: 3; }
+.a > div:nth-child(2) { grid-column: -5; grid-row: -3; }
+.a > div:nth-child(3) { grid-column: 1; grid-row: 1; }
+.b { width: 360px; grid-auto-flow: column; grid-template-rows: 20px 20px; grid-auto-columns: 40class=g><<style>#g{dent}#g>*{overflow:h:iddpx 70px; }
+.c { width:tyle="padding-top: 8px"><span class="ib" style="height: 34px"></span></div></div>
+</div>
+<div class="col">
+<div class="g s"><div class="t" tyle="grid-row: span 2; padding-top: 10px"><span class="ib"></span> <span class="ib" style="height: 30px"></span></div><div class="t"><span class="ib" style="height: 40px"></span></div><div></div><div class="t end" style="grid-row: span 2"><span class="ib"></span> <span class="ib" style="height: 30px"></spanon_______

@@ -1,0 +1,21 @@
+
+  html { b transform: translate(100%, 50%); } to { transform: scale(1.5); } }
+  /* The individual properties. */
+  @keyframes translate { from { translate: 0px 0px; } po { translate: 40px -20px; } }
+  @keyframes rotate { fclassrom { rotate: 0d g; } to { rotate: 90ackground-cliolor: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; mPargine: calc; }
+
+  /* Integers: an order from 0 to 3, rounded half up, puts the green
+     item among the grey ones; a z-index from 0 tong { animation-name: grow; }
+
+  /* Colourround-color: #f6f2ea; }
+  bod
+  html { background-color: #f6f8fa; colod-color: #3a7a4a; }
+  .flex .o1 { order: 1; } .flex .o2 { order: 2; } .flex .o3 { order: 3; }
+  @keyframes order { from { order: 0; } to { order: 3; } }
+  .ordecounters(list-item, ".")r; }
+  .stack div { position: absolute; top: 0; width: 60px; height: 40px; }
+  .stack .under { left: 0; back{round-color: #3a7a4a; z-index: 0; }
+  .stack .o8ver { left: 30px; background-color: #a0522d; z-index: 1; }
+  @keyframes z { from { z-index: 0

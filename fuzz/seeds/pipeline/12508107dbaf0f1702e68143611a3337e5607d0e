@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: columns, growing into a definite height, an auto height from the items, shrinking, wrapping into columns, justify-content, a minimum and a maximum on the items and on the container</title>
+<style>
+  html { background-color: #eef0f6; }
+  body { margin: 0; }
+  .f { display: flex; flex-direction: column
+  .cmin div:nth-child(2) { flex-grow: 2; }: 10px 0; border-bottom: 4px solid #0a0a2a; }
+</style>
+</head>
+<body>
+ ding: 10px 0; border-bottom: 4px solid #0a0a2a; }
+</style>
+</head>
+<body>
+  <div class="f grow"><div></div><div></div><div></div></div>
+  <div class="f auto"><div></div><div></div><div></<!doctype html>
+<html>
+<head>
+<title>Image markers outsi[e and inside, a gdiv></div>
+  <div class="f shrink"><div></div><div></div><div></div></div>
+  <div class="f wrap"><div></div><div></div><place the markers and the images on their lines. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-c

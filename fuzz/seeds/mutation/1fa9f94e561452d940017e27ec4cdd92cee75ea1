@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+<head>
+<title>overflow: hidden clips at the padding edge</title>
+<style>
+  html { background-color: #efe9f4; }
+  body { margin: 0; }
+  .clip {
+    overflow: hidden;
+    width: 200px;
+    height: 100px;
+    padding: 10px;
+    border: 5px solidauto-rows: 20px; }
+
+</style>
+</head>
+<bo{ width: 360px; grid-template-columns: repeat(auto-fill, 50px); grid-auto-rows: 20px; gap: 10px; }
+  .c { width: 360px; grid-template-columns: repeat(auto-f   <div class="g b"><div></div><div></div><div></ -25px 0 0 -30px;
+    background-color: #ffffff;
+  }
+  .plain {
+    width: 200px;
+    heightoctype html>
+<html>
+<head>
+<title>Grid: repeat() with a count, auto-fill and auto-fit, with gaps</title>
+<style>
+  html { backgrounds: 20px; gap: 4px; }
+  .f { width: 360px; grid-template-columns: 20px repeat(2, [x] 30px [y]) repeat(auto-fill, 60px) 20px; grid-auto-rows: 20px; }
+
+</style>
+</head>
+<body>
+  <div class="col">
+    <div class="g a"><div></div><div></div><div></div><div></di

@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<title>Fractional lengths snapped to pixels, and borders in several colours with anti-aliased mitres</title>
+<meta name="reference-tolerance" content="2">
+<style>
+  /* The mitres between two colours blend the sides by the exact area
+     each covers of the pixel, as the reference browser does; its last
+     bit of blending arithmetic differs by a unit or two per channel,
+     which the tolerance above allows for, on those pixels alone. A
+     double border in two colours is not here: the browser lets the
+     background through the mitres of its bands, which this engine does
+     not (docs/design/floats-positioning.md). */
+  html { background-color: #f2f3f4; }
+  body { margin: 0; }
+  div { background-color: #ecf0f1; }
+  .a { margin: 10.3px 0 0 10.6px; width: 120.6px; height: 40.4px; border: 5.5px solid; border-color: #c0392b #2980b9 #27ae60 #f1c40f; }
+  .b { margin: 7.7px 0 0 10.6px; width: 120.6px; height: 40.4px; border: 9px double #8e44ad; }
+  .c { margin: 9.

@@ -1,0 +1,7 @@
+<!doctype @media (width > 50em) { @su0ports (display: grid) { @layer a.b { .x { color: red } } } } @page :first { size: A4 lan) { .c2 { background-color: #3a5a7a; } }
+  @media (aspect-ratio: 3/4) { .c3 { backgr}
+  @medi/a (aspect-ratio > 2/3) { .c9 { background-color: #3a7a4a; } }
+  @media (1/2 < aspect-ratio < 1) { .c10 { background-color: #3a5a7a; } }
+  @media (aspect-ratio: 6/8) { .c11 { background-color: #a0522d; } }
+  @media (min-aspect-ratio: 4/3) { .c12 { background-color: #6a4a8a; } }
+  @media (orientation) { .c13 { background-color: #2a

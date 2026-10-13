@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>color: #e6dcc8 ;}
+  .g > div { background-color: #a07a3a; }
+  .g > div:nth-child(2n) { background-color: #c8a46a; }
+  .g > div:nth-child(3n) { background-color: #604a20; }
+  .col { float: left; width: 400px; }
+  i { display: block; background-color: #3a5a7a; }
+  .a { width: 360px; grid-template-columns: auto auto auto; }
+  .b { width: 360px; grid-template-columns: min-content max-content 1fr; }
+  .c { width: 360px;lock; height: 30px; margin-top: 15px; border: 3px solid #1b3a4f; background-color: #6f9bb8; }
+  .blocks div { height: 40px; background-color: #9dbcd0; }
+  .inline { font-size: 0; width: 400px; margin: 20px; padding: 5px; background-color: #c9d9e3; }
+  .inline::before { content: ""; display: inline-block; width: 50px; height: 30px; margin-right: 10px; background-color: #2f5d7a; }
+  .inline::after { content: ""; display: inline-block; width: 80px; height: 50px; margin-

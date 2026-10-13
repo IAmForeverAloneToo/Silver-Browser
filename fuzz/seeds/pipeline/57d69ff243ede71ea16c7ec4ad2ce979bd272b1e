@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<title>Transitions: one running, one in its delay and past it, one reversed half way and shortened, all properties, a shorthand named, and timing and easing per property, drawn three quarters of a second after the change</title>
+<!-- The bars' class changes at the first frame; the reversed one's .a div:nth-child(2) { flex-basis: 200px; }
+  .a div:nth-child(3) { flex-basis: 300px; }
+  .b div:nth-child(1) { flex: 0 1 100px; }
+  .b div:nth-child(2) { flex: 0 3 100px; }
+  .b div:ntr: #f6f2ea; font-family: "Reference Sans"; font-size: 16px; }
+  body { margin: 0; }
+  ul { float: left; width: 110px; margin: 10px 0 0 10px; padding: 0 0 0 40px; background-color: #e0d8c8; color: transparent; }
+  li { color: transparent; }
+  li::marker { color: #2f4f7f; }
+
+  .disc { list-style-type: disc; }
+  .circle { list-style-type: circle; }
+  .square { list-style-type: square; }
+  .inside { list-style-position: inside; }
+  .big { font-size: 32px; }
+  .coloured li { color: #3a7a4a; }

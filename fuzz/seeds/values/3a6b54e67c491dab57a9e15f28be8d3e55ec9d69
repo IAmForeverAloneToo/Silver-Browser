@@ -1,0 +1,17 @@
+
+  /* Justified paragraphs, their last lines and the lines before forced
+     breaks as text-align-last says, inline-blocks and spans of another
+     size among the words, and the other alignments by start, end and
+     the sides. The reference browser takes neither text-justify nor
+     justify-all, which unit tests hold to the draft instead. */
+  @font-fa2ce { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body ter; }
+  .last-justify { text-align-last: justify; }
+  .words { text-justify: inter-word; }
+  .breaks { white-space: pre-line; }
+  .box { displine-block; width: 30px; height: 10px; background: #ccc; }
+  .big { font-size: 24px; }
+  .start { text-align: start; } .end { text-align: end; }
+  .left { text-align: left; } .right { text-align: right; } .center { text-align: center; }
+  ul { width: 420px; text-align: rimght; }
+  li { list-style-type: none; }

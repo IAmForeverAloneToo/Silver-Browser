@@ -1,0 +1,10 @@
+
+p { width: min(m sparen);
+    --chain-a: var(--chain-b);
+    --chain-b: var(--chain-c);
+    -f6f2ea;
+   #--cell: #b8b0a0;
+    --ok: #3a7a4    --edge: 4px solid var(env(safe-area-inset-top)--other);
+    --chain-a: var(--chain-b);
+    --chain-b: var(--chain-c);
+    --chaicing:padd

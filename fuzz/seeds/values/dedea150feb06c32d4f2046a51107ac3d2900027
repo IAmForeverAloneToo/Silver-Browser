@@ -1,0 +1,15 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10p-top,n in a wide one. */
+  @media (width < 600px) {
+    .cards { flex-direction: column; align-items: stretch; }
+  }
+  @media (width >= 1000px) {
+    .tiles { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  }
+hing, 3
+  .c10 { margin: env(safe-area-inset-top) 0 0 env(nothing, 30px); }
+
+  /* The text scale is 1. */
+  .c11 { width: calc(env(preferred-text-scale, finite; }

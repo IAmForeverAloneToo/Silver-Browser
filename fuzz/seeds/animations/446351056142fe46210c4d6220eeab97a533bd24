@@ -1,0 +1,21 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex;
+  html { background-color: #f6f8fa; color: #1f2328; font-size: 16px; }
+  body { margin: 0; }
+  header { height: 56px; background margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 100px; height: 100px; margin-right: 10px; background-color: #e0d8c8; }
+  .deep { perspective: 300px; }
+  /* A 40px square in the cell's middle, its animation a second lon-color: #24292f; }
+  main { width: 720px; margin: 48px auto 0 auto; }
+  .panel { eyframe's easing, for the interval it begins. */
+  @keyframes stepped { from { width: 40px; animation-timing-function: steps(2, end); } to { width: 200px; } }
+  nfinite; }
+  @keyframes spin { to { rotate: 360deg; } }
+  /* The page's own answer to a user who asked for less motion. */
+  @media (prefers-reduced-motion: reduce) {
+    .spinner { animation: none; }
+  }
+  h1 { margin: 0 0 12px 0; font-size: 24px; t: 200px; } 50% { width: 40px; } }
+  /* A keyframe's easing, for the interval it begins

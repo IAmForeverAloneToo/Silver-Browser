@@ -1,0 +1,1 @@
+<style>#g{display:grid;grid-templa auto [a] 0fr [b]}#g>*{grid-column:d=a 2/b -1}</style><div id=g>"<span>one</span><span>two words</span></div>

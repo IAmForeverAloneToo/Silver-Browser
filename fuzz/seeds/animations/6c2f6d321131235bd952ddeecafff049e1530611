@@ -1,0 +1,13 @@
+
+  html { background-color: #f6f210px; }
+  .cell { width: 200px; height: 24px; margin-right: 10px; background-color: #e0d8c8; }
+  .bar { width: 40px; height: 24px; background-color: #3a7a4a; }
+  .go .bar { width: 200px; }
+
+  /* A second long and linear: three quarters of the way. */
+  .plain { transition: width 1s li
+  html { background-color:ier(0.6, -0.4, 0.4, 1.4); }
+  .jump-start { animation-timing-function: steps(4, jump-start); }
+  .jump-end { animation-timing-function: steps(4, jump-end); }
+  .jump-none { animation-timing-function: steps(4, jump-none); }
+  .jump-both { animation-tniming-ear; fun}

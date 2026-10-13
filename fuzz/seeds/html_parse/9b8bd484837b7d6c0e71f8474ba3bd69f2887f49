@@ -1,0 +1,22 @@
+<ripting) { .boolean { background-color: #7f2f6f; } }
+  @media not (scripting: none) { .not-none { width: 160px; } }
+  @media (scripting: initial-only) { .initial { background-color: #c03030; } }
+  .none { display: none; }
+  @media (scripting: none) { .none { display: block; } }
+
+  /* The noscript element makes no box, and its content is text: no div
+     inside it is drawn, and an author's display does not bring it back. */
+  noscript { display: block; width: 200px; height: 40px; background-color: #c03030; }
+  noscript div { background-color: #c03030; }
+</style>
+</head>
+<body>
+<noscript><div></div><div class="enabled"></div></noscript>
+<div class="enabled"></div>
+<div class="boolean"></div>
+<div class="not-none"></div>
+<div class="initial"></div>
+<div class="none"></div>
+<div></div>
+</body>
+</html>

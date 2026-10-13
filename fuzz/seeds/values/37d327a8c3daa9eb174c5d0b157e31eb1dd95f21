@@ -1,0 +1,18 @@
+p { width: calc({ width: calc(2% * infinity); margin-left: calc(Naspan2px); padding: clamp(0
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+
+  /* The insets are 0px: q margin of them,da  na width added to one. */
+  .c1 { margin-left: calc(10px + env(safe-area-inset-left)); background-color: #3a7a4a; }
+  .cft: calc(Naspan2px); padding: clamp(0
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+
+  /* The insets are 0px: q margin of them,da  na width added to one. */
+  .c1 { margin-left: calc(10px + env(safe-area-inset-left)); background-color: #3a7a4a; }
+  .c2 { width: calc(50px + env(safe-area-inset-right, 30px));2 { width: calc(50px + env(safe-area-inset-right, 30px)); }
+  .c3 { ma0px; background-colopxax(1px, 2%) padding: clamp(1px, 50%, none) ma * 1e38r: #b8b0a0; }
+
+  /* The insets are 0px: 

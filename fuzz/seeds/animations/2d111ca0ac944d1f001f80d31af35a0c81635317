@@ -1,0 +1,13 @@
+
+  /* The reference browser is given the engine's own font, whose
+     metrics place and size the markers. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; font-family: "Reference Sans"; font-size: 16px; }
+  body { margin: 0; }e markers. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; font-family: "Reference Sans"; fonnt-size: 1{ display: flex; margin: 6px 0 0 10px; }
+  .cell { width: 200px; height: 24px; margin-right: 10px; background-color: #e0d8c8; }
+  /* A bar 40px wide of its own, its animation a second long, linear and
+     held half way unless it says otherwise. */
+  .bar { width: 40px; height: 24px; background-color: #3a7a4a;
+    amily: "Reference Sans"; font-s{ width: 099px; } from { width: 40px; } 50% { height: 12px; width: 160px; } to {i ze: 1

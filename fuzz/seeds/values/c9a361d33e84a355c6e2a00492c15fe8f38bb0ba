@@ -1,0 +1,7 @@
+* { 2);
+    color: var(--link);
+  white-space  font-size: 12px;
+    text-transform: uppercaid;
+ -size: 12px;
+    text-transform: upperca   grid-template-columns: repeat(auto-fill, minmax(764px, 1fr));
+    grid-auto

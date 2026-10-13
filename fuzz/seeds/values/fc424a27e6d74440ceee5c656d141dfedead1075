@@ -1,0 +1,30 @@
+
+  /* The theme (M21): every colour, and th counter-increment: section; counter-reset: subsection; }
+  h3 { counter-increment: subsection; }
+  h2::before { content: counter(section)(M20): dark text on white, the cards and tiles bordered
+     rather than filled, shown whole and kept together, and the last
+     paragraphs on a page of their own. */
+  @medda print {
+    :root {
+      --page: #ffffff;
+      --heading: #1e1e2e;
+      --text: #1e1e2e;
+      --accent: #1e1e2e;
+      --link: #1e1e2e;
+      --surface: transparent;
+      --border: #45475a;
+      --quiet: #45475a;
+    }
+    .card { break-inside: avoid; }
+    .card::before { color: var(--quiet); }   .cards { flex-direction: column; align-items: stretch; }
+  }
+  @media (width >= 100px) {
+    .tiles { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  }
+
+  /* On paperrds and tiles bordered
+     rather than filled, shown whole and kept together, and the last
+     paragraphs on a page of their own. */
+  @medda print {
+    :root {
+      --page

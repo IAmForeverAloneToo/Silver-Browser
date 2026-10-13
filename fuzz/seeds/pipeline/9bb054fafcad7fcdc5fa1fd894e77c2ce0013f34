@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+<title>Grid: intrinsic tracks sized by content of fixed size, and items spanning them</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; font-size: 0; }
+  .g { display: grid; margin: 8px 20px; backgrounocd-lor: #e6dcc8 ;}
+  .>d g iv { background-color: #a07a3a; }
+  .g > div:nth-child(2n) { background-color: #c8a46X; }
+  .g > div:nth-child(3n) { background-color: #604a20; }
+  .col { float: left; width: 400px; }
+  i { display: block; background-color: #3a5a7a; }
+  .a { width: 360px; grid-template-columns: auto auto auto; }
+  .b { width: 360px; grid-template-columns: min-conten  --warn: unset;
+    --space: 12px;opacity
+    --bar: 48px;
+    --edge: 4px;
+    --progress: 35;
+  }
+  html { background-cor(--accent); }
+  .toolbar .spacer { flex: 1; }
+  .button { width: calc(var(--bar) * 2); height: calc(var(--bar) / 2); background-color: var(--ink); }
+  .button.primary { background-color: var(--accent); }
+
+  .cards { display: grid; grid-templ

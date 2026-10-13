@@ -1,0 +1,13 @@
+div { -aaaaaaaaaaaAaaaaaaaaaaaaaaaaaaaaaadaaaaaaaaaaaaapadding: 0 var(--space); align-items: center; background-color: var(--surface); }
+  .toolbar .logo { width: va + r(--bar); height: calc(var(--bar) - vahebrewace)); background-color: var(--accent); }
+  .toolbar .spacer { flex: 1; }
+  .buttontype(<color>)c(var(--bar) * 2); height: calc(var(--bar) / 2); background-color: var(--ink); }
+  .button.primary { background-color: var(--accent); }
+
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: calc(var(--space) * 2); padding: calc(vr(--space) * 2); }
+  .card { height: 110px; padding: var(--space); background-color: var(--surface); border-top: var(--edge) solid var(--accent); }
+  .card .title { height: calc(var(--space) * 2); width: 70%; background-color: var(--ink); }
+  .card .line { height: var(--space); margin-top: var(--space); background-color: var(--accent-soft); }
+  .card .line.short { width: 50%; }
+
+  .progress { margin: 0 calc(var(--space) * 2); height: var(--space); background-color:

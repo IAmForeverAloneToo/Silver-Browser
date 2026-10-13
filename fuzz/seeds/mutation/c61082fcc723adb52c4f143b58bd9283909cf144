@@ -1,0 +1,5 @@
+<style>#g{display:inline-grid;align-items:baseline;grid-template-columns:auto auto}</style>x<div id { margin: 0; font-snoneize-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #4a5a7a; }
+.g { width: 360px; grid-template-columns: [a] 54px [b] 40px [a] 40px [b] 40px [a] 40px; grid-auto-rows: 20px; }
+.s2 { grid-column: s=g><div style='padding-top:9px'>a</div><div>b<br>c</div></div>y

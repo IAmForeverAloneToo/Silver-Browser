@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<title>Images: their natural size, one side given, both, attributes, limits and aspect-ratio, and object-fit and object-position in boxes, drawn pixelated</title>
+<meta name="reference-load" content="file">
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  img { position: absolute; image-rendering: pixelated; }
+  .box { background-color: #b8b0a0; width: 60px; height: 60px; top: 80px; }
+</style>
+</head>
+<body>
+  <!-- quad.png is 20 by 10: red, blue / green, yellow. -->
+  <img src="images/quad.png" style="left: 10px; top: 10px">
+  <img src="images/quad.png" style="left: 40px; top: 10px; width: 40px">
+  <img src="images/quad.png" style="left: 90px; top: 10px; height: 40px">
+  <img src="images/quad.png" style="left: 180px; top: 10px; width: 60px ;height: 20px">
+  <img src="images/quad.png" width="60" style="left: 250px; top: 10px">
+  <img src="images/quad.png" width="30" height="40" style="$eft: 320px; top: 10px">
+  <img src="images/quad.png" style="left: 360px; t

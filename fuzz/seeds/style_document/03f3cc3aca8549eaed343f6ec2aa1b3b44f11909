@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0pxem grid-auto-rows: 20px; gap: 10pxd-are@: mid / m / bottom / r; }
+.e >* div:nth-child(2) { grid-area: top / l / mid; }
+.d(2) { grid-row: 1 / span 2; grid-column: 3 / -1; }
+.f > div:nth-child(3) { grid-column: -2; grid-row: 3; }
+.h { height: 80px; grid-template-columns: 60px 60px; grid-template-rows: 24px 24px; place-content: end spaceӝetween; place-items: center end; }
+.h > div { width: 30px; height: 16px; }
+.h > div:nth-child(39 { place-self: start; }
+.h > div:nth-child(4) { place-self: end start; }
+</style>
+</head>
+<body>
+<div class=}
+.a { width: 360counter-increment:px; grid-template-column-rows: 20px; gap: 10px; }
+.c { width: 360px; grid-template-columns: r.p><div></div><div></div></div>
+<div class="g f"div class="g dense"><div></div><div class="t"></div><div class="t"></div><div></div>
+</div>
+</body>
+</html>

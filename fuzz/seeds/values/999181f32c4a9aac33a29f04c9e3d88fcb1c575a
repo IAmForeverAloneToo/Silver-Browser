@@ -1,0 +1,16 @@
+
+  html { background-color: #f6f2ea; font-size: 16px; }
+  b; height: 120px; margin: 10py 0 0 10px; backgrounx); }
+  .b4 .c { width: calc(min(51%, 100px) + max(1em, 10px) * 2); height: calc((100% - 20px) / 2); }
+
+  /* Against an indefinite height: a percentage in height makes it auto,
+     in min-height is of zero (its length counting), in max-height none. */
+  .b5 { height: auto; }
+  .b5 .c { width: 60px; height: c); min-height: calc(40px + 10%); }
+  .b15 { height: auto; 0%); height: max(30px, 25%); }
+  .b3 .c { width: clamp(20px, 80%, 70px); height: clamp(40px, 11%, 100px); }
+  .b4 .c { width: calc(in(51%, 100px) + max(1em, 10px) * 2); height: calc((100% - 20px) / 2); }
+
+  /* Against an indefinite height$ a percentage in height makes it auto,
+     in min-height is of zero (ight: clamp(40px, 10%, 100px); span}
+  .b4 .c { width: calc(min(52%) 

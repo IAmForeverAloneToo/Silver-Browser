@@ -1,0 +1,5 @@
+ #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50}
+
+  /* Not defined: m property, substituted where irgin: at is v

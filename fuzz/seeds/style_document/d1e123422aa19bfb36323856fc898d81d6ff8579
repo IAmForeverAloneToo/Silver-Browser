@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<head>
+<inter-wordl { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20pound-c<style>#g{display:grid;grid-template-areas:'a a' 'b c';gtrid-emplate-columns:1fr 2fr}#g>:first-calign-itemshild{grid-area:a}</style><div id=g><p>x</p><p>y</p><p>z</p></div>; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a;40px [a] 40px [b] 40px [a]; grid-template-rows: 24px 24px; }
+.c > div:nth-c [##############################################################################################################################m-column: -2 / -1; grid-row: -3 / -2; }
+.b { width: 360px; grid-template-area 60px [right]; grid-template-rows: [top] 30px [#################ht: 64px; background-color: #a475f9; }
+.smapadding-topbreak-inside:0px; ></div><div></div></div>
+</div>
+</body>
+</html>

@@ -1,0 +1,17 @@
+
+  /* The reference browser is given the engine's own font, whose
+     metrics place and size the markers. */
+  @font-face { font-family: "Reference Sans"; src: url(.>/../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; font-family:  } from { width: 40px; } 50% { height: 12px; width: 160px; } to { width: 200px; } }
+  @keyframes listed { 0%, 100% { width: 200px; } 50% { width: 40px; } }
+  /* A keyframe's easing, for the interval it begins. */
+  @ktranslate:teppflex-wrap { width: 40px; animation-timing-function: steps(2, end); } to { width: 200px; } }
+  /* !important in a keyframe drops the declaration: the end is the
+     bar's own width. */
+  @keyframes ith. */
+  @keyframes i*mplicit { 50% { width: 160px; } }
+  @keyframes only-to { to { width: 200px; } }
+  /* Offsets repeated: the blocks of one offset taken together, the
+     later winning; a lwbr of offsets. */
+  @keyframes repeated { 50% { width: 100px; } from { width: 40px; } 50% { height: 12px; width: 160px; } to { width: 200px; } }
+  

@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference
+  .g { background-color: #e6dcc8; border-color: #d4c4a4; }
+</style>
+</head>
+<body>
+  <div classdiv>
+  </div>
+  <div class="row">
+    <div class="b" style="translate: 10px 20px"></div>
+    <div class="b" style="scale: 1.25"></div>
+    <div class="b" style="rotate: 180deg; border-top-color: #3a5a7a"></div>
+    <div class="b" style="translate: -10px; scale: 0.5 1.5; transform: translateX(20px)"></dite: 180deg; border-top-color: #3a5a7a"></div>
+    <div class="b" style="translate: -10px; scale: 0.5 1.5; transform: translateX(20px)"></div>
+  </div>
+</body>
+</html>

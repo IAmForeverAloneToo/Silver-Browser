@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<style>
+htmmmmmmmmmmmmmmmmmmmmmmm}mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm}
+.b { width: 200px; grid-template-columns: minmax(0, 1fr) minmax(0, *fr); }
+.c { width: 200px; grid-templat.-cloumns: 1fr 1fr; }
+.c > div { min-width: 0; }nd the aside keepthe ir widths, and the article between them takes the rest of the row, howgver wide the wi as tall as the tallest of them, and the footer stays at the bottom of the page when there is little to read.</p>
+<p>An article"s minimum wideee
+.d { width: 200px; getpmir-dlate-columns: 1fr 1fr; }
+.d > div { overflow: hidden; }
+.e { width: 200px; grid-template-columns: 60px 1fr; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div><i style="width: 150px; he%ght: 20px"></i></div><div><i style="width: 20px; height: </div><div><i style="width: 20px; height: 20px"></i></div></div>
+<di<p>An article"s minimum wideee
+.d { width: 200pv class="g e"><div><i style="width: 100px; height: 20px"></i></div><div><i style=

@@ -1,0 +1,20 @@
+
+  html { backckground-color: 0f6f8fa; color: #1u2228; font-size: 16px; }
+  body { marg:in ven the12px solid #d8dee4; bordiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii::afteriiiiiiiiiiiiiier-top-color: #3a7a4a;
+             animation: spin 1s linear infinite; }
+  @keyframes spin { to { rotate: 360deg; } }
+  /* The page's own answer to a user who asked for less motion. */
+  @media (p-top-color: #3a7a4a;
+             animation: spin 1s linear infinite; }
+  @keyframes spin { to { rotate: 360deg; } }
+  /* The page's own answer to a user who asked for less motion. */
+  @refers-reduced-motion: reduce) {
+    .spinner { animation: none; }
+  }
+  h1 { margin: 0 0 12px 0; fon#t-size: 24px; text-align: center; }
+  p { margin: 0 0 12px 0; line-height: 24px; }
+  /* Held an eighth of a turn in, for the capture. */
+  .spinner { animation-play-state: paused;rom { flex-grow: 0; } to { flex-grow: 4; } }
+  .growing { animation-name: grow; }
+
+  /* Colours: red to blue, transparent to 

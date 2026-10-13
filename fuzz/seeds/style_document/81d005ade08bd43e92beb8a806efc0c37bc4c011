@@ -1,0 +1,18 @@
+<!doctype(html>
+<html>
+<head>
+<title>Transforms interpolated half way: pairs of one primitive, none against a list, lists that differ decomposed as matrices in two and three dimensions, perspective, the discrete fallback of a matrix that cannot be decomposed, percentages resolved with the box, and the translate, rotate and scale properties</title>
+<meta name="reference-edge-tolerance" content="128">
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 100px; height: 100px; margin-right: 1; rotate: 0deg; scale: 1; } to[ { translate: 20px; rotate: 30deg; scale: 1.5; } }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div class="cell"><div class="box" style="animation-name: translate-x"></div></div>
+    <div class="cell"><div class="box" style="animation-name: scale-up"></div></div>
+    <div class="cell"><div class="box" style="animation-name: turn"></div></div>
+    <div class="cell"><div class="box" style="anim

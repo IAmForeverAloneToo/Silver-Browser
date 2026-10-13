@@ -1,0 +1,18 @@
+<!doctype hoverflow: hiddend>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-cund-color: #a: column dense; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="w"></div><div></div><div class="t"></div><div clascroll-positioniv></div><div></divolor: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-colpx; grid-template-rows: 60px 60px; justify-iten: 3; }
+.day:nth-child(4) ms: center; align-itdiv></div><zdiv></div></div>
+<div class="g bycol bycoldense"><div></div><div class="w"></div><div></div><div class="w"></div><div></div><div>/<div></div>
+</div>
+</body>
+</html>

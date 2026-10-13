@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: scroll containers, items that clip their content, padding and borders around the clip, containers that clip their items on either side and below, a clipping flex item</title>
+<style>
+  ction: linear; animation-play-state: paused; animation-delay: -0.5s; }
+  .early { animation-delay: -0.25s; }
+  .late { animation-delay: -0.75s; }
+  .later { animation-delay: -0.6s; }
+
+  /* Implicit ends: the bar's own width. */
+  @keyframes implicit { 50% { width: 160px; } }
+  @keyframes only-to { to { width: 200px; } }
+  /* Offsets repeated: the blocks of one offset taken together, the
+     later winning; a list of offsets. */
+  @keyframes repeated { 50% { width: 100px; } from { width: 40px; } 50% { height: 12px; width: 160px; } to { width: 200px; } }
+  @keyframes listed { 0%, 100% { width: 200px; } 50% { width: 40px; } }
+  /* A keyframe's easing, for the interval it begins. */
+  @keyframes stepped { from { width: 40px; animation-timing-function: steps(2, end); } to 

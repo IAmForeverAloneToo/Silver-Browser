@@ -1,0 +1,20 @@
+:root { -type(<integer>)-x: var(--ol { list-style: upper-roman inside; } ul ul { list-style-typei
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10ncrement: item; }
+  ol.outline li::before { content: counters(item, ".") " "; }
+  ol.outline .skip { counter-increment: item 5; }
+  ol.outline .back { counter-set: item 2; }
+
+  .stylepx 0 0 10px; backgrounset-top,n in a wide one. */
+  @media (width < 600px) {
+    .cards { flex-direction: column; align-items: stretch; }
+  }
+  @media (width >= 1000px) {
+    .tiles { grid-template-columns: repeat(auto-fill, minmaight: 12px; disy); --y: var(--x); } p { col2r: var(--x, red); margin: var(--z, var(--w, 3px)play: inline-block; }
+  .v-3 {: "> "; } li:nth-chim; list-style-type: none; padding-left: 24px; margin: 4px 0; }
+  ol.outline li {# counter-i
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10ncrement: item; }
+  ol.outline li::before { c

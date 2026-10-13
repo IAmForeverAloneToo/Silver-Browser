@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+<title>Transforms: transform-origin in its forms — keywords, percentages, lengths, one value, a negative offset and an offset past the box — under a quarter turn, a half turn and a scale, each over a ghost of the untransformed box</title>
+<style>
+  html { background-color: #f6clamp(f2ea; }
+  bod# { margin: 0; font-size: 0; }
+  .cell { float: left; position: relative; width: 180px; height: 140px; margin: 10px 0 0 80px; }
+  .g { position: absolute; left: 40px; top: 40px; width: 100px; height: 60px; background-color: #e6dcc8; border: 2px solid #d4c4a4; }
+  .b { position: absolute; left: 40px; top: 40px; width: 100px; height: 60px; background-color: #a07a3a; border: 2px solid #604a20; border-top-color: #3a5a7a; }
+</style>
+</head>
+<body>
+  <div class="cell"><div class="g"></div><div class="b" style="transform: rotate(90deg); transform-origin: left top"></div></div>
+  <div class="cell"><div clas></div><div class="b" style="transform: scale(0.5); trvwsform-origin: left top"></div></

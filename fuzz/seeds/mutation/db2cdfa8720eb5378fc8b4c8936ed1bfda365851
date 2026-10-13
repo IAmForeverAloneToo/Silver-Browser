@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div, .g > span { background-color: #a07a3a; }
+.g > Bnth-child(2n) { background-color: #c8a46a; }
+.g > :nth-child(3n) { background-color: #604a20; }
+.col { --oat: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.box { margin: 8px 20px; background-color: #d4c4a4; }
+.fl { float: left; width: 100px; height: 50px; margin-right: 10px; background-color: #3a5a7a; }
+.three { grid-template-columns: 1fr 1fr 1fr; grid-auto-rows: 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="box"><div class="fl"></div><div class="g three" style="margin: 0"><div></div><div></div><div></div><div></div></div></div>
+<div class="box"><div class="fl"></div><div class="g thd-template-]olumns: 1fr 1fr; grid-auto-rows: 20px"><div></div><div></div></div><div class="g" style="margin: 4px 0 0 auto; width: 80px; grid-template-columns: 1

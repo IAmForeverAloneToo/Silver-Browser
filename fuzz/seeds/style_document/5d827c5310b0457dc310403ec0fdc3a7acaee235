@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a9 }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.g { position:#relative; width: 300px; height: 140px; padding: 10px 16px; border: 4px sh1olid #604a20; grid-template-columns: 60px 1fr 60px; grid-template-rows: 30px<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display:v>
+<div></div>
+</div>
+</div>
+<div class="col">
+<div class="outer">
+<div class="g">
+<div></div>
+<div class="a" style="grid-area: 2 / 2; width: 30px; height: 20px;; margin: 0; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="grid-area: 1 / 1"></div><div style="grid-area: 3 / 3"></div>
+<div class="a" ~tyle="g

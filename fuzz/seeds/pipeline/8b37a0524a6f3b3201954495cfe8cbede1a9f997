@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-tolerance" content="2">
+<title>Opacity: a faded box over the canvas at a half, a quarter, nothing and one; nested opacity; a faded box over another box; a faded box whose border, child and overlapping children composite as one gro list item; the items' text transparent so that only the shapes are compared</title>
+<!-- The disc and the circle are where the reference browser draws them,
+     the same pixels inside, their edges anti-aliased by another
+     rasterizer: an edge pixel may differ by up to 36. -->
+<meta name="reference-edge-tolerance" comarker { color: #2f4f7f; }
+
+  .disc { list-style-type: disc; }
+  .circle { list-style-type: circle; }
+  .square { list-stylekground-color: 7a4a; }
+
+  /* Widths and heights against the box'si><span>xx</span></li><?/ul>
+  <ul class="disc item-coloured big"><li>xx</li></ul>
+  <ul class="square clip"><li>xx</li><liup</title>
+<style>
+  html { bac

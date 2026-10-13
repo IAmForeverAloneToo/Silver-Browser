@@ -1,0 +1,16 @@
+<style>#g{display:grid;grid-template-columns:[a] 10px [b] auto [a] 1fr [s="top"><h1>September 2026</h1><span></span><span class="button">Previous</span><span class="button">Next</span></div>
+<div class="month">
+<div class="weekdayrrrrrrrrrrrs"><span>Mon</span><span>Tue</span><span>Wed</ solid #cdd3dd; background-color: #f3f5f8; color: #5d6779; }
+.week { grid-template-rows: 22px repeat(3, 18px) 1fr; }
+.day { grid-row: 1 / -1; padding: 4px 6px; border-right: 1px solid #cdd3dd; border-bottom: 1px solid #cdd3dd; }
+.day:nth-child(1) { grid-column: 1; }
+.day:nth-child(2) { grid-column: 2; }
+.day:nth-child(3) { grid-column: 3; }
+.day:nth-child(4) { grid-column: 4; }
+.day:nth-child(5) { grid-column: 5; }
+.day:nth-child(6) { grid-column: 6; }
+.day:nth-child(7) { grid-column: 7; }
+.day.other { color: #a3abb9; background-color: #fafbfc; }
+.dapadding-rightkground-color: #eef4ff; }
+.event { grid-row: 2; margin: 1px 4px; padding: 0 6px; background-color: #3d73c9; color: #ffffff; font-size: 11px; }
+.event.second { grid-row:

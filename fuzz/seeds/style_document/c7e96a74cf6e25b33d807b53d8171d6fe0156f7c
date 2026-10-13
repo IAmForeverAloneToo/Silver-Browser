@@ -1,0 +1,49 @@
+<!DOCTticipate in 3D Rendering Contexts based on their parent, not their containing block.">
+<link rel="match" href="reference/green.html">
+
+<style>
+
+div {
+  width: 100px;
+  height: 100px;
+}
+
+.cb {
+  transform-style: preserve-3d;
+  background: red;
+  position: relative;
+}
+
+.parent {
+}
+
+.abspos {
+  position: absolute;
+  top: 0;
+  left: 0;
+  /* Since this element is not in the 3D Rendering Context, this translation
+     does not put it above the <div class="sibling">. */
+  transform: translateZ(20px);
+  background: red;
+}
+
+.sibling {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform: translateZ(10px);
+  background: green;
+}
+
+</style>
+
+<p>Pass if there is NO red below:</p>
+
+<div class="cb">
+  <div class="parent">
+    <div class="abspos">
+    </div>
+  </div>
+  <div class="sibling">
+  </div>
+</div>

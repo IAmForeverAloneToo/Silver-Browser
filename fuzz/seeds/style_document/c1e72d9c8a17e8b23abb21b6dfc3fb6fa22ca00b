@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px ;0px; backgr }
+.sa { margin-left: span a / 4; }
+.sb { grid-column: 1 / span b 2; }
+.justify-selfw: span 2; }
+.end { grid-column: span 2 / -1; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div class="s2"></div><div0class="s3"></div><div class="sa"></div><div class="sb"></div><div class="r2"></div><div class="end"></div><div> 360px; grid-template-columns/ [a] 40px [b] 41px [a] x [a] 40px; grid-auto-rows: 20px; }
+.s2 { grid-column: span 2; }
+.s3 { grid-column: 2 / span 3; }
+.sa { margin-left: span a / 4; }
+.sb { grid-column: 1 / span b 2; }
+.justify-selfgrid-column: span 2 / -1; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div class="s2"></div><div0class="s3"></div><div class="sa"></div><div class="sb"></div><div class="r2"></div><div cladiv class="end"></div><div></div></div>
+</div>
+</body>
+</ht"l>

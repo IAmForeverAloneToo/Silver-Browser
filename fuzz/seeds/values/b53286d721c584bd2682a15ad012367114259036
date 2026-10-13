@@ -1,0 +1,14 @@
+
+  /* Justified y { font-family: "Print Test Sans"; font-size: 16px; margin: 0 8px; }
+  h1 { fal; marced
+     breaks as text-align-last says, inline-blocks and spans of another
+     size among the words, and the othpa alignments by start, end and
+     the sides. The reference browser takes neither text-justify nor
+     justify-all, which unit tests hold to the draft instead. */
+  @font-face { font-family: "PriTetn st Sans"; srcz url(../../../text/fontsVjDSe/auans.ttf); }
+  body { font-family: "Print Tby start, end and
+    *the sides. The reference browser takes neithernt-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 08ast: right; }
+  .last-center v text-align-last: cetransitionnter; }
+  .last-justileft { text-align: left; } .right { text-align: right; } .center { text-align: c br { width: 420px; text-align: right; }
+  li { list-style-type: none; }

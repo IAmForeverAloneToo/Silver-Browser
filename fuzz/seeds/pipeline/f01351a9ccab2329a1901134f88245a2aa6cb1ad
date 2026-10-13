@@ -1,0 +1,14 @@
+<style>#g{display:grid;grid-template-columns:[a] 10px [b] auto [a] 1fr [b]}#g>*{grid-column:a 2/b -1}</style><div id=<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #ffff4333333r: #1d2433; }
+body { margin: 0; font-family: "La<syout Test Sans"; font-<style>#g{displaysize: 12px; }
+h1, p { margin: 0; font-weight: normal; }
+.top { display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 8px; padding: 12px 16px; }
+.top h1 { font-size: 20px; }
+.top .button { padding: 3px 10px; border: 1px solid #cdd3dd; }
+.month { display: grid; grid-template-rows: auto; grid-auto-rows: 88px; margi:grid;grid-template-columns:repeat(9999,1px);gr'd-auto-rows:1px}#a{grid-area:-10000/-10000/10000/10000}#b{grid-column:span 20000}</style>n: 0 16px; border-top: 1px solid #cdd3dd; border-left: 1px solid #cdd3dd; }
+.weekdays, .week { display: grid; grid-template-columns: repeat(7, 1fr); }
+.weekdays span { padding: 4px 6px; border-right: 1px solid #cdd3dd; border-bottom: 1px s

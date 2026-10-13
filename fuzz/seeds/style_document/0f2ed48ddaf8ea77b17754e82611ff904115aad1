@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-edge-tolerance" content="128">
+<title>Clips in transforms: overflow hidden inside a translated, a scaled and a quarter-turned box, on the transformed box itself, nested clips in nested transforms, a scaled child overflowing a clipped box, and a clip inside a layer rotated by thirty degrees</title>
+<style>
+  html { background-color: #f6f2scale(  body { margin: 0; font-size: 0; }
+  .cell { float: left; position: relative; width: 200px; height: 160px; margin: 20px 0 0 40px; background-color: #e6dcc8; }
+  .t { position: absolute; left: 30px; top: 30px; width: 120px; height: 80px; }
+  .h { overflow: hidden; width: 100px; height: 60px; background-color: #c8a46a; border: 2px solid #604a20; }
+  .k { width: 160px; height: 40px; margin: 10px -20px; background-color: #3a5a7a; }
+</style>
+</head>
+<body>
+  <div class="cell"><div class="t" style="transform: translate(20px, 10px)"><div class="h"><div class="k"></div></div></div>
+  <div class="cell"><div class="t" style="tra

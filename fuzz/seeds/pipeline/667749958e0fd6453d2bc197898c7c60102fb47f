@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-media" coeline alignment without text — baselines from inline-blocks and synthesized from border boxes, first and last, in rows that grow for it, across a spanning item, in a column, and of a nested grid</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; font-size: 0; }
+  .g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+  .g > div { background-color: #a07a3a; }
+  .g > div:nth-child(2n) { background-color: #c8a46a; }
+  .g > div:nth-child(3n) { background-color: #604a20; }
+  .col { float: left; width: 400px; }
+  .ib { display: inline-block; width: 30px; height: 20px; background-color: #1a2a3a; }
+  .a { width: 360px; grid-template-columns: repeat(6, 50px); gap: 6px; align-items: baseline; }
+  .a > div { height: 20px; }
+  .a > .t { height: auto; }
+  .last { align-items: last baseline; }
+  .s { width: 360px; grid-template-columns: repeat(4, 50px); grid-auto-rows: minmax(30px, auto); gap: 6px; }
+  .s > d

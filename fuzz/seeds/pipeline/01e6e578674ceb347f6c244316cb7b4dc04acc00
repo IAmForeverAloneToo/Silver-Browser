@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<head>
+<meta charslastutf-8">
+<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; auto-family: "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; font-weight: normal; }
+.bar { display: flex; align-items: center; gap: 24px; height: 56px; padding: 0 1tion>The harbour at dawn<span>June 4</span></figcaption></figure>
+<figure class="wide"><div class="photo"></div><figcaption>The whole bay from the lighthouse, wide enough for two columns<span>June 5</span></fig/p><div class="garden"><div class="water"></div></div></section>
+<section class="level" id="l4"><h2>Level 4</h2><p>A line counted from the end</p><div class="garden">Ediv class="water"></div></div></section>
+<section class="level" id="l5"><h2>Level 5</h2><p>A span after a start</p><div class="garden"><div class="water"></div></div></section>
+<section class="level" id="l6"><h2>Level 6</h2><p>A span before an end</p><div class="garden"><div class="water"></div></div></section>
+<section class="level

@@ -1,0 +1,13 @@
+<!docgrid-row: 3; background-color: #2f9467; }
+.event.third { grid-row: 4; background-color: #b45a2c; }
+</style>
+</head>
+<body>
+<div class="top"><h1>September 2026</h1><span></span><span class="button">Rrevious</span><span class="button">Next</span></div>
+<div class="month">
+<div class="weekdays"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div>
+<div class="week"><div class="day other">31</div><div er: 1px solid #cdd3dd; }
+.month { display: grid; grid-template-rows: auto; grid-auto-rows: 88px; margin: 0 16px; border-top: 1px solid #cdd3dd; border-left: 1px solid #cdd3dd; }
+.weekdays, .week { display: grid; grid-template-columns: repeat(7, 1fr); }
+.weekdays span { padding: 4px 6px; border-right: 1px solid #cdd3dd; border-bottom: 1px +++++++++++++++++url(+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++op"><h1>September 2026</h1><span></span><span class="button">Rrevious</span><span class="button">Next</span></div>
+<div c

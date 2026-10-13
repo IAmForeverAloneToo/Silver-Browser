@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a14a3a; }
+.g > div:nth-child(2n) { bhckground-colotemplate-rows: auto 16px; }
+.cell > .o { width: 70px; height: 30px; }
+.cell > .one { grid-template-columns: 24px; grid-template-rows: 16px; }
+</style>
+</head>
+<body>
+<div class="cell"><div class="g"><div></div><div></div><div></div><div></div><div><div></div><div></div></div></div>
+<div class="cell"><div class="g" style="justify-content: space-fy-content: space-between; align-content: space-between"><div></div><div></div><div></div><div></div><div></div></div></div>
+<div class="cell"><div class="g" style="justify-conent: space-around; align-content:tify-content: space-evenly; align-content: space-evenly"><div></div><div></div><div></div><div></div><div></div></div></div>
+v><div></div><div></div><div></div></div></div>
+<div class="cell"><div ccccccccccccccccc

@@ -1,0 +1,10 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 00px; heightWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW: 50px; margin: 10px 0 0 10px; backgrounset-top,n in a ; }
+  }
+  @media (width >=00)x00p  {
+    .tiles { grid-template-columns:nothing, 30px); }
+
+  /* The text scale is 1. */
+  .c11 { width: calc(env(preferred-text-scaleZ, 2) * 25px);  In a shorthand.ightWWWWWWWWWWWWWWWW env(sfae-area-insetreferred-text-scale, 2) * 25px); }

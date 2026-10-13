@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-size" content="480x640">
+<title>Orientation and aspect ratio in a portrait viewport of 480 by 640 pixels: ratios exact, reduced and as a number, in min-, max- and range syntax and in a bo{lean context</title>
+<style>
+  html { background-color: #f2f2ea; }
+@media (width > 50h3em) { @supports (display: grid) { @layer a.b {nd as a @pagenumber, in min-, max- and range syntax and in a boolean context</title>
+<style>
+  html { background-color: #f6f2ea; }
+@media (width > 50em) { @supports (display: grid) { @laytent="480x640">
+<title>Orientation and aspect ratio in a portrait viewport of 480 by 640 pixels: ratios exact, reduced and as a number, in min-, max- and range syntax and in a boolean context</title>
+<style>
+  html { background-color: #f2f2ea; }
+@media (width > 50h3em) { @supports (display: grid) { @layer a.b {nd as a @pagenumber, in min-, max- and range syntax and in a boolean context</title>
+<sutyle>
+  html { background-color: #f6f2ea; }
+@media (width > 50em

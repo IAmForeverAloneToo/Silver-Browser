@@ -1,0 +1,34 @@
+<!doctype h><
+ttlhmml>
+<hea
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+@g > div:nth-child(3n)dth: 360px; grid-templ<!doctype html>
+<html>
+<head>
+<meta charset="utf-6">
+<sd>
+<style>h {ml
+t background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px justify-selfound-?color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-colobackground-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+@g > div:nth-child(3n)dth: 360px; grid-templ<!doctype html>
+<html>
+<head>
+<meta charset="utf-6">
+<sd>
+<style>h {ml
+t background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px justify-selfound-?color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+@g > div:nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnth-child(3n)dth: 360px; grid-templ<!doctype html>
+<html>
+<head>
+<meta charset="utf-6">
+<style>
+m{ lht back

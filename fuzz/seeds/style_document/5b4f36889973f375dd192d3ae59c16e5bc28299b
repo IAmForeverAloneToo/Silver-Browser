@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-colto-rows: minmax(30px, auto);ems: end; padding: 4px; height: auto; }
+.n > div:first-child > div { height: 16px; background-color: #f0e8d8; }
+.n > div:first-child > div + div { height: 30px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div style="height: 40px"></div><div style="height: 30px; margin-top: 10px"></div><div style="padding-bottom: 10></span></div><div class="t" style="padding-top: 20px"><span class="ib" style="height: 10px"></span></div><div></div><div class="t" style="padding: 5px 0 20px"><span class="ib"></span></div><div class="t"><div style="hx solid #3a2a10"></div><div style="justify-self: last baseline; margin-right: 10px"></div><div style="word-spacing: last baseline"></div></div>
+</div>
+</body>
+</html>

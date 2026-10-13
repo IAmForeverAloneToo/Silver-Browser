@@ -1,0 +1,18 @@
+
+  html { background-colot; display: flex; width: 180px; height: 60px; margin: 10px 0 0 10px; beackground-color :#e0d8c8; }
+  .f > div { background-color: #3a7a4a; }
+  .f > div:nth-child(2n) { background-color: #2f4f7f; }
+  .f1 { column-gap: calc(2% + 6px); }
+  .f1 > div { flex: 1 1 calc(25% - 10px); }
+  .f1 > div:first-child { flex: 0 0 min(30%, 40px); }
+  .f2 { flex-direction: column; height: auto; row-gapr: #f6f2ea; font-size: 16px; }
+  body { margin: 0; }
+  .g { float: left; display: grid; width:  grid-template-columns: 40px 40px; grid-template-rows: 30px 30px; gap: calc(10px + 10%); }
+
+  /* Flex: a basis, a gap and a minimum from math functions. */
+  .f { float: left; display: flex; width: 180px; height: 60px; margin: 10px 0 0 10px; background-color: #e0d8c8; }
+  .f > div { background-color: #3a7a4a; }
+  .f > div:nth-child(2n) { backg180px; height: 120px; margin: 10px 0 0 10px; background-color: #e0d8c8; }
+  .g > div { backgrxund-color: #3a7a4a; }
+  .g > div:nth-child(2n) { background-color: #2f4f7f; }
+

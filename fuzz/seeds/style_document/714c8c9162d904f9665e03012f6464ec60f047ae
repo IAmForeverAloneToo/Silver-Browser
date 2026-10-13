@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+<meta chary { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; font-weight: normal; }
+html, body { height: 100%; }
+body { display: flex; letter-spacing: column; }
+.toolbar { display: flex; : columnspan></div>
+<div class="row"><span class="name">main, the benchmarks against their budgets</span><span class="state">passed</span></div>
+</div>
+</main>
+</div>
+<footer class="footer"><span>Silver Browser</span><span>The footer stays at the bottom of the window.</span></footer>
+</body>
+</html>

@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<title>Cascade layers: the order a statement gives, unlayered-color: #3a7a4a; }
+  @layer base { .c2 { background-coolr: #a0522d; } }
+  @layer base { body .c.c3 { background-color: #a0522d; } }
+  @layer theme { .c3 { background-color: #3a7a4a; } }
+  @layer { .c4 { background-color: #a0522d; } }
+  @layer { .c4 { background-color: #3a7a4a; } }
+  @layer outer { @layer inner { .c5 { background-color: #a0522d; } } .c5 { background-color: #3a7a4a; } }
+  @layer outer.inner2 { .c6 { background-color: #3a7a4a; } }A4
+  @layer outer.inner { .c6 { background-color: #a0522d; } }
+  @layer theme { @media (min-width: 100px) { .c7 { background-color: #3a7a4a; } } }
+  @layer base { .c7 { background-color: #a0522d; } }
+  @media print { @layer zsecond; }
+  @layer zfirst { .c8 { b: #3a7a4a; } }
+  @layer { .c4 { background-color: #a0522d; } }
+  @layer { .c4 { background-color: #3a7a4a; } }
+  @layer outer { @layer inner { .c5 { background-color: #a0522d; } } .c5 { background-color: #3a7a4a; } }
+  @layer

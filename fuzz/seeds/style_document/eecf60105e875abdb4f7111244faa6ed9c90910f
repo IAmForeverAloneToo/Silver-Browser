@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid;type(<angle>) margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { back); grid-template-r #45475a;
+    --warn: unset;
+    --space: 12px;
+    --bar: 48px;
+    --edge: 4px;
+    --progress: 35;
+  }
+  html { background-color: vab(--page); }
+  body { margin: 0; }
+
+  .toolbar { di-splay: flex; gap: var(--space); height: var(--bar); padding: 0 var(--space); align-i52px; grid-template-columns: repeat(auto-fill, minmax(70px, 1fr)); grid-auto-rows: 20px; gap: 4px; }
+.e { width: 360px; grid-template-columns: repeat(autof-it, minmax(70px, 1fr)); grid-auto-rows: 20px; gap: 4px; }
+.f { width: 360px; grid-template-columns: 20px repeat(2, [x] 30px [y]) repeat(atto-fill, 60px) 20px; grid-auto-rows: 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div><div></div><div></div><div></div></div>
+<div class="g b"><div></div><div></div><div></div><div></div>

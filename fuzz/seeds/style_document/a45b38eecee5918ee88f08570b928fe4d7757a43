@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f5f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 4dth: 360px; }
+.g > div { min-height: 16px; }
+.a { grid: auto-flow 20px / 1fr 2fr 1fr; gap: 4px 12px; }
+.b { grid: 20px 30px / auto-flow dense area: main; }
+.c > div:nass="col">
+<div class="g">
+<div style]"grid-area: ws: 20px; }
+.f > div:nth-chil:nth-child(4) {rset place-self: end start; }
+</stb=url([ody>
+</htmtl>h 
+1u

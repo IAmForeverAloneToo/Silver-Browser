@@ -1,0 +1,1 @@
+<style>#g{display:grid;grid-template-areas:'a a' 'b c';grid-template-columns:0fr 2fr}#g>:first-child{grid-area:a}</style><div id=g><p>x</p><p>y</p><p>z</p>4/div>

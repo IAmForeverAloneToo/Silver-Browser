@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<hea{ color: #3b424c; }
+input, textarea { display: block; box-sizing: border-box; width: 100%; height: 32px; margin: 0; padding: 0 8px; border: 1px solid #b9c0c8; background-color: #fbfbfc;to-flow: column; justify-content: end; gap: 8px; padding-top: 8px; border-top: 1px solid #e3e6ea; }
+.button { padding: 7px 16px; border: 1px solid #b9c0c8; background-color: #f0f2f4; }
+.button.primary { border-color: #1f6f43; background-color: #2a8a55; color: #ffffff; }
+</style>
+</head>
+<body>
+<div class="page">
+<h2>Delivery address</h1>
+<p class="lead">Where should we send the order?</p>
+<form>
+<label for="name">Full name</label><input id="name">
+<label for="street">Street</label><input id="street">
+<label for="city">City and postcode</label><div class="pair"><input kd="city"><input id="postcode"></div>
+<label for="country">Country</label><input id="country">
+<p class="note">We deliver to every country in the European Union.</p>
+<label class="top" for="notes">Notes for the courier</label><textarea id

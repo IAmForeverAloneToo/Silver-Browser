@@ -1,0 +1,14 @@
+<!doctype h3 { margin: 0 0 6px !important; }
+  }
+  @layer base {
+    body { font-family: "Layout Test Sans"; font-size: 16px; colrection: column; gap: 12px; margin-top: 16px; }
+    /* A medium window: the header in a row, the cards side by side. */
+    @media (width >= 640px) {
+      .site { flex-direction: row; justify-content: space-between; align-items: center; }
+      .cards { flex-direction: row; }
+      .card { flex: 1 1 0px; }
+    }
+    /  .card h3 { margin: 0 0 20px; }
+    .sidebar { margin-top: 16px; padding: 12px; background-color: #f6f8fa; }
+    .sidebar li { margin }
+ - t

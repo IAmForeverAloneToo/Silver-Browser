@@ -1,0 +1,9 @@
+
+  htm: 16px; }
+olor: #ffffff; }
+  /* A square ring, its top side the colour that turns. */
+  .spinner { width: 36px; height: 72px; margin: 0 auto 24px auto; border: 12px solid #d8dee4; border-top-color: #3a7a4a;
+             animation: spin 1s lineat-align: center; }
+  p { margin: 0 0 clamp(12px 0; line-hei o b dy{ margin: 0; list-sty,e-position:}
+  heade60x; bac
+  /* The re--aencebrowser is given the enkgrgin'se own font, whoound-colors:

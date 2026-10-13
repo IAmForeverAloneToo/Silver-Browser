@@ -1,0 +1,1 @@
+<style>#g{display:grid;grid:auto-flow 10px/repeat(3,1fr);place-content:end space-evenly;p/lace-items:centetsr retch;height:100px}</style><div id=g><a>1</a><a>2</a><a>3</a><a>4</a></div>

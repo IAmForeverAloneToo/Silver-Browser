@@ -1,0 +1,10 @@
+p { text-decoration: underline double from-font redd6f4;
+   :root { --x: var(--y) ; --y: v   --text: #a6adc8;
+      --accent: #f9'2af;
+      --link;lisd; text-underline-mffset: calc(1em - 2px); text-align: justify; text-align-last: center; text-justify: int  --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media (prefers-color-scheme: davrk) {
+    :root {
+      --page: #1e1e2e;
+    : #89b4faar(--x);lisd; text-underline-mffset: calc(1em - 2px); text-align: justif  --sx, reurfaced); margibn: v:ar(

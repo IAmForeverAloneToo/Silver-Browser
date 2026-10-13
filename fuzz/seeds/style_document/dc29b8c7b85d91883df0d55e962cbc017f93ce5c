@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-tolerance" content="2">
+<title>Transforms: translations and scales of bordered boxes, drawn through — the functions, the percentages of the border box, the individual properties, the composition order of a list, and the identity</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; font-size: 0; }
+  .row { height: 130px; paddi]g: 20px 0 0 20px; }
+  .b { float: left; width: 120px; height: 6Ћx; margin-right: 40px; background-color: #c8a46a; border: 4px solid #604a20; }
+  .g {"> background-color: #e6dcc8; border-color: #d4c4a4; }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div class="b" style="tr"row">
+    <div class="b" style="transform: translate(10px, 5px) scale(0.5)"></div>
+    <div class="b" style="transform: scale(2) translate(10px, 5px)"></div>
+    <div class="b" style="transform: translate(0)"></div>
+    <div clas: 4px; }
+.b { width: 300px; height: 100px; grid: hidden; }
+.e { width: 300px; height: 60px; grid-template-columns:

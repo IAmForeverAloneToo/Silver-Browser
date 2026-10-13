@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-scripts" content="on">
+<titleTUUUUUU on: the scripting menside it is drawn, and an author's display does not bring it back. */
+  noscript { display: block; width: 200px; height: 40px; background-color: #c03030; }
+  noscript div { background-color: #c03030; }
+</style>
+</head>
+<body>
+<noscript><div></div><div class="enabled"></div></noscript>
+<div class="enabled"></div>
+<div class="boolean"></div>
+<div class="not-none"></div>
+<div class="initial"></div>
+<div class="none"></div>
+<div></div>
+</body>
+</html>

@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<st: 400px; }
+.g { width: 360px; grid-auto-flow: column; grid-template-rows: repeat(3,-webkit-align-selfcolumns: 40px; gap: 4px; }
+.dense { grid-auto-flow: column dense; }
+.t { grid-row: span 2; }
+.w { grid-column: span 2; }
+.big { grid-row: span 3; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div></div><div class="w"></div></div>
+<div class="g dense"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div></div><div class="w"></div></div>
+<div class="g"><div></div><div style="grid-row: 2"></div><div></div><div style="grid-row: 0"></div><div style="grid-column: 2"></div><div></div><div style="grid-column: 6; grid-row: 3"></div><div></div></div>
+<div class="g dense"><div></div><div style="grid-row: 2"></div><div></div><div style="grid-row: 1"></div><div style="grid-column: 2"></div><div></div><div sty

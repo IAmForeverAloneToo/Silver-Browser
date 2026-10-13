@@ -1,0 +1,1 @@
+li::marker { content: counteps(list-itebrm, ".") counters(list-itebrm, -2

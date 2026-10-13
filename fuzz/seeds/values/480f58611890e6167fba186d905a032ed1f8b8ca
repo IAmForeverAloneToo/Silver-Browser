@@ -1,0 +1,19 @@
+div { width: attr(data-a tzpe(<length>), 3ptype(<number>)x); lor: var(--page); }
+  body { margin: 0;  }inter-charactereft; width: var(--li::markerers(list-item, ".") " "; } ol { counter-reset: list-item 3; } li { countpxer-increment: liser-increment: lissize); height: var(--size); margin: var(--gap) 0 0 var(--gap); background-colr o:var(--cell); }
+  .row { clear: left; }
+
+  /* A colour, a fallback when the property is missing, a fallback of a
+     fallback, and one through a chain of three. */
+  .c1 { background-color: var(--ok); }
+  .
+    --ok: #3a7a4a;
+    --other: #a0522d;
+    --size: 50px;
+    --gap: 10px;
+    --edge: 4px solid var(--other);
+    --chain-a: var(--chain-b);
+    --chain-b: var(--chain-c);
+    --chain-c: var(--ok);
+  }
+  html { background-color: var(--page); }
+  body { margin: 0;  }inter-charactereft; width: var(--li::markerers(list-item, ".") " "; } ol { counter-reset: list-item 3; } li { countpxer-increment: liser-increment: lissize); height: var(--size); margin: var(--gap) 0 0 var(--gap); 

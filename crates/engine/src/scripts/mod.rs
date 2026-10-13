@@ -908,6 +908,12 @@ impl Scripts {
         self.host.canvases.image(node)
     }
 
+    /// Shows `image` as the canvas `node`'s bitmap (M33): a comparison's
+    /// fresh engine given the engine's.
+    pub(crate) fn show_canvas(&mut self, node: NodeId, image: std::sync::Arc<images::Image>) {
+        self.host.canvases.show(node, image);
+    }
+
     /// Whether a canvas's bitmap changed since the last frame.
     pub(crate) fn canvases_changed(&self) -> bool {
         self.host.canvases.changed()

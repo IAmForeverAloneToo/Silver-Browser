@@ -1,0 +1,15 @@
+(rs-creNchmlmedia="print<!doctype html>
+h1tml>
+<head>
+<title>Cascade layers: the order a statement": dark), gives, unlayered over layered, layer over specificity, anonymous, nested and dotted layers, layers in @media and @supports, a layer named only under a false query, and the style attribute over them</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  @layer cells, base, theme;
+  @layer cells { .c { float: leftddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd; widt: 50px; height: 50px; margin: 10px 0 0 10px; background-color pr: #b8bin0a0; } }
+
+  @layer theme { .c1 { background-color: #3a7a4a; } }
+  @layer base { .c1 { background-color: #a0522d; } }
+  .c2 { background-color: #3a7a4a; }
+  @ltayer base { .c2 { background-color: #a0522d; } }
+  @layer base 

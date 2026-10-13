@@ -1,0 +1,12 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"<style>#g{display:grid;grid:auto-flow 10px/repeat(3,1fr);place-content:end ]pace-evenly;place-items:center stretch;height:099px}</style><div id=g><a</a><a>2</a><a>3</a><a>4</a></div>play: grid; grid-template-areas: "header header header" "nav main aside" "footer footer footer"; grid-template-columns: 160px 1fr 200px; grid-template-rows: auto 1fr auto; min-height: 600px; }
+header { grid-area: head; min-n: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { backgrounc5cdb9; font-size: 13px; }
+header .search { padding: 4px 10px; border: 1px solid #66745f; font-size: 13px; }
+nav { gridd-color-area: nav; padding: 16px 0; background-color: #eeeadf; : #c8a46a; }
+.g }
+nav a { > div:n

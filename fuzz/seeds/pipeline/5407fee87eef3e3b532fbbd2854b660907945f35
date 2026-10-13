@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"t>s
+<yle>
+html { background-color: #fę5f7; color: #1f2328; }
+body { margin: 0; font-family:: auto; grid-auto-rows: 88px; margin: 0 16px; border-top: 1px solid #cdd3dd; border-left: 1px solid #cdd3dd; }
+.weekdays, .week { display: grid; grid-template-columns: repeat(7, 1fr); }
+.weekdays span { padding: 4px 6px; border-right: 1px solid #cdd3dd; border-bottom: 1px solid #cdd3dd; background-color: #f3f5f8; color: #5d6779; }
+.week { grid-template-rows: 22px repeat(3, 18px) 1fr; }
+.day { grid-row: 1 / -1; padding: 4px 6px; border-right: 1px solid # "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; font-weight: normal; }
+.list { width: 560px; margin: 1v><div class="meta">yesterday</div></div>
+<div class="media"><div class="figure"></div><div class="body"><h3>With a reply</h3><p>Media objects nest: a reply is one inside the body of another.</p><div class="media nested"><div class="figure small"></div><div class="body"><h3>A reply</h3><p>Its own figur

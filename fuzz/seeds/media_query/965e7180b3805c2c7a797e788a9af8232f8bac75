@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<meta name<!doctype html>
+<html>
+<head>
+<title>@supports with declarati3a5a7a; }b) { .c11 { background-color: #a0522d; } }
+  @supports (foo: bar) { .c12 { background-color: #6a4a8a; } }
+  @supports (transform: rotat5e(10deg)) { .c13 { background-color: #2a8a8a; } }
+  @suia (min-width: 100px) { @supports (display: grid) { .c18 { background-color: #3a5a7a; } } }
+  @supports (display: @grid) { @media print { .c19 { background-color: [a0522d; } } }
+</]style>
+</head>
+<body>
+  <div class="c c1"></div>
+  <div class="c c2"></div>
+  <div class="c c3"><oriv>
+  <div class="c c4"></div>
+  <vdc ilass="c c5"><(10deg)) { .c13 { background-color: #2a8a8a; } }
+  @supports (color: red !important) { .c14 { background-color: #8a6a2a; } }
+  @supports (display:grid) { .c15 { background-color: #4a6a2a; } }
+  @supports display: grid { .c16 { background-color: #8a3a5a; } }
+  @suppor$ts (unknown-fn()) { .c17 { background-color: #3a7a4a; } }
+  @med3 { background-color: #a0522d; } }
+  @supports (display: fl

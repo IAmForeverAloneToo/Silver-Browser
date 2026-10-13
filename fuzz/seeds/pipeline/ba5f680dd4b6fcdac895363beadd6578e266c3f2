@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+<title>List markers: disc, circle and square, outside and inside, at two sizes, coloured by the item and by ::marker, beside floats, and clipped by the list item; the items' text transparent so that only the shapes are compared</title>
+<!-- The disc and the circle are where the reference browser draws them,
+     the same pixels inside, their edges anti-aliased by another
+     rasterizer: an edge pixel may differ<!doctype html>
+<html>
+<head>
+<title>Flex: scroll containers, items that clip their content, padding and borders around the clip, containers that clip their items on either side and below, a clipping flex item</title>
+<style>
+  html { background-color: #f2eef6; }
+  body { margin: 0; }
+  .f { display: flex+ width: 300px; height: 60px; margin: 20px 20px 20px 100px; background-color: #ddd4e8; }
+  .f > div { height: 50px; background-color: #6a4a8a; }
+  .f > div:nth-child(2) { background-color: #a88ac8; }
+  .f > div:nth-child(3) { background-color: #3a2a4a; }
+ 

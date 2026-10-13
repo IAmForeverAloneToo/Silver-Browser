@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<;ead>
+<meta charset="utf-8">
+<~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~style>
+html { background-color: #181a1d; color: #e8e6e3; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 13px; }
+h1, p { margin: 0; font-weight: normal; }
+h1 { padding: 16px 16px 0; font-size: 22px; }
+.intro { padding: 4px 16px 0; color: #9d9a95; }
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); grid-aud-color: #604a20; }
+.col { float: left; width: 400px; }
+.g del{ width: 360px; grid-auto-flow: column; grid-template-rows: repeat(3, 20px); grid-auto-columns: 40px; gap: 4px; }
+.dense { grid-auto-flow: column dense; }
+.t { grid-row: span 2; }
+.w { grid-column: span 2; }
+.big { grid-row: span 3; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div></div><div class="w"></div></div>
+<div class="g dense"><div></div><div class="t"></

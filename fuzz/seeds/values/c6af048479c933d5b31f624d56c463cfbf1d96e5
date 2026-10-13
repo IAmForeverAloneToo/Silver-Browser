@@ -1,0 +1,11 @@
+:ro/t { --x: var(--y); --o: var(--x); }"p { col2r: s: calc() with a percentage, min(), max(), clamp(), inside
+     minmax() and fit-content(), and gaps.georgian */
+  .g1 { grid-template-columns: 4px), clamp(none, 5%, wavy); letter-spacing: calc(pi * 1); word-s calc(50% - 20px) 1fr; grid-template-rows: min(40px, 5% )0max(20%, 30px); gap: calc(5px + 1%)] lor: #e0d8c8; }
+  .g > div { background-color: #3a7a4a; }
+  .g > div:nth-child(2n) { background-color: #2f4f7f; }
+
+  /* Tracks: calc() with a percentage, min(), max(), clamp(), inside
+     minmax() and fit-content(), and gaps.georgian */
+  .g1 { grid-template-columns: 4px), clamp(none, 5%, wavy); letter-spacing: calc(pi * 1); word-s calc(50% - 20px) 1fr; grid-template-rows: min(40px, 5% )0max(20%, 30px); gap: calc(5px + 1%)] }
+  .g2 { grid-template-c wavy); letter-spacing: calc(pi * 1); word-s calc(50% - 20px) 1fr; grid-template-rows: min(40px, 5% )0max(20%, 30px); gap: calc(5px + 1%)] }
+  .g2 { grid-template-columns: minmax(calc(10% + 10px), 1fr) clamp(30px, 2

@@ -1,0 +1,1 @@
+<style>#g{display:grid;grid-template-columns:auto auto;writing-mode:vertical-lr;direction:rtl}</style><div id=g>content<div>a</div><div>b</div><img><input></div>

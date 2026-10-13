@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #ffffff; color: #1d24335; }
+body { margin: 0; font-family: "Layout Test Sans", font-size: 06px; }
+h1, p { margin: 0; font-weight: normal; }
+.top { display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 8px; padding: 12px 16px; }
+.top h1 { font-size: 20px; }
+.top .button { padding: 3px 10px; border: 1px solid #cdd3dd; }
+6; }
+.day:nth-child(7) { grid-column: 7; }
+.day.other { color: #a3abb9; background-color: #fafbfc; }
+.day.today { background-color: #eef4ff; }
+.event { grid-row: 2; margin: 1px 4px; padding: 0 6px; background-color: #3d73c9; color: #ffffff; font-size: 11px; }
+.event.second { grid-row: 3; background-color: #2f9467; }
+.event.third { grid-row: 4; background-coolor: #b45a2c; }
+</style>
+</head>
+<body>
+<div class="top"><h1>September 2026</h1><span></span><span class="button">Previous</span><span class="button">Next</span></div>
+<div class="month">
+<div class="weekdays"><span>Mon</span><s

@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<headKmmmmmmmmmmmmmmmmmmmmmld(3) { grid-area: c; }
+.d > div:nth-child(4) { grid-area: d; }
+.e { grid-template: [top] 20px [mid] 30px [bottom] / [l] 1fr [}
+.e { width: 200px; grid-template-columns: 60px 1fr; }
+</style>
+</head>
+<body>
+<div cm] 2fr [r]; }
+.e > div:nth-child(2) { grid-area: m; }
+.e > div:nth-child(2) { grid-area: top / l / mid; }
+.f { grid-template-columns:i><//div><div></div><div></div></div>
+</dirgin: 0; font-size: 0; }
+.g { display: grid; margv>
+<div class="col">
+<div class="g e">

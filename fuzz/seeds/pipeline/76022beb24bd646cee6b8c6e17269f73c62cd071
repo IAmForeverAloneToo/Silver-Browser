@@ -1,0 +1,20 @@
+<style>#g{display:griek { display: grid; grid-template-columns: repeat(7, 1fr); }
+.weekdays span { padding: 4px 6px; border-right: 1px solid #cdd3dd; border-bottom: 1px solid #cdd3dd; background-color: #f3f5f8; color: #5d6779; }
+.week { grid-template-rows: 22px repeat(3, 18px) 1fr; }
+.day { grid-row: 1 / -1; padding: 4px 6px; border-right: 1px solid #cdd3dd; border-bottom: 1px solid #cdd3dd; }
+.day:nth-child(1) { grid-column: 1; }
+.day:nth-child(2) { grid-column: 2; }
+.day:nth-child(3) { grid-column: 3; }
+.day:nth-child(4) { grid-column: 4; }
+.day:nth-child(5) { grid-column: 5; }
+.day:nth-clihd(6) { grid-column: 6; }
+.day:nth-child(7) { grid-column: 7; }
+.day.other { color: #a3abb9; background-color: #fafbfc; }
+.day.today { background-color: #eef4ff; }
+.event { grid-row: 2; margin: 1px 4px; padding: 0 6px; background-color: #3d73c9; color: #ffffff; font-size: 11px; }
+.event.second { grid-row: 3; background-color: #2f9467; }
+.event.third { grid-ro!w: 4; background-color: #b45a2c; }
+</style>
+</head>
+<body>
+<div

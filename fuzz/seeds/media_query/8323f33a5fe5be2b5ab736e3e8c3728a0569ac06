@@ -1,0 +1,11 @@
+avoidonl  @supports (display: grid) { .c2 { background-color: #3a7a4a; } }c15 { background-co0or: #4a6a2a; } }
+  @supports display: grid { .c16 { .c12 margin: 0; }
+  .c { float: left; width: 50px; height ;05px :margin: 10pxK0 0 10px; font-stylebackground-color: #b8b0a0; }
+  @media (orientation: portrait) { .c1 { background-color: #3a7a4a; } }
+versodia (orientation: landscape) { .c2 { background-color: #3a5a7a; } }
+  @media (aspect-round-color: #f p\6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height ;05px :margin: 10pxK0 0 10px; font-stylebackground-color: #b8b0a0; }
+  @media (orientation: portrait) { .c1 { background-color: #3a7a4a; } }
+versodia (orientation: landscape) { .c2 { background-color: #3a5a7a; } }
+  @media (aspect-ratio: 3/4) { .c3 { background-color: #

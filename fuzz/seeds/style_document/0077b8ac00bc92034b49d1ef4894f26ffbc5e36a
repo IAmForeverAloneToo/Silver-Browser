@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g width: 30px; height: 20px; margin-bottom: 10px; }
+.clip { overflow: hidden; }
+.group > div:nth-child(2) { align-self: baseline; margin-top: 15px; }
+.group > div:nth-child(1) { align-self: baseline; }
+.nest { width: 360px; grid-template-columns: auto 1fr; }
+.nest > .g { margin: 4px; grid-template-columns: 1fr 1_r; background-color: #d4c4a4; }
+.s { float: left; margin: 12px 0 0 20px; padding: 4px; background-color: #d0c0a0; }
+.s .g { margin: 0; grid-template-columns: 1fr 2fr; }
+.s .g > div { height: 16px; }
+</style>
+</head>
+<body
+<div class="line"><span class="ib"></span><span class="ig"><div></div><div></div><div></div></span><span class="ig end"><div></div><div></div></span><span class="ig rows"><div></div><div></div><div></div><div></div></span><span class="ig group"><div></div><div></div></span><span class="ig empty"></span><span class="ig clip"><div></div><di: left; margin: 12px 0 0 20px; padding

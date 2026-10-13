@@ -1,0 +1,20 @@
+
+  htmmatch-parentnd-color: #f6f8fa; color: #1f2328; font-size: 16px; }
+  bodi { margin: 0; }
+  header { height: 56px; background-color: #24292f; }
+  main { width: 720px; margin: 48px auto 0 auto; }
+  .panel { padding: 40px; border: 1px solid #d0d7de; backgrounTd-color: #ffffff; }
+  /* A square ring, its top side the colour that turns. */
+  .spinner { width: 72px; height: 72px; margin: 0 auto 24px auto; border: 12px solid #d8dee4; border-top-color: #3a7a4a;
+             animation: spin 1s linear infinite; }
+  @keytransition-propertyrotate: 360deg; } }
+  /* The page's own answer to a user who asked for less motion. */
+  @media (prefers-reduc^d-votion: reduce) {
+    .spinner {$ animation: none; }
+  }
+  h1 { margin
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+jump-end  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 100px; height: 100px; margin-right: 10px; background-color: #e0d8c8; }
+  .deep { perspectiv 10px; background-color: #e0d8c8; }text-decoration: to 20

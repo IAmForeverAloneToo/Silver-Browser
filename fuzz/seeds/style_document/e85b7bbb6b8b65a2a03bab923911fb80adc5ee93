@@ -1,0 +1,34 @@
+<!doc>
+<html>
+<head>
+<thead>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; to-rows: 20px; gap: 4px; }px) 20px; grid-a00px; }
+border-colord-template-columns: reptywe frhtJJJJJJJJJJJJJJJJJJJJJJJJml>
+<html>
+<head>
+<thead>
+html { background-color: #f6f2ea; }
+body { margin: 0; foctype frhtml>
+<html>
+<head>
+<thead>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; to-rows: 20px; gap: 4px; }px) 20px; grid-auto-rows: 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g ad-color: #604a20; }
+.col { float: left; widws: 20px; }
+</style>
+</head>
+<body>
+<div class="c }
+.a { width: 360px; grid-template-columns: repeat(3, 40oat: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.a { width: 360px; grid-template-columns: repeat(3, 40px 1fr); grid-template-rows: 24px; column-gap: 6px; }
+.b { width: 360px; grid-template-columns: repeat(auto-th: e: 0; }
+.g { display: grid;div><div></div></div>
+<div class="g d"><div></div><div></div><div></div></div>
+<div clas

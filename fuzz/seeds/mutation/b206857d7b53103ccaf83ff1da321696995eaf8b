@@ -1,0 +1,14 @@
+<!doc width: 360px; grid-template-columns: repeat(3, minmaxtyle="width: 30px; height: 12px"></i></dcenteriv style="margin: 5px auto 5px 10px"></div><div style="margin: auto; align-self: egin-left: auto; margin-right: 10px"></div>
+</div>
+</div>
+<div class="colnd"></div><div style="margin-left: auto; margin-right: 10px"></div>
+</div>
+</div>
+<div class="col">
+<div class="g b">
+<div style="margin-left: 20px"></div><div style="margin-bottom: 10px"></div>
+<div style="grid-column: span 2; width: 60px; margin: auto"></div>
+</div>
+</div>
+</body>
+</html>

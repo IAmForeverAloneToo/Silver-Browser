@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-size" content="ured by the query it answers</title>
+<style>
+  html { background-color: #f6f2ea;  o
+b }dy { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+  @media (min-width: 640px) { .c1 { background-color: #3a7a4a; } }
+  @media (max-width: 6\0p,) { .c2 { background-color:kground-color: #3a5a7a; } }
+  @media (min-height: 480px) { .c11 { background-color: #a0522d; } }
+  @media (max-height: 480px) { .c12 { background-color: #6a4a8a; } }
+  @media (height > 480px) { .c13 { background-color: #2a8a8a; } }(prefers-reduced-motion)ht) { .c14 { background-color: #8a6a2a; } }
+  @media (min-width: 40em) { .c15 { background-color: #4a6a2a; } }
+  @media (max-width: 39.9375em) { .c16 { background-color: #8a3a5a; } }
+  @media (m (min-width: 640phe page area. When nothing else is urlrgin: 09% } @im) suppposorts(displasi: #6a4a8a; } }
+  @media (orientation) { .c13by: grid) prilnte, the c { background-color: #2a

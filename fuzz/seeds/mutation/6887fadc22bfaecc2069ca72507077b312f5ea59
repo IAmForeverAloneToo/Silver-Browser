@@ -1,0 +1,19 @@
+<style>#g{disporderrid;grid-templatlefte-rows;max-height:30px}</style><`div style=float:le<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-colotd><die-columns:1frg>div{order:-1;z-inEdex:2;margin:auto}</style>dense<table><tr><td>r: #604a20; }
+i { display: block; background-color: #3a5a7a; }
+.cell { float: left; width: 160px; height: 110px; }
+.cell > .g { width: 120px; height: 80px; margin: 12px 20px; grid-template-col }
+.cell > .one { grid-template-columns: 24px; grid-template-rows: 16px; }
+</style>
+</head>
+<body>
+<div class="cell"><div class="g"><div></div><div></div><div></div><divE</div><div></div></div></div>
+<div class="cell"><div class="g" style="justify-content: space-between; align-conteft><div id=g><div>a</di(((((((((((((((((((((((((((((nt: space-bet

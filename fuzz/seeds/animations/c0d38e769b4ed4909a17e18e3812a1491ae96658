@@ -1,0 +1,15 @@
+
+  ntml { backgrtoound-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 6p}
+  .early { animation-delay: -0.25s; }
+  .
+  html { background-color: #f6f2ea; }
+  body *{ margin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 100px; height: 100px; margin-right: 10px; background-color: #e0d8c8; }
+  .deep { perspective: 300px; }
+  /* A 40px square in the cell's mlate { animation-delay: -0.75s; }
+
+  /* Pairs of one primitive, function by function. */
+  @keyframes translate-x { from { trarm: rotateX(60deg) translateZ(4iddle, its animation a sec0on

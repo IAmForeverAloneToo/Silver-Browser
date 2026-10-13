@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #fbfaf7; color: #26231e; }
+body { margin: 0; font-family: "ayout Test Sans"; font-size: 15px; }
+h1, h4, p { margin: 0; font-weight: normal; }
+@page { display: grid; grid-template-areas: "header header header" "nav maindb9; font-sirepeat(x; }
+header .search { padding: 4px 10px; border: 1px solid #66745f; font-size: 1<style>#g{display:grid;grid-template-rows:au<stmax(0,1fr) fit-content(40%) min-content max-c; border: 1px solid #66745f; font-size: 1<style>#g{display:grid;grid-template-rows:au<stmax(0,1fr) fit-content(40%) min-content max-contenq}#g>*{ove3px; }
+nav { grid-area: nav; padding: 16px 0; background-color: #eeeadf; }
+nav a { display: block; padding: 6px 20px; color: #26231e; }
+main { grid-area: main; padding: 20px 24px; }
+main h2 { font-size: 20px; margin-bottom: 10px; }"main p { margin-bottom: 12px; }
+aside { grid-area: aside; padding: 20px 16px; border-left: 1px solid #e2ddd0; }
+aside h2 { font-size: 14px; margin-b

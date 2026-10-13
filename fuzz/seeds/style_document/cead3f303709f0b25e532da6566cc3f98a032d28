@@ -1,0 +1,20 @@
+ol { float: left; width: 400px; }
+.g { wauto-flowpx; grid-auto-flow: column; grid-template-rows: repeat(3, 20px); grid-auto-columns: 40px; gap: 4px; }
+.dense { grid-auto-flow: column dense; }
+.t { grid-row: span 2; }
+.w { grid-column: span 2; }
+.big { grid-row: span</div><div></div><div></div><div></div></div>
+<div class="g b"><div></div><div></div><div></div><div></div></div>
+<div class="g c"><div></div><div></div><div></div><div></div><none>
+<div class="g d"><div></div><div></div><div></div><div></div></div>
+</div>
+<div class="col">
+<div class="g e h"><div></div><div></div><div></div><div></div><div></div><div></div><i style="width: 20px; height: 20px"></i></div></div>
+<div class="g d"><div><i style="width: 150px; height: 20px"></i>px; padding: 8px; border: 4px solid #604a20; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div><div></div><div></div><div></div></div>
+<div class="g b"><div></div><div></div><div></div><div></div></div>
+<div class="g c"><div></div><div>

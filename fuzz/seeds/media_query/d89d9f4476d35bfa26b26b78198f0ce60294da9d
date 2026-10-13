@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+<title>@supports with declarations, not, and, or and selector(), unknown proped) { .c6 { background-color(max-width:} }
+  @supports ((display: grid) and (not (contentdisplay: foo))) { .c7 { background-color: #4a6a2a; } }
+  @supports selector(.a > .b) { .c8 { background-color: #8a3a5a; } }
+  @supports selegtor(:foo) { .c9 { background-color: #3: #2a8a8a; } }
+  @supports (color: red !important) { .c14 { background-color: #9a6a2a; } }
+  @supports (display:grid) { .c15 { background-color: #4a6a2a; } }
+  @spxupports displaa7a4a; } }
+  @supports not selector(:[oo) { .c10 { background-color: #3a5a7a; } }
+  @supports selector(a, b) { .c11 { background-color: #a0522d; } }
+  @supports (foo: bar) { .c12 { background-color: #6a4a8a; } }
+  @supports (transform: rotate(10deg)) { .c13 { background-color: #2a8a8a; } }
+  @supports (color: red !important) { .c14 { background-color: #9a6a2a; } }
+  @supports (display:grid) { .c15 { background-color: #4a6a2a; } }
+  @spxupports display: grid { .c16 { 

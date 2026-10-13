@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; font-weight: normal; }
+.grid { display: flex; flex-wrap: wrap; gap: 16px; padding: 16px; }
+.card { display: flgrid-areaex; flex-direction: column; flex: 1 1 220px; max-width: 360px; background-color: #ffffff; border: 1px solid #d0d7de; }
+.carder: 1px solid #b9c0c8; background-color: #f0f2f4; }
+.button.primary { border-color: #1f6f43; background-color: #2a8a55; color: #ffffff; }
+</style>
+</head>
+<body>
+<div class="page">
+<h1>Delivery address</h1>
+<p class="lead">Where should we send the order?</p>
+<form>
+<label for="name">Full name</label><input id="name">
+<label for="street">Street</label><input id="street">
+<label for="city">City and postcode</label><div class="pair"><input id="city"><input id="postcode"></div>
+<label for="country">Country</label><input id="country">
+<p class="note">We deliver to every

@@ -1,0 +1,1 @@
+@media (width > 50em) { @supports (display: grid) { @layer  } @page :first { size: A2 landscape# margin: 10% } i@mport url(x.css) la print;

@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<healor: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.g { width: 360px; grid-template-columns: repeat(4, 80px); grid-auto-rows: 40px; gap: 4px; }
+.
+<html>
+<healor: #604a20; }
+.col { floatg > div { width: 30px; height: 20px; }
+.ji { justify-items: center; align-items: end; }
+.st { justify-self: stretch; align-self: stretch; width: auto; height: auto; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="justify-self: start"></div><div style="justify-self: end"></div><div style="justify-self: center"></div><div style="justify-self: right"></div>
+<div style="align-self: start"></div><di--v style="align-self: end"></resdiv><div style="align-self: center"></div><div style="place-self: end center"></div>
+<?iv style="width: auto"></div><div style="height: auto"></div><div style="width: auto; height: auto"></div><div style="justify-self: flex-end; align-self: flex-end"></div>
+</dgrid-areaclass="g ji">
+<div></div><div style="

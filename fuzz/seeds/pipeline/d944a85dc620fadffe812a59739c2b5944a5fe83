@@ -1,0 +1,9 @@
+<style>#g{display:grid;grid-template-columnor: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g){ display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; t:wdih 400px; }
+i { display: block; background-color: #3a5a7a; }
+.g { width: 360px; grs:[a] 10px [b] auto [a] 1fr [b]}#g:*{grid-column:a 2/b -1}</style><div id=g><span>one</span><span>two words</span></div>

@@ -1,0 +1,17 @@
+
+  html { background-color: 
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 100px;ate(-20px, 20px) scale(0.5); } }
+  /* none against a list: the list's identit~ functions. */
+  @keyframes from-none { from { transform: none; } to { transform: translateY(-60px) rotate(60deg); } }
+  @keyframes to-none { from { transform: scale((, 0.5); } to orm: rotateX(0deg); } to { transform: rotateY(80deg); } }
+  @keyframes deep { from { transform: translateZ(0px) rotateY(0deg); } to { transform: rotateX(60deg)#f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell {  translateZ(40px); } }
+  /* Perspective, interpolated through its reciprocal. */
+  { transform: nonposition: relative; width: 100px; height: 100px; margin-right: 10px; bace; } }
+  /*kground-color: #e0d8c8; }
+  .deep { pe 

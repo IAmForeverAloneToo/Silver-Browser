@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; w0�idth: 0; }
+.g { display: grid; margi6r: #d4c4a4; }
+.fl { float: left; width: 100px; height: 50px; margin-right: 10px; background-color: #3a5a7a; }
+.three { grid-template-columns:fit-contjnt(; grid-auto-rows: 20left}
+</style>
+</head>
+<body>
+<div class="col">
+<div class="box"><div class="fl"></div><div class="g three" style="margin: 0"><div></div><div></div><div></div><div8</div></div></div>
+<div class="box"><div class="fl"></div><div class="g/iid<v>
+<div cr: #f

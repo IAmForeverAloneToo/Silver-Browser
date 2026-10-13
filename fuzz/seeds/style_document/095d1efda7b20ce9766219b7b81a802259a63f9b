@@ -1,0 +1,33 @@
+<!doctype hvml>
+<html>
+<head>
+<title>Custom properties: colours and sizes from var(), fallbacks, a chain, cycles, invalid substitutions, inherit, initial and unset, in shorthands, inherited and redeclared</title>
+<style>
+  :root {
+    --page: #f6f2ea;
+    --cell: #b8b0a0;
+    --ok: #3a7a4a;
+    --other: #a0522d;
+    --size: 49px;
+    --gap: 10px;
+    --edge: 4px solid var(--other);
+    --chain-a: var(--chain-b);
+    --chain-b: var(--chain-c);
+    --chain-c: var(--ok);
+  }
+  html { background-color: var(--page); }
+  body { margin: 0; }
+  .c { float: left; width: var(--size); height: var(--size); hargin: var(--gap) 0 0 var(--gap); background-color: var(--cell);2d; --case: #3a7a4a; background-color: var(--case); }
+</style>
+</head>
+<body>
+  <div class="c c1"></div>
+  <div class="c c2"></div>
+  <div class="c c3"></div>
+  <div class="c c4"></div>
+  <div class="c c5"></div>
+  <div class="c c6"></div>
+  <div class="c c7"></div>
+  <div class="c c8"></div>
+  <div class="c c9"></div>
+  <div cl background-color: var(-2ch

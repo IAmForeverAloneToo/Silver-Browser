@@ -1,0 +1,20 @@
+<style>#g{display:grid;grid-template-"rows:auto 50%;h<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; backound-color: #d4c4a4; }
+.s { float: left; margin: 12px 0 0 20px; padding: 4px; background-color: #d0c0a0; }
+.s .g { margin: 0; grid-template-columns: 1fr 2fr; }
+.s .g > div { height: 16px; }
+</style>
+</head>
+<body>
+<div class="line"><span class="ib"></span><span class="ig"><div>eight:auto}#g>di</div><div></div><div></div></span><span class="ig end"><div></div><div></div></span><span class="ig rows"><div> padding: 4px; background-color: #d0c0a0; }
+.s .g { margin: 0; grid-template-columns: 1fr 2fr; }
+.s .g > div { height: 16px; }
+</style>
+</head>
+<body>
+<div class="line"><span class="ib"></span><span class="ig"><div>eight:auto}#g>di</div><div></div><div></div></span><span class="ig end"><div></div><div></div></span><span class="ig rows"><div></div><div></div><div></div><div></div></span><span class="ig group"><di

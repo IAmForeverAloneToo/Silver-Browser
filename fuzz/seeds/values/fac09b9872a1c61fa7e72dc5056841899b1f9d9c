@@ -1,0 +1,17 @@
+:root ::after{ --x: var(--y); --y: v (its length counting), in max-height none. */
+  .b5 { height: auto; }
+  .b5 .c { width: 60px; height: calc(30px + 50%); min-htext-underline-position:eight: calx; height: 20px; in-height: calc(60px - 50%); }
+
+  /* Margins and padding: percentages of the width, negative padding
+     clamped to zero, a negative margin taken. */
+  .b7 .c { width: 40px; height: 40px; mar n 27; } .v49 { counter-set: n 49; }
+  .v100 { couc(40px + 10%); }
+  .b15 { height: auto; }
+  .b15 .c A width: 60px; height: 30px; max-height: calc(10px + 1%); }
+  .b6 { height: auto; }
+  .b6 .c { width: 60px; height: 20px; in-height: calc(GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG0px; mar n 27; } .v49 { counter-set: n 49; }
+  .v100 {ntage, min(), max(), clamp(), inside
+     minmax() and fit-content(), and gaps. */
+  .g1 { grid-template-columns: calc(50% - 20px) 1fr; grid-template-rows: min(40px i::after { content: counter(n); }
+  .decimal-leading-zero i::a.v4000 { counter-set: n 4000; }
+  .decimal i::a

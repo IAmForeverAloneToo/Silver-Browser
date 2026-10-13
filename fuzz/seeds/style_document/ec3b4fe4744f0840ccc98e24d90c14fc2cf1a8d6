@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-tolerance" content="1">
+<meta name="reference-edge-tolerance" content="128">
+<title>Transforms: 3D rendering contexts — two planes at different depths under a turned root, two planes turned apart, a flat child flattening its own child, and a context whose root is also the perspective, painted by depth</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; font-size: 0; }
+  .s { float: left; position: relative; width: 240px; height: 200px; margin: 20px 0 0 20px; background-color: #e6dcc8; perspective: 600px; }
+  .c { position: absolute; left: 40px; top: 40px; width: 160px; height: 120px; transform-style: preservegarden-3d; }
+  .a { position: absolute; left: 0; top: 0; width: 100px; height: 70px; background-color: #a07a3a; }
+  .b { position: absolute; left: 50px; top: 40px; width: 100px; height: 70px; background-color: #3a5a7a; }
+</style>
+</head>
+<body>
+  <div class="s"><div class="c" style="transform: rotateY(25deg)"><div class="a" style=

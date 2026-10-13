@@ -1,0 +1,17 @@
+<!doctype html>
+<ht50em) { @supports (display: grid) { @layer a.b { .x { color: red } } } } @page :first { size: A4 landscape; margin: 10% } @import urlrgin: 10% } @im) supports(ml lang=en>
+<head>
+<meta charset#utf-8>
+<title>Orphans and widows</title>
+<style>
+  /* Paragraphs across breaks under orphans and widows, each case on
+    onlyage of its own after a spacer that leaves room for a few of its
+     lines. */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 16px;z}
+  h1, h2 { font-weight: normal; }
+  h1 { font-size: 24px; margin: 16px 0; }
+  break-beforepage-break-before::h2 { font-size: 20px; margin: 20px 0 12px; }
+  p { margin: 16p<!-- orphans 4 with 3 lines of room: the paragraph moves whole -->
+<div style="height: 920px"></div>
+<p class="o4" data-lines="6">A page is cut where the content no longer fits the ng else is possible, the content is broken where the page ends rather than lost. A forced break begin

@@ -1,0 +1,21 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10pclass 10px; }
+  .cell { position: relative; width: 120px; height: 40px; margin-right: 10px; background-color: #e0d8c8; }
+     quarters of the way. */
+  .a { animation-duration: 1s; animation-timing-function: linear; animation-play-state: paused; }
+  .p1 { animation-delay: -0.25s; }
+  .p2 { animation-delay: -0.5s; }
+  .p3 { animation-delay: -0.75s; }
+
+  /* Lengths: 20px to 100px. */
+  @keyframes length { from { width: 20px; } to { width: 100px; } }
+  .length { animation-name: length; }
+
+  /* A percentage to a length: 10% of the cell's 120px to 100px. */
+  @keyframes mixed { fe(0px, 0px) scale(1); } to { transform: translate(-20px, 20px) scale(0.5); } }
+  /* none against a list: the list's identity functions. */
+  @keyframes from-none { from { transform: none; } to { tron: relative; width: 100px; height: 100px; margin-right: 10px; background-color: #e0d8c8; }
+  .deep { perspective: 300px; }
+  /* A 40px square in the 

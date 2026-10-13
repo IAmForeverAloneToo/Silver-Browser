@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head>
+<tfoot>
+htmmin-contentl { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color div:nth-child(2n) { background-color: #c8a46color: #3a5a7a; }
+.g { position: relative; width: 300px; height: 140px; padding: 10px 16px;height: 20png: 8px 0; background-color: #e0d4bc; }
+.ib { display: inline-scaleX(block; width:a3a; }
+.end { align-items: end; height: 50px; }
+.rows { grid-template-rows: 10@x 10px; padding-top: 12px; m
+.empty { width: tml>
+<html>
+<head>
+<tfoot>
+html { backg: #e6dccx; padding: 10px 16px;height: 20png: 8px 0; background-color: #e0d4bc; }
+.ib { display: inline-block; width:a3a; }
+.end { align-items: end; height: 50px; }
+.rows { grid-template-rows: 10@x 10px; padding-top: 12px; }
+.empty { width: tml>
+<html>
+<head>
+<tfoot>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { displate-rows: 10@x 10px; padding-top: 12px; }
+.empty { width: tml>
+<html>
+<head>
+<tfoot>
+html { background-color: #f

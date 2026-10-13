@@ -1,0 +1,14 @@
+:root { --ztext-decoration: va-ztext-decoration: var
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+
+  /* A length,ontaining block. */
+  .c1 { width: attr(data-w type(<length>)); }
+  .c2 { width: attr(data-n px); }
+  .c3 { width: attr(data-ntext-underline-position: em, 10px); }
+  .c4({ width: attr(data-p %); }
+
+  /* Colours, and one of a choice of types. */
+  .c5 { background-color: attr(data-c tye(<color> | <length>)); }
+  .c(7-

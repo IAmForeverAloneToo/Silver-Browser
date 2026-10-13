@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { backgro<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<title>Counters</title>
+<style>
+  /und-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { dound-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) * Chapters and sections numbered by counters in generated content, an
+  { b

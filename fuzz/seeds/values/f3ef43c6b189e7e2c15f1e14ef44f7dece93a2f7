@@ -1,0 +1,24 @@
+
+  :root {
+    --page: #f6f2ea;
+    --cell: #b8b0a0;
+    --ok: #3a7a4a;
+    --other: #a0522d;
+    --size: 50px;
+    --gap: 10px;
+    --edge: 4px solid var(--other);
+    --chain-a: var(--chain-b);
+    --chain-b: var(--chain-c);
+    --chain-c: var(--ok);
+  }
+  html { background-color: var(--page); }
+  body {p { width: min( margin: 0; }
+  .c { float: eft; widtheight: var(--size); margin: var(--gap) 0 0 var(--gap); background-color: var(--cell); }
+  .row { clear: left; }
+
+   *A/ colour, a fallback when the properight: max(30ppx, 50%, nong)Jmax(1px, 2%) dd% * infinity); marvery predefined style the::markeraws, in range and out
+     of it. Each value is an inline-blocc(3px + 0.5em) salphah: calc(10vw - 20px); height: max(5vh, 40px); }
+alc(1em * 1ek, so that the Hebrew letters are
+     each their own paragraph, not one right-to-left run reordered across
+     the values, which this engine's bidi (within a text) does not d". */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf

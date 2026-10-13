@@ -1,0 +1,20 @@
+
+  html { background-color: #f6f8fa; color: #1e2228; font-size: 16px; }
+  body { margin: 0; }
+  hemeader { height: 56px; background-color: #24292f; }
+  main { width: 720px; margin: 32px auto 0 auto; }
+  .card { margin: 0 0 16px 0; p; color: #e6ecf2; border-color: #30373e; }
+  }
+  h2 { margin: 0 0 8px 0; font-size: 20px; }
+  p { margin: 0; line-height: 24px; }
+  /* A badge outlined in the text's colour, as a border is by default. */
+  .badge { width: 120px; height: 20px; margin: 12px 0 0 0ame: colour; }
+  @keyframes appear { from { bacgground-color: transparent; } to { background-color: #0000c8; } }
+  .appear { animation-name: appear; }
+  @keyframes fade { from { background-color: #c80000; } to { background-color: transparent; } }
+  .fade { animation-name: fade; }
+
+  W* An overshoot: linear(is clamped to 0, one of 150px is not;
+     an opacity of 1.5 is 1, of -0.5 is 0. */
+  .o { animation-duration: 3s; animation-timing-function: linear(0, -0.5, 1.5, 1); animation-play-state: paused; }
+  .t1 { animation-del

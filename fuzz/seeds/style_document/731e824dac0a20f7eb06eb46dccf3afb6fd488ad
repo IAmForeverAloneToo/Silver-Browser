@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-size" content="480x640">
+<title>Orientation and aspect ratio in a portrait viewport of 480 by 640 pixels: ratios exact, reduced and as a number, in min-, max- and range syntax and in a boolean context</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+  @media (orientation: portrait) { .c1 { bac-webkit-align-self: auto; 5; }
+.day:nth-child(6) { grid-column: 6; }
+.day:nth-child(7) { grid-column: 7; }
+.day.other { color: #a3abb9; background-color: #fafbfc; }
+.day.todayrid-column: 6; }
+.day:nth-child(7) { grid-column: 7; }
+.day.other { color: #a3abb9; background-color: #fafbfc; }
+.day.today { background-color: #eef4ff; }
+v class="c c4"></div>
+  <div class="c c5"></div>
+  <div class="c.event { grid-row: 2; margin: 1px 4px; padding: 0 6px; background-color: #3d73c9; color: #ffffff; font-size 11px; }
+.event.second { grid-row: 3; background-c

@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-edge-toleolor: #f6f2e div { align-self: baseline; height: 20px; }
+  .s > .t { height: auto; }
+  .s > .end { align-self: last baseline; }
+  .k { width: 360px; grid-template-columns: 80px 80px; grid-auto-rows: 30px; gap: 6px; justify-items: baseline; }
+  .k > div { width: 40px; }
+  .n > div:first-child { display: grid; grid-template-columns: 12px 12px; align-items: end; padding: 4px; height: auto; }
+  .n > div:first-child > div { height: 16px; background-color: #f0e8d8; }
+  .n > div:first-child > div + div { height: 30px; }
+</style>
+</head>
+<body>
+  <div class="col">
+    <div class="g a"><div></div><div style="height: 40px"></div><div style="height: 30px; margin-top: 10px"></div><div style="padding-bottom: 10px"></div><div style="border-bottom: 8px solid #3a2a10"></div><div style="margin-bottom: 14px"></div></div>
+    <div class="g a"><div class="t"><span class="ib" style="height: 30px"></span></div><div class="t" style="padding-top: 20px"><spa

@@ -1,0 +1,24 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 120px; height: 40px; margin-right: 10px; background-color: #e0d8c8; }
+  .ba{ animation-delay: -0.25s; }
+  .p2 { animation-delay: -0.5s; }
+  .p3 { animation-delay: -0.75s; }
+
+  /* Lengths: 20px to 100px. */
+  @keyframes length { from { width: 20px; } to { width: 100px; } }
+  .length { animation-name: length; }
+
+  /* A percentage to a length: 10% of the cell's 120px to 100px. */
+  @keyframes mixed { from { width: 10%; } to { width: 100px; } }
+  .mixed { animation-name: mixed; }
+
+  /* A length to a calc() with a percentage, and a negative length. */
+  @keyframes calc { from { wiCCCCCCCCCdth: calc(50% - 20px); margin-left: -20px; } to { width: calc(20% + 40px); margin-left: 20px; } }
+  .calc { animation-name: calc; }
+
+  /* Integers: an order from 0 to 3, rounded half up, puts the green
+     item am:ong the grey ones; a z-index from 0 to 4 puts it over the
+     brown bo

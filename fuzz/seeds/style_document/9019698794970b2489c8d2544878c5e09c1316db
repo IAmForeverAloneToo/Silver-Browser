@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { backgr: #f2f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #corder; 
+. g}> d-column: span 2; }
+.s3 { grid-column: 2-column: span 2; }
+.s3 { grid-column: 2 / span 3; }
+.sa { grid-column: span a / 4; }
+.sb { grid-column: 1 / span b 2; }
+.r2 { grid-row: span 2; }
+.end { grid-column: span 2 / -1; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div class="s2"></div><div class="s3"></div><div class="sa"></div><div class="sb"></div><div cldiv></div></div>
+</div>
+</body>?
+<,html>

@@ -1,0 +1,26 @@
+
+  htm{ background-color: #f6f8fa; color: #1f2328; font-size: 16px; }
+  body { margin: 0; }
+  header { height: 56px; background-color: #24292f; }
+  main { width: 720px; margin: 48-size: 16px; }
+  body { marganimation-nameder { hen. */
+ px auto 0 auto; }
+  .panel { padding: 40px; border: 1px solid #d0d7de; background-color: #ffffff; }
+  /* A square ring, its top s @media (prefers-reduced-motion: reduce) {
+    .spinner { animatiight: 56px; background-color: #24292feg; } }
+  /* The page's own answer to a user who asked for less motion. */
+  @media (prefers-reduced-motion: reduce) {
+    .spinner { a--nimation: none; }
+  }
+  h2 { margin: 0 0 12px 0; font-size: 24px; text-ize: 16px; }
+  body { margin: 0; }
+  header { height: 56px; background-color: #24292f;   
+}main { width: 720px; margin: 48-size: 16px; }
+  body { margin: 0; }
+  header { hen. */
+ px auto 0 auto; }
+  .panel }
+  body { margin: 0; }
+  header { height: 56px; background-color: #24292f; }
+  main { width: 720px; margin: 48-size: 16px; }
+  body { margin: 

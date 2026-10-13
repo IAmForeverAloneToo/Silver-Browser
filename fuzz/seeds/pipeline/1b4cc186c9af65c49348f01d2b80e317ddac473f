@@ -1,0 +1,17 @@
+<style>#g{display:grid;position:relative;grid-templep2:0atx 1fr/1y-self:center}</style><div id=fr 30px;height:80px}#a{position:absolute;grid-area:2/1/3/3;in</style><div id=fr 30px;height:80px}#a{yle><div{ padding: d-column: 3; grid-row: 1 / 6; }
+#l20 .garden {umn: 1; grid-row: 1 / 6; }
+#l18 .carrot { grid-column: 5; grid-row: 1 / 6; }
+#l19 .garden { grid-template-columns: 50px 3fr 2fr; }
+#l19 .water { grid-column: 2; grid-row: 1 / 6; }
+#l19 .carrot { grid-column: 3; grid-row: 1 / 6; }
+#l20 .garden { grid-template-rows: 1fr 1fr 1fr 1fr 40px; }
+#l20 . grid-template-rows: 1fr 1fr 1fr 1fr 40px; }
+#l20 .water { grid-column: 1 / 6; grid-row: 5; }
+#l21 .garden { grid-template: 60% 1fr / 25% 1fr; }
+#l21 .water { grid-area: 1 / 1 / 2 / 3; }
+#l22 .garden { grid-template-areas: ". . . . ." ". bed bed bed ." ". bed bed bed ." ". . . . ." "path pamax-contentth path path path"; }
+#l22 .water { grid-area: bed; }
+#l22 .carrot { grid-area: path; }
+#l23 .garden { grid-auto-flow: column; }
+#l23 .carrot { grid-row: span 2; }
+#l2

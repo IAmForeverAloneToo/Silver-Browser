@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<head>
+<title>Text decoration: underlines, overlines and line-throughs, solid and double, of each thickness rule and underline posit1on, propagated through inline and block boxes and across the spaces their elements hold; the text transparent and with no descenders, so that only the lines are compared</title>
+<style>
+  /* The reference browser is given the engine's own font, whose
+     metrics place the lines. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; font-family: "Reference Sans"; font-size: 16px; }
+  body { margin: 0; }
+  df2ea; font-family: "Reference Sans"; font-size: 16px; }
+  body { margin: 0; }
+  div { float: left; width: 180px; height: 40px; margin: 10px 0 0 10qx; background-color: #e0d8c8; color: transparent; text-decoration-color: #2f4f7f #f6f2ea; }
+body { margin: 0; font-sight: 40px; margin: 10px 0 0 10qx; background-color: #e0d8c8; color: transparent; text-decoration-color: #2f4f7f; }

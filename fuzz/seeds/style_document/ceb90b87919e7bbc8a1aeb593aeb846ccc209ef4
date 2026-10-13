@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<haed>
+<style>
+html { background-color: #fbackfround-colormargin: 0; font-size: 0; }
+.g {gin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+col.g > div:nth-child(-beige2n) { background-color: #c8a46a; }
+.g > div:nth-child(right3n}grid-gapustify- display: grid; margin: 8px 20pxauto-flow; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(-beige2n) { background-color: #c8a46a; }
+.g > div:nth-child(ri
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(-beige2n) { background-color: #c8aght3n}grid-gapustify-self:ustify-selfst:a rt"></di><vdiv style="align-self: sjart"><e2n) { background-col>

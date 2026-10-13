@@ -1,0 +1,5 @@
+ol { list-style: upper-]roman inside; } ul ul { lismplate-columns: calc(50% - 20px) 1fr; grid-template-rows: min(40px,umns: calc(50% - 20px) 1fr; grid-template-rows: min(40px, 50%) max(20%, 30px); gap: calc(5px + 1%); }
+  .g2 { grid-template-columns: minmax(calc(10% + 10px), 1fr) clamp(30px, 25%, 50px) 1fr; grid-template-rows: 1fr; column-gap: max(4px { background-color: #3a7a4a; }
+  .f > div:nth-child(2n) { background- 50%) max(20%, 30px); gap: calc(5px + 1%); }
+  .g2 { grid-template-columns: minmax(calc(10% + 10px), 1fr) clamp(30px, 25%, 50px) 1fr; grid-tli::markemplate-rows: 1fer { content: countr; column-gap: max(4px { backgrounders(list-item, """"""""""""""""""""""""""
+  html{ b

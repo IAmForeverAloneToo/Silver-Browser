@@ -1,0 +1,14 @@
+<style>#g{display:grid;position:relative;grtent(40%) min-content max-content}#g>*{overflow:hidden}</style><div id=g><div>long long long text</div><div>mns:auto 1fr}</style><diiv class=g><div  { overflow: hidden; }
+.e { width: 300px; height: 60px; grid-template-columns: 120px 120px 120px; grid-auto-rows: 40px; gap: 6px; }
+.f { width: 300px; height: 60px; grid-template-columns: 120px 120px 120px; grid-auto-rows: 40px; gap: 6px; justify-content: end; align-content: center; }
+.k { width: 300px; grid-template-columns: 1fr 1fr; gap: 10px; }
+.k > div { height: 40px; padding: 4px; }
+.m { width: 300px; height: 60px; grid-template-columns: 1fr 100px; padding: 8px; border: 4px solid #604a20; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div><div></div><div></div><div></div></div>
+<div class="g b"><div></div><div></div><div></div><div></div></div>
+<div class="g c"><div></div><div></div><div></div><div></div></div>
+<div class="g d"><div></div><div></div><div></div><div></div></d

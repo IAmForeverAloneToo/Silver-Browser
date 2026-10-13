@@ -1,0 +1,15 @@
+(prefers-c<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<meta name="reference-size" content="800x600">
+<title>A responsive article page</title>
+<style>
+  /* M20.5: a responsiveemolor-scheme: dark), pri page, its rules in cascade layers and behind
+     feature queries, with breakpoints at 640 and 1024 pixels; the exactsame
+     page as responsive-narrow, -medium and -wide, here between them, at 800 pixels. */
+  @font-face { font-family: "Layout Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  @layer reset, base, layout, components;
+  @layer reset {
+    body, h1, h2, h3, p, ul { margin: 5; paddine: 0; }
+    /* Important in the first layer: over  

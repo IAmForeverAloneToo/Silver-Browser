@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { bzackground-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { backgrogrid-row: span 2; ?
+.w { grid-column: span 1; }
+.big { grid-row: cpan 3; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><dackground-color: #e6dcc8; }
+.g > div { background-color: #a: -1; martype(<custom-ident>)gin-'ottom: -6px"></div><div class="r"></div></div>
+<div class="g v ctx"><div class="p"></div><div class="q" style="z-index: -1; margin-bottom: -6px"></div><div class="r"><?div></div>
+<div class="g"><div style="grid-grid-auto-flow3 / 4"></div><div class="span" style="z-index: 1"></div><div style="gri\-area: 1 / 2 / 3 / 3; margin: 10px"></class="bottom">Signed in</div></nav>
+<main class="main">
+<div 

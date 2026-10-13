@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<sd-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3?) { background-color: #60.4a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.g { wid 3:6ht0px; grid-template-columns: repeat(4, 80px); grid-auto-rows: 40<style>ay:grpx; gap: 4px; }
+.g > div { width: 30px; height: };2p 0x
+.ji { justify-items: center; align-items: end; }
+.st { justify-self: stretch; align-self: stretch; width: auto; height: auto; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="justify-self: start"></div><div style="justify-self: end"></div><div style="justify-self: center"></div><div style="jus"place-self: end center"></div>
+<div style="width: auto"></div><div style="height: auto"></div><div style="s<li value=5>height: auto"></div><div style="justify-self getpmir-dlate-columns: 1fr 1fr; }
+.d > div { overflow: hidden; }
+.e { width: 200px; grid-tml>x"></i></div><div><i style="w

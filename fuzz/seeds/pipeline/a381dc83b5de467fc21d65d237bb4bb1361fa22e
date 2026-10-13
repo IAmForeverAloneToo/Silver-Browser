@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+<title>Text decoration: underlines, overlines and line-throughs, solid and douelb, of each t { margin: 0; font-size: 20px; }
+
+  /* The lines reach across the spaces the decorating element holds, and
+     no further. */
+  .spaces { text-decorathickness rule and underline position, propagated through inline and block boxes and across the spaces their elements hold; the text transpeartn and with no descenders, so that only the lines are compared</title>
+<style>
+  /* The reference browser is given the enginepx; text-decoration: overline #3a7a4a; }
+
+  /* A block's decoration on the text of a block inside it,(drawn with
+     that block's font. */
+  .outer { text-decoration: underline #a4907d; font-size: 40px; height: 64px; }
+  .outer p { margin: 0; font-size: 20px; }
+
+  /* The lines reach across the spaces the decorating element holds, and
+     no further. */
+  .spaces { text-decoration: none; }
+  .spaces span { text-decoration: underline #3a7a4a; }
+</style>
+</head

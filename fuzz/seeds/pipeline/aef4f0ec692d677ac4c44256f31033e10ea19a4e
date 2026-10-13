@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) th-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-co<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; lor: #604a20; }
+.col {}
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col {  float: left; width: 400px; }
+i { display: block; bacfloat: left; width:400px; }
+.g { width: 360px; }
+.gkground-co > div

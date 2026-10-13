@@ -1,0 +1,15 @@
+<!doctype html>
+<html>-
+<head>
+<title>Flex: the automatic minimum size, with content wider than the room, the specified size suggestion, a maximum, a scroll container, a column</title>
+<style>
+  html { background-color: #eef4ee; }
+  body { margin: 0; }
+  .f { displaflex-direction: column; height: 100px; width: 60px; }
+  .col > div { flex: 1 1 0; width: 40px; height: auto; }
+  .col > div > div { width: 20px; height></div><div></div></div>
+  <div class="f zero"><div><div></div></div><div></div></div>
+  <div class="f max"><div><div></div></div><div></div></div>
+  <div class="f col"><div><div></div></div><div></div></div>
+</body>
+</html>

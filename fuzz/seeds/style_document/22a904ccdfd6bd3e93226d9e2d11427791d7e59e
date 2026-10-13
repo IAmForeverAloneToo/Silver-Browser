@@ -1,0 +1,13 @@
+<!doctype html>
+<htn: absolute; left: 30px; top: 30px; width: 120px; height: 80px; }
+  .h { overflow: hidden; width: 100px; height: 60px; background-color: #c8a46a; border: 2px solid #604a20; }
+  .k { width: 160px; height: 40px; margin: 10px -20px; background-color: #3a5a7a; }
+</style>
+</head>
+<body>
+  <div class="cell"><div class="t" style="transform: translate(20px, 10px)"><div class="h"><div class="k"></div></div></div>
+  <div class="cell"><div class="t" style="transform: rotate(30deg)"><div class="h"><div class="k"></div></div></div></div>
+  <div class="cell"><div class="t" style="transform: scale(0.75); transform-origin: left top"><div class="h" style="width: 140px; height: 90px"><div style="transform: rotate(90deg); width: 60px; height: 100px; margin: -20px 10px; background-color: #d98c8c"></div></div></div></div>
+  <div class="cell"><div class="t h" style="transform: translate(10px, 5px); width: 100px; height: 60px"><div class="k" style="will-change: transforhiddenm"></div></div></div>
+</body>
+</html>

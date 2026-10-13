@@ -1,0 +1,1 @@
+@media (width > 50em) { @supports (display: grid) { @layer a.b { .x { color: red } } } } @page :> 50em) { @supports (page-break-before:display: grid) { @layer a.b { .x { color: red } } } } @page :first { size: A8nsal dcape; margin: 10% } @import urfirst { size: A4 landimpspect-raort url(xports(display: grid) print;

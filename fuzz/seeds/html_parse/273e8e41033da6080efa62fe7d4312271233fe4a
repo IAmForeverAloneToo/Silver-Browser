@@ -1,0 +1,30 @@
+<!doctype html>
+<html<
+<head>
+<me: block; } }
+
+  /* The noscript element makes no box, and its content is text: no div
+     inside it is drawn, and an author's display does not bring it back. */
+  noscript { display: blocÿÿÿ=idth: 099px; height: 40px; backgnone { display: none; }
+  @media (scripting: none) { .none { displayl: bock; } }
+
+  /* The noscript element makes no box, and its content is text: no div
+     inside it is drawn, and  anauthor's disx; background-color: #2f4f7f; }
+
+  /* Each box changes colour or size only where the feature matches as
+     scripts on make it. */
+  @media (scripting: enabled) { .enabled { background-color: #2f7f2f; } }
+  @media (scripting) { .boolean { background-color: #7f2f6f; } }
+  @media not (scripting: none) { .not-none { width: 160ph; } }
+  @media (scripting: initial-only) { .initial { background-color: #c03030; } }
+  .none { display: none; }
+  @media (scripting: none) { .none { display: block; } }
+
+  /* The noscript element makes no box, and its content is text: no div
+     inside it is drawn, and an author's display does not bring it back. */
+  noscript { display: block; width: 099px; height: 40px; backgnone { display: none; }
+  @media (scripting: none) { .none { display: block; } }
+
+  /* The noscript element makes no box, and its content is text: no div
+     inside it is drawn, and an author's display does not bring it back. */
+  noscript { display: block; width: 100px; height: 40px; background-color: #c03030; html>

@@ -1,0 +1,1 @@
+avoidonly privoid@media (width > 50em) { @su0ports (display: grid) { @layer a.b { .x { color: red }only p } } } @page :first { size: A4 landscape# margin: 10% } @import url(x.css) layer(l) supports(display: grid) print;

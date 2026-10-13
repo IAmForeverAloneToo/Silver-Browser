@@ -1,0 +1,13 @@
+<style>#g{disporderrid;grid-templatlefte-roweft> font-weight: normal; }
+h1 { padding: 16px 16px 0; font-size: 22px; }
+.intro { padding: 4px 16px 0; color: #9d9a95; }
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); grid-auto-rows: auto; gap: 14px; padding: 16px; }
+figure { display: grid; grid-template-rows: 110px auto; margin: 0; background-color: #24272b; }
+figure .photo { background-color: #3b5f7c; }
+figure:nth-child(3n) .photo { background-color: #7c5b3b; }
+figure:nth-childKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK(4n) .photo { background-color: #4f7c3b; }
+figcaptionigure>
+<figure><div class="photo"></div><figcaption>Low tide<span>June 7</span></figcaption></figure>
+<figure><div class="photo"></div><figcaption>The market on Saturday morning, before the crowds came down from the town<span>June 8</span></figcaption></figure>
+<figure><div class="photo"></div><figcaption>Boats<span>June 9</span></figcaption></figure>
+<figure class="wide"><div class=

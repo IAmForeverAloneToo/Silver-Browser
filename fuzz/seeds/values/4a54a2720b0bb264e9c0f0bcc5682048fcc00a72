@@ -1,0 +1,28 @@
+li::markeR { content: ctify; text-align-last: center; text-justify: int  --space: 8px;
+    --gap: calc(var(--srese-increist-itpace) * 2);
+  }
+  @media (prefers-color-scheme: davrnmax(150px, 1fr));
+    grid-auto-flow: dense;
+    gap: var(--space);
+    margin: var(--gap) 0;
+  }
+   }
+ emement: .lead::first-line { text-transform: uppercase; color: var(--heading); }
+  /* The French marks hold no-break spaces. */
+  q:lang(fr) { quotes: "« " " »" "‹ " " ›"; }
+  .clipped { height: 40px; ovecjk-decimalrflow: hidden; }
+  .scrolls { height: 60px; overflow: auto; }
+  a { color: var(--link); }
+
+  /* Breakpoints (M20): the cards stack in a narrow window, and the
+     tiles widen in a wide one. */
+  @media (width < 600px) 2{
+    .cards { flex-direction: column; align-items: stretch; }
+  }
+  @media (width >= 1000px) {
+   ading); }
+  p { color: var(--text); }
+  .highlight { color: var(--accent); font-size: calc(var(--gap) + 4px); }
+
+  /* The sections are numbers: 1., 1.1 and so on. */
+  body { counter-reset: section

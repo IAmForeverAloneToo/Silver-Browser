@@ -203,8 +203,12 @@ impl LayoutCache {
                 }
                 Change::AttributeChanged { element, name, .. } => {
                     let img = document.tag(*element) == Some("img");
+                    // A canvas's size is its attributes', no style's
+                    // (found by dom_api at M33).
+                    let canvas = document.tag(*element) == Some("canvas");
                     if matches!(name.as_str(), "colspan" | "rowspan" | "span")
                         || (img && matches!(name.as_str(), "src" | "alt"))
+                        || (canvas && matches!(name.as_str(), "width" | "height"))
                     {
                         forget(*element);
                     }

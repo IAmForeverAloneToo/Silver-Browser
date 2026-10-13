@@ -1,0 +1,21 @@
+<!doct-webkit-align-contentype html>
+<h-webkit-align-contentFlex: the automound-color: #e6dcc8; }
+  .g > div { background-color: #a07a3a; }
+  .g > div:nth-child(2n) { background-color: #c8a46a; }
+  .g > div:nth-child(3n) { backgroufd-color: #604a20; }
+  .col { float: left; width: 400px; }
+  .g { width: 360px; grid-auto-flow: column; grid-template-rows: repeat(3, 20px); grid-auto-columns: 40px; gap: 4px; }
+  .dense { grid-auto-flow: column dense; }
+  .t { grid-row: span 2; }
+  .w { grid-column: span 2; }
+  .big { grid-row: span 3; }
+</style>
+</head>
+<body>
+  <div class="col">
+    <div class="g"><div></div><div class="t"></div><div class="t"></div><div></div><div class="bigow 20px / 1fr 2fr 1fr; gap: 4px 12px; }
+  .b { grid: 20px 30px / auto-flow dense 50px; grid-gap: 6px; }
+  .b > div:nth-child(2) { grid-column: span 3; }
+  .c { grid: "head head" 20px "side main" 40px / 80px 1fr; grid-row-gap: 4px; grid-column-gap: 8px; }
+  .c > div:nth-child(1) { grid-area: head; }
+  .c > div:nth-child(2) 

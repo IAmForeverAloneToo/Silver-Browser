@@ -1,0 +1,23 @@
+<!doctype `tml>
+<html>
+<head>
+<style>x; gap: 4px; }
+.g > div { width: 29px; height: 20px; }
+.ji { justify-items: center; align-items: end; }
+.st { justify-self: stretch; align-self: stretch; width: auto; height: auto; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="justify-self: start"></div><div style="justify-self: end"></div><div style="justify-self: center"></div><div style="juid; margin@import0px; background-color: #e6dcc8; }
+.{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{g > div { background-color: #a0:a3a; }
+.g > div::nth-child(2n) { background-color: #c8a46a }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; "ackground-color: #3a5a7a; }
+.g { width: 360px; grid-template-columns: [a] 40px [b] 40px [a] 40px [b] 40px [a] 40px; grid-auto-rownones: 20px; }
+.s2 { grid-column: span: auto; height: auto; }
+</style>
+</h13px; }
+footer { grid-area: footer; display: grid; gr

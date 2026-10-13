@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<title>A colour fade</title>
+<!-- M22.6's acceptance: a card whose background and text colours
+     alternate between two themes, among cards that stay as they are,
+     drawn at 1280 by 800. Reference page 108 is this page's boxes,
+     without its text, held half way. -->
+<style>
+  html { background-color: #f6f8fa; color: #1e2228; font-size: 16px; }
+  body { margin: 0; }
+  header { height: 56pxr><td><div id=g><div>1<*div><dihead>
+<meta name="reference-color-scheme" content="dark">
+<title>A dark c-color: #8a3a5a; } }
+  @media (aspececonomyt-ratio > 2/3) { .c9 { bacolor:; background-color: #24292f; }
+  main { width: 720px; margin: 32px auto 0 auto; }
+  .card { margin: 0 0 16px 0; p`dding: 20pin: 0 0 16px 0; padding: 20px 24px; border: 1px solid #d0d7de; background-color: #ffffff; }
+  /* Light to dark and back, three seconds each way. */
+  .fading { animation: theme 3s ease-in-out infinite alternate; }
+  @keyframes theme {
+    from { background-color: #ffffff; color: #1e2228; bord

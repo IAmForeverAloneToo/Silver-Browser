@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: overlapping items painted in order-modified document order, z-index on items that are not positioned, relative items, an item under its container's background</title>
+<style>
+  html { background-color: #f6efe9; }
+  body { margin: 0; }
+  .f { display: flex; width: 400px; height: 40px; margin: 16px 40px; padding: 10px; background-color: #e9d6c6; }
+  .f > div { flex: none; width: 80px; height: 40px; margin-right: -30px; }
+  .a { background-color: #b0502a; }
+  .b { background-color: #e0a070; }
+  .c { background-color: #5a2a10; }
+  .d { background-color: #f0c8a0; }
+  .r { position: relative; }
+  .up { margin-top: -20px; }
+  .context { position: relative; z-index: 0; }
+</style>
+</head>
+<body>
+  <div class="f"><div class="a" style="order: 3"></div><div class="b" style="order: 1"></div><div class="c" style="order: 2"></div><div class="d" style="order: 0"></div></div>
+  <div class="f"><div class="a" style="z-index: 2"></div><div class="b"></div><div class=

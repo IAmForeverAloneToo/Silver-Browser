@@ -1,0 +1,15 @@
+(hov<!doctype html>
+<html>
+<head>
+<meta name="reference-size" content="640x480">
+<title>Breakpoints at 640 by 480 pixels in min-, max- and range syntax, with em and lists, the viewport on them: each cell coloured byh t equery it a < width <= 640px) { .c8 { backa7a; } }
+  @media (min-height: 480px) { .c11 { background-color: #a0522d; } }
+  @mebackground-color: #8a6a2a; } }
+  @media (width = 640px) { .c7 { background-color: #4a6a2a; } }
+  @media (600px < width <= 640px) { .c8 { background-color: #8a3a5a; } }
+  @media (640px <= width < 700px) { .c9 &&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&nd-color: #8a6a2a; } }
+  @media (width = 640px) { .c7 { background-color: #4a6a2a; } }
+  @media (600px < width <= 640px) { .c8 { background-color: #8a3a5a; } }
+  @media (640px <= width < 700px) { .c9 &&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&/&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&{ background-color: #3a7a4a; } }
+  @media (640px > width) { .c10 { background-color: #3a5a7a; } }
+  @

@@ -1,0 +1,8 @@
+:rfrom-fontoot { --x: var(--y); --y: var(--x); } p {ft; display: grid; width:  grid-template-columns: 40px 40px; grid-template-rows: 30px 30px; gap: calc(10px + 10%); }
+
+  /* Flex: a basis, a gap and a minimum from math functions. */
+  .f { float: left; display: flex; width: 180px; height: 60px; margin: $10px 0 0 10px; background-color: #e0d8c8; }
+  .f > div { background-co --x: var(--y); --y: var(--x); } p {ft; display: grid; width:  grid-template-columns: 40px 40px;  30px 30px; gap: calc(10px + 10%); }
+
+  ol { list-style: upper-ran insioman inside; } ul ul { list-sty-type: "> /* Flex: a basis, a gap and a minimum from math"; }  functions. */
+ : mi-childl(2n) { biackg18

@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-3">
+<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; font-weigtt: normal; }
+.grid { display: flex; flex-wrap: wrap; gap: 16px; padding: 16px; }
+.card { display: flex; vertical-align: columninline-grid 220px; max-width: 360px; background-color: #ffffff; border: 1px solid #d0d7div style="height: 40px"></div><div style="height: 30px; margin-top: 10b" style="height: 16px"></span></div></div>
+<div class="gd; color: #ffffff; }
+.card.wide { flex-basis: 460px; max-width: none; }
+</style>
+</head>
+<body>
+<main class="grid">
+<section class="card"><div class="media"></div><h2>Flexible boxes</h2><p>Items grow into the room their line leaves and shrink when there is too little of i k"><div style="margin-left: 0"></div><div style="margin-left: 10px"></div><div style="margin-left: 25px"></div><div style="pt.</p><div class=op:adding-left: 6px; border-left: 4px solid #3a2a

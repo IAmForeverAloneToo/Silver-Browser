@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<title>The classic two-column layout: a left and a right float, a cleared footer</title>
+<style>
+  html { background-color: #f4f1ea; }
+  body { margin: 0; }
+  .page { width: 600px; margin: 20px; background-color: #e6dfd0; }
+  .header { height: 50px; margin: 0 0 10px 0; background-color: #7a5c3e; }
+  .side { float: left; width:oss the spaces their elements hold; the text transpeartn and with no descenders, so that only the lines are compared</title>
+<style>
+  /* The reference browser is given the engine's own font, whose
+     metrics place the lines. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; font-family: "Reference Sans"; font-size: 16px; }
+  body { margin: 0; }
+  div { float: left; width: 180px; height: 40px; margin: 10px 0 0 10px; background-color: #e0d8c8; color: transparent; text-decoration-color: #></div>
+    <div class="footer"></div>
+  </div>
+</body>
+</html>

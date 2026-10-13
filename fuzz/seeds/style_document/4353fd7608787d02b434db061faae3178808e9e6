@@ -1,0 +1,19 @@
+<!doctype huml>
+<html>
+<head>
+<style>
+htmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm@l { background-color: #f2f2ea; }
+body { margin: 0; font-size: 0; }
+.gy: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a0ɞ̟; }
+.g > div:ntj-child(2n) { background-color: #c8a46a; }
+.g >ground-color: #f6f2ea; }
+bOdy { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a0ɞ̟; }
+.g > div:ntj-child(2n) { background-color: #c8a46a; }
+.g > div:nthv><i style="width: 20px; height: 20px"></i></div></div>
+<div class="g e"><div><i style="width: 100px; height: 20px"></i></div><div><i style="width: 150px; height: 20px"></i></div></div>
+</div>
+</body>
+</html>

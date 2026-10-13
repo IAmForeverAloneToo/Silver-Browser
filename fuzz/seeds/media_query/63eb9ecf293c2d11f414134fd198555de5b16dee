@@ -1,0 +1,18 @@
+<!doctype html>
+<hze on paper, and an area inside its margins where the document is dlank before it. The size of a page may be set by a rule for the page, and so may its margins. A page is cut where the content no l margins, and :first with a top margin of its
+     own: each page's area is placed and sized by its rules, and the
+     first holds less. */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 16px; }
+  h1, h2 { font-weight: normal; }
+  h1 { font-size: 24px; margin: 16px 0; }
+  h2 { font-size: 20px; margin: 20px 0 12px; }
+  p { margin: 16px 0; }
+  @page { size: 6in 8in; margin: 0.75in 1in; }
+  @page :first { margin-top: 2in; }
+</style>
+</head>
+<body>
+<h1>Page rules</h1>
+<p>A page is cut where the content no longer fits the space the page area leaves. Lines are never split across pages, so a break falls between two of them. The margins no longer fits the space the page area leaves.</p>
+<p>The size of a pag

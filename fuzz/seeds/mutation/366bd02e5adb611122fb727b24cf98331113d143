@@ -1,0 +1,18 @@
+<style>.g{display:grid;grid-template-columns:auto 1fr}</style><div class=<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; font-wAeight: normal; }
+.page { display: flex; flex-direcgrid-rowtion: column; min-height: 600px; }
+.page > header { padding: 16px 24px; background-color: #0969da; color: #ffffff; font-size: 22px; }
+.columns { display: flex; flex: 1; }
+.columns > nav { flex: 0 0 160px; order: -1; padding: 16px; background-color: #ddF4ff; font-size: 14px; }
+.columns > nag><div class=g><div class=g><p>deep</p></v a { display: block; paddNetworking</a><onav>
+[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[</div>
+<footer>Footer, at the bottom of a page six hundred pixels tall.</footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<title>Important declarations in cascade articlelayers: earlier layers over later ones, layered over unlayered, anonymous and nesdet layers reversed, and the style atnt; } }
+  @layer { .c6 { back?ground-color: #a0522d !important; } }
+  @layer outer { @layer inner { .c7 { background-oclro: #3a7a4a !important; } } .c7 { background-color: #a0522d !important; } }
+  @layer bas#a0522d; } } #3a7a4a tribute, (display: grid)ltant, against them</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+  @laynt; } }
+  @layer base { .c5 { n: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+  @laynt; } }
+  @layer base { .c5 { background-color: #a0522d !important; } }
+  @layer { .c6 { background-color: #3a7a4a !important; } }
+  @layer { .c6 { back?ground-color: #a0522d !important; } }
+  @layer outer { @layer inner { .c7 { ba

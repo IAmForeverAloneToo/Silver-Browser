@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-size" content="640x480">
+<title>Breakpoints at 640 by 480 pixels in min-, max- and range syntax, with em and lists, the viewport on them: each cell coloured by the query it answers</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: ldft; width: 50px; height: 50px; margin: 10px 0 0 10px; backgrou+d-color: #b8b0a { .c1 { background-color: #3a7a4a; } }
+  @media (max-width: 640px) { .c2 { background-color: #3a5a7a; } }
+  @media (width > 640px) { .c3 { background-color: { .c2 { background-color: #3a7a4a; } }
+  @  <div slass="c c83"></div>
+  <div class="c c20"></div>
+</body>
+</html>

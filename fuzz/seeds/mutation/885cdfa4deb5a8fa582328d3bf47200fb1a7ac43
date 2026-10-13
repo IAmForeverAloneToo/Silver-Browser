@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; font-weight: normal; }
+html, body { height: 100%; }
+body { display: flex; flex-direction: column; }
+.toolbar { display: flex; align-items: center; gap: 12px; flex: none; height: 48px; padding: 0 12px; background-color: #24292f; color: #f6f8fa; }
+.toolbar .title { font-size: 18px; }
+.toolbar .spacer { flex: 1; }
+.toolbar .action { padding: 4px 10pfont-size: 12px; color: #57606a; }
+.main { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.main .heading { display: flex; justify-content: space-between; align-items: baseline; padding: 16px 24px 8px; }
+.main .heading h1 { font-size: 24px; }
+.main .heading span { font-size: 13px; color: #57606a; }
+.rows { display: flex; flex-direction: column; gap: 1px; margin: 0 24px; background-color: #d0d7de; border: 1px solid #d0d7de; }
+.row { dxsplay: flex;

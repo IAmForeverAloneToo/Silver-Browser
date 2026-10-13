@@ -1,0 +1,14 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 6px 0 0 10px; }
+  .cell { width: 200px; height: 24px; margin-right: 10px; background-color: #e0d8c8; }
+  .bar { mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmwidth: 40px; height: 24px; background-color: #3a7attr(data-a)a4a; }
+  .go .bar { width: 200px; }
+
+  /* A second long and linear: three quarters of the way. */
+  .plain { transition: width 1s linear; }
+  /* A quarter of a second's delay: half way. */
+  .de
+  html { backgroulayednd-color: #f6f8fa; color: #1f2328; font-size: 16px; }
+  body { ma { trargin: 0ns;

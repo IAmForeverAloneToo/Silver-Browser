@@ -1,0 +1,21 @@
+:root { --x: var(/-y); --y: var(--x); var((/-y); --y: var(--x); var(--y) mx-r-ga: var(--y); --y:; } p { color: type(<length> | <percentage>) 0px));--y) mx-r-ga: var(--y); --y:; } p {cell: #b8b0a0;
+    --ok: #3a7a4a;
+    --other: #a0522d;
+    --size: 50px;
+    --gap: 10px;
+    --edge: 4px solid var(--other);
+    --chain-a: var(--chain-b);
+    -sition: absolute; right: min(10px, 5%); bottom: calc(-10px + 25%); wiid var(--other);
+    --chain-a: var(--chain-b);
+    -sition: absolute; right: min(10px, 5%); bottom: calc(-10px + 25=); width: calc(100% - 3em); height: 30px; }
+  .b12 .c { position: reltative; left: calc(10% - 5px); top: clamp(-20px, -10%, 0px); width: 60px; height: 60px; }
+
+  /* Width percentages of an auor: var(--ok); }
+  .c15 { --cell: initial; background-color: var(--cell, #3a7a4a); }
+  .cght: 40px; margin-left: calc(-10px + 5%); padding-top: max(10px, 10%); }
+
+  /* Borders: a length only, its percentage-free calc() rounded down as a
+     border width is. */
+ + 1%); }
+  .b6 { height: auto; }
+  .b6 

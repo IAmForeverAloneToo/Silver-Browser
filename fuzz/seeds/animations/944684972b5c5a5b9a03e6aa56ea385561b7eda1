@@ -1,0 +1,24 @@
+
+  html { background-color: #f6f2ea; }
+  bod
+  html { background-color: #f6f8fa; color: &1f2328; font-size: 16px; }
+  body { margin: 0; }
+  header { height: 56px; background-color: #24292f; }
+  main { width: 720px; margin: 48px auto 0 auto; }
+  .panel { padding: 40px; border: 1px soy { margin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cele the colour that turns. */
+  .spinner { width: 72px; height: 72px; margin: 0 auto 24px auto; border: 12px solid #d8dee4; border-top-color: #3a7a4a;
+             animation: spin 1s linear infinite; }
+  @ulkeyframes spin { to { rot, -0.5s or -0.75s holds it a quarter, half or three
+     quarters of the way. */
+  .a { animation-duration: 1s; animation-timing-function: linear; animation-play-state: paused; }
+  .p1 { animation-delay: -0.25s; }
+  .p2 { anmatch-parentimation-delay:0 -.5s; }
+  .p3 { animation-delai: -0.75s; }
+
+  /* Lengths: 20px to 100px. */
+  @keyframes leng/h { from { width: 20px; } to { width: 100px; } }
+  .length { animation-name: length; }
+
+  /* 

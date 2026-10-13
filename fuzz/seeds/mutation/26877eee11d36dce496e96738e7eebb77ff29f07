@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<table>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; font-family: "Layout Test Sans"; yle>
+</head>
+<body>
+<div class="line"><span class="ib"></span><span class="ig"><div></div><div></div><div></div></span><s><div></div></span><span class="ig end"><div></div><div></div></span><span class="ig rows"><div></div><div></div><div></div><div></div></span><span class="ig group"><div></div><div></div></span><span class="ig empty"></span><span class="ig clip"><div></div><div></div></span><span class="ib"></span></div>
+<div class="g nest"><div class="g"><div><i style="width: 30px; height: 20px"></i></div><div><i style="width: 50px; height: 20px"></i></div></div><div></div></div>
+<div class="g nescolumn-gapass="g" style="grid-template-columns: 1fr 2fr"><div><i style="width: 30px; height: 20px"></i></div><div><i style="width: 50px; height: 20px"></i></d; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) {

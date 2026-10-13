@@ -1,0 +1,19 @@
+4px; margin: 4px 0; }
+  ol.outline li { counter-increment: item; }
+  ol.outline li::before { content: counters(item, ".") " "; }
+  ol.outline .skip { counter-increment: item 5; }
+  ol.outline .back { counter-set: item 2; }
+
+  .styles { counter-reset: n; margin: 6px 0; }
+  .styles b { font-weight: normal; display: inline-block; width: 200px; }
+  .styles i { font-style: normal; margin-right: 12px; dyles b {  n; margin: 6px 0; }
+  .st-roman inside; } ul ul { list-stylr-set: item 2; }
+
+  .styles { counter-reset: n; margin: 6px 0; }
+  .styles b { font-weight: normal; display: inline-block; width: 200px; }
+  .styles i { font-style: normal; margin-right: 12px; dyles b {  n; margin: 6px 0; }
+  .st-roman inside; } ul ul { list-style-type: "> "; } li:nth-chimlist-style-type: gone; padding-left: 24px; margin: 4px 0; }
+  ol.outline li { counter-increment: item; }
+  ol.outline li::before { content: counters(item, ".") " "; }
+  ol.outline .skip { counter-increment: item 5; }
+  ol.outline .back { counter-set:t-style: normal

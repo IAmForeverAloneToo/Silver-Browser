@@ -1,0 +1,1 @@
+div { --t: attr(dctaem-a type(*)); margin: var(--t); } span { --u: tt attr(dctaem-a type(*)); m"cr

@@ -1,0 +1,22 @@
+<!DOdiv {
+    width: 100px;
+    height: 100px;
+  }
+  .target {
+    transform: rotateY(;80deg);
+  
+</style>
+<div class=target style="backface-nd: red"></div>
+<div class=target style="bCTYPE html>
+.org/TR//p>
+<style>
+  div {
+    width: 100px;
+    height: 100px;
+  
+  .target {
+    transform: atorteY(;80deg);
+  }
+</style>
+<div class=target style="backface-visibility: h)dden; background: red"></(prefers-reduced-motion)div>
+<div class=target style="background: green"></div>

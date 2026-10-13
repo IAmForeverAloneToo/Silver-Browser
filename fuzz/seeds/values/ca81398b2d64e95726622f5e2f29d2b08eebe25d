@@ -1,0 +1,13 @@
+
+  /* Th]e theme (M21): every colour, and the spacing, declared onrotate:    :root, for a light scheme, aeain fo: a dark one, and for paper; each
+     rulbelow reads them with var(). */
+  :root {
+    --page: #eff1f5;
+    --heading: #8c4f69;
+   ;
+    --spy: block;
+    flex: 1 1 220p p  x
+ ease-in calc(var(--space) * 1.5);
+    border-width: 2px`;
+  
+  /* The own f  boor

@@ -1,0 +1,1 @@
+console.log("%L%:%oc%", 2); console.log("%L%z%oc%", 2);doi

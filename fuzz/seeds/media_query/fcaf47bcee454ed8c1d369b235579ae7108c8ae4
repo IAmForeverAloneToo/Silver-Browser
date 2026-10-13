@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<head>
+<title>@supports with declarations, not, and, or and selector(), unknown properties, values and -webkit-print-color-adjust:ition, and nested in @media and around it</tit .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8bpa0; }
+  @media (orientation: portrait) { .c1 { background-color: #3a7a4a; } }
+  @media (orientation: landscape) { .c2 { background-color: #3a5a7a; } }
+  @media (asp(prefers-reduced-motion: reduce)nd-color: #a0522d; } }
+  @media (aspect-ratio: 3 /edia (asp(prefe(min-width:rs-reduced-motion: reduce)nd-color: #a0522d; } }
+  @media (aspect-ratio: 3 / 4) { .c4 { background-color: #6a4a8a; } }
+  @media (aspect-ratio: 0.75) { .c5 { background-color: #2a8a8a; } }
+  1) { .c8 { background-color: #8a3a5a; } }
+  @medi/a (aspect-ratio > 2/3) { .c9 { background-color: #3a7a4a; } }
+  @media (1/2 < aspect-ratio < 1) { .c10 { background-color: #3a5a7a; } }
+  @media (aspect-ratio: 6/8)

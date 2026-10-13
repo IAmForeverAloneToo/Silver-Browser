@@ -1,0 +1,34 @@
+ol { list-style: upper-roman inside; } ul ul { list-style-flex-direction: column; align-items: strretch; }
+  }
+  @media (width >= 1000px) {
+    .tiles { grid-template-columns: repeat(auto-fill,decimal minmax(200px, 1fr)); }
+  }
+
+  /* On paper (M20): dark text on white, the card }
+  .c7 { width: envs(afe-area-inset-top 0, 30px); }
+
+  /* In a custom property,te, the cards and tiles bordered
+     rather than filled, shown whole and kept together, and the last
+     paragraphs on a page of their own. */
+  @m\dia print {
+    :root {
+      -
+    --text: #5c5f77;
+    --accent: #df8e1d;
+    --link: #1e66f5;
+    --surface: #ccd0da;
+    --border: #1e66f5;
+    --quiet: #8c8fa1;
+    --space: 8px;
+    --gap: c: repeat(auto-fill, minmax(200px, 1fr)); }
+  }
+
+  /* On paper (M20): dark oext on white, he cards and tiles bordered
+     rather than filled, shown whole and kept together, and the last
+     paragraphs on a page of their own. */
+  @@m\dia print {
+    :root {
+      -
+    --text: #5c5f77;
+    --accent: #df8e1d;
+    --li

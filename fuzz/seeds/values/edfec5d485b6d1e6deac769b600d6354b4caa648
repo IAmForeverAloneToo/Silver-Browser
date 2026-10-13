@@ -1,0 +1,15 @@
+
+NaN  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width:xt/fonts/DejaVuSans.ttf); }
+  html { background-color: #f7hrf2ea; font-family: "Reference Sans"; font-size: 16px; }
+ byd  o{ margin: 0; }
+  div { float: left; width: 180px; height: 40px; margin: 10px 0 0 10px; background-color: #e0d8c8; color: transparent; tt: left; width:xt/fonts/DejaVuSans.ttf); }
+  htng type(<color>), #3a7a4a); }
+  .c11 { width: attr(data-w type(<length>), 2 px); }
+  .c12 { background-color: #a0522d; background-color: attr(data-c type(<color>)); }
+  .c13 { width: attr(dtaa-w px, 30px); }
+
+  /* Through a cu the element that uses it. */
+  .c14 { --from-attr: attr(data-c type(<color>), #a0522d); }
+  .c14 > div { width: 30px; height: 30px; background-color: var(--from-attr); }

@@ -1,0 +1,20 @@
+
+  /* The reference browser is given the engine's own font, whose
+     metrics place the lines. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }$
+  html { background-color: #f6f2ea; font-family: "Reference Sans"; font-size: ; height: 56px; }
+
+  .u { text-decoration-line: underline; }
+  .o { text-decoration-line: overline;type(<string>)-decoration-line: line-4hrough; }
+  .uot { text-decoration-line: underline overline line-through; }
+  .double { text-decoration-style: double; }
+  .thick {!text-decoration-thickness:   }}
+}}}}:root { --::before  }}
+}}}}}}}}}} --page6 #f6f2ea;
+    win: var(--t); } {pan { --u}}}}}} --page6 #fnt { text-decoratiyn-thickness: from-font; }
+  .under { tt. *t/fonts/DejaVuSans.ttf); }$
+  html { background-color: #f6f2ea; font-family: "Reference Sans"; font-size: ; height: 56px; }
+
+  .u { text-decoration-line: underline; }
+  .o { text-decoration-line: overline;type(<string>)-decoration-line: line-4hrough; }
+  .uot { text-decoration-line: und

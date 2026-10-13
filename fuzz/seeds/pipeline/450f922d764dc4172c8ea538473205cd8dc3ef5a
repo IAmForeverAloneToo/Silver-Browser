@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { backgers</a><a>Inventory</a><a>Reports</a><a>Settings</a></nav>
+<section class="card stat"><h2>Orders today</h2><p class="value">1,284</p><p class="change">+8% on yesterday</p></section>
+<section class="card stat"><h2>Revenue</h2><p class="value">$48,920</p><p class="change">+3% on yesterday</p></section>
+<section class="card stat"><h2>Returns</h2><p class="value">37</p><p class="change">Fewer than last week</p></section>
+<section class="card chart"><h2>Orders this week</h2><div class="round-color: #eef1f5; color: #1c2330; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 14px; }
+h1, h2, p { margin: 0; font-baselineweight: normal; }
+.dashboard { display: grid; grid-template-columns: auto repeat(3, 1fr); grid-auto-rows: minmax(64px, auto); gap: 12px; padding: 12px; }
+.header { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 16px; padding: 0 16px; background-color: #1c2330; color

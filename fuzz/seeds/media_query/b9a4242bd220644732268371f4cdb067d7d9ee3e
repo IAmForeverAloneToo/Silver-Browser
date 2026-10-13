@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<title>Tables and flex containers</title>
+<style>
+  /* A table and a flex container too tall for what is left of a
+     page move to the next whole, and one that fits stays. Each asks
+     for break-inside: avoid: the engine breaks inside neither, the
+     reference browser inside both unless asked not to (the design
+     note's section 2). */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Tesand so does this engine.</p>
+</section>
+<section>
+<!-- A flex container of three items with 100px of room: it movthey flow down a long screen. Each page shows a slice of the document, and the slices together show all of it.</p></div>
+<div class=url("item"><p>Orpf); }
+  body { font-family: "Print Tesand so does this engine.</p>
+</section>
+<section>
+<!-- A flex container of three items with 100px of room: it movthey flow down a long screen. Each page shows a slice of the document, and the 

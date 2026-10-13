@@ -1,0 +1,1 @@
+li::marker { content: counters(list-item, ".") " "; } ; } ol { counter-reset: list-item dst-item, ".") " "; } ; } ol { counter-resetent: counters(list-item, ".") " "; } ; } ol { counter-reset: list-item dst-item, ".") " "; } ; } ol { com dmamax(argin: var( var(--w, ar(--z, v

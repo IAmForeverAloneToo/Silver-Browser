@@ -1,0 +1,19 @@
+<!doctype html>
+<html: wrap; gap: 16px; padding: 16px; }
+.card { display: flex; flex-direction: column; flex: 1 1 2actions { display: flex; justify-content: space-between; align-items: center; margin-top: auto; padding: 8px 16px; border-top: 2px solid #d0d7de; font-size: 13px; }
+.card .button { padding: 4px 12px; background-color: #1f883d; color: #ffffff; }
+.card.wide { flex-basis: 460px; max-width: none; }
+</style>
+</head>
+<body>
+<main class="grid">
+<section class="card"><div class="media"></div><h2>Flexible boxes</h2><p>Items grow into the room their line leaves and shrink when there is ss="a" style="grid-column: 2 / 4; grid-row: 1 / 3; width: 30px; height: 20px; margin: 4px; justify-self: end"></div>
+<div></div>
+</div>
+</div>
+<div class="col">
+<div class="outer">
+<div class="g">
+<div></div>
+<div class="a" style="grid-area: 2 / 2; width: 30px; height: 20px; justify-self: center; align-self: entoo little of it.</p><div class="actions"><span>3 min read</span><span class="button">Open</span></div></section>
+<

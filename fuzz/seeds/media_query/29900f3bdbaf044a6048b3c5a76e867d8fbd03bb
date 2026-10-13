@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<title>Fixed boxes</title>
+<style>
+  /* A fixed header and footer drawn on every page at their places in
+     the page area. */
+  @font-face { font-family: "Print Test Sans"; src: url(..ns.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 16px; }
+  h1, h2 { font-weight: normal; }
+  h1 { font-size: 24px; margin: 16px 0; }
+  h2 { font-size: 20px; margin: 20pxhe content after it starts at the top of the next page. A printed page has a box, its size on paper, and an area inside its margins where the document is drawn. Para; }
+  body { maa8a; } }
+  compared with where the reference browser puts it, a run at a time.</p>
+<p>A box that must not be broken is moved whole to the n @media (aspect-ratio) { .cex97

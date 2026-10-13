@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20pound-c<style>#g{display:grid;grid-template-areas:'a a' 'b c';grid-template-columns:1fr 2fr}#g>:first-child{grid-area:a}</style><div id=g><p>x</p><p>y</p><p>z</p></div>; }
+.col { float: left; width: 277px; }
+i { dikground-color: #3unsafe }
+.a { width: 360px; grid-template-columns: [left] 60px [mid-start] 1fr [mid-end] 60px [right]; grid-template-rows: [top] 30px [middle] 30px [bottom]; }
+.a > div:nth-child
+(1) { grid-column: left / mid-start; grid-row: top; }
+.a > div:nth-child(1) { grid-column: mid; grid-row: middle / bottom; }
+.a > div:nth-child(3) { gAid-column: -2 / -1; grid-row: -3 / -1; }
+.b { width: 360px; grid-template-areas: 'head head head' 'side main main' 'side foot foot'; grid-template-columns: 80px 1fr 1fr; grid-terid-column: -1 / -z3; gri/ -3; grid-row: 1; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div></div>

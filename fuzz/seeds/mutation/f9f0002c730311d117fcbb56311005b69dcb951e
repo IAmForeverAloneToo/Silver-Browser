@@ -1,0 +1,9 @@
+<!doctytyle="gap: 15px"><div></div><div></div><div></div></div>
+    <div class="f" style="gap: 10px"><div></div><div style="margin-lefT: auto"></div><div></div></div>
+  </div>
+  <div class="f c" style="gap: 10px"><div></div><div></div><div></div></div>
+  <div class="f c grow" style="row-gap: 5%; column-gap: 50px"><div></div><div></div><div></div></div>
+  <div class="f c wrap" style="height: 110px; width: 120px; gap: 10px 20px"><div></div><div></div><div></div><div></div><div></div></div>
+  <div class="f c wrap" style="height: 110px; width: 120px; column-gap: 10px; align-content: space-between"><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div>
+</body>
+</html>

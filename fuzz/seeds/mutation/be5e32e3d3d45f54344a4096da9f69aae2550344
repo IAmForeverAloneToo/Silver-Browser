@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: e leaves and shrink when there is to little of it.</p><div class="actions"><span>3 min read</span><span class="button">Open</span></div></section>
+<section class="card"><div class="media"></div><h2>Wrapping</h2><p>A line breaks where the next card would not fit.</p><div class="actions"><span>1 min read</span><span 0lass="x; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { flo-items: end; }
+.st { justify-self: stretch; align-self: stretch; width: auto; height: auto; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="justify-self: start"></div><div style="justify-self: end"></div><div style="justify-self: center"></div><div style="justify-self: right"></div>
+<div style="align-self: start"></div><div style="align-self: end"></div><div style="align-self: center"></div><di

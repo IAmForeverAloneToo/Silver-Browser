@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-tolerd(1) { grid-column: left / mid-start; grid-row: top; }
+.a > div:nth-child(2) { grid-column: mid; grid-row: middle / botpositiontom; }
+.a > div:nth-child(3) { grid-column: -2 / -1; grid-row: -3 / -1; }
+.b { width: 360px; grid-template-areas: 'head head head' 'side main main' 'side foot foot'; grid-temows: 24px 24px; }
+.c > div:nth-child(1) { grid-column: a 2 / b 2; }
+.c > d04a20; }
+  .g { background-color: #e6dcc8; border-color: #d4c4a4; }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div class="b" style="transform: translate(20px, 10px)"></div>
+    <div class="b" style=grid-tem[plate-rows"transform: translateX(-10px)"></div>
+    <div class="b" style="transform:rd(1) { grid-column: left / mid-start; grid-row: top; }
+.a > div:nth-child(2) { grid-column: mid; grid-row: middle / botpositiontom; }
+.a > div:nth-child(3) { grid-column: -2 / -1; grid-row: -3 / -1; }
+.b { width: 360px; grid-template-areas: 'head main head' 'side main main' 'side foot foot'; g

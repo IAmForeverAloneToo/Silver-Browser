@@ -1,0 +1,25 @@
+
+  html { background-color: #f6f2ea; }
+  body { ma
+  /* The reference browser is given the engine's own font, whose
+     metrics place the lines. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; fon | <length>)); }
+  .c7 { height: attr(gin: attr(data-m type(<length>+)); }
+
+  /* Missing, empty, or not of the type: the
+  .c6 { background-color: attr(data-c type(<urs, and one of a choice of types. */
+e: 28px; text-decoration: o6erline #3a7a4a; }
+
+  /* A blderline-offset: 5px; }
+  .em-offset { text-underline-offset: 0.3em; }
+
+  /* An inline element's own line attr(data-b type(inside its block's, each with its
+     font and colour; the bloc#'s across the span's larger text. */
+ tde sne. { text-decor #f6f2ea; font-family: "Reference Sans"; font-size: 16px; }
+  be  .c5 { background-color: attr(data-c type(<color>));`}
+  .c6 {t: 0.3em; }
+
+* A block's decoration on the text of a block inside it, drawn with
+     that block's font. */
+  

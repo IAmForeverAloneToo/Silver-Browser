@@ -1,0 +1,1 @@
+p { width: min(max(calc((1px + 2%) * 3),  2%) 

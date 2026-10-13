@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-c<style>#g{displa<!doctype html>
+<sition: absolute; backgro 8px 20px; padding: 6px; width: 340px; background-color: #d4c4a4; }
+.outer > .g { position: static; margin: 0; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="grid-area: 2 / 1"></div><y:grid;grid-template-areas:'a a' 'div style="grid-area: 3 / 3"b c>';g</di

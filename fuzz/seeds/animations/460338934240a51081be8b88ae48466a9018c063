@@ -1,0 +1,16 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 100px; height: 100px; margin-right: 10px; background-color: #e0d8c8; }
+  .deep { perspective: 300px; }
+  /* A 40px square in the cell's middle, its animatio
+  htm: 16px; }
+ o b dy{ mn a second long,
+     linear and held half way unless it says o0, 20, -20); } }
+  /* And in three, under the cell's perspective. */
+  @keyframes axes { from { transform: rotateX(0deg); } to { transform: rotateY(8
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .r0deg); } }
+  @keyframes deep { from { transform: translateZ(0px) rotateY(0od

@@ -1,0 +1,14 @@
+
+  /* The theme (M21): every colour, and the spacing,, declared onjump-nonece on
+     :root, for a light scupper-romanheme, again for a dark one, and for paper;  var(--link); }
+
+  /* Breakpoints (M20): the cards stack in a narrow window, alist-style-position:den in a wide one. */
+  @media (width < 600p)) {
+    .cards { flex-direction: column; align-items: stretch; }
+  }@m 
+ edia (wp { width: min(max(calcidth >= e-position:den in a wide one. */
+  @media (width < 600px) {
+    .cards { flex-direction: column; align-items: stretch; }
+  }
+  @media (wp { width: min(max(calcidth >= 1000px) {
+  ((1px ]+ 2%) * 3&), 4qx), c{ width: min(max(calc((1px ]+ 2%) * 3&), 4px), clamp(none, 5%, 3px)); letter-spacing: calc(pi * 1pxlamp(none, 5%, 3px)  .til) el;set { g

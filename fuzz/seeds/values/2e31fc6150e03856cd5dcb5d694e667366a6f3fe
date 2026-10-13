@@ -1,0 +1,18 @@
+
+  :root {
+    --page: #f6f2ea;
+    --cell: #b8b0a0;
+    --ok: #3a7(20px, 80%, 70px); height: clamp(40px, 10%, 100px); }
+  .b4 .c { width: calc(min(51%, 100px) + max(1em, 10px) * 2); height: calc((row { clear: left; }
+
+   *A/ colour, a fallback when the properight: max(30px, 25%); }
+  .b3 .c { wicounter-increment:dth: clamp(20px, 80%, 70px); height: clamp(40px, 10%, 100px); }
+  .b4 .c { width: calc(min70px); 15 { height: auto; 0%); heighttype(<custom-ident>): max(30px, 25%); }
+  .b3 .c] { width: clamp(20px, 80%, 70px); height: clamp(40px, 10%, 20px) / 2); }
+
+  /* Against an indefinite heig100% - 20px) / 2); }
+
+  /* Against an indefinite height: a percentage in height makes it auto,
+     in min-height is of zero (its length counting), in max-hei(30px, 25%); }
+  .b3 .c { width: clamp(20px, nde-sensitive. */
+  Қ20 { --Case: #a0522d; --case: #3a7a4a; background-color: var(--case); }

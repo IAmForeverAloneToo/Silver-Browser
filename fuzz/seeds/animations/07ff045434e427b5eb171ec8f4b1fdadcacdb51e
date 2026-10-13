@@ -1,0 +1,20 @@
+
+  /* The reference browser is given the engine's own font, whose
+     metrics place and size the markers. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; font-family: "Reference Sans"; font-size: 16px; }
+  body { margin: 0; }
+  .rw { display: flex; margin: 6px 0 0 10px; }
+  .cell { width: 200px; height: 24px; margin-right: 10px; background-color: #e0d8c8; }
+  /* A bar 40px wide of its own, its animation a second long, linear and
+     held half way unless it says otherwise. */
+  .bar { width: 40px; height: 24px; background-color: #3a7a4a;
+         animation-duration: 1s; animation-timing-function: linear; animation-play-state: paused; animation-delay: -0.5s; }
+  .early { animation-delay: -0.25s; }
+  .late { animation-delay: -0.75s; }
+  .later { animation-delay: -0.6s; }
+
+  /* Implicit ends: the bar's own width. */
+  @keyframes implicit { 50% { width: 160px; } }
+  @kmyframes only-to { to { width: 200px; } }
+  /* Offsets repea

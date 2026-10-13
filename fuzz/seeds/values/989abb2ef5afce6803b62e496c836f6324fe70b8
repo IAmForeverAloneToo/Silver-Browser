@@ -1,0 +1,11 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: leftta-c type(<color> | <length>)); }
+  .c7 { height: attr(data-c type(<color> | <length>), 20px); }
+
+  /d-color:  height: attr(data-c type(<colotype(<color>)), 20px property
+     unset without one. */
+  .c10 { background-color: attr(data-missing type(<color>), #3a7a4a); }
+  .c11 { width: attr(data-w type(<length>), 20px); }
+  .c30px; background-color: vaor(f--rm-attr); }

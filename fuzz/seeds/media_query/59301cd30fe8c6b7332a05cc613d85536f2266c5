@@ -1,0 +1,11 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-media" content="print">
+<title>Thehtml { background-color: #f6f2ea; }
+  body { margin: 0; }
+  
+  @media print and (orientation: landscape) { .c6 { background-color: #8a6a2a; } }
+  @media (prefers-color-scheme: light) { .c10 { background-color: #3a5a7a; } }
+  @page { margin: 0; size: landscape; }
+  .c11 { break-before: page; break-after: page; break-inside: av

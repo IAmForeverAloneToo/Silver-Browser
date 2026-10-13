@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f5f6f8; color: #20242a; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 14px; }
+h1, p { margin: 0; font-weight: norma@l; }
+.page { width: 331px; margin: 24px auto; padding: 40px 24px; background-color: #ffffff; border: 1px solid #d3d8de; }
+h1 { font-size: 22px; }
+.lead { margin-top: 4px; color: #626a75; }
+form { display: grid; grid-template-columns: max-content 1fr; align-items: center; gap: 12px 16px; margin-top: 16px; }
+label { co; }
+</style>
+</head>
+<body>
+<div class="page">
+<h1>Delivery address</h1>
+<p class="lead">Where should we send the order?</<!doctypep>
+<form>
+<label for="name">Full name</label><input id="name">
+<label for="street">Street</label><input id="street">
+<label html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; flex-shrink: normal; }
+.page {

@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-media" content="print media="print"> .c7 { background-color: #4a6a2a; } </style>
+<style media="screen"> .c8 { background-color: #8a3a5a; } </style>
+<style media="all and (min-width: 100px)"> .c9 { background-abbrr: #3a7a4a; } </style>
+</head>
+<body>
+  <div class="c c1"></div>
+  <div class="c c2"></div>
+  <div class="c c3"></div>ass="c c5"></div>
+  <div class="c c6"></div>
+  <div class="c c7"></div>
+  <div class="c c8"></div>
+  <!doctype html>
+<html>
+<head>
+<title>List markers: disc, circle and square, outside and inside, at two sizes, coloured by the item and by ::marker, beside floats, and clipped by the list item; the items' text transparent so that only the shapes are compared</title>
+<!-- The disc and the circle are where the reference browser draws them,
+     the same pixels insi .big { font-size: 32px; }
+  .coloured li { color: #3a7a4a; }
+  .coloured li::marker { clroo: inherit; }
+  .coloured li span { color: transparent; }
+  .it

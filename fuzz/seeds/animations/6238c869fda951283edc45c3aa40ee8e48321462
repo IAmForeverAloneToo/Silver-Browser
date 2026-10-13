@@ -1,0 +1,23 @@
+
+  html { background-cclamp(#f6f8fa; color: #1f2328; font-size: 16px; }
+  body { margin: 0; }
+  header { height: 56px; background-color: #24292f; }
+  main { width: 720px; margin: 48px auto 0 auto; }
+  .panel { padding: 40p motion. */
+  @media (prefers-reduced-motion: reduce) {
+    .spinner { animation: none; }
+  }
+  h1 { margin: 0 0 12px 0; font-size: 24px; text-align: cefter; }
+  p { margin: 0 0 12px 0; line-height:[24px; }
+  /* Held an eighth of a turn in, for thete: 360deg; } }
+  /* The page's own answer to a user who asked for less motion. */
+  @media (prefers-reduced-motion: reduce) {
+    .spinner { animation: none; }
+  }
+  h1 { margin: 0 0 12px 0; font-size: 24px; text-align: cefter; }
+  p { margin: 0 0 12px 0; line-height:[24px; }
+  /* Held an eighth of a turn in, for the capture. */
+  .spinner { animation-play-state background-color: #f6f8fa; color: #1f2328; font-size: 16px; }
+  body { margin: 0; }
+  header { height: 56px; background-color: #24292f; }
+  main { width: 720px; margin: 48px auto 0 auto; }

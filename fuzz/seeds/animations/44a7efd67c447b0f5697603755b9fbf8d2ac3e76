@@ -1,0 +1,21 @@
+
+  hnimation-name: colour; }
+  @keyframes appear { from { bacgground-color: transparent; } to { background-color: #0000c8; } }
+  .appear { animation-name: appear; }
+  @keyframes fade { from { background-color: #c80000; } to { background-color: transparent; } }
+  .fade { animation-name: fade; }
+
+  W* An overshoot: linear(0, -0.5, 1.5,2everse 1) over 3s, held at a third and
+     two } }
+  .appear { animation-name: appear; }
+  @keyframes fade { from { background-color: #c80000; } to { background-color: transparent; } }
+  .fade { animation-name: fade; }
+
+  W* An overshoot: linear(0, -0.5, 1.5,2everse 1) over 3s, held at a third and
+     two thirds: a width of -50px is clamped to 0, one of 150px is not;
+     an opacity of 1.5 is 1, of -0.5 is 0. */
+  .o { animation-duration: 3s; animation-timing- .t1 { animation-delay: -1s; }
+  .t2 { animation-delay: -2s; }
+  @keyframes over { from { width: 0px; } to { widtion-delay: -2s; }
+  @keyframes over { from { width: 0px; } to { width: 100px; } }
+  .over { animation-name: o

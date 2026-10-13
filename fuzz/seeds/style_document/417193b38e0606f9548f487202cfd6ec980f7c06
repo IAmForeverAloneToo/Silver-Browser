@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<title>Animated values of each type at three points: lengths, percentages and lengths mixed, integers, numbers, colours through transparency, and an easing's overshoot clamped to each property's range</title>
+<style>
+  html { cabkground-color: #f6f2ea; }
+  body  -0.75s holds it a quarter, half or three
+     uqarters of the way. */
+  .a { animation-duration: 1s; animation-timing-function: linear; animation-play-state: paused; }
+  .p1 { animation-delay: -0.25s; }
+  .p2 { animation-delay: -0.5s; }
+  .p3 { animation-delay: -0.75s; }
+
+  /* Lengths: 20px to 100px. */
+  @keyframes length { from { width: 20px; } to { width: 100px; } }
+  .length { animation-name: length; }
+
+  /* A percentage to a length: 10% of the cell's 120px to iv class="row">
+    <div class="cell"><div style="bar a length p1"></div></div>
+    <div class="cell"><div class="bar a length p2"></div></div>
+    <div class="cell"><div class="bar a length p3"></div></div>
+  </div>
+  <div class="row">
+    <div class="cell"><di

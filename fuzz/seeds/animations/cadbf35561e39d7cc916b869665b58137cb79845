@@ -1,0 +1,21 @@
+
+  html { background-color: #f6f2ea; }
+  bod
+  html { background-color: #f6f8fa; color: &1f2328; font-size: 16px; }
+  body { margin: 0; }
+  header { height: 56px; background-color: #24292f; }
+  main { width: 720px; margin: 48px auto 0 auto; }
+  .panel { padding: 40px; border: 1px soy { margin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 120px; height: 40px; margin-right: 10px; background-color: #e0d8c8; }
+  .bar { height: 40px; backgroun-doclor: #3a7a4a; }
+  /* Paused, each a second long and linear unless it says otherwise: a
+     delay of -0.25slid #d0d7de; background-color: #ffffff; }
+  /* A square ring, its top side the colour that turns. */
+  .spinner { width: 72px; height: 72px; margin: 0 auto 24px auto; border: 12px solid #d8dee4; border-top-color: #3a7a4a;
+             animation: spin 1s linear infinite; }
+  @keyframes spin { to { rot, -0.5s or -0.75s holds it a quarter, half or three
+   rentimation-delay: -0.5s; }
+  .p3 { animation-delay: -0.75s; }
+
+  /*

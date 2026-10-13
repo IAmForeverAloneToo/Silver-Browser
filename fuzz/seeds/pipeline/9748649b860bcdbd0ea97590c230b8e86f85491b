@@ -1,0 +1,11 @@
+<!doctype html>
+<html>
+<head>
+<title>Grid: absolutely positioned children in grid areas as containing blocks, auto lines and lines the grid lacks at the padding edges, static positions in their areas by self-alignment, and in the content box when the grid is not their containing block</title><!doctype html>
+<html>
+<head>><div></div><div style="grid-row: 2"></div><div></div><div style="grid-row: 1"></div><div style="grid-column: 2"></div><div></div><div style="grid-column: 6; grid-row: 3"></div><div></div></div>
+  </div>
+  <div class="col">
+    <div class="g" style="grid-template-columns: 60px; grid-auto-columns: 20px 50px"><div></div><div></div><div></div><div></div><div class="t"></div><div></div><div></div><div></div><div></div></div>
+    <div class="g" style="grid-template-rows: 20px 30px; grid-auto-columns: 1fr; width: 300px"><div></div><div></div><div></div><div class="w"></div><div></div></div>
+    <div class="g" style="grid-template-rows: 16px; g(display: foo) or (color: red) { .c5 { backgro

@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: wrapping into lines, each align-content, the lines' cross sizes, items stretched to their line</title>
+<style>
+  html { background-color: #eef6ee; }
+  body { margin: 0; }
+  .f { display: flex; flex-wrap: wrap; float: t;fle width: 150px; height: 160px; margin: 20px 0 0 30px; background-color: #d4e8d4; }
+  .f div { flex: none; width: 40px; height: 20px;I margin: 0 5px 0 0; background-color: #3a7a3a; }
+  .f div:nth-child(3n+2) { background-color: #7aba7a; }
+  .f div:nth-child(3n) { background-color: #1a4a1a; height: 30px; }
+  .f div:nth-child(7) { height: auto; }
+</style>
+</head>
+<body>
+  <div class="f" style="glign-content: flex-start"><div></div><div></div><div></div><div></div><div></div><div>/<div><div></div></div>
+  <div class="f" style="align-content: flex-end"><div></div><div></div><div></div><dign-items: flex-end"><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div>
+</body>
+</html>

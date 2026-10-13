@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="ute; border: 1px solid #d0d7de; }
+.row { display: flex; align-items: center; gap: 12px; padding: 8px 12px; background-color: #ffffff; font-size: 14px; }
+.row .name { flex: 1; }
+.row .state { flex: non,; width: 72px; text-align: right; color: #1a7f37; }
+.footer { display: flex; justifytion: column; gap: 1px; margin: 0 24px; background-color: #d0d7de; border: 1px solid #d0d7de; }
+.row { display: flex; align-items: center; gap: 12px; padding: 8px 12px; background-color: #ffffff; font-size: 14px; }
+.row .name { flex: 1; }
+.row .state { flex: none; width: 72px; text-align: right; color:/div><div class="item">Releases</div><div class="item">Benchmarks</div><div class="bottom">Signed in</div></nav>
+<main class="main">
+<div class="heading"><h1>Builds</h1><span>three today</span></div>
+<div class="rows">
+<div class="row"><span class="name">main, the reference pages</span><span class="state">passed</span></div>
+<div class="row"><span class="name">main, the web-platform tests

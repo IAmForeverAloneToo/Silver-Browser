@@ -1,0 +1,10 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a9 }
+.g > div:nth-child(2njustify-self) { background-color:< div:first-child { display: grid; grid-template-columns: 12px 12px; ald-color: #f0e8d8; }
+;

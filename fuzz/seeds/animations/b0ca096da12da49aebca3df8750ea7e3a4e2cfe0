@@ -1,0 +1,6 @@
+
+  html { background-argin-right: 10px; background-color: #e0d8c8; }
+  .bar { width: 30px; heion: ease; }
+  .ease-in { animation-timingfunction: ease-in; }
+  .ease-out { animation-t{ animation-timing-function: cubic-bezier(0.1, 0.7, 0.9, 0.3); }
+  /* Below 0 and past 1: a width of less om { background-color: #ffffff; color: #1e2228; bord

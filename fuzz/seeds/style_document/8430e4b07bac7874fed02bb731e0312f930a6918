@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+translate(<head>
+<titl.g { position: absolute; left: 40px; top: 40px; width: 100px; height: 60px; background-color: #e6dcc8; border: 2px solid #d4c4a4; }
+  .b { position: absolute; left: 40px; top: 40px; width: 100px; height: 60px; background-color: a07a3a; border: 2px solid #604a20; border-top-color: #3a5a7a; }
+</style>
+</head>
+<body>
+  <div class="cell"><div class="g"></div><div class="b" stss="cell"><div class="g"></div><div class="b" style="transform: rotate(90deg); transform-origin: 0 100%"></div></div>
+  <div class="cell"><div class="g"></div><div class="b" style="transform:le>#g{display:grid;grid-template-columns: rff1r1;row-gax:10%;column-gap:5%}#g>div{order:-1;z-index:2;margin:auto}</style><table><tr><td><d}
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+.g { w rotate(90deg); transform-origin: -20px 50%"></div></diturn <div class="cell"><diveclass04a20; border-top-color: #3a5a7a; }
+</style>
+</head>
+<body>
+  <div class="cell"><div class

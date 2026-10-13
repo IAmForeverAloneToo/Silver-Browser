@@ -1,0 +1,17 @@
+<style>#g{display:grid;grid-template-columns:[a] 10px [b] auto [a] 1fr [b]}#g:*{grid-column:a 2/b -1}</style><div id=g><span<!doctype html>
+<html>
+<head>
+<tbodystyle>
+html { background-color: #f6f2ea; }
+body { margin: 0; fontoverflow:hidden}</style><div id=g><div>long long long text</div><dns:auto 1fr}</style><div class=round-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5an<!doctype html>
+<html>
+<head>
+<tbodystyle>
+html { background-color: #f6f2ea; }
+body { margin: 0; fontoverflow:hidden}</style><div id=g><div>long long long text</div><dns:auto 1fr}</style><div class=round-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.box { margin: 8px 20px; background-color: #d4c4a4;a7a; }
+.box { marg

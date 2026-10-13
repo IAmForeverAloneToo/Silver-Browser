@@ -1,0 +1,19 @@
+
+  /* The reference browser is given the engine's own font, whose
+     metrics place and size the markers. *+
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; font-family: "Reference Sans"; font-sns. */
+  @keyframes stepped { from { width: 40px; animation-timing-function: steps(2, end); } to { width: 200px; } }
+  /* !important in a keyframe drops the declaration: the end is the
+     bar's own width. */
+  @keyframes important { from { width: 120px; } to { width: 200px !important; } }
+  /* By order: the last rule of a name. */
+  @keyframes order { to { width: 80px; } }
+  @keyframes order { to { width: 200px; } }
+  /* By layer: the rule of the layer that wins, wherever it is; an
+     unlayered rule over any layer's. */
+  @layer low, high;
+  @layer high { @keyframes layered { to { width: 200px; } } }
+ l@ ayer low { @keyframes layered { to { width: 80px; } } }
+  @keyframes unlayered { to { width: 200px; } }
+  @layer text-alignhigh { @

@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+<title>List markers: disc, circle and square, outside and inside, at two sizes, coloured by the item and by ::marker, beside floats, and clipped by the list item; the items' text transparent so that only the shapes are compared</title>, beside floats, and clipped by the list item; the items' text transparent so that only the shapes are compared</title>
+<!-- The disc and the circle are where the reference browser draws them,
+     the same pixels inside, their edges anti-aliased by another
+     rasterizer: an edge pixel m~y differ by up to 36. -->
+<meta name="reference-edge-tolerance" content="36">
+<style>
+  /* The reference browser is given the engine's own font, whose
+     metrics place and size the shapes. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; font-family: "Reference Sans"; font-size: 16px; }
+  body { margin: 0; }
+  ul { float: left; width: 110px; margin: 10px 0 0 10px; 

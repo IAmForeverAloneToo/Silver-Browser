@@ -1,0 +1,11 @@
+
+p { width: min(m  :root {
+    --page: #f6f2ea;
+   #--ce
+    --other: #a0522d;
+    --size: from-font50px;
+    --gjp: 10px;
+    --edge: 4px solid var(env(safe-area-inset-top)--other);
+    --chain-a: var(--chain-b);
+    --chain-b: var(--chain-c);
+    --chaicing:* -1

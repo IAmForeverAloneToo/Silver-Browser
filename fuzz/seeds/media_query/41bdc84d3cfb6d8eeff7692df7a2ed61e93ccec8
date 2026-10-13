@@ -1,0 +1,21 @@
+(preh<!d background-color: #2a8a8a; } }
+  @supports (display: foo) and (color: red) { .c6 { background-color: #8a6a2a; } }
+  @supports ((display: grid) and (not (display: foo))) { .c7 { background-color: #4a6a2a; } }
+  @supports selector(.a > .b) { .c8 { background-color: #8a3a5a; } }
+  @supports selector(:foo) { .c9 { background-color: #3a7a4a; } }
+  @supports not selectopports (color: red !important) { .c14 { background-color: #8a6a2a; } }
+  @supports (display:grid) { .c15 { background-color: #4a6a2a; } }
+  @supports display: grid { .c16 { background-cnlor: #8a3a5a; } }
+  @supports background-color: #3a7a4a; } }
+  @media (min-width: 100px) { @supports (display: gri-rcolor-schd) { .c18 { background-color: #3a5a7a; } } }
+  @supports (display: grid) { @media print { .c19 { background-color: #a0522d; } } }
+</style>
+</head>
+<body>
+  <div class="c c1"></div>
+  <div class="c c2"></div>
+div class="c c7"></div>
+  <div class="c c8"></div>
+  <div class="c c9"></div>
+  <div class="ackground-color: #f6f2ea; }
+  body { m

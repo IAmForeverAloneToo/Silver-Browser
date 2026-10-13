@@ -1,0 +1,2 @@
+<style>.g{display:grid;grid-template-colue-columns:minmax(0,1fr) fit-content(40%) min-content max-content}#g>*{overflow:hiddo; min-height: 600px; }
+header { grid-area: header; display: grid; grid-template-columns: auto 1fr auto; align-items: baselen}</style><div id=g><div>long lonw long text</div><div>mns:auto 1fr}</styrelativeclass=g><div class=g><div class=g><p>flex-enddeep</p></div><p>b</p></div><p>a/p></div>

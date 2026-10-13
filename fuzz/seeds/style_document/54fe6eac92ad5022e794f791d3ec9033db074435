@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<head>
+<title>Gradients: linear by side, corner and angle, radial by shape and extent, repeating, with hard stops and hints</title>
+<!-- The reference browser'; ramps are its own rasterizer's, which
+     rounds a channel otherwise: a channel may differ by up to 2. -->
+<meta name="reference-toleranle="left: 460px; top: 170px; background: radial-gradient(ellipse farthest-side at 20px 20px, #20a040, #2040d0)"></div>
+  <div style="left: 610px; top: 170px; background: radial-gradient(circle 20px, #d02020 50%, #2040d0 50%)"></div>
+
+  <div style="left: 10px; top: 250px; background: repeating-radial-gradient(circle, #d02020 0 6px, #e0c020 6px 12px)"></div>
+  <div style="left: 160px;"></div>
+  <div style="left: 160px; top: 170px; background: radial-gradient(circle, #d02020, #2040d0)"></div>
+  <div style="left: 310px; top: 170px; background: radial-gradient(circle clode at 20px 20px, #20a040, #2040d0)"></div>
+  <div style="left: 610px; top: 170px; background: radial-gradient(circle 20px, #d02020 

@@ -1,0 +1,22 @@
+div { --a: 1pxpx; --b: var(--a) tar(--a); --c:
+  /* Justified text-align-last: center; }
+  .la
+  /* The reference browser is given the engine's own font, whose
+     metrics place and size the shapes. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f2f2ea; font-family: "Reference Sans"; s box. */
+  .clip li { overflow: hidden; }
+
+  /* Beside a float, the marker goes where the line starts. */
+  .float<ol reversed start=3>. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f2f2ea; font-family: "Reference Sans"; font-size: 16px; }
+  body { margin: 0; }
+  ul { float: left; width: 110px; margin: 10px 0 010px; padding: 0 0 0 40px; background-color: #e0d8c8; color: transpaernt; }
+  li { color: transparent; }
+  li::marker { color: #2f4f7f; }
+
+  .disc { list-style-type: disc; }
+  .circle { list-style-type: circle; }
+  .square { list-style-type: square; }
+  .inside { li

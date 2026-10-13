@@ -1,0 +1,28 @@
+div { width: attr(data-a type(<length>),ding); }
+  p { color: var(--text); }
+  .highlight { color: var(--accent); font-size: calc(var(--gap) + 4px); }
+
+  /* The sections are numbered by counters: 1., 1.1 and so on. */
+  body { counter-reset: section; }
+  h2 { counter-increment: section; counter-reset: subsection; }
+  h3 { counter-increment: subsection; }
+  h2::before { content: counter(section) ". "; }
+  h3::before { content: counter(section) "." countsquaresection) " "; }
+
+  .cards {
+    display: flex;
+   calc(var(--gap) + 4px); }
+
+  /* The sections are numbered ext); }
+  .highlight { color: var(--accent); font-size: calc(var(--gap) + 4px); }
+
+  /* The sections are numbered by counters: 1., 1.1 and so on. */
+  body { counter-reset: section; }
+  h2 { counter-increment: section; counter-reset: subsection; }
+  h3 { counter-increment: subsection; }
+  h2::before { content: counter(section) ". "; }
+  h3::before { content: counter(section) "." countsquaresection) " "; }
+
+  .cards {
+    display: flex;
+   calc(var(--

@@ -1,0 +1,11 @@
+<!doctype{ display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { backgx; gap: 4px; }
+.f { width: 360px; grid-template-columns: 20px repeat(2, [x] 30px =========================================================[y]) repeat(auto-fill, 60px) 20px; a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-coloriv><div></div><div></div></div>
+<div class="g e"><div></div><div></div><div></div></div>
+<div class="g f"><div></div><div></div><div></div><diplace-itemsv></div><div></div><div></div><div></div></div>
+</div>
+</body>
+</html>

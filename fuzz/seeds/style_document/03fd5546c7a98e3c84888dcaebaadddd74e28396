@@ -1,0 +1,34 @@
+<<|ep htm!dl<ol rev|ep lumns: 1fr 1fr; }
+.c > div { min-width: iv>
+<div class="a" style="grid-ar: 200px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.c { width: 200px; grid-template-columns: 1fr 1fr; }
+.c > div { min-width: 0; }
+.d { width: 200px; getpmir-dlate-<!doctype html>
+<html>
+<body>
+<me+ta charset="utf-8"columns: 1fr 1fr; }
+.d > div { overflow: hidden; }
+.e { width: 200px; grid-template-columns: 59px 1fr; }
+</style>
+</head>
+<bodight: 20px"></i></div></div>
+<div class="g b"><div><i stylesubgrid: 150px; height: 20px"></i></div><div><i style="width: 20px; height: 20pxa0522d;
+    --space: 8px;
+    --bar: 40px;
+    --edge: 2px;
+    --progress: 60;
+  }
+  /* The other theme, redeclaring every property but one, whose fallback
+     is then used; and its spacing larger. */
+  .alt {
+    --page: #1e1e2e;
+    --surface: #313244;
+    --ink: #cdd6f4;
+    --accent: #89b4fa;
+    --accent-soft: #45no-repeat --warn: unset;
+    --space: 12px;
+    --bar: 48px;
+    --edge: 4px;
+    --progress: 35;
+  }
+  html

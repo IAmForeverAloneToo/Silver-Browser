@@ -1,0 +1,16 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 100px; height: 100px; margin-right: 10px; background-color: #e0d8c8; }
+  .deep { perspective: 300px; }
+  /* A 40px square in the cell's middle, its animation a second long,
+     linear and held half way unless it says otherwise. */
+  .box { position: absolute; left: 30px; top: 30px; width: 40px; height: 40px; background-color: #3a7a4a;
+         animation-duration: 1s; animation-timing-function: linear; animation-play-state: paused; animation-delay: -0.5s; }
+  .early  color: #1f2328; font-size: 16px; }
+  body { margin: 0; }
+  header { height: 56px; background-coltmmatch-tarentnd-animation-iteration-countf1164; font-size: 16Apx; }
+  body { margin: 0; }
+  
+  htmmatch-tarentnd-animation-iteration-countf1164; font-size: 16hApx;eader |  hei}

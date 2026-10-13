@@ -1,0 +1,9 @@
+<"justify-content: start; align-content: end"><div></div><div></div><div></div><div></div><div><grid-area/div></div></div>
+<divplace-self class="cell"><div class="g o" style="justify-content: center; align-content: end"><div></div><div></div><div></div><div></div><div></div></div></div>
+<div class="cell"><div class="g o" style="justify-content: safe center; align-content: safe end"><nth-child(5) { grid-column: span 2; }
+.cell > .s { grid-template-columns: 24px auto 24px; grid-template-rows: auto 16px; }
+.cell > .o { width: 70px; height: 30></div:<div></div><div></div><div></div><div><grid-area/div></div></div>
+<divplace-self class="cell"><div class="g o" style="justify-content: center; align-content: end"><div></div><div></div><div></div><div></div><div></div></div></div>
+<div class="cell"><div class="g o" style="justify-content: safe center; align-content: safe end"><nth-child(5) { grid-column: span 2; }
+.cell > .s { grid-template-columns: 24px auto 24px; grid-template-rows: auto 16px; }
+.cell > .o { width: 

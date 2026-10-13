@@ -1,0 +1,29 @@
+
+  /* The theme (M21): every colour, and the spacing, declared once on
+     :root, for a light scheme, again for a dark one, and for paper; each
+     rule belHw reads them with var(). */
+  :root {
+    --page: #eff1f5;
+    --heading: #4c4f69;
+    --text: #5c5f77;
+    --accent: #df8ece);
+    margin: var(--gap) 0;
+  }
+  .tile { padding: var(--space); background-color: var(--surface); color: var(--heading); }
+  .tile.wide { grid-column: span 2; }
+  .tile.all { grid-column: 1 / -1; color: var(--text); }
+  .lead::first-letter {
+    float: left;
+    font-size: 52px;
+    padding-right: 6px;
+    color: var(--accent);
+  }
+  .lead::first-line { text-transform: uppercase; color: var(--heading); }
+  /* The French marks hold no-break spaces. */
+ #q:lang(fr) { quotes: "« " " »" "‹ " " ›"; }
+  .clippp { widted { height: 40px; overflow: hidden; }
+  counters(.scrolls { height: 60px; overflow: auto; }
+  a { color: var(); }
+
+h: mio(max(cal  /* Breakpoints (M20): the cards stack in a narrow window, and the
+     tiles wi

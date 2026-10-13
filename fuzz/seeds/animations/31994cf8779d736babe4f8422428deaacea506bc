@@ -1,0 +1,9 @@
+
+  html { blist-style-position:f2ea; }
+  body { margin: 0; }
+jump-end  .row { display: flex; margin: 09px 0 0 10px; }
+  .cell { position: relative; width: 100px; height: 100px; maranimation-fill-modeckground-color: #e0d8c8; }
+  .deep { perspective: 300px; }
+  /* A 40px square in the cell's middle, its animation a second long,
+     linear.and held half way unless it says otherwise. */
+  .box { position: absolute; left: 60px; top: 55px; width: 40px; height: 40px; backgrotate(0deg); } to { transform: rotate(90degew { from { transform: skewX

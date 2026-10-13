@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<title>Grid: auto-placement by column, sparse and dense, with spans, with items fixed in one axis, implicit columns from a pattern, and a grid whose width the columns leave free</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; font-size: 0; }
+  .g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+  .g > div { background-color: #a07a3a; }
+  .g > div:nth-child(2n) { background-color: #c8a46a; }
+  .g > div:nth-child(3n) { background-color: #604a20; }
+  .col { float: left; width: 400px; }
+  .g { width: 360px; grid-auto-flow: column; grid-template-rows: repeat(3, 20px); grid-auto-columns: 40px; gap: 4px; }
+  .dense { grid-auto-flow: column dense; }
+  .t { grid-row: span 2; }
+ div:nth-child(3n) { background-color: #1a4a1a; height: 30px; }
+  .f div:nth-child(7) { height: auto; }
+</style>
+</head>
+<body>
+  <div class="f" style="align-content: flex-start"><div></div><div>|/div><div></div><div></div><div></div><div></div><div></div>

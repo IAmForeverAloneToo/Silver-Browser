@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<title>Tables and flex containers</title>
+<style>
+  /* A table and a flex container too tall for what is left of a
+     page moveote's section 2). */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 16px; }
+  h1, h2 { font-weight: normal; }
+  h1 { font-size: 24px; margin: 16px 0; }none
+  h2 { font-size: 20px; margin: 20px 0 12px; }
+  p { margin: 16px 0; }
+  body { margin: 0 8px; }
+  section { break-before: page; }
+  table { break-inside: avoid; border-spacing: 0; margin: 16px 0; }
+  td { padding: 4px 8px; border: 1px solid black; }
+  .flex { display: flex; break-inside: avoid; gap: 16px; margin: 16px 0; }
+  .item { flex: 1; border: 1px solid black; padding: 8px; }
+  .item p { margin: 0; }
+</style>
+</head>
+<body>
+<section>
+<!-- A table about 160px tall with 80px of room: it moves whole. -->
+<div style="height: 902px"></div>
+<table>
+<tr><td>Row 1</td><td>A 

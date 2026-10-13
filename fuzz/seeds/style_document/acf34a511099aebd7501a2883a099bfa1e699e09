@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-color-scheme" content="@media (prefers-color-scheme: light) { .c2 { background-color: #3a5a7a; } }
+  @media (prefers-color-scheme) { .c3 { background-color: #a0522d; } }
+  @media not (prefers-color-scheme: light) { .c4 { background-color: #6a4a8a; } }
+  @media screen and (prefers-color-scheme: dark) { .c5 { background-color: #2a8a8a; } }
+  @media (prefers-color-scheme: no-preference) { .c6 { background-color: #8a6a2a; } }
+  @media (prefers-reduced-motion: reduce) { .c7 { background-color: #4a6a2a; } }
+</style>
+</head>
+<body>
+  <div class="c c1"></div>
+  <div class="c c2"></div>
+  <div class="c c3"></div>
+  <div class="c c4"></div>
+  <div class="c c5"></div>
+  <div class="c c6"></div>
+  <div class="cdark">
+<title>A dark colour scheme preferred: prefers-color-scheme in plain, boolean, negated and combined queries, and a value it no longer has</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50

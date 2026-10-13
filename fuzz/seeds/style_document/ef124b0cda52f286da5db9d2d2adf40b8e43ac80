@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; backgro { position: absolute;  #7a9aba; }
+.g > .a:nth-child(3n) { background-color: #1a2a3a; }
+.outer { position: relative; margin: 8px 20px; padding: 6px; width: 340px; background-color: #d4c4a4; }
+.outer > .g { position: static; margin: 0; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div stx; max-width: none; }
+</style>
+</head>
+<body>
+<main class="grid">
+<section class="card"><div class="media"></div><h2>Flexible boxes</h2><p; height: 20px; margin: 4px; justify-self: end"></div>
+<div></div>
+</div>
+</div>
+<div class="col">
+<div class="outer">
+<div class="g">
+<div></div>
+<div class="a" style="grs="g">
+<div></div>
+<div class="a" style="grid-area: 2 / 2; width: 30px; height: 20px; justify-self: center; align-self: end"></div>
+<div class="a" style="width: 30px; height: 20px; left: 0"></div>
+<div></div>
+</div>
+</div>
+<div class="g" style="justify-content

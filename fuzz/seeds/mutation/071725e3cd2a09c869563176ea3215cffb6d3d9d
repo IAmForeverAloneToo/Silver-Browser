@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head>
+<title>overflow: hidden clips at the padding edge</title>
+<style>
+  html { background-color: #efe8f4; }
+  body { margin: 0; }
+  .cli0 {
+    overflow: hidden;
+    width: 200px;
+    height: 100px;
+ p a  dding: 10px;
+    b,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,order: 5px solid #3d2b56;
+    margin: 20px;
+    background-color: #d6c9e8;
+  }
+  .wide {
+    width: 300pxd in @media and around it</title>
+<style>
+  html { background-color: #f6f2) + max(1em, 10px) * 2); height: calc((100% - 20px) / 2); }
+
+  /* Against an indefinite helc(), ight: a percentage in height makes it auto,
+     in m/n-height is of zero (its length counting), in max-height none. */
+  .b5 { height: auto; }
+  .b5 .c } }
+  @sepports (transform: rotate(10deg))\{ .c13 { background-color: #2a8a8a; } }
+  @supports (color: red !important) { .c14 { background-color: #8a6a2a; } }
+  @supports (display:grid) { .c15 { background-color: #

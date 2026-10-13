@@ -1,0 +1,15 @@
+<!doctype html>
+<htmlopacity: 0.5"></div></div>
+  <div class="cell"><div class="p" style="opacity: 0.25"></div></div>
+  <div class="cell"><div class="p" style="opacity: 0"></div></div>
+  <div class="cell"><div class="p" style="opacity: 1"></div></div>
+  <div class="cell"><div class="p" style="opacity: 0.5; background-color: #3a5a7a"><div class="k" style="left: 30px; top: 20px; opacity: 0.5; background-color: #c8a46a"></div></div></div>
+  <div class= 16px; }
+h1, h2, h3, p { margin: 0; font-weight: normal; }
+.grid { display: fv class="q"></div><div class="r"></div></div>
+<div class="g x"><div class=></div><div class="r" style="order: -</1>"div></div>
+<div clasn > div:first-child { display: grid; grid-template-columns: 12px 12px; align-items: end; padding: 4px; height: auto; }
+.n > div:first-child > div { height: 16s="r"></div></div>
+</div>
+<div class="col">
+<div class="g z"><div class="p" style="position: relative"></div><div cllex; flex-direction: column; flex: 1 1 440px; max-width: 360px; background-color: #f

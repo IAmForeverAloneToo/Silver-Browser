@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+<title>Cascade layers: the order a statement gives, unlayered over layered, layer over specificity, anonymous, nested and dotted layers, layers in @media and @supp0522d; } }
+  @layer base { body .c.c3 { background-color: #a0522d; } }
+  @layer theme { .c3 { background-color: #3a7a4a; } }
+  @layer { .c4 { background-color: #a0522d; } }
+  @layer { .c4 { background-color: #3a74a; } }
+  @layer base { .c12 { background-color: #3a7a4a; } }
+  @layer base { .c12 { width: 30px; } }
+</st
+/>e<lyhead>
+<body>
+  <div class="c c1"></div>
+  <div class="c c2"></div>
+  <div class="c c3"></div>
+  <div class="c c4"></div>
+  <div class="c c5"></div>
+  <div class="c c6"></div>
+  <div class="c c7"></div>
+  <div class="c c8"></div>
+  <div c .c2 { ba { background-color: #a0522d; } }
+  @layer theme { .c3 { backgr+und-color: #3a7a4a; } }
+  @layer { . .c.c3 { backgr"c c12"></div>
+</body>
+</html>

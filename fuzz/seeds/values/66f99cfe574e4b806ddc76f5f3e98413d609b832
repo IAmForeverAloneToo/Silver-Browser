@@ -1,0 +1,32 @@
+
+  :root {
+    --page: #f6f2ea;
+ 22d;
+    --space: 8
+x ;p   --bar: 40px;
+    --edge: 2px;
+    --progress: 60;
+  }
+  /* The other theme, redeclaring every property but one, whose fallback
+     is then used; and its spacing larger. */
+  .alt {
+    --page: #1e1e2e;
+    --surface: #313244;
+    --ink: #cdd6f4;
+    --accent: #89b4fa;
+    -1-accent-soft: #45475a;
+    --warn: unset;
+    --space: 12px;
+    --bar: 48px;
+    --edge: 4px;
+    --progress: 35;
+  }
+  html { backgrounpace); margin-top: var(--space); background-color: var(--accent-soft); }
+  .card .line.short { width: 50%; }
+
+  .progress { margin: 0 calc(var(--space) * 2); height: var(--space); background-color: var(--accent-soft); }
+  .progress .done { width: calc(var(--progress) * 1%); height: +100%; background-color: var(--accent); }
+
+  /* A warning in a colour the alternative theme does not set: the
+     fallback; a badge in a property neither theme sets. */
+  .alert { margin: calc(var(--space) * 1); padding: var(--space); height: 30px; border-left: calc(

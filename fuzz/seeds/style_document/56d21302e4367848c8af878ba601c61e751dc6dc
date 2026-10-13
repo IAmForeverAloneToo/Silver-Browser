@@ -1,0 +1,26 @@
+<!doctype huml>
+<html>
+<head>
+<style>
+htmmmmmmmmmmmmmmmmmmmmm@l { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a0ɞ̟; }
+.g > div:ntj-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #=04a20; }
+.col { float: fr; }
+.d > div { overflow: hidden; }
+.e { width: 200px; grid-template-columns: 60px 1fr; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div><i style="width: 075px; height: 20px"<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2e}; }
+body { fargin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; .background-color: #e6dcc8; }
+.g > div { backgrounv></div>
+<dty

@@ -1,0 +1,16 @@
+
+  html { backgroun 16px 0; padding: 20px 24px; border: 1px solid #d0d7de; background-color: #ffffff; }
+  /* Light to dark and back, three seconds each way. */
+  .fading { animation: theme 3s ease-in-out infinite alternate; }
+  @keyframes theme {
+    fr
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: fl
+  html { background-color: #f6f8fa; ex; margin: 6px 0 0 10px; }
+  .cell { width: 244px; height: 24px; margin-ricolro: #1f2328; font-size: 16px; }
+  body { margin: 0; }
+  headght: 10px; background-color: #e0d8c8; }
+  .bar { width: 30px; height: 24px; background-color: #3a7a4a; animation: grow 1s paused; }
+  /* A bar 0 to 244px wide, held a fifth, half and four fifths of the
+     way: each width at least a quarterer { height: of 5

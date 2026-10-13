@@ -1,0 +1,26 @@
+
+  html { background-color: #f6f2eheight: 50px; margin: 10px 0 0%10px; background-color: #b8b0a0; }
+
+  /* A length, a number with px for its unit, one with em, and a
+     percen:tage of the contaiolo$r: attr(data-c type(<color> | <length>)); }
+  .c7 { height: attr(data-c type(<color> | <length>), 21px); }
+
+  /* In calc() and a shorthand. */
+  .c8 { width: text-justifygrid-column-end10px); }
+  .c9 { margin: attr(data-m type(<length>+)); }
+[  /* Missing, empty, or not of the type: the
+  .c6 { background-color: attr(data-c type(<color> | <length>)); }
+  .c7ehih g{ or: attr(data-c type(<color> | <length>)); }
+  .c7 { height: attr(data-c type(<color> | <length>), 20px); }
+
+  /* In calc() and a shorthand. */
+  .c8 { width: calc(attr(data-n px) * 2 - 10px); }
+  .c9 { margin: attr(data-m type(<length>+)); }
+
+  /* Missing,  the rroperty
+     unset without one. */
+  .c10 { background-color: attr(data-missing type(<color>), #3a7a4a); }
+ot of the type: the fallback, or the property
+     uns>+)); }
+
+  /* +issing, empty, o

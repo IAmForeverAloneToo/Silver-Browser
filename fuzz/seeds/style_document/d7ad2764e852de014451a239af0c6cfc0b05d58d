@@ -1,0 +1,12 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-size" content="480x640">
+<title>Orientation and aspect ratio in a portrait viewport of 480 by 640 pixels: ratios exact, reduced and as a number, in mi: 1e-rows:masonry;grid-templa/style><div id=g><div>s</>did<v/ainx; baate-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 16px 12px; padding: 1e-rows:masonry;grid-templa/style><div id=g><div>s</>did<v/ainx; background-color: #8a6a3c; border: 2px solid #5c4424; }
+.water {e-rows:masonry;grid-template-columns:repeat(auto-fit,100px)}<;grid-template-columns:subgrid;grid-templat>
+html { background-color: #f]]]]]]]]]]]]]]]]]]]]]]3efe4; color: #2d2a24; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 12px; }
+h1, h2, p { margin: 0; font-weight: normal; }
+h1 *********{ padding: 12px 16px 0; font-size: 20px; }
+.levels { display: grid; grid-temp0late-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 16px 12px; padding: 1e-rows:masonry;grid-templa/stylont-size: 20px; }
+.levels { display: grid; grid-te

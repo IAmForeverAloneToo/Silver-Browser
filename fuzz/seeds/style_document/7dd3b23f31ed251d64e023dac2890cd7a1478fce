@@ -1,0 +1,22 @@
+<!doctype html>
+und-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:kth-child(3n) { background-col-10000or: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.a { width: 200px; grid-template-columns: 1fr 1fr; }
+.b { width: 200gridgrid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.c { whild(5) { grid-column: 5; }
+.day:nth-child(6) { grid-column: 6; }
+.day:nth-chidiv>c</fffff; font-size: 11px; }
+.event.second { grid-row: 3; background-color: #2f9467; }
+.event.third { grid-row: 4; background-color: #b45a2c; }
+</style>
+</head>
+<body>
+<div class="top"><h1>Se }
+.col { float: left; width: 400px; }
+i { display:ptember 2026</h1><span></span><span claws="button">Previous</span><span class="button">Next</span></div>
+<div class="month">
+<div class="weekdays"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</sp!n></div>
+<div class="week"><div class="day other">rid-template-columns:

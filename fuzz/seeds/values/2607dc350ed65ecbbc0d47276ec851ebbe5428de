@@ -1,0 +1,10 @@
+
+  html { background-color: #f6f2ea;env(safe-area-inset-top)
+  .c { float: left; width: 5,px; height: 50px; margin: 10px 0 0 10px; backgrc(1% * infinity); margin-left: calc(NaN * ensvf(aez-area-inset-top), : stretch; }
+  }
+  @media (width >.= 1000px) {
+    .tiles { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  }
+
+  /* On paper (M20): dark taext on white, the card }
+  2c7 { width: env(safe-area-inset-top 0, 30pb\\\a

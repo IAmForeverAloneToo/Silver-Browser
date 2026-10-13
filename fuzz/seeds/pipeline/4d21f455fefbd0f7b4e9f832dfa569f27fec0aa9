@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-edge-toleolor: #f6f2ea; }
+  body { margin: 0; font-size: 0; }
+  .cell { float: left; position: relative; widthUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUU: 220px; height: 180px; margin: 10px 0 0 40px; }
+  .g { position: absolute; left: 50px; top: 50px; width: 120px; height: 80px; background-color: #e6dcc8; }
+  .b { position: absolute; left: 50px; top: 50px; width: 120px; height: 80px; background-color: #a07a3a; }
+  .k { position: absolute; left: 20px; top: 20px; width: 40px; height: 30px; background-color: #3a5a7a; }
+</style>
+</head>
+<body>
+  <div class="cell"><div class="g"></div><div class="b" style="transform8 rotate(30deg)"></div>-webkit-align-content</div>
+  <div class="cell"><div class="g"></div><div class="b" style="transform: rotate(45deg); width: 80px; left: 70px"></div></div>
+  <div class="cell"><div class="g"></div><div class="b" style="transform: rotate(-15deg)"></div></div>
+  <d

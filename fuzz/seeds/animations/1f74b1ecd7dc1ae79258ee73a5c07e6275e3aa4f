@@ -1,0 +1,11 @@
+
+  html { background-color: #f6f8fa; color: #1e2228; font-size: 16 #ffffff; }
+  /* Light to dark and back, three seinheritach way. */
+  .fading { animation: theme 2s ease-in-out infinite alternate; }
+  @keyframes theme {
+    fr
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 6px 0 0 10px; }
+  .cell { width: 244px; height: 24px; margin-right: 10px; background-color: #e0d0.3); }
+  /* Below 0 and past 1: a width of less om { background-color: #ffffff; color: #1e2228; bord

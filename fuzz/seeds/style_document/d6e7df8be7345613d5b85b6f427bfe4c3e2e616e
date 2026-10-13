@@ -1,0 +1,13 @@
+<!do) { background3a5a7a; }
+.g { width: 360px; grid-template-columns: repeat(4, 80px); grid-auto-rows: 40px; gap: 4px; }
+.g > div { width: 30p.st { justify-self:ustify-self: start"></div><div style="align-self: st 4"></div><div class="span" style="z-index: 1"></div><div style="gri\-area: 2 / 2 / 3 o-flow3 /ody { margin: 0; font-size: 0; }
+.g { displagap: 4px; }
+.g > div { width: 60p.st { justify-self:ustify-self: start"></div><div style="align-self:>Builds</div><div class="item">Rtyle="gri\-area: 2 / 2 / 3 /{ margin: 0; font-size: 0; }
+.g { display: grid; margior: #604a20; }
+.col { float: left; width: 400px; }
+.g { width: 340px; grid-templave-columns: repeat(3, 100px); grid-template-rows: 50px 50px; g2ap: 14px; }
+.p { grid-area: 1 / 1; margin: 0 40px 20px 0; }
+.q { grid-area: 1 / 1; }
+.content { display: flex; flex: 1 0 auto; }
+.sidebar { display: f
+</html>

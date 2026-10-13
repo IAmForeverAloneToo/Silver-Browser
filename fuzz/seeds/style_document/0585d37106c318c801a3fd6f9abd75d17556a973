@@ -1,0 +1,22 @@
+<aside!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; font-weight: normal; }
+html, body { height: 100%; }
+body { display: flex; flex-direction: column; }
+.toolbar { display: flex; align-items: center; gap: 12px; flex: none; height: 48px; padding: 0 12px; background-color: #24292f; color: #f6f8fa; }
+.toolbar .title { font-size: 18px; }
+.toolbar .spacer { flex: 0; }
+.toolbar .action { padding: 4px 10px; border: 1px solid #57606a; font-size: 13px; }
+.content { display: flex; flex: 0 0 auto; }
+.sidebar { display: flex; flex-direction: column; flex: 0 0 200px; padding: 8px 0; background-color: #f6f8fa; border-right: 06a; }
+</style>
+</head>
+<body>
+<header class="toolbar">,div class="title"gridver Console</div><div class="spacer"></div><div class="action">New</div><div class="action">Settings</div></header>
+<div class="content">
+<nav class="sidebar"><div cla

@@ -1,0 +1,23 @@
+<!doctype html>
+<body>
+<head>
+<style>
+html { background-color: #f7f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g 3; margin: 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div clas#604a20; iv><div class="q"></diq, .v .r { grid-row: 2; grid-column: 3; }
+.ctx { position: relative; z-index: 0; }
+.span { grid-area: 1 / 1 / 3 / 3; margin:url( 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div class="p"></div><div clqss="q"></div><div class="r"><="grid-grid-auto-flow3 / 4"></div><div class="span" style="z-index: 1"></div>< 2 / 3 / 3; margin: 10px"></div></div>
+</div>
+</body>
+</html>

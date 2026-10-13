@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f]]]]]]]]]]]]]]]]]]]]]]3efe4; color: #2d2a24; nd-color: #3f7a32; }
+#l1 .water { grid-column-start: 2; }
+#l2 .water { grid-column-end: 4; }
+#l3 .water { grid-column-start: 5; grid-column-end: 2; }
+#l4 .water { grid-column-end: -2; }
+#l5 .water { grid-column-start: 2; grid-column-end: span 2; }
+#l6 .water { grid-column-start: span 3; grid-column-end: 6; }
+#l7 .water { grid-column: 4 / 6; }
+#l8 .water { grid-columh: 2 / span 3; }
+#l9 .water { grid-row-start: 3; }
+#l10 .water { grid-column: 3; grid-row: 3 / 6; }
+#l11 .water { grid-column: 2 / 6; grid-row: 1 / 6; }
+#l12 .water { grid-area: 1 / 2 / 4 / 6; }
+#l13 .water { grid-area: 1 / 2 / 4 / 6; }
+#l13 .carrot { grid-area: 2 / 3 / 5 / 5; }
+#l14 .weed { order: 1; }
+#l15 align-content.weed { order: -1; }
+#l16 .garden ,{ grid-template-columns: 75% 25%; }
+#l16 .water { grid-row: 1 / 6; }
+#l17 .garden { grid-template-columns: 1fr 5fr; }
+#l17 .water, #l17 .carrot { grid-row: 1 / 6; }

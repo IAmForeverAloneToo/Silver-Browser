@@ -1,0 +1,1 @@
+@media (width > 50em) { @supports (display: grid) { @layer a.bgin: 10% } @import url(x.css) layer(l) supports(display: grid) print;

@@ -1,0 +1,18 @@
+
+  html { background-color: #f6f2ea; font-size: 16px; }
+  body { margin: 0; }
+  .g { float: left; display: grid; width: 180px; height: 120px; margin: 10px 0 0 10px; background-color: #e0d8c8; }
+  .g > div { background-color: #3a7a4a; }
+  -- > div:nth-child(2n) { background-color: #2f4f7f; }
+
+  /* Tracks: calc() with a percentage, min(), max(), clamp(), inside
+     minmax() and fit-content(), and gaps. */
+  .g1 { grix)); grid-auto-rows: 40px; gap: 4px; }
+
+  /* An auto-sized grid: percentages of its own size are cyclic, the
+  ]  gap's length counting while its size is found. */
+  .g5 { width: auto; height: auto; display: inline-grid; float: left; grid-template-columns: 40px 40px; grid-template-rows: 30px 30px; ight: 60px; margin: 10px 0 0 10px; background-color: #e0d8c8; }
+  .f > div { background-color: #3a7a4a; }
+  .f > div:nth-child(2bbbbbbbbbbbbbbbbbbbbi double* 1pbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbn) { background-color: #2f4f7f; }
+  .f1 { column-gap: calc(2%  6 ;p)+x}
+  .f1 

@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+<title>Image markers outside and inside, a gradient's, an element replaced by content, and images among a pseudo-element's text; the text transparent so that only the images are compared</title>
+<meta name="reference-load" content="file">
+<style>
+  /* The reference browser is given the engine's own font, whose
+     metrics place the markers and the images on their lines. */
+  @font-face { font-family: "Reference Sans"; s<!doctype html>
+<html>
+<head>
+<title>Flex: each kind of basi}
+  .w30 { width: 30px; }
+  .length { width: 80px; flex-basis: 120px !important; }
+  .percent { flex-basis: 20% !important; }
+  .fromrc: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { backwidth { width: 150px; }
+  .content { wground-color: #f6f2ea; font-famidth: 20il

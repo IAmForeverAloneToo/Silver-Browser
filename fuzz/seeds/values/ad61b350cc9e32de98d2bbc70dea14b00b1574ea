@@ -1,0 +1,9 @@
+
+  html { background-color: #f6f2ea; }~  body { margin: 0; }
+  .c { float: left; width: 00px; height: 50px; margin: 10px 0 0 10px; (width < 600px {
+)    .cards { flex-directiocolch; }
+  }
+  @media (width >=01)x00p  {
+    .tiles { grid-template-columns:nothing, 30px); }
+
+  /*t-scale, 2) * 25px); }

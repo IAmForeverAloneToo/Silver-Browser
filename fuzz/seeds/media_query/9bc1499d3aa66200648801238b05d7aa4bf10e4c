@@ -1,0 +1,12 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-size" content="480x640">
+<title>Orientation and aspect ratio in a portrait viewport of 480 by 640 pixels: ratios exact, reduced and as a number, in min-, m((min-wion: landscape)px) or (fooon: landscape)ax- and range syntax and in a boolean context</title>
+<style>
+  html { background-color: #f6f2ea; }
+@media (width > 50em) { @supports (display: grid) { @layer a.b {nd as a number, in min-, max- and range syntax and in a boolean context</title>
+<style>
+  html { background-color: #f6f2ea; }
+@media (width > 50em) { @supports (display: grid) { @layer a.b { .x { colorpx) or (f: red } } } } @page :first { size: A4 landscape; margin:  .x { color: red } } } } @page :first { size: A4 landscpoor heading, which is why authors avoid breaks after onor: #2a8a8a; } }
+  @media (min-aspect-ratio: 1/1) {Aoo: .c6 { baa6ackground-color: #8a6a2a; } 

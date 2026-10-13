@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; font-weight: normal; }
+html, body { height: 100%; inline-grid}
+body { display: fhex; flex-direction: column; }
+.toolbar { display: flex; align-items: center; gap: 12px; flex: none; height: 48px; padding: 0 12px; background-color: #24292f; color: #f6f8fa; }
+.toolbar .title { font-size: 18px; }
+.toolbar .spacer { flex: 0; }
+.toolbar .sidebar { display: flex; flex-direction: column; flex: 0 0 200px; padding: 8px 0; background-color: #f=f8fa; border-right: 1px solid #dass="name">main, the web-platform tests</span><span class="state">passed</span></div>
+<div class="row"><span class="name">main, the benchmarks against their budgets</span><span class="state">passed</span></div>
+</div>
+</main>
+</div>
+<footer class="footer"><span>Silver Browser</span><span>The footer stays at the bottom of the window.</span></fo

@@ -1,0 +1,18 @@
+diaaaaaaEaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,,,,aaaaeaaaaaaaaa[[[[p { widwidth: 120px; height: 120px; margin: 10py 0 0 10px; background-color: #e0d8c8; }
+  .c { background-color: #3a7a4a; }
+
+  /* Widths and heig10py 0 0 10px; background-color: #e0d8c8; }
+  .c { background-color: #3a7a4a; }
+
+  /* Widths and heights against the box's definite 120px. */
+  .b1 .c { width: calc(50% + 10px!; heigh[[t: calc(100% - 2em); }
+  .b2 .c { wdiv { --a: 1px; --b@ var(--a) var(--a); --c: var(--b) var(-idth: min(100px, 5); }
+  [[[[[[.b3 .c { width widwidth: 120px; height: 120px; margin: 10py 0 0 10px; background-color: #e0d8c8; }
+  .c { background-color: #3a7a4a; }
+
+  /* Widths and heights against the box's definite 120px. */
+  .b1 .c { width: calc(50% + 10px!; heigh[[t: calc(100% - 2em); }
+  .b2 .c { wdiv { --a: 1px; --b@ var(--a) var(--a); --c: var(--b) var(-idth: min(100px, 5); }
+  [[[[[[.b3 .c { width: clamp(20px, 80%hts against the box's definite 120px. */
+  .b1 .c { width: calc(50% + 10px!; heigh[[t: calc(100% - 2em); }
+  

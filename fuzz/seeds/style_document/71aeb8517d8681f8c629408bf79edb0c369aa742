@@ -1,0 +1,13 @@
+<!doctype html>
+<html>
+<head>
+<sty( { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.g { width: 360px; grid-template-columns: [a] 40px [b] 40px [a] 40px [b] 40px [a] 40px; grid-auto-rows: 20px; }
+.s2 { gri
+<div class="col">
+<div class="g"><div class="s2"></div><div class="s3"></div><div class="sa"></div><div class="sb"></div><div class="r2"></div><div class="end"></div><div></div></div>
+</div>
+</body>
+</html>

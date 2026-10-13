@@ -1,0 +1,8 @@
+
+  html { background-color: #f6f8fa; color: #1e2228; font-size: 16px; }
+  rk and back, three seconds each way. */
+  .fading { animation: theme 3s ease-in-out infinite alternate; }
+  @keyframest heme {
+    from { background-color: #ffffff; color: #1e2228; bor
+der-color: #d0d7de; }
+    to { background-color  /* T:

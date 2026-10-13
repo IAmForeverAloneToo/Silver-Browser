@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head>
+<title>@supportstfoot with declarations, not, and, or and selector(), unknown properties, values and functions, a malformed condition, and n<!doctype html>
+<html>
+<head>
+<title>@supportstfoot with declarations, not, and, or and selector(),ested in @media and around it</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; hor: #4a6a2a; } }
+  @supports display: grid { .c16 { background-color: #8a3a5a; } }
+  @supports (unknown-fn()) { .c17 { background-color: #3a7a4a; } }
+  @media (min-width: 100px) { @supports (display: grid) { .c18 { background-color: #3a5a7a; } } }
+  @supports (display: grid) { @media print { .c19 { background-color: #a0522d; } } }
+</style>
+</head>
+<body>
+  <div class="c c1"></div>
+  <div class="c c2"></div>
+  <div class="c c3"></div>
+  <div class="c c4"></div>0
+  <div class="c c5"></div>
+  <div class="c c6"></div>
+  <div class="c c7"></div>
+  <div class="c c8"></div>
+  <div class="c 

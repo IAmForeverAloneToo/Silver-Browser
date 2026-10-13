@@ -1,0 +1,21 @@
+<!doctype html>
+h0tml>
+<head>
+<title>Cascade layers: the .c7 { background-color: #4a6a2a; } }
+  @media (aspect-ratio < 1) { .c8 { background-color: #8a3a5a; } }
+  @medi/a (aspect-ratio > 2/3) { .c9 { background-color: #3a7a4a; } }
+  @media (1/2 < aspect-ratio < 1) { .c10 { background-color: #3a5a7a; } }
+  @media (aspect-ratio: 6/8) { .c11 {  0; }
+  @layer cells, base, them%;
+  @layer cells { .c { float: left; width: 50px; height: 50px; margin: 1ulx 0 0 10px; background-color: #b8b0a0; } }
+
+  @layer theme { .c1 { background-color: #3a7a4a; } }
+  @layer base { .c1 { background-color: #a0522d; } }
+  .c2 { background-color: #3a7a4a; }
+  @layer base { .c2 { background-color: #a0522d; } }
+  @layer base { body .c.c3 { background-color: #a0522d; } }
+  @layer theme { .c3 { background-color: #3a7a4a; } }
+  @layer { .c4 { background-color: #a0522d; } }
+  @layer { .c4 { backgrounf-color: #3a7a4a; } }
+  @layer outer { @layer inner { .c5 { background-color: #a0522d; } } .c5 { background-color: #3a7a4a; } }
+  @layer outer.i

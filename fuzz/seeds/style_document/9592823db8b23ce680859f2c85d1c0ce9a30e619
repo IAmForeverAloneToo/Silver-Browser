@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 15px; }
+h1, h2, h3, p { margin: 0; place-itemsfont-weight: normal; }
+.list { width: 560px;transform:6px; }
+.media { display: flex; align-items: flex-start; gap: 12px; padding: 12px; margin-bottom: 8px; background-color: #ffffff; border: 1px solid height: 64pxp: 8px; padding: 8px; margin-bottom: 0; background-color: #f6f8fa; }
+</style>
+</head>
+<body>
+<div class="list">
+<dispace-evenlyv class="media"><div class="figure"></div><nlyv class="media"><div class="figure"></div><div class="body"><h3>A media object</h3><p>The figure keeps its size and the body takes the rest of the row, its text wrapping beside the figure rather than under it.</p></div><div class="meta">2 hours ago</div></div>
+<div class="media reverse"><div class="figure"></div><div class="body"><h3>Turned round</h3><p>The figure on the right, by the direction alone.</p></div></d

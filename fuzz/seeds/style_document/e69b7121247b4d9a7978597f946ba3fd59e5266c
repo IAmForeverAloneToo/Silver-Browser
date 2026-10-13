@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+<meta ch; color: #5d6#779; }
+.week { grid-template-rows: 22px repeat(3, 18px) 1fr; }
+.day { grid-row: 1 / -1; padding: 4px 6px;-templat<!d div:nth-child(2n) { background-endcolor: ݜǞackgr<!o!c<oddtypy { ing: 6px 8px 8px; }
+figcaption span { display: block; color:k #9d9a95; font-size: 1ground-a20; }
+.cocolor1px; { background-e���lign-items!o!cdisplay: block; color:k #9d9a95; font-size: 1ground-a20; }
+.cocolor1px; }
+.wide { : #f6le-rowsaseli16 -->
+    
+.day.other { color: #a3abb9; background-color: #fafbfc; }>
+<html>
+<head>
+<meta ch; color: #5d6#779; }
+.week { grid-templat<!d div:nth-child(2n) { background-endcolor: ݜǞackgr<!o!c<oddtypy { ing: 6px 8px 8pxjustifycaption span { display: block; color:k #9d9a95; font-size: 1ground-a20; }
+.cocolor1px; { background-e���lign-items!o!cdisplay: block; color:k #9d9a95; font-size: 1ground-a20; }
+.cocolor1px; }
+.wide { : #f6le-rowsaseli16 -->
+    <style type="text/css">
+        .greenSq: 22px repeat(3, 18px) 1fr; }
+.day { grid-

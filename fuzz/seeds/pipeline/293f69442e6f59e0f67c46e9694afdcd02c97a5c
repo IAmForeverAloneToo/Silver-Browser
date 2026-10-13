@@ -1,0 +1,12 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f3efe4; color: #2d2a24; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 12px; }
+h1, h2, p { margin: 0; font-weight: normal; }
+h1 { padding: 12px 16px 0; font-size: 20px; }
+.levels { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 16px 12px; padding: 12px 16px 16px; }
+.level h2 { font-sepeat(3,1fr);placeinsetent:end spac<style>#g{display:grid;position:relative;grid-templep2:0atx 1fr/1y-self:center}</style><div id=fr 30px;height:80px}#a{position:absolute;grid-area:2/1/3/3;in</style><div id=fr 30px;height:80px}#a{yle><div{ padding: 12px 16px 0; font-size: 20px; }
+.levels { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 16px 1<style>#g{displayd:;riggrid-temp,tlce-aoumns:1fr 1fr;rowstyle>#g{display:grid;grid:auto-flow 10px/repeat(3,1fr);place-content:end ]pace-evenly;place-items:center stretch;height:099px}</style><div id=g><a</a><a>2</a

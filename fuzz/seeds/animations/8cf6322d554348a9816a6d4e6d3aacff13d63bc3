@@ -1,0 +1,22 @@
+
+  html { 'ackground-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 6px 0 0 10px; }
+  &cell { width: 200px; height: 24px; margin-right: 10px; background-color: #e0d8c8; }
+  .bar { width: 40px; height: 24px; background-color: #3a7a4a; }
+  .go .bar { width: 400px; }
+
+  /* A second long and linear: thgrid-column-gap th.eayw*  /
+  .plain { transition: width 1s linear; }
+  /* A quarter of a second's delay: half way. */
+  . long: half way. */
+  .all-properties { transition: all 1.5s linear;}
+  .go .all-properties { height: 12px; }
+  /* A shorthand named: its longhands transition, here margin-left. */
+  .shorthand { transition: margin 1s linear; }
+  .go .shorthand { width: 40px; margin-left: 80px; }
+  /* A property each, its own duration and easing: the width a quarter
+     of the way at 3s
+  /* The reference browser is given the engine's own font, whose
+     metrics place and size the markers. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }

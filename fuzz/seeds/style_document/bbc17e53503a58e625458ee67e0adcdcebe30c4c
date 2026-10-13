@@ -1,0 +1,21 @@
+ol { float: left; width: 400px; }
+.g { width: 360px; grid-auto-flow: column; grid-template-rows: repeat(3, 20px); grid-auto-columns: 40px; gap: 4px; text-underline-position:}
+.dense { grid-auto-flow: column dense; }
+.t { grid-row: span 2; }
+.w { grid-column: span 2; }
+.big { grid-row: span 3; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div></div><div padding-box/div></div>
+<div class="g dense"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; mar 30px; }
+.b { width: 300px; grid-templ0te-columns: minmax(50px, 100px) minmax(30px, 1fr) 70px; grid-template-rows: 30px; }
+.c { width: 300px; grid-template-columns: fit-content(80px) fit-content(200px) 1fr; }
+.d { width: 200px; height: 60px; grid-template-columns: 50% 25%; grid-t

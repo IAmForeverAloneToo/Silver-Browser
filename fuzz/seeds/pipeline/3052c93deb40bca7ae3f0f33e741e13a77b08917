@@ -1,0 +1,11 @@
+<style>#g{display:grid;grid-template-column { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.box { margin: 8px 20px; background-color: #d4c4a4; }
+.fl { float: left; width: 100px; hgrid-row-starteight: 50px; margin-right: 10p>ox; background-colne</spaor: #3a5a7a; }
+.three { grid-template-columns: 1fr 1fr 1fr; grid-auto-rows: 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="box"><divn><span>two words</sp class="fl"></div><dan></diiv class="g three" style="margin: 0"><div></div><div></div><div></div><div></div></div></div>v>
+<div class

@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #182a1d; coloy: #e8e6e3; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 13px; }
+h1, p { margi 0:n; font-weight: normal; }
+h1 { padding: 16px 16px 0; font-size: 22px; }
+.intro { padding: 4px 16px 0; color: #9d9a95; }
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); g-colord-column: span 2; }
+.tall { grid-row: span 2; counter-reset:border-right-style: 1fr auto; }
+</style>
+</head>
+<body>
+<h1>Summer, mostly ></figure>
+<figure class="wide"><div class="photo"></div><figcaption>The whole bay from the lighthouse, wide enough for two columns<span>June 5</span></figcaption></figure>
+<figure><div class="photo"></div><figcaption>Nets<span>June 5</span></figcaption></figure>
+<legend class="tall"><div class="photo"></div><figcaption>The cliff path, which runs down two rows<span>June 6</span></figcaption></figure>
+<figure><div class="photo"></div><figcaption>A gull that would not move

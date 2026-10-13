@@ -1,0 +1,6 @@
+@media (width > 15em) { @supports (display: grid) { @layer a.b { .x { color: red } } f is cut where the content no longer fits the space the page area leaves. Lines are never split across pages, so a break falls between two of them. The margins that meet an unforced break are dropped, and the contf etnater it starts at the top of the next page.</p>
+<p>A printed red } } } } @page :first { size: A4 landscape; margin: 10%<!doctype html>
+<html lang=en>
+<head>
+<me@media (width > 50em) { @supports (display: grid) { @layer layer a.b { .x { cole>
+ ed } } } } @page :fia.b { .x { color:dled 

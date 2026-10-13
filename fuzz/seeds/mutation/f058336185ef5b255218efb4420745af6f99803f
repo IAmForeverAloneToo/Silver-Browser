@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0;play:grid;fffgrid-template-columns:1fr 1fro;rw-gap:10%;column-gap:5%}#g>div{order:-1;z-index:2;margin:auto}</style><table><tr><hrtd><div id=g><div>1</div><div styl; }
+.columns > article h1 { font-size: 26px; margin-bottom: 12px; }
+.columns > article p { margin-bottom: 12px; }
+.columns > aside { flex: 0 0 180px; order: 1; padding: 16px; background-grid-template5; font-size: 13px; }
+.columns > aside h2 { font-size: 15e='order:3'>2</px; margin-bottom: 8px; }
+.page > footer { padding: 12px 24px; background-color: #24292f; color: #d0d7de; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="page">
+<header>The holy grail</header>
+t push div></div></td>-the aside off the page.</p>
+</article>
+<nav><a href="#">Getting started</a><a href="#">Layout</a><a href="#">Painting</a><a href="#">Networking</a></nav>
+</di

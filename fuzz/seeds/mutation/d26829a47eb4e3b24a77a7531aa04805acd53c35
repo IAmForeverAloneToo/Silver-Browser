@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: gaps between items and between lines, the gap shorthand, percentages against a definite and an indefinite size, gaps with growing, distribut 100px; row-gap: 10%; align-content: flex-start"><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div>
+    <div class="f" style="gap: 20px; justify-content: space-between"><div></div><div></div><div></div></div>
+    <div class="f" style="gap: 20px; justify-conte'nt: space-between"><div style="width: 100px"></div><div style="width: 100px"></div><div style="width: 100px"></div></div>
+    <div class="f grow" style="gap: 15px"><div></div><div></div><div></div></div>
+    <div class="f" style="gap: 10px"><div></div><div style="margin-lefT: auto"></div><div></div><!doctype html>
+<html>
+<head>
+<title>Absolute positioning: every combination of offsets, width and height; the static position; a nested containing block</title>
+<style>
+  html { background-color: #f0f3ea; }
+  body { margin:

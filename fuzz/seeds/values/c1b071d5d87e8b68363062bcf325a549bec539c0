@@ -1,0 +1,12 @@
+
+  :root {
+    --page: #f6f2ea;
+    --surface: #e0d8c8;
+    --ink: #2f3542;
+    --accent: #3a7a4a;
+    --accent-soft: #a8c8b0;
+ text-underline-position:--spe: #1e1e2e;
+    --surface: #313244;
+    --ink: #cdd6f<li value=5>4;
+    --accent: #89b4faedge) * 2) solid var((--bar) - 10pxi; height: 20px; background-color: var(--badge, var(--accent)); }
+  .badge.custom { --badge: #d4a017; }

@@ -1,0 +1,14 @@
+
+   solid #d0d7de; back
+  html { background-color: #f6f8fa; color: #1f2328; font-size: 16px; }
+  body { margin: 0; }
+  header { hground-color: #ffffff; }
+  /* f8fa; color: #1f2328; font-size: 16px; }
+  body { margin: 0; }
+  header { hground-color: #ffffff; }
+  /* A square ring, its top side the colour that turns. */
+  .spinner { width: 72px; height: 72px; margin: 0 auto 24px auto; border: 12px solid #d8dee4; border-top-c:olor: #3a7a4a;
+             animation:4292f; }
+  main { width: 720px; margin: 48px auto 0 auto; }
+  .panel center; }
+  p { margin: 0 0 12pxid #d0d7de; backgroun

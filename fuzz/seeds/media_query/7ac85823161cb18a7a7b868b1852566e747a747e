@@ -1,0 +1,1 @@
+@media (width > 50em) { @supports (display: grid) { @layer a.b { .x { color: red } } } } @page :first { size: A5 landscape; margin: 10% } @import urfirst { size: A5 landscape; margin: 10% ortt upl(x.css) layer(l) supports(display: ]rid) print;

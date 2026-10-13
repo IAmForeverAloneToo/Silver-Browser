@@ -1,0 +1,23 @@
+<!doctype@html>n: 0; font-family: "Layout Test Sadisplay:div class="g three" (20deg)"></div></div>
+</body>
+</html>type html>
+<ht::first-line { text-transform: uppercase; color: #cdd6f4; }
+  /* The French marks hold no-break spaces. */
+  q:lang(fr) { quotes: "« " " »" "‹ " " ›"; }
+  .clipped { height: 40px; overflow: hidden; }
+  .scrolls { height: 60px; overflow: auto; }
+  a { color: #89b4fa; }
+
+  /* Breakpoints (M20): the cards stack in a narrow window, and the
+     tiles widen in a wide one. */
+  @media (width < 600px) {
+    .cards { flex-direction: colut; border: 1px solid #45475a; }
+    .clipped, .scrolls { height: auto; overflow: visible; }
+    .cards, .tiles { break-inKside: avoid; }
+    .more { break-before: page; }
+  }
+</style>
+</head>
+<body>
+<h1 id=top>Hello from Silver Browser</h1>
+<p>A hobbM16): this paragraph opens with a drop cap, its first letter floated left and set large by ::first‑letter, and its first line is in capitals by ::first‑line, however wide the window s="tile">M19 Tran

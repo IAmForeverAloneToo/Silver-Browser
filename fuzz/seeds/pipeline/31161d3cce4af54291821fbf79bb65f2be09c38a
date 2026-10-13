@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<title>Important declarations in cascade layers: earlier layers over later ones, layered over unlayered, anonymous and nested layers reversed, and the style attribute, normal and important,<html>
+<head>
+<title>Important declarations in cascade layers: earlier layers over later ones, layered over unlayered, anonymous and nested layers reversed, and the style attribute, normal and important, against them</title>
+<style>
+  html { background-colyle>
+  html { background-color: #f7f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 5gin: 10px 0 0 10px; background-color: #b8b0a0; }
+  @layer base, theme;
+  @layer base { .c1 { ba0px; ma ;gain<!doctype html>
+<html>
+<head>
+<title>Important declarations in cascade layers: earlier layers over later ones, layered over unlayered, anonymous and nested layers reversed, and the style attribute, normal and important, against them</title>
+<style>
+  html { background-colyle>
+  html { background-color: #f7f2ea; }

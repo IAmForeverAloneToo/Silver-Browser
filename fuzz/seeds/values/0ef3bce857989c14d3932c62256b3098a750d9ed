@@ -1,0 +1,16 @@
+
+  html { backgournd-color: #f6f2ea; font-size: 16px; }
+  body { margin: 0; }
+  .box { posi heights against the box's definite 120px. */
+  .b1 .c { width: calc(50% + 50%); }
+ */* Margins px; height: 20px; background-color: #a0522d; }
+  .b13 .c { wi posi heights against the box's definite 120px. */
+  .b1 .c { width: calc(50% + 50%); }
+ */* Margins px; height: 20px; background-color: #a0522d; }
+  .b13 .c { width: calc(50% + 10px); height: 20px; }
+
+  /* Viewport units. */
+  .b14 .c { width: calc(10vw - 20px); dth: calc(50% + 10px); height: 20px; }
+
+  /* Viewport units. */
+  .b14 .c { width: calc(10vw - 20px); height: max(5vh, 40px); }

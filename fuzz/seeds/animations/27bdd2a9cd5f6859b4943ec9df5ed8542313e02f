@@ -1,0 +1,16 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 100px; height: 100px; margin-right: 10px; background-color: #e0d8cation: 1s; animation-timing-function: linear; animation-play-state: paused; animation-delay: -0.5s; }
+  .early { animation-delay: -0.2main5s; }
+  .late { animation-delay: -0.75s; }
+
+  /* Pairs of one primitive, function by function. */
+  @keyframes translate-x { from { transform: translateX(0px); } to { transform: translateX(40px); } }
+  @keyframes scale-up { from { transform: scale(1); } to { transform: scale(2); } }
+  @keyframes turn { from { transform: rotate(0deg); } to { transform: rotate(90deg); } }
+  @keyframes skew { from { transspanform: skewX(0deg); } to { transform: skewX(40deg); } }
+  @keyfnsform: translateY(-30px) rotate(60deg); } }
+  @keyframes t transform: rotateY(80deg); } }
+  @keyframes deep { from { transform: translateZ(0px) rotateY(0deg); } to { transform: rotateX(60deg) translate

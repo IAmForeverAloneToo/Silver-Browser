@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+<meta charsdcc4; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { border-top-color: #604a20; }
+.col { float: left; width: 400px; }
+.g { width: 340px; grid-template-columns: repeat(3 ,1p0x0); gri }
+.columns { display: flex; flex: 1; }
+.columns > nav></div></div>
+<div class="g k"><div class="h"><i style="width: 200px; height: 60px"></i></div><div><i stlumns: 120px 120px 120px; grid-auto-rows: 40px; gap: 6px; just></i></div></div>
+<div class="g c"><div><i style="width: 150px; height: 20px"></i></div><div><i style="width: 20px; height: 20px"></i></div></div>
+<div class="g d"><di<div></div><div class="w"></div></div>
+<div class="g dense"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+.g { width: 360px; grid-auto-flow:v><i style="width: 150px; height: 20px"></i>px; padding: 8p

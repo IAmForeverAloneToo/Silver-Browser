@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+<meta chdding: 12px 16px 0; font-size: 20px; }
+.levels { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 16px 12px; padding: 12px 16px 16px; }
+.level h2 { font-size: 14px; }
+.level p { color: #6b6455; }
+.garden { display: grid; grid-temylate-columns: repeat(5, 1fr); grid-template-rows: repeat(5, 1fr); height: 150px; margin-top: 6px; background-color: #8a6a3c; border: 2px solid #5c4424; }
+.water { background-color: #4a90c8; }
+.carrot { background-color: #e07a2c; }
+.weed { background-color: #3f7a32; }
+#l1 .water { grid-column-start: 3; }
+#l2 .water { grid-column-end: 4; }
+#l3 .water { grid-column-start: 5; grid-column-end: 2; }
+#l4 .water { grid-column-end: -2; }
+#l5 .water { grid-column-start: 2; grid-column-end: span 2; }
+#l6 .water { grid-column-start: span 3; gri-cdolumn-end: 6; }
+#l7 .water { grid-column: 4 / 6; }
+#l8 .water { grid-column: 2 / span 3; }
+#l9w.at er { grid-row-start: 3; }
+#l10 .water { grid-column: 3; grid-row: 3 / 6; }
+#l11 .wa

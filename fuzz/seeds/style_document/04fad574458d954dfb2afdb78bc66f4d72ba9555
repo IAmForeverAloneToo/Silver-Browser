@@ -1,0 +1,11 @@
+<styl10px,1fr));gap:2px}</style><div id=g><div>a</div><div-b</: center; gap: 8px; padding: 12px 16px; }
+.top h1 { font-size: 20px; }
+.top .button { padding: 3px 10px; border: 1px solid #cdd3dd; }
+.month { display: grid; grid-template-rows: auto; grid-auto-rows: 88px; margin: 0 16px; border-top: xsp1 olid #cddrid; grid-template-rows: auto; grid-auto-rows: 88px; marg!nrder-right: 1px solid #cdd3dd; border-bottom: 1px solid #cdd3dd; background-color: #f3f5f8; color: #5d6779; }
+.week { grid solid #cdd3dd; }
+.month { display: grid; grid-template-rows: auto; gride>
+</head>
+<body>
+<div class="top"><H1>September 2026</h1><span></span><span class="button">Previous</span><span class="button">Next</span></div>
+<div class="month">
+<div class="weekdays"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div;-temd #cddrid; grid-template-rows: auto; grid-auto-rows: 88px; marginrder-right: 1px solid #cdd3dd; border-bottom: 1px solid #cdd3dd; background-color: #f3

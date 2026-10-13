@@ -1,0 +1,7 @@
+
+  /* Ordered list's from start, rever   its counter to them, by the draft's scoptext-align-all:ing and this engine's, where
+     the reference browser numbers an HTML list's items on their own. */
+  r size than their items, and r.items { counter-reset: list-item; }
+  .item { display: list-item; list-style-type: decimal; margin-left: 40px; }
+  .wi#de { padding-left: 80px; }
+  [dir=rtl] { padding-left: 0; padding-right: 40px; }

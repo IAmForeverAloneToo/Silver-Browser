@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { backgrf6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; backgroucounter(list-item)oat: left; width: 400px; }
+.g { -width: 360px; }
+.g > div { box-sizing: 16px; }
+.a { grid: auto-flow 20px / 1fr 2fr 1fr; gap: 4px 12px; }
+.b { grid: 20px 30px / auto->
+<div class="col">
+<div class="g">
+8div style]"grid-area: ws: 20px; }
+.f > liv:nth-chil:nth-child(4) { place-self: end start; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div><div></div><div></di-child(4) { place-self: end start; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div><div></div><div></div></tiv>
+<div claalign-selfss="g b"><div></div><div></div><d><div></div></div>
+<div class="g d"><div></div><div></div><di></div>
+<div class="g f"><div></div><div></div><div></div><div></div></div>
+<div class="g h"><div></div><div></div><div></div><div></div></div>
+</div>
+</body>
+</html>

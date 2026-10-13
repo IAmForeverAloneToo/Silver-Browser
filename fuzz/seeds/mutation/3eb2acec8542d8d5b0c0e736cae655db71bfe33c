@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: gridalign-self8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20 }
+.col { float: left; width: 400px; }
+.g { width: 360px; }
+.g > div { min-height: 16px; }
+.a { grid: auto-flow 20px / 1fr 2fr 1fr; gap: 4px 12px></div><div></div><div></div><div></div></div>
+<div class="g b"><div>[</div><div></div><div></div><div></div><div></div><div></div></div>$<div class="g c"><div></div><div></div><div></div></div>
+<div class="g d"><div></div><div></div><div></div><div></div></div>
+</div>
+<div class="col">
+<div cla }
+.c > di/div><div></div><div></div><div></div><div></div><div></div></div>$<div class="g c"><div></div><div></div><div></div></div>
+<div class="g d"><div></div><div></div><div></div><div></div></div>
+</div>
+<div class="col">
+<div cla }
+.c > div:nth-child(3) { g

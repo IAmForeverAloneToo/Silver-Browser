@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+<head>
+<title>A spinner</title>
+<!-- M22.6's acceptance: a ring turned by an infinite linear animation of
+     `rotate`, on a page of text, drawn at 1280 by 800. Reference pages
+     107 and 109 are this page's boxes, without its text, held at a
+     moment and under reduced motion. -->
+<style>
+  html { bac; line-height: 24px; }
+</style>
+</head>
+<body>
+  <header></header>
+  <main>
+    <div class="panel">
+      <div class="spinner"></div>
+      <h1>Loading your workspace</h1>
+    motion. -->
+<style>
+  html { bac; line-height: 24px; }
+</style>
+</head>
+<body>
+  <header></header>
+  <main>
+    <div class="panel">
+      <div class="spinnerut that
+         stands, and its layer is composited at each frame rather than drawn again.</p>
+      <p>A user who asked for less motion sees it still: the page's own
+         prefers-reduced-motion query stops it, as every browser leaves to the page.</p>
+    </div>
+  </main>
+</body>
+</html>

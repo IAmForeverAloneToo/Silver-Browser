@@ -1,0 +1,10 @@
+<!d }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(-beige2n) { background-color: #c8a46a; }
+.g > div:nth-child(right3n}
+.st { justify-self:ustify-selfst:a rt"></div><div style="align-self: sjart"></div><div class="st"></div>
+</div>
+</div>
+</body>
+</html>

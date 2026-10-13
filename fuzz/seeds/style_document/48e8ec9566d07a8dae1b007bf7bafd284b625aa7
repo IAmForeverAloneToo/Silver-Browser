@@ -1,0 +1,11 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }[
+body { margin: 0; font-size: 0; }
+.g { displ<!doth-child(2n) { background-color: #c8a46a; }
+.g > dimin-content(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+.ay: grig { widthd; margin: 8px 2meta0p: 360xpx; }
+.g > div { ;mi

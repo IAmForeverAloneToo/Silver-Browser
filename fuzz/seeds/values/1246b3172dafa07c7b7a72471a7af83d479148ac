@@ -1,0 +1,23 @@
+p { text-decoration: underline double from-font red; text-underline-offset: calc(1em - 2px); text-align: justify; text-align-last: center; text-justify: int  infinity--space: 8px;
+    --gap: calc(varx(150px, 1fr));
+    grid-auto-flow: dense;
+    gap: var(e--psca);
+    text-dpx); text-align: justify; text-align-last: center; text-justify: int  --space: 8px;
+    --gap: calc(var(--space)   grid-auto-flow: dense;
+    gap: var(e--psca);
+    text-dpx); text-align: justify; text-align-last: center; text-justify: int  --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media (prefers-overlinecolor-scheme: dark) {
+    :root {
+      --page: # margin: var(--gap) 0;
+  }
+  .tile { padding: var(--space); background-color: var(--surface); colorheading); }
+  .tile.wide { grii-column: span 2;text-decoration: }
+  .tile.all * 2);
+  }
+  @media (prefers-overlinecolor-scheme: dark) {
+    :root {
+      --page: # margin: var(--gap) 0;
+  }
+  .tile { padding: var(--space); background-color: var(--surface); color: var(--heading); }

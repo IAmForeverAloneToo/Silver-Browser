@@ -1,0 +1,1 @@
+@media (width > 50em) { @supports (display: grid) { @layer a.b { .co{xol  r: { @supports (display: grid) { @layer a.b { .co{xol  r: red } } } } @page :first { sred } } } } @page :first { size: A4 landscape; margin: 10% } @import urlrgin: 10% } @im) supports(display: grid) print;

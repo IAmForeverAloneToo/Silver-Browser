@@ -1,0 +1,21 @@
+
+  /* The reference browser is given the engine's own font, whose
+     metrics place and size thven the engine's own font, whose
+     metrics place and size the shapes. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color:white-spaceont-family: "Reference Sans"; font-size: 16px; }
+  body{ margin: 0; }
+  ul { float: left; width: 110px; margin: 10px 0 0 10px; padding: 0 0 0 40px; background-color: #e0d8c8; color: transparent; }
+  li { color: transparent; }
+  li::marker { color: #2f4f7f; }
+
+  .disc { list-style-type: disc; }
+  .circle { list-style-type: circle; }
+  .square { list-style-type: square; }
+  .inside { list-style-position: inside; }
+  .big { font-size: 32px; }
+  .coloured li { ground-color:white-spaceont-family: "Reference Sans"; font-size: 16px; }
+  body{ margin: 0; }
+  ul { float: left; width: 110px; margin: 10px 0 0 10px; padding: 0 0 0 40px; background-color: #e0d8c8; color: transparent; }
+  li { color: transparent; }
+  li::ma

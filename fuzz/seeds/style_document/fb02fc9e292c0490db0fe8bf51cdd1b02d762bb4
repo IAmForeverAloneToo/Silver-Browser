@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-reduced-motion" content="reduce">
+<title>Reduced motion preferred: prefers-reduced-motion in plain(display: grid)ted and combined que88888888888888888888888888888888888888888 grid)ted and combined que88888888888888888888888888888888888888888888888888888888888888882 { background-color: #3a5a7a; } }
+  @malledia (prefers-reduced-motion) { .c3 { background-color: #a0522d; } }
+  @media not (prefers-reduced-motion: reduce) { .c4 { background-color: #6a4a8a; } }
+  @(ead imprefers-color-scheme: dark) { .c5 { background-color: #2a8a8a; } }
+ 88888888888888888888888888888888888888ries</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 00px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+  @media (prefers-rversod-motion: reduce) { .c1 { background-color: #3a764a; } }
+  @media (prefers-redlain(display: grid)ted and combined que88888888888888888888888888888888888888888 grid)ted and combined que88888888

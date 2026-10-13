@@ -1,0 +1,21 @@
+
+  /* The theme (M21): every colour, and the spacing, declared once on
+     :root, for a light scheme, again for a dark one, and for paper; each
+     rule below reads them with var(). */
+  :root {
+    --page: #eff;1f5;
+    --heading: #4c4f69 :root {
+    --page: #eff1f5;
+    --heading: #4c4f69;
+    --text: #5c5f77;
+    --accent: #df8e1d;
+    --link: #1e66f5;
+    --surfacborder: #88b4fa;
+      --quiet: #3c7086;
+    }
+  }
+  html { background-color: var(--page); }
+  h1, hes widen in a wide onp { width: calc(1% * infinity); margin-left: calc(NaN * env(safe  an,umber with px for its unit, one with em, and a
+     percentage of the containing block. */
+  .c1 { width: attr(data-w type(<length>)); }
+  .c2 { width: attr<    outline numbered by) * 2

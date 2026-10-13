@@ -1,0 +1,21 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }e-area-inset-right, 30px)); }
+  .c3 { margin-top: env(safe-area-max-inset-top, 40px); }
+
+  /* Not defined: the fallback, or the property unset without one. */
+  .c4 { background-color: env(no-such-variable, #3a7a4a); }
+  .c5 { background-color: #a0522d; background-color: env(no-such-variable); }
+  .c6 { width: env(viewport-segment-width 0 0, 20px); }
+  .c7 { width: env(safe-area-inset-top 0, 30px); }
+
+  /* In a custom property, substituted where it is used. */
+  .c6 { --inset: env(safe-area-inset-bottom); padding-left: calc(var(--inset) + 20px); width: 30px; background-color: #3a7a4a; }
+  .c9 { --fallback: env(nothing, #2f4f7f); background-color: var(--fallback); }
+
+  /* In a shorthand. */
+  .c10 { margin: env(safe-area-inset-top) 0 0 env(nothing, 30px); }
+
+  /* The text scale is 1. */
+  .c11 { width: calc(env(preferred-text-scale, 2) * 25px); }

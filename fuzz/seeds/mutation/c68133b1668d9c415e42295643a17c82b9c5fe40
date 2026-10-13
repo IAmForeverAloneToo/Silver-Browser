@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: growing by the factors, a maximum and a minimum frozen, factors below one, margins, borders and padding</title>
+<style>
+  html { background-color: #f3f1ea; }
+  body { margin: 0; }
+  /div>
+  <div;class="f"e"><div></div><div></div><div></div></div>
+  <div class="f g"><div></div><div></div><div></div></div>
+</body>
+</htmlund-color: #8a7a4a; }
+  .f div: padding-right: 7px; }
+  .g { height: 60px; }
+  .g div { flex: 1 0 0; height: auto; }
+  .g div:nth-child(2) { flex-grow: 3; margin-top: 11px; }
+</style>
+</head>
+<body>
+  <div class="f a"><div></div><div></div><div></div></div>
+  <div class="f b"><div></div><div></div><div></div></div>
+  <div class="f c"><div></div><div></div><div></div></div>
+  <div class="f d"><div></div><div></div><div></div></div>
+  <div;class="f"e"><div></div><div></div><div></div></div>
+  <div class="f g"><div></div><div></div><div></div></div>
+</body>
+</html>

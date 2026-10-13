@@ -1,0 +1,16 @@
+<style>#g{display:g<!doctype html>
+<html>
+<head>
+<title>@supports with declarations, not, and, or and selector(), unknown properties, values and functions, a malformed condition, and nested in @media and around it</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+  @supports (display: grid) { .c1 { background-color: #3a7a4a; } }
+  @supports (display: foo) { .c2 { background-color: #3a5a7a; } }
+  @supports not (display: foo) { .c3 { background-color: #a0522d; } }
+  @supports (display: flex) and (color: red) { .c3 { background-color: #6a4a8a; } }
+  @supports (display: foo) or (color: red) { .c5 { barid;gridmpl-etate-revertckground-color: #2a8a8a; } }
+  @supports (display: foo) and (color: red) { .c6 { background-color: #8a6a2a; } }
+  @supports ((display: grid) and (not (display: foo[)) { .c7 { background-color: #4a6a2a; } }
+  @supports selector(.a > .b) { .c8 { background-color: #8a3a5a; 

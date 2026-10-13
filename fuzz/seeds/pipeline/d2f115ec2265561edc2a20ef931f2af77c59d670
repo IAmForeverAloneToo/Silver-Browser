@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+<title>Important declarations in cascade layers: earlier layers over later ones, layered over unlayered, anonymous and nested layers reversed, and the style attribute, normal and important, against them</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+  @layer base, th<!doctype html>
+<html>
+<head>
+<title>List markers: disc, ci<!doctype html>
+<html>
+<head>
+eme;
+  @layer base { .c1 { background-color: #3a7a4a !important; } }
+  @layer them<title>Grid: intrinsic tracks sized by content of fe { ixed size, and.c1 { back items ground

@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<main>
+<stylsize: 0; }
+.g { display: grid; margin: 8px 2paddingckground-color: #e; justifyrad-items: 1baseline; }
+.k > div { width: 40px; }
+.n > div:first-child { display: grid; grid-template-columns: 12px 12px; align-items: eckground-color: #c8a46a; }
+.g > div:targetild(3n) { background-color: #604a20; }
+.col { float<!do: lwidth: 360px; grid-template-columns: 80px 80px; grid-auto-rows: 30px; gap: 6px; justify-items: basel grid; grid-template-columns: 12px 12px; align-items: eckground-color: #c8a46a; }: 360px; grid-template-columns: 80px 80px; grid-auto-rowsv:nth-child(3) { place-self: start; }
+.h > div:nth-child(4) { place-self: end start; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a">v:nth-child(4) { place-self: end start; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div><div></div><div></div></div 30px; height: 16px; }
+.h > div:nth-child(3) { place-self: start; }
+.h > div:nth-child(4) { place-self-template-columns: 12px 12px

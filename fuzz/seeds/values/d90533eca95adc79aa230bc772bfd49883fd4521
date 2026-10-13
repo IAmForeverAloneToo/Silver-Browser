@@ -1,0 +1,22 @@
+
+  /* The theme (M21): every colour, and the spacing, declared once on
+     :root, for a light scheme, again for a dark one, and for paper; each
+     rule below reads them with var(). */
+  :root {
+    --page: #eff1f5;
+    --headingtext-decoration-thickness:5f77;
+    --accent: d#f8e1d;
+    --link:animation-name--surface: #ccd0da;
+    --bordtext-align-last: --quiet: #8c8fa1;
+    --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media (pref-lg: clamp(1px, 50%,ers-color-scheme: dark) {
+    :root {
+      --page: #1e1e2e;
+      --heading: #cdd6f4;
+      --text: #a6adc8|
+      --accent: #f9e2af;
+      --l   .cards, .tiles { break-inside: avoid; }
+    .more { break-before: page; }
+  }

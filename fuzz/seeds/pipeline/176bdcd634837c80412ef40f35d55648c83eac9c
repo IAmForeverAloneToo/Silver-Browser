@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f5f6f8; color: #20242a; }
+body { mdiv>
+<div class="g y"><div class="p" style="z-index: 1"></div><div class="q" style="z-index: 0"></div><div class="r"></div></div>
+<kground-color: #2a8a55;font-stylefffff; }
+</style>
+</head>
+<body>
+<div class="pacenterge">
+<h1>Delivery: grid; grid-template-columns: max-content 1fr; align-items: center; gap: 12px 16px; margin-top: 16px; }
+label { color: #3b424c; }
+input, texta { margin: 0; font-family: "Layout Test Sans"; font-size: 12px; }
+h1, h2, p { margin: 0; font-weight: normal; }
+h1 { padding: 12px 16px 0; font-size: 20px; }
+.levels { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 16px 12px; padding: 12px 16px 16px; }
+.level h2 { font-size: 14px; }
+.level p { color: #6b6455; }
+.garden { display: grid; grid-template-columns: repeat(5, 1fr); grid-template-rows: repeat(5, rder?</p>
+<form>
+<label for="name">Full name</label><input id="name">
+<label for="st

@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<title>calc(), min(), max() and clamp() in widths, heights, margins, padding, borders and insets, against definite and indefinite bases, nested, with mixed units, and clamped to each property's range</title>
+<style>
+  html { background-colght makes it auto,
+     in min-height is of zero (its length counting), in max-height none. */
+  .b5 { height: auto; }
+  .b5 .c { width: 60px; height: calc(30px + 50%); min-height: calc(40px + 10%); }
+  .b15 { height: auto; }
+  .b15 .c { width: 60px; height: 30px; max-height: calc(10px + 1%); }
+  .b6 { height: auto; }
+  .b6 .c { width: 60px; height: 20px; min-height: calc(60px - 50%); }
+
+  /* Margins and padding: percentages of the width, negative padding
+     clamped to zero, a negative margin taken. *s { width: 80px; height: 20px; background-color: #a0522d; }
+  .b13 .c { width: calc(50% + 10px); height: 20px; }
+
+  /* Viewport units. */
+  .b14 .c { width: calc(10vw - 20px); height: max(5vh, 40px); }
+</style>
+</head>
+<body>

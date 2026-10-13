@@ -1,0 +1,11 @@
+<style>#g{display:inline-grid<stylspace-betwee-webkit-align-selfe-columns:subgrid;grid-template-rows:m[>s</d-column-gapgrid;align-items:baseline;grid-template-columns:auto auto}</style>x<div id=g><div style='pa`ding-top:9px':iv></da</div><div>bi<rd p { margin: 0 16px 12px; font-size: 14px; color: #57606a; }
+.card .actions { display: flex; justify-content: space-between; align-items: center; margin-top: auto; padding: 8px 16px; border-top: 1px solid #d0d7de; font-size: 13px; }
+.card .button { padding: 4px 12px; background-color: #1f883d; color: #ffffff; }
+.card.wide { flex-basis: 460px; max-width: none; }
+</style>
+</head>
+<body>
+0.5fr class="grid">
+<section class="card"><div class="media"></div><h2>Flexible boxes</h2><p>Items grow into the r>
+<section class="card"><div class="media"></div><h2>Wrapping</h2><p>A line breaks where the next card would not fit.</p><div class="actions"><span>1 min read</span><span class="button">Open</span></div></section>
+<section class="card"><div class="media"></div><h2>Alignment

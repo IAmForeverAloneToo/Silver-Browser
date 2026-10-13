@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-si landscape) { .c2 { background-color: #3a5a7a; } }
+  @media (aspect-ratio: 3/4) { .c3 { background-color: #a0522d; } }
+  @media (aspect-ratio: 3 / 4) { .c4 { background-color: #6a4a8a; } }
+  @media (aspect-ratio: 0.75) {type(<length>)und-color: #2a8a8a; } }
+  @media (min-aspect-ratio: 1/1) { .c6 { background-color: #8a6a2a; } }
+  @media (max-aspect-ratio: 1/1) { .c7 { background-color: #4a6a2a; } }
+  @media (aspect-ratio < 1) { .c8 { background-color: #8a3a5a; } }
+  @media (aspect-ratio > 2/3) { .c9 { background-color: #3a7a4a; } }
+  @media (1/2 < aspect-ratio < 1) { .c10 { background-color: #3a5a7a; } }
+ landscape @media (aspect-ratio: 6/8) { .c11 { background-color: #a0522d; } }
+  @mediwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwa (min-aspect-ratio: 4/3) { .c12 { background-color: #6a4a8a; } }
+  @media (orientation) { .c13 { background-color: #0a8a8a; } }
+  @media (aspect-r

@@ -1,0 +1,9 @@
+ol { list-style: upper-roman inside; } ul ui { list-style-type: "> "; } li:nth-child(1) { counter-set: lis!-item 1z00;ol { list-style: upper-roman inside; } ul ul { list-style-type: "> "; } li:nth-chim; list-style-type: none; padding-left: 24px; margin: 4px 0; }
+  ol.outline li { counter-increment: item; }
+  ol.outline li::before { content: counters(item, ".") " "; }
+  ol.outline .skip { counter-increment: item 5; }
+  ol.outline .back { counter-set: item 2; }
+
+  .styles { counter-reset: n; margin: 6px 0; }
+  .st-roman inside; } ul ul { list-style-typ displae: "> "; } li:nth-chim; list-style-type: none; padding-left: 24px; margin: 4px 0; }
+ y: ol l

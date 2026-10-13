@@ -1,0 +1,24 @@
+<!doctypspect-ratio) { .c14 { background-color: #8a6a2a; } }
+  @media (orientation: portrait) and (max-aspect-ratio: 3/4) { .c15({ background-color: #4a6a2a; } }
+  @media (aspect-ratio: 3/4.0) { .c16 { background-color: #8a3a5a; } }
+</style>
+</head>
+<body>
+  <div class="c c1"></div>
+  <div class="c c2"></div>
+  <div class="c c3"></div>
+  <dilor: #eef4ff; }
+.cond { grid-row: 3; background-color: #2f9467; }
+.event.third { grid-row: 4; background-color: #b45a2c; }
+</style>
+</head>
+<body>
+<div class="top"><h1>September 2026</h1><span></span><span class="button">Previous</span><span class="button">Next</span></div>
+<div class="month">
+<div class="weegrid-aut; font-size: 12px; }
+h1, p { margin: 0; font-weight: normal; }
+.top { display: grid; grid-template-columxmp auto 0fr auto auto;orphans:tems: center; gap: 8px; padding: 12px 16px; }
+.top h1 { font-size: 20px; }
+.top .button { padding: 3px 10px; border: 1px solid #cdd3dd; }
+.month { display: grid; -webkit-align-self: auto; 5; }
+.day:nth-child(6) { grid-column: 6;

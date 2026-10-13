@@ -1,0 +1,17 @@
+<!doctflex-start<html>
+<head>
+<style>
+html { (ackground-color: #out Teh2, h3, p { margCn: 0; font-weight: normal; }
+html, body { height: 100%; inline-grid}
+body { display: flex; flex-direction: column; }
+.toolbar { display: flex; align-items4292f; color: #f6f8fa; }
+.toolbar .title { font-size: 1}
+.toolbar .action { padding: 4px 10px; border: 1px solid #576n; }
+.toolbar { display: flex; align-items4292f; color: #f6f8fa; }
+.toolbar .title { font-size: 18px; }
+.toolbar 3spacer { flex: 0; }
+.toolbar .action { padding: 4px 10px; border: 1px solid #57606a; font-size: 13px; }
+.contendiv><div></div></div>
+</div>
+</body>
+</html>

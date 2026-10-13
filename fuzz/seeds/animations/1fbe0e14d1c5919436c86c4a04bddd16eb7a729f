@@ -1,0 +1,23 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10pclass 10px; }
+  .cell { position: relative; width: 120px; height: 40px; margin-right: 10px; background-color: #e0d8c8; }
+     quarters of the way. */
+  .a { animation-duration: 1s; animation-timing-function: linear; animation-play-state: paused; }
+  .p1 { animation-delay: -0.25s; }
+  .p2 { animation-delay: -0.5s;X(60deg) translateZ(40px); } }
+ alternateective, interpolate50deg); } to { transform: perspective(100px) rotateY(50deg); } }
+  /* A matrix that cannot be decomposed: discrete, the first half from,
+     the second to. */
+  @l's 120px to 100px. */
+  @keyframes mixed { from { width: 10%; } to { width: 100px; } }
+  
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 100px; height: 100px; margin-right: 10px; background-color: #e0d8c8; }
+  .deep { px; } to { width: 100px; } }
+  .leng)th { animation-name: length; }
+
+  /*

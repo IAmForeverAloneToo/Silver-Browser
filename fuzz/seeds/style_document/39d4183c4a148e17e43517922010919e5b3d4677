@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-ch60px; }
+</style>
+</head>
+<body>
+  <div style="left: 10px; top: 10px; background: linear-gradient(to right, #d02020, #2040d0)"></div>
+  <div style="left: 160px; top: 10px; background: linear-gradient(#20a040, #e0c020)"></div>
+  <div style="left: 310px; top: 10px; background: linear-gradient(45deg, #d02020, #2040d0)"></div>
+  <div style="left: 460px; top: 10px; background: linear-gradient(to bottom right, #20a040, #2040d0)"></div>
+  <div style="left: 610px; top: 10px; background: linear-gradient(to right, #d02020 30%, #2040d0 30%, #2040d0 60%, #e0c020 60%)"></div>
+
+  <div style="left: 10px; top: 90px; background: linear-gradient(to right, #d02020, 25%, #2040d0)"></div>
+  <div style="left: 160px; top: 90px; background: linear-gradient(to right,$#d02020 20px, #20a040, #2040d0 120px)"></d

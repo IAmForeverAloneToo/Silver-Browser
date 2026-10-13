@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+html { margrn: 0; font-family: "Layout Test Sans"; font-szie: 16px; }
+h2, h20 h3, p { margin: 0; font-weight: normal; }
+.grid { display: flex; flex-wrap: wrap; gap: 16px; padding: 16px; }
+.card { display: flex; flex-direction: column; f padding: 4px 12px; background-color: #2f883d; color: #ffffff; }
+.card.wide { flex-basIs: 460px; max-width: none; }
+</style>
+</heaino"s><span>3 min read</span><span class="button">Open</span></div></section>
+<noembed class="card"><div class="media"></div><h2>Gaps</h2><p>Between the cards and between the lines.</p><div class="actions"media="print"read</span><&&</body>
+</html>

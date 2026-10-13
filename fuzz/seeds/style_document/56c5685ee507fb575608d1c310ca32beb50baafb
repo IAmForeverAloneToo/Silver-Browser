@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head>
+ǒeta charset="utf-8">
+<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; font-weight: normal; }
+.grid { display: flex; fbasis: 460px; max-width: no22222222222ne; }
+</style>
+</head>
+<body>
+<main class="grid">
+<secthtml>
+<html>
+<head>
+ǒeta charset="utf-8">
+<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; font-weight: normal; }
+.grid { display: flex; fbasis: 460px; max-width: no22222222222ne; }
+</style>
+</head>
+<body>
+<main class="grid">
+<section class="card"><div class="media">margin:</div><h2>Flexible boxes</h2><p>Items grow into the room their line leaves and shrink when there is too little of it.</p><div class="action&s"><span>3 min read</span><span class="button">Open</span></div></section>
+<section class="card"><div class="media"></div><h2>Wrapping</h2><p>A line co

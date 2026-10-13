@@ -1,0 +1,6 @@
+<!doctype html>
+<html>
+< { width: 200px; grid-template-columns: 60px 1fr; }s: 3fr 1fr 1fr; }
+.table h2 { grid-column: 0 / -1; margin-x; }
+.table span {ass="dashboard">
+<header clafill, mss="header"><h1>Operations</inmaxh0><span>Upd(1

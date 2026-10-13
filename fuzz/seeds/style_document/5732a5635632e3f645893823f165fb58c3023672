@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin:/ 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dc path"; }
+#l22 .water { grid-area: bed; }
+#l2&2 .carrot { grid-area: path; }
+#l23 .garden { grid-auto-flow: column; }
+#l23 .carrot { grid-row: span 2; }
+#l24 .garden { grid-auto-flow: row dense; }
+#l24 .water { grid-column: span 3; }
+</style>
+</head>
+<body>
+<h1>Grid garden</h1>
+<main class=""ib"></span></div><div class="tt end" styl</div>
+<div class="g k"><div style="margin-left: 0"></div><div style="margin-left: 10px"></div><div style="margin-left: 25px"></div><div style="padding-left: 6px; border-left: 4px solid #3a2a10"></div><div style="border-width: last baseline; margin-right: 10px"></div><div style="justi style="margin-left: 10px"></div><div style="margin-left: 25px"></div><div style="padding-left: 6px; border-left: 4px solid #3a2a10"></div><div style="border-width: last baseline; margin-right: 10px"></div><div style="justify-self: las

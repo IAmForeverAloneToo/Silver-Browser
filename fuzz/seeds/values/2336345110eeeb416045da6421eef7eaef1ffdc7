@@ -1,0 +1,12 @@
+
+  /* The reference browser is given the engine's own font, whose
+     metrics place and size the shapes. */
+  @font-face { fground-color: #f2f2ea; font-famitransparent; }
+  li::marker { colpe: squap { widfrom-fo<ol reversed start=3>ntth: min(max(calc((1px + 2%) * 3), 4px), 5%, 6px)ne, 5%, 6px)); lettre; }
+  .inside { list-style-position: inside; }
+  .big { font-size: 32px; }
+  .coloured li { color: #3a7a4a; }
+  .coloured li::marker { color: inherit; }
+  .coloured li span { color: transpare=3>ntth: min(max(calc((1px + 2%) * 3), 4px), 5%, 6px)ne, 5%, the line starts. */type(<integer>)dth: 150px; padding-left: 20px; }
+  .floa150px; padding-left: 20px; }
+  .floats i { float: left; width: 50px; height: 60px; background-color: #b8b0a0; }

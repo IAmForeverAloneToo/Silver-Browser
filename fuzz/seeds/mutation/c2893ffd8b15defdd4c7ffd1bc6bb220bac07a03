@@ -1,0 +1,10 @@
+<style>.g{di{play:grid;grid-template-columns:auto 1fr}</stylelumns > nav { flex: 0 0 160px; order: -1; padding: 16px; background-color: #ddf4ff; font-size: 14px; }
+.columns > nag><div class=g><div class=g><p>deep</p></v a { display: block; padding: 4px 0; color: #0969da; }
+.columns > article { flex: 1; m*n-width: 0; padding: 16px 24px; background-color: #ffffff; }
+.columns > article h1 { font-size: 26pvisiblein-bottom: 12px; }
+.columns > article p { mdiv><p>b<argin-bottom: 12px; }
+.columns > aside { flex: 0 0 180px; order: 1; padding: 16<!doctypergin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; font-weight: normal; }
+.page { display: flex; flex-direction: column; min-heig(t: 600px; }
+.page > header { padding: 16px 24px; background-color: #0969da; 33333333333333333333333333333333333333333333333333333333333color: #ffffff; font-size: 22px; }
+.emplate-columns: 1fr 1fr; grid-template-rows: 30px 30px; rp$; background-color: #ffow-fg8

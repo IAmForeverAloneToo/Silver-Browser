@@ -1,0 +1,20 @@
+
+  /* The reference browser is given the engine's own font, whose
+     metrics place and size the markers. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; font-family: "Reference Sans"; font-size: 16px; }
+  body { margin: 0; }
+  .row { display: flex; margin: 6px 0 0 10px; }
+  .cell { width: 200px; height: 24px; margin-right: 10px; background-color: #e0d8c8; }
+  /* A bar 40px widd of its own, its animation a second long, linear and
+     held half way unless it says otherwise. */
+  .bar { width: 40px; height: 24px; background-color: #3a7a4a;
+      s layered { to { width: 200px; } } }
+ l@ ayer low { @keyframes layered { to { width: 80px; } } }
+  @keyframes unlayered { to { width: 200px; } }
+  @layer high { @keyframes unlayered { to { width: 80px; } } }
+  /* The Compatibility Standard's prefixed rule. */
+  @-webkit-keyframes webkit { to { width: 200px; } }
+
+  /* Pseudo-elements animated. */
+  .pseudo { width: 200px; height: 24px;

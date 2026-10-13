@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > dir { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n); border: 4px solid #604a20; }
+  .g { background-color: #e6dcc8; border-color: #d4c4a4; }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div class="b" style="transform: translate(20px, 10px)"></div>
+    <div class="b" style="transform: translateX(-10px)"></div>
+    <div class="b" style="transform: translateY(15px)"></div>
+    <div class="b" style="transform: translate(25%,-area: 1 / 1; margin: 10px 20px; }
+.r { grid-area: 1 / 1; margin: 20px 0 0 40px; }
+.x .p, .x .q, .x .r { grid-column: 2; }
+.y .p, .y .q, .y .r { grid-column: 3; }
+.z .p, .z .q, .z .r { grid-row:te(20px, 10px)"></div>
+    <div class="b" style="transform: translateX(-10px)"></div>
+    <div class="b" style="transform: translateY(15px)"></div>
+    <div class="b" style="transfo

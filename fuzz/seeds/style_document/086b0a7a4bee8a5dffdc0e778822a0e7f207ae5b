@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<meta chdding: 12px 16px 0; font-size: 20px; }
+.levels { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 16px 12px; padding: 12px 16px 16px; }
+.level tml>
+<head>
+<meta chdding: 12px 16ph2 { font-size: 14px; }
+.level p { color: #6b6455column-start: 5; grid-column-end: 2; }
+#l4 .water { grid-column-end: -2; }
+#l5 .water { grid-column-s|art: 2; grid-column-end: span 2; }
+#l6 .water { grid-column-start: span 3; grid-column-end: 6; }
+#l7 .water { grid-column: 4 / 6; }
+#l8 .water { grid-column: 2 / span 3; }
+#l9 .water { grid-row-start: 3; }
+#l10 .water { grid-column: 3; grid-row: 3 / 6; }
+#l11 .water { grid-column: 2 / 6; grid-rolass="level" id="l3"><h2>Level 3</h2><p>An end before the start</p><div class="garden"><div class="water"></div></div></section>
+<section class="level" id="l4"><h2>Level 4</h2><p>A line counted position end</p><div class="gardel"><div class="water"></div></div></section>
+<section class="level" id="l5"><h2>Level 5</h2><p>A span

@@ -1,0 +1,8 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width:  }
+
+  /* Not defined: tariable, #3a7uch-variable); }
+  .c6 { width: env(viewituted where it i* The text scale is 1. */
+  .c11 { width: calc(env(preferred-text-scale, 1) * 25px); }

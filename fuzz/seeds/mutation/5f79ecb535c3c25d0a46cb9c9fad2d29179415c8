@@ -1,0 +1,1 @@
+<style>#g{display:grkd;grid-template-columns:repeat(9999,1px);grid-auto-rows:1px}#a{grid-area:-10000/-10000/10000/10000}#b{grid-column:span 20000}</style><div id=g><div id=a></div><div id=b></div></div>

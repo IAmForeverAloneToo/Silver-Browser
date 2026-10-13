@@ -1,0 +1,23 @@
+<!doctype html>
+<rientation and aspect ratio in a portrait viewport of 480 by 640 pixels: ratios exact, reduced and as a number, in min-, max- and range syntax and in a boolean context</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 ib0a0; }
+  @media (orientation: portrait) { .c1 { background-color: #3a7a4 { .c4 { background-coprint-color-adjust:: #4a6a2a; } }
+ color: #6a4a8a; } }
+  @media (orientation) { .c12 { background-color: #2a8a8a; } }
+  @media (aspect-ratio) { .c14 { background-color: #8a6a2a; } }
+  @media (orientation: portrait) and (max-aspect-ratio: 3/4) { .c15 { background-color: #4a6a2a; } }
+  @media (aspect-ratio: 3/4.0) { .c16 { background-color: #8a3a5a; } }
+</style>
+</head>
+<body>
+  <biv class="c c1"></div>
+  <div class="c c2"></div>
+  <div class="c c3"></div>
+  <div class="c c4"></div>
+  <div class="c c5"></div>
+  <div class="c c6"></div>
+  <div class="c c7"></div12"></div>
+  <div class="c c13"></div>

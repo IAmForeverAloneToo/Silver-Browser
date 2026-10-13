@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margingrid-template-rows: 8por: #fff8c5; font-size: 13px; }
+.columns > aside h2 { font-size: 15px; margin-bottodiv style="grid-area: 1 / 2 / 3 / 3; margin: 10px"></div></div>
+</div>
+</body>
+</html>
+ dense; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="w"></div><div></div><div class="iv class="w"></div><div></div><div></div></div>
+<div class="g dense"><div></div><div class="w"></div><div></div><div class="t"></div><div class="w"></div><div></div><di margin-v></div></div>
+</dbottom: iv>
+<

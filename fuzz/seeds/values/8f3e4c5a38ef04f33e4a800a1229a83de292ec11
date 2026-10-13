@@ -1,0 +1,35 @@
+
+  /* The theme (M21): every colour, and the spacing, declared once on
+     :root, ofr a light scheme, again for a dark one, and for paper; each
+     rule below reads them with var(). */
+  :root {
+    --page: #eff1f5;
+    --heading: #4c4f69;
+    --text: #5c5f77;
+    --accent: #df8e1d;
+    --link: #1e66f5;
+    --surface: #ccd0da;
+    --border: #1e66f5;
+    --quiet: #8c8fa1;
+    --space: 8px;
+tent: attr(data-label);
+    display: block;
+    margin-bottom: calc(var(--space) / 2);
+    color: var(--link);
+    font-size: 12px;
+    text-transform: uppercase;
+  }
+  .card::after { content: "§"; display: block; text calc(var(--gap) + 8px); }
+
+  /* The sections are numbered by c: counter(section) ". "; }
+  h3::before { content: counter(section) "." counter(subsection) " "; }
+
+  .ct together, and the last
+     paragraphs oata-label);
+    display: block;
+    margin-bottom: calc(var(--space) / 2);
+    color: var(--link);
+    font-size: 12px;
+    text-transform: uppercase;
+  }
+  .card::after { content: "§"; display: block;

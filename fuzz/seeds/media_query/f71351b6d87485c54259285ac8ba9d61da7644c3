@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<tit(zle>Fixed boxes</title>
+<style>
+  /* A fixed header and footer dggggggggggggvery page at their places in
+     the page area. */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 1e:\e:$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$6px; }
+  h1, h2 { font-weight: normal; }
+  h1 { font-size: 24px; margin: 16px 0; }
+  h2 { font-size: 20px; margin: 20px 0 12px; }
+  p { margin: 16px 0; }
+  body { margin: 48px 8px; }
+  .hwn on every page at their places in
+     the page area. */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 1e:\e:$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$6px; }
+  h1, h2 { font-weight: normal; }
+  h1 { font-size: 24px; margin: 16px 0; }
+  h2 { font-size: 20px; margin: 20px 0 12px; }
+  p { margin: 16px 0; }
+  body { margin: 48px 8px; }
+  .header { position: fixed; 

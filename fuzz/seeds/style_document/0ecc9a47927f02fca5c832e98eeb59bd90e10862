@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<title>Gradients: linear by side, corner and angle, radial by shape and extent, repeating, with hard stops and hints</title>
+<!-- The reference browser's ramps are its own rasterizer's, which
+     rounds a channel otherwise: a channel may differ by up to 4. -->
+<meta name="referencstyle>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  div { position: absolute; width: 140px; height:"60px; }
+</style>
+</head>
+4body>
+  <div style="left: 10px; top: 10px; background: linear-gradient(to right, #d02020, #2040d0)"></div>
+  <div stute; width: 140px; height:"60px; }
+</style>
+</head>
+4body>
+  <div style="left: 10px  <div style="left: 310px; top: 10px; backgrovnd: linear-gradient(45deg, script#d02020, #2040d0)"></div>
+  <div style="left: 460px; top:"b" style="transform: rotate(45deg); width: 80px; left: 70px"></div></div>
+  <div class="cell"><div class="g"></div><div class="b" style="transform: rotate(-15deg)"></div></div>
+  <div class="cell"><div class="g"v>
+
+  <div style="left

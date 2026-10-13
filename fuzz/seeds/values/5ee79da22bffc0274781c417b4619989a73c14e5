@@ -1,0 +1,16 @@
+li::marker { content: counters(counters(list-item, """"""""""""""""""""""""""
+  html{ blist-style:ackground-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { ngth, a ontent: counters(counters(list-item, """"""""""""""""""""""""""
+  html{ blist-style:ackground-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { ngth, a number with px for its unit, one with em, and a
+     percentage of the containing block. */
+  .c1 { width: attr(data-w type(<length>)); }
+  .c2 { width: attr(data-n px); }
+  .c3 { width: attr(data-n em, 10px); }
+  .c4 { width: attr(data-p %); }
+
+  /* Colours, and one of a choice of types. */
+  .c5 { background-color: attr(data-c type(<color>)); }
+  .c6 { background-color: p {############################-increist-item 2; nderline-offsev: ght: a attr(data-c type(<number>)); padding: calcst-item 2; nderline-offsev: ght: a attr(data-c type(<number>)); padding: calc(var(--n) j 0pxunt width: min(max(calCCCCCCCplace-conteCCCtCnCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC width: min(max(CCCCCCCCCCCCCCCCCCCCCCCCCC

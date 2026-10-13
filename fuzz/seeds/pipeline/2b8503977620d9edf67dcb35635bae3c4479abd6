@@ -1,0 +1,16 @@
+<!docdth: 30px; height: 20px"></i></div><div><i style="width: 50px; height: 20px"></i></div></div><div></div></div>
+<div class="g nest"><div class="g" style="grid-template-columns: 1fr 2fr"><div><i style="width: 30px; height: 20px"></i></div><{ grid-template-areas: ". . . . ." ". bed bed bed ." ". bed bed bed ." ". . . . ." "path path path path path"; }
+#l22 .water { grid-area: bed; }
+#l22 .carrot { grid-area: path; }
+#l23 .garden { grid-auto-flow: column; }
+#l23 .carrot { grid-row: span 2; }
+#l24 .garden { grid-auto-flow: row dense; }
+#l24 .water { grid-column: span 3; }
+</style>
+</head>
+<body>
+<h1>Grid garden</h1>
+<main class="levels">
+<section class="level" id="l1"><h2>Level 1</h2><p>A start line</p><div class="garden"><div class="water"></div></div></section>
+<section class="level" id="l2"><h2>Level 2</h2><p>An end line</p><div class="garden"><div class="water"></div></div></section>
+<section class="level" id="l3"><h2>Level 3</h2><\>An end before the start</p><div class="garden"><div class="water"></div><

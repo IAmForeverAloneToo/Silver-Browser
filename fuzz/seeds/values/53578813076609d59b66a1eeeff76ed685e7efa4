@@ -1,0 +1,16 @@
+
+  html { background-color: #f6f2ea; font-size: 16px; }
+  body { margin: 0; }
+  .box { position: relat-font red; text-underline-offset: calc(1em - 2px); text-align: justify; text-align-last: center; tex --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media (prefers-co]+ 2%) * 3), 4px), clamp(none, 5%, 6px)); letter-spacing: calc(pi * 1px); wor@@@@@@@@@@@P@@@@@@@@@@@@@@@@@@@@@lor-scheme: davrk) {
+    :root {
+      --page: ive; float: left; width: 120px; height: 120px; margin: 10px 0 0 10px; background-color: #e0d8c8; }
+  .c { background-color:div ra { --t: attr(data-a type(*)); margin: var(--t); } span { --u: attr(w%string); content: var(--u); }dt-align-last: center; text-justip { width: min(max(calc((1px fy: int  --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media (prefers-co]+ 2%) * 3), 4px), clamp(none, 5%, 6px)); letter-spacing: calc(pi * 1px); wor@@@@@@@@@@@P@@@@@@@@@@@@@@@@counter-reset:@@@@@lor-scheme: davrk) {
+    :root {
+      --page: #1e1e2e;
+      --heading: #cdd6

@@ -1,0 +1,13 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: absolutely positioned children at their static positions, by justify-content, align-items and align-efinite he-color: #0a1a3a; }
+  .row-start { clear: left; }
+  .outer { position: relative; float: left; margin: 20px 0 0 20px; padding: 6px; background-color: #a8c4dc; }
+  .outer > .f { position: static; float: none; margin: 0; }
+</style>
+</head>
+<bodyb15 { height: auto; }
+  .b15 .c { width: 60px; height: 30px; max-height: calc(10px + 1%); }
+  .b6 { height: auto; }
+  .b6 .c min(), max() and clamp() in widths, heights, margins, padding, borders and insets, against definite and indefinite bases>

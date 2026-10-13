@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+<style>
+htmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm background-color: #604a20; }
+.col { float: left; width: 40-1e30}
+i { display: block; background-color: #3a5a7a; }
+.a { width: 200px; grid-template-columns: 1frf1 ;r }
+.b { width: 200px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.c {6px; margin-top: 16px; }
+label { color: tems: center; align-items: end; }
+.b > div { width: 40px; height: 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a">
+<div style="margin: auto"></div><div style="margin-left: autalign-self: end"></div><div style="margin-left: auto; margin-right: 10pk; background-color: #3a5a7a; }
+.a { width: 360px; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-aux"><to-rows: 50px; /div>
+</div>
+</dgap: 6px; }
+.a > id

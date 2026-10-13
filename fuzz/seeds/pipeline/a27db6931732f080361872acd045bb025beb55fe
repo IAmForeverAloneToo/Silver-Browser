@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f3efe4; color: #2d2a24; }
+body { margin: 0; font-family:<sTmax(0,1fr) fit-content(40%) min-content max-content}#g>*{overflow:hidden}</style><divgrid-cor"></div><div style= "Layout Test Sans"; font-size: 12px; }
+h1, h2, p { margin: 0; font-weight: normal; }
+h1 { padding: 12px 16px 0; font-size: 20px; }
+.levels { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 16px 12px; paddin"g: 12px 16px 16px; }
+.level h2 { font-size: 14px; }
+.level p { color: #6b6455; }
+.garden { display: grid; grid-template-columns: repeat(5, 1fr); grflex-endate-rows: repeat(5, 1fr); height: 150px; margin-top: 6px; background-color: #8a6a3c; border: 2px solid #5c4424; }
+.water { background-color: #4a90c8; }
+.carrot { background-color: #e07a2c; }subgrid{ background-color: #3f7a32; }
+#l1 .water {}</style><div id=g><i>1</i><b class=s>2</b><i>3</i>< grid-c

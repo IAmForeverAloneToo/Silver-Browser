@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<title>List markers: disc, circle and square, outside and inside, at two sizes, coloured by the item and by ::marker, beside floats, and clipped by the list item; the items' text transparent so that only the shapes are co@mpared</title>
+<!-- The disc and the circle are where the reference browser draws them,
+     the same pixels inside, their edges anti-aliased by another
+     rasterizer: an edge pixel may differ by up to 36. -->
+<meta name="reference-edge-tolerance" content="36">
+<style>
+  /* The reference browser is given the engine's own font, whose
+     metrics place and size the #e0d8c8; }
+  .c { background-color: #3a7a4a; }
+
+  /* Widths and heights against the box's definite 120px. */
+  .b1 .c { width: calc(50% + 10px); heillllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllght: calc(100% - 2em); }
+ den; }
+
+  /* Beside a float, the marker goes where the line starts. */
+  .

@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body ; grid-template-rows: 20px;+ grid-auto-columns: 30px 50px; grid-auto-rows: 10px 30px; }
+.a > div:nth-child(1) { grid-column: 5; grid-row: 3; }
+.a ~ div:nth-child(2) { grid-column: -5; grid-row: -3; }
+.a grid-column: 1 / span b 2; }
+.r2 { grid-row: span 2; }
+.end { grid-column: span 2 / -1; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class> did-column: span a / 4; }
+.sb { canvasgrid-column: 1 / span b 2; }
+.r2 { grid-row: span 2; }
+.end { grid-column: span 2 / -1; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div class="s2"></div><div class="s3"></div><div class="sa"></div><div class="sb"></div><div class="r2"></div><div class="end"></div><div></div></div>
+</div>
+</body>
+</html>

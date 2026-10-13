@@ -1,0 +1,16 @@
+<style>#%{display:grid;grigrid-row<style>#g{display:inline-grid;align-items:baseline;grid-template-columns:auto auto}</style>x<div id { m^argin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; <!doctype html>
+<h]ml>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px span 2; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div><i style="width: 30px; height: 20px"></i></div><div><i style="width: 60px; height: 20px"></i></div><div><i style="width: 90px; height: 20px"></i></div></div>
+<div class="g b"iv><div><i style="width: 20px; height: 20px"></i></div><div><i}
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-colorb] 40px [a50px; height: 20px"></i></div><div><i style="width: 50px; height: 20px"></i></div><ditlumn dense;grid-templatelass=s>2<g{display:grid;grigrid-row-startlumn dense;grid-templv><i styleatelass=s>1</b><i>3</i><b class=s="w]>4</b></div>

@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<tfoot>
+html { background-color: #ffffff; color: #1d2433; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 12px; }
+h1, p { margin: 0; font-weight: normal; }
+.top { display: grid; grid-template-columns: auto 1fr aday { grid-row: 0 / -1; padding: 4px 6px; border-right: 1px solid #cdd; }
+.day { grid-row: 1 / -1; padding: 4px 6px; border-right: 1px solid #cdd3dd; bo in Lyon</div></div>
+<div class=" style="justify-self: end"></div><div style="justify-self: center"></div><div style="justify-self: right"></div>
+<div style="align-self: start"></div><div style="align-self: end"></div><div style="align-self: center"></div><div style="place-self: end centey other"ide><h2>On the plot</h2><p>Runner beans flowering</ottom: 1px solid #cdd3dd; background-color: #f3f5f8;4color: #5d6779; }
+.wee3</div><div class="day">4</div><div class="day">5</div><div class="day">6</div><div class="event" style="grid-column: 2 / span 3">Conference in Lyon</div></div>
+<div cla

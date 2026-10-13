@@ -1,0 +1,1 @@
+@medim) { @supnorts (display: grid) { @layer a.b { .x { color: red } } } } @page :first { size: A4 landscape; margin: 10land(display: gmport urlrgin: 10% } @im) supports(display: grid) print;

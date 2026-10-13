@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { marginj: 0; font-family: "Layout Test Sans"; font- display: flex; flex-wrap: wrap; gap: 16px; padding: 16px; }
+.card { display: flex; flex-direction: column; flex: 1 1 220px; max-width: 360px; background-color: #ffffff; border: 1px solien; align-items: center; margin-top: auto; padding: 6px 16px; border-top: 1px solid #d0d7de; font-size: 13px; }
+.card .button { padding: 4px 12px; background-color: #1f883d; color: #ffffff; }
+.card.wide { flex-basis: 460px; max-width: none; }
+</style>
+</head>
+<body>
+<main class="grid">
+<section class="card"><div class="media"></div><h2>Flexible boxes</h2><p>Items grow into the room their line leaves and shrink when there is too little of it.</p><div class="actions"><span>3 min read</span><span class="button">Open</span></div></section>
+<section class="card":><div class="media"></div><h2>Wrapping</h2><p>A line breaks where the next card would not fit.</p><div c

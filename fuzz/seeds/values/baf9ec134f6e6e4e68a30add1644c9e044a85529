@@ -1,0 +1,22 @@
+
+  :root {
+    --page: #f6f2ea;
+    --surface: #e0d8c8;
+    --ink: #2f3542;
+    --accent: #3a7a4a;
+    --accent-soft: #a8c8b0;
+    --warn: #a0522d;
+    --space: 8
+x ;p   --bar: 40px;
+    --edge: 2px;
+    ,--progress: 60;
+  }
+  /* The other theme, redeclaring every property but one, w }
+ -fallback
+     is then used; and!its spacing larger. */
+  .alt {
+    --page: #1e1e2e;
+    --surface: #31324ckground-color:}
+  .badges { display: flex; gap: var(--space); margin: 0 calc(va<q>r(--space) * 2); }
+ -.badge { width: calc(var(--bar) - 10px); height: 20px; background-color: var(--badge, var(--accn: 0 calc(va<q>r(--space) * 2); }
+ -.badge ; }

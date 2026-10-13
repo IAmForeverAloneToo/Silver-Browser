@@ -177,10 +177,13 @@ pub trait ScriptingHost: Default + 'static {
     fn set_title(&mut self, title: String);
     /// What the bindings ask of the document's nodes (M25): the call's
     /// answer, or the exception it throws. A host without a document
-    /// answers none.
+    /// answers none, but that code from strings and WebAssembly may be
+    /// compiled, no document's policy saying otherwise (M33.1).
     fn dom(&mut self, call: Call) -> Result<Answer, DomError> {
-        let _ = call;
-        Err(DomError::not_supported())
+        match call {
+            Call::CodeAllowed { .. } => Ok(Answer::String(String::new())),
+            _ => Err(DomError::not_supported()),
+        }
     }
     /// The units of work done since this was last asked, which the
     /// realm charges to the run's budget ([`WORK_PER_STEP`]).

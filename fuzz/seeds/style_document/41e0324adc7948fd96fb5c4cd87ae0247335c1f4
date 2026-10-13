@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"> order: 1; padding: 16px; background-color: #fff8c5; font-size: 13px; }
+.columns > aside h2 { font-size: 15px; margin-bottom: 8px; }
+.page > footer { padding: 12px 24px; background-color: #24292f; color:200007de; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="page">
+<header>The holy grail</header>
+<div class="columns">
+<aside><h2>Aside</h2><p>Last in the row by its order, first in the source.</p></aside>
+<article>
+<h1>Threrted</a><a href="#">Layout</a><a href="#">Painting</a><a href="#">Networking</a></nav>
+</div>
+<footer>Footer, at the bottom of a page six hundred pixels tall.</footer>
+=/div>
+</body>
+</html>

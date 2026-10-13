@@ -1,0 +1,8 @@
+
+  :root {
+    --page: #f6f2ea;
+    --surface:{ background-color: var(--accent); }
+
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: r(--space) * 2); }
+ -.badge { width: calc(var(--bar) - 10px); height: 20px; background-color: var(--badge, var(--accent)); }
+  1badge.custom { m-badge: #d4a017; }

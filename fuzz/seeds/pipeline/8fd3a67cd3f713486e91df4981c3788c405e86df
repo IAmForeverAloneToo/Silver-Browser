@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { backg/div><div style="width: 50px"></div><div></div><div style="grid-row: span 2; wcolumn dense; }
+.t { grid-row: span 2; }
+.w { grid-column: span 2; }
+.big { grid-row: span 3; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div></div><div class="w"></div></div>
+<div class="g dense"><div></div><div class="t"></div><div clas24px; height: 40px; margin: 0 6px; background-color: #3a5a7a; }
+.ig { display: inline-grid; margin: 0 6px; padding: 4px; grid-template-columns: 20px 20px; gap: 4px; background-color: #c8b48c; }
+.ig > div { height: 20px; background-color: #604a20; }
+.ig > div:nth-child(2n) { height: 30px; background-color: #a07a3a; }
+.end { align-items: end; height: 50px; }
+.rows { grid-template-rows: 10px 10px; padding-top: 12px; }
+.empty { width: 30px; height: 20px; margin-bottom: 10px; }
+.clip { overflow: hidden; }
+.group > div:nth-child(2) { align-self

@@ -1,0 +1,24 @@
+
+  html { background-color: #f6f2ea; font-size: 16px; }
+  body { font-family: "Print Test Sans"; font-size: 16px; margin: 0 8px; }
+  h1 { font-size: 24px; font-weight: normal; margin: 16px 0; }
+  h2 { font-size: 20px; font-weight: normal; margin: 20px 0 8px; }
+  ol, ul { margin: 6px 0; }
+  .inside { list-style-position: inside; }
+  .roman { list-style-type: upper-list-st-size: 24px; font-weight: normal; margin: 16px 0; }
+  h2 { font-size: 20px; font-weight: normal; margin: 20px 0 8px; }
+  ol, ul { margin: 6px 0; }
+  .inside { list-style-position: inside; }
+  .roman { list-style-type: upper-list-style-position:list-style-type: lower-alpha; }
+  .greek { list-style-type: lower-gonts/DejaVuSans.ttf); }
+  body { font.5)); transform-origin: calc(0% + 0px) calc(100% - 40pe(<leng>)ht, 2px): var(--gap) 0;
+  }
+  .cor: var(--text); }
+  .lead::first-letter {
+    float: left;
+    font-size: 5   float: left;
+    font-size: 52px;
+    padding-right: 6px;
+    color: var(--accent);
+  }
+  .lead::first-line { text-transform: upp

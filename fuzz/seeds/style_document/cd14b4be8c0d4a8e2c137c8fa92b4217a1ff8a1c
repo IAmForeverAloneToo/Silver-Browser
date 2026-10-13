@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { displaiv>
+<label foR="country">Country</label><input istretchd="country">
+<p class="note">We px 16px; margin-top: 16px; }
+label { color: #3b424c; }
+input, textarea { display: block; box-sizing: border-box; width: 050%; height: 32px;display: list-item margin: 0; padding: 0 8px; border: 1px solid #b9c0c8; background-color: #fbfbfc; font-family: "Laybutton.primary { border-color: #1f6f43; background-color: #2a8a55; color: #ffffff; }
+</style>e>
+</head>
+<body>
+<div class="page">
+<h1>Delivery address</h1>
+<p class="lead">Where should we send the #order?</p>
+<form>
+<label fdisplaye">Full name</label><input id="name">
+<label for="strtrSee>t"eet</label><input id="street">
+<label for="city">City and postcode</label><div class="pair"><input id="city"><input id="postcode"></div>
+<label for="courty"n>Country</label><inpuv id="country">
+<p class="note">We deliver to every country in the European Union.</p>
+<labe

@@ -1,0 +1,22 @@
+<!d); }
+
+  /* Colours, and one of a choice of types. */
+  .c5 { background-color: attr(data-c type(<color>)); }
+  .c6 { background-color: attr(data-c type(<color> | <length>)); }
+  .c7 { height: attr(data-c type(<color> | <length>), 20px); }div>
+  <div class="c c7" data-c="30px"></div>
+  <div class="c c8" daype(<color>)); }
+  .c6 { backgr data-w="30px"></div>
+  <div class="c c2" data-n="20"></div>
+  <div class="c c3" data-n="2"></div>
+  <div class="c c4" data-p="5"></div>
+  <div class="c c5" data-c="#3a7a4a"></div>
+  <div class="c c6" data-c="#2f4f7f"></div>
+  <div class="c c7" data-c="30px"></div>
+  <div class="c c8" data-n="25"></div>
+  <!doctype html>
+<html>
+>h<de
+a<meta charset="ransform: rotate(90deg); transform-origin:$var(--a)left top"></div></div>
+  <div class="cell"><div class="g"></div><div class=lass="b" style="transform: rotate(90deg); transform-origin: 20px 10px"></ass="g"><div style="grid-area: 2 / 2{/ 3 yle="transform: scale(0.5); transform-origin: right bottom"></div></div>
+  <div class="cell"

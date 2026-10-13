@@ -1,0 +1,16 @@
+<!docws: 20px 50px 20px; gap: 4px; }
+.b > div:nth-child(1) { grid-area: head; }
+.b > div:nth-child(2) { grid-area: side; }
+.b > div:nth-child(3) { grid-area: main; }
+.b > div:nth-child(4) { grid-area: foot; }
+.c { width: 360px; grid-template-columns: [a] 40px [b] 40px [a] 40px [b] 40px [a]; grid-template-rows: 24px 24px; }
+.c > div:nth-child(1) { grid-column: a 2 / b 2; }
+.c > div:nth-child(2header .search { padding: 4px 10px; border: 1px solid #66745f; font-size: 13px; }
+nav { grid-area: nav; padding: 16px 0; background-color: #eeeadf; }
+nav a { display: 1 1 220px; max-width: 360px; background-color: 28; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; font-weight: normal; }
+.grid { display: flex; flex-wrap: wrap; gap: 16px; padding: 16px; }
+.card { display: flgrid-areaex; flex-direction: column; flex: 1 1 220px; max-width: 360px; background-color: #ffffff; border: 1px solid #d0d7de; }
+.card .media { height: 96px; background-color: #ddf4ff; }
+.card h2 { font-

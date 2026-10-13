@@ -1,0 +1,1 @@
+@media (width > 50em) { @supports (display: grid) { @layer laage :fia.b { .x { color: red } } } } @page :first { break-inside:scape; margin: 10% } @import url(x.css) layer(l) : grid) print;

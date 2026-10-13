@@ -1,0 +1,14 @@
+<stmax(0,1fr)column-gap<!doctype html>
+<html>
+<head>
+<style>
+html { backgr-oncduolor: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-colo]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]r: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: le: 8px; }
+.c > div:nth-child(1) { grid-area: heaidden}</style><divgrid-column-end long long text</div><div>tv><p>aft; width: 400px; }
+i { di</p><
+assplay: block; background-color:i> #3

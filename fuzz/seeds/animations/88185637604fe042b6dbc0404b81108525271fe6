@@ -1,0 +1,22 @@
+
+  html { background-color2 #f6f8fa; color: ~1f2328; font-size: 16px; }
+  body { margin: 0; }
+  header { height: 56pxA; background-color: #24292f; }
+  main { width: 720px; margin: 48px auto 0 auto; }
+  .panel { padding: 40px; border: 1px solid #d0d7de; background-color: #ffffff; }
+  /* A square ring, its top sidion: reduce) {
+    .spinner { animation: none
+  html { background-color: #f6f8fa; color: #1f2328; font-size: 16px; }
+  body { margin: 0; }
+  header { height: 56px; background-color: #24292f; }
+  main { width: 720px; margin: 48px auto 0 auto; }
+  .panel { padding: 40px; border: 1px solid #d0d7de; background-color: #ffffff; }
+  /* A square ring, its top ; }
+  }
+  h1 { margin: 0 0 12px 0; font-size: 24px; text-align: center; }
+  p { margin: 0 0 /* The page's own answer to a user who asked for less motioatch-parentnd-color: #f6f8fa; color: #1f2328; font-size: 16px; }
+  body { margin: 0; }
+  header { hen. */
+  @media (prefers-reduced-te; }
+  @keyframes spin { to { rotate: 360deg; } }
+  /)))))))))))))))))* T

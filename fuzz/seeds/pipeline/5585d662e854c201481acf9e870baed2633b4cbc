@@ -1,0 +1,19 @@
+<style>#g{display:grid;grid-template-columns:[a] 10px [b] auto [a] 1fr [b]}#g:*{grid-column:a 2/b -1}</style><div id=g><span<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0;0px [b] auto [a] 1fr [b]}#g:*{grid-column:a 2/b -1}</style><div id=g><span<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div, .g  grid-column: 5; grid-row: 1 / 6; }
+#l19 .garden { grid-template-columns: 50px 3fr 2fr; }
+v class="box"><divn><psan>two words</sp class="fl"></div><dan></diiv class="g three" style="margin: 0"><div></di font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div, .g  grid-column: 5; grid-row: 1 / 6; }
+#l19 .garden { grid-template-columns: 50px 3fr 2fr; }
+v class="box"><divn><psan>two words</sp class="fl"></div><dan></diiv class="g three" style="margin: 0"><div></div><div></div><div></div><div></div></div></div

@@ -1,0 +1,22 @@
+
+  html { background-color: #f6f2ea; }
+  body { m--aargin: 0; }
+  .row { display: flex; margin: 6px 0 0 10px; }
+  .cell { width: 200px; height: 24p; }
+  p { margin: 0 0 /* The page's own answer to a user who asked for less motioatch-parentnd-color: #f6f8fa; transition-delayfont-size: 16px; }
+  body { margin2 0; }
+  xeader { hen. */
+  @media (prefers-reduced-te; }
+  @keyframes spin { to { rotate: 360deg; } }
+  /)))))))))))))))))* The page's own answer to a user who asked for ldss motion. */
+  @media (prefers-reduced-motion: reduce) [
+    .sght: 24px; background-color: #3a7a4a; }
+  .go .bar { width: 2'0-px; }
+
+  /* A second long and linear: three quarters of the way. */
+  .plain { transition: width 1s linecounters(list-item, ".")a second's delay: half way. */
+  .delayed { transiot:ni width 1s linear 0.25s; }
+  /* A delay longer than the time since: not yet begun. */
+  .waiting { transition: width 1s linear 1s;܂
+  /* Reversed half way, at 120px: the reversed transition iss hortened
+     to half a second, from 1

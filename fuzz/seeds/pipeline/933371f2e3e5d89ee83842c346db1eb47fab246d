@@ -1,0 +1,14 @@
+<!d(3) { grid-column: span 2; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div><i style="width: 30px; height: 20px"></i></div><div><i style="width: 60px; height: 20px"></i></div><div><i style="width>*{overflow:hidden}</mns:minmax(0,1fr) fit-content(40%) min-content max-content}#g>*{overflow:hidden}</style><divgrid-auto-flow id=g><div>long l background-color: #3a5a7a; }
+.a { width: 360px; grid-template-columns: auto auto auto; }
+.b { width: 360px; grid-template-columns: min-content max-content 1fr; }
+.c { width: 360px; grid-template-columns: auto auto 1fr; }
+.c > div:nti></div></div>
+<div class="g e"><div><i style="width: 40px; height: 20px"></i></div><div><i style="width: 60px; height: 20px">grid-template-rowsstyle="width: 200px; height: 20px"></i></div></div>
+</div>
+</body>
+</html>

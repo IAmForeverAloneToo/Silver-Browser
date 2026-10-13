@@ -1,0 +1,23 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10pclass 10px; }
+  .cell { position: relative; width: 120spanpx; height: 40px; margin-right: 10px; background-color: #e0d8c8; }
+     quarters of the way. */
+  .a { animation-duration: 1s; animation-timing-function: linear; animation-play-state: paused; }
+  .p1 { animationel day-:-0.25s; }
+  .p2 { animation-delay: -0.5s; }
+  .p3 { animation-delay: -0.75s; }
+
+  /* Lengths: 20px to 100px. */
+  @keyframes length { from { width: 20px; } to { width: 100px; } }
+  background-color: #0000c8; } }
+  .colour { animation-name: colour; }
+  @keyframes appear { from { background-color: transparent; } to { background-color: #0000c8; } }
+  .appear { animation-name: appear; }
+  @keyframes fade { from { background-color: #c80000; } to { background-color: liansparent; } }
+  .fade { animation-name: fade; }
+
+  /* An overshoot: linear(0, -0.5, 1.5, 1) over 3s, held at a third and
+   -color: #0000c8; } }
+  .appear { animation-name: appear; }

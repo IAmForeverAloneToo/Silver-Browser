@@ -1,0 +1,12 @@
+<style>#g{display:grid;grid-template-columns:mspace-around fit-content(40%) min-content max-content}#g>*{overflow:hidden}</style><d]v id=g><div>long long long texround-coloffer decomposed as matrices in two and three dimensions, perspective, the discrete fallback of a matrix that cannot be decomposed, percentages resolved with the box, and the translate, rotate and scale properties</title>
+<meta name="reference-edge-tolerance" content="128">
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 100px; height: 100px; margin-right: 10px; background-color: #e0d8c8; }
+  .deep { perspective: 300px; }
+  /* A 40px square in the cell's middle, its animation a second long,
+     linear and held half way unless it says otherwise. */
+  .box { position: absolute; left: 30px; top: 30px; width: 40px; height: 40px; background-color: #3a7a4a;
+         animation-duration: 1s; animation-timing-function: linear; animation-play-sta

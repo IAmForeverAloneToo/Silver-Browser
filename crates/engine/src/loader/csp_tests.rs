@@ -1067,16 +1067,19 @@ fn the_implicit_favicon_is_held_to_no_policy_of_the_page() {
         ("/favicon.ico", &[], ""),
     ];
     let server = sites(PAGES);
-    let refused = |path: &str, count: usize| {
+    // Run until `count` refusals, and `also`: the implicit favicon is
+    // asked for after the load, which the tab must outlive.
+    let refused = |path: &str, count: usize, also: &dyn Fn() -> bool| {
         let mut tab = Tab::new();
         tab.engine.set_scripting(true);
         tab.engine.navigate(at(&server, "a.localhost", path));
         let mut lines = tab.run_until(|lines| {
-            lines
-                .iter()
-                .filter(|line| line.starts_with("Content-Security-Policy refused"))
-                .count()
-                >= count
+            also()
+                && lines
+                    .iter()
+                    .filter(|line| line.starts_with("Content-Security-Policy refused"))
+                    .count()
+                    >= count
         });
         lines.retain(|line| line.starts_with("Content-Security-Policy refused"));
         lines.sort();
@@ -1093,7 +1096,10 @@ fn the_implicit_favicon_is_held_to_no_policy_of_the_page() {
             })
             .collect::<Vec<_>>()
     };
-    assert_eq!(refused("/page.html", 1), ["i.png:"]);
-    assert!(asked(&server).iter().any(|path| path == "/favicon.ico"));
-    assert_eq!(refused("/linked.html", 2), ["i.png:", "icon.png:"]);
+    let favicon = || asked(&server).iter().any(|path| path == "/favicon.ico");
+    assert_eq!(refused("/page.html", 1, &favicon), ["i.png:"]);
+    assert_eq!(
+        refused("/linked.html", 2, &|| true),
+        ["i.png:", "icon.png:"]
+    );
 }

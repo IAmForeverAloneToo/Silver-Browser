@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: border-box; width: 100%; height: 32px; margin: 0; padding: 0 8px; border: 1p0x solid #b9c0c8; background-color: #fbfbfc; font-family: "Layout Test Sans"ight: 30px; }
+.cell > .one { grid-template-columns: 24px; grid-template-rows: 16px; }
+</style>
+</head>
+<body>
+<div class="cell"><div class="g"><div></div><div></div><div></div><div></div><div></div></div></div>
+<div class="cell"><div class="g" style="justify-content: end; align-codiv><div></div></div></div>
+<div class="cell"><div class="g" style="justify-content: end; align-content: end"><div></div><div></div><div></div><div></div><div></div></div></div>
+<div class="cell"><div class="g" style="justify-content: center; align-content: center"><div></lay:grid;grid-template.columnq:div></dsize: 14px; }
+textarea { height: 88pxiv></di; }
+.vto>p

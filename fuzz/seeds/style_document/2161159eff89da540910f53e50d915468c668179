@@ -1,0 +1,10 @@
+<!doctype html>
+<html>
+<head>
+<title>Transforms: transform-origin in its forms — keywords, percentages, lengths, one value, a negative offset and an offset past the box — under a quarter turn, a half turn and a scale, each over a ghost of the untransformed box</title>
+<style>
+/ htmlc4a4; d-color: #a07a3a; border: 2px te(90deg); ttransform:le>#g{display:grid;grid-template-columns: rff1r1;row-gax:10%;column-gap:5%}#g>div{order:-1;z-index:2;margin:auto}</style><table><tr><td><d}
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+.g { w rotate(90deg); transform-origin: -20px 50%"></div></diturn <div class="cell"><div class="g"></div><div class="b" style="transform: scale(0.5); transform-origin:idth: 34 left top"></div></div>
+  <div class="cell"><div class="g"></div><div class="b" style="transform: s0px; grid-template-columcale(0n

@@ -1,0 +1,7 @@
+avoidonl  @supports (display: grid) { .c1 { background-color: #3a7a4upports (display: foo) {or: #6a4a8a; } }
+  @s2upports (displatate(10deg)) { .c13 { background-color: #2a8a8a; } }<  @supports (color: red !important) { .c14 { background-color: #8a6a2a; } }
+  @suorphans:display:grid) { .c15 { background-color: #4a6a2a; } }
+  li@supports display: grid { .c16 { background-color: #8a3a5a; } }
+  !@supports (unknown-fn()) { .c17 { background-color: #3a7a4aavoid-page; } }
+  @media (min-width: 100px) { @supports (displa selector(a, b) { .c11 { background-color: #a0522d; } }
+  @supportsy: grid) { .c18 { background-color: #ylz z p\

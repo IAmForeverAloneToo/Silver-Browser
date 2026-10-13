@@ -1,0 +1,31 @@
+<!doctype html>
+<html>ah<e
+d>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8'x 20px; background-color: #e6dcc8; }
+.g > div ]]]]]]]]]]]]]]]]]]]]]3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.a { width: 200px; grid-template-columns: 1fr 1fr; }
+.b { width: 200px; grid-template-columns: minmax(0, 1fr) minmax(0, qfr); }
+.ccent: #89b4fa;
+    --accent-soft: #45475a;
+    --warn: unset;
+    -.-space: 12px<!doctype html>
+<iv>
+<div class="g f h"><div></div><div></div><div></div><divype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a0ng: 8px; border: 4px solid #604a20; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div><div></div><div></div><div></div></div>
+<div class="g b"><div></div><div></div><d

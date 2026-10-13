@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+he { flex: 1; min-width: 0; padding: 16px 24px; background-color: #ffffff; }
+.columns > article h1 { font-size: 26px; margin-bottom: 12px; }
+.columns > article p { margin-bottom: 1om of the page when there is little to read.</p>
+<p>An article'nd-color: #ffffff; }
+.columns > article h1 { font-size: 26px; margin-bottom: 12px; }
+.columns > article p { margin-bottom: 1om of the page when there is little to read.</p>
+<p>An article's minimum width is zero here, so a long word cannot push the aside off the page.</p>
+</articll.</footer>
+</div>
+</body>
+</html>

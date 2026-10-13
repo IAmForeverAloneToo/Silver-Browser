@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<title>Custom properties: colours and sizes from var(), fallbacks, a chain, cycles, invalid substitutions, inherit, initial and unset, in shorthands, inherited and redeclared</title>
+<style>
+  :root {
+    --page: #f6f2ea;
+    --cell: #b8b0a0;
+    --ok: #3a7a4a;
+    --othther))); }
+  .c4 { background-color: var(--chain-a); }
+
+  /* A cycle makes both properties invalid: the fallback of a var() of
+     either is used; a property with none of its own is unset. */
+  .c5 { --x: var(--y); --y: var(--x); background-color: var(--x, #3a7a4a); }
+  .c6 { --x: var(--x); background-color: #a0522d; background-color: var(--x); }
+
+  /* A substitution the property cannot take: invalid at computed-value
+     time, the property unset (background-color's initial value), not the
+     earlier declaration. */
+  .c0 { background-color: #3a7a4a; background-color: var(--size); }
+  .c8 { width: var(--ok); }
+
+  /* Sizes: calc() of a custom property, a shorthand with var() in it,
+     

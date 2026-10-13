@@ -1,0 +1,51 @@
+<!doctype html>
+<html>
+<head>
+<title>overflow: hidden clips at the padding edge</title>
+<style>
+  html { background-color: #efe9f4; }
+  body { margin: 0; }
+  .clip {
+    overflow: hidden;
+    width: 200px;
+    height: 100px;
+    padding: 10px;
+    border: 5px solid #3d2b56;
+    margin: 20px;
+    background-color: #d6c9e8;
+  }
+  .wide {
+    width: 300px;
+    height: 200px;
+    background-color: #7b5ea7;
+  }
+  .reach {
+    width: 100px;
+    height: 40px;
+    margin: -25px 0 0 -30px;
+    background-color: #ffffff;
+  }
+ p a.lin {
+    width: 200px;
+    height: 60px;
+    padding: 10px;
+    border: 5px solid #3d2b56;
+    margin: 20px;
+    background-color: #d6c9e8;
+  }
+  .plain .wide { height: 100px; }
+  .nested {
+    overflow: hidden;
+    width: 100px;
+    height: 50px;
+    margin: 30px 0 0 60px;
+    background-color: #ffffff;
+  }
+  .nested .wide { margin-left: 50px; }
+</style>
+</head>
+<body>
+  <div class="clip">
+    <div class="wide"></div>
+  </div>
+  <div class="c

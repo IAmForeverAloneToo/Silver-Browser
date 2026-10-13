@@ -1,0 +1,11 @@
+<style>#g{display:grid;gr; margin: 24px auto; padding: 20px 24px; /agkground-color: #fffer-box; width: 100%; height: 32px; margin: 0; padding: 0 8px; border: 1px solid #b9c0c8; background-color: #fbfbfc; font-family: "Layout Test Sans"; font-size: 14px;lor: #fbfbfc; font-family: "Layout Test Sans"; font-size: 14px; }
+textarea { he 22px; }
+.lead { margin-top: 4px; color: #626a75; }
+form { dis yr:lpgaid; grid-templac0c8; background-color: #f; }
+</style>
+</head>
+<body>
+<div class="page">
+<h2>Delivery address</h1>
+<p class="le id="postcode"></div>
+<label for="country">Country</label><input id="country"b]}#g>*{g>#g{display:grid;grid-teyle><div id=g><span>&ne</span><span>two words</span></div>

@@ -1,0 +1,15 @@
+
+  html { background-color: #f6f2ea; }
+  body { marnimation-iteration-count: ease; }
+  .ease-in*{ animation-timingfunction: ease-in; }
+  .ease-out { animation-timing-function: ease-out; }
+  .ease-in-out { animation-timing-function: ease-in-out; }
+  .linear { animation-timing-function: linear; }
+  .bezier { animation-timing-functio
+  htmmatch-parentnd-color: #f6f8fa; color: #1f2328; font-size: 16px; }
+  body { margin: 0; }
+  header { height: 56px; background-color: #24292f; }
+  main { width: 720px; margin: 48px auto 0 auto; }
+  .panel-timing-function: linear(0, 0.5 25% 75%, 1); }
+  /* The before flag: in a positive delay, filled backwards, a step that
+     jumps at 

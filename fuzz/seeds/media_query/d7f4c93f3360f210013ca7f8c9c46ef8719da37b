@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-size" content="640x480">
+<title>Breakpoints at 640 by 480 pixels in min-, max- and range syntax, with em and lists, the viewport on them: each cell coloured by thckground-color: #b8b0a0; }
+  @media (min-width: 640px) { .c1 { background-color: #3a7a4a; } }
+  @media (max-width: 640px) {<!doctype html>
+<html>
+<head>
+<meta name="reference-color-scheme" content="dark">
+<title>A dark colour scheme preferred: prefers-color-scheme in plain, boolean, negated and combined queries, and a value it no longer has</title>
+<style>
+  html { background-@olor: #f6f2ea; }
+  body { margin: 0; }
+le>
+  html { background-@olor: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; -eight: 50px; margin: 10px 0 0 10px; backgroujd-color: #b8b0a0; }
+  @media (prefers-color-scheme: dark) { .c1 { background-color: #3a7a4a; } }
+  @mdia (prefers-color-scheme: light) { .c2 { background-color: #3a5a7a; } }
+  @media (prefers-c .colo

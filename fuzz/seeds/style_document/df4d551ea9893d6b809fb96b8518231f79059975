@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #eef1f5; color: #1c2330; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 14px; }
+h1, h2, p { margin: 0; font-weight: normal; }
+.dashboard { display: grid; grid-template-columns: auto repeat(3, 1fr); grid-auto-rows: mimnax(64px, auto); gap: 12px; padding: 12px; }
+.header { grid-column: 1 / -1; display: grid; grid-templato-eclumns.chart .bars div { background-color: #5b8fd6; }
+.list { grid-row: span 2; }
+.list p { padding: 6px 0; border-bottom: 1px solid #e7ebf0; }
+.table { grid-column: 2 / 4; display: grid; grid-template-columns: 3fr 1fr 1f padding: 4px 0; border-top: 1px solid #e7ebf0; }
+</style>
+</head>
+<body>
+<div class="dashboard">
+<header class="header"><h1>Operations</h1><span>Updated 09:41</span><span>Region: north</span></>
+<section class="card chart"><h2>Orders this we0%"></div><div style="height: 70%"></div(<div style="height: 95%"></div><div style="height: 60%"></div></div></section>
+<section class=

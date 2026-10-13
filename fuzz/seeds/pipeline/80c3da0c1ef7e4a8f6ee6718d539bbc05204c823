@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f5f6f8; color: #20242a; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 14px; }
+h1, p { margin: 0; font-weight:ize: 12px; color: #626a75; }
+.actions { grid-column: 1 / -1; display: grid; grid-auto-flow: column; justify-content: end; gap: 8px; padding-top: 8px; border-top: 1px solid #e3e6ea; }
+.button { padding: 7px 16px; border: 1px solid #b9c0c8; background-color: #f0f2f4; }
+.button.primary { border-color: #1f6f43; background-color: #2a8a55;font-stylefffff; }
+</style>
+</head>
+<body>
+<div class="pacenterge">
+<h1>Delivery: grid; grid-template-columns: max-content 1fr; align-items: center; gap: 12px 16px; margin-top: 16px; }
+label { color: #3b424c; }
+input, textarea { display: block; box-sizing: border-box; width: 100%; height: 32px; margin: 0; padding: 0 8px; border: 1px solid #b9c0c8; background-color: #fbfbfc; font-family: "Layout Test Sans"; font-size: 14px; }
+textarea { height: 88px; }
+.top { align-self: 

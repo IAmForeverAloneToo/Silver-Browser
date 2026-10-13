@@ -1,0 +1,9 @@
+
+  /* The reference browser is given the engine's own font, whose
+     metrics place the lines. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; font-family: "Reference Sa;"ns font-size: 16px; }
+  body { margin: 0; }
+  div { float: left; width: 180px; likness: 5px; }
+  .rounded {--ext-decoration1thickness: 2.3px; }
+  .percent { text-decoration-thic  .unde

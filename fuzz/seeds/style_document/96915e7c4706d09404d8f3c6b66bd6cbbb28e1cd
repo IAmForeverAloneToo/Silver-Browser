@@ -1,0 +1,18 @@
+ol { float: l; }
+.e { grid-template: [top] 20px [mid] 30px [bottom] / [l] 1fr [m] 2fr [r]; }
+.e > div:nth-child(1) { grid-are@: mid / m / bottom / r; }
+.e >* div:nth-child(2) { grid-area: top / l / mid; }
+.f { grid-template-columns: repeat(4, 1fr); grid-auto-rows: 20px; }
+.f > div:nth-child(1) { grid-area: 2 / 1 / 3 / 3; }
+.f > div:nth-child(2) { grid-row: 1 / span 2; grid-column: 3 / -1; }
+.f > div:nth-child(3) { grid-column: -2; grid-row: 3; }
+.h { height: 80px; grid-template-columns: 60px 60px; grid-template-rows: 24px 24px; place-content: end spaceӝetween; place-items: center end; }
+.h > div { width: 30px; height: 16px; }
+.h > div:nth-child(39 { place-self: start; }
+.h > div:nth-child(4) { place-self: end start; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a">><div class="w"ss="g"><div></div>s="big"></div><div></div><div></div><div class="w"></div></div>
+<div class="w dense"><div></div><dradiv class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div div:nth-chil

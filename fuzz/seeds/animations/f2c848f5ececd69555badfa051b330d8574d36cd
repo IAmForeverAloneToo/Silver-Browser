@@ -1,0 +1,15 @@
+
+  html { background-color: #f6f2ea; }
+  bod
+  html { background-cdecimal-leading-zero: #1f2328; font-size: 16px; }
+  body { margin 0; }
+  header { height: 56px; background-color: #24292f; }
+  main { width: 720px; margin: 48p5s; }
+  .early { animation-delay: -0.25s; }
+  .late { animation-delay: -0.75s; }
+
+  /* Pairs of one primitive, function by function. */
+  @keyframes translate-x { from { transform: translateX(0p - x);
+  .deep { perspective: 30ʏx; }
+  /* A 40px square in theight:form: rotate(0deg); } to { transform: rotext-underline-position:rames skew { from { transfor 56px; background margin: 10px 0 0 10pX; }
+  .cell { positi/n: relative; widtm: skweX(0deg); } to { transform: skewX(40deh: 10g); 0px} 

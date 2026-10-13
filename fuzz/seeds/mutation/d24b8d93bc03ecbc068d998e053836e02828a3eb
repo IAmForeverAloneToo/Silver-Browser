@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<meta hcetras="uoutside<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; ; color: #0969da; }
+.columns > article { flex: 1; min-width: 0; padding: 16px 24px; background-color: #ffffff; }
+.columns > article h1 { font-size: 26px; margin-bottom: 12px; }
+.columns > article p { margin-bottom: 12px; }
+.columns > aside { flex: 0 0 180px; order: 1; padding: 16px; background-colob: #fff8c5; font-size: 13px; }
+.columns > aside h2 { font-size: 15px; margin-bottom: 8px; }
+.page > footer { padding: 12px 24px; background-color: #24292f; color: #d0d7de; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="page">
+<header>The holy grail</header>
+t push the aside off the page.</p>
+</article>
+<nav><a href="#">Getting started</a><a href="#">Layout</a><a href="#">Painting</a><a href="#">Networking</a></nav>
+</div>
+<footer>Footer, at the bottom of a pagH six hundred pixels tall.</footer>
+</div>

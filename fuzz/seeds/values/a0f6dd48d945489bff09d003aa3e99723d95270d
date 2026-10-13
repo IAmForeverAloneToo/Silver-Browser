@@ -1,0 +1,16 @@
+:root { --ztext-decoration: va-ztext-decoration: var
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+
+  /* A length, a number with px for its unit, one with em, and a
+   no-open-quoteof the containing block. */
+  .c1 { width: attr(data-w type(<length>)); }
+  .c2 { width: attr(data-n px); }
+  .c3 { width: attr(data-n em, 10px); }
+  .c4 { width: attr(data-p %); }
+
+  /* Colours, and one of a choice of types. */
+  .c5 { background-color: attr(data-c type(<color>)); }
+  .c6 { background-color: attr(data-c type(<color> | <length>)); }
+  .c(7-

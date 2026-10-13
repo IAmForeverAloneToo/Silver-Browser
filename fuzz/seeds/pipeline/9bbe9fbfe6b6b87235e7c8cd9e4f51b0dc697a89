@@ -1,0 +1,1 @@
+<style>#g{display:grid;grid-template-columns:subgrid;grid-templa$e-rows:masonry;grid-template-columns:repeat(auto-fit,100px)}</style><div id=g><div>s</div><5div>

@@ -1,0 +1,1 @@
+<style>#g{display:grid;grid-template-columns:[a] 10px [b] auto [a] 1fr [b]}#g>{>g#g*{display:grid;grid-teyle><iv>

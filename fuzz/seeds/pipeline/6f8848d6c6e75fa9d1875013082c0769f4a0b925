@@ -1,0 +1,16 @@
+<!doctype html>
+<htm { width: 300px; grid-template-columns: fit-content(80px) fit-content(200px) 1fr; }
+  .d { width: 200px; height: 60px; grid-template-columns: 50% 25%; grid-template-rows: 50% 25%; }
+  .o { width: 300px; grid-template-columns: min-content max-content auto; }
+
+</style>
+</head>
+<body>
+  <div class="col">
+    <div class="g a"><div></div><div></div><div></div><div></div></div>
+    <div class="g b"><div></div><div></div><div></div></div>
+    <div class="g c"><div><i style="width: 40px; height: 20px"></i></div><div><i style="width: 100px; height: 20px"></i></div><div></div></div>
+    <div class="g d"><div></div><div></div><div></div><div></div></div>
+    <div class="g e"><div><i style="width: 30px; height: 20px"></i></div><div><i style="width: 50px; height: 20px"></i></div><div></dd (min-width: 700px) { .c5 { background-color: #2a8a8a; } }
+  @media print and (orientation: landscape) { .c6 { backgrouformnd-color: #8a6a2a; } }
+  @media (prefers-color-scheme: light) { .c10 iv></div>

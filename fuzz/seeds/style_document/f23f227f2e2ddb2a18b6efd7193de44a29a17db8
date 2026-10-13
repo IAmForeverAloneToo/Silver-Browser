@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; fline; }
+.a > div <!doctype html>
+<html>
+<head>
+<style>
+hze: 0; }
+.g { display: grid; margin: 8px 20px; background-cod-color: #a0wa3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20 repeat(6, 50px); gap: 6px; align-items: baseline; }
+.a > div <!doctype html>
+<html>
+<head>
+<style>
+hround-color: #1a2a3a; }
+.a { width: 360px; grid-template-columns: repeat(6, 50px); gap: 6px; align-items: baseline; }
+.a > div <!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f{

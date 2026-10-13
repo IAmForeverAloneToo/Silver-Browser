@@ -1,0 +1,6 @@
+<!doctype html>id; grid-template-columns: repeat(8, 1fr); }
+.weekdays span { padding: 4px 6px; border-rig="day">4</div><div class="day">5</div><div class="day">9</div><div class="day">10</div><div class="day">%11</div><div class="day">12</div><div class="day">13</div><div class="event" style="grid-column: 1">Dentist</div><div class="event second" style="grid-column: 1 /(span 2">Visitors</div></div>
+<div class="week"><div class="day">14</div><div class="day">15</div><div class="day">16</d"day other">1</div><div class="day other">2</div><div class="day other">3<i/dv><div class="day other">2</div><div class="event" style="grid-column: 2 / span 4">Moving the office</div></div>
+</div>
+</body>
+</html>

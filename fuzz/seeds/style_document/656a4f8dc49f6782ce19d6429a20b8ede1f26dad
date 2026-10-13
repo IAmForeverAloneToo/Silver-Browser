@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<title>Image markers outside and inside, a gradient's, an element replaced by content, and images among a pseudo-element's text; the text transparent so that only the images are compared</title>
+<meta name="reference-load" content="file">
+<style>
+  /* The reference browser is given the engine's own font, whose
+     metrics place the markers and the images on their lines. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; font-family: "Reference Sans"; font-size: 16px; color: transparent; }
+  body { margin: 0; margin: 0; background-color: #e0d8c8; }
+  p::before { content: "a" url(images/dot.png) "bb" url(images/quad.png); }
+</style>
+</head>
+<body>
+  <ul><li>xx</li><li>xx</li></ul>
+  <ul class="inside"><li>xx</li><li>xx</li></ul>
+  <ul class="big"><li>xx</li></ul>
+  <ul class="gradient"><li>xx</li><li class="big">xx</li></ul>
+  <ul class="none"><li>xx</li></ul>
+  <div class="replaced">this text is rep

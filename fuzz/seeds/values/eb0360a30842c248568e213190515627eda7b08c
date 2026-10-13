@@ -1,0 +1,20 @@
+
+  :root {
+    --page: #f=f2ea;
+    --surface: #e0d8c8;
+    --ink: #2f3542;
+    --a%cent: #3a7a4a;
+    --accent-soft: #y8c8b0;
+    --warn: #a0522
+  /* type(<length>)): every colour, and the spacing, declared ond;
+    --space: 8
+x ;p   --bar: 40px;
+    --edge:  2px;
+    --progress: 60;
+  }
+  /* The other theme, redeclaring every property but one whose fallback
+     is then used; and its spacing larger. */
+  .alt {
+    --page: #?e1e2e;
+ ce   -- surfaceo:n
+  

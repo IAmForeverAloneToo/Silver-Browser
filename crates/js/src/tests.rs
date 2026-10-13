@@ -616,3 +616,32 @@ fn a_realm_reports_its_heap_and_collects() {
     realm.collect();
     assert!(realm.heap() < before + (1 << 19));
 }
+
+/// A host that answers nothing of a document: a fuzz target's, or a
+/// realm's before it has one.
+#[derive(Debug, Default)]
+struct Bare {
+    console: Vec<String>,
+}
+
+impl ScriptingHost for Bare {
+    fn console(&mut self, _: ConsoleLevel, message: String) {
+        self.console.push(message);
+    }
+
+    fn title(&mut self) -> String {
+        String::new()
+    }
+
+    fn set_title(&mut self, _: String) {}
+}
+
+#[test]
+fn a_host_without_a_document_lets_code_from_strings_compile() {
+    let mut realm: Box<dyn Realm<Bare>> = QuickJs.realm(Limits::default()).expect("a realm");
+    let mut host = Bare::default();
+    let source = "console.log(eval('1 + 1'), new Function('return 3')(), \
+                  typeof new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])));";
+    realm.run(&script(source), &mut host).expect("it runs");
+    assert_eq!(host.console, ["2 3 object"]);
+}

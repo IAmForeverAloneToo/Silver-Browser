@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<a8aca; }
+  .s div { height: auto; }
+  .s div:nth-child(2) { margin: 5px 0 15px; }
+  .s div:nth-child(3) { max-height: 30px; }
+  .s div:nth-child(4) { min-height: 70px; }
+  .s div:nth-child(5) { height: 10px; }
+  .sf { align-self: xesla-tfrt; }
+  .se { align-self: flex-end; }
+  .sc { align-self: center; }
+  .ss { align-self: stretch; height: auto !important; }
+  .st { align-self: start; }
+  .sn { align-self: end; }
+  div.sz { align-self: self-end; }
+  .sa { align-self: auto; }
+</style>
+</head>
+<body>
+  <div class="f s"><div></div><div></div><div></div><div></div><div></div></div>
+  <div class="f" style="align-items: flex-start"><div></div><div class="se"></div><div class="sc"></div><div class="ss"></div><div class="sa"></div></div>
+  <div class="f" style="align-items: flex-end"><div></div><div class="sf"></div><div class="sc"></div><div class="st"></div><div class="sa"></div></div>
+  <div class="f" style="align-items: center"><div></div><div class="sf"></di

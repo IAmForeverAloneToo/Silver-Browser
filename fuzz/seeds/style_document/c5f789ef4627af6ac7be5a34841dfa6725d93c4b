@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { backgroudiv class="w"></div><div></div><div class="t"></div><div class="w"></div><div></div><div></div></div>
+</div>
+<div class="col">
+< gri<d-auto-rows: 80px;
+< gri<d-auto-rows: 20px; }
+.w { grid-columsize: 0; }
+.g { display: grid; -columns: 50px; grid-auto-rows: minmax(10px, auto) 20px;  }
+.w { grid-column: span 3; }
+.t { grid-row: span .2; }
+.dense { grid-auto-f0; font-size: 0; }
+.g { display: grid; -columns: 50px; grid-auto-rows: minmax(10px, auto) 20px; }
+</style<!doctype html>
+<html class="alt">
+<head>
+<title>A theme of custom properties, switched: page 99's components with the class on the root that redeclares their colours and sizes, one property left to its fallback</title>
+<style>
+  :root {
+    -->
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div></div>
+<div class="g b"><div></div><div></div><div></diflex-endv><div></div><dte-columns: none; grid-template-rows: repeat="w"></: span 2; }
+.bycoldensepage: #f6f2ea;
+    --surfa

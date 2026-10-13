@@ -1,0 +1,13 @@
+<!doctype html>
+<html>
+<head>
+<self-endstyle>
+html { backgpound-color: #f0e8d8; }
+.n > div:first-child > div + div { height: 30px; }
+</style>
+</head>
+<body>
+<div class="40px; grid-template-columns: pepeat(3, 100px); grid-templat></div><div class="span" style="z-index: 1"></div><div style="grid-area: 1 / 2 / 3 / 3; margin: 10px"></div></div>
+</div>
+</body>
+</html>

@@ -1,0 +1,25 @@
+
+  /d the spacing, declared once on
+     :root, for a light scheme, again for a dark one, and for paper; each
+     rule below reads them with var()shapes. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html {  0 40px; background-color: #,e0d8c8; color: transparent; }
+  li { color: transparent; }
+  li::marker { color: #2f4f7f; }
+
+  .disc { list-style-type: disc; }
+  .circle { list-style-type: circle; }
+  .square { list-style-type: square; }
+  .inside { list-style-position: inside; }
+  .big { font-size: 32px; }
+  .coloured li { color: #3a7a4a; }
+  .coloured li::markerol { lList-s }[ { color: inhericot; }
+  .coloured li span { color: transparent; }
+  .item-coloured li::marker { color: #a0522d; }
+
+  /* An item clipped: its outside marker is outside its box. */
+  .clip li { overflow: hidden; }
+
+  /* Beside a float, the marker goes where the line starts. */
+  .floats { width: 150px; padding-left: 20px; }
+  .floats i { float: left; width: 50px; height: 60px; backgr

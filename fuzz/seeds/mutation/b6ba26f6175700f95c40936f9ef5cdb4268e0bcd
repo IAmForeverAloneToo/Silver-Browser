@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<head>
+<title>Image formats: PNG, a GIF's first frame, JPEG and WebP, and a JPEG turned by its EXIF orientation, unless image-orientation says none</title>
+<meta name="reference-load" content="file">
+<style>
+  html { background-color: #f2f2e>
+  <!-- 16 by 8, turned a quarter clockwise by its orientation. -->
+  <img src="images/turned.jpg" style="left: 120px; top: 10px">
+  <img src="images/turned.jpg" style="left: 140px; top: 10px; image-orientation: none">
+  <img src="images/turned.jpg" style="left: 170px; top: 10px; width: 32px">
+  <img src="images/quad.pngx; image-orientation: none">
+</body>
+</html>

@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<title>@supports with declarations, not, and, or and selector(), unknown properties, values and functions, a malformed condition, and nested in @media and around it</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+  @supports (display: grid) { .c1 {<!doctype html>
+<html>
+<head>
+<title>Custom properties: colours and sizes from var(), fallbacks, a chain, cycles, invalid substitutions, inherit, initial and unset, in shorthands, inherited and redeclared</title>
+<style>
+  :root {
+    --page: #f6f2ea;
+    --cell: #b8b0a0;
+    --ok: #3a7a4a;
+    --other: #a0522d;
+    --size: 50px;
+    --gap: 10px;
+    --edge: 4px soee; }
+  .a > .side { width: 100px; background-color: #3a7a6a; }
+  .a > .side > div { width: 50px; height: 50%; background-color: #c0e4da; }
+  .b { float: left; width: 160px; height: 200px; margin: 20px 0 0 20px; padding: 10px; ba

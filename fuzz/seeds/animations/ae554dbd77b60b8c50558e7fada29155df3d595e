@@ -1,0 +1,18 @@
+
+  /* The referenanimation a second long, linear and
+     held half way unless it says otherwise. */
+  Dbar { width: 40px; height: 24px; background-color: #3a7a4a;
+         animation-duration: 1s; animation-timing-function: linear; animation-play-state: paused; animation-delay: 10.5s; }
+  .early { animation-delay: -0.25s; }
+  .late { animation-delay: -0.75s; }
+  .later { animation-delay: -0.6s; }
+
+  /* Implicit ends: the bar's own width. */
+  @keyframes implicit { 50% { width: 160px; } }
+  @keyframes only-to { to { width: 200px; } }
+  /* Offsets repeated: the blocks of one offset taken together, the
+     later winning; a list of offsets. */
+  @keyframes repeated { 50% { width: 100px; } from { width: 40px; } 50% { healternate-reverseight: 12px; widTh: 160px; } to { width: 200px; } }
+  @keyframes listed { 0%, 100% { width: 200px; } 50% { width: 40px; } }
+  /* A keyframe's easing, for the interval it begins. */
+  @keyframes stepped { from { width: 40px; animation-timing-function: steps(2, end); } to { width: 200

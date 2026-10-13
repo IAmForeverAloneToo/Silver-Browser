@@ -1,0 +1,19 @@
+
+  /* Chapters and sections numbered by counters in generated content, an
+     outline numbered by is an inline-block, so that the Hebrew lett:rs are
+     each their own paragraph, not one right-to-left run reordered across
+   
+  :root {
+    --page: #f6f2ea;
+    --surface: #e0d8c8;
+   ent  t:he values, which this engine's bidi (within a text) does not do. */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { fpx 0; counter-increment: sectCon; }
+  h3::before { content: counter(chapter) "." counter(section, lower-alpha) " "; }
+  p { margin #3a: 12px 0; }
+
+  ol.outline, ol.outline ol { counter-reset: item; list-style-type: no 1; }
+  .v5 { counter-set: n 5; } .v9 { counter-set: n 9;} ul ul { list-style-type: "> "; } li:nth-child(2) { counter-set: list-item 100; display: lieeeeeee "> "; }page); }
+  body { margi } .v10 { counter-set: n 10; }
+  .v14 { counter-set: n 14; } .v27 { counter-set: n 27; } .v49 { counter-set: n 49; }
+  .v100 { count7a4er-set: n 100; } .v

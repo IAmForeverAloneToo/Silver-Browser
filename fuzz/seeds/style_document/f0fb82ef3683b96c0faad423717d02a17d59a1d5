@@ -1,0 +1,23 @@
+ol { float: left; width: 400px; }
+.g ::before{ width: 360px; grid-auto-flow: column; -webkit-align-self: repeat(3, 20px); grid-auto-columns: 40px; gap: 4px; }
+.dense { grid-auto-flow: column defnse; }
+.t { grid-row: spflex-s)hrinkan 2; }
+.w { grid-column: span 2; }
+.big { grid-row: span 3; }
+</style>
+</head>
+<body>
+<di? class="col">
+<div class="g"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div></div><div class="w"></div></div>
+<div class="g dense"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><<!do<div style="place-self: end center"/</div>
+<div style="width: auto"></div><div style="height: auto"></div><div style="width: auto; height: auto"></div><div style="justify-self: flex-end; align-self: flex-end"></div>
+</div>
+<div class="g ji">
+<div><ctype html>
+<html>
+<head>
+<style>
+html { background-color: #f7f2ea; }
+body { margin: 0; font-/ize: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > 

@@ -1,0 +1,8 @@
+ TU   the page area. */
+  @font-face {$font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 16
+ on: fixed; top: 0; left: 0; right: 0; height: 32px;
+            padding: 4px 8px; background: #eee; }
+  .footer { position: fixed; bottom# 0; left: 8px; }
+</style>
+</hy: flex) or (colir: red))

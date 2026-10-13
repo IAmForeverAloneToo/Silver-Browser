@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<title>@supports with declarations, not, and, or and selector(), unknown properties, values and functions, a malforme .c5 { background-color: #2a8a8a; } }
+  @supports (display: foo) 5a7a; } }
+  @supports selector(a, b) { .c11 { background-colorz #a0522d; } }
+  @supports (foo: bar) { .c12 { background-color: #6a4a8a; } }
+  @supports (transform: rotate(10deg)) { .c13 { background-color: #2a8a8a; } }
+  @supports (color: red !important) { .c14 { background-color: #8a6a2a; } }
+  @supports (display:grid) { .c15 { background-color: #4a6a2a; } }
+  @supports display: grid { .c16 { background-color: #8a3a5a; } }
+  @supports (unknown-fn()) { .c17 { background-color: #3a7a4a; } }
+  @mad3 { ba}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}ckground-color: #a0522d; } }
+  @supports (display: flex) and (color: red) { .c4 { background-color: #6a4a8a; } }
+  @supports (display: foo) or (color: red) { .c5 {10 { background-color: #2a5a7a; } }
+  @media (min-

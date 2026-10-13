@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+<title>Image markers outside and inside, a<!doctype html>
+<html>
+<head>
+<title>Flex: wrapping into gradient's, an element replaced by content, and images among a pseudo-element's text; the text transparent so that only the images are compared</title>
+<meta name="reference-load" content="file">
+<style>
+  /* The reference browser is given the engine's own font, whose
+     metrics place the markers and the images on their lines. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; font-family: "Reference Sans"; font-size: 16px;tween collapsing margins, as a flex item, arou lines, each align-content, the lines' cross sizes, items stretched to their line</title>
+<nd a flex item, a table and inline items blockified, instyle>
+  html { back ag tr

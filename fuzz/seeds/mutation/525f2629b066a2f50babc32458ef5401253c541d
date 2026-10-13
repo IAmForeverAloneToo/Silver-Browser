@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > di</div></div>
+</div>
+<div grid-gapol">
+<div class="g" style="grid-template-columns: 60px; grid-auto-columns: 20px 50px"><div></div><div></div><div></div><div></div><div class="t"></div><div></div><div></div><div></div><div></div></div>
+<div class="g" style="grid-temp-columns: 40px; gap: 4px; }
+.dense { grid-auto-flow: column dense; }
+.t { grid-row: span 2; }
+.w { grid-column: span 2; }
+.big { grid-row: span 3; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div></div><div class="w"></div></div>
+<div class="g dense"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div></div><div class="w"></div></div>
+<div class="g"><div></div><div style="grid-row: 2"></div><div></div><div st

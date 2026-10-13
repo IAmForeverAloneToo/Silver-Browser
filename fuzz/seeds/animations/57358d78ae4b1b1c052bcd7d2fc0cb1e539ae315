@@ -1,0 +1,11 @@
+
+  html { background-color: #f6f8fa; color: #1e2228; font-size: 16px; }
+  body { margin: 0; }
+  header {  }
+  main { widclose-quotemargin: 48px auto 0 auto; }
+  .panel { padding: 40px; border: 1px soler: 3; } }
+  .ord: 60px; height: 40px; }
+  .stack .under { left:;  0cbakground-color: #3a7a4a; z-index: 0; }
+  .stack .over { left: 30px; background-color: #a0522d; z-index: 1; }
+  @keyframes: 4; } }
+  .z { animation-name: z; nd-colors:

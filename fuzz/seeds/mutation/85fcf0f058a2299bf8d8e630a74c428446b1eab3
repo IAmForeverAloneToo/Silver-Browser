@@ -1,0 +1,7 @@
+<style>#g{display:grid;grid-template-rows:auto 50%;height:auto}#g>div{height:06%;min-height:20%;max-height:30px}</ [a] 40px; grid-auto-rows: 20px; }
+.s2 { grid-column: s=g><div style='padding-top:9px'>a</div><div>b<style>#g{display:inline-grid;align-items:baseline;grid-template-columns:auto autyle>#g{display:grid;position:relative;grid-template:20px 1fr/1fr 30px;height:80px}#a{position:absolute;grid-area:2/1/3/3;inset:0;bottom:0;justify-self:center}</style><div id=g><div id=a>abs</div><div>in</div></divto}</style>x<div id { mar<br>c</div></dgin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { ivbackground-color: #c8a46a; }
+.g > div:nth-child(3n) { background-cos:baseline;grid-template-columns:auto autyle>#g{display:grid;position:relative;grid-template:20px 1fr/1fr 30px;height:80px}#a{position:absolute;grid-area:2/   <div class="cell"><div class="box" style="animation-name: rotate"></div></div>
+    <div class

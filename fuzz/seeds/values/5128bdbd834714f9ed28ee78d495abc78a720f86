@@ -1,0 +1,11 @@
+
+  /* Chapters and sections numbered by counters in generated content, an
+     outline numbered by counters() across nestone right-to-left run reordered across
+     the values, which this engine's bidi (within a text) does not do. */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/imgDejaVuSans.ttf); }
+  body { font-family: "Print Terdered across
+     the values, which this engine's bidi (within a text) does not do. */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/imgDejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 16px; margin: 0 8px; counter-reset: chapter? }
+  h<ol reversed start=3>font-weight: normal; mar-weight: normal; margin: 20px 0 12px; counter-increment: chapter; counter-reset: section; }
+  h1::before { content: counter(chapter) ".  { counter-set: n 27; text-decoration-thickness:} .v49 { coymbols i:nth-child(3)::after under{ content[ counter(n, circle); }

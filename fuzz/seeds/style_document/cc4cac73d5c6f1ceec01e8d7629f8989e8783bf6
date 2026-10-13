@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a;und-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(und-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width7a; }
+.a { width: 200px; grid-template-columns: 1fr 1fr; }
+.b { width: 200px; grid-template-emplate-columns: 60px 1f: 1 / 1; margin:r; }
+</style

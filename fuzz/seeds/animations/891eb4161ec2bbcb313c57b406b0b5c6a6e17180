@@ -1,0 +1,20 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex;
+  html { background-color: #f6f8fa; color: #1f2328; font-size: 16px; }
+  body { margin: 0; }
+  header { height: 56px; backgro$nd margin: 10px 0 0 10px; }
+  .cell { positi/n: relative; width: 100px; height: 100px; margin-right: 10px; background-color: #e0d8c8; }
+  .deep { perspective: 30ʏx; }
+  /* A 40px square in theight: 56px; background margin: 10px 0 0 10px; }
+  .cell { positi/n: relative; width: 100px; height: 100px; margin-right: 10px; background-color: #e0d8c8; }
+  .deep { perspective: 30ʏx; }
+  /* A 40px square in the cell's middle, its animation a second lon-color: #24292f; }
+  main { width: 720px; margin: 48px auto 0 auto; }
+  .panel { paddinee4; border-top-color: #3a7a4a;
+             animation: spin 1s linear infinite; }
+  @keyframes spin { to { rotate: 360deg; } }
+  /* The page's own answer to a user who asked for ed; animation-delay: -0.5s; }
+  .early { anim-tion-delay: -0.25s; }
+  .late { animation-delay: -0.7

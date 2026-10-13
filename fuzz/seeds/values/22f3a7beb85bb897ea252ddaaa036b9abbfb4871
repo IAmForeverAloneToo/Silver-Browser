@@ -1,0 +1,42 @@
+
+  :root {
+    --page: #f6v2ea;
+    --cell: #b8b0a0;
+    --okher: #a0522d;
+    --size: 50px;
+    --gap: 10px;
+    --edge: 4px solid var(---other);
+    --chain-aopen-quote: var(--chain-b);
+    --chain-b: var(--chain-c);
+    --chain-c: var(-%ok);
+  }
+  html { background-colchain-b: var(--chain-c);
+    --chain-c: var(-%ok);
+  }
+  html { background-color: var(--page); }
+  spanbody { margin: 0; }
+  .c { float:  var(--y); var(-%ok);
+  }
+  html { background-co--page: #f6v2ea;
+    --cell: #b8b0a0;
+    --okher: #a0522d;
+    --size: 50px;
+    --gap: 10px;
+    --edge: 4px solid var(---other);
+    --chain-aopen-quote: var(--chain-b);
+    --chain-b: var(--chain-c);
+    --chain-c: var(-%ok);
+  }
+  html { background-colchain-b: var(--chain-c);
+    --chain-c: var(-%ok);
+  }
+  html { background-color: var(--page); }
+  spanbody { margin: 0; }
+  .c { float:  var(--y); var(-%ok);
+  }
+  html { background-colchain-b: var(--chain-c);
+    --chain-c: var(-%ok);
+  }
+  html { background-color: var(--page); }
+  spanbody { margin: 0; }
+ 

@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+<style>h2
+h-child(4) { place-self: end start; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div><div></div><div></div></div>
+<div class="g b"><di }
+.g > div:nth-child(3n) { backg 1fr; gap: 4px 12px; }
+.b { grid:0xp 2 30px / auto-flow dense 50px; grid-gap: 6px; }
+.b > div:nth-child(2) { grid-column: span 2; }
+.c { gr:d "ihead head" 20px "side main" 40px / 80px 1fr; gri1d-row-gap: 4><div></div><div></div><div></div><div></div><div></div></div>
+<div class="g b"><div></div><div></div><div></div><div></div><div></div><div></div></div>
+<div class="g c"><div></div><div></div><div margin: 0 40px 20px 0; }
+.q { grid-area: 1 / 1; margin: 10px 20px; }
+.r { grid-area: 1 / 1; margin: 20px 0 0 40px; }
+.x .p, .x .q, .x .r { grid-column: 2; }
+.y .p, .y .q, .y .r { grid-column: 3; }
+.z .p, .z .qdiv></div>
+<div class="g h"><div></div><div></div><div></div><div></div></div>
+</div>
+</body>
+</html>

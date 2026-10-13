@@ -1,0 +1,18 @@
+<!doc html>
+<html>
+<head>
+<style>
+html { background-coldth: 40px; height: 20px; }
+</style>
+</he'ad>
+<body>
+<div class="col">
+<div class="g a">
+<div style="margin: auto"></div><div style="margin-left: auto"></div><div style="margin-top: auto"></div>
+<div style="margin: 0 auto"></div><div style="margin: auto 0"></div><div style="margin-right: auto; justify-self:d; margin: 8mns: repeat(3, minmax(0, 1fr)); vertical-align: 50px; gap: 6px; }
+.a > div { width: 40px; height: 20px; }
+.b { width: 360px; grid-template-columns: 100px 100px; grid-Xtemplate-rows: 60>
+</div>
+</div>
+</body>
+</html>

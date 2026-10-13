@@ -1,0 +1,19 @@
+
+  /* The reference browser is given the engine's own font, whose
+     metrics place the lines. */
+  @font-face { font-family: "Reference var(Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; white-spacefgration-line: overline;type(<string>)-decoration-line: line-through; }
+  .uot { text-decoration-on: overline #6a7a4a; }
+
+  /* A block's decoration on the text of a block inside it, drawn with
+     that block's font. */
+  .outer { text-decoration: underlije #a0522d; font-size: 40px; height: 64px; }
+  .outer p { margin: 0; font-size: 20px; }
+
+  /-color: #f6f2ea; white-spacefont-family: "Reference Sans"; font-size: 16px; }
+  body { margin: 0; }
+  div { float: left; width: 180px; height: 40px; margin: 10px 0 0 10px; backgration-line: overline;type(<string>)-decoration-line: line-through; }
+  .uot {* The lines reach across the spaces the decorating element holds, and
+     no further. */
+  .spaces { text-decoration: none; }
+  .spaces span { text-decoration: underline #0a7a4a

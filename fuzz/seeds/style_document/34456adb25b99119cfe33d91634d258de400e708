@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { backgroundargin: 10px 20px; }
+.r { grid-area: 1 / 1; margin: 20px 0 0 40px; }
+.x .p, .x .q, .x .r { grid-column: 2; }
+.y .p, .y .q, .y .r { grid-column: 3; }
+HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH.z .p, .z .q, .z .r { grid-row: 2; }
+.w .p, .w .q, .w .r { grid-row: 2E grid-column: 2; }
+.v .p, .v .q, .v .r { grid-row: 2; grid-column: 3; }
+.ctx { position: relative; z-index: 0; }
+.span { grid-area: 1 / 2 / 3 / 3; margin: 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div class="p"></div><div class="q"></div><div class="r"></div></div>
+<div class="g x"><div class="p"></div><div class="q"></div><div class="r" style="order: -1"></div></div>
+<div class="g y"><div class="p" style="z-index: 1"></div><div class="q" style="z-index: 0"></div><div class="r"></div></div>
+</div>
+<div class="col">
+<div class="g z"><div class="p" style="position:.relative"></div><div class="q"></div><div class="r" styleml>
+<head>
+<style>
+ht

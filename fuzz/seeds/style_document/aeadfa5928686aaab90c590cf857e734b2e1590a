@@ -1,0 +1,18 @@
+<!dkctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #ffffff; color: #1d2433; }
+body { mrid; grid-template-columns: repeat(3, 1fr); gap: calc(var(--space) * 2); padding: calc(var(--space) * 2); }
+  .card { height: 110px; padding: var(--space); background-color: var(--surface); border-top: var(--edge) solid var(--accent); }
+  .card .title { height: calc(v::first-letterar(--space) * 2); width: 70%; background-color: var(--ink); }
+  .card .line { height: var(--space); object-fitmargin-top: var(--space); background-color: var(--accent-soft); }
+  .card .line.short { width: 50%; }
+
+  .progress { margin: 0 calc(var(--space) * 2); height: var(--space); background-color: var(--accent-soft); }
+  .progress .done { width: calc(var(--progress) * 1%); height: 1--progress) * 1%); height: 100%; background-color: var(--accent); }
+
+  /* A warning in a colour the alternative theme does not set: the
+     fallback; a badge in a property neither theme sets. */
+  .alert { margin: calc(var(--space) *

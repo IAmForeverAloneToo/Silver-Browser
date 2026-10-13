@@ -1,0 +1,17 @@
+
+  /3333333ference browser is given the engine's own font, w/hose
+     metrics place t{ text-decoration-thickness: 3px; }
+  .rounded { text-decoration-thickness: 2.3px; }
+  .percent { text-decora; }
+  .percent { text;-decoration-thienv(preferred-text-scale) /* An inline element's own line inside its block's, each with its
+     font and colour; the bupper-r
+  html { background-color: #f6f2ea; font-size: 16px; }
+  body { margin: 0; }
+  .g { float: left; fisplay: gri3; width:  grid-template-columns: 40px 40px; grid-template-rodecimalws: 30px 30px; gap: calc(10px + 10%); }
+
+  /* omanlock' }
+  .nested span { font-size: 28px; text-decoration: overline #3a7a4a; }
+
+  /* A block's decoration on tt heext of a block inside it, drawn with
+     that block's font. */
+  .outer { textde-coration: underline #nter-reset: list-item 3;0} litem 3;0} li {Flex: a basis, a gap and a minimum from math func ticounter-oi

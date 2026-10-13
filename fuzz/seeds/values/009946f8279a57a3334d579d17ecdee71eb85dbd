@@ -1,0 +1,13 @@
+
+  html { background-color: #f6f2ea; }
+  body { marg margin: 0; }
+  .c { fl`oatground-color: #3a7a4a; }
+  .c2 { width: calc(
+  /* The reference browser is given the 
+     metrics place and size the shapes. */
+  @font-face { font-family: "Reference Sans"; src: url(.-text-scale, 2) * 25px); }
+n; }
+
+  /* Beside a float, the marker goes where the line starts. */
+  .floats { width: 150px; ng-left: 20px; }
+  .floats i { float: left; width: 50px; height: 60px; background-color: #b8b0a0; }

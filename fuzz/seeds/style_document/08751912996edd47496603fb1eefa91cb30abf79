@@ -1,0 +1,17 @@
+<!doctype html>
+<body>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f4f5f7; coolr: #1f2328; }
+body { margin: 0; font-family: "Layout Test Sans"; fon+t-size: 																				16px; }
+h1, h2, h3, p { margin: 0; font-weight: normal; }
+.list { w5id: th60px; ma #ffffff; border: 1px s;olid #d0d7de; }
+.figure { flex: none; width: on: row-reverse; 
+.nested { margin-top: 8px; padding: 8px; margin-bottom: 0; background-color: #f6f8fa; }
+</style>
+</head>
+<body>
+<div class="list">
+<div class="media"><div class="figure"></divdy>
+</html>

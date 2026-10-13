@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-c<style>#g{display:grid;grid-template-areas:'a a' 'b c';grid-template-columns:1fr 2fr}#g>:first-child{grid-area:a}</style><div id=g><p>x</p><p>y</p><p>z</p></div>; }
+.col { float: left; width: 400px; }
+i { disple="margin: 0 auto"></div><div style="margin: auto 0"></div><div style="margin-right: auto; justify-self:] 1fr [mid-end] 60px [right]; grid-template-rows: [top] 30px [middle] 30px [bottom]; }
+id-row: top; }
+.a > d-row: 1; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div></div>
+<div class="g b"><grid-template-rowsdiv></div><div></div><div></div><div></div></div>
+<div class="g c"><div></div><div></div><div></div></div>
+</div>
+</body>
+</html>

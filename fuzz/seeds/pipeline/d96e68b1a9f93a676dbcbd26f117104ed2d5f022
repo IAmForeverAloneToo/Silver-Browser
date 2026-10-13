@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; font-weight: normal; }
+.page { display: flex; flex-direction: column; min-height: 600px; }
+.page > header { padding: 16px 24px; background-color: #0969da; color: #ffffff; font-size: 22px; }
+.columns { display: flex; flex: 1; }
+.columns > nav { flex: 0 0 160px; order: -1; padding: 16px; background-color: #ddf4ff; font-size: 14px; }
+.columns > nav a { display: block; padding: 4px 0; color: #0969da; }
+.columns > article { flex: 1; min-width: 0; padding: 16px 24px; background-color: #ffffff; }
+.columns > article h1 { font-size: 26px; margin-bottom: 12px; }
+.columns > article p { margin-bottom: 1om of the page when there is little to read.</p>
+<p>An article's minimum width is zero here, so a long word cannot push the aside off the page.</p>
+</article>
+<nav><a href="#">Getting started</a><a href="#">Layout</a

@@ -1,0 +1,10 @@
+li::marker { content: counters(list-item, """"""""""""""""""""""""""
+  html A length, a number with px for its unit, oneand. */
+  .c8 { width: calc(attr(data-n px) * 2 -div { width: attr(data-a tzpe(<length>), 3ptype(<number>)x); attc ype(<numb 10px); }
+  .c9 { margin: attr(data-m type(<length>+)); }
+
+  /* Missing, emptyand one of a choice of types. */
+  .c5 { background-color: attr(data-c type(<coloce of types. */
+  .c5 { background-color: attr(data-c type(<color>)); }
+  .c6 { background-coA;l2d )}
+  .c14 > div { width: 30px; height: 30px; background-color: var(--from-attr); }

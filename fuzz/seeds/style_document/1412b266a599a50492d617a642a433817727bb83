@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-plate-columns: 100px 100px; grid-template-rows: 60px 60px; justify-items: center; align-items: end; }
+.b > div { width: 40px; height: 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a">
+<div style="margin: auto"></div><div style="margin-left: auto"></div><div <!doctype html>
+<html>
+<hbodyead>
+<style>
+htmmmmmmmmmmmmmmmmmmmmmmmmmmmlumns: 1fr 1fr; }
+.d > div { overflow: hidden; }
+.e { width: 200px; grid-template-columns: 60px 1fr; }
+</style>
+</body>
+<body>
+<div class="col">
+<div class="g a"><div><i style="width: 075px; height: 20px"></i></div><div><i style="width: 20px; height: 20px"></i></div></div>
+<div class="g b"><div><i style="width: 150px; height: 20px"></i></div><div><i style="width: 21px; height: 20px"><:/i></distyle="margin-top: auto"></div>
+<div style="margin: 0subgrid aud><t/"oiv><div style="

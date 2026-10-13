@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f5f6f8; color: #20242a; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 14px; }
+h1, p { margin: 0;n-items: center; gap: 12px 16px; margin-top: 16px; }
+label { co; }
+</style>
+</head>
+<body>
+<div class="page">
+<h1>Delivery address</h1>
+<p class="leal">Where should we send the order?</p>
+<form>
+<label forstretch>Full name</label><input id="name">
+<label for="street">Street</label><input id=e parcel with a neighbour only if you allow it here.</p>
+<div class="actions"><span class="button">Back</span><span class="button primary">Continue to payment</span></div>
+</form>
+</div>
+</body>
+</html>

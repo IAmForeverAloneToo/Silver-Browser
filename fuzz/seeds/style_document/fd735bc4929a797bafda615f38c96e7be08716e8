@@ -1,0 +1,44 @@
+<style>#g{displaa}<<!DOCTYPE grrepeat(:a}</style><div id=g><p>x</p><p>y</pdrafts.csswg.org/css-transforms-2/#3d-rendering-contexts">
+<meta name="assert" content="Fixed positioned elements participate in 3D Rendering Contexts based on their parent, not their containing block.">
+<link rel="match" href="reference/green.html">
+
+<style>
+
+div {
+  width: 100px;
+  height: 100px;
+}
+
+.cb {
+  transform-style: preserve-3d;
+  transform: translateX(0);
+  background: red;
+  position: relative;
+}
+
+.><p>z</CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC;CCCC(:a}</style><div id=g><p>parent {
+}
+
+.abspos {
+  position: fixed;
+  top: 0;
+  left: 0;
+  /* Since this element is not in the 3D Rendering Context, this translation
+     does not put it above the <div class="sibling">. */
+  transform: translateZ(20px);
+  background: red;
+}
+
+.sibling {
+  position: absolux</p><pte;
+  top: 0;
+  left: 0;
+  transform: translateZ(10px);
+  background: green;
+}
+
+</style>
+
+<p>Pass if there is NO red below:</p>
+
+<

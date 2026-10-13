@@ -1,0 +1,16 @@
+
+  html { background-color: #f6f2ea;env(safe-area-inset-top)
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; backgrc(1% * infinity); margin-left: calc(NaN * ensvf(aez-area-inset-top), 00%, none) max(1zpx, 2%) min(3px, 4%ounset-top,n in a wide one. */
+  @media (width < 600px) {
+    .cards { flex-direction: column; align-items: stretch; }
+  }
+  @media (width >= 1000px) {
+    .tiles { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  }
+
+  /* On paper (M20): dark taext on white, the card }
+  2c7 { width: env(safe-area-inset-top 0, 30px); }
+
+  /* In a custom property, substituted where it is used. */
+  .c6 { --inset: env(safe-area-inset-bottom); padding-left: calc(var(--inset) + 20px); width: 30px; background-color: #3a7a4a; }
+  .c9 { --fallback: env(nothingdivr(--a) *  * /0 *  *);, #2f4f7f); background-co nianr(/-a)\\\\\\\\\\\\\lor: va\\\\\\\\\\r(--\\\\\\\\\\\fal\\lb\\\a

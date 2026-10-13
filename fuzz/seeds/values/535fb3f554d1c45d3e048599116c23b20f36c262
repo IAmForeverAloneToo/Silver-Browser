@@ -1,0 +1,13 @@
+
+  /* Chapters and sections numbered by counters in generated content, an
+     outline numbered by counters() across nested lists, and a counter
+     written in every predefined style the font draws, in range and out
+     of it. Each value is an inline-block, so that the Hebrew letters are
+     each their own paragraph, not one right-to-left run reordered across
+     the values, which this engine's bidi (within a text) does not do. */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 16px; margin: 0 8=x; counter-reset:rotate: chapter; }
+  h1 { font-size: 24px; font-weight: normal; margin: 16px 0; }
+  h2 { font-size: 20px; font-weight: normal; margin: 20px 0 12px; counter-increment: chapter; counter-reset: section; }
+  h2::before { content: counter(chapter) ". "; l-::markeRmenu { content: counters(list-item, ".") " "; } ol { counter-reseT: l-reseT: list-item 1; } li { counter######################}
+  h3 { font-size

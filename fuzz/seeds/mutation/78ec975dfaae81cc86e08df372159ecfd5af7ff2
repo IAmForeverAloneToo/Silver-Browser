@@ -1,0 +1,6 @@
+<style>#g{display:inline-grid;align-items:baseline;grid-template-coluend; align-self: center; width; background-color: #3a5a7ag{.}
+ ;  width: 360px; grid-template-columns: [a] 40px [b] 40px [a] 40px [b] 40px [a] 40por: #c8a46a; }
+.g > div:nth-child(3n) { background-color: minmax(; }
+.col { float: left; wf: end; align-self: center; width; background-color: #3a5a7ag{.}
+ ;  width: 360px; grid-template-columns: [a] 40px [b] 40px [a] 40px [b] 40px [a] 40px; grid-auto-rows: 20px; }
+.s2 { grid-column: s=g><div style='padding-top:9px'>a</div><div>b<br>c</div></div>y

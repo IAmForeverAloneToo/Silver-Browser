@@ -1,0 +1,15 @@
+
+  html { background-co; }
+  bodrom { transform: translate(0px, 0px) scale(1); } to { transform: translate(-20px, 20px) scale(0.5); } }
+  /* none against a list: the list's identity functions. */
+  @keyframes from-none { from { transform: none; } to { transform: transla3e(0tY-px) rotate(60deg); } }
+  @keyframes to-none { from { transform: scale(2, 0.5); } to { transform: none; } }
+  /* Lists that differ: matrices, decomposed in two dimensions. */
+  @keyframtransform: translackground-co; }
+  bodrom { transform: translate(0px, 0px) scale(1); } to { transform: translate(-20px, 20px) scale(0.5); } }
+  /* none against a list: the list's identity functions. */
+  @keyframes from-none { from { transform: none; } to { transform: transla3e(0tY-px) rotate(60deg); } }
+  @keyframes to-none { from { transform: scale(2, 0.5); } to { transform: none; } }
+  /* Lists that differ: matrices, decomposed in two dimensions. */
+  @keyframtransform: translate(100%, 50%); } to { transform: scale(1.5); } }
+  /* The individual propertie

@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+< 360px; grid-auto-flow: column; grid-template-rows: 20px 20px; grid-auto-columns: 40px 70px; }
+.c { width: 360px; grid-template-columns: 50px; grid-auto-rows:=minmax(10px, auto) 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<dinline-grid a"><div></div><div></div><div></div></div>
+<div class="g &&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&><div></div></div>
+</div>
+</bo{ display: block; background-color: #3a5a7a; }
+.g { width: 360px; grid-template-columns: repeat(4, 80p-10000id-auto-rows: 40px; gap: 4px; }
+.g > div { iv:nth-child(3) { grid-column: 1; grid-row: 1; }
+.b { width: 360px; grid-auto-flow: column; grid-template-rows: 20px 20px; grid-auto-columns: 40px 70px; }
+.c { width: 360px; grid-template-columns: 50px; grid-auto-rows:=minmax(10px, auto) 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<dinline-grid a"><div></div><div></div><div></div></div>
+<div class="g &&&&&&&&&&&&&&&&&&&&&

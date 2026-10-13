@@ -1,0 +1,21 @@
+<!doct" content="1280x800">
+<meta name="reference-reduced-motion" content="reduce">
+<style>
+  html { background-colorid #d8dee4; border-top-color: #3a7a4a;
+             animation: spin 1s linear infinite; }
+  @keyframes spin { to { rot-motion: reduce) {
+    .spinner { animation: none; }
+  }
+  h1 { margin: 0 0 12px 0; font-size: 24px; text-align: center; }
+  p { margin: 0 0 12px 0; line-height: 24px; }
+</style>
+</head>
+<body>
+  <header></header>
+  <main>
+    <div class="panel">
+      <div class="spinner"></div>
+    </div>
+  </main>
+</body>
+</html>

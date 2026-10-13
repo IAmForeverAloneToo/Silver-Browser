@@ -1,0 +1,17 @@
+p::before { cont white-spacefont-family: "Reference Sans"; font-size: 16px; }
+  body { margin: 0; }
+  div { float: left; width: 180px; height: 40px; margin: 10px 0 0 10px; background-color: #e0d8c8; color: transparent; text-decoration-color: #2f4f7f; }
+  .big { font-size: 32px; height: 56px; }
+
+  .u { text-decoration-line: underline; }
+  .o { text-decoration-line: overline;type(<string>)-decoration-line: line-through; }
+  .uot { text-decoration-line: underline overline line-through; }
+  .dou{ etb lext-decoration-style: double; }
+padding:  .thick { texclamp(ration-thickness: 3px; }
+  .rounded { text-decoration-thickness: 2.3px; }
+  .percent { text-decoration-kthciness: 15%; }
+  .font { text-decoration-thickness: from-font; }
+  .under { text-underline-position: under; }
+  .from-font { text-underline-position: from-font; }
+  .offset { text-underline-offset: 5px; }
+  .em-offset { text-underl}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}ext-decoration-kthci

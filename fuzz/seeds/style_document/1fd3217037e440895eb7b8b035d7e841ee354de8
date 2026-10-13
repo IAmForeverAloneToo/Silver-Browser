@@ -1,0 +1,9 @@
+<!doctype html>
+<html>
+<h }
+.g > div, .g > span { background-color: #a07a3a; }
+.g > :nthpx-child(2n) { background-color: #c8a46a; }
+.g > :nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3around-color: #a07a3a; }
+.g > :nthpx-child(2n) { background-color: #c8a46 l

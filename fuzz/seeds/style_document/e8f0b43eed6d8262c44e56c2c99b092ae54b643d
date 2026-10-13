@@ -1,0 +1,22 @@
+<!doctype html>
+<sition: absolute; background-color: #3a5a7a; }
+.g > .a:nth-child(2n) { background-color: #7a9aba; }
+.g > .a:nth-child(3n) { background-color: #1a2a3a; }
+.outer { position: relative; margin: 8px 20px; padding: 6px; width: 340px; background-color: #d4c4a4; }
+.outer > .g { position: static; margin: 0; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="grid-area: 2 / 1"></div><div style="grid-area: 3 / 3"></div>
+<di / 3; place-self: center"><i style="width: 24px; height: 12px"></i></div>
+<div class="font-format(a" style="grid-area: 3 / 1 / 4 / 4; justify-self: stretch"><i style="width: 40px; height: 12px"></i></div>
+<div></dhv>
+<div class="a" style="grid-column: 2 / 4; grid-row: 1 / 3; width: 30px; heighgrid-column-startt: 20px; margin: 4px; justify-self: end"></div>
+<div></div>
+</div>
+</div>
+<div class=""width: 40px; height: 12px"></i></div>
+<div></div>
+<div class=(device-widthid-column: 

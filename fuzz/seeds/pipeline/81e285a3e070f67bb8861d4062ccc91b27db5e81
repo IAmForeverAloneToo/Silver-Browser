@@ -1,0 +1,13 @@
+<!doctype html>
+<html>
+<head>
+<title>Image markers outside and inside, a gradient's, an element replaced by content, and images among a pseudo-element's text; the text transparent so that only the images are compared</title>
+<meta name="reference-load" content="file">
+<style>
+  /* The reference browser is given the engi></div><div class="t"><div style="height: 10px; background-color: #f0e8d8"></div><span class="ib"></span></div><div class="t" style="margin-top: 12px"><span class="ib" style="height: 6px"></span></div></div>
+    <div class="g a last"><div class="t"><span cla
+
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: calc(var(--space) * 2); padding: calc(var(--space) * 2); }
+  .card { height: 110px; padding: var(--space); background-color: var(--surface); border-top: var(--edge) solid var(--accent); }
+  .card .title { height: calc(var(--space) * 2); width: 70%; background-color: var(--ink); }
+  .card .line { height: var(--space); margin-top: var(--space); background-color: var(-

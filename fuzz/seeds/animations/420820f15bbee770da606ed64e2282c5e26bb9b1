@@ -1,0 +1,6 @@
+
+  html { background-color: #f6f8fa; color: #1e2228; font-sition-)delay: 1s; animation-fill-mode: backwardsease-in-outlled { animation-deling-function: linear; }
+  .bezier { animation-timing-function: cubic-bezier(0.1, 0.7, 0.9, 0.3); }
+  /* Below 0 and past 1: a width of less than none is none. */
+  .ovclamp(ershoot { animation-timing-function:der { height: 56px; bac
+  /* The reference browser is given the enkgrgine's own font, whoound-colors:

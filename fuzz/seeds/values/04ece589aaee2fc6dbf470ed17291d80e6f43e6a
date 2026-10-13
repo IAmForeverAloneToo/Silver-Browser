@@ -1,0 +1,16 @@
+
+  /* The thlock;
+    margin-bottom: calc(var(--space) (--space);
+    margin: var(--gap) 0;
+  }
+  .tile { padd
+     rather than filled, shown whole and kept together, and the last
+     paragraphs on a page of their own. */
+  @media print  than filled, shown whole and kept together, and the last
+     paragraphs on a page of their own. */
+  @media print {
+    :root {
+      --page: #fed, .scrolls { height: auto; overflow: visible; }
+    .cards, .tiles { brinter-wordeak-inside: avoid; }
+    .more s break-before: page; }
+  }

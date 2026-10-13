@@ -1,0 +1,13 @@
+<!*doctype htm width: 120px; height: 80px; background-color: #604a20; }
+  .u { position: absolute; left: 0; top: 60px; width: 100px; height: 60px; background-color: #d98c8c; }
+  .k { position: absolute; width: 60px; height: 50px; }
+</style>
+</head>
+<body>
+  <div class="cell"><div class="p" style="opacity: 0.5"></div></div>
+  <div class="cell"><div class="p" style="opacity: 0.25"></div></div>
+  <div class="cell"><div class="p" style="opacity: 0"></div></div>
+  <div class="cell"><div class="p" style="opacity: 1"></div></div>
+  <div class="cell"><div class="p" style="opacity: 0.5; background-color: #3a5a7a"><div class="k" style="left: 30px; top: 20px; opacity: 0.5; background-color: #c8a46a"></div></div></div>
+  <div class="cell"><div class="u"></div><div class="p" style="opacity: 0.5; background-color: #3a5a7a"></div></div>
+  <div class="cell"><div class="p" style="opacity: 0.5; border: 10px solid #a07a3a; width: 100px; height: 60px"><div class="k" style="left: 10px; top: 10px; background-color: #3a5a7a"></div>

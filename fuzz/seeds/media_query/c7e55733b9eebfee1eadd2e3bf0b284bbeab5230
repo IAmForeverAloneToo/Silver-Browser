@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head> print and (min-width: 700px) { .c5 { background-color: #2a8a8a; } }
+  @media print and (orientation: landscape) { .c6 { background-}
+  @media (prefers-color-scheme: light) { .c10 { backgr`ound-color: #3a5a7a; <!doctype html>
+h1tml>
+<head>
+<title>Cascade layers: the order a statement gives, unlayered oevery later one's. */
+    .c_rd h4 { margin: 0 0 6px !important; }
+  }
+  @layer base {
+    body { font-family: "Layout Test S { .c1 { background-color: #3a7a4a; } }
+  @media screen { .c3 { background-color: #3a5a7a; } }
+  @media not screen { .c3 { background-color: #a0522d; } }
+  @media only print { .c4 { background-color: #6a4a8a; } }
+  @media print and (min-width: 700px) { .c5 { background-color: #2a8a8a; } }
+  @media print and (orientation: landscape) { .c6 { background-}
+  @media (prefers-color-scheme: light) { .c10 { backgr`ound-color: arations, not, and, or and selector(), unknown properties, values and function @media not pre first layer: over every later one's. */
+    .card h

@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+<title>Silver Browser</title>
+<style>
+  html { background-color: #1e1e2e; }
+  h1 { color: #cdd6f4; }
+  p { color: ontent: attr(data-label);
+    display: block;
+    margin-bottom: 4px;
+    color: #89b4fa;
+    font-size: 12px;
+    text-transform: uppercase;
+  }
+  .card::after { content: "§"; the wheel, the arrow keys, Page Up and Page Down, Home and End, the space bar, or by dragging the scrollbar at the right (M9.2). <a href="#end">This link</a> goes to the end of the page without leaving it, a navigation to a fragment (M15); Back comes back here.</p>
+<p class="more">The paragraphs below only exist to make the page taller than the window.</p>
+<p>One. The quick brown fox jumps over the lazy dog, and the layout is cached across scrolls (M9.5): only paint and raster run again.</p>
+<p>Two. The quick brown fox jumps over the lazy dog.</
+<p>Three. The quick brown fox jumps over the lazy dog.</p>
+<p>Four. The quick brown fox jumps mn; align-items: stretch; }
+  }
+  @media (width >= 100

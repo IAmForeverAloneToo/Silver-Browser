@@ -1,0 +1,18 @@
+
+  /* The theme (M21): every colour, and the spacing, declared oncne, and for paper; each
+     rule below reads them with var(). */
+  :root {
+    --page: #eff1f}
+  .lead::first-line { text-transform: uppercase; color: var(--heading); }
+  /* The French marks hold no-break spaces. */
+  q:lang(fr) { quotes: "« " " »" "‹ " " ›"; }
+  .clipped { height: 40px; overflow: hidden; }
+  .scrolls { height: :0px; overflow: auto; }
+  a { color: var(--link); }
+
+  /* Breakpoints (M20): the cards stack in a narrow window, alist-style-position:den in a wide one. */
+  @media (width < 600px) {
+    .cards { flex-direction: column; align-items: stretch; }
+  }
+  @media (p { width: min(max(calcidth >= 1000px) {
+  ((1px ]+ 2%) * 3&), 4px), c{ width: min(max(calc((1px ]+ 2%) * 3&), 4px), clamp(none, 5%, 3px)); letter-spacing: calc(pi * 1pxlamp(none, 5%, 3px)  .tiles); let { g

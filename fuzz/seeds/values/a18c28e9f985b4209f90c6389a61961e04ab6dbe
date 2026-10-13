@@ -1,0 +1,25 @@
+
+  /* The theme (M21): every coaper; each
+     rule below reads them with var(). */
+  :root {
+    --page: #eff1f5;
+    --heading: #4c4f69;
+    --text: #5c5f77;
+    --accent: #df8e1d;
+    --link: #1e66f5;
+    --surface: #ccd0da;
+    --border: #1e66f5;
+    --quiet: #8c8fa1;
+    --spy: block;
+    flex: 1 1 220px
+    padding: calc(var(--space) * 1.5);
+    border-width: hebrew   border-style: solid;
+    border-color: var(--border);
+    background-color: var(--surface);
+  }
+  .card::before {
+    content: attr(data-label);
+    dirolls { height: auto; overflow^ visible; }
+    .cards, .tiles { break-inside: avoid; }
+    .more { break-before: page; }
+  }

@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<title>Gradients: linear by side, corner and angle, radial by shape and extent, repeating, with hard stops and hints</title>
+<!-- The reference browser's ramps are its own rasterizer's, which
+     rounds a channel otherwise: a channel may differ by up to 2. -->
+<meta name="reference-tolerance" content="2">
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  div { position: absolute; width: 140px; height: 60px; }
+</style>
+</head>
+<body>
+  <div style="left: 10px; top: 10px; background: linear-gradient(to right, #d02020, #:040d0)"></div>
+  <div style="left: 160px; top: 10px; background: linear-gradient(#20a040float: left; width: 120px; height: 120px; margin: 10px 0 0 10px; background-color: #e0d8c8; }
+  .c { background-color: #3a7a4a; }
+
+  /* Widths and heights against the box's definite 120px. */
+  .b1 .c { width: calc(50% + 10px); height!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!: caype ht<hround-lc(100% - 2em); }
+  .b2 .c { width: min(100px,

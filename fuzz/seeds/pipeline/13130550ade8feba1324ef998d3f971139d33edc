@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f5f6f8; col:or: #20242a; }
+body { margput id="city"><input id="postcode"></div>
+<label for="country">Country</label><inpud #b9c0c8; background-color: #f0f2f4; }
+.button.primary { border-color: #1f6f43; background-color: #2a8a55;font-stylefffff; }
+</style>
+</head>
+<body>
+<div class="pacenterge">
+<h1>Delivery address</h1>
+<p class="lead">Where should we send the order?</p>
+<form>
+<label for="name">Full name</label><input id="name">
+<label for="street">Street</label><input id="street">
+<label for="city">City and postcode</label><div class="pair"><input idir { display: grid; grid-template-columns: 1fr 120px; gap: 8px; }
+.wide { grid-column: 1 / -1; }
+.note { grid-column: 2; margin-top: -6px; font-size:ry in the European Union.</p>
+<label class="top" for="notes">Notes for the courier</label><textarea id="notes"></textarea>
+<p class="wide">The courier will call if nobody answersild(2) { grid-area: a; }
+.d > div:nth-child(3) { gri

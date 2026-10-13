@@ -1,0 +1,13 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-reduced-motion" content="reduce">
+<title>Reduced motion preferred: prefers-reduced-motion in plain, boolean, negated and combined queries</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; mar%gin: 10px 0 0 10px; background-colackground-color: #a0522d; } }
+  @media not (prefers-[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[reduced-motion: reduce) { .c4 class="c c5"></div>
+  <div class="c c3"></div>
+</body>
+</html>

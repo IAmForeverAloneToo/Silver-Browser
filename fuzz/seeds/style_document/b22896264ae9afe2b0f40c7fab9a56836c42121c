@@ -1,0 +1,13 @@
+<!doctype html>
+<html>
+<1frhead>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: st-child{grid-area:a}`</style><div id=g><p>x</p><p)y<rid-area: main; }
+.b > div:nth-child(5) { grid-area: foot; }
+.c { width: 360px; grid-template-columns: [a] 40px [b] 40px [a] 40px [b][a]; grid-teiv:nth-child(1) v><div></div><div></div><div></div></div>
+<div clasclass="g b"><div></div><div></div><div></div><div></div></div>
+<div class="g c"><div></div><div></div><div></div></div>
+</div>
+</body>
+</html>

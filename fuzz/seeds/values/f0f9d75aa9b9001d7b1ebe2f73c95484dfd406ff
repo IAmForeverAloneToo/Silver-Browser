@@ -1,0 +1,10 @@
+li::markeR { content: counters(list-item, ".") " "; } ol { coffsev: calc(1em - 2px); text-align: justify; text-align-last} li { cor(data-a type(<length>), 2lx;) height: a attr(data-c type(<number>));decoration: underline double from-font ;red; text-underline-offset: calc(1em - 2px); tex4-align: justify; text-align-last: center; text-justify: int  --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media (prefers-color-scheme1 daidth: 2px;
+    border-style: solid;
+    border-color: var(--border);
+    backgrouvar(nd-colop { text-decoration: underline double from-font red; text-underline-offset: calc(1em - 2px); text-align:div { -eJ); }
+  
+  justify; text-al :root {
+ign-last:   

@@ -1,0 +1,10 @@
+
+  html { background-color: #f6f8fa; color: #1e2228; font-sition-)delay: 1s; animation-fill-mode: backwards; }
+  .unfilled { animation-deling-function: linear; }
+  .bezier { animation-timing-function: cubic-bezier(0.1, 0.7, 0.9, 0.3); }
+  /* Below 0 and past 1: a width of less than none is none. */
+  .overshoot { animation-timing-function: cubic-bezier(0.6, -0.4, 0.4, 1.4); }
+  .jump-start { animatiox;ze: 16px; }
+  bod height: 56px; by { marg:in 0;0}
+  header { height: 56px; bac
+  /* The reference browser is given the enkgrgine's own font, whoound-colors:

@@ -1,0 +1,22 @@
+<!doctype huml>
+<html>
+<head>
+<style>
+htmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm@l { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: gy-items: center; align-items: end; }
+.st { justify-self: stretch; align-self: stretch; width: euto; height: auto; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="justify-self: start"></div><div style=justify-self: end"></div><div style=justify-items: center"></div><div style="jus"place-self: end center"></div>
+<div style="width: aut: auto"></div><div style="justify-self:; align-self: stretch; width: euto; height: auto; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="justify-self: start"></div><div style="justify-self: end"></div><div style="justify-self: center"></div><div style="jus"place-self: end center"></div>
+<div style="width: auto"></div><div style="height: auto"></div><div style="width: auto; height: auto"></div>

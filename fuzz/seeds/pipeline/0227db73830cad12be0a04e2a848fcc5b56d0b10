@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<y: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; font-family: "Reference Sans"; font-size: 16px; color: transparent; }
+  body { margin: 0; }
+  ul { float: left; width: 110px; margin: 10px 0 0 10px; padding: 0 0 0 40px; background-color: #e0d8c8; list-style-image: url(images/dot.png); }
+  .inside { list-style-position: inside; }
+  .big { font-size: 32px; }
+  .gradient { list-style-image: linear-gradient(#d02020, #d02020); }
+  .none { list-style: none url(images/quad.png); }
+  .replaced { position: absolute; left: 10px; top: 200px; content: url(images/quad.png); }
+  .<!doctype html>
+<html>
+<head>
+<title>Grid: grids among other layouts — beside a float, after clearance, between collapsing margins, as a flex item, around a flex item, a table and inline items blockified, in a table cell, and in an absolutely positioned box with both insets</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; font-size: 0; }

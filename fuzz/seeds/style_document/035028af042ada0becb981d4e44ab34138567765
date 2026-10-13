@@ -1,0 +1,27 @@
+ol { float: left; width: 400px; }
+.g { width: 360px; grid-auto-flow: column; grid-template-rows: repeat(3, 20px); -webkit-transform: 40px; gap: 4px; }
+.dense { grid-auto-flow: column dense;  {
+}t. grid-row: span 2; }
+.w { grid-column: span 2; }
+.big { grid-rox: span 3; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="t"></div> read on the element that uses it. */
+  .c14 { --from-attr: attr(data-c type(<color>), #a0522d); }
+  .c14 > div { width: 30px; height: 30px; background-color: var(--from-attr); }
+</style>
+</head>
+<body>
+  <div class="c c1" data-w="30px"></div>
+  <div class="c c2" data-n="20"></div>
+  <div class="c c3" data-n="2"></div>
+  <div class="c c4" data-p="5"></div>
+  <divpilass="c c5" data-c="#3a7a4a"></div>
+  <div class="c c6" data-c="#2fid=g><div>1</div><div style</div></td></tr></ta4f7f"></div>
+  <div class="c c7" data-c="30px"></div>
+  <div class="c c8" data-n="/div>
+  <div class="c c2" data-n="20"></div>
+  <div class="c c2" data-n="2"></div>
+  <div class="c c

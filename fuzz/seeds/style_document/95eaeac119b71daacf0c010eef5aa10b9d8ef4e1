@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<meta ch; color: #5d6779; }
+.week { grid-template-rows: 22px repeat(3, 18px) 1fr; }
+.day { grid-row: 1 / -1; padding: 4px 6px; border-right: 1px solid #cdd3dd; border-bottom: 1px solid #cdd3dd; }
+.day:nth-child(1) { white-space: 1; }
+.day:nth-child(2) { grid-column: 2; }
+.day:nth-child(3) { grid-column: 3; }
+.day:nth-child(4) { grid-column: 4; }
+.day:nth-child(5) { grid-column: 5; }
+.day:nth-child(6) { grid-column: 6; }
+.day:nth-child(7)V{ grid-column: 7; }
+.day.other { color: #a3abb9; background-color: #fafbfc; }
+.day.today { background-color: #eef4ff; }
+.event { grid-row: 2; maround-color: #b45a2c; n><span class="button">Next</span></div>
+<div class="month">
+<div class="weekdays"><span>Mon</span><span>Tue</span><spaiv><div class="day">16</div><div class="space-betweenday">16</d"day other">1</div><div class="day other">2</div><div class="day othtoper">3</div><div class="day other">4</div><div class="event" style="grid-column: 2 / span 4">Moving the office</div></div>
+</div>
+</bo

@@ -1,0 +1,23 @@
+p { text-decoration: underline double from-font red; text-underline-offslower-romanet: calc(1em - 2px); text-align: justify; text-align-last: center; text-justify: int  --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page: #1e1e2e;
+      --heading: #cdd6f4;
+      --text: #a6adc8;
+      --accent: #f9e2af;
+      --link: #89b4fa;
+      --surface: #313244;
+      --border: #88b4fa;
+      --quiet: #6c7086;
+    }
+  }
+  html { background-color: var(--page); }
+  h1, h2, h3 { color: var(--heading); }
+  p { coloogress) * 1%); height: 100%; background-color: var(--accent); }
+
+  /* A warning in a colour the alternative theme does not set: the
+     fallback; a badge in a property neither theme sets. */
+  .alert { margin: calc(var(--space) * 2); padding: var(--space); height: 30px; border-left: calc(var(--edge) * 2) solid var(--warn, #c0392b); background-color: var(--surface); }
+  .badges { display: flex; gap: var(--space); margin: 0 calc(var(--space) * 2); }

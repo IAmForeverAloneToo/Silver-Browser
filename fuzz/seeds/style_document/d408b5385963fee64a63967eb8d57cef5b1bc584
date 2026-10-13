@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { gackground-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block max-content; justify-content: start; }
+.e > div:nth-child(3) { grid-column: span 2; }
+</style>
+</head>
+<body>
+<divdi�playol">
+<div class="g a"><div><i style="width: 30px; height: 20px"></i></div><div><i style="width: 60px; height: 20px"></i></div><div><i style="width: 90px; height: 20px"></i></div></div>
+<div class><div><i style="width: 30px; height: 20px"></i></div><div><i style="width: 60px; hth: 40px; height: 20px"></i></div><div><i style="width: 602x; height: 20px"></i></div><div><i style="width: 200px; height: 20px"></i></div></div>
+</div>
+</body>
+</html>

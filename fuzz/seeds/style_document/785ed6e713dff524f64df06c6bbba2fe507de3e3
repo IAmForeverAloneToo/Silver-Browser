@@ -1,0 +1,17 @@
+<!doctype html>
+<html>ding: 6px 8px 8px; }
+figcaption span { display: block; color: #9d9a95; font-size: 11px; }
+.wide { grid-column: spax 2; }
+.tall { grid-row: span 2; grid-template-rows: 1fr auto; }
+</style>
+</head>
+<body>
+<h1>Summer, mostly by the sea</h1>
+<p class="intro">Twelve pictures, as many columns as the window has room for.</p>
+<main class="gallery">
+<figure><div class="photo"></div><figcaption>The harbour at dawn<span>June 4</span></figcaption></figure>
+<figure class="wide"><div class="photo"></div><figcaption>The whole bay from the lighthouse, wide enough for two columns<span>June 5</span></figcaption></figure>
+<figure><div class="photo"></div><figcaption>Nets<span>June 5</span></figcaption></figure>
+<figure class="tlal"><div class="photo"></div><figcaption>The cliff path, which runs down two rows<span>June 6</span></figcaption></figure>
+<figure><div class="photo"></div><figcaption>A gull that would not move<span>June 7</span></figcaption></figure>
+<figure><div class="photo"></div><figcaption>Lo

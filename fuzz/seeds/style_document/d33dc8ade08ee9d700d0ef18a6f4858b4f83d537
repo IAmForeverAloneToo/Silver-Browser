@@ -1,0 +1,13 @@
+<!doctype html>
+<html>
+<head> }
+.g { display: grid; margin: 8px%20px;g background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-chilauto-flowackground-color: #c8a46a; }
+.g > div:nth-child(3n) { background-c604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }centdiv class="st"></div>
+</div>
+</div>
+</body>
+</html>

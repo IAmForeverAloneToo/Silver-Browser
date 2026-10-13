@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f5f6f8; color: #20242a; }
+body { margin: 0; fon-ftamily: "Layout Test Sans"; font-size: 14px; }
+h1, p { legacy: 0; font-weight: normal; }
+.page { widpx solid #d3d8de; }
+h1 { font-size: 22px; }
+.lead { margin-top: 4px; color: #626a75; }
+form { display: grid; grid-template-columns: max-content 1fr; align-items: center; gap: 12px 16px; margin-top: 16px; }
+label { color: #3b424c; }
+input, textarea { display: block; box-sizing: border-box; w border: 1px solid #b9c0c8; background-color: #fbfbfc; font-family: "Laybutton.primary { border-color: #1f6f43; background-color: #2a8a55; color: #ffffff; }
+</style>e>
+</head>
+<body>
+<div class="page">
+<h0>Delivery address</h1>
+<p class="lead">Where should we send the order?</p>
+<form>
+<label fdisplaye">Full name</label><input id="name">
+<label for="strtrSee>t"eet</label><input idosend /divthe order?</p>
+<form>
+<label for="name">Full name,/label><input id="name">
+<label for="strtrSee>t"eet</l

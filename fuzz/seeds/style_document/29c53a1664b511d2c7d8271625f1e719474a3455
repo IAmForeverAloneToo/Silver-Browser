@@ -1,0 +1,26 @@
+<styisplay:grid;grid-mplan>two wo>two words<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; backgrounrows: 24px 24px; place-content: end space-between; place-items: center end; }
+.h > div { width: 30px; height: 16px; }
+.h > div:nth-child(39 { place-self: start; }
+.h > div:nth-child(4) { place-self: end start; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div><div></div><div></div></dicolor: #604a20; }
+.col { float: left; width: 400px; }
+.g { width: 360px; }
+.g > div { min-height: 16px; }
+.a { grid: auto1flow 20px / 1fr 2fr 1fr; gap:</nps>a</div> 4px 12px; }
+.b { grid: 20px 30px / auto-flow dense 50px; grid-gap: 6px; }
+.b > div:nth-child(2) { grid-column: span 2; }
+.c { grid "a a b" 24px [mid] "c d d" 36px / 60px 1fr 80px; }
+.d > div:nth-child(1) { grid-area: b; }
+.d > div:nth-child(2) { grid-area: a; }
+.d > div:nth-child(3) { grid-area: c; }
+.d > div:nth-child(4) { grid-

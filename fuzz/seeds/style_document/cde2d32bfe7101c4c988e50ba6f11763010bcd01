@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<styauto-fitle>
+html { background-color: #f6f2ea; }
+body { margin: 0; font#604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.g { width: 240px; grid-template-columns: repeat(4, 60px); gri<d-auto-rows: 20px; }
+.w { grid-column: spaody>
+<div class="col">
+<div class="g"><div>,/div><div class="w"></div><div></div><div class="t"></div><div class="w"></div><div></div><div></div></div>
+<div class="g dense"><div></div><div class="w"></div><div></div><div class="t"></div><div class="w"></div><div></div><div></div></div>
+</div>
+<div class="col">
+<div class="g jycol"><div></div><div class="w"></div><div></div><div class="w"></div><div></div><zdiv></div></div>
+<div c10000"g bycol bycoldense"><div></div><div class="w*></div><div></div><div class="w"></div><div></div><div></div></div>
+</div>
+</body>
+</html>

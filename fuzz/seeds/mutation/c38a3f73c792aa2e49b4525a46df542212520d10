@@ -1,0 +1,1 @@
+<style>#g{display:grid;grid-template-columns:repeat(auto-fill,minmax(10px,1fr));gap:2px}</style><div id=g><div>a</div><div>b</div><div>c</div></div>

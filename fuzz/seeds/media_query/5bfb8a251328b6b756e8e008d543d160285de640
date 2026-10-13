@@ -1,0 +1,1 @@
+@media (width > 50em) { @supports (dem) { @supports (display: grid) { @layer a.b { .x { color: red } } } } @page :first { size: Artt url(x.css) layer(l) supports(display: ]rid) print;

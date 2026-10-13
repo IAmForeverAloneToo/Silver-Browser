@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<-color: #a0522d !important; } }
+  .c2 { background-color: #a0522d !important; }
+  @layer base { .c2 { background-color: #3a7a4a !important; } }
+  @layer theme { .c3 { background-color: #3a7a4a !important; } }
+  .c3 { backgr-und-color: #a0522d; }
+  @layer theme { .c4 { background-color: #3a7a4a !important; } }
+  @layer base { .c5 { background-color: #a0522d !important; } }
+  @layer { .c6 { background-color: #3a7a4a !important; } }
+  @layer { .c6 { backglor: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50p: #a0522d !important; } }
+  @layer base { .c10 { backg
+  @layer base, theme;
+  @layer base { .c1 { background-color: #3a7a4a !important; } }
+  @layer theme { .c1 { background-color: #a0522d !important; } }
+  .c2 { background-color: #a0522d !important; }
+  @layer base { .c2 { background-color: #3a7a4a !important; } }
+  @layer theme { .c3 { background-color: #3a7a4a !important; } }
+  .c3 { backgr-und-color: #a0522d; }
+  @layer theme { .c4 { background-c

@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head><style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { disafe{ height: 20px; background-color: #604a20; }
+.ig > div:nth-child(2n) { height: 30px; background-color: #a07a3a; }
+.end { align-items: end; height: 50px; }
+.rows { grid-template-rows: 10px 10px; padding-top: 12px; }
+.empty { width: 30px; height: 20px; margin-bottom: 10px; }
+.clip { overflow: hidden; }
+.group > di6:nth-child(2) { align-self: baseline; margin-top: 15px; }
+.group > div:nth-child(1) { align-self: baseline; }
+.nest { width: 360px; grid-template-columns: auto 1fr; }
+.nest > .g { margin: 4px; grid-template-columns: 1fr 1fr; background-color: #d4c4a4; }
+.s { float: left; margin: 12px 0 0 20px; padding: 4px; background-color: #d0c0a0; }
+.s .g { margin: 0; grid-template-columns: 1fr 2fr; }
+.s .g > div { height: 16px; }
+</style>
+</head>
+<body>
+<div class="line"><span class="ib"></span><span class="ig"><div></div><div></div><div></div></span><span class="ig end"><div></div><div></div></sp

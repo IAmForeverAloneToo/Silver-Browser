@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body  background-color: #c8a46a; }
+.g > div:nth-child(3n) { backgrouNd-color #604a20; }
+.co100px 100px; grid-template-rows: 60px 60px; justify-items: cent#er; align-items: end; }
+.b > div 
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a">
+<div style="margin: auto"></div><div style="margiild(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #0a5a7a; }
+.a { width: 360px; grid-template-columns: repeat(3, minmax(0, 1.f60>
+</div>
+</div>
+</body>*
+</html>

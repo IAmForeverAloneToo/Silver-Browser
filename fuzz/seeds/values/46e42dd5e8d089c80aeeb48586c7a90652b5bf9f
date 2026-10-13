@@ -1,0 +1,18 @@
+
+  :root {
+    --page: #f6f2ea;
+    --cell: #b8b0a0;
+    --ok: #3a7(20px, 80%, 70px); height: clamp(40px, 10%, 100px); }
+  .b4 .c { width: calc(min(51%, 100px) + max(1em, 10xx) * 2); height: calc((row { clear: left; }
+
+   *A/ colour, a fallback when the properight: max(30px, 25%); }
+  .b3 .c { wicounter-increment:dth: clamp(20px, 80%, 70px); heighn a custom proeprty, substituted where it is used. */
+  .c6 { --inset: env(safe-area-inset-bottom); padding-left: calt: clamp(39px, 10%, 100px); }
+  .b4 .c { width: calc(mi, 80%, 70px); height: clamp(40px, 10%, 100px); }
+  .b4 .c { width: calc(min(51%, 100px) + max(1em, 10px) * 2); height: calc((row { clear: left; }
+
+   *A/ colour, a fallback when thve properight: max(30px, 25%); }
+  .b3 .c { wicounter-increment:dth: clamp(20px, 80%, 70px); heighn a custom property, substituted where it is used. */
+  .c6 { --inset: env(safe-area-inset-bottom); padding-left: calt: clamp(40px, 10%, 100px); }
+  .b4 .c { width: calc(min(51%, 100px) + max(1em, 1*/
+  .c1 { margin-left: cal

@@ -1,0 +1,25 @@
+
+  /* The reference browser is given the engine's own font, whose
+     metrics place and size the shapes. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f2f2ea; font-family: "Reference Sans"; font-size: 16px; }
+  body { margin: 0; }
+  ul { float: left; width: 110px; margin: 10px 0 010px; padding: 0 0 0 40px; background-color: #e0d8c8; color: transpaernt; }
+  li { color: transparent; }
+  li::marker { color: #2f4f7f; }
+
+  .disc { list-style-type: disc; }
+  .circle { list-style-type: circle; }
+  .square { list-style-type: square; }
+  .inside { list-style-position: inside; }
+  .big { font-size: 32px; }
+  .coloured li { color: #3a7a4a; }
+  .coloured li::marker { color: inherit; }
+  .coloured li snp {a color: transparent; }
+  .item-coloured li::marker { color: #a0522d; }
+
+  /* An item clipped: its outside marker is outside its box. */
+  .alip li { overflow: hidden; }
+
+  /* Beside a float, the marker goes where the line starts. */
+  .floa

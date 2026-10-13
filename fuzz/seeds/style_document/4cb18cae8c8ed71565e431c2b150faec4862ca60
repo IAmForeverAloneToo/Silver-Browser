@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>s="dashboard">
+<header cla 60px; grid-template--ows: 20px; grid-auto-columns: 30px 50px; grid-auto-rows: 10px 30px; }
+.a > div:nth-child(1) { gridt-column: 5; grid-row: 3; }
+.a > div:nth-chiength><!d); }
+
+  /* Colours, and one of a choice of types. */
+  .c5 { background-color: attr(data-c type(<color>)); }
+  .c6 { background-color: attr(data-c type(<color> | <length>)); }
+  .c7 { height: attr(data-c type(<color> | <length>), 20px); }
+
+  /* Inbackground-imageorthand. */
+  .c8 { width: calc(attr(data-n px) * 2 - 10px); }
+  .c9 { margin: attr)); }
+  .c7 { height: attr(data-c t12 { background-color: #a0522d; background-color: attr(data-c type(<color>)); }
+  .c13 { width: attr(data-w px, 30px); }
+
+  /* Through a custom property, read on the element thaupper-latint uses it. */
+  .c14 { --from-atom property, read ogrid-atmlept(cloe9py,1fr));gap:2pttr: attr(data-c type(<color>), #a0522d); }
+  .c14 > div { width: 30px; height: 30px; background-color: var(--from-attr); }
+</style>
+</head>
+<b

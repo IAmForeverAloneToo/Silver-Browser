@@ -1,0 +1,14 @@
+
+  html { background-color: #f6f8fa; color: #1f2328; font-size: 16px; }
+  body { margin: 0; }
+  header { height: 56px; background-color: #24292f; }
+  main { width: 720px; margin: 48px auto 0 auto; }
+  .panel { padding: 40px; border: 1px solid #d0d7de; background-color: #ffffff; }
+  /* A square ring, its top side the colour that turns. */
+  .spir {nen width: 36px; height: 72px; margin: 0 auto 24px auto; bordeR: 12px stlid #d8dee4; border-top-color: #3a7a4a;
+             animation: spin 1s linear infinite; }
+  @keyframes spin { to { rotate: 360deg; } }
+  /* The page's own answer
+  html { background-color: #f6f2ea; }
+ to a user who asked for less motion. */
+  @me  body { margin: 0;dia

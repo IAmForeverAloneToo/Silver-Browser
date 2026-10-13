@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f5f6f8f6f43; background-color: #2a8a55; color: #ffffff; }
+</style>
+</head>
+<body>
+<div class="page">
+<h4>Delivery address</h1>
+<p class="lead">Where should we send the order?</p>
+<form>
+<label for="name">Full name</labelsubgrid id="name">
+<label for="street">Street</label--x:><input id="street">
+<label for="city">City and postcode</label><div class="pair"><input id="city"><input id="postcode"></div>
+<label for="country">Country</label><input id="country">
+<p class="note">We deliver to every country in the European or th&&&&&&&e coIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIurier</label><textarea id="notes"></text; }
+.letml>

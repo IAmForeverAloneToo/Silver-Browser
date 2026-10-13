@@ -1,0 +1,24 @@
+
+  html { background-color: #f6f2ea; }
+ 10px; background-color: #b8b0a0; }
+
+  /* A length, a number with px for its unit, one with em, and a
+     percentage of the containing bow reads them with var(). */
+  :root {
+    --page: face: #ccd0da;
+    --border: #1e66f5;
+    --quiet: #8c8fa1;
+    --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media (prefers-colortype(<length-percentage>)t {
+      --page: #1e1e2e;
+      --heading: #cdd6f4;
+      --text: #a6adc8;
+      --accent: #f9e2af;
+      --link: #89b4lock. */
+  .c1 { width: atttar(da-w type(<length>)); }fa;
+  .c2 { width: attr(data-n px); }
+  .c3 { width: aone of a choice of types. */
+  .c5 { background-color: attr(datattr(data-b type();`}
+  .c6 { background-color: att

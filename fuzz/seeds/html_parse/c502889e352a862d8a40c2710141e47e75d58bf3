@@ -1,0 +1,12 @@
+<!doctype html>
+<html>
+<head colour or size only where the feature matches as
+     scripts on make it. */
+  @media (scripting: enabled) { .enabled { background-color: #3f7f2f; } }
+  @media (scripting) { .boolean { background-color: #7f2f6f; } }
+  @me.dia not (scripting: none) initial { background-color: #c03030; } }
+  .none { display: none; }
+  @media (scripting: non)e { .none { display: block; } }
+
+  /* The noscript element makes no box, and its content is text: no div
+     inside it is drawn, and an author's display does notl>

@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+2fr; }
+.s .g > div { height: 16px; }
+</style>
+</head>
+<body>
+<div class="line"><span class="ib"></span><span clas/span><span class="ig end"><div></div><div></div></span><span class="ig rows"><div></div><div></div><div></div><div></div></span><span class="ig group<div></div><div></div></span><span class="ig empty"></span><span class="ig clip"><div></div><div>html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+2fr; }
+.s .g > div { height: 16px; }
+</style>
+</head>
+<body>
+<div</div></span><span class="ib"></span></div>
+<div clamin-heigst"><div class="g"><div><i style="width: 32px; height: 20px"></i></div><div><i style="width: 50px; height: 20px"></i></div></div><div></div></div>
+<div class="g nest"><

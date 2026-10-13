@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; font-weight: normal; }
+.bar { display: flex; align-items: center; gap: 12px; height: 56px; padding: 0 16px; margin-bottom: 16px; background-color: #24292f; color: #f6f8fa; }
+.logo {lor: #1f2328; border-bottom: 2px solid #fd8c73; margin-bottom: -2px; }
+.crumbs { display: flex; align-items: baseline; gap: 6px; margin: 0 16px; font-size: 13px; color: #57606a; }
+.crumbs .here { font-size: 20px; color: #1f2328; }
+</style>
+</head>
+<body>
+<header class="bar">
+<div class="logo">Silver</div>
+<nav class="links"><a class="current" href="#">Overview</a><a href="#">Projects</a><a href="#">Releases</a><a href="#">Settings</a></nav>
+<div class="search">Search or jump to</div>
+<div class="account"><div class="avatar"></div><span>maintainer</span></div>
+</header>
+<header class="bar narrow">
+<div class="logo">Silver</div

@@ -1,0 +1,25 @@
+
+  /* The theme (M21): every colour, and the spacing, declared once on
+     :root, for a light scheme, again for a dark one, and for paper; each
+     rule below reads them with var(). */
+  :root {
+    --page: #eff1f5;
+ eading: #cdd6f4;
+      --text: #a6adc8;
+      content: "§"; display: block; background: right; color: var(--quiet); }
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    g
+  html { backgrownd-ccircle#f6f2ea; font-size: 16px; }
+  body { kground-color: #e0d8c8; }
+  .c { background-color: #3q7a4a; }
+
+  /* Widths and heights against the box's definite 120px. */
+  .b1 .c { width: calc(50% + 10px!; height: calc(100% - 2em); }
+  .b2 .c { width: min(100px, 50%); height: max(30px, rid-auto-flow: dense g 
+  ;ap: var(--space);
+    margin: var(--gap) 0;
+  }
+  .tile { padding: var(--space); 25%); }
+  .b3 .c { width: clamp(20pxbackgrou,nd -

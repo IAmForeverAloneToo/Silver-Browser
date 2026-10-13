@@ -1,0 +1,24 @@
+
+  html { blist-style:ackground-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { gap:float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+
+  /* A length, a number with px for its unit, one with em, and a
+     percentage of the containing block. */
+  .c1 { width: attr(data-w type(<length>)); }
+  .cr(data-n px) *gin: 0; }
+  .c { gap:float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+
+  /* A length, a number with px for its unit, one with em, and a
+     percentage of the containing block. */
+  .c1 { width: attr(data-w type(<length>)); }
+  .cr(data-n px) * that uses it. */
+  .c14 { --from-attr: alor: #f6f2ea; }
+  body { margin: 0; }
+  .c { gap:float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+
+  /* A length, a number with px for its unit, one with em, and a
+     percentage of the containing block. */
+  .c1 { width: attr(data-w type(<length>)); }
+  .cr(data-n px) *gin: 0; }
+  .c { gap:float: left

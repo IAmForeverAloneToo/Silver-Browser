@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid;="col">
+<div class=<!doctype html>
+<html>
+<head>
+<style>
+html { bac-rows: mskewX(inmax(10px, auto) 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div></div
+<div class="col">
+kground-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; -columns: 50px; grid-auto-rows: mskewX(inmax(10px, auto) 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div></div
+<div class="col">
+< translateX(gri<d-auto-rows: 20px; }
+.w { grid-col
+<div class="g x"><div class="p"></argin: 0 40px 20px 0; }
+.q { grid-area: 1 / 1; margin: 10px 20px; }
+.r { grid-area: 1 / 1; margin: 20px 0 0 40px; }
+.x .p, !.x .q, x. .r { grid-column: 2; }
+.y .p, .y .q, .y .r { grid-coluid-column: 3; }
+.ctx { position: relative; z-indumn: span 3; }
+.t { gridgrid-column-gap
+.dense { grid-auto-flow: dse0nxe: e; }
+.bycol { wid

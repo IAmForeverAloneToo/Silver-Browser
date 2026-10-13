@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<title>List markers: disc, circle and square, outside and inside, at two sizes, coloured by the item and by ::marker, beside floats, and clipped by the list item; the items' text transparent so that only the shapes are compared</title>
+<!-- The disc and the circle are where the re<li>xx</li><li>xx</li></ul>
+  <ul class="disc inside"><li>xx</li><li>xx</li></ul>
+  <ul class="circle inside"><li>xx</li><li>xx</li></ul>
+  <ul class="disc big"><li>xx</li><li>xx</li></ul>
+  <ul class="ciackground-color: #e0d8c8; color: transparent; }
+  li { color: transparent; }
+  li::marker { color: #2f4f7f; }
+
+  .disc { list-style-type: disc; }
+  .circle { list-style-type: circle; }
+  .square { list-style-type: square; }
+  .inside { list-style-position: inside; }
+  .big { font-size: 32px; }
+  .coloured li { color: #3a7a4a; }
+  .coloured li::marker { color: inherit; }
+  .coloured li span { color: transparent; }
+  .item-coloured li::marker { color: #a0522d; }
+
+  /* An item clipped:

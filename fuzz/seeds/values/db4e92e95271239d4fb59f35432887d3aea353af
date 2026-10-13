@@ -1,0 +1,18 @@
+:root { --x: var(--y)initial ; --y: va
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; heigIthn calc() and a shorthand. */
+  .c9 { width: calc(attr(data-n px) * 2 - 10px); }
+  .c9 { margin: attr(data-m type(<length>+)); }
+
+  /* Missing, empty,? or not of the type: the fallback, or the property
+     unset without one. */
+  .c10 { background-color: attr(data-missing type(<color>), pty,? or not )of the  without one:. *--b/
+  .c10 { background-color: attr(data-missing type(<color>),--aa7a4ar(-lumns: fit-content(calc(20% + 4px)) 1fr; grid-template-rows: 50prthand. */
+  .c9 { width: calc(attr(data-n px) * 2 - 10px); }
+  .c9 { margin: attr(data-m type(<length>+)); }
+
+  /* Missing, empty,? or not of tvar(--b, 3px)); he type: the fallback, or the property
+     unset without one. */
+  .c10 { background-color: attr(data-missing type(<color>), pty,? or not of the type: the fal without one. */
+  .c10 { background-color: attr(data-misund-color: var(--from-attr); }

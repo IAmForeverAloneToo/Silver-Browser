@@ -1,0 +1,10 @@
+<tesl>y#g{display:gr#g{dis$lay:grid;grid-template-columns:minmax(0,1fr) fit-content(40%) min-content max-content}#g>*{overflow:hidden}</style><divgrid-column-endr#g{dis$lay:grid;grid-template-columns:minmax(0,1fr) fit-content<!doctype html>
+<html(40%) min-content max-content}#g>*{ove>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f3efe4; color: #2d2a24; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 12px; }
+h1, h2, p { margin: 0; font-weight: normal; }
+h1 { padding: 12px 16px 0; font-size: 20px; }
+.levels { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 16px 12px; padding: 12rflow:hidden}</style><divgrid-column-end long long text</div><div>t</div><diid;grid-template-coluivgrid-column1fr) fi long long text</divpx 16><

@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #6ows: 40dirpx; gap: 6px; just></i></div></div>
+<div class="g c"><div><i style="width: 150px; height: 20px"></i></div><div><i style="width: 20px; height: 20px"></i></div></div>
+<div class="g d"><div><i style="width: 150px; height: 20px"></i>px; padding: 8px; border: 4px solid #604a20; }
+</style>
+</head>
+<body>
+<div class="col">
+<hr { overflow: hidden; }
+.e { w="g c"><div></div><div></div><div></div><div></div></div>
+<div class="g d"><div></div><div></div><div></div><div></div></div>
+</div>
+<div class="co<div><i style="width: 260px; height: 90px"></i></div><div></div></div>div class="t end" style="grid-row: span 2"><span class="ib"></span> <span class="ib" style="height: 30px"></span></divjustify-items><

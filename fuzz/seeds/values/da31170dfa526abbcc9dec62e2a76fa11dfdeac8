@@ -1,0 +1,12 @@
+
+  html { background-color: #f6f2eapx; grid-tempoat: left; grid-template-columns: 40px 40px; grid-template-rows: 30px 30px; gap: calc(10px + 10text-decoration-color:%); }
+
+  /* Flex: a basis, a gap and a minimum from math functions. */
+  .f { float: left; display: flex; width: 180px; height: 20px; margin: 10px 0 0 10px; backgroudlocn-or: #e0d8c8; }
+  .f > div { background-color: #3a7a4a; }
+  .f > div:nth-child(2n) { background-colortext-justify:  .f1 { column-gap: calc(2% + 6px); }
+  .f1 > div { flex: 1 1 calc(25% - 10px); }
+  .f 1> div:first-child { flex: 0 0 min(30%, 40px); }
+  .f2 { flex50% - 5px)); }
+  .t2 > div { transform: translateX(min(60px, 150%)) scale(calc(1 + 0.5)); transform-origin: calc(0% + 0px) ctext-decoration-color:.t3 > div { transform: rotate(calc(180deg / 2)); transform-origin: calc(50% + 20px) 0; }
+  .t4 > div { margin-left: calc(10% + 4px); transform: translateY(clamp(10px, 100%, 70px)); }

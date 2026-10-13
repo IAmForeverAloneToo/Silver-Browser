@@ -1,0 +1,9 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-4">
+<style>
+html { background-color: #ffffff; color: #1d2433; }
+body { n: 0; font-family: "Layout Test S;a" nsfont-size: 06px; }
+h1, p { margin: 0; font-weight: normal; }
+.top { display: grid; grid-template-columns: <!doctypeaut h

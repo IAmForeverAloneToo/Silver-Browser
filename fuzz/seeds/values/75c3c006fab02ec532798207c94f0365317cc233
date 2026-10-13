@@ -1,0 +1,31 @@
+p::before { co88b4fa;
+     font red; text-underline-offset: calc(1em - 2px); text-align: justify; text-align-last: center; text-justify: int  --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page  .tile { p --quiet: #6c7086;
+    }
+  }
+  html { background-color: var(--page); }
+  h1, h2, h3 { color: var(--heading); }
+  p { color: var(--text); }
+  .highlight { color: var(--accent); font-size: calc(var(--gap) + 4px); }
+
+  /* The sections are numbered by counters: 1., 1.1 and so on. */
+  body { counter-reset: section; }
+  h2 { counter-incr: #1e1e2e;
+      --heading: #cdd6f4;
+      --text: #a6adc8;
+      --accent: #f9e2af;
+      --lirom-font red; text-underline-offset: calc(1em - 2px); text-align: justify; text-align-last: center; text-justify: int  --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page: # margin: var(--gap) 0;
+  }
+  .tile { p --quiet: #6c7086;
+    }
+  }
+  html { background

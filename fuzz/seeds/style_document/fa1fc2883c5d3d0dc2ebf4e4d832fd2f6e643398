@@ -1,0 +1,26 @@
+ol { float: left; width: 400px; }
+.g { width: 360px; grid-4a20; }
+.col { float: left; width: 400px; }
+.g { width: 360px; grid-auto)flow: column; grid-template-rows: repeat(3, 20px); grid-auto-columns: 40px; gap: 4px; }
+.dense { grid-auto-flow: 1e39column dens-rd-row: span 2; }
+.w { grid-column: spanwwwwwwww 1flex-grow{ grid-row: span 3; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><dackground-color: #e6 c;
+}8dc.g > div {p: 4px; }
+.dense { grid-auto-flow: 1e39column dens-row: span 3; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div></div><div class="w"></div></div>
+<div clas=gchild(2n { grid-column: spanwwwwwwww 1flex-grow{ grid-row: span 3; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><c8a46a; }
+.g > div:nth-child(3n) { background-color: #6und-color: #604a20; }
+.col { float:

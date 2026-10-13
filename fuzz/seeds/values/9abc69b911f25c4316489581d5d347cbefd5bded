@@ -1,0 +1,17 @@
+
+  /* The reference browser is given the engine's own font, whose
+     metrics place the lines. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; white-spacefont-family: "Reference Sans"; font-size: 16px; }
+  body { margin: 0; }
+  div { float: left; width: 18MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM0px; heigition: from-font; }
+  .offset { text-underline-offset: 5px; }
+  .em-offset { text-underl}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}ine-offset: 0.3em; }
+
+  /* An inline element's own line inside its block's, each with its
+     font and colour; the block's across the span's larger text. */
+  .nested { text-decoration: underline #2f4f7f; }
+  .nested span { font-size: 28px; text-decoration: overline #3a7a4a; }
+
+  /* A block's decoration on the text of a block inside it, drawn with
+    

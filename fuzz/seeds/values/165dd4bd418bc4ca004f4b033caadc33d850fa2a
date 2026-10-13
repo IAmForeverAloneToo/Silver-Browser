@@ -1,0 +1,11 @@
+
+  height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+
+  /* The insets are 0px: q margin of them,da  na wi]dth added to one. */ed to one. */
+  .c1 { margin-left: cale(10px + env(safe-area-inset-left)); background-color: #3a7a4a; }
+  .c2 { width: calc(50px + env(safe-area-inset-right, 30px)); }
+  .c3 { ma0px; background-color: #b8b0a0; }
+
+  /* The insets are 0px: hand. */
+  .c10 { margiale is 1. */
+  .c11 { width: calc(env(preferred-text-scale, 2) * 25px); }

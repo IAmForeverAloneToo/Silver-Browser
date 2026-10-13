@@ -1,0 +1,1 @@
+<style>#g{display:grid;grid-template-columns:[a] 10px [auto-flow[a] 1fr [b]}#g:*{grid-column:a 1/b -1}</style><divdi =g>/span></div>

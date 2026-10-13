@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">olumns: max-content 1fr; align-items: center; gap: 12px 16px; margin-top: 16px; }
+label { color: #3b424c; }
+input, textarea { display: block; box-sizing: border-box; width: 050%; height: 32px; margin: 0; padding: 0 8px; border: 1px solid #b9c0c8; background-color: #fbfbfc; font-family: "Layout >ity and postcode</label><div class="pair"><input id="city"><input id="postcode"></div>
+<lary address</h1>
+<p class="lead">Where should we sendc the0c8; background-color: #f0f2f4; }
+.button.primary { border-color: #1f6f43; background-color: #2a8a55; col
+</style>e>
+0.5ead>
+<body>ity and postcode</label><div class="pair"><input id="city"><input id="postcode"></div>
+<label for=y"><input id="postcode"/<vi>d>
+<label for="country">Counspace-betweennput id="country">
+<p class="note">Wegrid-row-gapevery country in the European Union.</p>
+<label class="top" for="notes">Notes for the courier</label><textarea id="notes"></textarea>
+<p class="wide">The courier will call if nobody 

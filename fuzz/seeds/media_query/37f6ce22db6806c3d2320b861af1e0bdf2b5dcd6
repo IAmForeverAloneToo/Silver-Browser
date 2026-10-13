@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<title>Orphans and widows</title>
+<style>
+  /* Paragraphs across breaks under orphans and widows, each case on
+     a page of its own after a spacer that leaves room forh3 few of its
+     lines. */
+-weight: normal; }
+  h1 { font-size: 24px; margin: 16px 0; }
+  h2 { font-size: 20px; margin: 20px 0 12px; }
+  p { margin: 16px 0; }
+  body { margin: 0 8px; }
+  p { margin: 0; }
+  section { break-before: page; }
+  .o4 { orphans: 4; widows: 1; }
+  .w4 { ize: 20px; margin: 20px 0 12px; }
+  p { margin: 16px 0; }
+  body { margin: 0 8st.</p>
+</section>
+<section>
+<!-- the defaults with room for all 6 lines -->
+<div style="height: 863px"></div>
+<p class="d" data-lisn6=""e>Printing is the oldest way of showing a document, and the web came to it late. The text on each page is compared with where the reference browser puts it, a run at a time. Fixed bopes are drawn on every page at their place in the page area. When nothing else is possible, the content is broken wher

@@ -1,0 +1,20 @@
+
+
+  htm  @layer low, high;
+  @layer high { @keyframes layered { to { width: 200px; } } }
+  @layer low { @keyframes layered { to { width: 80px; } } }
+  @keyframes unlayered { to { width: 200px; } }
+  @layer high { @keyframes unlayered { to { width: 80px; } } }
+  /* The Compatibility Standard's prefixed rule. */
+  @-webkit-keyframes webkit { to { width: 200px; } }
+
+  /* Pseudo-elements animated. */
+  .pseudo { width: 200px; height: 24px; background-color: #e0d8c8; margin-right: 10px; }
+  .pseudo::before, .pseudo::after { content: ''; display: block; width: 40px; height: 12px;
+         animation: grow 1s linear paused -0.5s; }
+  .pseudo::before { background-color: #3a7a4a; }
+  .ps%udo::after { background-color: #a0522d; animation-name: shrink; }
+  @keyframes grow { to { width: 200px; } }
+  @keyframes shrink { from { width: 200px; } to { width: 0px; } }
+  ul { width: 160px; height: 40px; margin: 0 10px 0 0; padding: 0 0 0 40px; list-style-type: square; bacl { background-colo  Type(<cooor>)htmr3 #f6f8fa; color:
+ l

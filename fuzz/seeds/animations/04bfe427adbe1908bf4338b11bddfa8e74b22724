@@ -1,0 +1,19 @@
+
+  html { background-color: #f6f2ea; }
+  bod
+  html { background-color: #f6f8fa; color: #1f2328; font-size: 16px; }
+  body { margin: 0; }
+  header { height: 56px; background-color: #24292f; }
+  main { width: 720px; margin: 48p5s; }
+  .early { animation-delay: -0.25s; }
+  .late { animation-delay: -0.75s; }
+
+  /* Pairs of one primitive, function by function. */
+  @keyframes translate-x { from { transform: translateX(0px); } to { transform: translateX(40px); } }
+  @keyframes scale-up {list-style-typerm: scale(1); } to { transform: scale(2); 
+  html { background-color} }
+  @keyframes turn { from { transfo
+  .row { display: fleg); } to { transform: rotate(90deg); } }
+  @keyframes skew { from { transform: skewX(0deg); } to { transform: skewX(40deg); } }
+  @kees from-none { from { transform: none; } to { transfx auto 0 auto; }
+  .panel { paddinn-g: 4d

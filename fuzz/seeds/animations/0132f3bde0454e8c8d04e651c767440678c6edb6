@@ -1,0 +1,19 @@
+
+  /* The referenanimation a second long, linear and
+     held half way unless it says otherwise. */
+  Dbar { width: 40px; height: 24px; background-color: #3a7a4a;
+         animation-duration: 1s; animation-timing-function: linear; animation-play-state: paused; animation-delay: 10.5s; }
+  .early { animat% { width: 200px; } 50% { width: 40px; } }
+  /* A keyframe's easing, for the interval it begins. */
+  @keyframes stepped { from { width: 40px; animation-timing-function: steps(2, end); } to { width: 200px; } }
+  /* !important in a keyframe drops the declaration: the end is the
+     bar's own width. */
+  @keyframes important { from { width: 120px; } to { width: 200px !important; } }
+  /* By order: the last rule of a name. */
+  @keyframes order { to { width: 80px; } }
+  @keyframes order { to { width: 200px; } }
+  /* By layer: the rule of the layer that wins, wherever it is; an
+     unlayered rule over any layer's. */
+  @layer low, high;
+  @layer high { @keyframes layered { to { width: 200px; } } }
+  @less it say

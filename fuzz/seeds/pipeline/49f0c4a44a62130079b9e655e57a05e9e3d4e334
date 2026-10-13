@@ -1,0 +1,12 @@
+<!doctype  { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-chdiv style="align-self: start"></div><div style="align-sElf: end"></div><div style="align-self: center"></div><div style="place-self: end center"></div>
+<div style="width: auto"></div><div style="height: auto"></div><div style="width: auto; height: auto"></div><div style="juo"></div><div style="width: auto; height: auto"></div><div style="justify-self: flex-end; align-self: flex-end"></div>
+</dgrid-areaclass="g ji">
+<dimode:vertical-lr;direction:rtl}</styv></div><div style="justify-self: start"></div><div style="align-self: start"></div><div class="st"></dile><div id=g><dild(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.g { width: 360px; grid-template-columns: repeat(4, 80px); grid-auto-rows: 40px; gap: 4px; }
+.g > div { wid

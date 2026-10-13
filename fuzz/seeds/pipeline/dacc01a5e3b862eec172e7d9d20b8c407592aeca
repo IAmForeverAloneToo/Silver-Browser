@@ -1,0 +1,18 @@
+<!doctype html>
+ected-height="16" data-offset-x="24" data-offset-y="124">The dialog is centred by its own transform, which takes half its own size, laid out first.</p>
+  </div>
+  <div class="backdrop" data-expected-width="800" data-e<html>
+<head>
+<meta charset="utf-8">
+<title>Layout: a faded modal over a page</title>
+<style>
+  @font-face { font-family: "Layout Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f4f5f7; color: #1f2328; }
+  body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+  h1, h2, p { margin: 0; font-weight: normal; }
+  .page { padding: 24px; }
+  .page p { margin: 8px 0; font-size: 14px; color: #57606a; }
+  .backdrop { position: fixed; left: 0; top: 0; right: 0; bottom: 0; background-color: #1f2328; opacity: 0.5; }
+  .dialog { position: fixed; left: 50%; top: 50%; width: 320px; padding: 20px; background-color: #ffffff; border: 1px solid #d0d7de; transform: translate(-50%, -50%); }
+  .dialog h2 { font-size: 18px; margin-bottom: 8px; }
+  .

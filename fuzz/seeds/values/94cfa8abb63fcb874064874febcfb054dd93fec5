@@ -1,0 +1,12 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left;text-justify: width: 50px; height: 50ppx) {
+    .times { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+oooooooooooooKooooooooooooooooooooooooooooooooooooooo  }
+
+  /* On paper (M19):n a shorthand. */
+  .c10 { margin: env(safe-area-inset-top) 0 0 env(nothing, 30px); }
+
+  /* The text scale is 1. */
+  .c11 { width: calc(env(preferred-text-scale, 2) * 25px); }

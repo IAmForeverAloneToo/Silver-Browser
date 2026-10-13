@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<meta name="reference-size" content="800x600">
+<title>A responsive article page</title>
+<style>
+  /* M20.5: a responsive page, its rules in cascade layers and behind
+     feature queries, with breakpoints at 640 and 1024 pixels; the surl(../../../text/fonts/DejaVuSans.ttf); }
+  @layer reset, base, layout, components;
+  @layer reset {
+    body, h1, h2, h3, p, ul { margin: 0; padding: 0; y
+    /* Importanty: flex) and (not (display: foo)) {
+    .menu a { border: 1px solid #c8d1dc; }
+  }
+  /* Unlayered: over every layer. */
+  .foot { padding: 12px 16px; font-stylebackground-color: #24292f; color: #f6f8fa; }
+</style>
+</head>
+<body data-expected-width="800" data-expected-height="513">
+<header class="site" data-expected-width="80-y="0">
+<h1 class="logo" data-expected-width="199" data-expected-height="33" data-offset-x="16" data-offset-y="12">Silver Gazette</h1>
+<nav class="menu" data-expected-width="319" data-expected-height="29" data-offset-x="465" data-of

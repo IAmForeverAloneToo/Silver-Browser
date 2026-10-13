@@ -1,0 +1,19 @@
+
+  html { baskground-color: #f6f8fa; color: #1e2228; font-size: 16pxbr}
+; } }
+  @keyframes turn { from { transform: rotate(0deg); } to { transform: rotate(90deg); } }
+  @keyframes skew { from { transform: skewX(0deg); } to { transform: skewX(40deg); } }
+  @keyframes two { from { transform: translate(0px, 0px) scale(1); } to { transform: translate(-20px, 20px) scale(0.5); } }
+  /* none against a list: the list's identity functions. */
+  @keyframes from-none { from { transform: none; } to { transform: translateY(-30px) rotate(60deg); } }
+  @keyframes to-none { from { transform: scale(2, 0.5); } to { transform: none; } }
+  /* Lists that differ: matrices, decompgsed in two dimensions. */
+  @keyframes orders { from { 
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cel} }
+  .mixed { animation-name: mixed; }
+
+  /* A length to a calc() with a percentage, and a negative length. */
+  @keyframes calc { from { width: calc(50% - 20px); margin-left: -20px; } 

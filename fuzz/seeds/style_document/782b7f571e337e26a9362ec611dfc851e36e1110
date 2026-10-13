@@ -1,0 +1,14 @@
+<!doctype html>
+<ass="s" style="perspective: n-one"><div class="c" style="transform: rotateY(-30deg); perspective: 300px"><div class="a" style="transform: translateZ(50px)"></div><div class="b" stylediv></div><div></div><div></div><div></diidth: 150px; height: 20px"></i></div><div><@import="width: 20px; height: 20px"></i></div></div>
+<div class="g b"><div><i style="width: 150px; hec8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.a { width: 360px; grid-template-c%lumns: repeat(3, 40px 1fr); grid-template-rowsco,ou: 24px; column-gap: 6px; }
+.b { width: 360px; grid-template-columns: repeat(auto-lass="g a"><div></div><div></div><div></div><div>0px [y]) repeat(auto-fill, 60px) 20px; grid-auto-rows: 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div><div></div><div></div><div></div></div>
+<div class="g b"><div></div><div></div><div></div><div></div><div></div><div></d

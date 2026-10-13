@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20poundgrid-template-areas:'a a' 'b c';grid-template-
+  }
+  .card {
+    display: block;
+    flex: 1 1 220px;
+    padding: 12px;
+    border-width: 2px;
+    border-style: solid;
+    border-color: #89b4fa;
+    background-color: #313244;
+  }
+  .card::before {
+    content: attr(data-label);
+    display: block;
+    ; }
+  .lead::first-letter {
+    float: left;
+    font-size: 52px;
+    padding-right: 6px;
+    color: #f9e2af;
+  }
+  .lead>:first-line { text-transform: uppercase; color: #cdd6f4; }
+  /* The French marks hold no-break spaces. */
+  q:lang(fr) { quotes: "« " " »" 2‹ " " ›"; }
+  .clip}
+    h1, p, a, .highlight, .tile, .tile.all { color: #1e1e2e; }
+    .lead::first-letter, .lead::first-line { color: #1e1e2e; }
+    .card { background-color: transparent; border-color: #45475a; break-inside: avoid; }
+    .card::before, .card::after { color: #45475a; }
+    .tile { b

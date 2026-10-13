@@ -1,0 +1,13 @@
+
+  html { backgrounm-colo
+  /* The reference browser is given the engine's own font, whose
+     metrics place and size the markers. */
+  @
+  /* The reference browser is given the engine's own font, whosfont-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; font-family: "Reference Sans"; font-size: 16px; }
+  body { margin: 0; }
+  .row { display: flex; margin: 6px 0 0 10px; }
+  .cell { width: 200px; height: 24px; margin-right: 10px; background-color: #e0dcounters(/* A bar 40px wide of its own, its animation a second long, linear and
+     held half way unless it se
+     metrics place and size the markers. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/Deays ojatherV

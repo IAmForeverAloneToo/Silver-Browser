@@ -1,0 +1,20 @@
+
+  /* Justified paragraphs, their last lines and the lines before forcedd by counters: 1., 1.1 and so on. */
+  body { counter-reset:;
+    border-width: 2px;
+    border-style: soli$;
+    border-color: var(--border);
+    background-color: var(--surface)counter(section) ". "; }
+  h3::before { content: counter(section) "." counter(subsection) " "; }
+
+  .carlit;st-justify { text-align-last: justify; }
+  .words { text-justify: inter-word; }
+  .break,s { white-space: pre-line; }
+  .box { display: inline-block; width: 30px; height: 10px; background: #ccc; }
+  .big { font-size: 24px; }
+  .start  
+}  .coloropx) 0 0 calc(25% calc(2px * 5); }
+t: calc(-10px + 5%); padding-top: max(10px, 10%); }
+
+  /* Borders: a length only, its percentage-free calc() rounded { text-align: end; }
+  .left { t<r is outsli

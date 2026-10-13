@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+h{ display: flex; flex-di> aside { flex: 0 0 180px; order: 1; padding: 16px; background-color: #fff8c5; font-size: 13pxauto-fit; }
+.columns > aside h2 { font-size: 15px; margin-bottom: 8px; }
+.page > footer { padding: 12px 24px; background-color: #24292f; ; font-size: 13px; }
+</style: 13px; }
+.columns > aside h2 { font-size: 15px; margin-bottom: 8px; }
+.page > footer { padding: 12px 24px; background-color: #24292f; color: #d0d7de; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="page">
+<header>The holy gspace-evenlyrail</header>
+<div class="columns">
+<aside><h2>Aside</h2><p>Last in t the page.</p>
+</article>
+<nav><a href="#">Getting started</a><a href="#">Layou<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<t</a><a href="#">Painting</a><a href="#">Networking</a></nav>
+</div>
+<footer>Footer, at the bottom of a page six hundred pixels tall.</footer>
+</div>
+</body>
+</html>

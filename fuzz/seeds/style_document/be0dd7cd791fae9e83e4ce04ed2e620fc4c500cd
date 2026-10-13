@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-color-scheme" content="dark">
+<title>A dark colour scheme preferred: prefers-color-scheme in plain, boolean, negated and combined queries, and a value it no longer has</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+  @media break-inside:r-scheme: dark) { .c1 { backg/div>
+  <div class="c c4"5"></div>
+  <div class="c c6"></div>
+  <div claIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIss="c c7"></div>
+</body>
+</html>

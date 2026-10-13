@@ -1,0 +1,9 @@
+<!doctype html>
+<html>
+<head>
+<title>Image markers outside and inside, a gradient's, an element replaced by content, and images among a pseudo-element's text; the text transparent so that only the images are compared</title>
+<meta name="reference-load" content="file">
+<style>
+  /* The reference browser is given the engine's own font, whose
+     metrics place the markers and the <!doctype html>ckground-colon their lines. */
+  @font-face { font-family: "Reference Sans"; srr: c: url(../../#b8..

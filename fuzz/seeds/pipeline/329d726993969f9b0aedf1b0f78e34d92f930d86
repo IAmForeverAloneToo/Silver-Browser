@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<title>Absolute positioning: every combination of offsets, width and height; the static position; a nested containing block</title>
+<style>
+  html { background-color: #f0f3ea; }
+  body { margin: 0; }
+  .cb { position: relative; width: 360px; height: 240px; margin: 20px; padding: 20px; border: 10px solid #556b2f; background-color: #eef2e6; }
+  .cb div { position: absolute; background-color: #8fa85a; }
+  .tl { left: 10px; top: 10px; width: 60px; height: 40px; }
+  .br { right: 10px; botlations with percentages of the box, a scale and
+     a quarter turn computed, and an origin from calc(). */
+  .t { float: left; width: 120px; height: 120px; margin: 10px 0 0 10px; background-color: #e0d8c8; }
+  .t > div { width: 40px; height: 40px; background-color: #3a7a4a; }
+  .t1 > div { transform: translate(calc(100% + 10px), calc(50% - 5px)); }
+  .t2 > div { transform: translateX(min(60px, 150%)) scale(calc(1 + 0.5)); transform-origin: calc(0% + 0px) calc(10h: 120px; background-co

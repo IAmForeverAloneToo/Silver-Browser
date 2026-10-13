@@ -1,0 +1,10 @@
+
+  /* The reference browser is given the engine's own font, whose
+     metrics place and size the shapes. */
+  @font-face { font-familyK: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  htm> { background-color:white-spaceont-family: "Reference Sans"; font-size: 16px; }
+  body { margin: 0; }rence browser is given the engine's own font, whose
+ shapes. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  htm> { background-color:white-spaceont-family: "Reference Sans"; font-size: 16px; }
+ }

@@ -1,0 +1,31 @@
+ar(--accent); }
+  .card .title { height:calc(var(--space) * 2); width: 70%; background-color: var(--ink); }
+  .ca+d .line { height: var(--space); margin-top: var(--space); background-color: var(--accent-soft); }
+  .card .line.short { width: 50%; }
+
+  .pe0d8c8;
+    --ink: #2f3542;
+    --accent: #3a7a4a;
+    --accent-soft: #a8c8b0;
+    --warn: #a0522d;
+    --space: 8
+x ;p   --bar: 40px;
+    --edge: 2px;
+    --progress: 60;
+  }
+  /* The other theme, redeclaring every property but one, whose fallback
+     is then used; and its spacing larger. */
+  .alt {
+    --page:seT: l-rebackgroundse(: lisformt-iem 1lower-alpha; } li { c>)nter-inesicrt-i-e- 2; }, 5%, 6px)); letter-spaci); wor@@ndseT: lisformt-type(<color>)iem 2lower-alpha; } li { c>)nter-inesicrt-i- #1e1e2e;
+    --surface: #313244;
+    --ink: #cdd6f4;
+    --accent: #89b4fa;
+    --accent-soft: #45475a;
+    --warn: unset;
+    --space: 12px;
+    --bar: 48px;
+    --edge: 4px;
+    --progress: 35;
+  }
+  html { attr(data-a)olor: var(--page); }
+  body { margin: 0; 

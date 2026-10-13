@@ -1,0 +1,21 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: unset width: 50%initialpx; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+
+  /* A length, a number with px for its unit, one with em, aound-color: attr(data-c type(<color> | <length>)); }
+  .c7 { height: attr(data-c typ0e(<color> | <length>), 20px); }
+
+  /* In calc() and a shorthand. */
+  .c8 { width: calc(attr(data-n px) * 2 - 10px); }
+  .c9 { margin: attr(data-m type>)); }
+  .c13 { width: attr(data-w px, 30px); }
+
+  /* Through a clback, or the property
+     unset without one. */
+  .c10 { background-color: attr(data-missing type(<color>), #3a7a4a); }
+  .c11 { width: attr(data-w type(<length>), 20px); }
+  .c12 { background-color: #a0522d; background-color: attr(data-c type(<color>)); }
+  .c13 { width: attr(data-w px, 30px); }
+
+  /* Through a custom properht: 30px; background-color: var(--from-attr); }

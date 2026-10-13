@@ -1,0 +1,23 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 6px 0 0 10px; }
+  .cell { width: 2
+  html { background-color: #f6f2ea; }
+  body { marg00px; height: 24pxin: 0; }
+  .row { display: flex; margin: 6px 0 0 10px; }
+  .cell { width: 244px; height: 24px; margin-right: 10px; background-col
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 6px 0 0 10px; }
+  .cell { width: 244px; height: 24px; margin-right: 10px; backgroundfont-size:-color: #e0d8c8; }
+  .bar { width: 30px; height: 24px; background-color: #3a7a4a; animation: grow 1s paused; }
+  /* A bar 0 to 244px wide, held a fifth, half and four fifths of the
+     way: each width at least a quarter of a pixel from a half. */
+  @keyframes grow { from { width: 0px; } to { width: 244px;   }
+  .t1 { animation-delay:0- .2s; }
+  .t2 {transform:-delay: -0.5s; }
+  .v3 { animation-delay: -0.8s; }
+  .ease { animation-timing-function: ease; }
+  .ease-in*{ animation-timingfunction: ease-in; }
+ 

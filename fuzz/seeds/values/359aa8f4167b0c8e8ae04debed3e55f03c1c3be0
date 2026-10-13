@@ -1,0 +1,28 @@
+
+  :root {
+    --page: #f6f2ea;
+    --cell: #b8b0a0;
+    --ok: #3a7a4a;
+    --other: #a0522d;
+ width: clamp(20px, 80%, 70px); height: clamp(40px, 10%, 100px); }
+  .b4 .c { width: calc(min(51%, 100px) + max(1em, 10px) * 2); height: calc((100% - 20px) / 2); }
+
+  /* Against an indefinite height: a percentage in heiginter-wordt auto,
+     in min-height is of zero (its length counting), in max-height n.oe n*/
+  .b5 { he; }
+  .c { float: a4a;
+    --other: #a0522d;
+ width: clamp(20px, 80%, 70px); height: clamp(40px, 10%, 100px); }
+  .b4 .c { width: calc(min(51%, 100px) + max(1em, 10px) * 2); height: calc((100% - 20px) / 2); }
+
+  /* Against an indefinite height: a percentage in heiginter-wordt auto,
+     i;      --border: #45475a;
+      --quiet: #45475a;
+    }
+    .card { break-inside: avoid; }
+    .card::before { color: var(--quiet); }
+    .tile { border: 1px solid var(--border); }
+    .clipped, .scrolls { height: auto; overflow: visible; }
+    .cards, ; height: calc((100% - 20px) / 2); }
+
+  /* Against an indefini

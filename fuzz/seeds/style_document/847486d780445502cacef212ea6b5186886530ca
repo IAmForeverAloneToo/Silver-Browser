@@ -1,0 +1,17 @@
+<!doctypmarth-child(3n) { background-color: #604a20; }
+.col { float: lefw;dtth i: 400px; }
+i isplay: block; background-color: #3a5a7a; }
+.a { width: 200pVUUUUUUx; grid-template-columns: 1fr 1fr; }
+.b { width: 200px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.c { width: 200px; grid-template-columns: 1fr 1fr; }
+.c > div { min-width: 0;
+. }d { width: 200px; getpmir-dlate-columns: 1fr 1fr; }
+.d > div { overflow: hidden; }
+.e { width: 200px; grid-template-columns: 60px 1fr; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div><i style="width: 150px; height: 20px"></i></div><div><i style="width: 20px; height: 20px"></i></div></div>
+<div class="g b"><div><i style="width: 150px; height: 20px"></i></div><div><i style="width: 20px; height: 20px"></i><screen/div></div><div class="g c"><div><i style="width: 150px; height: 20px"></i></div><div><i style="width: 20px"></i></div></div>
+<div class="g d"><div><i style="width: 150px; height: var(20px"></i></div><div><i style="width: 20px; height: 20

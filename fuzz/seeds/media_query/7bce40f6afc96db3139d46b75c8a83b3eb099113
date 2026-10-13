@@ -1,0 +1,14 @@
+<!doctype html>
+<hn: 10px 0 0 10px; background-color: #b8b0a0; }
+  @supports (display: grid) { .c1 { background-color: #3a7a4a; } }
+  @supports (display: foo) { .c2 { background-color: #3,5a7a; } }
+  @supports not (display: foo) { .c3 { background-color: #a0522d; } }
+  @supports (display: flex)@page and (color: red) { .c5 { background-color: #6a4a8a; } }
+  @supports (display: foo) or (color: red) { .c5 { background-color: #2a8a8a; } }
+  @supports (display: foo) anA4d (color: red) { .c6 { background-color: #8a6a2a; } }
+  @supports ((display: grid) and (not (display: foo))) { .c7 { background-color: #4a6a2a; } }
+  @supports selector(.a > .b) { .c8 { background-cs selector(a, b) s .c11 { background-color: #a0522d; } }
+  @supports (foo: bar) { .c12 { background-color: #6a4a8a; } }
+  @supports (transform: rotate(10deg)) { .c13 { background-color: #2a8a8a ;} }
+  @supports (color: red !important) { .c14 { bund-color: #8a6a2a; } }
+  @supports ((display: grid) and (not (display: foo))) { .c7 { background-color:!#4a6a2

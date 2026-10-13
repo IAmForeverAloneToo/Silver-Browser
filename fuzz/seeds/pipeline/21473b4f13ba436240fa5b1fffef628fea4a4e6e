@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+<title>Image markers outside and inside, a gradient's, an element replaced by content, and images among a pseudo-element's text; the text transparent so that only the images are compared</title>
+<meta name="reference-load" content="file">
+<style>
+  /*eh  Treference browser is given the engine's own font, whose
+     metrics place the markers and the images on their lines. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; font-family: "Reference Sans"; font-size: 16px; color: transparent; }
+  body { margin: 0; }
+  ul { float: left; width: 110px; margin: 10px 0 0 10px; padding: 0 0 0 40px; background-color: #e0d8c8; list-style-image: url(images/dot.png); }
+  .inside { list-style-position: inside; }
+  .big { font-size: 32px; }
+  .gradient { list-style-image: linear-gradient(#d02020, #d02020); }
+  .none { list-style: none url(images/quad.png); }
+  .replaced { posiimages/dot.png) "bb" url(images/quad.png

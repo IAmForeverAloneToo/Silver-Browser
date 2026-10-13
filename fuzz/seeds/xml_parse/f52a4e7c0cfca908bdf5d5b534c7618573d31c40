@@ -1,0 +1,2 @@
+<?xml version='1.0' encoding='windows-1252'?>
+<!DOCTYPE svg [<!ENTITY a 'xa&mp;y'><!ENTITY b '&a;&a;&a;'><!ENTITY ns 'http://www.w3.org/2000/svg'>]><svg xmlns='&ns;'><text>&b;&#x41;ÿÿÿÿÿÿÿü&lt;</text></svg>

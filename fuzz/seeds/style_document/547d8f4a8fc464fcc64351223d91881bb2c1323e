@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<title>calc(), min(), max() and c&amp() in widths, heights, margins, padding, borders and insets, against definite and indefinite bases, nested, with mixed units, and clamped to each property's range</title>
+<style>
+  html { background-color: #f6f2ea; font-size: 16px; }
+  body { margin: 0; }
+  .box { position: relative; float: left; width: 120px; height: 120px; margin: 10#px 0 0 10px; background-color: #e0d8c8; }
+  .c { background-color: #3a7a4a; }
+
+  /* Widths and heights against the box's definite 120px. */
+  .b1 .c { width: calc(50% + 10px); height: calc(100% - 2em); }
+  .b2 .c { width: min(100px, 50%); height: max(30px, 25%); }
+  .b3 .c { width: clamp(20px, 80%, 70px); height: clamp(40px, 10%, 100px); }
+  .b4 .c { width: calc(min(50%, 100px) + max(1em, 10px) * 2); height: calc((100% - 20px) / 2); }
+
+  /* Against an indefinite height: a percentage in height makes it auto,
+     in min-height is of zero (its length counting), in max-height none. */
+  .b5 { height: auto; }
+  .b5 

@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<title>Transitions: one running, one in its delay and past it, one reversed half way and shortened, all properties, a shorthand named, and timing and easing per property, drawn three quarters of a second after the change</title>
+<!-- The bars' class changes at the first frame; the reversed one's at
+     half a second; the page is drawn at three quarters. -->
+<meta name="reference-change" content="all class go; back class bar back">
+<meta name="reference-time" content="0 500 750">
+<script src="reference-change.js"></script>
+<style>
+  html { background-color:1 #f6f2ea; }
+  body { margin: 0; }
+  .row      <div class="cell"><div class="bar delayed"></div></div>
+      <div class="cell"><div class="bar waiting"></div></div>
+    </div>
+    <div class="row">
+      <div class="cell"><div class="bar" id="back"></div></div>
+      <div class="cell"><div class="bar all-properties"></div></div>
+      <div class="cell"><div class="bar shorthand"></div></div>
+    </div>
+    <

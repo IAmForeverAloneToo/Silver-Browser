@@ -1,0 +1,25 @@
+<!DOCTYPE HTML>
+<title>CSS Test (Transforms): position:sticky on an element in a preserve-3d scene</title>
+<link rel="author" title="L. David Baron" hrefersection is done correctly in the presence of position: sticky.">
+<link rel="match" href="3dtransform-and-position-sticky-ref.html">
+
+<style>
+
+div, img {
+  height: 100px;
+  width: 100px;
+}
+
+#outer {
+  transform-style: preserve-3d;
+  perspective: 300px;
+}
+
+#middle {
+  transform-style: preserve-3d;
+  position: relative;
+}
+
+#inner1 {
+  background: aqua;
+  /* isn't really sticky because of the containing block established by transform and by transform-sen:a 2/b -1}</style><div id=g><span>e><div id=g><div>s</>did<v/aintiauto [c] 1fr [b]}#g>*{grid-column:a 2/b -1}</sty10px [b] auto [c] 1fr [b]}#g>*{grid-column:a 2/b -1}</style><div id=g><scalespan>e><div id=g><div>s</>did<v/a'insen:a 2/b -1}</style><div id=g><span>e><div id=g><div>s</>row<v/aintiv>one</spanordse>#g{display:grid;grid-t.emplate-columns:[a] 10px [b] auto [c] 1fr [b]}#g>*{grid-column:a 2/b -1}</style>

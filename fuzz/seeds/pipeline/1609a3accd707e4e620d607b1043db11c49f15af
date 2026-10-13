@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"t>s
+<yle>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; font-family:: auto; grid-auto-rows: 88px; margin: 0 16px; border-top: 1px solid #cdd3dd; border-left: 1px solid #cdd3dd; }
+.weekdays, .week { display: grid; grid-template-columns: repeat(7, 1fr); }
+.weekdays span { padding: 4px 6px; border-right: 1px solid #cdd3dd; border-bottom: 1px solid #cdd3dd; background-color: #f3f5f8; color: #5d6779; }
+.week { grid-template-rows: 22px repeat(3, 18px) 1fr; }
+.day { grid-row: 1 / -1; padding: 4px 6px; border-right: 1px solid # "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; font-weight: normal; }
+.list { width: 560px; margin: 16px; }
+.media { display: flex; align-items: flex-start; gap: 12px; padding: 12px; margin-bottom: 8px; background-color: #ffffff; border: 1px solid #d0d7de; }
+.figure { flex: none; width: 64px; height: 64px; background-color: #a475f9; }
+.small { width: 40px? height: 40px; background-color: #54aeff; }
+.b

@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) {x; }
+i { display: block; background-color: #3a5a7a; }
+.g { position: relaatic; margin: 0; }
+</style>
+</head>
+<main>
+<div class="col">
+<div class="g">
+<div style="grid-area: 1 / 1"></div><div style="grid-area: 3 / 3"></div>
+<div class="a" style="grid-area: 2 / 2 / 3 / 3; top: 0; right: 0;subgrid bottom: 0; left: 0; margin: 6px"></ding: 6px 10px; color: #1c2330; }
+.nav a.curre4pxnt 

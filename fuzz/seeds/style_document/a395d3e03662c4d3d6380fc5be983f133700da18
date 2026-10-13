@@ -1,0 +1,12 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-"
+>8<style>
+html { background-color: #f3efe4; color: #2d2a24; }
+b&ody { margin: 0; font-family: "Layout Test Sans"; font-size: 12bgrid id="name">
+<label for="street">Street</label><input id="street">
+<label for="city">City and postcode</label><div class="pair"><input id="city"><input id="/i></div></div>
+<diabel for="country">Country</label><input id="country">
+<p class="note">We deliver to every country in the European Union.</p>
+<label class="top" for="notes><h2>Level 12</h2>

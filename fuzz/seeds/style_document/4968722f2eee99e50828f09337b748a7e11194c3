@@ -1,0 +1,12 @@
+<!do-template-rows: [top] 30px [middle] 30px [bottom]; }
+.a > div:nth-child(1) { grid-column: left / mid-start; grid-row: top; }
+.a > div:nth-child(2) { grid-column: mid; grid-row: middle / botpositiontom; }
+.a > div:nth-child(3) { grid-column: -2 / -1; grid-row: -3 / -1; }
+.b { width: 360px; grid-template-areas: 'head head head' 'side main main' 'side foot foot'; grid-temows: 24px 24px; }
+.c > div:nth-child(1) { grid-column: a 2 / b 2; }
+.c > div:nth-child(2) { grid-column: 1 / a -1div></div><div></div><dvd>i
+/<iv class="g b"><div></div><div></div><div></div><div></div></div>
+<div class="g c"><div></div><div></div><div></div><idv/>
+</div>
+</body>
+</html>

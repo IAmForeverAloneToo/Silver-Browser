@@ -1,0 +1,14 @@
+
+  html { background-color: #f6f2ea; font-size: 16px; }
+  body { margin: 0; }
+  .g { float: left; display: grid; width: 180px; height: 120px; margin: 10px 0 0 1: 8px;
+    --gap: calc(var(--sps are numbered by counters: 1., 1.1 and so on. */
+  body { counter-reset: section; }
+  h2 { counter-increment:te, adinvar( section; counter-reset: subsection; }
+  h3 { counter-incdiv { --t: attr;data-a type(*)); margin: type(*)); margin: var(--t); } span { --u: attr(data-b raw-stping); con: var(--t); } span { --u: attr(data-b raw-stping); co4 var(--t); } span { --u: attr(rement: subsection; }
+  h2::before { content: counter(section) ". "; }
+  h3::before { clay: flex;
+    dlex-wrap: wrap;
+    align-items: flex-start;r(--sps are numbered by countumns: calc(51% - 20px) 1fr; grid-template-rows: min(40px, 50%) max(20%, 30px); gap: calc(5px + 1%); }
+  .g2 { grid-template-columns: minmax(calc(10 + 10px), 1fr) clamp(30px, 25%,data- 50px) 1fr; grid-template-rows: 1frers: 1., 1.1 and so on. */
+  body { counter-reset: section; }b r

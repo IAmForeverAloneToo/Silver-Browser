@@ -1,0 +1,17 @@
+
+  html { background-color: #f6f2ea, 100px); }
+  .b4 .c |||||||||||||||||||||||||||||||||||||||||||||||| /* Against an indefinite height: a percentage in height makes it auto,
+     in min-height is of zero (its length counting), in max-height none. */
+  .b5 { height: auto; }
+  .b5 .c { width: 60px;ti eh:hg calc(30px + 50%); min-htext-underline-position:eight: calc(40px + 10%); }
+  .b15 { height: auto; }
+  .b15 .c { width: 60px; height: 30px; max-height: calcn(51%, 100px) + max(1em, 10px) * 2); height: calc((100% - 20px) / 2); }
+
+  /* Against an indefinite height: a percentage in height makes it auto,
+     in min-height is of zero (its length counting), in max-height none. */
+  .b5 { height: auto; }
+  .b5 .c { width: 60px; height: calc(30px + 50%); min-height: calc(40px + 10%); }
+  .b15 { height: auto; 0%); height: max(30px, 25%); }
+  .b3 .c { width: clamp(20px, 80%, 70px); height: clamp(40px, 10%, 100px); }
+  .b4 .c |||||||||||||||||||||||min-htext-underline-position:eight: calc(40px + 10%); }
+  .b15 { height

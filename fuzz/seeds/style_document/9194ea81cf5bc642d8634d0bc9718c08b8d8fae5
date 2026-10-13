@@ -1,0 +1,16 @@
+<!doctype `tml>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div display: block; background-color: #3a5a7a; }
+.g { widtiv><div styl-="place-self: end center"/</div>
+<div stmarginyle="width: auto"></div><div style="height: auto"></div><div style="width: auto; height: auto"></div><div url(style="justify-self: flex-end; align-self: flex-end"></div>
+</div>
+<div class="gA ji">
+<div></div><divss="st"></div>
+</div>v>
+</body>
+</html>

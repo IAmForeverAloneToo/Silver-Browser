@@ -1,0 +1,16 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10pclass 10px; }
+  .cell { position: relative; width: 120px; height: 40px; margin-right: 10px; background-color: #e0d8c8; }
+     q { transform: skewX(0deg); } to { transfor m:skewX(40deg); } }
+  @keyframes two { from { transform: translate(0px, 0px) scale(1); } to { transform: translate(-20px, 20px) scale(0.5); } }
+  /* none against a list: the list's identity functions. */
+  @keyframes from-none { from { transform: none; } to { transform: translateY(-30px) rotate(60deg); } }
+  @keyframes to-none { from { transform: scale(2, 0.5); } to { transform: none; } }
+  /* Lists that differ: matrices, decomposed in two dimensions. */
+  @keyframtransform: translate(100%, 50%); } to { transform: scale(1.5); } }
+  /* The individual properties. */
+  @keyframes translate { from { trh: 72px; height: 72px; margin: 0 auto 24px auto; border: 1px solid #d8dee4; border-top-cuarters of the way. */
+  .a { animation-duration: 1s100px; } }
+ 

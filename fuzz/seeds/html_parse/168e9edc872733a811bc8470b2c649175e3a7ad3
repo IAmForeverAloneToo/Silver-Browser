@@ -1,0 +1,16 @@
+<?xml<!doctype html>
+<html>
+<head>
+<meta charset="utrack>
+<title>Before</title>
+<!-- M24's acceptance (docs/roadmap.md, M24.7): an inlin sceripte; h1>Scripts</h1>
+  <p>This page's scripts set its title to "x", log "hello", throw an error, and log once more.</p>
+</div>
+<script>
+  missing();
+</script>
+<script>
+  console.info("after the error", 1 + 1);
+</script>
+</body>
+</html>

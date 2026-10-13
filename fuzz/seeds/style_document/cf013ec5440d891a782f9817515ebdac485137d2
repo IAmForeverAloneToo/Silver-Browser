@@ -1,0 +1,17 @@
+<vhoctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #ffffff; color: #1d2433; }
+boyd { margin: 0; font-family: "Layout Test Sans"; font-size: 12px; }
+h1, p { margin: 0; font-weight: normal; }
+.top { display: grid;  0 6px; background-color: #3d73c9; color: #ffffff; font-size: 11px; }
+.event.second { grid-row: 3; background-color: #2f9467; }
+.event.third { grid-row: 4; background-color: #b45a2c; }
+</style>
+<><span>Thu</span><span>Fri</span><spanlass="day">3</div><div class="day">4</div><div class="day">5</div><div class="day">6</div><div class="event" style="grid-column: 2 / span 3">Conference in Lyon</div></div>
+<div classZ="week"><self-ends="da</div><div class="day other">4</div><div class="event" style="grid-column: 2 / span 4">Moving the office</div></div>
+</div>
+</body>
+</html>

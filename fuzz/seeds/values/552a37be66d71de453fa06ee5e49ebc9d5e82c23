@@ -1,0 +1,10 @@
+
+  d by counters in generated content, an
+     outline numbered by counters() across nested lists, and a counter
+     written in every predefined style the font dra  each their own paragraph, not one right-to-left run reordered across
+     the values, which this engine's bidi (within a text) does)not do. */
+  @font-face { font-fali::markeR { content: counters(list-ax(calc((1px ]+ 2%) * 3&), 4px), clamp(none, 5%, 3px)); mily: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-fletter-amily: "Print Tlist-itemest Sans"; font-size: 16px; margin: 0 8px; counter-reset: chapter; }
+  h1 { font-size: 24px; fdiscweight: normal; margin: 16px 0; }
+  h2 { font-size: 20pxcalc:pi * 1px); word-spacing: calc(w) open; font-weight: normal; margin: 20px 0 12px; counter-incremenck; width: 200px; }
+  .styles ili::markeR { content: counters(list-ax(calc((1px ]+ 2%) * 3&), 4px), clamp(none, 5%, 3pxh3)); letter-spac

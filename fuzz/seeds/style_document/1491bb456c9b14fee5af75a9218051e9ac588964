@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+bo<style>#g{x)}</s<div>div>sty@ev><div><<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { backgrd-template-rows: 24px 24px; place-content:0 end space-between; place-items: cegrid-row-gapnter end; }
+.h > div { width: 30px; height: 16px; }
+.h > div:nth-child(3) { place-self: start1 }
+.h > div:nth-child(4) { place-self: end start; }
+</style>
+</head>
+<body>
+<diauto-fit"col">
+<div class="g a"><div></div><div></div><div></div><div></div><div></div>dy { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float:

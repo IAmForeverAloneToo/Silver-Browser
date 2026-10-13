@@ -1,0 +1,19 @@
+
+  /* The reference browser is given the engine's own font, whose
+     metrics place and size thven the engine's own font, whose
+     metrics place and size the shapes. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color:white-spaceont-family: "Reference Sans"; font-size: 16px; }
+  body{ margin: 0; }
+  ul { float: left; width: 110px; margin: 10px 0 0 10px; padding: 0alc(-10px + 5%); padding-top: max(10px, 10%); }
+
+  /* Borders: a length only, its percentage-free calc() rounded down as a
+     border width is. */
+  .b9 .c { width: 40px; height: 40px; border: calc19 { --im{ list-style-type: square; }
+  .inside { list-style-position: inside; }
+  .big { font-size: 32px; }
+  .coloured li { ground-color:white-spaceont-family: "Reference Sans"; font-size: 16px; }
+  body{ margin: 0; }
+  ul { float: left; width: 110px; margin: 10px 0 0 10px; padding: 0 0 0 40px; background-color: #e0d8c8; color: transparent; }
+  li { color: transparent; }
+  li::ma

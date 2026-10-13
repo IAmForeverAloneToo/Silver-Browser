@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-scripts" content="on">
+<title>Scripts on: the scripting media feature enabled, in the boolean context and against none and initial-only; noscript content not drawn, as text that makes no element, its own display and background whatever an author sheet says</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  div { float: left; width: 100px; height: 100px; margin: 10px 0 0 10px; background-color: #2f4f7f; }
+
+  /* Each box changes colour or size only where the feature matches as
+     scripts on make it. */
+  @media (scripting: enabled) { .enabled { background-color: #3f7f2f; } }
+  @media (scripting) { .boolean { background-color: #7f2f6f; } }
+  @media not (scripting: none) { .not-none { width: 160px; } }
+  @media (pts on: the scripting media feature enabled, in the boolean context and against none and initial-only; noscript content not drawn, as text that makes no element, its own display and background whatever an author sheet says</t

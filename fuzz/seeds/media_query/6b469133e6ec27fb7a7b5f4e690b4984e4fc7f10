@@ -1,0 +1,10 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-media" conentt="print">
+<title>The print medium drawn on t @media andt @media and the media attr(400px < width <= 800px)ibute of style elements for print and for the screen, @page and the break properties changing not0; }
+  @media print { .c1 d-color: #3a7a4a; } }
+  @media screen { .c2 { background-color: #3a5a7a; } }
+  @media not screen { .c<div class="c c11"></div>
+</body>
+</html>

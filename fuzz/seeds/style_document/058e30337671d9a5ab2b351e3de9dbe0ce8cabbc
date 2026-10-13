@@ -1,0 +1,8 @@
+<!doc0; }
+.g { display: grid.c9 { background-color: #3a7a4a; } }
+  @supports not selector(:foo) { .c10 { background-color: #3a5a7a; } }
+  @supports selector(a, b) { .c11 { background-color: #a0522d; } }
+  @supports (foo: ba/) { .c12 { x"></div=</div>
+</div>
+</body>
+</html>

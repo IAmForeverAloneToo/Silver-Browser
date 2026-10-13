@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f3efe4; color: #2d2a24; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 12px; }
+h1, h2, p { margin: 0; font-weight: normal; }
+h1 { padding: 12px 16px 0; font-size: 20px; }
+.levels { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 16px 12px; padding: 12px 16px 16px; }
+.level h2 { font-size: 14px; }
+.level p { color: #6b6455; }
+.garden { display: grid; grid-template-columns: repeat(5, 1fr); grid-temdiv></div><div></div><div><solid #e3e6ea; }
+.button { padding: 7px 1/div><div></div><div></div></div></div>
+<div class="cell"><div class="g" style="justify-content: center; align-content: center"><div></div><div></div><div></div><div></div><div></div></div></div>
+<div class="cell"><div class="g" style="justify-content: space-between; align-content: space-between"><div></div><div></div }
+</style>
+</head>
+<body>
+<h1>Grid garden</h1>
+<mainine</p><div class="garden"><div class="water"><

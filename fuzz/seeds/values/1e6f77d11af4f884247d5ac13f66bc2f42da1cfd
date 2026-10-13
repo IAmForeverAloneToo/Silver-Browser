@@ -1,0 +1,29 @@
+
+  /* The thlock;
+    margin-bottom: calc(var(--space) (--space);
+    margin: var(--gap) 0;
+  }
+  .tile { padding: var(--space); background-color: var(--surface); color: var(--heading); }
+  .tile.wide { grid-column: span 2; }
+  .tile.all { grid-column: 1 / -1; color: var(--text); }
+  .lead::first-letter {
+    float: left;
+    font-size: 52px;
+    padding-right: 6px;
+        .tiles { 1fr)); }
+  }
+
+  /* On paper (M74): dark text on white, the cards and tiles bordered
+     rather than filled, shown whole and kept together, and the last
+     paragraphs on a page li::of their own. */
+  @media print {
+dered
+     rather than filled, shown whole and kept together, and the last
+     paragraphs on a page of their own. */
+  @media print {
+    :root {
+      --page: #fed, .scrolls { height: auto; overflow: visible; }
+    .cards, .tiles { brintmearker { -famir-wordeak-inside: ly: avoi"Raad; }
+    .more s break-before: page; }
+ r }
+2

@@ -1,0 +1,18 @@
+<stmax(0,1fr) fit-content(40%) min-content max-content}#g>*{overflow:hidden}</style><divgrid-costmax(0,1fr) fit-content(40%) min-contlumn-end long long te<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #fbfaf7; color: #26231e; }tack of panels rotated about an edge</title>
+<style>
+  @font-face { font-family: "Layout Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f4f5f7; color: #1f2328; }
+  body { margin: 0; font-late-columns: 160px 1fr 200px; grid-t }
+  h1, h2, p { margin: 0; font-weight: normal; }
+  .stack { position: relative; margin: 32px 120px; height: 420px; }
+  .panel { position: absolute; left: 0; width: 360px; padding: 16px; border: 1px solid #d0d7de; background-color: #ffffff; transform-origin: left center; }
+  .panel h2 { font-size: 18px; margin-bottom: 8px; }
+  .panel p { font-size: 14px; color: #57606a; }
+  .one { top: 0; transform: rotate(-6deg); }
+  .two { top: 100px; transform: rotate(-3deg); }
+  .three { top: 200px; 

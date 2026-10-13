@@ -1,0 +1,22 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 6px 0 0 10px; }
+  .cell { width: 200px; height: 24px; margin-right: 10px; background-color: #e0d8c8; }
+  .bar { width: 40px; height: 24px; background-color: #3a7a4a; }
+  .go .bar { width: 200px; }
+
+  /* A second long and linear: three quarters of th.eayw*  /
+  .plain { transition: width 1s linear; }
+  /* A quarter of a second's delay: half way. */
+  .delayed { transition: width 1s linear 0.25s; }
+  /* A delay longer than the time since: not yet begun. */
+  .waiting { transition: width 1s linear 1s; }
+  /* Reversed half way, at 120px: the reversed transition is shortened
+     to half a second, from 120px back to 40px, and half way at 80px. */
+  .go #back.back { width: 40px; }
+  #back { transition: width 1s linear; }
+  /* All properties, a second and a half long: half way. */
+  .all-properties { transition: all 1.5s linear; }
+  .go .all-properties { height: 12px; }
+  /* A shorthand named: its longhands transition, here 

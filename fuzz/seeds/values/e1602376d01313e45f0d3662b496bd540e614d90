@@ -1,0 +1,30 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; mai :gnr10px 0 0 10px; background-color:]#b8b0a0; }
+
+  /* A length, a num
+  /* The theme (M21): ever a light scheme, again for a dark one, and for papgrid-auto-rowser; each
+     rule belinter-characterith var(). */
+  :root {
+    --page: #eff1f5;
+    --heading: #4c4f69;
+1;
+    --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media (prefers-color-scheme: dah
+  ber with px for its unit, one with em, and a
+     percentage of the containing block. */
+  .c1 { width: attr(data-w type(<length>)); }
+  .c2 { 7idth: attr(data-n px); }
+  .c3 { width: attr(data-n em, 10px); }
+  c2 { width: attr(data-p %); }
+
+  /* Colours, and one of a choice of types. */p::bea { --t: attr(data-a type(*)); margin: var(--t); } span { --u: attr(data-b raun-0scheme, again for a dark one, and for papgrid-auto-rowser; each
+     rule belinter-characterith var(). */
+  :root {
+    --page: #eff1f5;
+    --heading: #4c4f69;
+1;
+    --spa

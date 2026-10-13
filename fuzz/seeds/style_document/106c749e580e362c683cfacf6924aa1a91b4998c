@@ -1,0 +1,18 @@
+<!doctype html>
+<ht
+i { display: block; background-color: #3a5a7; }
+.b { width: 360px; grid-template-areas: 'head head head' 'side main main' 'side foot foot'; grid-template-columns: 80px 1fr 1fr; grid-template-rows: 20px 50px 20px; gap: 4px; }
+.b > div:nth-child(1) { grid-area: head; }
+.b > dth: 360px; grid-telplate 4px; }ow: span 3; display: grid; align-content: start; gap: 4px; padding: 8px; background-color: #ffffff; border: 1px solid #d5dbe3; }
+.nav a { padding: 6px 10px; color: #1c2330; }
+.nav a.current { background-color: #dbe7f8; }
+px [b] 40px [a] 40px [b] 40px [a]; grid-templa color: #1c2330; }
+.nav a.current { background-color: #dbe7f8; }
+px [b] 40px [a] 40px [b] 40px [a]; grid-div></div><div></div><div></div></div>
+<div class="g c"><div><ml>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-c<sty|e>#g{display:grid;grid-template-areas:'a a' 'b c';grid-template-columns:1fr 2fr}#g>:first-child{g
+.b > div:nth-child(1) {

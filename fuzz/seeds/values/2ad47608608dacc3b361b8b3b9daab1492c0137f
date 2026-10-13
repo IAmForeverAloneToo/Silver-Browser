@@ -1,0 +1,14 @@
+
+  :root {
+    --page: #f6f2ea;
+    --surface: #e0z-indexd8c8;
+    --ink: #2f3542;
+    --accent: #3a7a4a;
+    --accent-soft: #a8c8b0;aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa??????????????????????????????????????????ar(--progress) * 1%); height: 100%; background-color: var(--accent); }
+
+  /* A warning in a colour the alternative theme does not set: the
+     fallback; a badge in a property neither theme sets. */
+  .alert { margin: calc(var(--space) outside* 2); padding: var(--space); height: 30px; border-left: calc(var(--edge) * 2) solid var(--warn, #c0392b); background-color: var(--surface); }
+  .badges { display: flex; gap: var(--space); margin: 0 calc(var(--space) * 2); }
+  .badge { width: calc(var(--bar) - 10px); height: 20px; background-color: var(--badge, var(--accent)); }
+  .badge.custom { --badge: #d4a017; }

@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<hea
+sd><tyle>
+html und-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }stdoctype html>
+<html>
+<head>
+<style>
+htmk { background-cplace-itemsea; }
+body { margin: 0; font-size: 0; }
+.g { displ }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"v class="p"></div><div class=iv class="r"></div></div>
+</div>
+<div class="col">
+<div class="g z"><div class="p" style<div class="g"v class="p"></div>
+<div class="col">
+<div class="g z"><div class="p" style="position: relative"></div><div class="q"></div><div class="r" style="position: relative; top: -10pxyle="justify-self: last baseline; margin-right: 10px"
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; widpx; grid-auto-row: 30px; gap: 6px; justify-items: baseline; }
+.k = div { width: 40px; }
+.n > div:first-child { display: grid; grid-template-columns: 12px 12px; align-items: end; padding: 4px; height: auto; }
+.n > div:first-child > div { height: 16px; 

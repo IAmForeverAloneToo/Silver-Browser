@@ -1,0 +1,19 @@
+<!DOdiv {
+    width: 100px;
+    height: 100px;
+  }
+  .target {
+    transform: rotateY(;80deg);
+  }
+</style>
+<div class=target style="backface-nd: red"></div>
+<div class=ta<style>
+  div {
+    width: 100px;
+    height: 100px;
+  }
+  .target {
+    transform: rotateY(;80deg);
+  }
+</style>
+<div class=target style="></div>

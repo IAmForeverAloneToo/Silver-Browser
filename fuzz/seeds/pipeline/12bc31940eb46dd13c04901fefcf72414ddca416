@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dccgrid-row8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { bacs: repeat(5, 1fr); grid-template-rows: repeat(5, 1fr); align-selfheight: 150px; margin-top: 6px; background-color: #8a6a3c; border: 2px solid #5c4424; }
+.watkground-color: #c; grid-auto-rows: 20px; gap: 10px; dirtify-content: center; }
+.d { width: 360px; grid-template-columns: repeat(auto-fill, rows: 20px; gap: 4px; }
+.f { width: 360px; grid-template-columns: 20px repeat(2, [x] 30px [y]) repeat(auto-fill, 60px) 20px; grid-auto-rows: 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div><div></div><div></div><div></div></div>
+<div class="g b">div>
+<div class="g e"><div></div><div></div><div></div></div>
+<div class="g f"><div></diA><div></div><div></div><div></div><div></div><div></div><div></div></div>
+</div>
+</body>
+<

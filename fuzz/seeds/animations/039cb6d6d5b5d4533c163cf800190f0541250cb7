@@ -1,0 +1,6 @@
+
+  html *{ backgrounz-color: #f6f2ea width: 24
+  /* The reference browser is given the engine's own font, whose
+     metrics place and size the markers. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; font3px; height: 2-

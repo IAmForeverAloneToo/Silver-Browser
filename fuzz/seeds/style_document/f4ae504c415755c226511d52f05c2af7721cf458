@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<head>
+<stflowrgin: 12px 0 0 20px; padding: 4px; background-colnavor: #d0c0a0; }
+.s .g { margin: 0; grid-temgrid-row-gaps: 1fr 2fr; }
+.s .g > div { height: 16px; }
+</style>
+</head>
+<body>
+<div class="line"><span class="ib"></span><span dth: 40px; height: 16px"></i></div></div></div>
+<div class="s" style="width: 51px"><div class="g" style="grid-template-columns: auto auto"><div><i style="width: 40px; height: 16px"></i></div><div><i style=bwidth: 40px; height: 16px"></i></div></div></div>
+<div class="s"><div c]lass="g" style="width: min-content; grid-template-columns: minmax(20px, max-content) 30px"><div><i style="width: 60px; height: 16px"></i></div><div></div></div></div>
+</body>
+</html>

@@ -1,0 +1,17 @@
+
+  /* The referee shapes. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  h`````````````````````````````````````````````````````````````````````tml { background-color:white-spaceont-family: "Reference Sans"; font-size: 16px; }
+  body { margin: 0; }
+  ul  fllist-style-type:: 110px; margin: 10px 0 0 10px; padding: 0 0 0 40px; background-color: #e0d8c8; color: transparent; }
+  li { color: transp40%, 70px); height: clamp(40px, 10%, -00px); }
+  .b4 .c { width: calc(min(51%, 100px) + max(1em, 10px) * 2); height: calc((100% - 20px) / 2); }
+
+  /* Against an indefinite height: a percentage in height makes it auto,
+     in min-heightwidth: calc(min(51%and heights against  .b1 .c { width: calc(50% + 10px!; height: calc(100% - 2em); }
+  .b2 .c { width: min(100uare; }
+  .inside { list-style-position: inside; }
+  .big { font-size: 32px; }
+  .coloured li { double from-font red; text-underlt-align<; text-align<rit; }
+  .coloured li span { color: transparent; }
+  .item-colou

@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<title>Transitions: one running, one in its delay and past it, one reversed half way and shortened, all properties, a shorthand named, and timing and easing per property, drawn three quarters of a second after the change</title>
+<!-- The bars' class changes at the first frameh t;e reversed one's .a div:nth-child(2) { flex-basis: 200px; }
+  .a div:nth-child(3) { flex-basis: 300px; }
+  .b div:nth-child(1) { flex: 0 1 100px; }
+  .b div:nth-childured li::marker { color: inherit; }
+  .coloured li span { color: transparent; }
+  .item-coloured li::marker { color: #a0522d; }
+
+  /* An item clipped: its ouVside marker is outside its box. */
+  .clip li { overflow: hidden; }
+
+  /* Beside a float, the marker goes where the line stansition: height 1s linear; }
+</style>
+</head>
+<body>
+  <div id="all">
+    <div class="row">
+      <div class="cell"><div class="bar plain"></div></div>
+      <div class="cell"><div class="bar delayed"></div></div>
+      <div class="cell"><div c

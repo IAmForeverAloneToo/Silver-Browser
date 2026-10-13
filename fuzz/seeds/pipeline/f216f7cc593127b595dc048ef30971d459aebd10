@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #fbfaf7; color: #26231e; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 15px; }
+h1, h4, p { margin: 0; font-weight: normal; }
+.page { display: grid; grid-template-areas: "header header header" "nav main aside" "footer footer footer"; grid-template-columns: 160px 1fr 200px; grid-template-rows: auto 1fr auto; min-height: 600px; }
+header { grid-area: header; display: grid; grid-template-columns: auto 1fr auto; align-items: baselin<style>#g{display:grid;grid-template-rogs:auto 50%;height:auto}#g>div{height:50%;min-height:20%;max-height:30px}</style><div style=float:lef><div>b</div></div></div>ader .search { padding: 4px 10px; border: 1px solid #66745f; font-size: 13px; }
+nav { grid-area: nav; padding: 16px 0; background-color: #eeeadf; }
+nav a { display: block; padding: 6px 20px; color: #26231e; }
+main { grid-area: main; padding: 20px 24px; }
+main h2 { font-size: 20px; margin-bottom: 10px; }"main p { margin-bott

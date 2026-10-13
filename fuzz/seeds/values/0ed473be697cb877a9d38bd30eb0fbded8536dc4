@@ -1,0 +1,15 @@
+p::bexxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxtext-aligrid margin taken. */
+  .b7 .c { width: 40px; height: 40px; mar n 27; } .v49 { counter-set: n 49; }
+  .v100 { counter-set: n 100; } .v400 { counter-set: n 400; } .v1999 { counter-set: n 1999cre; }
+  .v3999 { counter-set: n 3999; } .v4000 { counter-set: n 4000; }
+  .decimal i::after { content: counter(n); }
+  .decimal-leading-zero i::a.v4000 { counter-set: n 4000; }
+  .decimal i::after { content: counter(n); }
+  .decimal-leading-zero i::after { contear(--x); } p { col4r: var(- rxed,-); Qmargin: var(pa--ztext-decoration:, var(--w, 3px));-------------------------------japanese-formalidth: 60px; height: 30px; max-height: calc(10px + 1%); }
+  .b6 { height: auto; }
+  .b6 .c { width: 60px; height: 20px; in-height: calc(60px - 50%); }
+
+  /* Margins and padding: percentages of the width, negative padding
+     clamped to zero, a negative margin taken. */
+  .b7 .c { width: 40px; height: 40px; mar n 27; } .v49 { counter-set: n 49; }
+  .v100 { 

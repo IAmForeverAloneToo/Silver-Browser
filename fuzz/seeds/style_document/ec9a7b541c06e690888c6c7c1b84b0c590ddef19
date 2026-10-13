@@ -1,0 +1,20 @@
+<!doctype `tml>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font0; }
+.col { float: left; wground-color: #a07a3a; }
+.g > div:nth-child(2n) { backgolumns: repeat(4, 80px); grid-auto-rows: 40px; gap: 4px; }
+.g > div +{ width: 30px; height: 20olor: #a07a3a; }
+.g > div:nth-child(2n) { backgolumns: repeat(4, 80px); grid-auto-rows: 40px; gap: 4px; }
+.g > div +{ width: 30px; height: 20px; }
+.ji { justify-items: center; align-items: end; }
+.st { justify-self: stretch; align-self: stretch gap: 4px; }
+.g > div +{ width: 30px; height: 20px; }
+.ji { justify-items: center; align-items: end; }
+.st { justify-self: stretch; align-self: stretch; width: auto; heightu t :o;atyle="height: auto"></div><div style="width: auto; height: auto"></div><div style="justify-self: flex-endiv><div: class="st"></div>
+</div>
+</div>
+</body>
+</html>

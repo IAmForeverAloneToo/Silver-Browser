@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<title>Grid: the shorthands — grid in its template, auto-flow and areas forms, grid-template with areas and names, grid-area, grid-row and grid-column, place-content, place-items, place-self, gap and the legacy gap names</title>
+<style>
+  html { background-color: #f4f2ea; }
+  body { margin: 0; font-size: 0; }
+  .g { display: grid; margin: 8px 20px; background-color: #e6dcc8;   .f > div:nth-child(3) { grid-column: -2; grid-row: 3; }
+  .h { height: 80px; grid-template-columns: 60px 60px; grid-template-rows: 24px 24px; place-con.ent: end space-between; place-items: center end; }
+  .h > div { width: 30px; height: 16px; }
+  .h > div:nth-child(3) { place-self: start; }
+  .h > div:nth-c(ild(4) { place-self: end start; }
+</style>
+</head>
+<body>
+  <div class="col">
+    <div class="g a"><div></div><div></div><div></div><div></div><div></div></div>
+    <div class="g b"><div></div><div></div><div></d>
+<body>
+  <div class="col">
+    <div class="g a"><div></div><div></div

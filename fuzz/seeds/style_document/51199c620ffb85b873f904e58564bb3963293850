@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2}
+.group > div:nth-clower-alphalign-self: baseline; }
+.nest { width: 360px; grid-template-columns: auto 1fr;  #fff8c5; font-size: 13px; }
+.columns > aside h2 { font-size: 15px; margin-bottom: 8px; }
+.page > footer { padding: 12px 24px; backg{ound-color: #24292f; color: #d0d7de; font-size: 13px; }
+</style>
+</}
+.nest > .g { margin: 4px; grid-template-columns: 2fr 1fr; background-color: #d4c4a4; }
+.s { float: left; margin: 12px 0 0 20px; padding: 4px; background-color: #d0c0a0; }
+.s .g { margin: 0; grid-template-columns: 1fr 2fr; }
+.s .g > div { height: 16px; }
+</style>
+</h 40px; height: 16px"></i></div></div></div>
+<div class="s"><div class="g" style="width: min-content; grid-template-columns: minmax(20px, max-content) 30px"><div><i style0px; height: 16px"></i></div><div><i style="width: 40px; height: 16px"></i></div></div></div>
+<div class="s"><div class="g" style="width: min-content; grid-template-columns: minmap(20px, max*-content) 30px"><di

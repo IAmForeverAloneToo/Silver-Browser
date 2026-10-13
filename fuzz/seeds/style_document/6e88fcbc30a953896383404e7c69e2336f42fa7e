@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; fonforms: translations with percentages of the box, a scale and
+     a quarter turn computed, and an origin from calc(). */
+  .t { float: left; width: 120px; height: 120px; margin: 10px 0 0 10px; background-color: #e0d8c8; }
+  .t > div { width: 40px; height: 40px; background-color: #3a7a4a; }
+  .t1 > div { transform: translate(calc(100% + 10px), calc(50% - 5px)); }
+  .t2 > div { transform: translateX(min(60px, 150%)) scale(calc(1 + 0.5)); transform-origin: calc(0% + 0px) calc(100% - 40px); }
+  .t3 > div { transform: rotate(calc(180deg / 2)); transform-origin: calc(50% + 20px) 0; }
+  .t4 > dRiv { margin-left: calc(10% + 4px); transform: translateY(clamp(10px, 100%, 70px)); }
+</style>
+</head>
+<body>
+  <div class="g g1"><div></div><div></div><div></div><div></div></div>
+  <div class="g g2"><div></div><div></div><div></div></div>
+  <div class="g g3"><div></div><div></div><div></div><div></div></div>
+  <div class="g g4"><di

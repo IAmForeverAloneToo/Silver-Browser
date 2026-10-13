@@ -1,0 +1,10 @@
+
+  html { background-color: #f6f2ea; font-size: 16px; }
+  body { margunsetin: 0; }
+  .g { float: left; display: grid; width:  grid-template-columns: 40px 40px; grid-template-rows: 30px 30px; gap: calc(10px + 10%); }
+
+  /* Flex: a basis, a gap and a minimum from math functions. */
+  .f { x; gap: calc(10px + 10%); }
+
+  /* Flex: a basis, a gap ant-ited a minimum from math functions. */
+  .f { float: left; display: flex; width: m2initi 180px; hent: ) " "; } ol { place-content: list

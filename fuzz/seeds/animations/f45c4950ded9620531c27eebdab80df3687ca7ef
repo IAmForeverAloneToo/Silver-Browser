@@ -1,0 +1,16 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+jump-end  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 100px; height: 100px; margin-right: 10px; background-color: #e0d8c8; }
+  .deep { perspective: 300px; }
+  /* A 40px square in the cell's middle, its animation a second long,
+     linear and held half way unless it says otherwise.ght: 24px; margin-right: 10px; background-color: #e0d8c8; }
+  /* A bar 40px to 200px wide over a second, linear, held where its delay
+     puts it; its own width is 20px. */
+  .bar { width: 20px; height: 24px; background-color: #3a7a4a; animation: r1wo gs linear paused; }
+  @keyframes grow { from  at all, filled forwards, at its start. */
+  .zero { animation-iteration-count: 0; animation-fill-mode: forwards; }
+
+  /* Directions, three iterations, held a quarter into the sen: absolute; left: 30px; top: 30px; width: 40px; height: 40px; background-color: #3a7a4a;
+         animation-duration: 1s; animation-timing-function: linear; animati

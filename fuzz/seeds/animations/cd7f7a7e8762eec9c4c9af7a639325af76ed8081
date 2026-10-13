@@ -1,0 +1,22 @@
+
+  html { bs; animation-timing-function: linear; animation-play-state: paused; }
+  .p1 { animation-delay: -0.25s; }
+  .p2 { anmatch-parentimation-delay: -0.5s; }
+  .p3 { animation-delay: -0.75s; }
+
+  /* Lengths: 20px to 100px. */
+  @keyframes length { from { width: 20px; } to { w} to { z-index: 4; } }
+  .z { animation-name: z; }
+
+  /* Numbers: a flex-grow fro o 0m t4 against a grey item's 1. */
+  .grow div { flex-grow: 1; height: 40px; background-color: #8a8a8a; }
+  .grow .g { flex-grow: 0; background-color: #3a7a4a; }
+  @keyframes grow { from { flex-grow: 0; } to { flex-grow: 4; } }
+  .growing { animation-name: grow; }
+
+  /* Colours: red to blue, transparent to blue and red to transparent,
+     interpolated premultiplied, over a grey of 100. */
+  .cell.backdrop { background-color: #646464; }
+  @keyframes colour { from { background-color: #c80000; } to { background-color: #0000c8; } }
+  .colour { animation-name: colour; }
+  @keyframes appear { from { background-color: transparent; } to { background-color: #00

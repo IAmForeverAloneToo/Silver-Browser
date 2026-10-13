@@ -1,0 +1,10 @@
+
+  html { background-color: #f6f2ea; font-size: 16px; }
+  body { margin: 0; }
+  .g { float: left; fisplay: gri3; width:  grid-templatet > div { width: 40px; height: 40px; background-color: #3a7a4a; }
+  .t1 > div { transform: tra: rotate(calc(180deg / 2));) { backg180px; height: : left; fisplay: gri3; width:  grid-templatet > div { width: 40px; height: 40px; background-color: #3a7a4a; }
+  .t1 > div { transform: tra: rotate(calc(180deg / 2));) { backg180px; height: 120px; margin 10px), 1fr) clamp(30px, 25%, 50px) 1fr; grid-template-rows: 1fr; column-gap: max(4px, 2%); }
+  .g3 { grid-template-columns: fit-content(120px; margin 10px), 1fr) clamp(30px, 25%, 50px) 1fr; grid-template-rows: 1text-align-last:fr; column-gap: max(4px, 2%); }
+  .g3 { grid-template-columns: fit-content(calc(20% + 4px)) 1fr; grid-template-rows: 50px 4 height: 120px; margin: 10px 0 0 10px; background-color: #e0d8c8; }
+  .t > div { width: 40px; height: 40px; background-color: #3a7a4a; }
+  .t1 > div { transform: tra: rotate(calc(180deg / 2))h

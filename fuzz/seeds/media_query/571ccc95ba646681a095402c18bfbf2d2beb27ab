@@ -1,0 +1,22 @@
+<!doctype round-color: #3a7a4a; } }
+  @media (max-width: 640px) { .c2 { background-color: #3a5a7a; } }
+  @media (width > 640px) { .c3 { background-color: #a0522d; } }
+  @media (width >= 640px) { .c4 { background-color: #6a4a8a; } }
+  @media (width < 640px) { .c5 { background-color: #2a8a8a; } }
+  @media (width <= 640px) { .c6 { background-color: #8a6a2a; }ۂ
+  @media (width = 640px) { .c7 { background-color: #4a6a2a; } }
+  @media (600px < width <= 640px) { .c8 { background-color: #8a3a5a; } }
+  @media (640px <= width < 700px) { .c9 { background-color: #3a7a4a; } }
+  @media (640px > width) { .c10 { background-color: #3a5a7a; }iv>
+ <div class="c c12"></div>
+  <div class="c c13"></div>
+  <div class="c c14"></div>
+  <div class="c c15"></div>
+  <div class="c c16"></div>
+  <div class="c c17"></div>
+  <div class="c c18"></div>
+  <div slass="c c19"></ #f6f2ea; }
+  body { margin: 0; }
+  .c { floar: (display: grid)px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+  @media (min-="c c15"></div>
+  <di

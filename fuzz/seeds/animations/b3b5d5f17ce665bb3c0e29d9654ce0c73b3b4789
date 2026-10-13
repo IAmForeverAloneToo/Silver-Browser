@@ -1,0 +1,21 @@
+
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { ay: -0.5s; }
+  .early { animation-delay: -0.25s; }
+  .late { animation-delay: -0.75s; }
+
+  /* Pairs of one primitive, function by function. */
+  @keyframes translate-x { from { transform: translateX(0px); } to { transform: translateX(40px); } }
+  @keyframes scale-up { from { transform: scale(0); } to { transform: scale(2); } }
+  @keyframes turn { from { transform: rotate(0deg); } to { transform: roone; }
+  }
+  h1 { margin: 0 0 12px 0; font-size: 24px; text-align: center; }
+rom { transform: translateX(0px); } to { transform: translateX(40px); } }
+  @keyframes scale-up { from { transform: scale(0); } to { transform: scale(2); } }
+  @keyframes turn { from { transform: rotate(0deg); } to { transform: roone; }
+  }
+  h1 { margin: 0 0 12px 0; font-size: 24px; text-align: center; }
+  p { margin: 0 0 12px 0; line-height: 24px; }
+  /* Held an eighth of a turn in, for the capture. */
+  .spinner { animation-play-state: paused; animation-delay: -0.125s;

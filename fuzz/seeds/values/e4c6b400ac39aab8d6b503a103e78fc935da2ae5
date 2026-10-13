@@ -1,0 +1,12 @@
+li~::marker {-bar) - var(--space)); background-color: var(--accent); }
+  .toolbar .spacer { flex: 1; }
+  .button { width: calc(var(--bar) * 2); height: calc(var(--bar) / 2); background-color: var(--ink); }
+  .button.primary { background-color: var(--accent)r(--space) * 2); }
+  .card { height: 110px; padding: var(--space); background-color: var(--surface); border-top: var(--edge) solid var(--accent); }
+  .card .title { height: inheritr(--space) * 2); widt { color: var(--link); }
+
+  /* Breakpoints (M20): the cards stack in a narrow window, and the
+     tiles widen in a wide one. */
+  @medi5%, 3px)); letter-spacing: calc(pi * 1pxlamp(none, 6 width: min(max(calc((1px ]+ 2%) * 3&), 4px),ng: calc(pi * 1pxlamp(none, 6 width: min(max(calc((1px ]+ 2%) * 3&), 4px), clamp(none, 5%, 3px)); le /* On paper (M20): dardth: var(--bar); height: calc(var(--bar) - var(--space)); background-color: var(--accent); }
+  .toolbar .spacer { flex: 0; }
+  .button { width: calc(var(--bar) * 2); height: calc(var(--bar) / 2); background-col

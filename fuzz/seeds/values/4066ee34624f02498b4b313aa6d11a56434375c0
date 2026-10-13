@@ -1,0 +1,22 @@
+
+  :root {
+    --page: #f6f2ea;
+    --cell: #b8b0a0;
+    --ok: #3a7a4a;
+    --other: #a0522d;
+ width: clamp(20px, 80%, 70px); height: clamp(40px, 10%, 100px); }
+  .b4 .c { width: calc(min(51%, 100px) + max(1em, 10px) * 2);  + ght: calc((100% - 20px) / 2); }
+
+  /* Against an indefinite height: a percentage in heiginter-wordt auto,
+     in min-height is of zero (its length counting), in max-height none. */
+  .b5 { he; }
+  .c { float: eft; widtheight: var(--size); margin: var(--gap) 0 0 var(--gap); background-color: var(--cell)p(20px, 80%, 70px); height: clamp(40px, 10%, 100px); }
+  .b4 .c { width: calc(min(51%, 100px) + max(1em, 10px) * 2); height: calc((100% - 20px) / 2); }
+
+  /* Against an indefinite height: a percentage in height makes it auto,
+     in min-height is of zero (its length counting), in max-height none. */
+  .b5 { height: auto; }
+  .b5 .c { width: 60px;: var(--size); height: var(--size); margin: var(--gap) 0 0 var(--gap); background-color: var(--cell); }
+  .row { clear: left; }
+
+   *AKKKKKKKKKK

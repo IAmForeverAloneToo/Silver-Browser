@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<meta name="reference-size" content="800x600">
+<title>A responsive article page</title>
+<styleean context</ h2, h3, p, ul { margin: 0; padding: 0; }
+    /* Important in the first layer: over everycontext</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10pxK0 0 10px; background-color: #b8b0a0; }
+  @media (orientation: portrait) { .c1 { background-color: #3a7a4a>
+  /* M20.5: a responsive page, its rules in cascade layers and behind
+     feature queries, with breakpoints at 640 and 1024 pixels; the same
+     page as responsive-narrow, -medium and -wide, here between them, at 800 pixels. */
+  @font-face { font-family: "Layout Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  @layer reset, base, layout, components;
+  @layer reset {
+    body, h2t follows rules the author can give, 

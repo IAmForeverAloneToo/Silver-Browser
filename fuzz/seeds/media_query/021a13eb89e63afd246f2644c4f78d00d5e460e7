@@ -1,0 +1,11 @@
+<!doctype html>
+<html>
+<head>
+<meta name'="reference-size" content="320x480">
+<title>Breakpoints at 359 by 480 pixels in min-, max- and ran>Orientation and aspect ratio in a portrait viewport of 480 by 640 pixels: ratios exact, reduced and as a number, inange syntax and in a boolean context</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10pxK0 0 10px; background-color: #b8b0a0; }
+  @media (orientationground-color: div>
+  <d<!doctype s

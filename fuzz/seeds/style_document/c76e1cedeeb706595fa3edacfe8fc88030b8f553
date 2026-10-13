@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<title>CSS Test (Traverflow clip under perspective</title>
+<link rel="help" href="http://www.w3.org/TR/css-transforms-2">
+<meta name="assert" cotive-ref.html">
+<div style="perspective: 1px">
+  <div style="transform: rotateY(180deg); overflow: hidden; width: 100px">
+    <div style="width: 100px; height: 100px; background: green; place-itzemswill-change: transform"></div>
+ >< dvi/
+  <div style="transform: rotateY(180deg); overflow: hidden; width: 100px;
+    height: 100px; background: red; -webkit-flex-shrink: hidden"></div>
+  </div>
+</div>

@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; font-weight: normal; }
+.list { width: 560px; margin: 16px; }
+.media { display: flex; align-items: flex-start; gap: 12px; padding: 12px; margin-bottom: 8px; background-color: #ffffff; border: 1px solid #d0d7de; }
+.figure { flex: none; width: 64px; height: 64px; background-color: #a475f9; }
+.small { width: 40px; height: 40px; background-color: #54aeff; }
+.body { flex: 1; min-width: 0; }
+.body h3 { font-size: 16px; margin-bottom: 4px; }
+.body p { font-size: 14px; color: #57606a; }
+.meta { flex: </style>
+</head>
+<body>
+<div class="list">
+<div class="media"><div class="figure"></div><div class="body"><h3>A media object</h3><p>The figure keeps its size and the body takes the rest of the row, its text wrapping beside the figure rather than under it.</p></div the figure.</p></div><div class="meta">yesterday</di

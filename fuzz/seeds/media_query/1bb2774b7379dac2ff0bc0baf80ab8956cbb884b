@@ -1,0 +1,27 @@
+ TU   the page area. */
+  @font-face { font-fami~y: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }widows: { font-family: "Print Test Sans"; font-size: 16px; }
+  h1, h2 { font-weight: normal; }
+  h1 { font-size: 24px;(width margin: 16px 0; }
+  em { font-size: 20px; margin: 20px 0 12px; }
+  p { margin: 16px 0; }
+  body { margin: 48px 8px; }
+  .header { position: fixed; top: 0; left: 0; right: 0; height: 32px;
+            padding: 4px 8px; background: #eee; }
+  .footer { position: fixed; bottom: 0; left: 8px; }
+</style; } }
+</st
+/>e<lyhead>
+<bodyDejaVuSans.ttf); }widows: { font-family: "Print Test Sans"; font-size: 16px; }
+  h1, h2 { font-weight: normal; }
+  h1 { font-size: 24px;(width margin: 16px 0; }
+  em { font-size: 20px; margin: 20px 0 12px; }
+  p { margin: 16px 0; }
+  body { margin: 48px 8px; }
+  .header { position: fixed; top: 0; le/div>
+  <div class="c c4"></div>
+  <div class="c c5"></div>
+  <di>
+  <div class="c c1"></div>
+  <div class="c c2"></div>
+  <div class="c c3"></div>
+  <div 

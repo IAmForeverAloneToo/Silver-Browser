@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2e}
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div, .g > span { background-color: #a07a3a; }
+.g > :nth-child(2n) { background-color: #c8a46a; }
+.g > :nth-child(3n) { background-color: #604a20; }
+.col { float: le0px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="box"><div class="fl"></div><div class="g three" style="margin: 0"><div></div><div></div><div></div><div></div></div></div>
+<div class="box"><div class="fl"></div><div een; padding: 4px"><i style="width: 30px; height: 1an></span><span style="display: inline-block; height: 20px"></span><div style="display: table; justify-self: stretch"><div style="display: table-cell; height: 10px; background-color: #3a5a7a"></div></div></div>
+<div class="box" style="padding: 4px; display: inline-block"><table style="border-spacing: 4px; background-color: #b0a080"><tr><td style="padding: 0"><div class="g" style="margin: 0; grid-templ

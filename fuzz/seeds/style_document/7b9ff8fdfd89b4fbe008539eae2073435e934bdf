@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: R8px 20osition: static; margin: 0; }-10000
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="grid-area: 1 / 1"></diss="col">
+<dirdiv class="g z"><div class="p" style="position: relc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-chi*d(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+.g {  background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: R8px 20osition: static; margin: 0; }-10000
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="grid-area: 1 / 1"></diss="col">
+<dirdiv class="g z"><div class="p" style="position: relc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+.g { width:

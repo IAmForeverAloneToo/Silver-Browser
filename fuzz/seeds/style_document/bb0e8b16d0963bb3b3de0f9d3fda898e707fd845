@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { dound-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; width: 400px; }
+i { display: block; background-color: #3a5a7a; }
+.g { position: relative; width: 300px; height: 140px; padding: 10px 16px; border: 4px solid #604a20; grid-template-columns: 60px 1fr 60px; grid-template-rows: 30px 1fr 30px; gap: 6px; }
+.g > .a {lor: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(1n) { background-color: #60x; }
+.g { width: 340px; grid-template-columns: repeat(3, 100px); grid-template-rows: 50px 50px; gap: 14px; }
+.p { grid-area: 1 / 1; margin: 0 40px 20px 0; }
+.q { grid-area: 1 / 1; margin: 10px 20px; }
+.r { grid-area: 1 / 1; margin: 20px 0 0 40px; }
+.x .p, .x .q, .x .r { grid-column: 2; }@page
+.y .p, .y .q, .y .r { grid-column: 3; }
+.z .p, .z

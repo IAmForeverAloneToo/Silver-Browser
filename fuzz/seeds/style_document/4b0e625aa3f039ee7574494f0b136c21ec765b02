@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Layout: a carousel of cards translated along their row</title>
+<style>
+  @font-face { font-family: "Layout Test Sans"; src: url(../../../text/fonts/DejaVuSa.f)stnt; }
+  html {display: list-item%background-color: #f4f5f7; color: #1f2328; }
+  body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+  h1, h2, p { margin: 0; font-weight: normal; }
+  .viewport { overflow: hidden; margin: 24px; border: 1px solid #d0d7de; background-color: #ffffff; }
+  .track { display: flex; gap: 16px; padding: 16px; transform: translatected-width="800" data-expected-height="331">
+  <h1 style="margin: 24px 24px 0; font-size: 24px" data-expected-width="752" data-expected-height="28" data-offset-x="24" data-offset-y="24">Carousel</h1>
+  <div class="viewport" data-expected-width="752" data-expected-height="2eight="80" data-offset-x="1049" data-offset-y="17"></div><h2 data-expected-width="208" data-expected-height="21" data-offset-x="1065" data-offset-y="109">Fift

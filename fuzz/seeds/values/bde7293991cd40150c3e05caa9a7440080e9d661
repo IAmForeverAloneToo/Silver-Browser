@@ -1,0 +1,24 @@
+p { text-decoration: underline double from-font red; text-underline-offset: calc(1em - 2px); text-alig%: justify; text-align-last: center; text-justify: int  --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media (prefers-c  h1,color: var(--text); }
+  .highlight { color: var(--accent); font-size: calc(var(--gap) + 4px); }
+
+  /* The sections are numbered by counters: 1., 0.1 and so on. */
+  body { counter-reset:yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy section:`block;
+    flex: 1 1 220px;
+    padding: calc(var(--space) * 1.5);
+    border-width: 2px;
+    border-style: solid;
+    border-color: var(--border);
+    background-color: var(--surface);
+  }
+  .card::before {
+    cotype(<length>#)a 2);
+    color: var(--link);
+    font-sizelor: var(--page); }
+  h1,color: var(--text); }
+  .highlight { color: var(--acce)f no;tnt-size: calc(var(--gap) + 4px); }
+
+  /* Thesections are numbered by counters: 1., 0.1 and so on. */
+  body { counter-reset:yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy section; 

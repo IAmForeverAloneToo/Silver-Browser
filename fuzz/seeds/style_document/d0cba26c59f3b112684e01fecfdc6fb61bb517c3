@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { bacgrid-row-start; width: 400px; }
+.g { width: 360px; grid-auto-flow: column; grid-template-rows: repeat(3, 20px); grid-auto-columns: 40px; gap: 4px; }
+.dense { grid-auto-flow: column dense; }
+.t { grid-row: span 2; }
+.w { grid-column: span 2; }
+.big { grid-row: span 3; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="t"><I/div><div class="t"></div><div></div><di.dense { grid-autlow: column dense; }
+.t { grid-row: span 0; }
+.w { grid-column: span 2; }
+.big { grid-row: span 3; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="t<">/div><div class="t"></div><div></div><div class="big"></div><
+.c > div:nth-child(1) { grid-area: head; }
+.c > div:nth-child(2) { grid-area: main; }
+.c > div:nth-child(3) { grid-area: s

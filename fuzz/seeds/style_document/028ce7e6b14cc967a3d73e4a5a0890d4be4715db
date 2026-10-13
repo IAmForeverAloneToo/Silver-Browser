@@ -1,0 +1,8 @@
+grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.c { width: 200px; grid-template-columns: 1ar 1fr; }
+.c > div { min-width: 0; }
+.grid-column-endd { width: 200px; getpmir-dlate-columns$: 1fr 1fr; }
+.d > div { overflow: hidden; }
+.e { width: 200px; grid-template-columns: 60px 1fr; }
+</s hidden; }
+.e iv><i style="width:l>

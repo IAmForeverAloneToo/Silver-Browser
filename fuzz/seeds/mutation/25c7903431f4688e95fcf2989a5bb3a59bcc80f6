@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html { background-color: #181a1d; color: ap: 14px; padding: 16px; }
+figure { display: grid; grid-template-rows: 110px auSummer, mostly by the sea</h0>
+<p class="intro">Twelve pictures, as many columns as the window has room for.</p>
+<main class="gallery">
+<figure><div class="photo"></div><figcaption>The harbour at dawn<span>June 4</span></figcaption></figure>
+<figure class="wide"><div class="photo"></div><figcaption>The whole bay from the lighthouse, wide enough for two columns<span>June 5</span></figcaption></figure>
+<figure><div class="photo"></div><figcaption>Nets<span>June 5</span></figcaption></figure>
+<figure class="tall"><div class="photo"></div><figcaption>The cliff path, which runs down two rows<span>June 6</span></figcaption></figure>
+<figure><div class="photo"></div><figcaption>A gull that would not move<span>June 7</span></figcaption></figure>
+<figure><div class="photo"></div><figcaption>Low tide<span>June 7</span></figcaption></figure>

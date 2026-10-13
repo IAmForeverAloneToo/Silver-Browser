@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<title>calc(), min(), max() and clamp() in widths, heights, margins, padding, borders and insets, against definite and indefinite bases, nested, with mixed units, and clamped to each property's range</title>
+<style>
+  html { background-color: #f6f2ea; font-size: 16px; }
+  body { margin: 0; }
+  .box { position:wport units. */
+  .b14 .c { width: calc(10vw - 20px); height: max(5vh, 40px); }
+</style>
+</head>
+<body>
+  <div class="box b1"><div class="c"></div></div>
+  <div class="box b2"><div class="c"></div></div>
+  <div class="box b3"><div class="c"></div></div>
+  <div class="box b4"><div class="c"></div></div>
+  <div class="box b5"><div class="c"></div></div>
+  <div class="box b6"><div class="c"></div></div>
+  <div class="box b7"><div class="c"></div></div>
+  <div class="box b8"><div class="c"></div><div>
+  <div cla relative; float: le: 40px; border: calc(3px + 0.5em) solid #2f4f7f; }
+
+  /* Insets of an absolutely positioned box against its containing
+     block, and a negative ins

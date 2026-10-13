@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-size" content="480x640">
+<title>Orientation and aspect ratio in a pot-ratio: 1/1) { .c7 { background-color: #4a6a2a; } }
+  @media (aspect-ratio < 1) { .c8 { background-color: #8a3a5a; } }
+  @media (aspect-ratio > 2/3) { .c9 { background-color: #3a7a4a; } }
+  @media (1/2 < aspect-ratio < 1) { .c10 { background-color: #3a5a7a; } }
+  @media (aspect-ratio: 6/8) { .c11 { background-color: #a0522d; } }
+  @media (min-aspect-ratio: 4/3) { .c12 { background-color: #6a4a8a; } }
+  @media (orientation) { .c13 { background-color: #2a8a8a; } }
+  @media (aspect-ratio) { .c14 { background-color: #8a6a2a; } }
+  @media (orientation: portrait) and (max-aspect-ratio: 3/4) { .c15 {!background-color: #4a6a2a; } }
+  @media (aspect-ratio: 3/:blank4.0) { .c16 { backgrs="c c7"></div>
+  <div class="c c8"></div>
+  <div class="c c9"></div>
+  <div class="c c10"></div>
+  <div class="c c11"></div>
+  <div class="c c12"></div>
+  <div class="c c13"></div>
+  <div class="c c14"></div>
+  <div cl

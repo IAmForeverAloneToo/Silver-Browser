@@ -1,0 +1,8 @@
+@media (width > 50em) { @supports (display: grid) { @layer a.b { .x { color: red } } } } @page :first { size: A4 landscape; margin: 10%<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<title>Paragraphs across pages</title>
+<style>
+  /* Paragraphs of every lenwser prints at three hundred dots to the inch, and so does this engine. A heading that ends a page alone is a poor heading, which is why authors avoid breaks after one.</p>ints at three hundred dots to the inch, and so does this engine. A heading that ends a page alone is a poor heading, which is why authors avoid breaks after one.</p>
+<p>A box that must not be broken is moved whole to the next page when it does not fit on the one it starts on. Printing is the oldest way of showing a document, and the web came to it late. The text on each page is compared with where the. Paragraphs flow from one page to the next as they flow down  } @import a long screen. Each page shows a slice of the document, and the @im) suppposorts(displasiby: grid) prilnte

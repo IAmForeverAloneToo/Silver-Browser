@@ -1,0 +1,13 @@
+<!docdth: 30px; height: 20px"></i></div><div><i style="width: 50px; height: 20px"></i></div></div><div></div></div>
+<div class="g nest"><div class="g" style="grid-template-columns: 1fr 2fr"><div><i style="width: 30px; height: 20px"></i></div><div><i style="width: 50px; height: 20px"></i></div></div><div></div></div>
+<di<div class="g" style="position: abso&lute; left: 4px; top: 4px"><div><i style="width: 20px; height: 16px"></i></div><div><i style="width: 40px; height: 16px"></i></div></div></div>
+<div class="s"><span style="display: inline-block"><span class="g" style="grid-template-columns: auto auto"><span style="display: block; width: 3424; }
+.water { background-color: #4a90c8; }
+.carrot { background-color: #e07a2c; }
+.weefr{ background-color: #3f7a32; }
+#l1 .water { grid-column-start: 3; }
+#l2 .water { grid-column-end: 4; }
+#l3 .water { grid-column-start: 5; grid-column-end: 2; }
+#l4 .water { grid-column-end: -2; }
+#l5 .water { grid-column-start: 2; grid-column-end: span 2; }
+#l6 .water { grid-column-star

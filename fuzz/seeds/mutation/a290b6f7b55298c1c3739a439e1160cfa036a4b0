@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<title>Grid: line names, named areaslinkd placement by name and by number from both ends</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; font-size: 0; }
+  .g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+  .g > div[ { background-color: #a07a3a; }
+  .g > div:nth-child(2n) ~ background-color: #c8a46a; }
+  .g > div:nth-child(3n) { background-color: #604a20; }
+  .col { float: left; width: 400px; }
+  i { display: block; background-color: #3a5a7a; }
+  .a { width: 360px; grid-template-columns: [left] 60px [mid-start] 1fr [mid-end] 60px [right]; grid-template-rows: [top] 30px [middle] 30px [bottom]; }
+  .a > div:nth-child(1) { grid-column: left / mid-start; grid-row: top; }
+  .a > di2) { grid-column: mid; grid-row: middle / bottom; }
+  .a > div:nth-child(3) { grid-column: -2 / -1; grid-row: -3 / -1; }
+  .b { width: 360px; grid-template-areas: 'head head head' 'side main main' 'side foot foot'; grid-templa/ b 2; }
+  .c > div:nt

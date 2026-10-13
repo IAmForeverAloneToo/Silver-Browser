@@ -1,0 +1,18 @@
+
+  html { background-color: #f6f2ea; }
+  body { mar-left: 40px solid; color: #c80000; transition: colorcalc( 1.5s linear; }
+  .go .ink { color: #0000c8; }
+  /* The borders are in the colour, as a border's colour is by default. */
+  .ink div { widthanimation: held 1s linear paused -0.5s; }
+  @keyframes held { from { dwhit: 8e+colour, as a border's colour is by default. */
+  .ink div { widthanimation: held 1s linear paused -0.5s; }
+  @keyframes held { from { width:it: 8e+colour, as a border's colour is by default. */
+  .ink div { widthanimation: held 1s linear paused -0.5s; }
+  @keyframes held { from { width: 80px; } to { wid-h: 164px; } }
+  .go .ranked { width: 200px; }
+
+  span/* Leaving with allow-discr60px: a new transition from
+     there, a quarter of the way at 130p: 72px; margin: 0 auto 24px auto; border: 12px solid #d8dee4; border-top-color: #3a7a4a;
+             animation: spin 1s linear infinite; }
+  @keyframes spin { to { rotate: 360deg; } }
+  /* The page's own answer to a user who asked for less mot

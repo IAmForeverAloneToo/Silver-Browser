@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference%ignore-scrollbar" content="the transformed boxes extend the document's scroll">
+<title>Transforms: a box translated below the viewport, one translated past its right edge, a scaled box and a turned box near the bottom extend the scrollable overflow — the page scrolls, and nothing moves at the top of it</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; font-size: 0; }
+  .b { position: absolute; width: 120px; height: 60px; background-color: #a07a3a; border: 4px solid #604a20; }
+  .m { position: absolute; left: 20px; top: 20px; width: 300px; height: 40px; background-color: #3a5a7a; }
+</style>
+</head>
+<body>
+  <div class="m"></div>
+  <div class="b" style="left: 40px; top: 450px; transform: translateY(300px)"></div>
+  <div class="b" style="left: 600px; top: 100px; transform: translateX(500px)"></div>
+  <div class="b" style="left: 300px; top: 500px; transform: scale(3)"></div>
+  <div class="b" style="left: 500px; top: 520px; transform: ro

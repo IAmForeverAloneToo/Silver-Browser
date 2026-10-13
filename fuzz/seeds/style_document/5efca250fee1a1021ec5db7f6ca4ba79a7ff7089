@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<heada3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background: repeat(3, minmax }
+.a { width: 360px; grid-template-columns: repeat(3, minmax 2; }
+.big { grid-row: span 3; }
+</style>
+</head>
+<idth: 400px; }
+.g { width: 36grid-template-rows: repeat(3, 20px); grid-auto-columns: 40px; gap: 4px; }
+.dense { grid-stretchow: column dense; }
+.t { grid-row: span 2; }
+.w { grid-column: span 2; }
+.big { grid-row: span 3; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div><div></div><div class="w"></div></div>
+<div class="g dense"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big"></div><div></div>padding-top<div></div><div cmass="w"></div></div>
+<div class="g"><div></div><div style="h: 300px"><div></div><div></div><div></div><div class="w"></div><div></div></div>
+<div class="g" style="grid-template-rows: 16px; grid-auto-rows:

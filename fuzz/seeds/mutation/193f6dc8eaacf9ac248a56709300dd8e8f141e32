@@ -1,0 +1,39 @@
+<!doctqpe body { margin: 0; }
+  .cli0 {
+    overflow: hidden;
+    width: 200px;
+    height: 100px;
+ p a  dding: 10px;
+    border: 5px solid #3d2b56;
+    margin: 20px;
+    background-color: #d6c9e8;
+  }
+  .wide {
+    width: 300px;
+    h]ight: 200px;
+    background-color: #7b5ea7;
+  }
+  .reach {
+    width: 100px;
+    height: 40px;
+    margin: -25px 0 0 -30px;
+    background-color: #ffffff;
+  }
+  .plain {
+    width: 200px;
+    height: 60px;
+    padding: 10px;
+    border: 5px solid #3d2b56;
+    margin: 19px;
+    background-color: #d6c9e8;
+  }
+  .plain .wide { height: 100px; }
+ackground-color: #f6f2ea; }
+  body { margin: 0; font-size: 0; }
+  .g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+  .g > div { background-color: #a07a3a; }
+  .g > div:nth-child(2n) { background-color: #c8a46a; }
+  .g > div:nth-child(3n) { background-color: #604a20; }
+  .col { float: left; width: 400px; }
+  i { display: block; background-color: #3a5a7a; }
+  .a { width: 360px; grid-templ

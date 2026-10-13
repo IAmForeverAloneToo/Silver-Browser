@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+<tfoot>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; backgroun/div><div></div></div></div>
+<div class="cell"><div class="g" style="justify-content: end; align-codiv><div></div></div></div>
+<div class="cell"><div class="g" style="justifff; }
+.card.wide { flex-basis: 956px; max-width: none; }
+</style>
+</head>
+<body>
+<main class="grid">
+<section class="card"><div class="media"></div><h2>Flexible boxes</h2><p>Items grow into the room their line leaves and shrink when there is too little of it.</p><div class="actions"><span>3 min read</span><span class="button">Open</span></div>oy-content: end; align-content: enzd"><div></div><div></div><div></ditent: rir auto; min-height: 600px; }
+header { grid-area: header; display: grid; grid-template-columns: auto 1fr auto; align-items: baseline; gap: 1ght; align6px-con;

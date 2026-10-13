@@ -1,0 +1,15 @@
+<!dy { margin: 0; font-size: 0; }
+.g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.gfr; gap: 4px 12px; }
+.b { grid: 20px 30px / auto-flow dense 50px; grid-gap: 6px; }
+.b > div:nth-child(2) { grid-column: span 2; }
+.c { grid: "head head" 20px "sidspanin" 40px / 80px 1fr; grid-row-gap: 4px; grid-column-gap: 8px; }
+.c > div:nth-c auto-flow 2rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr></i></div><div><i style="width: 50px; height: 20px"></i></div><div></div><}}}}}}}}}}}}}}}}}}}}}height: 20px"></i></div><div></div></div>
+<div class="g d"><div></div><div></div><div></div><div></div></div>
+<div class="g e"><div><i style="width: 30px; height: 20px"></i></div><div><i style="width: 50px; height: 20px"></i></div><div></div><}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}><div><div></div></div>
+<div class="g c"><div></div><div></ margin: 0; }
+</styldiv><div style="height: 30px"></div><div></de>
+</head>
+<body>
+<div c

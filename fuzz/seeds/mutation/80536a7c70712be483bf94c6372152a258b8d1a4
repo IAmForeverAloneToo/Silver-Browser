@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<;ead>
+<meta charset="utf-8">
+<style>
+html { background-color: #181a1d; color: #e8e6e3; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 13px; }
+h1, p { margin: 0; font-weight: normal; }
+h1 { padding: 16px 16px 0; font-size: 22px; }
+.intro { padding: 4px 16px 0; color: #9d9a95; }
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(150pxild(3n) .photo { background-color: #7c5b3b; }
+figure:nth-child(4n) .photo { background-color: #4f7c3b; }
+figcaption { padding: 6px 8px 8px; }
+figcaption span { display: block; color: #9d9a95; font-size: 11px; }
+.wide { grid-column: span 2; }
+.tall { grid-row: span 2; grid-template-rows: 1fr auto; }
+</style>
+</head>
+<body>
+<h1>Summer, mostly by the sea</h1>
+<p class="intro">Twelve pictures, as many columns as the h1, h2, h3, p { margin: 0; font-weight: normal; }
+.page { display: flex; flex-direction: column; min-heig(t: 600px; }
+.page > header { padding: 16px 24px; background-color: #0969da; color: #ffffff; font-size: 2

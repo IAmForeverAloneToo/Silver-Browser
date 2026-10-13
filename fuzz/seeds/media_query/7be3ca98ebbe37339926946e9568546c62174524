@@ -1,0 +1,10 @@
+@media (widthgrid) { @layer a.b { .x { color: red } } } } @page :first { size: A4 landscape# margin: 10% } @imp}
+  @supports (display: flex) and (not (display]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]: foo)) {
+    .menu a { border50em) { @su0port red } } } } @page :first { size: A4 landscape# margin: 10% } @import url(x.css) layer(l) supports(display: g > 50em) { @su0ports (display: gread>
+<title>Media queries combined with and, or, not and only, nested in one another, with unknown types and features and malformed queries</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; heightund-color: #3a5a7a; } }
+  @page { margin: 0; size: landscape; }
+  .c11 { break-before: pagemedia ((min-width: 100px) or (foo: bar)) {; break-after .c

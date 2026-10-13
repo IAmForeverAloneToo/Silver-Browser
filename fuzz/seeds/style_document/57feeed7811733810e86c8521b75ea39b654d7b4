@@ -1,0 +1,18 @@
+'style>#g{display:grid;grid-template-colmns: rff1r1;row-gap:10%;column-gap:5%}#g>div{order:-1;z-index:2;margin:auto}</style><table><tr><td><div id=g><div>1[/div><div style='order:3'>2</div></div></td><ol { float: left; width: 400px; }
+.g { width: 360px; grid-auto-flow: column; grid-template-rows: repeat(3, 20px); grid-auto-columns: 40px; gap: 4px; }
+.dense { grid-autod-color: #604a20; }
+.col { float: left; width: 400px; }
+.g { width: 360px; grid-auto-flow: column; grid-template-rows: repeat(3, 20px); grid-auto-columns: 40px; gap: 4px; }
+.dense { grid-auto-flow: co}
+.col { float: left; width: 400px; }
+.g { width: 360px; grid-auto-flow: column; grid-template-rows: repeat(3, 20px); grid-auto-columns: 40px; gap: 4px; }
+.dense { grid-auto-flow:"column dense; }
+.t { grid-row: span 2; }
+.w { grid-column: span 1; }
+.big { grid-row: span 3; }
+</style>
+</head>
+<umn; grid-template-rows: repeat(3, 20px); grid-auto-columns: 40px; gap: 4px; }
+.dense { grid-autod-color: #604a20; }
+.col { float: left; width: 400pbody>
+<div c

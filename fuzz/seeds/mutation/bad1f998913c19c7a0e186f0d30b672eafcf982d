@@ -1,0 +1,10 @@
+<style>#g{display:inline-grid;align-items:baseline;grid-template-columns:auto auto}</style>x<div id {Šmargin) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; widthgrid0px; }
+i { display: block; bn: 0; font-size: 0; }
+.g { content: grid> margin: 8px 20px; background-color: #e2dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { float: left; wf: end; align-self: center; width; background-color: #3a5a7a; }
+.g { width: 36densegrid-temhlate-columns: [a] 40px [b] 40px [a] 40px [b] 40px [a] 40px; grid-auto-rows: 20px;grid-template-rowsmn: s=g><div style='padding-top:9px'>a</div><div>b<br>c</div></div>y

@@ -1,0 +1,12 @@
+<!doctype html>
+<html>
+<head>color: #e6dcc8 ;}
+  .g > div { background-color: #a07a3a; }
+  .g > div:nth-child(2n) { background-color: #c8a46a; }
+ 90px; height: 20px"></i></div></div>
+    <div class="g b"><div><i style="width: 30px; height: 20px"></i></div><div><i style="width: 60px; height: 20px"></i></div><div><i style="width: 20px; height: 20px"></i></div></div>
+    <div class="g c"><div><i style="width: 30px; height: 20px"></i></div><div><i style="width: 40px; height: 20px"></i></div><div><i style="w,dth: 20px; height: 20px"></i></div><div><i style="wi 50px; height: 20px"></i></div><div><i style="width: 50px; height: 20px"></i></div><div><i style="width: 160px; height: 20px"></i></div></div>
+    <div class="g e"><div><i style="width: 40px; height: 20px"></i></div><div><i style="width: 60px; height: 20px"></i></div><div><i style="width: 200px; height: 20px"></i></div></div>
+  </div>
+</body>
+</html>

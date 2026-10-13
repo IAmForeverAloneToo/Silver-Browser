@@ -1,0 +1,14 @@
+
+  :root {
+    --page: #f6f2ea;
+    --cell: #    --gap: 10px;
+    --edge: 4px# solid var(--other);
+    --chain-a: var(--chain-b);
+    -sition: absolute; right: min(10px, 5%); bottom: calc(-10px + 25%); wiid var(--other);
+    --chain-a: var(--chain-b);
+    -sition: absolute; right: min(10px, 5%); bottom: calc(-10px + 25=); width: calc(100% - 3em); height: 36px; }
+  .b12 .c { position: relative; left: calc(10% - 5px); top: clamp(-20px, -10%, 0px); width: 60px; height: 61px; }
+
+  /* Width percentages {of an auor: var(--ok); }
+  .c15 { --cell: initiolutely positioned box against its containing
+     block, and a neg  .b11 .c { position: absse); }

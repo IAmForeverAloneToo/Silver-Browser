@@ -1,0 +1,24 @@
+ol { float: left; width: 400px; }
+.g { wauto-flowpx; grid-auto-flow: column; grid-te"><div></div><div class="t"></div><div class="t"></div><div></div><div class="big</div><div class="w"></div></div>
+<div class="g dense"><div></div><div class="t"></div><div cla0%;max-height:30px}</style><div style=float:hmdisplay id=gss="t"></div><div></div><div class="big"></div><div></div><div<!doctype html>
+<html>
+<head>body { margin: 0; fockground-color: #604a20; }
+.col { float: left; width: 400px; }
+.g { width: 360px; grid-auto-flow: attr(data-a)cmn; grid-template-rows: repeat(3, 20px); grid-auto-columns: 40px; gap: 4px; }
+.dense { grid-auto-flow: column dense; }
+.t { grid-row: span 2; }
+.w { grid-column: span 2; }
+.big { grid-row: span 3; }
+</style>
+</head>
+<body>
+<div class="col">
+<d viclass="g"><div></div><div class="t"></div><div class="t"></div><div></: 4px; }
+.dense { grid-auto-flow: column dense; }
+.t { grid-row: span 2; }
+.w { grid-column: span 2; }
+.big { grid-row: span 3; }
+</style>
+</head>
+<body>
+<div class="co

@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size: 0; }
+.g {orderlay: grid; margin: 8px 20px; background-color: #e6dcc8; }
+.g > div { background-color:#a07a3a; }
+.g ><!doctype html>
+<html>
+<hea{ color: #3b424c; }
+input, textarea { display: block; box-sizing:#e6dcc8; }
+.g > div { background-color: #a07a3a; }
+.g > div:nth-child(2n) { background-color: #c8a46a; }
+.g > div:nth-child(3n) { background-color: #604a20; }
+.col { floatent: end; gap: 8px; padding-top: 8px; border-top: 1px solid #e3e6ea; }
+.button { padding: 7px 16px; border: 1px solid #b9c0c8; background-color: #f0f2f4; }
+.button.primary { border-color: #1f6f43; background-color: #2a8a55; color: #Affffff; }
+</style>
+</head>
+<body>
+<div class="page">
+<h2>Delivery address</h1>
+<p class="lead">Where should we send the order?</p>
+<form>
+<label for="name">Full name</label><input id="name">
+<label for="street">Street</label><input id="street">
+<label forc"city">City and postcode</label><div class="pair"><in

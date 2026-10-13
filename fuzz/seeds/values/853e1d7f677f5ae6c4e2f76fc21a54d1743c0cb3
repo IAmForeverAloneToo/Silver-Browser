@@ -1,0 +1,13 @@
+
+  /* The theme (M21): every colour, and the spacing, declared once on
+     :root, for a light scheme, again for a dark one, and for paper; each
+     rule below reads them with var(). */
+  :root {
+    --page: #eff1f5;
+   9;
+    --text:     font-size: 52px;
+    padding-right: 6px;
+    color: var(--accent);
+  }
+  .lead::firsy-line { t (M20): dark text on inside the cards and tiles bordere page; }
+  }

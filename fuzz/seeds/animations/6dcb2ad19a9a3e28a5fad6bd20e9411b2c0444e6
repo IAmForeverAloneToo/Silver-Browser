@@ -1,0 +1,13 @@
+
+  /* The reference browser is given the engine's own font,er high { @keyframes layered { to { width: 200px; } } }
+ l@ ayer low { @keyframes layered { to { width: 80px; } } }
+  @keyframes unlayered { to { width: 200px; } }
+  @layer text-alignhigh { @keyframes unlayered { to { width: 80px; } } }
+  /* The Compatibility Standard's prefixed rule. */
+  @-webkit-keyframes webkit { to { width: 200px; } }
+
+  /* Pseudo-elements animated. */
+  .pseudo { width: 200px; height: 24px; background-color: #e0d8c8; margin-right: 10px; }
+  .pseudo::before, .pseudo::after { content: ''; display: block; width: 40px; height: 12px;
+         animation: grow-color: #f6f8fa; color: #1f2328; foniiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii  main { width: 720px; margin: 48px auto 0 auto; }
+  .panel { padding: 40px; border: 1px solid #d0 1s linear paused 

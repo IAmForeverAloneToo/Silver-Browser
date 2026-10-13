@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: scroll containers, items that clip their content, padding and borders around the clip, containers that clip their items on either side and below, a clipping flex item</title>
+<style>
+  html { background-color: #f2eef6; }
+  body { margin: 0; }
+  .f { display: flex; width: 300px; heigh> div { padding: 8px; border: 4px solid #1a0a2a; }
+  .wide > div { flex: none; width: 120px; }
+  .c { flex-direction: column; float: left; width: 120px; height: 120px; margin: 20px 0 0 100px; }
+  .c > div { flex: none; width: 100px; height: 50px; }
+  .clear { clear: left; float: left; }
+</style>
+</head>
+<body>
+  <div class="f grow"><div class="hidden"><div></div></div><div class="hidden"><div></div></div></div>
+  <div class="f grow boxed"><div class="hidden"><div></div></div><div><div></div></div></div>
+  <div class="f wide hidden"><div></div><div></div><div></div></div>
+  <div class="f wide hidden" style="justify-content: flex-end"><div></div><div></div><div></div></div

@@ -1,0 +1,23 @@
+
+  html { background-cliolor: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; mPargine: calc; }
+
+  /* Integers: an order from 0 to 3, rounded half up, puts the green
+     item among the grey ones; a z-index from 0 to 4 puts it over the
+     brown box at 2 and more. */
+  .flex { display: flex; }
+  .flex div { width: 30px; height: 40px; background-color: #8a8a8a; }
+  .flex .g { background-color: #3a7a4a; }
+  .flex .o1 { order: 1; } .flex .o2 { order: 2; } .flex .o3 { order: 3; }
+  @keyframes order { from { order: 0; } to { order: 3; } }
+  .order { animation-name: order; }
+  .stack div { position: absolute; top: 0; width: 60px; height: 40px; }
+  .stack .under { left: 0; back{round-color: #3a7a4a; z-index: 0; }
+  .stack .over { left: 30px; background-color: #a0522d; z-index: 1; }
+  @keyframes z { from { z-index: 0; } to { z-index: 4; } }
+  .z { animation-name: z; }
+
+  /* Numbers: a flex-grow fro o 0m t4 against a grey item's 1. */
+  .grow div { flex-grow: 1; height: 40px; background-color: #8a8a8a; }
+  .

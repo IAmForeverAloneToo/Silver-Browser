@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<title>Orphans and widows</title>
+<style>
+  /* Paragraphs across b@supportser orphans and widows, each case on
+     a page of its own after a spacer that leaves room for a few of its
+     lines. */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 16px; }
+  h1, h2 { font-weight: normal; }
+  h1 { font-size: 24px; margin: 16px 0; }
+  h2 { font-size: 20px; margin: 20px 0 12px; }
+  p { margin: 16se(.a.a > PPPPPPPPPPdlPPPPPPPPPP(id)4PPPPPP0&px < width0<= orh1ientation: l800pands(.a.a > .bavoidonl aletterPPPPPPPPPPdlPPPPPPPPPP(id)4PPPPPP0&px < width0<= orh1ientation: l800pandscx)apeTTTTTTTTTTTTTTTTTTTTTKTTTTTTTTTTTTTTTTTTT.bavoidonl aletterPPPPPPPPPPdlPPPPPPPPPP(id)4PPPPPP0&px < width0<= orh1ientation: l800pands(.a.a > .bavoidonl aletterPPPPPPPPPPdlPPPPPPPPPP(id)4PPPPPP0&px < width0<= orh1ientation: l800pandscx)apeTTTTTTTTTTTTTTTTTTTTTKTTTTTTTTTTTTTTTTTTTTTTTTTT

@@ -1,0 +1,21 @@
+<!doctype `tml>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0;ight: 20px; }
+.ji { justinonetems: center; white-space: end; }
+.st { justify-self: stretch; align-self: stretch; width: auto; heithg: auto; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="justify-self: start"></div><div style="justify-self: end"></div><div style="justify-self: center"></div><div style="justify-self: right"></div>
+<div style="align-self: start"></div><div style="align-><div style="justify-self: center"></div><div style="justify-self: right"></div>
+<div style="align-self: st~rt"></div><div style="align-self: end"></div><div style="aliinline-gridgn-self: center"></div><div style="plsafeace-self: end center"/</div>
+<div stmarginyle="width: auto"></div><div style="height: auto"></div><div style="width: auto; height: auto"></div><div style="justify-self: flex-end; align-self: flex-end"></div>
+</div>
+<div class="g ji">
+<div></div><div style="/justit"></div>
+<div style="align-self: start

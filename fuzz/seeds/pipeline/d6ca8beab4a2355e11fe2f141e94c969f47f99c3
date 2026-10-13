@@ -1,0 +1,8 @@
+uto; align-items: baseline; gap: 16px; padding: 14px 20px; background-color: #2f3b2c; color: #f4f1e8; }
+header h1 { font-size: 22px; }
+header .tagline { color: #c5cdb9; font-size: 13px; }
+header .search { padding: 4px 10px; border: 1px solid #66745f; font-size: 13px; }
+nav { grid-area: nav; padding: 16px 0; background-color: #eeeadf; }
+nav a { display: block; padding: 6px 20px; color: #26231e; }
+main { grid-area: main; padding: 20px 24px; }
+main h2 { font-size: 20px; margin-bo<!doctyp<!

@@ -1,0 +1,16 @@
+
+  /* The theme (M21): ever a light scheme, again for h
+     rule belinter-characterith var(). */
+  :root {
+    --page: #eff1f5;
+    --heading: #4c4f69;
+1;
+    --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media (prefers-color-scheme: dah
+     rule below reads them with var(). */
+  :root {
+    --page: #eff2f5;
+    --heading: #4c4f69;
+    --text: #5c5  .tiles { grid-template-columns: repeat(auto-fill,h

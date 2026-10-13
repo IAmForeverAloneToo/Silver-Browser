@@ -1,0 +1,10 @@
+ TU   the page area. */
+  @font-face { font-size: 24px; margin: 16px 0; }
+  em { font-size: 20px; margin: 20px 0 12px; }
+  p { margin: 16px 0; }
+  body { margin: 48px 8px; }
+  .header { posiavoid-pagetion: fixed; top: 0; left: 0; right: 0; height: 32px;
+            padding: 4px 8px; background: #eee; }
+  .fo: fixed; bottom: 0; left: 8px; }
+</style>
+</hy: flex) or (colir: red))

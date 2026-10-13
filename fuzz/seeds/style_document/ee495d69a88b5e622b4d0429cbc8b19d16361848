@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+meta { margin: 0; font-size: 0; }
+.g { display: gf4f5f7; color: #1f2328; }
+body { margin: 0}
+.#a > .t { height: auto; }
+.last { align-items: last baseline; }
+.s { width: 360px; grid-template-columns: repeat(4, 50px); grid-auto-rows: minmax(30px, auto); gap: 6px; }
+.s > div { align-self: baseline; height: 20px; }
+.s > .t { hei~ght: auto; }
+.s > .end { align-self: last baseline; }
+.k { width: 360px; grid-template-columns: 80px 80px; grid-auto-rows: 30px; gap: 6px; justify-items: baseline; }
+.k > div { width: 40px; }
+.n > div:first-child { display: grid; grid-template-columns: 12px 12px; align-items: end; padding: 4px; heig%t: auto; }
+.n > div:first-child > div { height: 16px; backgpound-color: #f0e8d8; }
+.n > div:first-child > div + div { height: 30px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div style="height: 40px"></div><div style="height: 30px; margin-top: 10px"></div><div style="padding-bottom: 1

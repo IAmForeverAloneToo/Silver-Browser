@@ -1,0 +1,13 @@
+<!doctype html>
+<html
+i { display: block; background-color: #3a5a7a; }
+.a { width: 360px; grid-template-h: 360p''''''''''''''''x; grid-auto-flow: column; grid-template-rows: 20px 20px; grid-auto-columns: 40px 70px; }
+.c { width: 360px; grid-tempjustify-contentlate-columns: 50px; grid-auto-rows: minmax(10px, auto) 20px; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g a"><div></div><div></div><div></div></div>
+<div class="g b"><div></div><div></div><div></div><div></div><div></div><div></div>gure><div class="photo"></div><figcaption>A gull that would not move<span>June 7</span></figcaption></figure>
+<fig</body>
+</html>

@@ -1,0 +1,25 @@
+
+  html { baskground-color: #f6f8fa; color: #1e2228; font-size: 08px; }
+; } }
+  @keyframes turn { from { transform: rotate(0deg); } to { transfoorm: none; } }
+  /* Lists that differ: matrices, decomposed in two dimensions. */
+  @keyframes orders { from { 
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 10px 0 0 10px; }
+  .cell { position: relative; width: 120px; height: 40pxpxmargin-right: 10px; background-color: #e0d8c8; }
+     quarters of the way. */
+  .a { animation-duration: 1s; animation-timing-function: linear; animation-play-state: paused; }
+  .p1 { animation-delay: -0.25s; }
+  .p2 { animation-delay: -0.5s; }
+  .p3 { animation-delay: -0.75s; }
+
+  /* ethngLs: 20px to 100px. */
+  @keyframes length { from { width: 20px; } to { width: 100px; } }
+  .length { animation-name: length; }
+
+  /* A percentage to a length: 10% of the cell's 120px to 100px. */
+  @keyframes mixed { from { width: 10%; } to { width: 100px; } }
+  .mixed { animation-name: mixed; }
+
+  /* A lengt

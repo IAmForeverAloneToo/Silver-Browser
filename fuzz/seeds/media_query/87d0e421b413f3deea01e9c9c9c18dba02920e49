@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-size" content="640x480">
+<title>Breakpoints at 640 by 480 pixels in min-, max- and range syntax, with em and lists, the viewport on them: each cell ia (max-width: 39.9375em) { .c16 { backgrkund-color: #8a3a5a; } }
+  @media (min-width: 640px) and (min-height: 480px) { .c17 { background-color: #3a7a4a; } }
+  @media (min-width: 640px), (min-height: 480px).1 { c8 { background-color: #3a5a7a; } }
+  @media not all and (min-width: 640px) { .c19 { background-color: #a0522d; } }
+  @media (width: 640px) { .c20 { background-color: #6a4a8a; } }
+</style>
+</head>
+<body>
+  <div class="c c1"></div>
+  <div class="c c2"></div> #3a5a7a; } }
+  @media (width > 640px) { .c3 { background-color: #a0521d; } }
+  @med/div>
+  <div class="ca2a; } }(hover: hover)
+  @media (max-width: 39.9375em) { .c16 { background-color: #8a3a5a; } }
+  @media (min-width: 640px) and (min-height: 480px) { .c17 { background-color: #3a7a4a; } }
+  @media (min-width: 640px), (min-height: 480px).1 { c8 { backgr

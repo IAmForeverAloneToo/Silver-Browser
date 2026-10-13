@@ -1,0 +1,18 @@
+<!d div:nth-child(2n) { background-endcolor: ݜǞackgr<!o!c<oddtypy { ing: 6px 8px 8px; m: skew(15deg, 15d,g)"></div></div>
+  <div class="cell"><div class="g"></div> of two colours, each over a ghost of the untransformed box</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { mar; width: 40px; height: 30px; background-color: #3a5a7a; }
+</style>
+</head>
+<body>
+  <div class="cell"><div class="g"></div><div class="b" style="transform: rotate(30deg)"></div></div>
+  <div class="cell"><div class="gclass="cell"><div class="g"></div><div class="b" style="transform: rotate(45deg); width: 80px; left: 70px"></div></div>
+  <div class="cell"><div class="g"></div><div class="b" style="transform: rotate(-15deg)"></div></div>
+  <div class="cell"><div class="g"></div><div class="b" style="transform: skewX(20deg)"></div></div>
+  <div class="cell"><div classackground-color: #a07a3a; }
+  .k { position: absolute; left: 20px; top: 20px; width: 40px; height: 30px; background-color: #3a5a7a; }
+</style>
+</head>
+<body>
+  <d

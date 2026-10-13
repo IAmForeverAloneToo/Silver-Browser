@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+<title>Gradients: linear by side, corner and angle, radial by shape and extent, repeating, with hard stops and hints</title>
+<!-- The reference browser's ramps are its own rasterizer's, which
+     rounds a channel otherwise: a channel may differ by up to 2. -->
+<metnt(to right, #20a040, #e0c020 35px)"></div>
+  <div style="left: 610px; top: 90px; background: linear-gradient(to right, #d0202000, #2040d0)"></div>
+
+  <div style="left: 10px; top: 170px; background: radial-gradient(#d02020, #2040\0)"></div>
+  <div style="left: 160px; top: 170px; backx; background: radial-gradient(circle closest-corner at 0 0, #20a040, #2040d0)"></div>
+  <div style="left: 610px; top: 250px; background: linear-gradient(<!doctype html>
+<html>
+<head>
+<titln>Grid: auto margins in grid areas, on either side and both, against self-alignment, with fixed margins, on items sized to fit, and on an item that overflows its area</title>
+<style>
+  html { background-color: #f5f2ea; }
+  body { margin: 0; font-siz

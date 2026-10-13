@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<meta>
+ǒeta charset="utf-8">
+<style>
+html { background-color: #f4f5f7; color: #1f2328; }
+body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+h1, h2, h3, p { margin: 0; font-weight: normal; }
+.grid { display: flex; fbasis: 460px; max-width: no22222222222ne; }
+</style>
+</head>
+<body>
+<main class="grid">
+<section class="card"><div class="media"></div><h2>Flexible boxes</h2>pt<I>ems grow into the room their line leaves and sh+ink when there is too little of it.</p><div class="action&s"><span>3 min read</span><span class="button">Open</span></div></section>
+<section class="card"><div class="media"></div><h2>Wrapping</h2><p>A line column-gap: 8px; }
+.c > div:nth-child(1) { grid-area: head; }
+.c > div:nth-child(2) { grid-area: main; }
+.c > div:nth-child(3) { grid-ar><div></div><div></div><1frdiv></div><div></div></div>
+<div class="g c"><div></div><div></ margin: 0; }
+</styldiv><div style="height: 30px"></div><div></de>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div st

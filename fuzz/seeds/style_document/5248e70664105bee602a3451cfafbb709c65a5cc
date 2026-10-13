@@ -1,0 +1,12 @@
+<!d); }
+
+  /* Colours, and one of a choice of types. */
+  .c5 { background-color: attr(data-c type(<color>)); }
+  .c6 { background-color: attr(data-c type(<color> | <length>)); }
+  .c7 { height: attr(data-c type(<color> | <length>), 10px); }
+
+  /* In calc() and a shorthand. */
+  .c8 { width: calc(attr(data-n px) * 2 - 10px); }
+  .c9 { margcirclev>
+</body>
+</html>

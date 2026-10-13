@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-reduced-motion" content="reduce">
+<title>Reduced motion preferred: prefers-reduced-motion in plain, boolean, negated and combined queries</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+  @media (prefers-reduced-motion: reduce) { .c1 { background-color: #3a7a4a; } }
+  @media (prefers-reduced-motion: no-preference) { .c2 { background-color: #3a5a7a; } }
+  @media (prefers-reduced-motio.e { grid-template: [top] 20px [mid] 30px [bottom] / [l] 1fr [m] 2fr [r]; }
+.e > div:nth-child(1) { grid-area: mid / m / bottom / r; }
+.e > div:nth-child(2(3) { grid-area: c; }
+.d > div:nth-child(4) emgrid-area: d; }
+.e { grid-template: [top] 20px [mid] 30px [bottom] / [l] 1fr [m] 2fr [r]; }
+.e > div:nth-child(1) { grid-area: mid / m / bottom / r; }
+.e > div:nth-child(2) { grid-area: top / l / mid; }
+.f { grid-template-columns: repeat(4, 1fr); grid-auto-r

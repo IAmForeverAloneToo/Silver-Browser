@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<title>Orphans and widows</title>
+<style>
+  /* Paragraphs across breaks under orphans and widows, each case on
+     a page of its own after a spacer that leaves room for a few of its
+     lines. */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 16px; }
+  h1, h2 { font-weight: normal; }
+  h1 { font-size: 24px; margin: 16px 0; }
+  h2 { font-size: 20px; margin: 20px 0 12px; }
+  p { margin: 16px 0; }
+  body { margin: 0 8px; }
+  p { margin: 0; }
+  section { break-before: page; }
+  .o4 { orphans: 4; widows: 1; }
+  .w4 { widows: 4; orphans: 1; }
+  .ow3 { orphans: 3; widows: 3; }
+</style>
+</head>
+<body>
+<section>
+<!-- orphans 4 with 3 line; of room: the paragraph moves whole -->
+<div style="height: 920px"></div>
+<p class="o4" data-lines="6">A page is cut graphs flow from one page to the next as they flow down a long screen.</p>
+</section>
+<section>
+<!-- widows 

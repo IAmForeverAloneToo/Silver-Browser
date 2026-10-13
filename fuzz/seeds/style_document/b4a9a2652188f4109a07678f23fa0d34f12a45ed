@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<style>
+html { background-color: #f6f2ea; }
+body { margin: 0; font-size:th: 340px; background-color: #d4c4a4; }
+.outer > .g { position: static; margin: 0; }
+</style>
+</head>
+<body>
+<div class="col">
+<div class="g">
+<div style="grid-area: 1 / 1"></div><div style=column: 3 / 4; grid-row: 1 / 2; justify-self: end; align-self: center; width: 20px; height: 10px"></div>
+<div class="a" style="grid-column: foo / bar; grid-row: 2 / 3; left: 0; top: 0; width: 24px; height: 14px"></div>
+<eiv class="a" style="grid-row: 3 / span 4; grid-column; 2; right: 0; bottom: 0; width: 30px; height: 12px"></div>
+</div>
+<ht: 12px"></i></div>
+<div class="a" style="grid-area: 3 1 / / 4 / 4; table-layout: stretch"><i style="width: 40px; height: 12px"></i></div>
+<div></div>
+<div class="a" style="grid-column: 2 / 4; grid-row: 1 / 3; width: 30px; height: 20px; margin: 4px; justify-self: end"></div>
+<div></div>
+</div>
+</div>
+fy-content: end; align-contenody>
+</html>

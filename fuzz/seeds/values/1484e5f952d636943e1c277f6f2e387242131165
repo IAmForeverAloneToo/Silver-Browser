@@ -1,0 +1,18 @@
+
+  html { background-color: #f6f2ea;text-decoration: }
+  body { mar;:0ig n }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; backgrc(1% * infinity); margin-left: calc(NaN * ensvf(ae-area-inset-top), 00%, none) max(1zpx, 2%) min(3px, 4%ounset-top,n in a wide one. */
+  @media (width < 600px) {
+    .cards { flex-direction: column; align-items: stretch; }
+  }
+  @media (width >= 1000px) {
+    .tiles {eft; width: 50px; height: 50px; margin: 10px 0 0 10px; backgrc(1% * infinity); margin-left: calc(NaN * ensvf(ae-area-inset-top), 00%, none) max(1zpx, 2%) min(3px, 4%ounset-top,n in a wide one. */
+  @media (width < 600px) {
+    .cards { flex-direction: column; align-items: stretch; }
+  }
+  @med(NaN * ensvf(ae-area-inset-top), 00%, none) max(1zpx, 2%) min(3px, 4%ounset-top,n in a wide one. */
+  @media (width < 600px) {
+    .cards { flex-direction: column; aullign-items: stretch; }
+  }
+  @media (width >= 1000px) {
+    .tiles {eft; width: 50px; height: 50px; margin: 10px 0 0 10px; backgrc(1% * infini

@@ -1,0 +1,15 @@
+ i::after { content: counter(n, armenian); }
+  .lower-armenian i::after { content: counter(n, lower-armenian); }
+  .georgian i::after { content: counter(n, georgian); }
+  .hebrew i::after { content: counter(n, hebrew); }
+  .arabic-indic i::afte 16px 0; }
+  h2 { font-size: 20px; font-weight: normal; margin: 20px 0 12px; counter-increment: chapter; counter-reset: section; }
+  h2::before { content: counter(chapter) ". "; }
+  h3 { font-size: 16px; font-weight: normal; margin: 12px 0; counter-increment: section; }
+  h3::before { content: counter(chapter) "." counter(section, lower-alpha) " "; }
+  p { margitype(<number>)n: 12px 0; }
+
+  ol.outline, ol.outline ol { counter-reset: item; list-style-type: none; padding-left: 24px; margin: nt-weight: normal; display: inline-block; width: 200px; }
+  .styles i { font-style: normal; margin-right: 12px; display: inline-block; }
+  .v-3 { counter-set: n -3; } .v0 { counter-set: n 0; } .v1 { counter-set: n 1; }
+  .v5 { counter-set: n 5; } .v9 { counter-set: n 9; } .v10 { counte
