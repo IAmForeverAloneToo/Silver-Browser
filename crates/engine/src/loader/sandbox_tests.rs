@@ -312,21 +312,21 @@ fn a_change_of_the_attribute_applies_at_the_next_navigation() {
             "/page.html",
             &[],
             "<script>onmessage = e => console.log(e.origin + ' ' + e.data);</script>\
-             <iframe src=again.html#before></iframe>\
+             <iframe src=again.html?before></iframe>\
              <script>\
              const f = document.querySelector('iframe');\
              onload = () => {\
                f.sandbox = 'allow-scripts';\
                f.contentWindow.postMessage('again', '*');\
-               setTimeout(() => { f.src = 'again.html#after'; }, 50);\
+               setTimeout(() => { f.src = 'again.html?after'; }, 50);\
              };\
              </script>",
         ),
         (
             "/again.html",
             &[],
-            "<script>parent.postMessage(location.hash + ' ' + self.origin, '*');\
-             onmessage = () => parent.postMessage(location.hash + ' still ' + self.origin, '*');\
+            "<script>parent.postMessage(location.search + ' ' + self.origin, '*');\
+             onmessage = () => parent.postMessage(location.search + ' still ' + self.origin, '*');\
              </script>",
         ),
     ];
@@ -334,14 +334,14 @@ fn a_change_of_the_attribute_applies_at_the_next_navigation() {
     let lines = run_to(
         &server,
         at(&server, "a.localhost", "/page.html"),
-        "#after null",
+        "?after null",
     );
     assert_eq!(
         lines,
         [
-            "http://a.localhost:PORT #before http://a.localhost:PORT",
-            "http://a.localhost:PORT #before still http://a.localhost:PORT",
-            "null #after null",
+            "http://a.localhost:PORT ?before http://a.localhost:PORT",
+            "http://a.localhost:PORT ?before still http://a.localhost:PORT",
+            "null ?after null",
         ]
     );
 }

@@ -1,0 +1,21 @@
+<!doctype html>
+<!--
+  The adversarial site's network (M33.8, docs/design/hardening.md).
+  Served over http: from a public address, it sends a request in clear
+  to a host the profile knows as HTTPS only (HSTS), which a network
+  attacker would read, and one to a device on the local network, which
+  the user was never asked about. The servers record what reached them
+  over http:, under /pwned. It logs one JSON line at once: the requests
+  it made (ran); the first may never be answered, since a TLS greeting
+  to the plain server waits.
+  crates/engine/src/loader/adversarial_tests.rs runs it with the host
+  known and the page public, where neither request may arrive, and with
+  the host unknown and the page itself on the local network, where both
+  must.
+-->
+<title>The network</title>
+<script>
+  fetch("{{hsts}}/pwned?hsts", { mode: "no-cors" }).catch(() => {});
+  fetch("{{printer}}/pwned?local-network", { mode: "no-cors" }).catch(() => {});
+  console.log(JSON.stringify({ pwned: [], ran: ["hsts", "local-network"] }));
+</script>

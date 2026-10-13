@@ -244,6 +244,69 @@ fn the_parents_load_waits_for_its_frames_and_their_loads_come_first() {
 }
 
 #[test]
+fn an_iframe_hears_load_for_each_document_whatever_navigated_its_frame() {
+    // Its parent's form and link, its `src` and its own script each bring
+    // a document, and each `load`; a fragment brings none (found by the
+    // adversarial site, M33.8).
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<iframe name=sink></iframe>\
+             <form action=/child.html method=post target=sink></form>\
+             <a href=/child.html?link target=sink></a>\
+             <script>\
+             const frame = document.querySelector('iframe');\
+             const steps = [\
+               () => document.querySelector('form').submit(),\
+               () => document.querySelector('a').click(),\
+               () => frame.src = '/child.html?src',\
+               () => {\
+                 frame.src = '/child.html?src#here';\
+                 setTimeout(() => frame.src = '/child.html?self', 200);\
+               },\
+             ];\
+             onload = () => {\
+               frame.onload = () => {\
+                 console.log('load ' + steps.length);\
+                 setTimeout(() => steps.length && steps.shift()(), 50);\
+               };\
+               steps.shift()();\
+             };\
+             </script>",
+        )),
+        _ if path.starts_with("/child.html") => Some(html(
+            "<script>onload = () => {\
+             if (location.search == '?self') location.href = '/child.html?itself';\
+             };</script>",
+        )),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(server.url("/page.html"));
+    let lines =
+        tab.run_until(|lines| lines.iter().filter(|line| line.starts_with("load")).count() >= 5);
+    // Form, link, `src`: one each; the fragment none; the frame's own
+    // navigation one more after the `src` that started it.
+    assert_eq!(lines, ["load 3", "load 2", "load 1", "load 0", "load 0"]);
+    let targets: Vec<String> = server
+        .requests()
+        .into_iter()
+        .filter(|request| request.target.starts_with("/child.html"))
+        .map(|request| format!("{} {}", request.method, request.target))
+        .collect();
+    assert_eq!(
+        targets,
+        [
+            "POST /child.html",
+            "GET /child.html?link",
+            "GET /child.html?src",
+            "GET /child.html?self",
+            "GET /child.html?itself",
+        ]
+    );
+}
+
+#[test]
 fn a_srcdoc_takes_its_parents_origin_and_base_url() {
     let server = two_pages(
         "<iframe srcdoc=\"<a href=x.html></a><script>console.log(self.origin, document.URL, \

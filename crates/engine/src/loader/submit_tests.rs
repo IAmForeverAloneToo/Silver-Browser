@@ -388,6 +388,43 @@ fn an_implicit_submission_hears_submit_and_scripts_off_refuse_mail() {
 }
 
 #[test]
+fn a_form_its_document_submits_while_parsing_is_sent_with_its_body() {
+    // The document is still on its way when its script submits: the
+    // POST goes with its body, not as a GET (found by the adversarial
+    // site, M33.8), and a `form-action` it breaks sends nothing.
+    let server = serve(|path| match path {
+        "/form" => Some(html(
+            "<form id=f action=/sent method=post><input name=q value=1></form>\
+             <script>document.getElementById('f').submit()</script>",
+        )),
+        "/guarded" => Some(html(
+            "<meta http-equiv=Content-Security-Policy content=\"form-action 'none'\">\
+             <form id=f action=/refused method=post></form>\
+             <script>document.getElementById('f').submit(); console.log('stayed')</script>",
+        )),
+        _ => Some(html("<title>done</title><p>done")),
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(server.url("/form"));
+    arrive(&mut tab, "/sent");
+    let sent = request(&server, "/sent");
+    assert_eq!(
+        (sent.method.as_str(), sent.body.as_slice()),
+        ("POST", &b"q=1"[..])
+    );
+    tab.engine.navigate(server.url("/guarded"));
+    arrive(&mut tab, "/guarded");
+    tab.settle();
+    assert!(
+        server
+            .requests()
+            .iter()
+            .all(|request| !request.target.starts_with("/refused"))
+    );
+}
+
+#[test]
 fn a_form_out_of_the_document_is_not_submitted() {
     let server = site("<form id=f action=/gone><input name=q></form>");
     let mut tab = open(&server, true);

@@ -1,0 +1,43 @@
+<!doctype html>
+<!--
+  The adversarial site's cookies and storage (M33.8,
+  docs/design/hardening.md). The user signed in to the victim first,
+  which set a Strict, a Lax and a partitioned cookie and kept the word
+  SECRET in its storage. Served from the attacker's site, this page
+  sends requests to the victim from a frame, an image, a form (into a
+  frame of its own once loaded, so that the page stays) and a fetch,
+  which must
+  carry none of those cookies, and frames the victim's reader, which
+  must find none of them and nothing of the victim's storage. The
+  victim's server records the cookies each request carried; the reader
+  tells this page what it found. It logs, last, one JSON line: what
+  the reader learned (pwned) and what it tried (ran).
+  crates/engine/src/loader/adversarial_tests.rs runs it from the
+  attacker's site, where nothing may be learned or carried, and from
+  the victim's own, where all must.
+-->
+<title>Cookies and storage</title>
+<script>
+  const pwned = [];
+  const ran = [];
+  addEventListener("message", (e) => {
+    if (e.data && e.data.ran) ran.push(e.data.ran);
+    if (e.data && e.data.pwned) pwned.push(e.data.pwned);
+  });
+</script>
+<iframe src="{{victim}}/cookies?frame"></iframe>
+<img src="{{victim}}/cookies?image">
+<iframe name=sink></iframe>
+<form id=form action="{{victim}}/cookies?form" method=post target=sink></form>
+<iframe src="{{victim}}/reader.html"></iframe>
+<script>
+  ran.push("frame", "image", "form", "fetch");
+  fetch("{{victim}}/cookies?fetch", { mode: "no-cors", credentials: "include" }).catch(() => {});
+  onload = () => {
+    document.getElementById("form").submit();
+    setTimeout(() => {
+      const sorted = (list) => [...new Set(list)].sort();
+      console.log(JSON.stringify({ pwned: sorted(pwned), ran: sorted(ran) }));
+    }, 100);
+  };
+</script>

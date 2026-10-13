@@ -622,12 +622,32 @@ pub(crate) struct Frame {
     pub(crate) engine: Box<Engine>,
     /// What the element's attributes last navigated it to.
     pub(crate) source: Source,
-    /// Whether the element was told its frame's document loaded: its
-    /// `load` fired.
-    pub(crate) told: bool,
+    /// The document of the frame whose load the element was told of: its
+    /// `load` fired for it. Each new document is told again, whatever
+    /// navigated the frame (M33.8).
+    pub(crate) told: Option<PageId>,
     /// The frame's last drawing.
     pub(crate) drawn: Option<Drawn>,
     tree: SharedTree,
+}
+
+impl Frame {
+    /// Whether the element was told its frame's document loaded.
+    pub(crate) fn told_of_its_document(&self) -> bool {
+        self.told == Some(self.engine.shown.page.id())
+    }
+
+    /// Whether the element is to be told its frame's document loaded:
+    /// a load completed since it was last told.
+    fn to_tell(&self) -> bool {
+        self.engine.completed.is_some() && self.engine.completed != self.told
+    }
+
+    /// Whether the frame has no navigation under way and its element was
+    /// told its document loaded.
+    pub(crate) fn settled(&self) -> bool {
+        self.told_of_its_document() && self.engine.frame_settled()
+    }
 }
 
 impl Drop for Frame {
@@ -924,7 +944,7 @@ impl Engine {
             id,
             engine,
             source: Source::Blank,
-            told: false,
+            told: None,
             drawn: None,
             tree: self.frame.tree.clone(),
         })
@@ -958,7 +978,13 @@ impl Engine {
             .container_local_network
             .clone_from(&local_network);
         frame.source = source.clone();
-        frame.told = false;
+        // What its frame showed before is never told now: the initial
+        // `about:blank` hears no `load` when a navigation follows (HTML's
+        // "process the iframe attributes"); a `javascript:` URL brings no
+        // document here, and it is still told.
+        if !matches!(&source, Source::Url(url) if url.scheme() == "javascript") {
+            frame.told = frame.engine.completed;
+        }
         frame.drawn = None;
         match source {
             Source::Blank => frame.engine.show_blank(&creator, false),
@@ -1074,6 +1100,13 @@ impl Engine {
         initiator: Option<net::Initiator>,
         policy: Option<net::ReferrerPolicy>,
     ) {
+        // A fragment of the document shown is gone to, not fetched again
+        // (HTML's "navigate to a fragment", M33.8).
+        let shown = self.shown.page.url().map(Url::without_fragment);
+        if url.fragment().is_some() && shown == Some(url.without_fragment()) {
+            self.navigate_to_fragment(url, Handling::Push);
+            return;
+        }
         self.cancel_navigation();
         if url.scheme() == "javascript" {
             if self.scripts_run() {
@@ -1336,7 +1369,7 @@ impl Engine {
     /// the document's own load waits for (HTML's "delaying the load
     /// event"), and a runner waits for once a frame is put back.
     pub fn frames_settled(&self) -> bool {
-        self.shown.frames.values().all(|frame| frame.told)
+        self.shown.frames.values().all(Frame::settled)
     }
 
     /// Fires `load` at each `iframe` whose frame's document has loaded
@@ -1347,9 +1380,9 @@ impl Engine {
             .shown
             .frames
             .iter_mut()
-            .filter(|(_, frame)| !frame.told && frame.engine.frame_settled())
+            .filter(|(_, frame)| frame.to_tell())
             .map(|(&node, frame)| {
-                frame.told = true;
+                frame.told = frame.engine.completed;
                 node
             })
             .collect();
@@ -1407,7 +1440,7 @@ impl Engine {
             .frames
             .values()
             .filter_map(|frame| {
-                if !frame.told && frame.engine.frame_settled() {
+                if frame.to_tell() {
                     Some(Duration::ZERO)
                 } else {
                     frame.engine.next_task_at()

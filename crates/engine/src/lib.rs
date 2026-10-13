@@ -308,6 +308,10 @@ pub struct Engine {
     /// way.
     navigation: Option<Navigation>,
     load_state: LoadState,
+    /// The last document whose load completed, loaded or failed (M33.8):
+    /// what a frame's element hears `load` for, though the document's own
+    /// `load` listener navigate on at once.
+    completed: Option<PageId>,
     /// The waker the caller gave, kept to wake the caller while a parse
     /// has more to do (M24.8).
     waker: Option<loader::Waker>,
@@ -1070,6 +1074,7 @@ impl Engine {
             network,
             navigation: None,
             load_state: LoadState::Loaded,
+            completed: None,
             waker: None,
             compat_user_agent: false,
             scripting: false,
@@ -1207,7 +1212,7 @@ impl Engine {
             && left.parsing.is_none()
             && left.scripts.keepable()
             && !self.frame.is_frame()
-            && left.frames.values().all(|frame| frame.told);
+            && left.frames.values().all(frames::Frame::settled);
         self.unload(&mut left, kept);
         if kept {
             left.scripts.collect();
@@ -1498,7 +1503,9 @@ impl Engine {
     /// for: in place of the navigation that brought it, with its handling,
     /// so that a page that sends its reader on by script leaves one entry.
     /// Its `javascript:` URLs and reloads wait for it to be shown: they do
-    /// nothing.
+    /// nothing. A form it submits goes with its body, held to its
+    /// `form-action`; one that would leave a secure document for `http:`
+    /// is not sent, the warning page needing a document shown (M33.8).
     fn incoming_navigation(&mut self, navigation: scripts::ScriptNavigation) {
         let Some(url) = navigation.url.filter(|_| !navigation.reload) else {
             return;
@@ -1515,10 +1522,24 @@ impl Engine {
             origin: current.url.origin(),
             activated: false,
             csp: None,
-            form: false,
+            form: navigation.form,
             referrer: None,
             referrer_policy: net::ReferrerPolicy::default(),
         };
+        if navigation.form
+            && let Some(Navigation {
+                incoming: Incoming::Parsing { page, document, .. },
+                ..
+            }) = &mut self.navigation
+        {
+            let refused =
+                net::csp::enforced(page.csp(document).form_action_violations((&url, &url), 0))
+                    .is_err();
+            let mixed = page.is_secure_context() && !url.is_potentially_trustworthy();
+            if refused || mixed {
+                return;
+            }
+        }
         // A link or form of the document on its way may name another
         // frame (M33.2), chosen as that document would.
         if navigation.link
@@ -1549,7 +1570,7 @@ impl Engine {
         }
         match refusal(&url, Some(&source), false) {
             Some(why) => self.notice = Some(why),
-            None => self.start_navigation_with(url, handling, None, Some(from)),
+            None => self.start_navigation_with(url, handling, navigation.post, Some(from)),
         }
     }
 
@@ -5004,6 +5025,7 @@ impl Engine {
             self.cached_styles();
             if self.shown.images.settled() {
                 self.load_state = LoadState::Loaded;
+                self.completed = Some(self.shown.page.id());
             }
         }
         self.update_target();
@@ -5022,6 +5044,7 @@ impl Engine {
         {
             LoadState::Loading
         } else if let Some(failure) = &self.shown.failure {
+            self.completed = Some(self.shown.page.id());
             LoadState::Failed(failure.clone())
         } else {
             // Loaded once the images its styles name are in (M23.3).

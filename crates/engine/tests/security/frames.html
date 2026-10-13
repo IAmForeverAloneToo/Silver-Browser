@@ -1,0 +1,81 @@
+<!doctype html>
+<!--
+  The adversarial site's frames (M33.8, docs/design/hardening.md).
+  Served from the attacker's origin, it frames a victim that refuses to
+  be framed, reads what a sandboxed frame should not reach, reads a
+  frame of the victim's origin and has a frame of its own read the
+  victim, its parent, and hear a message meant for the victim's own
+  origin. The word SECRET is in each thing it should not learn. It logs,
+  last, one JSON line: the attacks that learned the word or did what
+  they should not (pwned) and the attacks it made (ran); the victim's
+  server records what reached it, under /pwned. After the line, with
+  ?top or ?popup, a sandboxed frame tries to navigate the top or open a
+  window, one to a run since either leaves the page.
+  crates/engine/src/loader/adversarial_tests.rs runs it with the
+  defences on, where nothing may succeed, and with each taken away (a
+  victim of this origin, no header, no sandbox), where all must but the
+  reads across frames: every frame is of an origin of its own to every
+  other until M34 (G90), so those fail either way, and are kept for the
+  day they would not.
+-->
+<title>Frames</title>
+<script>
+  const SECRET = "{{secret}}";
+  const DEFENDED = {{defended}};
+  const pwned = [];
+  const ran = [];
+  function look(what, value) {
+    if (String(value).indexOf(SECRET) >= 0) pwned.push(what);
+  }
+  function attempt(what, read) {
+    ran.push(what);
+    try {
+      look(what, read());
+    } catch (e) {}
+  }
+  // What a sandboxed frame must not reach: this origin's cookie and
+  // storage.
+  document.cookie = "parent=" + SECRET;
+  localStorage.setItem("secret", SECRET);
+  // What frames say: an attack made, or one that worked.
+  addEventListener("message", (e) => {
+    if (e.data && e.data.ran) ran.push(e.data.ran);
+    if (e.data && e.data.pwned) pwned.push(e.data.pwned);
+  });
+  ran.push("x-frame-options", "frame-ancestors", "sandboxed script", "sandboxed handler",
+    "sandboxed-form");
+</script>
+<iframe src="{{victim}}/framed-xfo"></iframe>
+<iframe src="{{victim}}/framed-ancestors"></iframe>
+<iframe {{sandbox-scripts}} src="/sandboxed.html"></iframe>
+<iframe {{sandbox}} srcdoc="<script>parent.postMessage({ pwned: 'sandboxed script' }, '*')</script>
+<img src=/missing.png onerror=&quot;parent.postMessage({ pwned: 'sandboxed handler' }, '*')&quot;>"></iframe>
+<iframe {{sandbox-scripts}} srcdoc="<form action=/pwned?sandboxed-form method=post></form>
+<script>document.forms[0].submit()</script>"></iframe>
+<iframe id=victim src="{{victim}}/victim.html?{{secret}}"></iframe>
+<script>
+  onload = () => {
+    const frame = document.getElementById("victim");
+    attempt("frame document", () => frame.contentDocument.body.textContent);
+    attempt("frame window document", () => frame.contentWindow.document.body.textContent);
+    attempt("frame location", () => frame.contentWindow.location.href);
+    attempt("frame name", () => frame.contentWindow.name);
+    attempt("frame storage", () => frame.contentWindow.localStorage.getItem("secret"));
+    attempt("frame cookie", () => frame.contentWindow.document.cookie);
+    // The messages of the frames come as tasks: the line after them.
+    setTimeout(() => {
+      const sorted = (list) => [...new Set(list)].sort();
+      console.log(JSON.stringify({ pwned: sorted(pwned), ran: sorted(ran) }));
+      const late = {
+        "?top": "<script>top.location.href = '/pwned?sandboxed-top-navigation'</scr" + "ipt>",
+        "?popup": "<a target=_blank href=/pwned?sandboxed-popup></a><script>document.querySelector('a').click()</scr" + "ipt>",
+      }[location.search];
+      if (late) {
+        const sandboxed = document.createElement("iframe");
+        if (DEFENDED) sandboxed.setAttribute("sandbox", "allow-scripts");
+        sandboxed.srcdoc = late;
+        document.body.append(sandboxed);
+      }
+    }, 100);
+  };
+</script>

