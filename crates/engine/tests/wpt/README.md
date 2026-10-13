@@ -36,9 +36,9 @@ subtest they fail is named in `expectations.txt`, and why.
 | --- | ---: |
 | checklayout | 70 |
 | crashtest | 101 |
-| reftest | 2910 |
+| reftest | 2909 |
 | testharness | 4278 |
-| all | 7359 |
+| all | 7358 |
 
 ## Left out
 
@@ -46,7 +46,7 @@ The first reason the rule found for each test it left out:
 
 | Reason | Tests |
 | --- | ---: |
-| script | 3152 |
+| script | 3153 |
 | Python handler | 1867 |
 | @font-face | 902 |
 | declaration of font | 713 |
@@ -177,7 +177,6 @@ The first reason the rule found for each test it left out:
 | declaration of accent-color | 3 |
 | declaration of background-position-x | 3 |
 | declaration of background-size | 3 |
-| declaration of border | 3 |
 | declaration of border-bottom-right-radius | 3 |
 | declaration of caret-color | 3 |
 | declaration of color-scheme | 3 |
@@ -196,6 +195,7 @@ The first reason the rule found for each test it left out:
 | SVG <mask> (G87) | 2 |
 | SVG <set> (G87) | 2 |
 | SharedArrayBuffer (G83) | 2 |
+| declaration of border | 2 |
 | declaration of border-bottom-left-radius | 2 |
 | declaration of border-image | 2 |
 | declaration of content | 2 |
@@ -313,6 +313,7 @@ The first reason the rule found for each test it left out:
 | input type=color | 1 |
 | input type=week | 1 |
 | its frame's page asks a Python handler (delay.py): on the runner's server the request ends at once, before the navigation or after it by chance | 1 |
+| its lazy image's second source, set in its load event, races the screenshot: it fails as M23 named it, and passed once in M33's gates | 1 |
 | link to  | 1 |
 | link to //[ | 1 |
 | link to {{location[scheme]}}://{{location[host]}}/content-security-policy/support/checkReport.sub.js | 1 |

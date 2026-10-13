@@ -175,7 +175,7 @@ const TESTHARNESS_DIRECTORIES: &[(&str, &str)] = &[
 ];
 
 /// Tests the rule would take that are left out by name, and why: what the
-/// rule's look at a test's own text cannot see (M33).
+/// rule's look at a test's own text cannot see, of every kind (M33).
 const TESTS_LEFT_OUT: &[(&str, &str)] = &[
     (
         "xhr/abort-during-navigation.window.js",
@@ -186,6 +186,11 @@ const TESTS_LEFT_OUT: &[(&str, &str)] = &[
         "content-security-policy/frame-ancestors/frame-ancestors-path-ignored.window.js",
         "two frames race for its one result, and a same-origin frame's location is \
          unreadable here (G90): it passes or fails as their responses come",
+    ),
+    (
+        "html/semantics/embedded-content/the-img-element/image-loading-lazy-data-url-to-https.html",
+        "its lazy image's second source, set in its load event, races the screenshot: \
+         it fails as M23 named it, and passed once in M33's gates",
     ),
 ];
 
@@ -881,6 +886,9 @@ fn is_test(rel: &str) -> bool {
 /// The test at `rel`, if the rule takes it: how it is run and the files
 /// it needs besides itself; else why it is left out.
 fn take(checkout: &Path, rel: &str) -> Result<(Kind, Vec<String>), String> {
+    if let Some((_, why)) = TESTS_LEFT_OUT.iter().find(|(test, _)| *test == rel) {
+        return Err((*why).to_string());
+    }
     // A `.sub` file is a template wptserve fills in with its hosts and
     // ports, which the runner's one server does not.
     if rel

@@ -1530,7 +1530,6 @@ css/css-backgrounds/border-image-image-type-002.htm                             
 css/css-backgrounds/border-image-image-type-004.htm                              as border-image-image-type-001.htm: an SVG border image of no natural size is cut from its 300 by 150 default
 css/css-backgrounds/border-image-image-type-005.htm                              as border-image-image-type-001.htm: an SVG border image of no natural size is cut from its 300 by 150 default
 css/css-backgrounds/border-image-repeat-1.html                                   the border image's pieces, the SVG image drawn at its natural 48 by 48 and scaled to the 16-pixel border, are resampled at their edges, by up to 112, where the reference browser draws the vector at the border's size
-html/semantics/embedded-content/the-img-element/image-loading-lazy-data-url-to-https.html   a lazy img whose src is changed in the load event shows neither its first image nor its second by the screenshot (lazy loading, M23)
 svg/painting/reftests/paint-context-003.svg                                      context-fill and context-stroke, a use's context paint, draw nothing in v1 (G87)
 svg/painting/reftests/paint-context-007.svg                                      as paint-context-003.svg: context-fill and context-stroke draw nothing in v1 (G87)
 svg/shapes/reftests/pathlength-004b.svg                                          pathLength (G87); the test's helpers are loaded by SVG script elements' href, and its change is made after the first frame

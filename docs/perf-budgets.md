@@ -1714,6 +1714,46 @@ bootstrap 533 lines longer with SVG's interfaces). The first run
   bimodal (144 against 150ms by their medians, one at 279), the
   machine's variance M23 noted.
 
+### Frames and the security sweep (M33)
+
+`benches/frames.rs` (`cargo bench -p engine --bench frames`), on the
+Windows machine, release, medians of ten (forty for the changes),
+three runs: a page of twenty `srcdoc` frames of 300 by 200, each a
+document of its own with a grid of twelve boxes and a paragraph, from
+its load to its first frame with every frame loaded and drawn; the
+page scrolled down and back by a frame's height, each to its frame;
+and the window made narrower and wider, three frames to a row and
+four, each to its frame.
+
+| | At 1 | At 2 |
+| --- | --- | --- |
+| Twenty frames, the load to the first frame | 39.4-41.4ms | 126.8-128.8ms |
+
+| | |
+| --- | --- |
+| Scrolled by a frame's height, to the frame | 1.5-1.6ms |
+| The window's width changed, to the frame | 12.2-12.6ms |
+
+- *A frame* is an engine of its own: its document is styled, laid out
+  and drawn into a pixmap of its own, and its parent's frame draws
+  that pixmap as it draws a canvas's. A scroll of the parent draws no
+  frame again; a resize lays out the parent and draws the frames whose
+  size changed.
+- *Every check M33 added* (CSP's by destination, the referrer, HSTS,
+  the address spaces, the partitions) is a lookup per request, and the
+  benches' pages, which make few, show none of them.
+- *`ComputedStyle`* grew by one byte, the border colours that are
+  `currentcolor`, to 704 bytes from 696: no padding was left.
+
+**T4.3.** The benchmarks of the code before M33 (ed0f317) and of M33
+(f735dc1 and the frames bench), by turns, four rounds, M32's nineteen
+and `svg`: within 8% by their medians, but the flex grid's first frame
+(0.24 against 0.30s, x1.26), whose layout came out bimodal in the
+head's rounds, 194ms in one and 320 to 326ms in three; eight runs of
+each by turns after it gave 198 to 205ms before and 196 to 205ms with
+M33, the same, the machine's variance M23 and M32 noted. Numbered
+lists' cascade, x1.07 (24.9 against 26.7ms), is the largest after it.
+
 ### Over budget, and why
 
 These are known and recorded rather than hidden. Each has the item that

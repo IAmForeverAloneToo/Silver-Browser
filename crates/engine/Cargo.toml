@@ -115,6 +115,10 @@ harness = false
 name = "svg"
 harness = false
 
+[[bench]]
+name = "frames"
+harness = false
+
 [dev-dependencies]
 # The scripted server the loader's tests fetch from.
 net = { workspace = true, features = ["test-server"] }
