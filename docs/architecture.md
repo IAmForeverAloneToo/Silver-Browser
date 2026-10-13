@@ -93,8 +93,11 @@ shell          (bin "silver-browser": windowing, event loop, input, clipboard)
    whose own (its file reads, locks and hashing) is third-party (M28).
    `js` runs WebAssembly over `wasmi` (M29), whose executor's own is
    third-party too. `canvas` forbids it, drawing with `tiny-skia`
-   (M30), whose own is third-party. The unsafe code that leaves,
-   third-party and pinned, is M33.5's audit.
+   (M30), whose own is third-party. Since M33 every other crate, test,
+   bench, example and fuzz target says `#![forbid(unsafe_code)]`, the
+   shell `deny` and its platform module alone `allow`, each block with
+   its argument, which a test and CI hold; the third-party unsafe code,
+   pinned, is inventoried in `docs/security.md` (M33.5).
 
 ## Pixels: where fractions become whole (M8.5)
 
@@ -1250,8 +1253,8 @@ by the layout cache, mended; T4.3 found the box tree doing the
 milestone's work for every document, mended, and the larger style
 copied with every fragment the layout cache gives back, an appended
 paragraph's frame 25% longer and the pseudo benchmark's 40–53%, the
-exception written in `docs/perf-budgets.md` with M35.9. Security, until
-`docs/security.md` (M33): a math function nests 32 deep; a substitution
+exception written in `docs/perf-budgets.md` with M35.9. Security (in
+`docs/security.md` since M33): a math function nests 32 deep; a substitution
 weighs a mebibyte at most (`style::custom::MAX_SUBSTITUTION`) and a
 cascade's substitutions 256 MiB (`MAX_CASCADE_SUBSTITUTION`), by the
 memory their tokens take, so thirty properties each doubling the last
@@ -1356,8 +1359,8 @@ timing, interpolation and frames drawn at a series of times to their
 bounds; the `mutation` target's styles take transitions and animations,
 and its comparison finishes the engine's transitions as `finish()` would
 (`Engine::finish_transitions`), which found a change no frame had drawn;
-the targets ran fifteen minutes each and found nothing else. Security,
-until `docs/security.md` (M33): a document runs at most 65,536
+the targets ran fifteen minutes each and found nothing else. Security (in
+`docs/security.md` since M33): a document runs at most 65,536
 animations and transitions together
 (`style::animation::MAX_ANIMATIONS`), past which a new animation does
 not start and a new transition's property takes its value at once;
