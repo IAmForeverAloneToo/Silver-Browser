@@ -368,8 +368,15 @@ only.test
         assert!(!known("test"));
         assert!(!known("other.test"));
         assert_eq!(list.len(), 2, "comments are not hosts");
-        // The list shipped reads.
-        let _ = preload();
+        // The list shipped is the reference browser's (fetched at M33):
+        // whole top-level domains, sites with their subdomains and
+        // without, and nothing of this machine's.
+        let shipped = |host| hsts.known(host, at(0));
+        assert!(preload().len() > 90_000, "{}", preload().len());
+        assert!(shipped("dev") && shipped("www.example.dev"));
+        assert!(shipped("github.com") && shipped("api.github.com"));
+        assert!(shipped("paypal.com") && !shipped("nosuchname.paypal.com"));
+        assert!(!shipped("example.com") && !shipped("localhost"));
     }
 
     #[test]

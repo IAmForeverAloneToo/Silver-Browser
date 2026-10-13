@@ -1744,6 +1744,9 @@ four, each to its frame.
   benches' pages, which make few, show none of them.
 - *`ComputedStyle`* grew by one byte, the border colours that are
   `currentcolor`, to 704 bytes from 696: no padding was left.
+- *The HSTS preload list*, the reference browser's 95,136 hosts, is
+  read into a hash map at the first lookup, 12.8ms on a fetch thread,
+  then 75ns a lookup; the binary carries its 2.2 MB.
 
 **T4.3.** The benchmarks of the code before M33 (ed0f317) and of M33
 (f735dc1 and the frames bench), by turns, four rounds, M32's nineteen

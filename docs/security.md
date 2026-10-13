@@ -122,9 +122,9 @@ certificates `webpki-roots` bundles (Mozilla's set); nothing weaker is
 offered. HSTS (M33.3): a host that sent the
 field over `https:` is fetched over it from then on, its subdomains
 too when it said so, kept in the profile, 10,000 hosts at most and a
-year at most each; the preload list's slot is wired but empty (a gap:
-the reference browser's list has to be fetched with the user's
-leave). `Upgrade-Insecure-Requests` is sent on navigations and its
+year at most each, and the reference browser's preload list (95,136
+hosts as of 2026-10-13) known from the start.
+`Upgrade-Insecure-Requests` is sent on navigations and its
 directive honoured; mixed content is upgraded or blocked as the
 reference browser does; a form from a secure page to `http:` waits for
 the user on a warning page. Revocation and Certificate Transparency
@@ -430,11 +430,12 @@ seconds (`PROMPT_TIMEOUT`).
 - **Frames are cross-origin to each other** whatever their origins
   (G90): the closed side, but same-origin pages that script their
   frames do not work.
-- **The HSTS preload list is empty**: the reference browser's list
-  (`transport_security_state_static.json`) is to be fetched with the
-  maintainer's leave and turned into `crates/net/data/hsts_preload.txt`
-  by `crates/net/examples/hsts_preload.rs`; until then a first visit
-  to a preloaded host in clear is not upgraded.
+- **The HSTS preload list is a copy** of the reference browser's as of
+  2026-10-13 (`crates/net/data/hsts_preload.txt`, made by
+  `crates/net/examples/hsts_preload.rs` from its
+  `transport_security_state_static.json`): a host preloaded since is
+  not known until it sends the field, and the copy is refreshed by hand
+  until an update service (T6.3) can.
 - **No revocation or Certificate Transparency** (G100), **no Encrypted
   Client Hello** (G101).
 - **Third-party cookies are sent** (`SameSite=None`), as the reference

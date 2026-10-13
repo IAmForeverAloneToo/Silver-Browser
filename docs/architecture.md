@@ -1987,14 +1987,14 @@ report-only, the fetch directives by destination, inline code by
 nonce, hash and `'unsafe-inline'`, `'strict-dynamic'`, code from
 strings and WebAssembly, `base-uri`, `form-action`, nonces hidden from
 selectors, violations as events, console lines and reports. Referrer
-Policy (step 9), HSTS kept in the profile with a preload list's slot
-(D26) and `Upgrade-Insecure-Requests` (step 10), Local Network
-Access's prompt with its answers kept (step 11). The profile encrypted
-at rest, AES-256-GCM under a key DPAPI wraps on Windows (step 12,
-D27). `unsafe` in the shell's platform module alone, four blocks
-argued, the third-party inventory in `docs/security.md` (step 13).
-Fuzzing (step 14): `csp` whole, `referrer`, `hsts` and `frames` new,
-`dom_api` making frames, 29 targets whose minimized corpora are
+Policy (step 9), HSTS kept in the profile with the reference browser's
+preload list (D26) and `Upgrade-Insecure-Requests` (step 10), Local
+Network Access's prompt with its answers kept (step 11). The profile
+encrypted at rest, AES-256-GCM under a key DPAPI wraps on Windows
+(step 12, D27). `unsafe` in the shell's platform module alone, four
+blocks argued, the third-party inventory in `docs/security.md` (step
+13). Fuzzing (step 14): `csp` whole, `referrer`, `hsts` and `frames`
+new, `dom_api` making frames, 29 targets whose minimized corpora are
 committed as seeds (50,653 inputs, 14.6 MB) and fuzzed nightly by CI;
 merging them found a hostless realm refusing `eval`, the differential
 comparison blind to canvases and to frames' documents, and a canvas a
@@ -2026,6 +2026,7 @@ Transparency, Encrypted Client Hello, `<frame>` and `<object>`
 documents, lazy frames and the frame attributes past `sandbox` and
 `allow`, CSP's edges and the interfaces the tests found missing, the
 web-platform tests failing undiagnosed, and Referrer Policy's and the
-profile encryption's edges; the HSTS preload list itself waits for
-the maintainer's leave to fetch it. 2,606 tests pass workspace-wide,
-two ignored. Next milestone: the multi-process architecture (M34).
+profile encryption's edges. The preload list, fetched with the
+maintainer's leave after the documents, holds the reference browser's
+95,136 hosts as of 2026-10-13. 2,606 tests pass workspace-wide, two
+ignored. Next milestone: the multi-process architecture (M34).

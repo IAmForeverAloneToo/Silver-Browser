@@ -3,25 +3,43 @@
 //! `transport_security_state_static.json` (Chromium's, under its BSD
 //! licence), which the caller fetched:
 //!
-//!     cargo run -p net --example hsts_preload -- <the JSON file>
+//!     cargo run -p net --example hsts_preload -- <the JSON file> [--leave-out <words>]
 //!
 //! Its `force-https` entries are kept, with their `include_subdomains`;
 //! the pins, the entries of no mode and the test domains are left out.
 //! The file is JSON with `//` comment lines, which are dropped first.
+//! With `--leave-out`, a file of words, one a line, kept outside the
+//! repository, a host whose name holds one is left out too, as the
+//! maintainer chose; the header says how many.
 
 #![forbid(unsafe_code)]
 
 use std::path::Path;
 
 fn main() {
-    let Some(source) = std::env::args().nth(1) else {
-        eprintln!("usage: hsts_preload <transport_security_state_static.json>");
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let usage = || -> ! {
+        eprintln!(
+            "usage: hsts_preload <transport_security_state_static.json> [--leave-out <words>]"
+        );
         std::process::exit(2);
+    };
+    let (source, words) = match args.as_slice() {
+        [source] => (source.clone(), Vec::new()),
+        [source, flag, words] if flag == "--leave-out" => (source.clone(), read_words(words)),
+        _ => usage(),
     };
     let text = std::fs::read_to_string(&source).unwrap_or_else(|error| {
         eprintln!("cannot read {source}: {error}");
         std::process::exit(1);
     });
+    // The source's notice, its comment lines before the first that is
+    // not one, kept with what is made from it.
+    let notice: Vec<&str> = text
+        .lines()
+        .map_while(|line| line.trim_start().strip_prefix("//"))
+        .map(str::trim)
+        .collect();
     let json: String = text
         .lines()
         .filter(|line| !line.trim_start().starts_with("//"))
@@ -32,6 +50,7 @@ fn main() {
         std::process::exit(1);
     });
     let entries = value["entries"].as_array().cloned().unwrap_or_default();
+    let mut left_out = 0;
     let mut lines: Vec<String> = entries
         .iter()
         .filter(|entry| entry["mode"] == "force-https" && entry["policy"] != "test")
@@ -41,6 +60,10 @@ fn main() {
                 && name
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.');
+            if valid && words.iter().any(|word| name.contains(word.as_str())) {
+                left_out += 1;
+                return None;
+            }
             valid.then(
                 || match entry["include_subdomains"].as_bool() == Some(true) {
                     true => format!("{name} include"),
@@ -58,6 +81,15 @@ fn main() {
          # browser's transport_security_state_static.json, under its BSD\n\
          # licence. One host a line, `include` for its subdomains too.\n",
     );
+    if left_out > 0 {
+        text.push_str(&format!(
+            "# Left out at the maintainer's choice: {left_out} hosts.\n"
+        ));
+    }
+    text.push_str("# The source's notice:\n");
+    for line in &notice {
+        text.push_str(&format!("# {line}\n"));
+    }
     for line in &lines {
         text.push_str(line);
         text.push('\n');
@@ -66,5 +98,22 @@ fn main() {
         eprintln!("cannot write {}: {error}", out.display());
         std::process::exit(1);
     });
-    println!("{} hosts written to {}", lines.len(), out.display());
+    println!(
+        "{} hosts written to {}, {left_out} left out",
+        lines.len(),
+        out.display()
+    );
+}
+
+/// The words of the file at `path`, one a line, lowercase; blank lines
+/// and `#` comments skipped.
+fn read_words(path: &str) -> Vec<String> {
+    let text = std::fs::read_to_string(path).unwrap_or_else(|error| {
+        eprintln!("cannot read {path}: {error}");
+        std::process::exit(1);
+    });
+    text.lines()
+        .map(|line| line.trim().to_ascii_lowercase())
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect()
 }

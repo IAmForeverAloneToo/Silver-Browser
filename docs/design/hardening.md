@@ -1075,8 +1075,11 @@ URL, and a worker's its own by the default policy, its response's
 field not read (registered).
 
 *HSTS and Upgrade-Insecure-Requests.* *(corrected)* The preload list's
-file ships empty, the reference browser's list waiting for the
-maintainer's leave to fetch it, and is read into a hash map; a
+file shipped empty until the maintainer's leave to fetch the
+reference browser's list came after the documents: it holds 95,136
+hosts as of 2026-10-13, 11 left out at the maintainer's choice, the
+source's notice kept with them, read into a hash map at the first
+lookup (12.8ms) rather than a sorted table; a
 field's `max-age` counts for a year at most; a form submitted into
 another frame by its target, or redirected to `http:`, is not held on
 the warning page (registered).
