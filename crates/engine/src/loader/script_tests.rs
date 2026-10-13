@@ -722,8 +722,9 @@ fn unsafe_inline_lets_inline_scripts_run_unless_a_nonce_takes_its_place() {
     for (policy, runs) in [
         ("script-src 'unsafe-inline'", true),
         ("img-src 'none'", true),
-        // A nonce takes 'unsafe-inline' away, and matches nothing yet.
-        ("script-src 'unsafe-inline' 'nonce-abc'", false),
+        // A nonce takes 'unsafe-inline' away (M33.1: and its own runs).
+        ("script-src 'unsafe-inline' 'nonce-xyz'", false),
+        ("script-src 'nonce-abc'", true),
     ] {
         let server = serve(move |path| match path {
             "/page.html" => Some(under(

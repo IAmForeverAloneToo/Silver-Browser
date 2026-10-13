@@ -591,6 +591,21 @@ const NATIVES: &[(&str, Decode)] = &[
             message: a.string(1)?,
         })
     }),
+    ("codeAllowed", |a| {
+        let element = match a.integer(2) {
+            n if n >= 0.0 => Some(a.handle(2)?),
+            _ => None,
+        };
+        Ok(Call::CodeAllowed {
+            kind: a.string(0)?,
+            source: a.string(1)?,
+            element,
+        })
+    }),
+    ("nonce", |a| Ok(Call::Nonce(a.handle(0)?))),
+    ("setNonce", |a| {
+        Ok(Call::SetNonce(a.handle(0)?, a.string(1)?))
+    }),
 ];
 
 /// Runs the bootstrap with the natives, which nothing else then holds;

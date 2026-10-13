@@ -590,6 +590,20 @@ pub enum Call {
         kind: String,
         message: String,
     },
+    /// Whether code from a string may be compiled (M33.1): `kind` is
+    /// `eval` (`eval`, the function constructors, a timer's string),
+    /// `wasm` (a WebAssembly module) or `handler` (an event handler
+    /// attribute of `element`, its text `source`). The answer is empty
+    /// when it may, else what refuses it, as the exception says it.
+    CodeAllowed {
+        kind: String,
+        source: String,
+        element: Option<Handle>,
+    },
+    /// An element's nonce (M33.1, HTML's `[[CryptographicNonce]]`), which
+    /// its `nonce` attribute no longer shows once hidden.
+    Nonce(Handle),
+    SetNonce(Handle, String),
     /// A canvas's operation (M30): one variant for them all.
     Canvas(Box<CanvasCall>),
 }

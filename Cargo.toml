@@ -77,6 +77,9 @@ redb = "4.3"
 # provider, which has the X25519MLKEM768 key exchange, and Mozilla's
 # root program compiled in.
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12", "prefer-post-quantum"] }
+# The SHA-2 digests a Content Security Policy's hash sources name
+# (M33.1): rustls's provider, with the features rustls enables in it.
+aws-lc-rs = { version = "1.18", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
 webpki-roots = "1"
 # gzip and deflate content codings, pure Rust over miniz_oxide.
 flate2 = "1"

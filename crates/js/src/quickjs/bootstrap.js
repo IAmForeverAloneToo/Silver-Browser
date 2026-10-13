@@ -33,6 +33,12 @@
   const $Proxy = Proxy;
   const $FinalizationRegistry = FinalizationRegistry;
   const ReflectApply = Reflect.apply;
+  const ReflectConstruct = Reflect.construct;
+  const $EvalError = EvalError;
+  // The originals of what compiles code from strings (M33.1), which
+  // only this closure holds once they are guarded.
+  const OriginalEval = global.eval;
+  const OriginalFunction = Function;
   const ReflectGet = Reflect.get;
   const ReflectSet = Reflect.set;
   const ReflectHas = Reflect.has;
@@ -8034,6 +8040,20 @@
   }
   expose(SVGElement, "SVGElement");
 
+  // HTMLOrSVGElement's `nonce` (M33.1): the element's nonce, which its
+  // attribute stops showing once the document hides it.
+  include(
+    {
+      get nonce() {
+        return native.nonce(self(this));
+      },
+      set nonce(value) {
+        native.setNonce(self(this), str(value));
+      },
+    },
+    [HTMLElement.prototype, SVGElement.prototype],
+  );
+
   const svgInterfaces = new $Map();
   function svgElement(name, tags, base) {
     const cls = {
@@ -9346,6 +9366,10 @@
     const params = type === "error" && target === global
       ? "event, source, lineno, colno, error"
       : "event";
+    // The document's policies may refuse it (M33.1): no handler then.
+    if (native.codeAllowed("handler", body, handle) !== "") {
+      return null;
+    }
     const owner = native.formOwner(handle);
     const url = native.documentUrl();
     const source = "(function () { with (arguments[0]) with (arguments[1]) " +
@@ -14535,6 +14559,87 @@
     return madeOffscreen(native.canvas("offscreenAdopt", 1, e[1], e[2], e[3]));
   };
 
+  // ---- Code from strings (M33.1, CSP's 'unsafe-eval') ---------------------
+
+  // Once the document's policies would refuse or report a string
+  // compiled as code, `eval`, `Function` and the constructors of async,
+  // generator and async generator functions (reached through their
+  // prototypes' `constructor`) are replaced by functions that ask the
+  // host first, then compile through the originals: an `EvalError` when
+  // refused. They keep the originals' names, lengths and prototypes, so
+  // that `eval === window.eval`, `Function.prototype.constructor ===
+  // Function` and `instanceof Function` hold. An `eval` through them is
+  // indirect: a direct `eval` loses its caller's scope while a policy
+  // is there (a deviation, docs/design/hardening.md).
+  let codeGuarded = false;
+
+  function codeRefused(source) {
+    const refused = native.codeAllowed("eval", source, -1);
+    if (refused !== "") {
+      throw new $EvalError(refused);
+    }
+  }
+
+  // The source a function constructor would compile, as the reference
+  // browser samples it.
+  function functionSource(prefix, args) {
+    let params = "";
+    for (let i = 0; i < args.length - 1; i++) {
+      params += (i === 0 ? "" : ",") + str(args[i]);
+    }
+    const body = args.length === 0 ? "" : str(args[args.length - 1]);
+    return "(" + prefix + " anonymous(" + params + "\n) {\n" + body + "\n})";
+  }
+
+  function guardConstructor(Original, prefix) {
+    const guard = function () {
+      const args = [];
+      for (let i = 0; i < arguments.length; i++) {
+        ArrayPush(args, arguments[i]);
+      }
+      codeRefused(functionSource(prefix, args));
+      return ReflectConstruct(Original, args, new.target === undefined ? guard : new.target);
+    };
+    defineProperty(guard, "name", { value: Original.name, configurable: true });
+    defineProperty(guard, "length", { value: 1, configurable: true });
+    defineProperty(guard, "prototype", { value: Original.prototype, writable: false });
+    setPrototypeOf(guard, ReflectGetPrototypeOf(Original));
+    defineProperty(Original.prototype, "constructor", {
+      value: guard,
+      writable: true,
+      configurable: true,
+    });
+    return guard;
+  }
+
+  function guardCode() {
+    if (codeGuarded) {
+      return;
+    }
+    codeGuarded = true;
+    const guarded = {
+      eval(x) {
+        if (typeof x === "string") {
+          codeRefused(x);
+        }
+        return OriginalEval(x);
+      },
+    }.eval;
+    defineProperty(global, "eval", { value: guarded, writable: true, configurable: true });
+    const FunctionGuard = guardConstructor(OriginalFunction, "function");
+    defineProperty(global, "Function", {
+      value: FunctionGuard,
+      writable: true,
+      configurable: true,
+    });
+    guardConstructor(ReflectGetPrototypeOf(async function () {}).constructor, "async function");
+    guardConstructor(ReflectGetPrototypeOf(function* () {}).constructor, "function*");
+    guardConstructor(
+      ReflectGetPrototypeOf(async function* () {}).constructor,
+      "async function*",
+    );
+  }
+
   // ---- Timers (M26, HTML section 8.6) ------------------------------------
 
   // Each timer's callback (a function, or a string compiled when it
@@ -14556,6 +14661,11 @@
       id = id >= 2147483647 ? 1 : id + 1;
     } while (MapHas(timers, id));
     lastTimer = id;
+    // A string the policies refuse to compile (M33.1): an id, and
+    // nothing runs.
+    if (typeof callback === "string" && native.codeAllowed("eval", callback, -1) !== "") {
+      return id;
+    }
     const delay = long(timeout);
     native.setTimer(id, delay);
     MapSet(timers, id, { callback, args, repeat, delay });
@@ -14799,8 +14909,13 @@
     return compileText(moduleBytes(bytes, where), where);
   }
 
-  // A module compiled from its bytes as base64.
+  // A module compiled from its bytes as base64, if the policies allow
+  // (M33.1: 'wasm-unsafe-eval' or 'unsafe-eval').
   function compileText(text, where) {
+    const refused = native.codeAllowed("wasm", "", -1);
+    if (refused !== "") {
+      throw new CompileError(where + ": " + refused);
+    }
     const handle = native.wasmCompile(text, where);
     if (typeof handle === "string") {
       throw new CompileError(where + ": " + handle);
@@ -15756,6 +15871,7 @@
     },
     frames: runFrames,
     frameList,
+    guardCode,
     fetched,
     // A message's arrival (M31): at the global (`kind` 0), at worker
     // `n`'s object (1) or at port `n` (2).

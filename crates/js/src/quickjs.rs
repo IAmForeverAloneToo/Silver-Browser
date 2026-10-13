@@ -419,6 +419,11 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                     .get::<_, Function<'_>>("frameList")?
                     .call::<_, Value<'_>>((names.clone(),))
             }),
+            Task::GuardCode => self.stepped(&entries, |_, entries| {
+                entries
+                    .get::<_, Function<'_>>("guardCode")?
+                    .call::<_, Value<'_>>(())
+            }),
             Task::Fetched { id, answer } => self.context.with(|ctx| {
                 let called = entries.clone().restore(&ctx).and_then(|entries| {
                     let answer = match answer {

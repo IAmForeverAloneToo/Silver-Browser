@@ -69,6 +69,8 @@ impl ScriptingHost for Recorder {
                 self.dialogs.push((kind, message));
                 Ok(Answer::Nothing)
             }
+            // A document with no policy compiles any code (M33.1).
+            Call::CodeAllowed { .. } => Ok(Answer::String(String::new())),
             Call::WantFrame => {
                 self.frames_wanted += 1;
                 Ok(Answer::Nothing)

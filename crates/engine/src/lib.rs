@@ -1480,11 +1480,12 @@ impl Engine {
         if self.shown.page.sandbox().has(sandbox::Sandbox::SCRIPTS) {
             return;
         }
-        let violations = self
-            .shown
-            .page
-            .csp(&self.shown.document)
-            .javascript_url_violations();
+        // By 'unsafe-inline', or its hash with 'unsafe-hashes' (M33.1).
+        let violations = self.shown.page.csp(&self.shown.document).inline_violations(
+            net::csp::Inline::Navigation,
+            "",
+            url.as_str(),
+        );
         let refused = violations
             .iter()
             .any(|violation| violation.disposition == net::csp::Disposition::Enforce);
@@ -4290,6 +4291,7 @@ impl Engine {
                     // The sheets the parser made before the script are
                     // found first: one on its way blocks it, and its
                     // `getComputedStyle` reads them (M25).
+                    page.hide_nonces(document);
                     let changes = document.take_changes();
                     if changes
                         .iter()
@@ -4309,6 +4311,7 @@ impl Engine {
                     scripts.prepare(&mut lent, element, line);
                     asked = scripts.take_navigation();
                 }
+                page.hide_nonces(document);
                 let changes = document.take_changes();
                 if changes
                     .iter()
@@ -4447,6 +4450,8 @@ impl Engine {
     /// After the shown document's scripts ran: their changes are taken as
     /// any change is, and a realm that died says so.
     fn scripts_ran(&mut self) {
+        // What the parser and the scripts inserted hides its nonces.
+        self.shown.page.hide_nonces(&mut self.shown.document);
         let changes = self.shown.document.take_changes();
         if !changes.is_empty() {
             self.document_changed(changes);

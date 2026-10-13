@@ -43,6 +43,9 @@ pub(crate) struct Page {
     metas: Vec<NodeId>,
     /// The document's sandboxing flags (M33.2).
     sandbox: Sandbox,
+    /// Each element's nonce once its attribute was hidden or a script set
+    /// it (M33.1, HTML's `[[CryptographicNonce]]`).
+    nonces: HashMap<NodeId, String>,
 }
 
 /// What a page's fetches are made with.
@@ -204,6 +207,7 @@ impl Page {
             csp: Csp::none(origin).with_sink(),
             metas: Vec::new(),
             sandbox: Sandbox::NONE,
+            nonces: HashMap::new(),
         }
     }
 
@@ -237,6 +241,7 @@ impl Page {
             csp,
             metas: Vec::new(),
             sandbox: Sandbox::NONE,
+            nonces: HashMap::new(),
         }
     }
 
@@ -272,6 +277,53 @@ impl Page {
     /// The document's sandboxing flags.
     pub(crate) fn sandbox(&self) -> Sandbox {
         self.sandbox
+    }
+
+    /// Element `node`'s nonce (M33.1): the one kept when its attribute
+    /// was hidden or a script set it, else its attribute's.
+    pub(crate) fn nonce(&self, document: &Document, node: NodeId) -> String {
+        self.nonces
+            .get(&node)
+            .cloned()
+            .or_else(|| document.attr(node, "nonce").map(str::to_owned))
+            .unwrap_or_default()
+    }
+
+    /// Element `node`'s nonce is `nonce` from now on, its attribute
+    /// unchanged (HTML's `nonce` IDL attribute's setter).
+    pub(crate) fn set_nonce(&mut self, node: NodeId, nonce: String) {
+        self.nonces.insert(node, nonce);
+    }
+
+    /// The nonce element `node` is checked by (CSP section 6.7.3.1, "is
+    /// element nonceable"): none when the name or the value of one of its
+    /// attributes holds `<script` or `<style`, as markup a dangling
+    /// injection swallowed would.
+    pub(crate) fn checked_nonce(&self, document: &Document, node: NodeId) -> String {
+        checked_nonce(document, &self.nonces, node)
+    }
+
+    /// Hides the nonces of `document`'s elements (HTML's nonce attribute
+    /// steps, M33.1) when one of its policies came from a header: each
+    /// element's `nonce` attribute that is not empty is kept as its nonce
+    /// and emptied, so that no selector reads it out.
+    pub(crate) fn hide_nonces(&mut self, document: &mut Document) {
+        if !self.csp.has_header_policy() {
+            return;
+        }
+        let shown: Vec<(NodeId, String)> = document
+            .subtree(document.root())
+            .filter_map(|node| {
+                let nonce = document
+                    .attr(node, "nonce")
+                    .filter(|nonce| !nonce.is_empty())?;
+                Some((node, nonce.to_owned()))
+            })
+            .collect();
+        for (node, nonce) in shown {
+            self.nonces.insert(node, nonce);
+            let _ = document.set_attribute(node, "nonce", "");
+        }
     }
 
     /// What the document gives the documents of the frames it makes
@@ -516,7 +568,7 @@ impl Page {
         // Its requests are checked against its policies (M33.1).
         let csp = self.csp(document).clone();
         network.set_csp(self.context.id, Some(csp));
-        let (found, _) = scan(document, &self.context);
+        let (found, _) = scan(document, &self.context, &self.nonces);
         let context = &self.context;
         self.owners = found
             .into_iter()
@@ -549,7 +601,7 @@ impl Page {
     ) {
         let csp = self.csp(document).clone();
         network.set_csp(self.context.id, Some(csp));
-        let (found, base) = scan(document, &self.context);
+        let (found, base) = scan(document, &self.context, &self.nonces);
         let mut old: HashMap<NodeId, Owner> = self
             .owners
             .drain(..)
@@ -949,7 +1001,11 @@ fn is_ascii_whitespace(c: char) -> bool {
 
 /// The elements of `document` that may own a sheet, in tree order, and
 /// its base URL.
-fn scan(document: &Document, context: &Context) -> (Vec<Found>, Option<Url>) {
+fn scan(
+    document: &Document,
+    context: &Context,
+    nonces: &HashMap<NodeId, String>,
+) -> (Vec<Found>, Option<Url>) {
     let html = document.document_element();
     let mut found = Vec::new();
     let mut base = context.fallback();
@@ -964,6 +1020,7 @@ fn scan(document: &Document, context: &Context) -> (Vec<Found>, Option<Url>) {
             None => continue,
         };
         let attr = |name: &str| document.attr(node, name).map(str::to_owned);
+        let nonce = |node: NodeId| checked_nonce(document, nonces, node);
         let title = || attr("title").unwrap_or_default();
         match tag {
             // HTML's body element: the html element's child body.
@@ -988,7 +1045,7 @@ fn scan(document: &Document, context: &Context) -> (Vec<Found>, Option<Url>) {
                 charset: attr("charset"),
                 base_here: base.clone(),
                 before_body,
-                nonce: attr("nonce").unwrap_or_default(),
+                nonce: nonce(node),
             }),
             "style" => found.push(Found {
                 node,
@@ -1004,12 +1061,41 @@ fn scan(document: &Document, context: &Context) -> (Vec<Found>, Option<Url>) {
                 charset: None,
                 base_here: base.clone(),
                 before_body,
-                nonce: attr("nonce").unwrap_or_default(),
+                nonce: nonce(node),
             }),
             _ => {}
         }
     }
     (found, base)
+}
+
+/// The nonce element `node` of `document` is checked by (CSP section
+/// 6.7.3.1, "is element nonceable", M33.1): its kept nonce of `nonces`,
+/// else its attribute's; none when the name or the value of one of its
+/// attributes holds `<script` or `<style`, as markup a dangling
+/// injection swallowed would.
+fn checked_nonce(document: &Document, nonces: &HashMap<NodeId, String>, node: NodeId) -> String {
+    let injected = |text: &str| {
+        let lower = text.to_ascii_lowercase();
+        lower.contains("<script") || lower.contains("<style")
+    };
+    let swallowed = document
+        .attrs(node)
+        .unwrap_or_default()
+        .iter()
+        .any(|(name, value)| injected(name) || injected(value));
+    if swallowed {
+        return String::new();
+    }
+    // White space around it is not the nonce's, as the reference
+    // browser takes it (p4).
+    nonces
+        .get(&node)
+        .map(String::as_str)
+        .or_else(|| document.attr(node, "nonce"))
+        .unwrap_or_default()
+        .trim_matches(is_ascii_whitespace)
+        .to_owned()
 }
 
 /// A `<base>`'s frozen base URL (HTML §4.2.3): its `href` parsed against

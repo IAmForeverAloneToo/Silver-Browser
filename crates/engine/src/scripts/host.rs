@@ -1732,6 +1732,43 @@ impl DocumentHost {
                 let group = forms::radio_group(&self.document, node);
                 Ok(Answer::Nodes(group.into_iter().map(handle).collect()))
             }
+            Call::CodeAllowed {
+                kind,
+                source,
+                element: _,
+            } => {
+                let Some(page) = self.page.as_mut() else {
+                    return Ok(Answer::String(String::new()));
+                };
+                let csp = page.csp(&self.document);
+                let violations = match kind.as_str() {
+                    "wasm" => csp.wasm_violations(),
+                    "handler" => {
+                        csp.inline_violations(net::csp::Inline::ScriptAttribute, "", &source)
+                    }
+                    _ => csp.eval_violations(&source),
+                };
+                let refused = net::csp::enforced(violations.clone()).err();
+                self.say_violations(violations);
+                Ok(Answer::String(
+                    refused.map_or_else(String::new, |violation| code_refusal(&kind, &violation)),
+                ))
+            }
+            Call::Nonce(node) => {
+                let node = self.node(node)?;
+                let nonce = self
+                    .page
+                    .as_ref()
+                    .map(|page| page.nonce(&self.document, node));
+                Ok(Answer::String(nonce.unwrap_or_default()))
+            }
+            Call::SetNonce(node, nonce) => {
+                let node = self.node(node)?;
+                if let Some(page) = self.page.as_mut() {
+                    page.set_nonce(node, nonce);
+                }
+                Ok(Answer::Nothing)
+            }
             Call::Dialog { kind, .. } if self.sandboxed(Sandbox::MODALS) => {
                 self.say(
                     ConsoleLevel::Error,
@@ -3329,4 +3366,22 @@ fn byte_at_units(text: &str, units: usize) -> usize {
         count += c.len_utf16();
     }
     text.len()
+}
+
+/// What a string compiled as code (`eval`) or a WebAssembly module
+/// (`wasm`) refused by `violation` throws, as the reference browser words
+/// it (M33.1, p4): an `EvalError`'s message, or a `CompileError`'s after
+/// its operation's name.
+pub(crate) fn code_refusal(kind: &str, violation: &net::csp::Violation) -> String {
+    match kind {
+        "wasm" => format!(
+            "Compiling or instantiating WebAssembly module violates the following Content \
+             Security policy directive because 'unsafe-eval' is not an allowed source of script \
+             in the following Content Security Policy directive: \"{violation}\"."
+        ),
+        _ => format!(
+            "Evaluating a string as JavaScript violates the following Content Security Policy \
+             directive because 'unsafe-eval' is not an allowed source of script: {violation}\".\n"
+        ),
+    }
 }

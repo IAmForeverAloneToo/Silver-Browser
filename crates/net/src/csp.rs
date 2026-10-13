@@ -69,6 +69,8 @@ pub struct Policy {
     directives: Vec<Directive>,
     disposition: Disposition,
     serialization: String,
+    /// Whether a `<meta>` delivered it.
+    from_meta: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,6 +94,70 @@ pub struct Violation {
     pub what: String,
     pub disposition: Disposition,
     pub policy: String,
+    /// The first [`MAX_SAMPLE`] characters of an inline script, style,
+    /// attribute, `javascript:` URL or code string, when its directive
+    /// has `'report-sample'`; empty otherwise.
+    pub sample: String,
+}
+
+/// How many characters of what was blocked a violation's sample keeps.
+pub const MAX_SAMPLE: usize = 40;
+
+/// What an inline check is for (section 6.7.3.3's types): an inline
+/// script or style element's text, an event handler attribute's or a
+/// `style` attribute's value, or a `javascript:` URL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Inline {
+    Script,
+    ScriptAttribute,
+    Navigation,
+    Style,
+    StyleAttribute,
+}
+
+impl Inline {
+    /// The directives its check consults, the most relevant first.
+    fn directives(self) -> &'static [&'static str] {
+        match self {
+            Inline::Script | Inline::Navigation => SCRIPT_ELEM,
+            Inline::ScriptAttribute => &["script-src-attr", "script-src", "default-src"],
+            Inline::Style => &["style-src-elem", "style-src", "default-src"],
+            Inline::StyleAttribute => &["style-src-attr", "style-src", "default-src"],
+        }
+    }
+
+    /// What a console line calls it.
+    fn what(self) -> &'static str {
+        match self {
+            Inline::Script => "an inline script",
+            Inline::ScriptAttribute => "an event handler",
+            Inline::Navigation => "a javascript: URL",
+            Inline::Style => "an inline style",
+            Inline::StyleAttribute => "a style attribute",
+        }
+    }
+
+    /// Whether it is an element's, which a nonce, and a hash without
+    /// `'unsafe-hashes'`, may allow.
+    fn element(self) -> bool {
+        matches!(self, Inline::Script | Inline::Style)
+    }
+
+    /// Whether it is a script's, which `'strict-dynamic'` concerns.
+    fn script(self) -> bool {
+        matches!(
+            self,
+            Inline::Script | Inline::ScriptAttribute | Inline::Navigation
+        )
+    }
+}
+
+/// A hash source's algorithm (section 2.3.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Hash {
+    Sha256,
+    Sha384,
+    Sha512,
 }
 
 impl std::fmt::Display for Violation {
@@ -160,6 +226,7 @@ impl Policy {
             directives,
             disposition,
             serialization: serialized.trim_matches(is_ascii_whitespace).to_owned(),
+            from_meta: false,
         }
     }
 
@@ -179,6 +246,7 @@ impl Policy {
     /// Removes the directives a `<meta>` may not deliver (HTML section
     /// 4.2.5.3): `report-uri`, `frame-ancestors` and `sandbox`.
     fn for_meta(mut self) -> Policy {
+        self.from_meta = true;
         self.directives.retain(|d| {
             !matches!(
                 d.name.as_str(),
@@ -278,7 +346,7 @@ impl Csp {
         let nonceable = matches!(effective, "script-src-elem" | "style-src-elem");
         let dynamic = matches!(effective, "script-src-elem" | "worker-src");
         let what = format!("{noun} {reported}");
-        self.violations(names, reported.as_str(), &what, |list| {
+        self.violations(names, (reported.as_str(), ""), &what, |list| {
             if nonceable
                 && !nonce.is_empty()
                 && list.iter().any(|source| nonce_of(source) == Some(nonce))
@@ -303,35 +371,58 @@ impl Csp {
         enforced(self.request_violations(Destination::Script, (url, url), redirects, "", true))
     }
 
-    /// The violations of an inline script (section 4.2.3, an element's
-    /// inline `script` behavior): each policy whose script directive does
-    /// not allow all inline behavior.
-    pub fn inline_script_violations(&self) -> Vec<Violation> {
-        self.violations(SCRIPT_ELEM, "inline", "an inline script", allows_all_inline)
+    /// The violations of inline content of `kind` (section 6.7.3.3, "does
+    /// element match source list for type and source"), its element's
+    /// `nonce` (empty for none, or for an element that is not nonceable)
+    /// and its `source`: each policy whose directive neither allows all
+    /// inline behavior, nor a nonce of the element's (an element's), nor
+    /// the hash of its source (an element's, or with `'unsafe-hashes'`).
+    pub fn inline_violations(&self, kind: Inline, nonce: &str, source: &str) -> Vec<Violation> {
+        self.violations(kind.directives(), ("inline", source), kind.what(), |list| {
+            inline_allowed(list, kind, nonce, source)
+        })
     }
 
-    /// Whether an inline script may run: the first enforced violation, if
-    /// one.
+    /// Whether an inline script with no nonce and no text may run: the
+    /// first enforced violation, if one.
     pub fn check_inline_script(&self) -> Result<(), Box<Violation>> {
-        enforced(self.inline_script_violations())
+        enforced(self.inline_violations(Inline::Script, "", ""))
     }
 
-    /// The violations of a `javascript:` URL (section 4.2.4): as an inline
-    /// script's, its hashes left aside, which only `'unsafe-hashes'` would
-    /// bring in.
-    pub fn javascript_url_violations(&self) -> Vec<Violation> {
+    /// Whether a `javascript:` URL of no text may run: the first enforced
+    /// violation, if one.
+    pub fn check_javascript_url(&self) -> Result<(), Box<Violation>> {
+        enforced(self.inline_violations(Inline::Navigation, "", ""))
+    }
+
+    /// The violations of a string compiled as code, `source` (section
+    /// 4.4, "EnsureCSPDoesNotBlockStringCompilation"): each policy whose
+    /// `script-src` (else `default-src`) has no `'unsafe-eval'`.
+    pub fn eval_violations(&self, source: &str) -> Vec<Violation> {
         self.violations(
-            SCRIPT_ELEM,
-            "inline",
-            "a javascript: URL",
-            allows_all_inline,
+            &["script-src", "default-src"],
+            ("eval", source),
+            "a string as code",
+            |list| has_keyword(list, "'unsafe-eval'"),
         )
     }
 
-    /// Whether a `javascript:` URL may run: the first enforced violation,
-    /// if one.
-    pub fn check_javascript_url(&self) -> Result<(), Box<Violation>> {
-        enforced(self.javascript_url_violations())
+    /// The violations of a WebAssembly module compiled (section 4.5):
+    /// each policy whose `script-src` (else `default-src`) has neither
+    /// `'wasm-unsafe-eval'` nor `'unsafe-eval'`.
+    pub fn wasm_violations(&self) -> Vec<Violation> {
+        self.violations(
+            &["script-src", "default-src"],
+            ("wasm-eval", ""),
+            "a WebAssembly module",
+            |list| has_keyword(list, "'wasm-unsafe-eval'") || has_keyword(list, "'unsafe-eval'"),
+        )
+    }
+
+    /// Whether a policy came from a response's header rather than a
+    /// `<meta>` (HTML's nonce attribute steps hide nonces only then).
+    pub fn has_header_policy(&self) -> bool {
+        self.policies.iter().any(|policy| !policy.from_meta)
     }
 
     /// Records `violations` where the document of these policies takes
@@ -408,7 +499,7 @@ impl Csp {
     fn violations(
         &self,
         names: &[&str],
-        blocked: &str,
+        (blocked, source): (&str, &str),
         what: &str,
         allows: impl Fn(&[String]) -> bool,
     ) -> Vec<Violation> {
@@ -421,7 +512,11 @@ impl Csp {
             if let Some(directive) = policy.directive(names)
                 && !allows(&directive.value)
             {
-                found.push(violation(policy, directive, effective, blocked, what));
+                let mut violation = violation(policy, directive, effective, blocked, what);
+                if has_keyword(&directive.value, "'report-sample'") {
+                    violation.sample = source.chars().take(MAX_SAMPLE).collect();
+                }
+                found.push(violation);
             }
         }
         found
@@ -444,6 +539,7 @@ fn violation(
         what: what.to_owned(),
         disposition: policy.disposition,
         policy: policy.serialization.clone(),
+        sample: String::new(),
     }
 }
 
@@ -457,7 +553,90 @@ fn too_many(effective: &str, blocked: &str, what: &str) -> Violation {
         what: what.to_owned(),
         disposition: Disposition::Enforce,
         policy: String::new(),
+        sample: String::new(),
     }
+}
+
+/// Whether `list` has the keyword source `keyword`, in any case.
+fn has_keyword(list: &[String], keyword: &str) -> bool {
+    list.iter()
+        .any(|source| source.eq_ignore_ascii_case(keyword))
+}
+
+/// Whether `list` allows inline content of `kind` with `nonce` and
+/// `source` (section 6.7.3.3).
+fn inline_allowed(list: &[String], kind: Inline, nonce: &str, source: &str) -> bool {
+    if allows_all_inline(list, kind.script()) {
+        return true;
+    }
+    if kind.element()
+        && !nonce.is_empty()
+        && list
+            .iter()
+            .any(|expression| nonce_of(expression) == Some(nonce))
+    {
+        return true;
+    }
+    if !kind.element() && !has_keyword(list, "'unsafe-hashes'") {
+        return false;
+    }
+    list.iter().any(|expression| {
+        hash_of(expression).is_some_and(|(hash, value)| {
+            normalized_base64(value) == base64(&digest(hash, source.as_bytes()))
+        })
+    })
+}
+
+/// A hash source's algorithm and base64 value, `'sha256-...'` and the
+/// others (section 2.3.1), its prefix in any case.
+fn hash_of(expression: &str) -> Option<(Hash, &str)> {
+    let inner = expression.strip_prefix('\'')?.strip_suffix('\'')?;
+    let (algorithm, value) = inner.split_once('-')?;
+    let hash = match algorithm.to_ascii_lowercase().as_str() {
+        "sha256" => Hash::Sha256,
+        "sha384" => Hash::Sha384,
+        "sha512" => Hash::Sha512,
+        _ => return None,
+    };
+    (!value.is_empty()).then_some((hash, value))
+}
+
+/// `bytes`' digest by `hash`.
+fn digest(hash: Hash, bytes: &[u8]) -> Vec<u8> {
+    let algorithm = match hash {
+        Hash::Sha256 => &aws_lc_rs::digest::SHA256,
+        Hash::Sha384 => &aws_lc_rs::digest::SHA384,
+        Hash::Sha512 => &aws_lc_rs::digest::SHA512,
+    };
+    aws_lc_rs::digest::digest(algorithm, bytes)
+        .as_ref()
+        .to_vec()
+}
+
+/// `bytes` in base64 with padding (RFC 4648 section 4).
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, &b)| n | (u32::from(b) << (16 - 8 * i)));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(char::from(ALPHABET[((n >> (18 - 6 * i)) & 63) as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// A hash source's value with base64url's two characters as base64's,
+/// as the reference browser takes it.
+fn normalized_base64(value: &str) -> String {
+    value.replace('-', "+").replace('_', "/")
 }
 
 /// The first violation of `violations` an enforced policy gave, which
@@ -481,10 +660,10 @@ fn nonce_of(expression: &str) -> Option<&str> {
     (prefix.eq_ignore_ascii_case("'nonce-") && !value.is_empty()).then_some(value)
 }
 
-/// *Does a source list allow all inline behavior* (section 6.7.3.2) for
-/// a script: `'unsafe-inline'`, with no nonce, hash or
+/// *Does a source list allow all inline behavior* (section 6.7.3.2):
+/// `'unsafe-inline'`, with no nonce or hash, nor for a script
 /// `'strict-dynamic'`.
-fn allows_all_inline(list: &[String]) -> bool {
+fn allows_all_inline(list: &[String], script: bool) -> bool {
     let mut unsafe_inline = false;
     for expression in list {
         let lower = expression.to_ascii_lowercase();
@@ -492,7 +671,7 @@ fn allows_all_inline(list: &[String]) -> bool {
             || ["'sha256-", "'sha384-", "'sha512-"]
                 .iter()
                 .any(|hash| lower.starts_with(hash))
-            || lower == "'strict-dynamic'"
+            || (script && lower == "'strict-dynamic'")
         {
             return false;
         }
@@ -1135,7 +1314,7 @@ mod tests {
         assert_eq!(reported.len(), 1);
         assert!(enforced(reported).is_ok());
         assert!(
-            both.inline_script_violations()
+            both.inline_violations(Inline::Script, "", "")
                 .iter()
                 .all(|violation| violation.disposition == Disposition::Report)
         );
@@ -1175,5 +1354,97 @@ mod tests {
             page.record(&found);
         }
         assert_eq!(page.take_violations().len(), MAX_RECORDED);
+    }
+
+    #[test]
+    fn base64_is_rfc_4648s() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+        assert_eq!(base64(&[0xfb, 0xff]), "+/8=");
+    }
+
+    #[test]
+    fn inline_content_is_allowed_by_nonce_hash_or_unsafe_inline_as_section_6_7_3_3_says() {
+        let script = "console.log('hashed')";
+        let policy = csp(&["script-src 'nonce-abc' \
+             'sha256-Ly+EvtafdANT0xlOxh/fd3NF3f5hCoaFad0hrg25DRI=' \
+             'SHA384-rzh2fR62o6squOaj7F0JlhI4ddmHGG9ZrFVO1/6ozP8UwCu0TAsfAzztuofNtZcy' \
+             'report-sample'; style-src 'unsafe-hashes' \
+             'sha512-ocSA23LaMKg3bDI5FncQNvuQfjXdujM4i74BJygee6ohNiax3HNTrCdGP7SNV7qePx2OuVoViiM0bLOu0-AC9g=='"]);
+        let allowed = |kind, nonce: &str, source: &str| {
+            policy.inline_violations(kind, nonce, source).is_empty()
+        };
+        assert!(allowed(Inline::Script, "abc", "anything"));
+        assert!(allowed(Inline::Script, "", script));
+        // Each algorithm digests as its name says.
+        let sha384 = csp(&["script-src \
+             'sha384-rzh2fR62o6squOaj7F0JlhI4ddmHGG9ZrFVO1/6ozP8UwCu0TAsfAzztuofNtZcy'"]);
+        assert!(
+            sha384
+                .inline_violations(Inline::Script, "", script)
+                .is_empty()
+        );
+        assert!(!allowed(Inline::Script, "", "console.log('hashed') "));
+        assert!(!allowed(Inline::Script, "abd", "anything"));
+        // An attribute's or a javascript: URL's: no nonce, and a hash only
+        // with 'unsafe-hashes'.
+        assert!(!allowed(Inline::ScriptAttribute, "abc", script));
+        assert!(!allowed(Inline::Navigation, "", script));
+        assert!(allowed(Inline::StyleAttribute, "", "color: red"));
+        assert!(allowed(Inline::Style, "", "color: red"));
+        assert!(!allowed(Inline::StyleAttribute, "", "color: blue"));
+        // 'report-sample' keeps the first 40 characters.
+        let long = "x".repeat(MAX_SAMPLE + 10);
+        let found = policy.inline_violations(Inline::Script, "", &long);
+        assert_eq!(found[0].sample, "x".repeat(MAX_SAMPLE));
+        assert_eq!(found[0].blocked, "inline");
+        assert_eq!(found[0].effective, "script-src-elem");
+        // 'unsafe-inline' is all inline behavior with no nonce or hash, and
+        // for a script with no 'strict-dynamic'.
+        let open = csp(&["script-src 'unsafe-inline' 'strict-dynamic'; \
+             style-src 'unsafe-inline' 'strict-dynamic'"]);
+        assert!(!open.inline_violations(Inline::Script, "", "1").is_empty());
+        assert!(open.inline_violations(Inline::Style, "", "p {}").is_empty());
+        let attr = csp(&["script-src-attr 'unsafe-inline'; script-src 'none'"]);
+        assert!(
+            attr.inline_violations(Inline::ScriptAttribute, "", "1")
+                .is_empty()
+        );
+        assert!(!attr.inline_violations(Inline::Script, "", "1").is_empty());
+    }
+
+    #[test]
+    fn eval_needs_unsafe_eval_and_webassembly_wasm_unsafe_eval_or_it() {
+        let strict = csp(&["script-src 'self' 'report-sample'"]);
+        let found = strict.eval_violations("1 + 1");
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            (
+                found[0].blocked.as_str(),
+                found[0].effective.as_str(),
+                found[0].sample.as_str()
+            ),
+            ("eval", "script-src", "1 + 1")
+        );
+        assert_eq!(strict.wasm_violations()[0].blocked, "wasm-eval");
+        let wasm = csp(&["default-src 'wasm-unsafe-eval'"]);
+        assert!(wasm.wasm_violations().is_empty());
+        assert!(!wasm.eval_violations("1").is_empty());
+        let both = csp(&["script-src 'unsafe-eval'"]);
+        assert!(both.eval_violations("1").is_empty() && both.wasm_violations().is_empty());
+        // Only script-src and default-src are asked.
+        assert!(
+            csp(&["script-src-elem 'none'"])
+                .eval_violations("1")
+                .is_empty()
+        );
+        // A policy from a <meta> is no header's.
+        let mut meta = Csp::none(url("https://example.com/").origin());
+        meta.add_meta("script-src 'none'");
+        assert!(!meta.has_header_policy());
+        assert!(strict.has_header_policy());
     }
 }

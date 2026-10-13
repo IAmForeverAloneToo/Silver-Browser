@@ -312,8 +312,10 @@ pub(crate) fn prepare_element(
         return Prepared::Nothing;
     }
     let Some(src) = src else {
+        // By nonce, hash or 'unsafe-inline' (M33.1).
+        let nonce = page.checked_nonce(document, element);
         let csp = page.csp(document);
-        let violations = csp.inline_script_violations();
+        let violations = csp.inline_violations(net::csp::Inline::Script, &nonce, &text);
         csp.record(&violations);
         if net::csp::enforced(violations).is_err() {
             return Prepared::Refused;
@@ -341,10 +343,7 @@ pub(crate) fn prepare_element(
         return Prepared::Nothing;
     };
     // Its nonce and who inserted it, for its directive (M33.1).
-    request.nonce = document
-        .attr(element, "nonce")
-        .unwrap_or_default()
-        .to_owned();
+    request.nonce = page.checked_nonce(document, element);
     request.parser_inserted = parser_inserted;
     let request = crate::loader::with_cors_settings(request, document.attr(element, "crossorigin"));
     let fallback = document
@@ -436,6 +435,8 @@ pub(crate) struct Scripts {
     /// The names of the window's child frames' elements, in tree order
     /// (M33.2), which its realm's frames by index and name follow.
     frame_list: Vec<String>,
+    /// Whether the realm's code from strings asks the host (M33.1).
+    code_guarded: bool,
 }
 
 impl Default for Scripts {
@@ -469,6 +470,7 @@ impl Scripts {
             answers: VecDeque::new(),
             posted: VecDeque::new(),
             frame_list: Vec::new(),
+            code_guarded: false,
         }
     }
 
@@ -741,7 +743,10 @@ impl Scripts {
         }
         if self.realm.is_none() {
             match QuickJs.realm::<DocumentHost>(self.limits) {
-                Ok(realm) => self.realm = Some(realm),
+                Ok(realm) => {
+                    self.realm = Some(realm);
+                    self.code_guarded = false;
+                }
                 Err(error) => {
                     self.report(&error);
                     self.stop();
@@ -754,6 +759,22 @@ impl Scripts {
             }
         }
         true
+    }
+
+    /// Guards the realm's code from strings once the document's policies
+    /// would refuse or report one (M33.1), before what runs next.
+    fn guard_code(&mut self, lent: &mut Lent<'_>) {
+        if self.code_guarded {
+            return;
+        }
+        let Some(realm) = &mut self.realm else {
+            return;
+        };
+        if lent.page.csp(lent.document).eval_violations("").is_empty() {
+            return;
+        }
+        let _ = realm.enter(&js::Task::GuardCode, &mut self.host);
+        self.code_guarded = true;
     }
 
     /// The window's child frames are now named `names`, their elements'
@@ -851,6 +872,7 @@ impl Scripts {
         if !self.ensure_realm() {
             return None;
         }
+        self.guard_code(lent);
         let realm = self.realm.as_mut()?;
         let host = &mut self.host;
         let insertion_point = how.at_insertion_point
@@ -917,6 +939,7 @@ impl Scripts {
         if self.stopped {
             return false;
         }
+        self.guard_code(lent);
         let Some(realm) = self.realm.as_mut() else {
             return false;
         };

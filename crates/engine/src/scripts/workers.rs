@@ -595,6 +595,14 @@ fn run(setup: Setup) {
         line: 1,
         muted: false,
     };
+    // Its policies may refuse or report code from strings (M33.1).
+    if host
+        .csp
+        .as_ref()
+        .is_some_and(|csp| !csp.eval_violations("").is_empty())
+    {
+        let _ = realm.enter(&Task::GuardCode, &mut host);
+    }
     let result = realm.run(&script, &mut host).map(|_| false);
     host.finish(&mut *realm, result, &stop);
     work(&mut *realm, &mut host, &mailbox, &stop);
@@ -966,6 +974,29 @@ impl ScriptingHost for WorkerHost {
                 Ok(Answer::Nothing)
             }
             // A dedicated worker's animation frames (HTML section 8.10).
+            Call::CodeAllowed { kind, source, .. } => {
+                let Some(csp) = &self.csp else {
+                    return Ok(Answer::String(String::new()));
+                };
+                let violations = match kind.as_str() {
+                    "wasm" => csp.wasm_violations(),
+                    "eval" => csp.eval_violations(&source),
+                    _ => Vec::new(),
+                };
+                let refused = net::csp::enforced(violations.clone()).err();
+                for violation in violations {
+                    let level = super::violation_level(&violation);
+                    self.tell(FromWorker::Console(
+                        level,
+                        cut(super::violation_text(&violation)),
+                    ));
+                }
+                Ok(Answer::String(
+                    refused.map_or_else(String::new, |violation| {
+                        super::host::code_refusal(&kind, &violation)
+                    }),
+                ))
+            }
             Call::WantFrame => {
                 self.frame_wanted = true;
                 Ok(Answer::Nothing)

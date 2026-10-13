@@ -264,6 +264,10 @@ pub enum Task {
     /// The window's child frames are now as many as these names, their
     /// elements' (M33.2): its frames by index and name, made again.
     FrameList(Vec<String>),
+    /// The document's policies would refuse or report code from strings
+    /// (M33.1): `eval` and the function constructors ask the host from
+    /// now on.
+    GuardCode,
 }
 
 /// Where a message is delivered (M31).
