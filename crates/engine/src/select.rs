@@ -114,7 +114,7 @@ impl Engine {
 
     /// The border box of an element in the viewport, from the layout
     /// kept, with its font size.
-    fn border_box(&mut self, node: NodeId) -> Option<(Rect, f32)> {
+    pub(crate) fn border_box(&mut self, node: NodeId) -> Option<(Rect, f32)> {
         let (width, height) = self.viewport;
         if width == 0 {
             return None;

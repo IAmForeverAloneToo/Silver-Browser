@@ -185,6 +185,11 @@ impl Renderer {
             .id()
     }
 
+    /// Where messages for it are written.
+    pub(crate) fn sender(&self) -> Sender<ToRenderer> {
+        self.sender.clone()
+    }
+
     /// Sends `message`.
     pub fn send(&self, message: &ToRenderer) -> Result<(), Closed> {
         self.sender.send(message)

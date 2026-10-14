@@ -400,6 +400,12 @@ pub struct Engine {
     /// What a document wrote to its console as it was left (M26), for
     /// the next [`Engine::take_console`].
     departed: Vec<ConsoleEntry>,
+    /// In a renderer (M34): its link to the browser, and the fetcher of
+    /// its frame, which a response handed over is told to; and the frames
+    /// of other renderers dropped since the renderer last asked.
+    link: Option<Arc<renderer::link::Link>>,
+    fetcher: Option<Arc<renderer::link::RemoteFetcher>>,
+    dropped_remote: Vec<u32>,
     /// Where the pointer is over the page, in its coordinates, while it
     /// is (M26.4).
     pointer: Option<(f32, f32)>,
@@ -1126,6 +1132,9 @@ impl Engine {
             hidden_ran: None,
             pending_events: Vec::new(),
             departed: Vec::new(),
+            link: None,
+            fetcher: None,
+            dropped_remote: Vec::new(),
             pointer: None,
             buttons: 0,
             modifiers: Modifiers::default(),
@@ -5185,6 +5194,43 @@ impl Engine {
     /// engine makes at its first fetch, `Client::default()`: a test's
     /// client trusts its server's root, say. Fetches in flight finish
     /// with the client they began with.
+    /// Makes this the engine of a renderer's frame the browser numbers
+    /// `key` (M34): its fetches, cookies and storage the browser's, asked
+    /// for by that number; its frames numbered by the browser too; what
+    /// its tree posts to frames of other renderers sent through `link`.
+    pub(crate) fn set_link(&mut self, link: Arc<renderer::link::Link>, key: u32) {
+        use renderer::link::{RemoteAreas, RemoteCookies, RemoteFetcher};
+        let fetcher = Arc::new(RemoteFetcher::new(link.clone(), key));
+        self.set_remote_network(
+            fetcher.clone(),
+            Arc::new(RemoteCookies::new(link.clone(), key)),
+        );
+        self.set_remote_storage(Arc::new(RemoteAreas::new(link.clone(), key)));
+        self.frame.key = key;
+        let forwarding = link.clone();
+        {
+            let mut tree = frames::lock(&self.frame.tree);
+            tree.set_key(self.frame.id, key);
+            tree.set_forward(Arc::new(move |from, to, task| {
+                let _ = forwarding.send(&ipc::ToBrowser::PostFrame {
+                    from,
+                    to,
+                    task: ipc::WireTask::from_task(task),
+                });
+            }));
+        }
+        self.fetcher = Some(fetcher);
+        self.link = Some(link);
+    }
+
+    /// The next fetch of a document of `url` takes the response the
+    /// browser holds as `handover` (M34.1).
+    pub(crate) fn hand_over(&mut self, url: &Url, handover: u64) {
+        if let Some(fetcher) = &self.fetcher {
+            fetcher.hand_over(url.clone(), handover);
+        }
+    }
+
     /// Reaches its Web Storage areas through the browser (M34.1): the
     /// engine of a renderer, whose storage is the browser's.
     #[cfg_attr(not(test), allow(dead_code))]

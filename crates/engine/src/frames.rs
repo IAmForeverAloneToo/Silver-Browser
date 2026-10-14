@@ -108,7 +108,18 @@ pub(crate) struct FrameTree {
     /// The router of the ports of every frame's document and workers, so
     /// that a port goes from one frame to another.
     router: SharedRouter,
+    /// In a renderer (M34): the browser's number for each frame, those
+    /// whose documents other renderers show, and where what is posted to
+    /// those goes.
+    keys: HashMap<FrameId, u32>,
+    remote: HashSet<FrameId>,
+    forward: Option<Forward>,
 }
+
+/// Where a renderer sends what one of its frames posts to a frame another
+/// renderer shows (M34): the browser's numbers of the frame posting, if
+/// it has one, and of the frame posted to, and the task.
+pub(crate) type Forward = Arc<dyn Fn(Option<u32>, u32, FrameTask) + Send + Sync>;
 
 /// A tab's frame tree, as its engines hold it.
 pub(crate) type SharedTree = Arc<Mutex<FrameTree>>;
@@ -120,7 +131,70 @@ impl FrameTree {
             next: TOP + 1,
             nodes: HashMap::from([(TOP, TreeNode::default())]),
             router: SharedRouter::default(),
+            keys: HashMap::new(),
+            remote: HashSet::new(),
+            forward: None,
         }))
+    }
+
+    /// Frame `id` is the browser's frame `key` (M34).
+    pub(crate) fn set_key(&mut self, id: FrameId, key: u32) {
+        self.keys.insert(id, key);
+    }
+
+    /// The frame the browser numbers `key`, if it is in this tree.
+    pub(crate) fn local_of(&self, key: u32) -> Option<FrameId> {
+        self.keys
+            .iter()
+            .find(|(_, held)| **held == key)
+            .map(|(id, _)| *id)
+    }
+
+    /// Frame `id`'s document is shown by another renderer, as the
+    /// browser's frame `key`: what is posted to it goes there (M34).
+    pub(crate) fn set_remote(&mut self, id: FrameId, key: u32) {
+        self.keys.insert(id, key);
+        self.remote.insert(id);
+    }
+
+    /// Frame `id`'s document is this renderer's again.
+    pub(crate) fn set_local(&mut self, id: FrameId) {
+        self.remote.remove(&id);
+    }
+
+    /// Sends what is posted to frames of other renderers through
+    /// `forward`, once given.
+    pub(crate) fn set_forward(&mut self, forward: Forward) {
+        if self.forward.is_none() {
+            self.forward = Some(forward);
+        }
+    }
+
+    /// A frame of another renderer under `parent`, the top's when none
+    /// (M34): the browser's frame `key`, its document of `origin`.
+    pub(crate) fn add_stub(
+        &mut self,
+        parent: Option<FrameId>,
+        key: u32,
+        origin: net::Origin,
+    ) -> FrameId {
+        let id = match parent {
+            None => TOP,
+            Some(parent) => self.add(parent).unwrap_or(TOP),
+        };
+        if let Some(node) = self.nodes.get_mut(&id) {
+            node.origin = Some(origin);
+        }
+        self.set_remote(id, key);
+        id
+    }
+
+    /// A frame under `parent` for a renderer's frame root (M34), the
+    /// browser's frame `key`.
+    pub(crate) fn add_root(&mut self, parent: FrameId, key: u32) -> FrameId {
+        let id = self.add(parent).unwrap_or(TOP);
+        self.set_key(id, key);
+        id
     }
 
     /// The tab's port router.
@@ -371,6 +445,18 @@ impl FrameTree {
     /// Puts `task` in frame `id`'s inbox: false when the frame is gone or
     /// its inbox full.
     pub(crate) fn post(&mut self, id: FrameId, task: FrameTask) -> bool {
+        if self.remote.contains(&id) {
+            let (Some(to), Some(forward)) = (self.keys.get(&id).copied(), self.forward.clone())
+            else {
+                return false;
+            };
+            let from = match &task {
+                FrameTask::Message { source, .. } => self.keys.get(source).copied(),
+                FrameTask::Navigate(_) => None,
+            };
+            forward(from, to, task);
+            return true;
+        }
         match self.nodes.get_mut(&id) {
             Some(node) if node.inbox.len() < MAX_FRAME_TASKS => {
                 node.inbox.push_back(task);
@@ -510,6 +596,9 @@ pub(crate) fn lock(tree: &SharedTree) -> MutexGuard<'_, FrameTree> {
 pub(crate) struct FrameContext {
     pub(crate) tree: SharedTree,
     pub(crate) id: FrameId,
+    /// The browser's number for the frame, in a renderer (M34); 0 in one
+    /// process.
+    pub(crate) key: u32,
     /// How many frames it is inside: 0 for the top-level document's.
     pub(crate) depth: usize,
     /// The URLs, without their fragments, of the documents of its
@@ -589,6 +678,7 @@ impl FrameContext {
         FrameContext {
             tree: FrameTree::shared(),
             id: TOP,
+            key: 0,
             depth: 0,
             ancestors: Vec::new(),
             container: None,
@@ -616,10 +706,28 @@ pub(crate) enum Source {
     Url(Url),
 }
 
+/// A frame whose document another renderer shows (M34): the browser's
+/// number for it, and how many of its documents loaded, and how many of
+/// those its element was told of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RemoteFrame {
+    pub(crate) key: u32,
+    loads: u32,
+    told: u32,
+}
+
+/// What a frame of another renderer is drawn as in its parent's page
+/// (M34, D32): a colour no page is taken to draw, which the browser
+/// replaces with the frame's pixels where it shows.
+pub const HOLE: [u8; 4] = [1, 254, 3, 255];
+
 /// An `iframe`'s frame: its engine, and what its element knows of it.
 pub(crate) struct Frame {
     pub(crate) id: FrameId,
+    /// Its engine; once another renderer shows its documents, one that
+    /// shows nothing.
     pub(crate) engine: Box<Engine>,
+    pub(crate) remote: Option<RemoteFrame>,
     /// What the element's attributes last navigated it to.
     pub(crate) source: Source,
     /// The document of the frame whose load the element was told of: its
@@ -634,19 +742,28 @@ pub(crate) struct Frame {
 impl Frame {
     /// Whether the element was told its frame's document loaded.
     pub(crate) fn told_of_its_document(&self) -> bool {
-        self.told == Some(self.engine.shown.page.id())
+        match &self.remote {
+            Some(remote) => remote.told > 0 && remote.told == remote.loads,
+            None => self.told == Some(self.engine.shown.page.id()),
+        }
     }
 
     /// Whether the element is to be told its frame's document loaded:
     /// a load completed since it was last told.
     fn to_tell(&self) -> bool {
-        self.engine.completed.is_some() && self.engine.completed != self.told
+        match &self.remote {
+            Some(remote) => remote.loads > remote.told,
+            None => self.engine.completed.is_some() && self.engine.completed != self.told,
+        }
     }
 
     /// Whether the frame has no navigation under way and its element was
     /// told its document loaded.
     pub(crate) fn settled(&self) -> bool {
-        self.told_of_its_document() && self.engine.frame_settled()
+        match &self.remote {
+            Some(_) => self.told_of_its_document(),
+            None => self.told_of_its_document() && self.engine.frame_settled(),
+        }
     }
 }
 
@@ -734,7 +851,7 @@ impl Engine {
     /// fonts, cookies, cache, storage, clock, waker and settings of this
     /// one, its own fetch threads and software rasterizer, and a smaller
     /// heap for its realm.
-    fn child_engine(&mut self, id: FrameId) -> Engine {
+    fn child_engine(&mut self, id: FrameId) -> Option<Engine> {
         let fonts = self.layout_fonts.clone();
         let backend = Box::new(render::SoftwareBackend::with_fonts(fonts.clone()));
         let mut child = Engine::with_backend(fonts, backend);
@@ -767,13 +884,20 @@ impl Engine {
         child.frame = FrameContext {
             tree: self.frame.tree.clone(),
             id,
+            key: 0,
             depth: self.frame.depth + 1,
             ancestors,
             container: self.shown.page.initiator(),
             container_csp: Some(self.shown.page.csp(&self.shown.document).clone()),
             container_local_network: self.shown.page.local_network().cloned(),
         };
-        child
+        // In a renderer (M34), the browser numbers the frame: its fetches,
+        // cookies and storage are asked for by that number.
+        if let Some(link) = self.link.clone() {
+            let key = link.new_frame(self.frame.key)?;
+            child.set_link(link, key);
+        }
+        Some(child)
     }
 
     /// The features the `iframe` `node`'s `allow` attribute names (M33.4).
@@ -938,12 +1062,19 @@ impl Engine {
         };
         let (sandbox, allow) = (self.element_sandbox(node), self.element_allow(node));
         lock(&self.frame.tree).set_element_policy(id, sandbox, allow);
-        let mut engine = Box::new(self.child_engine(id));
+        let Some(engine) = self.child_engine(id) else {
+            lock(&self.frame.tree).remove(id);
+            let text = "An iframe was left empty: the browser gave its frame no number".to_owned();
+            self.shown.scripts.say(js::ConsoleLevel::Error, text);
+            return None;
+        };
+        let mut engine = Box::new(engine);
         let creator = self.shown.page.creator(&self.shown.document);
         engine.show_blank(&creator, true);
         Some(Frame {
             id,
             engine,
+            remote: None,
             source: Source::Blank,
             told: None,
             drawn: None,
@@ -968,6 +1099,13 @@ impl Engine {
             .map(|url| url.without_fragment().to_owned());
         let local_network = self.shown.page.local_network().cloned();
         let ancestors = &self.frame.ancestors;
+        if let (Some(link), Some(frame)) = (&self.link, self.shown.frames.get(&node)) {
+            let sandbox = frame.engine.creation_sandbox().bits();
+            let _ = link.send(&crate::ipc::ToBrowser::FramePolicy {
+                key: frame.engine.frame.key,
+                sandbox,
+            });
+        }
         let Some(frame) = self.shown.frames.get_mut(&node) else {
             return;
         };
@@ -987,6 +1125,16 @@ impl Engine {
             frame.told = frame.engine.completed;
         }
         frame.drawn = None;
+        if let Some(remote) = frame.remote
+            && matches!(source, Source::Blank | Source::Srcdoc(_))
+        {
+            frame.remote = None;
+            lock(&self.frame.tree).set_local(frame.id);
+            self.dropped_remote.push(remote.key);
+        }
+        let Some(frame) = self.shown.frames.get_mut(&node) else {
+            return;
+        };
         match source {
             Source::Blank => frame.engine.show_blank(&creator, false),
             Source::Srcdoc(text) => frame.engine.show_srcdoc(text, creator),
@@ -1011,6 +1159,9 @@ impl Engine {
         let Some(mut frame) = self.shown.frames.remove(&node) else {
             return;
         };
+        if let Some(remote) = frame.remote {
+            self.dropped_remote.push(remote.key);
+        }
         frame.engine.unload_shown(false);
         frame.engine.stop();
         let lines = frame.engine.take_console();
@@ -1383,7 +1534,10 @@ impl Engine {
             .iter_mut()
             .filter(|(_, frame)| frame.to_tell())
             .map(|(&node, frame)| {
-                frame.told = frame.engine.completed;
+                match &mut frame.remote {
+                    Some(remote) => remote.told = remote.loads,
+                    None => frame.told = frame.engine.completed,
+                }
                 node
             })
             .collect();
@@ -1573,6 +1727,158 @@ impl Engine {
         ))
     }
 
+    /// An engine of a renderer for the frame root the browser numbers
+    /// `key` (M34): a frame whose parent's document another renderer shows,
+    /// its ancestors (the parent first, each the browser's number, origin
+    /// and URL) frames of other renderers in its tree, its document made
+    /// with the `sandbox` flags.
+    pub(crate) fn frame_root(
+        fonts: text::FontCollection,
+        link: Arc<crate::renderer::link::Link>,
+        key: u32,
+        ancestors: &[(u32, net::Origin, Option<Url>)],
+        sandbox: Sandbox,
+    ) -> Engine {
+        let mut engine = Engine::with_fonts(fonts);
+        let tree = FrameTree::shared();
+        let id = {
+            let mut tree = lock(&tree);
+            let mut parent = None;
+            for (key, origin, _) in ancestors.iter().rev() {
+                parent = Some(tree.add_stub(parent, *key, origin.clone()));
+            }
+            let id = tree.add_root(parent.unwrap_or(TOP), key);
+            tree.set_element_policy(id, sandbox, Allowed::default());
+            id
+        };
+        engine.frame = FrameContext {
+            tree,
+            id,
+            key,
+            depth: ancestors.len(),
+            ancestors: ancestors
+                .iter()
+                .filter_map(|(_, _, url)| url.as_ref().map(|url| url.without_fragment().to_owned()))
+                .collect(),
+            container: None,
+            container_csp: None,
+            container_local_network: None,
+        };
+        engine.window_focused = false;
+        engine.set_link(link, key);
+        engine
+    }
+
+    /// Marks the frame the browser numbers `key`, this engine's or one
+    /// of its frames', as shown by another renderer (M34); whether one is.
+    pub(crate) fn mark_remote(&mut self, key: u32) -> bool {
+        let tree = self.frame.tree.clone();
+        for frame in self.shown.frames.values_mut() {
+            if frame.engine.frame.key == key && frame.remote.is_none() {
+                frame.remote = Some(RemoteFrame {
+                    key,
+                    loads: 0,
+                    told: 0,
+                });
+                frame.drawn = None;
+                lock(&tree).set_remote(frame.id, key);
+                self.changed = true;
+                return true;
+            }
+            if frame.remote.is_none() && frame.engine.mark_remote(key) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The frame of another renderer the browser numbers `key` loaded a
+    /// document (M34): its element hears `load`; whether it is here.
+    pub(crate) fn remote_loaded(&mut self, key: u32) -> bool {
+        let mut found = false;
+        for frame in self.shown.frames.values_mut() {
+            match &mut frame.remote {
+                Some(remote) if remote.key == key => {
+                    remote.loads += 1;
+                    found = true;
+                }
+                Some(_) => {}
+                None => found |= frame.engine.remote_loaded(key),
+            }
+            if found {
+                break;
+            }
+        }
+        if found {
+            self.tell_frame_loads();
+        }
+        found
+    }
+
+    /// The frames of other renderers this page shows, and its frames',
+    /// with their content boxes in its viewport, CSS pixels (M34): the
+    /// holes the browser fills.
+    pub(crate) fn remote_holes(&mut self) -> Vec<(u32, [f32; 4])> {
+        let nodes: Vec<NodeId> = self.shown.frames.keys().copied().collect();
+        let mut holes = Vec::new();
+        for node in nodes {
+            let Some(rect) = self.content_box(node) else {
+                continue;
+            };
+            let Some(frame) = self.shown.frames.get_mut(&node) else {
+                continue;
+            };
+            match frame.remote {
+                Some(remote) => holes.push((remote.key, rect)),
+                None => holes.extend(
+                    frame
+                        .engine
+                        .remote_holes()
+                        .into_iter()
+                        .map(|(key, [x, y, w, h])| (key, [x + rect[0], y + rect[1], w, h])),
+                ),
+            }
+        }
+        holes
+    }
+
+    /// The content box of the `iframe` `node` in the viewport.
+    fn content_box(&mut self, node: NodeId) -> Option<[f32; 4]> {
+        let (border, _) = self.border_box(node)?;
+        let layout = self.layout(self.viewport.0 as f32);
+        let f = fragment_of(&layout.roots, node)?;
+        let content = f.children.first()?;
+        Some([
+            border.x + (content.x - f.x),
+            border.y + (content.y - f.y),
+            content.w,
+            content.h,
+        ])
+    }
+
+    /// The engine, this or one of its frames', of the frame the browser
+    /// numbers `key` (M34).
+    pub(crate) fn engine_of_key(&mut self, key: u32) -> Option<&mut Engine> {
+        if self.frame.key == key {
+            return Some(self);
+        }
+        self.shown
+            .frames
+            .values_mut()
+            .filter(|frame| frame.remote.is_none())
+            .find_map(|frame| frame.engine.engine_of_key(key))
+    }
+
+    /// The frames of other renderers this page and its frames dropped
+    /// since this was last asked (M34): their views go.
+    pub(crate) fn take_remote_drops(&mut self) -> Vec<u32> {
+        let mut dropped = std::mem::take(&mut self.dropped_remote);
+        for frame in self.shown.frames.values_mut() {
+            dropped.extend(frame.engine.take_remote_drops());
+        }
+        dropped
+    }
+
     /// The engine of the frame of the `iframe` `node`, if it has one.
     pub(crate) fn frame_engine(&mut self, node: NodeId) -> Option<&mut Engine> {
         self.shown
@@ -1660,6 +1966,40 @@ impl Engine {
             size.0.round().max(1.0) as u32,
             size.1.round().max(1.0) as u32,
         );
+        // Another renderer's frame (M34): a hole of its size, which the
+        // browser fills.
+        if frame.remote.is_some() {
+            let stale = frame
+                .drawn
+                .as_ref()
+                .is_none_or(|drawn| drawn.size != raster);
+            if stale {
+                let pixels: Vec<u8> = HOLE
+                    .iter()
+                    .copied()
+                    .cycle()
+                    .take(raster.0 as usize * raster.1 as usize * 4)
+                    .collect();
+                let image = images::Image {
+                    width: raster.0,
+                    height: raster.1,
+                    frames: vec![images::Frame {
+                        pixels: pixels.into(),
+                        delay: 0,
+                    }],
+                    plays: images::Plays::Times(1),
+                };
+                frame.drawn = Some(Drawn {
+                    size: raster,
+                    frame: FRAME_DRAWINGS.fetch_add(1, Ordering::Relaxed),
+                    pixels: Arc::new(image),
+                });
+            }
+            return frame
+                .drawn
+                .as_ref()
+                .map(|drawn| (drawn.frame, drawn.pixels.clone()));
+        }
         // A frame under a transform that scales it lays out at its box's
         // size and draws at the size it lands on.
         let at = if (raster.0 as f32 - place.0 * scale).abs() > 1.0 {

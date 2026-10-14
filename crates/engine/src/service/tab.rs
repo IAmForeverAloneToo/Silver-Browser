@@ -16,19 +16,27 @@
 //! in a new renderer when its own is gone. At most `cap` renderers live
 //! at once; the one least recently shown of those that show nothing
 //! makes room.
+//!
+//! A frame whose document is of another site than its parent's is shown
+//! by a view of its own in that site's renderer, a frame root (D33): its
+//! parent draws a hole where it is, and the browser composites the
+//! frame's pixels into the hole, gives the frame the pointer's events
+//! that fall in it, and its keys once it is clicked.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 use net::cookies::Jar;
 use net::{Client, Hsts, Url};
 
+use super::frames::{FrameEvent, FrameInfo, FramesService, SharedRegistry};
 use super::handover::{HandoverNotice, Handovers};
 use super::network::{FrameGrant, Grants, Lock, NetworkService};
 use super::process::{Event, Gone, Launcher, Renderer, Services};
 use super::storage::StorageService;
-use crate::ipc::{Input, Settings, ToBrowser, ToRenderer, ViewState};
+use crate::frames::HOLE;
+use crate::ipc::{Ancestor, Hole, Input, Settings, ToBrowser, ToRenderer, ViewState};
 use crate::permissions::Permissions;
 use crate::renderer::MAX_SURFACE_PIXELS;
 use crate::storage::Storage;
@@ -41,6 +49,9 @@ use crate::{
 /// The most renderers a tab has alive at once, the spare among them
 /// (docs/design/processes.md, "The cap and eviction").
 pub const MAX_RENDERERS: usize = 16;
+
+/// A view of a renderer: the renderer's number and the view's.
+type ViewId = (u32, u32);
 
 /// A renderer the tab holds, and the site it is locked to.
 struct Slot {
@@ -63,6 +74,40 @@ struct Segment {
     state: ViewState,
 }
 
+/// A frame root's view: the frame the browser numbers so, and what its
+/// renderer last said of it.
+struct FrameView {
+    key: u32,
+    state: ViewState,
+    /// The URL of the document whose load its parent was last told of.
+    told: Option<Url>,
+    /// The raster size it was last given.
+    raster: (u32, u32),
+}
+
+/// A view's frames as they come: the frame being received, the last
+/// whole one with its size, and where the frames of other renderers are
+/// in it.
+#[derive(Default)]
+struct Buffer {
+    incoming: Vec<u8>,
+    pixels: Vec<u8>,
+    size: (u32, u32),
+    holes: Vec<Hole>,
+}
+
+impl Buffer {
+    /// The pixel at `(x, y)`, if the frame has one there.
+    fn pixel(&self, x: i32, y: i32) -> Option<[u8; 4]> {
+        let (w, h) = (self.size.0 as i32, self.size.1 as i32);
+        if x < 0 || y < 0 || x >= w || y >= h {
+            return None;
+        }
+        let at = (y as usize * w as usize + x as usize) * 4;
+        self.pixels.get(at..at + 4)?.try_into().ok()
+    }
+}
+
 /// A tab whose pages renderers show.
 pub struct RemoteTab {
     fonts: text::FontCollection,
@@ -70,6 +115,7 @@ pub struct RemoteTab {
     grants: Arc<Grants>,
     network: Arc<NetworkService>,
     handovers: Arc<Handovers>,
+    registry: SharedRegistry,
     services: Arc<Services>,
     storage: Arc<Mutex<Storage>>,
     jar: Arc<Mutex<Jar>>,
@@ -79,16 +125,18 @@ pub struct RemoteTab {
     renderers: BTreeMap<u32, Slot>,
     next_renderer: u32,
     next_view: u32,
-    next_frame: u32,
     /// The most renderers alive at once, and whether one waits, unlocked,
     /// for the next site.
     cap: usize,
     spare: bool,
     segments: Vec<Segment>,
     current: usize,
+    frame_views: HashMap<ViewId, FrameView>,
+    buffers: HashMap<ViewId, Buffer>,
     events: mpsc::Receiver<(u32, Event)>,
     sender: mpsc::Sender<(u32, Event)>,
     handed: mpsc::Receiver<HandoverNotice>,
+    frame_events: mpsc::Receiver<FrameEvent>,
     /// What wakes the session's loop when a renderer says something: the
     /// session's waker once given.
     waker: Arc<Mutex<Option<crate::loader::Waker>>>,
@@ -101,15 +149,18 @@ pub struct RemoteTab {
     /// What the session reads when no segment shows anything.
     blank: ViewState,
     undecodable: Option<&'static str>,
-    /// The frame being received, and the last whole one with its size.
-    incoming: Vec<u8>,
-    pixels: Vec<u8>,
-    size: (u32, u32),
-    /// What `frame_at` returns when the size asked is not the frame's.
+    /// What `frame_at` returns when the frame shown is not the page's
+    /// alone, or not of the size asked.
     out: Vec<u8>,
     fresh: bool,
     /// How many frames came: for the tests of the renderer's pace.
     frames: u64,
+    /// The view the pointer was last over, and the one a press was in
+    /// while its button is held, with its offset in the page.
+    pointer_view: Option<ViewId>,
+    captured: Option<(ViewId, (f32, f32))>,
+    /// The view the keys go to: the one last pressed in.
+    focused_view: Option<ViewId>,
     console: Vec<ConsoleEntry>,
     notice: Option<String>,
     focus_left: bool,
@@ -137,39 +188,56 @@ impl RemoteTab {
         let permissions: Arc<Permissions> = Arc::default();
         let storage = Arc::new(Mutex::new(Storage::new()));
         let handovers = Handovers::new();
+        let registry: SharedRegistry = Arc::default();
         let network = NetworkService::new(
             client(&jar, &cache, &hsts, &permissions, false),
             grants.clone(),
         );
         network.hand_over_with(handovers.clone());
-        let services = Arc::new(Services(vec![
-            network.clone(),
-            StorageService::new(storage.clone(), grants.clone()),
-        ]));
+        let waker: Arc<Mutex<Option<crate::loader::Waker>>> = Arc::default();
+        let wake = waking(&waker);
         let (sender, events) = mpsc::channel();
         let (notify, handed) = mpsc::channel();
-        let waker: Arc<Mutex<Option<crate::loader::Waker>>> = Arc::default();
-        let waking = waker.clone();
+        let (frame_sender, frame_events) = mpsc::channel();
         let notify = Mutex::new(notify);
+        let notified = wake.clone();
         network.on_handover(Arc::new(move |notice| {
             let _ = notify
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .send(notice);
-            if let Some(wake) = waking
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .as_ref()
-            {
-                wake();
-            }
+            notified();
         }));
+        let (asked, seen) = (registry.clone(), registry.clone());
+        network.watch_frames(
+            Arc::new(move |key| {
+                super::frames::lock(&asked)
+                    .frames
+                    .get(&key)
+                    .is_some_and(|info| info.root.is_some())
+            }),
+            Arc::new(move |renderer, key, url, _| {
+                let mut registry = super::frames::lock(&seen);
+                if let Some(info) = registry.frames.get_mut(&key)
+                    && super::frames::lock_matches(info, renderer)
+                {
+                    info.origin = Some(url.origin());
+                    info.url = Some(url.clone());
+                }
+            }),
+        );
+        let services = Arc::new(Services(vec![
+            network.clone(),
+            StorageService::new(storage.clone(), grants.clone()),
+            FramesService::new(registry.clone(), grants.clone(), frame_sender, wake),
+        ]));
         RemoteTab {
             fonts,
             launcher,
             grants,
             network,
             handovers,
+            registry,
             services,
             storage,
             jar,
@@ -179,14 +247,16 @@ impl RemoteTab {
             renderers: BTreeMap::new(),
             next_renderer: 1,
             next_view: 1,
-            next_frame: 1,
             cap: cap.max(1),
             spare,
             segments: Vec::new(),
             current: 0,
+            frame_views: HashMap::new(),
+            buffers: HashMap::new(),
             events,
             sender,
             handed,
+            frame_events,
             waker,
             clock: None,
             settings: Settings::default(),
@@ -194,12 +264,12 @@ impl RemoteTab {
             raster: (0, 0),
             blank: ViewState::default(),
             undecodable: None,
-            incoming: Vec::new(),
-            pixels: Vec::new(),
-            size: (0, 0),
             out: Vec::new(),
             fresh: false,
             frames: 0,
+            pointer_view: None,
+            captured: None,
+            focused_view: None,
             console: Vec::new(),
             notice: None,
             focus_left: false,
@@ -214,15 +284,31 @@ impl RemoteTab {
             .map_or(&self.blank, |segment| &segment.state)
     }
 
+    /// The state of the view under the pointer: a frame root's, or the
+    /// page's.
+    fn pointed_state(&self) -> &ViewState {
+        self.pointer_view
+            .and_then(|view| self.frame_views.get(&view))
+            .map_or_else(|| self.state(), |frame| &frame.state)
+    }
+
     fn segment(&self) -> Option<&Segment> {
         self.segments.get(self.current)
     }
 
+    /// The current segment's view, if its renderer lives.
+    fn shown_view(&self) -> Option<ViewId> {
+        let segment = self.segment()?;
+        let renderer = segment.renderer?;
+        self.renderers
+            .contains_key(&renderer)
+            .then_some((renderer, segment.view))
+    }
+
     /// The renderer of the current segment, and its view.
     fn shown(&self) -> Option<(&Renderer, u32)> {
-        let segment = self.segment()?;
-        let slot = self.renderers.get(&segment.renderer?)?;
-        Some((&slot.renderer, segment.view))
+        let (renderer, view) = self.shown_view()?;
+        Some((&self.renderers.get(&renderer)?.renderer, view))
     }
 
     fn send(&self, message: impl FnOnce(u32) -> ToRenderer) {
@@ -231,13 +317,34 @@ impl RemoteTab {
         }
     }
 
+    fn send_to(&self, (renderer, view): ViewId, message: impl FnOnce(u32) -> ToRenderer) {
+        if let Some(slot) = self.renderers.get(&renderer) {
+            let _ = slot.renderer.send(&message(view));
+        }
+    }
+
+    /// `input` for the view the keys go to: the one last pressed in, or
+    /// the page's.
     fn input(&self, input: Input) {
-        self.send(|view| ToRenderer::Input { view, input });
+        match self
+            .focused_view
+            .filter(|view| self.frame_views.contains_key(view))
+        {
+            Some(view) => self.send_to(view, |view| ToRenderer::Input { view, input }),
+            None => self.send(|view| ToRenderer::Input { view, input }),
+        }
     }
 
     fn send_settings(&self) {
         let settings = self.settings.clone();
         self.send(|view| ToRenderer::Settings { view, settings });
+        let mut framed = self.settings.clone();
+        for (view, frame) in &self.frame_views {
+            framed.focused = self.settings.focused && self.focused_view == Some(*view);
+            let settings = framed.clone();
+            let _ = frame;
+            self.send_to(*view, |view| ToRenderer::Settings { view, settings });
+        }
     }
 
     fn send_size(&self) {
@@ -253,16 +360,7 @@ impl RemoteTab {
 
     /// The wake the renderers' events call.
     fn wake(&self) -> crate::loader::Waker {
-        let waker = self.waker.clone();
-        Arc::new(move || {
-            if let Some(wake) = waker
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .as_ref()
-            {
-                wake();
-            }
-        })
+        waking(&self.waker)
     }
 
     /// Starts a renderer, room made for it; its number.
@@ -285,6 +383,7 @@ impl RemoteTab {
             Some(serve),
         ) {
             Ok(renderer) => {
+                super::frames::lock(&self.registry).reach(number, renderer.sender());
                 self.renderers.insert(
                     number,
                     Slot {
@@ -306,10 +405,15 @@ impl RemoteTab {
     /// nothing now; whether there was one.
     fn evict(&mut self) -> bool {
         let shown = self.segment().and_then(|segment| segment.renderer);
+        let framing: Vec<u32> = self
+            .frame_views
+            .keys()
+            .map(|(renderer, _)| *renderer)
+            .collect();
         let idle = self
             .renderers
             .iter()
-            .filter(|(number, _)| Some(**number) != shown)
+            .filter(|(number, _)| Some(**number) != shown && !framing.contains(number))
             .min_by_key(|(_, slot)| (slot.lock.is_some(), slot.shown))
             .map(|(number, _)| *number);
         let Some(number) = idle else {
@@ -325,10 +429,31 @@ impl RemoteTab {
         if let Some(slot) = self.renderers.remove(&number) {
             slot.renderer.shutdown();
         }
+        self.left(number);
+    }
+
+    /// What renderer `number` showed is gone with it.
+    fn left(&mut self, number: u32) {
         self.grants.forget(number);
         for segment in &mut self.segments {
             if segment.renderer == Some(number) {
                 segment.renderer = None;
+            }
+        }
+        self.buffers.retain(|(renderer, _), _| *renderer != number);
+        let gone: Vec<ViewId> = self
+            .frame_views
+            .keys()
+            .filter(|(renderer, _)| *renderer == number)
+            .copied()
+            .collect();
+        let mut registry = super::frames::lock(&self.registry);
+        registry.unreach(number);
+        for view in gone {
+            if let Some(frame) = self.frame_views.remove(&view)
+                && let Some(info) = registry.frames.get_mut(&frame.key)
+            {
+                info.root = None;
             }
         }
     }
@@ -368,23 +493,42 @@ impl RemoteTab {
         Some(number)
     }
 
+    /// A number for a tab's top-level frame in renderer `number`.
+    fn top_frame(&mut self, number: u32) -> u32 {
+        let mut registry = super::frames::lock(&self.registry);
+        let key = registry.number();
+        registry.frames.insert(
+            key,
+            FrameInfo {
+                renderer: number,
+                parent: None,
+                origin: None,
+                url: None,
+                sandbox: 0,
+                root: None,
+            },
+        );
+        drop(registry);
+        self.grants.grant_frame(
+            number,
+            key,
+            FrameGrant {
+                top: net::Origin::new_opaque(),
+                cross_site: false,
+            },
+        );
+        key
+    }
+
     /// A new view in `lock`'s renderer, after the current segment, which
     /// becomes the current one; whether there is one.
     fn new_segment(&mut self, lock: Lock) -> bool {
         let Some(number) = self.renderer_for(&lock) else {
             return false;
         };
-        let (view, frame) = (self.next_view, self.next_frame);
+        let view = self.next_view;
         self.next_view += 1;
-        self.next_frame += 1;
-        self.grants.grant_frame(
-            number,
-            frame,
-            FrameGrant {
-                top: net::Origin::new_opaque(),
-                cross_site: false,
-            },
-        );
+        let frame = self.top_frame(number);
         let renderer = &self.renderers[&number].renderer;
         let _ = renderer.send(&ToRenderer::CreateView {
             view,
@@ -393,11 +537,10 @@ impl RemoteTab {
         });
         // The segments after the current one go, and its own entries
         // after its current one.
-        if let Some(left) = self.segments.get(self.current) {
+        if self.segments.get(self.current).is_some() {
             if let Some((renderer, view)) = self.shown() {
                 let _ = renderer.send(&ToRenderer::DropForward { view });
             }
-            let _ = left;
             self.hide();
             self.segments.truncate(self.current + 1);
             if let Some(left) = self.segments.last_mut() {
@@ -433,6 +576,9 @@ impl RemoteTab {
         {
             slot.shown = Instant::now();
         }
+        self.focused_view = None;
+        self.pointer_view = None;
+        self.captured = None;
         self.send_settings();
         self.send_size();
         self.undecodable = undecodable(self.state());
@@ -455,17 +601,9 @@ impl RemoteTab {
             let Some(number) = self.renderer_for(&lock) else {
                 return;
             };
-            let (view, frame) = (self.next_view, self.next_frame);
+            let view = self.next_view;
             self.next_view += 1;
-            self.next_frame += 1;
-            self.grants.grant_frame(
-                number,
-                frame,
-                FrameGrant {
-                    top: net::Origin::new_opaque(),
-                    cross_site: false,
-                },
-            );
+            let frame = self.top_frame(number);
             let segment = &mut self.segments[index];
             segment.renderer = Some(number);
             segment.view = view;
@@ -491,13 +629,19 @@ impl RemoteTab {
         self.clock.as_ref().map_or(Duration::ZERO, |clock| clock())
     }
 
-    /// Takes what the renderers and the network service said; whether
-    /// anything changed.
+    /// Takes what the renderers and the services said; whether anything
+    /// changed.
     fn take_events(&mut self) -> bool {
         let mut changed = false;
         while let Ok(notice) = self.handed.try_recv() {
             changed = true;
             self.hand_over(notice);
+        }
+        while let Ok(event) = self.frame_events.try_recv() {
+            changed = true;
+            match event {
+                FrameEvent::Dropped(key) => self.drop_frame(key),
+            }
         }
         while let Ok((number, event)) = self.events.try_recv() {
             if !self.renderers.contains_key(&number) {
@@ -519,16 +663,33 @@ impl RemoteTab {
         changed
     }
 
-    /// A page's navigation was handed over to its site's renderer: if it
-    /// was the current segment's top-level document's, a segment of that
-    /// site takes the response.
+    /// A document of another site than its renderer's was handed over:
+    /// the current segment's top-level one starts a segment of that site,
+    /// a frame's goes to a frame root in that site's renderer.
     fn hand_over(&mut self, notice: HandoverNotice) {
         let current = self
             .segment()
             .and_then(|segment| Some((segment.renderer?, segment.frame)));
-        if current != Some((notice.renderer, notice.frame)) {
+        if current == Some((notice.renderer, notice.frame)) {
+            self.hand_over_top(notice);
             return;
         }
+        let framed = super::frames::lock(&self.registry)
+            .frames
+            .get(&notice.frame)
+            .is_some_and(|info| {
+                info.parent.is_some()
+                    && (info.renderer == notice.renderer
+                        || info
+                            .root
+                            .is_some_and(|(renderer, _)| renderer == notice.renderer))
+            });
+        if framed {
+            self.hand_over_frame(notice);
+        }
+    }
+
+    fn hand_over_top(&mut self, notice: HandoverNotice) {
         if !self.new_segment(notice.lock.clone()) {
             return;
         }
@@ -547,17 +708,140 @@ impl RemoteTab {
         }
     }
 
+    /// Frame `notice.frame`'s document goes to a view of its own in the
+    /// renderer of its site: the frame's view there if it has one, else a
+    /// new one, its parent told it is another renderer's.
+    fn hand_over_frame(&mut self, notice: HandoverNotice) {
+        let key = notice.frame;
+        let (root, parent_renderer, sandbox) = {
+            let registry = super::frames::lock(&self.registry);
+            let Some(info) = registry.frames.get(&key) else {
+                return;
+            };
+            (info.root, info.renderer, info.sandbox)
+        };
+        let reuse = root.filter(|(renderer, _)| {
+            self.renderers
+                .get(renderer)
+                .is_some_and(|slot| slot.lock.as_ref() == Some(&notice.lock))
+        });
+        let view = match reuse {
+            Some(view) => view,
+            None => {
+                if let Some(old) = root {
+                    self.destroy_view(old);
+                }
+                let Some(number) = self.renderer_for(&notice.lock) else {
+                    return;
+                };
+                let view = (number, self.next_view);
+                self.next_view += 1;
+                let (ancestors, grant) = self.place_of(key, &notice.url);
+                self.grants.grant_frame(number, key, grant);
+                let mut settings = self.settings.clone();
+                settings.focused = false;
+                self.send_to(view, |id| ToRenderer::CreateFrameView {
+                    view: id,
+                    key,
+                    settings,
+                    ancestors,
+                    sandbox,
+                });
+                self.frame_views.insert(
+                    view,
+                    FrameView {
+                        key,
+                        state: ViewState::default(),
+                        told: None,
+                        raster: (0, 0),
+                    },
+                );
+                if let Some(info) = super::frames::lock(&self.registry).frames.get_mut(&key) {
+                    info.root = Some(view);
+                }
+                if root.is_none()
+                    && let Some(slot) = self.renderers.get(&parent_renderer)
+                {
+                    let _ = slot.renderer.send(&ToRenderer::FrameRemote { key });
+                }
+                view
+            }
+        };
+        self.handovers.assign(notice.handover, view.0, key);
+        self.send_to(view, |id| ToRenderer::NavigateHandedOver {
+            view: id,
+            url: notice.url,
+            handover: notice.handover,
+        });
+    }
+
+    /// Frame `key`'s ancestors as its view is told of them, and its place
+    /// in the tab for a document of `url`: the top-level document's
+    /// origin, and whether it or an ancestor is of another site.
+    fn place_of(&self, key: u32, url: &Url) -> (Vec<Ancestor>, FrameGrant) {
+        let registry = super::frames::lock(&self.registry);
+        let ancestors = registry.ancestors(key);
+        let top = ancestors
+            .last()
+            .map_or_else(net::Origin::new_opaque, |(_, origin, _)| origin.clone());
+        let origin = url.origin();
+        let cross_site = !top.same_site(&origin)
+            || ancestors
+                .iter()
+                .rev()
+                .skip(1)
+                .any(|(_, ancestor, _)| !top.same_site(ancestor));
+        (
+            ancestors
+                .into_iter()
+                .map(|(key, origin, url)| Ancestor { key, origin, url })
+                .collect(),
+            FrameGrant { top, cross_site },
+        )
+    }
+
+    /// A frame root's view goes, and what its renderer showed of it.
+    fn destroy_view(&mut self, view: ViewId) {
+        self.send_to(view, |id| ToRenderer::DestroyView { view: id });
+        if let Some(frame) = self.frame_views.remove(&view) {
+            self.grants.revoke_frame(view.0, frame.key);
+        }
+        self.buffers.remove(&view);
+        if self.focused_view == Some(view) {
+            self.focused_view = None;
+        }
+        if self.pointer_view == Some(view) {
+            self.pointer_view = None;
+        }
+        if self.captured.is_some_and(|(captured, _)| captured == view) {
+            self.captured = None;
+        }
+    }
+
+    /// Frame `key` left its parent's page: its view and its frames' go.
+    fn drop_frame(&mut self, key: u32) {
+        let gone: Vec<(u32, Option<ViewId>)> = {
+            let registry = super::frames::lock(&self.registry);
+            registry
+                .subtree(key)
+                .into_iter()
+                .map(|key| (key, registry.frames.get(&key).and_then(|info| info.root)))
+                .collect()
+        };
+        for (key, root) in gone {
+            if let Some(view) = root {
+                self.destroy_view(view);
+            }
+            super::frames::lock(&self.registry).frames.remove(&key);
+        }
+    }
+
     /// Renderer `number` is gone: its segments wait to be restored, and
     /// the page it showed says why.
     fn gone(&mut self, number: u32, why: Gone) {
         let showed = self.segment().and_then(|segment| segment.renderer) == Some(number);
         self.renderers.remove(&number);
-        self.grants.forget(number);
-        for segment in &mut self.segments {
-            if segment.renderer == Some(number) {
-                segment.renderer = None;
-            }
-        }
+        self.left(number);
         if showed && why != Gone::Shutdown {
             if let Some(segment) = self.segments.get_mut(self.current) {
                 segment.state.load = LoadState::Failed(LoadError::Lost);
@@ -578,97 +862,335 @@ impl RemoteTab {
     /// Takes a message of renderer `number`'s; Err for one it may not
     /// send.
     fn take(&mut self, number: u32, message: ToBrowser) -> Result<(), String> {
+        let view_of = |message: &ToBrowser| match message {
+            ToBrowser::State { view, .. }
+            | ToBrowser::History { view, .. }
+            | ToBrowser::Pixels { view, .. }
+            | ToBrowser::Frame { view, .. }
+            | ToBrowser::Holes { view, .. }
+            | ToBrowser::Console { view, .. }
+            | ToBrowser::Notice { view, .. }
+            | ToBrowser::FocusLeft { view }
+            | ToBrowser::Copied { view, .. } => Some(*view),
+            _ => None,
+        };
+        let Some(view) = view_of(&message) else {
+            return Err(format!("{message:?} out of place"));
+        };
+        let id = (number, view);
+        let framed = self.frame_views.contains_key(&id);
+        let segment = match framed {
+            true => None,
+            false => Some(self.segment_of(number, view)?),
+        };
+        let shown = segment == Some(self.current);
         match message {
-            ToBrowser::State { view, state } => {
-                let index = self.segment_of(number, view)?;
-                self.segments[index].state = *state;
-                if index == self.current {
-                    self.undecodable = undecodable(self.state());
+            ToBrowser::State { state, .. } => match segment {
+                Some(index) => {
+                    self.segments[index].state = *state;
+                    if shown {
+                        self.undecodable = undecodable(self.state());
+                    }
                 }
-            }
-            ToBrowser::History {
-                view,
-                entries,
-                index,
-            } => {
-                let at = self.segment_of(number, view)?;
+                None => self.frame_state(id, *state),
+            },
+            ToBrowser::History { entries, index, .. } => {
                 let index = index as usize;
                 if index >= entries.len() {
                     return Err(format!("entry {index} of {}", entries.len()));
                 }
-                let segment = &mut self.segments[at];
-                segment.entries = entries;
-                segment.index = index;
+                // A frame's own history is not the tab's (G92).
+                if let Some(at) = segment {
+                    let segment = &mut self.segments[at];
+                    segment.entries = entries;
+                    segment.index = index;
+                }
             }
             ToBrowser::Pixels {
-                view,
-                frame: _,
                 width,
                 height,
                 first_row,
                 bytes,
+                ..
             } => {
-                let index = self.segment_of(number, view)?;
                 let row = frame_size(width, height)?;
-                if index != self.current {
-                    return Ok(());
-                }
-                if self.incoming.len() != width as usize * height as usize * 4 {
-                    self.incoming = vec![255; width as usize * height as usize * 4];
+                let buffer = self.buffers.entry(id).or_default();
+                if buffer.incoming.len() != width as usize * height as usize * 4 {
+                    buffer.incoming = vec![255; width as usize * height as usize * 4];
                 }
                 let start = first_row as usize * row;
                 let end = start
                     .checked_add(bytes.0.len())
-                    .filter(|end| bytes.0.len() % row == 0 && *end <= self.incoming.len())
+                    .filter(|end| bytes.0.len() % row == 0 && *end <= buffer.incoming.len())
                     .ok_or("pixels past the frame")?;
-                self.incoming[start..end].copy_from_slice(&bytes.0);
+                buffer.incoming[start..end].copy_from_slice(&bytes.0);
+            }
+            ToBrowser::Holes { holes, .. } => {
+                if holes.len() > crate::MAX_FRAMES {
+                    return Err(format!("{} holes", holes.len()));
+                }
+                self.buffers.entry(id).or_default().holes = holes;
+                self.size_frames(id);
             }
             ToBrowser::Frame {
-                view,
                 frame,
                 width,
                 height,
+                ..
             } => {
-                let index = self.segment_of(number, view)?;
                 frame_size(width, height)?;
-                // A view not shown has its frames taken, unseen.
-                if index == self.current {
-                    if self.incoming.len() != width as usize * height as usize * 4 {
-                        return Err("a frame of no pixels".into());
-                    }
-                    self.pixels.clone_from(&self.incoming);
-                    self.size = (width, height);
+                let buffer = self.buffers.entry(id).or_default();
+                if buffer.incoming.len() != width as usize * height as usize * 4 {
+                    return Err("a frame of no pixels".into());
+                }
+                buffer.pixels.clone_from(&buffer.incoming);
+                buffer.size = (width, height);
+                if shown || framed {
                     self.fresh = true;
                     self.frames += 1;
                 }
-                if let Some(slot) = self.renderers.get(&number) {
-                    let _ = slot.renderer.send(&ToRenderer::FrameTaken { view, frame });
-                }
+                self.send_to(id, |view| ToRenderer::FrameTaken { view, frame });
             }
-            ToBrowser::Console { view, entries } => {
-                self.segment_of(number, view)?;
-                self.console.extend(entries);
-            }
-            ToBrowser::Notice { view, text } => {
-                if self.segment_of(number, view)? == self.current {
+            ToBrowser::Console { entries, .. } => self.console.extend(entries),
+            ToBrowser::Notice { text, .. } => {
+                if shown {
                     self.notice = Some(text);
                 }
             }
-            ToBrowser::FocusLeft { view } => {
-                if self.segment_of(number, view)? == self.current {
+            ToBrowser::FocusLeft { .. } => {
+                if framed {
+                    self.focused_view = None;
+                } else if shown {
                     self.focus_left = true;
                 }
             }
-            ToBrowser::Copied { view, text, cut } => {
-                if self.segment_of(number, view)? == self.current
-                    && let Some(text) = text
+            ToBrowser::Copied { text, cut, .. } => {
+                if let Some(text) = text
+                    && (shown || framed)
                 {
                     self.copied = Some((text, cut));
                 }
             }
-            other => return Err(format!("{other:?} out of place")),
+            _ => {}
         }
         Ok(())
+    }
+
+    /// A frame root's state: its parent hears of each document it loads.
+    fn frame_state(&mut self, id: ViewId, state: ViewState) {
+        let Some(frame) = self.frame_views.get_mut(&id) else {
+            return;
+        };
+        let loaded = matches!(state.load, LoadState::Loaded | LoadState::Failed(_));
+        let tell = loaded && state.url.is_some() && frame.told != state.url;
+        if tell {
+            frame.told.clone_from(&state.url);
+        }
+        let key = frame.key;
+        frame.state = state;
+        if tell {
+            let parent = super::frames::lock(&self.registry)
+                .frames
+                .get(&key)
+                .map(|info| info.renderer);
+            if let Some(slot) = parent.and_then(|parent| self.renderers.get(&parent)) {
+                let _ = slot.renderer.send(&ToRenderer::FrameLoaded { key });
+            }
+        }
+    }
+
+    /// The frame roots in view `id`'s holes are given their holes' sizes.
+    fn size_frames(&mut self, id: ViewId) {
+        let scale = self.settings.scale;
+        let holes = self
+            .buffers
+            .get(&id)
+            .map(|buffer| buffer.holes.clone())
+            .unwrap_or_default();
+        for hole in holes {
+            let Some(view) = self.root_of(hole.key) else {
+                continue;
+            };
+            let Some(frame) = self.frame_views.get_mut(&view) else {
+                continue;
+            };
+            let raster = (hole.width.max(1), hole.height.max(1));
+            if frame.raster == raster {
+                continue;
+            }
+            frame.raster = raster;
+            let css = |v: u32| (v as f32 / scale).round().max(1.0) as u32;
+            self.send_to(view, |view| ToRenderer::Resize {
+                view,
+                width: css(raster.0),
+                height: css(raster.1),
+                raster_width: raster.0,
+                raster_height: raster.1,
+            });
+        }
+    }
+
+    /// The view showing frame `key`'s documents, if another renderer's.
+    fn root_of(&self, key: u32) -> Option<ViewId> {
+        super::frames::lock(&self.registry)
+            .frames
+            .get(&key)
+            .and_then(|info| info.root)
+            .filter(|view| self.frame_views.contains_key(view))
+    }
+
+    /// Puts frame root `view`'s pixels into `out`, `size` big, where the
+    /// frame drawn at `at` in it shows through a hole, and theirs into
+    /// theirs, within `clip`.
+    fn compose(
+        &self,
+        view: ViewId,
+        out: &mut [u8],
+        size: (u32, u32),
+        at: (i32, i32),
+        clip: [i32; 4],
+        depth: usize,
+    ) {
+        let Some(buffer) = self.buffers.get(&view) else {
+            return;
+        };
+        if depth > crate::MAX_FRAME_DEPTH {
+            return;
+        }
+        for hole in &buffer.holes {
+            let Some(child) = self.root_of(hole.key) else {
+                continue;
+            };
+            let Some(inner) = self.buffers.get(&child) else {
+                continue;
+            };
+            let origin = (at.0 + hole.x, at.1 + hole.y);
+            let area = [
+                origin.0.max(clip[0]).max(0),
+                origin.1.max(clip[1]).max(0),
+                (origin.0 + hole.width as i32)
+                    .min(clip[2])
+                    .min(size.0 as i32),
+                (origin.1 + hole.height as i32)
+                    .min(clip[3])
+                    .min(size.1 as i32),
+            ];
+            for y in area[1]..area[3] {
+                for x in area[0]..area[2] {
+                    if buffer.pixel(x - at.0, y - at.1) != Some(HOLE) {
+                        continue;
+                    }
+                    let pixel = inner
+                        .pixel(x - origin.0, y - origin.1)
+                        .unwrap_or([255, 255, 255, 255]);
+                    let to = (y as usize * size.0 as usize + x as usize) * 4;
+                    out[to..to + 4].copy_from_slice(&pixel);
+                }
+            }
+            self.compose(child, out, size, origin, area, depth + 1);
+        }
+    }
+
+    /// The view under the page's point `(x, y)`, CSS pixels, and the point
+    /// in it: a frame root's, through the holes it shows in, or the page's.
+    fn view_at(&self, x: f32, y: f32) -> Option<(ViewId, f32, f32)> {
+        let scale = self.settings.scale;
+        let mut view = self.shown_view()?;
+        let (mut rx, mut ry) = ((x * scale).round() as i32, (y * scale).round() as i32);
+        for _ in 0..=crate::MAX_FRAME_DEPTH {
+            let Some(buffer) = self.buffers.get(&view) else {
+                break;
+            };
+            let inside = buffer.holes.iter().rev().find(|hole| {
+                rx >= hole.x
+                    && ry >= hole.y
+                    && rx < hole.x + hole.width as i32
+                    && ry < hole.y + hole.height as i32
+                    && buffer.pixel(rx, ry) == Some(HOLE)
+            });
+            let Some(hole) = inside else {
+                break;
+            };
+            let Some(child) = self.root_of(hole.key) else {
+                break;
+            };
+            (rx, ry) = (rx - hole.x, ry - hole.y);
+            view = child;
+        }
+        Some((view, rx as f32 / scale, ry as f32 / scale))
+    }
+
+    /// The offset of view `target`'s page in the tab's page, CSS pixels.
+    fn offset_of(&self, target: ViewId) -> (f32, f32) {
+        let scale = self.settings.scale;
+        let Some(mut view) = self.shown_view() else {
+            return (0.0, 0.0);
+        };
+        let (mut x, mut y) = (0, 0);
+        for _ in 0..=crate::MAX_FRAME_DEPTH {
+            if view == target {
+                break;
+            }
+            let next = self.buffers.get(&view).and_then(|buffer| {
+                buffer.holes.iter().find_map(|hole| {
+                    let child = self.root_of(hole.key)?;
+                    self.reaches(child, target)
+                        .then_some((child, hole.x, hole.y))
+                })
+            });
+            let Some((child, hx, hy)) = next else {
+                break;
+            };
+            (x, y, view) = (x + hx, y + hy, child);
+        }
+        (x as f32 / scale, y as f32 / scale)
+    }
+
+    /// Whether view `target` is `view` or shows in its holes.
+    fn reaches(&self, view: ViewId, target: ViewId) -> bool {
+        let mut queue = vec![view];
+        let mut seen = 0;
+        while let Some(at) = queue.pop() {
+            if at == target {
+                return true;
+            }
+            seen += 1;
+            if seen > crate::MAX_FRAMES {
+                return false;
+            }
+            if let Some(buffer) = self.buffers.get(&at) {
+                queue.extend(
+                    buffer
+                        .holes
+                        .iter()
+                        .filter_map(|hole| self.root_of(hole.key)),
+                );
+            }
+        }
+        false
+    }
+
+    /// The pointer's event at `(x, y)` goes to the view under it, or to the
+    /// one a press is held in; the view it left hears so.
+    fn pointer(&mut self, x: f32, y: f32, event: impl FnOnce(f32, f32) -> Input) {
+        let target = match self.captured {
+            Some((view, (dx, dy))) => Some((view, x - dx, y - dy)),
+            None => self.view_at(x, y),
+        };
+        let Some((view, fx, fy)) = target else {
+            return;
+        };
+        if self.pointer_view != Some(view) {
+            if let Some(left) = self.pointer_view {
+                self.send_to(left, |view| ToRenderer::Input {
+                    view,
+                    input: Input::PointerLeave {},
+                });
+            }
+            self.pointer_view = Some(view);
+        }
+        let input = event(fx, fy);
+        self.send_to(view, |view| ToRenderer::Input { view, input });
     }
 
     /// Keeps what the browsing keeps in `profile` from now on (M28): the
@@ -713,6 +1235,18 @@ impl RemoteTab {
     pub fn shown_renderer(&self) -> Option<u32> {
         self.segment().and_then(|segment| segment.renderer)
     }
+
+    /// The frame roots of the tab, by the renderers that show them and the
+    /// URLs they show: for the tests and the checks.
+    pub fn frame_roots(&self) -> Vec<(u32, Option<Url>)> {
+        let mut roots: Vec<_> = self
+            .frame_views
+            .iter()
+            .map(|((renderer, _), frame)| (*renderer, frame.state.url.clone()))
+            .collect();
+        roots.sort_by_key(|(renderer, url)| (*renderer, url.as_ref().map(|url| url.to_string())));
+        roots
+    }
 }
 
 impl Drop for RemoteTab {
@@ -721,6 +1255,20 @@ impl Drop for RemoteTab {
             slot.renderer.shutdown();
         }
     }
+}
+
+/// The wake that calls the session's waker once it is given.
+fn waking(waker: &Arc<Mutex<Option<crate::loader::Waker>>>) -> crate::loader::Waker {
+    let waker = waker.clone();
+    Arc::new(move || {
+        if let Some(wake) = waker
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+        {
+            wake();
+        }
+    })
 }
 
 /// The static name of the encoding `state` says its document cannot be
@@ -807,11 +1355,7 @@ impl View for RemoteTab {
     }
 
     fn reload(&mut self) {
-        let alive = self
-            .segment()
-            .and_then(|segment| segment.renderer)
-            .is_some_and(|number| self.renderers.contains_key(&number));
-        if alive {
+        if self.shown_view().is_some() {
             self.send(|view| ToRenderer::Reload { view });
             return;
         }
@@ -981,20 +1525,31 @@ impl View for RemoteTab {
             self.send_size();
         }
         self.fresh = false;
-        if self.size == (width, height) {
-            return &self.pixels;
+        let view = self.shown_view();
+        let buffer = view.and_then(|view| self.buffers.get(&view));
+        let plain =
+            buffer.is_some_and(|buffer| buffer.size == (width, height) && buffer.holes.is_empty());
+        if plain && let Some(buffer) = buffer {
+            return &buffer.pixels;
         }
-        // The last frame, of another size, at the top left, the rest of
-        // the page white until the renderer draws it at this one.
+        // The page's last frame at the top left, the rest white until the
+        // renderer draws it at this size; the frames of other renderers in
+        // their holes.
         let (w, h) = (width as usize, height as usize);
-        self.out.clear();
-        self.out.resize(w * h * 4, 255);
-        let (fw, fh) = (self.size.0 as usize, self.size.1 as usize);
-        for y in 0..h.min(fh) {
-            let n = w.min(fw) * 4;
-            self.out[y * w * 4..y * w * 4 + n]
-                .copy_from_slice(&self.pixels[y * fw * 4..y * fw * 4 + n]);
+        let mut out = std::mem::take(&mut self.out);
+        out.clear();
+        out.resize(w * h * 4, 255);
+        if let (Some(view), Some(buffer)) = (view, buffer) {
+            let (fw, fh) = (buffer.size.0 as usize, buffer.size.1 as usize);
+            for y in 0..h.min(fh) {
+                let n = w.min(fw) * 4;
+                out[y * w * 4..y * w * 4 + n]
+                    .copy_from_slice(&buffer.pixels[y * fw * 4..y * fw * 4 + n]);
+            }
+            let clip = [0, 0, width as i32, height as i32];
+            self.compose(view, &mut out, (width, height), (0, 0), clip, 0);
         }
+        self.out = out;
         &self.out
     }
 
@@ -1003,15 +1558,31 @@ impl View for RemoteTab {
     }
 
     fn pointer_move(&mut self, x: f32, y: f32) {
-        self.input(Input::PointerMove { x, y });
+        self.pointer(x, y, |x, y| Input::PointerMove { x, y });
     }
 
     fn pointer_leave(&mut self) {
-        self.input(Input::PointerLeave {});
+        if let Some(view) = self.pointer_view.take() {
+            self.send_to(view, |view| ToRenderer::Input {
+                view,
+                input: Input::PointerLeave {},
+            });
+        }
     }
 
     fn pointer_down(&mut self, x: f32, y: f32, button: Button, count: u32) {
-        self.input(Input::PointerDown {
+        if let Some((view, fx, fy)) = self.view_at(x, y) {
+            let framed = self.frame_views.contains_key(&view);
+            let (dx, dy) = self.offset_of(view);
+            self.captured = Some((view, (dx, dy)));
+            let before = self.focused_view;
+            self.focused_view = framed.then_some(view);
+            if before != self.focused_view {
+                self.send_settings();
+            }
+            let _ = (fx, fy);
+        }
+        self.pointer(x, y, |x, y| Input::PointerDown {
             x,
             y,
             button,
@@ -1020,24 +1591,25 @@ impl View for RemoteTab {
     }
 
     fn pointer_up(&mut self, x: f32, y: f32, button: Button, count: u32) {
-        self.input(Input::PointerUp {
+        self.pointer(x, y, |x, y| Input::PointerUp {
             x,
             y,
             button,
             count,
         });
+        self.captured = None;
     }
 
     fn wheel(&mut self, x: f32, y: f32, dy: f32) {
-        self.input(Input::Wheel { x, y, dy });
+        self.pointer(x, y, |x, y| Input::Wheel { x, y, dy });
     }
 
     fn cursor_at(&mut self, _: f32, _: f32) -> Cursor {
-        self.state().cursor
+        self.pointed_state().cursor
     }
 
     fn link_at(&mut self, _: f32, _: f32) -> Option<Link> {
-        self.state().hover.clone().map(Link::remote)
+        self.pointed_state().hover.clone().map(Link::remote)
     }
 
     fn key_down(&mut self, key: &Key) -> KeyOutcome {
@@ -1050,6 +1622,7 @@ impl View for RemoteTab {
     }
 
     fn focus_next(&mut self, backward: bool) -> bool {
+        self.focused_view = None;
         self.input(Input::FocusNext { backward });
         true
     }
@@ -1062,12 +1635,18 @@ impl View for RemoteTab {
     }
 
     fn copy(&self) -> Option<String> {
-        self.send(|view| ToRenderer::Copy { view, cut: false });
+        match self
+            .focused_view
+            .filter(|view| self.frame_views.contains_key(view))
+        {
+            Some(view) => self.send_to(view, |view| ToRenderer::Copy { view, cut: false }),
+            None => self.send(|view| ToRenderer::Copy { view, cut: false }),
+        }
         None
     }
 
     fn cut(&mut self) -> Option<String> {
-        self.send(|view| ToRenderer::Cut { view });
+        self.cut_copied();
         None
     }
 
@@ -1079,10 +1658,18 @@ impl View for RemoteTab {
     }
 
     fn can_paste(&self) -> bool {
-        self.state().can_paste
+        self.focused_view
+            .and_then(|view| self.frame_views.get(&view))
+            .map_or_else(|| self.state().can_paste, |frame| frame.state.can_paste)
     }
 
     fn caret_area(&mut self) -> Option<(f32, f32, f32, f32)> {
+        if let Some(view) = self.focused_view
+            && let Some(frame) = self.frame_views.get(&view)
+        {
+            let (dx, dy) = self.offset_of(view);
+            return frame.state.caret.map(|(x, y, w, h)| (x + dx, y + dy, w, h));
+        }
         self.state().caret
     }
 
@@ -1095,11 +1682,17 @@ impl View for RemoteTab {
     }
 
     fn scroll_by(&mut self, dy: f32) {
-        self.input(Input::ScrollBy { dy });
+        self.send(|view| ToRenderer::Input {
+            view,
+            input: Input::ScrollBy { dy },
+        });
     }
 
     fn scroll_to_fraction(&mut self, fraction: f32) {
-        self.input(Input::ScrollToFraction { fraction });
+        self.send(|view| ToRenderer::Input {
+            view,
+            input: Input::ScrollToFraction { fraction },
+        });
     }
 
     fn flush_profile(&mut self) -> Result<(), profile::Error> {
@@ -1119,7 +1712,13 @@ impl View for RemoteTab {
     }
 
     fn copy_to_cut(&mut self) -> Option<String> {
-        self.send(|view| ToRenderer::Copy { view, cut: true });
+        match self
+            .focused_view
+            .filter(|view| self.frame_views.contains_key(view))
+        {
+            Some(view) => self.send_to(view, |view| ToRenderer::Copy { view, cut: true }),
+            None => self.send(|view| ToRenderer::Copy { view, cut: true }),
+        }
         None
     }
 
@@ -1128,6 +1727,12 @@ impl View for RemoteTab {
     }
 
     fn cut_copied(&mut self) {
-        self.send(|view| ToRenderer::Cut { view });
+        match self
+            .focused_view
+            .filter(|view| self.frame_views.contains_key(view))
+        {
+            Some(view) => self.send_to(view, |view| ToRenderer::Cut { view }),
+            None => self.send(|view| ToRenderer::Cut { view }),
+        }
     }
 }

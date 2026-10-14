@@ -207,7 +207,19 @@ pub struct NetworkService {
     /// over.
     handovers: Mutex<Option<Arc<Handovers>>>,
     notify: Mutex<Option<Notify>>,
+    /// The tab's word on frames (M34): whether one is shown by another
+    /// renderer, whose documents then go there whatever their site; and
+    /// who hears of each document committed.
+    remote: Mutex<Option<Remote>>,
+    committed: Mutex<Option<Committed>>,
 }
+
+/// Whether the frame the browser numbers so is shown by another renderer.
+type Remote = Arc<dyn Fn(u32) -> bool + Send + Sync>;
+
+/// Who hears that a frame of a renderer commits a document of a URL, and
+/// whether the frame is a top-level one.
+type Committed = Arc<dyn Fn(u32, u32, &Url, bool) + Send + Sync>;
 
 /// What the browser's tab is told a response waits for it by.
 type Notify = Arc<dyn Fn(HandoverNotice) + Send + Sync>;
@@ -223,6 +235,8 @@ impl NetworkService {
             fetches: Arc::default(),
             handovers: Mutex::new(None),
             notify: Mutex::new(None),
+            remote: Mutex::new(None),
+            committed: Mutex::new(None),
         })
     }
 
@@ -247,6 +261,16 @@ impl NetworkService {
     }
 
     /// Tells `notify` of each response handed over.
+    /// Asks `remote` whether a frame is shown by another renderer, and
+    /// tells `committed` of each document committed (M34).
+    pub(crate) fn watch_frames(&self, remote: Remote, committed: Committed) {
+        *self.remote.lock().unwrap_or_else(PoisonError::into_inner) = Some(remote);
+        *self
+            .committed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(committed);
+    }
+
     pub fn on_handover(&self, notify: Notify) {
         *self.notify.lock().unwrap_or_else(PoisonError::into_inner) = Some(notify);
     }
@@ -416,8 +440,22 @@ impl NetworkService {
         // A top-level document's response decides, before the renderer
         // has it, what its frame's requests are from then on, or that it
         // goes to the renderer of its site (M34.1).
-        let navigation = request.destination == net::Destination::Document
-            && request.mode == net::Mode::Navigate;
+        let top_level = request.destination == net::Destination::Document;
+        let navigation = matches!(
+            request.destination,
+            net::Destination::Document | net::Destination::Iframe
+        ) && request.mode == net::Mode::Navigate;
+        let shown_elsewhere = self
+            .remote
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .is_some_and(|remote| !top_level && remote(frame));
+        let committed = self
+            .committed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
         let handovers = self
             .handovers
             .lock()
@@ -445,8 +483,9 @@ impl NetworkService {
                                     && let Some(url) = head.url_list.last()
                                 {
                                     let target = Lock::of(url);
-                                    if target != Lock::Opaque
-                                        && target != lock
+                                    // A frame shown by another renderer
+                                    // stays so for its parent (M34).
+                                    if (shown_elsewhere || super::frames::elsewhere(&target, &lock))
                                         && let (Some(handovers), Some(notify)) =
                                             (&handovers, &notify)
                                     {
@@ -467,7 +506,12 @@ impl NetworkService {
                                         });
                                         return;
                                     }
-                                    grants.commit(renderer, frame, url);
+                                    if top_level {
+                                        grants.commit(renderer, frame, url);
+                                    }
+                                    if let Some(committed) = &committed {
+                                        committed(renderer, frame, url, top_level);
+                                    }
                                 }
                                 let _ = reply.send(&ToRenderer::FetchHead {
                                     id,
@@ -551,8 +595,10 @@ fn checked(mut request: Request, lock: &Lock, grant: &FrameGrant) -> Result<Requ
             return Err("an initiator whose URL is not of its origin".into());
         }
     }
+    // A frame asks in the name of the tab's top-level origin (M33.4).
     if let Some(access) = &request.local_network
         && !lock.admits(&access.origin)
+        && access.origin != grant.top
     {
         return Err(format!(
             "local network access for {}",

@@ -333,3 +333,44 @@ fn a_renderer_draws_no_frame_while_the_browser_has_not_taken_the_last() {
     // Taken, the next come.
     settle(&mut tab, |tab| tab.frames_received() >= before + 3);
 }
+
+#[test]
+fn a_renderer_that_lies_about_frames_is_killed() {
+    let forged = lied_to(|| {
+        vec![ToBrowser::PostFrame {
+            from: None,
+            to: 1,
+            task: ipc::WireTask::Message {
+                data: "x".into(),
+                origin: "https://victim.test".into(),
+                target_origin: "*".into(),
+            },
+        }]
+    });
+    assert!(
+        forged.contains("a message from https://victim.test"),
+        "{forged}"
+    );
+    let unknown = lied_to(|| {
+        vec![ToBrowser::NewFrame {
+            call: 1,
+            parent: 999,
+        }]
+    });
+    assert!(unknown.contains("frame 999 is not renderer"), "{unknown}");
+    let dropped = lied_to(|| vec![ToBrowser::FrameDropped { key: 999 }]);
+    assert!(
+        dropped.contains("frame 999, not of the renderer's pages"),
+        "{dropped}"
+    );
+    let policy = lied_to(|| {
+        vec![ToBrowser::FramePolicy {
+            key: 999,
+            sandbox: 0,
+        }]
+    });
+    assert!(
+        policy.contains("frame 999, not of the renderer's pages"),
+        "{policy}"
+    );
+}

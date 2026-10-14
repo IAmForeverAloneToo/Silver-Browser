@@ -50,6 +50,16 @@ impl Sandbox {
     /// *Parse a sandboxing directive* (HTML 7.1.3): every flag but those
     /// the tokens, ASCII case-insensitively, take away; tokens it does
     /// not know are ignored.
+    /// The flags as bits, for another process (M34).
+    pub(crate) fn bits(self) -> u32 {
+        self.0
+    }
+
+    /// The flags `bits` names; bits no flag has are dropped.
+    pub(crate) fn from_bits(bits: u32) -> Sandbox {
+        Sandbox(bits & Sandbox::ALL.0)
+    }
+
     pub(crate) fn parse(value: &str) -> Sandbox {
         let mut flags = Sandbox::ALL;
         for token in value

@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::link::{Link, RemoteAreas, RemoteCookies, RemoteFetcher};
-use crate::ipc::{Bytes, Input, MAX_CHUNK, Settings, ToBrowser, ToRenderer, ViewState};
+use super::link::Link;
+use crate::ipc::{Bytes, Hole, Input, MAX_CHUNK, Settings, ToBrowser, ToRenderer, ViewState};
 use crate::{Engine, FrameTime, KeyOutcome};
 
 /// The least time between two frames of a view.
@@ -24,9 +24,9 @@ pub const MAX_SURFACE_PIXELS: u32 = 4096 * 4096;
 
 struct View {
     engine: Engine,
-    /// Its document's fetches, which may be told of a response handed
-    /// over.
-    fetcher: Arc<RemoteFetcher>,
+    /// Whether frames of other renderers were in its last frame (M34):
+    /// their holes are sent with each frame until none are.
+    holes: bool,
     /// The history last reported.
     history: (Vec<net::Url>, usize),
     /// The raster size the browser draws the page at.
@@ -87,16 +87,38 @@ impl Host {
     /// A view of `frame`, the browser's number for its frame, shown under
     /// `settings`.
     fn create(&mut self, view: u32, frame: u32, settings: &Settings) -> Result<(), String> {
+        let mut engine = Engine::with_fonts(self.fonts()?);
+        engine.set_link(self.link.clone(), frame);
+        self.add(view, engine, settings)
+    }
+
+    /// A view of the frame root `key`, under `ancestors` (M34).
+    fn create_frame(
+        &mut self,
+        view: u32,
+        key: u32,
+        settings: &Settings,
+        ancestors: Vec<crate::ipc::Ancestor>,
+        sandbox: u32,
+    ) -> Result<(), String> {
+        let ancestors: Vec<_> = ancestors
+            .into_iter()
+            .map(|ancestor| (ancestor.key, ancestor.origin, ancestor.url))
+            .collect();
+        let engine = Engine::frame_root(
+            self.fonts()?,
+            self.link.clone(),
+            key,
+            &ancestors,
+            crate::sandbox::Sandbox::from_bits(sandbox),
+        );
+        self.add(view, engine, settings)
+    }
+
+    fn add(&mut self, view: u32, mut engine: Engine, settings: &Settings) -> Result<(), String> {
         if self.views.contains_key(&view) {
             return Err(format!("view {view} again"));
         }
-        let mut engine = Engine::with_fonts(self.fonts()?);
-        let fetcher = Arc::new(RemoteFetcher::new(self.link.clone(), frame));
-        engine.set_remote_network(
-            fetcher.clone(),
-            Arc::new(RemoteCookies::new(self.link.clone(), frame)),
-        );
-        engine.set_remote_storage(Arc::new(RemoteAreas::new(self.link.clone(), frame)));
         let wake = self.wake.clone();
         engine.set_waker(move || wake());
         let began = self.began;
@@ -106,7 +128,7 @@ impl Host {
             view,
             View {
                 engine,
-                fetcher,
+                holes: false,
                 history: (Vec::new(), 0),
                 raster: (0, 0),
                 sent: Vec::new(),
@@ -149,10 +171,33 @@ impl Host {
                 handover,
             } => {
                 let view = self.view(view)?;
-                view.fetcher.hand_over(url.clone(), handover);
+                view.engine.hand_over(&url, handover);
                 view.engine.navigate(url);
             }
             ToRenderer::DropForward { view } => self.view(view)?.engine.drop_forward(),
+            ToRenderer::CreateFrameView {
+                view,
+                key,
+                settings,
+                ancestors,
+                sandbox,
+            } => self.create_frame(view, key, &settings, ancestors, sandbox)?,
+            ToRenderer::FrameRemote { key } => {
+                for view in self.views.values_mut() {
+                    if view.engine.mark_remote(key) {
+                        view.owed = true;
+                        break;
+                    }
+                }
+            }
+            ToRenderer::FrameLoaded { key } => {
+                for view in self.views.values_mut() {
+                    if view.engine.remote_loaded(key) {
+                        break;
+                    }
+                }
+            }
+            ToRenderer::FrameTask { from, to, task } => self.deliver(from, to, task),
             ToRenderer::Restore {
                 view,
                 entries,
@@ -209,6 +254,31 @@ impl Host {
         Ok(true)
     }
 
+    /// Puts what frame `from` of another renderer posted to frame `to` in
+    /// that frame's inbox, the frame standing for the sender as its source.
+    fn deliver(&mut self, from: Option<u32>, to: u32, task: crate::ipc::WireTask) {
+        for view in self.views.values_mut() {
+            let Some(engine) = view.engine.engine_of_key(to) else {
+                continue;
+            };
+            let tree = engine.frame.tree.clone();
+            let posted = {
+                let mut tree = crate::frames::lock(&tree);
+                let Some(local) = tree.local_of(to) else {
+                    return;
+                };
+                let source = from
+                    .and_then(|from| tree.local_of(from))
+                    .unwrap_or(crate::frames::TOP);
+                tree.post(local, task.into_task(source))
+            };
+            if posted {
+                (self.wake)();
+            }
+            return;
+        }
+    }
+
     /// The views' turn: what arrived and the tasks due, then the frames
     /// and the state the browser is to have.
     pub(crate) fn turn(&mut self) {
@@ -233,6 +303,9 @@ impl Host {
             }
             if let Some(text) = view.engine.take_notice() {
                 out.push(ToBrowser::Notice { view: id, text });
+            }
+            for key in view.engine.take_remote_drops() {
+                out.push(ToBrowser::FrameDropped { key });
             }
             draw(view, id, now, time, &mut out);
             let history = view.engine.history_urls();
@@ -390,6 +463,20 @@ fn draw(view: &mut View, id: u32, now: Instant, time: Duration, out: &mut Vec<To
     }
     view.drawn = Some(now);
     view.owed = false;
+    // The frames of other renderers it shows, before its pixels (M34).
+    let scale = view.engine.scale_factor();
+    let holes: Vec<Hole> = view
+        .engine
+        .remote_holes()
+        .into_iter()
+        .map(|(key, [x, y, w, h])| Hole {
+            key,
+            x: (x * scale).round() as i32,
+            y: (y * scale).round() as i32,
+            width: (w * scale).round().max(0.0) as u32,
+            height: (h * scale).round().max(0.0) as u32,
+        })
+        .collect();
     let pixels = view.engine.frame_at(width, height, FrameTime::at(time));
     if pixels.len() != width as usize * height as usize * 4 {
         return;
@@ -402,6 +489,14 @@ fn draw(view: &mut View, id: u32, now: Instant, time: Duration, out: &mut Vec<To
     }
     view.frame += 1;
     view.taken = false;
+    if !holes.is_empty() || view.holes {
+        view.holes = !holes.is_empty();
+        out.push(ToBrowser::Holes {
+            view: id,
+            frame: view.frame,
+            holes,
+        });
+    }
     let rows_per_piece = (MAX_CHUNK / row).max(1);
     let mut first = None;
     let rows = height as usize;

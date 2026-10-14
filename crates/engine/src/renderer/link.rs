@@ -62,6 +62,15 @@ impl Link {
         self.calls.call(&self.sender, ask)
     }
 
+    /// The browser's number for a new frame under its frame `parent`
+    /// (M34); none when it refuses one.
+    pub(crate) fn new_frame(&self, parent: u32) -> Option<u32> {
+        match self.call(|call| ToBrowser::NewFrame { call, parent }) {
+            Ok(Answer::Frame { key }) => key,
+            _ => None,
+        }
+    }
+
     /// Takes `message` if it is for one who waits on the link (an answer,
     /// a piece of a fetch); otherwise gives it back, for the renderer's
     /// main thread. Err when it answers nothing that was asked: the
@@ -207,8 +216,10 @@ impl RemoteFetcher {
     fn handed_over(&self, request: &Request) -> Option<u64> {
         let mut held = self.handover.lock().unwrap_or_else(PoisonError::into_inner);
         let matches = held.as_ref().is_some_and(|(url, _)| {
-            request.destination == net::Destination::Document
-                && url.as_str() == request.url.as_str()
+            matches!(
+                request.destination,
+                net::Destination::Document | net::Destination::Iframe
+            ) && url.as_str() == request.url.as_str()
         });
         if !matches {
             return None;

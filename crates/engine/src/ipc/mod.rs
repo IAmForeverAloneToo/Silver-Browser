@@ -20,7 +20,7 @@ pub use channel::{Calls, Closed, ReadError, Sender, frame, read_message, spawn_r
 pub use codec::{Bytes, Decoder, Encoder, Malformed, Wire, decode_all, encode};
 #[cfg(test)]
 pub(crate) use codec::{wire_enum, wire_struct, wire_unit_enum};
-pub use messages::{Answer, StorageOp, ToBrowser, ToRenderer};
+pub use messages::{Ancestor, Answer, Hole, StorageOp, ToBrowser, ToRenderer, WireTask};
 pub use pipe::{PipeBreaker, PipeReader, PipeWriter, duplex, pipe};
 pub use view_wire::{Input, Settings, ViewState};
 

@@ -4,10 +4,13 @@
 //! here step by step: the network and storage services, the frame tree,
 //! the session history, the compositor and the session's proxy.
 
+mod frames;
 mod handover;
 mod network;
 #[cfg(test)]
 mod network_tests;
+#[cfg(test)]
+mod oopif_tests;
 mod orb;
 mod process;
 #[cfg(test)]

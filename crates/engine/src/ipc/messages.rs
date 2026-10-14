@@ -7,7 +7,7 @@ use net::cookies::Context;
 use net::csp::Violation;
 use net::{NetworkError, Origin, Partition, Request, Response, Url};
 
-use super::codec::{Bytes, encode, wire_enum};
+use super::codec::{Bytes, encode, wire_enum, wire_struct};
 use super::view_wire::{Input, Settings, ViewState};
 use crate::ConsoleEntry;
 
@@ -73,6 +73,66 @@ wire_enum! {
         /// The view's history is `entries`, the one at `index` current
         /// and loaded: a segment restored.
         20 => Restore { view: u32, entries: Vec<Url>, index: u32 },
+        /// A view of the frame the browser numbers `key`, whose parent's
+        /// document another renderer shows (M34): its ancestors, the parent
+        /// first, and the sandboxing flags of its documents.
+        21 => CreateFrameView {
+            view: u32,
+            key: u32,
+            settings: Settings,
+            ancestors: Vec<Ancestor>,
+            sandbox: u32,
+        },
+        /// The frame the browser numbers `key`, of one of the renderer's
+        /// pages, is shown by another renderer from now on.
+        22 => FrameRemote { key: u32 },
+        /// The frame of another renderer the browser numbers `key` loaded a
+        /// document: its element hears `load`.
+        23 => FrameLoaded { key: u32 },
+        /// What frame `from` (the browser's number, if one) posted to frame
+        /// `to`, one of the renderer's.
+        24 => FrameTask { from: Option<u32>, to: u32, task: WireTask },
+    }
+}
+
+wire_struct! {
+    /// A frame root's ancestor (M34): the browser's number for it, and its
+    /// document's origin and URL as far as the browser knows them.
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct Ancestor {
+        pub key: u32,
+        pub origin: Origin,
+        pub url: Option<Url>,
+    }
+}
+
+wire_struct! {
+    /// Where a frame of another renderer is in a view's frame (M34): the
+    /// browser's number for it, and its content box in the view's raster
+    /// pixels.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct Hole {
+        pub key: u32,
+        pub x: i32,
+        pub y: i32,
+        pub width: u32,
+        pub height: u32,
+    }
+}
+
+wire_enum! {
+    /// What one frame asks of another of another renderer (M34): a message
+    /// (its data serialized, the sender's origin, the target origin it was
+    /// posted for), or a navigation.
+    #[derive(Debug, Clone)]
+    pub enum WireTask {
+        0 => Message { data: String, origin: String, target_origin: String },
+        1 => Navigate {
+            url: Box<Url>,
+            replace: bool,
+            post: Option<(Bytes, String)>,
+            origin: Origin,
+        },
     }
 }
 
@@ -135,6 +195,21 @@ wire_enum! {
         },
         /// The view's history: its entries' URLs and the current one.
         14 => History { view: u32, entries: Vec<Url>, index: u32 },
+        /// A number for a new frame under the renderer's frame `parent`
+        /// (M34).
+        15 => NewFrame { call: u64, parent: u32 },
+        /// What the renderer's frame `from` posted to frame `to` of another
+        /// renderer.
+        16 => PostFrame { from: Option<u32>, to: u32, task: WireTask },
+        /// The frame of another renderer the browser numbers `key` left
+        /// the renderer's page, or became its again: its view goes.
+        17 => FrameDropped { key: u32 },
+        /// Where the frames of other renderers are in the view's frame
+        /// `frame`, sent before it.
+        18 => Holes { view: u32, frame: u64, holes: Vec<Hole> },
+        /// The sandboxing flags the next document of the renderer's frame
+        /// `key` is made with, as its parent says.
+        19 => FramePolicy { key: u32, sandbox: u32 },
     }
 }
 
@@ -169,6 +244,8 @@ wire_enum! {
         4 => StorageSet { stored: bool, old: Option<String>, changed: bool },
         /// Whether `clear()` removed anything.
         5 => StorageCleared { cleared: bool },
+        /// The browser's number for a new frame, if it gives one.
+        6 => Frame { key: Option<u32> },
     }
 }
 
@@ -183,4 +260,62 @@ macro_rules! equal_by_encoding {
     )*};
 }
 
-equal_by_encoding!(ToRenderer, ToBrowser, Answer, StorageOp);
+equal_by_encoding!(ToRenderer, ToBrowser, Answer, StorageOp, WireTask);
+
+impl WireTask {
+    /// `task` on the wire: a message's source goes apart, as the browser's
+    /// number of its frame.
+    pub(crate) fn from_task(task: crate::frames::FrameTask) -> WireTask {
+        match task {
+            crate::frames::FrameTask::Message {
+                data,
+                origin,
+                target_origin,
+                ..
+            } => WireTask::Message {
+                data,
+                origin,
+                target_origin,
+            },
+            crate::frames::FrameTask::Navigate(navigation) => WireTask::Navigate {
+                url: Box::new(navigation.url),
+                replace: navigation.replace,
+                post: navigation
+                    .post
+                    .map(|post| (Bytes(post.body), post.content_type)),
+                origin: navigation.origin,
+            },
+        }
+    }
+
+    /// The task for a frame, its message from `source`, the frame of the
+    /// receiving tree standing for the sender.
+    pub(crate) fn into_task(self, source: crate::frames::FrameId) -> crate::frames::FrameTask {
+        match self {
+            WireTask::Message {
+                data,
+                origin,
+                target_origin,
+            } => crate::frames::FrameTask::Message {
+                data,
+                origin,
+                source,
+                target_origin,
+            },
+            WireTask::Navigate {
+                url,
+                replace,
+                post,
+                origin,
+            } => crate::frames::FrameTask::Navigate(Box::new(crate::frames::FrameNavigation {
+                url: *url,
+                replace,
+                post: post.map(|(body, content_type)| crate::submit::Post {
+                    body: body.0,
+                    content_type,
+                }),
+                origin,
+            })),
+        }
+    }
+}
