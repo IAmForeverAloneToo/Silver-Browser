@@ -3,7 +3,7 @@
 //! own, their results taken on the engine's thread.
 
 #[cfg(test)]
-mod adversarial_tests;
+pub(crate) mod adversarial_tests;
 #[cfg(test)]
 mod body_tests;
 #[cfg(test)]
@@ -53,7 +53,7 @@ mod sandbox_tests;
 #[cfg(test)]
 mod script_tests;
 #[cfg(test)]
-mod security_tests;
+pub(crate) mod security_tests;
 mod sheets;
 #[cfg(test)]
 mod state_tests;

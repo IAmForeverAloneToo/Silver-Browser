@@ -4,6 +4,10 @@
 //! here step by step: the network and storage services, the frame tree,
 //! the session history, the compositor and the session's proxy.
 
+#[cfg(test)]
+mod adversarial_tests;
+#[cfg(test)]
+mod compromised_tests;
 mod frames;
 mod handover;
 mod network;

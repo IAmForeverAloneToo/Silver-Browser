@@ -86,6 +86,14 @@ fn top(server: &TestServer) -> FrameGrant {
     }
 }
 
+/// A request of the page at `server`'s root for `url`, as a document
+/// asks: of its origin.
+fn of_page(server: &TestServer, url: Url, destination: Destination) -> Request {
+    let mut request = Request::get(url, destination);
+    request.origin = Some(server.url("/").origin());
+    request
+}
+
 fn serve(script: impl Fn(&str) -> Option<Reply> + Send + Sync + 'static) -> TestServer {
     TestServer::plain(move |request| {
         script(&request.target).unwrap_or_else(|| Reply::with_fields(404, &[], b""))
@@ -120,13 +128,15 @@ fn a_renderer_fetches_through_the_browser() {
     );
     assert_eq!(kept.as_deref(), Some(&b"s=1"[..]));
 
-    // A body longer than a message comes in pieces, whole or streamed.
-    let big = Request::get(server.url("/big"), Destination::Empty);
+    // A body longer than a message comes in pieces, whole or streamed
+    // (a navigation's).
+    let big = of_page(&server, server.url("/big"), Destination::Empty);
     assert_eq!(fetcher.fetch(&big).expect("fetched").body.len(), BIG);
     let mut heads = 0;
     let mut pieces = Vec::new();
+    let navigation = Request::get(server.url("/big"), Destination::Document);
     let streamed = fetcher
-        .fetch_streaming(&big, &mut |delivery| match delivery {
+        .fetch_streaming(&navigation, &mut |delivery| match delivery {
             Delivery::Head(head) => {
                 heads += 1;
                 assert_eq!(head.status, 200);
@@ -168,7 +178,7 @@ fn a_fetch_is_cancelled_when_it_is_aborted() {
     });
     let wired = wired(site_of(&server), top(&server));
     let fetcher = RemoteFetcher::new(wired.link.clone(), 7);
-    let request = Request::get(server.url("/slow"), Destination::Empty);
+    let request = of_page(&server, server.url("/slow"), Destination::Empty);
     let abort = request.abort.clone();
     let fetching = thread::spawn(move || fetcher.fetch(&request).map(|r| r.status));
     thread::sleep(Duration::from_millis(100));
@@ -203,7 +213,7 @@ fn a_fetch_numbered_again_while_in_flight_kills_the_renderer() {
                 id: 5,
                 frame: 7,
                 streamed: false,
-                request: Box::new(Request::get(server.url("/slow"), Destination::Empty)),
+                request: Box::new(of_page(&server, server.url("/slow"), Destination::Empty)),
             })
             .expect("sent");
     }
@@ -220,7 +230,7 @@ fn a_policys_violations_come_back_to_the_renderer() {
     let mut headers = net::HeaderList::new();
     headers.append(b"Content-Security-Policy", b"connect-src 'none'");
     let csp = net::csp::Csp::from_headers(&headers, &page).with_sink();
-    let request = Request::get(server.url("/data"), Destination::Empty).with_csp(csp.clone());
+    let request = of_page(&server, server.url("/data"), Destination::Empty).with_csp(csp.clone());
     let result = fetcher.fetch(&request);
     assert!(matches!(result, Err(NetworkError::Csp(_))), "{result:?}");
     let violations = csp.take_violations();
@@ -274,7 +284,7 @@ fn what_a_renderer_may_not_ask_for_kills_it() {
     let other = Url::parse("http://victim.test/").expect("a URL");
     let wired = wired(site_of(&server), top(&server));
     let send = |message: ToBrowser| wired.link.send(&message).expect("sent");
-    let request = |url: Url| Request::get(url, Destination::Empty);
+    let request = |url: Url| of_page(&server, url, Destination::Empty);
 
     send(ToBrowser::Fetch {
         id: 1,
@@ -344,6 +354,45 @@ fn what_a_renderer_may_not_ask_for_kills_it() {
         "local network access for http://victim.test"
     );
 
+    // No origin, or a navigation's mode, is the user's own load, which
+    // the fetch would not filter; and only a navigation is streamed.
+    send(ToBrowser::Fetch {
+        id: 6,
+        frame: 7,
+        streamed: false,
+        request: Box::new(Request::get(other.clone(), Destination::Empty)),
+    });
+    assert_eq!(killed_for(&wired), "a request of no origin");
+    let mut navigating = request(other.clone());
+    navigating.mode = net::Mode::Navigate;
+    send(ToBrowser::Fetch {
+        id: 7,
+        frame: 7,
+        streamed: true,
+        request: Box::new(navigating),
+    });
+    assert_eq!(killed_for(&wired), "a fetch in a navigation's mode");
+    send(ToBrowser::Fetch {
+        id: 8,
+        frame: 7,
+        streamed: true,
+        request: Box::new(request(server.url("/"))),
+    });
+    assert_eq!(
+        killed_for(&wired),
+        "a stream that is not a navigation's, or the reverse"
+    );
+    send(ToBrowser::Fetch {
+        id: 9,
+        frame: 7,
+        streamed: false,
+        request: Box::new(Request::get(server.url("/"), Destination::Document)),
+    });
+    assert_eq!(
+        killed_for(&wired),
+        "a stream that is not a navigation's, or the reverse"
+    );
+
     send(ToBrowser::Cookies {
         call: 1,
         frame: 7,
@@ -381,7 +430,7 @@ fn the_browser_decides_the_partition_and_drops_a_referrer_of_another_site() {
         },
     );
     let fetcher = RemoteFetcher::new(wired.link.clone(), 7);
-    let mut request = Request::get(server.url("/x"), Destination::Empty);
+    let mut request = of_page(&server, server.url("/x"), Destination::Empty);
     request.partition = Some(Partition {
         top: top_url.origin(),
         cross_site: false,
@@ -394,7 +443,8 @@ fn the_browser_decides_the_partition_and_drops_a_referrer_of_another_site() {
     let sent = server.requests();
     assert_eq!(sent[0].header("Referer"), None, "the referrer dropped");
     assert!(wired.bad.try_recv().is_err());
-    let file = Request::get(
+    let file = of_page(
+        &server,
         Url::parse("file:///C:/Windows/win.ini").expect("a URL"),
         Destination::Empty,
     );

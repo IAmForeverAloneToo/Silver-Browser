@@ -305,6 +305,11 @@ impl NetworkService {
             } => {
                 let (lock, grant) = self.grants.frame(renderer, frame)?;
                 let request = checked(*request, &lock, &grant)?;
+                // A navigation's response is streamed, to be handed over
+                // at its head when of another site; nothing else is.
+                if streamed != is_navigation(&request) {
+                    return Err("a stream that is not a navigation's, or the reverse".into());
+                }
                 self.start((renderer, frame), id, streamed, request, &lock, reply)?;
                 Ok(None)
             }
@@ -441,10 +446,7 @@ impl NetworkService {
         // has it, what its frame's requests are from then on, or that it
         // goes to the renderer of its site (M34.1).
         let top_level = request.destination == net::Destination::Document;
-        let navigation = matches!(
-            request.destination,
-            net::Destination::Document | net::Destination::Iframe
-        ) && request.mode == net::Mode::Navigate;
+        let navigation = is_navigation(&request);
         let shown_elsewhere = self
             .remote
             .lock()
@@ -474,10 +476,18 @@ impl NetworkService {
                 let reply = answer;
                 let abort = request.abort.clone();
                 let mut moved: Option<u64> = None;
+                // The body of another site's response that makes no
+                // document (a download), which no renderer has (M34.7).
+                let mut withheld = false;
                 let result = match streamed {
                     true => client
                         .fetch_streaming(&request, &mut |delivery| match delivery {
                             Delivery::Head(head) => {
+                                withheld = navigation
+                                    && !commits(head)
+                                    && head.url_list.last().is_some_and(|url| {
+                                        super::frames::elsewhere(&Lock::of(url), &lock)
+                                    });
                                 if navigation
                                     && commits(head)
                                     && let Some(url) = head.url_list.last()
@@ -524,6 +534,7 @@ impl NetworkService {
                                         abort.abort();
                                     }
                                 }
+                                _ if withheld => {}
                                 _ => send_body(&reply, id, bytes),
                             },
                         })
@@ -576,9 +587,40 @@ impl super::Serve for NetworkService {
     }
 }
 
+/// Whether `request` is a navigation: a document's or a frame's, in a
+/// navigation's mode.
+fn is_navigation(request: &Request) -> bool {
+    matches!(
+        request.destination,
+        net::Destination::Document | net::Destination::Iframe
+    ) && request.mode == net::Mode::Navigate
+}
+
 /// `request` as the browser makes it for a frame of `grant` in a renderer
 /// locked to `lock`; Err for one the renderer may not ask for.
 fn checked(mut request: Request, lock: &Lock, grant: &FrameGrant) -> Result<Request, String> {
+    // The fetch goes by a request's origin and mode: none, or a
+    // navigation's, is the user's own load, whose response no tainting
+    // filters. A renderer has that of a navigation alone (M34.7).
+    if request.mode == net::Mode::Navigate && !is_navigation(&request) {
+        return Err("a fetch in a navigation's mode".into());
+    }
+    if request.origin.is_none() && !is_navigation(&request) {
+        return Err("a request of no origin".into());
+    }
+    // What the fetch sets itself, and what servers trust it to have set
+    // (cookies, the origin, the fetch's metadata), no renderer sets; nor
+    // a method no document may use.
+    if request.method.is_forbidden() {
+        return Err(format!("the method {}", request.method.as_str()));
+    }
+    if let Some((name, _)) = request
+        .headers
+        .iter()
+        .find(|(name, value)| net::headers::is_forbidden_request_header(name, value))
+    {
+        return Err(format!("the field {}", String::from_utf8_lossy(name)));
+    }
     if let Some(origin) = &request.origin
         && !lock.admits(origin)
     {

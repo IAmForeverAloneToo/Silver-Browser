@@ -1385,6 +1385,25 @@ impl RemoteTab {
         }
     }
 
+    /// The tab's network reaches hosts as `config` says: for the tests
+    /// of the adversarial site's names and address spaces.
+    #[cfg(test)]
+    pub(crate) fn set_transport(&mut self, config: net::transport::Config) {
+        self.network.replace_client(
+            Client::new(config)
+                .with_cookies(self.jar.clone())
+                .with_cache(self.cache.clone())
+                .with_hsts(self.hsts.clone())
+                .with_local_network_gate(self.permissions.clone()),
+        );
+    }
+
+    /// The hosts the tab knows as HTTPS only.
+    #[cfg(test)]
+    pub(crate) fn hsts(&self) -> Arc<Mutex<Hsts>> {
+        self.hsts.clone()
+    }
+
     /// Kills renderer `number`, as a crash would end it.
     #[cfg(test)]
     pub(crate) fn kill(&self, number: u32) {

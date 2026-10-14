@@ -18,8 +18,9 @@ use net::test_server::{Reply, ServerRequest, TestServer};
 use net::transport::Config;
 use net::{AddressSpace, Url};
 
-use super::tests::load_all;
+use crate::Engine;
 use crate::testing::*;
+use crate::view::View;
 
 const FRAMES: &str = include_str!("../../tests/security/frames.html");
 const CSP: &str = include_str!("../../tests/security/csp.html");
@@ -384,20 +385,46 @@ fn put(config: Config, server: &TestServer, space: AddressSpace) -> Config {
         .treat_as(SocketAddr::new(v6, server.port()), space)
 }
 
+/// How a run's tab is made (M34.7): with the network's `config`, and
+/// `known` a host known as HTTPS only, when given; one engine here, a tab
+/// of renderers in `service::adversarial_tests`. Scripts on.
+pub(crate) type Make<'a> = &'a dyn Fn(Config, Option<&Url>) -> Box<dyn View>;
+
+/// One engine.
+fn one_engine(config: Config, known: Option<&Url>) -> Box<dyn View> {
+    let mut engine: Engine = Tab::new().engine;
+    engine.set_scripting(true);
+    engine.set_network(net::Client::new(config));
+    if let Some(known) = known {
+        engine
+            .network
+            .hsts()
+            .lock()
+            .unwrap()
+            .store(known, "max-age=1000", SystemTime::now());
+    }
+    Box::new(engine)
+}
+
 /// Runs the page at `path` on `host`, the defences on or off, after the
 /// user signed in at the victim when `signed_in`: what the page said
 /// and what reached the servers. It runs on after the page's line for
 /// the requests on their way: until every attack in `awaited` is
 /// recorded, and half a second at least.
-fn attack(defended: bool, signed_in: bool, host: &str, path: &str, awaited: &[&str]) -> Outcome {
+fn attack(
+    make: Make,
+    defended: bool,
+    signed_in: bool,
+    host: &str,
+    path: &str,
+    awaited: &[&str],
+) -> Outcome {
     let secret = secret();
     let printer = TestServer::plain(|_: &ServerRequest| Reply::ok("text/plain", b"local"));
     let server = site(defended, secret.clone(), printer.port());
     let url = |host: &str, path: &str| {
         Url::parse(&format!("http://{host}:{}{path}", server.port())).expect("a URL")
     };
-    let mut tab = Tab::new();
-    tab.engine.set_scripting(true);
     // The site is public with the defences on, so that the printer is
     // asked for across spaces; with them off, it is on the local network
     // too.
@@ -411,32 +438,21 @@ fn attack(defended: bool, signed_in: bool, host: &str, path: &str, awaited: &[&s
         .resolve("public.test", LOCAL)
         .resolve("printer.test", LOCAL);
     let config = put(put(config, &server, space), &printer, AddressSpace::Local);
-    tab.engine.set_network(net::Client::new(config));
-    if defended {
-        let hsts = tab.engine.network.hsts();
-        let known = Url::parse("https://hsts.localhost/").expect("a URL");
-        hsts.lock()
-            .unwrap()
-            .store(&known, "max-age=1000", SystemTime::now());
-    }
+    let known = Url::parse("https://hsts.localhost/").expect("a URL");
+    let mut tab = make(config, defended.then_some(&known));
     if signed_in {
-        load_all(&mut tab, url("b.localhost", "/login"));
+        load_view(&mut *tab, url("b.localhost", "/login"));
     }
     let path = path.replace("{{secret}}", &secret);
-    tab.engine.navigate(url(host, &path));
+    tab.navigate(url(host, &path));
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut line = None;
     let mut least = None;
     let mut said = Vec::new();
     loop {
-        tab.engine.poll_network();
-        tab.engine.run_tasks();
-        said.extend(
-            tab.engine
-                .take_console()
-                .into_iter()
-                .map(|entry| entry.text),
-        );
+        tab.poll_network();
+        tab.run_tasks();
+        said.extend(tab.take_console().into_iter().map(|entry| entry.text));
         if line.is_none() {
             line = said
                 .iter()
@@ -468,14 +484,35 @@ fn attack(defended: bool, signed_in: bool, host: &str, path: &str, awaited: &[&s
 
 #[test]
 fn a_framing_page_reaches_nothing_its_frames_keep_and_all_with_their_defences_gone() {
-    let defended = attack(true, false, "a.localhost", "/frames.html", &[]);
+    framing(&one_engine);
+}
+
+#[test]
+fn injected_markup_runs_nothing_and_reaches_nothing_under_the_policy_and_all_without() {
+    injected(&one_engine);
+}
+
+#[test]
+fn another_site_carries_and_reads_none_of_the_victims_cookies_and_storage() {
+    cookies(&one_engine);
+}
+
+#[test]
+fn a_public_page_sends_nothing_in_clear_to_a_known_host_or_to_the_local_network() {
+    network(&one_engine);
+}
+
+/// The framing page reaches nothing its frames keep, and all with their
+/// defences gone.
+pub(crate) fn framing(make: Make) {
+    let defended = attack(make, true, false, "a.localhost", "/frames.html", &[]);
     assert_eq!(defended.pwned, set(&[]));
     assert_eq!(defended.ran, set(&FRAME_ATTACKS));
     let learned: Vec<&str> = FRAME_ATTACKS
         .into_iter()
         .filter(|attack| !ACROSS_FRAMES.contains(attack))
         .collect();
-    let open = attack(false, false, "a.localhost", "/frames.html", &learned);
+    let open = attack(make, false, false, "a.localhost", "/frames.html", &learned);
     assert_eq!(open.pwned, set(&learned));
     assert_eq!(open.ran, set(&FRAME_ATTACKS));
     // A sandboxed frame's navigation of the top and its popup, each a
@@ -486,24 +523,33 @@ fn a_framing_page_reaches_nothing_its_frames_keep_and_all_with_their_defences_go
             _ => "sandboxed-popup",
         };
         let path = format!("/frames.html?{late}");
-        let defended = attack(true, false, "a.localhost", &path, &[]);
+        let defended = attack(make, true, false, "a.localhost", &path, &[]);
         assert_eq!(defended.pwned, set(&[]), "{late}");
-        let open = attack(false, false, "a.localhost", &path, &[attack_name]);
+        let open = attack(make, false, false, "a.localhost", &path, &[attack_name]);
         assert!(open.pwned.contains(attack_name), "{late}: {open:?}");
     }
 }
 
-#[test]
-fn injected_markup_runs_nothing_and_reaches_nothing_under_the_policy_and_all_without() {
-    let defended = attack(true, false, "b.localhost", "/csp.html?form", &[]);
+/// Injected markup runs and reaches nothing under the policy, and all
+/// without it.
+pub(crate) fn injected(make: Make) {
+    let defended = attack(make, true, false, "b.localhost", "/csp.html?form", &[]);
     assert_eq!(defended.pwned, set(&[]));
     assert_eq!(defended.ran, set(&CSP_ATTACKS));
-    let open = attack(false, false, "b.localhost", "/csp.html?form", &CSP_ATTACKS);
+    let open = attack(
+        make,
+        false,
+        false,
+        "b.localhost",
+        "/csp.html?form",
+        &CSP_ATTACKS,
+    );
     assert_eq!(open.pwned, set(&CSP_ATTACKS));
 }
 
-#[test]
-fn another_site_carries_and_reads_none_of_the_victims_cookies_and_storage() {
+/// Another site carries and reads none of the victim's cookies and
+/// storage.
+pub(crate) fn cookies(make: Make) {
     // Sent from the frame, the image, the form and the fetch: each
     // request with each cookie.
     let carried: Vec<String> = COOKIE_REQUESTS
@@ -513,13 +559,13 @@ fn another_site_carries_and_reads_none_of_the_victims_cookies_and_storage() {
     let carried: Vec<&str> = carried.iter().map(String::as_str).collect();
     let mut all = carried.clone();
     all.extend(COOKIE_READS);
-    let defended = attack(true, true, "a.localhost", "/cookies.html", &[]);
+    let defended = attack(make, true, true, "a.localhost", "/cookies.html", &[]);
     assert_eq!(defended.pwned, set(&[]));
     let mut ran = COOKIE_REQUESTS.to_vec();
     ran.extend(COOKIE_READS);
     assert_eq!(defended.ran, set(&ran));
     // From the victim's own site, all of it.
-    let open = attack(false, true, "b.localhost", "/cookies.html", &all);
+    let open = attack(make, false, true, "b.localhost", "/cookies.html", &all);
     assert_eq!(open.pwned, set(&all));
     // An `HttpOnly` cookie is not a script's, a `Secure` one is not kept
     // by a page not served securely, and a cross-site `Referer` does not
@@ -539,20 +585,21 @@ fn another_site_carries_and_reads_none_of_the_victims_cookies_and_storage() {
             &["referer"][..],
         ),
     ] {
-        let defended = attack(true, signed_in, host, path, &[]);
+        let defended = attack(make, true, signed_in, host, path, &[]);
         assert_eq!(defended.pwned, set(&[]), "{path}");
         assert_eq!(defended.ran, set(attacks), "{path}");
-        let open = attack(false, signed_in, host, path, attacks);
+        let open = attack(make, false, signed_in, host, path, attacks);
         assert_eq!(open.pwned, set(attacks), "{path}");
     }
 }
 
-#[test]
-fn a_public_page_sends_nothing_in_clear_to_a_known_host_or_to_the_local_network() {
+/// A public page sends nothing in clear to a known host or to the local
+/// network.
+pub(crate) fn network(make: Make) {
     let attacks = ["hsts", "local-network"];
-    let defended = attack(true, false, "public.test", "/network.html", &[]);
+    let defended = attack(make, true, false, "public.test", "/network.html", &[]);
     assert_eq!(defended.pwned, set(&[]));
     assert_eq!(defended.ran, set(&attacks));
-    let open = attack(false, false, "public.test", "/network.html", &attacks);
+    let open = attack(make, false, false, "public.test", "/network.html", &attacks);
     assert_eq!(open.pwned, set(&attacks));
 }

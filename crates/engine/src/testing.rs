@@ -23,6 +23,23 @@ pub(crate) struct Tab {
     woken: Receiver<()>,
 }
 
+/// Navigates `view`, an engine or a tab of renderers, to `url` and takes
+/// what comes until it shows `url` loaded.
+pub(crate) fn load_view(view: &mut dyn crate::view::View, url: Url) {
+    view.navigate(url.clone());
+    let deadline = Instant::now() + WAIT;
+    while !(view.url() == Some(&url) && *view.load_state() == crate::LoadState::Loaded) {
+        view.poll_network();
+        view.run_tasks();
+        assert!(
+            Instant::now() < deadline,
+            "{url} did not load: {:?}",
+            view.load_state()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
 impl Tab {
     pub(crate) fn new() -> Tab {
         let mut engine = Engine::with_fonts(

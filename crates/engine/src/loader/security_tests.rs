@@ -11,8 +11,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use net::Url;
 use net::test_server::{Reply, ServerRequest, TestServer};
 
-use super::tests::load_all;
 use crate::testing::*;
+use crate::view::View;
 
 const PAGE: &str = include_str!("../../tests/security/cross-origin.html");
 
@@ -170,10 +170,39 @@ fn victim(secret: String, allow: Option<String>) -> TestServer {
     })
 }
 
+/// How a run's tab is made (M34.7): one engine here, a tab of renderers
+/// in `service::adversarial_tests`.
+pub(crate) type Make<'a> = &'a dyn Fn() -> Box<dyn View>;
+
+/// One engine, scripts on.
+fn one_engine() -> Box<dyn View> {
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    Box::new(tab.engine)
+}
+
+/// Takes what `view` does until `server` has had no request for a
+/// while: what a page fetched on its own, its icon, has come.
+fn quiet(view: &mut dyn View, server: &TestServer) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let (mut seen, mut since) = (server.requests().len(), Instant::now());
+    while since.elapsed() < Duration::from_millis(300) {
+        view.poll_network();
+        view.run_tasks();
+        let now = server.requests().len();
+        if now != seen {
+            (seen, since) = (now, Instant::now());
+        }
+        assert!(Instant::now() < deadline, "the requests did not stop");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
 /// What the page learned and what it ran, and the requests the victim
-/// had from it, the victim allowing it by CORS or not. The user signed
-/// in to the victim first, so it holds the victim's cookies.
-fn attack(allow: bool) -> (String, String, Vec<ServerRequest>) {
+/// had from it, the victim allowing it by CORS or not, in a tab `make`
+/// makes. The user signed in to the victim first, so it holds the
+/// victim's cookies.
+fn attack(make: Make, allow: bool) -> (String, String, Vec<ServerRequest>) {
     let secret = format!(
         "s{:x}",
         SystemTime::now()
@@ -199,19 +228,18 @@ fn attack(allow: bool) -> (String, String, Vec<ServerRequest>) {
             .replace("{{secret}}", &secret),
     )
     .expect("set once");
-    let mut tab = Tab::new();
-    tab.engine.set_scripting(true);
-    load_all(&mut tab, Url::parse(&format!("{b}/login")).unwrap());
+    let mut tab = make();
+    load_view(&mut *tab, Url::parse(&format!("{b}/login")).unwrap());
     // Its icon too, which is same-site and carries the Lax cookie: what
     // comes after is the page's.
-    tab.settle();
+    quiet(&mut *tab, &victim);
     let before = victim.requests().len();
-    load_all(&mut tab, Url::parse(&format!("{a}/page.html")).unwrap());
+    load_view(&mut *tab, Url::parse(&format!("{a}/page.html")).unwrap());
     let deadline = Instant::now() + Duration::from_secs(20);
     let line = loop {
-        tab.engine.poll_network();
-        tab.engine.run_tasks();
-        let lines = tab.engine.take_console();
+        tab.poll_network();
+        tab.run_tasks();
+        let lines = tab.take_console();
         if let Some(entry) = lines
             .iter()
             .find(|entry| entry.text.starts_with("{\"learned\""))
@@ -258,7 +286,17 @@ fn json(reads: &[&str]) -> String {
 
 #[test]
 fn a_page_learns_nothing_of_an_origin_that_allows_nothing() {
-    let (learned, ran, requests) = attack(false);
+    learns_nothing(&one_engine);
+}
+
+#[test]
+fn a_page_learns_by_cors_what_the_origin_allows_and_nothing_more() {
+    learns_by_cors(&one_engine);
+}
+
+/// From a victim that allows nothing, the page learns nothing.
+pub(crate) fn learns_nothing(make: Make) {
+    let (learned, ran, requests) = attack(make, false);
     assert_eq!(learned, "[]");
     assert_eq!(ran, json(&READS));
     // The write was refused at its preflight.
@@ -267,9 +305,9 @@ fn a_page_learns_nothing_of_an_origin_that_allows_nothing() {
     check_cookies(&requests);
 }
 
-#[test]
-fn a_page_learns_by_cors_what_the_origin_allows_and_nothing_more() {
-    let (learned, ran, requests) = attack(true);
+/// From one that allows it by CORS, it learns by every CORS read alone.
+pub(crate) fn learns_by_cors(make: Make) {
+    let (learned, ran, requests) = attack(make, true);
     assert_eq!(learned, json(&CORS_READS));
     assert_eq!(ran, json(&READS));
     let puts = requests
