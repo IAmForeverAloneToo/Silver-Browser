@@ -5,7 +5,7 @@ what holds each, the bounds every input is held to, the unsafe code it
 runs, how it is fuzzed and attacked, and what it does not defend yet.
 The threat model lives here from M33 on (T3.3): each milestone updates
 it, and the architecture notes point here for the limits they used to
-list. As of M33 (2026-10).
+list. As of M34 (2026-10).
 
 ## 1. Assets
 
@@ -34,8 +34,13 @@ list. As of M33 (2026-10).
   changes what goes in clear, and answers for any host it can reach
   the user's DNS for.
 - **A page that exploits the engine**: turns a bug in the engine or a
-  library under it into code running in the browser's process. With
-  one process (until M34), such a page has all of the browser.
+  library under it into code running in its renderer's process (M34),
+  which shows its site's documents alone, holds no cookie, storage or
+  profile, and on Windows runs sandboxed (section 4.10). It is then a
+  *compromised renderer*: it speaks the browser's protocol as it likes,
+  and the browser holds every message to what its site may ask.
+  Built as one process (`--features single-process`), such a page has
+  all of the browser.
 
 Out of scope: a user who installs something hostile on their own
 machine, an attacker with the user's account on it, and a hostile
@@ -47,7 +52,8 @@ operating system.
 |---|---|---|
 | The workspace's Rust | be memory-safe and keep its rules | `#![forbid(unsafe_code)]` everywhere but the shell's platform module; the tests, the gate and review |
 | Third-party crates | be correct and memory-safe at their safe interfaces | pinned in `Cargo.lock`, `cargo deny` (advisories and licences), the unsafe inventory (section 5) |
-| C under the crates (QuickJS-ng, aws-lc) | nothing beyond what fuzzing and their upstreams give | the bounds of section 8 on what reaches them; the process boundary of M34 |
+| C under the crates (QuickJS-ng, aws-lc) | nothing beyond what fuzzing and their upstreams give | the bounds of section 8 on what reaches them; the process boundary (section 4.10): QuickJS-ng runs in the renderers, aws-lc in the browser |
+| A renderer process | nothing: what it says is a compromised renderer's word | the browser's checks on each message against the renderer's site lock and grants, a kill on the first it may not send; the sandbox |
 | Page content | nothing | everything below |
 | The network | nothing | TLS, HSTS, mixed-content blocking, the egress rule |
 | The profile on disk | to be the user's | encryption at rest (section 4.9) |
@@ -86,8 +92,9 @@ operating system.
   heap (64 MiB, `MAX_FRAME_HEAP`), fetches and raster, drawn into its
   parent as a canvas is, reached only by messages through the tab's
   frame tree. Every frame is cross-origin to every other, the same
-  origin included, until M34 (G90): no frame reads anything of
-  another that a frame of another origin could not.
+  origin included (G90, open after M34): no frame reads anything of
+  another that a frame of another origin could not. A frame of another
+  site is shown by its site's renderer (section 4.10).
 - **Limits**: 100 frames in a tab (`MAX_FRAMES`), 16 deep
   (`MAX_FRAME_DEPTH`); a frame never loads a document an ancestor
   shows.
@@ -180,22 +187,87 @@ can still ask DPAPI, as it can for the reference browser.
 
 ### 4.10 The process boundary
 
-None yet: the browser is one process, its frames threads and engines
-within it. A memory-safety bug in the C under the crates (QuickJS-ng,
-aws-lc) or in a crate's unsafe code gives a page the whole browser,
-every site's data with it. M34 puts each site's documents in a process
-of its own, sandboxed by the operating system. Until then the bounds,
-the fuzzing, and the small surface of C are what hold.
+M34 (docs/design/processes.md). The browser process keeps the window,
+the network, the cookie jar, the storage, the HTTP cache, the profile,
+the permissions and the frames' tree; each site's documents are
+engines in a *renderer process* of their own, the same executable run
+with `--renderer`, which speaks to the browser over its standard input
+and output by the protocol of `engine::ipc` (a versioned schema, each
+message at most `MAX_MESSAGE`).
+
+- **Site isolation.** A renderer is locked to one site (scheme and
+  registrable domain) at its first document: a navigation whose
+  response is of another site is handed over at its head to a renderer
+  of that site, never read by the one that asked; a frame of another
+  site is shown by its site's renderer in a hole of its parent's
+  frame, the browser compositing them. At most `MAX_RENDERERS` (16) a
+  tab, the least recently shown not showing anything let go first.
+- **The browser's word, not the renderer's.** Each message is checked
+  against the renderer's lock and the frames the browser granted it,
+  and a renderer that sends one it may not is killed: a request
+  claiming another origin, initiator, partition or local network
+  access; a request of no origin that is no navigation, a navigation's
+  mode outside one, a stream that is no navigation's, a forbidden
+  method or field; another site's cookies or storage; a frame it does
+  not host; a message stamped with another origin or a navigation in
+  another's name; a view or a surface it was not given; a malformed,
+  truncated, overlong or unknown message. The browser decides the
+  partition, the cookies' context and the referrer it sends, filters
+  opaque responses by Opaque Response Blocking before a renderer has
+  them, keeps another site's download's body, and refuses `file:` to a
+  renderer not of files. `service::compromised_tests` is a renderer
+  speaking the protocol itself, asking for each.
+- **The sandbox on Windows** (D2). A renderer starts with a restricted
+  token of the browser's: every privilege but traversal removed, every
+  group deny-only but `Users`, `Everyone` and the logon session's, and
+  `Users`, `Everyone` and `RESTRICTED` as restricting SIDs (its default
+  DACL admitting `RESTRICTED` too, for what it makes for itself); at
+  low integrity; suspended, put in a job and resumed. The job kills it
+  when the browser's hold closes, admits no second process, limits its
+  committed memory to `MAX_RENDERER_MEMORY` (4 GiB) and closes the
+  desktop's global state (system parameters, display settings, exiting
+  Windows, global atoms, other processes' user handles, the clipboard,
+  other desktops). It inherits its three pipes and its crash channel,
+  named by a handle list, and nothing else. `--check-processes sandbox`
+  runs probes inside one: the user's files and folders, the temporary
+  folder, the profile's folder, a folder writable by `Users` (at low
+  integrity), the executable, a child process, past its memory and the
+  desktop's state are refused; the system's fonts are read.
+- **macOS and Linux** run renderers as processes with no sandbox yet
+  (G113): a Seatbelt profile by `sandbox_init`, and seccomp-BPF in new
+  user, PID and network namespaces, are what each needs.
+- **What a compromised renderer still has**: everything of its own
+  site's documents in the tab (their cookies through the browser, their
+  storage); the network, by a socket of its own on Windows (G111; it
+  holds no cookie to send); the reference browser's harder lockdown is
+  not here (G112); the URL it reports for its page is shown as it
+  says (G123). The browser process itself runs unsandboxed, as the
+  reference browser's does.
+- **Crashes** (D34). A renderer that dies leaves the browser's own page
+  saying so, in the tab or in a frame's hole, until a reload brings it
+  back in a new renderer; the browser goes on. On Windows the browser
+  writes a minidump of a renderer that crashed (by an exception or a
+  panic that ended it) beside the profile, the newest
+  `MAX_CRASH_DUMPS` (8) kept; nothing is sent anywhere.
 
 ## 5. Unsafe code
 
 **In the workspace** (M33.5): every crate, test, bench, example and
 fuzz target says `#![forbid(unsafe_code)]` but the shell, which says
-`#![deny(unsafe_code)]` and allows it in its platform module alone:
-four blocks (`SystemParametersInfoW` for the system's animation
-setting, the user's reduced motion; DPAPI's call, to wrap or unwrap the
-profile's key; the slice of its output; and `LocalFree`), each with its
-`// SAFETY:` argument. The shell's test
+`#![deny(unsafe_code)]` and allows it in its platform module alone,
+51 blocks at M34, each with its `// SAFETY:` argument: M33's four
+(`SystemParametersInfoW` for the user's reduced motion; DPAPI's call
+to wrap or unwrap the profile's key, the slice of its output and
+`LocalFree`), and M34's 47 for the renderers on Windows: their pipes
+and the handles they inherit (`CreatePipe`, `SetHandleInformation`, the
+attribute list of `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`), the job and its
+limits, the restricted token (`OpenProcessToken`, `CreateWellKnownSid`,
+`GetTokenInformation`, `EqualSid`, `CreateRestrictedToken`, the default
+DACL's entries, `SetTokenInformation` for the integrity),
+`CreateProcessAsUserW`, `ResumeThread`, `TerminateProcess` and the exit
+code; and the crash channel: its mapping and events, the browser's
+wait and `MiniDumpWriteDump`, the renderer's view of the block, its
+unhandled-exception filter and the check's `RaiseException`. The shell's test
 `unsafe_is_written_in_the_platform_module_alone_each_block_argued`
 holds every source file to this, and CI greps the same (T3.2).
 
@@ -231,7 +303,7 @@ that adds a package writing `unsafe` is read with it.
 
 ## 6. Fuzzing
 
-29 libFuzzer targets in `fuzz/` (M33.6), each holding its subject to
+30 libFuzzer targets in `fuzz/` (M33.6, M34), each holding its subject to
 not panicking, to its bounds, and to what it must keep (a round trip,
 a differential comparison with a fresh engine, a policy never allowing
 what it refused):
@@ -244,7 +316,11 @@ what it refused):
 - *the engine*: `style_document`, `animations`, `pipeline`, `mutation`,
   `dom_api`, `input`, `canvas`, `clone`, `frames`;
 - *the network's rules*: `csp`, `referrer`, `hsts`, `cookies`,
-  `storage`, `http_cache`.
+  `storage`, `http_cache`;
+- *the process boundary*: `ipc_decode`, any bytes read as the
+  messages of either side, frame by frame and whole, each decoded one
+  encoded again the same; its seeds include messages recorded from a
+  session through renderers (`examples/ipc_seeds.rs`).
 
 Each target's corpus, minimized, is committed under `fuzz/seeds/`;
 CI runs every target nightly from its cache and the seeds; each
@@ -275,6 +351,15 @@ run by the engine's tests against victims served by the test server
   Each runs with the defences on, where none of its 56 attacks may
   succeed, and with each defence taken away, where each must (the nine
   reads across frames aside, which G90 keeps closed either way).
+
+Every page above runs again in a tab of renderers
+(`service/adversarial_tests.rs`, M34.7), the attacker's and the
+victim's documents in renderers of their sites, with the same
+outcomes. And `service/compromised_tests.rs` is a renderer that speaks
+the protocol itself: twenty-one requests it may not make, each its
+renderer killed with the browser's word on why and the tab going on;
+another site's HTML by no-cors, a `file:` URL and another site's
+download answered without what they hold.
 
 ## 8. Limits
 
@@ -334,6 +419,16 @@ earlier milestones say why each is what it is):
 | `engine` | `MAX_QUEUED_BYTES` | `512 << 20` | The most the messages waiting in one realm's inbox may hold, in bytes. |
 | `engine` | `MAX_WORKER_FETCH_THREADS` | `6` | The threads a worker's fetches run on at once. |
 | `engine` | `MAX_ROWS` | `20` | The most rows a drop-down's list shows at once. |
+| `engine` | `MAX_MESSAGE` | `16 << 20` | The longest message, in bytes. A body or a picture longer goes in pieces of at most [`MAX_CHUNK`]. |
+| `engine` | `MAX_CHUNK` | `1 << 20` | The longest piece of a body in one message. |
+| `engine` | `HELLO_TIMEOUT` | `10 s` | How long a renderer has to answer the hello before it is killed. |
+| `engine` | `MAX_RENDERER_MEMORY` | `4 << 30` | The memory a renderer's process may commit, where its sandbox can limit it (M34.3, D2): past it, its allocations fail. |
+| `engine` | `MAX_RENDERER_FETCHES` | `256` | The most fetches one renderer has in flight; one past it is answered with an error. |
+| `engine` | `MAX_HANDOVER_BUFFER` | `16 << 20` | How much of a body waits for the renderer it goes to; past it the network waits. |
+| `engine` | `HANDOVER_TIMEOUT` | `30 s` | How long a response waits for its renderer before it is given up. |
+| `engine` | `MAX_RENDERERS` | `16` | The most renderers a tab has alive at once, the spare among them. |
+| `engine` | `MAX_SURFACE_PIXELS` | `4096 * 4096` | The most raster pixels a view's frame has: one bigger is drawn clipped. |
+| `silver-browser` | `MAX_CRASH_DUMPS` | `8` | The most dumps kept: past it, the oldest go. |
 | `html` | `MAX_DEPTH` | `dom::MAX_DEPTH` | The most elements that may be open at once. |
 | `html` | `MAX_XML_DEPTH` | `512` | The most elements open at once. |
 | `html` | `MAX_ENTITY_EXPANSION` | `1 << 20` | The most characters entities may expand to in a document. |
@@ -426,7 +521,20 @@ seconds (`PROMPT_TIMEOUT`).
 
 ## 9. Known gaps with security weight
 
-- **One process** (M34): a memory-safety bug is the whole browser's.
+- **The renderers' sandbox is Windows's alone** (G113); macOS and
+  Linux run renderers unsandboxed, the process boundary all they have.
+- **A renderer reaches the network** by a socket of its own (G111), and
+  **the reference browser's lockdown** (a token admitting nothing,
+  untrusted integrity, a desktop of their own, win32k closed, the
+  mitigation policies) is not here (G112).
+- **A sandboxed frame shares its site's renderer** (G114), as frames of
+  one site do.
+- **The URL a renderer reports is shown as it says** (G123): error and
+  made pages commit under the URL they were asked for, so a compromised
+  renderer can show another site's URL over its own content.
+- **`--print-to-pdf` runs its page in the browser's own process**, a
+  tool with no window, unsandboxed (G124).
+- **A hung renderer** is not noticed, only a dead one (G120).
 - **Frames are cross-origin to each other** whatever their origins
   (G90): the closed side, but same-origin pages that script their
   frames do not work.
