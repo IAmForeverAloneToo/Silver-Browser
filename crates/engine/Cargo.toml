@@ -80,6 +80,10 @@ name = "animation"
 harness = false
 
 [[bench]]
+name = "processes"
+harness = false
+
+[[bench]]
 name = "fetch"
 harness = false
 

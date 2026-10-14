@@ -1412,6 +1412,14 @@ impl RemoteTab {
         }
     }
 
+    /// The processes of the tab's renderers alive: for the checks.
+    pub fn renderer_processes(&self) -> Vec<u32> {
+        self.renderers
+            .values()
+            .map(|slot| slot.renderer.process_id())
+            .collect()
+    }
+
     /// The process of the renderer of the page shown, if one runs: for the
     /// tests and the checks.
     pub fn renderer_process(&self) -> Option<u32> {

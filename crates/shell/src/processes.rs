@@ -214,13 +214,19 @@ fn ended(
 /// `about:silver` in a tab of a renderer and says what it drew. With
 /// `sandbox`, runs the sandbox's probes in a renderer and says what
 /// became of each. With `crash`, crashes a renderer by a panic and
-/// another by a fault and says what the browser kept of each.
+/// another by a fault and says what the browser kept of each. With
+/// `kill`, kills a renderer in the middle of an animation, sees the page
+/// say so and come back on a reload (M34.7's acceptance). With `cap` and
+/// a port, shows twenty sites of `localhost` at that port one after
+/// another and says how many renderers live and what each holds.
 pub(crate) fn check(what: Option<&str>) -> i32 {
     let checked = match what {
         Some("orphan") => check_orphan(),
         Some("page") => check_page(),
         Some("sandbox") => check_sandbox(),
         Some("crash") => check_crash(),
+        Some("kill") => check_kill(),
+        Some("cap") => check_cap(std::env::args().nth(3)),
         _ => check_all(),
     };
     match checked {
@@ -412,6 +418,173 @@ fn probed(file: &Path) -> Result<String, String> {
         .map_err(|_| "the probes did not end".to_owned());
     drop((launched.to_renderer, launched.process));
     said
+}
+
+/// A tab of renderer processes the size of `size`, its pages animated.
+fn process_tab(size: (u32, u32)) -> Result<RemoteTab, String> {
+    let launcher = ProcessLauncher::new().map_err(|error| format!("no executable: {error}"))?;
+    let fonts = engine::Engine::new()
+        .map_err(|error| format!("no fonts: {error}"))?
+        .fonts()
+        .clone();
+    let mut tab = RemoteTab::new(Arc::new(launcher), fonts);
+    tab.set_viewport(size.0, size.1);
+    tab.frame_at(size.0, size.1, FrameTime::at(Duration::ZERO));
+    Ok(tab)
+}
+
+/// Takes what the tab's renderers say until `done` holds, at most
+/// `WAIT`; whether it did.
+fn wait_for(tab: &mut RemoteTab, mut done: impl FnMut(&mut RemoteTab) -> bool) -> bool {
+    let began = Instant::now();
+    while began.elapsed() < WAIT {
+        tab.poll_network();
+        tab.run_tasks();
+        if done(tab) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    false
+}
+
+/// The colours of the page's top left pixel over `span`, each once.
+fn colours(tab: &mut RemoteTab, size: (u32, u32), span: Duration) -> Vec<[u8; 4]> {
+    let mut seen = Vec::new();
+    let began = Instant::now();
+    while began.elapsed() < span {
+        tab.poll_network();
+        if tab.needs_frame() {
+            let frame = tab.frame_at(size.0, size.1, FrameTime::at(Duration::ZERO));
+            if let Ok(pixel) = <[u8; 4]>::try_from(&frame[..4])
+                && !seen.contains(&pixel)
+            {
+                seen.push(pixel);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    seen
+}
+
+/// A page whose colour never stops changing.
+const ANIMATED: &str = "<!DOCTYPE html><style>\
+    @keyframes shift { from { background: rgb(0, 0, 255) } to { background: rgb(255, 0, 0) } }\
+    html, body { margin: 0; height: 100% }\
+    body { animation: shift 400ms linear infinite alternate }</style>";
+
+/// The background of the browser's own pages: the page saying a
+/// renderer stopped.
+const STOPPED: [u8; 4] = [246, 246, 244, 255];
+
+fn check_kill() -> Result<(), String> {
+    const SIZE: (u32, u32) = (200, 100);
+    let file = std::env::temp_dir().join(format!("silver-animated-{}.html", std::process::id()));
+    std::fs::write(&file, ANIMATED).map_err(|error| format!("no page: {error}"))?;
+    let killed = kill_animated(&file, SIZE);
+    let _ = std::fs::remove_file(&file);
+    killed
+}
+
+fn kill_animated(file: &Path, size: (u32, u32)) -> Result<(), String> {
+    let url = Url::parse(&format!(
+        "file:///{}",
+        file.display().to_string().replace('\\', "/")
+    ))
+    .map_err(|_| "no URL for the page")?;
+    let mut tab = process_tab(size)?;
+    tab.navigate(url);
+    if !wait_for(&mut tab, |tab| *tab.load_state() == LoadState::Loaded) {
+        return Err(format!("the page did not load: {:?}", tab.load_state()));
+    }
+    let before = colours(&mut tab, size, Duration::from_millis(800));
+    let first = tab.renderer_process();
+    println!(
+        "animated: {} colours, renderer process {first:?}",
+        before.len()
+    );
+    if before.len() < 3 {
+        return Err("the page did not animate".into());
+    }
+    tab.kill_renderer();
+    let stopped = wait_for(&mut tab, |tab| {
+        matches!(tab.load_state(), LoadState::Failed(_))
+            && tab.needs_frame()
+            && tab.frame_at(size.0, size.1, FrameTime::at(Duration::ZERO))[..4] == STOPPED
+    });
+    let notice = tab.take_notice();
+    println!(
+        "killed: {:?}, the page saying so: {stopped}, {notice:?}",
+        tab.load_state()
+    );
+    if !stopped {
+        return Err("no page saying the renderer stopped".into());
+    }
+    tab.reload();
+    if !wait_for(&mut tab, |tab| *tab.load_state() == LoadState::Loaded) {
+        return Err(format!("no reload: {:?}", tab.load_state()));
+    }
+    let after = colours(&mut tab, size, Duration::from_millis(800));
+    let second = tab.renderer_process();
+    println!(
+        "reloaded: {} colours, renderer process {second:?}",
+        after.len()
+    );
+    if after.len() < 3 || second == first {
+        return Err("the page did not come back in a new renderer".into());
+    }
+    Ok(())
+}
+
+/// What `tasklist` says process `id` holds, where there is one.
+fn held(id: u32) -> String {
+    std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {id}"), "/FO", "CSV", "/NH"])
+        .output()
+        .ok()
+        .and_then(|out| {
+            let line = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+            line.rsplit("\",\"")
+                .next()
+                .map(|held| held.trim_end_matches('"').to_owned())
+        })
+        .unwrap_or_default()
+}
+
+fn check_cap(port: Option<String>) -> Result<(), String> {
+    const SIZE: (u32, u32) = (200, 100);
+    let port: u16 = port
+        .and_then(|port| port.parse().ok())
+        .ok_or("cap: the port of a server of localhost's names")?;
+    let mut tab = process_tab(SIZE)?;
+    for n in 0..20 {
+        let url = Url::parse(&format!("http://site{n}.localhost:{port}/")).map_err(|_| "no URL")?;
+        tab.navigate(url.clone());
+        if !wait_for(&mut tab, |tab| {
+            tab.url() == Some(&url) && *tab.load_state() == LoadState::Loaded
+        }) {
+            return Err(format!("site {n} did not load: {:?}", tab.load_state()));
+        }
+        let alive = tab.renderers().len();
+        println!("site {n}: {alive} renderers");
+        if alive > engine::service::MAX_RENDERERS {
+            return Err(format!("{alive} renderers past the cap"));
+        }
+    }
+    let ids = tab.renderer_processes();
+    println!("renderers: {}", ids.len());
+    for id in &ids {
+        println!("renderer process {id}: {}", held(*id));
+    }
+    println!(
+        "browser process {}: {}",
+        std::process::id(),
+        held(std::process::id())
+    );
+    if ids.len() != engine::service::MAX_RENDERERS {
+        return Err(format!("{} renderers, not the cap", ids.len()));
+    }
+    Ok(())
 }
 
 fn check_page() -> Result<(), String> {

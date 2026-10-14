@@ -165,6 +165,33 @@ fn a_renderers_crash_leaves_a_dump_the_browser_wrote() {
 }
 
 #[test]
+fn a_renderer_killed_mid_animation_leaves_a_page_that_a_reload_brings_back() {
+    let out = Command::new(BROWSER)
+        .args(["--check-processes", "kill"])
+        .output()
+        .expect("the check ran");
+    let said = String::from_utf8_lossy(&out.stdout);
+    let complained = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{said}{complained}");
+    assert!(said.contains("the page saying so: true"), "{said}");
+}
+
+#[test]
+fn a_tab_keeps_at_most_the_cap_of_renderer_processes() {
+    let server = net::test_server::TestServer::plain(|_| {
+        net::test_server::Reply::ok("text/html", b"<p>a site</p>")
+    });
+    let out = Command::new(BROWSER)
+        .args(["--check-processes", "cap", &server.port().to_string()])
+        .output()
+        .expect("the check ran");
+    let said = String::from_utf8_lossy(&out.stdout);
+    let complained = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{said}{complained}");
+    assert!(said.contains("site 19: 16 renderers"), "{said}");
+}
+
+#[test]
 fn a_renderer_process_shows_a_page_for_the_browser() {
     let out = Command::new(BROWSER)
         .args(["--check-processes", "page"])
