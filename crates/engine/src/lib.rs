@@ -5125,6 +5125,19 @@ impl Engine {
     /// engine makes at its first fetch, `Client::default()`: a test's
     /// client trusts its server's root, say. Fetches in flight finish
     /// with the client they began with.
+    /// Fetches, and reaches `document.cookie`, through the browser (M34.1):
+    /// the engine of a renderer, whose network is the browser's.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn set_remote_network(
+        &mut self,
+        fetcher: Arc<dyn loader::Fetcher>,
+        cookies: Arc<dyn loader::Cookies>,
+    ) {
+        self.network.set_remote(fetcher, cookies);
+        let client = self.network.client();
+        self.for_each_frame(&mut |frame| frame.network.share_client(client.clone()));
+    }
+
     pub fn set_network(&mut self, client: Client) {
         self.network.set_client(client);
         let client = self.network.client();

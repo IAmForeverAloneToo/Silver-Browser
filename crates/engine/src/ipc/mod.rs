@@ -10,6 +10,7 @@
 mod channel;
 mod codec;
 mod messages;
+mod net_wire;
 mod pipe;
 #[cfg(test)]
 mod tests;
@@ -18,7 +19,7 @@ pub use channel::{Calls, Closed, ReadError, Sender, frame, read_message, spawn_r
 pub use codec::{Bytes, Decoder, Encoder, Malformed, Wire, decode_all, encode};
 #[allow(unused_imports)]
 pub(crate) use codec::{wire_enum, wire_struct, wire_unit_enum};
-pub use messages::{ToBrowser, ToRenderer};
+pub use messages::{Answer, ToBrowser, ToRenderer};
 pub use pipe::{PipeBreaker, PipeReader, PipeWriter, duplex, pipe};
 
 /// The schema's version: a message's layout never changes without it.

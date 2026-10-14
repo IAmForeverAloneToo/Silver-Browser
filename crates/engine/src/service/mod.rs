@@ -4,10 +4,16 @@
 //! here step by step: the network and storage services, the frame tree,
 //! the session history, the compositor and the session's proxy.
 
+mod network;
+#[cfg(test)]
+mod network_tests;
+mod orb;
 mod process;
 #[cfg(test)]
 mod tests;
 
+pub use network::{FrameGrant, Grant, Grants, Lock, MAX_RENDERER_FETCHES, NetworkService};
 pub use process::{
-    Event, Gone, HELLO_TIMEOUT, Launched, Launcher, Renderer, RendererProcess, ThreadLauncher,
+    Event, Gone, HELLO_TIMEOUT, Launched, Launcher, Renderer, RendererProcess, Serve,
+    ThreadLauncher,
 };

@@ -48,6 +48,21 @@ pub trait RendererProcess: Send {
     fn exit_code(&mut self) -> Option<i64>;
 }
 
+/// What serves the messages a renderer sends the browser's services (the
+/// network, the storage), on the renderer's reader thread, never waiting
+/// on any renderer.
+pub trait Serve: Send + Sync {
+    /// Takes `message` of renderer `renderer` if it is a service's,
+    /// answering through `reply`; gives it back otherwise. Err for what
+    /// the protocol does not allow, for which the renderer is killed.
+    fn serve(
+        &self,
+        renderer: u32,
+        message: ToBrowser,
+        reply: &Sender<ToRenderer>,
+    ) -> Result<Option<ToBrowser>, String>;
+}
+
 /// Why a renderer is gone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Gone {
@@ -67,7 +82,7 @@ pub enum Event {
     /// It answered the hello.
     Ready,
     /// A message after its hello.
-    Message(ToBrowser),
+    Message(Box<ToBrowser>),
     /// It is gone, and why; nothing comes after.
     Gone(Gone),
 }
@@ -125,13 +140,15 @@ impl Renderer {
     /// Starts renderer `number` with `launcher` and sends it the hello.
     /// What it does goes to `events` with its number, each followed by a
     /// call of `wake`; the last is its [`Event::Gone`].
+    /// Messages after the hello go first to `serve`, if given.
     pub fn start(
         launcher: &dyn Launcher,
         number: u32,
         events: mpsc::Sender<(u32, Event)>,
         wake: Waker,
+        serve: Option<Arc<dyn Serve>>,
     ) -> io::Result<Renderer> {
-        start_within(launcher, number, events, wake, HELLO_TIMEOUT)
+        start_within(launcher, number, events, wake, serve, HELLO_TIMEOUT)
     }
 
     /// The renderer's number.
@@ -216,6 +233,7 @@ pub(super) fn start_within(
     number: u32,
     events: mpsc::Sender<(u32, Event)>,
     wake: Waker,
+    serve: Option<Arc<dyn Serve>>,
     timeout: Duration,
 ) -> io::Result<Renderer> {
     let launched = launcher.launch(number)?;
@@ -237,6 +255,7 @@ pub(super) fn start_within(
     }
     let reading = shared.clone();
     let ending = shared.clone();
+    let reply = sender.clone();
     let (deliver, delivered, wake_too) = (events.clone(), wake.clone(), wake.clone());
     ipc::spawn_reader::<ToBrowser, _>(
         &format!("renderer-{number}-reader"),
@@ -265,8 +284,20 @@ pub(super) fn start_within(
                         reading.end(Gone::BadMessage("a second hello".into()), true);
                         None
                     }
-                    #[allow(unreachable_patterns)]
-                    (State::Ready, message) => Some(Event::Message(message)),
+                    (State::Ready, message) => {
+                        drop(state);
+                        let served = match &serve {
+                            Some(serve) => serve.serve(number, message, &reply),
+                            None => Ok(Some(message)),
+                        };
+                        match served {
+                            Ok(message) => message.map(|message| Event::Message(Box::new(message))),
+                            Err(why) => {
+                                reading.end(Gone::BadMessage(why), true);
+                                None
+                            }
+                        }
+                    }
                     (State::Gone(_), _) => None,
                 }
             };

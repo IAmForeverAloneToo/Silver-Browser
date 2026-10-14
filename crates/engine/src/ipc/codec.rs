@@ -336,6 +336,28 @@ impl<A: Wire, B: Wire, C: Wire> Wire for (A, B, C) {
     }
 }
 
+impl<T: Wire, E: Wire> Wire for Result<T, E> {
+    fn encode(&self, out: &mut Encoder) {
+        match self {
+            Ok(value) => {
+                out.u8(0);
+                value.encode(out);
+            }
+            Err(error) => {
+                out.u8(1);
+                error.encode(out);
+            }
+        }
+    }
+    fn decode(input: &mut Decoder<'_>) -> Result<Self, Malformed> {
+        match input.u8()? {
+            0 => T::decode(input).map(Ok),
+            1 => E::decode(input).map(Err),
+            tag => Err(Malformed::Tag("Result", u32::from(tag))),
+        }
+    }
+}
+
 impl<T: Wire> Wire for Box<T> {
     fn encode(&self, out: &mut Encoder) {
         (**self).encode(out);
@@ -455,7 +477,6 @@ macro_rules! wire_struct {
 }
 
 /// An enum of unit variants, each with its tag (8 bits).
-#[allow(unused_macros)]
 macro_rules! wire_unit_enum {
     ($name:ty { $( $tag:literal => $variant:path ),* $(,)? }) => {
         impl $crate::ipc::Wire for $name {

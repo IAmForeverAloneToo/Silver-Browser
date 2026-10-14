@@ -92,11 +92,13 @@ pub(crate) fn with_cors_settings(request: net::Request, value: Option<&str>) -> 
     }
 }
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
+use std::time::SystemTime;
 
 use dom::{Document, NodeId};
 use encoding::Encoding;
-use net::{AbortHandle, Client, Delivery, NetworkError, Request, Response};
+use net::cookies::{Api, Context, Jar};
+use net::{AbortHandle, Client, Delivery, NetworkError, Request, Response, Url};
 
 pub(crate) use pool::{JobId, Lost, Pool, Waker};
 pub(crate) use sheets::has_token;
@@ -215,13 +217,72 @@ pub(crate) struct Arrived {
     pub(crate) result: Result<Response, LoadError>,
 }
 
+/// What the engine's fetches are made with (M34.1): `net::Client` in one
+/// process; in a renderer, the browser's network service, reached
+/// through the renderer's link.
+pub(crate) trait Fetcher: Send + Sync {
+    fn fetch(&self, request: &Request) -> Result<Response, NetworkError>;
+    fn fetch_streaming(
+        &self,
+        request: &Request,
+        deliver: &mut dyn FnMut(Delivery<'_>),
+    ) -> Result<Response, NetworkError>;
+}
+
+impl Fetcher for Client {
+    fn fetch(&self, request: &Request) -> Result<Response, NetworkError> {
+        Client::fetch(self, request)
+    }
+
+    fn fetch_streaming(
+        &self,
+        request: &Request,
+        deliver: &mut dyn FnMut(Delivery<'_>),
+    ) -> Result<Response, NetworkError> {
+        Client::fetch_streaming(self, request, deliver)
+    }
+}
+
+/// `document.cookie`'s cookies (M34.1): the engine's jar in one process,
+/// the browser's in a renderer.
+pub(crate) trait Cookies: Send + Sync {
+    /// The cookies a script of `url`'s document reads in `context`.
+    fn script_cookies(&self, url: &Url, context: Context) -> Option<Vec<u8>>;
+    /// Keeps the cookie a script of `url`'s document writes.
+    fn set_script_cookie(&self, value: &[u8], url: &Url, context: Context);
+}
+
+impl Cookies for Mutex<Jar> {
+    fn script_cookies(&self, url: &Url, context: Context) -> Option<Vec<u8>> {
+        self.lock().unwrap_or_else(PoisonError::into_inner).header(
+            url,
+            Api::Script,
+            context,
+            SystemTime::now(),
+        )
+    }
+
+    fn set_script_cookie(&self, value: &[u8], url: &Url, context: Context) {
+        self.lock().unwrap_or_else(PoisonError::into_inner).store(
+            value,
+            url,
+            Api::Script,
+            context,
+            SystemTime::now(),
+        );
+    }
+}
+
 /// The engine's fetches: the client they share, the threads they run
 /// on, and those in flight, each of which can be aborted.
 pub(crate) struct Network {
     pool: Pool<Fetched>,
     /// Made at the first fetch: a document given to the engine needs
     /// none.
-    client: Option<Arc<Client>>,
+    client: Option<Arc<dyn Fetcher>>,
+    /// In a renderer (M34.1): the browser's cookies; the client is the
+    /// browser's too, which nothing replaces.
+    remote_cookies: Option<Arc<dyn Cookies>>,
     /// The cookies every client of the engine keeps (M27.4), and
     /// `document.cookie` reads and writes.
     cookies: Arc<Mutex<net::cookies::Jar>>,
@@ -253,6 +314,7 @@ impl Network {
         Network {
             pool: Pool::new(MAX_FETCH_THREADS),
             client: None,
+            remote_cookies: None,
             cookies: Arc::default(),
             cache: Arc::default(),
             hsts: Arc::default(),
@@ -318,9 +380,30 @@ impl Network {
     }
 
     /// Fetches from now on with `client`; fetches in flight finish with
-    /// the client they began with.
+    /// the client they began with. In a renderer the browser's client
+    /// stays.
     pub(crate) fn set_client(&mut self, client: Client) {
+        if self.remote_cookies.is_some() {
+            return;
+        }
         self.client = Some(Arc::new(self.shared(client)));
+    }
+
+    /// Fetches from now on through `fetcher`, and reaches the cookies of
+    /// `document.cookie` through `cookies`: the browser's, in a renderer
+    /// (M34.1).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn set_remote(&mut self, fetcher: Arc<dyn Fetcher>, cookies: Arc<dyn Cookies>) {
+        self.client = Some(fetcher);
+        self.remote_cookies = Some(cookies);
+    }
+
+    /// The cookies `document.cookie` reads and writes.
+    pub(crate) fn cookie_access(&self) -> Arc<dyn Cookies> {
+        match &self.remote_cookies {
+            Some(remote) => remote.clone(),
+            None => self.cookies.clone(),
+        }
     }
 
     /// `client` keeping the engine's cookies and cache.
@@ -333,7 +416,7 @@ impl Network {
     }
 
     /// The client fetches are made with, made now if none is yet.
-    pub(crate) fn client(&mut self) -> Arc<Client> {
+    pub(crate) fn client(&mut self) -> Arc<dyn Fetcher> {
         if self.client.is_none() {
             self.client = Some(Arc::new(self.shared(Client::default())));
         }
@@ -352,6 +435,7 @@ impl Network {
         let mut network = Network::new();
         network.pool = Pool::new(MAX_FRAME_FETCH_THREADS);
         network.client = Some(self.client());
+        network.remote_cookies = self.remote_cookies.clone();
         network.cookies = self.cookies.clone();
         network.cache = self.cache.clone();
         network
@@ -363,7 +447,7 @@ impl Network {
     }
 
     /// Fetches from now on with `client`, a frame's parent's (M33.2).
-    pub(crate) fn share_client(&mut self, client: Arc<Client>) {
+    pub(crate) fn share_client(&mut self, client: Arc<dyn Fetcher>) {
         self.client = Some(client);
     }
 

@@ -41,6 +41,17 @@ pub struct Csp {
     sink: Option<Sink>,
 }
 
+/// A policy list as plain values (M34.2): [`Csp::parts`] and
+/// [`Csp::from_parts`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CspParts {
+    /// Each policy's serialization, disposition, and whether it came
+    /// from a `<meta>`.
+    pub policies: Vec<(String, Disposition, bool)>,
+    pub self_origin: Origin,
+    pub overflowed: bool,
+}
+
 /// Where a document's violations wait for it, shared by the copies of its
 /// policies its requests carry.
 type Sink = Arc<Mutex<Vec<Violation>>>;
@@ -461,6 +472,48 @@ impl Csp {
     /// `<meta>` (HTML's nonce attribute steps hide nonces only then).
     pub fn has_header_policy(&self) -> bool {
         self.policies.iter().any(|policy| !policy.from_meta)
+    }
+
+    /// The policies as plain values, for another process (M34.2): each
+    /// one's serialization, disposition and whether it came from a
+    /// `<meta>`, the origin they protect, whether more came than are kept.
+    pub fn parts(&self) -> CspParts {
+        CspParts {
+            policies: self
+                .policies
+                .iter()
+                .map(|policy| {
+                    (
+                        policy.serialization.clone(),
+                        policy.disposition,
+                        policy.from_meta,
+                    )
+                })
+                .collect(),
+            self_origin: self.self_origin.clone(),
+            overflowed: self.overflowed,
+        }
+    }
+
+    /// The policies `parts` describes, parsed again, with no sink; at most
+    /// as many as one list keeps.
+    pub fn from_parts(parts: CspParts) -> Csp {
+        let overflowed = parts.overflowed || parts.policies.len() > MAX_POLICIES;
+        let policies = parts
+            .policies
+            .into_iter()
+            .take(MAX_POLICIES)
+            .map(|(serialized, disposition, from_meta)| {
+                let policy = Policy::parse_as(&serialized, disposition);
+                if from_meta { policy.for_meta() } else { policy }
+            })
+            .collect();
+        Csp {
+            policies,
+            self_origin: parts.self_origin,
+            overflowed,
+            sink: None,
+        }
     }
 
     /// Records `violations` where the document of these policies takes

@@ -322,7 +322,9 @@ fn calls_are_answered_by_their_numbers() {
         "test-asked",
         browser_in,
         move |message| {
-            let ToBrowser::Hello { version } = message;
+            let ToBrowser::Hello { version } = message else {
+                panic!("a hello: {message:?}");
+            };
             // The question's number is in the version's high bits.
             let id = version >> 16;
             replies

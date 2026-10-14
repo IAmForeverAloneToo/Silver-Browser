@@ -31,7 +31,7 @@ fn until_gone(events: &mpsc::Receiver<(u32, Event)>, number: u32) -> Vec<String>
 #[test]
 fn a_renderer_answers_the_hello_and_ends_when_told() {
     let (events, received) = mpsc::channel();
-    let renderer = Renderer::start(&ThreadLauncher, 3, events, nothing()).expect("started");
+    let renderer = Renderer::start(&ThreadLauncher, 3, events, nothing(), None).expect("started");
     assert!(renderer.wait_ready(WAIT));
     assert_eq!(renderer.number(), 3);
     assert_eq!(renderer.gone(), None);
@@ -49,7 +49,7 @@ fn a_renderer_answers_the_hello_and_ends_when_told() {
 #[test]
 fn a_renderer_killed_is_gone() {
     let (events, received) = mpsc::channel();
-    let renderer = Renderer::start(&ThreadLauncher, 1, events, nothing()).expect("started");
+    let renderer = Renderer::start(&ThreadLauncher, 1, events, nothing(), None).expect("started");
     assert!(renderer.wait_ready(WAIT));
     renderer.bad_message("a test's");
     assert_eq!(
@@ -117,7 +117,7 @@ fn written(bytes: Vec<u8>, timeout: Duration) -> Vec<String> {
         },
         killed.clone(),
     );
-    let renderer = start_within(&fake, 9, events, nothing(), timeout).expect("started");
+    let renderer = start_within(&fake, 9, events, nothing(), None, timeout).expect("started");
     // The fake's pipes stay open: the browser ends it by closing its own.
     let seen = loop {
         let (_, event) = received.recv_timeout(WAIT).expect("an event in time");
@@ -195,7 +195,7 @@ fn each_renderer_numbers_its_opaque_origins_apart() {
     assert!(opaque_origins_of(0) > 0, "apart from the browser's");
     assert!(opaque_origins_of(1) - opaque_origins_of(0) >= 1 << 40);
     let (events, _received) = mpsc::channel();
-    let renderer = Renderer::start(&ThreadLauncher, 5, events, nothing()).expect("started");
+    let renderer = Renderer::start(&ThreadLauncher, 5, events, nothing(), None).expect("started");
     assert!(renderer.wait_ready(WAIT));
     // Renderers as threads share the process's counter, which the hello
     // moved past the renderer's space's start.

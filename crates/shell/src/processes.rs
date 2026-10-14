@@ -77,7 +77,7 @@ fn check_all() -> Result<(), String> {
     let start = |number: u32| {
         let (events, received) = mpsc::channel();
         let began = Instant::now();
-        let renderer = Renderer::start(&launcher, number, events, Arc::new(|| {}))
+        let renderer = Renderer::start(&launcher, number, events, Arc::new(|| {}), None)
             .map_err(|error| format!("renderer {number} did not start: {error}"))?;
         if !renderer.wait_ready(HELLO_TIMEOUT + Duration::from_secs(1)) {
             return Err(format!(
@@ -114,7 +114,7 @@ fn check_all() -> Result<(), String> {
 fn check_orphan() -> Result<(), String> {
     let launcher = ProcessLauncher::new().map_err(|error| format!("no executable: {error}"))?;
     let (events, _received) = mpsc::channel();
-    let renderer = Renderer::start(&launcher, 3, events, Arc::new(|| {}))
+    let renderer = Renderer::start(&launcher, 3, events, Arc::new(|| {}), None)
         .map_err(|error| format!("renderer 3 did not start: {error}"))?;
     if !renderer.wait_ready(HELLO_TIMEOUT + Duration::from_secs(1)) {
         return Err("renderer 3 did not answer".into());

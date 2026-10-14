@@ -5,12 +5,12 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, SystemTime};
+use std::sync::{Arc, PoisonError};
+use std::time::Duration;
 
 use dom::{Document, MutationError, Namespace, NodeData, NodeId, forms};
 use js::{Answer, Call, ConsoleLevel, DomError, Handle, NestedScript, ScriptError, ScriptingHost};
-use net::cookies::{Api, Context};
+use net::cookies::Context;
 use style::animation::Animations;
 use style::selector_matching::{Matcher, PseudoElement, SelectorList};
 use style::{CascadeContext, FontMeasure, Styles, Stylesheets};
@@ -180,9 +180,10 @@ pub(crate) struct DocumentHost {
     pub(crate) in_flight: usize,
     /// The engine's client, lent for a run, for a synchronous XHR
     /// (M27.6).
-    client: Option<Arc<net::Client>>,
-    /// The engine's cookie jar, lent for a run (M27.4).
-    cookies: Option<Arc<Mutex<net::cookies::Jar>>>,
+    client: Option<Arc<dyn crate::loader::Fetcher>>,
+    /// The engine's cookies, lent for a run (M27.4): its jar, or the
+    /// browser's in a renderer (M34.1).
+    cookies: Option<Arc<dyn crate::loader::Cookies>>,
     /// The document's page and parser, lent for a run; and where its
     /// loading stands.
     page: Option<Page>,
@@ -1199,9 +1200,8 @@ impl DocumentHost {
             Call::Cookie => {
                 self.cookie_refused("read the 'cookie' property from")?;
                 let cookies = self.cookie_url().and_then(|url| {
-                    let jar = self.cookies.as_ref()?;
-                    let mut jar = jar.lock().expect("never poisoned");
-                    jar.header(&url, Api::Script, self.cookie_context(), SystemTime::now())
+                    let cookies = self.cookies.as_ref()?;
+                    cookies.script_cookies(&url, self.cookie_context())
                 });
                 Ok(Answer::String(cookies.map_or_else(String::new, |bytes| {
                     String::from_utf8_lossy(&bytes).into_owned()
@@ -1209,15 +1209,8 @@ impl DocumentHost {
             }
             Call::SetCookie(value) => {
                 self.cookie_refused("set the 'cookie' property on")?;
-                if let (Some(url), Some(jar)) = (self.cookie_url(), &self.cookies) {
-                    let mut jar = jar.lock().expect("never poisoned");
-                    jar.store(
-                        value.as_bytes(),
-                        &url,
-                        Api::Script,
-                        self.cookie_context(),
-                        SystemTime::now(),
-                    );
+                if let (Some(url), Some(cookies)) = (self.cookie_url(), &self.cookies) {
+                    cookies.set_script_cookie(value.as_bytes(), &url, self.cookie_context());
                 }
                 Ok(Answer::Nothing)
             }
@@ -2318,7 +2311,7 @@ impl DocumentHost {
         self.document = std::mem::take(lent.document);
         let placeholder = Page::given(lent.page.id());
         self.page = Some(std::mem::replace(lent.page, placeholder));
-        self.cookies = Some(lent.network.cookies());
+        self.cookies = Some(lent.network.cookie_access());
         self.client = Some(lent.network.client());
         self.workers.set_wake(lent.network.waker());
         self.parser = lent

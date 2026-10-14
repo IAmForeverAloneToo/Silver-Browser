@@ -15,7 +15,9 @@ use js::{
     Answer, Call, ConsoleLevel, DomError, ErrorKind, Limits, MessageTarget, QuickJs, Realm,
     RealmKind, Script, ScriptEngine, ScriptError, ScriptingHost, Task,
 };
-use net::{Client, Credentials, Destination, Initiator, Origin, Request, Url};
+use net::{Credentials, Destination, Initiator, Origin, Request, Url};
+
+use crate::loader::Fetcher;
 
 use super::canvas::{Canvases, names_context, needs_source};
 use super::host::{
@@ -188,7 +190,7 @@ pub(crate) struct Start {
     pub(crate) credentials: Credentials,
     /// The client its fetches share with the engine's: its cookies and
     /// its cache.
-    pub(crate) client: Arc<Client>,
+    pub(crate) client: Arc<dyn Fetcher>,
     /// Its creator, which its script's request is made by.
     pub(crate) initiator: Initiator,
     /// Whether its creator is a secure context, which it then is.
@@ -765,7 +767,7 @@ pub(crate) struct WorkerHost {
     owner: Option<Inbox>,
     /// What its requests are made by: its URL and origin.
     initiator: Option<Initiator>,
-    client: Option<Arc<Client>>,
+    client: Option<Arc<dyn Fetcher>>,
     origin: Origin,
     url: Option<Url>,
     secure: bool,

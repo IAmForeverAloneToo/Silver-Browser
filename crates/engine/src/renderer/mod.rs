@@ -11,6 +11,12 @@ use std::sync::mpsc;
 
 use crate::ipc::{self, IPC_VERSION, Sender, ToBrowser, ToRenderer};
 
+// The renderer's engines use it from step 5 (M34.5); its tests now.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod link;
+
+use link::Link;
+
 /// Where renderer `process`'s opaque origins are numbered from: each
 /// process its own space of 2^40, the browser's the first.
 pub fn opaque_origins_of(process: u32) -> u64 {
@@ -19,7 +25,7 @@ pub fn opaque_origins_of(process: u32) -> u64 {
 
 /// What the renderer's reader thread hands its main thread.
 enum Input {
-    Message(ToRenderer),
+    Message(Box<ToRenderer>),
     /// The browser's channel ended, or said what is no message.
     Closed(Option<String>),
 }
@@ -33,22 +39,36 @@ pub fn run(
     output: impl Write + Send + 'static,
 ) -> Result<(), String> {
     let sender = Sender::<ToBrowser>::new(output);
+    let link = Link::new(sender.clone());
     let (queue, inputs) = mpsc::channel();
     let closing = queue.clone();
+    let (routing, ending) = (link.clone(), link.clone());
     ipc::spawn_reader::<ToRenderer, _>(
         "renderer-reader",
         input,
-        move |message| {
-            let _ = queue.send(Input::Message(message));
+        move |message| match routing.route(message) {
+            Ok(Some(message)) => {
+                let _ = queue.send(Input::Message(Box::new(message)));
+            }
+            Ok(None) => {}
+            Err(why) => {
+                let _ = queue.send(Input::Closed(Some(why)));
+            }
         },
         move |reason| {
+            ending.close();
             let _ = closing.send(Input::Closed(reason.map(|reason| reason.to_string())));
         },
     )
     .map_err(|error| format!("no reader thread: {error}"))?;
 
-    match inputs.recv() {
-        Ok(Input::Message(ToRenderer::Hello { version, process })) if version == IPC_VERSION => {
+    let first = match inputs.recv() {
+        Ok(Input::Message(message)) => *message,
+        Ok(Input::Closed(None)) | Err(_) => return Ok(()),
+        Ok(Input::Closed(Some(why))) => return Err(why),
+    };
+    match first {
+        ToRenderer::Hello { version, process } if version == IPC_VERSION => {
             net::start_opaque_origins_at(opaque_origins_of(process));
             sender
                 .send(&ToBrowser::Hello {
@@ -56,19 +76,21 @@ pub fn run(
                 })
                 .map_err(|_| "the browser is gone".to_owned())?;
         }
-        Ok(Input::Message(ToRenderer::Hello { version, .. })) => {
+        ToRenderer::Hello { version, .. } => {
             return Err(format!("a hello of version {version}, not {IPC_VERSION}"));
         }
-        Ok(Input::Message(message)) => return Err(format!("{message:?} before the hello")),
-        Ok(Input::Closed(None)) | Err(_) => return Ok(()),
-        Ok(Input::Closed(Some(why))) => return Err(why),
+        message => return Err(format!("{message:?} before the hello")),
     }
 
     // A renderer with nothing to show waits for its end.
-    match inputs.recv() {
-        Ok(Input::Message(ToRenderer::Shutdown {})) => Ok(()),
-        Ok(Input::Message(ToRenderer::Hello { .. })) => Err("a second hello".into()),
-        Ok(Input::Closed(None)) | Err(_) => Ok(()),
-        Ok(Input::Closed(Some(why))) => Err(why),
+    let next = match inputs.recv() {
+        Ok(Input::Message(message)) => *message,
+        Ok(Input::Closed(None)) | Err(_) => return Ok(()),
+        Ok(Input::Closed(Some(why))) => return Err(why),
+    };
+    match next {
+        ToRenderer::Shutdown {} => Ok(()),
+        ToRenderer::Hello { .. } => Err("a second hello".into()),
+        message => Err(format!("{message:?} out of place")),
     }
 }

@@ -44,4 +44,4 @@ pub use hsts::Hsts;
 pub use mime::MimeType;
 pub use referrer::{Referrer, ReferrerPolicy};
 pub use url::Partition;
-pub use url::{Host, Origin, Url, start_opaque_origins_at};
+pub use url::{Host, Origin, Site, Url, start_opaque_origins_at};
