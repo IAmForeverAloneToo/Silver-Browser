@@ -30,12 +30,18 @@
 //! engine takes what arrived; a load the command line asked for that
 //! fails shows the engine's error page, and is reported on standard
 //! error.
+//!
+//! The same executable is each renderer (M34, docs/design/processes.md):
+//! `--renderer <number>` runs it as one, for the browser that started it,
+//! and `--check-processes` starts renderers as the browser does and says
+//! what became of them.
 
 // `unsafe` in the platform module alone (M33.5), which allows it.
 #![deny(unsafe_code)]
 
 mod keys;
 mod platform;
+mod processes;
 mod session;
 
 use std::ffi::OsString;
@@ -877,6 +883,17 @@ fn start_page(arg: OsString) -> Result<Option<Url>, String> {
 }
 
 fn main() {
+    // A renderer (M34) or the check of renderers: no window, no page.
+    match std::env::args_os().nth(1) {
+        Some(first) if first == "--renderer" => std::process::exit(processes::renderer()),
+        Some(first) if first == "--check-processes" => {
+            let orphan = std::env::args_os()
+                .nth(2)
+                .is_some_and(|arg| arg == "orphan");
+            std::process::exit(processes::check(orphan))
+        }
+        _ => {}
+    }
     let line = match command_line(std::env::args_os().skip(1)) {
         Ok(line) => line,
         Err(message) => {

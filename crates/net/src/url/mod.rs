@@ -416,11 +416,21 @@ pub enum Origin {
     Opaque(u64),
 }
 
+/// The number of the next opaque origin made in this process.
+static NEXT_OPAQUE: AtomicU64 = AtomicU64::new(0);
+
+/// This process's opaque origins are numbered from `start` on, if its
+/// numbers have not passed it (M34.2): each process of the browser is
+/// given a space of its own, so that two processes' opaque origins never
+/// share a number.
+pub fn start_opaque_origins_at(start: u64) {
+    NEXT_OPAQUE.fetch_max(start, Ordering::Relaxed);
+}
+
 impl Origin {
     /// A new opaque origin, same origin with nothing but itself.
     pub fn new_opaque() -> Origin {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        Origin::Opaque(NEXT.fetch_add(1, Ordering::Relaxed))
+        Origin::Opaque(NEXT_OPAQUE.fetch_add(1, Ordering::Relaxed))
     }
 
     /// Whether the origin is opaque.
