@@ -6,7 +6,7 @@
 //! are the way to say it. And where the platform keeps an application's
 //! data, for the profile (M28), and the key that keeps the profile's
 //! (M33, D27). And the renderers' processes (M34): their launch, their
-//! pipes and the job object that holds them.
+//! pipes, the job object that holds them and, on Windows, their sandbox.
 //!
 //! This file is the workspace's one place that writes `unsafe` (M33.5):
 //! its Windows modules allow it, each block with its `// SAFETY:`
@@ -104,10 +104,18 @@ pub(crate) fn reduced_motion() -> Option<bool> {
 /// standard input and output are the channel, their standard error the
 /// browser's log. On Windows each starts suspended, is put in a job
 /// object that kills it when the browser's hold on the job closes, and is
-/// resumed; it inherits its three pipes and nothing else. Elsewhere it is
-/// a child process with piped streams, which ends when its input does.
+/// resumed; it inherits its three pipes and nothing else. There it runs
+/// sandboxed (M34.3, D2): with a restricted token of the browser's at
+/// low integrity, in a job that admits no second process, limits its
+/// memory to [`engine::service::MAX_RENDERER_MEMORY`] and closes the
+/// desktop's global state to it. Elsewhere it is a child process with
+/// piped streams, which ends when its input does, and has no sandbox
+/// (G113).
 pub(crate) struct ProcessLauncher {
     executable: PathBuf,
+    /// What follows the renderer's number on its command line: the
+    /// sandbox's probes' (M34.3).
+    arguments: Vec<OsString>,
 }
 
 impl ProcessLauncher {
@@ -118,7 +126,29 @@ impl ProcessLauncher {
 
     /// A launcher of `executable`, the shell's.
     pub(crate) fn of(executable: PathBuf) -> ProcessLauncher {
-        ProcessLauncher { executable }
+        ProcessLauncher {
+            executable,
+            arguments: Vec::new(),
+        }
+    }
+
+    /// The launcher, its renderers given `arguments` after their number.
+    pub(crate) fn with_arguments(mut self, arguments: Vec<OsString>) -> ProcessLauncher {
+        self.arguments = arguments;
+        self
+    }
+}
+
+/// Whether the job this process runs in closes the desktop's global
+/// state to it, as a renderer's does (M34.3): for the sandbox's probes.
+pub(crate) fn desktop_closed() -> bool {
+    #[cfg(windows)]
+    {
+        launch::desktop_closed()
+    }
+    #[cfg(not(windows))]
+    {
+        false
     }
 }
 
@@ -126,17 +156,18 @@ impl engine::service::Launcher for ProcessLauncher {
     fn launch(&self, number: u32) -> std::io::Result<engine::service::Launched> {
         #[cfg(windows)]
         {
-            launch::launch(&self.executable, number)
+            launch::launch(&self.executable, number, &self.arguments)
         }
         #[cfg(not(windows))]
         {
-            portable::launch(&self.executable, number)
+            portable::launch(&self.executable, number, &self.arguments)
         }
     }
 }
 
 #[cfg(not(windows))]
 mod portable {
+    use std::ffi::OsString;
     use std::path::Path;
     use std::process::{Child, Command, Stdio};
 
@@ -166,10 +197,15 @@ mod portable {
         }
     }
 
-    pub(super) fn launch(executable: &Path, number: u32) -> std::io::Result<Launched> {
+    pub(super) fn launch(
+        executable: &Path,
+        number: u32,
+        arguments: &[OsString],
+    ) -> std::io::Result<Launched> {
         let mut child = Command::new(executable)
             .arg("--renderer")
             .arg(number.to_string())
+            .args(arguments)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -187,11 +223,11 @@ mod portable {
     }
 }
 
-// The renderers' launch, through `unsafe` (M34.2).
+// The renderers' launch and sandbox, through `unsafe` (M34.2, M34.3).
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod launch {
-    use std::ffi::OsStr;
+    use std::ffi::{OsStr, OsString};
     use std::fs::File;
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
@@ -199,21 +235,36 @@ mod launch {
 
     use engine::service::{Launched, RendererProcess};
     use windows_sys::Win32::Foundation::{
-        HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation, WAIT_OBJECT_0,
+        GENERIC_ALL, HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation, WAIT_OBJECT_0,
     };
-    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+    use windows_sys::Win32::Security::{
+        ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
+        AddAccessAllowedAce, AddAce, CreateRestrictedToken, CreateWellKnownSid,
+        DISABLE_MAX_PRIVILEGE, EqualSid, GetAce, GetAclInformation, GetLengthSid,
+        GetTokenInformation, InitializeAcl, PSID, SECURITY_ATTRIBUTES, SECURITY_MAX_SID_SIZE,
+        SID_AND_ATTRIBUTES, SetTokenInformation, TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY,
+        TOKEN_DEFAULT_DACL, TOKEN_DUPLICATE, TOKEN_GROUPS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+        TokenDefaultDacl, TokenGroups, TokenIntegrityLevel, WELL_KNOWN_SID_TYPE,
+        WinBuiltinUsersSid, WinLowLabelSid, WinRestrictedCodeSid, WinWorldSid,
+    };
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-        SetInformationJobObject,
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
+        JOB_OBJECT_UILIMIT_DESKTOP, JOB_OBJECT_UILIMIT_DISPLAYSETTINGS,
+        JOB_OBJECT_UILIMIT_EXITWINDOWS, JOB_OBJECT_UILIMIT_GLOBALATOMS, JOB_OBJECT_UILIMIT_HANDLES,
+        JOB_OBJECT_UILIMIT_READCLIPBOARD, JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS,
+        JOB_OBJECT_UILIMIT_WRITECLIPBOARD, JOBOBJECT_BASIC_UI_RESTRICTIONS,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicUIRestrictions,
+        JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
     };
     use windows_sys::Win32::System::Pipes::CreatePipe;
     use windows_sys::Win32::System::Threading::{
-        CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
-        DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
-        InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
-        PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES,
-        STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
+        CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW,
+        DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess,
+        GetExitCodeProcess, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+        OpenProcessToken, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, ResumeThread,
+        STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute,
+        WaitForSingleObject,
     };
 
     /// A handle the call that made it returned, now ours alone; `None`
@@ -269,14 +320,23 @@ mod launch {
     }
 
     /// A job object that kills its processes when its last handle
-    /// closes.
+    /// closes, admits one active process (so no child of the renderer's),
+    /// limits a process's committed memory to `MAX_RENDERER_MEMORY`, and
+    /// forbids the desktop's global state: the system's parameters, the
+    /// display settings, exiting Windows, the global atoms, user objects'
+    /// handles from outside the job, the clipboard and other desktops.
     fn job() -> std::io::Result<OwnedHandle> {
         // SAFETY: no attributes and no name: a new unnamed job with the
         // default security, its handle returned.
         let job = owned(unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) })
             .ok_or_else(last_error)?;
         let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+            | JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+        limits.BasicLimitInformation.ActiveProcessLimit = 1;
+        limits.ProcessMemoryLimit =
+            usize::try_from(engine::service::MAX_RENDERER_MEMORY).unwrap_or(usize::MAX);
         // SAFETY: `limits` is the whole extended limit structure the class
         // names, of the size given, alive for the call, which reads it.
         let set = unsafe {
@@ -290,7 +350,302 @@ mod launch {
         if set == 0 {
             return Err(last_error());
         }
+        let interface = JOBOBJECT_BASIC_UI_RESTRICTIONS {
+            UIRestrictionsClass: CLOSED,
+        };
+        // SAFETY: `interface` is the whole structure the class names, of
+        // the size given, alive for the call, which reads it.
+        let set = unsafe {
+            SetInformationJobObject(
+                raw(&job),
+                JobObjectBasicUIRestrictions,
+                (&raw const interface).cast(),
+                size_of::<JOBOBJECT_BASIC_UI_RESTRICTIONS>() as u32,
+            )
+        };
+        if set == 0 {
+            return Err(last_error());
+        }
         Ok(job)
+    }
+
+    /// What of the desktop's global state a renderer's job closes.
+    const CLOSED: u32 = JOB_OBJECT_UILIMIT_DESKTOP
+        | JOB_OBJECT_UILIMIT_DISPLAYSETTINGS
+        | JOB_OBJECT_UILIMIT_EXITWINDOWS
+        | JOB_OBJECT_UILIMIT_GLOBALATOMS
+        | JOB_OBJECT_UILIMIT_HANDLES
+        | JOB_OBJECT_UILIMIT_READCLIPBOARD
+        | JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS
+        | JOB_OBJECT_UILIMIT_WRITECLIPBOARD;
+
+    pub(super) fn desktop_closed() -> bool {
+        let mut interface = JOBOBJECT_BASIC_UI_RESTRICTIONS::default();
+        // SAFETY: a null job is the one this process runs in; the
+        // structure is the whole one the class names, of the size given,
+        // ours to write; no length is asked back.
+        let read = unsafe {
+            QueryInformationJobObject(
+                std::ptr::null_mut(),
+                JobObjectBasicUIRestrictions,
+                (&raw mut interface).cast(),
+                size_of::<JOBOBJECT_BASIC_UI_RESTRICTIONS>() as u32,
+                std::ptr::null_mut(),
+            )
+        };
+        read != 0 && interface.UIRestrictionsClass & CLOSED == CLOSED
+    }
+
+    /// Of a token's groups' attributes: `SE_GROUP_INTEGRITY`, the
+    /// integrity label's, and `SE_GROUP_LOGON_ID`, the logon session's.
+    const GROUP_INTEGRITY: u32 = 0x0000_0020;
+    const GROUP_LOGON_ID: u32 = 0xC000_0000;
+
+    /// A well-known SID of `kind`, in a buffer of words.
+    fn well_known(kind: WELL_KNOWN_SID_TYPE) -> std::io::Result<Vec<usize>> {
+        let mut size = SECURITY_MAX_SID_SIZE;
+        let mut sid = vec![0usize; (SECURITY_MAX_SID_SIZE as usize).div_ceil(size_of::<usize>())];
+        // SAFETY: the buffer is at least `size` bytes and ours to write;
+        // the kinds asked for need no domain.
+        let made = unsafe {
+            CreateWellKnownSid(
+                kind,
+                std::ptr::null_mut(),
+                sid.as_mut_ptr().cast(),
+                &mut size,
+            )
+        };
+        if made == 0 {
+            return Err(last_error());
+        }
+        Ok(sid)
+    }
+
+    /// `token`'s information of class `class`, in a buffer of words.
+    fn information(
+        token: &OwnedHandle,
+        class: windows_sys::Win32::Security::TOKEN_INFORMATION_CLASS,
+    ) -> std::io::Result<Vec<usize>> {
+        let mut size = 0u32;
+        // SAFETY: no buffer and no length ask for the size the class
+        // needs, written to `size`; the call fails by design, with it.
+        unsafe { GetTokenInformation(raw(token), class, std::ptr::null_mut(), 0, &mut size) };
+        let mut buffer = vec![0usize; (size as usize).div_ceil(size_of::<usize>()).max(1)];
+        // SAFETY: the buffer is at least `size` bytes, aligned for the
+        // structure, and ours to write; `size` too.
+        let read = unsafe {
+            GetTokenInformation(
+                raw(token),
+                class,
+                buffer.as_mut_ptr().cast(),
+                size,
+                &mut size,
+            )
+        };
+        if read == 0 {
+            return Err(last_error());
+        }
+        Ok(buffer)
+    }
+
+    /// Adds an entry granting `sid` all access to `token`'s default DACL,
+    /// the one given to what a process of the token makes for itself
+    /// (its threads, its sections, its events): without it, what the
+    /// process makes would grant only the user, whom the restricted
+    /// check does not admit, and the system's libraries fail to start.
+    fn admit_by_default(token: &OwnedHandle, sid: PSID) -> std::io::Result<()> {
+        let buffer = information(token, TokenDefaultDacl)?;
+        // SAFETY: the buffer holds the token's default DACL as the call
+        // wrote it: the structure, its pointer into the buffer or null.
+        let old = unsafe { (*buffer.as_ptr().cast::<TOKEN_DEFAULT_DACL>()).DefaultDacl };
+        let mut sizes = ACL_SIZE_INFORMATION::default();
+        if !old.is_null() {
+            // SAFETY: `old` is the token's ACL, in the buffer, alive; the
+            // structure is the class's, of the size given, ours to write.
+            let read = unsafe {
+                GetAclInformation(
+                    old,
+                    (&raw mut sizes).cast(),
+                    size_of::<ACL_SIZE_INFORMATION>() as u32,
+                    AclSizeInformation,
+                )
+            };
+            if read == 0 {
+                return Err(last_error());
+            }
+        }
+        // SAFETY: `sid` is a valid SID made by the caller.
+        let length = size_of::<ACL>() as u32
+            + sizes.AclBytesInUse
+            + size_of::<ACCESS_ALLOWED_ACE>() as u32
+            + unsafe { GetLengthSid(sid) };
+        let mut acl = vec![0usize; (length as usize).div_ceil(size_of::<usize>())];
+        let new = acl.as_mut_ptr().cast::<ACL>();
+        let revision = if old.is_null() {
+            windows_sys::Win32::Security::ACL_REVISION
+        } else {
+            // SAFETY: `old` is the token's ACL, alive in the buffer.
+            u32::from(unsafe { (*old).AclRevision })
+        };
+        // SAFETY: the buffer is at least `length` bytes, aligned, ours.
+        if unsafe { InitializeAcl(new, length, revision) } == 0 {
+            return Err(last_error());
+        }
+        for index in 0..sizes.AceCount {
+            let mut entry = std::ptr::null_mut();
+            // SAFETY: `old` is a valid ACL of more than `index` entries;
+            // `entry` is ours to write, then points into `old`, whose
+            // entries are copied, each of the size its header says, into
+            // the new ACL, which has room for all of them.
+            let copied = unsafe {
+                GetAce(old, index, &mut entry) != 0
+                    && AddAce(
+                        new,
+                        revision,
+                        u32::MAX,
+                        entry,
+                        u32::from((*entry.cast::<ACE_HEADER>()).AceSize),
+                    ) != 0
+            };
+            if !copied {
+                return Err(last_error());
+            }
+        }
+        // SAFETY: the new ACL has room for the entry; `sid` is valid.
+        if unsafe { AddAccessAllowedAce(new, revision, GENERIC_ALL, sid) } == 0 {
+            return Err(last_error());
+        }
+        let default = TOKEN_DEFAULT_DACL { DefaultDacl: new };
+        // SAFETY: the token is open with the right to change its default;
+        // the structure and the ACL it points at are alive for the call,
+        // which copies them.
+        let set = unsafe {
+            SetTokenInformation(
+                raw(token),
+                TokenDefaultDacl,
+                (&raw const default).cast(),
+                size_of::<TOKEN_DEFAULT_DACL>() as u32,
+            )
+        };
+        if set == 0 {
+            return Err(last_error());
+        }
+        Ok(())
+    }
+
+    /// The token a renderer runs with (M34.3, D2): the browser's own,
+    /// restricted. Every privilege is removed but the one to traverse
+    /// folders; every group is made deny-only but `Everyone`, `Users` and
+    /// the logon session's; and `Users`, `Everyone` and `RESTRICTED` are
+    /// its restricting SIDs, so that an access must be granted to one of
+    /// them as well as to the user. The logon session's SID is not one:
+    /// it would admit the session's desktop and named objects, which a
+    /// renderer needs no more of than those grant. Its integrity is low:
+    /// it can write nothing labelled above it.
+    fn renderer_token() -> std::io::Result<OwnedHandle> {
+        let mut own: HANDLE = std::ptr::null_mut();
+        // SAFETY: the current process's pseudo-handle needs no closing;
+        // `own` is ours to write.
+        let opened = unsafe {
+            OpenProcessToken(
+                GetCurrentProcess(),
+                TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT,
+                &mut own,
+            )
+        };
+        if opened == 0 {
+            return Err(last_error());
+        }
+        let own = owned(own).ok_or_else(last_error)?;
+        // The SIDs live in `sids`, to the end of the function.
+        let mut sids = [
+            well_known(WinBuiltinUsersSid)?,
+            well_known(WinWorldSid)?,
+            well_known(WinRestrictedCodeSid)?,
+            well_known(WinLowLabelSid)?,
+        ];
+        let [users, everyone, restricted, low]: [PSID; 4] =
+            sids.each_mut().map(|sid| sid.as_mut_ptr().cast());
+        let buffer = information(&own, TokenGroups)?;
+        let list = buffer.as_ptr().cast::<TOKEN_GROUPS>();
+        // SAFETY: the buffer holds the token's groups as the call wrote
+        // them: a count, then that many entries, whose SIDs point into the
+        // buffer, which outlives every use of them below.
+        let groups: &[SID_AND_ATTRIBUTES] = unsafe {
+            std::slice::from_raw_parts(
+                (&raw const (*list).Groups).cast(),
+                (*list).GroupCount as usize,
+            )
+        };
+        let mut deny = Vec::new();
+        for group in groups {
+            if group.Attributes & GROUP_INTEGRITY != 0 {
+                continue;
+            }
+            if group.Attributes & GROUP_LOGON_ID == GROUP_LOGON_ID {
+                continue;
+            }
+            // SAFETY: each SID is valid and alive: the token's, or one
+            // made above.
+            let kept =
+                unsafe { EqualSid(group.Sid, users) != 0 || EqualSid(group.Sid, everyone) != 0 };
+            if !kept {
+                deny.push(SID_AND_ATTRIBUTES {
+                    Sid: group.Sid,
+                    Attributes: 0,
+                });
+            }
+        }
+        let restricting: Vec<SID_AND_ATTRIBUTES> = [users, everyone, restricted]
+            .into_iter()
+            .map(|sid| SID_AND_ATTRIBUTES {
+                Sid: sid,
+                Attributes: 0,
+            })
+            .collect();
+        let mut token: HANDLE = std::ptr::null_mut();
+        // SAFETY: the browser's token is open with the rights the call
+        // needs; both lists are whole, of the lengths given, their SIDs
+        // valid and alive for the call; `token` is ours to write.
+        let made = unsafe {
+            CreateRestrictedToken(
+                raw(&own),
+                DISABLE_MAX_PRIVILEGE,
+                deny.len() as u32,
+                deny.as_ptr(),
+                0,
+                std::ptr::null(),
+                restricting.len() as u32,
+                restricting.as_ptr(),
+                &mut token,
+            )
+        };
+        if made == 0 {
+            return Err(last_error());
+        }
+        let token = owned(token).ok_or_else(last_error)?;
+        admit_by_default(&token, restricted)?;
+        let label = TOKEN_MANDATORY_LABEL {
+            Label: SID_AND_ATTRIBUTES {
+                Sid: low,
+                Attributes: GROUP_INTEGRITY,
+            },
+        };
+        // SAFETY: the new token is open with the right to change its
+        // default, which covers its integrity; the label and its SID are
+        // valid and alive for the call, the length counting both.
+        let set = unsafe {
+            SetTokenInformation(
+                raw(&token),
+                TokenIntegrityLevel,
+                (&raw const label).cast(),
+                size_of::<TOKEN_MANDATORY_LABEL>() as u32 + GetLengthSid(low),
+            )
+        };
+        if set == 0 {
+            return Err(last_error());
+        }
+        Ok(token)
     }
 
     fn wide(text: &OsStr) -> Vec<u16> {
@@ -393,7 +748,12 @@ mod launch {
         }
     }
 
-    pub(super) fn launch(executable: &Path, number: u32) -> std::io::Result<Launched> {
+    pub(super) fn launch(
+        executable: &Path,
+        number: u32,
+        arguments: &[OsString],
+    ) -> std::io::Result<Launched> {
+        let token = renderer_token()?;
         let (child_input, to_renderer) = pipe()?;
         let (from_renderer, child_output) = pipe()?;
         let (log, child_log) = pipe()?;
@@ -402,10 +762,15 @@ mod launch {
         }
         let job = job()?;
         let application = wide(executable.as_os_str());
-        let mut command = wide(OsStr::new(&format!(
-            "\"{}\" --renderer {number}",
-            executable.display()
-        )));
+        let mut line = format!("\"{}\" --renderer {number}", executable.display());
+        for argument in arguments {
+            let quotable = argument
+                .to_str()
+                .filter(|text| !text.contains('"') && !text.ends_with('\\'))
+                .ok_or_else(|| std::io::Error::other("an argument the line cannot quote"))?;
+            line.push_str(&format!(" \"{quotable}\""));
+        }
+        let mut command = wide(OsStr::new(&line));
         let mut list = HandleList::new([raw(&child_input), raw(&child_output), raw(&child_log)])?;
         let mut startup = STARTUPINFOEXW::default();
         startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
@@ -415,15 +780,17 @@ mod launch {
         startup.StartupInfo.hStdError = raw(&child_log);
         startup.lpAttributeList = list.list();
         let mut made = PROCESS_INFORMATION::default();
-        // SAFETY: the application name and the command line are
-        // NUL-terminated wide strings we own, the command line mutable as
-        // the call requires; no process or thread attributes, the
-        // environment and directory ours; the startup structure is the
-        // extended one its flag says, its list naming the three
-        // inheritable handles above, all alive for the call; `made` is
-        // ours to fill.
+        // SAFETY: the token is the restricted one made above, open with
+        // the rights a primary token needs; the application name and the
+        // command line are NUL-terminated wide strings we own, the command
+        // line mutable as the call requires; no process or thread
+        // attributes, the environment and directory ours; the startup
+        // structure is the extended one its flag says, its list naming the
+        // three inheritable handles above, all alive for the call; `made`
+        // is ours to fill.
         let created = unsafe {
-            CreateProcessW(
+            CreateProcessAsUserW(
+                raw(&token),
                 application.as_ptr(),
                 command.as_mut_ptr(),
                 std::ptr::null(),

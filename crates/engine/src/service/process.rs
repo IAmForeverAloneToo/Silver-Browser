@@ -20,6 +20,10 @@ use crate::loader::Waker;
 /// How long a renderer has to answer the hello before it is killed.
 pub const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The memory a renderer's process may commit, where its sandbox can
+/// limit it (M34.3, D2): past it, its allocations fail.
+pub const MAX_RENDERER_MEMORY: u64 = 4 << 30;
+
 /// What starts renderers.
 pub trait Launcher: Send + Sync {
     /// Starts renderer number `number`.

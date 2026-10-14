@@ -117,6 +117,32 @@ fn a_renderer_ends_with_the_browser_that_started_it() {
     assert!(!runs(id), "renderer process {id} outlived its browser");
 }
 
+#[cfg(windows)]
+#[test]
+fn a_renderer_runs_in_the_sandbox() {
+    let out = Command::new(BROWSER)
+        .args(["--check-processes", "sandbox"])
+        .output()
+        .expect("the check ran");
+    let said = String::from_utf8_lossy(&out.stdout);
+    let complained = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{said}{complained}");
+    for refused in [
+        "the user's file, read: refused",
+        "the user's folder, listed: refused",
+        "the temporary folder, written: refused",
+        "the folder of the profile, written: refused",
+        "a folder of the users, written at low integrity: refused",
+        "the executable, written: refused",
+        "a child process: refused",
+        "more memory than a renderer may have: refused",
+        "the desktop's global state, changed: refused",
+    ] {
+        assert!(said.contains(refused), "{refused}: {said}");
+    }
+    assert!(said.contains("the system's fonts, read: allowed"), "{said}");
+}
+
 #[test]
 fn a_renderer_process_shows_a_page_for_the_browser() {
     let out = Command::new(BROWSER)

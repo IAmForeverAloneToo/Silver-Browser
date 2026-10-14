@@ -3,18 +3,34 @@
 //! channel the process's standard input and output; and
 //! `--check-processes`, which starts renderers the way the browser does
 //! and says on standard output what became of them, for the shell's tests
-//! and for a user who wants to know.
+//! and for a user who wants to know; among them the sandbox's probes
+//! (M34.3), run in a renderer started as any other.
 
+use std::ffi::OsString;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use engine::service::{Event, Gone, HELLO_TIMEOUT, RemoteTab, Renderer};
+use engine::service::{
+    Event, Gone, HELLO_TIMEOUT, Launcher, MAX_RENDERER_MEMORY, RemoteTab, Renderer,
+};
 use engine::{FrameTime, LoadState, Url, View};
 
 use crate::platform::ProcessLauncher;
 
-/// Runs this process as a renderer; its exit code.
+/// Runs this process as a renderer; its exit code. With `--probe` and a
+/// file of the user's after its number, it runs the sandbox's probes
+/// instead and says what became of each.
 pub(crate) fn renderer() -> i32 {
+    let arguments: Vec<OsString> = std::env::args_os().skip(3).collect();
+    if arguments.first().is_some_and(|first| first == "--probe") {
+        let file = arguments.get(1).map(PathBuf::from).unwrap_or_default();
+        for (probe, outcome) in probe(&file) {
+            println!("{probe}: {outcome}");
+        }
+        return 0;
+    }
     match engine::renderer::run(std::io::stdin(), std::io::stdout()) {
         Ok(()) => 0,
         Err(why) => {
@@ -26,6 +42,115 @@ pub(crate) fn renderer() -> i32 {
 
 /// How long the check waits for what it waits for.
 const WAIT: Duration = Duration::from_secs(20);
+
+/// What the sandbox must refuse a renderer (M34.3, D2), by its probes'
+/// names.
+const REFUSED: [&str; 9] = [
+    "the user's file, read",
+    "the user's folder, listed",
+    "the temporary folder, written",
+    "the folder of the profile, written",
+    "a folder of the users, written at low integrity",
+    "the executable, written",
+    "a child process",
+    "more memory than a renderer may have",
+    "the desktop's global state, changed",
+];
+
+/// What it must allow one.
+const FONTS: &str = "the system's fonts, read";
+
+/// A probe's outcome: `refused` when the system denied it access.
+fn outcome<T>(result: std::io::Result<T>) -> String {
+    match result {
+        Ok(_) => "allowed".into(),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => "refused".into(),
+        Err(error) => format!("failed ({error})"),
+    }
+}
+
+/// Makes a new file in `folder`, gone again when closed: a probe the
+/// sandbox wrongly allows leaves nothing behind, even where the file,
+/// once made, could not be removed.
+fn made_in(folder: &Path) -> std::io::Result<()> {
+    let path = folder.join(format!("silver-sandbox-probe-{}", std::process::id()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // GENERIC_WRITE and DELETE, and FILE_FLAG_DELETE_ON_CLOSE.
+        options
+            .access_mode(0x4000_0000 | 0x0001_0000)
+            .custom_flags(0x0400_0000);
+    }
+    options.open(&path)?;
+    #[cfg(not(windows))]
+    std::fs::remove_file(path)?;
+    Ok(())
+}
+
+/// What a renderer may do where it runs (M34.3, D2): each probe by its
+/// name, with `refused`, `allowed`, or how it failed otherwise. `file` is
+/// a file of the user's the browser made for the probes.
+fn probe(file: &Path) -> Vec<(&'static str, String)> {
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    // The local application data, on Windows, where the profile lives.
+    let profile = crate::platform::profile_directory()
+        .and_then(|profile| profile.ancestors().nth(2).map(Path::to_path_buf))
+        .unwrap_or_default();
+    let users = std::env::var_os("ProgramData")
+        .map_or_else(|| PathBuf::from("C:\\ProgramData"), PathBuf::from);
+    let executable = std::env::current_exe().unwrap_or_default();
+    let child = match std::process::Command::new(&executable)
+        .args(["--renderer", "0"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(mut child) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            "allowed".to_owned()
+        }
+        Err(error) => format!("refused ({error})"),
+    };
+    let more = usize::try_from(MAX_RENDERER_MEMORY + (512 << 20)).unwrap_or(usize::MAX);
+    let memory = match Vec::<u8>::new().try_reserve_exact(more) {
+        Ok(()) => "allowed".to_owned(),
+        Err(_) => "refused".to_owned(),
+    };
+    let fonts = match engine::Engine::new() {
+        Ok(_) => "allowed".to_owned(),
+        Err(error) => format!("failed ({error})"),
+    };
+    vec![
+        (REFUSED[0], outcome(std::fs::read(file))),
+        (REFUSED[1], outcome(std::fs::read_dir(&home))),
+        (REFUSED[2], outcome(made_in(&std::env::temp_dir()))),
+        (REFUSED[3], outcome(made_in(&profile))),
+        (REFUSED[4], outcome(made_in(&users))),
+        (
+            REFUSED[5],
+            outcome(std::fs::OpenOptions::new().write(true).open(&executable)),
+        ),
+        (REFUSED[6], child),
+        (REFUSED[7], memory),
+        (
+            REFUSED[8],
+            if crate::platform::desktop_closed() {
+                "refused (by its job)".to_owned()
+            } else {
+                "allowed".to_owned()
+            },
+        ),
+        (FONTS, fonts),
+    ]
+}
 
 /// Waits for renderer `number`'s end on `events`, and its exit code.
 fn ended(
@@ -54,11 +179,14 @@ fn ended(
 /// prints what each did and returns 0 when both did as they should. With
 /// `orphan`, starts one, prints its process's number and exits at once,
 /// without ending it: its job object must. With `page`, shows
-/// `about:silver` in a tab of a renderer and says what it drew.
+/// `about:silver` in a tab of a renderer and says what it drew. With
+/// `sandbox`, runs the sandbox's probes in a renderer and says what
+/// became of each.
 pub(crate) fn check(what: Option<&str>) -> i32 {
     let checked = match what {
         Some("orphan") => check_orphan(),
         Some("page") => check_page(),
+        Some("sandbox") => check_sandbox(),
         _ => check_all(),
     };
     match checked {
@@ -120,6 +248,52 @@ fn check_orphan() -> Result<(), String> {
     println!("renderer 3: process {}", renderer.process_id());
     // No destructor runs: only the operating system ends the renderer.
     std::process::exit(0);
+}
+
+fn check_sandbox() -> Result<(), String> {
+    let file = std::env::temp_dir().join(format!("silver-sandbox-file-{}", std::process::id()));
+    std::fs::write(&file, "the user's").map_err(|error| format!("no file: {error}"))?;
+    let said = probed(&file);
+    let _ = std::fs::remove_file(&file);
+    let said = said?;
+    print!("{said}");
+    let said_of = |probe: &str| {
+        said.lines()
+            .find_map(|line| line.strip_prefix(probe)?.strip_prefix(": "))
+            .unwrap_or("not said")
+            .to_owned()
+    };
+    for probe in REFUSED {
+        if !said_of(probe).starts_with("refused") {
+            return Err(format!("{probe}: {}", said_of(probe)));
+        }
+    }
+    if said_of(FONTS) != "allowed" {
+        return Err(format!("{FONTS}: {}", said_of(FONTS)));
+    }
+    Ok(())
+}
+
+/// What a renderer started with the probes' arguments says.
+fn probed(file: &Path) -> Result<String, String> {
+    let launcher = ProcessLauncher::new()
+        .map_err(|error| format!("no executable: {error}"))?
+        .with_arguments(vec!["--probe".into(), file.into()]);
+    let launched = launcher
+        .launch(7)
+        .map_err(|error| format!("renderer 7 did not start: {error}"))?;
+    let mut from_renderer = launched.from_renderer;
+    let (sender, received) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut said = String::new();
+        let _ = from_renderer.read_to_string(&mut said);
+        let _ = sender.send(said);
+    });
+    let said = received
+        .recv_timeout(WAIT)
+        .map_err(|_| "the probes did not end".to_owned());
+    drop((launched.to_renderer, launched.process));
+    said
 }
 
 fn check_page() -> Result<(), String> {

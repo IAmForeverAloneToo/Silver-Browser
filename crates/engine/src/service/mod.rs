@@ -27,8 +27,8 @@ mod tests;
 pub use handover::{HANDOVER_TIMEOUT, HandoverNotice, Handovers, MAX_HANDOVER_BUFFER};
 pub use network::{FrameGrant, Grant, Grants, Lock, MAX_RENDERER_FETCHES, NetworkService};
 pub use process::{
-    Event, Gone, HELLO_TIMEOUT, Launched, Launcher, Renderer, RendererProcess, Serve, Services,
-    ThreadLauncher,
+    Event, Gone, HELLO_TIMEOUT, Launched, Launcher, MAX_RENDERER_MEMORY, Renderer, RendererProcess,
+    Serve, Services, ThreadLauncher,
 };
 pub use storage::StorageService;
 pub use tab::{MAX_RENDERERS, RemoteTab};
