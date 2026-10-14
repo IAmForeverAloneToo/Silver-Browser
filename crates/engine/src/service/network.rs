@@ -138,7 +138,7 @@ impl Grants {
     }
 
     /// Renderer `renderer`'s lock and its grant for `frame`.
-    fn frame(&self, renderer: u32, frame: u32) -> Result<(Lock, FrameGrant), String> {
+    pub(crate) fn frame(&self, renderer: u32, frame: u32) -> Result<(Lock, FrameGrant), String> {
         let grants = self.lock();
         let grant = grants
             .get(&renderer)
@@ -416,7 +416,18 @@ fn checked(mut request: Request, lock: &Lock, grant: &FrameGrant) -> Result<Requ
     {
         request.referrer = Referrer::None;
     }
-    request.partition = match request.partition.take() {
+    request.partition = partition(request.partition.take(), grant)?;
+    Ok(request)
+}
+
+/// The partition a frame of `grant` is in, the renderer having `claimed`
+/// one: its top-level origin the browser's, cross-site if either says
+/// so; Err for a claim of another top.
+pub(crate) fn partition(
+    claimed: Option<Partition>,
+    grant: &FrameGrant,
+) -> Result<Option<Partition>, String> {
+    Ok(match claimed {
         Some(partition) if partition.top != grant.top => {
             return Err(format!(
                 "a request in the partition of {}",
@@ -432,8 +443,7 @@ fn checked(mut request: Request, lock: &Lock, grant: &FrameGrant) -> Result<Requ
             cross_site: true,
         }),
         None => None,
-    };
-    Ok(request)
+    })
 }
 
 /// `response` as a renderer may have it: an opaque one that Opaque

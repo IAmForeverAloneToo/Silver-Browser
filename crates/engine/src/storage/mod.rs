@@ -108,6 +108,95 @@ pub(crate) struct Change {
     pub(crate) page: PageId,
 }
 
+/// Whose area a document's scripts reach (the Storage Standard's storage
+/// key, M33.2): its origin and, in a context of another site than the
+/// top, the top-level site.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AreaKey {
+    pub(crate) origin: net::Origin,
+    pub(crate) partition: Option<net::Partition>,
+}
+
+impl AreaKey {
+    /// The key the engine keeps the area by: the origin's serialization,
+    /// and for a cross-site context the top-level site's after a `^`.
+    pub(crate) fn serialization(&self) -> String {
+        let origin = self.origin.serialization();
+        match &self.partition {
+            Some(partition) if partition.cross_site => {
+                format!("{origin}^{}", partition.cookie_key())
+            }
+            _ => origin,
+        }
+    }
+}
+
+/// The Web Storage areas as a document's scripts reach them (M34.1): the
+/// engine's in one process, the browser's in a renderer. `local` names
+/// `localStorage`, otherwise `sessionStorage`.
+pub(crate) trait Areas: Send + Sync {
+    fn length(&self, local: bool, key: &AreaKey) -> usize;
+    fn key(&self, local: bool, key: &AreaKey, index: usize) -> Option<String>;
+    fn keys(&self, local: bool, key: &AreaKey) -> Vec<String>;
+    fn get(&self, local: bool, key: &AreaKey, item: &str) -> Option<String>;
+    /// `setItem`, as [`Area::set`] answers.
+    fn set(
+        &self,
+        local: bool,
+        key: &AreaKey,
+        item: &str,
+        value: &str,
+    ) -> Result<Option<Option<String>>, OverQuota>;
+    fn remove(&self, local: bool, key: &AreaKey, item: &str) -> Option<String>;
+    fn clear(&self, local: bool, key: &AreaKey) -> bool;
+}
+
+impl Areas for Mutex<Storage> {
+    fn length(&self, local: bool, key: &AreaKey) -> usize {
+        let mut storage = self.lock().unwrap_or_else(PoisonError::into_inner);
+        storage.area(local, &key.serialization()).len()
+    }
+
+    fn key(&self, local: bool, key: &AreaKey, index: usize) -> Option<String> {
+        let mut storage = self.lock().unwrap_or_else(PoisonError::into_inner);
+        storage.area(local, &key.serialization()).key(index)
+    }
+
+    fn keys(&self, local: bool, key: &AreaKey) -> Vec<String> {
+        let mut storage = self.lock().unwrap_or_else(PoisonError::into_inner);
+        storage.area(local, &key.serialization()).keys().to_vec()
+    }
+
+    fn get(&self, local: bool, key: &AreaKey, item: &str) -> Option<String> {
+        let mut storage = self.lock().unwrap_or_else(PoisonError::into_inner);
+        storage
+            .area(local, &key.serialization())
+            .get(item)
+            .map(str::to_owned)
+    }
+
+    fn set(
+        &self,
+        local: bool,
+        key: &AreaKey,
+        item: &str,
+        value: &str,
+    ) -> Result<Option<Option<String>>, OverQuota> {
+        let mut storage = self.lock().unwrap_or_else(PoisonError::into_inner);
+        storage.set_item(local, &key.serialization(), item, value)
+    }
+
+    fn remove(&self, local: bool, key: &AreaKey, item: &str) -> Option<String> {
+        let mut storage = self.lock().unwrap_or_else(PoisonError::into_inner);
+        storage.remove_item(local, &key.serialization(), item)
+    }
+
+    fn clear(&self, local: bool, key: &AreaKey) -> bool {
+        let mut storage = self.lock().unwrap_or_else(PoisonError::into_inner);
+        storage.clear_area(local, &key.serialization())
+    }
+}
+
 /// The engine's Web Storage as a page's scripts reach it, but without
 /// a page (M28): for the `storage` fuzz target and the benchmarks. An
 /// origin is named by its serialization; `local` names the

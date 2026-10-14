@@ -9,11 +9,15 @@ mod network;
 mod network_tests;
 mod orb;
 mod process;
+mod storage;
+#[cfg(test)]
+mod storage_tests;
 #[cfg(test)]
 mod tests;
 
 pub use network::{FrameGrant, Grant, Grants, Lock, MAX_RENDERER_FETCHES, NetworkService};
 pub use process::{
-    Event, Gone, HELLO_TIMEOUT, Launched, Launcher, Renderer, RendererProcess, Serve,
+    Event, Gone, HELLO_TIMEOUT, Launched, Launcher, Renderer, RendererProcess, Serve, Services,
     ThreadLauncher,
 };
+pub use storage::StorageService;

@@ -352,23 +352,20 @@ impl DocumentHost {
         "Access is denied for this document.".to_owned()
     }
 
-    /// `f` of the engine's storage and the document's origin, by its
-    /// serialization; a `SecurityError` when its scripts may not reach
-    /// the origin's areas.
-    fn with_storage<T>(
+    /// `f` of the Web Storage areas and the document's key to them; a
+    /// `SecurityError` when its scripts may not reach them.
+    fn with_areas<T>(
         &self,
-        f: impl FnOnce(&mut storage::Storage, &str) -> T,
+        f: impl FnOnce(&dyn storage::Areas, &storage::AreaKey) -> T,
     ) -> Result<T, DomError> {
         let refused = self.storage_refused();
         if !refused.is_empty() {
             return Err(DomError::new("SecurityError", refused));
         }
-        let (Some(page), Some(storage)) = (&self.page, &self.window.storage) else {
+        let (Some(page), Some(areas)) = (&self.page, &self.window.areas) else {
             return Err(DomError::new("SecurityError", refused));
         };
-        let origin = self.storage_key(page);
-        let mut storage = storage.lock().unwrap_or_else(PoisonError::into_inner);
-        Ok(f(&mut storage, &origin))
+        Ok(f(areas.as_ref(), &self.storage_key(page)))
     }
 
     /// Where the document is in its tab (M33.2): its frame's place, its
@@ -390,13 +387,10 @@ impl DocumentHost {
     /// origin, and for a frame in a cross-site context the top-level
     /// site too, so that a third party's areas are kept apart by the
     /// site it is embedded under, as the reference browser keeps them.
-    fn storage_key(&self, page: &Page) -> String {
-        let origin = page.origin().serialization();
-        match &self.partition() {
-            Some(partition) if partition.cross_site => {
-                format!("{origin}^{}", partition.cookie_key())
-            }
-            _ => origin,
+    fn storage_key(&self, page: &Page) -> storage::AreaKey {
+        storage::AreaKey {
+            origin: page.origin().clone(),
+            partition: self.partition(),
         }
     }
 
@@ -453,16 +447,6 @@ impl DocumentHost {
         }
     }
 
-    /// `f` of the document's `localStorage` area if `local`, else its
-    /// `sessionStorage` area, as [`DocumentHost::with_storage`].
-    fn with_area<T>(
-        &self,
-        local: bool,
-        f: impl FnOnce(&mut storage::Area) -> T,
-    ) -> Result<T, DomError> {
-        self.with_storage(|storage, origin| f(storage.area(local, origin)))
-    }
-
     /// Tells a change of an area (M28) to another document alive of the
     /// origin, if there is one, in a `storage` event.
     fn broadcast(
@@ -475,7 +459,7 @@ impl DocumentHost {
         let (Some(page), Some(storage)) = (&self.page, &self.window.storage) else {
             return;
         };
-        let origin = self.storage_key(page);
+        let origin = self.storage_key(page).serialization();
         let mut storage = storage.lock().unwrap_or_else(PoisonError::into_inner);
         if self.window.storage_peer {
             storage.broadcast(storage::Change {
@@ -1254,21 +1238,23 @@ impl DocumentHost {
             },
             Call::StorageOpen(_) => Ok(Answer::String(self.storage_refused())),
             Call::StorageLength(local) => {
-                self.with_area(local, |area| Answer::Number(area.len() as f64))
+                self.with_areas(|areas, area| Answer::Number(areas.length(local, area) as f64))
             }
-            Call::StorageKey(local, index) => self.with_area(local, |area| {
-                Answer::MaybeString(usize::try_from(index).ok().and_then(|i| area.key(i)))
+            Call::StorageKey(local, index) => self.with_areas(|areas, area| {
+                Answer::MaybeString(
+                    usize::try_from(index)
+                        .ok()
+                        .and_then(|i| areas.key(local, area, i)),
+                )
             }),
             Call::StorageKeys(local) => {
-                self.with_area(local, |area| Answer::Strings(area.keys().to_vec()))
+                self.with_areas(|areas, area| Answer::Strings(areas.keys(local, area)))
             }
-            Call::StorageGet(local, key) => self.with_area(local, |area| {
-                Answer::MaybeString(area.get(&key).map(str::to_owned))
-            }),
+            Call::StorageGet(local, key) => {
+                self.with_areas(|areas, area| Answer::MaybeString(areas.get(local, area, &key)))
+            }
             Call::StorageSet(local, key, value) => {
-                match self
-                    .with_storage(|storage, origin| storage.set_item(local, origin, &key, &value))?
-                {
+                match self.with_areas(|areas, area| areas.set(local, area, &key, &value))? {
                     Err(storage::OverQuota) => Ok(Answer::Bool(false)),
                     Ok(None) => Ok(Answer::Bool(true)),
                     Ok(Some(old)) => {
@@ -1278,15 +1264,14 @@ impl DocumentHost {
                 }
             }
             Call::StorageRemove(local, key) => {
-                let old =
-                    self.with_storage(|storage, origin| storage.remove_item(local, origin, &key))?;
+                let old = self.with_areas(|areas, area| areas.remove(local, area, &key))?;
                 if let Some(old) = old {
                     self.broadcast(local, Some(key), Some(old), None);
                 }
                 Ok(Answer::Nothing)
             }
             Call::StorageClear(local) => {
-                if self.with_storage(|storage, origin| storage.clear_area(local, origin))? {
+                if self.with_areas(|areas, area| areas.clear(local, area))? {
                     self.broadcast(local, None, None, None);
                 }
                 Ok(Answer::Nothing)

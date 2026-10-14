@@ -741,6 +741,7 @@ impl Engine {
         child.network = self.network.for_frame();
         child.clock = self.clock.clone();
         child.storage = self.storage.clone();
+        child.areas = self.areas.clone();
         child.scripting = self.scripting;
         child.script_limits = js::Limits {
             heap: self.script_limits.heap.min(MAX_FRAME_HEAP),

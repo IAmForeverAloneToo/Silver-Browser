@@ -14,8 +14,9 @@ use net::cookies::Context;
 use net::csp::Violation;
 use net::{Delivery, NetworkError, Request, Response, Url};
 
-use crate::ipc::{Answer, Bytes, Calls, Closed, Sender, ToBrowser, ToRenderer};
+use crate::ipc::{Answer, Bytes, Calls, Closed, Sender, StorageOp, ToBrowser, ToRenderer};
 use crate::loader::{Cookies, Fetcher};
+use crate::storage::{AreaKey, Areas, OverQuota};
 
 /// How often a fetch waiting for the browser looks whether it was
 /// aborted.
@@ -229,5 +230,111 @@ impl Cookies for RemoteCookies {
             value: Bytes(value.to_vec()),
             context,
         });
+    }
+}
+
+/// A renderer's frame's Web Storage areas, kept by the browser.
+pub(crate) struct RemoteAreas {
+    link: Arc<Link>,
+    frame: u32,
+}
+
+impl RemoteAreas {
+    pub(crate) fn new(link: Arc<Link>, frame: u32) -> RemoteAreas {
+        RemoteAreas { link, frame }
+    }
+
+    fn ask(&self, local: bool, key: &AreaKey, op: StorageOp) -> Option<Answer> {
+        self.link
+            .call(|call| ToBrowser::Storage {
+                call,
+                frame: self.frame,
+                local,
+                origin: key.origin.clone(),
+                partition: key.partition.clone(),
+                op,
+            })
+            .ok()
+    }
+
+    fn value(&self, local: bool, key: &AreaKey, op: StorageOp) -> Option<String> {
+        match self.ask(local, key, op) {
+            Some(Answer::StorageValue { value }) => value,
+            _ => None,
+        }
+    }
+}
+
+impl Areas for RemoteAreas {
+    fn length(&self, local: bool, key: &AreaKey) -> usize {
+        match self.ask(local, key, StorageOp::Length {}) {
+            Some(Answer::StorageLength { length }) => usize::try_from(length).unwrap_or(0),
+            _ => 0,
+        }
+    }
+
+    fn key(&self, local: bool, key: &AreaKey, index: usize) -> Option<String> {
+        self.value(
+            local,
+            key,
+            StorageOp::Key {
+                index: index as u64,
+            },
+        )
+    }
+
+    fn keys(&self, local: bool, key: &AreaKey) -> Vec<String> {
+        match self.ask(local, key, StorageOp::Keys {}) {
+            Some(Answer::StorageKeys { keys }) => keys,
+            _ => Vec::new(),
+        }
+    }
+
+    fn get(&self, local: bool, key: &AreaKey, item: &str) -> Option<String> {
+        self.value(
+            local,
+            key,
+            StorageOp::Get {
+                item: item.to_owned(),
+            },
+        )
+    }
+
+    fn set(
+        &self,
+        local: bool,
+        key: &AreaKey,
+        item: &str,
+        value: &str,
+    ) -> Result<Option<Option<String>>, OverQuota> {
+        let op = StorageOp::Set {
+            item: item.to_owned(),
+            value: value.to_owned(),
+        };
+        match self.ask(local, key, op) {
+            Some(Answer::StorageSet {
+                stored: true,
+                old,
+                changed,
+            }) => Ok(changed.then_some(old)),
+            _ => Err(OverQuota),
+        }
+    }
+
+    fn remove(&self, local: bool, key: &AreaKey, item: &str) -> Option<String> {
+        self.value(
+            local,
+            key,
+            StorageOp::Remove {
+                item: item.to_owned(),
+            },
+        )
+    }
+
+    fn clear(&self, local: bool, key: &AreaKey) -> bool {
+        matches!(
+            self.ask(local, key, StorageOp::Clear {}),
+            Some(Answer::StorageCleared { cleared: true })
+        )
     }
 }

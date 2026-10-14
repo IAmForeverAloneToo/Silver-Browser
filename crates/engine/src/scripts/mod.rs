@@ -193,6 +193,9 @@ pub(crate) struct WindowEnv {
     /// origin, to hear of its changes.
     pub(crate) storage: Option<Arc<Mutex<crate::storage::Storage>>>,
     pub(crate) storage_peer: bool,
+    /// The areas themselves: the engine's storage's, or the browser's in
+    /// a renderer (M34.1).
+    pub(crate) areas: Option<Arc<dyn crate::storage::Areas>>,
     /// The tab's frames and the window's own (M33.2).
     pub(crate) frames: Option<crate::frames::FramesEnv>,
     /// Where the window's frame is in its tab (M33.2), its document

@@ -63,6 +63,26 @@ pub trait Serve: Send + Sync {
     ) -> Result<Option<ToBrowser>, String>;
 }
 
+/// Services tried in turn: the first that takes a message serves it.
+pub struct Services(pub Vec<Arc<dyn Serve>>);
+
+impl Serve for Services {
+    fn serve(
+        &self,
+        renderer: u32,
+        mut message: ToBrowser,
+        reply: &Sender<ToRenderer>,
+    ) -> Result<Option<ToBrowser>, String> {
+        for service in &self.0 {
+            match service.serve(renderer, message, reply)? {
+                Some(left) => message = left,
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(message))
+    }
+}
+
 /// Why a renderer is gone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Gone {

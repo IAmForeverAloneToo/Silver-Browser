@@ -383,6 +383,9 @@ pub struct Engine {
     /// The profile what the browsing keeps is written to, and the Web
     /// Storage areas (M28), which scripts reach through their host.
     storage: Arc<Mutex<storage::Storage>>,
+    /// The Web Storage areas the browser keeps, in a renderer (M34.1); the
+    /// storage's own otherwise.
+    areas: Option<Arc<dyn storage::Areas>>,
     /// The `storage` events queued (M28), each at the page it goes to.
     storage_events: VecDeque<(PageId, js::EventInit)>,
     /// Whether the window is hidden (M26): minimized or covered.
@@ -1105,6 +1108,7 @@ impl Engine {
                 Arc::new(move || made.elapsed())
             },
             storage: Arc::new(Mutex::new(storage::Storage::new())),
+            areas: None,
             storage_events: VecDeque::new(),
             hidden: false,
             hidden_ran: None,
@@ -1703,6 +1707,10 @@ impl Engine {
             keyboard: self.keyboard,
             storage: Some(self.storage.clone()),
             storage_peer: self.storage_peers(),
+            areas: Some(match &self.areas {
+                Some(areas) => areas.clone(),
+                None => self.storage.clone(),
+            }),
             drawables: Some(self.shown.drawables.clone()),
             frames: Some(frames::FramesEnv {
                 tree: self.frame.tree.clone(),
@@ -5125,6 +5133,14 @@ impl Engine {
     /// engine makes at its first fetch, `Client::default()`: a test's
     /// client trusts its server's root, say. Fetches in flight finish
     /// with the client they began with.
+    /// Reaches its Web Storage areas through the browser (M34.1): the
+    /// engine of a renderer, whose storage is the browser's.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn set_remote_storage(&mut self, areas: Arc<dyn storage::Areas>) {
+        self.areas = Some(areas.clone());
+        self.for_each_frame(&mut |frame| frame.areas = Some(areas.clone()));
+    }
+
     /// Fetches, and reaches `document.cookie`, through the browser (M34.1):
     /// the engine of a renderer, whose network is the browser's.
     #[cfg_attr(not(test), allow(dead_code))]

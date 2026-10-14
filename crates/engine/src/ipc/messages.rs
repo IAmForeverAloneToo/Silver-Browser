@@ -5,7 +5,7 @@
 
 use net::cookies::Context;
 use net::csp::Violation;
-use net::{NetworkError, Request, Response, Url};
+use net::{NetworkError, Origin, Partition, Request, Response, Url};
 
 use super::codec::{Bytes, encode, wire_enum};
 
@@ -51,6 +51,31 @@ wire_enum! {
         3 => Cookies { call: u64, frame: u32, url: Url, context: Context },
         /// `document.cookie = value` of frame `frame`'s document.
         4 => SetCookie { frame: u32, url: Url, value: Bytes, context: Context },
+        /// An operation on a Web Storage area of frame `frame`'s document,
+        /// of `origin` in `partition`: `localStorage`'s if `local`, else
+        /// `sessionStorage`'s.
+        5 => Storage {
+            call: u64,
+            frame: u32,
+            local: bool,
+            origin: Origin,
+            partition: Option<Partition>,
+            op: StorageOp,
+        },
+    }
+}
+
+wire_enum! {
+    /// What a script does to a Web Storage area.
+    #[derive(Debug)]
+    pub enum StorageOp {
+        0 => Length {},
+        1 => Key { index: u64 },
+        2 => Keys {},
+        3 => Get { item: String },
+        4 => Set { item: String, value: String },
+        5 => Remove { item: String },
+        6 => Clear {},
     }
 }
 
@@ -60,6 +85,17 @@ wire_enum! {
     pub enum Answer {
         /// `document.cookie`'s cookies, if any.
         0 => Cookies { cookies: Option<Bytes> },
+        /// An area's number of items.
+        1 => StorageLength { length: u64 },
+        /// An item's value or key, if there is one.
+        2 => StorageValue { value: Option<String> },
+        /// An area's keys, in their order.
+        3 => StorageKeys { keys: Vec<String> },
+        /// What `setItem` did: whether the item was stored (not past the
+        /// quota), and whether it changed, from `old`.
+        4 => StorageSet { stored: bool, old: Option<String>, changed: bool },
+        /// Whether `clear()` removed anything.
+        5 => StorageCleared { cleared: bool },
     }
 }
 
@@ -74,4 +110,4 @@ macro_rules! equal_by_encoding {
     )*};
 }
 
-equal_by_encoding!(ToRenderer, ToBrowser, Answer);
+equal_by_encoding!(ToRenderer, ToBrowser, Answer, StorageOp);
