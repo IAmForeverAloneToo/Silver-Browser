@@ -132,6 +132,30 @@ impl Grants {
         }
     }
 
+    /// Locks renderer `renderer` to `lock`, whatever it was locked to:
+    /// until each site has its renderer (M34 step 6), the tab's one
+    /// renderer takes the site it is asked to show.
+    pub(crate) fn relock(&self, renderer: u32, lock: Lock) {
+        self.lock().entry(renderer).or_default().lock = Some(lock);
+    }
+
+    /// Frame `frame` of renderer `renderer` commits `url`'s document: a
+    /// top-level frame's origin is the top's from now on, and (until step
+    /// 6) the renderer takes its site.
+    pub(crate) fn commit(&self, renderer: u32, frame: u32, url: &Url) {
+        let mut grants = self.lock();
+        let Some(grant) = grants.get_mut(&renderer) else {
+            return;
+        };
+        let Some(framed) = grant.frames.get_mut(&frame) else {
+            return;
+        };
+        if !framed.cross_site {
+            framed.top = url.origin();
+            grant.lock = Some(Lock::of(url));
+        }
+    }
+
     /// Forgets renderer `renderer`.
     pub fn forget(&self, renderer: u32) {
         self.lock().remove(&renderer);
@@ -158,7 +182,8 @@ impl Grants {
 
 /// The browser's network, for every renderer.
 pub struct NetworkService {
-    client: Arc<Client>,
+    client: Mutex<Arc<Client>>,
+    jar: Arc<Mutex<Jar>>,
     grants: Arc<Grants>,
     /// The fetches in flight, by renderer and the renderer's number for
     /// them, with what aborts each.
@@ -170,7 +195,8 @@ impl NetworkService {
     /// the browser's, checking renderers against `grants`.
     pub fn new(client: Client, grants: Arc<Grants>) -> Arc<NetworkService> {
         Arc::new(NetworkService {
-            client: Arc::new(client),
+            jar: client.cookies().clone(),
+            client: Mutex::new(Arc::new(client)),
             grants,
             fetches: Arc::default(),
         })
@@ -178,7 +204,13 @@ impl NetworkService {
 
     /// The client's cookie jar.
     pub fn jar(&self) -> &Arc<Mutex<Jar>> {
-        self.client.cookies()
+        &self.jar
+    }
+
+    /// Fetches from now on with `client`, which keeps the same jar:
+    /// another user agent (D12). Fetches in flight end with the old.
+    pub fn replace_client(&self, client: Client) {
+        *self.client.lock().unwrap_or_else(PoisonError::into_inner) = Arc::new(client);
     }
 
     /// How many fetches renderer `renderer` has in flight.
@@ -211,7 +243,7 @@ impl NetworkService {
             } => {
                 let (lock, grant) = self.grants.frame(renderer, frame)?;
                 let request = checked(*request, &lock, &grant)?;
-                self.start(renderer, id, streamed, request, &lock, reply)?;
+                self.start((renderer, frame), id, streamed, request, &lock, reply)?;
                 Ok(None)
             }
             ToBrowser::CancelFetch { id } => {
@@ -282,7 +314,7 @@ impl NetworkService {
     /// thread of its own, which answers through `reply`.
     fn start(
         &self,
-        renderer: u32,
+        (renderer, frame): (u32, u32),
         id: u64,
         streamed: bool,
         mut request: Request,
@@ -320,7 +352,17 @@ impl NetworkService {
         // The violations of the request's policies are collected here and
         // go back with its end.
         request.csp = request.csp.map(net::csp::Csp::with_sink);
-        let (client, fetches) = (self.client.clone(), self.fetches.clone());
+        let client = self
+            .client
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let fetches = self.fetches.clone();
+        let grants = self.grants.clone();
+        // A top-level document's response decides, before the renderer
+        // has it, what its frame's requests are from then on.
+        let navigation = request.destination == net::Destination::Document
+            && request.mode == net::Mode::Navigate;
         let answer = reply.clone();
         let spawned = thread::Builder::new()
             .name(format!("renderer-{renderer}-fetch"))
@@ -330,6 +372,12 @@ impl NetworkService {
                     true => client
                         .fetch_streaming(&request, &mut |delivery| match delivery {
                             Delivery::Head(head) => {
+                                if navigation
+                                    && commits(head)
+                                    && let Some(url) = head.url_list.last()
+                                {
+                                    grants.commit(renderer, frame, url);
+                                }
                                 let _ = reply.send(&ToRenderer::FetchHead {
                                     id,
                                     response: renderer_head(head),
@@ -458,6 +506,15 @@ fn filtered(mut response: Response) -> Response {
         response.body.clear();
     }
     response
+}
+
+/// Whether a navigation's response `head` makes a document: not a
+/// download, nor a 204 or 205 (the engine's `outcome`).
+fn commits(head: &Response) -> bool {
+    !matches!(
+        crate::loader::outcome(head),
+        crate::loader::Outcome::Download(_) | crate::loader::Outcome::Nothing
+    )
 }
 
 /// `response`'s head as a renderer may have it: no `Set-Cookie`, which is

@@ -14,13 +14,15 @@ mod net_wire;
 mod pipe;
 #[cfg(test)]
 mod tests;
+mod view_wire;
 
 pub use channel::{Calls, Closed, ReadError, Sender, frame, read_message, spawn_reader};
 pub use codec::{Bytes, Decoder, Encoder, Malformed, Wire, decode_all, encode};
-#[allow(unused_imports)]
+#[cfg(test)]
 pub(crate) use codec::{wire_enum, wire_struct, wire_unit_enum};
 pub use messages::{Answer, StorageOp, ToBrowser, ToRenderer};
 pub use pipe::{PipeBreaker, PipeReader, PipeWriter, duplex, pipe};
+pub use view_wire::{Input, Settings, ViewState};
 
 /// The schema's version: a message's layout never changes without it.
 /// The hello of each side carries it, and a renderer of another version

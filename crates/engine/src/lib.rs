@@ -117,6 +117,7 @@ mod submit;
 mod svg_images;
 #[cfg(test)]
 mod testing;
+mod view;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -140,6 +141,7 @@ pub use storage::{FLUSH_INTERVAL, STORAGE_QUOTA, StorageDriver};
 pub use style::animation::{AnimationEvent, EventKind, Running as RunningAnimation};
 pub use style::computed::Cursor;
 pub use style::{ColorScheme, MediaType, Preferences};
+pub use view::View;
 
 use dom::{Change, Document, NodeId};
 use image_store::{Decoder, ImageStore};
@@ -783,6 +785,16 @@ impl Link {
     /// The link's element.
     pub fn node(&self) -> NodeId {
         self.node
+    }
+
+    /// A link a renderer found (M34.5), known to the browser by its URL
+    /// alone: no page of the browser's has it.
+    pub(crate) fn remote(url: Url) -> Link {
+        Link {
+            page: PageId::MAX,
+            node: NodeId::from_bits(0).expect("the first slot's first node"),
+            url,
+        }
     }
 }
 

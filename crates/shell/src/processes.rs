@@ -8,7 +8,8 @@
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use engine::service::{Event, Gone, HELLO_TIMEOUT, Renderer};
+use engine::service::{Event, Gone, HELLO_TIMEOUT, RemoteTab, Renderer};
+use engine::{FrameTime, LoadState, Url, View};
 
 use crate::platform::ProcessLauncher;
 
@@ -52,18 +53,15 @@ fn ended(
 /// Starts a renderer and ends it when told, then another and kills it;
 /// prints what each did and returns 0 when both did as they should. With
 /// `orphan`, starts one, prints its process's number and exits at once,
-/// without ending it: its job object must.
-pub(crate) fn check(orphan: bool) -> i32 {
-    if orphan {
-        return match check_orphan() {
-            Ok(()) => 0,
-            Err(why) => {
-                eprintln!("silver-browser: {why}");
-                1
-            }
-        };
-    }
-    match check_all() {
+/// without ending it: its job object must. With `page`, shows
+/// `about:silver` in a tab of a renderer and says what it drew.
+pub(crate) fn check(what: Option<&str>) -> i32 {
+    let checked = match what {
+        Some("orphan") => check_orphan(),
+        Some("page") => check_page(),
+        _ => check_all(),
+    };
+    match checked {
         Ok(()) => 0,
         Err(why) => {
             eprintln!("silver-browser: {why}");
@@ -122,4 +120,48 @@ fn check_orphan() -> Result<(), String> {
     println!("renderer 3: process {}", renderer.process_id());
     // No destructor runs: only the operating system ends the renderer.
     std::process::exit(0);
+}
+
+fn check_page() -> Result<(), String> {
+    const SIZE: (u32, u32) = (400, 300);
+    let launcher = ProcessLauncher::new().map_err(|error| format!("no executable: {error}"))?;
+    let fonts = engine::Engine::new()
+        .map_err(|error| format!("no fonts: {error}"))?
+        .fonts()
+        .clone();
+    let mut tab = RemoteTab::new(Arc::new(launcher), fonts);
+    tab.set_viewport(SIZE.0, SIZE.1);
+    tab.frame_at(SIZE.0, SIZE.1, FrameTime::at(Duration::ZERO));
+    let url = Url::parse("about:silver").map_err(|_| "about:silver")?;
+    tab.navigate(url);
+    let began = Instant::now();
+    let mut drawn = 0;
+    while began.elapsed() < WAIT {
+        tab.poll_network();
+        tab.run_tasks();
+        if *tab.load_state() == LoadState::Loaded && tab.needs_frame() {
+            let frame = tab.frame_at(SIZE.0, SIZE.1, FrameTime::at(Duration::ZERO));
+            drawn = frame
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|pixel| pixel[..3] != [255, 255, 255])
+                .count();
+            if drawn > 0 {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    println!(
+        "page: about:silver {:?}, {} pixels drawn of {}, renderer process {:?}",
+        tab.load_state(),
+        drawn,
+        SIZE.0 * SIZE.1,
+        tab.renderer_process()
+    );
+    if drawn == 0 {
+        return Err("the renderer drew nothing".into());
+    }
+    Ok(())
 }

@@ -116,3 +116,15 @@ fn a_renderer_ends_with_the_browser_that_started_it() {
     }
     assert!(!runs(id), "renderer process {id} outlived its browser");
 }
+
+#[test]
+fn a_renderer_process_shows_a_page_for_the_browser() {
+    let out = Command::new(BROWSER)
+        .args(["--check-processes", "page"])
+        .output()
+        .expect("the check ran");
+    let said = String::from_utf8_lossy(&out.stdout);
+    let complained = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{said}{complained}");
+    assert!(said.starts_with("page: about:silver Loaded, "), "{said}");
+}

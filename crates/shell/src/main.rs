@@ -53,7 +53,7 @@ use std::time::{Duration, Instant};
 use engine::address::Address;
 use engine::{
     Backend, ColorScheme, Engine, FRAME_BUDGET, FrameTime, LoadState, Preferences, PrintOptions,
-    Profile, Url,
+    Profile, Url, View,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
@@ -80,13 +80,13 @@ struct NetworkWake;
 /// The window lives behind an `Arc` because softbuffer's `Context` and
 /// `Surface` each hold their own handle to it (raw-window-handle 0.6
 /// provides the impls for `Arc<T>`).
-struct Browser {
+struct Browser<V: View> {
     window: Option<Arc<Window>>,
     context: Option<softbuffer::Context<Arc<Window>>>,
     surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
     /// The size the surface was last given.
     surface_size: SurfaceSize,
-    session: Session,
+    session: Session<V>,
     /// The clock frames are drawn by and clicks counted on: the time
     /// since the browser began.
     start: Instant,
@@ -127,8 +127,8 @@ struct Shown {
     ime: Option<Option<(i32, i32, u32, u32)>>,
 }
 
-impl Browser {
-    fn new(session: Session, asked: Asked, start: Instant) -> Self {
+impl<V: View> Browser<V> {
+    fn new(session: Session<V>, asked: Asked, start: Instant) -> Self {
         Browser {
             window: None,
             context: None,
@@ -244,7 +244,7 @@ fn frame_due(drawn: Option<Instant>, now: Instant) -> Option<Instant> {
         .filter(|&due| due > now)
 }
 
-impl ApplicationHandler<NetworkWake> for Browser {
+impl<V: View> ApplicationHandler<NetworkWake> for Browser<V> {
     /// The time the session asked to be woken at has come (M22.3): the
     /// end of an animation's delay, which wants a frame.
     fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
@@ -598,7 +598,7 @@ fn print_to_pdf(
 /// platform's place (M28, docs/design/storage.md). What went wrong, to
 /// say: the engine then keeps nothing this run, and a profile it could
 /// not open is left as it is.
-fn open_profile(engine: &mut Engine, keep: &Keep, default: Option<PathBuf>) -> Option<String> {
+fn open_profile(engine: &mut impl View, keep: &Keep, default: Option<PathBuf>) -> Option<String> {
     let dir = match keep {
         Keep::Nothing => return None,
         Keep::In(dir) => dir.clone(),
@@ -754,6 +754,9 @@ struct CommandLine {
     compat: bool,
     /// Where the browsing keeps what it keeps (M28).
     profile: Keep,
+    /// `--multi-process`: the page shown by a renderer process (M34.5),
+    /// until the many processes are the default.
+    multi_process: bool,
 }
 
 /// The profile the command line asks for (M28).
@@ -783,6 +786,7 @@ fn command_line(args: impl Iterator<Item = OsString>) -> Result<CommandLine, Str
         scripts: false,
         compat: false,
         profile: Keep::Default,
+        multi_process: false,
     };
     let mut page: Option<OsString> = None;
     let mut args = args.peekable();
@@ -797,6 +801,10 @@ fn command_line(args: impl Iterator<Item = OsString>) -> Result<CommandLine, Str
         }
         if arg == "--compat-user-agent" {
             line.compat = true;
+            continue;
+        }
+        if arg == "--multi-process" {
+            line.multi_process = true;
             continue;
         }
         if arg == "--profile" || arg == "--temporary-profile" {
@@ -887,10 +895,8 @@ fn main() {
     match std::env::args_os().nth(1) {
         Some(first) if first == "--renderer" => std::process::exit(processes::renderer()),
         Some(first) if first == "--check-processes" => {
-            let orphan = std::env::args_os()
-                .nth(2)
-                .is_some_and(|arg| arg == "orphan");
-            std::process::exit(processes::check(orphan))
+            let what = std::env::args_os().nth(2);
+            std::process::exit(processes::check(what.as_deref().and_then(|w| w.to_str())))
         }
         _ => {}
     }
@@ -902,12 +908,12 @@ fn main() {
                 "usage: silver-browser [--software] [--layer-budget <MiB>] \
                  [--prefers-color-scheme light|dark] [--prefers-reduced-motion] \
                  [--enable-scripts] [--compat-user-agent] [--print-to-pdf <path>] \
-                 [--profile <dir> | --temporary-profile] [URL or path]"
+                 [--profile <dir> | --temporary-profile] [--multi-process] [URL or path]"
             );
             std::process::exit(2);
         }
     };
-    let start = line.start;
+    let start = line.start.clone();
     let asked = line.asked;
     if let Some(path) = &line.print_to {
         std::process::exit(print_to_pdf(
@@ -920,12 +926,30 @@ fn main() {
         ));
     }
 
+    if line.multi_process {
+        let launcher = match platform::ProcessLauncher::new() {
+            Ok(launcher) => launcher,
+            Err(e) => {
+                eprintln!("silver-browser: no renderer can be started: {e}");
+                std::process::exit(1);
+            }
+        };
+        let fonts = match engine::Engine::new() {
+            Ok(engine) => engine.fonts().clone(),
+            Err(e) => {
+                eprintln!("engine initialization failed: {e}");
+                return;
+            }
+        };
+        let tab = engine::service::RemoteTab::new(Arc::new(launcher), fonts);
+        return run(tab, &line);
+    }
     let wanted = if line.software {
         Backend::Software
     } else {
         Backend::Gpu
     };
-    let (mut engine, fallback) = match Engine::new_on(wanted) {
+    let (engine, fallback) = match Engine::new_on(wanted) {
         Ok(made) => made,
         Err(e) => {
             eprintln!("engine initialization failed: {e}");
@@ -935,6 +959,12 @@ fn main() {
     if let Some(why) = fallback {
         eprintln!("silver-browser: {why}; drawing in software");
     }
+    run(engine, &line)
+}
+
+/// Shows the page `engine` shows in a window until it is closed.
+fn run(mut engine: impl View, line: &CommandLine) {
+    let (start, asked) = (line.start.clone(), line.asked);
     if let Some(bytes) = line.layer_budget {
         engine.set_layer_budget(bytes);
     }
@@ -959,11 +989,11 @@ fn main() {
     // The proxy is sent across threads but need not be shared between
     // them on every platform, so a lock makes it so.
     let proxy = Mutex::new(event_loop.create_proxy());
-    engine.set_waker(move || {
+    engine.set_waker(Arc::new(move || {
         let proxy = proxy.lock().unwrap_or_else(PoisonError::into_inner);
         // An event loop gone has no one to wake.
         let _ = proxy.send_event(NetworkWake);
-    });
+    }));
     // The engine's tasks and the frames read one clock (M26).
     let began = Instant::now();
     engine.set_clock(Arc::new(move || began.elapsed()));
@@ -1181,6 +1211,7 @@ mod tests {
                 scripts: false,
                 compat: false,
                 profile: Keep::Default,
+                multi_process: false,
             })
         );
         assert_eq!(
@@ -1194,6 +1225,7 @@ mod tests {
                 scripts: false,
                 compat: false,
                 profile: Keep::Default,
+                multi_process: false,
             })
         );
         assert_eq!(

@@ -215,6 +215,11 @@ impl Renderer {
         *state == State::Ready
     }
 
+    /// Kills it, as from outside: its end comes as any end does.
+    pub fn kill(&self) {
+        self.shared.kill();
+    }
+
     /// Kills it for having sent `what`, which the protocol does not
     /// allow.
     pub fn bad_message(&self, what: impl Into<String>) {
@@ -374,8 +379,17 @@ pub(super) fn start_within(
 
 /// Starts renderers as threads of this process, over pipes in memory:
 /// the whole of the protocol without a process, for the tests (M34.6).
-#[derive(Debug, Default, Clone, Copy)]
-pub struct ThreadLauncher;
+#[derive(Default, Clone)]
+pub struct ThreadLauncher {
+    fonts: Option<text::FontCollection>,
+}
+
+impl ThreadLauncher {
+    /// A launcher whose renderers draw with `fonts`, not the system's.
+    pub fn with_fonts(fonts: text::FontCollection) -> ThreadLauncher {
+        ThreadLauncher { fonts: Some(fonts) }
+    }
+}
 
 struct ThreadRenderer {
     thread: Option<thread::JoinHandle<Result<(), String>>>,
@@ -417,10 +431,11 @@ impl Launcher for ThreadLauncher {
     fn launch(&self, number: u32) -> io::Result<Launched> {
         let ((browser_in, browser_out), (renderer_in, renderer_out)) = ipc::duplex();
         let breakers = [browser_out.breaker(), renderer_out.breaker()];
+        let fonts = self.fonts.clone();
         let thread = thread::Builder::new()
             .name(format!("renderer-{number}"))
             .stack_size(32 << 20)
-            .spawn(move || crate::renderer::run(renderer_in, renderer_out))?;
+            .spawn(move || crate::renderer::run_with(renderer_in, renderer_out, fonts))?;
         Ok(Launched {
             from_renderer: Box::new(browser_in),
             to_renderer: Box::new(browser_out),

@@ -31,7 +31,8 @@ fn until_gone(events: &mpsc::Receiver<(u32, Event)>, number: u32) -> Vec<String>
 #[test]
 fn a_renderer_answers_the_hello_and_ends_when_told() {
     let (events, received) = mpsc::channel();
-    let renderer = Renderer::start(&ThreadLauncher, 3, events, nothing(), None).expect("started");
+    let renderer =
+        Renderer::start(&ThreadLauncher::default(), 3, events, nothing(), None).expect("started");
     assert!(renderer.wait_ready(WAIT));
     assert_eq!(renderer.number(), 3);
     assert_eq!(renderer.gone(), None);
@@ -49,7 +50,8 @@ fn a_renderer_answers_the_hello_and_ends_when_told() {
 #[test]
 fn a_renderer_killed_is_gone() {
     let (events, received) = mpsc::channel();
-    let renderer = Renderer::start(&ThreadLauncher, 1, events, nothing(), None).expect("started");
+    let renderer =
+        Renderer::start(&ThreadLauncher::default(), 1, events, nothing(), None).expect("started");
     assert!(renderer.wait_ready(WAIT));
     renderer.bad_message("a test's");
     assert_eq!(
@@ -195,7 +197,8 @@ fn each_renderer_numbers_its_opaque_origins_apart() {
     assert!(opaque_origins_of(0) > 0, "apart from the browser's");
     assert!(opaque_origins_of(1) - opaque_origins_of(0) >= 1 << 40);
     let (events, _received) = mpsc::channel();
-    let renderer = Renderer::start(&ThreadLauncher, 5, events, nothing(), None).expect("started");
+    let renderer =
+        Renderer::start(&ThreadLauncher::default(), 5, events, nothing(), None).expect("started");
     assert!(renderer.wait_ready(WAIT));
     // Renderers as threads share the process's counter, which the hello
     // moved past the renderer's space's start.

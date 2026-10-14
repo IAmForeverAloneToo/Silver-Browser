@@ -7,14 +7,15 @@
 //! told to end or its input ends.
 
 use std::io::{Read, Write};
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 
 use crate::ipc::{self, IPC_VERSION, Sender, ToBrowser, ToRenderer};
 
-// The renderer's engines use it from step 5 (M34.5); its tests now.
-#[cfg_attr(not(test), allow(dead_code))]
+mod host;
 pub(crate) mod link;
 
+use host::Host;
+pub use host::MAX_SURFACE_PIXELS;
 use link::Link;
 
 /// Where renderer `process`'s opaque origins are numbered from: each
@@ -23,11 +24,14 @@ pub fn opaque_origins_of(process: u32) -> u64 {
     (u64::from(process) + 1) << 40
 }
 
-/// What the renderer's reader thread hands its main thread.
+/// What the renderer's main thread is woken by.
 enum Input {
     Message(Box<ToRenderer>),
     /// The browser's channel ended, or said what is no message.
     Closed(Option<String>),
+    /// An engine has something to take: a fetch's result, a worker's
+    /// message.
+    Wake,
 }
 
 /// Runs a renderer over `input`, what the browser writes, and `output`,
@@ -38,10 +42,21 @@ pub fn run(
     input: impl Read + Send + 'static,
     output: impl Write + Send + 'static,
 ) -> Result<(), String> {
+    run_with(input, output, None)
+}
+
+/// [`run`], its views drawing with `fonts` rather than the system's: the
+/// tests' bundled font.
+pub fn run_with(
+    input: impl Read + Send + 'static,
+    output: impl Write + Send + 'static,
+    fonts: Option<text::FontCollection>,
+) -> Result<(), String> {
     let sender = Sender::<ToBrowser>::new(output);
     let link = Link::new(sender.clone());
     let (queue, inputs) = mpsc::channel();
     let closing = queue.clone();
+    let waking = queue.clone();
     let (routing, ending) = (link.clone(), link.clone());
     ipc::spawn_reader::<ToRenderer, _>(
         "renderer-reader",
@@ -62,10 +77,13 @@ pub fn run(
     )
     .map_err(|error| format!("no reader thread: {error}"))?;
 
-    let first = match inputs.recv() {
-        Ok(Input::Message(message)) => *message,
-        Ok(Input::Closed(None)) | Err(_) => return Ok(()),
-        Ok(Input::Closed(Some(why))) => return Err(why),
+    let first = loop {
+        match inputs.recv() {
+            Ok(Input::Message(message)) => break *message,
+            Ok(Input::Wake) => {}
+            Ok(Input::Closed(None)) | Err(_) => return Ok(()),
+            Ok(Input::Closed(Some(why))) => return Err(why),
+        }
     };
     match first {
         ToRenderer::Hello { version, process } if version == IPC_VERSION => {
@@ -82,15 +100,38 @@ pub fn run(
         message => return Err(format!("{message:?} before the hello")),
     }
 
-    // A renderer with nothing to show waits for its end.
-    let next = match inputs.recv() {
-        Ok(Input::Message(message)) => *message,
-        Ok(Input::Closed(None)) | Err(_) => return Ok(()),
-        Ok(Input::Closed(Some(why))) => return Err(why),
-    };
-    match next {
-        ToRenderer::Shutdown {} => Ok(()),
-        ToRenderer::Hello { .. } => Err("a second hello".into()),
-        message => Err(format!("{message:?} out of place")),
+    let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+        let _ = waking.send(Input::Wake);
+    });
+    let mut host = Host::new(link, fonts, wake);
+    loop {
+        let first = match host.wait() {
+            Some(wait) => match inputs.recv_timeout(wait) {
+                Ok(input) => Some(input),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+            },
+            None => match inputs.recv() {
+                Ok(input) => Some(input),
+                Err(_) => return Ok(()),
+            },
+        };
+        // What came meanwhile is taken before the views' turn.
+        for input in first
+            .into_iter()
+            .chain(std::iter::from_fn(|| inputs.try_recv().ok()))
+        {
+            match input {
+                Input::Message(message) => {
+                    if !host.handle(*message)? {
+                        return Ok(());
+                    }
+                }
+                Input::Wake => {}
+                Input::Closed(None) => return Ok(()),
+                Input::Closed(Some(why)) => return Err(why),
+            }
+        }
+        host.turn();
     }
 }

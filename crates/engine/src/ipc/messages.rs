@@ -8,6 +8,8 @@ use net::csp::Violation;
 use net::{NetworkError, Origin, Partition, Request, Response, Url};
 
 use super::codec::{Bytes, encode, wire_enum};
+use super::view_wire::{Input, Settings, ViewState};
+use crate::ConsoleEntry;
 
 wire_enum! {
     /// What the browser sends a renderer.
@@ -32,6 +34,37 @@ wire_enum! {
             result: Result<Response, NetworkError>,
             violations: Vec<Violation>,
         },
+        /// A view of the frame the browser numbered `frame`, shown under
+        /// `settings`: an engine showing `about:blank`.
+        6 => CreateView { view: u32, frame: u32, settings: Settings },
+        /// The view goes.
+        7 => DestroyView { view: u32 },
+        /// The view navigates to `url`.
+        8 => Navigate { view: u32, url: Url },
+        /// The view's history goes `delta` entries back or forward.
+        9 => Traverse { view: u32, delta: i32 },
+        10 => Reload { view: u32 },
+        11 => Stop { view: u32 },
+        /// The view's viewport, in CSS pixels, and the size its frames are
+        /// drawn at, in raster pixels.
+        12 => Resize {
+            view: u32,
+            width: u32,
+            height: u32,
+            raster_width: u32,
+            raster_height: u32,
+        },
+        /// The settings the view is shown under now.
+        13 => Settings { view: u32, settings: Settings },
+        /// Input given to the view.
+        14 => Input { view: u32, input: Input },
+        /// The browser took the view's frame `frame`: the next may come.
+        15 => FrameTaken { view: u32, frame: u64 },
+        /// The view's selection is wanted, to be copied, or cut once the
+        /// clipboard has it.
+        16 => Copy { view: u32, cut: bool },
+        /// The view's selection is cut.
+        17 => Cut { view: u32 },
     }
 }
 
@@ -62,6 +95,28 @@ wire_enum! {
             partition: Option<Partition>,
             op: StorageOp,
         },
+        /// Rows of the view's frame `frame`, `width` by `height`, from
+        /// `first_row`: those that changed since the last frame.
+        6 => Pixels {
+            view: u32,
+            frame: u64,
+            width: u32,
+            height: u32,
+            first_row: u32,
+            bytes: Bytes,
+        },
+        /// The view's frame `frame` is whole.
+        7 => Frame { view: u32, frame: u64, width: u32, height: u32 },
+        /// What the session reads of the view, changed.
+        8 => State { view: u32, state: Box<ViewState> },
+        /// What the view's scripts wrote to the console.
+        9 => Console { view: u32, entries: Vec<ConsoleEntry> },
+        /// A notice the view has for the user.
+        10 => Notice { view: u32, text: String },
+        /// The keyboard's focus left the view's page.
+        11 => FocusLeft { view: u32 },
+        /// The view's selection, copied or to be cut.
+        12 => Copied { view: u32, text: Option<String>, cut: bool },
     }
 }
 

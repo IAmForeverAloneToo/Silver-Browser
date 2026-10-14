@@ -358,6 +358,23 @@ impl<T: Wire, E: Wire> Wire for Result<T, E> {
     }
 }
 
+impl<A: Wire, B: Wire, C: Wire, D: Wire> Wire for (A, B, C, D) {
+    fn encode(&self, out: &mut Encoder) {
+        self.0.encode(out);
+        self.1.encode(out);
+        self.2.encode(out);
+        self.3.encode(out);
+    }
+    fn decode(input: &mut Decoder<'_>) -> Result<Self, Malformed> {
+        Ok((
+            A::decode(input)?,
+            B::decode(input)?,
+            C::decode(input)?,
+            D::decode(input)?,
+        ))
+    }
+}
+
 impl<T: Wire> Wire for Box<T> {
     fn encode(&self, out: &mut Encoder) {
         (**self).encode(out);
@@ -447,7 +464,6 @@ macro_rules! wire_enum {
 }
 
 /// A struct of named fields, each a [`Wire`], encoded in order.
-#[allow(unused_macros)]
 macro_rules! wire_struct {
     (
         $(#[$meta:meta])*

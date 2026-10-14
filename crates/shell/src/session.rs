@@ -11,7 +11,7 @@
 use std::time::{Duration, Instant};
 
 use engine::address::{self, Address};
-use engine::{Engine, FrameTime, Link, LoadState, PermissionPrompt, Preferences, Url};
+use engine::{Engine, FrameTime, Link, LoadState, PermissionPrompt, Preferences, Url, View};
 use ui::{Action, Choice, PageState, PromptBar, StatusBubble, TooLong, Toolbar};
 
 use crate::keys::{self, Key, Modifiers, Platform, Shortcut};
@@ -83,9 +83,10 @@ struct Press {
     count: u32,
 }
 
-/// The window's contents.
-pub(crate) struct Session {
-    engine: Engine,
+/// The window's contents: the page an engine shows (M15), or one a
+/// renderer shows, through the browser's proxy of it (M34.5).
+pub(crate) struct Session<V: View = Engine> {
+    engine: V,
     toolbar: Toolbar,
     bubble: StatusBubble,
     /// The permission prompt the engine wants shown (M33.4), its bar, and
@@ -128,15 +129,15 @@ pub(crate) struct Session {
     drawn_bubble: Option<String>,
 }
 
-impl Session {
+impl<V: View> Session<V> {
     /// A session showing `start`, or `about:silver` with the address
     /// field focused when the command line asked for nothing.
     pub(crate) fn new(
-        mut engine: Engine,
+        mut engine: V,
         clipboard: Box<dyn Clipboard>,
         platform: Platform,
         start: Option<Url>,
-    ) -> Session {
+    ) -> Session<V> {
         let fonts = engine.fonts().clone();
         let about_silver = || Url::parse("about:silver").expect("about:silver parses");
         engine.navigate(start.clone().unwrap_or_else(about_silver));
@@ -175,12 +176,12 @@ impl Session {
     }
 
     #[cfg(test)]
-    pub(crate) fn engine(&self) -> &Engine {
+    pub(crate) fn engine(&self) -> &V {
         &self.engine
     }
 
     #[cfg(test)]
-    pub(crate) fn engine_mut(&mut self) -> &mut Engine {
+    pub(crate) fn engine_mut(&mut self) -> &mut V {
         &mut self.engine
     }
 
@@ -387,7 +388,7 @@ impl Session {
         // An open list takes every key (M26.8).
         let shortcut = key
             .as_ref()
-            .filter(|_| in_field || self.engine.popup_open().is_none())
+            .filter(|_| in_field || !self.engine.popup_open())
             .and_then(|key| keys::shortcut(key, self.mods, self.platform, in_field));
         match shortcut {
             Some(shortcut) => self.shortcut(shortcut),
@@ -652,7 +653,7 @@ impl Session {
             Shortcut::Cut => {
                 // The text leaves the control only once the clipboard
                 // has it.
-                if let Some(text) = self.engine.copy()
+                if let Some(text) = self.engine.copy_to_cut()
                     && self.copy(&text)
                 {
                     self.engine.cut();
@@ -821,6 +822,17 @@ impl Session {
     /// Brings the engine and what the window shows of it up to date: the
     /// page's focus, the toolbar, the title, and a notice the engine has.
     fn sync(&mut self) {
+        // What a renderer answered since (M34.5): the keyboard's focus left
+        // the page, or its selection was copied.
+        if self.engine.take_focus_left() {
+            self.toolbar.focus();
+        }
+        if let Some((text, cut)) = self.engine.take_copied()
+            && self.copy(&text)
+            && cut
+        {
+            self.engine.cut_copied();
+        }
         self.sync_window_focus();
         if let Some(notice) = self.engine.take_notice() {
             self.notice = Some(notice);
@@ -860,7 +872,7 @@ fn put(rgba: &[u8], out: &mut [u32]) {
 /// Prints what the shown page's scripts wrote to its console, and the
 /// errors they reported, to the standard error (M24.7): the console a
 /// developer would read until the browser has its own (M36).
-pub(crate) fn print_console(engine: &mut Engine) {
+pub(crate) fn print_console(engine: &mut impl View) {
     for entry in engine.take_console() {
         eprintln!("{}", console_line(&entry));
     }

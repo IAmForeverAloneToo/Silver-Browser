@@ -23,8 +23,7 @@ pub struct StorageService {
 
 impl StorageService {
     /// The service of `storage`, the browser's, checking renderers against
-    /// `grants`. The browser's tab makes it from step 5 (M34.5).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// `grants`.
     pub(crate) fn new(storage: Arc<Mutex<Storage>>, grants: Arc<Grants>) -> Arc<StorageService> {
         Arc::new(StorageService { storage, grants })
     }

@@ -12,6 +12,9 @@ mod process;
 mod storage;
 #[cfg(test)]
 mod storage_tests;
+mod tab;
+#[cfg(test)]
+mod tab_tests;
 #[cfg(test)]
 mod tests;
 
@@ -21,3 +24,4 @@ pub use process::{
     ThreadLauncher,
 };
 pub use storage::StorageService;
+pub use tab::RemoteTab;
