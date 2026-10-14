@@ -534,6 +534,7 @@ impl Wire for NetworkError {
             NetworkError::Refused(what) => text(out, 24, what),
             NetworkError::Csp(what) => text(out, 25, what),
             NetworkError::NotCached => out.u8(26),
+            NetworkError::Moved => out.u8(27),
         }
     }
     fn decode(input: &mut Decoder<'_>) -> Result<Self, Malformed> {
@@ -573,6 +574,7 @@ impl Wire for NetworkError {
             24 => NetworkError::Refused(text(input)?),
             25 => NetworkError::Csp(text(input)?),
             26 => NetworkError::NotCached,
+            27 => NetworkError::Moved,
             tag => return Err(Malformed::Tag("NetworkError", u32::from(tag))),
         })
     }

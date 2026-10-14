@@ -3700,6 +3700,40 @@ impl Engine {
         self.traverse(-1);
     }
 
+    /// The URLs of the session history's entries (an entry of a document
+    /// given as source as `about:blank`), and the current one's index
+    /// (M34.1): what the browser keeps of a renderer's segment.
+    pub(crate) fn history_urls(&self) -> (Vec<Url>, usize) {
+        let blank = || Url::parse("about:blank").expect("about:blank parses");
+        let urls = self
+            .history
+            .entries()
+            .iter()
+            .map(|entry| entry.url.clone().unwrap_or_else(blank))
+            .collect();
+        (urls, self.history.current_index())
+    }
+
+    /// Drops the entries after the current one (M34.1): the browser's
+    /// history goes on in another renderer.
+    pub(crate) fn drop_forward(&mut self) {
+        self.history.drop_forward();
+    }
+
+    /// Makes the session history `urls`, the current entry the one at
+    /// `index`, which is loaded (M34.1): a segment restored in a new
+    /// renderer.
+    pub(crate) fn restore_history(&mut self, urls: Vec<Url>, index: usize) {
+        if urls.is_empty() {
+            return;
+        }
+        let index = index.min(urls.len() - 1);
+        let url = urls[index].clone();
+        self.history
+            .restore(urls.into_iter().map(Some).collect(), index);
+        self.start_navigation(url, Handling::Traverse(index));
+    }
+
     /// Goes forward one entry, if there is one after the current one.
     pub fn go_forward(&mut self) {
         self.traverse(1);
@@ -4810,6 +4844,12 @@ impl Engine {
         } = navigation;
         let response = match result {
             Ok(response) => response,
+            // Handed to the renderer of its site (M34.1): the page shown
+            // here stays, as for a 204.
+            Err(LoadError::Network(NetworkError::Moved)) => {
+                self.settle_load_state();
+                return;
+            }
             Err(error) => {
                 let shown = self.made(pages::error(&url, &error), Some(error));
                 self.commit(shown, Some(url), handling);

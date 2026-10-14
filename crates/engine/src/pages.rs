@@ -130,6 +130,8 @@ fn network_error(url: &Url, place: &str, error: &NetworkError) -> (String, Strin
             reach,
             "It was asked for from the cache alone, which does not have it.".to_owned(),
         ),
+        // Never shown: the page stays (M34.1).
+        NetworkError::Moved => (reach, format!("{place} is shown by another renderer.")),
         NetworkError::Csp(_) => (
             reach,
             "The page's Content-Security-Policy does not allow it.".to_owned(),

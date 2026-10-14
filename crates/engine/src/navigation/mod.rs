@@ -74,9 +74,40 @@ impl<D> History<D> {
         &mut self.entries[self.current]
     }
 
-    #[cfg(test)]
     pub(crate) fn current_index(&self) -> usize {
         self.current
+    }
+
+    /// The entries, oldest first.
+    pub(crate) fn entries(&self) -> &[Entry] {
+        &self.entries
+    }
+
+    /// Drops the entries after the current one, and the documents kept
+    /// for them.
+    pub(crate) fn drop_forward(&mut self) {
+        self.entries.truncate(self.current + 1);
+        self.prune();
+    }
+
+    /// Makes the history `urls`, each a new state, the current entry the
+    /// one at `index`; nothing is kept.
+    pub(crate) fn restore(&mut self, urls: Vec<Option<Url>>, index: usize) {
+        self.entries = urls
+            .into_iter()
+            .map(|url| Entry {
+                url,
+                state: 0,
+                scroll: 0.0,
+                posted: false,
+            })
+            .collect();
+        for at in 0..self.entries.len() {
+            let state = self.new_state();
+            self.entries[at].state = state;
+        }
+        self.current = index.min(self.entries.len().saturating_sub(1));
+        self.prune();
     }
 
     #[cfg(test)]

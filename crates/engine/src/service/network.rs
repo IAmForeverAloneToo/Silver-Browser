@@ -20,6 +20,7 @@ use net::{
     ResponseType, Url,
 };
 
+use super::handover::{HandoverNotice, Handovers};
 use super::orb;
 use crate::ipc::{Answer, Bytes, MAX_CHUNK, Sender, ToBrowser, ToRenderer};
 
@@ -37,6 +38,16 @@ pub enum Lock {
     File,
     /// Documents of opaque origins alone.
     Opaque,
+}
+
+impl std::fmt::Display for Lock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Lock::Site { scheme, host } => write!(f, "{scheme}://{host}"),
+            Lock::File => write!(f, "file:"),
+            Lock::Opaque => write!(f, "opaque"),
+        }
+    }
 }
 
 impl Lock {
@@ -132,16 +143,10 @@ impl Grants {
         }
     }
 
-    /// Locks renderer `renderer` to `lock`, whatever it was locked to:
-    /// until each site has its renderer (M34 step 6), the tab's one
-    /// renderer takes the site it is asked to show.
-    pub(crate) fn relock(&self, renderer: u32, lock: Lock) {
-        self.lock().entry(renderer).or_default().lock = Some(lock);
-    }
-
     /// Frame `frame` of renderer `renderer` commits `url`'s document: a
-    /// top-level frame's origin is the top's from now on, and (until step
-    /// 6) the renderer takes its site.
+    /// top-level frame's origin is the top's from now on, and a renderer
+    /// not yet locked is locked to its site. A lock never changes: a
+    /// document of another site is handed over before it commits.
     pub(crate) fn commit(&self, renderer: u32, frame: u32, url: &Url) {
         let mut grants = self.lock();
         let Some(grant) = grants.get_mut(&renderer) else {
@@ -152,8 +157,17 @@ impl Grants {
         };
         if !framed.cross_site {
             framed.top = url.origin();
-            grant.lock = Some(Lock::of(url));
+            if grant.lock.is_none() {
+                grant.lock = Some(Lock::of(url));
+            }
         }
+    }
+
+    /// Renderer `renderer`'s lock, if it has one.
+    pub fn lock_of(&self, renderer: u32) -> Option<Lock> {
+        self.lock()
+            .get(&renderer)
+            .and_then(|grant| grant.lock.clone())
     }
 
     /// Forgets renderer `renderer`.
@@ -188,7 +202,15 @@ pub struct NetworkService {
     /// The fetches in flight, by renderer and the renderer's number for
     /// them, with what aborts each.
     fetches: Arc<Mutex<HashMap<(u32, u64), AbortHandle>>>,
+    /// Where a top-level document's response of another site than its
+    /// renderer's waits, and who is told of it (M34.1); none hands nothing
+    /// over.
+    handovers: Mutex<Option<Arc<Handovers>>>,
+    notify: Mutex<Option<Notify>>,
 }
+
+/// What the browser's tab is told a response waits for it by.
+type Notify = Arc<dyn Fn(HandoverNotice) + Send + Sync>;
 
 impl NetworkService {
     /// The service of `client`, whose jar, cache, HSTS hosts and gate are
@@ -199,6 +221,8 @@ impl NetworkService {
             client: Mutex::new(Arc::new(client)),
             grants,
             fetches: Arc::default(),
+            handovers: Mutex::new(None),
+            notify: Mutex::new(None),
         })
     }
 
@@ -211,6 +235,20 @@ impl NetworkService {
     /// another user agent (D12). Fetches in flight end with the old.
     pub fn replace_client(&self, client: Client) {
         *self.client.lock().unwrap_or_else(PoisonError::into_inner) = Arc::new(client);
+    }
+
+    /// Hands top-level documents of another site than their renderer's
+    /// over through `handovers` from now on.
+    pub fn hand_over_with(&self, handovers: Arc<Handovers>) {
+        *self
+            .handovers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(handovers);
+    }
+
+    /// Tells `notify` of each response handed over.
+    pub fn on_handover(&self, notify: Notify) {
+        *self.notify.lock().unwrap_or_else(PoisonError::into_inner) = Some(notify);
     }
 
     /// How many fetches renderer `renderer` has in flight.
@@ -244,6 +282,22 @@ impl NetworkService {
                 let (lock, grant) = self.grants.frame(renderer, frame)?;
                 let request = checked(*request, &lock, &grant)?;
                 self.start((renderer, frame), id, streamed, request, &lock, reply)?;
+                Ok(None)
+            }
+            ToBrowser::FetchHandedOver {
+                id,
+                frame,
+                handover,
+                request,
+            } => {
+                self.grants.frame(renderer, frame)?;
+                let handovers = self
+                    .handovers
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone()
+                    .ok_or("a handover, where none are")?;
+                handovers.take(handover, (renderer, frame), id, &request.url, reply)?;
                 Ok(None)
             }
             ToBrowser::CancelFetch { id } => {
@@ -360,14 +414,28 @@ impl NetworkService {
         let fetches = self.fetches.clone();
         let grants = self.grants.clone();
         // A top-level document's response decides, before the renderer
-        // has it, what its frame's requests are from then on.
+        // has it, what its frame's requests are from then on, or that it
+        // goes to the renderer of its site (M34.1).
         let navigation = request.destination == net::Destination::Document
             && request.mode == net::Mode::Navigate;
+        let handovers = self
+            .handovers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let notify = self
+            .notify
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let lock = lock.clone();
         let answer = reply.clone();
         let spawned = thread::Builder::new()
             .name(format!("renderer-{renderer}-fetch"))
             .spawn(move || {
                 let reply = answer;
+                let abort = request.abort.clone();
+                let mut moved: Option<u64> = None;
                 let result = match streamed {
                     true => client
                         .fetch_streaming(&request, &mut |delivery| match delivery {
@@ -376,6 +444,29 @@ impl NetworkService {
                                     && commits(head)
                                     && let Some(url) = head.url_list.last()
                                 {
+                                    let target = Lock::of(url);
+                                    if target != Lock::Opaque
+                                        && target != lock
+                                        && let (Some(handovers), Some(notify)) =
+                                            (&handovers, &notify)
+                                    {
+                                        let held = handovers.hold(url.clone(), renderer_head(head));
+                                        moved = Some(held);
+                                        // The renderer that asked is done with it.
+                                        fetches
+                                            .lock()
+                                            .unwrap_or_else(PoisonError::into_inner)
+                                            .remove(&(renderer, id));
+                                        send_done(&reply, id, Err(NetworkError::Moved), Vec::new());
+                                        notify(HandoverNotice {
+                                            handover: held,
+                                            renderer,
+                                            frame,
+                                            url: url.clone(),
+                                            lock: target,
+                                        });
+                                        return;
+                                    }
                                     grants.commit(renderer, frame, url);
                                 }
                                 let _ = reply.send(&ToRenderer::FetchHead {
@@ -383,7 +474,14 @@ impl NetworkService {
                                     response: renderer_head(head),
                                 });
                             }
-                            Delivery::Body(bytes) => send_body(&reply, id, bytes),
+                            Delivery::Body(bytes) => match (moved, &handovers) {
+                                (Some(held), Some(handovers)) => {
+                                    if !handovers.body(held, bytes) {
+                                        abort.abort();
+                                    }
+                                }
+                                _ => send_body(&reply, id, bytes),
+                            },
                         })
                         .map(|response| renderer_head(&response)),
                     false => client.fetch(&request).map(|response| {
@@ -405,7 +503,10 @@ impl NetworkService {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .remove(&(renderer, id));
-                send_done(&reply, id, result, violations);
+                match (moved, &handovers) {
+                    (Some(held), Some(handovers)) => handovers.end(held, result, violations),
+                    _ => send_done(&reply, id, result, violations),
+                }
             });
         if spawned.is_err() {
             self.fetches().remove(&(renderer, id));

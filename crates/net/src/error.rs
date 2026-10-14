@@ -79,6 +79,9 @@ pub enum NetworkError {
     Csp(String),
     /// An `only-if-cached` request with nothing cached for it (M28.4).
     NotCached,
+    /// The browser gave the response to another process (M34.1): the
+    /// renderer of its document's site.
+    Moved,
 }
 
 /// Why TLS failed.
@@ -140,6 +143,7 @@ impl fmt::Display for NetworkError {
             }
             NetworkError::Redirected => f.write_str("a redirect, which the request refuses"),
             NetworkError::NotCached => f.write_str("nothing cached, and only the cache asked"),
+            NetworkError::Moved => f.write_str("given to the renderer of its site"),
             NetworkError::Refused(why) => write!(f, "refused: {why}"),
             NetworkError::Csp(directive) => {
                 write!(f, "blocked by Content-Security-Policy: {directive}")

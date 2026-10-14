@@ -106,12 +106,14 @@ impl Link {
     }
 
     /// Fetches `request` for frame `frame` through the browser, handing
-    /// a streamed fetch's head and body to `deliver` as they come.
+    /// a streamed fetch's head and body to `deliver` as they come; the
+    /// response the browser holds as `handover`, if one.
     fn fetch(
         &self,
         frame: u32,
         request: &Request,
         streamed: bool,
+        handover: Option<u64>,
         deliver: &mut dyn FnMut(Delivery<'_>),
     ) -> Result<Response, NetworkError> {
         let gone = || NetworkError::Io("the browser is gone".to_owned());
@@ -122,15 +124,21 @@ impl Link {
         // The policies' violations come back from the browser; its copy
         // keeps none.
         asked.csp = request.csp.as_ref().map(net::csp::Csp::inherited);
-        if self
-            .send(&ToBrowser::Fetch {
+        let ask = match handover {
+            Some(handover) => ToBrowser::FetchHandedOver {
+                id,
+                frame,
+                handover,
+                request: Box::new(asked),
+            },
+            None => ToBrowser::Fetch {
                 id,
                 frame,
                 streamed,
                 request: Box::new(asked),
-            })
-            .is_err()
-        {
+            },
+        };
+        if self.send(&ask).is_err() {
             return Err(gone());
         }
         let mut body = Vec::new();
@@ -175,17 +183,44 @@ impl Link {
 pub(crate) struct RemoteFetcher {
     link: Arc<Link>,
     frame: u32,
+    /// The response the browser holds for the next fetch of a document of
+    /// this URL (M34.1).
+    handover: Mutex<Option<(Url, u64)>>,
 }
 
 impl RemoteFetcher {
     pub(crate) fn new(link: Arc<Link>, frame: u32) -> RemoteFetcher {
-        RemoteFetcher { link, frame }
+        RemoteFetcher {
+            link,
+            frame,
+            handover: Mutex::new(None),
+        }
+    }
+
+    /// The next fetch of a document of `url` takes response `handover`.
+    pub(crate) fn hand_over(&self, url: Url, handover: u64) {
+        *self.handover.lock().unwrap_or_else(PoisonError::into_inner) = Some((url, handover));
+    }
+
+    /// The response held for `request`, if it is the document's fetch the
+    /// browser handed one over for.
+    fn handed_over(&self, request: &Request) -> Option<u64> {
+        let mut held = self.handover.lock().unwrap_or_else(PoisonError::into_inner);
+        let matches = held.as_ref().is_some_and(|(url, _)| {
+            request.destination == net::Destination::Document
+                && url.as_str() == request.url.as_str()
+        });
+        if !matches {
+            return None;
+        }
+        held.take().map(|(_, handover)| handover)
     }
 }
 
 impl Fetcher for RemoteFetcher {
     fn fetch(&self, request: &Request) -> Result<Response, NetworkError> {
-        self.link.fetch(self.frame, request, false, &mut |_| {})
+        self.link
+            .fetch(self.frame, request, false, None, &mut |_| {})
     }
 
     fn fetch_streaming(
@@ -193,7 +228,9 @@ impl Fetcher for RemoteFetcher {
         request: &Request,
         deliver: &mut dyn FnMut(Delivery<'_>),
     ) -> Result<Response, NetworkError> {
-        self.link.fetch(self.frame, request, true, deliver)
+        let handover = self.handed_over(request);
+        self.link
+            .fetch(self.frame, request, true, handover, deliver)
     }
 }
 

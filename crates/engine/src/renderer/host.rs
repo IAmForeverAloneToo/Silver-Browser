@@ -24,6 +24,11 @@ pub const MAX_SURFACE_PIXELS: u32 = 4096 * 4096;
 
 struct View {
     engine: Engine,
+    /// Its document's fetches, which may be told of a response handed
+    /// over.
+    fetcher: Arc<RemoteFetcher>,
+    /// The history last reported.
+    history: (Vec<net::Url>, usize),
     /// The raster size the browser draws the page at.
     raster: (u32, u32),
     /// The last frame sent, row by row, its size and number, and whether
@@ -86,8 +91,9 @@ impl Host {
             return Err(format!("view {view} again"));
         }
         let mut engine = Engine::with_fonts(self.fonts()?);
+        let fetcher = Arc::new(RemoteFetcher::new(self.link.clone(), frame));
         engine.set_remote_network(
-            Arc::new(RemoteFetcher::new(self.link.clone(), frame)),
+            fetcher.clone(),
             Arc::new(RemoteCookies::new(self.link.clone(), frame)),
         );
         engine.set_remote_storage(Arc::new(RemoteAreas::new(self.link.clone(), frame)));
@@ -100,6 +106,8 @@ impl Host {
             view,
             View {
                 engine,
+                fetcher,
+                history: (Vec::new(), 0),
                 raster: (0, 0),
                 sent: Vec::new(),
                 sent_size: (0, 0),
@@ -135,6 +143,25 @@ impl Host {
                 self.views.remove(&view);
             }
             ToRenderer::Navigate { view, url } => self.view(view)?.engine.navigate(url),
+            ToRenderer::NavigateHandedOver {
+                view,
+                url,
+                handover,
+            } => {
+                let view = self.view(view)?;
+                view.fetcher.hand_over(url.clone(), handover);
+                view.engine.navigate(url);
+            }
+            ToRenderer::DropForward { view } => self.view(view)?.engine.drop_forward(),
+            ToRenderer::Restore {
+                view,
+                entries,
+                index,
+            } => {
+                self.view(view)?
+                    .engine
+                    .restore_history(entries, index as usize);
+            }
             ToRenderer::Traverse { view, delta } => {
                 self.view(view)?.engine.traverse(delta as isize);
             }
@@ -208,6 +235,15 @@ impl Host {
                 out.push(ToBrowser::Notice { view: id, text });
             }
             draw(view, id, now, time, &mut out);
+            let history = view.engine.history_urls();
+            if history != view.history {
+                view.history = history.clone();
+                out.push(ToBrowser::History {
+                    view: id,
+                    entries: history.0,
+                    index: history.1 as u32,
+                });
+            }
             let state = state_of(view);
             if state != view.state {
                 view.state = state.clone();

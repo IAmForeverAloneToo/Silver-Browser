@@ -65,6 +65,14 @@ wire_enum! {
         16 => Copy { view: u32, cut: bool },
         /// The view's selection is cut.
         17 => Cut { view: u32 },
+        /// The view navigates to `url`, whose response the browser holds
+        /// as `handover`: its document's fetch asks for that one.
+        18 => NavigateHandedOver { view: u32, url: Url, handover: u64 },
+        /// The view's history drops its entries after the current one.
+        19 => DropForward { view: u32 },
+        /// The view's history is `entries`, the one at `index` current
+        /// and loaded: a segment restored.
+        20 => Restore { view: u32, entries: Vec<Url>, index: u32 },
     }
 }
 
@@ -117,6 +125,16 @@ wire_enum! {
         11 => FocusLeft { view: u32 },
         /// The view's selection, copied or to be cut.
         12 => Copied { view: u32, text: Option<String>, cut: bool },
+        /// [`ToBrowser::Fetch`] of the response the browser holds as
+        /// `handover` for this frame.
+        13 => FetchHandedOver {
+            id: u64,
+            frame: u32,
+            handover: u64,
+            request: Box<Request>,
+        },
+        /// The view's history: its entries' URLs and the current one.
+        14 => History { view: u32, entries: Vec<Url>, index: u32 },
     }
 }
 
