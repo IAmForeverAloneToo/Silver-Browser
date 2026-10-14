@@ -50,6 +50,11 @@ pub trait RendererProcess: Send {
     fn id(&self) -> u32;
     /// Its exit code, once it has ended.
     fn exit_code(&mut self) -> Option<i64>;
+    /// The file the browser wrote a dump of it to when it crashed, if it
+    /// did (M34.4): where the platform's launcher writes them.
+    fn dump(&mut self) -> Option<std::path::PathBuf> {
+        None
+    }
 }
 
 /// What serves the messages a renderer sends the browser's services (the
@@ -250,6 +255,15 @@ impl Renderer {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .exit_code()
+    }
+
+    /// The file a dump of it was written to, if it crashed and one was.
+    pub fn dump(&self) -> Option<std::path::PathBuf> {
+        self.shared
+            .process
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .dump()
     }
 }
 

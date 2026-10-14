@@ -235,6 +235,29 @@ pub(crate) fn resubmission(url: &Url) -> Document {
     )
 }
 
+/// The page shown, by the browser, in place of one whose renderer
+/// stopped (M34.4, D34), under `url` when it had one: `why` it stopped,
+/// and the file a dump of it was written to, if one was, for the user to
+/// share if they choose. A reload brings the page back in a new
+/// renderer.
+pub(crate) fn stopped(url: Option<&Url>, why: &str, dump: Option<&str>) -> Document {
+    let mut paragraphs = vec![paragraph(
+        "",
+        "The process that showed this page stopped. Reload to show it again.".to_owned(),
+    )];
+    if let Some(url) = url {
+        paragraphs.push(paragraph("detail", url.as_str().to_owned()));
+    }
+    paragraphs.push(paragraph("detail", format!("Why: {why}.")));
+    if let Some(dump) = dump {
+        paragraphs.push(paragraph(
+            "detail",
+            format!("A record of what it was doing is in {dump}. Nothing was sent anywhere."),
+        ));
+    }
+    page("Page stopped", "This page stopped", paragraphs)
+}
+
 /// The address of a mixed form page's "Send anyway" (M33.3), which the
 /// engine follows only from that page.
 pub(crate) const SEND_FORM: &str = "about:silver-send-form";

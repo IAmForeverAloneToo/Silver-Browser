@@ -143,6 +143,27 @@ fn a_renderer_runs_in_the_sandbox() {
     assert!(said.contains("the system's fonts, read: allowed"), "{said}");
 }
 
+#[cfg(windows)]
+#[test]
+fn a_renderers_crash_leaves_a_dump_the_browser_wrote() {
+    let out = Command::new(BROWSER)
+        .args(["--check-processes", "crash"])
+        .output()
+        .expect("the check ran");
+    let said = String::from_utf8_lossy(&out.stdout);
+    let complained = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{said}{complained}");
+    assert!(
+        said.contains("renderer 8 (panic): Ended, exit code 0x65, dump of "),
+        "{said}"
+    );
+    assert!(said.contains("the check's panic"), "{said}");
+    assert!(
+        said.contains("renderer 9 (fault): Ended, exit code 0xc0000005, dump of "),
+        "{said}"
+    );
+}
+
 #[test]
 fn a_renderer_process_shows_a_page_for_the_browser() {
     let out = Command::new(BROWSER)

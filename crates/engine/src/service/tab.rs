@@ -42,8 +42,8 @@ use crate::renderer::MAX_SURFACE_PIXELS;
 use crate::storage::Storage;
 use crate::view::View;
 use crate::{
-    Button, Clock, ConsoleEntry, Cursor, FrameTime, Key, KeyOutcome, Link, LoadError, LoadState,
-    Modifiers, PermissionPrompt, Preferences, Profile, Scrollbar,
+    Button, Clock, ConsoleEntry, Cursor, Engine, FrameTime, Key, KeyOutcome, Link, LoadError,
+    LoadState, Modifiers, PermissionPrompt, Preferences, Profile, Scrollbar,
 };
 
 /// The most renderers a tab has alive at once, the spare among them
@@ -99,12 +99,41 @@ struct Buffer {
 impl Buffer {
     /// The pixel at `(x, y)`, if the frame has one there.
     fn pixel(&self, x: i32, y: i32) -> Option<[u8; 4]> {
-        let (w, h) = (self.size.0 as i32, self.size.1 as i32);
-        if x < 0 || y < 0 || x >= w || y >= h {
-            return None;
-        }
-        let at = (y as usize * w as usize + x as usize) * 4;
-        self.pixels.get(at..at + 4)?.try_into().ok()
+        pixel_in(&self.pixels, self.size, x, y)
+    }
+}
+
+/// The pixel at `(x, y)` of a frame of `size`, if it has one there.
+fn pixel_in(pixels: &[u8], size: (u32, u32), x: i32, y: i32) -> Option<[u8; 4]> {
+    let (w, h) = (size.0 as i32, size.1 as i32);
+    if x < 0 || y < 0 || x >= w || y >= h {
+        return None;
+    }
+    let at = (y as usize * w as usize + x as usize) * 4;
+    pixels.get(at..at + 4)?.try_into().ok()
+}
+
+/// The browser's page saying a frame's renderer stopped (M34.4), shown
+/// in the frame's hole, and its pixels at the hole's size.
+struct Stopped {
+    engine: Engine,
+    pixels: Vec<u8>,
+    size: (u32, u32),
+}
+
+/// Why a renderer went, for the page saying so: how, and its exit code
+/// when its process has one yet.
+fn stopped_why(why: &Gone, code: Option<i64>) -> String {
+    let how = match why {
+        Gone::Ended => "its process ended".to_owned(),
+        Gone::BadMessage(what) => format!("it sent what it may not ({what}) and was stopped"),
+        Gone::NoHello => "it did not start".to_owned(),
+        Gone::Shutdown => "the browser ended it".to_owned(),
+    };
+    match code {
+        Some(code) if code >= 0 => format!("{how}, with exit code {code:#x}"),
+        Some(code) => format!("{how}, with exit code {code}"),
+        None => how,
     }
 }
 
@@ -165,6 +194,11 @@ pub struct RemoteTab {
     notice: Option<String>,
     focus_left: bool,
     copied: Option<(String, bool)>,
+    /// The page saying a segment's renderer stopped (M34.4), by the
+    /// segment's index; and the frames' whose renderer did, by their
+    /// numbers.
+    stopped: Option<(usize, Engine)>,
+    stopped_frames: HashMap<u32, Stopped>,
 }
 
 impl RemoteTab {
@@ -274,6 +308,8 @@ impl RemoteTab {
             notice: None,
             focus_left: false,
             copied: None,
+            stopped: None,
+            stopped_frames: HashMap::new(),
         }
     }
 
@@ -432,7 +468,9 @@ impl RemoteTab {
         self.left(number);
     }
 
-    /// What renderer `number` showed is gone with it.
+    /// What renderer `number` showed is gone with it. A frame it showed
+    /// stays another renderer's than its parent's: its next document is
+    /// handed over to a new view.
     fn left(&mut self, number: u32) {
         self.grants.forget(number);
         for segment in &mut self.segments {
@@ -447,14 +485,9 @@ impl RemoteTab {
             .filter(|(renderer, _)| *renderer == number)
             .copied()
             .collect();
-        let mut registry = super::frames::lock(&self.registry);
-        registry.unreach(number);
+        super::frames::lock(&self.registry).unreach(number);
         for view in gone {
-            if let Some(frame) = self.frame_views.remove(&view)
-                && let Some(info) = registry.frames.get_mut(&frame.key)
-            {
-                info.root = None;
-            }
+            self.frame_views.remove(&view);
         }
     }
 
@@ -597,6 +630,7 @@ impl RemoteTab {
             .renderer
             .is_some_and(|number| self.renderers.contains_key(&number));
         if !alive {
+            self.stopped = None;
             let lock = self.segments[index].lock.clone();
             let Some(number) = self.renderer_for(&lock) else {
                 return;
@@ -759,6 +793,17 @@ impl RemoteTab {
                 if let Some(info) = super::frames::lock(&self.registry).frames.get_mut(&key) {
                     info.root = Some(view);
                 }
+                self.stopped_frames.remove(&key);
+                // A hole already drawn for the frame sizes its new view.
+                let hole = self
+                    .buffers
+                    .values()
+                    .flat_map(|buffer| buffer.holes.iter())
+                    .find(|hole| hole.key == key)
+                    .cloned();
+                if let Some(hole) = hole {
+                    self.size_frame(&hole);
+                }
                 if root.is_none()
                     && let Some(slot) = self.renderers.get(&parent_renderer)
                 {
@@ -832,21 +877,97 @@ impl RemoteTab {
             if let Some(view) = root {
                 self.destroy_view(view);
             }
+            self.stopped_frames.remove(&key);
             super::frames::lock(&self.registry).frames.remove(&key);
         }
     }
 
-    /// Renderer `number` is gone: its segments wait to be restored, and
-    /// the page it showed says why.
+    /// The browser's page saying the renderer of `url`'s document stopped,
+    /// and why, in an engine of the browser's own.
+    fn stopped_page(&self, url: Option<Url>, why: &str, dump: Option<&str>) -> Engine {
+        let mut engine = Engine::with_fonts(self.fonts.clone());
+        engine.set_preferences(self.settings.preferences);
+        if self.settings.scale.is_finite() && self.settings.scale > 0.0 {
+            engine.set_scale_factor(self.settings.scale);
+        }
+        engine.show_stopped(url, why, dump);
+        engine
+    }
+
+    /// Renderer `number` is gone (M34.4, D34): its segments wait to be
+    /// restored, and the page it showed says why, as do the frames it
+    /// showed under other renderers' pages, whose parents' `load` waits
+    /// for them no more; the frames of its pages that other renderers
+    /// showed go with them.
     fn gone(&mut self, number: u32, why: Gone) {
         let showed = self.segment().and_then(|segment| segment.renderer) == Some(number);
+        let (code, dump) = self
+            .renderers
+            .get(&number)
+            .map(|slot| (slot.renderer.exit_code(), slot.renderer.dump()))
+            .unwrap_or_default();
         self.renderers.remove(&number);
+        let orphans: Vec<u32> = super::frames::lock(&self.registry)
+            .frames
+            .iter()
+            .filter(|(_, info)| info.renderer == number && info.parent.is_some())
+            .map(|(key, _)| *key)
+            .collect();
+        for key in orphans {
+            self.drop_frame(key);
+        }
+        let shown_here: Vec<(u32, Option<Url>, bool)> = self
+            .frame_views
+            .iter()
+            .filter(|((renderer, _), _)| *renderer == number)
+            .map(|(_, frame)| {
+                let loading = !matches!(frame.state.load, LoadState::Loaded | LoadState::Failed(_));
+                (frame.key, frame.state.url.clone(), loading)
+            })
+            .collect();
         self.left(number);
-        if showed && why != Gone::Shutdown {
-            if let Some(segment) = self.segments.get_mut(self.current) {
-                segment.state.load = LoadState::Failed(LoadError::Lost);
+        if why == Gone::Shutdown {
+            return;
+        }
+        let said = stopped_why(&why, code);
+        let dump = dump.map(|path| path.display().to_string());
+        for (key, url, loading) in shown_here {
+            let parent = super::frames::lock(&self.registry)
+                .frames
+                .get(&key)
+                .map(|info| info.renderer);
+            let Some(parent) = parent else {
+                continue;
+            };
+            let engine = self.stopped_page(url, &said, dump.as_deref());
+            self.stopped_frames.insert(
+                key,
+                Stopped {
+                    engine,
+                    pixels: Vec::new(),
+                    size: (0, 0),
+                },
+            );
+            if loading && let Some(slot) = self.renderers.get(&parent) {
+                let _ = slot.renderer.send(&ToRenderer::FrameLoaded { key });
             }
-            self.notice = Some(format!("The page's renderer stopped ({why:?})"));
+            self.fresh = true;
+        }
+        if showed {
+            let url = self.segments.get_mut(self.current).and_then(|segment| {
+                segment.state.load = LoadState::Failed(LoadError::Lost);
+                segment.state.url.clone()
+            });
+            self.notice = Some(match &dump {
+                Some(dump) => {
+                    format!("The page's renderer stopped: {said}; a record of it is in {dump}")
+                }
+                None => format!("The page's renderer stopped: {said}"),
+            });
+            let mut engine = self.stopped_page(url, &said, dump.as_deref());
+            engine.set_viewport(self.viewport.0.max(1), self.viewport.1.max(1));
+            self.stopped = Some((self.current, engine));
+            self.fresh = true;
         }
     }
 
@@ -1001,33 +1122,39 @@ impl RemoteTab {
 
     /// The frame roots in view `id`'s holes are given their holes' sizes.
     fn size_frames(&mut self, id: ViewId) {
-        let scale = self.settings.scale;
         let holes = self
             .buffers
             .get(&id)
             .map(|buffer| buffer.holes.clone())
             .unwrap_or_default();
-        for hole in holes {
-            let Some(view) = self.root_of(hole.key) else {
-                continue;
-            };
-            let Some(frame) = self.frame_views.get_mut(&view) else {
-                continue;
-            };
-            let raster = (hole.width.max(1), hole.height.max(1));
-            if frame.raster == raster {
-                continue;
-            }
-            frame.raster = raster;
-            let css = |v: u32| (v as f32 / scale).round().max(1.0) as u32;
-            self.send_to(view, |view| ToRenderer::Resize {
-                view,
-                width: css(raster.0),
-                height: css(raster.1),
-                raster_width: raster.0,
-                raster_height: raster.1,
-            });
+        for hole in &holes {
+            self.size_frame(hole);
         }
+    }
+
+    /// The frame root in `hole` is given the hole's size, if it has
+    /// another.
+    fn size_frame(&mut self, hole: &Hole) {
+        let scale = self.settings.scale;
+        let Some(view) = self.root_of(hole.key) else {
+            return;
+        };
+        let Some(frame) = self.frame_views.get_mut(&view) else {
+            return;
+        };
+        let raster = (hole.width.max(1), hole.height.max(1));
+        if frame.raster == raster {
+            return;
+        }
+        frame.raster = raster;
+        let css = |v: u32| (v as f32 / scale).round().max(1.0) as u32;
+        self.send_to(view, |view| ToRenderer::Resize {
+            view,
+            width: css(raster.0),
+            height: css(raster.1),
+            raster_width: raster.0,
+            raster_height: raster.1,
+        });
     }
 
     /// The view showing frame `key`'s documents, if another renderer's.
@@ -1037,6 +1164,37 @@ impl RemoteTab {
             .get(&key)
             .and_then(|info| info.root)
             .filter(|view| self.frame_views.contains_key(view))
+    }
+
+    /// The pages saying a frame's renderer stopped, drawn at the sizes of
+    /// the holes they show in.
+    fn draw_stopped_frames(&mut self) {
+        if self.stopped_frames.is_empty() {
+            return;
+        }
+        let scale = self.settings.scale;
+        let holes: Vec<Hole> = self
+            .buffers
+            .values()
+            .flat_map(|buffer| buffer.holes.iter().cloned())
+            .filter(|hole| self.stopped_frames.contains_key(&hole.key))
+            .collect();
+        for hole in holes {
+            let Some(stopped) = self.stopped_frames.get_mut(&hole.key) else {
+                continue;
+            };
+            let size = (hole.width.max(1), hole.height.max(1));
+            if stopped.size == size && !stopped.engine.needs_frame() {
+                continue;
+            }
+            let css = |v: u32| (v as f32 / scale).round().max(1.0) as u32;
+            stopped.engine.set_viewport(css(size.0), css(size.1));
+            stopped.pixels = stopped
+                .engine
+                .frame_at(size.0, size.1, FrameTime::at(Duration::ZERO))
+                .to_vec();
+            stopped.size = size;
+        }
     }
 
     /// Puts frame root `view`'s pixels into `out`, `size` big, where the
@@ -1058,10 +1216,20 @@ impl RemoteTab {
             return;
         }
         for hole in &buffer.holes {
-            let Some(child) = self.root_of(hole.key) else {
-                continue;
+            // The frame root's pixels, or the page saying its renderer
+            // stopped.
+            let child = self.root_of(hole.key);
+            let inner = match child {
+                Some(child) => self
+                    .buffers
+                    .get(&child)
+                    .map(|inner| (inner.pixels.as_slice(), inner.size)),
+                None => self
+                    .stopped_frames
+                    .get(&hole.key)
+                    .map(|stopped| (stopped.pixels.as_slice(), stopped.size)),
             };
-            let Some(inner) = self.buffers.get(&child) else {
+            let Some((pixels, inner_size)) = inner else {
                 continue;
             };
             let origin = (at.0 + hole.x, at.1 + hole.y);
@@ -1080,14 +1248,15 @@ impl RemoteTab {
                     if buffer.pixel(x - at.0, y - at.1) != Some(HOLE) {
                         continue;
                     }
-                    let pixel = inner
-                        .pixel(x - origin.0, y - origin.1)
+                    let pixel = pixel_in(pixels, inner_size, x - origin.0, y - origin.1)
                         .unwrap_or([255, 255, 255, 255]);
                     let to = (y as usize * size.0 as usize + x as usize) * 4;
                     out[to..to + 4].copy_from_slice(&pixel);
                 }
             }
-            self.compose(child, out, size, origin, area, depth + 1);
+            if let Some(child) = child {
+                self.compose(child, out, size, origin, area, depth + 1);
+            }
         }
     }
 
@@ -1213,6 +1382,14 @@ impl RemoteTab {
     pub fn kill_renderer(&self) {
         if let Some((renderer, _)) = self.shown() {
             renderer.kill();
+        }
+    }
+
+    /// Kills renderer `number`, as a crash would end it.
+    #[cfg(test)]
+    pub(crate) fn kill(&self, number: u32) {
+        if let Some(slot) = self.renderers.get(&number) {
+            slot.renderer.kill();
         }
     }
 
@@ -1519,13 +1696,30 @@ impl View for RemoteTab {
         None
     }
 
-    fn frame_at(&mut self, width: u32, height: u32, _: FrameTime) -> &[u8] {
+    fn frame_at(&mut self, width: u32, height: u32, time: FrameTime) -> &[u8] {
         if self.raster != (width, height) {
             self.raster = (width, height);
             self.send_size();
         }
         self.fresh = false;
         let view = self.shown_view();
+        // The page saying the page's renderer stopped, the browser's own.
+        let stopped = self
+            .stopped
+            .as_ref()
+            .is_some_and(|(index, _)| *index == self.current);
+        if view.is_none()
+            && stopped
+            && let Some((index, mut engine)) = self.stopped.take()
+        {
+            engine.set_viewport(self.viewport.0.max(1), self.viewport.1.max(1));
+            self.out.clear();
+            self.out
+                .extend_from_slice(engine.frame_at(width, height, time));
+            self.stopped = Some((index, engine));
+            return &self.out;
+        }
+        self.draw_stopped_frames();
         let buffer = view.and_then(|view| self.buffers.get(&view));
         let plain =
             buffer.is_some_and(|buffer| buffer.size == (width, height) && buffer.holes.is_empty());

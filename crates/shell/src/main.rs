@@ -39,6 +39,7 @@
 // `unsafe` in the platform module alone (M33.5), which allows it.
 #![deny(unsafe_code)]
 
+mod crashes;
 mod keys;
 mod platform;
 mod processes;
@@ -598,6 +599,17 @@ fn print_to_pdf(
 /// platform's place (M28, docs/design/storage.md). What went wrong, to
 /// say: the engine then keeps nothing this run, and a profile it could
 /// not open is left as it is.
+/// Where the dumps of renderers' crashes go (M34.4): beside the profile
+/// kept, `default` when the command line names none; nowhere when
+/// nothing is kept.
+fn crash_folder(keep: &Keep, default: Option<PathBuf>) -> Option<PathBuf> {
+    match keep {
+        Keep::Nothing => None,
+        Keep::In(dir) => crashes::beside(dir),
+        Keep::Default => default.and_then(|dir| crashes::beside(&dir)),
+    }
+}
+
 fn open_profile(engine: &mut impl View, keep: &Keep, default: Option<PathBuf>) -> Option<String> {
     let dir = match keep {
         Keep::Nothing => return None,
@@ -927,8 +939,9 @@ fn main() {
     }
 
     if line.multi_process {
+        let crashes = crash_folder(&line.profile, platform::profile_directory());
         let launcher = match platform::ProcessLauncher::new() {
-            Ok(launcher) => launcher,
+            Ok(launcher) => launcher.with_crashes(crashes),
             Err(e) => {
                 eprintln!("silver-browser: no renderer can be started: {e}");
                 std::process::exit(1);
@@ -1152,6 +1165,16 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn the_crashes_dumps_go_beside_the_profile_kept() {
+        let profile = PathBuf::from("data").join("Profile");
+        let beside = Some(PathBuf::from("data").join("Crashes"));
+        assert_eq!(crash_folder(&Keep::Default, Some(profile.clone())), beside);
+        assert_eq!(crash_folder(&Keep::In(profile.clone()), None), beside);
+        assert_eq!(crash_folder(&Keep::Default, None), None);
+        assert_eq!(crash_folder(&Keep::Nothing, Some(profile)), None);
+    }
 
     #[test]
     fn a_wanted_frame_waits_for_a_frames_budget_after_the_last() {

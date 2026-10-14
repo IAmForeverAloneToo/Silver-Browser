@@ -3568,6 +3568,19 @@ impl Engine {
         self.load_state = LoadState::Loading;
     }
 
+    /// Shows the browser's page saying a renderer stopped (M34.4, D34),
+    /// under `url`: `why` it did, and the file a dump of it was written
+    /// to, if one was. The browser's own engine shows it, for a tab or a
+    /// frame whose renderer is gone.
+    pub fn show_stopped(&mut self, url: Option<Url>, why: &str, dump: Option<&str>) {
+        self.cancel_navigation();
+        let shown = self.made(
+            pages::stopped(url.as_ref(), why, dump),
+            Some(LoadError::Lost),
+        );
+        self.commit(shown, url, Handling::Replace);
+    }
+
     /// A page the browser made, `document`, with no URL of its own so
     /// that nothing in it resolves against the URL it is shown under,
     /// and never kept by the back-forward cache; `failure` for an error

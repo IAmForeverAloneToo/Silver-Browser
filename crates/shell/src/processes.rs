@@ -19,11 +19,26 @@ use engine::{FrameTime, LoadState, Url, View};
 
 use crate::platform::ProcessLauncher;
 
-/// Runs this process as a renderer; its exit code. With `--probe` and a
-/// file of the user's after its number, it runs the sandbox's probes
-/// instead and says what became of each.
+/// Runs this process as a renderer; its exit code. After its number,
+/// `--crash` and three handles' values set it up to report its crash to
+/// the browser (M34.4); then `--probe` and a file of the user's run the
+/// sandbox's probes instead and say what became of each, and
+/// `--crash-now` with `panic` or `fault` crashes it, for the check of
+/// the dumps. A panic that ends it is reported, its exit code 101's.
 pub(crate) fn renderer() -> i32 {
-    let arguments: Vec<OsString> = std::env::args_os().skip(3).collect();
+    let mut arguments: Vec<OsString> = std::env::args_os().skip(3).collect();
+    if arguments.first().is_some_and(|first| first == "--crash") {
+        let handles: Vec<usize> = arguments
+            .iter()
+            .skip(1)
+            .take(3)
+            .filter_map(|value| value.to_str()?.parse().ok())
+            .collect();
+        if let Ok(handles) = <[usize; 3]>::try_from(handles) {
+            crate::platform::report_crashes(handles);
+        }
+        arguments.drain(..arguments.len().min(4));
+    }
     if arguments.first().is_some_and(|first| first == "--probe") {
         let file = arguments.get(1).map(PathBuf::from).unwrap_or_default();
         for (probe, outcome) in probe(&file) {
@@ -31,11 +46,28 @@ pub(crate) fn renderer() -> i32 {
         }
         return 0;
     }
-    match engine::renderer::run(std::io::stdin(), std::io::stdout()) {
-        Ok(()) => 0,
-        Err(why) => {
+    let crash = arguments
+        .first()
+        .is_some_and(|first| first == "--crash-now")
+        .then(|| arguments.get(1).and_then(|how| how.to_str()))
+        .flatten();
+    let ran = std::panic::catch_unwind(|| {
+        match crash {
+            Some("panic") => panic!("the check's panic"),
+            Some("fault") => crate::platform::fault(),
+            _ => {}
+        }
+        engine::renderer::run(std::io::stdin(), std::io::stdout())
+    });
+    match ran {
+        Ok(Ok(())) => 0,
+        Ok(Err(why)) => {
             eprintln!("{why}");
             1
+        }
+        Err(_) => {
+            crate::platform::crashed_by_panic();
+            101
         }
     }
 }
@@ -181,12 +213,14 @@ fn ended(
 /// without ending it: its job object must. With `page`, shows
 /// `about:silver` in a tab of a renderer and says what it drew. With
 /// `sandbox`, runs the sandbox's probes in a renderer and says what
-/// became of each.
+/// became of each. With `crash`, crashes a renderer by a panic and
+/// another by a fault and says what the browser kept of each.
 pub(crate) fn check(what: Option<&str>) -> i32 {
     let checked = match what {
         Some("orphan") => check_orphan(),
         Some("page") => check_page(),
         Some("sandbox") => check_sandbox(),
+        Some("crash") => check_crash(),
         _ => check_all(),
     };
     match checked {
@@ -272,6 +306,90 @@ fn check_sandbox() -> Result<(), String> {
         return Err(format!("{FONTS}: {}", said_of(FONTS)));
     }
     Ok(())
+}
+
+fn check_crash() -> Result<(), String> {
+    let dir = std::env::temp_dir().join(format!("silver-crashes-{}", std::process::id()));
+    let checked = crashed(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    checked
+}
+
+/// Crashes two renderers, their dumps going to `dir`, where as many
+/// older dumps as are kept wait to be removed.
+fn crashed(dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|error| format!("no folder: {error}"))?;
+    let older: Vec<PathBuf> = (0..crate::crashes::MAX_CRASH_DUMPS)
+        .map(|n| dir.join(crate::crashes::dump_name(n as u128, 1)))
+        .collect();
+    for dump in &older {
+        std::fs::write(dump, b"older").map_err(|error| format!("not written: {error}"))?;
+    }
+    for (number, how) in [(8, "panic"), (9, "fault")] {
+        let launcher = ProcessLauncher::new()
+            .map_err(|error| format!("no executable: {error}"))?
+            .with_crashes(Some(dir.to_path_buf()))
+            .with_arguments(vec!["--crash-now".into(), how.into()]);
+        let (events, received) = mpsc::channel();
+        let renderer = Renderer::start(&launcher, number, events, Arc::new(|| {}), None)
+            .map_err(|error| format!("renderer {number} did not start: {error}"))?;
+        let (gone, code) = ended(&renderer, &received)?;
+        let dump = renderer
+            .dump()
+            .ok_or_else(|| format!("renderer {number}: no dump"))?;
+        let bytes = std::fs::read(&dump).unwrap_or_default();
+        let streams = streams(&bytes);
+        let size = bytes.len();
+        let message = std::fs::read_to_string(dump.with_extension("txt")).unwrap_or_default();
+        println!(
+            "renderer {number} ({how}): {gone:?}, exit code {code:#x}, dump of {size} bytes, \
+             {} streams, message {:?}",
+            streams.len(),
+            message.lines().take(2).collect::<Vec<_>>().join(" ")
+        );
+        if streams.is_empty() || dump.parent() != Some(dir) {
+            return Err(format!("renderer {number}: the dump {}", dump.display()));
+        }
+        if how == "fault" && !streams.contains(&EXCEPTION_STREAM) {
+            return Err(format!(
+                "renderer {number}: no exception in the dump: {streams:?}"
+            ));
+        }
+        if how == "panic" && !message.contains("the check's panic") {
+            return Err(format!("renderer {number}: the message {message:?}"));
+        }
+    }
+    let kept = std::fs::read_dir(dir)
+        .map_err(|error| format!("not listed: {error}"))?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|x| x == "dmp"))
+        .count();
+    println!("dumps kept: {kept}");
+    if kept != crate::crashes::MAX_CRASH_DUMPS || older[..2].iter().any(|dump| dump.exists()) {
+        return Err(format!("{kept} dumps kept, the oldest among them"));
+    }
+    Ok(())
+}
+
+/// A minidump's stream of the exception that crashed its process.
+const EXCEPTION_STREAM: u32 = 6;
+
+/// The types of a minidump's streams, read from its header and its
+/// directory: none for what is not one.
+fn streams(dump: &[u8]) -> Vec<u32> {
+    let word = |at: usize| {
+        dump.get(at..at + 4)
+            .map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    };
+    if dump.get(..4) != Some(b"MDMP") {
+        return Vec::new();
+    }
+    let (Some(count), Some(directory)) = (word(8), word(12)) else {
+        return Vec::new();
+    };
+    (0..count.min(1024) as usize)
+        .map_while(|entry| word(directory as usize + entry * 12))
+        .collect()
 }
 
 /// What a renderer started with the probes' arguments says.

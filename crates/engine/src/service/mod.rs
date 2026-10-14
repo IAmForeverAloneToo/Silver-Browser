@@ -15,6 +15,8 @@ mod orb;
 mod process;
 #[cfg(test)]
 mod sites_tests;
+#[cfg(test)]
+mod stopped_tests;
 mod storage;
 #[cfg(test)]
 mod storage_tests;

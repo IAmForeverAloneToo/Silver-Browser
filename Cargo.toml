@@ -108,13 +108,18 @@ pdf-writer = "0.15"
 # docs/design/media.md): Windows's system parameters and macOS's
 # accessibility settings, through the versions of the crates winit and
 # its neighbours already bring there, with the features those calls
-# need alone; and the renderers' processes, their pipes and their job
-# objects (M34, docs/design/processes.md).
+# need alone; and the renderers' processes, their pipes, their job
+# objects, their sandbox and their crashes' dumps (M34,
+# docs/design/processes.md).
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Cryptography",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_Debug",
     "Win32_System_JobObjects",
+    "Win32_System_Kernel",
+    "Win32_System_Memory",
     "Win32_System_Pipes",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
