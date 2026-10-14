@@ -180,20 +180,7 @@ impl FontStore {
     /// *same* loaded font set rather than re-scanning the system fonts
     /// per query.
     fn query(db: &fontdb::Database, family_names: &[&str]) -> Result<Self, FontError> {
-        let families: Vec<fontdb::Family> = family_names
-            .iter()
-            .copied()
-            .map(fontdb::Family::Name)
-            .chain([fontdb::Family::SansSerif])
-            .collect();
-        let query = fontdb::Query {
-            families: &families,
-            weight: fontdb::Weight::NORMAL,
-            style: fontdb::Style::Normal,
-            stretch: fontdb::Stretch::Normal,
-        };
-
-        let Some(face_id) = db.query(&query) else {
+        let Some(face_id) = face_of(db, family_names) else {
             return Err(FontError::NoFontFound);
         };
 
@@ -717,14 +704,54 @@ fn fallback_families_for(script: Script) -> Option<&'static [&'static str]> {
     }
 }
 
+/// The best match for `family_names` (falling back to the generic
+/// `sans-serif`) in an already-populated database, if any.
+fn face_of(db: &fontdb::Database, family_names: &[&str]) -> Option<fontdb::ID> {
+    let families: Vec<fontdb::Family> = family_names
+        .iter()
+        .copied()
+        .map(fontdb::Family::Name)
+        .chain([fontdb::Family::SansSerif])
+        .collect();
+    db.query(&fontdb::Query {
+        families: &families,
+        weight: fontdb::Weight::NORMAL,
+        style: fontdb::Style::Normal,
+        stretch: fontdb::Stretch::Normal,
+    })
+}
+
+/// A script's fallback font (M8.1): its face found in the system's
+/// database when the collection is made, its file read when a text of
+/// the script first needs it (M34). Each renderer process makes a
+/// collection of its own, and the fallbacks, some 60 MB on Windows (the
+/// CJK fonts), were read into every one for pages that never use them.
+/// Scripts whose fallback is the same face share it.
+struct Fallback {
+    path: std::path::PathBuf,
+    index: u32,
+    font: std::sync::OnceLock<Option<FontStore>>,
+}
+
+impl Fallback {
+    /// The font, read the first time it is asked for; `None` for a file
+    /// gone or not a font.
+    fn font(&self) -> Option<&FontStore> {
+        self.font
+            .get_or_init(|| {
+                let data = std::fs::read(&self.path).ok()?;
+                FontStore::from_bytes(data, self.index).ok()
+            })
+            .as_ref()
+    }
+}
+
 /// A primary font plus resolved per-script fallback fonts (roadmap
 /// M8.1) — e.g. a Latin-oriented primary font paired with a
 /// CJK-capable fallback, each queried from the same loaded `fontdb`
 /// database once at construction (not re-scanning system fonts per
-/// script). Falls back are resolved eagerly rather than lazily: there
-/// are only a handful of scripts [`fallback_families_for`] knows about,
-/// so the up-front cost is small and it sidesteps needing interior
-/// mutability to cache query results behind `&self`.
+/// script). The fallbacks' faces are resolved then, and their files read
+/// when first needed ([`Fallback`]), shared by the collection's clones.
 ///
 /// A system missing every family in a script's fallback list is not an
 /// error — [`FontCollection::font_for`] just returns the primary font
@@ -733,7 +760,7 @@ fn fallback_families_for(script: Script) -> Option<&'static [&'static str]> {
 #[derive(Clone)]
 pub struct FontCollection {
     primary: FontStore,
-    fallbacks: HashMap<Script, FontStore>,
+    fallbacks: HashMap<Script, Arc<Fallback>>,
     /// The widths [`FontCollection::measure`] has given, shared by the
     /// collection's clones.
     measures: Arc<Mutex<Measures>>,
@@ -791,18 +818,38 @@ impl FontCollection {
         db.load_system_fonts();
         let primary = FontStore::query(&db, &["Segoe UI", "DejaVu Sans", "Helvetica", "Arial"])?;
 
-        let mut fallbacks = HashMap::new();
+        let mut fallbacks: HashMap<Script, Arc<Fallback>> = HashMap::new();
+        let mut found: Vec<Arc<Fallback>> = Vec::new();
         for script in [
             Script::Han,
             Script::Hiragana,
             Script::Katakana,
             Script::Hangul,
         ] {
-            if let Some(families) = fallback_families_for(script)
-                && let Ok(store) = FontStore::query(&db, families)
+            let source = fallback_families_for(script)
+                .and_then(|families| face_of(&db, families))
+                .and_then(|id| db.face_source(id));
+            let (path, index) = match source {
+                Some((fontdb::Source::File(path), index)) => (path, index),
+                Some((fontdb::Source::SharedFile(path, _), index)) => (path, index),
+                _ => continue,
+            };
+            let fallback = match found
+                .iter()
+                .find(|known| known.path == path && known.index == index)
             {
-                fallbacks.insert(script, store);
-            }
+                Some(known) => known.clone(),
+                None => {
+                    let new = Arc::new(Fallback {
+                        path,
+                        index,
+                        font: std::sync::OnceLock::new(),
+                    });
+                    found.push(new.clone());
+                    new
+                }
+            };
+            fallbacks.insert(script, fallback);
         }
         Ok(FontCollection {
             primary,
@@ -820,7 +867,10 @@ impl FontCollection {
     /// The best available font for `script`: a resolved fallback
     /// (M8.1) if this system has one, else the primary font.
     pub fn font_for(&self, script: Script) -> &FontStore {
-        self.fallbacks.get(&script).unwrap_or(&self.primary)
+        self.fallbacks
+            .get(&script)
+            .and_then(|fallback| fallback.font())
+            .unwrap_or(&self.primary)
     }
 
     /// `text`'s total advance width at `font_size_px`, itemizing it
@@ -1650,5 +1700,32 @@ mod tests {
             );
         }
         assert_eq!(bidi_reorder("one\u{2029}two", None), "one\u{2029}two");
+    }
+
+    #[test]
+    fn a_fallback_is_read_when_first_needed_and_shared_by_the_scripts_of_its_face() {
+        // A machine with no system font has nothing to show here.
+        let Ok(fonts) = FontCollection::new() else {
+            return;
+        };
+        assert!(
+            fonts
+                .fallbacks
+                .values()
+                .all(|fallback| fallback.font.get().is_none()),
+            "nothing read before it is needed"
+        );
+        if let Some(han) = fonts.fallbacks.get(&Script::Han) {
+            let font = fonts.font_for(Script::Han);
+            let read = han.font.get().expect("read once asked for");
+            assert_eq!(read.is_some(), !std::ptr::eq(font, fonts.primary()));
+        }
+        if let (Some(a), Some(b)) = (
+            fonts.fallbacks.get(&Script::Hiragana),
+            fonts.fallbacks.get(&Script::Katakana),
+        ) && (&a.path, a.index) == (&b.path, b.index)
+        {
+            assert!(Arc::ptr_eq(a, b), "one face, read once");
+        }
     }
 }
