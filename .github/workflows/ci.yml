@@ -40,6 +40,8 @@ jobs:
       # member, so `--all` above does not reach them.
       - run: cargo fmt --manifest-path fuzz/Cargo.toml -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # The one-process build (M34.6): the shell without its renderers.
+      - run: cargo clippy -p silver-browser --all-targets --features single-process --locked -- -D warnings
       # T3.4: only `net` opens network connections and speaks TLS
       # (docs/design/net.md, "The layering contract").
       - name: network code only in net
@@ -108,6 +110,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers
       - run: cargo build --workspace --all-targets --locked
       - run: cargo test --workspace --locked
+      # And the shell's tests once more as one process (M34.6).
+      - run: cargo test -p silver-browser --features single-process --locked
 
   fuzz:
     name: fuzz (${{ matrix.target }})

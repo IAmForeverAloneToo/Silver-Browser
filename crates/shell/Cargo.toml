@@ -10,6 +10,11 @@ license.workspace = true
 # is built.
 default = ["gpu"]
 gpu = ["engine/gpu"]
+# One process (M34.6, D30, docs/design/processes.md): the session drives
+# an `Engine` in the browser's own process and starts no renderer, for
+# debugging and for machines short of memory. Without it, each site's
+# pages are shown by a renderer process of their own.
+single-process = []
 
 [dependencies]
 engine.workspace = true

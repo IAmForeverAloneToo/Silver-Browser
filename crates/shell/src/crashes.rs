@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 pub(crate) const MAX_CRASH_DUMPS: usize = 8;
 
 /// The folder the dumps go to beside the profile in `profile`.
+#[cfg_attr(feature = "single-process", allow(dead_code))]
 pub(crate) fn beside(profile: &Path) -> Option<PathBuf> {
     Some(profile.parent()?.join("Crashes"))
 }

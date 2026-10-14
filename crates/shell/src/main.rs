@@ -53,8 +53,8 @@ use std::time::{Duration, Instant};
 
 use engine::address::Address;
 use engine::{
-    Backend, ColorScheme, Engine, FRAME_BUDGET, FrameTime, LoadState, Preferences, PrintOptions,
-    Profile, Url, View,
+    ColorScheme, Engine, FRAME_BUDGET, FrameTime, LoadState, Preferences, PrintOptions, Profile,
+    Url, View,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
@@ -602,6 +602,7 @@ fn print_to_pdf(
 /// Where the dumps of renderers' crashes go (M34.4): beside the profile
 /// kept, `default` when the command line names none; nowhere when
 /// nothing is kept.
+#[cfg(not(feature = "single-process"))]
 fn crash_folder(keep: &Keep, default: Option<PathBuf>) -> Option<PathBuf> {
     match keep {
         Keep::Nothing => None,
@@ -751,7 +752,9 @@ struct CommandLine {
     /// (M19.6), in bytes, when given.
     layer_budget: Option<usize>,
     /// `--software`: draw in software even where there is a GPU
-    /// (M19.3, roadmap D3).
+    /// (M19.3, roadmap D3). Renderers draw in software (G110): the one
+    /// process alone draws on the GPU.
+    #[cfg_attr(not(feature = "single-process"), allow(dead_code))]
     software: bool,
     /// The user's preferences given (M20.3).
     asked: Asked,
@@ -766,9 +769,6 @@ struct CommandLine {
     compat: bool,
     /// Where the browsing keeps what it keeps (M28).
     profile: Keep,
-    /// `--multi-process`: the page shown by a renderer process (M34.5),
-    /// until the many processes are the default.
-    multi_process: bool,
 }
 
 /// The profile the command line asks for (M28).
@@ -798,7 +798,6 @@ fn command_line(args: impl Iterator<Item = OsString>) -> Result<CommandLine, Str
         scripts: false,
         compat: false,
         profile: Keep::Default,
-        multi_process: false,
     };
     let mut page: Option<OsString> = None;
     let mut args = args.peekable();
@@ -813,10 +812,6 @@ fn command_line(args: impl Iterator<Item = OsString>) -> Result<CommandLine, Str
         }
         if arg == "--compat-user-agent" {
             line.compat = true;
-            continue;
-        }
-        if arg == "--multi-process" {
-            line.multi_process = true;
             continue;
         }
         if arg == "--profile" || arg == "--temporary-profile" {
@@ -920,7 +915,7 @@ fn main() {
                 "usage: silver-browser [--software] [--layer-budget <MiB>] \
                  [--prefers-color-scheme light|dark] [--prefers-reduced-motion] \
                  [--enable-scripts] [--compat-user-agent] [--print-to-pdf <path>] \
-                 [--profile <dir> | --temporary-profile] [--multi-process] [URL or path]"
+                 [--profile <dir> | --temporary-profile] [URL or path]"
             );
             std::process::exit(2);
         }
@@ -938,29 +933,40 @@ fn main() {
         ));
     }
 
-    if line.multi_process {
-        let crashes = crash_folder(&line.profile, platform::profile_directory());
-        let launcher = match platform::ProcessLauncher::new() {
-            Ok(launcher) => launcher.with_crashes(crashes),
-            Err(e) => {
-                eprintln!("silver-browser: no renderer can be started: {e}");
-                std::process::exit(1);
-            }
-        };
-        let fonts = match engine::Engine::new() {
-            Ok(engine) => engine.fonts().clone(),
-            Err(e) => {
-                eprintln!("engine initialization failed: {e}");
-                return;
-            }
-        };
-        let tab = engine::service::RemoteTab::new(Arc::new(launcher), fonts);
-        return run(tab, &line);
-    }
+    show(&line);
+}
+
+/// Shows the page in a tab whose pages renderer processes show (M34,
+/// docs/design/processes.md), each site's its own, sandboxed.
+#[cfg(not(feature = "single-process"))]
+fn show(line: &CommandLine) {
+    let crashes = crash_folder(&line.profile, platform::profile_directory());
+    let launcher = match platform::ProcessLauncher::new() {
+        Ok(launcher) => launcher.with_crashes(crashes),
+        Err(e) => {
+            eprintln!("silver-browser: no renderer can be started: {e}");
+            std::process::exit(1);
+        }
+    };
+    let fonts = match Engine::new() {
+        Ok(engine) => engine.fonts().clone(),
+        Err(e) => {
+            eprintln!("engine initialization failed: {e}");
+            return;
+        }
+    };
+    let tab = engine::service::RemoteTab::new(Arc::new(launcher), fonts);
+    run(tab, line);
+}
+
+/// Shows the page in an engine of the browser's own process (M34.6,
+/// D30): the one-process build.
+#[cfg(feature = "single-process")]
+fn show(line: &CommandLine) {
     let wanted = if line.software {
-        Backend::Software
+        engine::Backend::Software
     } else {
-        Backend::Gpu
+        engine::Backend::Gpu
     };
     let (engine, fallback) = match Engine::new_on(wanted) {
         Ok(made) => made,
@@ -972,7 +978,7 @@ fn main() {
     if let Some(why) = fallback {
         eprintln!("silver-browser: {why}; drawing in software");
     }
-    run(engine, &line)
+    run(engine, line);
 }
 
 /// Shows the page `engine` shows in a window until it is closed.
@@ -1166,6 +1172,7 @@ mod tests {
 
     use super::*;
 
+    #[cfg(not(feature = "single-process"))]
     #[test]
     fn the_crashes_dumps_go_beside_the_profile_kept() {
         let profile = PathBuf::from("data").join("Profile");
@@ -1234,7 +1241,6 @@ mod tests {
                 scripts: false,
                 compat: false,
                 profile: Keep::Default,
-                multi_process: false,
             })
         );
         assert_eq!(
@@ -1248,7 +1254,6 @@ mod tests {
                 scripts: false,
                 compat: false,
                 profile: Keep::Default,
-                multi_process: false,
             })
         );
         assert_eq!(
