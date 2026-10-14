@@ -100,6 +100,7 @@ mod editing;
 mod focus;
 mod frames;
 mod image_store;
+pub mod ipc;
 mod keys;
 mod loader;
 mod navigation;

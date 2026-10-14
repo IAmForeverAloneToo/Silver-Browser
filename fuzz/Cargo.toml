@@ -257,3 +257,10 @@ path = "fuzz_targets/frames.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "ipc_decode"
+path = "fuzz_targets/ipc_decode.rs"
+test = false
+doc = false
+bench = false
