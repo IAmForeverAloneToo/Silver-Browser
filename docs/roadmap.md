@@ -444,6 +444,19 @@ images, the last item on T0's list, come with M23.
   committed seeds; the web-platform tests of CSP, sandboxing, referrers
   and iframes; an adversarial site of 56 attacks; and
   `docs/security.md`, the threat model.
+- **M34, Multi-process architecture** (done 2026-10-15, designed in
+  `docs/design/processes.md`): each site's documents in a renderer
+  process of its own, the same executable, locked to its site and
+  speaking a versioned protocol (`engine::ipc`) with the browser, which
+  keeps the network, the cookies, the storage, the profile and the
+  frames' tree and checks every message (D28 to D31); navigations of
+  another site handed over at their response's head, the session
+  history in segments, 16 renderers a tab and a spare; frames of
+  another site shown by their site's renderer and composited by the
+  browser (D32, D33); on Windows a restricted token at low integrity in
+  a job (D2); a renderer's crash a page of the browser's and a dump
+  beside the profile (D34); one process a build feature; and a
+  compromised renderer refused all it may not ask.
 
 Each milestone's fuller writeup and stated gaps are in
 `docs/architecture.md` "Current state", and the gaps no milestone holds
@@ -2158,28 +2171,77 @@ cascade's computed styles, and layout reads its `viewBox` grammar.)*
 The site-isolation milestone — the architecture.md crate seams become
 process seams.
 
-- [ ] M34.1 Process model: browser process (chrome, net, profile,
+- [x] M34.1 Process model: browser process (chrome, net, profile,
        policy) + renderer processes (documents/frames); process-per-site-
        instance v1 (not per-tab — lightweight goal: process count capped,
        LRU eviction).
-- [ ] M34.2 IPC design: message-passing over the existing internal
+       Done 2026-10-15 (`docs/design/processes.md`, D28 to D33): the
+       browser keeps the window, the network, the jar, the storage, the
+       cache, the profile, the permissions and the frames' tree; each
+       site's documents are engines in a renderer process locked to the
+       site at its first document; a navigation whose response is of
+       another site is handed over at its head to that site's renderer;
+       the history in segments, one a run of a site's entries; frames of
+       another site in their site's renderer, drawn in their parent's
+       hole and composited by the browser, their messages, loads and
+       input through it; at most 16 renderers a tab, the least recently
+       shown let go first, and a spare.
+- [x] M34.2 IPC design: message-passing over the existing internal
        boundaries; capability-scoped handles (a renderer gets exactly the
        interfaces it needs — no god-channel); schema versioned from day
        one.
-- [ ] M34.3 Renderer sandbox per-OS (decision D2): Windows job objects +
+       Done 2026-10-15: `engine::ipc`, an own codec with versioned
+       messages (`IPC_VERSION`), frames of at most 16 MiB read as their
+       bytes come, a hello in 10 seconds; the browser's services (the
+       network, the storage, the frames) answer each message on its
+       renderer's reader thread, checked against the renderer's lock
+       and the frames granted it, a renderer that sends what it may not
+       killed. Fuzzed by `ipc_decode`, its seeds partly a session's
+       traffic.
+- [x] M34.3 Renderer sandbox per-OS (decision D2): Windows job objects +
        restricted token v1; document the macOS/Linux equivalents
        (sandbox-exec/seccomp) for portability.
-- [ ] M34.4 Crash isolation: renderer death = sad-tab + respawn, browser
+       Done 2026-10-15: on Windows a restricted token of the browser's
+       (no privilege but traversal, groups deny-only but Users, Everyone
+       and the logon session's, Users, Everyone and RESTRICTED
+       restricting), low integrity, a job of one process, 4 GiB and the
+       desktop's state closed, three pipes and a crash channel
+       inherited; probes inside a renderer for each refusal.
+       `docs/security.md` says what macOS and Linux need (G113).
+- [x] M34.4 Crash isolation: renderer death = sad-tab + respawn, browser
        process survives; crash reporting local-only (minidump written,
        user chooses to share — nothing phones home).
-- [ ] M34.5 The `Engine` type becomes a session proxy in the browser
+       Done 2026-10-15: a renderer gone leaves the browser's own page
+       saying so, in the tab or in a frame's hole, its parent's load not
+       held, until a reload or a navigation brings it back in a new
+       renderer; on Windows the browser writes a minidump of a renderer
+       that crashed by an exception or a panic, beside the profile, the
+       newest eight kept, nothing sent.
+- [x] M34.5 The `Engine` type becomes a session proxy in the browser
        process; the render pipeline state lives in the renderer.
-- [ ] M34.6 Migration plan executed incrementally: single-process remains
+       Done 2026-10-15: the session drives a `View`, an `Engine` in one
+       process or a `RemoteTab` whose answers are what its renderers
+       last reported; a view's frames go to the browser as the rows
+       that changed (shared surfaces are G125).
+- [x] M34.6 Migration plan executed incrementally: single-process remains
        a build feature (`--features single-process`) for debugging and
        constrained machines — tested in CI both ways.
-- [ ] M34.7 Acceptance: kill -9 a renderer mid-animation; the tab shows a
+       Done 2026-10-15: many processes by default, `--features
+       single-process` the one-process browser, both linted and tested
+       by the gate and CI.
+- [x] M34.7 Acceptance: kill -9 a renderer mid-animation; the tab shows a
        crash placeholder and recovers; a renderer compromise cannot read
        another site's cookies (test via the adversarial suite).
+       Done 2026-10-15: a renderer process killed in an animation leaves
+       the page saying so and a reload brings it back in a new one
+       (`--check-processes kill`); the adversarial site's pages run
+       again in a tab of renderers with the same outcomes, and a
+       renderer speaking the protocol itself is refused 21 requests,
+       killed for each; it found requests of no origin or in a
+       navigation's mode reading another site's HTML, fixed. The cap
+       measured found the fallback fonts read into each renderer, fixed
+       (120 MB of its own to 5 MB). T4.3 and the fuzz runs: in
+       `docs/perf-budgets.md` and the notes.
 
 ---
 
@@ -2761,6 +2823,56 @@ Deferred from the milestones above, each with what it waits on:
        until written again; a profile opened with a wrap that cannot
        unwrap its key starts over with a new one, its values lost.
        Found at M33.
+- [ ] G110 A GPU process: renderers draw in software, the GPU's driver
+       being a large surface to give a sandboxed process; the one
+       process keeps the GPU backend. Found at M34.
+- [ ] G111 The network denied to a renderer: a low-box (AppContainer)
+       token without `internetClient`; a renderer taken over can open a
+       socket of its own, though it holds no cookie to send. Found at
+       M34.
+- [ ] G112 The reference browser's lockdown: a token admitting nothing
+       after a start under another, untrusted integrity, a desktop of
+       the renderers' own, win32k closed, the mitigation policies.
+       Found at M34.
+- [ ] G113 The sandbox on macOS (a Seatbelt profile by `sandbox_init`)
+       and Linux (seccomp-BPF in new user, PID and network namespaces),
+       and the crash dumps there. Found at M34.
+- [ ] G114 A sandboxed frame in a process of its own, as the reference
+       browser isolates one. Found at M34.
+- [x] G115 Input hit-tested by the browser: not needed, the browser
+       hit-tests the pointer itself by the frames' holes (M34).
+- [ ] G116 A remote frame under a transform, an opacity or a filter:
+       its hole is found by its colour, which those change. Found at
+       M34.
+- [ ] G117 `history.state` and form state kept by the browser: lost
+       with a discarded segment's renderer. Found at M34.
+- [ ] G118 A soft cap: past `MAX_RENDERERS` showing something, a
+       frame of a new site stays empty. Found at M34.
+- [ ] G119 Cross-origin isolation: `Cross-Origin-Opener-Policy`,
+       `Cross-Origin-Embedder-Policy`, `crossOriginIsolated`, and
+       `Origin-Agent-Cluster`'s processes by origin. Found at M34.
+- [ ] G120 A hung renderer, noticed and offered to be stopped; only a
+       dead one is noticed, and a panic on a renderer's thread other
+       than its main loop is not reported. Found at M34.
+- [ ] G121 ORB's JavaScript parse, done by sniffing for what is not
+       script. Found at M34.
+- [ ] G122 Frames across renderers: a remote frame's window answers
+       `postMessage` and `location` alone (its `length`, `frames` and
+       document are not read across renderers), ports are not carried
+       between renderers, the wheel is not given back to the parent
+       when a frame does not scroll, sequential focus does not enter a
+       remote frame. Found at M34.
+- [ ] G123 The URL a renderer reports for its page is shown as it says:
+       error pages and the browser's made pages commit under the URL
+       they were asked for, in the renderer that asked, so a renderer
+       taken over can show another site's URL over its own content.
+       The browser's own error and made pages, then the URL held to the
+       lock. Found at M34.
+- [ ] G124 `--print-to-pdf` runs its page in the browser's own process,
+       unsandboxed. Found at M34.
+- [ ] G125 Shared surfaces (D32): a view's frames go through the pipe
+       as rows; a click reaches its frame in 25 ms through renderers,
+       1.5 ms in one engine. Found at M34.
 
 ---
 

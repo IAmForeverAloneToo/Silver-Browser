@@ -1757,10 +1757,71 @@ each by turns after it gave 198 to 205ms before and 196 to 205ms with
 M33, the same, the machine's variance M23 and M32 noted. Numbered
 lists' cascade, x1.07 (24.9 against 26.7ms), is the largest after it.
 
+### Processes (M34)
+
+`benches/processes.rs` (`cargo bench -p engine --bench processes`), on
+the Windows machine, release, medians of fifteen: the same pages shown
+by one engine and by a tab of renderers on threads (the protocol and
+its pipes the processes', not their start), each from the navigation
+to its title, but the click, from the press to the frame that shows its
+effect.
+
+| | One engine | A tab of renderers |
+| --- | --- | --- |
+| A small page, from a new view | 0.58ms | 7.16ms |
+| 500 paragraphs to their title | 3.41ms | 29.6ms |
+| 100 fetches one after another | 56.3ms | 83.2ms |
+| 1,000 reads of `document.cookie` | 32.8ms | 59.0ms |
+| A click to the frame that shows it | 1.53ms | 25.2ms |
+
+| In a tab of renderers | |
+| --- | --- |
+| A navigation that stays in its renderer | 36.5ms |
+| A navigation to another site, handed over | 298ms, 33ms past `localhost`'s connection |
+
+- *A renderer process* answers its hello in 21 to 23ms
+  (`--check-processes`, release), sandboxed; at the cap, sixteen of
+  them hold 16MB of working set and 5MB of their own each, the browser
+  22 and 14 (`--check-processes cap`, twenty sites). Before the fallback
+  fonts were read when needed, each held 120MB of its own: every
+  renderer read the CJK fallbacks (Microsoft YaHei, Yu Gothic twice,
+  Malgun Gothic, some 60MB) whether its pages used them or not.
+- *A fetch* through the browser costs 0.27ms more than in one engine,
+  *a call* to it (a read of `document.cookie`) 26us more.
+- *A page's first frame* waits for its renderer's pacing (a frame each
+  16ms at most, and only once the browser took the last) and for its
+  rows through the pipe: 26ms more for 500 paragraphs at 800 by 600.
+- *The test servers' names under `localhost`* cost about 250ms a
+  connection on Windows (net tries `[::1]` first, where they do not
+  listen); the handed-over navigation pays it once, its own cost the
+  33ms past it.
+
+**T4.3.** The benchmarks of the code before M34 (76ac554) and of M34
+(58a5ec2), by turns, four rounds, sixteen benches (M33's and `fetch`,
+`storage`, `frames`, `dom`, `scripts`, `animation`): within 8% by
+their medians but four rows. The flex grid's first frame, 0.25
+against 0.37s (x1.47), its layout 201 against 334ms in six runs more by
+turns: the same head binary, copied out of the folder it was built in,
+lays the grid out in 204ms, the base's time, and in 325ms where it was
+built, so where the binary lies decides it, not what it runs (the
+bimodal row M33 met). A scroll frame, 0.65 against 0.72ms, and its
+paint, 0.27 against 0.31ms, and a page of 100 stylesheets again from
+the cache, 3.75 against 4.15ms, are fractions of a millisecond within
+their ranges. The seams M34 put in one process (the fetcher, the
+cookies and the storage areas behind traits, the frames' numbers) are
+an indirect call a request: the fetch bench's 1,000 `fetch()`es take
+107.5 against 103.7ms (x1.04).
+
 ### Over budget, and why
 
 These are known and recorded rather than hidden. Each has the item that
 is to take it on.
+
+- **A click's frame through renderers (M34).** 25ms from a press to
+  the frame that shows what it changed, against 1.5ms in one engine:
+  the renderer draws a frame each 16ms at most, once the browser took
+  the last, and sends its rows through the pipe. Drawing at once after
+  input, and shared surfaces, are G125's.
 
 - **2,000 particles on a canvas (M30).** 26.9ms a frame on the GPU
   backend and 31.3ms on the software one, where the acceptance asked

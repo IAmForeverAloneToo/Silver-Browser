@@ -662,3 +662,104 @@ gate.
 13. *`docs/security.md`*: the process boundary in the threat model, the
     sandbox per platform, the limits.
 14. *The documents*.
+
+## 4. Corrected to the code
+
+Where the milestone's code came out otherwise than the sections above
+planned, *(corrected)*, by section. The step notes say how each was
+found.
+
+*IPC.* *(corrected)* Messages are tagged by a `u16`, unit enums by a
+`u8`; a count or a length is held to the bytes left before anything
+is allocated for it (step 1).
+
+*The network and storage services.* *(corrected)* Storage events stay
+among one renderer's engines, as they stayed among one engine's
+documents in one process (step 4). Frames ask for local network access
+in their top-level origin's name, which the lock check admits (step 7).
+The compromised renderer of step 11 found what the note did not list:
+the fetch treats a request of no origin, or in a navigation's mode, as
+the user's own load and filters nothing, so the browser now kills a
+renderer for a request of no origin that is not a navigation, for a
+navigation's mode outside a document's or a frame's navigation, for a
+stream that is not a navigation's or a navigation not streamed (the
+hand-over is on the streamed path), and for a forbidden method or
+field; and another site's response to a navigation that makes no
+document (a download) reaches the renderer as its head alone.
+
+*Navigation and the session history.* *(corrected)* Scripts have no
+history object yet, so the segments are the browser's alone and no
+engine is told how many entries lie before and after its own (step 6).
+An error page commits where its navigation was asked for, under the
+URL it was asked for, as planned; so does a page the browser makes (the
+mixed form's warning), which leaves the browser unable to tell them
+from a renderer's lie about its URL (G123, step 11).
+
+*Pixels.* *(corrected)* A view's frames go through the pipe as the
+rows that changed, in pieces under `MAX_CHUNK`, on every platform: the
+shared surfaces of D32 are not made (G125). A renderer draws at most
+one frame each 16 ms and only once the browser took the last. A remote
+frame's hole is drawn in the colour `HOLE` (rgb(1, 254, 3), opaque),
+and the browser composites a frame root's pixels where its parent's
+are that colour, so the parent's content over the frame stays over it;
+a hole under a transform, an opacity or a filter is shown as G116
+says (step 7).
+
+*Frames across processes.* *(corrected)* No renderer keeps a replica of
+the tree: the browser numbers frames, knows their renderers, parents,
+origins, URLs, sandboxing and the views that show them, and carries a
+message or a navigation posted to a frame of another renderer to it,
+checking the sender's frame and origin; a remote frame's window
+answers `postMessage` and `location` alone, its `length`, `frames` and
+document not read across renderers, nor ports carried between them
+(G122). The browser hit-tests the pointer itself, by the holes and the
+`HOLE` pixel under it, with capture while a button is held, so G115 is
+not needed; the wheel goes to the frame under the pointer and is not
+given back to its parent when the frame does not scroll, keys go to the
+view last clicked, and sequential focus does not enter a remote frame
+(G122). A frame's new view is sized from the hole already drawn for it
+(step 9).
+
+*The sandbox.* *(corrected)* The logon session's SID is not a
+restricting SID: nothing a renderer does needs it, and it would admit
+the session's desktop and named objects; it stays enabled for the
+normal check, which user32's start needs. The token's default DACL
+admits `RESTRICTED`, without which what the process makes for itself
+grants the user alone and the system's libraries fail to start
+(0xC0000142). The probes refuse a folder of `Users` written at low
+integrity (ProgramData) besides those planned, and the desktop's state
+as the job reports it; the network is not probed (a socket in the
+shell would break the egress rule's check), and is open (G111). A probe
+that makes a file makes it delete-on-close (step 8).
+
+*Crashes.* *(corrected)* The engine catches the panics of image
+decoders, of the WebAssembly glue and of the profile, so the panic
+hook only keeps the message (with a backtrace); the report is made when
+a panic leaves the renderer's main loop, which runs under
+`catch_unwind`. A panic on another thread of a renderer is not
+reported. `--temporary-profile` keeps no dumps; a renderer that lives
+10 seconds after its dump is ended (step 9).
+
+*One process as a build feature.* *(corrected)* `--multi-process` is
+gone; `--software` belongs to the one-process build, renderers drawing
+in software; `--print-to-pdf` runs its page in the browser's own
+process, unsandboxed (G124, step 10).
+
+*Limits, tests and measures.* *(corrected)* The cap measured at step 12
+found each renderer holding 120 MB of its own, the CJK fallback fonts
+read into every process: a fallback is now read when a text of its
+script first needs it, shared by the scripts of its face, and a
+renderer at the cap holds 5 MB. A renderer process answers its hello
+in 21 to 23 ms. A click reaches the frame that shows it in 25 ms
+through renderers against 1.5 ms in one engine, the frame pacing and
+the rows through the pipe (M35).
+
+*Registered* (G110 to G125): the GPU (G110); the network (G111); the
+lockdown (G112); macOS's and Linux's sandboxes and dumps (G113); a
+sandboxed frame's process (G114); G115 not needed; transformed frames
+(G116); `history.state` and form state (G117); the soft cap (G118);
+cross-origin isolation (G119); a hung renderer (G120); ORB's script
+parse (G121); the frame tree's reads and ports across renderers, the
+wheel's chaining and focus traversal into frames (G122); the URL a
+renderer reports (G123); `--print-to-pdf` in the browser's process
+(G124); shared surfaces (G125).

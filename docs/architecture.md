@@ -48,6 +48,13 @@ shell          (bin "silver-browser": windowing, event loop, input, clipboard)
                 leaf crate, since M14)
 ```
 
+Since M34 the engine's `ipc`, `service` and `renderer` modules lay it
+across processes (`docs/design/processes.md`): the browser process runs
+the shell and the `service` side (the network, the storage, the frames'
+tree, the tab of renderers), and each renderer process, the same
+executable, the `renderer` side, each site's engines in a process of its
+own; the crates below are the same in either.
+
 ### Rules
 
 1. **Dependencies point strictly downward.** A lower crate must never
@@ -2030,3 +2037,59 @@ profile encryption's edges. The preload list, fetched with the
 maintainer's leave after the documents, holds the reference browser's
 95,136 hosts as of 2026-10-13. 2,606 tests pass workspace-wide, two
 ignored. Next milestone: the multi-process architecture (M34).
+
+Milestone 34 (the multi-process architecture; `docs/design/processes.md`,
+`docs/security.md` 4.10): the crate seams became process seams. The
+IPC (step 1, `engine::ipc`): an own codec of versioned messages, frames
+of at most 16 MiB read as their bytes come, a channel, numbered calls,
+fuzzed by `ipc_decode`. Renderer processes (step 2): the same
+executable run with `--renderer`, its standard input and output the
+channel, a hello in 10 seconds, started suspended in a job that ends
+it with the browser, its opaque origins numbered apart. The network
+service (step 3): every fetch and `document.cookie` made by the
+browser, each request held to the renderer's lock and the frames
+granted it, Opaque Response Blocking before a renderer has a response;
+the storage service (step 4) the same for Web Storage. The remote tab
+(step 5): the session drives a `View`, an `Engine` or a `RemoteTab`
+whose renderers draw and send the rows that changed. Sites and the
+session history (step 6): a renderer locked to a site at its first
+document, a navigation of another site handed over at its response's
+head, the history in segments, 16 renderers a tab and a spare. Frames
+across processes (step 7): a frame of another site shown by its site's
+renderer, drawn by its parent as a hole the browser composites it
+into, its messages, loads and input through the browser, which numbers
+the frames and hit-tests the pointer itself. The sandbox (step 8, D2):
+on Windows a restricted token at low integrity in a job of one
+process, 4 GiB and the desktop's state closed, probes inside a
+renderer for each refusal. Crashes (step 9, D34): a renderer gone
+leaves the browser's own page saying so, in the tab or in a frame's
+hole, until a reload brings it back; on Windows the browser writes a
+minidump of a renderer that crashed, beside the profile, eight kept.
+Many processes by default (step 10), `--features single-process` the
+one-process browser, both in the gate and CI. A compromised renderer
+(step 11): a renderer speaking the protocol itself is refused 21
+requests, killed for each, and the adversarial site's pages run again
+through renderers; it found requests of no origin or in a navigation's
+mode reading another site's HTML whole, now refused, and another
+site's download's body, now kept from the renderer. The acceptance
+(step 12): a renderer process killed in an animation leaves the page
+saying so and a reload brings the animation back in a new one; a tab of
+twenty sites keeps sixteen renderer processes, each ready in 21 to 23ms;
+measuring them found every renderer reading the CJK fallback fonts,
+120MB of its own each, now read when a page needs them (5MB). Through
+renderers a fetch costs 0.27ms more, a call to the browser 26us, a
+click to its frame 25ms against 1.5 (G125). T4.3 within 8% of M33 by
+its medians but the flex grid's first frame, which the same binary runs
+at the base's speed when copied out of the folder it was built in; the
+`ipc_decode` fuzz run (fifteen minutes on six workers, 30 million
+inputs from the session's seeds) found nothing. Not in this
+milestone, said rather than hidden and registered (G110 to G125, G115
+not needed): the GPU in a process of its own, the network denied to a
+renderer, the reference browser's lockdown, the sandbox and dumps on
+macOS and Linux, a sandboxed frame's own process, frames under a
+transform, `history.state` across a discarded renderer, a soft cap,
+cross-origin isolation, a hung renderer, ORB's script parse, the frame
+tree's reads and ports across renderers, the URL a renderer reports,
+`--print-to-pdf` in the browser's process, and shared surfaces. 2,699
+tests pass workspace-wide, two ignored. Next milestone: the
+performance pass (M35).
