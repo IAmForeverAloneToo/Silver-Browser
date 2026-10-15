@@ -45,6 +45,16 @@
 //! laid out again takes the items nothing changed from the cache, and
 //! the boxes inside an item are kept and taken as a block's are.
 //!
+//! The box tree is kept too (M35.9, [`LayoutCache::keep_boxes`]): a pass
+//! builds anew the boxes of the elements a change reached and takes
+//! the rest whole from the last tree, an element's own box with its
+//! subtree, where nothing in it is generated, a marker, a control, or
+//! styled by an ancestor's pseudo-element (what the builder's later
+//! steps write into a tree), and nothing was forgotten in it since: the
+//! elements a change reached, their ancestors, and everything under a
+//! restyled element, whose decorations and first lines reach its
+//! descendants' boxes.
+//!
 //! Boxes laid out in other ways, inside an inline-block, a float, or
 //! an absolutely positioned box, are laid out again with the box that
 //! holds them, which is itself kept when it can be.
@@ -55,6 +65,7 @@ use std::collections::HashMap;
 use dom::{Change, Document, NodeId};
 
 use crate::block::{AdjoiningMargins, BlockLayout, Fragment};
+use crate::box_tree::{BoxKind, LayoutBox};
 use crate::composite::Patch;
 
 /// The layout results kept between passes, and what the last pass did.
@@ -69,6 +80,12 @@ pub struct LayoutCache {
     /// with (M35.9): what a box's widths depend on is its subtree and
     /// the fonts, so what a change does not reach measures the same.
     widths: RefCell<HashMap<NodeId, (u64, Widths)>>,
+    /// The last box tree built, and where in it each element's own box
+    /// that may be taken whole is, by the places among their parents'
+    /// children of the boxes down to it (M35.9).
+    tree: RefCell<Vec<LayoutBox>>,
+    boxes: RefCell<HashMap<NodeId, Box<[u32]>>>,
+    boxes_taken: Cell<usize>,
     laid_out: Cell<usize>,
     reused: Cell<usize>,
     items_laid_out: Cell<usize>,
@@ -147,6 +164,39 @@ impl LayoutCache {
         self.entries.get_mut().clear();
         self.items.get_mut().clear();
         self.widths.get_mut().clear();
+        self.tree.get_mut().clear();
+        self.boxes.get_mut().clear();
+    }
+
+    /// How many elements' boxes the last build took whole from the box
+    /// tree kept (M35.9).
+    pub fn boxes_taken(&self) -> usize {
+        self.boxes_taken.get()
+    }
+
+    /// Keeps `boxes`, the box tree a pass was laid out from, for the next
+    /// build to take what nothing changed from (M35.9).
+    pub fn keep_boxes(&self, boxes: Vec<LayoutBox>) {
+        let mut places = HashMap::new();
+        mark(&boxes, &mut Vec::new(), &mut places);
+        *self.tree.borrow_mut() = boxes;
+        *self.boxes.borrow_mut() = places;
+    }
+
+    /// The box kept for the element `node`, taken out of the tree kept,
+    /// if there is one nothing changed in.
+    pub(crate) fn take_box(&self, node: NodeId) -> Option<LayoutBox> {
+        let place = self.boxes.borrow_mut().remove(&node)?;
+        let mut tree = self.tree.borrow_mut();
+        let (&last, way) = place.split_last()?;
+        let mut list: &mut Vec<LayoutBox> = &mut tree;
+        for &i in way {
+            list = &mut list.get_mut(i as usize)?.children;
+        }
+        let slot = list.get_mut(last as usize).filter(|b| b.node == node)?;
+        let hollow = LayoutBox::hollow(slot);
+        self.boxes_taken.set(self.boxes_taken.get() + 1);
+        Some(std::mem::replace(slot, hollow))
     }
 
     /// What the last pass did with the flex and grid items and the table
@@ -182,14 +232,17 @@ impl LayoutCache {
         let entries = self.entries.get_mut();
         let items = self.items.get_mut();
         let widths = self.widths.get_mut();
+        let boxes = self.boxes.get_mut();
         let mut forget = |node: NodeId| {
             entries.remove(&node);
             items.remove(&node);
             widths.remove(&node);
+            boxes.remove(&node);
             for ancestor in document.ancestors(node) {
                 entries.remove(&ancestor);
                 items.remove(&ancestor);
                 widths.remove(&ancestor);
+                boxes.remove(&ancestor);
             }
         };
         let mut controls = false;
@@ -199,6 +252,7 @@ impl LayoutCache {
                     entries.clear();
                     items.clear();
                     widths.clear();
+                    boxes.clear();
                     return;
                 }
                 Change::Inserted { parent, child } | Change::Removed { parent, child, .. } => {
@@ -264,9 +318,24 @@ impl LayoutCache {
         for &node in restyled {
             forget(node);
         }
+        // A restyled element's decorations and first line reach the boxes
+        // of its descendants, which are built again.
+        let boxes = self.boxes.get_mut();
+        if !boxes.is_empty() {
+            for &node in restyled {
+                if document.contains(node) {
+                    for below in document.subtree(node) {
+                        boxes.remove(&below);
+                    }
+                }
+            }
+        }
         entries.retain(|node, _| document.contains(*node));
         items.retain(|node, _| document.contains(*node));
         widths.retain(|node, _| document.contains(*node));
+        self.boxes
+            .get_mut()
+            .retain(|node, _| document.contains(*node));
     }
 
     /// Gives the fragments of the kept entries that a restyle's
@@ -432,6 +501,44 @@ impl Entry {
     }
 }
 
+/// Records in `places` where each element's own box under `boxes` that
+/// a build may take whole is, `path` the way to `boxes`: whether every
+/// box there may be.
+fn mark(
+    boxes: &[LayoutBox],
+    path: &mut Vec<u32>,
+    places: &mut HashMap<NodeId, Box<[u32]>>,
+) -> bool {
+    let mut all = true;
+    for (i, b) in boxes.iter().enumerate() {
+        path.push(i as u32);
+        let inside = mark(&b.children, path, places);
+        let whole = inside
+            && b.generated.is_none()
+            && !b.styled_by_ancestor
+            && b.first_line.is_none()
+            && b.control_size.is_none()
+            && !matches!(b.kind, BoxKind::Marker { .. });
+        let own = !b.anonymous
+            && matches!(
+                b.kind,
+                BoxKind::Block
+                    | BoxKind::InlineBlock
+                    | BoxKind::Float
+                    | BoxKind::Absolute
+                    | BoxKind::Flex
+                    | BoxKind::Grid
+                    | BoxKind::Table
+            );
+        if whole && own {
+            places.insert(b.node, path.clone().into_boxed_slice());
+        }
+        all &= whole;
+        path.pop();
+    }
+    all
+}
+
 /// Whether an attribute named `name` may change what a form control
 /// shows (M26.7): its value, placeholder or type, a checkbox's or a
 /// radio button's state and group, being disabled, a select's kind, an
@@ -461,9 +568,9 @@ pub fn shown_by_controls(name: &str) -> bool {
 mod tests {
     use super::*;
     use crate::block::{DocumentLayout, layout_document_cached, layout_document_in};
-    use crate::build_box_tree;
     use crate::composite::EffectsChange;
     use crate::{Children, FragmentKind};
+    use crate::{build_box_tree, build_box_tree_kept};
     use std::collections::HashSet;
     use style::{CascadeContext, Styles, Stylesheets};
     use text::FontCollection;
@@ -624,9 +731,12 @@ mod tests {
             let recascade = self
                 .sheets
                 .recascader(&self.document, &self.styles, &context);
-            let boxes = build_box_tree(&self.document, &self.styles, &recascade);
+            // The box tree from the one kept, as the engine builds it.
+            let boxes =
+                build_box_tree_kept(&self.document, &self.styles, &recascade, &(), &self.cache);
             let cached =
                 layout_document_cached(&boxes, self.width, Some(HEIGHT), &self.fonts, &self.cache);
+            self.cache.keep_boxes(boxes);
             let fresh = self.fresh();
             assert_eq!(
                 snapshot(&cached),
@@ -1281,6 +1391,56 @@ mod tests {
         );
         s.pass();
         set_text(&mut s, "s", "one and a great deal more");
+        s.pass();
+    }
+
+    #[test]
+    fn a_build_takes_the_boxes_nothing_changed_from_the_tree_kept() {
+        // M35.9: a paragraph appended, html's and body's boxes are built
+        // anew and the three paragraphs' taken whole; a restyled element's
+        // box and its descendants' are built anew (`pass` holds each tree
+        // laid out to a fresh one's).
+        let mut s = Session::new(
+            "<p id=a>one</p><p id=b>two</p><div id=c><p>three</p></div>",
+            "",
+        );
+        s.pass();
+        let taken = s.cache.boxes_taken();
+        let body = s.body();
+        s.change(|d| {
+            append_paragraph(d, body, "four");
+        });
+        s.pass();
+        assert_eq!(s.cache.boxes_taken() - taken, 3);
+        let (taken, c) = (s.cache.boxes_taken(), s.id("c"));
+        s.change(|d| d.set_attribute(c, "style", "padding-left: 9px").unwrap());
+        s.pass();
+        // #a, #b and the fourth paragraph; not #c nor the paragraph in it.
+        assert_eq!(s.cache.boxes_taken() - taken, 3);
+        // A box whose own first line was styled is built anew, or the
+        // build would style it again.
+        let mut s = Session::new(
+            "<div id=d>first line, and a great deal more after it, enough to wrap</div>",
+            "#d::first-line { letter-spacing: 2px }",
+        );
+        s.pass();
+        let body = s.body();
+        s.change(|d| {
+            append_paragraph(d, body, "after");
+        });
+        s.pass();
+        // A float moved out of a flex container, where it was an item, is
+        // a float again, whatever box it had.
+        let mut s = Session::new(
+            "<div id=f><div id=x>x</div><p>y</p></div><div id=b><p>z</p></div>",
+            "#f { display: flex } #x { float: left; width: 10px } p { margin: 0 }",
+        );
+        s.pass();
+        let (f, x, b) = (s.id("f"), s.id("x"), s.id("b"));
+        s.change(|d| {
+            d.remove_child(f, x).unwrap();
+            d.insert_before(b, x, None).unwrap();
+        });
         s.pass();
     }
 

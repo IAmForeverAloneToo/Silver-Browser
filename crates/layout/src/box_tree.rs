@@ -54,6 +54,7 @@ mod first_letter;
 mod first_line;
 mod generated;
 
+use crate::cache::LayoutCache;
 use crate::decoration::{self, Decorating};
 
 /// The character a generated text holds where its `content` has an image
@@ -169,6 +170,31 @@ pub struct LayoutBox {
     /// attributes and font rather than by CSS. `None` for every other
     /// box.
     pub control_size: Option<ControlSize>,
+}
+
+impl LayoutBox {
+    /// What stands in `b`'s place in a kept tree once a build took it
+    /// (M35.9): its node and style, nothing else.
+    pub(crate) fn hollow(b: &LayoutBox) -> LayoutBox {
+        LayoutBox {
+            style: Arc::clone(&b.style),
+            kind: BoxKind::AnonymousBlock,
+            children: Vec::new(),
+            node: b.node,
+            anonymous: true,
+            generated: None,
+            generated_text: 0,
+            decorations: None,
+            styled_by_ancestor: false,
+            first_line: None,
+            tree_order: 0,
+            item: false,
+            parent: None,
+            in_3d: false,
+            replaced: None,
+            control_size: None,
+        }
+    }
 }
 
 /// A form control's own content size (M26.11), each side `None` where
@@ -625,6 +651,31 @@ pub fn build_box_tree_showing(
     recascade: &dyn Recascade,
     images: &dyn Images,
 ) -> Vec<LayoutBox> {
+    build(document, styles, recascade, images, None)
+}
+
+/// [`build_box_tree_showing`], an element's own box taken whole from the
+/// box tree `cache` keeps when nothing in its subtree changed since
+/// (M35.9, [`LayoutCache::keep_boxes`]): its style the very one the
+/// element has, its kind the one it is built as here. The tree built is
+/// to be given back to `cache` once it is laid out.
+pub fn build_box_tree_kept(
+    document: &Document,
+    styles: &Styles,
+    recascade: &dyn Recascade,
+    images: &dyn Images,
+    cache: &LayoutCache,
+) -> Vec<LayoutBox> {
+    build(document, styles, recascade, images, Some(cache))
+}
+
+fn build(
+    document: &Document,
+    styles: &Styles,
+    recascade: &dyn Recascade,
+    images: &dyn Images,
+    kept: Option<&LayoutCache>,
+) -> Vec<LayoutBox> {
     let styled = Styled {
         document,
         styles,
@@ -632,6 +683,7 @@ pub fn build_box_tree_showing(
         images,
         generated: OnceCell::new(),
         decorations: RefCell::new(vec![None; document.slot_count()]),
+        kept,
     };
     let mut boxes = build_block_container(&styled, Item::Node(document.root()));
     place_markers(&mut boxes);
@@ -835,6 +887,9 @@ struct Styled<'a> {
     /// The text decorations in force over each element's text, found as
     /// the build asks, by the element's slot in the document.
     decorations: RefCell<Vec<Option<Decorations>>>,
+    /// The layout cache whose box tree the build takes elements' boxes
+    /// from (M35.9), if any.
+    kept: Option<&'a LayoutCache>,
 }
 
 /// The text decorations in force over some text, if any.
@@ -1117,6 +1172,17 @@ impl<'a> Styled<'a> {
         kind: BoxKind,
         build: impl FnOnce() -> Vec<LayoutBox>,
     ) -> LayoutBox {
+        // The box kept, when nothing under it changed, its style the
+        // element's own and its kind this one (M35.9).
+        if let (Item::Node(node), Some(kept)) = (item, self.kept)
+            && let Some(b) = kept.take_box(node)
+            && b.kind == kind
+            && self
+                .shared(item)
+                .is_some_and(|own| Arc::ptr_eq(own, &b.style))
+        {
+            return b;
+        }
         LayoutBox {
             style: self.control_style(item, style),
             kind,

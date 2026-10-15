@@ -5837,11 +5837,14 @@ impl Engine {
                 self.shown
                     .stylesheets
                     .recascader(&self.shown.document, styles, &context);
-            let boxes = layout::build_box_tree_showing(
+            // The boxes of what no change reached are taken whole from
+            // the tree the last pass kept (M35.9).
+            let boxes = layout::build_box_tree_kept(
                 &self.shown.document,
                 styles,
                 &recascade,
                 &self.shown.images,
+                &self.shown.layout_cache,
             );
             let layout = layout::layout_document_cached(
                 &boxes,
@@ -5850,6 +5853,7 @@ impl Engine {
                 &self.layout_fonts,
                 &self.shown.layout_cache,
             );
+            self.shown.layout_cache.keep_boxes(boxes);
             self.layout_runs += 1;
             let (laid_out, reused) = self.shown.layout_cache.counts();
             self.boxes_laid_out += laid_out as u64;
