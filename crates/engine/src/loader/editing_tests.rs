@@ -73,6 +73,29 @@ const CTRL: Modifiers = Modifiers {
     alt: false,
     meta: false,
 };
+const ALT: Modifiers = Modifiers {
+    shift: false,
+    ctrl: false,
+    alt: true,
+    meta: false,
+};
+const META: Modifiers = Modifiers {
+    shift: false,
+    ctrl: false,
+    alt: false,
+    meta: true,
+};
+
+/// The modifier that moves and deletes by words, as the engine's
+/// `edit_key` reads it: Option on macOS, Ctrl elsewhere.
+const WORD: Modifiers = if cfg!(target_os = "macos") { ALT } else { CTRL };
+
+/// And the one of commands such as select-all: Cmd on macOS.
+const COMMAND: Modifiers = if cfg!(target_os = "macos") {
+    META
+} else {
+    CTRL
+};
 
 /// `source` run, and what it logged.
 fn run(tab: &mut Tab, source: &str) -> Vec<String> {
@@ -138,7 +161,7 @@ fn the_keys_move_select_and_delete() {
     let mut tab = page("<input id=t value='one two three'><input id=r readonly value=ro>");
     run(&mut tab, "document.getElementById('t').focus();");
     tab.engine.key_down(&key("Home"));
-    with(&mut tab, CTRL, |tab| {
+    with(&mut tab, WORD, |tab| {
         tab.engine.key_down(&key("ArrowRight"));
     });
     assert_eq!(selection(&mut tab, "t"), "3 3 forward");
@@ -159,11 +182,11 @@ fn the_keys_move_select_and_delete() {
     );
     tab.engine.key_down(&key("Delete"));
     assert_eq!(value(&mut tab, "t"), "\"oneo three\"");
-    with(&mut tab, CTRL, |tab| {
+    with(&mut tab, WORD, |tab| {
         tab.engine.key_down(&key("Backspace"));
     });
     assert_eq!(value(&mut tab, "t"), "\"o three\"");
-    with(&mut tab, CTRL, |tab| {
+    with(&mut tab, COMMAND, |tab| {
         tab.engine.key_down(&key("a"));
     });
     assert_eq!(selection(&mut tab, "t"), "0 7 forward");

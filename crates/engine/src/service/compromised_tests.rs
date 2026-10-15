@@ -549,11 +549,7 @@ fn a_compromised_renderer_reads_no_file() {
     let server = server();
     let file = std::env::temp_dir().join(format!("silver-compromised-{}", std::process::id()));
     std::fs::write(&file, "the user's").expect("written");
-    let target = Url::parse(&format!(
-        "file:///{}",
-        file.display().to_string().replace('\\', "/")
-    ))
-    .expect("a URL");
+    let target = Url::from_file_path(&file).expect("a URL");
     let page = url(&server, "attacker.localhost", "/page").origin();
     let done = fetched(&server, false, move |_| {
         let mut request = Request::get(target, Destination::Empty);

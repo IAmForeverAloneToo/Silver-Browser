@@ -487,11 +487,7 @@ fn check_kill() -> Result<(), String> {
 }
 
 fn kill_animated(file: &Path, size: (u32, u32)) -> Result<(), String> {
-    let url = Url::parse(&format!(
-        "file:///{}",
-        file.display().to_string().replace('\\', "/")
-    ))
-    .map_err(|_| "no URL for the page")?;
+    let url = Url::from_file_path(file).ok_or("no URL for the page")?;
     let mut tab = process_tab(size)?;
     tab.navigate(url);
     if !wait_for(&mut tab, |tab| *tab.load_state() == LoadState::Loaded) {

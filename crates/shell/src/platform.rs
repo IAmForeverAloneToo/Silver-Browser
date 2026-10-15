@@ -118,7 +118,9 @@ pub(crate) struct ProcessLauncher {
     /// What follows the renderer's number on its command line: the
     /// sandbox's probes' (M34.3).
     arguments: Vec<OsString>,
-    /// Where the dumps of crashed renderers go.
+    /// Where the dumps of crashed renderers go: Windows's alone yet
+    /// (G113).
+    #[cfg_attr(not(windows), allow(dead_code))]
     crashes: Option<PathBuf>,
 }
 

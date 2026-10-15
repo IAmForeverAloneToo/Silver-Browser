@@ -969,12 +969,19 @@ fn a_nested_scripts_error_is_the_pages_and_nesting_is_bounded() {
     assert_eq!(console.len(), 2, "{console:?}");
     assert!(console[0].starts_with("Script ran too long"), "{console:?}");
     assert_eq!(console[1], "next");
-    // A script that writes a script that writes one, forty deep.
-    let (_, console) = scripted(
-        "<p>x</p><script>window.depth = 0; window.deeper = function () { depth++; \
-         document.write('<script>deeper()<\\/script>'); }; deeper(); \
-         console.log('depth', depth)</script>",
-        true,
+    // A script that writes a script that writes one, forty deep. Its
+    // realm's stack has room past the nesting's bound: an unoptimized
+    // build's frames, some 32 KiB a level, use the default's 256 KiB up
+    // near the bound, sooner on some machines than on others.
+    let (_, console) = scripted_bytes(
+        b"<p>x</p><script>window.depth = 0; window.deeper = function () { depth++; \
+          document.write('<script>deeper()<\\/script>'); }; deeper(); \
+          console.log('depth', depth)</script>"
+            .to_vec(),
+        Some(js::Limits {
+            stack: 1 << 20,
+            ..js::Limits::default()
+        }),
     );
     let most = crate::scripts::MAX_SCRIPT_NESTING;
     assert_eq!(

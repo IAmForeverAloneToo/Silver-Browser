@@ -54,8 +54,57 @@ fn check(lines: &[String], want: &[(&str, &str)]) {
             .iter()
             .find(|line| line.starts_with(&prefix))
             .unwrap_or_else(|| panic!("no {name} in {lines:#?}"));
-        assert_eq!(&line[prefix.len()..], *value, "{name}");
+        let got = &line[prefix.len()..];
+        assert!(close(got, value), "{name}\n  left: {got}\n right: {value}");
     }
+}
+
+/// Whether `a` and `b` say the same, their numbers within a few units in
+/// the last place of each other. The C libraries' sines and cosines
+/// differ in the last place (the reference's numbers came from
+/// Windows's; glibc's and macOS's round some the other way), which no
+/// test here asks about.
+fn close(a: &str, b: &str) -> bool {
+    let (a, b) = (tokens(a), tokens(b));
+    a.len() == b.len()
+        && a.iter().zip(&b).all(|(x, y)| {
+            x == y
+                || matches!(
+                    (x.parse::<f64>(), y.parse::<f64>()),
+                    (Ok(x), Ok(y)) if (x - y).abs() <= 4.0 * f64::EPSILON * x.abs().max(y.abs())
+                )
+        })
+}
+
+/// `text` cut into runs of a number's characters and of the others.
+fn tokens(text: &str) -> Vec<&str> {
+    let numeric = |c: char| c.is_ascii_digit() || c == '.';
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut kind = None;
+    for (at, c) in text.char_indices() {
+        let now = numeric(c);
+        if kind.is_some_and(|was| was != now) {
+            out.push(&text[start..at]);
+            start = at;
+        }
+        kind = Some(now);
+    }
+    if start < text.len() {
+        out.push(&text[start..]);
+    }
+    out
+}
+
+#[test]
+fn numbers_a_last_place_apart_are_close_and_others_are_not() {
+    assert!(close(
+        "matrix(0.7071067811865476, 0.7071067811865475)",
+        "matrix(0.7071067811865476, 0.7071067811865476)"
+    ));
+    assert!(!close("matrix(0.70710678, 1)", "matrix(0.70710679, 1)"));
+    assert!(!close("[1,2]", "[1,2,3]"));
+    assert!(!close("a 1", "b 1"));
 }
 
 #[test]

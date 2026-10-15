@@ -22,7 +22,8 @@ pub(crate) fn dump_name(millis: u128, id: u32) -> String {
 }
 
 /// Removes the oldest dumps in `dir`, and their messages, past the
-/// newest `keep`.
+/// newest `keep`. Only Windows writes dumps yet (G113).
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn prune(dir: &Path, keep: usize) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -49,6 +50,7 @@ pub(crate) fn prune(dir: &Path, keep: usize) {
 /// A renderer's panic message as the file beside its dump keeps it: what
 /// the renderer wrote, which is not trusted, its control characters but
 /// line breaks and tabs dropped.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn message_text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes)
         .chars()

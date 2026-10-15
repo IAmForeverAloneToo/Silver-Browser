@@ -20,10 +20,13 @@ fn the_browser_starts_renderers_and_ends_them() {
     let complained = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{said}{complained}");
     assert!(said.contains("renderer 1: Shutdown, exit code 0"), "{said}");
+    // Killed: 1 on Windows, where the browser ends it so; a signal's end,
+    // without a code, elsewhere. The check fails on a code of zero.
     assert!(
-        said.contains("renderer 2: BadMessage(\"the check's\"), exit code 1"),
+        said.contains("renderer 2: BadMessage(\"the check's\"), exit code "),
         "{said}"
     );
+    assert!(!said.contains("renderer 2: BadMessage(\"the check's\"), exit code 0"));
 }
 
 #[test]
