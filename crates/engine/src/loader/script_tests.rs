@@ -359,7 +359,9 @@ fn an_external_script_holds_the_parser_until_it_has_run() {
     assert!(lines(&mut tab).is_empty());
     assert_eq!(text(&tab.engine), "x");
     assert_eq!(tab.engine.load_state(), &LoadState::Loading);
-    load_all(&mut tab, body);
+    // The same load, waited for: navigating again would run the script
+    // twice on a machine slow enough for the first to have run.
+    tab.wait_until(|engine| engine.load_state() == &LoadState::Loaded);
     assert_eq!(lines(&mut tab), ["\"\""]);
     assert_eq!(text(&tab.engine), "xtafter");
 }

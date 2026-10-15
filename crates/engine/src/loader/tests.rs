@@ -1031,7 +1031,7 @@ fn a_document_is_shown_before_its_body_has_all_arrived_and_grows() {
     assert_eq!(tab.engine.load_state(), &LoadState::Loading);
     let frame = tab.engine.frame(200, 100);
     // The rest comes, and the document grows: a change like any other.
-    load_all(&mut tab, page);
+    tab.wait_until(|engine| engine.load_state() == &LoadState::Loaded);
     assert_eq!(text(&tab.engine), "Slowfirstafter");
     assert!(tab.engine.needs_frame() || tab.engine.frame(200, 100) != frame);
 }

@@ -186,7 +186,15 @@ fn one_engine() -> Box<dyn View> {
 fn quiet(view: &mut dyn View, server: &TestServer) {
     let deadline = Instant::now() + Duration::from_secs(20);
     let (mut seen, mut since) = (server.requests().len(), Instant::now());
-    while since.elapsed() < Duration::from_millis(300) {
+    let icon = |server: &TestServer| {
+        server
+            .requests()
+            .iter()
+            .any(|request| request.target == "/favicon.ico")
+    };
+    // The icon first, however slow the machine: it is the victim's own,
+    // and carries the cookie no request of the page's may.
+    while !icon(server) || since.elapsed() < Duration::from_millis(300) {
         view.poll_network();
         view.run_tasks();
         let now = server.requests().len();
@@ -264,10 +272,14 @@ fn attack(make: Make, allow: bool) -> (String, String, Vec<ServerRequest>) {
 /// include credentials, whatever the victim allows.
 fn check_cookies(requests: &[ServerRequest]) {
     let cookie = |request: &ServerRequest| request.header("Cookie").unwrap_or("").to_owned();
+    let carried: Vec<&str> = requests
+        .iter()
+        .filter(|request| cookie(request).contains("lax="))
+        .map(|request| request.target.as_str())
+        .collect();
     assert!(
-        requests
-            .iter()
-            .all(|request| !cookie(request).contains("lax="))
+        carried.is_empty(),
+        "the Lax cookie sent across sites: {carried:?}"
     );
     let credentialed = requests
         .iter()

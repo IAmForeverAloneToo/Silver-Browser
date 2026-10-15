@@ -372,7 +372,7 @@ fn a_document_on_its_way_hears_its_fetches_answer_before_it_is_shown() {
     tab.engine.set_scripting(true);
     let url = server.url("/page.html");
     tab.engine.navigate(url.clone());
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while !(tab.engine.url() == Some(&url) && tab.engine.load_state() == &crate::LoadState::Loaded)
     {
         assert!(Instant::now() < deadline, "the page loads in time");
