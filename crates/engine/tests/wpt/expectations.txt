@@ -3,7 +3,8 @@
 # path, a tab, its name, a tab and the reason, the name in printable
 # ASCII with \u{HEX} for any other character. A test or subtest that
 # fails without being named here fails the run, and so does one named
-# here that passes.
+# here that passes, unless its reason begins `either:`: its outcome
+# depends on the machine's timing, and it may pass.
 # The steps are those of the milestone a section names, in its design
 # note's section 3: docs/design/flexbox.md for M17, docs/design/grid.md
 # for M18, docs/design/compositing.md for M19, docs/design/media.md for
@@ -1523,7 +1524,7 @@ css/mediaqueries/prefers-color-scheme-svg-image-normal-with-meta-dark.html      
 css/css-values/svg-attr-case-sensitivity.html                                    attr() with a type (css-values-5) is not parsed here, so the fill falls back to black
 css/css-lists/list-item-definition.html                                          a ::before or ::after of display: list-item makes no list item here: no marker, and not counted
 css/css-lists/list-style-image-gradients.html                                    the reference's marker is an SVG image of no natural size, which a marker shows at the default object size (300 by 150) here, where the reference browser shows it as small as the gradient markers the test has
-css/css-content/element-replacement-dynamic.html                                 a class change after the first frame that makes content: url() replace the element is not shown by the screenshot; the same replacement at the load is (element-replacement.html)
+css/css-content/element-replacement-dynamic.html                                 either: passes where the screenshot comes late enough (macOS's runners); a class change after the first frame that makes content: url() replace the element is not shown by the screenshot; the same replacement at the load is (element-replacement.html)
 css/css-backgrounds/background-size/background-size-cover-svg-view.html          an SVG image's fragment naming a view (#svgView, the view element) is not read (G87)
 css/css-backgrounds/border-image-image-type-001.htm                              a border image of an SVG image of no natural size is cut from its 300 by 150 default here, not from an image sized by the border image area (CSS Backgrounds 3 section 6.2)
 css/css-backgrounds/border-image-image-type-002.htm                              as border-image-image-type-001.htm: an SVG border image of no natural size is cut from its 300 by 150 default

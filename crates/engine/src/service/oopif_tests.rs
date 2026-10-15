@@ -108,6 +108,21 @@ fn server() -> TestServer {
                  document.getElementById('f').src = '/again'; }};</script>"
             ),
             "/again" => "<p>again</p>".to_owned(),
+            "/counted" => format!(
+                "<iframe id=f src='/same'></iframe><img src='/slow'>\
+                 <script>let got = 0; addEventListener('message', () => got++); \
+                 let once = false; document.getElementById('f').onload = () => {{ \
+                 if (once) {{ return; }} once = true; \
+                 document.getElementById('f').src = 'http://b.localhost:{port}/child'; }}; \
+                 onload = () => console.log('load ' + got);</script>"
+            ),
+            "/same" => "<p>same</p>".to_owned(),
+            "/slow" => {
+                return Reply::After(
+                    Duration::from_millis(1000),
+                    Box::new(Reply::ok("text/plain", b"not an image")),
+                );
+            }
             _ => String::new(),
         };
         Reply::ok("text/html", body.as_bytes())
@@ -330,4 +345,22 @@ fn a_frame_shown_elsewhere_stays_so_when_its_parent_navigates_it_home() {
     );
     let roots = tab.frame_roots();
     assert_eq!(roots.len(), 1, "{roots:?}");
+}
+
+#[test]
+fn a_parents_load_waits_for_its_frame_handed_over_however_late_the_browser_says_so() {
+    let server = server();
+    let mut tab = tab();
+    tab.navigate(url(&server, "a.localhost", "/counted"));
+    // The renderers go on without the tab. The frame shows a document of
+    // its parent's site, then is sent to another site while its parent
+    // still loads (an image comes late): the parent's renderer hears the
+    // navigation moved long before the browser tells it the frame is
+    // another renderer's, and its load must wait for that frame's.
+    thread::sleep(Duration::from_millis(2000));
+    let mut lines = Vec::new();
+    settle(&mut tab, &mut lines, "the parent's load", |_, lines| {
+        lines.iter().any(|line| line.starts_with("load "))
+    });
+    assert!(lines.contains(&"load 1".to_owned()), "{lines:?}");
 }

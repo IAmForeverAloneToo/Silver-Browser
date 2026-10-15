@@ -103,6 +103,8 @@ const LOCAL: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 struct Outcome {
     pwned: BTreeSet<String>,
     ran: BTreeSet<String>,
+    /// Everything the page and its frames logged: what a failure says.
+    said: Vec<String>,
 }
 
 fn set(names: &[&str]) -> BTreeSet<String> {
@@ -373,6 +375,7 @@ fn outcome_of(line: &str) -> Outcome {
     Outcome {
         pwned: list(pwned),
         ran: list(ran),
+        said: Vec::new(),
     }
 }
 
@@ -470,6 +473,7 @@ fn attack(
             if Instant::now() >= least
                 && awaited.iter().all(|attack| outcome.pwned.contains(*attack))
             {
+                outcome.said = said;
                 return outcome;
             }
         }
@@ -506,15 +510,15 @@ fn a_public_page_sends_nothing_in_clear_to_a_known_host_or_to_the_local_network(
 /// defences gone.
 pub(crate) fn framing(make: Make) {
     let defended = attack(make, true, false, "a.localhost", "/frames.html", &[]);
-    assert_eq!(defended.pwned, set(&[]));
-    assert_eq!(defended.ran, set(&FRAME_ATTACKS));
+    assert_eq!(defended.pwned, set(&[]), "{defended:?}");
+    assert_eq!(defended.ran, set(&FRAME_ATTACKS), "{defended:?}");
     let learned: Vec<&str> = FRAME_ATTACKS
         .into_iter()
         .filter(|attack| !ACROSS_FRAMES.contains(attack))
         .collect();
     let open = attack(make, false, false, "a.localhost", "/frames.html", &learned);
-    assert_eq!(open.pwned, set(&learned));
-    assert_eq!(open.ran, set(&FRAME_ATTACKS));
+    assert_eq!(open.pwned, set(&learned), "{open:?}");
+    assert_eq!(open.ran, set(&FRAME_ATTACKS), "{open:?}");
     // A sandboxed frame's navigation of the top and its popup, each a
     // run of its own, since either leaves the page.
     for late in ["top", "popup"] {
@@ -524,7 +528,7 @@ pub(crate) fn framing(make: Make) {
         };
         let path = format!("/frames.html?{late}");
         let defended = attack(make, true, false, "a.localhost", &path, &[]);
-        assert_eq!(defended.pwned, set(&[]), "{late}");
+        assert_eq!(defended.pwned, set(&[]), "{late}: {defended:?}");
         let open = attack(make, false, false, "a.localhost", &path, &[attack_name]);
         assert!(open.pwned.contains(attack_name), "{late}: {open:?}");
     }
@@ -534,8 +538,8 @@ pub(crate) fn framing(make: Make) {
 /// without it.
 pub(crate) fn injected(make: Make) {
     let defended = attack(make, true, false, "b.localhost", "/csp.html?form", &[]);
-    assert_eq!(defended.pwned, set(&[]));
-    assert_eq!(defended.ran, set(&CSP_ATTACKS));
+    assert_eq!(defended.pwned, set(&[]), "{defended:?}");
+    assert_eq!(defended.ran, set(&CSP_ATTACKS), "{defended:?}");
     let open = attack(
         make,
         false,
@@ -544,7 +548,7 @@ pub(crate) fn injected(make: Make) {
         "/csp.html?form",
         &CSP_ATTACKS,
     );
-    assert_eq!(open.pwned, set(&CSP_ATTACKS));
+    assert_eq!(open.pwned, set(&CSP_ATTACKS), "{open:?}");
 }
 
 /// Another site carries and reads none of the victim's cookies and
@@ -560,13 +564,13 @@ pub(crate) fn cookies(make: Make) {
     let mut all = carried.clone();
     all.extend(COOKIE_READS);
     let defended = attack(make, true, true, "a.localhost", "/cookies.html", &[]);
-    assert_eq!(defended.pwned, set(&[]));
+    assert_eq!(defended.pwned, set(&[]), "{defended:?}");
     let mut ran = COOKIE_REQUESTS.to_vec();
     ran.extend(COOKIE_READS);
-    assert_eq!(defended.ran, set(&ran));
+    assert_eq!(defended.ran, set(&ran), "{defended:?}");
     // From the victim's own site, all of it.
     let open = attack(make, false, true, "b.localhost", "/cookies.html", &all);
-    assert_eq!(open.pwned, set(&all));
+    assert_eq!(open.pwned, set(&all), "{open:?}");
     // An `HttpOnly` cookie is not a script's, a `Secure` one is not kept
     // by a page not served securely, and a cross-site `Referer` does not
     // carry the path.
@@ -586,10 +590,10 @@ pub(crate) fn cookies(make: Make) {
         ),
     ] {
         let defended = attack(make, true, signed_in, host, path, &[]);
-        assert_eq!(defended.pwned, set(&[]), "{path}");
-        assert_eq!(defended.ran, set(attacks), "{path}");
+        assert_eq!(defended.pwned, set(&[]), "{path}: {defended:?}");
+        assert_eq!(defended.ran, set(attacks), "{path}: {defended:?}");
         let open = attack(make, false, signed_in, host, path, attacks);
-        assert_eq!(open.pwned, set(attacks), "{path}");
+        assert_eq!(open.pwned, set(attacks), "{path}: {open:?}");
     }
 }
 
@@ -598,8 +602,8 @@ pub(crate) fn cookies(make: Make) {
 pub(crate) fn network(make: Make) {
     let attacks = ["hsts", "local-network"];
     let defended = attack(make, true, false, "public.test", "/network.html", &[]);
-    assert_eq!(defended.pwned, set(&[]));
-    assert_eq!(defended.ran, set(&attacks));
+    assert_eq!(defended.pwned, set(&[]), "{defended:?}");
+    assert_eq!(defended.ran, set(&attacks), "{defended:?}");
     let open = attack(make, false, false, "public.test", "/network.html", &attacks);
-    assert_eq!(open.pwned, set(&attacks));
+    assert_eq!(open.pwned, set(&attacks), "{open:?}");
 }

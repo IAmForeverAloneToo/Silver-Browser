@@ -1,2 +1,7 @@
+# Every text file is checked out as it is committed, with LF line ends,
+# on every system: the tests serve their files byte for byte, which a
+# checkout converting them to CRLF (Windows's runners) changes.
+* text=auto eol=lf
+
 # Fuzz seeds are inputs byte for byte: never converted, never diffed.
 fuzz/seeds/** binary

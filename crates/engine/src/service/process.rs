@@ -243,9 +243,11 @@ impl Renderer {
     /// Asks it to end: it ends on its own, or when the browser lets go of
     /// it.
     pub fn shutdown(&self) {
+        // Said first: the renderer may end at once, and its end is then
+        // the shutdown's, not its channel's.
+        self.shared.end(Gone::Shutdown, false);
         let _ = self.sender.send(&ToRenderer::Shutdown {});
         self.sender.close();
-        self.shared.end(Gone::Shutdown, false);
     }
 
     /// Its exit code, once its process has ended.

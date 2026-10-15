@@ -758,11 +758,17 @@ impl Frame {
     }
 
     /// Whether the frame has no navigation under way and its element was
-    /// told its document loaded.
+    /// told its document loaded. A frame whose navigation was handed to
+    /// another renderer has one under way until the browser makes it
+    /// remote (M34).
     pub(crate) fn settled(&self) -> bool {
         match &self.remote {
             Some(_) => self.told_of_its_document(),
-            None => self.told_of_its_document() && self.engine.frame_settled(),
+            None => {
+                self.told_of_its_document()
+                    && self.engine.frame_settled()
+                    && !self.engine.handed_over
+            }
         }
     }
 }

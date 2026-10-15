@@ -766,6 +766,14 @@ impl RemoteTab {
                     self.destroy_view(old);
                 }
                 let Some(number) = self.renderer_for(&notice.lock) else {
+                    // No renderer for it (G118): it stays empty, and its
+                    // parent's load waits for it no more.
+                    if root.is_none()
+                        && let Some(slot) = self.renderers.get(&parent_renderer)
+                    {
+                        let _ = slot.renderer.send(&ToRenderer::FrameRemote { key });
+                        let _ = slot.renderer.send(&ToRenderer::FrameLoaded { key });
+                    }
                     return;
                 };
                 let view = (number, self.next_view);

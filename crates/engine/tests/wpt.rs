@@ -1847,7 +1847,7 @@ fn the_web_platform_tests_subset_runs_as_expected() {
         }
         match (outcome.passed, expected.contains_key(test.path())) {
             (false, false) => unexpected.push(format!("FAIL {}: {}", test.path(), outcome.message)),
-            (true, true) => unexpected.push(format!(
+            (true, true) if !either(&expected, test.path()) => unexpected.push(format!(
                 "PASS {}: it passes, so expectations.txt must no longer name it",
                 test.path()
             )),
@@ -1876,6 +1876,14 @@ fn the_web_platform_tests_subset_runs_as_expected() {
 /// wrote `harness`: a harness that did not finish, unless the test is
 /// named whole; one that did, if it is; each subtest that failed and is
 /// not named, or passed and is; and each subtest named that did not run.
+/// Whether the test or subtest `key` may pass as well as fail: its reason
+/// says `either:`, its outcome depending on the machine's timing.
+fn either(expected: &BTreeMap<String, String>, key: &str) -> bool {
+    expected
+        .get(key)
+        .is_some_and(|reason| reason.starts_with("either:"))
+}
+
 fn harness_unexpected(
     path: &str,
     harness: &Harness,
@@ -1908,9 +1916,11 @@ fn harness_unexpected(
                 "{} {path}\t{name}: {message}",
                 status_name(&SUBTEST_STATUSES, *status)
             )),
-            (true, true) => unexpected.push(format!(
-                "PASS {path}\t{name}: it passes, so expectations.txt must no longer name it"
-            )),
+            (true, true) if !either(expected, &format!("{path}\t{name}")) => {
+                unexpected.push(format!(
+                    "PASS {path}\t{name}: it passes, so expectations.txt must no longer name it"
+                ));
+            }
             _ => {}
         }
     }

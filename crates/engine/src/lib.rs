@@ -406,6 +406,10 @@ pub struct Engine {
     link: Option<Arc<renderer::link::Link>>,
     fetcher: Option<Arc<renderer::link::RemoteFetcher>>,
     dropped_remote: Vec<u32>,
+    /// Its last navigation was handed to the renderer of its document's
+    /// site (M34): a frame's, its parent's `load` waits until the browser
+    /// says it is another renderer's, and then for that frame's load.
+    handed_over: bool,
     /// Where the pointer is over the page, in its coordinates, while it
     /// is (M26.4).
     pointer: Option<(f32, f32)>,
@@ -1135,6 +1139,7 @@ impl Engine {
             link: None,
             fetcher: None,
             dropped_remote: Vec::new(),
+            handed_over: false,
             pointer: None,
             buttons: 0,
             modifiers: Modifiers::default(),
@@ -3711,6 +3716,7 @@ impl Engine {
 
     /// Aborts the navigation under way, if there is one.
     fn cancel_navigation(&mut self) {
+        self.handed_over = false;
         if let Some(navigation) = self.navigation.take() {
             self.network.cancel(navigation.incoming.id(), None);
         }
@@ -4869,6 +4875,7 @@ impl Engine {
             // Handed to the renderer of its site (M34.1): the page shown
             // here stays, as for a 204.
             Err(LoadError::Network(NetworkError::Moved)) => {
+                self.handed_over = true;
                 self.settle_load_state();
                 return;
             }
