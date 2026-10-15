@@ -9,9 +9,9 @@
 use std::sync::Arc;
 
 use tiny_skia::{
-    BlendMode, FillRule, FilterQuality, GradientStop, LinearGradient, Mask, PathBuilder, Pixmap,
-    PixmapPaint, PixmapRef, Point, RadialGradient, Rect, Shader, SpreadMode, StrokeDash,
-    SweepGradient, Transform,
+    BlendMode, FillRule, FilterQuality, GradientStop, LinearGradient, Mask, PathBuilder,
+    PathSegment, Pixmap, PixmapPaint, PixmapRef, Point, RadialGradient, Rect, Shader, SpreadMode,
+    StrokeDash, SweepGradient, Transform,
 };
 
 use crate::blur::blur;
@@ -48,6 +48,40 @@ const MAX_STROKE_RESOLUTION: f64 = 65_536.0;
 /// million points and took a second and a half (found by fuzzing); 266
 /// so.
 const FAR_STROKE: f64 = 4_194_304.0;
+
+/// The most dashes a stroke is cut into: past it the path is stroked
+/// whole, as Skia strokes it past a million. A path stretched by a
+/// transform all but singular, millions of units long in the user's
+/// space and a few pixels in the bitmap's, was cut into a hundred
+/// thousand dashes and took a second a stroke (found by fuzzing, M35);
+/// this many take a tenth of one there, and still dash a line across
+/// the largest bitmap a pixel at a time.
+pub(crate) const MAX_STROKE_DASHES: f64 = 16_384.0;
+
+/// The length of `path`'s control polygon, which is at least that of
+/// its lines and curves: what bounds the dashes it is cut into.
+fn control_length(path: &tiny_skia::Path) -> f64 {
+    let distance = |a: Point, b: Point| f64::from(a.x - b.x).hypot(f64::from(a.y - b.y));
+    let (mut start, mut last) = (Point::zero(), Point::zero());
+    let mut length = 0.0;
+    for segment in path.segments() {
+        let points = match segment {
+            PathSegment::MoveTo(p) => {
+                (start, last) = (p, p);
+                continue;
+            }
+            PathSegment::LineTo(p) => [p, p, p],
+            PathSegment::QuadTo(a, p) => [a, p, p],
+            PathSegment::CubicTo(a, b, p) => [a, b, p],
+            PathSegment::Close => [start, start, start],
+        };
+        for p in points {
+            length += distance(last, p);
+            last = p;
+        }
+    }
+    length
+}
 
 /// A rectangle of whole pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,7 +221,9 @@ impl Canvas {
             + state.line_width * state.transform.scale();
         let far = (reach / FAR_STROKE).max(1.0);
         let resolution = (state.transform.scale().max(1.0) / far).min(MAX_STROKE_RESOLUTION) as f32;
-        if !state.dash.list.is_empty() && state.dash.list.iter().sum::<f64>() > 0.0 {
+        let interval: f64 = state.dash.list.iter().sum();
+        let dashes = control_length(&path) * (state.dash.list.len() / 2) as f64 / interval;
+        if !state.dash.list.is_empty() && interval > 0.0 && dashes <= MAX_STROKE_DASHES {
             let list: Vec<f32> = state.dash.list.iter().map(|&v| v as f32).collect();
             let dash = StrokeDash::new(list, state.dash.offset as f32)?;
             path = path.dash(&dash, resolution)?;

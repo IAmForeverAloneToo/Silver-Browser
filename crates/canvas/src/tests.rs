@@ -1467,6 +1467,35 @@ fn a_stroke_under_a_vast_scale_is_traced_to_a_bounded_precision() {
 }
 
 #[test]
+fn a_stroke_cut_into_too_many_dashes_is_stroked_whole() {
+    // The fuzzer's (M35): a path made before a transform all but
+    // singular is millions of units long in its space and a few pixels
+    // in the bitmap's; cut into a hundred thousand dashes, round capped,
+    // its stroke took a second.
+    let mut canvas = Canvas::new(5, 18, true);
+    canvas.with_path(|path, m| path.cubic_to(0.0, 1e-300, 0.5, 1e-300, 0.0, 2.5, m));
+    canvas.transform(&Matrix::new(-1e9, 147.75, 1.0, 0.0, 0.0, 0.0));
+    canvas.state_mut().set_line_width(147.75);
+    canvas.state_mut().line_cap = crate::LineCap::Round;
+    let inverse = canvas.state().transform.invert().expect("invertible");
+    let user = canvas.path().transformed(&inverse);
+    let whole = canvas.stroke_outline(&user).expect("an outline");
+    canvas.state_mut().dash.set(&[158.5, 0.0]);
+    let dashed = canvas.stroke_outline(&user).expect("an outline");
+    assert_eq!(dashed.len(), whole.len(), "stroked whole");
+    // Under the bound it is dashed: a line across the largest bitmap, a
+    // pixel at a time.
+    let mut canvas = Canvas::new(4, 4, false);
+    let mut line = Path::new();
+    line.move_to(0.0, 2.0, &Matrix::IDENTITY);
+    line.line_to(f64::from(MAX_CANVAS_SIDE), 2.0, &Matrix::IDENTITY);
+    let whole = canvas.stroke_outline(&line).expect("an outline");
+    canvas.state_mut().dash.set(&[1.0, 1.0]);
+    let dashed = canvas.stroke_outline(&line).expect("an outline");
+    assert!(dashed.len() > 1000 * whole.len(), "{}", dashed.len());
+}
+
+#[test]
 fn a_rectangle_of_values_not_finite_clears_nothing() {
     // WPT's 2d.clearRect.nonfinite, which found the bitmap dropped.
     let inf = f64::INFINITY;
