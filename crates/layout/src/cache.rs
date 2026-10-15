@@ -772,6 +772,7 @@ mod tests {
                     old: &c.old,
                     new: &c.new,
                     transformed: c.transformed,
+                    styles: Some((&c.old_style, &c.new_style)),
                 })
                 .collect();
             // Into the layout, then the cache, as the engine does: one

@@ -1277,6 +1277,11 @@ pub struct Composited {
     /// Whether its transform changed, which can change the scrollable
     /// overflow its boxes are part of.
     pub transformed: bool,
+    /// The style it replaces and the new one, which differ in these
+    /// effects alone (T4.3, M35): a box that carries the very style
+    /// takes the new one rather than a copy of its own.
+    pub old_style: Arc<ComputedStyle>,
+    pub new_style: Arc<ComputedStyle>,
 }
 
 /// The composited changes from `old` to `new`, the computed styles of the
@@ -1327,8 +1332,8 @@ fn composited_change(node: NodeId, old: &Computed, new: &Computed) -> Option<Vec
 fn composited_style(
     node: NodeId,
     pseudo: Option<PseudoElement>,
-    old: &ComputedStyle,
-    new: &ComputedStyle,
+    old: &Arc<ComputedStyle>,
+    new: &Arc<ComputedStyle>,
     out: &mut Vec<Composited>,
 ) -> Option<()> {
     if old == new {
@@ -1372,6 +1377,8 @@ fn composited_style(
             || a.translate != b.translate
             || a.rotate != b.rotate
             || a.scale != b.scale,
+        old_style: Arc::clone(old),
+        new_style: Arc::clone(new),
     });
     Some(())
 }

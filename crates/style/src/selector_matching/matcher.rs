@@ -115,7 +115,11 @@ pub struct Matcher<'a> {
     /// For each element whose children were matched, the ancestor
     /// filter of its children: the bits of the features of it and of
     /// its ancestors (M35.2), at most [`MAX_ANCESTOR_FILTERS`] of them.
-    filters: HashMap<NodeId, Box<AncestorFilter>>,
+    filters: Vec<AncestorFilter>,
+    /// Where each element's filter is in `filters`, by slot index, one
+    /// past it; none for 0. Read at every match of a selector with a
+    /// combinator, which a map's hashing made the cost of (T4.3).
+    filter_at: Vec<u32>,
     /// The places a selector's compounds were found to lead nowhere, by
     /// the selector's address, the compound and the node: kept for the
     /// matcher's life, since the document does not change in it (M35.2),
@@ -198,7 +202,8 @@ impl<'a> Matcher<'a> {
             radio_groups: HashMap::new(),
             selected_options: HashMap::new(),
             scope: None,
-            filters: HashMap::new(),
+            filters: Vec::new(),
+            filter_at: Vec::new(),
             failed: HashSet::new(),
             #[cfg(test)]
             compounds_tried: 0,
@@ -382,11 +387,11 @@ impl<'a> Matcher<'a> {
     /// of its ancestors, made down from the nearest one kept; `None` past
     /// [`MAX_ANCESTOR_FILTERS`].
     fn filter_of(&mut self, parent: NodeId) -> Option<&AncestorFilter> {
-        if !self.filters.contains_key(&parent) {
+        if self.filter_place(parent).is_none() {
             let mut chain = Vec::new();
             let mut node = Some(parent);
             while let Some(at) = node {
-                if self.filters.contains_key(&at) {
+                if self.filter_place(at).is_some() {
                     break;
                 }
                 chain.push(at);
@@ -396,14 +401,26 @@ impl<'a> Matcher<'a> {
                 return None;
             }
             let mut filter: AncestorFilter = node
-                .and_then(|kept| self.filters.get(&kept))
-                .map_or([0; ANCESTOR_FILTER_BITS / 64], |kept| **kept);
+                .and_then(|kept| self.filter_place(kept))
+                .map_or([0; ANCESTOR_FILTER_BITS / 64], |place| self.filters[place]);
+            let slots = self.document.slot_count();
+            if self.filter_at.len() < slots {
+                self.filter_at.resize(slots, 0);
+            }
             for at in chain.into_iter().rev() {
                 self.add_features(&mut filter, at);
-                self.filters.insert(at, Box::new(filter));
+                self.filters.push(filter);
+                self.filter_at[at.index()] = self.filters.len() as u32;
             }
         }
-        self.filters.get(&parent).map(|filter| &**filter)
+        let place = self.filter_place(parent)?;
+        self.filters.get(place)
+    }
+
+    /// Where `element`'s filter is in `filters`, if it has one.
+    fn filter_place(&self, element: NodeId) -> Option<usize> {
+        let place = *self.filter_at.get(element.index())?;
+        place.checked_sub(1).map(|place| place as usize)
     }
 
     /// Adds `element`'s ID, classes and tag to `filter`.

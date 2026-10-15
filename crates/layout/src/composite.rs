@@ -60,6 +60,12 @@ pub struct EffectsChange<'a> {
     /// Whether its transform changed, which can change the scrollable
     /// overflow its boxes are part of.
     pub transformed: bool,
+    /// The style its fragments carry and the new one, when known, which
+    /// differ in these effects alone: a fragment that carries the very
+    /// style takes the new one, shared, rather than a copy of its own
+    /// with the new effects (T4.3, M35), which costs a style's copy a
+    /// fragment a frame where the lists are shared with the cache.
+    pub styles: Option<(&'a Arc<ComputedStyle>, &'a Arc<ComputedStyle>)>,
 }
 
 /// A change of an element's, or pseudo-element's, computed style in
@@ -200,7 +206,13 @@ impl<'c, 'a> Changes<'c, 'a> {
 
     /// Gives `fragment` the new effects of the change `i`.
     fn write(&self, fragment: &mut Fragment, i: usize) {
-        Arc::make_mut(&mut fragment.style).effects = Some(Arc::clone(self.changes[i].new));
+        let change = &self.changes[i];
+        match change.styles {
+            Some((old, new)) if Arc::ptr_eq(&fragment.style, old) => {
+                fragment.style = Arc::clone(new);
+            }
+            _ => Arc::make_mut(&mut fragment.style).effects = Some(Arc::clone(change.new)),
+        }
     }
 }
 
@@ -554,6 +566,7 @@ mod tests {
             old: &old,
             new: &new,
             transformed: true,
+            styles: None,
         };
         composite(&mut laid.layout, &[change])
     }
@@ -572,6 +585,7 @@ mod tests {
             old: &a,
             new: &new,
             transformed: true,
+            styles: None,
         };
         assert_eq!(composite(&mut laid.layout, &[change]), Composited::Done);
         assert!(Arc::ptr_eq(&effects(&laid, "a"), &new));
@@ -610,6 +624,7 @@ mod tests {
             old,
             new,
             transformed,
+            styles: None,
         };
         // Two in the middle: both written, the overflow as it was.
         let changes = [
@@ -662,8 +677,52 @@ mod tests {
             old: &old,
             new: &new,
             transformed: false,
+            styles: None,
         };
         assert_eq!(composite(&mut laid.layout, &[change]), Composited::Done);
+    }
+
+    #[test]
+    fn a_fragment_carrying_the_very_style_takes_the_new_one_shared() {
+        // T4.3 (M35): an opacity animated on 1,000 paragraphs copied a
+        // style a fragment a frame, 8us each, the lists being shared.
+        let mut laid = laid("<div id=a></div>", "div { opacity: 0.5; height: 10px }");
+        let with = |style: &Arc<ComputedStyle>, opacity: f32| {
+            let mut effects = (**style.effects.as_ref().expect("effects")).clone();
+            effects.opacity = opacity;
+            let effects = Arc::new(effects);
+            let mut changed = (**style).clone();
+            changed.effects = Some(Arc::clone(&effects));
+            (effects, Arc::new(changed))
+        };
+        let old = style_of(&laid, "a");
+        let (new_effects, new) = with(&old, 0.25);
+        let change = EffectsChange {
+            node: node(&laid, "a"),
+            pseudo: None,
+            old: old.effects.as_ref().expect("effects"),
+            new: &new_effects,
+            transformed: false,
+            styles: Some((&old, &new)),
+        };
+        assert_eq!(composite(&mut laid.layout, &[change]), Composited::Done);
+        assert!(Arc::ptr_eq(&style_of(&laid, "a"), &new), "shared");
+        // A fragment that carries another style takes a copy of its own
+        // with the new effects.
+        let stranger = Arc::new((*new).clone());
+        let (newer_effects, newer) = with(&new, 0.75);
+        let change = EffectsChange {
+            node: node(&laid, "a"),
+            pseudo: None,
+            old: &new_effects,
+            new: &newer_effects,
+            transformed: false,
+            styles: Some((&stranger, &newer)),
+        };
+        assert_eq!(composite(&mut laid.layout, &[change]), Composited::Done);
+        let carried = style_of(&laid, "a");
+        assert!(!Arc::ptr_eq(&carried, &newer));
+        assert_eq!(carried, newer, "the same values");
     }
 
     /// The style the box of the element `id` carries.

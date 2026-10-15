@@ -5851,6 +5851,7 @@ impl Engine {
                 old: &change.old,
                 new: &change.new,
                 transformed: change.transformed,
+                styles: Some((&change.old_style, &change.new_style)),
             })
             .collect();
         // One patch for both: the lists of children the layout shares
@@ -11271,6 +11272,19 @@ mod tests {
             faded[0] > 100 && faded[0] < 160 && faded[2] == 255,
             "{faded:?}"
         );
+        // Their boxes carry the cascade's new styles themselves, not
+        // copies of their own made a frame (T4.3, M35).
+        for id in ["a", "b"] {
+            let node = node_by_id(&engine, id);
+            let styled = engine.shown.styled.as_ref().expect("styled");
+            let style = styled.styles.shared(node).expect("a style");
+            let layout = &engine.shown.layout.as_ref().expect("laid out").layout;
+            let carried = layout
+                .iter()
+                .find(|f| f.node == node && matches!(f.kind, layout::FragmentKind::Box))
+                .expect("a box");
+            assert!(Arc::ptr_eq(&carried.style, style), "{id}");
+        }
         // Nor do the frames after.
         for ms in [600, 700, 800] {
             draw_at(&mut engine, ms);
