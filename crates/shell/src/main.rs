@@ -761,14 +761,26 @@ struct CommandLine {
     /// `--print-to-pdf <path>`: the file to print the page to, with no
     /// window (M20.4).
     print_to: Option<PathBuf>,
-    /// `--enable-scripts`: run pages' scripts (M24), which are off
-    /// otherwise until the isolation of M33 and M34 (roadmap risk R2).
-    scripts: bool,
+    /// `--enable-scripts` or `--disable-scripts`: whether pages' scripts
+    /// run (M24), when the command line says. When it does not, they
+    /// run where each page is in a renderer process of its site's (M34):
+    /// the window of the many-process build. In one process, and in
+    /// `--print-to-pdf`'s page, which the browser's own process shows
+    /// (G124), they wait to be asked for (roadmap risk R2).
+    scripts: Option<bool>,
     /// `--compat-user-agent`: send the reference browser's user agent
     /// string, this browser named after it (D12's escape hatch, M25).
     compat: bool,
     /// Where the browsing keeps what it keeps (M28).
     profile: Keep,
+}
+
+impl CommandLine {
+    /// Whether the window's pages run their scripts: as the command line
+    /// says, else where pages are renderers' (M34).
+    fn window_scripts(&self) -> bool {
+        self.scripts.unwrap_or(!cfg!(feature = "single-process"))
+    }
 }
 
 /// The profile the command line asks for (M28).
@@ -795,7 +807,7 @@ fn command_line(args: impl Iterator<Item = OsString>) -> Result<CommandLine, Str
         software: false,
         asked: Asked::default(),
         print_to: None,
-        scripts: false,
+        scripts: None,
         compat: false,
         profile: Keep::Default,
     };
@@ -806,8 +818,11 @@ fn command_line(args: impl Iterator<Item = OsString>) -> Result<CommandLine, Str
             line.software = true;
             continue;
         }
-        if arg == "--enable-scripts" {
-            line.scripts = true;
+        if arg == "--enable-scripts" || arg == "--disable-scripts" {
+            if line.scripts.is_some() {
+                return Err("--enable-scripts and --disable-scripts: one at most".to_owned());
+            }
+            line.scripts = Some(arg == "--enable-scripts");
             continue;
         }
         if arg == "--compat-user-agent" {
@@ -914,7 +929,8 @@ fn main() {
             eprintln!(
                 "usage: silver-browser [--software] [--layer-budget <MiB>] \
                  [--prefers-color-scheme light|dark] [--prefers-reduced-motion] \
-                 [--enable-scripts] [--compat-user-agent] [--print-to-pdf <path>] \
+                 [--enable-scripts | --disable-scripts] [--compat-user-agent] \
+                 [--print-to-pdf <path>] \
                  [--profile <dir> | --temporary-profile] [URL or path]"
             );
             std::process::exit(2);
@@ -926,7 +942,7 @@ fn main() {
         std::process::exit(print_to_pdf(
             start,
             asked,
-            line.scripts,
+            line.scripts.unwrap_or(false),
             line.compat,
             &line.profile,
             path,
@@ -989,7 +1005,7 @@ fn run(mut engine: impl View, line: &CommandLine) {
     }
     // The window's theme is known once there is a window.
     engine.set_preferences(preferences(asked, None, platform::reduced_motion()));
-    engine.set_scripting(line.scripts);
+    engine.set_scripting(line.window_scripts());
     if line.compat {
         engine.set_compat_user_agent(true);
     }
@@ -1219,12 +1235,21 @@ mod tests {
     }
 
     #[test]
-    fn scripts_run_only_when_the_command_line_asks() {
-        let scripts =
-            |args: &[&str]| command_line(args.iter().map(OsString::from)).map(|l| l.scripts);
-        assert_eq!(scripts(&[]), Ok(false));
-        assert_eq!(scripts(&["--enable-scripts"]), Ok(true));
-        assert_eq!(scripts(&["example.com", "--enable-scripts"]), Ok(true));
+    fn scripts_run_in_renderers_unless_the_command_line_says_otherwise() {
+        let line = |args: &[&str]| command_line(args.iter().map(OsString::from));
+        let scripts = |args: &[&str]| line(args).map(|l| l.scripts);
+        assert_eq!(scripts(&[]), Ok(None));
+        assert_eq!(scripts(&["--enable-scripts"]), Ok(Some(true)));
+        assert_eq!(
+            scripts(&["example.com", "--disable-scripts"]),
+            Ok(Some(false))
+        );
+        assert!(scripts(&["--enable-scripts", "--disable-scripts"]).is_err());
+        // The window's pages run them where they are renderers'.
+        let window = |args: &[&str]| line(args).map(|l| l.window_scripts());
+        assert_eq!(window(&[]), Ok(!cfg!(feature = "single-process")));
+        assert_eq!(window(&["--disable-scripts"]), Ok(false));
+        assert_eq!(window(&["--enable-scripts"]), Ok(true));
     }
 
     #[test]
@@ -1238,7 +1263,7 @@ mod tests {
                 software: false,
                 asked: Asked::default(),
                 print_to: None,
-                scripts: false,
+                scripts: None,
                 compat: false,
                 profile: Keep::Default,
             })
@@ -1251,7 +1276,7 @@ mod tests {
                 software: true,
                 asked: Asked::default(),
                 print_to: None,
-                scripts: false,
+                scripts: None,
                 compat: false,
                 profile: Keep::Default,
             })

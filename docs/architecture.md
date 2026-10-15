@@ -2091,5 +2091,8 @@ transform, `history.state` across a discarded renderer, a soft cap,
 cross-origin isolation, a hung renderer, ORB's script parse, the frame
 tree's reads and ports across renderers, the URL a renderer reports,
 `--print-to-pdf` in the browser's process, and shared surfaces. 2,699
-tests pass workspace-wide, two ignored. Next milestone: the
-performance pass (M35).
+tests pass workspace-wide, two ignored. After the milestone, at the
+maintainer's word, scripts run by default where pages are renderers'
+(the many-process build's window), `--disable-scripts` turning them
+off; the one-process build and `--print-to-pdf` wait for
+`--enable-scripts`. Next milestone: the performance pass (M35).

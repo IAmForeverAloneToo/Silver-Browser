@@ -167,6 +167,12 @@ such budget and run on threads of their own. WebAssembly runs in
 as its bytes are charged to the run. Scripts reach the document only
 through the engine's host calls, never its memory.
 
+Scripts run by default where pages are renderers' (the many-process
+build's window, since M34), `--disable-scripts` turning them off; in
+the one-process build and in `--print-to-pdf`'s page, which the
+browser's own process shows unsandboxed (G124), they run only when
+`--enable-scripts` asks (risk R2).
+
 ### 4.8 Parsers and decoders
 
 Every parser and decoder is bounded (section 8): nesting depths, node

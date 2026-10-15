@@ -3037,6 +3037,12 @@ Deferred from the milestones above, each with what it waits on:
   the single most dangerous window. Mitigation: M24 runs only in a
   strict-CSP, no-cookie, in-memory default profile until M33 lands; the
   `ScriptEngine` boundary is reviewed as security code.
+  Since M34 (2026-10-15, the maintainer's choice) scripts run by
+  default in the many-process build's window, each page in a renderer
+  process of its site, sandboxed on Windows; `--disable-scripts` turns
+  them off. The one-process build and `--print-to-pdf`, whose pages are
+  the browser's own process's, run them only when `--enable-scripts`
+  asks.
 - **R3 — Single-developer throughput.** Phases marked XR are
   year-scale at hobby cadence. Mitigation: milestones stay vertical and
   demoable (motivation + integration risk control); parallel tracks
