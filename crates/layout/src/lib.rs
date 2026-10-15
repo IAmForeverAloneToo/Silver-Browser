@@ -11,7 +11,8 @@
 //! breaking against `text`-measured words, baseline alignment across
 //! mixed font sizes, `text-align`, bidi — see that module's docs for
 //! its own v1 scope (no `overflow-wrap`). The result is a
-//! [`DocumentLayout`] (M9.1): a fragment tree in document coordinates
+//! [`DocumentLayout`] (M9.1): a fragment tree, each fragment placed
+//! relative to its parent and the roots in document coordinates (M35.9),
 //! plus the content height the viewport scrolls over; `paint` consumes
 //! it, applying the scroll offset. A [`LayoutCache`] (M13.2) keeps
 //! block boxes' layouts from one pass to the next, so that a pass after
@@ -39,8 +40,8 @@ mod replaced;
 mod table;
 
 pub use block::{
-    DocumentLayout, Fragment, FragmentKind, Preorder, StackingKey, flatten, layout,
-    layout_document, layout_document_cached, layout_document_in, preorder,
+    DocumentLayout, Fragment, FragmentKind, Placed, Places, Preorder, StackingKey, flatten, layout,
+    layout_document, layout_document_cached, layout_document_in, placed, preorder,
 };
 pub use box_tree::{
     BoxKind, FirstLine, ImageState, Images, LayoutBox, MAX_GENERATED_TEXT, Mark, MarkerShape,
@@ -60,7 +61,7 @@ pub(crate) mod testing {
 
     use dom::{Document, Node, NodeId};
 
-    use crate::{DocumentLayout, LayoutBox};
+    use crate::{DocumentLayout, Fragment, LayoutBox, Preorder, preorder};
 
     /// The document `node` describes and its box tree, cascaded under
     /// the UA sheet and `sheets` with no viewport and no font.
@@ -103,6 +104,14 @@ pub(crate) mod testing {
         (document, boxes)
     }
 
+    /// A copy of `roots` with every fragment at its place on the page
+    /// (M35.9): the coordinates the tests were written in.
+    pub(crate) fn absolute(roots: &[Fragment]) -> Vec<Fragment> {
+        let mut roots = roots.to_vec();
+        crate::paginate::absolute(&mut roots);
+        roots
+    }
+
     /// The document node and the elements, in tree order.
     fn numbered(document: &Document) -> impl Iterator<Item = NodeId> + '_ {
         document
@@ -137,9 +146,27 @@ pub(crate) mod testing {
     pub(crate) struct Laid {
         pub(crate) document: Document,
         pub(crate) layout: DocumentLayout,
+        /// A copy of the layout's fragments, each at its place on the
+        /// page (M35.9).
+        absolute: Vec<Fragment>,
     }
 
     impl Laid {
+        pub(crate) fn new(document: Document, layout: DocumentLayout) -> Laid {
+            let absolute = absolute(&layout.roots);
+            Laid {
+                document,
+                layout,
+                absolute,
+            }
+        }
+
+        /// Every fragment in tree order, each at its place on the page,
+        /// as the tests read where a fragment is.
+        pub(crate) fn iter(&self) -> Preorder<'_> {
+            preorder(&self.absolute)
+        }
+
         /// [`number`] in this layout's document.
         pub(crate) fn number(&self, node: NodeId) -> usize {
             number(&self.document, node)

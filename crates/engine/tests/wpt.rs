@@ -1378,7 +1378,8 @@ struct Boxes {
 /// The boxes of every element that has one.
 fn boxes(layout: &layout::DocumentLayout) -> HashMap<NodeId, Boxes> {
     let mut out: HashMap<NodeId, Boxes> = HashMap::new();
-    for f in layout.iter() {
+    for placed in layout.placed() {
+        let f = placed.fragment;
         if f.generated.is_some() {
             continue;
         }
@@ -1389,12 +1390,13 @@ fn boxes(layout: &layout::DocumentLayout) -> HashMap<NodeId, Boxes> {
         };
         match out.get_mut(&f.node) {
             None => {
-                out.insert(f.node, own(f, inline));
+                out.insert(f.node, own(f, placed.x, placed.y, inline));
             }
             Some(b) if b.inline && inline => {
-                let (right, bottom) = ((b.x + b.w).max(f.x + f.w), (b.y + b.h).max(f.y + f.h));
-                b.x = b.x.min(f.x);
-                b.y = b.y.min(f.y);
+                let (x, y) = (placed.x, placed.y);
+                let (right, bottom) = ((b.x + b.w).max(x + f.w), (b.y + b.h).max(y + f.h));
+                b.x = b.x.min(x);
+                b.y = b.y.min(y);
                 b.w = right - b.x;
                 b.h = bottom - b.y;
             }
@@ -1404,11 +1406,12 @@ fn boxes(layout: &layout::DocumentLayout) -> HashMap<NodeId, Boxes> {
     out
 }
 
-fn own(f: &Fragment, inline: bool) -> Boxes {
+/// The boxes of `f`, at `(x, y)` on the page.
+fn own(f: &Fragment, x: f32, y: f32, inline: bool) -> Boxes {
     let border = f.style.used_border_width();
     Boxes {
-        x: f.x,
-        y: f.y,
+        x,
+        y,
         w: f.w,
         h: f.h,
         border_left: border[LEFT],

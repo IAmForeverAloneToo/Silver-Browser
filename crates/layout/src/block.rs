@@ -71,7 +71,8 @@
 //!
 //! The output is a tree (M9.1): a block box's [`Fragment`] holds its
 //! content's fragments as children, which is what clipping (M9.3) and
-//! hit testing (M9.4) walk. Coordinates are document coordinates — the
+//! hit testing (M9.4) walk. A fragment's coordinates are its offset
+//! from its parent's (M35.9); a root's are document coordinates: the
 //! initial containing block's top-left is `(0, 0)` and nothing here
 //! knows the viewport's height or scroll position; `paint` applies
 //! the scroll offset. [`DocumentLayout::height`] is what the viewport
@@ -99,14 +100,14 @@ use crate::pass::Pass;
 
 /// A positioned, sized box ready for painting (roadmap M6.7), one node
 /// of the fragment tree (M9.1): a block box's fragment holds the
-/// fragments of its content as `children`. Coordinates are absolute
-/// document coordinates once [`layout_document`] returns — the initial
-/// containing block's top-left is `(0, 0)`, and content further down
-/// the page than the viewport is tall simply has a larger `y`; `paint`
-/// subtracts the scroll offset. Inside this module a fragment's
-/// `children` are relative to its own `(x, y)` until the final pass
-/// makes them absolute, so placing a box moves its whole subtree at
-/// the cost of one translation.
+/// fragments of its content as `children`. Its `x` and `y` are its
+/// offset from its parent's `(x, y)` (M35.9), a root's from the initial
+/// containing block's top-left, `(0, 0)`: content further down the
+/// page than the viewport is tall simply has a larger `y`, and `paint`
+/// subtracts the scroll offset. Placing a box, or a kept subtree
+/// again, moves its whole subtree at the cost of one translation; what
+/// needs a fragment's place on the page adds the offsets on the way
+/// down ([`placed`], `paint`'s walk).
 #[derive(Debug, Clone)]
 pub struct Fragment {
     pub x: f32,
@@ -215,8 +216,8 @@ pub enum FragmentKind {
 }
 
 impl Fragment {
-    /// Moves this fragment and, since its children are relative to it
-    /// until [`layout_document`]'s final pass, its whole subtree.
+    /// Moves this fragment and, since its children are relative to it,
+    /// its whole subtree.
     pub(crate) fn translated(mut self, dx: f32, dy: f32) -> Self {
         self.x += dx;
         self.y += dy;
@@ -250,8 +251,9 @@ impl Fragment {
             )
     }
 
-    /// Whether the document-space point lies within the fragment's box
-    /// (a text fragment's is its line box).
+    /// Whether the point, in the coordinates the fragment's own `x` and
+    /// `y` are in (its parent's), lies within the fragment's box (a text
+    /// fragment's is its line box).
     pub fn contains(&self, px: f32, py: f32) -> bool {
         let top = self.top();
         px >= self.x && px < self.x + self.w && py >= top && py < top + self.h
@@ -370,7 +372,8 @@ pub(crate) fn extent_bottom(f: &Fragment, cb_width: f32) -> f32 {
 #[derive(Debug, Clone, Default)]
 pub struct DocumentLayout {
     /// The top-level fragments, in document order, each with its
-    /// subtree; coordinates are absolute.
+    /// subtree, whose coordinates are relative to their parents'
+    /// (M35.9).
     pub roots: Vec<Fragment>,
     /// From the top of the initial containing block to the bottom of
     /// the last margin: the content height plus the leading and
@@ -387,6 +390,11 @@ impl DocumentLayout {
     /// Every fragment in tree order (preorder: a box, then its content).
     pub fn iter(&self) -> Preorder<'_> {
         preorder(&self.roots)
+    }
+
+    /// Every fragment in tree order with its place on the page.
+    pub fn placed(&self) -> Places<'_> {
+        placed(&self.roots)
     }
 }
 
@@ -413,77 +421,63 @@ impl<'a> Iterator for Preorder<'a> {
     }
 }
 
+/// A fragment and its place on the page (M35.9): its `x` and `y`
+/// added to its ancestors', in document coordinates.
+#[derive(Debug, Clone, Copy)]
+pub struct Placed<'a> {
+    pub x: f32,
+    pub y: f32,
+    pub fragment: &'a Fragment,
+}
+
+impl Placed<'_> {
+    /// The top edge of its box on the page, as [`Fragment::top`] has it.
+    pub fn top(&self) -> f32 {
+        self.y - self.fragment.ascent
+    }
+}
+
+/// A preorder walk that places each fragment as it goes down, adding
+/// its offset to its parent's place.
+pub struct Places<'a> {
+    stack: Vec<(f32, f32, &'a Fragment)>,
+}
+
+/// The fragments under `roots` in tree order, each with its place on
+/// the page.
+pub fn placed(roots: &[Fragment]) -> Places<'_> {
+    Places {
+        stack: roots.iter().rev().map(|f| (0.0, 0.0, f)).collect(),
+    }
+}
+
+impl<'a> Iterator for Places<'a> {
+    type Item = Placed<'a>;
+
+    fn next(&mut self) -> Option<Placed<'a>> {
+        let (dx, dy, f) = self.stack.pop()?;
+        let (x, y) = (dx + f.x, dy + f.y);
+        self.stack
+            .extend(f.children.iter().rev().map(|c| (x, y, c)));
+        Some(Placed { x, y, fragment: f })
+    }
+}
+
 /// Takes the fragments out of their tree in tree order; each comes out
-/// with no children. The view the pre-M9 tests were written against.
+/// with no children, at its place on the page. The view the pre-M9
+/// tests were written against.
 pub fn flatten(roots: Vec<Fragment>) -> Vec<Fragment> {
     let mut out = Vec::new();
-    let mut stack: Vec<Fragment> = roots.into_iter().rev().collect();
-    while let Some(mut f) = stack.pop() {
+    let mut stack: Vec<(f32, f32, Fragment)> =
+        roots.into_iter().rev().map(|f| (0.0, 0.0, f)).collect();
+    while let Some((dx, dy, mut f)) = stack.pop() {
+        f.x += dx;
+        f.y += dy;
         let children = std::mem::take(&mut f.children);
-        stack.extend(children.into_iter().rev());
+        stack.extend(children.into_iter().rev().map(|c| (f.x, f.y, c)));
         out.push(f);
     }
     out
-}
-
-/// Makes every coordinate absolute: each fragment moves by `(dx, dy)`
-/// and its children by its resulting position.
-fn make_absolute(fragments: &mut [Fragment], dx: f32, dy: f32) {
-    for f in fragments {
-        f.x += dx;
-        f.y += dy;
-        make_absolute(&mut f.children, f.x, f.y);
-    }
-}
-
-/// [`extent_bottom`] of `f`, measured as [`make_absolute`] moves `f`
-/// and its subtree by `dx` and `dy`: each fragment's extent is taken
-/// from the place it has relative to its parent, before it moves, by
-/// the same arithmetic, so that one walk over a page's fragments does
-/// what two did, at every layout.
-fn absolute_reaching(f: &mut Fragment, dx: f32, dy: f32, cb_width: f32) -> f32 {
-    let plain = |f: &Fragment| f.children.is_empty() && !matches!(f.kind, FragmentKind::Box);
-    let own = f.top() + f.h;
-    let y = f.y;
-    f.x += dx;
-    f.y += dy;
-    if plain(f) {
-        return own;
-    }
-    let (ax, ay) = (f.x, f.y);
-    let untransformed = if f.clips() {
-        make_absolute(&mut f.children, ax, ay);
-        own
-    } else {
-        let content_width = f.content_width(cb_width);
-        f.children.iter_mut().fold(own, |reach, c| {
-            let below = if plain(c) {
-                let below = c.top() + c.h;
-                c.x += ax;
-                c.y += ay;
-                below
-            } else {
-                absolute_reaching(c, ax, ay, content_width)
-            };
-            reach.max(y + below)
-        })
-    };
-    match f.matrix(cb_width) {
-        None => untransformed,
-        Some(matrix) => match matrix.bounds(0.0, 0.0, f.w, untransformed - y) {
-            Some((_, _, _, bottom)) if matrix.inverse().is_some() => y + bottom,
-            _ => y,
-        },
-    }
-}
-
-/// Where every fragment of `roots` is, in tree order, to the bit: what
-/// the tests hold one walk to another by.
-#[cfg(test)]
-fn places(roots: &[Fragment]) -> Vec<(u32, u32)> {
-    preorder(roots)
-        .map(|f| (f.x.to_bits(), f.y.to_bits()))
-        .collect()
 }
 
 /// A set of adjoining vertical margins (CSS2 §8.3.1), not yet resolved:
@@ -651,30 +645,13 @@ fn layout_document_with(
     // reaches down to whatever its content reaches, a box overflowing
     // its parent, an absolutely positioned box, a transformed box by its
     // transformed bounds (M19); a fixed box, which does not scroll, adds
-    // nothing. The fragments are made absolute on the same walk.
-    #[cfg(test)]
-    let two_walks = {
-        let mut roots = roots.clone();
-        let mut height = height;
-        for (i, root) in roots.iter().enumerate() {
-            if i < flow_roots || root.style.position != Position::Fixed {
-                height = height.max(extent_bottom(root, viewport_width));
-            }
-        }
-        make_absolute(&mut roots, 0.0, 0.0);
-        (height.to_bits(), places(&roots))
-    };
-    for (i, root) in roots.iter_mut().enumerate() {
+    // nothing. The fragments stay relative to their parents (M35.9).
+    for (i, root) in roots.iter().enumerate() {
         if i >= flow_roots && root.style.position == Position::Fixed {
-            make_absolute(std::slice::from_mut(root), 0.0, 0.0);
             continue;
         }
-        height = height.max(absolute_reaching(root, 0.0, 0.0, viewport_width));
+        height = height.max(extent_bottom(root, viewport_width));
     }
-    // Every layout of this crate's tests holds the one walk to the two
-    // it stands for, to the bit.
-    #[cfg(test)]
-    assert_eq!((height.to_bits(), places(&roots)), two_walks);
     DocumentLayout {
         roots,
         height: height.max(0.0),
@@ -4645,11 +4622,11 @@ mod tests {
         let sheet = css::parse_stylesheet(css_src).expect("test css is valid");
         let (document, boxes) = boxes_of(&doc, &[sheet]);
         let layout = layout_document(&boxes, VIEWPORT, &fonts);
-        Laid { document, layout }
+        Laid::new(document, layout)
     }
 
     #[test]
-    fn fragments_form_a_tree_with_absolute_coordinates_and_node_ids() {
+    fn fragments_form_a_tree_each_placed_from_its_parent_with_node_ids() {
         // <section><p>hi</p></section>: the section's fragment holds the
         // p's, which holds the text's. Nodes: document 0, section 1, p 2.
         let root = Element::new("section").push(Element::new("p").text("hi"));
@@ -4663,7 +4640,7 @@ mod tests {
         assert_eq!(
             (p.x, p.y),
             (10.0, 15.0),
-            "absolute: the section's padding plus the p's margin"
+            "from the section: its padding plus the p's margin"
         );
         assert_eq!(p.children.len(), 1);
         let text = &p.children[0];
@@ -4674,14 +4651,17 @@ mod tests {
             "a text fragment names its containing element"
         );
         let m = test_fonts().primary().metrics(16.0);
-        assert_eq!(text.y, 15.0 + m.ascent, "the baseline, absolute");
+        assert_eq!(text.y, m.ascent, "the baseline, from the p (M35.9)");
         assert_eq!(text.ascent, m.ascent);
         assert_eq!(text.h, m.ascent + m.descent);
-        assert_eq!(text.top(), 15.0);
-        assert!(text.contains(text.x + 1.0, 16.0));
-        assert!(!text.contains(text.x + 1.0, 14.0));
-        assert!(!text.contains(text.x - 1.0, 16.0));
+        assert_eq!(text.top(), 0.0);
+        assert!(text.contains(text.x + 1.0, 1.0));
+        assert!(!text.contains(text.x + 1.0, -1.0));
+        assert!(!text.contains(text.x - 1.0, 1.0));
         assert!(section.contains(0.0, 0.0));
+        // Placed on the page, each adds its parent's place.
+        let placed: Vec<(f32, f32)> = layout.layout.placed().map(|f| (f.x, f.top())).collect();
+        assert_eq!(placed, [(0.0, 0.0), (10.0, 15.0), (10.0 + text.x, 15.0)]);
         // The flat views are preorder: a box, then its content.
         let order: Vec<usize> = layout.iter().map(|f| layout.number(f.node)).collect();
         assert_eq!(order, vec![1, 2, 2]);
@@ -4689,6 +4669,7 @@ mod tests {
         assert_eq!(flat.len(), 3);
         assert!(flat.iter().all(|f| f.children.is_empty()));
         assert_eq!((flat[1].x, flat[1].y), (10.0, 15.0));
+        assert_eq!((flat[2].x, flat[2].top()), (10.0 + text.x, 15.0));
     }
 
     #[test]
@@ -4733,7 +4714,7 @@ mod tests {
             .clone()
     }
 
-    fn text_of(layout: &DocumentLayout, t: &str) -> Fragment {
+    fn text_of(layout: &Laid, t: &str) -> Fragment {
         layout
             .iter()
             .find(|f| matches!(&f.kind, FragmentKind::Text(x) if x == t))
@@ -5755,7 +5736,7 @@ mod tests {
             let sheet = css::parse_stylesheet(css).expect("test css is valid");
             let (document, boxes) = boxes_of(&docu, &[sheet]);
             let layout = layout_document_in(&boxes, VIEWPORT, Some(600.0), &fonts);
-            Laid { document, layout }
+            Laid::new(document, layout)
         };
         let root = Element::new("div")
             .attr("class", "s")
@@ -5860,7 +5841,7 @@ mod tests {
 
     /// Every inline box fragment (M11.6) in the document, in tree
     /// order: one per line each inline element appears on.
-    fn inline_boxes(layout: &DocumentLayout) -> Vec<Fragment> {
+    fn inline_boxes(layout: &Laid) -> Vec<Fragment> {
         layout
             .iter()
             .filter(|f| matches!(f.kind, FragmentKind::InlineBox))
@@ -5893,7 +5874,7 @@ mod tests {
         assert_eq!(b.children.len(), 1, "the text is inside it");
         assert_eq!(
             b.children[0].x, 10.0,
-            "absolute, as the final pass leaves it"
+            "on the page, as the tests' copy has it"
         );
         // The page reaches the inline box's border box, 2px below the
         // line (css-overflow-3 §2.2, as the reference browser has it).
@@ -6384,7 +6365,7 @@ mod tests {
             let sheet = css::parse_stylesheet(css).expect("test css is valid");
             let (document, boxes) = boxes_of(&docu, &[sheet]);
             let layout = layout_document_in(&boxes, VIEWPORT, Some(600.0), &fonts);
-            Laid { document, layout }
+            Laid::new(document, layout)
         };
         let wrapper = ".w { margin: 20px; width: 200px; height: 100px; padding: 10px; \
                        border: 5px solid; TRANSFORM }
@@ -6470,10 +6451,10 @@ mod tests {
         )
         .expect("test css is valid");
         let (document, boxes) = boxes_of(&docu, &[sheet]);
-        let layout = Laid {
+        let layout = Laid::new(
             document,
-            layout: layout_document_in(&boxes, VIEWPORT, Some(600.0), &fonts),
-        };
+            layout_document_in(&boxes, VIEWPORT, Some(600.0), &fonts),
+        );
         assert_eq!(parent_of(&layout, 3), Some(1));
         assert_eq!(parent_of(&layout, 2), Some(1));
         assert_eq!((by_node(&layout, 3).x, by_node(&layout, 3).y), (20.0, 20.0));
@@ -6682,7 +6663,7 @@ mod tests {
         .expect("test css is valid");
         let (document, boxes) = boxes_of(&docu, &[sheet]);
         let layout = layout_document_in(&boxes, VIEWPORT, Some(600.0), &fonts);
-        let layout = Laid { document, layout };
+        let layout = Laid::new(document, layout);
         assert_eq!(parent_of(&layout, 2), Some(1));
         assert_eq!((by_node(&layout, 2).x, by_node(&layout, 2).y), (20.0, 20.0));
         assert_eq!(parent_of(&layout, 3), None);
@@ -6729,7 +6710,7 @@ mod tests {
         .expect("test css is valid");
         let (document, boxes) = boxes_of(&docu, &[sheet]);
         let layout = layout_document_in(&boxes, VIEWPORT, Some(600.0), &fonts);
-        let layout = Laid { document, layout };
+        let layout = Laid::new(document, layout);
         let node = |n: usize| layout.element(n);
         assert_eq!(by_node(&layout, 2).parent, Some(node(1)));
         assert!(!by_node(&layout, 2).in_3d);
@@ -6780,7 +6761,7 @@ mod tests {
             .expect("test css is valid");
             let (document, boxes) = boxes_of(&docu, &[sheet]);
             let layout = layout_document_in(&boxes, VIEWPORT, Some(600.0), &fonts);
-            Laid { document, layout }
+            Laid::new(document, layout)
         };
         let layout = doc("td { transform: translateX(0px) }");
         assert_eq!(parent_of(&layout, 6), Some(5), "the cell");
@@ -6811,7 +6792,7 @@ mod tests {
         .expect("test css is valid");
         let (document, boxes) = boxes_of(&docu, &[sheet]);
         let layout = layout_document_in(&boxes, VIEWPORT, Some(600.0), &fonts);
-        let layout = Laid { document, layout };
+        let layout = Laid::new(document, layout);
         assert_eq!(parent_of(&layout, 3), Some(2), "the caption");
         assert_eq!((by_node(&layout, 3).x, by_node(&layout, 3).y), (2.0, 1.0));
     }

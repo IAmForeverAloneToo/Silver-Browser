@@ -1733,10 +1733,8 @@ impl Engine {
         let f = fragment_of(&layout.roots, node)?;
         let content = f.children.first()?;
         let border = f.style.border_width;
-        Some((
-            px - (content.x - f.x - border[3]),
-            py - (content.y - f.y - border[0]),
-        ))
+        // The content's offsets are from the frame's box (M35.9).
+        Some((px - (content.x - border[3]), py - (content.y - border[0])))
     }
 
     /// An engine of a renderer for the frame root the browser numbers
@@ -1860,9 +1858,10 @@ impl Engine {
         let layout = self.layout(self.viewport.0 as f32);
         let f = fragment_of(&layout.roots, node)?;
         let content = f.children.first()?;
+        // The content's offsets are from the frame's box (M35.9).
         Some([
-            border.x + (content.x - f.x),
-            border.y + (content.y - f.y),
+            border.x + content.x,
+            border.y + content.y,
             content.w,
             content.h,
         ])

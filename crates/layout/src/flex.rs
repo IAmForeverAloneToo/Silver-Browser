@@ -1362,7 +1362,7 @@ mod tests {
             .expect("test css is valid");
         let (document, boxes) = boxes_of(&doc, &[sheet]);
         let layout = layout_document(&boxes, VIEWPORT, &fonts);
-        Laid { document, layout }
+        Laid::new(document, layout)
     }
 
     /// The element whose `id` is `id`.

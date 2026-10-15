@@ -427,7 +427,8 @@ fn fragment_lines(
         "height {} depends on the viewport's height {}",
         layout.height, layout.depends_on_viewport_height
     )];
-    for f in layout.iter() {
+    for placed in layout.placed() {
+        let f = placed.fragment;
         let Some(number) = places.get(&f.node) else {
             return Err(format!(
                 "a fragment of {}, which is not in the tree",
@@ -457,7 +458,7 @@ fn fragment_lines(
         };
         lines.push(format!(
             "node {number} {kind} at ({}, {}) {} by {} ascent {} scroll height {} style {:?}",
-            f.x, f.y, f.w, f.h, f.ascent, f.scroll_height, f.style
+            placed.x, placed.y, f.w, f.h, f.ascent, f.scroll_height, f.style
         ));
     }
     Ok(lines)

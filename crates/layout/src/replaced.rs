@@ -576,7 +576,7 @@ mod tests {
             .expect("test css is valid");
         let (document, boxes) = boxes_with(&doc, &[sheet], state);
         let layout = layout_document(&boxes, 800.0, &fonts);
-        Laid { document, layout }
+        Laid::new(document, layout)
     }
 
     /// The fragments of the element whose `id` is `id`.

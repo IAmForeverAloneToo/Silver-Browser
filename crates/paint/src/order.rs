@@ -60,7 +60,8 @@
 //! to the viewport's: the document's content is in groups of its own
 //! whose matrix is the viewport's scroll offset, so the rectangles
 //! inside are in document coordinates, the same from frame to frame as
-//! the document scrolls; inside a scroll container its offset (M10.5)
+//! the document scrolls (a fragment's offset from its parent added to
+//! the parent's place as the walk goes down, M35.9); inside a scroll container its offset (M10.5)
 //! is applied as the rectangles are listed, and so is the shift of a
 //! `position: sticky` box ([`sticky_shift`], M11), which paint and hit
 //! testing thereby agree on. A `position: fixed` box is placed against
@@ -254,6 +255,8 @@ pub fn paint_order_in<'a>(
             h: viewport.height,
         },
         scroll: viewport.scroll_y,
+        ox: 0.0,
+        oy: 0.0,
         dx: 0.0,
         dy: 0.0,
         chain: Vec::new(),
@@ -460,6 +463,11 @@ struct Walk<'a, 'o> {
     window: Rect,
     /// The viewport's scroll offset: the document's groups' matrix.
     scroll: f32,
+    /// Where the fragments walked over have their offsets from (M35.9):
+    /// their parent's place on the page, the offsets of the boxes being
+    /// walked into added up.
+    ox: f32,
+    oy: f32,
     /// From a document `x` to the coordinates of the group being walked
     /// into: the shifts of the sticky boxes being walked into (M11).
     dx: f32,
@@ -517,6 +525,8 @@ struct Positioned<'a> {
     f: &'a Fragment,
     containing: Rect,
     chain: Vec<(Option<NodeId>, Rect, usize)>,
+    ox: f32,
+    oy: f32,
     dx: f32,
     dy: f32,
     contained: u32,
@@ -787,15 +797,31 @@ impl<'a> Walk<'a, '_> {
         }
     }
 
+    /// Where a fragment is on the page: its offset from its parent's
+    /// place added to that place.
+    fn place(&self, f: &Fragment) -> (f32, f32) {
+        (f.x + self.ox, f.y + self.oy)
+    }
+
     /// A fragment's box in the coordinates of the group being walked
     /// into.
     fn rect_of(&self, f: &Fragment) -> Rect {
+        let (x, y) = self.place(f);
         Rect {
-            x: f.x + self.dx,
-            y: f.top() + self.dy,
+            x: x + self.dx,
+            y: (y - f.ascent) + self.dy,
             w: f.w,
             h: f.h,
         }
+    }
+
+    /// Runs `body` over the fragments under `f`, whose offsets are from
+    /// its place.
+    fn inside(&mut self, f: &Fragment, body: impl FnOnce(&mut Self)) {
+        let (ox, oy) = (self.ox, self.oy);
+        (self.ox, self.oy) = self.place(f);
+        body(self);
+        (self.ox, self.oy) = (ox, oy);
     }
 
     /// A fragment's own step — a box's background and border, a text
@@ -819,7 +845,7 @@ impl<'a> Walk<'a, '_> {
                 Step::Text {
                     fragment: f,
                     rect,
-                    baseline: f.y + self.dy,
+                    baseline: self.place(f).1 + self.dy,
                 }
             }
         });
@@ -929,7 +955,7 @@ impl<'a> Walk<'a, '_> {
         }
         let padding_box = padding_box(f, rect);
         if !clips {
-            body(self, padding_box);
+            self.inside(f, |w| body(w, padding_box));
             return;
         }
         let effective = match self.clip() {
@@ -984,7 +1010,7 @@ impl<'a> Walk<'a, '_> {
                 1
             }
         };
-        body(self, padding_box);
+        self.inside(f, |w| body(w, padding_box));
         match scroll_layer {
             Some(_) => {
                 self.groups.pop();
@@ -1208,9 +1234,10 @@ impl<'a> Walk<'a, '_> {
     /// The depth of a member of a 3D rendering context (M19.5): that
     /// of its border box's centre under its full matrix.
     fn depth_of(&self, p: &Positioned<'a>) -> f32 {
+        let (x, y) = (p.f.x + p.ox, p.f.y + p.oy);
         let rect = Rect {
-            x: p.f.x + p.dx,
-            y: p.f.top() + p.dy,
+            x: x + p.dx,
+            y: (y - p.f.ascent) + p.dy,
             w: p.f.w,
             h: p.f.h,
         };
@@ -1278,6 +1305,8 @@ impl<'a> Walk<'a, '_> {
                 f,
                 containing,
                 chain: self.chain.clone(),
+                ox: self.ox,
+                oy: self.oy,
                 dx: self.dx,
                 dy: self.dy,
                 contained: self.contained,
@@ -1353,6 +1382,8 @@ impl<'a> Walk<'a, '_> {
                     f,
                     containing,
                     chain: self.chain.clone(),
+                    ox: self.ox,
+                    oy: self.oy,
                     dx: self.dx,
                     dy: self.dy,
                     contained: self.contained,
@@ -1450,7 +1481,7 @@ impl<'a> Walk<'a, '_> {
                         && !stacking_context(f, false)
                     {
                         self.own(f, containing.w);
-                        self.phase(&f.children, containing, phase, false);
+                        self.inside(f, |w| w.phase(&f.children, containing, phase, false));
                     }
                 }
                 // A flex or grid item paints as an inline-block does, as
@@ -1536,14 +1567,15 @@ impl<'a> Walk<'a, '_> {
             self.steps.push(Step::PushClip { node, rect });
         }
         let opened = self.chain.len() - shared;
-        let (dx, dy, contained) = (self.dx, self.dy, self.contained);
-        (self.dx, self.dy, self.contained) = (p.dx, p.dy, p.contained);
+        let (ox, oy, dx, dy, contained) = (self.ox, self.oy, self.dx, self.dy, self.contained);
+        (self.ox, self.oy, self.dx, self.dy, self.contained) =
+            (p.ox, p.oy, p.dx, p.dy, p.contained);
         if stacking_context(p.f, p.item) {
             self.stacking(p.f, p.containing, &[], p.space);
         } else {
             self.unit(p.f, p.containing);
         }
-        (self.dx, self.dy, self.contained) = (dx, dy, contained);
+        (self.ox, self.oy, self.dx, self.dy, self.contained) = (ox, oy, dx, dy, contained);
         if self.steps.len() == mark + opened {
             // Nothing of it shows: its clips are left out with it.
             self.steps.truncate(mark);
@@ -3147,6 +3179,40 @@ mod tests {
                 "box 4",
                 "text b",
                 "endgroup"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_members_depth_is_reckoned_where_it_is_on_the_page() {
+        // M35.9: a context turned about its centre, away from the page's
+        // origin, brings the member left of the centre towards the
+        // viewer and takes the one right of it away; their offsets are
+        // from the context's place, which their depths add. Nodes:
+        // div.ctx 1, div.a 2, div.b 3.
+        let layout = layout_of(
+            Element::new("div")
+                .attr("class", "ctx")
+                .push(Element::new("div").attr("class", "a").text("a"))
+                .push(Element::new("div").attr("class", "b").text("b")),
+            "div { margin: 0; height: 20px; }              .ctx { position: relative; margin-left: 300px; width: 200px;              transform: rotateY(60deg); transform-style: preserve-3d; }              .a, .b { position: absolute; top: 0; width: 50px; transform: translateZ(0); }              .a { left: 0; } .b { left: 150px; }",
+        );
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        let turned = "1 [0.5, 0.0, 0.0, 1.0, 200.0, 0.0]";
+        assert_eq!(
+            content(&layout, &steps),
+            [
+                format!("group 3 {turned}"),
+                "box 3".to_owned(),
+                "text b".to_owned(),
+                "endgroup".to_owned(),
+                format!("group 1 {turned}"),
+                "box 1".to_owned(),
+                "endgroup".to_owned(),
+                format!("group 2 {turned}"),
+                "box 2".to_owned(),
+                "text a".to_owned(),
+                "endgroup".to_owned(),
             ]
         );
     }

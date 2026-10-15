@@ -2068,7 +2068,7 @@ mod tests {
         let sheet = css::parse_stylesheet(css).expect("test css is valid");
         let (document, boxes) = boxes_of(&doc, &[sheet]);
         let layout = layout_document(&boxes, VIEWPORT, &fonts);
-        Laid { document, layout }
+        Laid::new(document, layout)
     }
 
     /// The first fragment in tree order for the node `node`.

@@ -27,7 +27,7 @@ use dom::NodeId;
 use style::computed::{Effects, Position, TOP};
 use style::selector_matching::PseudoElement;
 
-use crate::block::{DocumentLayout, Fragment, FragmentKind};
+use crate::block::{DocumentLayout, Fragment, FragmentKind, extent_bottom};
 
 /// How far from a scroll container's bottom edge a box's transformed
 /// extent counts as reaching it: what the two ways of measuring the
@@ -112,7 +112,7 @@ impl DocumentLayout {
             // A fixed box does not scroll: the document's height leaves
             // it out.
             let edge = (root.style.position != Position::Fixed).then_some(height);
-            walk.visit(root, viewport_width, edge, false);
+            walk.visit(root, viewport_width, edge, false, 0.0);
         }
         if walk.patched.contains(&false) {
             Composited::Missed
@@ -153,12 +153,20 @@ struct Walk<'c, 'a> {
 }
 
 impl Walk<'_, '_> {
-    /// Visits `fragment`, whose containing block is `cb_width` wide, in a
-    /// scroll container whose scrollable overflow ends at `edge`, `None`
-    /// when it counts toward none; `covered` when a box around it in
-    /// that container is measured for the changes, which measures it
-    /// too.
-    fn visit(&mut self, fragment: &mut Fragment, cb_width: f32, edge: Option<f32>, covered: bool) {
+    /// Visits `fragment`, whose containing block is `cb_width` wide and
+    /// whose parent is at `top` on the page (its offset is from there,
+    /// M35.9), in a scroll container whose scrollable overflow ends at
+    /// `edge` on the page, `None` when it counts toward none; `covered`
+    /// when a box around it in that container is measured for the
+    /// changes, which measures it too.
+    fn visit(
+        &mut self,
+        fragment: &mut Fragment,
+        cb_width: f32,
+        edge: Option<f32>,
+        covered: bool,
+        top: f32,
+    ) {
         let reached = self.changes.reaching(fragment);
         // A box whose transform changed is measured, or the outermost
         // transformed box around one, which projects it.
@@ -169,7 +177,8 @@ impl Walk<'_, '_> {
                 || (!fragment.clips()
                     && fragment.matrix(cb_width).is_some()
                     && self.holds(fragment)));
-        let before = measured.then(|| reach(fragment, cb_width));
+        let reach = |fragment: &Fragment| top + extent_bottom(fragment, cb_width);
+        let before = measured.then(|| reach(fragment));
         if let Some(i) = reached {
             self.changes.write(fragment, i);
             self.patched[i] = true;
@@ -178,17 +187,18 @@ impl Walk<'_, '_> {
         let (inner_edge, inner_covered) = if fragment.clips() {
             let border_top = fragment.style.used_border_width()[TOP];
             (
-                Some(fragment.y + border_top + fragment.scroll_height),
+                Some(top + fragment.y + border_top + fragment.scroll_height),
                 false,
             )
         } else {
             (edge, covered || measured)
         };
+        let inner_top = top + fragment.y;
         for child in &mut fragment.children {
-            self.visit(child, content_width, inner_edge, inner_covered);
+            self.visit(child, content_width, inner_edge, inner_covered, inner_top);
         }
         if let (Some(before), Some(edge)) = (before, edge)
-            && before.max(reach(fragment, cb_width)) >= edge - EDGE
+            && before.max(reach(fragment)) >= edge - EDGE
         {
             self.overflow = true;
         }
@@ -206,31 +216,6 @@ impl Walk<'_, '_> {
                     .is_some_and(|i| self.changes.changes[i].transformed))
                 || (!child.clips() && self.holds(child))
         })
-    }
-}
-
-/// The bottom of `fragment`'s box, or of anything inside it reaching
-/// lower, in the absolute coordinates of a finished layout: `extent_bottom`
-/// of `crate::block`, for a tree whose fragments are all in the
-/// document's coordinates.
-fn reach(fragment: &Fragment, cb_width: f32) -> f32 {
-    let own = fragment.top() + fragment.h;
-    let untransformed = if fragment.clips() || fragment.children.is_empty() {
-        own
-    } else {
-        let content_width = fragment.content_width(cb_width);
-        fragment
-            .children
-            .iter()
-            .map(|child| reach(child, content_width))
-            .fold(own, f32::max)
-    };
-    match fragment.matrix(cb_width) {
-        None => untransformed,
-        Some(matrix) => match matrix.bounds(0.0, 0.0, fragment.w, untransformed - fragment.y) {
-            Some((_, _, _, bottom)) if matrix.inverse().is_some() => fragment.y + bottom,
-            _ => fragment.y,
-        },
     }
 }
 
@@ -254,7 +239,7 @@ mod tests {
             .expect("test css is valid");
         let (document, boxes) = boxes_of(&doc, &[sheet]);
         let layout = layout_document(&boxes, VIEWPORT, &fonts);
-        Laid { document, layout }
+        Laid::new(document, layout)
     }
 
     /// The element whose `id` is `id`.
@@ -269,7 +254,8 @@ mod tests {
     /// The effects the box of the element `id` carries.
     fn effects(laid: &Laid, id: &str) -> Arc<Effects> {
         let node = node(laid, id);
-        laid.iter()
+        laid.layout
+            .iter()
             .find(|f| f.node == node && matches!(f.kind, FragmentKind::Box))
             .and_then(|f| f.style.effects.clone())
             .unwrap_or_else(|| panic!("no effects for #{id}"))
@@ -324,7 +310,8 @@ mod tests {
         // The paragraph inside has effects of its own, none.
         let p = node(&laid, "p");
         assert!(
-            laid.iter()
+            laid.layout
+                .iter()
                 .filter(|f| f.node == p)
                 .all(|f| f.style.effects.is_none())
         );
@@ -432,6 +419,15 @@ mod tests {
         // Its overflow ends at its bottom padding, below the last box.
         assert_eq!(translate(&mut laid, "b", 5.0), Composited::Done);
         assert_eq!(translate(&mut laid, "b", 20.0), Composited::Overflow);
+        // The same further down the page, inside another box: its edge
+        // is where it is on the page, its offset added to its parent's
+        // place (M35.9).
+        let mut lower = self::laid(
+            "<div id=above></div><div><div id=s><div id=a></div><div id=fill></div>             <div id=b></div></div></div>",
+            "#above { height: 40px } #s { overflow: auto; height: 100px;              border-top: 10px solid #000; padding-bottom: 8px }              #a, #b { height: 20px; translate: 0 0 } #fill { height: 300px }",
+        );
+        assert_eq!(translate(&mut lower, "b", 5.0), Composited::Done);
+        assert_eq!(translate(&mut lower, "b", 20.0), Composited::Overflow);
     }
 
     #[test]

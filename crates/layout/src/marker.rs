@@ -337,7 +337,7 @@ mod tests {
             .expect("test css is valid");
         let (document, boxes) = boxes_of(&doc, &[sheet]);
         let layout = layout_document(&boxes, 800.0, &fonts());
-        Laid { document, layout }
+        Laid::new(document, layout)
     }
 
     /// The box fragment of the element with the id `id`.

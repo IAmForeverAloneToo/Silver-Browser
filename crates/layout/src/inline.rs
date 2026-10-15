@@ -1835,8 +1835,8 @@ fn innermost<'s>(
 /// (CSS2 §10.6.1), its padding and border around that, the vertical
 /// ones without changing the line's height; a side sliced off has no
 /// border in the fragment's style, so none is painted there. Its
-/// children are made relative to it, as [`layout_document`]'s final
-/// pass expects, and a relatively positioned inline element is moved
+/// children are made relative to it, as every fragment's are (M35.9),
+/// and a relatively positioned inline element is moved
 /// as a whole (CSS2 §9.4.3), the absolutely positioned boxes met inside
 /// it on this line with it.
 ///

@@ -347,16 +347,20 @@ fn the_clipboard_copies_cuts_and_pastes() {
     assert!(!tab.engine.paste("x"));
 }
 
-/// The field's box, as the frame lays it out.
+/// The field's box, as the frame lays it out, at its place on the page.
 fn field_box(tab: &mut Tab, id: &str) -> layout::Fragment {
     tab.engine.frame(600, 300);
     let node = by_id(&tab.engine, id);
-    tab.engine
-        .layout(600.0)
-        .iter()
-        .find(|f| f.node == node && matches!(f.kind, layout::FragmentKind::Box))
-        .cloned()
-        .expect("the field's box")
+    let layout = tab.engine.layout(600.0);
+    let placed = layout
+        .placed()
+        .find(|p| p.fragment.node == node && matches!(p.fragment.kind, layout::FragmentKind::Box))
+        .expect("the field's box");
+    layout::Fragment {
+        x: placed.x,
+        y: placed.y,
+        ..placed.fragment.clone()
+    }
 }
 
 #[test]
@@ -446,9 +450,9 @@ fn a_field_scrolls_to_keep_its_caret_in_view() {
     let first = tab
         .engine
         .layout(600.0)
-        .iter()
-        .find(|f| f.node == t && matches!(f.kind, layout::FragmentKind::Text(_)))
-        .map(|f| f.x)
+        .placed()
+        .find(|p| p.fragment.node == t && matches!(p.fragment.kind, layout::FragmentKind::Text(_)))
+        .map(|p| p.x)
         .expect("the text");
     assert!(first < b.x, "{first} {}", b.x);
     tab.engine.key_down(&key("Home"));

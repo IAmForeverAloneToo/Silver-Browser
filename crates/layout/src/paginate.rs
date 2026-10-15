@@ -57,7 +57,7 @@ const EPSILON: f32 = 0.01;
 pub struct Paginated {
     /// The document's fragments, moved down past each break, in the
     /// same order and with the same coordinates system as a
-    /// [`DocumentLayout`]'s.
+    /// [`DocumentLayout`]'s: each relative to its parent.
     pub roots: Vec<Fragment>,
     /// The pages, in order: slices of the paginated document, each from
     /// its `top` and as tall as its page area.
@@ -88,7 +88,12 @@ pub const MAX_PAGES: usize = 10_000;
 /// flow, [`MAX_PAGES`] at most. A height below one pixel is taken as one
 /// pixel. The layout's fragments are moved, not copied.
 pub fn paginate(layout: DocumentLayout, page_height: &dyn Fn(PagePosition) -> f32) -> Paginated {
-    let plan = Plan::of(&layout.roots);
+    // The pages are reckoned in the document's coordinates: each
+    // fragment at its place on the page, and relative to its parent
+    // again after (M35.9).
+    let mut roots = layout.roots;
+    absolute(&mut roots);
+    let plan = Plan::of(&roots);
     let mut pages = Pages {
         pages: Vec::new(),
         page_height,
@@ -98,11 +103,39 @@ pub fn paginate(layout: DocumentLayout, page_height: &dyn Fn(PagePosition) -> f3
     while pages.end() < bottom - EPSILON && !pages.full() {
         pages.next(false);
     }
-    let mut roots = layout.roots;
     plan.apply(&mut roots, &breaks);
+    relative(&mut roots);
     Paginated {
         roots,
         pages: pages.pages,
+    }
+}
+
+/// Moves every fragment under `roots` to its place on the page, its
+/// offset added to its parent's place.
+pub(crate) fn absolute(roots: &mut [Fragment]) {
+    let mut stack: Vec<(&mut [Fragment], f32, f32)> = vec![(roots, 0.0, 0.0)];
+    while let Some((fragments, dx, dy)) = stack.pop() {
+        for f in fragments {
+            f.x += dx;
+            f.y += dy;
+            let (x, y) = (f.x, f.y);
+            stack.push((&mut f.children, x, y));
+        }
+    }
+}
+
+/// Moves every fragment under `roots`, each at its place on the page,
+/// to its offset from its parent's place: what [`absolute`] undoes.
+fn relative(roots: &mut [Fragment]) {
+    let mut stack: Vec<(&mut [Fragment], f32, f32)> = vec![(roots, 0.0, 0.0)];
+    while let Some((fragments, dx, dy)) = stack.pop() {
+        for f in fragments {
+            let (x, y) = (f.x, f.y);
+            f.x -= dx;
+            f.y -= dy;
+            stack.push((&mut f.children, x, y));
+        }
     }
 }
 
@@ -748,15 +781,18 @@ mod tests {
     }
 
     /// `html` under `css`, laid out at [`WIDTH`] and paginated into pages
-    /// `height` tall, or `first` for the first.
+    /// `height` tall, or `first` for the first; each fragment then moved
+    /// to its place on the page, which the tests read.
     fn paged(html: &str, css: &str, first: f32, height: f32) -> Paginated {
         let node = ::html::parse_document(html).expect("never fails");
         let sheet = ::css::parse_stylesheet(css).expect("valid");
         let (_, boxes) = boxes_of(&node, &[sheet]);
         let layout = crate::layout_document_in(&boxes, WIDTH, Some(height), &fonts());
-        paginate(layout, &|position: PagePosition| {
+        let mut paginated = paginate(layout, &|position: PagePosition| {
             if position.first { first } else { height }
-        })
+        });
+        absolute(&mut paginated.roots);
+        paginated
     }
 
     /// The fragments of `paginated` in tree order.
@@ -1187,13 +1223,16 @@ mod tests {
         let ran = std::thread::Builder::new()
             .stack_size(256 * 1024)
             .spawn(move || {
-                let mut leaf = boxed(depth as f32, 50.0, Vec::new());
+                // Each a pixel below its parent (M35.9: the offsets are
+                // from the parent's).
+                let mut leaf = boxed(1.0, 50.0, Vec::new());
                 std::sync::Arc::make_mut(&mut leaf.style).overflow =
                     style::computed::Overflow::Hidden;
                 let mut chain = leaf;
                 for level in (0..depth).rev() {
-                    let y = level as f32;
-                    chain = boxed(y, depth as f32 + 50.0 - y, vec![chain]);
+                    let y = if level == 0 { 0.0 } else { 1.0 };
+                    let h = depth as f32 + 50.0 - level as f32;
+                    chain = boxed(y, h, vec![chain]);
                     // A pixel of padding above each child: a gap a break
                     // may come after.
                     std::sync::Arc::make_mut(&mut chain.style).padding[TOP] =
@@ -1207,6 +1246,7 @@ mod tests {
                 let height = depth as f32 + 20.0;
                 let mut p = paginate(layout, &|_| height);
                 let pages = p.pages.len();
+                absolute(&mut p.roots);
                 let mut stack = std::mem::take(&mut p.roots);
                 let mut deepest = 0.0f32;
                 while let Some(mut f) = stack.pop() {
