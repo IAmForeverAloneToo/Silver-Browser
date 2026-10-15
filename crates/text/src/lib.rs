@@ -26,7 +26,7 @@ pub mod edit;
 use std::collections::HashMap;
 use std::fmt;
 use std::ops::Range;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use ab_glyph::{Font as _, Glyph, GlyphId, Point, PxScale, ScaleFont as _};
 // Re-exported: `Script` is already part of this crate's own public API
@@ -120,12 +120,51 @@ impl FontMetrics {
     }
 }
 
+/// The most shaping plans a font keeps (M35.8): one for each direction,
+/// script and language its text has come in, which a page of every
+/// script on the web does not reach. Past it a plan is made for the
+/// call and not kept.
+pub const MAX_SHAPE_PLANS: usize = 64;
+
+/// The face rustybuzz shapes with, borrowing the bytes it was parsed
+/// from.
+type ShapingFace<'a> = rustybuzz::Face<'a>;
+
+self_cell::self_cell!(
+    /// A font's bytes and the shaping face parsed from them, kept
+    /// together for the font's life (M35.8): parsing the face, its tables
+    /// of substitutions and positions among it, was a part of every
+    /// call that shaped.
+    struct KeptFace {
+        owner: Arc<Vec<u8>>,
+        #[covariant]
+        dependent: ShapingFace,
+    }
+);
+
+/// What shaping keeps of a font (M35.8): its face, and its plans by the
+/// direction, script and language they were made for, each costlier to
+/// make than shaping a word with it.
+struct Shaping {
+    face: KeptFace,
+    plans: RwLock<Vec<(PlanKey, Arc<rustybuzz::ShapePlan>)>>,
+}
+
+/// What a shaping plan is made for.
+type PlanKey = (
+    rustybuzz::Direction,
+    Option<rustybuzz::Script>,
+    Option<rustybuzz::Language>,
+);
+
 /// A loaded font, ready for shaping and rasterization. Cloning shares
 /// the face data (an `Arc`) rather than copying it.
 #[derive(Clone)]
 pub struct FontStore {
     /// Raw face data.
     raw: Arc<Vec<u8>>,
+    /// The shaping face and plans, shared by the clones.
+    shaping: Arc<Shaping>,
     /// Face index within `raw` (nonzero for font collections).
     index: u32,
     /// The face's units per em, cached for shaping.
@@ -235,8 +274,16 @@ impl FontStore {
         let glyph_font = ab_glyph::FontVec::try_from_vec_and_index(data.clone(), index)
             .map(ab_glyph::FontArc::from)
             .map_err(|_| FontError::InvalidFont)?;
+        let raw = Arc::new(data);
+        let face = KeptFace::try_new(raw.clone(), |bytes| {
+            rustybuzz::Face::from_slice(bytes, index).ok_or(FontError::InvalidFont)
+        })?;
         Ok(FontStore {
-            raw: Arc::new(data),
+            raw,
+            shaping: Arc::new(Shaping {
+                face,
+                plans: RwLock::new(Vec::new()),
+            }),
             index,
             units_per_em,
             ascender_units,
@@ -330,7 +377,7 @@ impl FontStore {
                 // harfbuzz y_offset is positive-up; we store positive-down.
                 y: -whole_pixels(pos.y_offset, font_size_px, self.units_per_em),
             });
-            pen_x += self.advance(&face, info, pos, font_size_px);
+            pen_x += self.advance(face, info, pos, font_size_px);
         }
         out
     }
@@ -347,7 +394,7 @@ impl FontStore {
             .glyph_infos()
             .iter()
             .zip(shaped.glyph_positions())
-            .map(|(info, pos)| self.advance(&face, info, pos, font_size_px))
+            .map(|(info, pos)| self.advance(face, info, pos, font_size_px))
             .sum()
     }
 
@@ -370,7 +417,7 @@ impl FontStore {
                 std::collections::BTreeMap::new();
             for (info, pos) in shaped.glyph_infos().iter().zip(shaped.glyph_positions()) {
                 *advances.entry(info.cluster as usize).or_default() +=
-                    self.advance(&face, info, pos, font_size_px);
+                    self.advance(face, info, pos, font_size_px);
             }
             let starts: Vec<usize> = advances.keys().copied().collect();
             let mut x = 0.0f32;
@@ -397,13 +444,50 @@ impl FontStore {
     /// Shared rustybuzz plumbing for [`FontStore::shape`] and
     /// [`FontStore::measure`] — font-unit positions, unscaled, with the
     /// face they were shaped in, whose own advances
-    /// [`FontStore::advance`] reads.
-    fn shape_raw(&self, text: &str) -> Option<(rustybuzz::Face<'_>, rustybuzz::GlyphBuffer)> {
-        let face = rustybuzz::Face::from_slice(&self.raw, self.index)?;
+    /// [`FontStore::advance`] reads. The face is the font's own, parsed
+    /// once, and the plan the one kept for the text's direction, script
+    /// and language (M35.8).
+    fn shape_raw(&self, text: &str) -> Option<(&rustybuzz::Face<'_>, rustybuzz::GlyphBuffer)> {
+        let face = self.shaping.face.borrow_dependent();
         let mut buffer = rustybuzz::UnicodeBuffer::new();
         buffer.push_str(text);
-        let shaped = rustybuzz::shape(&face, &[], buffer);
+        buffer.guess_segment_properties();
+        let plan = self.plan(face, &buffer);
+        let shaped = rustybuzz::shape_with_plan(face, &plan, buffer);
         Some((face, shaped))
+    }
+
+    /// The plan for `buffer`'s direction, script and language: the one
+    /// kept, or one made and kept, up to [`MAX_SHAPE_PLANS`].
+    fn plan(
+        &self,
+        face: &rustybuzz::Face<'_>,
+        buffer: &rustybuzz::UnicodeBuffer,
+    ) -> Arc<rustybuzz::ShapePlan> {
+        // The buffer says a script it could not guess is the unknown
+        // one; the plan `rustybuzz::shape` makes then is made for none.
+        let script = Some(buffer.script()).filter(|script| *script != rustybuzz::script::UNKNOWN);
+        let key: PlanKey = (buffer.direction(), script, buffer.language());
+        let plans = &self.shaping.plans;
+        if let Ok(kept) = plans.read()
+            && let Some((_, plan)) = kept.iter().find(|(made, _)| *made == key)
+        {
+            return plan.clone();
+        }
+        let plan = Arc::new(rustybuzz::ShapePlan::new(
+            face,
+            key.0,
+            key.1,
+            key.2.as_ref(),
+            &[],
+        ));
+        if let Ok(mut kept) = plans.write()
+            && kept.len() < MAX_SHAPE_PLANS
+            && !kept.iter().any(|(made, _)| *made == key)
+        {
+            kept.push((key, plan.clone()));
+        }
+        plan
     }
 
     /// A shaped glyph's advance at `font_size_px`, as the reference
@@ -621,6 +705,14 @@ pub fn glyph_outline(font: &ab_glyph::FontArc, glyph_id: u16, size_px: f32) -> O
 /// today's one-font behavior.
 pub fn itemize(text: &str) -> Vec<(Range<usize>, Script)> {
     let mut runs = Vec::new();
+    for_each_run(text, |range, script| runs.push((range, script)));
+    runs
+}
+
+/// Calls `run` with each of `text`'s runs as [`itemize`] splits it, in
+/// order, without making a list of them (M35.8): what measuring a word
+/// and finding its line's metrics do for every word.
+fn for_each_run(text: &str, mut run: impl FnMut(Range<usize>, Script)) {
     let mut run_start = 0usize;
     let mut run_script = Script::Common;
 
@@ -646,14 +738,13 @@ pub fn itemize(text: &str) -> Vec<(Range<usize>, Script)> {
             }
             continue;
         }
-        runs.push((run_start..idx, run_script));
+        run(run_start..idx, run_script);
         run_start = idx;
         run_script = s;
     }
     if !text.is_empty() {
-        runs.push((run_start..text.len(), run_script));
+        run(run_start..text.len(), run_script);
     }
-    runs
 }
 
 /// Per-script system family names to try before falling back to the
@@ -762,13 +853,36 @@ pub struct FontCollection {
     primary: FontStore,
     fallbacks: HashMap<Script, Arc<Fallback>>,
     /// The widths [`FontCollection::measure`] has given, shared by the
-    /// collection's clones.
-    measures: Arc<Mutex<Measures>>,
+    /// collection's clones, in [`MEASURE_SHARDS`] parts by text, each
+    /// behind its own lock.
+    measures: Arc<[Mutex<Measures>]>,
 }
 
 /// The most widths a collection keeps: a few megabytes of words. Past
-/// it they are dropped and measured again as they are asked for.
+/// it they are dropped and measured again as they are asked for, a
+/// shard's at a time.
 pub const MAX_MEASURES: usize = 1 << 16;
+
+/// How many parts the kept widths are in, each with its own lock, so
+/// that threads measuring different words do not wait on one lock
+/// (M35.8, M35.3).
+pub const MEASURE_SHARDS: usize = 16;
+
+/// The kept widths' parts, empty.
+fn no_measures() -> Arc<[Mutex<Measures>]> {
+    (0..MEASURE_SHARDS)
+        .map(|_| Mutex::new(Measures::default()))
+        .collect()
+}
+
+/// The shard `text` at `size` is kept in: an FNV-1a hash of both.
+fn shard_of(size: u32, text: &str) -> usize {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in size.to_le_bytes().iter().chain(text.as_bytes()) {
+        hash = (hash ^ u32::from(*byte)).wrapping_mul(0x0100_0193);
+    }
+    hash as usize % MEASURE_SHARDS
+}
 
 /// [`FontCollection::measure`]'s widths by font size, then text (M35.8,
 /// measured at M25.3: a word shaped again is about 25us, and a layout
@@ -784,10 +898,10 @@ impl Measures {
         self.by_size.get(&size)?.get(text).copied()
     }
 
-    /// Keeps `width`, all dropped first when there are as many as are
-    /// kept.
+    /// Keeps `width`, all of the shard's dropped first when it has as
+    /// many as a shard keeps.
     fn keep(&mut self, size: u32, text: &str, width: f32) {
-        if self.count >= MAX_MEASURES {
+        if self.count >= MAX_MEASURES / MEASURE_SHARDS {
             *self = Measures::default();
         }
         self.count += 1;
@@ -807,7 +921,7 @@ impl FontCollection {
         Ok(FontCollection {
             primary: FontStore::from_bytes(data, index)?,
             fallbacks: HashMap::new(),
-            measures: Arc::default(),
+            measures: no_measures(),
         })
     }
 
@@ -854,7 +968,7 @@ impl FontCollection {
         Ok(FontCollection {
             primary,
             fallbacks,
-            measures: Arc::default(),
+            measures: no_measures(),
         })
     }
 
@@ -884,22 +998,19 @@ impl FontCollection {
     /// without shaping when the same text is asked for at the same size.
     pub fn measure(&self, text: &str, font_size_px: f32) -> f32 {
         let size = font_size_px.to_bits();
-        let kept = self
-            .measures
+        let shard = &self.measures[shard_of(size, text)];
+        let kept = shard
             .lock()
             .ok()
             .and_then(|measures| measures.get(size, text));
         if let Some(width) = kept {
             return width;
         }
-        let width = itemize(text)
-            .iter()
-            .map(|(range, script)| {
-                self.font_for(*script)
-                    .measure(&text[range.clone()], font_size_px)
-            })
-            .sum();
-        if let Ok(mut measures) = self.measures.lock() {
+        let mut width = 0.0;
+        for_each_run(text, |range, script| {
+            width += self.font_for(script).measure(&text[range], font_size_px);
+        });
+        if let Ok(mut measures) = shard.lock() {
             measures.keep(size, text, width);
         }
         width
@@ -940,21 +1051,20 @@ impl FontCollection {
     /// zero-initialized fold starting point, so composing this via
     /// `.max()` across words never needs a special empty case.
     pub fn metrics_for_text(&self, text: &str, font_size_px: f32) -> FontMetrics {
-        itemize(text)
-            .iter()
-            .map(|(_, script)| self.font_for(*script).metrics(font_size_px))
-            .fold(
-                FontMetrics {
-                    ascent: 0.0,
-                    descent: 0.0,
-                    line_gap: 0.0,
-                },
-                |acc, m| FontMetrics {
-                    ascent: acc.ascent.max(m.ascent),
-                    descent: acc.descent.max(m.descent),
-                    line_gap: acc.line_gap.max(m.line_gap),
-                },
-            )
+        let mut metrics = FontMetrics {
+            ascent: 0.0,
+            descent: 0.0,
+            line_gap: 0.0,
+        };
+        for_each_run(text, |_, script| {
+            let m = self.font_for(script).metrics(font_size_px);
+            metrics = FontMetrics {
+                ascent: metrics.ascent.max(m.ascent),
+                descent: metrics.descent.max(m.descent),
+                line_gap: metrics.line_gap.max(m.line_gap),
+            };
+        });
+        metrics
     }
 
     /// Shapes `text` at `font_size_px`, itemizing it into per-script
@@ -1077,6 +1187,98 @@ mod tests {
         FontStore::from_bytes(TEST_FONT.to_vec(), 0).expect("the bundled test font parses")
     }
 
+    fn plans_kept(store: &FontStore) -> usize {
+        store.shaping.plans.read().expect("not poisoned").len()
+    }
+
+    /// The face and plans a font keeps shape as rustybuzz shapes with a
+    /// face and plan made afresh (M35.8): every glyph, cluster and
+    /// position the same, for text of either direction, of scripts with
+    /// and without a shaper of their own, with marks, and of no script.
+    #[test]
+    fn a_kept_face_and_plan_shape_as_fresh_ones_do() {
+        let store = test_store();
+        let texts = [
+            "word",
+            "fi ffl office",
+            "123 !?",
+            "",
+            "\u{5d0}\u{5d1}\u{5d2} \u{5e9}\u{5dc}\u{5d5}\u{5dd}",
+            "\u{627}\u{644}\u{639}\u{631}\u{628}\u{64a}\u{629}",
+            "\u{5b57}\u{6f22}",
+            "a\u{301}e\u{308}",
+            "\u{928}\u{92e}\u{938}\u{94d}\u{924}\u{947}",
+        ];
+        let fresh_face = rustybuzz::Face::from_slice(TEST_FONT, 0).expect("a face");
+        for _ in 0..2 {
+            for text in texts {
+                let mut buffer = rustybuzz::UnicodeBuffer::new();
+                buffer.push_str(text);
+                let fresh = rustybuzz::shape(&fresh_face, &[], buffer);
+                let (_, kept) = store.shape_raw(text).expect("shaped");
+                let glyphs =
+                    |shaped: &rustybuzz::GlyphBuffer| -> Vec<(u32, u32, i32, i32, i32, i32)> {
+                        shaped
+                            .glyph_infos()
+                            .iter()
+                            .zip(shaped.glyph_positions())
+                            .map(|(info, pos)| {
+                                (
+                                    info.glyph_id,
+                                    info.cluster,
+                                    pos.x_advance,
+                                    pos.y_advance,
+                                    pos.x_offset,
+                                    pos.y_offset,
+                                )
+                            })
+                            .collect()
+                    };
+                assert_eq!(glyphs(&kept), glyphs(&fresh), "{text:?}");
+            }
+        }
+    }
+
+    /// A font keeps a plan for each direction, script and language its
+    /// text comes in, shared by its clones (M35.8).
+    #[test]
+    fn a_font_keeps_a_plan_for_each_direction_and_script() {
+        let store = test_store();
+        store.measure("one", 16.0);
+        store.measure("two words", 24.0);
+        assert_eq!(plans_kept(&store), 1, "Latin, left to right");
+        store.measure("\u{5d0}\u{5d1}", 16.0);
+        assert_eq!(plans_kept(&store), 2, "and Hebrew, right to left");
+        let clone = store.clone();
+        clone.measure("three", 16.0);
+        clone.measure("\u{5d2}", 16.0);
+        assert_eq!(plans_kept(&store), 2, "the clone's are the font's");
+    }
+
+    /// Past [`MAX_SHAPE_PLANS`] a plan is made for the call and not kept,
+    /// and shapes as one kept would.
+    #[test]
+    fn past_the_most_plans_kept_a_plan_is_made_and_not_kept() {
+        let store = test_store();
+        let latin = store.measure("word", 16.0);
+        let plan = store.shaping.plans.read().expect("not poisoned")[0]
+            .1
+            .clone();
+        {
+            let mut kept = store.shaping.plans.write().expect("not poisoned");
+            kept.clear();
+            for n in 0..MAX_SHAPE_PLANS {
+                let language: rustybuzz::Language = format!("x-{n}").parse().expect("a language");
+                kept.push((
+                    (rustybuzz::Direction::LeftToRight, None, Some(language)),
+                    plan.clone(),
+                ));
+            }
+        }
+        assert_eq!(store.measure("word", 16.0), latin);
+        assert_eq!(plans_kept(&store), MAX_SHAPE_PLANS);
+    }
+
     /// A font collection (OpenType's `ttcf`) of `fonts`, each an sfnt
     /// whose tables are moved to where it lands in the collection.
     fn collection(fonts: &[&[u8]]) -> Vec<u8> {
@@ -1139,22 +1341,38 @@ mod tests {
         // Each text at each size once, shared by the collection's clones.
         let clone = fonts.clone();
         assert_eq!(clone.measure("Row", 16.0), store.measure("Row", 16.0));
-        let measures = fonts.measures.lock().expect("not poisoned");
-        assert_eq!(measures.count, words.len() * 2);
-        assert_eq!(
-            measures.get(16.0f32.to_bits(), "cell"),
-            Some(store.measure("cell", 16.0))
-        );
-        assert_eq!(measures.get(15.0f32.to_bits(), "cell"), None);
+        let count: usize = fonts
+            .measures
+            .iter()
+            .map(|shard| shard.lock().expect("not poisoned").count)
+            .sum();
+        assert_eq!(count, words.len() * 2);
+        let size = 16.0f32.to_bits();
+        let shard = fonts.measures[shard_of(size, "cell")]
+            .lock()
+            .expect("not poisoned");
+        assert_eq!(shard.get(size, "cell"), Some(store.measure("cell", 16.0)));
+        assert_eq!(shard.get(15.0f32.to_bits(), "cell"), None);
+    }
+
+    /// The widths are spread over the shards, so that threads measuring
+    /// different words take different locks (M35.8).
+    #[test]
+    fn the_widths_kept_are_spread_over_the_shards() {
+        let used: std::collections::HashSet<usize> = (0..1000)
+            .map(|i| shard_of(16.0f32.to_bits(), &format!("word{i}")))
+            .collect();
+        assert_eq!(used.len(), MEASURE_SHARDS);
+        assert_ne!(shard_of(1, "a"), shard_of(2, "a"), "the size is hashed too");
     }
 
     #[test]
     fn the_widths_kept_are_dropped_when_there_are_as_many_as_are_kept() {
         let mut measures = Measures::default();
-        for i in 0..MAX_MEASURES {
+        for i in 0..MAX_MEASURES / MEASURE_SHARDS {
             measures.keep(1, &i.to_string(), 1.0);
         }
-        assert_eq!(measures.count, MAX_MEASURES);
+        assert_eq!(measures.count, MAX_MEASURES / MEASURE_SHARDS);
         assert_eq!(measures.get(1, "0"), Some(1.0));
         measures.keep(2, "next", 2.0);
         assert_eq!(measures.count, 1);
@@ -1505,6 +1723,62 @@ mod tests {
             fonts.metrics_for_text("hello", 16.0),
             fonts.primary().metrics(16.0)
         );
+    }
+
+    /// The bundled font with its `hhea` ascender doubled: a font of other
+    /// metrics, for a fallback.
+    fn taller_font() -> FontStore {
+        let mut data = TEST_FONT.to_vec();
+        let hhea = ttf_parser::RawFace::parse(TEST_FONT, 0)
+            .expect("a face")
+            .table_records
+            .into_iter()
+            .find(|record| record.tag == ttf_parser::Tag::from_bytes(b"hhea"))
+            .expect("an hhea table")
+            .offset as usize;
+        let ascender = i16::from_be_bytes([data[hhea + 4], data[hhea + 5]]);
+        data[hhea + 4..hhea + 6].copy_from_slice(&(ascender * 2).to_be_bytes());
+        FontStore::from_bytes(data, 0).expect("the taller font parses")
+    }
+
+    /// A line's metrics are the largest of every font its text's runs
+    /// go to (M8.1), however the runs come (M35.8 walks them without a
+    /// list).
+    #[test]
+    fn a_texts_metrics_are_the_largest_of_its_runs_fonts() {
+        let mut fonts = test_fonts();
+        let taller = taller_font();
+        let tall = taller.metrics(16.0);
+        let own = fonts.primary().metrics(16.0);
+        assert!(tall.ascent > own.ascent);
+        let font = std::sync::OnceLock::new();
+        let _ = font.set(Some(taller));
+        fonts.fallbacks.insert(
+            Script::Han,
+            Arc::new(Fallback {
+                path: std::path::PathBuf::new(),
+                index: 0,
+                font,
+            }),
+        );
+        assert_eq!(fonts.metrics_for_text("ab", 16.0), own);
+        assert_eq!(fonts.metrics_for_text("\u{5b57}", 16.0), tall);
+        for mixed in ["a\u{5b57}", "\u{5b57}a", "a\u{5b57}b"] {
+            let m = fonts.metrics_for_text(mixed, 16.0);
+            assert_eq!(m.ascent, tall.ascent.max(own.ascent), "{mixed:?}");
+            assert_eq!(m.descent, tall.descent.max(own.descent), "{mixed:?}");
+        }
+    }
+
+    /// Text of no script is shaped with a plan made for none, as
+    /// `rustybuzz::shape` makes it, not for the unknown script.
+    #[test]
+    fn text_of_no_script_keeps_a_plan_for_none() {
+        let store = test_store();
+        store.measure("123 !?", 16.0);
+        let kept = store.shaping.plans.read().expect("not poisoned");
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].0.1, None);
     }
 
     #[test]
