@@ -117,20 +117,24 @@ fn under_reduced_motion_the_pages_own_query_stops_the_spinner() {
 }
 
 #[test]
-fn the_colour_fades_frames_lay_out_the_card_alone() {
+fn the_colour_fades_frames_lay_nothing_out() {
     let mut engine = engine();
     engine.load_document(&demo("colour-fade"));
     draw(&mut engine, 0);
-    let (mut laid_out, mut reused) = (engine.boxes_laid_out(), engine.boxes_reused());
+    let (laid_out, reused) = (engine.boxes_laid_out(), engine.boxes_reused());
+    let (runs, kept) = (engine.layout_runs(), engine.layouts_kept());
     for i in 1..=60 {
         draw(&mut engine, i);
-        let (now_laid_out, now_reused) = (engine.boxes_laid_out(), engine.boxes_reused());
-        // The card, its heading, paragraph and badge, which inherit its
-        // colour, and the main, body and html around it; the header and
-        // the other two cards taken whole.
-        assert_eq!(now_laid_out - laid_out, 7, "frame {i}");
-        assert_eq!(now_reused - reused, 3, "frame {i}");
-        (laid_out, reused) = (now_laid_out, now_reused);
+        // The card's background and colour, which its heading, paragraph
+        // and badge inherit, change what painting reads alone: their
+        // boxes take the new styles, and nothing is laid out (M35.9).
+        assert_eq!(
+            (engine.boxes_laid_out(), engine.boxes_reused()),
+            (laid_out, reused),
+            "frame {i}"
+        );
+        assert_eq!(engine.layout_runs(), runs, "frame {i}");
+        assert_eq!(engine.layouts_kept(), kept + i as u64, "frame {i}");
     }
     assert!(
         engine.needs_frame(),

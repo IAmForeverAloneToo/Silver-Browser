@@ -50,7 +50,7 @@ pub use box_tree::{
 };
 pub use cache::{LayoutCache, shown_by_controls};
 pub use children::Children;
-pub use composite::{Composited, EffectsChange, Patch};
+pub use composite::{Composited, EffectsChange, Patch, StyleChange, repaints_only};
 pub use paginate::{MAX_PAGES, PageSlice, Paginated, paginate};
 pub use replaced::ICON_SIZE;
 

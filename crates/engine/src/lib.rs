@@ -5738,7 +5738,7 @@ impl Engine {
                     .into_iter()
                     .filter(|c| laid(&c.node))
                     .collect();
-                let kept = !read && changed.is_empty() && self.composite(&composited);
+                let kept = !read && self.patch_layout(&changed, &composited);
                 if kept {
                     self.layouts_kept += 1;
                 } else {
@@ -5756,16 +5756,39 @@ impl Engine {
         &self.shown.styled.as_ref().expect("just computed").styles
     }
 
-    /// Writes the composited changes `composited` into the layout shown
-    /// and the layout cache, all in one walk of each (M22.4,
-    /// `layout::composite`): says whether there is a layout and it
-    /// stands, every change having found the boxes it reaches and left
-    /// the scrollable overflow as it was. When it does not, the caller
-    /// lays the document out again.
-    fn composite(&mut self, composited: &[style::Composited]) -> bool {
-        let Some(cached) = self.shown.layout.as_mut() else {
+    /// Writes the composited changes `composited`, and the changes of the
+    /// styles of the elements `changed` when they are in what painting
+    /// reads alone, into the layout shown and the layout cache, all in
+    /// one walk of each (M22.4, M35.9, `layout::composite`): says whether
+    /// there is a layout and it stands, every composited change having
+    /// found the boxes it reaches, every change of style being one that
+    /// only repaints, and the scrollable overflow as it was. When it does
+    /// not, the caller lays the document out again.
+    fn patch_layout(&mut self, changed: &[NodeId], composited: &[style::Composited]) -> bool {
+        let (Some(cached), Some(styled)) = (self.shown.layout.as_mut(), self.shown.styled.as_ref())
+        else {
             return false;
         };
+        let mut restyled = Vec::new();
+        for &node in changed {
+            if let Some(new) = styled.styles.shared(node) {
+                restyled.push(layout::StyleChange {
+                    node,
+                    pseudo: None,
+                    new,
+                });
+            }
+            use style::selector_matching::PseudoElement::{After, Before};
+            for pseudo in [Before, After] {
+                if let Some(new) = styled.styles.pseudo_shared(node, pseudo) {
+                    restyled.push(layout::StyleChange {
+                        node,
+                        pseudo: Some(pseudo),
+                        new,
+                    });
+                }
+            }
+        }
         let changes: Vec<layout::EffectsChange<'_>> = composited
             .iter()
             .map(|change| layout::EffectsChange {
@@ -5777,11 +5800,14 @@ impl Engine {
             })
             .collect();
         // One patch for both: the lists of children the layout shares
-        // with the cache are copied once (M35.9).
-        let mut patch = layout::Patch::new(&changes);
-        let done = cached.layout.composite(&mut patch, cached.width);
-        self.shown.layout_cache.composite(&mut patch);
-        done == layout::Composited::Done
+        // with the cache are copied once (M35.9). A layout that does not
+        // stand is made again, the entries the changes reach forgotten.
+        let mut patch = layout::Patch::new(&changes).restyled(&restyled);
+        let done = cached.layout.composite(&mut patch, cached.width) == layout::Composited::Done;
+        if done {
+            self.shown.layout_cache.composite(&mut patch);
+        }
+        done
     }
 
     /// The document's layout for `viewport_width`, computed once per
@@ -9863,17 +9889,17 @@ mod tests {
         assert_eq!((engine.style_runs(), engine.layout_runs()), runs);
 
         // A real change is seen: the next frame restyles the one element
-        // it reaches (M13.1), lays out again, and shows it.
+        // it reaches (M13.1), and, a change that only repaints, gives its
+        // box the new style without laying out (M35.9), and shows it.
+        let kept = engine.layouts_kept();
         engine
             .mutate(|document| document.set_attribute(p, "style", "background-color: #0000ff"))
             .expect("p is an element");
         assert!(engine.needs_frame());
         let frame = engine.frame(200, 100);
         assert!(!engine.needs_frame());
-        assert_eq!(
-            (engine.style_runs(), engine.layout_runs()),
-            (runs.0, runs.1 + 1)
-        );
+        assert_eq!((engine.style_runs(), engine.layout_runs()), runs);
+        assert_eq!(engine.layouts_kept(), kept + 1);
         assert_eq!(engine.restyled_elements(), 1);
         assert_eq!(px(&frame, 200, 5, 5), [0x00, 0x00, 0xff, 0xff]);
 
@@ -11062,6 +11088,64 @@ mod tests {
         // transform moved the bottom of a scroll container's overflow or
         // the document's, which this small page's boxes are often near.
         // The others laid it out.
+        assert_eq!(laid + kept, steps, "every step restyled");
+        assert!(kept * 3 > steps, "{kept} of {steps} kept the layout");
+        assert!(laid > 0, "no step laid out");
+    }
+
+    #[test]
+    fn changes_that_only_repaint_keep_the_layout_and_show_what_a_fresh_engine_shows() {
+        // M35.9: each element given in turn a colour, a background, a
+        // border colour, an outline and a cursor, then put back, compared
+        // after each with a fresh engine's full pass. Those that only
+        // repaint keep the layout, their boxes given the new styles; an
+        // anonymous box's style made from its element's, a first line's,
+        // a marker's, a table part's background, a decoration's colour,
+        // a placeholder's, lay out again.
+        let mut fresh = test_engine();
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 4px; font-size: 10px } .b { border: 2px solid #000 }             p.l::first-line { letter-spacing: 1px } u { text-decoration: underline }             .bf::before { content: 'x' } tr { background-color: #eee }</style>             <div class=b>block <p>para <span>inline</span> <u>under</u></p></div>             <ul><li>item</li></ul><p class=bf>before</p><p class=l>first<br>line</p>             <table><tr><td>1</td><td class=b>2</td></tr></table>             <div style='display: none'><p>hidden</p></div>             <span class=b>inline box</span><input placeholder=ph>",
+        );
+        let check = |engine: &mut Engine, fresh: &mut Engine, step: &str| {
+            if let Err(difference) = differential::compare_with_fresh(engine, fresh, 160, 120) {
+                panic!("{step}: {difference}");
+            }
+        };
+        check(&mut engine, &mut fresh, "loaded");
+        let document = engine.document();
+        let elements: Vec<NodeId> = document
+            .subtree(document.root())
+            .filter(|&n| document.is_element(n) && document.tag(n) != Some("style"))
+            .collect();
+        let (runs, kept) = (engine.layout_runs(), engine.layouts_kept());
+        let mut steps = 0;
+        for (i, &element) in elements.iter().enumerate() {
+            let restore = engine.document().attr(element, "style").map(str::to_string);
+            let changes = [
+                "color: #123456",
+                "background-color: #0000ff",
+                "border-color: #00ff00",
+                "outline: 1px solid #f00; cursor: pointer",
+            ]
+            .map(|value| Some(value.to_string()))
+            .into_iter()
+            .chain([restore]);
+            for value in changes {
+                if engine.document().attr(element, "style") == value.as_deref() {
+                    continue;
+                }
+                engine.mutate(|document| match &value {
+                    Some(value) => document.set_attribute(element, "style", value).unwrap(),
+                    None => document.remove_attribute(element, "style").unwrap(),
+                });
+                check(&mut engine, &mut fresh, &format!("element {i}, {value:?}"));
+                steps += 1;
+            }
+        }
+        // Each step undoes the last one's change too, a colour or a
+        // cursor inherited by a marker or an anonymous box among them.
+        let (laid, kept) = (engine.layout_runs() - runs, engine.layouts_kept() - kept);
         assert_eq!(laid + kept, steps, "every step restyled");
         assert!(kept * 3 > steps, "{kept} of {steps} kept the layout");
         assert!(laid > 0, "no step laid out");

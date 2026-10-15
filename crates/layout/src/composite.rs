@@ -22,12 +22,22 @@
 //! A box inside a transformed box, in the same scroll container, counts
 //! toward the overflow through that box's projection: the outermost such
 //! box around it is measured instead.
+//!
+//! A change of an element's style in what painting reads alone (M35.9,
+//! [`repaints_only`]), a colour, a cursor, an outline, a block's
+//! background, is written the same way: its fragments take the new
+//! style. Only when every fragment of the element carries its style, the
+//! one the change replaces: one carrying another, an anonymous box's or
+//! a first line's, made from it at layout, would keep the old; and when
+//! an element with no fragment would make none with its new style. Any
+//! other change is laid out.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use dom::NodeId;
-use style::computed::{Effects, Position, TOP};
+use style::ComputedStyle;
+use style::computed::{Content, Display, Effects, Position, TOP};
 use style::selector_matching::PseudoElement;
 
 use crate::block::{DocumentLayout, Fragment, FragmentKind, extent_bottom};
@@ -52,6 +62,70 @@ pub struct EffectsChange<'a> {
     pub transformed: bool,
 }
 
+/// A change of an element's, or pseudo-element's, computed style in
+/// what painting reads alone (M35.9, [`repaints_only`]): its fragments
+/// take the new style rather than being laid out again.
+#[derive(Debug, Clone, Copy)]
+pub struct StyleChange<'a> {
+    pub node: NodeId,
+    pub pseudo: Option<PseudoElement>,
+    /// Its new style, the cascade's.
+    pub new: &'a Arc<ComputedStyle>,
+}
+
+/// Whether `new` differs from `old`, an element's or pseudo-element's
+/// style before a restyle, only in what painting reads and layout does
+/// not (M35.9): the colour, the cursor, the outline and the custom
+/// properties; and the background and the border colours (a border's
+/// `currentcolor` the colour) but of a table or a table part's box,
+/// whose layout reads them (a row's background, a collapsed border's
+/// colour). A box that draws a text decoration takes its colour at
+/// layout.
+pub fn repaints_only(old: &ComputedStyle, new: &ComputedStyle) -> bool {
+    if old.color != new.color && (old.decoration().line.draws() || new.decoration().line.draws()) {
+        return false;
+    }
+    let mut probe = old.clone();
+    probe.color = new.color;
+    probe.cursor = new.cursor;
+    probe.outline = new.outline.clone();
+    probe.custom = new.custom.clone();
+    let laid_from_colours = matches!(
+        old.display,
+        Display::Table
+            | Display::InlineTable
+            | Display::TableRowGroup
+            | Display::TableHeaderGroup
+            | Display::TableFooterGroup
+            | Display::TableRow
+            | Display::TableColumnGroup
+            | Display::TableColumn
+            | Display::TableCell
+            | Display::TableCaption
+    );
+    if !laid_from_colours {
+        probe.background_color = new.background_color;
+        probe.background = new.background.clone();
+        probe.border_color = new.border_color;
+        probe.border_current_color = new.border_current_color;
+    }
+    probe == *new
+}
+
+/// Whether a box of `pseudo`'s, or of its element when `None`, with
+/// `style` makes no fragment: what a change found none for must still
+/// be, laid out again otherwise.
+fn makes_none(pseudo: Option<PseudoElement>, style: &ComputedStyle) -> bool {
+    match pseudo {
+        None => style.display == Display::None,
+        Some(PseudoElement::Before | PseudoElement::After) => {
+            style.display == Display::None
+                || matches!(style.content, Content::Normal | Content::None)
+        }
+        Some(_) => false,
+    }
+}
+
 /// What a restyle's composited changes did to a layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Composited {
@@ -71,6 +145,13 @@ pub enum Composited {
 struct Changes<'c, 'a> {
     changes: &'c [EffectsChange<'a>],
     by_box: HashMap<(NodeId, Option<PseudoElement>), usize>,
+    /// The changes of styles in what painting reads alone (M35.9), by
+    /// element and pseudo-element, and the elements they are of.
+    styles: &'c [StyleChange<'a>],
+    by_style: HashMap<(NodeId, Option<PseudoElement>), usize>,
+    restyled: HashSet<NodeId>,
+    /// The style each replaces, as its fragments carry it, once found.
+    olds: Vec<Option<Arc<ComputedStyle>>>,
 }
 
 impl<'c, 'a> Changes<'c, 'a> {
@@ -81,7 +162,28 @@ impl<'c, 'a> Changes<'c, 'a> {
             .map(|(i, change)| ((change.node, change.pseudo), i))
             .collect();
         debug_assert_eq!(by_box.len(), changes.len(), "a change for each box");
-        Changes { changes, by_box }
+        Changes {
+            changes,
+            by_box,
+            styles: &[],
+            by_style: HashMap::new(),
+            restyled: HashSet::new(),
+            olds: Vec::new(),
+        }
+    }
+
+    /// The change of style that reaches `fragment`, if one does: one of
+    /// its element's, or its pseudo-element's, whose old style it
+    /// carries.
+    fn restyling(&self, fragment: &Fragment) -> Option<usize> {
+        let &i = self.by_style.get(&(fragment.node, fragment.generated))?;
+        let old = self.olds[i].as_ref()?;
+        Arc::ptr_eq(&fragment.style, old).then_some(i)
+    }
+
+    /// Gives `fragment` the new style of the change `i`.
+    fn restyle(&self, fragment: &mut Fragment, i: usize) {
+        fragment.style = Arc::clone(self.styles[i].new);
     }
 
     /// The change that reaches `fragment`, if one does: one of its
@@ -113,6 +215,8 @@ impl DocumentLayout {
             changes: &patch.changes,
             path: Vec::new(),
             measured: Vec::new(),
+            olds: vec![None; patch.changes.styles.len()],
+            mixed: false,
         };
         let height = self.height;
         for (i, root) in self.roots.iter().enumerate() {
@@ -123,7 +227,23 @@ impl DocumentLayout {
             walk.visit(root, viewport_width, edge, false, 0.0);
             walk.path.pop();
         }
-        let measured = walk.measured;
+        let (measured, olds) = (walk.measured, walk.olds);
+        // A change of style is written only where it is what painting
+        // reads alone, every fragment of its element carrying the style
+        // it replaces; else the layout is to be made again.
+        if walk.mixed {
+            return Composited::Missed;
+        }
+        for (change, old) in patch.changes.styles.iter().zip(&olds) {
+            let alike = match old {
+                Some(old) => repaints_only(old, change.new),
+                None => makes_none(change.pseudo, change.new),
+            };
+            if !alike {
+                return Composited::Missed;
+            }
+        }
+        patch.changes.olds = olds;
         for root in &mut self.roots {
             patch.fragment(root);
         }
@@ -174,16 +294,36 @@ impl<'c, 'a> Patch<'c, 'a> {
         }
     }
 
+    /// The patch with `styles`, changes of styles in what painting reads
+    /// alone, to write too (M35.9): written only by a layout that finds
+    /// them so ([`DocumentLayout::composite`]), and then into the
+    /// cache's entries.
+    pub fn restyled(mut self, styles: &'c [StyleChange<'a>]) -> Self {
+        self.changes.by_style = styles
+            .iter()
+            .enumerate()
+            .map(|(i, change)| ((change.node, change.pseudo), i))
+            .collect();
+        self.changes.restyled = styles.iter().map(|change| change.node).collect();
+        self.changes.styles = styles;
+        self.changes.olds = vec![None; styles.len()];
+        self
+    }
+
     /// Writes the changes into `fragment` and the fragments under it;
     /// whether any reached.
     pub(crate) fn fragment(&mut self, fragment: &mut Fragment) -> bool {
+        let restyled = self.changes.restyling(fragment);
+        if let Some(i) = restyled {
+            self.changes.restyle(fragment, i);
+        }
         let reached = self.changes.reaching(fragment);
         if let Some(i) = reached {
             self.changes.write(fragment, i);
             self.patched[i] = true;
         }
         let below = self.children(&mut fragment.children);
-        reached.is_some() || below
+        restyled.is_some() || reached.is_some() || below
     }
 
     /// Writes the changes under `children`, a copy of the list in its
@@ -205,13 +345,17 @@ impl<'c, 'a> Patch<'c, 'a> {
         let list = Arc::clone(list);
         let mut copy: Option<Vec<Fragment>> = None;
         for (i, child) in list.iter().enumerate() {
+            let restyled = self.changes.restyling(child);
             let reached = self.changes.reaching(child);
             let mut below = child.children.clone();
             let changed = self.children(&mut below);
-            if reached.is_none() && !changed {
+            if restyled.is_none() && reached.is_none() && !changed {
                 continue;
             }
             let copy = copy.get_or_insert_with(|| list.to_vec());
+            if let Some(r) = restyled {
+                self.changes.restyle(&mut copy[i], r);
+            }
             if let Some(r) = reached {
                 self.changes.write(&mut copy[i], r);
                 self.patched[r] = true;
@@ -248,6 +392,12 @@ struct Walk<'w, 'c, 'a> {
     /// the fragments it is in, from a root's.
     path: Vec<usize>,
     measured: Vec<Measured>,
+    /// The style each change of style replaces, as the first fragment of
+    /// its element met carries it.
+    olds: Vec<Option<Arc<ComputedStyle>>>,
+    /// Whether a fragment of a restyled element carries another style,
+    /// or one of a pseudo-element no change is of.
+    mixed: bool,
 }
 
 impl Walk<'_, '_, '_> {
@@ -265,6 +415,19 @@ impl Walk<'_, '_, '_> {
         covered: bool,
         top: f32,
     ) {
+        if self.changes.restyled.contains(&fragment.node) {
+            match self
+                .changes
+                .by_style
+                .get(&(fragment.node, fragment.generated))
+            {
+                Some(&i) => match &self.olds[i] {
+                    None => self.olds[i] = Some(Arc::clone(&fragment.style)),
+                    Some(old) => self.mixed |= !Arc::ptr_eq(old, &fragment.style),
+                },
+                None => self.mixed = true,
+            }
+        }
         let reached = self.changes.reaching(fragment);
         // A box whose transform changed is measured, or the outermost
         // transformed box around one, which projects it.
@@ -501,6 +664,111 @@ mod tests {
             transformed: false,
         };
         assert_eq!(composite(&mut laid.layout, &[change]), Composited::Done);
+    }
+
+    /// The style the box of the element `id` carries.
+    fn style_of(laid: &Laid, id: &str) -> Arc<ComputedStyle> {
+        let node = node(laid, id);
+        laid.layout
+            .iter()
+            .find(|f| {
+                f.node == node && matches!(f.kind, FragmentKind::Box | FragmentKind::InlineBox)
+            })
+            .map(|f| Arc::clone(&f.style))
+            .unwrap_or_else(|| panic!("no box for #{id}"))
+    }
+
+    /// `old` changed by `change`.
+    fn changed(old: &ComputedStyle, change: impl FnOnce(&mut ComputedStyle)) -> Arc<ComputedStyle> {
+        let mut new = old.clone();
+        change(&mut new);
+        Arc::new(new)
+    }
+
+    /// The change of the element `id`'s style to `new`, written.
+    fn restyle(laid: &mut Laid, id: &str, new: &Arc<ComputedStyle>) -> Composited {
+        let change = StyleChange {
+            node: node(laid, id),
+            pseudo: None,
+            new,
+        };
+        laid.layout
+            .composite(&mut Patch::new(&[]).restyled(&[change]), VIEWPORT)
+    }
+
+    #[test]
+    fn what_painting_reads_alone_is_a_colour_an_outline_a_cursor_and_a_boxs_background() {
+        // M35.9.
+        let plain = style::ComputedStyle::default();
+        let red = style::computed::Color::rgb8(255, 0, 0);
+        let alone = |change: &dyn Fn(&mut ComputedStyle)| {
+            let mut new = plain.clone();
+            change(&mut new);
+            repaints_only(&plain, &new)
+        };
+        assert!(alone(&|s| s.color = red));
+        assert!(alone(&|s| s.background_color = red));
+        assert!(alone(&|s| s.border_color = [red; 4]));
+        assert!(alone(&|s| s.cursor = style::computed::Cursor::Pointer));
+        assert!(!alone(&|s| s.font_size_px = 20.0));
+        assert!(!alone(&|s| s.display = Display::Block));
+        // A row's background is laid out, a decorating box's colour.
+        let row = ComputedStyle {
+            display: Display::TableRow,
+            ..plain.clone()
+        };
+        let mut new = row.clone();
+        new.background_color = red;
+        assert!(!repaints_only(&row, &new));
+        let mut underlined = plain.clone();
+        underlined.decoration_mut().line.underline = true;
+        let mut new = underlined.clone();
+        new.color = red;
+        assert!(!repaints_only(&underlined, &new));
+    }
+
+    #[test]
+    fn a_change_that_only_repaints_gives_the_elements_fragments_its_new_style() {
+        // M35.9: the paragraph's box and its text take the new style,
+        // the span's, its own, keep theirs; nothing is laid out.
+        let mut laid = laid("<p id=p>one <span id=s>two</span></p>", "");
+        let old = style_of(&laid, "p");
+        let span = style_of(&laid, "s");
+        let new = changed(&old, |s| s.color = style::computed::Color::rgb8(255, 0, 0));
+        assert_eq!(restyle(&mut laid, "p", &new), Composited::Done);
+        let p = node(&laid, "p");
+        let mine: Vec<_> = laid.layout.iter().filter(|f| f.node == p).collect();
+        assert!(mine.len() >= 2 && mine.iter().all(|f| Arc::ptr_eq(&f.style, &new)));
+        assert!(Arc::ptr_eq(&style_of(&laid, "s"), &span));
+    }
+
+    #[test]
+    fn a_change_laid_out_or_whose_element_has_a_style_made_from_it_is_missed() {
+        // M35.9: a size is laid out; a first line's style is made from
+        // its element's at layout, and would keep the old colour; an
+        // element with no box, which its new style would give one. An
+        // anonymous block's lines are its element's, which carry its
+        // style.
+        let mut laid = laid(
+            "<p id=p>one</p><p id=d>first<br>line</p><div id=n></div><div id=a>text<p>block</p></div>",
+            "#n { display: none } #d::first-line { letter-spacing: 1px }",
+        );
+        let old = style_of(&laid, "p");
+        let bigger = changed(&old, |s| s.font_size_px = 30.0);
+        assert_eq!(restyle(&mut laid, "p", &bigger), Composited::Missed);
+        assert!(Arc::ptr_eq(&style_of(&laid, "p"), &old), "nothing written");
+        let div = style_of(&laid, "d");
+        let red = changed(&div, |s| s.color = style::computed::Color::rgb8(255, 0, 0));
+        assert_eq!(restyle(&mut laid, "d", &red), Composited::Missed);
+        let shown = changed(&div, |s| s.display = Display::Block);
+        assert_eq!(restyle(&mut laid, "n", &shown), Composited::Missed);
+        let hidden = changed(&div, |s| s.display = Display::None);
+        assert_eq!(restyle(&mut laid, "n", &hidden), Composited::Done);
+        let anonymous = style_of(&laid, "a");
+        let red = changed(&anonymous, |s| {
+            s.color = style::computed::Color::rgb8(255, 0, 0)
+        });
+        assert_eq!(restyle(&mut laid, "a", &red), Composited::Done);
     }
 
     #[test]
