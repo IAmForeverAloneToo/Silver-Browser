@@ -85,6 +85,28 @@ struct FrameView {
     raster: (u32, u32),
 }
 
+impl FrameView {
+    /// The view made for frame `key`'s navigation handed over. Its
+    /// initial `about:blank`, which it may say it loaded before it takes
+    /// the navigation, is never told: no `load` for it when a navigation
+    /// follows (HTML's "process the iframe attributes").
+    fn handed_over(key: u32) -> FrameView {
+        FrameView {
+            key,
+            state: ViewState::default(),
+            told: Url::parse("about:blank").ok(),
+            raster: (0, 0),
+        }
+    }
+
+    /// Whether its parent is to be told of the load `state` says: one
+    /// done, of a document it was not told of.
+    fn tells(&self, state: &ViewState) -> bool {
+        let loaded = matches!(state.load, LoadState::Loaded | LoadState::Failed(_));
+        loaded && state.url.is_some() && self.told != state.url
+    }
+}
+
 /// A view's frames as they come: the frame being received, the last
 /// whole one with its size, and where the frames of other renderers are
 /// in it.
@@ -797,15 +819,7 @@ impl RemoteTab {
                     ancestors,
                     sandbox,
                 });
-                self.frame_views.insert(
-                    view,
-                    FrameView {
-                        key,
-                        state: ViewState::default(),
-                        told: None,
-                        raster: (0, 0),
-                    },
-                );
+                self.frame_views.insert(view, FrameView::handed_over(key));
                 if let Some(info) = super::frames::lock(&self.registry).frames.get_mut(&key) {
                     info.root = Some(view);
                 }
@@ -1121,8 +1135,7 @@ impl RemoteTab {
         let Some(frame) = self.frame_views.get_mut(&id) else {
             return;
         };
-        let loaded = matches!(state.load, LoadState::Loaded | LoadState::Failed(_));
-        let tell = loaded && state.url.is_some() && frame.told != state.url;
+        let tell = frame.tells(&state);
         if tell {
             frame.told.clone_from(&state.url);
         }
@@ -1994,5 +2007,32 @@ impl View for RemoteTab {
             Some(view) => self.send_to(view, |view| ToRenderer::Cut { view }),
             None => self.send(|view| ToRenderer::Cut { view }),
         }
+    }
+}
+
+#[cfg(test)]
+mod frame_view_tests {
+    use super::*;
+
+    fn state(url: &str, load: LoadState) -> ViewState {
+        ViewState {
+            url: Url::parse(url).ok(),
+            load,
+            ..ViewState::default()
+        }
+    }
+
+    #[test]
+    fn a_frames_parent_is_told_of_each_document_loaded_but_the_initial_blank() {
+        let mut view = FrameView::handed_over(7);
+        // Said loaded before the navigation was taken (CI's runners).
+        assert!(!view.tells(&state("about:blank", LoadState::Loaded)));
+        assert!(!view.tells(&state("http://b.test/", LoadState::Loading)));
+        let loaded = state("http://b.test/", LoadState::Loaded);
+        assert!(view.tells(&loaded));
+        view.told = loaded.url.clone();
+        assert!(!view.tells(&loaded), "told once");
+        // A blank its document goes to later is a document like any.
+        assert!(view.tells(&state("about:blank", LoadState::Loaded)));
     }
 }
