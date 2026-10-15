@@ -95,7 +95,7 @@ use crate::block::{
     resolve_width_and_margins, settle_absolutes,
 };
 use crate::box_tree::{BoxKind, LayoutBox, RowGroupKind};
-use crate::pass::Pass;
+use crate::pass::{ItemKey, Pass};
 
 /// Lays out the table box `b` whose content box is `content_width` wide
 /// — the `width` given, or the containing block's width for `auto` —
@@ -1453,18 +1453,22 @@ fn layout_cell<'a>(
         edges.border = border;
     }
     let content_width = (span_width - edges.horizontal()).max(0.0);
-    let layout = layout_block_contents(
-        b,
-        &edges,
-        table_width,
-        None,
-        content_width,
-        0.0,
-        Content::Root,
-        pass,
-        None,
-        None,
-    );
+    // Kept for the pass and by the layout cache, as an item is (M35.9).
+    let key = ItemKey::of(b, content_width, None, table_width, None).with_border(collapsed_border);
+    let layout = pass.item(key, || {
+        layout_block_contents(
+            b,
+            &edges,
+            table_width,
+            None,
+            content_width,
+            0.0,
+            Content::Root,
+            pass,
+            pass.cache(),
+            None,
+        )
+    });
     let specified = definite_height(&b.style, None, edges.vertical()).unwrap_or(0.0);
     let (min_height, _) = height_bounds(
         &b.style,

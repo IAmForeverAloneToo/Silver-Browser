@@ -452,7 +452,7 @@ impl<'a> Item<'a> {
             0.0,
             Content::Root,
             pass,
-            None,
+            pass.cache(),
             imposed,
         )
     }

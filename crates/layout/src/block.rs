@@ -584,7 +584,7 @@ fn layout_document_with(
     fonts: &FontCollection,
     cache: Option<&LayoutCache>,
 ) -> DocumentLayout {
-    let pass = Pass::new(fonts);
+    let pass = Pass::with_cache(fonts, cache);
     // The initial containing block is the outermost block formatting
     // context: its float context is the document's, and its content
     // top is the root of the coordinates floats are placed in.

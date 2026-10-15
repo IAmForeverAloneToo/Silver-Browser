@@ -1065,7 +1065,7 @@ pub(crate) fn layout_grid_contents<'a>(
                     0.0,
                     Content::Root,
                     pass,
-                    None,
+                    pass.cache(),
                     None,
                 )
             };
@@ -1272,7 +1272,7 @@ pub(crate) fn layout_grid_contents<'a>(
                     0.0,
                     Content::Root,
                     pass,
-                    None,
+                    pass.cache(),
                     imposed,
                 )
             });

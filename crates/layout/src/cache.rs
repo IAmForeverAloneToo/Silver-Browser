@@ -39,10 +39,15 @@
 //! entry moves its box's place, and its children's list's shift every
 //! place under it.
 //!
-//! Boxes laid out in other ways — inside an inline-block, a float, an
-//! absolutely positioned box, a table cell, or a flex or grid item —
-//! are laid out again with the box that holds them, which is itself
-//! kept when it can be.
+//! A flex or grid item and a table cell are kept too (M35.9), under
+//! their node beside a block's entries, a few each, by the inputs their
+//! container lays them out with (`crate::pass::ItemKey`): a container
+//! laid out again takes the items nothing changed from the cache, and
+//! the boxes inside an item are kept and taken as a block's are.
+//!
+//! Boxes laid out in other ways, inside an inline-block, a float, or
+//! an absolutely positioned box, are laid out again with the box that
+//! holds them, which is itself kept when it can be.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -55,9 +60,21 @@ use crate::composite::Patch;
 /// The layout results kept between passes, and what the last pass did.
 #[derive(Debug, Default)]
 pub struct LayoutCache {
-    entries: RefCell<HashMap<NodeId, Entry>>,
+    entries: RefCell<HashMap<NodeId, (Inputs, Entry)>>,
+    /// The flex and grid items' and the table cells' layouts, a few by
+    /// node, the latest last (M35.9).
+    items: RefCell<HashMap<NodeId, Vec<(ItemInputs, Entry)>>>,
+    /// The boxes' content widths (min-content, max-content), by node,
+    /// with the fingerprint of the generated text they were measured
+    /// with (M35.9): what a box's widths depend on is its subtree and
+    /// the fonts, so what a change does not reach measures the same.
+    widths: RefCell<HashMap<NodeId, (u64, Widths)>>,
     laid_out: Cell<usize>,
     reused: Cell<usize>,
+    items_laid_out: Cell<usize>,
+    items_reused: Cell<usize>,
+    widths_measured: Cell<usize>,
+    widths_reused: Cell<usize>,
 }
 
 /// What a box's layout was computed from, beyond its subtree.
@@ -69,10 +86,30 @@ pub(crate) struct Inputs {
     pub(crate) generated_text: u64,
 }
 
+/// What an item's or a cell's layout was computed from, beyond its
+/// subtree and its node (M35.9, `crate::pass::ItemKey`): the sizes by
+/// their bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ItemInputs {
+    pub(crate) content_width: u32,
+    pub(crate) imposed: Option<(u32, bool)>,
+    pub(crate) cb_width: u32,
+    pub(crate) cb_height: Option<u32>,
+    pub(crate) border: Option<[u32; 4]>,
+    pub(crate) generated_text: u64,
+}
+
+/// A box's content widths: min-content, max-content.
+type Widths = (f32, f32);
+
+/// The most layouts of one item or cell kept: a container lays an item
+/// out to measure it and again at its final size, and a few times more
+/// for a nested container's sizes.
+const MAX_ITEM_LAYOUTS: usize = 4;
+
 /// One box's kept result: a [`BlockLayout`] with nothing carried out.
 #[derive(Debug)]
 struct Entry {
-    inputs: Inputs,
     /// The box's fragment and its subtree, shared.
     root: Fragment,
     height: f32,
@@ -108,6 +145,21 @@ impl LayoutCache {
     /// Forgets every entry.
     pub fn clear(&mut self) {
         self.entries.get_mut().clear();
+        self.items.get_mut().clear();
+        self.widths.get_mut().clear();
+    }
+
+    /// What the last pass did with the flex and grid items and the table
+    /// cells (M35.9): how many layouts it made, and how many it took
+    /// from the cache instead.
+    pub fn item_counts(&self) -> (usize, usize) {
+        (self.items_laid_out.get(), self.items_reused.get())
+    }
+
+    /// What the last pass did with the boxes' content widths (M35.9):
+    /// how many it measured, and how many it took from the cache.
+    pub fn width_counts(&self) -> (usize, usize) {
+        (self.widths_measured.get(), self.widths_reused.get())
     }
 
     /// What the last pass did with the boxes it placed in flow: how
@@ -128,10 +180,16 @@ impl LayoutCache {
     /// entries of nodes freed since go too.
     pub fn invalidate(&mut self, document: &Document, changes: &[Change], restyled: &[NodeId]) {
         let entries = self.entries.get_mut();
+        let items = self.items.get_mut();
+        let widths = self.widths.get_mut();
         let mut forget = |node: NodeId| {
             entries.remove(&node);
+            items.remove(&node);
+            widths.remove(&node);
             for ancestor in document.ancestors(node) {
                 entries.remove(&ancestor);
+                items.remove(&ancestor);
+                widths.remove(&ancestor);
             }
         };
         let mut controls = false;
@@ -139,6 +197,8 @@ impl LayoutCache {
             match change {
                 Change::Everything => {
                     entries.clear();
+                    items.clear();
+                    widths.clear();
                     return;
                 }
                 Change::Inserted { parent, child } | Change::Removed { parent, child, .. } => {
@@ -205,6 +265,8 @@ impl LayoutCache {
             forget(node);
         }
         entries.retain(|node, _| document.contains(*node));
+        items.retain(|node, _| document.contains(*node));
+        widths.retain(|node, _| document.contains(*node));
     }
 
     /// Gives the fragments of the kept entries that a restyle's
@@ -213,8 +275,13 @@ impl LayoutCache {
     /// `patch`, which wrote them into the layout shown first, so that
     /// each list of children shared with it is the copy it made.
     pub fn composite(&self, patch: &mut Patch<'_, '_>) {
-        for entry in self.entries.borrow_mut().values_mut() {
+        for (_, entry) in self.entries.borrow_mut().values_mut() {
             patch.fragment(&mut entry.root);
+        }
+        for kept in self.items.borrow_mut().values_mut() {
+            for (_, entry) in kept {
+                patch.fragment(&mut entry.root);
+            }
         }
     }
 
@@ -222,6 +289,65 @@ impl LayoutCache {
     pub(crate) fn begin_pass(&self) {
         self.laid_out.set(0);
         self.reused.set(0);
+        self.items_laid_out.set(0);
+        self.items_reused.set(0);
+        self.widths_measured.set(0);
+        self.widths_reused.set(0);
+    }
+
+    /// The content widths kept for `node`'s box with the generated text
+    /// `generated_text`, if there are.
+    pub(crate) fn widths(&self, node: NodeId, generated_text: u64) -> Option<(f32, f32)> {
+        let widths = self.widths.borrow();
+        let (_, widths) = widths
+            .get(&node)
+            .filter(|(text, _)| *text == generated_text)?;
+        self.widths_reused.set(self.widths_reused.get() + 1);
+        Some(*widths)
+    }
+
+    /// Keeps `widths`, `node`'s box's content widths with the generated
+    /// text `generated_text`.
+    pub(crate) fn keep_widths(&self, node: NodeId, generated_text: u64, widths: (f32, f32)) {
+        self.widths_measured.set(self.widths_measured.get() + 1);
+        self.widths
+            .borrow_mut()
+            .insert(node, (generated_text, widths));
+    }
+
+    /// Counts an item's or a cell's layout made.
+    pub(crate) fn count_item_laid_out(&self) {
+        self.items_laid_out.set(self.items_laid_out.get() + 1);
+    }
+
+    /// The kept layout of `node`'s item or cell laid out with `inputs`,
+    /// its place in tree order now `tree_order`, if there is one.
+    pub(crate) fn take_item<'a>(
+        &self,
+        node: NodeId,
+        inputs: ItemInputs,
+        tree_order: u32,
+    ) -> Option<BlockLayout<'a>> {
+        let items = self.items.borrow();
+        let (_, entry) = items.get(&node)?.iter().find(|(i, _)| *i == inputs)?;
+        self.items_reused.set(self.items_reused.get() + 1);
+        Some(entry.layout(tree_order))
+    }
+
+    /// Keeps `layout`, `node`'s item or cell laid out with `inputs`, when
+    /// nothing was carried out of it, the oldest of its layouts let go
+    /// past [`MAX_ITEM_LAYOUTS`].
+    pub(crate) fn keep_item(&self, node: NodeId, inputs: ItemInputs, layout: &BlockLayout<'_>) {
+        if !layout.absolutes.is_empty() {
+            return;
+        }
+        let mut items = self.items.borrow_mut();
+        let kept = items.entry(node).or_default();
+        kept.retain(|(i, _)| *i != inputs);
+        if kept.len() >= MAX_ITEM_LAYOUTS {
+            kept.remove(0);
+        }
+        kept.push((inputs, Entry::of(layout)));
     }
 
     /// Counts a box placed in flow and laid out.
@@ -240,29 +366,9 @@ impl LayoutCache {
         tree_order: u32,
     ) -> Option<BlockLayout<'a>> {
         let entries = self.entries.borrow();
-        let entry = entries.get(&node).filter(|e| e.inputs == inputs)?;
-        let mut root = entry.root.clone();
-        let by = tree_order.wrapping_sub(root.tree_order);
-        root.tree_order = tree_order;
-        root.children.move_along(by);
+        let (_, entry) = entries.get(&node).filter(|(i, _)| *i == inputs)?;
         self.reused.set(self.reused.get() + 1);
-        let layout = BlockLayout {
-            root,
-            height: entry.height,
-            margin_left: entry.margin_left,
-            margin_top: entry.margin_top,
-            margin_bottom: entry.margin_bottom,
-            top_edge: entry.top_edge,
-            bottom_edge: entry.bottom_edge,
-            self_collapsing: entry.self_collapsing,
-            last_baseline: entry.last_baseline,
-            first_baseline: entry.first_baseline,
-            first_line: entry.first_line,
-            inline_block_baseline: entry.inline_block_baseline,
-            absolutes: Vec::new(),
-            auto_content_height: entry.auto_content_height,
-        };
-        Some(layout)
+        Some(entry.layout(tree_order))
     }
 
     /// Keeps `layout`, `node`'s box laid out with `inputs`, its fragment
@@ -275,25 +381,54 @@ impl LayoutCache {
             entries.remove(&node);
             return;
         }
-        entries.insert(
-            node,
-            Entry {
-                inputs,
-                root: layout.root.clone(),
-                height: layout.height,
-                margin_left: layout.margin_left,
-                margin_top: layout.margin_top,
-                margin_bottom: layout.margin_bottom,
-                top_edge: layout.top_edge,
-                bottom_edge: layout.bottom_edge,
-                self_collapsing: layout.self_collapsing,
-                last_baseline: layout.last_baseline,
-                first_baseline: layout.first_baseline,
-                first_line: layout.first_line,
-                inline_block_baseline: layout.inline_block_baseline,
-                auto_content_height: layout.auto_content_height,
-            },
-        );
+        entries.insert(node, (inputs, Entry::of(layout)));
+    }
+}
+
+impl Entry {
+    /// `layout` kept, its fragment subtree shared.
+    fn of(layout: &BlockLayout<'_>) -> Entry {
+        Entry {
+            root: layout.root.clone(),
+            height: layout.height,
+            margin_left: layout.margin_left,
+            margin_top: layout.margin_top,
+            margin_bottom: layout.margin_bottom,
+            top_edge: layout.top_edge,
+            bottom_edge: layout.bottom_edge,
+            self_collapsing: layout.self_collapsing,
+            last_baseline: layout.last_baseline,
+            first_baseline: layout.first_baseline,
+            first_line: layout.first_line,
+            inline_block_baseline: layout.inline_block_baseline,
+            auto_content_height: layout.auto_content_height,
+        }
+    }
+
+    /// The layout kept, its fragment subtree shared, its box's place in
+    /// tree order moved to `tree_order` and every place under it with
+    /// it.
+    fn layout<'a>(&self, tree_order: u32) -> BlockLayout<'a> {
+        let mut root = self.root.clone();
+        let by = tree_order.wrapping_sub(root.tree_order);
+        root.tree_order = tree_order;
+        root.children.move_along(by);
+        BlockLayout {
+            root,
+            height: self.height,
+            margin_left: self.margin_left,
+            margin_top: self.margin_top,
+            margin_bottom: self.margin_bottom,
+            top_edge: self.top_edge,
+            bottom_edge: self.bottom_edge,
+            self_collapsing: self.self_collapsing,
+            last_baseline: self.last_baseline,
+            first_baseline: self.first_baseline,
+            first_line: self.first_line,
+            inline_block_baseline: self.inline_block_baseline,
+            absolutes: Vec::new(),
+            auto_content_height: self.auto_content_height,
+        }
     }
 }
 
@@ -416,8 +551,13 @@ mod tests {
             let mut layout = HashSet::new();
             lists(&self.layout.roots, &mut layout);
             let mut kept = HashSet::new();
-            for entry in self.cache.entries.borrow().values() {
+            for (_, entry) in self.cache.entries.borrow().values() {
                 lists(std::slice::from_ref(&entry.root), &mut kept);
+            }
+            for kept_items in self.cache.items.borrow().values() {
+                for (_, entry) in kept_items {
+                    lists(std::slice::from_ref(&entry.root), &mut kept);
+                }
             }
             !kept.is_empty() && kept.is_subset(&layout)
         }
@@ -1016,7 +1156,7 @@ mod tests {
         let d = s.box_of("d");
         assert_ne!(d.children.shift(), 0);
         let entries = s.cache.entries.borrow();
-        let kept = &entries[&s.id("d")].root;
+        let kept = &entries[&s.id("d")].1.root;
         assert!(Children::ptr_eq(&d.children, &kept.children));
     }
 
@@ -1055,6 +1195,93 @@ mod tests {
         s.pass();
         assert!(s.kept("k"));
         assert!(s.shares_its_lists());
+    }
+
+    /// The item and cell layouts `change` makes the next pass lay out
+    /// and take, and the content widths it measures and takes, in a
+    /// session of `html` under `css` after a first pass.
+    type Counts = ((usize, usize), (usize, usize));
+    fn items_after(html: &str, css: &str, change: impl FnOnce(&mut Session)) -> Counts {
+        let mut s = Session::new(html, css);
+        s.pass();
+        change(&mut s);
+        s.pass();
+        (s.cache.item_counts(), s.cache.width_counts())
+    }
+
+    /// Sets the text of the element `id` to `text`.
+    fn set_text(s: &mut Session, id: &str, text: &str) {
+        let node = s.id(id);
+        s.change(|d| {
+            let child = d.first_child(node).unwrap();
+            d.set_text(child, text).unwrap();
+        });
+    }
+
+    #[test]
+    fn a_containers_items_and_a_tables_cells_nothing_changed_are_taken() {
+        // M35.9: one item's text changed, the container is laid out
+        // again, that item with it, the others taken from the cache
+        // (`pass` holds each layout to a fresh one's).
+        let flex = items_after(
+            "<div id=f><p id=a>one</p><p id=b>two</p><p id=c>three</p></div>",
+            "#f { display: flex } p { margin: 0 }",
+            |s| set_text(s, "b", "two and more"),
+        );
+        let grid = items_after(
+            "<div id=g><p id=a>one</p><p id=b>two</p><p id=c>three</p></div>",
+            "#g { display: grid; grid-template-columns: 1fr 1fr 1fr } p { margin: 0 }",
+            |s| set_text(s, "b", "two and more"),
+        );
+        // A table whose columns the text sizes gives every cell another
+        // width; one laid out by the fixed algorithm does not.
+        let table = items_after(
+            "<table><tr><td id=a>one</td><td id=b>two</td><td id=c>three</td></tr></table>",
+            "table { table-layout: fixed; width: 300px }",
+            |s| set_text(s, "b", "two and more"),
+        );
+        // An item twice, measured and laid out; a cell once. The
+        // changed item's content widths are measured, the others' taken.
+        assert_eq!(flex, ((2, 4), (1, 2)));
+        assert_eq!(grid, ((2, 4), (1, 2)));
+        assert_eq!(table.0, (1, 2));
+    }
+
+    #[test]
+    fn what_an_item_or_a_cell_is_laid_out_by_is_held_to_a_fresh_layout() {
+        // M35.9 (`pass` holds each layout to a fresh one's): anonymous
+        // items, which name their container and lay out alike in equal
+        // columns, are not kept, or one would be given the other's
+        // layout; a cell's border in the collapsed model is its table's
+        // to change; a change deep in an item reaches its widths.
+        let mut s = Session::new(
+            "<div id=g>one<p>x</p>two and two</div>",
+            "#g { display: grid; grid-template-columns: 1fr 1fr 1fr } p { margin: 0 }",
+        );
+        s.pass();
+        s.pass();
+        // Nor are their content widths, which would be another's.
+        let mut s = Session::new(
+            "<div id=f>short<p>x</p>a run of anonymous text a great deal longer</div>",
+            "#f { display: flex } p { margin: 0 }",
+        );
+        s.pass();
+        s.pass();
+        let mut s = Session::new(
+            "<table id=t><tr><td>one</td><td>two</td></tr></table>",
+            "table { border-collapse: collapse; table-layout: fixed; width: 200px }              td { border: 1px solid #000 } .thick { border-top: 9px solid #000 }",
+        );
+        s.pass();
+        let t = s.id("t");
+        s.change(|d| d.set_attribute(t, "class", "thick").unwrap());
+        s.pass();
+        let mut s = Session::new(
+            "<div id=f><div><span id=s>one</span></div><p>two</p></div>",
+            "#f { display: flex } p { margin: 0 }",
+        );
+        s.pass();
+        set_text(&mut s, "s", "one and a great deal more");
+        s.pass();
     }
 
     #[test]

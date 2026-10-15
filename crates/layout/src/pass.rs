@@ -13,7 +13,12 @@
 //! it depends on, and gives a clone of it when asked again, or lets a
 //! step that only measures the item read it where it is kept. Nothing kept
 //! outlives the pass, so nothing kept outlives the box tree it was made
-//! from; the layout cache (M13.2) is what keeps results across passes.
+//! from; the layout cache (M13.2) is what keeps results across passes,
+//! and a layout the pass does not have it asks the cache for, by the
+//! box's node and the same inputs, before laying the item out, and gives
+//! the cache what it lays out (M35.9): a flex or grid item, or a table
+//! cell, an element's own box, which no ancestor's pseudo-element
+//! styles.
 //!
 //! A box's min-content and max-content widths are the same for the
 //! whole pass, as they depend on nothing but the box and the fonts,
@@ -28,15 +33,19 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
+use dom::NodeId;
 use text::FontCollection;
 
 use crate::block::{BlockLayout, Imposed};
 use crate::box_tree::LayoutBox;
+use crate::cache::{ItemInputs, LayoutCache};
 
 /// The context of one layout pass over a box tree.
 pub(crate) struct Pass<'a> {
     /// The fonts the pass measures and shapes text with.
     pub(crate) fonts: &'a FontCollection,
+    /// The layout cache the pass takes from and keeps in, if any.
+    cache: Option<&'a LayoutCache>,
     /// The flex items' layouts so far, by box and inputs.
     items: RefCell<HashMap<ItemKey, BlockLayout<'a>>>,
     /// The boxes' content widths measured so far, by box address.
@@ -63,6 +72,13 @@ pub(crate) struct Pass<'a> {
 /// otherwise is what keeps a chain of nested flex containers linear: a
 /// container laid out at an indefinite height and again at a definite
 /// one asks for its items with the same key both times.
+///
+/// What the layout cache keeps an item's layout by across passes, the
+/// box's node for its address, it carries too: its node, its place in
+/// tree order, the fingerprint of its generated text, and whether it is
+/// an element's own box no ancestor's pseudo-element styles, which the
+/// cache keeps; and a cell's border in the collapsed model, which its
+/// table gives it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct ItemKey {
     b: usize,
@@ -70,6 +86,11 @@ pub(crate) struct ItemKey {
     imposed: Option<(u32, bool)>,
     cb_width: u32,
     cb_height: Option<u32>,
+    border: Option<[u32; 4]>,
+    node: NodeId,
+    tree_order: u32,
+    generated_text: u64,
+    kept: bool,
 }
 
 impl ItemKey {
@@ -92,15 +113,46 @@ impl ItemKey {
             imposed: imposed.map(|i| (i.height.to_bits(), i.definite)),
             cb_width: cb_width.to_bits(),
             cb_height: cb_height.filter(|_| reads_cb_height).map(f32::to_bits),
+            border: None,
+            node: b.node,
+            tree_order: b.tree_order,
+            generated_text: b.generated_text,
+            kept: !b.anonymous && !b.styled_by_ancestor && b.generated.is_none(),
+        }
+    }
+
+    /// The key with a cell's border in the collapsed model, `border`.
+    pub(crate) fn with_border(mut self, border: Option<[f32; 4]>) -> Self {
+        self.border = border.map(|b| b.map(f32::to_bits));
+        self
+    }
+
+    /// What the layout cache keeps the layout by, beside the node.
+    fn inputs(&self) -> ItemInputs {
+        ItemInputs {
+            content_width: self.content_width,
+            imposed: self.imposed,
+            cb_width: self.cb_width,
+            cb_height: self.cb_height,
+            border: self.border,
+            generated_text: self.generated_text,
         }
     }
 }
 
 impl<'a> Pass<'a> {
     /// A pass measuring text with `fonts`.
+    #[cfg(test)]
     pub(crate) fn new(fonts: &'a FontCollection) -> Self {
+        Pass::with_cache(fonts, None)
+    }
+
+    /// A pass measuring text with `fonts`, taking from `cache` and
+    /// keeping in it.
+    pub(crate) fn with_cache(fonts: &'a FontCollection, cache: Option<&'a LayoutCache>) -> Self {
         Pass {
             fonts,
+            cache,
             items: RefCell::new(HashMap::new()),
             widths: RefCell::new(HashMap::new()),
             computed: Cell::new(0),
@@ -119,9 +171,34 @@ impl<'a> Pass<'a> {
         if let Some(layout) = self.items.borrow().get(&key) {
             return layout.clone();
         }
+        let layout = self
+            .taken(key)
+            .unwrap_or_else(|| self.laid_out(key, lay_out));
+        self.items.borrow_mut().insert(key, layout.clone());
+        layout
+    }
+
+    /// The layout cache the pass takes from and keeps in, if any.
+    pub(crate) fn cache(&self) -> Option<&'a LayoutCache> {
+        self.cache
+    }
+
+    /// The layout `key` names, from the layout cache, if it keeps one.
+    fn taken(&self, key: ItemKey) -> Option<BlockLayout<'a>> {
+        let cache = self.cache.filter(|_| key.kept)?;
+        cache.take_item(key.node, key.inputs(), key.tree_order)
+    }
+
+    /// `lay_out`'s layout, counted, and kept in the layout cache.
+    fn laid_out(&self, key: ItemKey, lay_out: impl FnOnce() -> BlockLayout<'a>) -> BlockLayout<'a> {
         let layout = lay_out();
         self.computed.set(self.computed.get() + 1);
-        self.items.borrow_mut().insert(key, layout.clone());
+        if let Some(cache) = self.cache {
+            cache.count_item_laid_out();
+            if key.kept {
+                cache.keep_item(key.node, key.inputs(), &layout);
+            }
+        }
         layout
     }
 
@@ -142,8 +219,9 @@ impl<'a> Pass<'a> {
         if let Some(layout) = self.items.borrow().get(&key) {
             return read(layout);
         }
-        let layout = lay_out();
-        self.computed.set(self.computed.get() + 1);
+        let layout = self
+            .taken(key)
+            .unwrap_or_else(|| self.laid_out(key, lay_out));
         let value = read(&layout);
         self.items.borrow_mut().insert(key, layout);
         value
@@ -163,7 +241,20 @@ impl<'a> Pass<'a> {
         if let Some(&widths) = self.widths.borrow().get(&key) {
             return widths;
         }
-        let widths = measure();
+        // Across passes, an element's own box's, by its node (M35.9).
+        let cache = self
+            .cache
+            .filter(|_| !b.anonymous && !b.styled_by_ancestor && b.generated.is_none());
+        let widths = match cache.and_then(|cache| cache.widths(b.node, b.generated_text)) {
+            Some(widths) => widths,
+            None => {
+                let widths = measure();
+                if let Some(cache) = cache {
+                    cache.keep_widths(b.node, b.generated_text, widths);
+                }
+                widths
+            }
+        };
         self.widths.borrow_mut().insert(key, widths);
         widths
     }
