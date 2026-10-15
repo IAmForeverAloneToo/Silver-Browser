@@ -468,10 +468,19 @@ impl GpuBackend {
         Self::with_fonts(FontCollection::new().map_err(GpuError::Fonts)?)
     }
 
-    /// Creates the backend over fonts already loaded.
+    /// Creates the backend over fonts already loaded. The backends tried
+    /// are Vulkan, Metal and Direct3D 12, or those of them wgpu's own
+    /// `WGPU_BACKEND` names: CI's Windows job names Vulkan, which its
+    /// runners lack, since a device on their software rasterizer crashes
+    /// the tests' process (2026-10-15).
     pub fn with_fonts(fonts: FontCollection) -> Result<Self, GpuError> {
+        let ours = wgpu::Backends::VULKAN | wgpu::Backends::METAL | wgpu::Backends::DX12;
+        let backends = wgpu::Backends::from_env()
+            .map(|named| named & ours)
+            .filter(|named| !named.is_empty())
+            .unwrap_or(ours);
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN | wgpu::Backends::METAL | wgpu::Backends::DX12,
+            backends,
             flags: wgpu::InstanceFlags::empty(),
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
             backend_options: wgpu::BackendOptions::default(),

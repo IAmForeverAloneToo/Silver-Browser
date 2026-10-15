@@ -109,6 +109,13 @@ jobs:
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers
       - run: cargo build --workspace --all-targets --locked
+      # Windows's runners have no GPU but a software rasterizer, on which
+      # a wgpu device crashes the tests' process (2026-10-15): there the
+      # GPU backend is held to Vulkan, which they lack, and its tests say
+      # so and pass. Linux's job runs them on Mesa's software Vulkan.
+      - if: runner.os == 'Windows'
+        run: echo "WGPU_BACKEND=vulkan" >> "$GITHUB_ENV"
+        shell: bash
       - run: cargo test --workspace --locked
       # And the shell's tests once more as one process (M34.6).
       - run: cargo test -p silver-browser --features single-process --locked

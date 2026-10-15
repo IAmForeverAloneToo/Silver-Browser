@@ -207,6 +207,15 @@ const NONE: Modifiers = Modifiers {
     logo: false,
 };
 const CTRL: Modifiers = Modifiers { ctrl: true, ..NONE };
+
+/// The modifier of a text field's commands (select-all): the engine's
+/// fields follow the system they were built for, Cmd on macOS, whatever
+/// platform a test's session takes.
+const FIELD_COMMAND: Modifiers = if cfg!(target_os = "macos") {
+    Modifiers { logo: true, ..NONE }
+} else {
+    CTRL
+};
 const SHIFT: Modifiers = Modifiers {
     shift: true,
     ..NONE
@@ -977,8 +986,9 @@ fn a_pages_field_takes_typing_the_clipboard_and_an_input_methods_text() {
     window.press_key(Key::Tab, NONE);
     window.type_text("hello");
     assert_eq!(value(&window), "hello");
-    // Ctrl+A on the page is the field's; copied, then pasted at the end.
-    window.chord("a", CTRL);
+    // Select-all on the page is the field's; copied, then pasted at the
+    // end.
+    window.chord("a", FIELD_COMMAND);
     window.chord("c", CTRL);
     assert_eq!(window.board.text(), "hello");
     window.press_key(Key::End, NONE);
