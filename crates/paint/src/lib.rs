@@ -45,8 +45,8 @@ use style::transform::Matrix;
 pub use order::{Rect, Step, padding_box, paint_order, paint_order_in};
 
 /// What names a group across frames (M19), which a backend keeps a
-/// layer under.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// layer under; ordered, so that a choice among layers is fixed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum GroupKey {
     /// A stacking context's group: its box, by the node and the
     /// pseudo-element that generated it, as [`layout::StackingKey`]

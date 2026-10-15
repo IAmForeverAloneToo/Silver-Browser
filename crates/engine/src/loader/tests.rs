@@ -2239,6 +2239,69 @@ fn image_orientation_none_leaves_a_background_of_another_origin_turned() {
     assert!(!painted(12, 20) && painted(4, 28), "another origin");
 }
 
+/// A frame of `tab`'s page 100 by 80, once its images are decoded and
+/// drawn: frames drawn until no decode is under way.
+fn drawn(tab: &mut Tab) -> Vec<u8> {
+    let mut frame = tab.engine.frame(100, 80);
+    for _ in 0..50 {
+        tab.wait_until(|engine| !engine.decoding());
+        let again = tab.engine.frame(100, 80);
+        if again == frame && !tab.engine.decoding() {
+            break;
+        }
+        frame = again;
+    }
+    frame
+}
+
+#[test]
+fn a_page_put_away_lets_go_of_its_pixels_and_draws_them_again_when_shown() {
+    // M35.5: the back-forward cache keeps a page as fetched, not its
+    // decoded images, which it decodes again when it is shown; and an
+    // engine trimmed lets go of its layers and its pixels, and draws its
+    // next frame the same.
+    let server = serve(|path| match path {
+        "/a.html" => Some(html(
+            "<body style='margin: 0'><img src=a.png width=60 height=40></body>",
+        )),
+        "/b.html" => Some(html("<body><p>B</p></body>")),
+        "/a.png" => Some(Reply::ok("image/png", &png_bytes(60, 40))),
+        _ => None,
+    });
+    let a = server.url("/a.html");
+    let mut tab = Tab::new();
+    load_all(&mut tab, a.clone());
+    tab.settle();
+    let frame = drawn(&mut tab);
+    let shown = tab.engine.memory();
+    assert!(shown.images >= 60 * 40 * 4, "{shown:?}");
+    assert!(
+        shown.nodes > 0 && shown.styles > 0 && shown.layout > 0,
+        "{shown:?}"
+    );
+    load_all(&mut tab, server.url("/b.html"));
+    tab.settle();
+    // Kept with what it holds, its pixels let go.
+    let kept = tab.engine.history.kept_bytes();
+    assert!(kept > 0 && kept < shown.total(), "{kept} {shown:?}");
+    tab.engine.go_back();
+    tab.wait_until(|engine| engine.url() == Some(&a));
+    let back = tab.engine.memory();
+    assert!(back.images < 60 * 40 * 4, "its pixels let go: {back:?}");
+    assert_eq!(drawn(&mut tab), frame, "drawn again the same");
+    // Trimmed.
+    let before = tab.engine.memory();
+    assert!(!tab.engine.needs_frame());
+    tab.engine.trim();
+    let after = tab.engine.memory();
+    assert!(
+        after.images < before.images && after.layers == 0,
+        "{before:?} {after:?}"
+    );
+    assert!(!tab.engine.needs_frame(), "a trim asks for no frame");
+    assert_eq!(drawn(&mut tab), frame, "the frame after a trim");
+}
+
 #[test]
 fn a_page_left_while_an_image_decodes_is_not_kept() {
     let server = serve(|path| match path {

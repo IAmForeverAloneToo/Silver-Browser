@@ -59,7 +59,7 @@
 //! an absolutely positioned box, are laid out again with the box that
 //! holds them, which is itself kept when it can be.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use dom::{Change, Document, NodeId};
 
@@ -166,6 +166,28 @@ impl LayoutCache {
         self.widths.get_mut().clear();
         self.tree.get_mut().clear();
         self.boxes.get_mut().clear();
+    }
+
+    /// The bytes `layout` and the cache hold between them (M35.5): each
+    /// list of fragments once however many share it, each fragment with
+    /// its text, the boxes of the tree kept, and the content widths.
+    pub fn heap_bytes(&self, layout: &crate::DocumentLayout) -> usize {
+        let mut seen = HashSet::new();
+        let mut bytes = layout.roots.capacity() * std::mem::size_of::<Fragment>();
+        for f in &layout.roots {
+            bytes += fragment_bytes(f, &mut seen);
+        }
+        for (_, entry) in self.entries.borrow().values() {
+            bytes += std::mem::size_of::<Entry>() + fragment_bytes(&entry.root, &mut seen);
+        }
+        for kept in self.items.borrow().values() {
+            for (_, entry) in kept {
+                bytes += std::mem::size_of::<Entry>() + fragment_bytes(&entry.root, &mut seen);
+            }
+        }
+        bytes += box_bytes(&self.tree.borrow());
+        bytes += self.widths.borrow().len() * std::mem::size_of::<(NodeId, (u64, Widths))>();
+        bytes
     }
 
     /// How many elements' boxes the last build took whole from the box
@@ -499,6 +521,41 @@ impl Entry {
             auto_content_height: self.auto_content_height,
         }
     }
+}
+
+/// The bytes of what `f` holds beyond itself: its text and decoration,
+/// and its children's list, when `seen` has not counted it.
+fn fragment_bytes(f: &Fragment, seen: &mut HashSet<*const Vec<Fragment>>) -> usize {
+    let mut bytes = match &f.kind {
+        crate::FragmentKind::Text(text) => text.capacity(),
+        _ => 0,
+    };
+    if f.decorated.is_some() {
+        bytes += std::mem::size_of::<crate::decoration::Decorated>();
+    }
+    if let Some(list) = f.children.shared()
+        && seen.insert(std::sync::Arc::as_ptr(list))
+    {
+        bytes += list.capacity() * std::mem::size_of::<Fragment>();
+        for child in list.iter() {
+            bytes += fragment_bytes(child, seen);
+        }
+    }
+    bytes
+}
+
+/// The bytes of `boxes` and everything in them.
+fn box_bytes(boxes: &[LayoutBox]) -> usize {
+    boxes
+        .iter()
+        .map(|b| {
+            let text = match &b.kind {
+                BoxKind::Text(text) => text.capacity(),
+                _ => 0,
+            };
+            std::mem::size_of::<LayoutBox>() + text + box_bytes(&b.children)
+        })
+        .sum()
 }
 
 /// Records in `places` where each element's own box under `boxes` that
@@ -1305,6 +1362,28 @@ mod tests {
         s.pass();
         assert!(s.kept("k"));
         assert!(s.shares_its_lists());
+    }
+
+    #[test]
+    fn the_bytes_count_each_list_of_fragments_once() {
+        // M35.5: the cache's entries are the layout's subtrees, their
+        // lists shared: what the cache adds is its entries, its boxes and
+        // its widths, not the lists again.
+        let mut s = Session::new("<div id=k><p>a</p><p>b</p></div><p>c</p>", "");
+        s.pass();
+        assert!(s.kept("k") && s.shares_its_lists());
+        let alone = LayoutCache::new().heap_bytes(&s.layout);
+        assert!(alone > 0);
+        let entries = s.cache.entries.borrow().len()
+            + s.cache.items.borrow().values().map(Vec::len).sum::<usize>();
+        let widths = s.cache.widths.borrow().len() * std::mem::size_of::<(NodeId, (u64, Widths))>();
+        assert_eq!(
+            s.cache.heap_bytes(&s.layout),
+            alone
+                + entries * std::mem::size_of::<Entry>()
+                + box_bytes(&s.cache.tree.borrow())
+                + widths
+        );
     }
 
     /// The item and cell layouts `change` makes the next pass lay out

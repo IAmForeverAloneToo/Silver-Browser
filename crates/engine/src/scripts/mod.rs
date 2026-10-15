@@ -1280,7 +1280,6 @@ impl Scripts {
     }
 
     /// The bytes of heap the realm holds; none without one.
-    #[cfg(test)]
     pub(crate) fn heap(&self) -> usize {
         self.realm.as_ref().map_or(0, |realm| realm.heap())
     }

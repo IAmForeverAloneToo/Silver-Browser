@@ -269,6 +269,36 @@ impl FrameTime {
     }
 }
 
+/// What a document holds, by part, in bytes (M35.5, [`Engine::memory`]):
+/// from the sizes each part knows, not from the allocator, so that a
+/// page of a given kind costs the same on every machine.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DocumentMemory {
+    /// Its nodes and their data.
+    pub nodes: usize,
+    /// Its computed styles, each distinct one once.
+    pub styles: usize,
+    /// Its layout, the layout cache's entries and the box tree kept,
+    /// each list of fragments once.
+    pub layout: usize,
+    /// Its images as fetched and decoded, and its gradients.
+    pub images: usize,
+    /// The layers and tiles the backend holds for it.
+    pub layers: usize,
+    /// Its realm's heap.
+    pub heap: usize,
+}
+
+impl DocumentMemory {
+    /// All of it.
+    pub fn total(&self) -> usize {
+        self.nodes + self.styles + self.layout + self.images + self.layers + self.heap
+    }
+}
+
+/// How long a renderer's views are all hidden before it trims (M35.5).
+pub const IDLE_TRIM_AFTER: Duration = Duration::from_secs(30);
+
 /// What a frame took, stage by stage (M13.4), on the engine's own clock,
 /// which it reads for nothing else.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -620,6 +650,26 @@ impl Shown {
             frames: HashMap::new(),
             pointer_frame: None,
             pressed_frame: None,
+        }
+    }
+
+    /// What the document holds, its layers aside, which the backend
+    /// holds (M35.5).
+    fn memory(&self) -> DocumentMemory {
+        let layout = match &self.layout {
+            Some(cached) => self.layout_cache.heap_bytes(&cached.layout),
+            None => self.layout_cache.heap_bytes(&DocumentLayout::default()),
+        };
+        DocumentMemory {
+            nodes: self.document.heap_bytes(),
+            styles: self
+                .styled
+                .as_ref()
+                .map_or(0, |styled| styled.styles.heap_bytes()),
+            layout,
+            images: self.images.heap_bytes(),
+            layers: 0,
+            heap: self.scripts.heap(),
         }
     }
 
@@ -1254,8 +1304,12 @@ impl Engine {
         self.unload(&mut left, kept);
         if kept {
             left.scripts.collect();
+            // Its decoded images go, decoded again if it is shown, and
+            // what it holds then is what the cache counts (M35.5).
+            left.images.let_go_of_pixels();
+            let bytes = left.memory().total();
             // What the cache lets go is dropped here.
-            drop(self.history.keep(state, Box::new(left)));
+            drop(self.history.keep(state, Box::new(left), bytes));
         } else {
             self.network.set_partition(left.page.id(), None);
             self.network.set_csp(left.page.id(), None);
@@ -5922,6 +5976,36 @@ impl Engine {
     /// How many bytes of layer pixmaps the backend holds (M19.6).
     pub fn layer_bytes(&self) -> usize {
         self.backend.layer_bytes()
+    }
+
+    /// What the document shown holds, by part (M35.5): its nodes, its
+    /// styles, its layout and what the layout cache keeps, its images,
+    /// the backend's layers, and its realm's heap, from the sizes each
+    /// part knows.
+    pub fn memory(&self) -> DocumentMemory {
+        DocumentMemory {
+            layers: self.backend.layer_bytes(),
+            ..self.shown.memory()
+        }
+    }
+
+    /// Lets go of what an engine whose view is hidden can make again
+    /// when it is shown (M35.5): the backend's layers and its glyphs,
+    /// the decoded images, the fonts' measures, and its realm's garbage.
+    /// What a renderer whose views are all hidden calls after
+    /// [`IDLE_TRIM_AFTER`]. It asks for no frame, which would make what
+    /// it let go again: the next frame, when one is wanted, draws whole.
+    pub fn trim(&mut self) {
+        self.backend.forget_frame();
+        self.backend.clear_glyph_cache();
+        self.shown.images.let_go_of_pixels();
+        self.layout_fonts.clear_measures();
+        self.shown.scripts.collect();
+    }
+
+    /// Whether the engine's view is hidden.
+    pub fn is_hidden(&self) -> bool {
+        self.hidden
     }
 
     /// The user's preferences that media queries ask about (M20.3).

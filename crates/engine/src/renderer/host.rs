@@ -52,6 +52,50 @@ pub(crate) struct Host {
     began: Instant,
     views: HashMap<u32, View>,
     wake: Arc<dyn Fn() + Send + Sync>,
+    /// Since when its views have all been hidden (M35.5).
+    idle: Idle,
+}
+
+/// Since when a renderer's views have all been hidden, and whether it
+/// has trimmed since (M35.5): it trims once they have been for
+/// `after`, and again only after one is shown and hidden.
+#[derive(Debug)]
+pub(crate) struct Idle {
+    since: Option<Instant>,
+    trimmed: bool,
+    after: Duration,
+}
+
+impl Idle {
+    pub(crate) fn new(after: Duration) -> Idle {
+        Idle {
+            since: None,
+            trimmed: false,
+            after,
+        }
+    }
+
+    /// Whether to trim now, at `now`, the views all hidden or not.
+    pub(crate) fn tick(&mut self, now: Instant, hidden: bool) -> bool {
+        if !hidden {
+            self.since = None;
+            self.trimmed = false;
+            return false;
+        }
+        let since = *self.since.get_or_insert(now);
+        if self.trimmed || now.duration_since(since) < self.after {
+            return false;
+        }
+        self.trimmed = true;
+        true
+    }
+
+    /// When the trim is due, while one is to come.
+    pub(crate) fn due(&self) -> Option<Instant> {
+        self.since
+            .filter(|_| !self.trimmed)
+            .map(|since| since + self.after)
+    }
 }
 
 impl Host {
@@ -68,6 +112,7 @@ impl Host {
             began: Instant::now(),
             views: HashMap::new(),
             wake,
+            idle: Idle::new(crate::IDLE_TRIM_AFTER),
         }
     }
 
@@ -329,6 +374,15 @@ impl Host {
                 self.send(message);
             }
         }
+        // A renderer whose views have all been hidden for a while lets
+        // go of what it can make again when one is shown (M35.5).
+        let hidden =
+            !self.views.is_empty() && self.views.values().all(|view| view.engine.is_hidden());
+        if self.idle.tick(now, hidden) {
+            for view in self.views.values_mut() {
+                view.engine.trim();
+            }
+        }
     }
 
     /// How long the loop may wait for a message before the next turn:
@@ -350,6 +404,11 @@ impl Host {
                 };
                 [task, frame].into_iter().flatten().min()
             })
+            .chain(
+                self.idle
+                    .due()
+                    .map(|due| due.saturating_duration_since(self.began)),
+            )
             .min()
             .map(|due| due.saturating_sub(time))
     }
@@ -533,4 +592,88 @@ fn draw(view: &mut View, id: u32, now: Instant, time: Duration, out: &mut Vec<To
         width,
         height,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Idle;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_renderer_trims_once_its_views_have_all_been_hidden_a_while() {
+        // M35.5.
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        let mut idle = Idle::new(Duration::from_secs(30));
+        assert!(!idle.tick(at(0), false));
+        assert_eq!(idle.due(), None, "shown: nothing due");
+        assert!(!idle.tick(at(1), true));
+        assert_eq!(idle.due(), Some(at(31)));
+        assert!(!idle.tick(at(30), true), "not yet");
+        assert!(idle.tick(at(31), true), "now");
+        assert!(!idle.tick(at(90), true), "once");
+        assert_eq!(idle.due(), None);
+        // Shown, and hidden again: another trim, a while after.
+        assert!(!idle.tick(at(100), false));
+        assert!(!idle.tick(at(101), true));
+        assert!(idle.tick(at(131), true));
+    }
+
+    #[test]
+    fn a_host_trims_when_its_views_are_all_hidden_and_wakes_for_it() {
+        // M35.5: the idle clock is the views', and the loop's wait.
+        use super::{Host, Link};
+        use crate::ipc::{Sender, Settings, ToRenderer};
+        use std::sync::Arc;
+        let host = |after| {
+            let fonts = text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
+                .expect("the bundled font parses");
+            let link = Link::new(Sender::new(std::io::sink()));
+            let mut host = Host::new(link, Some(fonts), Arc::new(|| {}));
+            host.idle = Idle::new(after);
+            let hidden = Settings {
+                hidden: true,
+                ..Settings::default()
+            };
+            for (view, settings) in [(1, Settings::default()), (2, hidden.clone())] {
+                let create = ToRenderer::CreateView {
+                    view,
+                    frame: view,
+                    settings,
+                };
+                host.handle(create).expect("made");
+                let resize = ToRenderer::Resize {
+                    view,
+                    width: 40,
+                    height: 30,
+                    raster_width: 40,
+                    raster_height: 30,
+                };
+                host.handle(resize).expect("sized");
+            }
+            // Their first frames drawn, nothing else is due.
+            host.turn();
+            assert_eq!(host.idle.due(), None, "one shown");
+            let hide = ToRenderer::Settings {
+                view: 1,
+                settings: hidden,
+            };
+            host.handle(hide).expect("hidden");
+            host.turn();
+            host
+        };
+        let layers = |host: &Host| {
+            let mut bytes = host.views.values().map(|view| view.engine.layer_bytes());
+            (bytes.next().unwrap_or(0), bytes.next().unwrap_or(0))
+        };
+        let trimmed = host(Duration::ZERO);
+        assert!(trimmed.idle.trimmed, "at once");
+        assert_eq!(layers(&trimmed), (0, 0), "each view's engine trimmed");
+        let host = host(Duration::from_secs(3600));
+        assert!(!host.idle.trimmed, "not yet");
+        let (one, two) = layers(&host);
+        assert!(one > 0 && two > 0, "its frames held until then");
+        let wait = host.wait().expect("woken for the trim");
+        assert!(wait > Duration::from_secs(3500), "{wait:?}");
+    }
 }

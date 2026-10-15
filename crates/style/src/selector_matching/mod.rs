@@ -137,7 +137,7 @@ pub struct PseudoElementSelector {
 }
 
 /// The pseudo-elements a selector may end in (Pseudo-Elements 4).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PseudoElement {
     /// `::before` (or `:before`)
     Before,

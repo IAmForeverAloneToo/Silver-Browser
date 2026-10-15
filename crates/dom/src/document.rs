@@ -428,6 +428,16 @@ impl Document {
         self.live <= 1
     }
 
+    /// The bytes the document holds (M35.5): its slots, the data of its
+    /// live nodes, and its journal; from the sizes it knows, not the
+    /// allocator's.
+    pub fn heap_bytes(&self) -> usize {
+        self.slots.capacity() * std::mem::size_of::<Slot>()
+            + self.free.capacity() * std::mem::size_of::<u32>()
+            + self.journal.capacity() * std::mem::size_of::<Change>()
+            + self.data_bytes
+    }
+
     /// One past the highest slot index in use: the size a table indexed
     /// by [`NodeId::index`] needs.
     #[inline]
@@ -1478,6 +1488,15 @@ impl Iterator for Subtree<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn its_bytes_hold_its_nodes_data() {
+        // M35.5.
+        let mut document = Document::new();
+        let before = document.heap_bytes();
+        document.create_text(&"x".repeat(10_000)).unwrap();
+        assert!(document.heap_bytes() >= before + 10_000);
+    }
 
     fn sample() -> Node {
         Node::document(vec![

@@ -194,6 +194,41 @@ impl Styles {
 
     /// [`Styles::get`], the style shared (M35.9): what a box and its
     /// fragments hold rather than a copy of it.
+    /// The bytes the styles hold (M35.5): an entry an element, and each
+    /// distinct style once, however many elements share it.
+    pub fn heap_bytes(&self) -> usize {
+        let mut seen: std::collections::HashSet<*const ComputedStyle> =
+            std::collections::HashSet::new();
+        let mut styles = 0;
+        let mut count = |style: &Arc<ComputedStyle>| {
+            if seen.insert(Arc::as_ptr(style)) {
+                styles += std::mem::size_of::<ComputedStyle>();
+            }
+        };
+        let mut pseudo = 0;
+        for (_, computed) in self.entries.iter().flatten() {
+            count(&computed.style);
+            if let Some(styles) = &computed.pseudo {
+                pseudo += std::mem::size_of::<PseudoStyles>();
+                for style in [
+                    &styles.before,
+                    &styles.after,
+                    &styles.first_letter,
+                    &styles.first_line,
+                    &styles.marker,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    count(style);
+                }
+            }
+        }
+        self.entries.capacity() * std::mem::size_of::<Option<(NodeId, Computed)>>()
+            + styles
+            + pseudo
+    }
+
     pub fn shared(&self, node: NodeId) -> Option<&Arc<ComputedStyle>> {
         self.computed(node).map(|computed| &computed.style)
     }
@@ -10877,6 +10912,22 @@ mod tests {
         };
         assert!(Arc::ptr_eq(&custom("div"), &custom("p")));
         assert_eq!(styles.get(first(&document, "html")).unwrap().custom, None);
+    }
+
+    #[test]
+    fn the_bytes_count_a_style_elements_share_once() {
+        // M35.5: a hundred paragraphs of one style hold it once.
+        let bytes = |count: usize| {
+            let html = "<p>x</p>".repeat(count);
+            let document = Document::from_node(&html::parse_document(&html).expect("never fails"));
+            let sheets = [sheet("p { color: red }")];
+            cascade_document(&document, &sheets, &CascadeContext::default()).heap_bytes()
+        };
+        let more = bytes(100) - bytes(2);
+        assert!(
+            more < 98 * std::mem::size_of::<ComputedStyle>() / 4,
+            "{more}"
+        );
     }
 
     #[test]

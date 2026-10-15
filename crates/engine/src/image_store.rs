@@ -650,6 +650,44 @@ impl ImageStore {
         }
     }
 
+    /// The bytes the images hold (M35.5): what each was fetched as and
+    /// its decoded pixels, and the gradients rendered.
+    pub(crate) fn heap_bytes(&self) -> usize {
+        let images: usize = self
+            .entries
+            .values()
+            .map(|entry| match &entry.state {
+                ImageState::Ready(ready) => {
+                    ready.bytes.len()
+                        + match &ready.pixels {
+                            Pixels::Decoded(image) => image.bytes(),
+                            _ => 0,
+                        }
+                }
+                _ => 0,
+            })
+            .sum();
+        images + self.gradients.borrow().bytes
+    }
+
+    /// Lets the decoded pixels of every image go, to be decoded again
+    /// from what was fetched when next drawn (M35.5): what a document put
+    /// away in the back-forward cache, or a hidden one an idle renderer
+    /// trims, holds no more.
+    pub(crate) fn let_go_of_pixels(&mut self) {
+        for entry in self.entries.values_mut() {
+            if let ImageState::Ready(ready) = &mut entry.state
+                && matches!(ready.pixels, Pixels::Decoded(_))
+            {
+                ready.pixels = Pixels::NotDecoded;
+                ready.kept_for = None;
+            }
+        }
+        let gradients = self.gradients.get_mut();
+        gradients.kept.clear();
+        gradients.bytes = 0;
+    }
+
     /// Drops the decoded pixels of the images drawn longest ago, none
     /// drawn in frame `frame`, while all kept hold more than the budget
     /// (M23.5); they are decoded again when next drawn.

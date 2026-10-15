@@ -21,6 +21,11 @@ pub(crate) const MAX_ENTRIES: usize = 50;
 /// recently goes.
 pub(crate) const MAX_KEPT: usize = 6;
 
+/// The most bytes the documents the back-forward cache keeps hold
+/// together, as each said when it was put away (M35.5, `Engine::memory`):
+/// past it, the ones shown least recently go.
+pub const MAX_KEPT_BYTES: usize = 256 << 20;
+
 /// Which document state an entry has.
 pub(crate) type StateId = u64;
 
@@ -45,8 +50,9 @@ pub(crate) struct History<D> {
     entries: Vec<Entry>,
     current: usize,
     next_state: StateId,
-    /// The documents kept, by state, the one shown least recently first.
-    kept: Vec<(StateId, D)>,
+    /// The documents kept, by state, the one shown least recently first,
+    /// each with the bytes it held when it was put away.
+    kept: Vec<(StateId, D, usize)>,
 }
 
 impl<D> History<D> {
@@ -183,26 +189,26 @@ impl<D> History<D> {
         self.entries.iter().any(|entry| entry.state == state)
     }
 
-    /// Keeps `document` for `state`, as the one shown most recently,
-    /// when an entry has that state; the one shown least recently goes
-    /// when the cache is full. Returns the documents that went, for the
-    /// engine to drop.
-    pub(crate) fn keep(&mut self, state: StateId, document: D) -> Vec<D> {
+    /// Keeps `document`, which holds `bytes`, for `state`, as the one
+    /// shown most recently, when an entry has that state; the ones shown
+    /// least recently go when the cache is full, by count or by bytes.
+    /// Returns the documents that went, for the engine to drop.
+    pub(crate) fn keep(&mut self, state: StateId, document: D, bytes: usize) -> Vec<D> {
         if !self.names(state) {
             return vec![document];
         }
         let mut gone: Vec<D> = Vec::new();
-        if let Some(at) = self.kept.iter().position(|(kept, _)| *kept == state) {
+        if let Some(at) = self.kept.iter().position(|(kept, _, _)| *kept == state) {
             gone.push(self.kept.remove(at).1);
         }
-        self.kept.push((state, document));
+        self.kept.push((state, document, bytes));
         gone.extend(self.prune());
         gone
     }
 
     /// Takes the document kept for `state`, if there is one.
     pub(crate) fn take_kept(&mut self, state: StateId) -> Option<D> {
-        let at = self.kept.iter().position(|(kept, _)| *kept == state)?;
+        let at = self.kept.iter().position(|(kept, _, _)| *kept == state)?;
         Some(self.kept.remove(at).1)
     }
 
@@ -212,27 +218,40 @@ impl<D> History<D> {
         self.kept.len()
     }
 
+    /// The bytes the documents kept hold, as each said.
+    #[cfg(test)]
+    pub(crate) fn kept_bytes(&self) -> usize {
+        self.kept.iter().map(|(_, _, bytes)| bytes).sum()
+    }
+
     /// Whether a document is kept for `state`.
     #[cfg(test)]
     pub(crate) fn is_kept(&self, state: StateId) -> bool {
-        self.kept.iter().any(|(kept, _)| *kept == state)
+        self.kept.iter().any(|(kept, _, _)| *kept == state)
     }
 
     /// Drops the documents kept for states no entry has, and the ones
-    /// shown least recently past [`MAX_KEPT`]; returns them.
+    /// shown least recently past [`MAX_KEPT`] and past [`MAX_KEPT_BYTES`];
+    /// returns them.
     fn prune(&mut self) -> Vec<D> {
         let mut gone = Vec::new();
         let mut kept = Vec::with_capacity(self.kept.len());
-        for (state, document) in self.kept.drain(..) {
+        for (state, document, bytes) in self.kept.drain(..) {
             if self.entries.iter().any(|entry| entry.state == state) {
-                kept.push((state, document));
+                kept.push((state, document, bytes));
             } else {
                 gone.push(document);
             }
         }
         if kept.len() > MAX_KEPT {
             let over = kept.len() - MAX_KEPT;
-            gone.extend(kept.drain(..over).map(|(_, document)| document));
+            gone.extend(kept.drain(..over).map(|(_, document, _)| document));
+        }
+        let mut total: usize = kept.iter().map(|(_, _, bytes)| bytes).sum();
+        while total > MAX_KEPT_BYTES && !kept.is_empty() {
+            let (_, document, bytes) = kept.remove(0);
+            total -= bytes;
+            gone.push(document);
         }
         self.kept = kept;
         gone

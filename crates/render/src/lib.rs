@@ -763,18 +763,18 @@ impl<P: Pixels> Layers<P> {
     /// Lets the layer or tile least recently used go, among those used
     /// before the frame `before`; whether there was one.
     fn evict_oldest(&mut self, before: u64) -> bool {
-        let mut oldest: Option<(u64, String, GroupKey, Option<i32>)> = None;
+        let mut oldest: Option<(u64, GroupKey, Option<i32>)> = None;
         let mut consider = |used: u64, key: GroupKey, row: Option<i32>| {
             if used >= before {
                 return;
             }
-            // Ties by the key's name, so that the order is fixed.
-            let name = format!("{key:?}");
+            // Ties by the key, then the row, so that the order is fixed
+            // (M35.5: no longer by the key's name, formatted each time).
             if oldest
                 .as_ref()
-                .is_none_or(|(u, n, _, _)| used < *u || (used == *u && name < *n))
+                .is_none_or(|&(u, k, r)| (used, key, row) < (u, k, r))
             {
-                oldest = Some((used, name, key, row));
+                oldest = Some((used, key, row));
             }
         };
         for (key, layer) in &self.held {
@@ -787,7 +787,7 @@ impl<P: Pixels> Layers<P> {
                 }
             }
         }
-        let Some((_, _, key, row)) = oldest else {
+        let Some((_, key, row)) = oldest else {
             return false;
         };
         match row {
@@ -6635,6 +6635,53 @@ mod tests {
         assert_eq!(none.rasterize(&list, w, h), &want[..]);
         assert!(none.layers().is_empty());
         assert_eq!(none.layer_bytes(), 0);
+    }
+
+    #[test]
+    fn the_layer_let_go_is_the_one_used_longest_ago_ties_by_key() {
+        // M35.5: by the frame each was last used, before the frame
+        // given; ties by the key, not by its name.
+        struct Held;
+        impl Pixels for Held {
+            fn bytes(&self) -> usize {
+                10
+            }
+            fn size(&self) -> (u32, u32) {
+                (1, 1)
+            }
+        }
+        let mut layers = Layers::<Held>::new();
+        for (key, used) in [(3, 5), (1, 7), (2, 5), (0, 9)] {
+            let layer = Layer {
+                reason: LayerReason::WillChange,
+                items: Vec::new(),
+                store: Store::Whole {
+                    pixels: Held,
+                    origin: (0.0, 0.0),
+                    scale: (1.0, 1.0),
+                },
+                used,
+            };
+            layers.insert(GroupKey::Document(key), layer);
+        }
+        let held = |layers: &Layers<Held>| {
+            let mut keys: Vec<GroupKey> = layers.held.keys().copied().collect();
+            keys.sort();
+            keys
+        };
+        let mut gone = Vec::new();
+        loop {
+            let before = held(&layers);
+            if !layers.evict_oldest(9) {
+                break;
+            }
+            let after = held(&layers);
+            gone.extend(before.into_iter().filter(|key| !after.contains(key)));
+        }
+        let document = GroupKey::Document;
+        assert_eq!(gone, [document(2), document(3), document(1)]);
+        assert_eq!(held(&layers), [document(0)], "used in the frame");
+        assert_eq!(layers.bytes(), 10);
     }
 
     #[test]

@@ -913,6 +913,16 @@ impl Measures {
 }
 
 impl FontCollection {
+    /// Forgets the widths kept (M35.5): an idle renderer's trim; they
+    /// are measured again as they are asked for.
+    pub fn clear_measures(&self) {
+        for shard in self.measures.iter() {
+            *shard
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Measures::default();
+        }
+    }
+
     /// A collection of one font, from its face data, with no per-script
     /// fallbacks: what a test wants, so that it measures and draws the
     /// same font on every machine rather than whichever system font

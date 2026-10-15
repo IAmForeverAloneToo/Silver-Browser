@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use net::test_server::{Reply, TestServer};
 
-use super::{History, MAX_ENTRIES, MAX_KEPT};
+use super::{History, MAX_ENTRIES, MAX_KEPT, MAX_KEPT_BYTES};
 use crate::testing::*;
 use crate::{Engine, LoadState, Url};
 
@@ -73,6 +73,32 @@ fn the_history_holds_fifty_entries_and_drops_the_oldest() {
 }
 
 #[test]
+fn the_cache_holds_its_bytes_and_drops_the_ones_shown_least_recently_past_them() {
+    // M35.5: documents of 100MB each, kept as entries are left; the
+    // third past MAX_KEPT_BYTES, the oldest goes.
+    let mut history = History::<&str>::new(at("0"));
+    let names = ["zero", "one", "two", "three"];
+    let mut gone = Vec::new();
+    for n in 1..names.len() {
+        let left = history.current().state;
+        let state = history.new_state();
+        history.push(at(&n.to_string()), state);
+        gone.extend(history.keep(left, names[n - 1], 100 << 20));
+    }
+    assert_eq!(gone, ["zero"]);
+    assert_eq!(history.kept_len(), 2);
+    // One larger than the cache's bytes alone is not kept.
+    let left = history.current().state;
+    let state = history.new_state();
+    history.push(at("4"), state);
+    assert_eq!(
+        history.keep(left, "huge", MAX_KEPT_BYTES + 1),
+        ["one", "two", "huge"]
+    );
+    assert_eq!(history.kept_len(), 0);
+}
+
+#[test]
 fn the_cache_keeps_six_documents_and_drops_the_one_shown_least_recently() {
     let mut history = History::<&str>::new(at("0"));
     let names = [
@@ -84,7 +110,7 @@ fn the_cache_keeps_six_documents_and_drops_the_one_shown_least_recently() {
         let left = history.current().state;
         let state = history.new_state();
         history.push(at(&n.to_string()), state);
-        gone.extend(history.keep(left, names[n - 1]));
+        gone.extend(history.keep(left, names[n - 1], 0));
     }
     assert_eq!(history.kept_len(), MAX_KEPT);
     assert_eq!(gone, ["zero"]);
@@ -92,8 +118,8 @@ fn the_cache_keeps_six_documents_and_drops_the_one_shown_least_recently() {
     // Taking one out and keeping it again makes it the most recent.
     assert_eq!(history.take_kept(1), Some("one"));
     let current = history.current().state;
-    assert_eq!(history.keep(1, "one"), Vec::<&str>::new());
-    assert_eq!(history.keep(current, "seven"), ["two"]);
+    assert_eq!(history.keep(1, "one", 0), Vec::<&str>::new());
+    assert_eq!(history.keep(current, "seven", 0), ["two"]);
     assert!(history.is_kept(1) && !history.is_kept(2));
 }
 
@@ -103,15 +129,15 @@ fn a_document_no_entry_names_is_not_kept() {
     let a = history.current().state;
     let b = history.new_state();
     history.push(at("b"), b);
-    assert!(history.keep(a, "a").is_empty());
+    assert!(history.keep(a, "a", 0).is_empty());
     // Going back to a and pushing c drops b's entry, and b with it.
     history.go_to(0);
-    assert!(history.keep(b, "b").is_empty() && history.is_kept(b));
+    assert!(history.keep(b, "b", 0).is_empty() && history.is_kept(b));
     let c = history.new_state();
     history.push(at("c"), c);
     assert!(!history.is_kept(b));
     // A state no entry has is refused outright.
-    assert_eq!(history.keep(99, "stray"), ["stray"]);
+    assert_eq!(history.keep(99, "stray", 0), ["stray"]);
 }
 
 #[test]
@@ -123,7 +149,7 @@ fn entries_share_a_state_and_its_document() {
     let b = history.new_state();
     history.replace(at("b"), b);
     // The first entry still has a's state, so a's document is kept.
-    assert!(history.keep(a, "a").is_empty());
+    assert!(history.keep(a, "a", 0).is_empty());
     assert!(history.is_kept(a));
 }
 
