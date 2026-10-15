@@ -1458,6 +1458,53 @@ fn an_svg_document_is_the_xml_parsers_drawn_whole_its_scripts_run() {
 }
 
 #[test]
+fn an_svg_documents_scripts_run_in_order_the_parser_blocked_by_each_fetched() {
+    // M35: as XML's parser meets them, each `href` script the pending
+    // parsing-blocking one, those after it waiting; the parse not over,
+    // and the document loading, until the last has run. The first one
+    // fetched comes late.
+    let late = "console.log('a', document.readyState)";
+    let head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\nContent-Length: {}\r\n\r\n",
+        late.len()
+    );
+    let server = serve(move |path| match path {
+        "/a.svg" => Some(Reply::ok(
+            "image/svg+xml",
+            b"<svg xmlns='http://www.w3.org/2000/svg'>\
+              <script><![CDATA[ addEventListener('load', () => \
+              console.log('load', document.readyState)); \
+              console.log('first', document.readyState) ]]></script>\
+              <script href='a.js'/><script href='b.js'/>\
+              <script><![CDATA[ console.log('last', typeof fromB) ]]></script></svg>",
+        )),
+        "/a.js" => Some(Reply::Pieces(vec![
+            (Duration::ZERO, head.clone().into_bytes()),
+            (Duration::from_millis(300), late.as_bytes().to_vec()),
+        ])),
+        "/b.js" => Some(Reply::ok(
+            "text/javascript",
+            b"function fromB() {} console.log('b')",
+        )),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(server.url("/a.svg"));
+    let lines = tab.run_until(|lines| lines.iter().any(|line| line.starts_with("load")));
+    assert_eq!(
+        lines,
+        [
+            "first loading",
+            "a loading",
+            "b",
+            "last function",
+            "load complete"
+        ]
+    );
+}
+
+#[test]
 fn what_is_no_image_is_broken() {
     use crate::image_store::ImageState;
     let server = serve(|path| match path {

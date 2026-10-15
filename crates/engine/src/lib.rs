@@ -505,6 +505,10 @@ struct Shown {
     /// The document's parse, while its body is still arriving or its
     /// parse has more to do (M24.8).
     parsing: Option<Box<loader::Parsing>>,
+    /// An SVG document's script elements its XML parser has yet to meet,
+    /// while it parses (M32, M35): `Some` until it has met each and none
+    /// blocks it.
+    unreached: Option<VecDeque<NodeId>>,
     /// The document's scripts (M24).
     scripts: scripts::Scripts,
     /// Its lifecycle events fired so far (M26).
@@ -597,6 +601,7 @@ impl Shown {
             svgs: HashMap::new(),
             next_image_frame: None,
             parsing: None,
+            unreached: None,
             scripts: scripts::Scripts::default(),
             lifecycle: Lifecycle::default(),
             rendered: None,
@@ -2911,7 +2916,11 @@ impl Engine {
     /// it has loaded, `readystatechange` again, `load` at the window, its
     /// target the document, and `pageshow`.
     fn lifecycle(&mut self) {
-        if !self.scripts_run() || self.shown.made || self.shown.parsing.is_some() {
+        if !self.scripts_run()
+            || self.shown.made
+            || self.shown.parsing.is_some()
+            || self.shown.unreached.is_some()
+        {
             return;
         }
         let document = self.document_target();
@@ -3427,7 +3436,7 @@ impl Engine {
     /// while it is parsed, `interactive` until its load event, then
     /// `complete` (M26: as its lifecycle events have it).
     fn ready_state(&self) -> scripts::ReadyState {
-        if self.shown.parsing.is_some() {
+        if self.shown.parsing.is_some() || self.shown.unreached.is_some() {
             scripts::ReadyState::Loading
         } else if self.shown.lifecycle.loaded
             || (!self.scripts_run() && self.load_state == LoadState::Loaded)
@@ -3861,6 +3870,7 @@ impl Engine {
             self.wake();
         }
         self.shown.scripts.abort();
+        self.shown.unreached = None;
         if self.shown.page.abort(&mut self.network) {
             self.shown.salvageable = false;
             self.sheets_changed();
@@ -4753,6 +4763,10 @@ impl Engine {
         };
         shown.scripts.run_ready(&mut lent, true);
         self.scripts_ran();
+        // The XML parser a script blocked goes on once it has run (M35).
+        if self.shown.unreached.is_some() && !self.shown.scripts.blocks_parser() {
+            self.reach_scripts();
+        }
         self.update_load_state();
     }
 
@@ -5002,27 +5016,48 @@ impl Engine {
             unreachable!("checked above");
         };
         let url = page.url().cloned();
-        self.commit(Shown::new(*document, *page), url, handling);
-        // An SVG document's scripts (M32), which no HTML parser met: each
-        // prepared in tree order, as if its parser had just closed it.
-        if self.scripts_run() && self.shown.page.content_type() == Some("image/svg+xml") {
-            self.prepare_parsed_scripts();
+        let mut shown = Shown::new(*document, *page);
+        // An SVG document's scripts (M32), which no HTML parser met: the
+        // XML parser meets them in tree order once it is shown, and its
+        // parse is not over until it has.
+        if self.scripting
+            && !shown.page.sandbox().has(sandbox::Sandbox::SCRIPTS)
+            && shown.page.content_type() == Some("image/svg+xml")
+        {
+            let document = &shown.document;
+            shown.unreached = Some(
+                document
+                    .subtree(document.root())
+                    .filter(|&node| scripts::is_script(document, node))
+                    .collect(),
+            );
+        }
+        self.commit(shown, url, handling);
+        if self.shown.unreached.is_some() {
+            self.reach_scripts();
+            self.run_scripts();
+            self.update_load_state();
         }
     }
 
-    /// Prepares each script of the shown document in tree order, then
-    /// runs what is ready (M32: an SVG document's, parsed whole). An
-    /// inline one runs at once; one with a `src` when it comes, not in
-    /// order with the rest: recorded.
-    fn prepare_parsed_scripts(&mut self) {
-        let document = &self.shown.document;
-        let elements: Vec<NodeId> = document
-            .subtree(document.root())
-            .filter(|&node| scripts::is_script(document, node))
-            .collect();
+    /// Prepares the scripts the XML parser has yet to reach, in tree
+    /// order, as it meets them (M32: an SVG document's, parsed whole):
+    /// an inline one runs at once, and at one that is then the pending
+    /// parsing-blocking script, one to fetch, the parser blocks until it
+    /// has come and run (M35), as XML's parser does. One a script before
+    /// it took out of the document is not met. With none left and none
+    /// blocking, the parse is over.
+    fn reach_scripts(&mut self) {
         let window = self.window_env();
         let ready = self.ready_state();
-        for element in elements {
+        while !self.shown.scripts.blocks_parser() {
+            let Some(element) = self.shown.unreached.as_mut().and_then(VecDeque::pop_front) else {
+                self.shown.unreached = None;
+                return;
+            };
+            if !connected(&self.shown.document, element) {
+                continue;
+            }
             let shown = &mut self.shown;
             let mut lent = scripts::Lent {
                 document: &mut shown.document,
@@ -5035,7 +5070,6 @@ impl Engine {
             shown.scripts.prepare(&mut lent, element, 1);
             self.scripts_ran();
         }
-        self.run_scripts();
     }
 
     /// Shows a navigation's document, `shown`, at `url`, and puts it in
@@ -5107,6 +5141,7 @@ impl Engine {
         if self.load_state == LoadState::Loading
             && self.navigation.is_none()
             && self.shown.parsing.is_none()
+            && self.shown.unreached.is_none()
             && self.shown.scripts.settled()
             && self.shown.page.settled()
             && self.shown.images.settled()
@@ -5130,6 +5165,7 @@ impl Engine {
     fn settle_load_state(&mut self) {
         self.load_state = if self.navigation.is_some()
             || self.shown.parsing.is_some()
+            || self.shown.unreached.is_some()
             || !self.shown.page.settled()
             || !self.shown.images.settled()
             || !self.frames_settled()

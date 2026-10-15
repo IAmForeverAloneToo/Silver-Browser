@@ -1534,7 +1534,6 @@ css/css-backgrounds/border-image-image-type-005.htm                             
 css/css-backgrounds/border-image-repeat-1.html                                   the border image's pieces, the SVG image drawn at its natural 48 by 48 and scaled to the 16-pixel border, are resampled at their edges, by up to 112, where the reference browser draws the vector at the border's size
 svg/painting/reftests/paint-context-003.svg                                      context-fill and context-stroke, a use's context paint, draw nothing in v1 (G87)
 svg/painting/reftests/paint-context-007.svg                                      as paint-context-003.svg: context-fill and context-stroke draw nothing in v1 (G87)
-svg/shapes/reftests/pathlength-004b.svg                                          pathLength (G87); the test's helpers are loaded by SVG script elements' href, and its change is made after the first frame
 svg/struct/reftests/use-inheritance-001.svg                                      a use's instance is matched by selectors where its element is in the document, not as a shadow tree's root (SVG 2 section 5.6.3), so `use rect` and `.container rect` style it
 svg/struct/reftests/use-inheritance-nth-child-of.svg                             as use-inheritance-001.svg: a use's instance is matched by selectors where its element is in the document
 svg/pservers/reftests/gradient-inheritance-not-in-rendertree-01.tentative.svg    tentative: a gradient in a text, where no element is rendered, is still a template here; the reference browser takes nothing from it

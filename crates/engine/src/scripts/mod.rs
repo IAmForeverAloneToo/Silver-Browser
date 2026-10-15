@@ -685,6 +685,13 @@ impl Scripts {
         self.blocking.is_none() && self.deferred.is_empty()
     }
 
+    /// Whether a pending parsing-blocking script blocks the parser: an
+    /// SVG document's XML parser meets no more scripts until it has run
+    /// (M35).
+    pub(crate) fn blocks_parser(&self) -> bool {
+        self.blocking.is_some()
+    }
+
     /// Whether no script is on its way: the load waits for them.
     pub(crate) fn settled(&self) -> bool {
         self.blocking.is_none()
