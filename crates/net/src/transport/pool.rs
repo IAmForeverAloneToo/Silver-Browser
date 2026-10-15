@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::io::BufReader;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -44,6 +44,13 @@ struct Origin {
 struct State {
     origins: HashMap<OriginKey, Origin>,
     reaper_running: bool,
+    /// The pool was dropped: its idle connections were closed, none is
+    /// parked any more, and its reaper ends, woken.
+    closed: bool,
+    /// How many times its reapers looked at the idle connections, for
+    /// the tests.
+    #[cfg(test)]
+    reaper_passes: usize,
 }
 
 struct Shared {
@@ -78,6 +85,9 @@ impl Pool {
             state: Mutex::new(State {
                 origins: HashMap::new(),
                 reaper_running: false,
+                closed: false,
+                #[cfg(test)]
+                reaper_passes: 0,
             }),
             changed: Condvar::new(),
             max_per_origin,
@@ -147,13 +157,33 @@ impl Pool {
     }
 }
 
+impl Drop for Pool {
+    /// Closes the idle connections now rather than when their time runs
+    /// out, and wakes the reaper to end: a dropped pool, an engine's,
+    /// leaves no thread behind it (M35).
+    fn drop(&mut self) {
+        let mut state = self.0.lock();
+        state.closed = true;
+        let mut idle = Vec::new();
+        for origin in state.origins.values_mut() {
+            origin.open -= origin.idle.len();
+            idle.append(&mut origin.idle);
+        }
+        state.origins.retain(|_, origin| origin.open > 0);
+        drop(state);
+        self.0.changed.notify_all();
+        drop(idle);
+    }
+}
+
 impl Drop for Lease {
     fn drop(&mut self) {
         let connection = self.connection.take();
         let mut state = self.shared.lock();
+        let parks = self.keep && !state.closed;
         let origin = state.origins.entry(self.key.clone()).or_default();
         let closed = match connection {
-            Some(connection) if self.keep => {
+            Some(connection) if parks => {
                 origin.idle.push((connection, Instant::now()));
                 None
             }
@@ -167,8 +197,8 @@ impl Drop for Lease {
         }
         if !state.reaper_running && state.origins.values().any(|o| !o.idle.is_empty()) {
             state.reaper_running = true;
-            let shared = Arc::downgrade(&self.shared);
-            thread::spawn(move || reap(shared));
+            let shared = self.shared.clone();
+            thread::spawn(move || reap(&shared));
         }
         drop(state);
         self.shared.changed.notify_all();
@@ -186,38 +216,48 @@ fn expire(origin: &mut Origin, now: Instant, timeout: Duration) {
 }
 
 /// Closes idle connections as their time runs out, until none is idle or
-/// the pool is gone.
-fn reap(shared: Weak<Shared>) {
+/// the pool is dropped. It waits on the pool's changes rather than
+/// sleeping, so that a pool dropped wakes it to end at once: asleep
+/// until the next idle connection's time ran out, each engine dropped
+/// left a thread behind for as long as that, and a test making
+/// thousands of engines thousands of them (M35).
+fn reap(shared: &Shared) {
+    let mut state = shared.lock();
     loop {
-        let Some(strong) = shared.upgrade() else {
+        if state.closed {
+            state.reaper_running = false;
+            return;
+        }
+        let now = Instant::now();
+        let timeout = shared.idle_timeout;
+        let mut next: Option<Instant> = None;
+        for origin in state.origins.values_mut() {
+            expire(origin, now, timeout);
+            for (_, since) in &origin.idle {
+                let at = *since + timeout;
+                next = Some(next.map_or(at, |next| next.min(at)));
+            }
+        }
+        state.origins.retain(|_, origin| origin.open > 0);
+        #[cfg(test)]
+        {
+            state.reaper_passes += 1;
+        }
+        let Some(at) = next else {
+            state.reaper_running = false;
+            drop(state);
+            shared.changed.notify_all();
             return;
         };
-        let wait = {
-            let mut state = strong.lock();
-            let now = Instant::now();
-            let timeout = strong.idle_timeout;
-            let mut next: Option<Instant> = None;
-            for origin in state.origins.values_mut() {
-                expire(origin, now, timeout);
-                for (_, since) in &origin.idle {
-                    let at = *since + timeout;
-                    next = Some(next.map_or(at, |next| next.min(at)));
-                }
-            }
-            state.origins.retain(|_, origin| origin.open > 0);
-            match next {
-                Some(at) => at.saturating_duration_since(now),
-                None => {
-                    state.reaper_running = false;
-                    drop(state);
-                    strong.changed.notify_all();
-                    return;
-                }
-            }
-        };
-        strong.changed.notify_all();
-        drop(strong);
-        thread::sleep(wait.max(Duration::from_millis(10)));
+        shared.changed.notify_all();
+        let wait = at
+            .saturating_duration_since(now)
+            .max(Duration::from_millis(10));
+        state = shared
+            .changed
+            .wait_timeout(state, wait)
+            .unwrap_or_else(PoisonError::into_inner)
+            .0;
     }
 }
 
@@ -225,6 +265,7 @@ fn reap(shared: Weak<Shared>) {
 mod tests {
     use super::*;
     use crate::transport::stream::{Socket, Waiter, non_blocking};
+    use std::io::Read;
     use std::net::{TcpListener, TcpStream};
 
     /// A pooled connection to a listener of its own, and the server's
@@ -285,6 +326,66 @@ mod tests {
         // Not kept, it gives its place up.
         drop(lease);
         assert_eq!(pool.counts(&a), (0, 0));
+    }
+
+    /// Whether the server's end of a connection hears it close within
+    /// a few seconds.
+    fn closes(mut server: TcpStream) -> bool {
+        server
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        matches!(server.read(&mut [0; 1]), Ok(0))
+    }
+
+    #[test]
+    fn a_dropped_pools_reaper_ends_at_once() {
+        // M35: a pool with an idle connection has a reaper waiting for
+        // its time to run out, thirty seconds here; dropped, the pool
+        // wakes it to end, rather than leaving a thread behind for that
+        // long.
+        let pool = Pool::new(2, Duration::from_secs(30));
+        let idle = park(&pool, &key("a"));
+        // The reaper has looked, and waits.
+        let started = Instant::now();
+        while pool.0.lock().reaper_passes == 0 {
+            assert!(started.elapsed() < Duration::from_secs(5), "no reaper");
+            thread::sleep(Duration::from_millis(10));
+        }
+        let shared = Arc::downgrade(&pool.0);
+        let dropped = Instant::now();
+        drop(pool);
+        while shared.upgrade().is_some() {
+            assert!(
+                dropped.elapsed() < Duration::from_secs(2),
+                "the reaper outlives its pool"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(closes(idle));
+    }
+
+    #[test]
+    fn a_dropped_pool_closes_its_idle_connections_and_parks_none() {
+        // M35: with connections still in use as it goes, the idle one
+        // closes at once, and one that comes back to be kept is closed
+        // rather than parked, though another is still out.
+        let pool = Pool::new(4, Duration::from_secs(30));
+        let a = key("a");
+        let idle = park(&pool, &a);
+        let mut out = Vec::new();
+        let mut servers = Vec::new();
+        for _ in 0..2 {
+            let mut lease = pool.checkout(&a, true, &AbortHandle::new()).unwrap();
+            let (connection, server) = connection();
+            lease.connection = Some(connection);
+            lease.keep = true;
+            out.push(lease);
+            servers.push(server);
+        }
+        drop(pool);
+        assert!(closes(idle), "the idle connection closes");
+        drop(out.remove(0));
+        assert!(closes(servers.remove(0)), "one coming back closes");
     }
 
     #[test]
