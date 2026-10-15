@@ -27,19 +27,17 @@
 //!   ancestor's `::first-letter` taking its text, whose change restyles
 //!   the ancestor alone.
 //!
-//! An entry does not copy the fragments of the children the cache
-//! holds too: it names each by its node and the serial its entry was
-//! kept with, and the place its fragment had, and taking the entry
-//! puts the children's fragments back from theirs. The cache's size is
-//! so the document's, however deep its boxes nest. A child whose entry
-//! has since gone or been replaced makes the entry useless, and the box
-//! is laid out again.
+//! An entry holds the box's fragment subtree whole, shared (M35.9,
+//! [`crate::Children`]): the lists of children in it are the very ones
+//! the layout that made or took it holds, and the entries of the boxes
+//! inside it hold the same, so the cache costs the document's fragments
+//! once however deep its boxes nest, and taking an entry copies
+//! nothing.
 //!
 //! The fragments carry their boxes' places in tree order (M17), which
 //! a change before a box moves without changing the box. Taking an
-//! entry moves them along: every place in an unchanged subtree moves by
-//! as much as the box's own, and a held child's is the box's and the
-//! distance between the two when the entry was kept.
+//! entry moves its box's place, and its children's list's shift every
+//! place under it.
 //!
 //! Boxes laid out in other ways — inside an inline-block, a float, an
 //! absolutely positioned box, a table cell, or a flex or grid item —
@@ -51,16 +49,13 @@ use std::collections::HashMap;
 
 use dom::{Change, Document, NodeId};
 
-use crate::block::{AdjoiningMargins, BlockLayout, Fragment, FragmentKind};
-use crate::composite::{EffectsChange, patch};
+use crate::block::{AdjoiningMargins, BlockLayout, Fragment};
+use crate::composite::Patch;
 
 /// The layout results kept between passes, and what the last pass did.
 #[derive(Debug, Default)]
 pub struct LayoutCache {
     entries: RefCell<HashMap<NodeId, Entry>>,
-    /// The serial the next entry kept gets: what tells a child's entry
-    /// from one kept for the same node later.
-    next_serial: Cell<u64>,
     laid_out: Cell<usize>,
     reused: Cell<usize>,
 }
@@ -74,28 +69,12 @@ pub(crate) struct Inputs {
     pub(crate) generated_text: u64,
 }
 
-/// A child of a box whose fragment the cache holds under the child's
-/// node: one taken from the cache, or kept in it, as the box was laid
-/// out.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Held {
-    /// Its fragment's place among the box's fragment's children.
-    pub(crate) index: usize,
-    pub(crate) node: NodeId,
-    /// The serial of the entry its fragment is in.
-    pub(crate) serial: u64,
-}
-
-/// One box's kept result: a [`BlockLayout`] with nothing carried out,
-/// its held children's fragments left out.
+/// One box's kept result: a [`BlockLayout`] with nothing carried out.
 #[derive(Debug)]
 struct Entry {
-    serial: u64,
     inputs: Inputs,
-    /// The box's fragment without the held children's.
+    /// The box's fragment and its subtree, shared.
     root: Fragment,
-    /// The held children, in the order of their places.
-    holes: Vec<Hole>,
     height: f32,
     margin_left: f32,
     margin_top: AdjoiningMargins,
@@ -108,18 +87,6 @@ struct Entry {
     first_line: Option<(f32, f32)>,
     inline_block_baseline: Option<f32>,
     auto_content_height: f32,
-}
-
-/// A held child left out of an entry: its place, its entry, where its
-/// fragment was, and how far after the box it comes in tree order.
-#[derive(Debug, Clone, Copy)]
-struct Hole {
-    index: usize,
-    node: NodeId,
-    serial: u64,
-    x: f32,
-    y: f32,
-    after: u32,
 }
 
 impl LayoutCache {
@@ -240,17 +207,15 @@ impl LayoutCache {
         entries.retain(|node, _| document.contains(*node));
     }
 
-    /// Gives the fragments of the kept entries that `changes` reach
-    /// their new effects, so that a later layout taking them has them: a
-    /// restyle's composited changes (M22.4, `crate::composite`).
-    pub fn composite(&self, changes: &[EffectsChange<'_>]) {
-        patch(
-            self.entries
-                .borrow_mut()
-                .values_mut()
-                .map(|entry| &mut entry.root),
-            changes,
-        );
+    /// Gives the fragments of the kept entries that a restyle's
+    /// composited changes reach their new effects, so that a later
+    /// layout taking them has them (M22.4, `crate::composite`): through
+    /// `patch`, which wrote them into the layout shown first, so that
+    /// each list of children shared with it is the copy it made.
+    pub fn composite(&self, patch: &mut Patch<'_, '_>) {
+        for entry in self.entries.borrow_mut().values_mut() {
+            patch.fragment(&mut entry.root);
+        }
     }
 
     /// Starts a pass: its counts from zero.
@@ -265,18 +230,21 @@ impl LayoutCache {
     }
 
     /// The kept result for `node`'s box laid out with `inputs`, its
-    /// place in tree order now `tree_order`, and the serial of its
-    /// entry, if there is one whose held children's entries are all
-    /// still there.
+    /// place in tree order now `tree_order`, if there is one: its
+    /// fragment subtree shared, the box's place moved to `tree_order`
+    /// and every place under it with it.
     pub(crate) fn take<'a>(
         &self,
         node: NodeId,
         inputs: Inputs,
         tree_order: u32,
-    ) -> Option<(BlockLayout<'a>, u64)> {
+    ) -> Option<BlockLayout<'a>> {
         let entries = self.entries.borrow();
         let entry = entries.get(&node).filter(|e| e.inputs == inputs)?;
-        let root = rebuild(&entries, entry, tree_order)?;
+        let mut root = entry.root.clone();
+        let by = tree_order.wrapping_sub(root.tree_order);
+        root.tree_order = tree_order;
+        root.children.move_along(by);
         self.reused.set(self.reused.get() + 1);
         let layout = BlockLayout {
             root,
@@ -293,52 +261,25 @@ impl LayoutCache {
             inline_block_baseline: entry.inline_block_baseline,
             absolutes: Vec::new(),
             auto_content_height: entry.auto_content_height,
-            held: Vec::new(),
         };
-        Some((layout, entry.serial))
+        Some(layout)
     }
 
-    /// Keeps `layout`, `node`'s box laid out with `inputs`, when `keep`
-    /// says it may be (see the module documentation) and nothing was
-    /// carried out of it, and returns its entry's serial; otherwise
+    /// Keeps `layout`, `node`'s box laid out with `inputs`, its fragment
+    /// subtree shared, when `keep` says it may be (see the module
+    /// documentation) and nothing was carried out of it; otherwise
     /// forgets any entry `node` had.
-    pub(crate) fn keep(
-        &self,
-        node: NodeId,
-        inputs: Inputs,
-        layout: &BlockLayout<'_>,
-        keep: bool,
-    ) -> Option<u64> {
+    pub(crate) fn keep(&self, node: NodeId, inputs: Inputs, layout: &BlockLayout<'_>, keep: bool) {
         let mut entries = self.entries.borrow_mut();
         if !keep || !layout.absolutes.is_empty() {
             entries.remove(&node);
-            return None;
-        }
-        let serial = self.next_serial.get();
-        self.next_serial.set(serial + 1);
-        let mut root = childless(&layout.root);
-        let mut holes = Vec::with_capacity(layout.held.len());
-        let mut held = layout.held.iter().peekable();
-        for (index, child) in layout.root.children.iter().enumerate() {
-            match held.next_if(|h| h.index == index) {
-                Some(h) => holes.push(Hole {
-                    index,
-                    node: h.node,
-                    serial: h.serial,
-                    x: child.x,
-                    y: child.y,
-                    after: child.tree_order.wrapping_sub(layout.root.tree_order),
-                }),
-                None => root.children.push(child.clone()),
-            }
+            return;
         }
         entries.insert(
             node,
             Entry {
-                serial,
                 inputs,
-                root,
-                holes,
+                root: layout.root.clone(),
                 height: layout.height,
                 margin_left: layout.margin_left,
                 margin_top: layout.margin_top,
@@ -353,77 +294,6 @@ impl LayoutCache {
                 auto_content_height: layout.auto_content_height,
             },
         );
-        Some(serial)
-    }
-}
-
-/// `entry`'s fragment subtree whole, its box's place in tree order now
-/// `tree_order`: its own fragments, moved along in tree order with it,
-/// with each held child's put back in its place from the child's entry,
-/// where it was. `None` when a held child's entry is gone or was
-/// replaced.
-fn rebuild(entries: &HashMap<NodeId, Entry>, entry: &Entry, tree_order: u32) -> Option<Fragment> {
-    let by = tree_order.wrapping_sub(entry.root.tree_order);
-    let mut root = childless(&entry.root);
-    root.tree_order = tree_order;
-    root.children
-        .reserve(entry.root.children.len() + entry.holes.len());
-    let mut own = entry.root.children.iter().map(|f| moved_along(f, by));
-    for hole in &entry.holes {
-        while root.children.len() < hole.index {
-            root.children.push(own.next()?);
-        }
-        let child = entries
-            .get(&hole.node)
-            .filter(|e| e.serial == hole.serial)?;
-        let mut fragment = rebuild(entries, child, tree_order.wrapping_add(hole.after))?;
-        fragment.x = hole.x;
-        fragment.y = hole.y;
-        root.children.push(fragment);
-    }
-    root.children.extend(own);
-    Some(root)
-}
-
-/// A copy of `fragment` and its subtree, every box's place in tree order
-/// moved `by` on; a text fragment's, which is no box's, stays zero. A
-/// subtree that has not moved, as when a box is appended after it, is
-/// copied whole, which is cheaper than rebuilding it a fragment at a time.
-fn moved_along(fragment: &Fragment, by: u32) -> Fragment {
-    if by == 0 {
-        return fragment.clone();
-    }
-    let mut moved = childless(fragment);
-    if !matches!(moved.kind, FragmentKind::Text(_)) {
-        moved.tree_order = moved.tree_order.wrapping_add(by);
-    }
-    moved.children = fragment
-        .children
-        .iter()
-        .map(|child| moved_along(child, by))
-        .collect();
-    moved
-}
-
-/// A copy of `fragment` without its children.
-fn childless(fragment: &Fragment) -> Fragment {
-    Fragment {
-        x: fragment.x,
-        y: fragment.y,
-        w: fragment.w,
-        h: fragment.h,
-        style: fragment.style.clone(),
-        kind: fragment.kind.clone(),
-        node: fragment.node,
-        generated: fragment.generated,
-        ascent: fragment.ascent,
-        scroll_height: fragment.scroll_height,
-        children: Vec::new(),
-        tree_order: fragment.tree_order,
-        stacking_parent: fragment.stacking_parent,
-        parent: fragment.parent,
-        in_3d: fragment.in_3d,
-        decorated: fragment.decorated.clone(),
     }
 }
 
@@ -455,8 +325,11 @@ pub fn shown_by_controls(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block::{DocumentLayout, layout_document_cached, layout_document_in, preorder};
+    use crate::block::{DocumentLayout, layout_document_cached, layout_document_in};
     use crate::build_box_tree;
+    use crate::composite::EffectsChange;
+    use crate::{Children, FragmentKind};
+    use std::collections::HashSet;
     use style::{CascadeContext, Styles, Stylesheets};
     use text::FontCollection;
 
@@ -517,6 +390,38 @@ mod tests {
             self.cache.entries.borrow().contains_key(&self.id(id))
         }
 
+        /// A layout of the document as it stands, over a full cascade,
+        /// with no cache.
+        fn fresh(&self) -> DocumentLayout {
+            let context = CascadeContext::default();
+            let styles = self.sheets.cascade(&self.document, &context);
+            let recascade = self.sheets.recascader(&self.document, &styles, &context);
+            let boxes = build_box_tree(&self.document, &styles, &recascade);
+            layout_document_in(&boxes, self.width, Some(HEIGHT), &self.fonts)
+        }
+
+        /// The box fragment of the element `id` in the last layout.
+        fn box_of(&self, id: &str) -> Fragment {
+            let node = self.id(id);
+            self.layout
+                .iter()
+                .find(|f| f.node == node && matches!(f.kind, FragmentKind::Box))
+                .cloned()
+                .expect("a box")
+        }
+
+        /// Whether every list of children the cache's entries hold is
+        /// one the last layout holds: shared, no copy (M35.9).
+        fn shares_its_lists(&self) -> bool {
+            let mut layout = HashSet::new();
+            lists(&self.layout.roots, &mut layout);
+            let mut kept = HashSet::new();
+            for entry in self.cache.entries.borrow().values() {
+                lists(std::slice::from_ref(&entry.root), &mut kept);
+            }
+            !kept.is_empty() && kept.is_subset(&layout)
+        }
+
         /// Changes the document with `f`, then restyles it and brings
         /// the cache up to date with what changed.
         fn change(&mut self, f: impl FnOnce(&mut Document)) {
@@ -565,7 +470,11 @@ mod tests {
                     transformed: c.transformed,
                 })
                 .collect();
-            self.cache.composite(&changes);
+            // Into the layout, then the cache, as the engine does: one
+            // patch, the lists they share copied once.
+            let mut patch = Patch::new(&changes);
+            self.layout.composite(&mut patch, self.width);
+            self.cache.composite(&mut patch);
         }
 
         /// A pass with the cache, held to a pass over a full cascade
@@ -578,28 +487,54 @@ mod tests {
             let boxes = build_box_tree(&self.document, &self.styles, &recascade);
             let cached =
                 layout_document_cached(&boxes, self.width, Some(HEIGHT), &self.fonts, &self.cache);
-            let styles = self
-                .sheets
-                .cascade(&self.document, &CascadeContext::default());
-            let recascade = self.sheets.recascader(&self.document, &styles, &context);
-            let boxes = build_box_tree(&self.document, &styles, &recascade);
-            let fresh = layout_document_in(&boxes, self.width, Some(HEIGHT), &self.fonts);
+            let fresh = self.fresh();
             assert_eq!(
                 snapshot(&cached),
                 snapshot(&fresh),
                 "the cached layout differs from a fresh one"
+            );
+            let orders = |layout: &DocumentLayout| -> Vec<u32> {
+                crate::flatten(layout.roots.clone())
+                    .iter()
+                    .map(|f| f.tree_order)
+                    .collect()
+            };
+            assert_eq!(
+                orders(&cached),
+                orders(&fresh),
+                "the flat view's tree order"
             );
             self.layout = cached;
             self.cache.counts()
         }
     }
 
-    /// Everything a layout says, to compare two by.
+    /// Everything a layout says, to compare two by: the places in tree
+    /// order with the shifts above them added (M35.9).
     fn snapshot(layout: &DocumentLayout) -> String {
         format!(
             "{} {} {:?}",
-            layout.height, layout.depends_on_viewport_height, layout.roots
+            layout.height,
+            layout.depends_on_viewport_height,
+            settled(&layout.roots, 0)
         )
+    }
+
+    /// A copy of `fragments`, `shift` along in tree order, with every
+    /// list's shift added to the places under it.
+    fn settled(fragments: &[Fragment], shift: u32) -> Vec<Fragment> {
+        fragments
+            .iter()
+            .map(|f| {
+                let mut f = f.clone();
+                if !matches!(f.kind, FragmentKind::Text(_)) {
+                    f.tree_order = f.tree_order.wrapping_add(shift);
+                }
+                let below = shift.wrapping_add(f.children.shift());
+                f.children = settled(&f.children, below).into();
+                f
+            })
+            .collect()
     }
 
     /// Appends a paragraph saying `text` to `parent`.
@@ -632,12 +567,17 @@ mod tests {
         // the pass that takes the top box whole has the new effects, as
         // a fresh layout does.
         let mut s = Session::new(
-            "<div id=d><p id=t>turned</p><p>still</p></div><p>after</p>",
+            "<div id=d><p id=t>turned</p><p>still</p></div><p id=after>after</p>",
             "#t { rotate: 5deg; opacity: 0.9 } #t.more { rotate: 30deg; opacity: 0.5 }",
         );
         s.pass();
         let t = s.id("t");
+        let after = s.box_of("after").children.clone();
         s.composite(|d| d.set_attribute(t, "class", "more").unwrap());
+        // The lists on the way to the change are copies the layout and
+        // the cache share; those off it are as they were (M35.9).
+        assert!(s.shares_its_lists());
+        assert!(Children::ptr_eq(&s.box_of("after").children, &after));
         assert_eq!(s.pass(), (0, 1));
         // Laid out again, the change reaches its box and its ancestors.
         s.change(|d| d.set_attribute(t, "class", "").unwrap());
@@ -787,32 +727,45 @@ mod tests {
             .spawn(|| {
                 let mut s = Session::new(&"<div>x".repeat(100), "div { padding-left: 1px }");
                 assert_eq!(s.pass(), (102, 0));
-                // Every fragment of the layout is in exactly one entry.
-                assert_eq!(stored(&s.cache), preorder(&s.layout.roots).count());
+                // Every list of children an entry holds is the layout's,
+                // shared, not a copy (M35.9): the cache costs the
+                // fragments once however deep the boxes nest.
+                assert!(s.shares_its_lists());
+                // Taken whole, the next layout's are the same lists.
+                let before: HashSet<_> = {
+                    let mut set = HashSet::new();
+                    lists(&s.layout.roots, &mut set);
+                    set
+                };
                 assert_eq!(s.pass(), (0, 1));
+                let mut after = HashSet::new();
+                lists(&s.layout.roots, &mut after);
+                assert_eq!(after, before);
             })
             .expect("the thread starts")
             .join()
             .expect("no panic");
     }
 
-    /// How many fragments the cache's entries hold between them.
-    fn stored(cache: &LayoutCache) -> usize {
-        cache
-            .entries
-            .borrow()
-            .values()
-            .map(|e| preorder(std::slice::from_ref(&e.root)).count())
-            .sum()
+    /// The lists of children under `fragments`, by address.
+    fn lists(fragments: &[Fragment], out: &mut HashSet<*const Vec<Fragment>>) {
+        for f in fragments {
+            if let Some(list) = f.children.shared()
+                && out.insert(std::sync::Arc::as_ptr(list))
+            {
+                lists(list, out);
+            }
+        }
     }
 
     #[test]
-    fn an_entry_whose_child_was_kept_again_since_is_not_taken() {
-        // The context root's entry holds its paragraph's by serial. A
-        // float before it narrows it: it is laid out again, not kept,
-        // and its paragraph kept again at the narrower width. With the
-        // float gone, the root's old entry fits its inputs again, but
-        // not its paragraph's.
+    fn an_entry_whose_child_was_kept_again_since_is_whole_and_taken() {
+        // A float before the context root narrows it: it is laid out
+        // again, not kept, and its paragraph kept again at the narrower
+        // width. With the float gone, the root's old entry fits its
+        // inputs again, and holds its subtree whole as it was (M35.9),
+        // its paragraph's at the width it has again: it is taken, and
+        // the pass is a fresh one's.
         let mut s = Session::new(
             "<div id=r><p id=p>one two three four five six seven</p></div>",
             "#f { float: left; width: 100px; height: 20px } #r { overflow: hidden }",
@@ -833,7 +786,7 @@ mod tests {
             d.remove_child(body, float).unwrap();
             d.free(float).unwrap();
         });
-        assert_eq!(s.pass(), (4, 0));
+        assert_eq!(s.pass(), (2, 1));
     }
 
     #[test]
@@ -1058,5 +1011,64 @@ mod tests {
         });
         // html, body and the new paragraph; #a and #d taken.
         assert_eq!(s.pass(), (3, 2));
+        // #d's subtree is its entry's, shared, moved along by its list's
+        // shift rather than copied with every place moved (M35.9).
+        let d = s.box_of("d");
+        assert_ne!(d.children.shift(), 0);
+        let entries = s.cache.entries.borrow();
+        let kept = &entries[&s.id("d")].root;
+        assert!(Children::ptr_eq(&d.children, &kept.children));
+    }
+
+    #[test]
+    fn a_composited_change_under_a_box_moved_along_keeps_its_places() {
+        // M35.9: a box taken after an insertion before it has its list
+        // moved along by a shift; a change written under it copies the
+        // list, the shift kept: the layout is a fresh one's.
+        let mut s = Session::new(
+            "<p id=a>one</p><div id=d><p id=t>turned</p><p>still</p></div>",
+            "#t { opacity: 0.9 } #t.more { opacity: 0.5 }",
+        );
+        s.pass();
+        let (body, a) = (s.body(), s.id("a"));
+        s.change(|d| {
+            let p = d.create_element("p").unwrap();
+            d.insert_before(body, p, Some(a)).unwrap();
+        });
+        s.pass();
+        assert_ne!(s.box_of("d").children.shift(), 0);
+        let t = s.id("t");
+        s.composite(|d| d.set_attribute(t, "class", "more").unwrap());
+        assert_eq!(snapshot(&s.layout), snapshot(&s.fresh()));
+    }
+
+    #[test]
+    fn a_markers_walk_leaves_the_lists_without_it_shared() {
+        // M35.9: an outside marker is moved onto its line by a walk that
+        // goes only into the subtree holding it: a box before that line,
+        // whose list the cache shares, is not written.
+        // #k has no line, so the marker's line is the paragraph's.
+        let mut s = Session::new(
+            "<ul><li id=l><div id=k><div></div></div><p>x</p></li></ul>",
+            "",
+        );
+        s.pass();
+        assert!(s.kept("k"));
+        assert!(s.shares_its_lists());
+    }
+
+    #[test]
+    fn a_float_after_kept_boxes_leaves_their_lists_shared() {
+        // M35.9: the floats get their places at the end of a pass, under
+        // whichever box holds their fragments; a box with none under it,
+        // whose list the cache shares, is not written, which would copy
+        // it.
+        let mut s = Session::new(
+            "<div id=k><p>one</p><p>two</p></div><div id=f>float</div>",
+            "#f { float: left; width: 50px }",
+        );
+        s.pass();
+        assert!(s.kept("k") && !s.kept("f"));
+        assert!(s.shares_its_lists());
     }
 }

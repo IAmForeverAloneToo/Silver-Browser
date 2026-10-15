@@ -1452,7 +1452,6 @@ pub(crate) fn layout_grid_contents<'a>(
         inline_block_baseline: first_baseline,
         absolutes,
         auto_content_height,
-        held: Vec::new(),
     }
 }
 

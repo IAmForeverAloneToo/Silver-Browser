@@ -269,7 +269,7 @@ fn split(
     let piece = |text: &str| LayoutBox {
         style: text_box.style.clone(),
         kind: BoxKind::Text(text.to_string()),
-        children: Vec::new(),
+        children: Default::default(),
         node: text_box.node,
         anonymous: text_box.anonymous,
         generated: text_box.generated,

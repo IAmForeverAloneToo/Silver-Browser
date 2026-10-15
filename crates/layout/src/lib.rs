@@ -25,6 +25,7 @@ mod align;
 pub mod block;
 pub mod box_tree;
 mod cache;
+mod children;
 mod composite;
 pub mod decoration;
 mod flex;
@@ -48,7 +49,8 @@ pub use box_tree::{
     Replaced, RowGroupKind, build_box_tree, build_box_tree_showing, canvas_size, is_outer_svg,
 };
 pub use cache::{LayoutCache, shown_by_controls};
-pub use composite::{Composited, EffectsChange};
+pub use children::Children;
+pub use composite::{Composited, EffectsChange, Patch};
 pub use paginate::{MAX_PAGES, PageSlice, Paginated, paginate};
 pub use replaced::ICON_SIZE;
 
@@ -133,6 +135,29 @@ pub(crate) mod testing {
         numbered(document)
             .nth(number)
             .unwrap_or_else(|| panic!("no node is numbered {number}"))
+    }
+
+    /// A block box's fragment at `(x, y)`, 10 by 10, with `children`,
+    /// naming no node: one a test builds by hand.
+    pub(crate) fn fragment(x: f32, y: f32, children: Vec<Fragment>) -> Fragment {
+        Fragment {
+            x,
+            y,
+            w: 10.0,
+            h: 10.0,
+            style: std::sync::Arc::new(style::ComputedStyle::default()),
+            kind: crate::FragmentKind::Box,
+            node: no_node(),
+            generated: None,
+            ascent: 0.0,
+            scroll_height: 0.0,
+            children: children.into(),
+            tree_order: 0,
+            stacking_parent: None,
+            parent: None,
+            in_3d: false,
+            decorated: None,
+        }
     }
 
     /// The node a box or fragment a test builds by hand names: the

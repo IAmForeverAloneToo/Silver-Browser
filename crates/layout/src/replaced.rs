@@ -525,7 +525,6 @@ pub(crate) fn layout_replaced<'a>(
         // As a block's, the height its `height: auto` would be, unclamped:
         // what a flex container's minimum and keywords read.
         auto_content_height: auto_height(b, replaced, content_width, cb_width),
-        held: Vec::new(),
     }
 }
 

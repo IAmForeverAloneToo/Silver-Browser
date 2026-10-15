@@ -257,6 +257,7 @@ pub fn paint_order_in<'a>(
         scroll: viewport.scroll_y,
         ox: 0.0,
         oy: 0.0,
+        ts: 0,
         dx: 0.0,
         dy: 0.0,
         chain: Vec::new(),
@@ -300,7 +301,7 @@ pub fn paint_order_in<'a>(
     // positioned by a containing block the viewport may meet: painted
     // last, in its layer's order, rather than lost.
     let mut left: Vec<Positioned<'a>> = walk.adopted.drain().flat_map(|(_, p)| p).collect();
-    left.sort_by_key(|p| (p.z(), p.f.tree_order));
+    left.sort_by_key(|p| (p.z(), p.tree_order()));
     for p in left {
         walk.positioned(p);
     }
@@ -468,6 +469,10 @@ struct Walk<'a, 'o> {
     /// walked into added up.
     ox: f32,
     oy: f32,
+    /// How far the places in tree order of the fragments walked over
+    /// moved: the shifts of the lists of children being walked into,
+    /// added up (M35.9).
+    ts: u32,
     /// From a document `x` to the coordinates of the group being walked
     /// into: the shifts of the sticky boxes being walked into (M11).
     dx: f32,
@@ -527,6 +532,7 @@ struct Positioned<'a> {
     chain: Vec<(Option<NodeId>, Rect, usize)>,
     ox: f32,
     oy: f32,
+    ts: u32,
     dx: f32,
     dy: f32,
     contained: u32,
@@ -618,6 +624,12 @@ impl Positioned<'_> {
             .z_index
             .filter(|_| self.f.style.position.is_positioned() || self.item)
             .unwrap_or(0)
+    }
+
+    /// Its box's place in tree order, the shifts of the lists of
+    /// children above it added (M35.9).
+    fn tree_order(&self) -> u32 {
+        self.f.tree_order.wrapping_add(self.ts)
     }
 }
 
@@ -818,10 +830,11 @@ impl<'a> Walk<'a, '_> {
     /// Runs `body` over the fragments under `f`, whose offsets are from
     /// its place.
     fn inside(&mut self, f: &Fragment, body: impl FnOnce(&mut Self)) {
-        let (ox, oy) = (self.ox, self.oy);
+        let (ox, oy, ts) = (self.ox, self.oy, self.ts);
         (self.ox, self.oy) = self.place(f);
+        self.ts = ts.wrapping_add(f.children.shift());
         body(self);
-        (self.ox, self.oy) = (ox, oy);
+        (self.ox, self.oy, self.ts) = (ox, oy, ts);
     }
 
     /// A fragment's own step — a box's background and border, a text
@@ -1181,7 +1194,7 @@ impl<'a> Walk<'a, '_> {
                 positioned = rest;
                 let by_depth = |a: &(f32, Positioned<'a>), b: &(f32, Positioned<'a>)| {
                     a.0.total_cmp(&b.0)
-                        .then_with(|| (a.1.z(), a.1.f.tree_order).cmp(&(b.1.z(), b.1.f.tree_order)))
+                        .then_with(|| (a.1.z(), a.1.tree_order()).cmp(&(b.1.z(), b.1.tree_order())))
                 };
                 before.sort_by(by_depth);
                 after.sort_by(by_depth);
@@ -1307,6 +1320,7 @@ impl<'a> Walk<'a, '_> {
                 chain: self.chain.clone(),
                 ox: self.ox,
                 oy: self.oy,
+                ts: self.ts,
                 dx: self.dx,
                 dy: self.dy,
                 contained: self.contained,
@@ -1384,6 +1398,7 @@ impl<'a> Walk<'a, '_> {
                     chain: self.chain.clone(),
                     ox: self.ox,
                     oy: self.oy,
+                    ts: self.ts,
                     dx: self.dx,
                     dy: self.dy,
                     contained: self.contained,
@@ -1446,7 +1461,7 @@ impl<'a> Walk<'a, '_> {
         // order: the boxes' own (M17), as layout put some elsewhere in
         // the fragment tree — an absolutely positioned box under its
         // containing block's fragment, or among the roots.
-        positioned.sort_by_key(|p| (p.z(), p.f.tree_order));
+        positioned.sort_by_key(|p| (p.z(), p.tree_order()));
         let mut positioned = positioned.into_iter().peekable();
         while let Some(p) = positioned.next_if(|p| p.z() < 0) {
             self.positioned(p);
@@ -1567,15 +1582,17 @@ impl<'a> Walk<'a, '_> {
             self.steps.push(Step::PushClip { node, rect });
         }
         let opened = self.chain.len() - shared;
-        let (ox, oy, dx, dy, contained) = (self.ox, self.oy, self.dx, self.dy, self.contained);
-        (self.ox, self.oy, self.dx, self.dy, self.contained) =
-            (p.ox, p.oy, p.dx, p.dy, p.contained);
+        let (ox, oy, ts) = (self.ox, self.oy, self.ts);
+        let (dx, dy, contained) = (self.dx, self.dy, self.contained);
+        (self.ox, self.oy, self.ts) = (p.ox, p.oy, p.ts);
+        (self.dx, self.dy, self.contained) = (p.dx, p.dy, p.contained);
         if stacking_context(p.f, p.item) {
             self.stacking(p.f, p.containing, &[], p.space);
         } else {
             self.unit(p.f, p.containing);
         }
-        (self.ox, self.oy, self.dx, self.dy, self.contained) = (ox, oy, dx, dy, contained);
+        (self.ox, self.oy, self.ts) = (ox, oy, ts);
+        (self.dx, self.dy, self.contained) = (dx, dy, contained);
         if self.steps.len() == mark + opened {
             // Nothing of it shows: its clips are left out with it.
             self.steps.truncate(mark);
@@ -3181,6 +3198,54 @@ mod tests {
                 "endgroup"
             ]
         );
+    }
+
+    #[test]
+    fn positioned_boxes_are_ordered_by_their_places_moved_along() {
+        // M35.9: a subtree the layout cache hands back after a box was
+        // inserted before it keeps the places in tree order it was laid
+        // out with, its list of children moved along by a shift: the
+        // walk adds it. .p's place, 2 and the shift of 10 of the list it
+        // is in, its containing block's, is after .q's, 5, though its own
+        // is before, and so it is painted after.
+        let mut layout = layout_of(
+            Element::new("div")
+                .push(
+                    Element::new("div")
+                        .attr("class", "s")
+                        .push(Element::new("div").attr("class", "p").text("p")),
+                )
+                .push(Element::new("div").attr("class", "q").text("q")),
+            ".s { position: relative }              .p, .q { position: absolute; top: 0; width: 10px; height: 10px } .q { left: 20px }",
+        );
+        let s = layout.element(2);
+        fn find(fragments: &mut [Fragment], node: NodeId) -> Option<&mut Fragment> {
+            for f in fragments {
+                if f.node == node && matches!(f.kind, FragmentKind::Box) {
+                    return Some(f);
+                }
+                if let Some(found) = find(f.children.as_mut_slice(), node) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        let (p, q) = (layout.element(3), layout.element(4));
+        find(&mut layout.layout.roots, p).expect("p").tree_order = 2;
+        find(&mut layout.layout.roots, q).expect("q").tree_order = 5;
+        let order = |layout: &Laid| -> Vec<String> {
+            let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+            content(layout, &steps)
+                .into_iter()
+                .filter(|step| step == "box 3" || step == "box 4")
+                .collect()
+        };
+        assert_eq!(order(&layout), ["box 3", "box 4"]);
+        find(&mut layout.layout.roots, s)
+            .expect("s")
+            .children
+            .move_along(10);
+        assert_eq!(order(&layout), ["box 4", "box 3"]);
     }
 
     #[test]

@@ -120,7 +120,7 @@ impl<'a> Marker<'a> {
             generated: Some(PseudoElement::Marker),
             ascent,
             scroll_height: 0.0,
-            children: Vec::new(),
+            children: Default::default(),
             tree_order: self.b.tree_order,
             stacking_parent: None,
             parent: Some(self.b.node),
@@ -311,9 +311,20 @@ impl Place<'_> {
             }
             return true;
         }
+        // Only into the subtree that holds it: a list of children shared
+        // with the layout cache is copied when written (M35.9).
         children.iter_mut().any(|f| {
             let x = left + f.x;
-            self.within(&mut f.children, x)
+            self.holds(&f.children) && self.within(f.children.as_mut_slice(), x)
+        })
+    }
+
+    /// Whether the marker's fragments are among `children` or under
+    /// them.
+    fn holds(&self, children: &[Fragment]) -> bool {
+        children.iter().any(|f| {
+            (f.generated == Some(PseudoElement::Marker) && f.node == self.node)
+                || self.holds(&f.children)
         })
     }
 }

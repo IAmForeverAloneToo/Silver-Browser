@@ -176,7 +176,7 @@ fn add(recascade: &dyn Recascade, container: &mut LayoutBox, path: &[usize]) {
     let pseudo = LayoutBox {
         style: style.clone(),
         kind: BoxKind::Inline,
-        children: Vec::new(),
+        children: Default::default(),
         node: element,
         anonymous: true,
         generated: Some(PseudoElement::FirstLine),

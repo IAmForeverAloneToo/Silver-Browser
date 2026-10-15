@@ -1417,7 +1417,7 @@ impl<'a> Styled<'a> {
         let text = LayoutBox {
             style: self.shared_or_initial(item),
             kind: BoxKind::Text(alt.to_owned()),
-            children: Vec::new(),
+            children: Default::default(),
             node,
             anonymous: true,
             generated: None,
@@ -1745,7 +1745,7 @@ impl BlockContainer<'_> {
             self.add_inline_level(LayoutBox {
                 style: styled.shared_or_initial(parent),
                 kind: BoxKind::Text(text.into_owned()),
-                children: Vec::new(),
+                children: Default::default(),
                 node: parent.node(),
                 anonymous: true,
                 generated: parent.generated(),
@@ -1809,7 +1809,7 @@ impl BlockContainer<'_> {
         self.add_inline_level(LayoutBox {
             style: style.into(),
             kind: BoxKind::Text(text),
-            children: Vec::new(),
+            children: Default::default(),
             node,
             anonymous: true,
             generated: None,
@@ -2007,7 +2007,7 @@ impl BlockContainer<'_> {
             self.add_inline_level(LayoutBox {
                 style: styled.share(item, &style),
                 kind: BoxKind::Text(run.to_owned()),
-                children: Vec::new(),
+                children: Default::default(),
                 node: element,
                 anonymous: true,
                 generated: Some(side.pseudo_element()),
@@ -2092,7 +2092,7 @@ impl BlockContainer<'_> {
                 .map(|text| LayoutBox {
                     style: style.clone().into(),
                     kind: BoxKind::Text(text.into_owned()),
-                    children: Vec::new(),
+                    children: Default::default(),
                     node: element,
                     anonymous: true,
                     generated: Some(PseudoElement::Marker),
@@ -2200,7 +2200,7 @@ impl BlockContainer<'_> {
             .map(|b| LayoutBox {
                 style: b.style.clone(),
                 kind: BoxKind::Inline,
-                children: Vec::new(),
+                children: Default::default(),
                 node: b.node,
                 anonymous: b.anonymous,
                 generated: b.generated,
@@ -2605,9 +2605,10 @@ mod tests {
     fn a_box_and_a_fragment_stay_small() {
         // Each holds its style shared (M35.9), where each held a 704-byte
         // style of its own, copied into every box and every fragment,
-        // every word's among them. Growing them is a decision too.
+        // every word's among them; a fragment its children shared too.
+        // Growing them is a decision too.
         assert_eq!(std::mem::size_of::<LayoutBox>(), 160);
-        assert_eq!(std::mem::size_of::<crate::Fragment>(), 136);
+        assert_eq!(std::mem::size_of::<crate::Fragment>(), 128);
     }
 
     /// A box tree and the document it was built from, whose nodes the

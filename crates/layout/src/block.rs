@@ -91,7 +91,8 @@ use style::transform::{Matrix, ReferenceBox};
 use text::FontCollection;
 
 use crate::box_tree::{BoxKind, LayoutBox, MarkerShape, Replaced};
-use crate::cache::{Held, Inputs, LayoutCache};
+use crate::cache::{Inputs, LayoutCache};
+use crate::children::Children;
 use crate::decoration::Decorated;
 use crate::float::{At, FloatContext, FloatKey, PendingFloat, attach_floats};
 use crate::inline::layout_inline;
@@ -145,12 +146,14 @@ pub struct Fragment {
     pub scroll_height: f32,
     /// The fragments of this box's content, in tree order: the paint
     /// order is the walk's (M11.6, in `paint`). A text fragment has
-    /// none; an inline box's are its line's items inside it.
-    pub children: Vec<Fragment>,
+    /// none; an inline box's are its line's items inside it. Shared
+    /// between layouts and with the layout cache (M35.9).
+    pub children: Children,
     /// The box's place in tree order, order-modified among a flex
     /// container's children ([`crate::LayoutBox::tree_order`], M17): what
     /// the paint order puts positioned boxes in, whichever fragment layout
     /// put them under. Zero for a text fragment, which nothing orders.
+    /// Behind by the [`Children::shift`] of every list above it.
     pub tree_order: u32,
     /// For an absolutely positioned box, the stacking context it
     /// belongs to when that is not the one whose subtree its fragment
@@ -464,17 +467,21 @@ impl<'a> Iterator for Places<'a> {
 }
 
 /// Takes the fragments out of their tree in tree order; each comes out
-/// with no children, at its place on the page. The view the pre-M9
-/// tests were written against.
+/// with no children, at its place on the page and in tree order. The
+/// view the pre-M9 tests were written against.
 pub fn flatten(roots: Vec<Fragment>) -> Vec<Fragment> {
     let mut out = Vec::new();
-    let mut stack: Vec<(f32, f32, Fragment)> =
-        roots.into_iter().rev().map(|f| (0.0, 0.0, f)).collect();
-    while let Some((dx, dy, mut f)) = stack.pop() {
+    let mut stack: Vec<(f32, f32, u32, Fragment)> =
+        roots.into_iter().rev().map(|f| (0.0, 0.0, 0, f)).collect();
+    while let Some((dx, dy, shift, mut f)) = stack.pop() {
         f.x += dx;
         f.y += dy;
+        if !matches!(f.kind, FragmentKind::Text(_)) {
+            f.tree_order = f.tree_order.wrapping_add(shift);
+        }
         let children = std::mem::take(&mut f.children);
-        stack.extend(children.into_iter().rev().map(|c| (f.x, f.y, c)));
+        let shift = shift.wrapping_add(children.shift());
+        stack.extend(children.into_iter().rev().map(|c| (f.x, f.y, shift, c)));
         out.push(f);
     }
     out
@@ -1149,10 +1156,6 @@ pub(crate) struct BlockLayout<'a> {
     /// a context root's floats included): what a table row takes from
     /// a cell whose `height` is only a minimum (M12).
     pub(crate) auto_content_height: f32,
-    /// The children whose fragments the layout cache holds under their
-    /// nodes (M13.2): taken from it or kept in it as this box was laid
-    /// out, by their places among `root`'s children.
-    pub(crate) held: Vec<Held>,
 }
 
 /// An inline-block laid out for its line (M10.4, M7.7): one atomic item
@@ -1665,7 +1668,6 @@ pub(crate) fn layout_block_contents<'a>(
             inline_block_baseline: None,
             absolutes: Vec::new(),
             auto_content_height: 0.0,
-            held: Vec::new(),
         };
     }
 
@@ -1766,7 +1768,6 @@ pub(crate) fn layout_block_contents<'a>(
             inline_block_baseline: None,
             absolutes,
             auto_content_height: 0.0,
-            held: children.held,
         };
     }
 
@@ -1928,18 +1929,12 @@ pub(crate) fn layout_block_contents<'a>(
             marker.metrics.descent,
             pass.fonts,
         );
-        // The children the layout cache holds are named by their places
-        // among the fragment's children, which the marker's, put before
-        // them all, move along.
-        for held in &mut children.held {
-            held.index += fragments.len();
-        }
         root.children.splice(0..0, fragments);
     } else if b.style.display == Display::ListItem
         && b.style.lists().list_style_position == ListStylePosition::Outside
     {
         crate::marker::place_on_line(
-            &mut root.children,
+            root.children.as_mut_slice(),
             b.node,
             &b.style,
             border_box_width,
@@ -1951,7 +1946,7 @@ pub(crate) fn layout_block_contents<'a>(
         // The floats of this context get their positions, under
         // whichever box of the context holds their fragment.
         attach_floats(
-            &mut root.children,
+            root.children.as_mut_slice(),
             own_floats.placed(),
             0.0,
             0.0,
@@ -2007,7 +2002,6 @@ pub(crate) fn layout_block_contents<'a>(
         absolutes,
         // What the box is with an `auto` height: a control's own (M26.11).
         auto_content_height: natural_height.unwrap_or(auto_content_height),
-        held: children.held,
     }
 }
 
@@ -2368,9 +2362,6 @@ struct BlockPlacement<'a> {
     /// stop there, and its own top margin lies below the gap. `None`
     /// when the box's margins collapse with its siblings' as usual.
     separated: Option<f32>,
-    /// The serial of the layout cache's entry for the box, when the
-    /// layout was taken from it or kept in it (M13.2).
-    held: Option<u64>,
 }
 
 /// Whether a box's top edge separates its margins from its children's
@@ -2443,14 +2434,11 @@ fn place_block<'a>(
         cb_height,
         generated_text: child.generated_text,
     };
-    if let Some((layout, serial)) =
-        held.and_then(|cache| cache.take(child.node, inputs, child.tree_order))
-    {
+    if let Some(layout) = held.and_then(|cache| cache.take(child.node, inputs, child.tree_order)) {
         return BlockPlacement {
             x: layout.margin_left,
             layout,
             separated: None,
-            held: Some(serial),
         };
     }
     if let Some(cache) = cache {
@@ -2478,8 +2466,9 @@ fn place_block<'a>(
         child, cb_width, cb_width, cb_height, floats, at, pass, cache,
     );
     // Laid out untouched, it is kept if it placed no float either.
-    let kept =
-        held.and_then(|cache| cache.keep(child.node, inputs, &layout, floats.is_untouched()));
+    if let Some(cache) = held {
+        cache.keep(child.node, inputs, &layout, floats.is_untouched());
+    }
     let above = if layout.self_collapsing {
         layout.top_edge
     } else {
@@ -2495,7 +2484,6 @@ fn place_block<'a>(
             x: layout.margin_left,
             layout,
             separated: None,
-            held: kept,
         };
     };
     // Clearance: the box's top border edge is at `top`, the margins
@@ -2510,7 +2498,6 @@ fn place_block<'a>(
             x: layout.margin_left,
             layout,
             separated: Some(top),
-            held: None,
         };
     }
     let before = before
@@ -2553,7 +2540,6 @@ fn relaid_below_floats<'a>(
         x: layout.margin_left,
         layout,
         separated: Some(top),
-        held: None,
     }
 }
 
@@ -2607,7 +2593,6 @@ fn place_beside_floats<'a>(
                     x: border_left - cb_left + layout.margin_left - margin_left,
                     layout,
                     separated: (top > hypothetical).then_some(top),
-                    held: None,
                 });
             }
             // A float lower down narrows the room: try that room.
@@ -2639,7 +2624,7 @@ pub(crate) fn box_fragment(w: f32, h: f32, b: &LayoutBox) -> Fragment {
         generated: b.generated,
         ascent: 0.0,
         scroll_height: 0.0,
-        children: Vec::new(),
+        children: Default::default(),
         tree_order: b.tree_order,
         stacking_parent: None,
         parent: b.parent,
@@ -2699,9 +2684,6 @@ struct ChildrenLayout<'a> {
     /// The absolutely positioned boxes met among the children or
     /// carried up by them (M11), relative to the content-box origin.
     absolutes: Vec<Deferred<'a>>,
-    /// The children whose fragments the layout cache holds (M13.2), by
-    /// their places in `fragments`.
-    held: Vec<Held>,
 }
 
 /// Stacks a block container's children (M10.4: all block-level, per the
@@ -2730,7 +2712,6 @@ fn layout_children<'a>(
     cache: Option<&LayoutCache>,
 ) -> ChildrenLayout<'a> {
     let mut fragments = Vec::new();
-    let mut held = Vec::new();
     let mut absolutes: Vec<Deferred<'a>> = Vec::new();
     let mut y = 0.0f32;
     // The set of margins adjoining BETWEEN two siblings, not yet
@@ -2768,14 +2749,7 @@ fn layout_children<'a>(
                     layout,
                     x,
                     separated,
-                    held: serial,
                 } = place_block(child, cb_width, cb_height, floats, at, pass, cache);
-                // Its fragment goes next, whichever way it is placed.
-                held.extend(serial.map(|serial| Held {
-                    index: fragments.len(),
-                    node: child.node,
-                    serial,
-                }));
                 // `position: relative` moves the fragment, and its
                 // subtree with it, from where the flow put it (M11).
                 let (dx, dy) = relative_offset(&child.style, cb_width, cb_height);
@@ -3025,7 +2999,6 @@ fn layout_children<'a>(
         inline_block_baseline,
         end: at,
         absolutes,
-        held,
     }
 }
 
@@ -4072,7 +4045,7 @@ mod tests {
         let text = LayoutBox {
             style: ComputedStyle::default().into(),
             kind: BoxKind::Text("x".to_string()),
-            children: Vec::new(),
+            children: Default::default(),
             node: no_node(),
             anonymous: true,
             generated: None,

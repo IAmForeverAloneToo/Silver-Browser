@@ -333,7 +333,9 @@ impl At {
 /// a root's children, relative to its border box, `(dx, dy)` is its
 /// content box's top-left in that border box, and `(px, py)` is zero.
 /// A float's own content is another context's and is not entered, nor
-/// is any other root's.
+/// is any other root's; nor is a subtree with no float in it, whose list
+/// of children may be shared with the layout cache, which writing would
+/// copy (M35.9).
 pub(crate) fn attach_floats(
     fragments: &mut [Fragment],
     placed: &[PlacedFloat],
@@ -354,10 +356,27 @@ pub(crate) fn attach_floats(
             f.x = p.border_x + dx - px;
             f.y = p.border_y + dy - py;
         }
-        if !crate::block::establishes_bfc(&f.style) {
-            attach_floats(&mut f.children, placed, px + f.x, py + f.y, dx, dy);
+        if !crate::block::establishes_bfc(&f.style) && holds_floats(&f.children) {
+            attach_floats(
+                f.children.as_mut_slice(),
+                placed,
+                px + f.x,
+                py + f.y,
+                dx,
+                dy,
+            );
         }
     }
+}
+
+/// Whether a float's fragment is among `fragments` or under them in
+/// their formatting context.
+fn holds_floats(fragments: &[Fragment]) -> bool {
+    fragments.iter().any(|f| {
+        matches!(f.kind, FragmentKind::Box)
+            && (f.style.float != Float::None
+                || (!crate::block::establishes_bfc(&f.style) && holds_floats(&f.children)))
+    })
 }
 
 #[cfg(test)]

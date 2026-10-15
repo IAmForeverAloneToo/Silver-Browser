@@ -628,7 +628,6 @@ pub(crate) fn layout_table_contents<'a>(
         // own `height` and anything imposed left out — what a flex item
         // or a keyword limit takes as the table's content (M17).
         auto_content_height: top_height + rows_height + bottom_height,
-        held: Vec::new(),
     }
 }
 

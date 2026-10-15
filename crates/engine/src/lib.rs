@@ -5776,8 +5776,11 @@ impl Engine {
                 transformed: change.transformed,
             })
             .collect();
-        let done = cached.layout.composite(&changes, cached.width);
-        self.shown.layout_cache.composite(&changes);
+        // One patch for both: the lists of children the layout shares
+        // with the cache are copied once (M35.9).
+        let mut patch = layout::Patch::new(&changes);
+        let done = cached.layout.composite(&mut patch, cached.width);
+        self.shown.layout_cache.composite(&mut patch);
         done == layout::Composited::Done
     }
 

@@ -1656,7 +1656,7 @@ fn flush_line<'a>(
             style: &b.style,
             x,
             starts: true,
-            children: Vec::new(),
+            children: Default::default(),
             absolutes_from: absolutes.len(),
         });
     let continued = open.iter().map(|b| OpenInline {
@@ -1667,7 +1667,7 @@ fn flush_line<'a>(
         },
         x,
         starts: false,
-        children: Vec::new(),
+        children: Default::default(),
         absolutes_from: absolutes.len(),
     });
     let mut stack: Vec<OpenInline<'a>> = chain.collect();
@@ -1746,7 +1746,7 @@ fn flush_line<'a>(
                     style,
                     x,
                     starts: true,
-                    children: Vec::new(),
+                    children: Default::default(),
                     absolutes_from: absolutes.len(),
                 });
                 x += edge;
@@ -1896,7 +1896,7 @@ fn close_inline<'a>(
         generated: b.generated,
         ascent: 0.0,
         scroll_height: 0.0,
-        children,
+        children: children.into(),
         tree_order: b.tree_order,
         stacking_parent: None,
         parent: b.parent,
@@ -2094,7 +2094,7 @@ fn text_fragment(
         generated: word.generated,
         ascent,
         scroll_height: 0.0,
-        children: Vec::new(),
+        children: Default::default(),
         tree_order: 0,
         stacking_parent: None,
         parent: Some(word.node),
@@ -2192,7 +2192,7 @@ mod tests {
         LayoutBox {
             style: style.into(),
             kind: BoxKind::Text(text.to_string()),
-            children: Vec::new(),
+            children: Default::default(),
             node: crate::testing::no_node(),
             anonymous: true,
             generated: None,
@@ -2574,7 +2574,7 @@ mod tests {
         LayoutBox {
             style: style.into(),
             kind: BoxKind::Text(text.to_string()),
-            children: Vec::new(),
+            children: Default::default(),
             node: crate::testing::no_node(),
             anonymous: true,
             generated: None,

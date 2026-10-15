@@ -942,7 +942,6 @@ pub(crate) fn layout_flex_contents<'a>(
         // The content as if `height` were `auto`: a row container's
         // lines, a column container's longest line.
         auto_content_height: if column { longest } else { lines_sum },
-        held: Vec::new(),
     }
 }
 

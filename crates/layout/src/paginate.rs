@@ -120,7 +120,7 @@ pub(crate) fn absolute(roots: &mut [Fragment]) {
             f.x += dx;
             f.y += dy;
             let (x, y) = (f.x, f.y);
-            stack.push((&mut f.children, x, y));
+            stack.push((f.children.as_mut_slice(), x, y));
         }
     }
 }
@@ -134,7 +134,7 @@ fn relative(roots: &mut [Fragment]) {
             let (x, y) = (f.x, f.y);
             f.x -= dx;
             f.y -= dy;
-            stack.push((&mut f.children, x, y));
+            stack.push((f.children.as_mut_slice(), x, y));
         }
     }
 }
@@ -1203,7 +1203,7 @@ mod tests {
             generated: None,
             ascent: 0.0,
             scroll_height: 0.0,
-            children,
+            children: children.into(),
             tree_order: 0,
             stacking_parent: None,
             parent: None,
