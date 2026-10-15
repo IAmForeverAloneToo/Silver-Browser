@@ -36,6 +36,7 @@ mod intrinsic;
 mod marker;
 /// Pagination (M20): a laid-out document cut into pages.
 pub mod paginate;
+mod parallel;
 mod pass;
 mod replaced;
 mod table;
@@ -53,6 +54,7 @@ pub use cache::{LayoutCache, shown_by_controls};
 pub use children::Children;
 pub use composite::{Composited, EffectsChange, Patch, StyleChange, repaints_only};
 pub use paginate::{MAX_PAGES, PageSlice, Paginated, paginate};
+pub use parallel::{MAX_WORKER_THREADS, PARALLEL_MIN_ITEMS};
 pub use replaced::ICON_SIZE;
 
 #[cfg(test)]

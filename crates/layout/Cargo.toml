@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 dom.workspace = true
 images.workspace = true
+rayon.workspace = true
 style.workspace = true
 svg.workspace = true
 text.workspace = true

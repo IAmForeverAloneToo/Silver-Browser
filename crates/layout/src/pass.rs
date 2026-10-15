@@ -30,7 +30,6 @@
 //! [`crate::intrinsic::content_widths`] keeps them through
 //! [`Pass::widths`], under the box alone.
 
-use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 use dom::NodeId;
@@ -39,6 +38,7 @@ use text::FontCollection;
 use crate::block::{BlockLayout, Imposed};
 use crate::box_tree::LayoutBox;
 use crate::cache::{ItemInputs, LayoutCache};
+use crate::parallel::{Count, Locked};
 
 /// The context of one layout pass over a box tree.
 pub(crate) struct Pass<'a> {
@@ -47,13 +47,13 @@ pub(crate) struct Pass<'a> {
     /// The layout cache the pass takes from and keeps in, if any.
     cache: Option<&'a LayoutCache>,
     /// The flex items' layouts so far, by box and inputs.
-    items: RefCell<HashMap<ItemKey, BlockLayout<'a>>>,
+    items: Locked<HashMap<ItemKey, BlockLayout<'a>>>,
     /// The boxes' content widths measured so far, by box address.
-    widths: RefCell<HashMap<usize, (f32, f32)>>,
+    widths: Locked<HashMap<usize, (f32, f32)>>,
     /// How many item layouts were computed rather than taken.
-    computed: Cell<usize>,
+    computed: Count,
     /// How many boxes' content widths were measured.
-    measured: Cell<usize>,
+    measured: Count,
 }
 
 /// What a flex item's layout depends on (M17): the box, by its address,
@@ -153,10 +153,10 @@ impl<'a> Pass<'a> {
         Pass {
             fonts,
             cache,
-            items: RefCell::new(HashMap::new()),
-            widths: RefCell::new(HashMap::new()),
-            computed: Cell::new(0),
-            measured: Cell::new(0),
+            items: Locked::new(HashMap::new()),
+            widths: Locked::new(HashMap::new()),
+            computed: Count::default(),
+            measured: Count::default(),
         }
     }
 
@@ -192,7 +192,7 @@ impl<'a> Pass<'a> {
     /// `lay_out`'s layout, counted, and kept in the layout cache.
     fn laid_out(&self, key: ItemKey, lay_out: impl FnOnce() -> BlockLayout<'a>) -> BlockLayout<'a> {
         let layout = lay_out();
-        self.computed.set(self.computed.get() + 1);
+        self.computed.add();
         if let Some(cache) = self.cache {
             cache.count_item_laid_out();
             if key.kept {
@@ -263,7 +263,7 @@ impl<'a> Pass<'a> {
     /// so, for the tests to see each box measured once a pass, however
     /// the measuring is reached.
     pub(crate) fn measuring(&self) {
-        self.measured.set(self.measured.get() + 1);
+        self.measured.add();
     }
 
     /// How many item layouts the pass has computed so far.

@@ -1043,46 +1043,46 @@ pub(crate) fn layout_grid_contents<'a>(
     // `max-height` is cyclic and counts as their initial value here
     // (css-sizing-3 §5.2.1c), as in the reference browser; the item's
     // final layout resolves it against its area.
-    let sized: Vec<Sized> = grid
+    // On the pool when there are many items (M35.3).
+    let measuring: Vec<_> = grid
         .items
         .iter()
         .zip(&automatic_widths)
         .zip(&known)
-        .map(|((item, &automatic), &known)| {
-            let (_, width) = column_lines.area(&item.columns);
-            let edges = Edges::of_box(item.b, width);
-            let margin = margins(&item.b.style, width);
-            let content_width =
-                item_width(item, style, width, &edges, &margin, automatic, known, pass);
-            let key = ItemKey::of(item.b, content_width, None, width, None);
-            let lay_out = || {
-                layout_contents(
-                    item.b,
-                    &edges,
-                    width,
-                    None,
-                    content_width,
-                    0.0,
-                    Content::Root,
-                    pass,
-                    pass.cache(),
-                    None,
-                )
-            };
-            let measured = pass.read_item(key, lay_out, |layout| Measured {
-                outer: layout.height + margin[TOP] + margin[BOTTOM],
-                auto_height: layout.auto_content_height,
-                baselines: [layout.first_baseline, layout.last_baseline]
-                    .map(|baseline| baseline.unwrap_or(layout.height)),
-            });
-            Sized {
-                edges,
-                margin,
-                content_width,
-                measured,
-            }
-        })
         .collect();
+    let sized: Vec<Sized> = crate::parallel::map(&measuring, |&((item, &automatic), &known)| {
+        let (_, width) = column_lines.area(&item.columns);
+        let edges = Edges::of_box(item.b, width);
+        let margin = margins(&item.b.style, width);
+        let content_width = item_width(item, style, width, &edges, &margin, automatic, known, pass);
+        let key = ItemKey::of(item.b, content_width, None, width, None);
+        let lay_out = || {
+            layout_contents(
+                item.b,
+                &edges,
+                width,
+                None,
+                content_width,
+                0.0,
+                Content::Root,
+                pass,
+                pass.cache(),
+                None,
+            )
+        };
+        let measured = pass.read_item(key, lay_out, |layout| Measured {
+            outer: layout.height + margin[TOP] + margin[BOTTOM],
+            auto_height: layout.auto_content_height,
+            baselines: [layout.first_baseline, layout.last_baseline]
+                .map(|baseline| baseline.unwrap_or(layout.height)),
+        });
+        Sized {
+            edges,
+            margin,
+            content_width,
+            measured,
+        }
+    });
     // §12.5 step 1: the items in baseline-sharing groups along the rows
     // and their shims, from their baselines as measured.
     let row_groups: Vec<Option<Group>> = grid
@@ -1192,12 +1192,14 @@ pub(crate) fn layout_grid_contents<'a>(
     let content_y = border[TOP] + padding[TOP];
     let height = content_height + vertical_edges;
     let mut root = box_fragment(content_width + edges.horizontal(), height, b);
-    let (laid, widths): (Vec<BlockLayout<'a>>, Vec<f32>) = grid
+    let laying: Vec<_> = grid
         .items
         .iter()
         .zip(&sized)
         .zip(&automatic_widths)
-        .map(|((item, s), &automatic)| {
+        .collect();
+    let (laid, widths): (Vec<BlockLayout<'a>>, Vec<f32>) =
+        crate::parallel::map(&laying, |&((item, s), &automatic)| {
             let item_style = &item.b.style;
             let (_, width) = column_lines.area(&item.columns);
             let (_, area_height) = row_lines.area(&item.rows);
@@ -1278,6 +1280,7 @@ pub(crate) fn layout_grid_contents<'a>(
             });
             (layout, content_width)
         })
+        .into_iter()
         .unzip();
     // Each item's outer size, and its baselines from its border box's
     // top, as laid out; the groups align by these.

@@ -59,7 +59,6 @@
 //! an absolutely positioned box, are laid out again with the box that
 //! holds them, which is itself kept when it can be.
 
-use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 use dom::{Change, Document, NodeId};
@@ -67,31 +66,32 @@ use dom::{Change, Document, NodeId};
 use crate::block::{AdjoiningMargins, BlockLayout, Fragment};
 use crate::box_tree::{BoxKind, LayoutBox};
 use crate::composite::Patch;
+use crate::parallel::{Count, Locked};
 
 /// The layout results kept between passes, and what the last pass did.
 #[derive(Debug, Default)]
 pub struct LayoutCache {
-    entries: RefCell<HashMap<NodeId, (Inputs, Entry)>>,
+    entries: Locked<HashMap<NodeId, (Inputs, Entry)>>,
     /// The flex and grid items' and the table cells' layouts, a few by
     /// node, the latest last (M35.9).
-    items: RefCell<HashMap<NodeId, Vec<(ItemInputs, Entry)>>>,
+    items: Locked<HashMap<NodeId, Vec<(ItemInputs, Entry)>>>,
     /// The boxes' content widths (min-content, max-content), by node,
     /// with the fingerprint of the generated text they were measured
     /// with (M35.9): what a box's widths depend on is its subtree and
     /// the fonts, so what a change does not reach measures the same.
-    widths: RefCell<HashMap<NodeId, (u64, Widths)>>,
+    widths: Locked<HashMap<NodeId, (u64, Widths)>>,
     /// The last box tree built, and where in it each element's own box
     /// that may be taken whole is, by the places among their parents'
     /// children of the boxes down to it (M35.9).
-    tree: RefCell<Vec<LayoutBox>>,
-    boxes: RefCell<HashMap<NodeId, Box<[u32]>>>,
-    boxes_taken: Cell<usize>,
-    laid_out: Cell<usize>,
-    reused: Cell<usize>,
-    items_laid_out: Cell<usize>,
-    items_reused: Cell<usize>,
-    widths_measured: Cell<usize>,
-    widths_reused: Cell<usize>,
+    tree: Locked<Vec<LayoutBox>>,
+    boxes: Locked<HashMap<NodeId, Box<[u32]>>>,
+    boxes_taken: Count,
+    laid_out: Count,
+    reused: Count,
+    items_laid_out: Count,
+    items_reused: Count,
+    widths_measured: Count,
+    widths_reused: Count,
 }
 
 /// What a box's layout was computed from, beyond its subtree.
@@ -195,7 +195,7 @@ impl LayoutCache {
         }
         let slot = list.get_mut(last as usize).filter(|b| b.node == node)?;
         let hollow = LayoutBox::hollow(slot);
-        self.boxes_taken.set(self.boxes_taken.get() + 1);
+        self.boxes_taken.add();
         Some(std::mem::replace(slot, hollow))
     }
 
@@ -371,14 +371,14 @@ impl LayoutCache {
         let (_, widths) = widths
             .get(&node)
             .filter(|(text, _)| *text == generated_text)?;
-        self.widths_reused.set(self.widths_reused.get() + 1);
+        self.widths_reused.add();
         Some(*widths)
     }
 
     /// Keeps `widths`, `node`'s box's content widths with the generated
     /// text `generated_text`.
     pub(crate) fn keep_widths(&self, node: NodeId, generated_text: u64, widths: (f32, f32)) {
-        self.widths_measured.set(self.widths_measured.get() + 1);
+        self.widths_measured.add();
         self.widths
             .borrow_mut()
             .insert(node, (generated_text, widths));
@@ -386,7 +386,7 @@ impl LayoutCache {
 
     /// Counts an item's or a cell's layout made.
     pub(crate) fn count_item_laid_out(&self) {
-        self.items_laid_out.set(self.items_laid_out.get() + 1);
+        self.items_laid_out.add();
     }
 
     /// The kept layout of `node`'s item or cell laid out with `inputs`,
@@ -399,7 +399,7 @@ impl LayoutCache {
     ) -> Option<BlockLayout<'a>> {
         let items = self.items.borrow();
         let (_, entry) = items.get(&node)?.iter().find(|(i, _)| *i == inputs)?;
-        self.items_reused.set(self.items_reused.get() + 1);
+        self.items_reused.add();
         Some(entry.layout(tree_order))
     }
 
@@ -421,7 +421,7 @@ impl LayoutCache {
 
     /// Counts a box placed in flow and laid out.
     pub(crate) fn count_laid_out(&self) {
-        self.laid_out.set(self.laid_out.get() + 1);
+        self.laid_out.add();
     }
 
     /// The kept result for `node`'s box laid out with `inputs`, its
@@ -436,7 +436,7 @@ impl LayoutCache {
     ) -> Option<BlockLayout<'a>> {
         let entries = self.entries.borrow();
         let (_, entry) = entries.get(&node).filter(|(i, _)| *i == inputs)?;
-        self.reused.set(self.reused.get() + 1);
+        self.reused.add();
         Some(entry.layout(tree_order))
     }
 

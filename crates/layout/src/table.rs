@@ -146,15 +146,16 @@ pub(crate) fn layout_table_contents<'a>(
     };
 
     // Every cell's content, laid out at its columns' width.
-    let mut cells: Vec<CellLayout<'a>> = Vec::with_capacity(grid.cells.len());
-    for (i, cell) in grid.cells.iter().enumerate() {
+    // On the pool when there are many cells (M35.3).
+    let numbered: Vec<_> = grid.cells.iter().enumerate().collect();
+    let cells: Vec<CellLayout<'a>> = crate::parallel::map(&numbered, |&(i, cell)| {
         let span_width = widths[cell.col..cell.col + cell.colspan]
             .iter()
             .sum::<f32>()
             + (cell.colspan - 1) as f32 * hspacing;
         let border = cell_borders.map(|borders| borders[i]);
-        cells.push(layout_cell(cell.b, span_width, content_width, border, pass));
-    }
+        layout_cell(cell.b, span_width, content_width, border, pass)
+    });
 
     // The row baselines: the lowest baseline among the cells aligned to
     // it, a cell spanning rows to its first row's.
@@ -1039,12 +1040,10 @@ fn measure_columns<'a>(
             Some(_) | None => {}
         }
     }
-    let measures: Vec<ColumnMeasure> = grid
-        .cells
-        .iter()
-        .enumerate()
-        .map(|(i, cell)| measure_cell(cell.b, cell_borders.map(|b| b[i]), pass))
-        .collect();
+    let numbered: Vec<_> = grid.cells.iter().enumerate().collect();
+    let measures: Vec<ColumnMeasure> = crate::parallel::map(&numbered, |&(i, cell)| {
+        measure_cell(cell.b, cell_borders.map(|b| b[i]), pass)
+    });
     let raise_percent = |column: &mut ColumnMeasure, p: f32| {
         column.percent = Some(column.percent.map_or(p, |q| q.max(p)));
     };

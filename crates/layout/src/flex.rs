@@ -606,9 +606,12 @@ pub(crate) fn layout_flex_contents<'a>(
         .filter(|(_, child)| child.kind != BoxKind::Absolute)
         .collect();
     children.sort_by_key(|(_, child)| child.style.order);
-    let (indices, mut items): (Vec<usize>, Vec<Item<'a>>) = children
+    // Each item's sizes, on the pool when there are many (M35.3).
+    let (indices, mut items): (Vec<usize>, Vec<Item<'a>>) =
+        crate::parallel::map(&children, |&(index, child)| {
+            (index, Item::new(child, &c, single_line, pass))
+        })
         .into_iter()
-        .map(|(index, child)| (index, Item::new(child, &c, single_line, pass)))
         .unzip();
 
     // §9.2 step 4 and §9.3 step 5: the main size and the lines. A row
@@ -648,7 +651,7 @@ pub(crate) fn layout_flex_contents<'a>(
     // its height laid out at its main size with `height: auto` (its own
     // `height`, `min-height` and `max-height` applied), a column item's
     // its width.
-    for item in &mut items {
+    crate::parallel::for_each_mut(&mut items, |item| {
         if column {
             item.width = item.column_width(&c, None, pass);
             item.cross = item.width + item.edges.horizontal();
@@ -663,7 +666,7 @@ pub(crate) fn layout_flex_contents<'a>(
                 });
             (item.cross, item.auto_height, item.baselines) = measured;
         }
-    }
+    });
 
     // §9.4 steps 8, 9 and 15: each line's cross size, the largest outer
     // hypothetical cross size on it or, if larger, a baseline-sharing
@@ -831,24 +834,21 @@ pub(crate) fn layout_flex_contents<'a>(
     // imposed; a column item at its used width with its used height
     // imposed, definite when the container's height or the item's basis
     // is (§9.8).
-    let layouts: Vec<BlockLayout<'a>> = items
-        .iter()
-        .map(|item| {
-            if column {
-                let imposed = Imposed {
-                    height: item.target + item.edges.vertical(),
-                    definite: c.definite_height.is_some() || item.definite_basis,
-                };
-                item.lay_out(&c, item.width, Some(imposed), pass)
-            } else {
-                let imposed = item.imposed_cross.map(|height| Imposed {
-                    height,
-                    definite: true,
-                });
-                item.lay_out(&c, item.target, imposed, pass)
-            }
-        })
-        .collect();
+    let layouts: Vec<BlockLayout<'a>> = crate::parallel::map(&items, |item| {
+        if column {
+            let imposed = Imposed {
+                height: item.target + item.edges.vertical(),
+                definite: c.definite_height.is_some() || item.definite_basis,
+            };
+            item.lay_out(&c, item.width, Some(imposed), pass)
+        } else {
+            let imposed = item.imposed_cross.map(|height| Imposed {
+                height,
+                definite: true,
+            });
+            item.lay_out(&c, item.target, imposed, pass)
+        }
+    });
 
     let content_x = border[LEFT] + padding[LEFT];
     let content_y = border[TOP] + padding[TOP];
