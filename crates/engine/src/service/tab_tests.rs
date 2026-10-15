@@ -331,13 +331,20 @@ fn a_renderer_draws_no_frame_while_the_browser_has_not_taken_the_last() {
     settle(&mut tab, |tab| {
         *tab.load_state() == LoadState::Loaded && tab.needs_frame()
     });
+    // The browser reads on but takes nothing for half a second, some
+    // thirty frames of the animation: the renderer draws the one it may
+    // and waits.
+    tab.hold_frames(true);
     let before = tab.frames_received();
-    // The browser takes nothing for a while: the renderer waits.
-    thread::sleep(Duration::from_millis(500));
-    tab.poll_network();
+    let began = Instant::now();
+    while began.elapsed() < Duration::from_millis(500) {
+        tab.poll_network();
+        thread::sleep(Duration::from_millis(5));
+    }
     let came = tab.frames_received() - before;
     assert!(came <= 1, "{came} frames came untaken");
     // Taken, the next come.
+    tab.hold_frames(false);
     settle(&mut tab, |tab| tab.frames_received() >= before + 3);
 }
 

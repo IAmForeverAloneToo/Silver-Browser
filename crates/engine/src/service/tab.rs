@@ -225,6 +225,13 @@ pub struct RemoteTab {
     /// tests.
     #[cfg(test)]
     told_loaded: Vec<String>,
+    /// Whether the frames that come are read but not taken, and the last
+    /// of them, taken once they are no longer held: for the tests of the
+    /// renderer's pace.
+    #[cfg(test)]
+    holding: bool,
+    #[cfg(test)]
+    held: Option<(ViewId, u64)>,
 }
 
 impl RemoteTab {
@@ -338,6 +345,10 @@ impl RemoteTab {
             stopped_frames: HashMap::new(),
             #[cfg(test)]
             told_loaded: Vec::new(),
+            #[cfg(test)]
+            holding: false,
+            #[cfg(test)]
+            held: None,
         }
     }
 
@@ -1103,6 +1114,11 @@ impl RemoteTab {
                     self.fresh = true;
                     self.frames += 1;
                 }
+                #[cfg(test)]
+                if self.holding {
+                    self.held = Some((id, frame));
+                    return Ok(());
+                }
                 self.send_to(id, |view| ToRenderer::FrameTaken { view, frame });
             }
             ToBrowser::Console { entries, .. } => self.console.extend(entries),
@@ -1439,6 +1455,16 @@ impl RemoteTab {
     #[cfg(test)]
     pub(crate) fn hsts(&self) -> Arc<Mutex<Hsts>> {
         self.hsts.clone()
+    }
+
+    /// Reads the frames that come without taking them while `hold`, and
+    /// takes the last one read once not.
+    #[cfg(test)]
+    pub(crate) fn hold_frames(&mut self, hold: bool) {
+        self.holding = hold;
+        if !hold && let Some((id, frame)) = self.held.take() {
+            self.send_to(id, |view| ToRenderer::FrameTaken { view, frame });
+        }
     }
 
     /// Each time a frame's parent was told it loaded, and why.
