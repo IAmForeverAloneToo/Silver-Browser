@@ -54,6 +54,9 @@ pub(crate) struct Host {
     wake: Arc<dyn Fn() + Send + Sync>,
     /// Since when its views have all been hidden (M35.5).
     idle: Idle,
+    /// The files of the browser's fonts, when it sent them and no fonts
+    /// were given (M35.6), read at the first view.
+    font_files: Option<text::FontFiles>,
 }
 
 /// Since when a renderer's views have all been hidden, and whether it
@@ -113,6 +116,7 @@ impl Host {
             views: HashMap::new(),
             wake,
             idle: Idle::new(crate::IDLE_TRIM_AFTER),
+            font_files: None,
         }
     }
 
@@ -123,7 +127,18 @@ impl Host {
 
     fn fonts(&mut self) -> Result<text::FontCollection, String> {
         if self.fonts.is_none() {
-            let fonts = text::FontCollection::new().map_err(|error| format!("fonts: {error}"))?;
+            // The files the browser found, read alone (M35.6); else the
+            // system's, scanned.
+            let given = self
+                .font_files
+                .take()
+                .and_then(|files| text::FontCollection::from_files(&files).ok());
+            let fonts = match given {
+                Some(fonts) => fonts,
+                None => {
+                    text::FontCollection::system().map_err(|error| format!("fonts: {error}"))?
+                }
+            };
             self.fonts = Some(fonts);
         }
         Ok(self.fonts.clone().expect("loaded"))
@@ -201,6 +216,11 @@ impl Host {
         match message {
             ToRenderer::Shutdown {} => return Ok(false),
             ToRenderer::Hello { .. } => return Err("a second hello".into()),
+            ToRenderer::Fonts { primary, fallbacks } => {
+                if self.fonts.is_none() {
+                    self.font_files = Some(text::FontFiles { primary, fallbacks });
+                }
+            }
             ToRenderer::CreateView {
                 view,
                 frame,
@@ -617,6 +637,45 @@ mod tests {
         assert!(!idle.tick(at(100), false));
         assert!(!idle.tick(at(101), true));
         assert!(idle.tick(at(131), true));
+    }
+
+    #[test]
+    fn a_host_reads_the_font_files_the_browser_sent() {
+        // M35.6: those alone, not the system's scanned; and none when it
+        // was given its fonts.
+        use super::{Host, Link};
+        use crate::ipc::{Sender, ToRenderer};
+        use std::sync::Arc;
+        let font = concat!(env!("CARGO_MANIFEST_DIR"), "/../text/fonts/DejaVuSans.ttf");
+        let sent = || ToRenderer::Fonts {
+            primary: (font.to_owned(), 0),
+            fallbacks: Vec::new(),
+        };
+        let host = |fonts| {
+            Host::new(
+                Link::new(Sender::new(std::io::sink())),
+                fonts,
+                Arc::new(|| {}),
+            )
+        };
+        let mut sent_to = host(None);
+        sent_to.handle(sent()).expect("taken");
+        let files = sent_to.fonts().expect("read").files().expect("of a file");
+        assert_eq!(files.primary, (font.to_owned(), 0));
+        let given = text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0).expect("parses");
+        let mut given = host(Some(given));
+        given.handle(sent()).expect("taken");
+        assert_eq!(given.fonts().expect("given").files(), None);
+        // A file gone: the system's, scanned, where it has fonts.
+        if let Ok(system) = text::FontCollection::system() {
+            let mut gone = host(None);
+            let lost = ToRenderer::Fonts {
+                primary: ("no such font file".to_owned(), 0),
+                fallbacks: Vec::new(),
+            };
+            gone.handle(lost).expect("taken");
+            assert_eq!(gone.fonts().expect("scanned").files(), system.files());
+        }
     }
 
     #[test]

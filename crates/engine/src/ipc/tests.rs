@@ -131,6 +131,10 @@ fn messages_go_there_and_back() {
             process: 7,
         },
         ToRenderer::Shutdown {},
+        ToRenderer::Fonts {
+            primary: ("C:\\Windows\\Fonts\\segoeui.ttf".to_owned(), 0),
+            fallbacks: vec![(0, ("msyh.ttc".to_owned(), 1))],
+        },
     ];
     for message in to_renderer {
         assert_eq!(decode_all(&encode(&message)), Ok(message));

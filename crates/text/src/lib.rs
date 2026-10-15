@@ -208,7 +208,7 @@ impl FontStore {
     pub fn new() -> Result<Self, FontError> {
         let mut db = fontdb::Database::new();
         db.load_system_fonts();
-        Self::query(&db, &["Segoe UI", "DejaVu Sans", "Helvetica", "Arial"])
+        Self::query(&db, PRIMARY_FAMILIES)
     }
 
     /// Loads the best match for `family_names` (falling back to the
@@ -856,6 +856,69 @@ pub struct FontCollection {
     /// collection's clones, in [`MEASURE_SHARDS`] parts by text, each
     /// behind its own lock.
     measures: Arc<[Mutex<Measures>]>,
+    /// The primary font's file and face, when it was read from one: what
+    /// [`FontCollection::files`] gives.
+    primary_file: Option<(std::path::PathBuf, u32)>,
+}
+
+/// The scripts a collection has fallbacks for, in the order
+/// [`FontFiles`] numbers them.
+const FALLBACK_SCRIPTS: [Script; 4] = [
+    Script::Han,
+    Script::Hiragana,
+    Script::Katakana,
+    Script::Hangul,
+];
+
+/// The families the primary font is the first of found.
+const PRIMARY_FAMILIES: &[&str] = &["Segoe UI", "DejaVu Sans", "Helvetica", "Arial"];
+
+/// The files a collection's fonts are in (M35.6): what a process that
+/// scanned the system's fonts gives another, which reads those files
+/// alone rather than scanning the system's again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FontFiles {
+    /// The primary font's file and face index.
+    pub primary: (String, u32),
+    /// Each fallback's script, by its place among the scripts with
+    /// fallbacks, and its file and face index.
+    pub fallbacks: Vec<(u8, (String, u32))>,
+}
+
+/// The file and face index of the face `id` of `db`, when it is in one.
+fn file_of(db: &fontdb::Database, id: fontdb::ID) -> Option<(std::path::PathBuf, u32)> {
+    match db.face_source(id)? {
+        (fontdb::Source::File(path), index) => Some((path, index)),
+        (fontdb::Source::SharedFile(path, _), index) => Some((path, index)),
+        _ => None,
+    }
+}
+
+/// The fallbacks of `files`, each script's, those of one face shared.
+fn fallbacks_of(
+    files: impl Iterator<Item = (Script, std::path::PathBuf, u32)>,
+) -> HashMap<Script, Arc<Fallback>> {
+    let mut fallbacks: HashMap<Script, Arc<Fallback>> = HashMap::new();
+    let mut found: Vec<Arc<Fallback>> = Vec::new();
+    for (script, path, index) in files {
+        let fallback = match found
+            .iter()
+            .find(|known| known.path == path && known.index == index)
+        {
+            Some(known) => known.clone(),
+            None => {
+                let new = Arc::new(Fallback {
+                    path,
+                    index,
+                    font: std::sync::OnceLock::new(),
+                });
+                found.push(new.clone());
+                new
+            }
+        };
+        fallbacks.insert(script, fallback);
+    }
+    fallbacks
 }
 
 /// The most widths a collection keeps: a few megabytes of words. Past
@@ -912,6 +975,9 @@ impl Measures {
     }
 }
 
+/// The system's fonts, once scanned ([`FontCollection::system`]).
+static SYSTEM: std::sync::OnceLock<Result<FontCollection, FontError>> = std::sync::OnceLock::new();
+
 impl FontCollection {
     /// Forgets the widths kept (M35.5): an idle renderer's trim; they
     /// are measured again as they are asked for.
@@ -932,7 +998,64 @@ impl FontCollection {
             primary: FontStore::from_bytes(data, index)?,
             fallbacks: HashMap::new(),
             measures: no_measures(),
+            primary_file: None,
         })
+    }
+
+    /// The files its fonts are in, for another process to read rather
+    /// than scan the system's fonts (M35.6): `None` for a collection made
+    /// from bytes, or one whose files are not named in Unicode.
+    pub fn files(&self) -> Option<FontFiles> {
+        let named = |path: &std::path::Path, index: u32| Some((path.to_str()?.to_owned(), index));
+        let (path, index) = self.primary_file.as_ref()?;
+        let mut fallbacks = Vec::new();
+        for (place, script) in (0u8..).zip(FALLBACK_SCRIPTS) {
+            if let Some(fallback) = self.fallbacks.get(&script) {
+                fallbacks.push((place, named(&fallback.path, fallback.index)?));
+            }
+        }
+        Some(FontFiles {
+            primary: named(path, *index)?,
+            fallbacks,
+        })
+    }
+
+    /// The collection whose fonts are in `files`, which another process
+    /// found (M35.6): the primary font read now, the fallbacks when first
+    /// needed, as [`FontCollection::new`]'s are.
+    pub fn from_files(files: &FontFiles) -> Result<Self, FontError> {
+        let (path, index) = &files.primary;
+        let data = std::fs::read(path).map_err(|_| FontError::NoFontFound)?;
+        let primary = FontStore::from_bytes(data, *index)?;
+        let fallbacks =
+            fallbacks_of(files.fallbacks.iter().filter_map(|(place, (path, index))| {
+                let script = *FALLBACK_SCRIPTS.get(usize::from(*place))?;
+                Some((script, std::path::PathBuf::from(path), *index))
+            }));
+        Ok(FontCollection {
+            primary,
+            fallbacks,
+            measures: no_measures(),
+            primary_file: Some((std::path::PathBuf::from(path), *index)),
+        })
+    }
+
+    /// The system's fonts, scanned once a process (M35.6): the first
+    /// call scans them, or waits for the scan [`FontCollection::scan_system`]
+    /// began; the calls after share what it found.
+    pub fn system() -> Result<Self, FontError> {
+        SYSTEM.get_or_init(FontCollection::new).clone()
+    }
+
+    /// Begins the scan of the system's fonts on a thread of its own, for
+    /// [`FontCollection::system`] to find done, or under way, when a
+    /// process first needs them (M35.6).
+    pub fn scan_system() {
+        if SYSTEM.get().is_none() {
+            let _ = std::thread::Builder::new()
+                .name("fonts".to_owned())
+                .spawn(|| drop(FontCollection::system()));
+        }
     }
 
     /// Loads the primary font (same search as [`FontStore::new`]) plus
@@ -940,45 +1063,18 @@ impl FontCollection {
     pub fn new() -> Result<Self, FontError> {
         let mut db = fontdb::Database::new();
         db.load_system_fonts();
-        let primary = FontStore::query(&db, &["Segoe UI", "DejaVu Sans", "Helvetica", "Arial"])?;
-
-        let mut fallbacks: HashMap<Script, Arc<Fallback>> = HashMap::new();
-        let mut found: Vec<Arc<Fallback>> = Vec::new();
-        for script in [
-            Script::Han,
-            Script::Hiragana,
-            Script::Katakana,
-            Script::Hangul,
-        ] {
-            let source = fallback_families_for(script)
-                .and_then(|families| face_of(&db, families))
-                .and_then(|id| db.face_source(id));
-            let (path, index) = match source {
-                Some((fontdb::Source::File(path), index)) => (path, index),
-                Some((fontdb::Source::SharedFile(path, _), index)) => (path, index),
-                _ => continue,
-            };
-            let fallback = match found
-                .iter()
-                .find(|known| known.path == path && known.index == index)
-            {
-                Some(known) => known.clone(),
-                None => {
-                    let new = Arc::new(Fallback {
-                        path,
-                        index,
-                        font: std::sync::OnceLock::new(),
-                    });
-                    found.push(new.clone());
-                    new
-                }
-            };
-            fallbacks.insert(script, fallback);
-        }
+        let primary = FontStore::query(&db, PRIMARY_FAMILIES)?;
+        let primary_file = face_of(&db, PRIMARY_FAMILIES).and_then(|id| file_of(&db, id));
+        let fallbacks = fallbacks_of(FALLBACK_SCRIPTS.into_iter().filter_map(|script| {
+            let families = fallback_families_for(script)?;
+            let (path, index) = file_of(&db, face_of(&db, families)?)?;
+            Some((script, path, index))
+        }));
         Ok(FontCollection {
             primary,
             fallbacks,
             measures: no_measures(),
+            primary_file,
         })
     }
 
@@ -1984,6 +2080,42 @@ mod tests {
             );
         }
         assert_eq!(bidi_reorder("one\u{2029}two", None), "one\u{2029}two");
+    }
+
+    #[test]
+    fn the_files_of_the_system_fonts_make_the_same_collection_without_a_scan() {
+        // M35.6: what a browser gives its renderers. A machine with no
+        // system font has nothing to show here.
+        let Ok(fonts) = FontCollection::system() else {
+            return;
+        };
+        let files = fonts.files().expect("the system's fonts are in files");
+        let read = FontCollection::from_files(&files).expect("read");
+        assert_eq!(read.files(), Some(files.clone()));
+        assert_eq!(read.measure("Silver", 16.0), fonts.measure("Silver", 16.0));
+        assert_eq!(read.fallbacks.len(), fonts.fallbacks.len());
+        // Scanned once a process: its collections share their widths.
+        let again = FontCollection::system().expect("scanned");
+        assert!(Arc::ptr_eq(&fonts.measures, &again.measures));
+        // A file gone is no collection; a script past those with
+        // fallbacks is passed over.
+        let gone = FontFiles {
+            primary: ("no such font file".to_owned(), 0),
+            fallbacks: Vec::new(),
+        };
+        assert_eq!(
+            FontCollection::from_files(&gone).err(),
+            Some(FontError::NoFontFound)
+        );
+        let mut stray = files;
+        stray.fallbacks.push((200, stray.primary.clone()));
+        let read = FontCollection::from_files(&stray).expect("read");
+        assert_eq!(read.fallbacks.len(), fonts.fallbacks.len());
+    }
+
+    #[test]
+    fn a_collection_from_bytes_has_no_files() {
+        assert_eq!(test_fonts().files(), None);
     }
 
     #[test]

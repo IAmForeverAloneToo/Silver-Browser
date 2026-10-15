@@ -175,6 +175,11 @@ impl<V: View> Session<V> {
         session
     }
 
+    /// Whether the frame drawn holds the page's own pixels (M35.6).
+    pub(crate) fn has_page_frame(&self) -> bool {
+        self.engine.has_page_frame()
+    }
+
     #[cfg(test)]
     pub(crate) fn engine(&self) -> &V {
         &self.engine

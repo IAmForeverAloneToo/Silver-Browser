@@ -1089,7 +1089,7 @@ impl Engine {
     /// Creates a session showing the initial `about:blank`, with the
     /// system's fonts, drawing in software.
     pub fn new() -> Result<Self, FontError> {
-        Ok(Self::with_fonts(text::FontCollection::new()?))
+        Ok(Self::with_fonts(text::FontCollection::system()?))
     }
 
     /// Creates a session with the system's fonts on `backend` (M19.3):
@@ -1097,7 +1097,7 @@ impl Engine {
     /// the backend, else the software's, with why the GPU's could not
     /// be had. [`Engine::backend`] says which it is on.
     pub fn new_on(backend: Backend) -> Result<(Self, Option<String>), FontError> {
-        let fonts = text::FontCollection::new()?;
+        let fonts = text::FontCollection::system()?;
         match backend {
             Backend::Software => Ok((Self::with_fonts(fonts), None)),
             Backend::Gpu => match Self::on_gpu(fonts.clone()) {

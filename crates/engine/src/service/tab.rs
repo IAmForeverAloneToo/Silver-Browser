@@ -458,6 +458,14 @@ impl RemoteTab {
             Some(serve),
         ) {
             Ok(renderer) => {
+                // The files of the browser's fonts, which the renderer
+                // reads rather than scanning the system's (M35.6).
+                if let Some(files) = self.fonts.files() {
+                    let _ = renderer.send(&ToRenderer::Fonts {
+                        primary: files.primary,
+                        fallbacks: files.fallbacks,
+                    });
+                }
                 super::frames::lock(&self.registry).reach(number, renderer.sender());
                 self.renderers.insert(
                     number,
@@ -556,13 +564,21 @@ impl RemoteTab {
                 number
             }
         };
+        self.start_spare();
+        Some(number)
+    }
+
+    /// Starts a spare renderer for the next site when the tab keeps one
+    /// and has none, once a frame is shown (M35.6): not while the first
+    /// page waits for its renderer to start.
+    fn start_spare(&mut self) {
         if self.spare
+            && self.frames > 0
             && self.renderers.values().all(|slot| slot.lock.is_some())
             && self.renderers.len() < self.cap
         {
             self.launch();
         }
-        Some(number)
     }
 
     /// A number for a tab's top-level frame in renderer `number`.
@@ -1113,6 +1129,9 @@ impl RemoteTab {
                 if shown || framed {
                     self.fresh = true;
                     self.frames += 1;
+                    if self.frames == 1 {
+                        self.start_spare();
+                    }
                 }
                 #[cfg(test)]
                 if self.holding {
@@ -2033,6 +2052,12 @@ impl View for RemoteTab {
             Some(view) => self.send_to(view, |view| ToRenderer::Cut { view }),
             None => self.send(|view| ToRenderer::Cut { view }),
         }
+    }
+
+    fn has_page_frame(&self) -> bool {
+        self.shown_view()
+            .and_then(|view| self.buffers.get(&view))
+            .is_some_and(|buffer| buffer.size != (0, 0))
     }
 }
 

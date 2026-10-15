@@ -189,6 +189,32 @@ pub(crate) struct ProcessMemory {
     pub(crate) working_set: u64,
 }
 
+/// How long ago this process started, for `--startup-trace` (M35.6):
+/// on Windows from its creation time, on Linux from its start in
+/// `/proc`; `None` elsewhere, or where it cannot be read.
+pub(crate) fn process_age() -> Option<std::time::Duration> {
+    #[cfg(windows)]
+    {
+        windows::process_age()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // The 22nd field of its stat, after the name in parentheses, is
+        // its start in clock ticks after the boot; the uptime is in
+        // seconds. Linux's ticks are a hundred a second.
+        let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+        let after = stat.rsplit_once(')')?.1;
+        let ticks: f64 = after.split_whitespace().nth(19)?.parse().ok()?;
+        let uptime = std::fs::read_to_string("/proc/uptime").ok()?;
+        let up: f64 = uptime.split_whitespace().next()?.parse().ok()?;
+        std::time::Duration::try_from_secs_f64(up - ticks / 100.0).ok()
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        None
+    }
+}
+
 /// What process `id` holds, for the measures of a page class's memory
 /// (M35.1): on Windows from `GetProcessMemoryInfo`, its private bytes
 /// and working set; on Linux from `/proc`, its anonymous resident pages
@@ -1321,6 +1347,30 @@ mod windows {
             private: Some(counters.PrivateUsage as u64),
             working_set: counters.WorkingSetSize as u64,
         })
+    }
+
+    /// How long ago this process was made, from its creation time.
+    pub(super) fn process_age() -> Option<std::time::Duration> {
+        use windows_sys::Win32::Foundation::FILETIME;
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+        let mut times = [FILETIME::default(); 4];
+        let [made, exited, kernel, user] = &mut times;
+        // SAFETY: the pseudo-handle of this process, never closed, and
+        // four times of ours to write.
+        let read = unsafe { GetProcessTimes(GetCurrentProcess(), made, exited, kernel, user) };
+        if read == 0 {
+            return None;
+        }
+        // Hundreds of nanoseconds since 1601, as the system's clock.
+        let made = (u64::from(times[0].dwHighDateTime) << 32) | u64::from(times[0].dwLowDateTime);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?;
+        const UNIX_FROM_1601: u64 = 11_644_473_600;
+        let now =
+            (now.as_secs() + UNIX_FROM_1601) * 10_000_000 + u64::from(now.subsec_nanos() / 100);
+        now.checked_sub(made)
+            .map(|ticks| std::time::Duration::from_nanos(ticks * 100))
     }
 
     /// `data` wrapped by DPAPI for the user, with no prompt; `None` when

@@ -18,6 +18,8 @@ single-process = []
 
 [dependencies]
 engine.workspace = true
+# The system's fonts, scanned once and aside as the browser starts (M35.6).
+text.workspace = true
 ui.workspace = true
 winit.workspace = true
 softbuffer.workspace = true
@@ -35,4 +37,3 @@ objc2-app-kit.workspace = true
 net = { workspace = true, features = ["test-server"] }
 # A profile in memory, for the windows that keep what they keep (M28).
 profile.workspace = true
-text.workspace = true

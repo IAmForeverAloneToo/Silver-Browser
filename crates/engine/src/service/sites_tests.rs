@@ -12,7 +12,7 @@ use net::test_server::{Reply, TestServer};
 
 use super::{RemoteTab, ThreadLauncher};
 use crate::view::View;
-use crate::{LoadState, Url};
+use crate::{FrameTime, LoadState, Url};
 
 const WAIT: Duration = Duration::from_secs(30);
 
@@ -212,7 +212,15 @@ fn a_spare_waits_for_the_next_site() {
     let mut tab = tab(16, true);
     let first = url(&server, "a.localhost", "/p");
     tab.navigate(first.clone());
+    // The spare starts once a frame is shown, not beside the renderer
+    // the first page waits for (M35.6).
+    assert_eq!(tab.renderers().len(), 1);
+    assert!(!tab.has_page_frame());
     at(&mut tab, &first);
+    settle(&mut tab, "a frame, and the spare", |tab| {
+        tab.frame_at(200, 150, FrameTime::at(Duration::ZERO));
+        tab.has_page_frame() && tab.renderers().len() == 2
+    });
     let renderers = tab.renderers();
     assert_eq!(renderers.len(), 2, "one more, unlocked: {renderers:?}");
     assert!(renderers.iter().any(|(_, lock)| lock.is_none()));
@@ -269,4 +277,44 @@ fn a_new_site_after_going_back_drops_the_entries_ahead() {
     tab.go_forward();
     at(&mut tab, &b);
     assert!(!tab.can_go_forward(), "the second page of a went");
+}
+
+#[test]
+fn a_renderer_draws_with_the_font_files_the_browser_sent() {
+    // M35.6: a renderer given no fonts reads the files of the browser's,
+    // not the system's: its frame is that of one given the same font.
+    let server = TestServer::plain(|_| {
+        Reply::ok(
+            "text/html",
+            b"<p style='margin: 0; font-size: 40px'>Silver fonts</p>",
+        )
+    });
+    let page = url(&server, "a.localhost", "/");
+    let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../text/fonts/DejaVuSans.ttf");
+    let files = text::FontFiles {
+        primary: (file.to_owned(), 0),
+        fallbacks: Vec::new(),
+    };
+    let read = text::FontCollection::from_files(&files).expect("read");
+    let frame = |launcher: ThreadLauncher| {
+        let mut tab = RemoteTab::with_cap(Arc::new(launcher), read.clone(), 16, false);
+        tab.set_viewport(200, 150);
+        let began = Instant::now();
+        tab.set_clock(Arc::new(move || began.elapsed()));
+        tab.navigate(page.clone());
+        at(&mut tab, &page);
+        let mut last = Vec::new();
+        settle(&mut tab, "the same frame twice", |tab| {
+            let pixels = tab
+                .frame_at(200, 150, FrameTime::at(Duration::ZERO))
+                .to_vec();
+            let same = tab.has_page_frame() && pixels == last;
+            last = pixels;
+            same
+        });
+        last
+    };
+    let sent = frame(ThreadLauncher::default());
+    assert!(sent.iter().any(|&byte| byte < 128), "text drawn");
+    assert_eq!(sent, frame(ThreadLauncher::with_fonts(fonts())));
 }

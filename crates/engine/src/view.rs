@@ -105,6 +105,12 @@ pub trait View {
     /// Asks a remote page to cut what it copied for a cut, once the
     /// clipboard has it.
     fn cut_copied(&mut self) {}
+
+    /// Whether the frame drawn holds the page's own pixels (M35.6): a
+    /// remote page's not before its renderer has drawn one.
+    fn has_page_frame(&self) -> bool {
+        true
+    }
 }
 
 impl View for Engine {

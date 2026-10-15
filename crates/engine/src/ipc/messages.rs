@@ -92,6 +92,10 @@ wire_enum! {
         /// What frame `from` (the browser's number, if one) posted to frame
         /// `to`, one of the renderer's.
         24 => FrameTask { from: Option<u32>, to: u32, task: WireTask },
+        /// The files of the fonts the browser found (M35.6,
+        /// `text::FontFiles`), which the renderer reads rather than
+        /// scanning the system's: sent after the hello, before any view.
+        25 => Fonts { primary: (String, u32), fallbacks: Vec<(u8, (String, u32))> },
     }
 }
 

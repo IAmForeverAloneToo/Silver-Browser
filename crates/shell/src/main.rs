@@ -44,6 +44,7 @@ mod keys;
 mod platform;
 mod processes;
 mod session;
+mod startup;
 
 use std::ffi::OsString;
 use std::num::NonZeroU32;
@@ -181,6 +182,7 @@ impl<V: View> Browser<V> {
                 if let Err(e) = buffer.present() {
                     eprintln!("present failed: {e}");
                 }
+                startup::presented(self.session.has_page_frame());
                 self.session.draw_ahead(began + FRAME_BUDGET);
             }
             Err(e) => eprintln!("buffer acquisition failed: {e}"),
@@ -302,6 +304,7 @@ impl<V: View> ApplicationHandler<NetworkWake> for Browser<V> {
 
         match event_loop.create_window(attributes) {
             Ok(window) => {
+                startup::mark("window");
                 let window = Arc::new(window);
                 match softbuffer::Context::new(window.clone()) {
                     Ok(context) => match softbuffer::Surface::new(&context, window.clone()) {
@@ -611,29 +614,69 @@ fn crash_folder(keep: &Keep, default: Option<PathBuf>) -> Option<PathBuf> {
     }
 }
 
+/// A profile read, and the directory it is in; `None` when nothing is
+/// kept; or why there is none, as the browser says it.
+type ReadProfile = Result<Option<(PathBuf, Profile)>, String>;
+
+/// Gives `engine` the profile `keep` names, `default` the place for it
+/// when the command line names none; why there is none, if there is not.
 fn open_profile(engine: &mut impl View, keep: &Keep, default: Option<PathBuf>) -> Option<String> {
+    use_profile(engine, read_profile(keep, default))
+}
+
+/// Reads the profile `keep` names, `default` the place for it when the
+/// command line names none.
+fn read_profile(keep: &Keep, default: Option<PathBuf>) -> ReadProfile {
     let dir = match keep {
-        Keep::Nothing => return None,
+        Keep::Nothing => return Ok(None),
         Keep::In(dir) => dir.clone(),
         Keep::Default => match default {
             Some(dir) => dir,
-            None => return Some("no place for the profile; keeping nothing this time".to_owned()),
+            None => return Err("no place for the profile; keeping nothing this time".to_owned()),
         },
-    };
-    let failed = |why: String| {
-        Some(format!(
-            "the profile in {}: {why}; keeping nothing this time",
-            dir.display()
-        ))
     };
     // Its values sealed under a key the system keeps for the user (D27).
     match Profile::open_with(&dir, platform::key_wrap()) {
-        Ok(profile) => engine
+        Ok(profile) => Ok(Some((dir, profile))),
+        Err(e) => Err(unkept(&dir, &e.to_string())),
+    }
+}
+
+/// Reads the profile `keep` names on a thread of its own, while the
+/// fonts are scanned and the window's process starts (M35.6); what the
+/// function returned gives, waiting for it.
+fn read_profile_aside(keep: &Keep) -> impl FnOnce() -> ReadProfile + use<> {
+    let aside = keep.clone();
+    let reading = std::thread::Builder::new()
+        .name("profile".to_owned())
+        .spawn(move || read_profile(&aside, platform::profile_directory()));
+    let keep = keep.clone();
+    move || match reading {
+        Ok(reading) => reading
+            .join()
+            .unwrap_or_else(|_| Err("the profile was not read; keeping nothing this time".into())),
+        Err(_) => read_profile(&keep, platform::profile_directory()),
+    }
+}
+
+/// Gives `engine` the profile `read`, or says why there is none.
+fn use_profile(engine: &mut impl View, read: ReadProfile) -> Option<String> {
+    match read {
+        Ok(None) => None,
+        Ok(Some((dir, profile))) => engine
             .set_profile(profile)
             .err()
-            .and_then(|e| failed(e.to_string())),
-        Err(e) => failed(e.to_string()),
+            .map(|e| unkept(&dir, &e.to_string())),
+        Err(why) => Some(why),
     }
+}
+
+/// Why the profile in `dir` is not kept.
+fn unkept(dir: &Path, why: &str) -> String {
+    format!(
+        "the profile in {}: {why}; keeping nothing this time",
+        dir.display()
+    )
 }
 
 /// The session's key for winit's, or nothing for a modifier key, whose
@@ -829,6 +872,10 @@ fn command_line(args: impl Iterator<Item = OsString>) -> Result<CommandLine, Str
             line.compat = true;
             continue;
         }
+        // Read by `main` before the rest (M35.6).
+        if arg == "--startup-trace" {
+            continue;
+        }
         if arg == "--profile" || arg == "--temporary-profile" {
             if line.profile != Keep::Default {
                 return Err("--profile and --temporary-profile: one at most".to_owned());
@@ -922,6 +969,10 @@ fn main() {
         }
         _ => {}
     }
+    if std::env::args_os().any(|arg| arg == "--startup-trace") {
+        startup::begin();
+        startup::mark("main");
+    }
     let line = match command_line(std::env::args_os().skip(1)) {
         Ok(line) => line,
         Err(message) => {
@@ -930,7 +981,7 @@ fn main() {
                 "usage: silver-browser [--software] [--layer-budget <MiB>] \
                  [--prefers-color-scheme light|dark] [--prefers-reduced-motion] \
                  [--enable-scripts | --disable-scripts] [--compat-user-agent] \
-                 [--print-to-pdf <path>] \
+                 [--print-to-pdf <path>] [--startup-trace] \
                  [--profile <dir> | --temporary-profile] [URL or path]"
             );
             std::process::exit(2);
@@ -949,6 +1000,8 @@ fn main() {
         ));
     }
 
+    // The system's fonts scanned while the rest starts (M35.6).
+    text::FontCollection::scan_system();
     show(&line);
 }
 
@@ -956,6 +1009,7 @@ fn main() {
 /// docs/design/processes.md), each site's its own, sandboxed.
 #[cfg(not(feature = "single-process"))]
 fn show(line: &CommandLine) {
+    let profile = read_profile_aside(&line.profile);
     let crashes = crash_folder(&line.profile, platform::profile_directory());
     let launcher = match platform::ProcessLauncher::new() {
         Ok(launcher) => launcher.with_crashes(crashes),
@@ -964,21 +1018,27 @@ fn show(line: &CommandLine) {
             std::process::exit(1);
         }
     };
-    let fonts = match Engine::new() {
-        Ok(engine) => engine.fonts().clone(),
+    startup::mark("launcher");
+    // The system's fonts, as scanned once (M35.6): no engine is made to
+    // borrow them.
+    let fonts = match text::FontCollection::system() {
+        Ok(fonts) => fonts,
         Err(e) => {
             eprintln!("engine initialization failed: {e}");
             return;
         }
     };
+    startup::mark("fonts");
     let tab = engine::service::RemoteTab::new(Arc::new(launcher), fonts);
-    run(tab, line);
+    startup::mark("tab");
+    run(tab, line, profile);
 }
 
 /// Shows the page in an engine of the browser's own process (M34.6,
 /// D30): the one-process build.
 #[cfg(feature = "single-process")]
 fn show(line: &CommandLine) {
+    let profile = read_profile_aside(&line.profile);
     // The bindings compiled while the window opens (M35.12), as a
     // renderer compiles them as it starts.
     if line.window_scripts() {
@@ -1002,11 +1062,12 @@ fn show(line: &CommandLine) {
     if let Some(why) = fallback {
         eprintln!("silver-browser: {why}; drawing in software");
     }
-    run(engine, line);
+    run(engine, line, profile);
 }
 
-/// Shows the page `engine` shows in a window until it is closed.
-fn run(mut engine: impl View, line: &CommandLine) {
+/// Shows the page `engine` shows in a window until it is closed, with
+/// the profile `profile` reads, which it has before its first navigation.
+fn run(mut engine: impl View, line: &CommandLine, profile: impl FnOnce() -> ReadProfile) {
     let (start, asked) = (line.start.clone(), line.asked);
     if let Some(bytes) = line.layer_budget {
         engine.set_layer_budget(bytes);
@@ -1017,9 +1078,10 @@ fn run(mut engine: impl View, line: &CommandLine) {
     if line.compat {
         engine.set_compat_user_agent(true);
     }
-    if let Some(why) = open_profile(&mut engine, &line.profile, platform::profile_directory()) {
+    if let Some(why) = use_profile(&mut engine, profile()) {
         eprintln!("silver-browser: {why}");
     }
+    startup::mark("profile");
 
     let event_loop = match EventLoop::<NetworkWake>::with_user_event().build() {
         Ok(event_loop) => event_loop,
@@ -1028,6 +1090,7 @@ fn run(mut engine: impl View, line: &CommandLine) {
             std::process::exit(1);
         }
     };
+    startup::mark("event loop");
 
     // The proxy is sent across threads but need not be shared between
     // them on every platform, so a lock makes it so.
@@ -1042,6 +1105,7 @@ fn run(mut engine: impl View, line: &CommandLine) {
     engine.set_clock(Arc::new(move || began.elapsed()));
     let clipboard = Box::new(SystemClipboard::default());
     let session = Session::new(engine, clipboard, Platform::current(), start);
+    startup::mark("session");
 
     let mut browser = Browser::new(session, asked, began);
     let ran = event_loop.run_app(&mut browser);
@@ -1491,6 +1555,30 @@ mod tests {
                 Err("--profile and --temporary-profile: one at most".to_owned())
             );
         }
+    }
+
+    #[test]
+    fn a_profile_read_aside_is_the_one_read_in_place() {
+        // M35.6: read while the browser starts, given before the first
+        // navigation; held by one engine, refused to a second.
+        let dir = std::env::temp_dir().join(format!("silver-shell-aside-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut engine = Engine::new().unwrap();
+        let read = read_profile_aside(&Keep::In(dir.clone()))();
+        assert!(matches!(&read, Ok(Some((at, _))) if *at == dir));
+        assert_eq!(use_profile(&mut engine, read), None);
+        assert!(dir.join("profile.redb").is_file());
+        assert!(matches!(read_profile_aside(&Keep::Nothing)(), Ok(None)));
+        let refused = read_profile_aside(&Keep::In(dir.clone()))();
+        assert_eq!(
+            refused.err(),
+            Some(format!(
+                "the profile in {}: another browser has it open; keeping nothing this time",
+                dir.display()
+            ))
+        );
+        drop(engine);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
