@@ -241,6 +241,13 @@ impl Launcher for Lying {
             let _ = sender.send(&ToBrowser::Hello {
                 version: ipc::IPC_VERSION,
             });
+            // It lies once given its view, as a renderer would: the
+            // browser has given it its site and frames by then.
+            while let Ok(Some(message)) = ipc::read_message::<ToRenderer>(&mut renderer_in) {
+                if matches!(message, ToRenderer::CreateView { .. }) {
+                    break;
+                }
+            }
             for lie in lies() {
                 let _ = sender.send(&lie);
             }

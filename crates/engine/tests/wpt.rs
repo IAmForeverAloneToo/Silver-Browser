@@ -458,12 +458,17 @@ fn content_type(path: &str) -> &'static str {
 /// timeout and log off, as `wptrunner`'s does, and writes the results
 /// into the page, a line each, for [`harness_results`] to read: the
 /// harness's status and message, then each subtest's status, name and
-/// message, tabs between, tabs and line breaks in them made spaces.
+/// message, tabs between, tabs and line breaks in them made spaces. Each
+/// subtest is logged as it ends, for a test that never finishes to say
+/// which did.
 const REPORT: &str = r#"setup({explicit_timeout: true, output: false});
+function clean(text) {
+  return String(text === undefined || text === null ? "" : text).replace(/[\t\n\r]/g, " ");
+}
+add_result_callback(function (test) {
+  console.log("wpt-done\t" + test.status + " " + clean(test.name));
+});
 add_completion_callback(function (tests, status) {
-  function clean(text) {
-    return String(text === undefined || text === null ? "" : text).replace(/[\t\n\r]/g, " ");
-  }
   var lines = [status.status + "\t" + clean(status.message)];
   for (var i = 0; i < tests.length; i++) {
     lines.push(tests[i].status + "\t" + clean(tests[i].name) + "\t" + clean(tests[i].message));
@@ -1212,11 +1217,14 @@ fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
             };
         }
         if now > wait {
-            return Outcome::fail(format!("TIMEOUT: still running after {wait:?} of its time"));
+            return unfinished(
+                engine,
+                format!("TIMEOUT: still running after {wait:?} of its time"),
+            );
         }
         let left = deadline.checked_duration_since(Instant::now());
         let Some(left) = left else {
-            return Outcome::fail(format!("TIMEOUT: still running after {LOAD:?}"));
+            return unfinished(engine, format!("TIMEOUT: still running after {LOAD:?}"));
         };
         if engine.fetching() {
             let _ = woken.recv_timeout(left.min(Duration::from_millis(100)));
@@ -1256,11 +1264,22 @@ fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
                     left.min(Duration::from_secs(1))
                 };
                 if woken.recv_timeout(quiet).is_err() {
-                    return Outcome::fail("TIMEOUT: nothing left to wait for".to_string());
+                    return unfinished(engine, "TIMEOUT: nothing left to wait for".to_string());
                 }
             }
         }
     }
+}
+
+/// A testharness test that did not finish, `why`, with the subtests that
+/// did, as the report logged them.
+fn unfinished(engine: &mut Engine, why: String) -> Outcome {
+    let done: Vec<String> = engine
+        .take_console()
+        .into_iter()
+        .filter_map(|entry| entry.text.strip_prefix("wpt-done\t").map(str::to_owned))
+        .collect();
+    Outcome::fail(format!("{why}; finished: [{}]", done.join(" | ")))
 }
 
 fn run_reftest(

@@ -1548,6 +1548,12 @@ impl Engine {
             })
             .collect();
         if loaded.is_empty() {
+            // A frame's navigation can end with no new document (a 204,
+            // a download): its element hears nothing, but the document's
+            // load may have waited for that navigation alone.
+            if self.load_state == LoadState::Loading && self.frames_settled() {
+                self.update_load_state();
+            }
             return;
         }
         let document = &self.shown.document;

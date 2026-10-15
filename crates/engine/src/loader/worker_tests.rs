@@ -300,14 +300,19 @@ fn past_the_live_bound_a_worker_waits_for_one_to_end() {
         "<script>\
          var all = [];\
          var up = 0;\
+         var next = null;\
          var later = function (f) { setTimeout(f, 1000); };\
          for (var i = 0; i < 20; i++) {\
            var w = new Worker('stay.js');\
-           w.onmessage = function () { up++; if (up === 16) { later(function () {\
-             console.log('up', up); all[0].terminate();\
-             later(function () { console.log('after terminate', up); all[1].postMessage('close');\
-               later(function () { console.log('after close', up); console.log('done'); });\
-             }); }); } };\
+           w.onmessage = function () { up++;\
+             if (up === 16) { later(function () {\
+               console.log('up', up);\
+               next = function () { console.log('after terminate', up);\
+                 next = function () { later(function () {\
+                   console.log('after close', up); console.log('done'); }); };\
+                 all[1].postMessage('close'); };\
+               all[0].terminate(); }); }\
+             else if (next) { var f = next; next = null; f(); } };\
            all.push(w);\
          }\
          </script>",
@@ -316,7 +321,8 @@ fn past_the_live_bound_a_worker_waits_for_one_to_end() {
             "postMessage('up'); onmessage = function (e) { if (e.data === 'close') { close(); } };",
         )],
     );
-    // Sixteen at once; another as one is terminated, and as one closes.
+    // Sixteen at once, none more for a second; another once one is
+    // terminated, and once one closes, and none more for a second.
     let lines = until(&mut tab, "done");
     assert_eq!(
         lines,

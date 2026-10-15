@@ -244,6 +244,41 @@ fn the_parents_load_waits_for_its_frames_and_their_loads_come_first() {
 }
 
 #[test]
+fn the_parents_load_comes_when_a_frames_navigation_ends_with_no_document() {
+    let gate = Gate::new();
+    let held = gate.clone();
+    let server = serve(move |path| match path {
+        "/page.html" => Some(html(
+            "<iframe src=nothing></iframe>\
+             <script>onload = () => console.log('page load')</script>",
+        )),
+        "/nothing" => {
+            held.wait();
+            Some(Reply::with_fields(204, &[], b""))
+        }
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(server.url("/page.html"));
+    // All else is done, and the frame's element was told of its first
+    // document: the frame's navigation alone holds the load.
+    tab.wait_until(|engine| {
+        engine.shown.parsing.is_none()
+            && !engine.shown.frames.is_empty()
+            && engine
+                .shown
+                .frames
+                .values()
+                .all(|frame| frame.told.is_some())
+    });
+    assert_eq!(*tab.engine.load_state(), LoadState::Loading);
+    // It ends with no new document to tell the element of.
+    gate.open();
+    tab.run_until(|lines| lines.iter().any(|line| line == "page load"));
+}
+
+#[test]
 fn an_iframe_hears_load_for_each_document_whatever_navigated_its_frame() {
     // Its parent's form and link, its `src` and its own script each bring
     // a document, and each `load`; a fragment brings none (found by the

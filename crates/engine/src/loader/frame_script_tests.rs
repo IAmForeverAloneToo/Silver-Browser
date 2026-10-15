@@ -213,14 +213,15 @@ fn links_and_forms_target_frames_by_name_parent_and_top() {
             "<a href=named.html target=bee id=l>named</a>\
              <iframe name=bee src=x.html></iframe>\
              <iframe srcdoc=\"<a id=t href='/top.html' target=_top>top</a>\
-             <script>onload = () => setTimeout(() => document.getElementById('t').click(), 100)\
-             </script>\"></iframe>\
-             <script>onload = () => document.getElementById('l').click()</script>",
+             <script>onmessage = () => document.getElementById('t').click()</script>\"></iframe>\
+             <script>onload = () => document.getElementById('l').click(); \
+             onmessage = () => frames[1].postMessage('go', '*')</script>",
         ),
         ("/x.html", "<p>x</p>"),
+        // The other frame's link to the top is followed once this ran.
         (
             "/named.html",
-            "<script>console.log('named here', name)</script>",
+            "<script>console.log('named here', name); parent.postMessage('ran', '*')</script>",
         ),
         ("/top.html", "<script>console.log('top here')</script>"),
     ];

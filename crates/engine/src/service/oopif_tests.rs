@@ -110,11 +110,10 @@ fn server() -> TestServer {
             "/again" => "<p>again</p>".to_owned(),
             "/counted" => format!(
                 "<iframe id=f src='/same'></iframe><img src='/slow'>\
-                 <script>let got = 0; addEventListener('message', () => got++); \
-                 let once = false; document.getElementById('f').onload = () => {{ \
-                 if (once) {{ return; }} once = true; \
+                 <script>let loads = 0; document.getElementById('f').onload = () => {{ \
+                 loads++; if (loads > 1) {{ return; }} \
                  document.getElementById('f').src = 'http://b.localhost:{port}/child'; }}; \
-                 onload = () => console.log('load ' + got);</script>"
+                 onload = () => console.log('load ' + loads);</script>"
             ),
             "/same" => "<p>same</p>".to_owned(),
             "/slow" => {
@@ -356,11 +355,12 @@ fn a_parents_load_waits_for_its_frame_handed_over_however_late_the_browser_says_
     // its parent's site, then is sent to another site while its parent
     // still loads (an image comes late): the parent's renderer hears the
     // navigation moved long before the browser tells it the frame is
-    // another renderer's, and its load must wait for that frame's.
+    // another renderer's, and its load must wait for that frame's: the
+    // frame's element hears both documents load before it.
     thread::sleep(Duration::from_millis(2000));
     let mut lines = Vec::new();
     settle(&mut tab, &mut lines, "the parent's load", |_, lines| {
         lines.iter().any(|line| line.starts_with("load "))
     });
-    assert!(lines.contains(&"load 1".to_owned()), "{lines:?}");
+    assert!(lines.contains(&"load 2".to_owned()), "{lines:?}");
 }

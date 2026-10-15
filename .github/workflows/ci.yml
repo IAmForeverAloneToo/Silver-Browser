@@ -116,9 +116,12 @@ jobs:
       - if: runner.os == 'Windows'
         run: echo "WGPU_BACKEND=vulkan" >> "$GITHUB_ENV"
         shell: bash
-      - run: cargo test --workspace --locked
+      # Every test binary runs, and the step after too, whatever fails:
+      # one run says all that does.
+      - run: cargo test --workspace --locked --no-fail-fast
       # And the shell's tests once more as one process (M34.6).
-      - run: cargo test -p silver-browser --features single-process --locked
+      - if: ${{ !cancelled() }}
+        run: cargo test -p silver-browser --features single-process --locked --no-fail-fast
 
   fuzz:
     name: fuzz (${{ matrix.target }})
