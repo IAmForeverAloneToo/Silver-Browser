@@ -361,7 +361,7 @@ pub(crate) fn has_substitution(tokens: &[Token]) -> bool {
 
 /// Whether `tokens` hold an `attr()`, at any depth: what they give
 /// depends on the element's attributes.
-fn reads_attributes(tokens: &[Token]) -> bool {
+pub(crate) fn reads_attributes(tokens: &[Token]) -> bool {
     tokens
         .iter()
         .any(|t| substitution_function(t) == Some(Function::Attr))

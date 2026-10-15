@@ -103,7 +103,7 @@
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -1058,6 +1058,7 @@ impl Recascade for Recascader<'_> {
                     )
                 })
             },
+            |_, _| None,
         )
         .0
     }
@@ -1118,6 +1119,7 @@ impl Recascade for Recascader<'_> {
                     )
                 })
             },
+            |_, _| None,
         )
         .0;
         Some(style)
@@ -1351,6 +1353,66 @@ fn ua() -> &'static UserAgent {
     })
 }
 
+/// The most base styles a cascade keeps for the elements after made of
+/// the same (M35.2): a few megabytes; past it they are forgotten and
+/// computed again.
+pub const MAX_KEPT_STYLES: usize = 4096;
+
+/// How many distinct parent styles a cascade remembers, to number the
+/// parents of equal styles alike, so that cousins share what they make.
+const RECENT_PARENTS: usize = 8;
+
+/// The longhands an animation of which may be set on the style made
+/// without it (M35.2): those nothing else in a style is computed from,
+/// what the compositor draws.
+const COMPOSITED_LONGHANDS: [Longhand; 5] = [
+    Longhand::Opacity,
+    Longhand::Transform,
+    Longhand::Translate,
+    Longhand::Rotate,
+    Longhand::Scale,
+];
+
+#[cfg(test)]
+thread_local! {
+    /// Whether the cascades made on this thread keep no style for the
+    /// elements after and set no animation on a style (M35.2): the
+    /// tests' reference, what is kept compared with.
+    pub(crate) static PLAIN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// How many base styles the cascades made on this thread computed
+    /// rather than took from those kept.
+    pub(crate) static AFRESH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// How many animated styles were made by setting their animations'
+    /// values on the style made without them.
+    pub(crate) static SET_ON: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether this cascade keeps nothing between elements: the tests'
+/// reference alone.
+fn plain() -> bool {
+    #[cfg(test)]
+    {
+        PLAIN.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
+/// What an element's base style is made of (M35.2): the number of its
+/// parent's style among the distinct ones met, whether it is the root,
+/// its `dir`, the `rem` it resolves against, and each matched
+/// declaration by address, with its tier, layer, specificity and order.
+#[derive(PartialEq, Eq, Hash)]
+struct StyleKey {
+    parent: u32,
+    root: bool,
+    dir: Option<Box<str>>,
+    rem: u32,
+    declarations: Vec<(usize, u8, u32, [u32; 3], u32)>,
+}
+
 /// The cascade's working state over one document: the matcher, with
 /// its caches, and the rules in force.
 struct Cascader<'a> {
@@ -1361,6 +1423,22 @@ struct Cascader<'a> {
     /// The selectors an element is tried against, made again for each
     /// (M35.2): kept to spare an allocation an element.
     candidates: Vec<(u32, u32)>,
+    /// The base styles made in this cascade, by what they are made of
+    /// (M35.2), at most [`MAX_KEPT_STYLES`]: an element made of the same
+    /// takes the one made, rather than computing it again. Off for the
+    /// tests that compare.
+    kept: HashMap<StyleKey, ComputedStyle>,
+    keeps: bool,
+    /// Each parent's style's number, by node, and the last distinct
+    /// parent styles with theirs.
+    parent_numbers: HashMap<NodeId, u32>,
+    recent_parents: VecDeque<(u32, ComputedStyle)>,
+    /// Whether each declaration met, by address, reads an attribute.
+    reads_attributes: HashMap<usize, bool>,
+    /// Whether an animation of composited longhands alone is set on the
+    /// style made without it rather than computing it again (M35.2). Off
+    /// for the tests that compare.
+    sets_composited: bool,
     context: &'a CascadeContext<'a>,
     /// The answers that left these rules in force, kept with the styles.
     media: Vec<bool>,
@@ -1390,6 +1468,12 @@ impl<'a> Cascader<'a> {
             ua,
             author,
             candidates: Vec::new(),
+            kept: HashMap::new(),
+            keeps: !plain(),
+            parent_numbers: HashMap::new(),
+            recent_parents: VecDeque::new(),
+            reads_attributes: HashMap::new(),
+            sets_composited: !plain(),
             context,
             media,
             viewport_used: Cell::new(false),
@@ -1419,6 +1503,7 @@ impl<'a> Cascader<'a> {
             (&self.ua, &self.author),
             self.context.inline_styles,
         );
+        let key = self.style_key(element, &matched, parent.style, rem);
         let resolution = Resolution {
             rem,
             context: self.context,
@@ -1426,15 +1511,35 @@ impl<'a> Cascader<'a> {
             attributes: self.document.attrs(element).unwrap_or_default(),
             substitutions: &self.substitutions,
         };
-        let base = element_style(
-            self.document,
-            element,
-            &matched,
-            parent.style,
-            &resolution,
-            None,
-            None,
-        );
+        let kept = key.as_ref().and_then(|key| self.kept.get(key)).cloned();
+        let base = match kept {
+            Some(base) => base,
+            None => {
+                #[cfg(test)]
+                AFRESH.with(|afresh| afresh.set(afresh.get() + 1));
+                let base = element_style(
+                    self.document,
+                    element,
+                    &matched,
+                    parent.style,
+                    &resolution,
+                    None,
+                    None,
+                );
+                if let Some(key) = key {
+                    if self.kept.len() >= MAX_KEPT_STYLES {
+                        self.kept.clear();
+                    }
+                    self.kept.insert(key, base.clone());
+                }
+                base
+            }
+        };
+        let important = matched
+            .of(Target::Element)
+            .iter()
+            .any(|applied| applied.tier >= tier(TierBase::AuthorSheet, true));
+        let sets_composited = self.sets_composited;
         let base_display = base.display;
         let display_none = parent.display_none || base_display == Display::None;
         let animating = self.sample((element, None), &base, Some(!display_none));
@@ -1456,6 +1561,30 @@ impl<'a> Cascader<'a> {
                     animated,
                     transitioned,
                 )
+            },
+            // An animation of composited longhands alone, none of them
+            // declared important, is the base style with its values set
+            // (M35.2): what `compute_style` makes, the animations applied
+            // after every normal declaration, nothing computed from them.
+            |base, animated| {
+                if !sets_composited || important || !animated.sets_only(&COMPOSITED_LONGHANDS) {
+                    return None;
+                }
+                let mut style = base.clone();
+                let bases = LengthBases {
+                    em: style.font_size_px,
+                    resolution: &resolution,
+                };
+                animated.apply(
+                    &mut style,
+                    parent.style,
+                    Target::Element,
+                    &bases,
+                    &mut [false; 4],
+                );
+                #[cfg(test)]
+                SET_ON.with(|set| set.set(set.get() + 1));
+                Some(style)
             },
         );
         // Shown by a transition of `display` alone, it is inert (Display 4
@@ -1534,6 +1663,7 @@ impl<'a> Cascader<'a> {
                         transitioned,
                     )
                 },
+                |_, _| None,
             );
             Some(style)
         };
@@ -1552,6 +1682,72 @@ impl<'a> Cascader<'a> {
             unrendered,
             after_change,
         }
+    }
+
+    /// What `element`'s base style is made of, if it may be kept for the
+    /// elements after (M35.2): not when one of its declarations is its
+    /// own (an inline style's, a presentational hint's) or reads an
+    /// attribute (`attr()`), which another element's may not be.
+    fn style_key(
+        &mut self,
+        element: NodeId,
+        matched: &Matched<'_>,
+        parent: &ComputedStyle,
+        rem: f32,
+    ) -> Option<StyleKey> {
+        if !self.keeps {
+            return None;
+        }
+        let mut declarations = Vec::new();
+        for applied in matched.of(Target::Element) {
+            let identity = applied.identity()?;
+            let reads = *self
+                .reads_attributes
+                .entry(identity)
+                .or_insert_with(|| custom::reads_attributes(&applied.decl.value));
+            if reads {
+                return None;
+            }
+            let Specificity(a, b, c) = applied.specificity;
+            declarations.push((
+                identity,
+                applied.tier,
+                applied.layer,
+                [a, b, c],
+                applied.order,
+            ));
+        }
+        let parent_node = self.document.parent(element)?;
+        let parent = self.parent_number(parent_node, parent);
+        Some(StyleKey {
+            parent,
+            root: self.document.document_element() == Some(element),
+            dir: self.document.attr(element, "dir").map(Box::from),
+            rem: rem.to_bits(),
+            declarations,
+        })
+    }
+
+    /// The number of `node`'s style, `style`, among the distinct parent
+    /// styles this cascade met: that of an equal one among the last
+    /// [`RECENT_PARENTS`], else a new one.
+    fn parent_number(&mut self, node: NodeId, style: &ComputedStyle) -> u32 {
+        if let Some(&number) = self.parent_numbers.get(&node) {
+            return number;
+        }
+        let number = match self.recent_parents.iter().find(|(_, seen)| seen == style) {
+            Some(&(number, _)) => number,
+            None => {
+                let number = self.parent_numbers.len() as u32;
+                if self.recent_parents.len() == RECENT_PARENTS {
+                    self.recent_parents.pop_front();
+                }
+                self.recent_parents.push_back((number, style.clone()));
+                number
+            }
+        };
+        self.parent_numbers.insert(node, number);
+        number
     }
 
     /// What `target`'s animations give at the timeline's time, its style
@@ -1717,6 +1913,7 @@ fn changed_style(
     before: Before<'_>,
     rendered: impl Fn(&ComputedStyle) -> bool,
     compute: impl Fn(&ComputedStyle, Option<&Animated<'_>>, Option<&[Transitioning]>) -> ComputedStyle,
+    onto: impl Fn(&ComputedStyle, &Animated<'_>) -> Option<ComputedStyle>,
 ) -> (ComputedStyle, Option<Arc<ComputedStyle>>) {
     let acts = animating.map_or(WillChange::AUTO, |a| a.acts);
     let animated = animating.and_then(|a| a.animated.as_ref());
@@ -1727,7 +1924,9 @@ fn changed_style(
         style
     };
     let style = match animated {
-        Some(animated) => finish(compute(parent.style, Some(animated), None)),
+        Some(animated) => finish(
+            onto(&base, animated).unwrap_or_else(|| compute(parent.style, Some(animated), None)),
+        ),
         None => finish(base),
     };
     let Some(cell) = animations else {
@@ -11408,5 +11607,49 @@ mod tests {
         assert_eq!(line("abbr[title]"), (true, false, DecorationStyle::Dotted));
         assert!(!line("abbr:not([title])").0);
         assert!(!line("a:not([href])").0);
+    }
+
+    /// M35.2: elements made of the same declarations, with parents of the
+    /// same style, take the base style the first of them was given,
+    /// cousins too, and every element's style is the one a cascade that
+    /// keeps nothing gives it, an `attr()` and an inline style among them.
+    #[test]
+    fn a_style_made_once_is_kept_for_the_elements_made_of_the_same() {
+        let html = format!(
+            "<ul>{}</ul><table>{}</table><p>x</p><p class=a>y</p>\
+             <p data-x=1>z</p><p data-x=2>w</p><p style='color: green'>v</p>             <p style='color: blue'>u</p><div class=a><b>s</b></div><div><b>t</b></div>             <span dir=rtl>r</span><span>l</span>",
+            "<li>i</li>".repeat(50),
+            "<tr><td>a<td>b<td>c<td>d</tr>".repeat(20)
+        );
+        let sheets = [sheet(
+            "li { margin: 2px } td { padding: 1px } .a { color: red } \
+             li:nth-child(2n) { color: blue } p[data-x] { --x: attr(data-x) }",
+        )];
+        let document = Document::from_node(&html::parse_document(&html).expect("never fails"));
+        let afresh = || AFRESH.with(std::cell::Cell::get);
+        PLAIN.with(|plain| plain.set(true));
+        let reference = cascade_document(&document, &sheets, &CascadeContext::default());
+        PLAIN.with(|plain| plain.set(false));
+        let before = afresh();
+        let kept = cascade_document(&document, &sheets, &CascadeContext::default());
+        let made = afresh() - before;
+        let elements = document
+            .subtree(document.root())
+            .filter(|&node| document.is_element(node))
+            .count() as u64;
+        assert!(made < 26, "{made} of {elements} styles computed");
+        for node in document.subtree(document.root()) {
+            assert_eq!(reference.get(node), kept.get(node), "{node:?}");
+        }
+        // The two paragraphs that read their attributes differ.
+        let x = |n: usize| {
+            let node = document
+                .subtree(document.root())
+                .filter(|&node| document.attr(node, "data-x").is_some())
+                .nth(n)
+                .expect("a paragraph");
+            kept.get(node).expect("styled").clone()
+        };
+        assert_ne!(x(0), x(1));
     }
 }

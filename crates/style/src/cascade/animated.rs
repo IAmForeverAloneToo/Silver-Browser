@@ -133,6 +133,21 @@ impl<'a> Sampled<'a> {
 }
 
 impl<'a> Animated<'a> {
+    /// Whether the animations give only longhands among `only` and no
+    /// custom property (M35.2): what nothing else in a style is computed
+    /// from, so that their values may be set on the style computed
+    /// without them.
+    pub(super) fn sets_only(&self, only: &[Longhand]) -> bool {
+        self.samples.iter().all(|sample| {
+            let keyframes = &sample.keyframes.keyframes;
+            keyframes.custom.is_empty()
+                && keyframes
+                    .longhands
+                    .iter()
+                    .all(|longhand| only.contains(longhand))
+        })
+    }
+
     /// The custom property declarations the animations give, in order,
     /// for the custom properties' pass: each the declaration of the
     /// keyframe its discrete step takes, none where that is an implicit
@@ -1426,5 +1441,58 @@ mod tests {
             .expect("styled");
         assert_eq!(rgba(before.color), [100.0, 50.0, 0.0, 1.0]);
         assert_eq!(page.animations.borrow().len(), 2);
+    }
+
+    /// M35.2: the base styles a cascade keeps for the elements after, and
+    /// an animation of composited longhands set on the style made without
+    /// it, give every element the style a cascade keeping nothing gives,
+    /// frame after frame and across a change: an animation with an
+    /// important declaration of its property, one of a colour, a
+    /// transition, an `attr()`, an inline style and a `dir` among them.
+    #[test]
+    fn kept_and_composited_styles_are_those_made_afresh() {
+        let css = ".f { animation: fade 1s linear infinite alternate }
+            @keyframes fade { to { opacity: 0.2; transform: translateX(30px) rotate(10deg); scale: 1.5 } }
+            .i { opacity: 1 !important }
+            .c { animation: tint 1s linear infinite }
+            @keyframes tint { to { color: rgb(200, 0, 0) } }
+            .t { transition: opacity 1s linear, color 1s linear }
+            .t.on { opacity: 0.5; color: blue }
+            li { margin: 4px; --n: attr(data-n) }";
+        let html = "<div id=root><p class=f id=a>a</p><p class=f id=b>b</p>
+            <p class='f i' id=c>c</p><p class=c id=d>d</p><p class=t id=e>e</p><ul>
+            <li data-n=1>1</li><li data-n=2>2</li><li style='color: green'>3</li>
+            <li dir=rtl>4</li><li>5</li><li>6</li></ul></div>";
+        let plain = |on: bool| crate::cascade::PLAIN.with(|p| p.set(on));
+        let set_on = || crate::cascade::SET_ON.with(std::cell::Cell::get);
+        plain(true);
+        let mut reference = Page::new(css, html);
+        plain(false);
+        let mut kept = Page::new(css, html);
+        let compare = |reference: &Page, kept: &Page, at: &str| {
+            for node in reference.document.subtree(reference.document.root()) {
+                assert_eq!(
+                    reference.styles.get(node),
+                    kept.styles.get(node),
+                    "{at}: {node:?}"
+                );
+            }
+        };
+        compare(&reference, &kept, "the first cascade");
+        let before = set_on();
+        for (n, time) in [0.0, 0.1, 0.25, 0.5, 0.9, 1.3].into_iter().enumerate() {
+            if n == 2 {
+                plain(true);
+                reference.class("e", "t on");
+                plain(false);
+                kept.class("e", "t on");
+            }
+            plain(true);
+            reference.frame(time);
+            plain(false);
+            kept.frame(time);
+            compare(&reference, &kept, &format!("the frame at {time}"));
+        }
+        assert!(set_on() > before, "the composited animations were set on");
     }
 }
