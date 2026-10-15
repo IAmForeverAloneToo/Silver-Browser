@@ -2873,6 +2873,13 @@ Deferred from the milestones above, each with what it waits on:
 - [ ] G125 Shared surfaces (D32): a view's frames go through the pipe
        as rows; a click reaches its frame in 25 ms through renderers,
        1.5 ms in one engine. Found at M34.
+- [ ] G126 On Windows Server (CI's runners), the first two of a
+       worker's XHRs in `xhr/responseurl-after-abort.any.worker.html`
+       never answer, every run; never on Windows 10, alone, loaded or
+       on four cores. Suspected: a connection reused from the pool
+       whose poll is not armed again (mio on Windows clears a socket's
+       interest on an event and sets it again only on WouldBlock).
+       Named `either:` in the expectations. Found 2026-10-15.
 
 ---
 

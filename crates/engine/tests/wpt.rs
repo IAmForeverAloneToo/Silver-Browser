@@ -820,6 +820,13 @@ fn a_harness_is_held_to_the_expectations_subtest_by_subtest() {
     assert!(unexpected[1].starts_with("PASS t.html\ta:"));
     assert!(unexpected[2].starts_with("FAIL t.html\tc: said"));
     assert!(unexpected[3].starts_with("GONE t.html\tgone:"));
+    // Named whole as one that may pass or not: its harness finishing is
+    // not unexpected, and its subtests are held as any are.
+    let mut either = expected(&["t.html\tb", "t.html\tc"]);
+    either.insert("t.html".to_string(), "either: timing".to_string());
+    assert!(harness_unexpected("t.html", &ran, &either).is_empty());
+    either.remove("t.html\tc");
+    assert_eq!(harness_unexpected("t.html", &ran, &either).len(), 1);
     // A harness that did not finish: the test named whole, or it is
     // unexpected.
     let error = harness(1, &[("a", 0)]);
@@ -1906,10 +1913,6 @@ fn the_web_platform_tests_subset_runs_as_expected() {
     );
 }
 
-/// What is unexpected of the testharness test at `path` whose harness
-/// wrote `harness`: a harness that did not finish, unless the test is
-/// named whole; one that did, if it is; each subtest that failed and is
-/// not named, or passed and is; and each subtest named that did not run.
 /// Whether the test or subtest `key` may pass as well as fail: its reason
 /// says `either:`, its outcome depending on the machine's timing.
 fn either(expected: &BTreeMap<String, String>, key: &str) -> bool {
@@ -1918,6 +1921,11 @@ fn either(expected: &BTreeMap<String, String>, key: &str) -> bool {
         .is_some_and(|reason| reason.starts_with("either:"))
 }
 
+/// What is unexpected of the testharness test at `path` whose harness
+/// wrote `harness`: a harness that did not finish, unless the test is
+/// named whole; one that did, if it is, unless its reason says
+/// `either:`; each subtest that failed and is not named, or passed and
+/// is; and each subtest named that did not run.
 fn harness_unexpected(
     path: &str,
     harness: &Harness,
@@ -1935,7 +1943,7 @@ fn harness_unexpected(
         };
     }
     let mut unexpected = Vec::new();
-    if whole {
+    if whole && !either(expected, path) {
         unexpected.push(format!(
             "PASS {path}: its harness finished, so expectations.txt must name its failing \
              subtests rather than the test"

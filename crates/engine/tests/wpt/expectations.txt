@@ -1484,6 +1484,7 @@ xhr/getresponseheader.any.worker.html	getResponseHeader('www-authenticate') expe
 xhr/open-url-worker-origin.htm	Origin header	a Python handler (inspect-headers.py, requri.py) the runner's server has not
 xhr/open-url-worker-origin.htm	Referer header	a Python handler (inspect-headers.py, requri.py) the runner's server has not
 xhr/open-url-worker-origin.htm	Request URL test	a Python handler (inspect-headers.py, requri.py) the runner's server has not
+xhr/responseurl-after-abort.any.worker.html                                             either: on Windows Server (CI's runners) two of the worker's first requests never answer and it times out; never on Windows 10 (G126)
 xhr/responseurl-after-abort.any.worker.html	responseURL reflects the new response after abort() and reuse	no URL class (G68)
 xhr/xmlhttprequest-timeout-worker-aborted.html	Timeout test: time to abort is 5000, timeout set at 2000	a Python handler (delay.py) the runner's server has not
 xhr/xmlhttprequest-timeout-worker-overrides.html	Timeout test: timeout overrides load after a delay, original timeout at 5000, reset at 1000 to 2000	a Python handler (delay.py) the runner's server has not
