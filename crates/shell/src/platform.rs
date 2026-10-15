@@ -181,6 +181,52 @@ pub(crate) fn fault() {
     std::process::abort();
 }
 
+/// What a process holds (M35.1): the bytes it alone committed, where
+/// the system says, and its working set, its pages in memory.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProcessMemory {
+    pub(crate) private: Option<u64>,
+    pub(crate) working_set: u64,
+}
+
+/// What process `id` holds, for the measures of a page class's memory
+/// (M35.1): on Windows from `GetProcessMemoryInfo`, its private bytes
+/// and working set; on Linux from `/proc`, its anonymous resident pages
+/// and its resident set; on macOS its resident size from `ps`, the
+/// private bytes unknown. `None` where it cannot be read.
+pub(crate) fn process_memory(id: u32) -> Option<ProcessMemory> {
+    #[cfg(windows)]
+    {
+        windows::process_memory(id)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::fs::read_to_string(format!("/proc/{id}/status")).ok()?;
+        let field = |name: &str| {
+            status.lines().find_map(|line| {
+                let kb = line.strip_prefix(name)?.trim().strip_suffix("kB")?;
+                kb.trim().parse::<u64>().ok().map(|kb| kb * 1024)
+            })
+        };
+        Some(ProcessMemory {
+            private: field("RssAnon:"),
+            working_set: field("VmRSS:")?,
+        })
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let out = std::process::Command::new("ps")
+            .args(["-o", "rss=", "-p", &id.to_string()])
+            .output()
+            .ok()?;
+        let kb: u64 = String::from_utf8_lossy(&out.stdout).trim().parse().ok()?;
+        Some(ProcessMemory {
+            private: None,
+            working_set: kb * 1024,
+        })
+    }
+}
+
 /// Whether the job this process runs in closes the desktop's global
 /// state to it, as a renderer's does (M34.3): for the sandbox's probes.
 pub(crate) fn desktop_closed() -> bool {
@@ -1234,14 +1280,48 @@ mod launch {
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod windows {
-    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree};
     use windows_sys::Win32::Security::Cryptography::{
         CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
     };
+    use windows_sys::Win32::System::ProcessStatus::{
+        K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
+    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW,
     };
     use windows_sys::core::BOOL;
+
+    /// What process `id` holds: its private bytes and its working set,
+    /// read with no more than the right to query it.
+    pub(super) fn process_memory(id: u32) -> Option<super::ProcessMemory> {
+        // SAFETY: any number may be asked for; the result is a handle of
+        // ours, closed below, or null.
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, id) };
+        if process.is_null() {
+            return None;
+        }
+        let mut counters = PROCESS_MEMORY_COUNTERS_EX {
+            cb: size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+            ..PROCESS_MEMORY_COUNTERS_EX::default()
+        };
+        // SAFETY: the handle is open with the right to query; the
+        // structure is ours, of the extended kind its size names.
+        let read = unsafe {
+            K32GetProcessMemoryInfo(
+                process,
+                (&raw mut counters).cast::<PROCESS_MEMORY_COUNTERS>(),
+                counters.cb,
+            )
+        };
+        // SAFETY: the handle is ours, open, and closed once.
+        unsafe { CloseHandle(process) };
+        (read != 0).then_some(super::ProcessMemory {
+            private: Some(counters.PrivateUsage as u64),
+            working_set: counters.WorkingSetSize as u64,
+        })
+    }
 
     /// `data` wrapped by DPAPI for the user, with no prompt; `None` when
     /// the system refuses.

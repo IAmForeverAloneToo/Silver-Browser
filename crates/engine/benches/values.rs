@@ -38,6 +38,8 @@
 
 #![forbid(unsafe_code)]
 
+mod support;
+
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
@@ -155,7 +157,7 @@ impl Stages {
         let context = context();
         let (mut cascades, mut trees, mut layouts) = (Vec::new(), Vec::new(), Vec::new());
         let mut laid_out = None;
-        for _ in 0..RUNS {
+        for _ in 0..support::rounds(RUNS) {
             let started = Instant::now();
             let styles = page.cascade();
             cascades.push(started.elapsed());
@@ -216,7 +218,7 @@ fn themes() {
         let page = Page::parse(&page(sheet, &body));
         let mut times = Vec::new();
         let mut styles = None;
-        for _ in 0..RUNS {
+        for _ in 0..support::rounds(RUNS) {
             let started = Instant::now();
             styles = Some(page.cascade());
             times.push(started.elapsed());
@@ -283,7 +285,7 @@ fn custom_cascade(source: &str) -> (Duration, Styles, dom::NodeId) {
     let page = Page::parse(source);
     let mut times = Vec::new();
     let mut styles = None;
-    for _ in 0..RUNS {
+    for _ in 0..support::rounds(RUNS) {
         let started = Instant::now();
         styles = Some(page.cascade());
         times.push(started.elapsed());

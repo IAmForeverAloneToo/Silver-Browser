@@ -194,6 +194,51 @@ fn a_tab_keeps_at_most_the_cap_of_renderer_processes() {
     assert!(said.contains("site 19: 16 renderers"), "{said}");
 }
 
+/// M35.1: the memory of each class of page, the page-load benchmark's
+/// pages, each shown in a renderer of its own.
+#[test]
+fn what_a_renderer_holds_is_said_for_each_class_of_page() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../engine/benches/pages");
+    let mut pages: Vec<String> = std::fs::read_dir(&root)
+        .expect("the benchmark's pages")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".html"))
+        .collect();
+    pages.sort();
+    let served = root.clone();
+    let server = net::test_server::TestServer::plain(move |request| {
+        let path = request.target.split('?').next().unwrap_or("");
+        let file = served.join(path.trim_start_matches('/'));
+        let kind = match file.extension().and_then(|kind| kind.to_str()) {
+            Some("html") => "text/html",
+            Some("css") => "text/css",
+            Some("png") => "image/png",
+            _ => "application/octet-stream",
+        };
+        match std::fs::read(&file) {
+            Ok(bytes) if !path.contains("..") => net::test_server::Reply::ok(kind, &bytes),
+            _ => net::test_server::Reply::with_fields(404, &[], b""),
+        }
+    });
+    let out = Command::new(BROWSER)
+        .args(["--check-processes", "memory", &server.port().to_string()])
+        .args(&pages)
+        .output()
+        .expect("the check ran");
+    let said = String::from_utf8_lossy(&out.stdout);
+    let complained = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{said}{complained}");
+    for page in &pages {
+        let line = said
+            .lines()
+            .find(|line| line.starts_with(&format!("{page}: renderer process ")))
+            .unwrap_or_else(|| panic!("no line for {page}: {said}"));
+        assert!(!line.ends_with("working set 0 KB"), "{line}");
+    }
+    assert!(said.contains("browser process: private "), "{said}");
+}
+
 #[test]
 fn a_renderer_process_shows_a_page_for_the_browser() {
     let out = Command::new(BROWSER)

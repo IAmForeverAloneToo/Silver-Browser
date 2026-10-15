@@ -123,6 +123,22 @@ jobs:
       - if: ${{ !cancelled() }}
         run: cargo test -p silver-browser --features single-process --locked --no-fail-fast
 
+  benches:
+    # T4.2 (M35.1): every benchmark is built and run once, in its quick
+    # mode, so that one that no longer builds or panics fails the push.
+    # Its numbers say nothing on a shared runner; they are taken on the
+    # maintainer's machine, by turns (T4.3, docs/perf-budgets.md).
+    name: benches (quick)
+    runs-on: ubuntu-latest
+    env:
+      SILVER_BENCH_QUICK: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ./.github/actions/rust
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers
+      - run: cargo bench --workspace --locked --benches
+
   fuzz:
     name: fuzz (${{ matrix.target }})
     runs-on: ubuntu-latest

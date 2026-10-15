@@ -23,6 +23,8 @@
 
 #![forbid(unsafe_code)]
 
+mod support;
+
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
@@ -89,7 +91,7 @@ fn main() {
     let runs_before = engine.layout_runs();
     let mut stats = Vec::new();
     let (mut elapsed, mut ahead, mut tiles) = (Duration::ZERO, Vec::new(), 0);
-    for i in 1..=FRAMES {
+    for i in 1..=support::frames(FRAMES) {
         engine.set_scroll(i as f32 * STEP_PX);
         let time = FrameTime::at(FRAME_BUDGET * i);
         let start = Instant::now();
@@ -100,7 +102,7 @@ fn main() {
         tiles += engine.draw_ahead(start + FRAME_BUDGET);
         ahead.push(presented.elapsed().as_secs_f64() * 1000.0);
     }
-    let per_frame_ms = elapsed.as_secs_f64() * 1000.0 / FRAMES as f64;
+    let per_frame_ms = elapsed.as_secs_f64() * 1000.0 / stats.len() as f64;
 
     println!(
         "document: {paragraphs} paragraphs, {height:.0}px tall ({:.1} viewports of {HEIGHT}px)",

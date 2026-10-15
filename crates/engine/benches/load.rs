@@ -20,6 +20,8 @@
 
 #![forbid(unsafe_code)]
 
+mod support;
+
 use std::hint::black_box;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
@@ -183,7 +185,7 @@ fn main() {
     // Apart: the document fetched alone, and parsed alone.
     let mut fetched = Vec::new();
     let mut parsed = Vec::new();
-    for _ in 0..RUNS {
+    for _ in 0..support::rounds(RUNS) {
         let client = net::Client::default();
         let start = Instant::now();
         let response = client
@@ -204,7 +206,7 @@ fn main() {
     let mut shown = Vec::new();
     let mut total = Vec::new();
     let mut stages: [Vec<f64>; 5] = Default::default();
-    for _ in 0..RUNS {
+    for _ in 0..support::rounds(RUNS) {
         let (until_shown, stats, until_frame) = run(&server);
         shown.push(ms(until_shown));
         total.push(ms(until_frame));
@@ -237,7 +239,9 @@ fn main() {
     println!("  load to the first frame drawn: {}", spread(&mut total));
 
     for (kept, name) in [(true, "from the cache"), (false, "fetched again")] {
-        let mut times: Vec<f64> = (0..RUNS).map(|_| ms(back(&server, kept))).collect();
+        let mut times: Vec<f64> = (0..support::rounds(RUNS))
+            .map(|_| ms(back(&server, kept)))
+            .collect();
         println!(
             "  back to the page {name}, to its first frame drawn: {}",
             spread(&mut times)

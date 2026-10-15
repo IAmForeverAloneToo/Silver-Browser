@@ -14,6 +14,8 @@
 
 #![forbid(unsafe_code)]
 
+mod support;
+
 use std::hint::black_box;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant, UNIX_EPOCH};
@@ -155,7 +157,9 @@ fn main() {
     ] {
         // One run first, to warm the server's connections.
         run(&server, path);
-        let mut times: Vec<f64> = (0..RUNS).map(|_| ms(run(&server, path))).collect();
+        let mut times: Vec<f64> = (0..support::rounds(RUNS))
+            .map(|_| ms(run(&server, path)))
+            .collect();
         println!(
             "{what}, navigate to the last promise: {}",
             spread(&mut times)

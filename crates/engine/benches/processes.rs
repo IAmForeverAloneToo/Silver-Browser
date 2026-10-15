@@ -18,6 +18,8 @@
 
 #![forbid(unsafe_code)]
 
+mod support;
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -131,7 +133,7 @@ fn load<V: View>(server: &TestServer, path: &str, make: impl Fn() -> V) -> Strin
 /// The same, the page at `host`.
 fn load_at<V: View>(server: &TestServer, host: &str, path: &str, make: impl Fn() -> V) -> String {
     let mut times = Vec::new();
-    for _ in 0..RUNS {
+    for _ in 0..support::rounds(RUNS) {
         let mut view = make();
         let target = url(server, host, path);
         view.navigate(target.clone());
@@ -151,7 +153,7 @@ fn shows<V: View>(view: &mut V, pixel: [u8; 4]) -> bool {
 /// A click on the page to the frame that shows its effect.
 fn click<V: View>(server: &TestServer, make: impl Fn() -> V) -> String {
     let mut times = Vec::new();
-    for _ in 0..RUNS {
+    for _ in 0..support::rounds(RUNS) {
         let mut view = make();
         let target = url(server, "127.0.0.1", "/click");
         view.navigate(target.clone());
@@ -172,7 +174,7 @@ fn click<V: View>(server: &TestServer, make: impl Fn() -> V) -> String {
 /// over, or of its own.
 fn navigation(server: &TestServer, from: &str, host: &str) -> String {
     let mut times = Vec::new();
-    for _ in 0..RUNS {
+    for _ in 0..support::rounds(RUNS) {
         let mut view = tab();
         let target = url(server, host, "/small");
         view.navigate(url(server, "127.0.0.1", from));

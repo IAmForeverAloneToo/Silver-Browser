@@ -24,6 +24,8 @@
 
 #![forbid(unsafe_code)]
 
+mod support;
+
 use std::hint::black_box;
 use std::time::Duration;
 
@@ -168,7 +170,7 @@ fn main() {
     for depth in DEPTHS {
         let source = chain(depth);
         let mut times = Vec::with_capacity(RUNS);
-        for _ in 0..RUNS {
+        for _ in 0..support::rounds(RUNS) {
             let mut engine = new_engine();
             engine.load_document(&source);
             black_box(engine.frame_at(WIDTH, HEIGHT, FrameTime::at(FRAME_BUDGET)));

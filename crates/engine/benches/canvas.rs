@@ -20,6 +20,8 @@
 
 #![forbid(unsafe_code)]
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -150,7 +152,7 @@ fn run(gpu: bool, what: &str, path: &Path) {
     load(&mut engine, path);
     draw(&mut engine, 0);
     let layouts = engine.layout_runs();
-    let mut times: Vec<f64> = (1..=FRAMES)
+    let mut times: Vec<f64> = (1..=support::frames(FRAMES))
         .map(|i| draw(&mut engine, i).as_secs_f64() * 1000.0)
         .collect();
     let over = times

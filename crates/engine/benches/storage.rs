@@ -16,6 +16,8 @@
 
 #![forbid(unsafe_code)]
 
+mod support;
+
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -175,7 +177,7 @@ fn main() {
     ] {
         let (mut warm, woken) = engine();
         load(&mut warm, &woken, server.url(path));
-        let mut times: Vec<f64> = (0..RUNS)
+        let mut times: Vec<f64> = (0..support::rounds(RUNS))
             .map(|_| {
                 let (mut engine, woken) = engine();
                 ms(load(&mut engine, &woken, server.url(path)))
@@ -183,14 +185,14 @@ fn main() {
             .collect();
         println!("{what}, navigate to its title: {}", spread(&mut times));
     }
-    let mut memory: Vec<f64> = (0..RUNS)
+    let mut memory: Vec<f64> = (0..support::rounds(RUNS))
         .map(|_| ms(flush(Profile::in_memory(&Memory::new()).expect("opens"))))
         .collect();
     println!(
         "a write of {ITEMS} items, in memory: {}",
         spread(&mut memory)
     );
-    let mut disk: Vec<f64> = (0..RUNS)
+    let mut disk: Vec<f64> = (0..support::rounds(RUNS))
         .map(|run| {
             let dir = directory(&format!("flush{run}"));
             let time = ms(flush(Profile::open(&dir).expect("opens")));
@@ -199,7 +201,7 @@ fn main() {
         })
         .collect();
     println!("a write of {ITEMS} items, on disk: {}", spread(&mut disk));
-    let (mut given, mut read): (Vec<f64>, Vec<f64>) = (0..RUNS)
+    let (mut given, mut read): (Vec<f64>, Vec<f64>) = (0..support::rounds(RUNS))
         .map(|_| {
             let (given, read) = opened();
             (ms(given), ms(read))
@@ -212,7 +214,7 @@ fn main() {
     println!("then an origin's items read: {}", spread(&mut read));
     let mut first = Vec::new();
     let mut again = Vec::new();
-    for _ in 0..RUNS {
+    for _ in 0..support::rounds(RUNS) {
         let (mut engine, woken) = engine();
         first.push(ms(load(&mut engine, &woken, server.url("/sheets.html"))));
         again.push(ms(load(&mut engine, &woken, server.url("/sheets.html"))));

@@ -218,7 +218,10 @@ fn ended(
 /// `kill`, kills a renderer in the middle of an animation, sees the page
 /// say so and come back on a reload (M34.7's acceptance). With `cap` and
 /// a port, shows twenty sites of `localhost` at that port one after
-/// another and says how many renderers live and what each holds.
+/// another and says how many renderers live and what each holds. With
+/// `memory`, a port and pages' paths, shows each page of the server at
+/// that port in a renderer of its own and says what the renderer holds
+/// once it is shown (M35.1, a page class's memory).
 pub(crate) fn check(what: Option<&str>) -> i32 {
     let checked = match what {
         Some("orphan") => check_orphan(),
@@ -227,6 +230,7 @@ pub(crate) fn check(what: Option<&str>) -> i32 {
         Some("crash") => check_crash(),
         Some("kill") => check_kill(),
         Some("cap") => check_cap(std::env::args().nth(3)),
+        Some("memory") => check_memory(std::env::args().nth(3), std::env::args().skip(4).collect()),
         _ => check_all(),
     };
     match checked {
@@ -590,6 +594,63 @@ fn check_cap(port: Option<String>) -> Result<(), String> {
     if ids.len() != engine::service::MAX_RENDERERS {
         return Err(format!("{} renderers, not the cap", ids.len()));
     }
+    Ok(())
+}
+
+fn check_memory(port: Option<String>, pages: Vec<String>) -> Result<(), String> {
+    const SIZE: (u32, u32) = (1280, 800);
+    let port: u16 = port
+        .and_then(|port| port.parse().ok())
+        .ok_or("memory: the port of a server of the pages")?;
+    if pages.is_empty() {
+        return Err("memory: the pages to show".into());
+    }
+    let kb = |bytes: u64| bytes / 1024;
+    for page in &pages {
+        let mut tab = process_tab(SIZE)?;
+        // Scripts on, as the browser's window has them.
+        tab.set_scripting(true);
+        let url = Url::parse(&format!("http://127.0.0.1:{port}/{page}"))
+            .map_err(|_| format!("no URL for {page}"))?;
+        tab.navigate(url.clone());
+        if !wait_for(&mut tab, |tab| {
+            tab.url() == Some(&url) && *tab.load_state() == LoadState::Loaded
+        }) {
+            return Err(format!("{page} did not load: {:?}", tab.load_state()));
+        }
+        // Its frames drawn, until it wants no more for a while.
+        let began = Instant::now();
+        let mut quiet = Instant::now();
+        while began.elapsed() < WAIT && quiet.elapsed() < Duration::from_millis(300) {
+            tab.poll_network();
+            tab.run_tasks();
+            if tab.needs_frame() {
+                tab.frame_at(SIZE.0, SIZE.1, FrameTime::at(Duration::ZERO));
+                quiet = Instant::now();
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let id = tab
+            .renderer_process()
+            .ok_or_else(|| format!("{page}: no renderer"))?;
+        let held = crate::platform::process_memory(id)
+            .ok_or_else(|| format!("{page}: renderer process {id}'s memory unread"))?;
+        println!(
+            "{page}: renderer process {id}, private {} KB, working set {} KB",
+            held.private
+                .map_or_else(|| "?".to_owned(), |bytes| kb(bytes).to_string()),
+            kb(held.working_set)
+        );
+    }
+    let browser =
+        crate::platform::process_memory(std::process::id()).ok_or("the browser's memory unread")?;
+    println!(
+        "browser process: private {} KB, working set {} KB",
+        browser
+            .private
+            .map_or_else(|| "?".to_owned(), |bytes| kb(bytes).to_string()),
+        kb(browser.working_set)
+    );
     Ok(())
 }
 

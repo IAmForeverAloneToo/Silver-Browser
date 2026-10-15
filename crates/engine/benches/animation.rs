@@ -38,6 +38,8 @@
 
 #![forbid(unsafe_code)]
 
+mod support;
+
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -124,7 +126,9 @@ fn run(gpu: bool, name: &str) {
     draw(&mut engine, 0);
     let first = start.elapsed();
     let (layouts, laid_out) = (engine.layout_runs(), engine.boxes_laid_out());
-    let stats: Vec<FrameStats> = (1..=FRAMES).map(|i| draw(&mut engine, i)).collect();
+    let stats: Vec<FrameStats> = (1..=support::frames(FRAMES))
+        .map(|i| draw(&mut engine, i))
+        .collect();
     println!(
         "  {name}, {FRAMES} frames sixty a second: the first {:.1} ms; layouts run {}, \
          boxes laid out {}",
@@ -201,7 +205,9 @@ fn animated(label: &str, source: &str) {
     draw(&mut engine, 0);
     let first = start.elapsed();
     let work = Work::of(&engine);
-    let stats: Vec<FrameStats> = (1..=COST_FRAMES).map(|i| draw(&mut engine, i)).collect();
+    let stats: Vec<FrameStats> = (1..=support::frames(COST_FRAMES))
+        .map(|i| draw(&mut engine, i))
+        .collect();
     println!(
         "  {label}: the first frame {:.1} ms; {COST_FRAMES} frames: {}",
         first.as_secs_f64() * 1000.0,
@@ -297,7 +303,7 @@ fn turned_card() {
     };
     let work = Work::of(&engine);
     let mut stats = Vec::new();
-    for i in 1..=COST_FRAMES {
+    for i in 1..=support::frames(COST_FRAMES) {
         let style = format!("transform: rotate({}deg)", 2 * i);
         engine
             .mutate(|document| document.set_attribute(spin, "style", &style))

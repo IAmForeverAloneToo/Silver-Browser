@@ -15,6 +15,8 @@
 
 #![forbid(unsafe_code)]
 
+mod support;
+
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
@@ -220,7 +222,7 @@ fn main() {
         ("/compile.html", "the same compiled"),
     ] {
         let url = server.url(path);
-        let mut times: Vec<f64> = (0..RUNS).map(|_| ms(load(&url))).collect();
+        let mut times: Vec<f64> = (0..support::rounds(RUNS)).map(|_| ms(load(&url))).collect();
         println!("  {what}: {}", spread(&mut times));
     }
 }

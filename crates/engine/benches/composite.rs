@@ -31,6 +31,8 @@
 
 #![forbid(unsafe_code)]
 
+mod support;
+
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
@@ -184,7 +186,7 @@ fn scrolling(gpu: bool) {
     let mut stats = Vec::new();
     let (mut drawn_in_frame, mut prepainted) = (0u32, 0u32);
     let mut composited = 0u32;
-    for i in 1..=FRAMES {
+    for i in 1..=support::frames(FRAMES) {
         engine.set_scroll(i as f32 * STEP_PX);
         stats.push(draw(&mut engine, i));
         let layered = engine.layered();
@@ -220,7 +222,7 @@ fn moving_card(gpu: bool, promoted: bool, turning: bool) {
     let mut stats = Vec::new();
     let (mut rasterized, mut composited, mut partial, mut whole) = (0u32, 0u32, 0u32, 0u32);
     let (mut redrawn_area, mut tiles) = (0u64, 0u32);
-    for i in 1..=FRAMES {
+    for i in 1..=support::frames(FRAMES) {
         let style = if turning {
             format!("transform: rotate({}deg)", 2 * i)
         } else {
@@ -281,7 +283,7 @@ fn faded_cards(gpu: bool) {
     draw(&mut engine, 0);
     let first = start.elapsed();
     let mut stats = Vec::new();
-    for i in 1..=FRAMES {
+    for i in 1..=support::frames(FRAMES) {
         engine.set_scroll(i as f32 * STEP_PX);
         stats.push(draw(&mut engine, i));
     }

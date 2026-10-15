@@ -15,6 +15,8 @@
 
 #![forbid(unsafe_code)]
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
@@ -83,7 +85,7 @@ fn median(mut times: Vec<f64>) -> f64 {
 /// The demo `name` from its navigation to its first frame, decoded, at
 /// `scale`: the median of the rounds.
 fn first_frame(name: &str, scale: f32) {
-    let times = (0..ROUNDS)
+    let times = (0..support::rounds(ROUNDS))
         .map(|_| {
             let (mut engine, woken) = engine(scale);
             let start = Instant::now();
@@ -165,7 +167,7 @@ fn image_resize() {
         .subtree(document.root())
         .find(|&n| document.attr(n, "id") == Some("i"))
         .expect("the image");
-    let times = (0..ROUNDS * 4)
+    let times = (0..support::rounds(ROUNDS) * 4)
         .map(|i| {
             let width = format!("width: {}px", 100 + 37 * (i + 1));
             let start = Instant::now();

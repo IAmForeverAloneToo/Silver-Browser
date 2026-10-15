@@ -14,6 +14,8 @@
 
 #![forbid(unsafe_code)]
 
+mod support;
+
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
@@ -47,7 +49,7 @@ fn page() -> String {
         "<!doctype html><style>body { margin: 8px } \
          iframe { width: 300px; height: 200px; margin: 0 4px 4px 0 }</style>",
     );
-    for i in 0..FRAMES {
+    for i in 0..support::frames(FRAMES as u32) as usize {
         let mut boxes = String::new();
         for j in 0..12 {
             boxes.push_str(&format!(
@@ -102,7 +104,7 @@ fn median(mut times: Vec<f64>) -> f64 {
 /// The page from its load to its first frame, its frames loaded and
 /// drawn: the median of the rounds.
 fn first_frame(scale: f32) {
-    let times = (0..ROUNDS)
+    let times = (0..support::rounds(ROUNDS))
         .map(|_| {
             let start = Instant::now();
             std::hint::black_box(loaded(scale));
@@ -119,7 +121,7 @@ fn first_frame(scale: f32) {
 /// frame: the median of forty.
 fn scroll() {
     let (mut engine, _woken) = loaded(1.0);
-    let times = (0..ROUNDS * 4)
+    let times = (0..support::rounds(ROUNDS) * 4)
         .map(|i| {
             let y = if i % 2 == 0 { 204.0 } else { 0.0 };
             let start = Instant::now();
@@ -138,7 +140,7 @@ fn scroll() {
 /// and four, each to its frame: the median of forty.
 fn resize() {
     let (mut engine, _woken) = loaded(1.0);
-    let times = (0..ROUNDS * 4)
+    let times = (0..support::rounds(ROUNDS) * 4)
         .map(|i| {
             let width = if i % 2 == 0 { 1000 } else { WIDTH };
             let start = Instant::now();

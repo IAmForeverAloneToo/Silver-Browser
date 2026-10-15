@@ -15,6 +15,8 @@
 
 #![forbid(unsafe_code)]
 
+mod support;
+
 use std::hint::black_box;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
@@ -137,7 +139,7 @@ fn load(server: &TestServer, scripting: bool) -> Duration {
 
 fn main() {
     let mut made = Vec::new();
-    for _ in 0..RUNS {
+    for _ in 0..support::rounds(RUNS) {
         let start = Instant::now();
         let realm = QuickJs
             .realm::<Host>(Limits::default())
@@ -162,7 +164,7 @@ fn main() {
         ),
     ] {
         let mut ran = Vec::new();
-        for _ in 0..RUNS {
+        for _ in 0..support::rounds(RUNS) {
             let start = Instant::now();
             black_box(realm.run(&script(source), &mut host).expect("it runs"));
             assert!(realm.checkpoint(&mut host).is_empty());
@@ -170,7 +172,7 @@ fn main() {
         }
         println!("{what}: {}", spread(&mut ran));
     }
-    assert_eq!(host.lines, 1000 * RUNS);
+    assert_eq!(host.lines, 1000 * support::rounds(RUNS));
 
     let html = page();
     let server = {
@@ -189,7 +191,7 @@ fn main() {
         html.len()
     );
     for scripting in [false, true] {
-        let mut loads: Vec<f64> = (0..RUNS / 2)
+        let mut loads: Vec<f64> = (0..(support::rounds(RUNS) / 2).max(1))
             .map(|_| ms(load(&server, scripting)))
             .collect();
         let on = if scripting { "on" } else { "off" };
