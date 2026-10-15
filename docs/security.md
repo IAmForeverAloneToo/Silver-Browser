@@ -227,8 +227,10 @@ message at most `MAX_MESSAGE`).
   token of the browser's: every privilege but traversal removed, every
   group deny-only but `Users`, `Everyone` and the logon session's, and
   `Users`, `Everyone` and `RESTRICTED` as restricting SIDs (its default
-  DACL admitting `RESTRICTED` too, for what it makes for itself); at
-  low integrity; suspended, put in a job and resumed. The job kills it
+  DACL, for what it makes for itself, admitting its user, the system and
+  `RESTRICTED`, whatever the browser's own: an elevated browser's admits
+  only the administrators, made deny-only); at low integrity;
+  suspended, put in a job and resumed. The job kills it
   when the browser's hold closes, admits no second process, limits its
   committed memory to `MAX_RENDERER_MEMORY` (4 GiB) and closes the
   desktop's global state (system parameters, display settings, exiting

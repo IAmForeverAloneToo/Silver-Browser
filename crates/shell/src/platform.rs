@@ -290,14 +290,13 @@ mod launch {
         SetHandleInformation, WAIT_OBJECT_0,
     };
     use windows_sys::Win32::Security::{
-        ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
-        AddAccessAllowedAce, AddAce, CreateRestrictedToken, CreateWellKnownSid,
-        DISABLE_MAX_PRIVILEGE, EqualSid, GetAce, GetAclInformation, GetLengthSid,
-        GetTokenInformation, InitializeAcl, PSID, SECURITY_ATTRIBUTES, SECURITY_MAX_SID_SIZE,
-        SID_AND_ATTRIBUTES, SetTokenInformation, TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY,
-        TOKEN_DEFAULT_DACL, TOKEN_DUPLICATE, TOKEN_GROUPS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
-        TokenDefaultDacl, TokenGroups, TokenIntegrityLevel, WELL_KNOWN_SID_TYPE,
-        WinBuiltinUsersSid, WinLowLabelSid, WinRestrictedCodeSid, WinWorldSid,
+        ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, AddAccessAllowedAce, CreateRestrictedToken,
+        CreateWellKnownSid, DISABLE_MAX_PRIVILEGE, EqualSid, GetLengthSid, GetTokenInformation,
+        InitializeAcl, PSID, SECURITY_ATTRIBUTES, SECURITY_MAX_SID_SIZE, SID_AND_ATTRIBUTES,
+        SetTokenInformation, TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY, TOKEN_DEFAULT_DACL,
+        TOKEN_DUPLICATE, TOKEN_GROUPS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_USER,
+        TokenDefaultDacl, TokenGroups, TokenIntegrityLevel, TokenUser, WELL_KNOWN_SID_TYPE,
+        WinBuiltinUsersSid, WinLocalSystemSid, WinLowLabelSid, WinRestrictedCodeSid, WinWorldSid,
     };
     use windows_sys::Win32::System::Diagnostics::Debug::{
         EXCEPTION_EXECUTE_HANDLER, EXCEPTION_POINTERS, MINIDUMP_EXCEPTION_INFORMATION,
@@ -762,72 +761,31 @@ mod launch {
         Ok(buffer)
     }
 
-    /// Adds an entry granting `sid` all access to `token`'s default DACL,
-    /// the one given to what a process of the token makes for itself
-    /// (its threads, its sections, its events): without it, what the
-    /// process makes would grant only the user, whom the restricted
-    /// check does not admit, and the system's libraries fail to start.
-    fn admit_by_default(token: &OwnedHandle, sid: PSID) -> std::io::Result<()> {
-        let buffer = information(token, TokenDefaultDacl)?;
-        // SAFETY: the buffer holds the token's default DACL as the call
-        // wrote it: the structure, its pointer into the buffer or null.
-        let old = unsafe { (*buffer.as_ptr().cast::<TOKEN_DEFAULT_DACL>()).DefaultDacl };
-        let mut sizes = ACL_SIZE_INFORMATION::default();
-        if !old.is_null() {
-            // SAFETY: `old` is the token's ACL, in the buffer, alive; the
-            // structure is the class's, of the size given, ours to write.
-            let read = unsafe {
-                GetAclInformation(
-                    old,
-                    (&raw mut sizes).cast(),
-                    size_of::<ACL_SIZE_INFORMATION>() as u32,
-                    AclSizeInformation,
-                )
-            };
-            if read == 0 {
-                return Err(last_error());
-            }
-        }
-        // SAFETY: `sid` is a valid SID made by the caller.
-        let length = size_of::<ACL>() as u32
-            + sizes.AclBytesInUse
-            + size_of::<ACCESS_ALLOWED_ACE>() as u32
-            + unsafe { GetLengthSid(sid) };
+    /// Sets `token`'s default DACL, the one given to what a process of
+    /// the token makes for itself (its threads, its sections, its
+    /// events), to one granting each of `sids` all access, whatever the
+    /// browser's own was: that grants its user, whom the restricted check
+    /// does not admit, or for a browser run elevated the administrators,
+    /// made deny-only, whom neither check admits; and a process whose own
+    /// objects admit no one fails to start.
+    fn set_default_dacl(token: &OwnedHandle, sids: &[PSID]) -> std::io::Result<()> {
+        let entries: u32 = sids
+            .iter()
+            // SAFETY: each SID is a valid one the caller holds.
+            .map(|&sid| size_of::<ACCESS_ALLOWED_ACE>() as u32 + unsafe { GetLengthSid(sid) })
+            .sum();
+        let length = size_of::<ACL>() as u32 + entries;
         let mut acl = vec![0usize; (length as usize).div_ceil(size_of::<usize>())];
         let new = acl.as_mut_ptr().cast::<ACL>();
-        let revision = if old.is_null() {
-            windows_sys::Win32::Security::ACL_REVISION
-        } else {
-            // SAFETY: `old` is the token's ACL, alive in the buffer.
-            u32::from(unsafe { (*old).AclRevision })
-        };
         // SAFETY: the buffer is at least `length` bytes, aligned, ours.
-        if unsafe { InitializeAcl(new, length, revision) } == 0 {
+        if unsafe { InitializeAcl(new, length, ACL_REVISION) } == 0 {
             return Err(last_error());
         }
-        for index in 0..sizes.AceCount {
-            let mut entry = std::ptr::null_mut();
-            // SAFETY: `old` is a valid ACL of more than `index` entries;
-            // `entry` is ours to write, then points into `old`, whose
-            // entries are copied, each of the size its header says, into
-            // the new ACL, which has room for all of them.
-            let copied = unsafe {
-                GetAce(old, index, &mut entry) != 0
-                    && AddAce(
-                        new,
-                        revision,
-                        u32::MAX,
-                        entry,
-                        u32::from((*entry.cast::<ACE_HEADER>()).AceSize),
-                    ) != 0
-            };
-            if !copied {
+        for &sid in sids {
+            // SAFETY: the new ACL has room for the entries; `sid` is valid.
+            if unsafe { AddAccessAllowedAce(new, ACL_REVISION, GENERIC_ALL, sid) } == 0 {
                 return Err(last_error());
             }
-        }
-        // SAFETY: the new ACL has room for the entry; `sid` is valid.
-        if unsafe { AddAccessAllowedAce(new, revision, GENERIC_ALL, sid) } == 0 {
-            return Err(last_error());
         }
         let default = TOKEN_DEFAULT_DACL { DefaultDacl: new };
         // SAFETY: the token is open with the right to change its default;
@@ -854,8 +812,9 @@ mod launch {
     /// its restricting SIDs, so that an access must be granted to one of
     /// them as well as to the user. The logon session's SID is not one:
     /// it would admit the session's desktop and named objects, which a
-    /// renderer needs no more of than those grant. Its integrity is low:
-    /// it can write nothing labelled above it.
+    /// renderer needs no more of than those grant. What it makes for
+    /// itself admits its user, the system and `RESTRICTED`. Its integrity
+    /// is low: it can write nothing labelled above it.
     fn renderer_token() -> std::io::Result<OwnedHandle> {
         let mut own: HANDLE = std::ptr::null_mut();
         // SAFETY: the current process's pseudo-handle needs no closing;
@@ -877,8 +836,9 @@ mod launch {
             well_known(WinWorldSid)?,
             well_known(WinRestrictedCodeSid)?,
             well_known(WinLowLabelSid)?,
+            well_known(WinLocalSystemSid)?,
         ];
-        let [users, everyone, restricted, low]: [PSID; 4] =
+        let [users, everyone, restricted, low, system]: [PSID; 5] =
             sids.each_mut().map(|sid| sid.as_mut_ptr().cast());
         let buffer = information(&own, TokenGroups)?;
         let list = buffer.as_ptr().cast::<TOKEN_GROUPS>();
@@ -938,7 +898,11 @@ mod launch {
             return Err(last_error());
         }
         let token = owned(token).ok_or_else(last_error)?;
-        admit_by_default(&token, restricted)?;
+        let named = information(&own, TokenUser)?;
+        // SAFETY: the buffer holds the token's user as the call wrote it,
+        // its SID pointing into the buffer, which outlives its use here.
+        let user = unsafe { (*named.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+        set_default_dacl(&token, &[user, system, restricted])?;
         let label = TOKEN_MANDATORY_LABEL {
             Label: SID_AND_ATTRIBUTES {
                 Sid: low,
@@ -1198,6 +1162,71 @@ mod launch {
             log: Some(Box::new(File::from(log))),
             process: Box::new(renderer),
         })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use windows_sys::Win32::Security::{
+            ACL_SIZE_INFORMATION, AclSizeInformation, GetAce, GetAclInformation,
+        };
+
+        /// What a renderer makes for itself admits its user, the system
+        /// and `RESTRICTED`, and no one else, whatever the browser's own
+        /// default DACL: an elevated browser's (CI's runners) admits no
+        /// one the restricted token may act as, and its renderers failed
+        /// to start (0xC0000142).
+        #[test]
+        fn a_renderers_own_objects_admit_its_user_the_system_and_restricted() {
+            let token = renderer_token().expect("a renderer's token");
+            let named = information(&token, TokenUser).expect("its user");
+            // SAFETY: the buffer holds the token's user as the call wrote
+            // it, its SID pointing into the buffer, alive to the end.
+            let user = unsafe { (*named.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+            let mut system = well_known(WinLocalSystemSid).expect("the system's SID");
+            let mut restricted = well_known(WinRestrictedCodeSid).expect("RESTRICTED");
+            let wanted: [PSID; 3] = [
+                user,
+                system.as_mut_ptr().cast(),
+                restricted.as_mut_ptr().cast(),
+            ];
+            let buffer = information(&token, TokenDefaultDacl).expect("its default DACL");
+            // SAFETY: the buffer holds the token's default DACL as the call
+            // wrote it: the structure, its pointer into the buffer.
+            let dacl = unsafe { (*buffer.as_ptr().cast::<TOKEN_DEFAULT_DACL>()).DefaultDacl };
+            assert!(!dacl.is_null());
+            let mut sizes = ACL_SIZE_INFORMATION::default();
+            // SAFETY: `dacl` is the token's ACL, alive in the buffer; the
+            // structure is the class's, of the size given, ours to write.
+            let read = unsafe {
+                GetAclInformation(
+                    dacl,
+                    (&raw mut sizes).cast(),
+                    size_of::<ACL_SIZE_INFORMATION>() as u32,
+                    AclSizeInformation,
+                )
+            };
+            assert_ne!(read, 0);
+            assert_eq!(sizes.AceCount, 3);
+            for (index, sid) in (0u32..).zip(wanted) {
+                let mut entry = std::ptr::null_mut();
+                // SAFETY: `dacl` has more than `index` entries; `entry` is
+                // ours to write, then points at one in the buffer.
+                assert_ne!(unsafe { GetAce(dacl, index, &mut entry) }, 0);
+                let ace = entry.cast::<ACCESS_ALLOWED_ACE>();
+                // SAFETY: each entry is an allowed one, as the token's
+                // default was set: its header, mask and SID, in the buffer.
+                let (kind, mask, admitted) = unsafe {
+                    (
+                        (*ace).Header.AceType,
+                        (*ace).Mask,
+                        EqualSid((&raw mut (*ace).SidStart).cast(), sid) != 0,
+                    )
+                };
+                // An allowed entry is of type 0.
+                assert_eq!((kind, mask, admitted), (0, GENERIC_ALL, true), "{index}");
+            }
+        }
     }
 }
 

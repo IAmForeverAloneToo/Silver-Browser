@@ -199,6 +199,10 @@ pub struct RemoteTab {
     /// numbers.
     stopped: Option<(usize, Engine)>,
     stopped_frames: HashMap<u32, Stopped>,
+    /// Each time a frame's parent was told it loaded, and why: for the
+    /// tests.
+    #[cfg(test)]
+    told_loaded: Vec<String>,
 }
 
 impl RemoteTab {
@@ -310,6 +314,8 @@ impl RemoteTab {
             copied: None,
             stopped: None,
             stopped_frames: HashMap::new(),
+            #[cfg(test)]
+            told_loaded: Vec::new(),
         }
     }
 
@@ -773,6 +779,8 @@ impl RemoteTab {
                     {
                         let _ = slot.renderer.send(&ToRenderer::FrameRemote { key });
                         let _ = slot.renderer.send(&ToRenderer::FrameLoaded { key });
+                        #[cfg(test)]
+                        self.told_loaded.push(format!("{key}: no renderer"));
                     }
                     return;
                 };
@@ -958,6 +966,9 @@ impl RemoteTab {
             );
             if loading && let Some(slot) = self.renderers.get(&parent) {
                 let _ = slot.renderer.send(&ToRenderer::FrameLoaded { key });
+                #[cfg(test)]
+                self.told_loaded
+                    .push(format!("{key}: its renderer stopped"));
             }
             self.fresh = true;
         }
@@ -1116,6 +1127,11 @@ impl RemoteTab {
             frame.told.clone_from(&state.url);
         }
         let key = frame.key;
+        #[cfg(test)]
+        if tell {
+            self.told_loaded
+                .push(format!("{key}: {:?} {:?}", state.url, state.load));
+        }
         frame.state = state;
         if tell {
             let parent = super::frames::lock(&self.registry)
@@ -1410,6 +1426,12 @@ impl RemoteTab {
     #[cfg(test)]
     pub(crate) fn hsts(&self) -> Arc<Mutex<Hsts>> {
         self.hsts.clone()
+    }
+
+    /// Each time a frame's parent was told it loaded, and why.
+    #[cfg(test)]
+    pub(crate) fn told_loaded(&self) -> &[String] {
+        &self.told_loaded
     }
 
     /// The load state of each frame root, by the renderer showing it.

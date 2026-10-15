@@ -246,9 +246,19 @@ fn check_all() -> Result<(), String> {
         let renderer = Renderer::start(&launcher, number, events, Arc::new(|| {}), None)
             .map_err(|error| format!("renderer {number} did not start: {error}"))?;
         if !renderer.wait_ready(HELLO_TIMEOUT + Duration::from_secs(1)) {
+            // Its code once it has ended, as the system says it: a status
+            // in hexadecimal on Windows.
+            let code = (0..50).find_map(|_| {
+                let code = renderer.exit_code();
+                if code.is_none() {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                code
+            });
             return Err(format!(
-                "renderer {number} did not answer: {:?}",
-                renderer.gone()
+                "renderer {number} did not answer: {:?}, exit code {:?}",
+                renderer.gone(),
+                code.map(|code| format!("{code} ({:#x})", code as u32))
             ));
         }
         println!(

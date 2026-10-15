@@ -218,9 +218,10 @@ fn a_frame_whose_renderer_stopped_holds_its_parents_load_no_more() {
     assert_eq!(
         state,
         LoadState::Loading,
-        "{lines:?} {:?} {:?} {:?}",
+        "{lines:?} {:?} {:?} {:?} {:?}",
         tab.frame_loads(),
         tab.renderers(),
+        tab.told_loaded().to_vec(),
         tab.take_notice()
     );
     let framing = frame_renderer(&tab, "/never").expect("the frame's renderer");

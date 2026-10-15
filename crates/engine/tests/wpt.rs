@@ -1272,14 +1272,29 @@ fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
 }
 
 /// A testharness test that did not finish, `why`, with the subtests that
-/// did, as the report logged them.
+/// did, as the report logged them, and the last of what else its
+/// console said.
 fn unfinished(engine: &mut Engine, why: String) -> Outcome {
-    let done: Vec<String> = engine
+    let (done, said): (Vec<String>, Vec<String>) = engine
         .take_console()
         .into_iter()
-        .filter_map(|entry| entry.text.strip_prefix("wpt-done\t").map(str::to_owned))
+        .map(|entry| entry.text)
+        .partition(|text| text.starts_with("wpt-done\t"));
+    let done: Vec<&str> = done
+        .iter()
+        .map(|text| text.trim_start_matches("wpt-done\t"))
         .collect();
-    Outcome::fail(format!("{why}; finished: [{}]", done.join(" | ")))
+    let said: Vec<String> = said
+        .iter()
+        .rev()
+        .take(5)
+        .rev()
+        .map(|text| text.chars().take(200).collect())
+        .collect();
+    Outcome::fail(format!(
+        "{why}; finished: [{}]; said: {said:?}",
+        done.join(" | ")
+    ))
 }
 
 fn run_reftest(
