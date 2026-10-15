@@ -393,7 +393,7 @@ impl ImageStore {
             let all = styles.get(node).into_iter().chain(
                 pseudo
                     .into_iter()
-                    .flat_map(|p| [p.before.as_ref(), p.after.as_ref(), p.marker.as_ref()])
+                    .flat_map(|p| [p.before.as_deref(), p.after.as_deref(), p.marker.as_deref()])
                     .flatten(),
             );
             for style in all {

@@ -81,6 +81,8 @@
 //! column is never hit. The paint-order walk needs nothing new: these
 //! are block-level boxes in flow.
 
+use std::sync::Arc;
+
 use style::computed::{
     BOTTOM, BorderCollapse, BorderStyle, BoxSizing, CaptionSide, Color, ComputedStyle, Display,
     EmptyCells, Float, LEFT, LengthPercentage, LengthPercentageAuto, Overflow, Position, RIGHT,
@@ -373,10 +375,10 @@ pub(crate) fn layout_table_contents<'a>(
     let table_width = content_width + edges.horizontal();
     let table_height = content_height + edges.vertical();
     let mut table_box = box_fragment(table_width, table_height, b);
-    table_box.style = inner_style(style);
+    table_box.style = inner_style(style).into();
     if collapsed.is_some() {
         // Its border is the grid's outer lines', painted as segments.
-        table_box.style.border_style = [BorderStyle::None; 4];
+        Arc::make_mut(&mut table_box.style).border_style = [BorderStyle::None; 4];
     }
     // The absolutely positioned boxes met in the cells, relative to the
     // table box, and in the captions, relative to the wrapper.
@@ -416,7 +418,7 @@ pub(crate) fn layout_table_contents<'a>(
             part,
             Rect::empty(grid_left, row_y.first().copied().unwrap_or(0.0)),
         );
-        fragment.style.position = Position::Static;
+        Arc::make_mut(&mut fragment.style).position = Position::Static;
         if part.style.background_color.a > 0.0 {
             for &i in cells_under(part) {
                 let mut background = background_fragment(part, cell_rect(&grid.cells[i]));
@@ -429,7 +431,7 @@ pub(crate) fn layout_table_contents<'a>(
             for column in &part.children {
                 let mut column_fragment =
                     part_fragment(column, Rect::empty(fragment.x, fragment.y));
-                column_fragment.style.position = Position::Static;
+                Arc::make_mut(&mut column_fragment.style).position = Position::Static;
                 if column.style.background_color.a > 0.0 {
                     for &i in cells_under(column) {
                         let mut background = background_fragment(column, cell_rect(&grid.cells[i]));
@@ -587,7 +589,7 @@ pub(crate) fn layout_table_contents<'a>(
     // absolutely positioned boxes they carry, move below the table box.
     let wrapper_height = top_height + table_height + bottom_height;
     let mut root = box_fragment(table_width, wrapper_height, b);
-    root.style = wrapper_style(style);
+    root.style = wrapper_style(style).into();
     root.children.extend(top_captions);
     root.children.push(table_box.translated(0.0, top_height));
     root.children.extend(
@@ -1545,12 +1547,13 @@ fn row_fragment<'a>(
         cell_fragment.h = r.h;
         if collapsed {
             // Its borders are the grid lines', painted as segments.
-            cell_fragment.style.border_style = [BorderStyle::None; 4];
+            Arc::make_mut(&mut cell_fragment.style).border_style = [BorderStyle::None; 4];
         } else if cell.b.style.empty_cells == EmptyCells::Hide && is_empty_cell(cell.b) {
             // `empty-cells: hide` (CSS2 §17.6.1.1): an empty cell paints
             // neither its border nor its background.
-            cell_fragment.style.border_style = [BorderStyle::None; 4];
-            cell_fragment.style.background_color = Color::TRANSPARENT;
+            let style = Arc::make_mut(&mut cell_fragment.style);
+            style.border_style = [BorderStyle::None; 4];
+            style.background_color = Color::TRANSPARENT;
         }
         let (dx, dy) = layout.relative;
         cell_fragment.x = r.x - rect.x + dx;
@@ -1585,8 +1588,8 @@ fn part_fragment(part: &LayoutBox, rect: Rect) -> Fragment {
     let mut fragment = box_fragment(rect.w, rect.h, part);
     fragment.x = rect.x;
     fragment.y = rect.y;
-    fragment.style.background_color = Color::TRANSPARENT;
-    fragment.style.border_style = [BorderStyle::None; 4];
+    Arc::make_mut(&mut fragment.style).background_color = Color::TRANSPARENT;
+    Arc::make_mut(&mut fragment.style).border_style = [BorderStyle::None; 4];
     fragment
 }
 
@@ -1596,10 +1599,10 @@ fn background_fragment(part: &LayoutBox, rect: Rect) -> Fragment {
     let mut fragment = box_fragment(rect.w, rect.h, part);
     fragment.x = rect.x;
     fragment.y = rect.y;
-    fragment.style.border_style = [BorderStyle::None; 4];
-    fragment.style.position = Position::Static;
-    fragment.style.float = Float::None;
-    fragment.style.z_index = None;
+    Arc::make_mut(&mut fragment.style).border_style = [BorderStyle::None; 4];
+    Arc::make_mut(&mut fragment.style).position = Position::Static;
+    Arc::make_mut(&mut fragment.style).float = Float::None;
+    Arc::make_mut(&mut fragment.style).z_index = None;
     fragment
 }
 
@@ -1998,21 +2001,19 @@ fn segment_fragment(table: &LayoutBox, border: Candidate, side: usize, rect: Rec
     let mut fragment = box_fragment(rect.w, rect.h, table);
     fragment.x = rect.x;
     fragment.y = rect.y;
-    fragment.style = inner_style(&table.style);
-    fragment.style.background_color = Color::TRANSPARENT;
-    fragment.style.overflow = Overflow::Visible;
-    fragment.style.border_style = [BorderStyle::None; 4];
-    fragment.style.border_style[side] = match border.style {
+    fragment.style = inner_style(&table.style).into();
+    Arc::make_mut(&mut fragment.style).background_color = Color::TRANSPARENT;
+    Arc::make_mut(&mut fragment.style).overflow = Overflow::Visible;
+    Arc::make_mut(&mut fragment.style).border_style = [BorderStyle::None; 4];
+    Arc::make_mut(&mut fragment.style).border_style[side] = match border.style {
         BorderStyle::Inset => BorderStyle::Ridge,
         BorderStyle::Outset => BorderStyle::Groove,
         other => other,
     };
-    fragment.style.border_width = [0.0; 4];
-    fragment.style.border_width[side] = border.width;
-    fragment.style.border_color[side] = border.color;
-    fragment
-        .style
-        .set_border_color_current(side, border.current);
+    Arc::make_mut(&mut fragment.style).border_width = [0.0; 4];
+    Arc::make_mut(&mut fragment.style).border_width[side] = border.width;
+    Arc::make_mut(&mut fragment.style).border_color[side] = border.color;
+    Arc::make_mut(&mut fragment.style).set_border_color_current(side, border.current);
     fragment
 }
 

@@ -172,6 +172,7 @@ fn add(recascade: &dyn Recascade, container: &mut LayoutBox, path: &[usize]) {
     let Some(style) = recascade.pseudo_element(element, PseudoElement::FirstLine, parent) else {
         return; // no rule styles it after all
     };
+    let style = std::sync::Arc::new(style);
     let pseudo = LayoutBox {
         style: style.clone(),
         kind: BoxKind::Inline,
@@ -257,9 +258,9 @@ fn restyle(
             ..
         } = &mut *b;
         restyle(recascade, children, own, &style);
-        if style != *own {
+        if style != **own {
             b.first_line = Some(Box::new(FirstLine {
-                style,
+                style: style.into(),
                 chain: Vec::new(),
             }));
         }

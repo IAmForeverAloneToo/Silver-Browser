@@ -114,7 +114,7 @@ impl<'a> Marker<'a> {
             y,
             w,
             h,
-            style: self.style.clone(),
+            style: self.style.clone().into(),
             kind,
             node: self.b.node,
             generated: Some(PseudoElement::Marker),

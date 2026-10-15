@@ -66,14 +66,11 @@ pub use generated::MAX_GENERATED_TEXT;
 /// One node in the box tree.
 #[derive(Debug, Clone)]
 pub struct LayoutBox {
-    /// The generating element's computed style — owned, not `&'a
-    /// ComputedStyle` as the roadmap's own sketch first put it: a
-    /// borrowed field would thread a lifetime parameter through every
-    /// consumer (`layout`, `paint`, tests) for what's currently a small,
-    /// cheap-to-clone struct. Revisit with arenas if profiling ever
-    /// shows it matters (that's what M35's "shared data arenas" line is
-    /// for).
-    pub style: ComputedStyle,
+    /// The generating element's computed style, shared with the cascade
+    /// and the box's fragments (M35.9): a style is 704 bytes, and was
+    /// copied into every box and every fragment, every word's among
+    /// them.
+    pub style: Arc<ComputedStyle>,
     /// What kind of box this is, and its own children (a [`BoxKind::Text`]
     /// never has children).
     pub kind: BoxKind,
@@ -323,7 +320,7 @@ pub struct FirstLine {
     /// The box's style there: for the run's anonymous block, the
     /// innermost `::first-line`'s, which the line's root inline box
     /// inherits — its font is the line's strut.
-    pub style: ComputedStyle,
+    pub style: Arc<ComputedStyle>,
     /// For the run's anonymous block, the `::first-line`
     /// pseudo-elements around the line's content, outermost first: each
     /// an inline box naming its originating element, marked as the
@@ -848,6 +845,12 @@ impl<'a> Styled<'a> {
     /// or a generated box's pseudo-element's; `None` for a text, and for
     /// an element the cascade did not style.
     fn style(&self, item: Item) -> Option<&'a ComputedStyle> {
+        self.shared(item).map(|style| &**style)
+    }
+
+    /// [`Styled::style`], shared with the cascade (M35.9): what a box of
+    /// the item holds rather than a copy.
+    fn shared(&self, item: Item) -> Option<&'a Arc<ComputedStyle>> {
         match item {
             // While scripts run, a `noscript` makes no box (HTML section
             // 15.3.1): as an element with none.
@@ -864,9 +867,26 @@ impl<'a> Styled<'a> {
             {
                 None
             }
-            Item::Node(node) => self.styles.get(node),
-            Item::Generated(element, side) => self.styles.pseudo(element, side.pseudo_element()),
+            Item::Node(node) => self.styles.shared(node),
+            Item::Generated(element, side) => {
+                self.styles.pseudo_shared(element, side.pseudo_element())
+            }
             Item::GeneratedText(..) | Item::ControlText(_) | Item::ControlArrow(_) => None,
+        }
+    }
+
+    /// [`Styled::style_or_initial`], shared with the cascade when the
+    /// item has a style (M35.9).
+    fn shared_or_initial(&self, item: Item) -> Arc<ComputedStyle> {
+        self.shared(item).cloned().unwrap_or_default()
+    }
+
+    /// `style`, for a box of `item`: the cascade's own, shared, when it
+    /// is that (M35.9), else a style of its own.
+    fn share(&self, item: Item, style: &ComputedStyle) -> Arc<ComputedStyle> {
+        match self.shared(item) {
+            Some(shared) if std::ptr::eq(&**shared, style) => shared.clone(),
+            _ => Arc::new(style.clone()),
         }
     }
 
@@ -1183,17 +1203,19 @@ impl<'a> Styled<'a> {
     /// drop-down's text starting [`SELECT_INDENT`] in, as the reference
     /// browser's does whatever its padding; the computed style scripts
     /// read is not changed. Any other box's style as it is.
-    fn control_style(&self, item: Item, style: &ComputedStyle) -> ComputedStyle {
-        let mut used = style.clone();
+    fn control_style(&self, item: Item, style: &ComputedStyle) -> Arc<ComputedStyle> {
         if let Item::Node(node) = item
             && self.document.tag(node) == Some("select")
             && !dom::forms::is_list_box(self.document, node)
-            && let style::computed::LengthPercentage::Px(left) = used.padding[style::computed::LEFT]
+            && let style::computed::LengthPercentage::Px(left) =
+                style.padding[style::computed::LEFT]
         {
+            let mut used = style.clone();
             used.padding[style::computed::LEFT] =
                 style::computed::LengthPercentage::Px(left + SELECT_INDENT);
+            return Arc::new(used);
         }
-        used
+        self.share(item, style)
     }
 
     /// The box the `img` element `node`, `item`, generates with the
@@ -1393,7 +1415,7 @@ impl<'a> Styled<'a> {
         icon.replaced = Some(Replaced::Icon);
         let alt = self.document.attr(node, "alt").unwrap_or_default();
         let text = LayoutBox {
-            style: self.style_or_initial(item),
+            style: self.shared_or_initial(item),
             kind: BoxKind::Text(alt.to_owned()),
             children: Vec::new(),
             node,
@@ -1428,7 +1450,7 @@ impl<'a> Styled<'a> {
         children: Vec<LayoutBox>,
     ) -> LayoutBox {
         LayoutBox {
-            style: anonymous_style(self, item, display),
+            style: anonymous_style(self, item, display).into(),
             kind,
             children,
             node: item.node(),
@@ -1589,7 +1611,7 @@ fn build_items(styled: &Styled<'_>, item: Item) -> Vec<LayoutBox> {
             if img.kind != BoxKind::Absolute {
                 // An item is blockified (css-flexbox-1 section 4).
                 img.kind = BoxKind::Block;
-                img.style.display = Display::Block;
+                Arc::make_mut(&mut img.style).display = Display::Block;
                 if img.replaced.is_none() {
                     img.children = vec![styled.alt_block(child, img.children)];
                 }
@@ -1721,7 +1743,7 @@ impl BlockContainer<'_> {
                 continue;
             }
             self.add_inline_level(LayoutBox {
-                style: styled.style_or_initial(parent),
+                style: styled.shared_or_initial(parent),
                 kind: BoxKind::Text(text.into_owned()),
                 children: Vec::new(),
                 node: parent.node(),
@@ -1785,7 +1807,7 @@ impl BlockContainer<'_> {
     ) {
         let styled = self.styled;
         self.add_inline_level(LayoutBox {
-            style,
+            style: style.into(),
             kind: BoxKind::Text(text),
             children: Vec::new(),
             node,
@@ -1983,7 +2005,7 @@ impl BlockContainer<'_> {
                 continue;
             }
             self.add_inline_level(LayoutBox {
-                style: style.clone(),
+                style: styled.share(item, &style),
                 kind: BoxKind::Text(run.to_owned()),
                 children: Vec::new(),
                 node: element,
@@ -2068,7 +2090,7 @@ impl BlockContainer<'_> {
                 })
                 .filter(|text| !text.is_empty())
                 .map(|text| LayoutBox {
-                    style: style.clone(),
+                    style: style.clone().into(),
                     kind: BoxKind::Text(text.into_owned()),
                     children: Vec::new(),
                     node: element,
@@ -2216,7 +2238,7 @@ impl BlockContainer<'_> {
         }
         let children = std::mem::take(&mut self.run);
         self.out.push(LayoutBox {
-            style: self.styled.inherited_from(self.item),
+            style: self.styled.inherited_from(self.item).into(),
             kind: BoxKind::AnonymousBlock,
             children,
             node: self.item.node(),
@@ -2535,6 +2557,57 @@ mod tests {
         // a page's paint 8% slower at M32's T4.3, so it is boxed. Growing
         // this is a decision, not an accident.
         assert_eq!(std::mem::size_of::<Replaced>(), 24);
+    }
+
+    /// An element's box and the text boxes of its text hold the style
+    /// the cascade made for it, shared, not a copy (M35.9); so do
+    /// elements the cascade made of the same declarations.
+    #[test]
+    fn boxes_share_the_cascades_styles() {
+        let html = html::parse_document("<p class=a>one <b>two</b></p><p class=a>three</p>")
+            .expect("parses");
+        let document = dom::Document::from_node(&html);
+        let sheets = style::Stylesheets::new(vec![
+            css::parse_stylesheet(".a { color: red }").expect("parses"),
+        ]);
+        let context = style::CascadeContext::default();
+        let styles = sheets.cascade(&document, &context);
+        let recascade = sheets.recascader(&document, &styles, &context);
+        let boxes = crate::build_box_tree(&document, &styles, &recascade);
+        let mut all = Vec::new();
+        let mut pending: Vec<&LayoutBox> = boxes.iter().collect();
+        while let Some(b) = pending.pop() {
+            all.push(b);
+            pending.extend(b.children.iter());
+        }
+        let ps: Vec<NodeId> = document
+            .subtree(document.root())
+            .filter(|&node| document.tag(node) == Some("p"))
+            .collect();
+        let shared = |node| styles.shared(node).expect("styled");
+        let own = all
+            .iter()
+            .find(|b| b.node == ps[0] && !b.anonymous)
+            .expect("the paragraph's box");
+        assert!(Arc::ptr_eq(&own.style, shared(ps[0])));
+        let text = all
+            .iter()
+            .find(|b| {
+                b.node == ps[0] && matches!(&b.kind, BoxKind::Text(t) if t.starts_with("one"))
+            })
+            .expect("its text's box");
+        assert!(Arc::ptr_eq(&text.style, shared(ps[0])));
+        // The two paragraphs, made of the same, share one style.
+        assert!(Arc::ptr_eq(shared(ps[0]), shared(ps[1])));
+    }
+
+    #[test]
+    fn a_box_and_a_fragment_stay_small() {
+        // Each holds its style shared (M35.9), where each held a 704-byte
+        // style of its own, copied into every box and every fragment,
+        // every word's among them. Growing them is a decision too.
+        assert_eq!(std::mem::size_of::<LayoutBox>(), 160);
+        assert_eq!(std::mem::size_of::<crate::Fragment>(), 136);
     }
 
     /// A box tree and the document it was built from, whose nodes the

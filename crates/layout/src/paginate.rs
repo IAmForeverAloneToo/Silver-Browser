@@ -1160,7 +1160,8 @@ mod tests {
             style: style::ComputedStyle {
                 display: Display::Block,
                 ..Default::default()
-            },
+            }
+            .into(),
             kind: FragmentKind::Box,
             node: crate::testing::no_node(),
             generated: None,
@@ -1187,14 +1188,16 @@ mod tests {
             .stack_size(256 * 1024)
             .spawn(move || {
                 let mut leaf = boxed(depth as f32, 50.0, Vec::new());
-                leaf.style.overflow = style::computed::Overflow::Hidden;
+                std::sync::Arc::make_mut(&mut leaf.style).overflow =
+                    style::computed::Overflow::Hidden;
                 let mut chain = leaf;
                 for level in (0..depth).rev() {
                     let y = level as f32;
                     chain = boxed(y, depth as f32 + 50.0 - y, vec![chain]);
                     // A pixel of padding above each child: a gap a break
                     // may come after.
-                    chain.style.padding[TOP] = style::computed::LengthPercentage::Px(1.0);
+                    std::sync::Arc::make_mut(&mut chain.style).padding[TOP] =
+                        style::computed::LengthPercentage::Px(1.0);
                 }
                 let layout = DocumentLayout {
                     roots: vec![chain],

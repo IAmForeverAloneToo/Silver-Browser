@@ -189,7 +189,22 @@ impl Styles {
     /// node's initial values; `None` for a text node, a node not styled
     /// (detached), or a stale id.
     pub fn get(&self, node: NodeId) -> Option<&ComputedStyle> {
+        self.computed(node).map(|computed| &*computed.style)
+    }
+
+    /// [`Styles::get`], the style shared (M35.9): what a box and its
+    /// fragments hold rather than a copy of it.
+    pub fn shared(&self, node: NodeId) -> Option<&Arc<ComputedStyle>> {
         self.computed(node).map(|computed| &computed.style)
+    }
+
+    /// [`Styles::pseudo`], the style shared (M35.9).
+    pub fn pseudo_shared(
+        &self,
+        node: NodeId,
+        pseudo: PseudoElement,
+    ) -> Option<&Arc<ComputedStyle>> {
+        self.computed(node)?.pseudo.as_deref()?.shared(pseudo)
     }
 
     /// The computed style of the element `node`'s pseudo-element
@@ -231,10 +246,12 @@ impl Styles {
     }
 }
 
-/// An element's computed style and those of its pseudo-elements.
+/// An element's computed style and those of its pseudo-elements, each
+/// shared with the elements made of the same and with the boxes and
+/// fragments made of it (M35.9).
 #[derive(Debug, Clone, PartialEq, Default)]
 struct Computed {
-    style: ComputedStyle,
+    style: Arc<ComputedStyle>,
     /// `None` when no rule styles any of them, as for most elements.
     pseudo: Option<Box<PseudoStyles>>,
     /// Whether the element's style without its animations, or an
@@ -311,21 +328,26 @@ struct Animating<'a> {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PseudoStyles {
     /// `::before`.
-    pub before: Option<ComputedStyle>,
+    pub before: Option<Arc<ComputedStyle>>,
     /// `::after`.
-    pub after: Option<ComputedStyle>,
+    pub after: Option<Arc<ComputedStyle>>,
     /// `::first-letter`.
-    pub first_letter: Option<ComputedStyle>,
+    pub first_letter: Option<Arc<ComputedStyle>>,
     /// `::first-line`.
-    pub first_line: Option<ComputedStyle>,
+    pub first_line: Option<Arc<ComputedStyle>>,
     /// `::marker` (M21.6): a list item's alone, whether or not a rule
     /// styles it, none the user agent's.
-    pub marker: Option<ComputedStyle>,
+    pub marker: Option<Arc<ComputedStyle>>,
 }
 
 impl PseudoStyles {
     /// The style of `pseudo`, if it is one kept and some rule styles it.
     pub fn get(&self, pseudo: PseudoElement) -> Option<&ComputedStyle> {
+        self.shared(pseudo).map(|style| &**style)
+    }
+
+    /// [`PseudoStyles::get`], the style shared (M35.9).
+    pub fn shared(&self, pseudo: PseudoElement) -> Option<&Arc<ComputedStyle>> {
         match pseudo {
             PseudoElement::Before => self.before.as_ref(),
             PseudoElement::After => self.after.as_ref(),
@@ -860,7 +882,8 @@ impl Stylesheets {
                 // The style it had is its before-change style, if it was
                 // rendered (M22.1).
                 let old = styles.computed(node);
-                let before = Before::Known(old.filter(|old| !old.unrendered).map(|old| &old.style));
+                let before =
+                    Before::Known(old.filter(|old| !old.unrendered).map(|old| &*old.style));
                 // A change to a pseudo-element's style counts as one to
                 // the element's: how layout hears of it.
                 let computed = cascader.style_of(node, Parent::of(parent), rem, before, old);
@@ -1427,7 +1450,7 @@ struct Cascader<'a> {
     /// (M35.2), at most [`MAX_KEPT_STYLES`]: an element made of the same
     /// takes the one made, rather than computing it again. Off for the
     /// tests that compare.
-    kept: HashMap<StyleKey, ComputedStyle>,
+    kept: HashMap<StyleKey, Arc<ComputedStyle>>,
     keeps: bool,
     /// Each parent's style's number, by node, and the last distinct
     /// parent styles with theirs.
@@ -1512,8 +1535,8 @@ impl<'a> Cascader<'a> {
             substitutions: &self.substitutions,
         };
         let kept = key.as_ref().and_then(|key| self.kept.get(key)).cloned();
-        let base = match kept {
-            Some(base) => base,
+        let (base, shared) = match kept {
+            Some(kept) => ((*kept).clone(), Some(kept)),
             None => {
                 #[cfg(test)]
                 AFRESH.with(|afresh| afresh.set(afresh.get() + 1));
@@ -1526,13 +1549,15 @@ impl<'a> Cascader<'a> {
                     None,
                     None,
                 );
-                if let Some(key) = key {
+                let shared = key.map(|key| {
                     if self.kept.len() >= MAX_KEPT_STYLES {
                         self.kept.clear();
                     }
-                    self.kept.insert(key, base.clone());
-                }
-                base
+                    let shared = Arc::new(base.clone());
+                    self.kept.insert(key, shared.clone());
+                    shared
+                });
+                (base, shared)
             }
         };
         let important = matched
@@ -1668,13 +1693,19 @@ impl<'a> Cascader<'a> {
             Some(style)
         };
         let pseudo = PseudoStyles {
-            before: pseudo(Target::Before),
-            after: pseudo(Target::After),
-            first_letter: pseudo(Target::FirstLetter),
-            first_line: pseudo(Target::FirstLine),
-            marker: pseudo(Target::Marker),
+            before: pseudo(Target::Before).map(Arc::new),
+            after: pseudo(Target::After).map(Arc::new),
+            first_letter: pseudo(Target::FirstLetter).map(Arc::new),
+            first_line: pseudo(Target::FirstLine).map(Arc::new),
+            marker: pseudo(Target::Marker).map(Arc::new),
         };
         let pseudo = (pseudo != PseudoStyles::default()).then(|| Box::new(pseudo));
+        // The kept base style itself when nothing changed it, so that the
+        // elements made of the same share one (M35.9).
+        let style = match shared {
+            Some(shared) if *shared == style => shared,
+            _ => Arc::new(style),
+        };
         Computed {
             style,
             pseudo,
@@ -1865,9 +1896,11 @@ impl<'a> Cascader<'a> {
                 let rem = root_font_size.unwrap_or(ComputedStyle::default().font_size_px);
                 let replaced = old.and_then(|old| old.computed(child));
                 let before = match old {
-                    Some(_) => {
-                        Before::Known(replaced.filter(|old| !old.unrendered).map(|old| &old.style))
-                    }
+                    Some(_) => Before::Known(
+                        replaced
+                            .filter(|old| !old.unrendered)
+                            .map(|old| &*old.style),
+                    ),
                     None => Before::Unknown,
                 };
                 let computed = self.style_of(child, Parent::of(&parent), rem, before, replaced);

@@ -124,7 +124,7 @@ pub(crate) enum InlineItem<'a> {
         /// consistently with how [`emit_letter_spaced`] renders it —
         /// see that function's doc for why that's the same code path).
         width: f32,
-        style: &'a ComputedStyle,
+        style: &'a Arc<ComputedStyle>,
         /// `white-space: pre`: the gap before this word is never a
         /// line-break opportunity (text flows without wrapping).
         no_wrap: bool,
@@ -145,13 +145,13 @@ pub(crate) enum InlineItem<'a> {
         gap_decorations: Option<&'a Arc<[Decorating]>>,
         /// That white space's style, whose space the gap is as wide as:
         /// the text's the space was first met in, not the word's.
-        gap_style: Option<&'a ComputedStyle>,
+        gap_style: Option<&'a Arc<ComputedStyle>>,
     },
     /// A literal newline under `white-space: pre`/`pre-wrap`/`pre-line`
     /// — ends the current line unconditionally, however much of
     /// `available_width` is left. On an empty line it *is* the line: a
     /// blank line of the text's own font height.
-    ForcedBreak(&'a ComputedStyle),
+    ForcedBreak(&'a Arc<ComputedStyle>),
     /// An atomic inline-level box (M10.4: an inline-block), one item on
     /// the line, as wide as its margin box.
     Atomic {
@@ -162,7 +162,7 @@ pub(crate) enum InlineItem<'a> {
         /// As for a word (M21.7).
         gap_decorations: Option<&'a Arc<[Decorating]>>,
         /// As for a word.
-        gap_style: Option<&'a ComputedStyle>,
+        gap_style: Option<&'a Arc<ComputedStyle>>,
     },
     /// A float met in the run (M11): out of flow, placed by the float
     /// context beside the line it is met on, and invisible to the
@@ -181,24 +181,24 @@ pub(crate) enum InlineItem<'a> {
     /// items go: its own, or on the first line (M16).
     Open {
         b: &'a LayoutBox,
-        style: &'a ComputedStyle,
+        style: &'a Arc<ComputedStyle>,
         gap_before: bool,
         /// As for a word (M21.7).
         gap_decorations: Option<&'a Arc<[Decorating]>>,
         /// As for a word.
-        gap_style: Option<&'a ComputedStyle>,
+        gap_style: Option<&'a Arc<ComputedStyle>>,
     },
     /// The end of an inline element: its right padding, border and
     /// margin, on the line it ends on, glued to what precedes it; with
     /// the element's style where the items go.
-    Close(&'a ComputedStyle),
+    Close(&'a Arc<ComputedStyle>),
     /// A list item's marker (M21.6, [`BoxKind::Marker`]): outside, as
     /// wide as nothing and glued to what follows it, the list item
     /// placing it once laid out; inside, a shape as wide as itself and
     /// the room after it. Either way its font is on the line.
     Marker {
         b: &'a LayoutBox,
-        style: &'a ComputedStyle,
+        style: &'a Arc<ComputedStyle>,
     },
 }
 
@@ -208,7 +208,7 @@ pub(crate) enum InlineItem<'a> {
 struct LineWord<'i> {
     text: &'i str,
     width: f32,
-    style: &'i ComputedStyle,
+    style: &'i Arc<ComputedStyle>,
     node: NodeId,
     generated: Option<PseudoElement>,
     decorations: Option<&'i Arc<[Decorating]>>,
@@ -224,10 +224,10 @@ enum LineItem<'a, 'i> {
     /// An inline element's start edge, as wide as its left margin,
     /// border and padding (M11.6), with the element's style on the line
     /// (M16: on the first line, its style there).
-    Open(&'a LayoutBox, &'a ComputedStyle, f32),
+    Open(&'a LayoutBox, &'a Arc<ComputedStyle>, f32),
     /// An inline element's end edge, as wide as its right padding,
     /// border and margin, with the element's style on the line.
-    Close(&'a ComputedStyle, f32),
+    Close(&'a Arc<ComputedStyle>, f32),
     /// An absolutely positioned box met here (M11): no width, its
     /// static position taken where the line puts it.
     Absolute(&'a LayoutBox),
@@ -280,20 +280,23 @@ struct Placed<'a, 'i> {
     gap_before: bool,
     /// The style of the white space a gap before it is, which its width
     /// is a space of; the item's own when it has none.
-    gap_style: Option<&'a ComputedStyle>,
+    gap_style: Option<&'a Arc<ComputedStyle>>,
     can_break: bool,
 }
 
 impl Placed<'_, '_> {
     /// The width of the gap before it, when there is one.
     fn gap(&self, fonts: &FontCollection) -> f32 {
-        space_width(self.gap_style.unwrap_or(self.item.style()), fonts)
+        space_width(
+            self.gap_style.map_or(self.item.style(), |style| &**style),
+            fonts,
+        )
     }
 }
 
 impl<'a> InlineItem<'a> {
     /// The style of the white space whose gap is before it, if one is.
-    fn gap_style(&self) -> Option<&'a ComputedStyle> {
+    fn gap_style(&self) -> Option<&'a Arc<ComputedStyle>> {
         match self {
             InlineItem::Word { gap_style, .. }
             | InlineItem::Atomic { gap_style, .. }
@@ -708,7 +711,10 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
         let gap_before = gap_before && self.has_content;
         let gap_style = self.item(index).gap_style();
         let gap = if gap_before {
-            space_width(gap_style.unwrap_or(item.style()), self.pass.fonts)
+            space_width(
+                gap_style.map_or(item.style(), |style| &**style),
+                self.pass.fonts,
+            )
         } else {
             0.0
         };
@@ -1033,7 +1039,7 @@ struct Collector<'a, 'f> {
     /// The text decorations over that white space (M21.7).
     space_decorations: Option<&'a Arc<[Decorating]>>,
     /// And its style, which the gap is a space of.
-    space_style: Option<&'a ComputedStyle>,
+    space_style: Option<&'a Arc<ComputedStyle>>,
     /// An inline element's start edge took a gap and no content has
     /// followed it: white space seen now collapses into that gap
     /// (css-text-3 §4.1.1, across the boundary of the inline).
@@ -1047,7 +1053,7 @@ struct Collector<'a, 'f> {
 
 impl<'a> Collector<'a, '_> {
     /// `b`'s style where the items go: on the first line, or its own.
-    fn style_of(&self, b: &'a LayoutBox) -> &'a ComputedStyle {
+    fn style_of(&self, b: &'a LayoutBox) -> &'a Arc<ComputedStyle> {
         match &b.first_line {
             Some(line) if self.first_line.is_some() => &line.style,
             _ => &b.style,
@@ -1236,7 +1242,7 @@ impl<'a> Collector<'a, '_> {
     fn word(
         &mut self,
         b: &'a LayoutBox,
-        style: &'a ComputedStyle,
+        style: &'a Arc<ComputedStyle>,
         text: &str,
         no_wrap: bool,
         gap_before: bool,
@@ -1796,7 +1802,7 @@ fn through_inlines<'a>(mut d: Deferred<'a>, open: &[&'a LayoutBox]) -> Deferred<
 struct OpenInline<'a> {
     b: &'a LayoutBox,
     /// Its style on the line: on the first, its style there (M16).
-    style: &'a ComputedStyle,
+    style: &'a Arc<ComputedStyle>,
     /// Where it starts on the line: before its start edge when it
     /// starts here, else the line's start.
     x: f32,
@@ -1861,12 +1867,13 @@ fn close_inline<'a>(
         + m.descent
         + edges.padding[BOTTOM]
         + edges.border[BOTTOM];
+    // The element's style shared, but where a line break slices it.
     let mut style = own.clone();
     if !inline.starts {
-        style.border_style[LEFT] = BorderStyle::None;
+        Arc::make_mut(&mut style).border_style[LEFT] = BorderStyle::None;
     }
     if !ends {
-        style.border_style[RIGHT] = BorderStyle::None;
+        Arc::make_mut(&mut style).border_style[RIGHT] = BorderStyle::None;
     }
     let (dx, dy) = relative_offset(own, cb_width, cb_height);
     let mut children = inline.children;
@@ -2183,7 +2190,7 @@ mod tests {
             ..ComputedStyle::default()
         };
         LayoutBox {
-            style,
+            style: style.into(),
             kind: BoxKind::Text(text.to_string()),
             children: Vec::new(),
             node: crate::testing::no_node(),
@@ -2204,7 +2211,7 @@ mod tests {
 
     fn inline_box(children: Vec<LayoutBox>) -> LayoutBox {
         LayoutBox {
-            style: ComputedStyle::default(),
+            style: ComputedStyle::default().into(),
             kind: BoxKind::Inline,
             children,
             node: crate::testing::no_node(),
@@ -2565,7 +2572,7 @@ mod tests {
 
     fn styled_text_box(text: &str, style: ComputedStyle) -> LayoutBox {
         LayoutBox {
-            style,
+            style: style.into(),
             kind: BoxKind::Text(text.to_string()),
             children: Vec::new(),
             node: crate::testing::no_node(),
@@ -2631,7 +2638,8 @@ mod tests {
             style: ComputedStyle {
                 display: style::computed::Display::InlineBlock,
                 ..ComputedStyle::default()
-            },
+            }
+            .into(),
             kind: BoxKind::InlineBlock,
             ..inline_box(Vec::new())
         };
@@ -2704,7 +2712,7 @@ mod tests {
         let fonts = test_fonts();
         let big = |children: Vec<LayoutBox>| {
             let mut span = inline_box(children);
-            span.style.font_size_px = 32.0;
+            Arc::make_mut(&mut span.style).font_size_px = 32.0;
             span
         };
         let items = [text_box("a ", 16.0), big(vec![text_box("b", 32.0)])];
@@ -3012,7 +3020,7 @@ mod tests {
             };
             LayoutBox {
                 first_line: Some(Box::new(FirstLine {
-                    style: style(32.0),
+                    style: style(32.0).into(),
                     chain: Vec::new(),
                 })),
                 ..styled_text_box(text, style(16.0))
@@ -3042,7 +3050,7 @@ mod tests {
     fn with_first_line(b: LayoutBox, style: ComputedStyle) -> LayoutBox {
         LayoutBox {
             first_line: Some(Box::new(FirstLine {
-                style,
+                style: style.into(),
                 chain: Vec::new(),
             })),
             ..b

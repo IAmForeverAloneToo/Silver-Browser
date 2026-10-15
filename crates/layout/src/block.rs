@@ -77,6 +77,8 @@
 //! the scroll offset. [`DocumentLayout::height`] is what the viewport
 //! scrolls over.
 
+use std::sync::Arc;
+
 use dom::NodeId;
 
 use style::computed::{
@@ -111,7 +113,8 @@ pub struct Fragment {
     pub y: f32,
     pub w: f32,
     pub h: f32,
-    pub style: ComputedStyle,
+    /// Its box's style, shared (M35.9).
+    pub style: Arc<ComputedStyle>,
     pub kind: FragmentKind,
     /// The node this fragment belongs to (M9.4, M13): what hit testing
     /// answers with. A text fragment names its containing element, and
@@ -4090,7 +4093,7 @@ mod tests {
         // in an anonymous block); layout takes it anyway.
         let fonts = test_fonts();
         let text = LayoutBox {
-            style: ComputedStyle::default(),
+            style: ComputedStyle::default().into(),
             kind: BoxKind::Text("x".to_string()),
             children: Vec::new(),
             node: no_node(),
@@ -4111,7 +4114,8 @@ mod tests {
             style: ComputedStyle {
                 display: style::computed::Display::Block,
                 ..ComputedStyle::default()
-            },
+            }
+            .into(),
             kind: BoxKind::Block,
             children: vec![text],
             node: no_node(),

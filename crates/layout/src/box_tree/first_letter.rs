@@ -285,7 +285,7 @@ fn split(
         control_size: None,
     };
     let generated = |kind, style: ComputedStyle, children| LayoutBox {
-        style,
+        style: style.into(),
         kind,
         children,
         node: text_box.node,

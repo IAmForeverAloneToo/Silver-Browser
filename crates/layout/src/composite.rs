@@ -94,7 +94,7 @@ impl<'c, 'a> Changes<'c, 'a> {
 
     /// Gives `fragment` the new effects of the change `i`.
     fn write(&self, fragment: &mut Fragment, i: usize) {
-        fragment.style.effects = Some(Arc::clone(self.changes[i].new));
+        Arc::make_mut(&mut fragment.style).effects = Some(Arc::clone(self.changes[i].new));
     }
 }
 
