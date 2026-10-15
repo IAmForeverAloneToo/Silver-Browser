@@ -50,7 +50,7 @@ operating system.
 
 | What | Trusted to | Held by |
 |---|---|---|
-| The workspace's Rust | be memory-safe and keep its rules | `#![forbid(unsafe_code)]` everywhere but the shell's platform module; the tests, the gate and review |
+| The workspace's Rust | be memory-safe and keep its rules | `#![forbid(unsafe_code)]` everywhere but the shell's platform module and the reading of the bindings' bytecode (M35.12); the tests, the gate and review |
 | Third-party crates | be correct and memory-safe at their safe interfaces | pinned in `Cargo.lock`, `cargo deny` (advisories and licences), the unsafe inventory (section 5) |
 | C under the crates (QuickJS-ng, aws-lc) | nothing beyond what fuzzing and their upstreams give | the bounds of section 8 on what reaches them; the process boundary (section 4.10): QuickJS-ng runs in the renderers, aws-lc in the browser |
 | A renderer process | nothing: what it says is a compromised renderer's word | the browser's checks on each message against the renderer's site lock and grants, a kill on the first it may not send; the sandbox |
@@ -275,9 +275,21 @@ DACL's entries, `SetTokenInformation` for the integrity),
 `CreateProcessAsUserW`, `ResumeThread`, `TerminateProcess` and the exit
 code; and the crash channel: its mapping and events, the browser's
 wait and `MiniDumpWriteDump`, the renderer's view of the block, its
-unhandled-exception filter and the check's `RaiseException`. The shell's test
+unhandled-exception filter and the check's `RaiseException`. M35 adds
+the reading of a process's memory (`OpenProcess`,
+`K32GetProcessMemoryInfo`, `CloseHandle`, M35.1), 56 blocks with the
+default DACL's fixed entries; and one block outside the shell, the
+exception the roadmap asked for (M35.12): `js` says
+`#![deny(unsafe_code)]` and allows it in `quickjs/bytecode.rs` alone,
+whose one block reads the DOM's bindings as QuickJS bytecode
+(`Module::load`, unsafe because QuickJS's reader trusts its input). What
+it reads is only what the same process wrote with QuickJS's own writer
+from the bootstrap compiled into the executable, kept in a static that
+is never written again nor freed; never a file, a pipe, another
+process's bytes or a page's. The shell's test
 `unsafe_is_written_in_the_platform_module_alone_each_block_argued`
-holds every source file to this, and CI greps the same (T3.2).
+holds every source file to this, that module's one block among them,
+and CI greps the same (T3.2).
 
 **Under it**: of the 379 packages `Cargo.lock` holds (every platform's
 together), 261 write `unsafe` somewhere and 118 none. Those the

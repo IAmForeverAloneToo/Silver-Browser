@@ -3,9 +3,12 @@
 //! slot the native functions read for the length of a run, and the
 //! limits set on the runtime.
 
+mod bytecode;
 pub(crate) mod console;
 mod dom;
 mod wasm;
+
+pub use bytecode::warm as warm_bindings;
 
 #[cfg(test)]
 pub(crate) use wasm::from_base64;

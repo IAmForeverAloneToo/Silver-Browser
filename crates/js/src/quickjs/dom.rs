@@ -16,7 +16,7 @@ use crate::{
 };
 
 /// The bindings, run in each new realm before any page's script.
-const BOOTSTRAP: &str = include_str!("bootstrap.js");
+pub(super) const BOOTSTRAP: &str = include_str!("bootstrap.js");
 
 /// What the natives charge the work they report to: the run's steps,
 /// the work not yet a whole step, and the budget's end.
@@ -688,7 +688,7 @@ pub(super) fn install<'js, H: ScriptingHost>(
     )?;
     install_errors(ctx, host, &natives)?;
     super::wasm::install(ctx, &natives, budget)?;
-    let bootstrap: Function<'js> = ctx.eval(BOOTSTRAP)?;
+    let bootstrap: Function<'js> = super::bytecode::bootstrap(ctx)?;
     bootstrap.call::<_, Object<'js>>((natives, ctx.globals()))
 }
 

@@ -979,6 +979,14 @@ fn show(line: &CommandLine) {
 /// D30): the one-process build.
 #[cfg(feature = "single-process")]
 fn show(line: &CommandLine) {
+    // The bindings compiled while the window opens (M35.12), as a
+    // renderer compiles them as it starts.
+    if line.window_scripts() {
+        let _ = std::thread::Builder::new()
+            .name("bindings".to_owned())
+            .stack_size(8 << 20)
+            .spawn(engine::warm_bindings);
+    }
     let wanted = if line.software {
         engine::Backend::Software
     } else {
@@ -1119,7 +1127,12 @@ mod tests {
         sources(&root.join("crates"), &mut files);
         sources(&root.join("fuzz").join("fuzz_targets"), &mut files);
         assert!(files.len() > 100, "the workspace's sources found");
+        // M35.12's reading of the bindings' bytecode, reviewed, is the one
+        // block outside the platform module, and its crate denies `unsafe`
+        // rather than forbidding it so that the module may allow it.
+        const BYTECODE: &str = "crates/js/src/quickjs/bytecode.rs";
         let mut blocks = 0;
+        let mut bytecode_blocks = 0;
         for file in &files {
             let name = file
                 .strip_prefix(&root)
@@ -1138,10 +1151,9 @@ mod tests {
                 if !writes_unsafe(&code) {
                     continue;
                 }
-                assert_eq!(
-                    name,
-                    "crates/shell/src/platform.rs",
-                    "unsafe at line {}",
+                assert!(
+                    name == "crates/shell/src/platform.rs" || name == BYTECODE,
+                    "unsafe in {name} at line {}",
                     n + 1
                 );
                 // Its argument: the nearest comment above it, a statement
@@ -1165,7 +1177,11 @@ mod tests {
                     "{name}:{}: an unsafe block without its argument",
                     n + 1
                 );
-                blocks += 1;
+                if name == BYTECODE {
+                    bytecode_blocks += 1;
+                } else {
+                    blocks += 1;
+                }
             }
             let root_file = name.ends_with("/src/lib.rs")
                 || name.starts_with("fuzz/")
@@ -1173,7 +1189,12 @@ mod tests {
                     let parts: Vec<&str> = name.split('/').collect();
                     parts.len() == 4 && parts[2] == *kind
                 });
-            if root_file {
+            if root_file && name == "crates/js/src/lib.rs" {
+                assert!(
+                    text.contains("\n#![deny(unsafe_code)]\n"),
+                    "{name} does not deny unsafe code"
+                );
+            } else if root_file {
                 assert!(
                     text.contains("#![forbid(unsafe_code)]"),
                     "{name} does not forbid unsafe code"
@@ -1181,6 +1202,7 @@ mod tests {
             }
         }
         assert!(blocks >= 4, "the platform module's blocks found: {blocks}");
+        assert_eq!(bytecode_blocks, 1, "the bytecode's one reviewed block");
         // The shell denies it but where the platform module allows it.
         let shell = std::fs::read_to_string(root.join("crates/shell/src/main.rs")).unwrap();
         assert!(shell.contains("\n#![deny(unsafe_code)]\n"));

@@ -127,7 +127,7 @@ use std::time::{Duration, Instant, SystemTime};
 pub use dom::ElementState;
 pub use frames::{MAX_FRAME_DEPTH, MAX_FRAME_HEAP, MAX_FRAMES};
 pub use image_store::MAX_DECODE_THREADS;
-pub use js::ConsoleLevel;
+pub use js::{ConsoleLevel, warm_bindings};
 pub use keys::{Key, KeyOutcome};
 pub use loader::{LoadError, LoadState};
 pub use net::{Client, NetworkError, Url};

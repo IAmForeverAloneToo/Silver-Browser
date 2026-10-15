@@ -18,6 +18,10 @@ use host::Host;
 pub use host::MAX_SURFACE_PIXELS;
 use link::Link;
 
+/// The stack of the thread that compiles the bindings as a renderer
+/// starts: room past the 1 MiB QuickJS's parser may use of it.
+const BINDINGS_STACK: usize = 8 << 20;
+
 /// Where renderer `process`'s opaque origins are numbered from: each
 /// process its own space of 2^40, the browser's the first.
 pub fn opaque_origins_of(process: u32) -> u64 {
@@ -52,6 +56,13 @@ pub fn run_with(
     output: impl Write + Send + 'static,
     fonts: Option<text::FontCollection>,
 ) -> Result<(), String> {
+    // The bindings compiled while the renderer waits for its first page
+    // (M35.12): every realm it makes reads them; one asked for first
+    // waits for the compile rather than compiling again.
+    let _ = std::thread::Builder::new()
+        .name("renderer-bindings".to_owned())
+        .stack_size(BINDINGS_STACK)
+        .spawn(js::warm_bindings);
     let sender = Sender::<ToBrowser>::new(output);
     let link = Link::new(sender.clone());
     let (queue, inputs) = mpsc::channel();

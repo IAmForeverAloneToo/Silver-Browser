@@ -3,9 +3,14 @@
 //! through, and the limits a hostile script cannot get past. A leaf
 //! crate: it depends on no crate of the engine's, so a script can touch
 //! nothing but what its [`ScriptingHost`] is given, and it writes no
-//! `unsafe`; QuickJS-ng is reached through `rquickjs`'s safe interface.
+//! `unsafe` but one reviewed call, which reads the bindings' bytecode
+//! this process wrote (M35.12, `quickjs/bytecode.rs`); QuickJS-ng is
+//! otherwise reached through `rquickjs`'s safe interface.
 
-#![forbid(unsafe_code)]
+// Denied rather than forbidden, so that the one module that reads the
+// bindings' bytecode may allow it (M35.12); the shell's test of where
+// `unsafe` is written admits that module and no other.
+#![deny(unsafe_code)]
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -33,7 +38,7 @@ pub use dom::{
     Answer, Call, CanvasCall, DomError, FetchCall, Handle, MAX_HANDLE, NestedScript, WORK_PER_STEP,
 };
 pub use pattern::pattern_matches;
-pub use quickjs::QuickJs;
+pub use quickjs::{QuickJs, warm_bindings};
 
 /// The most heap a realm may hold, in bytes. An allocation past it
 /// throws; one that escapes a run with the heap still full leaves the
