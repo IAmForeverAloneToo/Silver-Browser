@@ -1003,7 +1003,7 @@ fn a_pages_field_takes_typing_the_clipboard_and_an_input_methods_text() {
         .expect("an input method is wanted");
     assert!(y >= TOP && h > 0.0);
     // Cut takes the selection to the clipboard.
-    window.chord("a", CTRL);
+    window.chord("a", FIELD_COMMAND);
     window.chord("x", CTRL);
     assert_eq!(window.board.text(), "hellohello!");
     assert_eq!(value(&window), "");

@@ -214,7 +214,15 @@ fn a_frame_whose_renderer_stopped_holds_its_parents_load_no_more() {
     });
     thread::sleep(Duration::from_millis(200));
     tab.poll_network();
-    assert_eq!(*tab.load_state(), LoadState::Loading, "{lines:?}");
+    let state = tab.load_state().clone();
+    assert_eq!(
+        state,
+        LoadState::Loading,
+        "{lines:?} {:?} {:?} {:?}",
+        tab.frame_loads(),
+        tab.renderers(),
+        tab.take_notice()
+    );
     let framing = frame_renderer(&tab, "/never").expect("the frame's renderer");
     tab.kill(framing);
     settle(&mut tab, &mut lines, "the page loaded", |tab, lines| {

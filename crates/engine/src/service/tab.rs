@@ -1412,6 +1412,15 @@ impl RemoteTab {
         self.hsts.clone()
     }
 
+    /// The load state of each frame root, by the renderer showing it.
+    #[cfg(test)]
+    pub(crate) fn frame_loads(&self) -> Vec<(u32, LoadState)> {
+        self.frame_views
+            .iter()
+            .map(|((renderer, _), frame)| (*renderer, frame.state.load.clone()))
+            .collect()
+    }
+
     /// Kills renderer `number`, as a crash would end it.
     #[cfg(test)]
     pub(crate) fn kill(&self, number: u32) {
