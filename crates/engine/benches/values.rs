@@ -330,9 +330,13 @@ fn chains() {
     // The page built to exhaust the cascade's bound: every element computes
     // the chain of its own, a megabyte of tokens and more, until the
     // cascade's substitutions together weigh MAX_CASCADE_SUBSTITUTION.
+    // Each has a style attribute of its own, so that none is given
+    // another's style kept (M35.5) rather than computing its own.
     let source = page(
         &format!("div {{ {} }}", doubling("v", 16)),
-        &"<div></div>".repeat(1000),
+        &(0..1000)
+            .map(|i| format!("<div style='--i: {i}'></div>"))
+            .collect::<String>(),
     );
     let page = Page::parse(&source);
     let resident = memory("VmRSS:");
