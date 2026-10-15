@@ -304,9 +304,11 @@ fn parse_complex(c: &mut Cursor, depth: usize, scope: Scope) -> Result<Selector,
             break;
         }
     }
+    let ancestor_hashes = super::ancestor_hashes(&compounds, &combinators);
     Ok(Selector {
         compounds,
         combinators,
+        ancestor_hashes,
         pseudo_element,
         specificity,
     })
@@ -329,6 +331,7 @@ fn parse_state_selector(c: &mut Cursor, depth: usize) -> Result<Selector, ParseE
                 .collect(),
         }],
         combinators: Vec::new(),
+        ancestor_hashes: [0; super::ANCESTOR_HASHES],
         pseudo_element: None,
         specificity,
     })

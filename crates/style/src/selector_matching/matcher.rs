@@ -112,6 +112,50 @@ pub struct Matcher<'a> {
     /// The element `:scope` is: a query's (M25), or none, which makes it
     /// the root element.
     scope: Option<NodeId>,
+    /// For each element whose children were matched, the ancestor
+    /// filter of its children: the bits of the features of it and of
+    /// its ancestors (M35.2), at most [`MAX_ANCESTOR_FILTERS`] of them.
+    filters: HashMap<NodeId, Box<AncestorFilter>>,
+    /// The places a selector's compounds were found to lead nowhere, by
+    /// the selector's address, the compound and the node: kept for the
+    /// matcher's life, since the document does not change in it (M35.2),
+    /// at most [`MAX_FAILED`] of them.
+    failed: HashSet<(usize, usize, NodeId)>,
+    /// How many compounds were tried against an element: for the tests.
+    #[cfg(test)]
+    pub(crate) compounds_tried: u64,
+}
+
+/// The bits of an ancestor filter (M35.2): a Bloom filter of the IDs,
+/// classes and tags of an element and its ancestors, two bits a feature.
+pub const ANCESTOR_FILTER_BITS: usize = 4096;
+
+type AncestorFilter = [u64; ANCESTOR_FILTER_BITS / 64];
+
+/// The most ancestor filters a matcher keeps, 512 bytes each: past it
+/// an element's selectors are matched without one.
+pub const MAX_ANCESTOR_FILTERS: usize = 1 << 14;
+
+/// The most failed places a matcher keeps; past it they are forgotten
+/// and found again.
+pub const MAX_FAILED: usize = 1 << 20;
+
+/// The two bits of `hash` in an ancestor filter.
+fn filter_bits(hash: u32) -> [usize; 2] {
+    let bits = ANCESTOR_FILTER_BITS as u32;
+    [(hash % bits) as usize, ((hash >> 16) % bits) as usize]
+}
+
+fn filter_add(filter: &mut AncestorFilter, hash: u32) {
+    for bit in filter_bits(hash) {
+        filter[bit / 64] |= 1 << (bit % 64);
+    }
+}
+
+fn filter_has(filter: &AncestorFilter, hash: u32) -> bool {
+    filter_bits(hash)
+        .iter()
+        .all(|&bit| filter[bit / 64] & (1 << (bit % 64)) != 0)
 }
 
 /// Where an element's language comes from.
@@ -154,6 +198,10 @@ impl<'a> Matcher<'a> {
             radio_groups: HashMap::new(),
             selected_options: HashMap::new(),
             scope: None,
+            filters: HashMap::new(),
+            failed: HashSet::new(),
+            #[cfg(test)]
+            compounds_tried: 0,
         }
     }
 
@@ -226,11 +274,31 @@ impl<'a> Matcher<'a> {
         if n == 1 {
             return true;
         }
+        // Not every feature it asks of its ancestors is among theirs:
+        // nothing to walk.
+        if !self.ancestors_may_have(element, &selector.ancestor_hashes) {
+            return false;
+        }
         // `(k, node)` pairs known to lead nowhere: compound `k` either
         // does not match at `node`, or does and the compounds before it
-        // cannot be satisfied from there. Allocated only once something
-        // fails, which the common one-candidate selectors never do.
-        let mut failed: Option<HashSet<(usize, NodeId)>> = None;
+        // cannot be satisfied from there, whichever element the walk
+        // began at. A selector that can backtrack, through two or more
+        // descendant or later-sibling combinators, keeps them for every
+        // element the matcher matches after, by its address (M35.2):
+        // walks from different elements meet the same places. Any
+        // other keeps them for this walk alone, allocated only once
+        // something fails, which the common selectors never do.
+        let id = std::ptr::from_ref(selector) as usize;
+        let kept = selector
+            .combinators
+            .iter()
+            .filter(|c| matches!(c, Combinator::Descendant | Combinator::LaterSibling))
+            .count()
+            >= 2;
+        if kept && self.failed.len() >= MAX_FAILED {
+            self.failed.clear();
+        }
+        let mut local: Option<HashSet<(usize, NodeId)>> = None;
         let mut stack = vec![Frame {
             k: n - 1,
             node: element,
@@ -246,9 +314,13 @@ impl<'a> Matcher<'a> {
                 }
                 let Some(cand) = frame.next else {
                     let frame = stack.pop().expect("the stack is not empty");
-                    failed
-                        .get_or_insert_with(HashSet::new)
-                        .insert((frame.k, frame.node));
+                    if kept {
+                        self.failed.insert((id, frame.k, frame.node));
+                    } else {
+                        local
+                            .get_or_insert_with(HashSet::new)
+                            .insert((frame.k, frame.node));
+                    }
                     continue;
                 };
                 let comb = selector.combinators[frame.k - 1];
@@ -259,7 +331,12 @@ impl<'a> Matcher<'a> {
                 };
                 (frame.k - 1, cand)
             };
-            if failed.as_ref().is_some_and(|f| f.contains(&(target, cand))) {
+            let known = if kept {
+                self.failed.contains(&(id, target, cand))
+            } else {
+                local.as_ref().is_some_and(|f| f.contains(&(target, cand)))
+            };
+            if known {
                 continue;
             }
             if self.matches_compound(cand, &compounds[target]) {
@@ -273,11 +350,78 @@ impl<'a> Matcher<'a> {
                     node: cand,
                     next,
                 });
+            } else if kept {
+                self.failed.insert((id, target, cand));
             } else {
-                failed
+                local
                     .get_or_insert_with(HashSet::new)
                     .insert((target, cand));
             }
+        }
+    }
+
+    /// Whether `element`'s ancestors may have every feature of `hashes`
+    /// (M35.2): `false` only when one of them is in no ancestor's.
+    fn ancestors_may_have(&mut self, element: NodeId, hashes: &[u32]) -> bool {
+        if hashes[0] == 0 {
+            return true;
+        }
+        let Some(parent) = self.document.parent_element(element) else {
+            return false;
+        };
+        let Some(filter) = self.filter_of(parent) else {
+            return true;
+        };
+        hashes
+            .iter()
+            .take_while(|&&hash| hash != 0)
+            .all(|&hash| filter_has(filter, hash))
+    }
+
+    /// The ancestor filter of `parent`'s children: the features of it and
+    /// of its ancestors, made down from the nearest one kept; `None` past
+    /// [`MAX_ANCESTOR_FILTERS`].
+    fn filter_of(&mut self, parent: NodeId) -> Option<&AncestorFilter> {
+        if !self.filters.contains_key(&parent) {
+            let mut chain = Vec::new();
+            let mut node = Some(parent);
+            while let Some(at) = node {
+                if self.filters.contains_key(&at) {
+                    break;
+                }
+                chain.push(at);
+                node = self.document.parent_element(at);
+            }
+            if self.filters.len() + chain.len() > MAX_ANCESTOR_FILTERS {
+                return None;
+            }
+            let mut filter: AncestorFilter = node
+                .and_then(|kept| self.filters.get(&kept))
+                .map_or([0; ANCESTOR_FILTER_BITS / 64], |kept| **kept);
+            for at in chain.into_iter().rev() {
+                self.add_features(&mut filter, at);
+                self.filters.insert(at, Box::new(filter));
+            }
+        }
+        self.filters.get(&parent).map(|filter| &**filter)
+    }
+
+    /// Adds `element`'s ID, classes and tag to `filter`.
+    fn add_features(&self, filter: &mut AncestorFilter, element: NodeId) {
+        let document = self.document;
+        if let Some(id) = document.attr(element, "id") {
+            filter_add(filter, super::feature_hash(b'#', id));
+        }
+        if let Some(classes) = document.attr(element, "class") {
+            for class in classes.split_ascii_whitespace() {
+                filter_add(filter, super::feature_hash(b'.', class));
+            }
+        }
+        if let Some(name) = document.local_name(element) {
+            filter_add(
+                filter,
+                super::feature_hash(b'<', &name.to_ascii_lowercase()),
+            );
         }
     }
 
@@ -295,6 +439,10 @@ impl<'a> Matcher<'a> {
 
     /// Whether every simple selector in the compound matches.
     fn matches_compound(&mut self, element: NodeId, compound: &'a super::CompoundSelector) -> bool {
+        #[cfg(test)]
+        {
+            self.compounds_tried += 1;
+        }
         compound
             .simple
             .iter()
@@ -2281,5 +2429,100 @@ mod tests {
                     <button id=n required></button><div id=o required></div>";
         assert_eq!(ids(page, ":required"), ["a", "e", "l"]);
         assert_eq!(ids(page, ":optional"), ["b", "k", "m"]);
+    }
+
+    // ---- what a cascade spares (M35.2) ------------------------------------
+
+    /// The compounds a fresh matcher tries matching `selector` against
+    /// every element of `document` once, and the elements it matched.
+    fn tried(document: &Node, selector: &str) -> (u64, usize) {
+        let document = Document::from_node(document);
+        let list = parse_selector_list(&css::tokenize(selector)).expect("valid selector");
+        let mut matcher = Matcher::new(&document);
+        let matched = elements(&document)
+            .into_iter()
+            .filter(|&id| matcher.matches_list(id, &list))
+            .count();
+        (matcher.compounds_tried, matched)
+    }
+
+    /// `depth` divs nested in a body, each with a paragraph, the
+    /// outermost of class `outer`.
+    fn nested(depth: usize) -> Node {
+        let mut inner = e("div").push(e("p"));
+        for _ in 1..depth {
+            inner = e("div").push(e("p")).push(inner);
+        }
+        p(vec![
+            e("html")
+                .push(e("body").push(inner.attr("class", "outer")))
+                .into(),
+        ])
+    }
+
+    /// A selector asking its ancestors for what none of them has is not
+    /// walked up the tree: its subject's compound alone is tried, where
+    /// each paragraph would have tried every div above it.
+    #[test]
+    fn the_ancestor_filter_spares_a_walk_that_cannot_match() {
+        let page = nested(200);
+        let (absent, matched) = tried(&page, ".absent p");
+        assert_eq!(matched, 0);
+        assert!(absent <= 410, "{absent} compounds tried");
+        // What it lets through is walked and matched as before.
+        let (_, matched) = tried(&page, ".outer p");
+        assert_eq!(matched, 200);
+        let (_, matched) = tried(&page, "body > div p");
+        assert_eq!(matched, 200);
+        let (_, matched) = tried(&page, "html div div p");
+        assert_eq!(matched, 199);
+    }
+
+    /// What lies left of a sibling combinator is not asked of the
+    /// ancestors, and an ancestor's tag is filtered lowercased, as type
+    /// selectors match it (M35.2).
+    #[test]
+    fn the_ancestor_filter_asks_only_what_ancestors_must_have() {
+        let html = "<div class=a><span class=y>s</span><p class=p>x<b>b</b></p></div>                    <svg><foreignObject><i>i</i></foreignObject></svg>";
+        let page = html::parse_document(html).expect("parses");
+        let tags = |selector| matched_tags(&page, selector);
+        assert_eq!(tags("span.y ~ p"), ["p"]);
+        assert_eq!(tags("span.y + p b"), ["b"]);
+        assert_eq!(tags(".a span.y ~ p > b"), ["b"]);
+        assert_eq!(tags("foreignobject i"), ["i"]);
+        assert_eq!(tags("svg FOREIGNOBJECT > i"), ["i"]);
+    }
+
+    /// The fuzzer's quadratic case (M17, `docs/perf-budgets.md`): a
+    /// selector whose ancestors' features are all present but in an order
+    /// that never matches, against elements nested deep. Each element's
+    /// walk meets the places earlier walks found to lead nowhere, kept for
+    /// the cascade, rather than trying the compounds again at each.
+    #[test]
+    fn places_that_lead_nowhere_are_kept_for_every_element() {
+        let depth = 300;
+        let mut inner = e("x").attr("class", "e");
+        for _ in 1..depth {
+            inner = e("x").attr("class", "e").push(inner);
+        }
+        let page = p(vec![
+            e("html")
+                .push(
+                    e("div").attr("class", "c").push(
+                        e("div")
+                            .attr("class", "b")
+                            .push(e("div").attr("class", "a").push(inner)),
+                    ),
+                )
+                .into(),
+        ]);
+        let (compounds, matched) = tried(&page, ".a .b .c .e");
+        assert_eq!(matched, 0);
+        assert!(
+            compounds < 10 * depth as u64,
+            "{compounds} compounds tried for {depth} elements"
+        );
+        let (_, matched) = tried(&page, ".c .b .a .e");
+        assert_eq!(matched, depth);
     }
 }

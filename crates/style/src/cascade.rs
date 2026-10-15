@@ -129,7 +129,7 @@ use crate::custom::{self, CustomProperties, DataType, Substituted, Substitutions
 use crate::invalidation::{Reach, SelectorFeatures, invalidate};
 use crate::media::Media;
 use crate::page::{PagePosition, PageStyle};
-use crate::rule_set::{KeyframesInForce, RuleSet};
+use crate::rule_set::{InForce, KeyframesInForce, RuleSet};
 use crate::selector_matching::{Matcher, PseudoElement, SelectorList, Specificity};
 
 mod animated;
@@ -993,7 +993,7 @@ impl Recascader<'_> {
         let cascader = &mut *cascader;
         let matched = declarations_for(
             self.document,
-            &mut cascader.matcher,
+            (&mut cascader.matcher, &mut cascader.candidates),
             element,
             (&cascader.ua, &cascader.author),
             cascader.context.inline_styles,
@@ -1356,8 +1356,11 @@ fn ua() -> &'static UserAgent {
 struct Cascader<'a> {
     document: &'a Document,
     matcher: Matcher<'a>,
-    ua: Vec<ParsedRule<'a>>,
-    author: Vec<ParsedRule<'a>>,
+    ua: InForce<'a>,
+    author: InForce<'a>,
+    /// The selectors an element is tried against, made again for each
+    /// (M35.2): kept to spare an allocation an element.
+    candidates: Vec<(u32, u32)>,
     context: &'a CascadeContext<'a>,
     /// The answers that left these rules in force, kept with the styles.
     media: Vec<bool>,
@@ -1375,8 +1378,8 @@ impl<'a> Cascader<'a> {
     /// numbered `sheets`.
     fn new(
         document: &'a Document,
-        ua: Vec<ParsedRule<'a>>,
-        author: Vec<ParsedRule<'a>>,
+        ua: InForce<'a>,
+        author: InForce<'a>,
         context: &'a CascadeContext<'a>,
         media: Vec<bool>,
         sheets: u64,
@@ -1386,6 +1389,7 @@ impl<'a> Cascader<'a> {
             matcher: Matcher::with_language(document, context.language),
             ua,
             author,
+            candidates: Vec::new(),
             context,
             media,
             viewport_used: Cell::new(false),
@@ -1410,7 +1414,7 @@ impl<'a> Cascader<'a> {
     ) -> Computed {
         let matched = declarations_for(
             self.document,
-            &mut self.matcher,
+            (&mut self.matcher, &mut self.candidates),
             element,
             (&self.ua, &self.author),
             self.context.inline_styles,
@@ -1894,18 +1898,19 @@ fn tier(base: TierBase, important: bool) -> u8 {
 /// [`compute_style`] sorts before applying.
 fn declarations_for<'a>(
     document: &Document,
-    matcher: &mut Matcher<'a>,
+    (matcher, candidates): (&mut Matcher<'a>, &mut Vec<(u32, u32)>),
     element: NodeId,
-    (ua, author): (&[ParsedRule<'a>], &[ParsedRule<'a>]),
+    (ua, author): (&InForce<'a>, &InForce<'a>),
     inline_styles: Option<&dyn InlineStyles>,
 ) -> Matched<'a> {
     let mut order = 0u32;
     let mut out = Matched::default();
     let svg = document.svg_tag(element).is_some();
+    ua.candidates(document, element, candidates);
     collect_from_sheet(
         matcher,
         (element, svg),
-        ua,
+        (ua, candidates),
         TierBase::UserAgent,
         &mut order,
         &mut out,
@@ -1940,10 +1945,11 @@ fn declarations_for<'a>(
         });
         order += 1;
     }
+    author.candidates(document, element, candidates);
     collect_from_sheet(
         matcher,
         (element, svg),
-        author,
+        (author, candidates),
         TierBase::AuthorSheet,
         &mut order,
         &mut out,
@@ -1974,16 +1980,26 @@ fn declarations_for<'a>(
 
 /// Matches `sheet`'s rules against `element` and its pseudo-elements,
 /// pushing one [`Applied`] per declaration of every rule that matches,
-/// for each target it matches.
+/// for each target it matches. Only `candidates` are tried, the
+/// selectors the rule index gives for the element (M35.2), by their
+/// rules' places and their own, in order: a selector of no candidate
+/// cannot match the element.
 fn collect_from_sheet<'a>(
     matcher: &mut Matcher<'a>,
     (element, svg): (NodeId, bool),
-    sheet: &[ParsedRule<'a>],
+    (sheet, candidates): (&[ParsedRule<'a>], &[(u32, u32)]),
     base: TierBase,
     order: &mut u32,
     out: &mut Matched<'a>,
 ) {
-    for rule in sheet {
+    let mut next = 0;
+    while next < candidates.len() {
+        let place = candidates[next].0;
+        let start = next;
+        while next < candidates.len() && candidates[next].0 == place {
+            next += 1;
+        }
+        let rule = &sheet[place as usize];
         if rule.svg_only && !svg {
             continue;
         }
@@ -1994,7 +2010,8 @@ fn collect_from_sheet<'a>(
         // for the element and for each of its pseudo-elements.
         let list: &'a SelectorList = rule.list;
         let mut best: [Option<Specificity>; 6] = [None; 6];
-        for selector in &list.0 {
+        for &(_, index) in &candidates[start..next] {
+            let selector = &list.0[index as usize];
             let target = match &selector.pseudo_element {
                 None => Target::Element,
                 // One matched and set aside: nothing draws it yet.

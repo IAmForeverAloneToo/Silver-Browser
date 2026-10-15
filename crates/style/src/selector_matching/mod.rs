@@ -49,6 +49,55 @@ pub use parse::{parse_selector_list, parse_selector_list_in, supports_selector};
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectorList(pub Vec<Selector>);
 
+/// The most features a selector asks of its ancestors that the
+/// ancestor filter checks (M35.2).
+pub const ANCESTOR_HASHES: usize = 4;
+
+/// What the ancestor filter keys a feature by (M35.2): an FNV-1a hash
+/// of its kind (`b'#'` an ID, `b'.'` a class, `b'<'` a tag, lowercased)
+/// and its name; never zero, which stands for none.
+pub(crate) fn feature_hash(kind: u8, name: &str) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in std::iter::once(kind).chain(name.bytes()) {
+        hash = (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193);
+    }
+    hash.max(1)
+}
+
+/// The hashes of what `compounds` left of the subject require of its
+/// ancestors: walking left from the subject while the combinators are
+/// descendant or child ones, each compound's IDs, classes and tag,
+/// until [`ANCESTOR_HASHES`] are found. A sibling combinator ends the
+/// walk: what lies left of it need not be an ancestor.
+pub(crate) fn ancestor_hashes(
+    compounds: &[CompoundSelector],
+    combinators: &[Combinator],
+) -> [u32; ANCESTOR_HASHES] {
+    let mut hashes = [0; ANCESTOR_HASHES];
+    let mut found = 0;
+    for k in (0..compounds.len().saturating_sub(1)).rev() {
+        if !matches!(
+            combinators.get(k),
+            Some(Combinator::Descendant | Combinator::Child)
+        ) {
+            break;
+        }
+        for simple in &compounds[k].simple {
+            let hash = match simple {
+                SimpleSelector::Id(id) => feature_hash(b'#', id),
+                SimpleSelector::Class(class) => feature_hash(b'.', class),
+                SimpleSelector::Type(tag) => feature_hash(b'<', &tag.to_ascii_lowercase()),
+                _ => continue,
+            };
+            if found < ANCESTOR_HASHES && !hashes.contains(&hash) {
+                hashes[found] = hash;
+                found += 1;
+            }
+        }
+    }
+    hashes
+}
+
 /// One complex selector: compounds joined by combinators, in source
 /// order (`compounds.len() == combinators.len() + 1`). Matching walks
 /// right-to-left, per selectors-4.
@@ -58,6 +107,12 @@ pub struct Selector {
     pub compounds: Vec<CompoundSelector>,
     /// `combinators[i]` joins `compounds[i]` and `compounds[i+1]`.
     pub combinators: Vec<Combinator>,
+    /// What the compounds left of the subject require of its ancestors,
+    /// through descendant and child combinators alone: the hashes of
+    /// their IDs, classes and tags ([`feature_hash`]), at most
+    /// [`ANCESTOR_HASHES`], zero past the last (M35.2). An element no
+    /// ancestor of which has one of them is matched no further.
+    pub ancestor_hashes: [u32; ANCESTOR_HASHES],
     /// The pseudo-element the selector ends in (`p::before`), if any.
     /// The compounds then match its *originating element*, and the
     /// selector represents that element's pseudo-element, not the

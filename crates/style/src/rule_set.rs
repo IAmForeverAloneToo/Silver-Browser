@@ -16,8 +16,14 @@
 //! holds, each with its layer's place in the order, which depends on
 //! the medium too, a layer named only inside a block whose list is
 //! false having no place (Cascade 5 §6.4.3).
+//!
+//! The set keeps an index of its rules' selectors by what their
+//! subjects require (M35.2): an element is tried against the selectors
+//! of its id's, its classes' and its tag's buckets and the universal
+//! one, in the rules' order, rather than every selector of every rule.
 
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::Arc;
 
 use css::{Block, Rule, Token};
@@ -34,6 +40,8 @@ use crate::selector_matching::{Namespaces, SelectorList, SimpleSelector, parse_s
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RuleSet {
     rules: Vec<StyleRule>,
+    /// The rules' selectors by what their subjects require (M35.2).
+    index: RuleIndex,
     /// The `@page` rules kept, in the order they appear.
     pages: Vec<PageRule>,
     /// The ways down to the rules, each a run of indices: the rule's
@@ -87,6 +95,154 @@ impl<'s> KeyframesInForce<'s> {
                 Rule::Qualified(block) => &block.declarations[i as usize],
                 Rule::At(_) => unreachable!("a keyframe's declarations are a block's"),
             })
+    }
+}
+
+/// A rule's selectors by what their subject compounds require (M35.2,
+/// `docs/design/performance.md`, "Rules in buckets by their rightmost
+/// compound"): a selector whose subject names an id is kept under the
+/// id; else, one that names a class under its first class; else, one
+/// that names a tag under the tag, lowercased; else under none, the
+/// universal bucket. A selector can only match an element its bucket
+/// is looked up for, so trying the buckets' alone changes no answer.
+#[derive(Debug, Clone, Default)]
+struct RuleIndex {
+    ids: HashMap<Box<str>, Vec<Indexed>>,
+    classes: HashMap<Box<str>, Vec<Indexed>>,
+    tags: HashMap<Box<str>, Vec<Indexed>>,
+    universal: Vec<Indexed>,
+}
+
+/// A selector, by its rule's index among the set's and its own in the
+/// rule's list.
+#[derive(Debug, Clone, Copy)]
+struct Indexed {
+    rule: u32,
+    selector: u32,
+}
+
+/// What a subject compound requires of an element, if anything the
+/// index keeps selectors by.
+enum Requires<'s> {
+    Id(&'s str),
+    Class(&'s str),
+    Tag(&'s str),
+}
+
+impl RuleIndex {
+    /// The index of `rules`, each bucket in the rules' order.
+    fn of(rules: &[StyleRule]) -> RuleIndex {
+        let mut index = RuleIndex::default();
+        for (rule, style_rule) in rules.iter().enumerate() {
+            for (selector, parsed) in style_rule.list.0.iter().enumerate() {
+                let entry = Indexed {
+                    rule: rule as u32,
+                    selector: selector as u32,
+                };
+                let requires = parsed.compounds.last().and_then(|subject| {
+                    let simple = &subject.simple;
+                    simple
+                        .iter()
+                        .find_map(|s| match s {
+                            SimpleSelector::Id(id) => Some(Requires::Id(id)),
+                            _ => None,
+                        })
+                        .or_else(|| {
+                            simple.iter().find_map(|s| match s {
+                                SimpleSelector::Class(class) => Some(Requires::Class(class)),
+                                _ => None,
+                            })
+                        })
+                        .or_else(|| {
+                            simple.iter().find_map(|s| match s {
+                                SimpleSelector::Type(tag) => Some(Requires::Tag(tag)),
+                                _ => None,
+                            })
+                        })
+                });
+                let bucket = match requires {
+                    Some(Requires::Id(id)) => index.ids.entry(id.into()).or_default(),
+                    Some(Requires::Class(class)) => index.classes.entry(class.into()).or_default(),
+                    Some(Requires::Tag(tag)) => index
+                        .tags
+                        .entry(tag.to_ascii_lowercase().into())
+                        .or_default(),
+                    None => &mut index.universal,
+                };
+                bucket.push(entry);
+            }
+        }
+        index
+    }
+}
+
+/// The rules a medium leaves in force (M20), with the index of the set
+/// they are of (M35.2): a slice of them, in order.
+pub(crate) struct InForce<'s> {
+    rules: Vec<ParsedRule<'s>>,
+    /// Each of the set's rules' place among `rules`, or [`NOT_IN_FORCE`].
+    places: Vec<u32>,
+    index: &'s RuleIndex,
+}
+
+/// The place of a rule the medium leaves out.
+const NOT_IN_FORCE: u32 = u32::MAX;
+
+impl<'s> Deref for InForce<'s> {
+    type Target = [ParsedRule<'s>];
+
+    fn deref(&self) -> &Self::Target {
+        &self.rules
+    }
+}
+
+impl InForce<'_> {
+    /// The selectors that may match `element`, by their rules' places
+    /// among these and their own in the rules' lists, in order and each
+    /// once, into `out`: those of its id's bucket, each of its classes',
+    /// its tag's, and the universal one (M35.2).
+    pub(crate) fn candidates(
+        &self,
+        document: &dom::Document,
+        element: dom::NodeId,
+        out: &mut Vec<(u32, u32)>,
+    ) {
+        out.clear();
+        let mut add = |entries: &[Indexed]| {
+            for entry in entries {
+                let place = self.places[entry.rule as usize];
+                if place != NOT_IN_FORCE {
+                    out.push((place, entry.selector));
+                }
+            }
+        };
+        let index = self.index;
+        if let Some(id) = document.attr(element, "id")
+            && let Some(entries) = index.ids.get(id)
+        {
+            add(entries);
+        }
+        // HTML splits `class` on ASCII white space only, as the matcher.
+        if let Some(classes) = document.attr(element, "class") {
+            for class in classes.split_ascii_whitespace() {
+                if let Some(entries) = index.classes.get(class) {
+                    add(entries);
+                }
+            }
+        }
+        if let Some(name) = document.local_name(element) {
+            let entries = if name.bytes().any(|b| b.is_ascii_uppercase()) {
+                index.tags.get(name.to_ascii_lowercase().as_str())
+            } else {
+                index.tags.get(name)
+            };
+            if let Some(entries) = entries {
+                add(entries);
+            }
+        }
+        add(&index.universal);
+        out.sort_unstable();
+        out.dedup();
     }
 }
 
@@ -188,7 +344,9 @@ impl RuleSet {
             builder.namespaces_closed = false;
             builder.walk(&stylesheet.rules, &place);
         }
-        builder.set
+        let mut set = builder.set;
+        set.index = RuleIndex::of(&set.rules);
+        set
     }
 
     /// The answer of each `@media` block's own list under `media`, in
@@ -206,10 +364,24 @@ impl RuleSet {
         &'s self,
         sheets: &'s [css::Stylesheet],
         answers: &[bool],
-    ) -> Vec<ParsedRule<'s>> {
+    ) -> InForce<'s> {
         let (holds, places) = self.ordered(answers);
         let last = places[UNLAYERED as usize];
-        self.rules
+        let mut kept = 0u32;
+        let rule_places = self
+            .rules
+            .iter()
+            .map(|rule| {
+                if rule.block.is_none_or(|b| holds[b as usize]) {
+                    kept += 1;
+                    kept - 1
+                } else {
+                    NOT_IN_FORCE
+                }
+            })
+            .collect();
+        let rules = self
+            .rules
             .iter()
             .filter(|rule| rule.block.is_none_or(|b| holds[b as usize]))
             .map(|rule| {
@@ -234,7 +406,12 @@ impl RuleSet {
                         }),
                 }
             })
-            .collect()
+            .collect();
+        InForce {
+            rules,
+            places: rule_places,
+            index: &self.index,
+        }
     }
 
     /// The `@page` rules of `sheets` that `answers` leave in force, in
@@ -599,5 +776,114 @@ fn layer_name(tokens: &[Token]) -> Option<Vec<&str>> {
             Some(Token::Delim('.')) => {}
             Some(_) => return None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::selector_matching::Matcher;
+
+    fn sheets(src: &str) -> Vec<css::Stylesheet> {
+        vec![css::parse_stylesheet(src).expect("a valid sheet")]
+    }
+
+    /// The bucket each selector of `src` is kept in, in order: `#` an
+    /// ID's, `.` a class's, `<` a tag's, `*` the universal one.
+    fn buckets(src: &str) -> Vec<String> {
+        let sheets = sheets(src);
+        let set = RuleSet::new(&sheets, &mut SelectorFeatures::default());
+        let index = &set.index;
+        let mut out: Vec<(u32, u32, String)> = Vec::new();
+        for (kind, map) in [('#', &index.ids), ('.', &index.classes), ('<', &index.tags)] {
+            for (name, entries) in map {
+                for entry in entries {
+                    out.push((entry.rule, entry.selector, format!("{kind}{name}")));
+                }
+            }
+        }
+        for entry in &index.universal {
+            out.push((entry.rule, entry.selector, "*".to_owned()));
+        }
+        out.sort();
+        out.into_iter().map(|(.., bucket)| bucket).collect()
+    }
+
+    /// M35.2: a selector is kept by its subject's ID, else its first
+    /// class, else its tag, lowercased, else in the universal bucket.
+    #[test]
+    fn selectors_are_kept_by_what_their_subjects_require() {
+        assert_eq!(
+            buckets(
+                "div#a.b {} .c.d {} p {} * {} [x] {} :hover {} .x span.y {} \
+                 #a .z, div {} LinearGradient {} a::before {} :is(p) {}"
+            ),
+            [
+                "#a",
+                ".c",
+                "<p",
+                "*",
+                "*",
+                "*",
+                ".y",
+                ".z",
+                "<div",
+                "<lineargradient",
+                "<a",
+                "*"
+            ]
+        );
+    }
+
+    /// M35.2: whatever matches an element is among the selectors the
+    /// index gives for it, in its rules' order and once each: the index
+    /// leaves out only what cannot match.
+    #[test]
+    fn an_element_is_given_every_selector_that_matches_it() {
+        let sheets = sheets(
+            "@namespace svg url(http://www.w3.org/2000/svg);
+             div#a.b, .c.d, p, * {} [x] {} .x span.y, div > span {} svg|rect {}
+             linearGradient {} LINEARGRADIENT {} foreignobject {} #g, .r {}
+             p::before {} div:hover {} :is(p, span) {} #a .y {} input[x] {}
+             .c + p {} html div p.c {} span.y ~ p {} @media (max-width: 1px) { p {} }",
+        );
+        let set = RuleSet::new(&sheets, &mut SelectorFeatures::default());
+        let in_force = set.in_force(&sheets, &[true]);
+        let html = "<div id=a class='b c'><span class='y x'>s</span><p class='c d'>p</p>\
+                    <svg><linearGradient id=g></linearGradient><rect class=r></rect>\
+                    <foreignObject></foreignObject></svg><input type=text x=1>                    <b class='c c d'>twice</b></div>";
+        let document = dom::Document::from_node(&html::parse_document(html).expect("parses"));
+        let mut matcher = Matcher::new(&document);
+        let mut candidates = Vec::new();
+        let mut matched = 0;
+        for element in document
+            .subtree(document.root())
+            .filter(|&node| document.is_element(node))
+        {
+            in_force.candidates(&document, element, &mut candidates);
+            let mut sorted = candidates.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(candidates, sorted, "in order and once each");
+            for (place, rule) in in_force.iter().enumerate() {
+                for (index, selector) in rule.list.0.iter().enumerate() {
+                    let matches = match &selector.pseudo_element {
+                        None => matcher.matches_element(element, selector),
+                        Some(ending) => {
+                            matcher.matches_pseudo_element(element, selector, ending.element)
+                        }
+                    };
+                    if matches {
+                        matched += 1;
+                        assert!(
+                            candidates.contains(&(place as u32, index as u32)),
+                            "{:?} matches {element:?} but is not given",
+                            selector
+                        );
+                    }
+                }
+            }
+        }
+        assert!(matched > 20, "the selectors match: {matched}");
     }
 }
