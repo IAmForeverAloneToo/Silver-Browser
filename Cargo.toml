@@ -154,8 +154,11 @@ wasmparser = { version = "0.228", default-features = false, features = ["std"] }
 # Dependencies are optimised even in the dev profile: the rasterizer,
 # the shaper and the font parser are not what a debug build is for
 # debugging, and unoptimised they put every frame far past the budget.
+# Nor do they carry debug information: theirs was most of each test
+# binary's debug symbols, a few hundred megabytes a binary on Windows.
 [profile.dev.package."*"]
 opt-level = 3
+debug = false
 
 # tiny-skia's pipeline works in 16-bit lanes that wrap, as the SIMD it
 # stands for does, and works out both sides of a choice before keeping
