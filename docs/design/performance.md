@@ -527,7 +527,11 @@ widths are kept across passes too, which the note did not have (step
 element's own box is given back whole when nothing generated, no
 marker, no control and no first-line style is in its subtree; the
 numbering, marker and first-line walks still visit the whole tree, and
-inline elements are built anew (step 9).
+inline elements are built anew (step 9). The nightly fuzz run found two
+holes in the tree kept, mended: a restyle written into the layout
+without laying it out left the old styles in the boxes kept, and a node
+moved took its boxes built where it was, without the decorations of
+its new ancestors; the boxes of both are forgotten now (step 15).
 
 *Text.* *(corrected)* Justification by character costs a fragment a
 character, and its measures were cache hits already: nothing of text's

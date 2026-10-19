@@ -2138,13 +2138,17 @@ past the budget, 26 to 51 before), a card's title in a flex grid of
 the jank page's frame 5.4 to 2.5ms, a renderer of one page 30.6 to
 27.6MB of its own. The fuzz runs of the eleven targets the milestone
 touched (ten minutes each on six workers, the nineteen written pages
-among the seeds) found nothing. Not in this milestone, said rather than hidden
-and registered (G127 to G143): layout without recursion, a block's
+among the seeds) found nothing; CI's nightly runs after found two holes
+in the box tree kept (a style written without a layout, a node moved),
+a JPEG decoder's unchecked multiplication, and a selector parse
+exponential in its unclosed `:is(` lists, older than the milestone,
+all mended. Not in this milestone, said rather than hidden
+and registered (G127 to G144): layout without recursion, a block's
 children in parallel, interned names, raster at the device transform,
 compositing v2, parallel raster, the display list kept, the pool's
 scaling, a binding's `toString`, `[::1]` first on Windows, the font
 scan before the window, an index of fragments by node, pagination over
 relative fragments, TodoMVC's frame after a delete, the opacity page's
-raster, a table of 1,000 rows, and boxes with generated content built
-anew. 2,756 tests pass workspace-wide, two ignored. Next milestone:
+raster, a table of 1,000 rows, boxes with generated content built
+anew, and a worker test's error once on macOS. 2,760 tests pass workspace-wide, two ignored. Next milestone:
 DevTools v0 and the remaining storage (M36).

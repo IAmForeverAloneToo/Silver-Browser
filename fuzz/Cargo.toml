@@ -56,6 +56,12 @@ text = { path = "../crates/text" }
 debug-assertions = true
 overflow-checks = false
 
+# Nor in zune-jpeg, whose DC coefficient wraps on a corrupt stream as a
+# release build's does (the workspace's dev profile says why).
+[profile.release.package.zune-jpeg]
+debug-assertions = true
+overflow-checks = false
+
 [[bin]]
 name = "clone"
 path = "fuzz_targets/clone.rs"

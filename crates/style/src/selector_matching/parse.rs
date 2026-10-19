@@ -100,6 +100,7 @@ enum Scope {
 }
 
 /// A peekable cursor over a token slice.
+#[derive(Clone, Copy)]
 struct Cursor<'a> {
     tokens: &'a [Token],
     pos: usize,
@@ -174,16 +175,6 @@ impl<'a> Cursor<'a> {
         }
         self.pos > start
     }
-
-    /// Whether the cursor is where a list member ends: at a comma, at
-    /// the end, or, `in_parens`, at the `)` closing the list.
-    fn at_member_end(&self, in_parens: bool) -> bool {
-        match self.peek() {
-            None | Some(Token::Comma) => true,
-            Some(Token::CloseParen) => in_parens,
-            _ => false,
-        }
-    }
 }
 
 /// Parses a selector list at the cursor: complex selectors separated by
@@ -206,25 +197,38 @@ fn parse_list(
     let mut selectors = Vec::new();
     loop {
         c.skip_ws();
-        let start = c.pos;
-        let member = parse_complex(c, depth, scope).and_then(|selector| {
-            c.skip_ws();
-            if c.at_member_end(in_parens) {
+        // The member is parsed within its own tokens, up to its list's
+        // next comma or closing parenthesis, nested ones counted: one
+        // whose own parentheses do not close cannot run on into the
+        // members after it, which a forgiving list would parse again
+        // once it failed, at every level of nesting (found by the
+        // nightly fuzz run: unclosed `:is(` lists took seconds).
+        let end = {
+            let mut scan = *c;
+            skip_member(&mut scan);
+            scan.pos
+        };
+        let mut member = Cursor {
+            tokens: &c.tokens[..end],
+            ..*c
+        };
+        let parsed = parse_complex(&mut member, depth, scope).and_then(|selector| {
+            member.skip_ws();
+            if member.at_end() {
                 Ok(selector)
             } else {
                 Err(ParseError::InvalidSelector)
             }
         });
-        match member {
+        match parsed {
             Ok(selector) => selectors.push(selector),
             Err(e) => {
                 if !forgiving {
                     return Err(e);
                 }
-                c.pos = start;
-                skip_member(c);
             }
         }
+        c.pos = end;
         match c.peek() {
             Some(Token::Comma) => {
                 c.advance();
@@ -952,6 +956,21 @@ mod tests {
             "selector must NOT parse: {s:?} -> {:?}",
             parse(s)
         );
+    }
+
+    #[test]
+    fn a_list_whose_parentheses_do_not_close_is_parsed_once() {
+        // Found by the nightly fuzz run (M35): `:is(` lists nested and
+        // never closed, each running on into the members after it, which
+        // every enclosing forgiving list parsed again once it failed:
+        // half an hour a selector, each member now parsed within its own
+        // tokens.
+        let bytes = include_bytes!("../../tests/data/unclosed-is-lists.bin");
+        let source = String::from_utf8_lossy(bytes);
+        let began = std::time::Instant::now();
+        assert!(parse(&source).is_err());
+        let took = began.elapsed();
+        assert!(took < std::time::Duration::from_secs(2), "{took:?}");
     }
 
     // ---- simple selectors ------------------------------------------------

@@ -6,6 +6,10 @@ use crate::*;
 /// browser's canvas encodes them.
 const JPEG: &[u8] = include_bytes!("../fixtures/red-blue-16x8.jpg");
 const LOSSY_WEBP: &[u8] = include_bytes!("../fixtures/red-blue-16x8-lossy.webp");
+/// A corrupt JPEG whose DC prediction runs far enough that zune-jpeg's
+/// product of it and the quantizer overflows (found by the nightly
+/// fuzz run at M35).
+const DC_OVERFLOW: &[u8] = include_bytes!("../fixtures/dc-overflow.jpg");
 
 const RED: [u8; 4] = [255, 0, 0, 255];
 const BLUE: [u8; 4] = [0, 0, 255, 255];
@@ -517,6 +521,15 @@ fn a_truncated_image_is_malformed() {
     let bytes = png(4, 4, &[0; 64]);
     assert_eq!(decode(&bytes[..40]), Err(Error::Malformed));
     assert_eq!(decode(&JPEG[..20]), Err(Error::Malformed));
+}
+
+#[test]
+fn a_corrupt_jpeg_whose_coefficients_overflow_wraps_as_a_release_build_does() {
+    // zune-jpeg multiplies without a check; built without overflow checks
+    // here as in a release build, the product wraps and the image is a
+    // corrupt one's pixels, or an error, never a panic.
+    assert_ne!(read_header(DC_OVERFLOW), Err(Error::Panicked));
+    assert_ne!(decode(DC_OVERFLOW), Err(Error::Panicked));
 }
 
 #[test]

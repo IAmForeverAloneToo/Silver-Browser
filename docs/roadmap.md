@@ -3009,6 +3009,11 @@ Deferred from the milestones above, each with what it waits on:
        in its subtree is built again at every pass (M35's box tree kept
        passes over them): a paragraph appended to the pseudo benchmark's
        page with every pseudo-element styled, 27.2 ms. Found at M35.
+- [ ] G144 On macOS (CI's runners), once in a week's runs,
+       `workers/interfaces/WorkerUtils/importScripts/report-error-setTimeout-same-origin.sub.any.worker.html`
+       reported ERROR: the SyntaxError it means to raise taken by the
+       worker's own harness for an uncaught one, though the test allows
+       them. Not reproduced. Found at M35.
 
 ---
 

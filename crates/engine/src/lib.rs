@@ -5795,6 +5795,18 @@ impl Engine {
                 let kept = !read && self.patch_layout(&changed, &composited);
                 if kept {
                     self.layouts_kept += 1;
+                    // The fragments carry the new styles; the boxes kept
+                    // carry the old, and are made again (M35.9: found by
+                    // the mutation fuzz target, a colour's transition
+                    // finished then a box taken whole from the old tree).
+                    let written: Vec<NodeId> = changed
+                        .iter()
+                        .copied()
+                        .chain(composited.iter().map(|c| c.node))
+                        .collect();
+                    self.shown
+                        .layout_cache
+                        .forget_boxes(&self.shown.document, &written);
                 } else {
                     let mut restyled = changed;
                     restyled.extend(composited.iter().map(|c| c.node));
@@ -11238,6 +11250,54 @@ mod tests {
         assert_eq!(laid + kept, steps, "every step restyled");
         assert!(kept * 3 > steps, "{kept} of {steps} kept the layout");
         assert!(laid > 0, "no step laid out");
+    }
+
+    /// Holds `engine` to what a fresh engine shows of its document.
+    fn as_fresh(engine: &mut Engine, fresh: &mut Engine, step: &str) {
+        if let Err(difference) = differential::compare_with_fresh(engine, fresh, 160, 120) {
+            panic!("{step}: {difference}");
+        }
+    }
+
+    #[test]
+    fn a_style_written_without_a_layout_reaches_the_boxes_kept() {
+        // M35.9, found by the mutation fuzz target: a colour's transition
+        // finished was written into the layout standing, and the next
+        // layout, at another width, took the paragraph's box whole, inside
+        // its parent's, from the box tree kept, its old colour with it.
+        let mut fresh = test_engine();
+        let mut engine = test_engine();
+        engine.load_document("<div><p id=p>text</p></div><div>q</div>");
+        as_fresh(&mut engine, &mut fresh, "loaded");
+        let p = node_by_id(&engine, "p");
+        engine.mutate(|d| {
+            d.set_attribute(p, "style", "transition: all 1s; color: #0a0")
+                .unwrap()
+        });
+        let kept = engine.layouts_kept();
+        as_fresh(&mut engine, &mut fresh, "the transition finished");
+        assert!(engine.layouts_kept() > kept, "written without a layout");
+        if let Err(difference) = differential::compare_with_fresh(&mut engine, &mut fresh, 140, 120)
+        {
+            panic!("laid out again at another width: {difference}");
+        }
+    }
+
+    #[test]
+    fn a_node_moved_is_built_again_where_it_lands() {
+        // M35.9, found by the mutation fuzz target: a block moved into an
+        // `<s>` took its box whole from the box tree kept, built outside
+        // the `<s>`, and was drawn without the line through it.
+        let mut fresh = test_engine();
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0; font-size: 20px }</style>\
+             <p><s id=s>struck </s></p><div id=d><span>moved</span></div>",
+        );
+        as_fresh(&mut engine, &mut fresh, "loaded");
+        let (s, d) = (node_by_id(&engine, "s"), node_by_id(&engine, "d"));
+        engine.mutate(|doc| doc.append_child(s, d).unwrap());
+        as_fresh(&mut engine, &mut fresh, "moved");
     }
 
     #[test]

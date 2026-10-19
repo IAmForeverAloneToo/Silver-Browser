@@ -165,3 +165,10 @@ debug = false
 # one (hard-light and overlay): checked, the side it drops overflows.
 [profile.dev.package.tiny-skia]
 overflow-checks = false
+
+# zune-jpeg multiplies a block's DC prediction by its quantizer without a
+# check; a corrupt stream runs the prediction far enough to overflow. A
+# release build wraps there, the corrupt image's pixels, and so does this
+# one rather than panicking (found by the nightly fuzz run at M35).
+[profile.dev.package.zune-jpeg]
+overflow-checks = false

@@ -196,6 +196,29 @@ impl LayoutCache {
         self.boxes_taken.get()
     }
 
+    /// Forgets the kept boxes of `nodes`, elements whose new styles a
+    /// restyle wrote into the layout without laying it out (M22.4,
+    /// M35.9), and their ancestors' and descendants': a box carries its
+    /// element's style, and the next build takes a box whole, its
+    /// descendants with it.
+    pub fn forget_boxes(&self, document: &Document, nodes: &[NodeId]) {
+        let mut boxes = self.boxes.borrow_mut();
+        if boxes.is_empty() {
+            return;
+        }
+        for &node in nodes {
+            if !document.contains(node) {
+                continue;
+            }
+            for ancestor in document.ancestors(node) {
+                boxes.remove(&ancestor);
+            }
+            for below in document.subtree(node) {
+                boxes.remove(&below);
+            }
+        }
+    }
+
     /// Keeps `boxes`, the box tree a pass was laid out from, for the next
     /// build to take what nothing changed from (M35.9).
     pub fn keep_boxes(&self, boxes: Vec<LayoutBox>) {
@@ -268,7 +291,14 @@ impl LayoutCache {
             }
         };
         let mut controls = false;
+        // The nodes inserted, moved among them: their boxes were built
+        // where they were, under other ancestors' decorations, and are
+        // built again (found by the mutation fuzz target, M35.9).
+        let mut inserted = Vec::new();
         for change in changes {
+            if let Change::Inserted { child, .. } = change {
+                inserted.push(*child);
+            }
             match change {
                 Change::Everything => {
                     entries.clear();
@@ -344,7 +374,7 @@ impl LayoutCache {
         // of its descendants, which are built again.
         let boxes = self.boxes.get_mut();
         if !boxes.is_empty() {
-            for &node in restyled {
+            for &node in restyled.iter().chain(&inserted) {
                 if document.contains(node) {
                     for below in document.subtree(node) {
                         boxes.remove(&below);
