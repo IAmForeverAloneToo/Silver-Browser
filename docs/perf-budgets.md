@@ -62,7 +62,9 @@ nothing that changes what is shown.
   from M16, which measured its base again ("Selectors and
   pseudo-elements", below), as M17 did ("Flexbox", below). Numbers
   from different machines are not compared; a milestone that changes
-  machine measures its base again.
+  machine measures its base again. From M27, the maintainer's Windows
+  machine, sixteen cores, where each milestone's T4.3 times its base
+  and itself by turns.
 - **Benchmarks:** plain binaries, `harness = false`, run by hand:
   - `cargo bench -p engine --bench scroll` (M9.6; stages since M13.4).
   - `cargo bench -p engine --bench mutation` (M13.6).
@@ -77,10 +79,52 @@ nothing that changes what is shown.
   - `cargo bench -p engine --bench images` (M23), on both backends.
   - `cargo bench -p engine --bench scripts` (M24).
   - `cargo bench -p style --bench match` (M4.12; recorded since M16).
-  - Criterion-tracked benchmarks run in CI are T4.2, for M35.
+  - `dom` (M25), `fetch` (M27), `storage` (M28), `wasm` (M29),
+    `canvas` (M30), `workers` (M31), `svg` (M32), `frames` (M33) and
+    `processes` (M34).
+  - `pages`, `interaction` and `jank` (M35.1): twenty pages of the
+    web's classes to their first frames, TodoMVC in plain DOM, and a
+    page scrolled while three animations run.
+  - **T4.2 (M35):** every benchmark has a quick mode
+    (`SILVER_BENCH_QUICK`: one round, the smallest sizes), which CI runs
+    on every push, so that a benchmark that no longer builds or panics
+    fails the run; the numbers are taken here, by turns. Criterion was
+    declined (`docs/design/performance.md`).
+- **Cold start:** `silver-browser --startup-trace` (M35.6) prints the
+  time from the process's start to each step and to the first frame
+  with the page drawn.
+- **Memory:** `silver-browser --check-processes memory <port> <pages>`
+  (M35.1) shows each page in a renderer of its own and prints what the
+  renderer holds, its own bytes and its working set.
 - **Counters** prove work that is not done: `Engine::style_runs`,
   `restyled_elements`, `layout_runs`, `boxes_laid_out`, `boxes_reused`
   and `redrawn`.
+
+## The budgets (M35.7)
+
+Each is a number a benchmark prints, with what M35 measured: the
+Windows machine, release, medians of the four rounds of its T4.3. A
+milestone's exit runs the benchmarks. A number past its budget, or
+more than 10% worse than the code before it (T4.3), blocks the exit
+unless it is written here, in "Over budget, and why" or in the
+milestone's T4.3, with the item that will undo it.
+
+| What a user meets | Budget | Benchmark | At M35 |
+| --- | --- | --- | --- |
+| A scroll's frame | 16.7ms | `scroll` | 0.58ms |
+| A frame of a page scrolled through three animations | 16.7ms | `jank` | 2.5ms, worst 4.6ms; one frame of 2,400 past |
+| A paragraph appended to 1,000, its frame | 16.7ms | `mutation` | 1.44ms, none of 1,000 past |
+| A card's title changed in a flex grid of 1,000 | 16.7ms | `flex` | 6.9ms |
+| A caption changed in a grid gallery of 1,000 | 16.7ms | `grid` | 5.9ms |
+| A cell's text edited in a table of 1,000 rows | 16.7ms | `dom` | 19.5ms, past (below) |
+| A class toggled on that table | 16.7ms | `dom` | 47.3ms, past (below) |
+| A colour animated on one of 1,000 paragraphs | 16.7ms | `animation` | 1.38ms |
+| An opacity animated on each of 1,000 | 16.7ms | `animation` | 15.1ms, one frame of 120 past |
+| TodoMVC: the frame after 100 items added, completed, deleted | 16.7ms | `interaction` | 4.5, 6.4 and 3.5ms |
+| A page of the twenty, from its navigation to its first frame | 100ms | `pages` | 19.7ms, the worst 69.1ms (the page built by script) |
+| A realm made | 8ms | `scripts` | 5.3ms |
+| A cold start, to the blank tab's first frame with its page | 300ms (`STARTUP_BUDGET`) | `--startup-trace` | 94ms, warm |
+| A page of the twenty, what its renderer holds of its own | 64MB | `--check-processes memory` | 27.6MB, the most 59.2MB (the page in several scripts, whose CJK fallback fonts it reads) |
 
 ## The numbers
 
@@ -1812,104 +1856,114 @@ cookies and the storage areas behind traits, the frames' numbers) are
 an indirect call a request: the fetch bench's 1,000 `fetch()`es take
 107.5 against 103.7ms (x1.04).
 
+### Performance v1 (M35)
+
+The Windows machine, release. The base is M34's end (8876b28); T4.3's
+base tree is M35's first step (348f075), that engine with the new
+benchmarks, so that `pages`, `interaction` and `jank` are timed before
+and after too: 25 benchmarks by turns, four rounds, and the rows past
+10% six rounds more. Medians, the base's then M35's:
+
+| | Before M35 | M35 |
+| --- | --- | --- |
+| A realm made | 30.6ms | 5.3ms |
+| The twenty pages, navigation to first frame | 39.9ms, the worst 125ms | 19.7ms, the worst 69.1ms |
+| TodoMVC's three steps, 100 items | 190ms | 149ms |
+| The jank page, a frame | 5.4ms, the worst 12.3ms | 2.5ms, the worst 4.6ms |
+| The first frame of 1,000 paragraphs | 60.6ms | 22.2ms |
+| A paragraph appended to them, its frame | 12.1ms, 26-51 of 1,000 past | 1.44ms, none past |
+| 1,000 appended in one frame | 70.4ms | 18.7ms |
+| A page of 1,000 paragraphs, `load` to its first frame | 65.8ms | 27.1ms |
+| A flex grid of 1,000 cards, its first frame | 240ms | 60ms |
+| A card's title changed in it, a frame | 190ms | 6.9ms |
+| A grid gallery of 1,000 figures, its first frame | 121ms | 42.6ms |
+| A caption changed in it, a frame | 87.8ms | 5.9ms |
+| A 1,000-row table built by script, its frame | 101ms | 47.9ms |
+| Its class toggled, a frame | 80.5ms | 47.3ms |
+| A cell's text edited, a frame | 41.4ms | 19.5ms |
+| An opacity on each of 1,000 paragraphs, a frame | 22.8ms (style 17.0), 120 of 120 past | 15.1ms (style 8.2), 1 of 120 past |
+| A colour on one of 1,000, a frame | 15.0ms | 1.38ms |
+| 1,000 paragraphs justified by character, their layout | 160ms | 70ms |
+| A page of 110 scripts, scripts on | 89.6ms | 33.1ms |
+| The style benchmark, 1,000 selectors by 10,003 elements | 273ms | 286ms |
+| A cold start to the blank tab's page frame (warm) | 114ms | 94ms |
+| A page of the twenty, its renderer's own bytes | 30.6MB, the most 62.7MB | 27.6MB, the most 59.2MB |
+
+What took it there, step by step, is in `docs/design/performance.md`
+and its section 4: a font's shaping face and plans kept (a word
+measured afresh 14.6 to 2.2us); the bindings compiled once a process;
+rules in buckets, an ancestor filter and failures kept; base styles
+kept and shared; `Arc<ComputedStyle>` to the fragments; fragments
+relative to their parents and shared with the cache; changes that only
+repaint laying nothing out; items, cells and content widths kept; the
+box tree kept; items and cells on eight threads; the back-forward cache
+by bytes and an idle trim; a cold start traced, its fonts scanned once.
+
+**T4.3.** Within 10% of the base by their medians but three rows,
+written here as exceptions with their items, and rows of hundredths of
+a millisecond (a style stage of 0.04 against 0.05ms). It first found
+two regressions of the milestone's own, both mended before its end:
+the style benchmark, 270 against 316ms, its ancestor filters hashed by
+node at every match of a selector with a combinator (kept by slot
+index now: 273 against 286ms); and an opacity on 1,000 paragraphs,
+whose style stage step 5 had halved and step 7b given back, each
+changed fragment's style copied (8us) since the lists are shared with
+the cache (a fragment that carries the element's very style now takes
+the cascade's new one). The exceptions:
+
+- *Pagination alone*, 3.08 against 3.97ms: the walks that make a tree
+  of relative fragments absolute and relative again. The print's
+  layout, pagination and paint, 54 against 37ms. G139.
+- *TodoMVC's frame after its 100 items are deleted*, 2.88 against
+  3.48ms (layout 0.10 to 0.22ms, raster 2.82 to 3.21ms, by turns); not
+  found. G140.
+- *The opacity page's raster*, 4.77 against 5.97ms: the same display
+  lists, hashed alike in every frame, rasterized slower once a
+  thousand style copies a frame are no longer made; the frame 22.8
+  against 15.1ms. G141.
+
+The values benchmark's chain of doubling custom properties runs
+another page since M35 (each element a style attribute of its own, so
+that none takes another's kept style): the base given that page, 263
+against 265ms. The GPU backend's raster rows move by 10-20% from run
+to run within each other's ranges; its code is untouched.
+
 ### Over budget, and why
 
 These are known and recorded rather than hidden. Each has the item that
-is to take it on.
+is to take it on. What M35 took on (a selector failing at its leftmost
+compound, large flex and grid layouts and a change inside one, the
+first layout of a large page, the box tree and the fragments copied at
+every pass, an appended paragraph's frame, justification by character,
+many animations at once, a colour's animation laying out, a realm made)
+is in "Performance v1 (M35)" above.
 
+- **A table of 1,000 rows (M35).** A cell's text edited costs a 19.5ms
+  frame (41.4ms before M35), 17.4ms of it the table's layout, which
+  still visits every cell to take it from the cache; its class toggled
+  costs 47.3ms (80.5ms): its 5,002 elements restyled, 16.8ms, and the
+  table laid out again, 23.3ms. The table's grid kept between passes,
+  and a restyle that keeps what the class cannot reach, are G142's.
+- **Generated content and first lines built anew (M35).** On the pseudo
+  benchmark's page with every pseudo-element styled, a paragraph
+  appended costs 27.2ms (52.5ms before M35): a box with generated
+  content, a first letter or a first line in its subtree is built again
+  at every pass, as M35's box tree kept leaves it. G143.
 - **A click's frame through renderers (M34).** 25ms from a press to
   the frame that shows what it changed, against 1.5ms in one engine:
   the renderer draws a frame each 16ms at most, once the browser took
   the last, and sends its rows through the pipe. Drawing at once after
   input, and shared surfaces, are G125's.
-
 - **2,000 particles on a canvas (M30).** 26.9ms a frame on the GPU
   backend and 31.3ms on the software one, where the acceptance asked
   16.7: the calls through the bindings, about 14ms, and tiny-skia's
   fills, 5.3ms. Sixty frames a second hold up to 1,000 particles on the
   GPU backend. Batching the calls and drawing the canvas on the GPU are
   G81's.
-
-- **A selector that fails at its leftmost compound, after descendant
-  combinators.** The matcher keeps what it has failed on for one
-  element's match only, so every element tries each pair of its
-  ancestors: the square of the tree's depth, for every element. M17's
-  fuzz runs found a 3,118-byte input, unknown elements nested hundreds
-  deep and one such rule, whose cascade takes 0.9s in release (0.8s
-  before M17). M35.2.
-- **A large flex layout, and a change inside one.** A grid of 1,000
-  cards takes 2.5s to lay out, nearly all of it text measurement
-  (M35.8). A change anywhere inside a flex container lays all its items
-  out again, since they are kept only with the container (the flexbox
-  note, "The layout cache"), so a change to one card costs the grid's
-  whole layout.
-- **A large grid layout, and a change inside one.** A gallery of 1,000
-  figures takes 0.86s to lay out, text measurement again, and a change
-  to one caption costs the gallery's whole layout, since a grid's items
-  are kept only with the container, as a flex container's are (the grid
-  note, "The layout cache"). M35.8 and M35.9.
-- **The first layout of a large page.** 490ms for the 1,000 paragraphs
-  M13.2 was measured on, 630–680ms for the mutation benchmark's page,
-  and 690–700ms for the load benchmark's, with its sheets. Most of it is text shaping, at about 25µs a word. Caching word
-  measures and fonts' faces is M35.8. Laying out 1,000 new paragraphs
-  at once costs the same, for the same reason. M25 cached the widths
-  (above): the mutation benchmark's first frame is 56-58ms, the load
-  benchmark's 50-54ms, past the budget still; the faces are M35.8's.
-- **Work that grows faster than the page.** The box tree, rebuilt on
-  every layout pass, takes 1.1, 2.4, 5.2, 18.7 and 80ms at 1,000,
-  2,000, 4,000, 8,000 and 16,000 paragraphs. Its boxes, fragments and
-  computed styles are large: a `LayoutBox` is 448 bytes, a `Fragment`
-  464 and a `ComputedStyle` 376, each 40 or 48 more since M16. M35.9.
-- **A layout pass copies every fragment.** Fragments hold absolute
-  coordinates and copies of their styles, so even a pass that reuses
-  every box copies them all into the new layout: 58ms of the 90ms
-  above. Fragments that refer to styles, and relative coordinates, are
-  M35.9's.
-- **An appended paragraph's frame.** The work above that grows with the
-  page, the box tree and the fragments copied, takes an appended
-  paragraph's frame past the budget almost half the time between 1,000
-  and 2,000 paragraphs in the debug build. In release it stayed within
-  it on the machine measured to M15; on M16's it is past it 115–240
-  times in 1,000, the median at 12.6ms. M17's larger computed style
-  takes it further: 394–442 times in 1,000, the median at 15.1–15.5ms,
-  against 259–291 and 13.7–14.6ms for the code before M17 measured in
-  the same rounds. M21's larger style again: 256–384 times in 1,000,
-  the median at 13.9ms, against 16–90 and 11.2ms for the code before
-  M21 in the same rounds (T4.3, M21). M22 leaves it as it was: 58–299
-  times in 1,000, the median at 13.1ms, against 103–446 and 12.6ms
-  before M22 (T4.3, M22). M35.9 takes it on.
-- **Justification by character.** `text-justify: inter-character`, a
-  word laid out a fragment a character and each measured alone, as
-  letter spacing is: 1,000 paragraphs of six lines take 5.5–5.9s to lay
-  out against 2.2s justified by word. M35.8.
-- **A first line's boxes cascaded again at every build.** A
-  `::first-line` that sets an inherited property has every inline
-  element, `::before`, `::after` and `::first-letter` on a first line's
-  run cascaded again whenever the box tree is built, which is at every
-  layout pass. On the pseudo benchmark's page that is 7–8ms of an
-  appended paragraph's frame with links and emphases alone, and 30–35ms
-  with generated boxes and first letters as well. A box tree kept and
-  updated in place, M35.9, keeps those styles with it.
-- **Many animations at once.** An opacity animated on each of 1,000
-  paragraphs takes 23.5–26.8ms a frame: every frame restyles the 1,000
-  elements, their selectors matched again, 15.5–17.2ms, and draws their
-  groups, 7ms (M22). Keeping an animated element's matched rules
-  between frames is M35.2's.
-- **A colour's animation lays out what it reaches.** A colour animated
-  on one of 1,000 paragraphs lays out that paragraph and the boxes
-  around it at every frame, 6.4–7.2ms of an 8.5–9.6ms frame, though it
-  only repaints (M22). Fragments that refer to their styles, so that a
-  paint-only change lays nothing out, are M35.9's.
 - **Positions counted from the end.** With `:last-child` or
   `:nth-last-child` in a stylesheet, inserting an element restyles every
   sibling before it: 20,015 elements and 42ms at 10,000 paragraphs. That
   is the conservative rule of M13.1.
-- **A realm made.** A page's first script waits for its realm, which
-  compiles and runs the bindings' bootstrap: 5ms at M25, 10.6ms at
-  M26, 15.6ms at M27, 17.5ms at M29, 22.9ms at M30, 27.6ms at M31 and
-  28.6ms at M32, 15,387 lines, past a frame's budget alone; a worker
-  waits as long for its first message (25.9ms). Loading it compiled is
-  M35.12's.
 - **A scrolled page at a display's scale (M32).** A scrolled layer's
   tiles are drawn a pixel to a pixel, so at a scale other than 1 the
   document's layer is kept whole at the scale, and its scrolling draws
