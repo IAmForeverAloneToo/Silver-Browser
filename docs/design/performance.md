@@ -451,4 +451,137 @@ gate, measured against the base before it is committed.
 
 ## 4. Corrected to the code
 
-Filled in at the last step.
+Where the milestone's code came out otherwise than the sections above
+planned, *(corrected)*, by section. The step notes say how each was
+found, and `docs/perf-budgets.md` "Performance v1 (M35)" has the
+numbers.
+
+*The causes.* *(corrected)* `docs/perf-budgets.md` gave a computed
+style as 376 bytes and a box and a fragment as 448 and 464; at the
+base a style was 704 bytes, and a box and a fragment each held one,
+so each was over 704. A box is now 160 bytes and a fragment 128,
+pinned by a test.
+
+*What is measured.* *(corrected)* The page-load benchmark's twenty
+pages are nineteen of the web's classes and `about:silver`, as
+planned. T4.3's base tree is step 1's commit (348f075), which is the
+base's engine with the new benchmarks, so that they are timed before
+and after too.
+
+*The rule.* *(corrected)* The budgets are a table in
+`docs/perf-budgets.md`, each with what M35 measured; two are past (a
+1,000-row table's cell edit and class toggle, G142) and written in
+"Over budget, and why". T4.3 found two regressions of the milestone's
+own, mended in step 15: the ancestor filters, in a map hashed at every
+match of a selector with a combinator, are kept by slot index; and an
+opacity on 1,000 paragraphs, whose style stage step 7b had doubled
+again, each changed fragment's style copied since the lists are shared
+with the cache, now gives a fragment that carries the element's very
+style the cascade's new one. Three rows past 10% are written as
+exceptions with their items (G139 to G141).
+
+*Style.* *(corrected)* The ancestor filter is not a counting filter
+kept along the walk: a restyle does not walk in order. It is a
+4,096-bit filter (`ANCESTOR_FILTER_BITS`, not `ANCESTOR_FILTER_SLOTS`),
+two bits a feature, made for each parent the first
+time one of its children is matched, from its parent's and its own,
+and kept for the matcher's life (`MAX_ANCESTOR_FILTERS`, 16,384 of
+them). The hashes a selector requires are made when it is parsed, so
+`querySelector` uses the filter too. A subject that is a lone `:is()`
+or `:where()` goes in the universal bucket; its members are not
+bucketed. The memo of failures is kept for the matcher's life, keyed by
+the selector's address, at most `MAX_FAILED` places (step 4).
+
+Style sharing is not a sibling's style given when a list of conditions
+holds, but a cascade's kept base styles, found by what each is made
+of: the number of its parent's style among the distinct ones met (an
+equal one among the last eight takes its number, so cousins share),
+its matched declarations by address with their tier, layer,
+specificity and order, its `dir`, whether it is the root, and its
+`rem`; never one with an inline style's or a hint's declaration or one
+that reads `attr()`; at most `MAX_KEPT_STYLES`, 4,096. Position among
+siblings needs no condition: matching decided it. Matching is not
+skipped for what animates, which was 0.8us of an element's 14us; an
+animation of opacity, transform, translate, rotate or scale alone, none
+important, is set on the base style rather than computing it again
+(step 5). `STYLE_SHARING_CANDIDATES` is not a constant of the code.
+
+*Styles shared, fragments shared.* *(corrected)* A fragment's text
+stays a `String` of its own: with fragments shared between passes a
+word's string is made once, at the pass that lays it out (step 6). A
+fragment's children are a `Children`, an `Arc`'d `Vec`, none for none,
+copied on write a level at a time, not an `Arc<[Fragment]>`, which
+cannot be written in place while a layout builds it; a cache entry
+holds its box's subtree whole, shared with the layout that made or
+took it, and the places in tree order a taken subtree carries are
+moved by a shift on its list rather than by copying it (step 7). What
+only repaints is a difference in the colour, the cursor, the outline
+or the custom properties alone, and in the background and border
+colours but of a table part's box; `visibility` is not (`collapse`
+lays a row out), and a box that draws a text decoration is laid out
+(step 7). Items and cells are kept under their node, a few layouts
+each (`MAX_ITEM_LAYOUTS`, 4), but not an anonymous one, a generated
+one, or one an ancestor's pseudo-element styles; a box's content
+widths are kept across passes too, which the note did not have (step
+8). The box tree is kept by the layout cache, not the engine: an
+element's own box is given back whole when nothing generated, no
+marker, no control and no first-line style is in its subtree; the
+numbering, marker and first-line walks still visit the whole tree, and
+inline elements are built anew (step 9).
+
+*Text.* *(corrected)* Justification by character costs a fragment a
+character, and its measures were cache hits already: nothing of text's
+to do, and the "one shaping call" is dropped (step 2).
+
+*Scripts.* *(corrected)* The bytecode keeps its source and debug lines,
+so that nothing a page sees changes; a binding's `toString` therefore
+shows its JavaScript, not `[native code]`, as it did (G135). `js`
+denies rather than forbids `unsafe`, since a forbid cannot be allowed
+under it (step 3).
+
+*Threads.* *(corrected)* Layout's pool is the layout crate's own, made
+the first time a container asks, threads with 8MiB stacks; nested
+containers lay out on the thread they are on. Eight threads made the
+flex grid's first layout 2.2 times faster, not eight; the cause is not
+found (G134; step 10). Parallel raster was built, measured and
+taken out: the tiles' drawing is not where a raster goes (the walk of
+the list for the extents and the damage, and the glyph masks, are),
+and four more glyph caches were not worth it. The display list is not
+kept: a frame follows a change, and the list is 0.3 to 0.5ms of the
+1,000-paragraph page's frame. G132 and G133 (step 11).
+
+*Compositing v2.* *(corrected)* Not done: a turned card's frame is
+1.9ms, a moved card's 0.3ms and a scroll's 0.7ms; opaque tiles would
+save 0.2ms of a scroll, and layers above the tiles need overlap rules
+in z-order and the composite split from the raster. G131 (step 12).
+
+*Memory.* *(corrected)* A document put away lets go of its decoded
+images; its layers needed nothing, since the backend is the engine's.
+A document larger alone than `MAX_KEPT_BYTES` is not kept. The trim
+lets go of every decoded image of an engine whose view is hidden, and
+asks for no frame: a frame is wanted whether a view is hidden or not,
+and one drawn would make again what the trim let go (step 13).
+
+*Startup.* *(corrected)* The profile is read on a thread of its own
+while the fonts are scanned, and given before the first navigation,
+not opened after the window: the first navigation would go without
+its cookies, and the first renderer starts with the session, before
+the window. The browser's scan runs from `main` and is waited for when
+the tab is made; the window is made after the session, whose toolbar
+needs the fonts. A renderer does not scan at all: the browser sends it
+the files of its fonts after the hello (`ToRenderer::Fonts`), a file
+gone falling back to a scan (step 14).
+
+*Bounds.* *(corrected)* The bounds are `ANCESTOR_FILTER_BITS` and
+`MAX_ANCESTOR_FILTERS` for the filters, `MAX_FAILED` for the memo,
+`MAX_KEPT_STYLES` for the kept styles, `MAX_ITEM_LAYOUTS` for an item's
+layouts, `MAX_SHAPE_PLANS` and `MEASURE_SHARDS` beside `MAX_MEASURES`,
+`MAX_WORKER_THREADS` and `PARALLEL_MIN_ITEMS` for the pool,
+`MAX_KEPT_BYTES` and `IDLE_TRIM_AFTER` for what a renderer keeps, and
+`MAX_STROKE_DASHES` for a canvas stroke's dashes, which the base's
+nightly fuzz run found unbounded; `PARALLEL_MIN_PIXELS` went with the
+parallel raster.
+
+*Not in this milestone.* *(corrected)* Registered: layout without
+recursion as G127, a block's children in parallel as G128, interning
+names as G129, raster at the device transform as G130.

@@ -2096,3 +2096,55 @@ maintainer's word, scripts run by default where pages are renderers'
 (the many-process build's window), `--disable-scripts` turning them
 off; the one-process build and `--print-to-pdf` wait for
 `--enable-scripts`. Next milestone: the performance pass (M35).
+
+Milestone 35 (the performance pass; `docs/design/performance.md`,
+`docs/perf-budgets.md` "The budgets" and "Performance v1"): the causes
+every milestone since M13 left over the frame's budget, taken on where
+the work is. Benchmarks of the browser's use (step 1): twenty pages of
+the web's classes to their first frames, TodoMVC in plain DOM, a page
+scrolled through three animations, a page class's memory by
+`--check-processes memory`, and every benchmark run once in CI in a
+quick mode (T4.2). Text (step 2): a font's shaping face and plans kept,
+a word measured afresh in 2.2us rather than 14.6. Scripts (step 3): the
+bindings compiled once a process and read by every realm as bytecode,
+the one reviewed `unsafe` of `js`; a realm in 5.3ms rather than 30.6.
+Style (steps 4 and 5): selectors in buckets by their subject, an
+ancestor filter for each parent, the places a selector failed at kept,
+base styles kept by what they are made of so that cousins share, and
+an animation of composited longhands set on the base style. Layout
+(steps 6 to 10): `Arc<ComputedStyle>` from the cascade to the
+fragments; fragments relative to their parents and their lists of
+children shared with the layout cache; a change that only repaints
+laying nothing out; flex items, grid items, table cells and content
+widths kept by the cache; the box tree kept between passes; a
+container's items and cells laid out on a pool of eight threads. Raster
+on threads, the display list kept and compositing v2 were built or
+measured and left (steps 11 and 12, G131 to G133). Memory (step 13):
+`Engine::memory`, the back-forward cache bounded by bytes, a document
+put away letting go of its decoded images, an idle renderer's trim.
+Startup (step 14): `--startup-trace`, the system's fonts scanned once a
+process and a renderer reading the browser's font files rather than
+scanning, the profile read aside, the spare renderer after the first
+frame; the blank tab's page frame at 94ms against a 300ms budget. The
+acceptance (step 15): the budgets published; T4.3 against the base
+found two regressions of the milestone's own, mended (the ancestor
+filters hashed at every match, and a composited change copying each
+fragment's style since the lists are shared), and three rows past 10%
+written as exceptions with their items. Against the code before: the
+twenty pages' first frames 39.9 to 19.7ms (the worst 125 to 69ms), a
+paragraph appended to 1,000 a frame of 12.1 to 1.44ms (none of 1,000
+past the budget, 26 to 51 before), a card's title in a flex grid of
+1,000 190 to 6.9ms, an opacity on 1,000 paragraphs 22.8 to 15.1ms,
+the jank page's frame 5.4 to 2.5ms, a renderer of one page 30.6 to
+27.6MB of its own. The fuzz runs of the eleven targets the milestone
+touched (ten minutes each on six workers, the nineteen written pages
+among the seeds) found nothing. Not in this milestone, said rather than hidden
+and registered (G127 to G143): layout without recursion, a block's
+children in parallel, interned names, raster at the device transform,
+compositing v2, parallel raster, the display list kept, the pool's
+scaling, a binding's `toString`, `[::1]` first on Windows, the font
+scan before the window, an index of fragments by node, pagination over
+relative fragments, TodoMVC's frame after a delete, the opacity page's
+raster, a table of 1,000 rows, and boxes with generated content built
+anew. 2,756 tests pass workspace-wide, two ignored. Next milestone:
+DevTools v0 and the remaining storage (M36).

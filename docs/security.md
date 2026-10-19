@@ -199,7 +199,10 @@ the permissions and the frames' tree; each site's documents are
 engines in a *renderer process* of their own, the same executable run
 with `--renderer`, which speaks to the browser over its standard input
 and output by the protocol of `engine::ipc` (a versioned schema, each
-message at most `MAX_MESSAGE`).
+message at most `MAX_MESSAGE`). After the hello the browser names the
+files of the system's fonts it found (M35.6, `ToRenderer::Fonts`),
+which the renderer opens with its own token rather than scanning the
+font folders; a file it cannot read, it scans for.
 
 - **Site isolation.** A renderer is locked to one site (scheme and
   registrable domain) at its first document: a navigation whose
@@ -291,8 +294,8 @@ process's bytes or a page's. The shell's test
 holds every source file to this, that module's one block among them,
 and CI greps the same (T3.2).
 
-**Under it**: of the 379 packages `Cargo.lock` holds (every platform's
-together), 261 write `unsafe` somewhere and 118 none. Those the
+**Under it**: of the 385 packages `Cargo.lock` holds (every platform's
+together), 267 write `unsafe` somewhere and 118 none. Those the
 attack surface runs through:
 
 | Crate | Version | What for | Blocks | Fns | Traits, impls | Externs |
@@ -307,6 +310,11 @@ attack surface runs through:
 | `zune-jpeg` | 0.5.15 | JPEG | 56 | 23 | 0 | 0 |
 | `tiny-skia` | 0.12.0 | the canvas's raster | 134 | 1 | 16 | 0 |
 | `rustybuzz` | 0.20.1 | shaping | 1 | 0 | 14 | 0 |
+| `self_cell` | 1.3.0 | a font's shaping face kept with its bytes (M35.8) | 16 | 13 | 5 | 0 |
+| `rayon` | 1.12.0 | layout's pool of threads (M35.3) | 50 | 9 | 8 | 0 |
+| `rayon-core` | 1.13.0 | its threads and their queues | 42 | 40 | 5 | 0 |
+| `crossbeam-deque` | 0.8.8 | the queues' work stealing | 29 | 6 | 6 | 0 |
+| `crossbeam-epoch` | 0.9.21 | the queues' memory reclamation | 87 | 40 | 11 | 0 |
 | `redb` | 4.3.0 | the profile | 30 | 18 | 5 | 1 |
 | `hashbrown` | 0.17.1 | hash tables | 322 | 107 | 26 | 0 |
 | `winit` | 0.30.13 | windows and input | 732 | 65 | 70 | 56 |
@@ -397,6 +405,7 @@ earlier milestones say why each is what it is):
 | `canvas` | `MAX_PATH_POINTS` | `1 << 20` | The most points a path holds. |
 | `canvas` | `MAX_SHADOW_BLUR` | `256.0` | The largest shadow blur drawn. |
 | `canvas` | `MAX_DASHES` | `1_024` | The longest dash list. |
+| `canvas` | `MAX_STROKE_DASHES` | `16_384.0` | The most dashes a stroke is cut into: past it the path is stroked whole, as Skia strokes it past a million (found by fuzzing, M35). |
 | `css` | `MAX_NESTING` | `128` | How deep blocks may nest before a block is kept raw rather than parsed. |
 | `dom` | `MAX_DEPTH` | `512` | The deepest elements may nest: 512, the HTML parser's cap on its stack of open elements (`html::MAX_DEPTH` is this constant), which keeps the recursive walks over a finished tree within any thread's stack. |
 | `dom` | `MAX_NODES` | `1 << 22` | The most nodes a document may hold alive through its mutation API: about four million, past any real page (the largest have a few hundred thousand) and short of what would exhaust memory before their attributes and text are counted. |
@@ -415,6 +424,8 @@ earlier milestones say why each is what it is):
 | `engine` | `MAX_FRAME_FETCH_THREADS` | `6` | The most threads a frame's engine fetches on (M33.2): a frame is one of up to `MAX_FRAMES` a tab, each with its own. |
 | `engine` | `MAX_IMPORT_DEPTH` | `16` | How deep imports go: a sheet's imports are one deeper than it, and one deeper than this is not fetched. |
 | `engine` | `MAX_ENTRIES` | `50` | The most entries a history holds: past it, the oldest goes, as in Chromium and Firefox. |
+| `engine` | `MAX_KEPT_BYTES` | `256 << 20` | The most bytes the documents the back-forward cache keeps hold together, as each said when it was put away (M35.5): past it, the ones shown least recently go. |
+| `engine` | `IDLE_TRIM_AFTER` | `30 s` | How long a renderer's views are all hidden before it trims what it can make again (M35.5). |
 | `engine` | `MAX_KEPT` | `6` | The most documents the back-forward cache keeps besides the one shown, as Chromium's does by default: past it, the one shown least recently goes. |
 | `engine` | `MAX_KEPT` | `1000` | The most answers kept: past it, a new answer is not kept. |
 | `engine` | `MAX_CANVAS_MEMORY` | `512 << 20` | The most bytes a document's bitmaps hold in all: a canvas made or resized past it has no bitmap, and draws nothing. |
@@ -478,6 +489,8 @@ earlier milestones say why each is what it is):
 | `layout` | `MAX_LINE` | `10_000` | The last line coordinate the grid may have (section 5.4). |
 | `layout` | `MAX_EXPLICIT_TRACKS` | `MAX_LINE as usize` | The most tracks the explicit grid has in one axis, however many a track list's repetitions ask for. |
 | `layout` | `MAX_SPAN` | `(MAX_LINE - MIN_LINE) as i64` | The most tracks a span may cross: the whole limited grid. |
+| `layout` | `MAX_WORKER_THREADS` | `8` | The most threads layout's pool has (M35.3): fewer on a machine with fewer cores. |
+| `layout` | `MAX_ITEM_LAYOUTS` | `4` | The most layouts of one flex item, grid item or cell the layout cache keeps (M35.9). |
 | `layout` | `MAX_PAGES` | `10_000` | The most pages a document is cut into: what is below the last is on none. |
 | `net` | `MAX_CACHE_BYTES` | `64 << 20` | The most the cache's bodies hold in all: past it, the least recently used entries go first. |
 | `net` | `MAX_CACHE_ENTRY_BYTES` | `8 << 20` | The largest body the cache keeps. |
@@ -522,6 +535,10 @@ earlier milestones say why each is what it is):
 | `style` | `MAX_PROGRESS` | `1e9` | The most an output progress may be away from zero, either way. |
 | `style` | `MAX_NESTING` | `32` | How deep conditions in parentheses may nest before what is inside is left unknown. |
 | `style` | `MAX_NESTING` | `32` | How deep `:not()`, `:is()`, `:where()` and `of S` may nest. |
+| `style` | `ANCESTOR_FILTER_BITS` | `4096` | The bits of an ancestor filter (M35.2): a Bloom filter of the IDs, classes and tags of an element and its ancestors, two bits a feature. |
+| `style` | `MAX_ANCESTOR_FILTERS` | `1 << 14` | The most ancestor filters a matcher keeps, 512 bytes each: past it an element's selectors are matched without one. |
+| `style` | `MAX_FAILED` | `1 << 20` | The most places a matcher keeps a selector failed at; past it they are forgotten and found again. |
+| `style` | `MAX_KEPT_STYLES` | `4096` | The most base styles a cascade keeps for the elements made of the same (M35.2); past it they are forgotten and computed again. |
 | `svg` | `MAX_SVG_ELEMENTS` | `1 << 18` | The most elements a render tree is built from, `<use>`s' instances counted; past it, what was built is drawn. |
 | `svg` | `MAX_USE_DEPTH` | `32` | The most `<use>`s within one another, and the longest chain of gradients' templates; a `<use>` past it draws nothing. |
 | `svg` | `MAX_GRADIENT_STOPS` | `1_024` | The most stops a gradient takes; the rest are left out. |
@@ -530,6 +547,8 @@ earlier milestones say why each is what it is):
 | `svg` | `MAX_SVG_LAYER_PIXELS` | `1 << 28` | The most pixels the layers of one drawing take, together; past it, an opacity goes to each child, as past [`MAX_SVG_LAYERS`]. |
 | `text` | `MAX_LEN` | `65_536` | The most bytes the address field holds. |
 | `text` | `MAX_MASK_PIXELS` | `4096 * 4096` | The most pixels one glyph mask may hold: a glyph drawn at a size where a single letter is 4096 pixels on a side. |
+| `text` | `MAX_SHAPE_PLANS` | `64` | The most shaping plans a font keeps (M35.8): past it a plan is made for the call and not kept. |
+| `text` | `MEASURE_SHARDS` | `16` | How many parts the kept widths are in, each behind its own lock (M35.8). |
 | `text` | `MAX_MEASURES` | `1 << 16` | The most widths a collection keeps: a few megabytes of words. |
 | `ui` | `MAX_CHARS` | `1024` | The most characters of a page's title the window shows. |
 | `ui` | `MIN_FIELD_W` | `40.0` | The narrowest the field is drawn. |

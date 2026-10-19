@@ -2247,26 +2247,62 @@ process seams.
 
 ## M35 — Performance v1  ·  all  ·  Effort: XL  ·  Depends: M13, M19, M25
 
-- [ ] M35.1 Benchmarks committed: Speedometer-style interaction bench
+- [x] M35.1 Benchmarks committed: Speedometer-style interaction bench
        (subset), page-load bench on 20 saved pages, scroll/animation
        jank bench, memory footprints per page class. All recorded per
        milestone from now on (T4 track formalized).
-- [ ] M35.2 Style: rule hash bucketing (rightmost compound), style
+       Done 2026-10-16 (`docs/design/performance.md`): `benches/pages.rs`,
+       nineteen pages of the web's classes written for it and
+       `about:silver`, each to its first frame by stage, a maintainer's
+       own from `SILVER_PAGES`; `benches/interaction.rs`, TodoMVC in
+       plain DOM, a hundred items added, completed and deleted;
+       `benches/jank.rs`, ten seconds scrolled while three animations
+       run; `--check-processes memory`, each page in a renderer of its
+       own. Every benchmark has a quick mode CI runs on each push (T4.2).
+- [x] M35.2 Style: rule hash bucketing (rightmost compound), style
        sharing cache (sibling style reuse), state-bounded invalidation.
        At M26 the user agent sheet's 73 rules, 13 more for controls,
        `:any-link` and `:focus-visible`, are each tried on every
        element restyled: T4.3's restyles 9-16% slower.
-- [ ] M35.3 Layout: parallel block layout (rayon subtrees where
+       Done 2026-10-16: selectors in buckets by their subject's ID,
+       class or tag; an ancestor filter of 4,096 bits for each parent;
+       the places a selector failed at kept for the matcher's life; base
+       styles kept by what they are made of, so that cousins share; an
+       animation of composited longhands alone set on the base style.
+       The 1,000-row table's class toggled, 33.0 to 16.8 ms of style.
+- [x] M35.3 Layout: parallel block layout (rayon subtrees where
        independent — the DAG shape from architecture.md pays off here).
+       Partly done 2026-10-16: a flex container's items, a grid's items
+       and a table's cells laid out on a pool of eight threads from 32 of
+       them; a block's children stay in order (G128). Eight threads lay
+       the flex grid of 1,000 cards out 2.2 times faster (G134).
 - [ ] M35.4 Paint/raster: parallel raster tiles, display-list retention.
-- [ ] M35.5 Memory: shared string/data arenas per pipeline stage;
+       Not done: parallel raster was built and measured, then taken out,
+       and the display list kept was measured not to pay (G132, G133).
+- [x] M35.5 Memory: shared string/data arenas per pipeline stage;
        measure + cap the layer cache (M19.6) and the back-forward cache
        (M15, six documents for now); idle renderer memory trim.
-- [ ] M35.6 Startup: cold start < 300ms to a blank tab on a mid laptop
+       Done 2026-10-16: `Engine::memory`, what a document holds by
+       part; the back-forward cache bounded at 256 MB as well as six
+       documents, a document put away letting go of its decoded images;
+       a renderer whose views are all hidden for 30 s trims; the layer
+       cache's eviction without formatting; a renderer of one page of the
+       twenty holds 27.6 MB of its own (30.6 before). The arenas are the
+       shared styles and fragments; interning names is G129.
+- [x] M35.6 Startup: cold start < 300ms to a blank tab on a mid laptop
        (measure; lazy-init everything non-critical).
-- [ ] M35.7 Acceptance: numeric budgets published in
+       Done 2026-10-16: `--startup-trace`, the page frame of the blank
+       tab at 94 ms on this machine (114 before), `STARTUP_BUDGET` 300 ms;
+       the system's fonts scanned once a process, from `main`, a
+       renderer reading the browser's font files rather than scanning;
+       the profile read aside; the spare renderer after the first frame.
+- [x] M35.7 Acceptance: numeric budgets published in
        `docs/perf-budgets.md`, regressions block milestone exit (T4).
-- [ ] M35.8 Text measurement off layout's hot path: each font's
+       Done 2026-10-16: the budgets table in `docs/perf-budgets.md`;
+       T4.3 against the base found two regressions of the milestone's
+       own, fixed (step 15), and three rows past 10%, written as
+       exceptions with their items (G139 to G141).
+- [x] M35.8 Text measurement off layout's hot path: each font's
        shaping face kept rather than rebuilt per call, and a cache of
        word measures in layout (measured at M13: about 25µs a word,
        8µs of it the face, most of a 1,000-paragraph page's 700ms
@@ -2274,7 +2310,10 @@ process seams.
        (`MAX_MEASURES` widths by size and text), when a table built by
        script spent a second a frame shaping its words again; the face
        kept is still to do.
-- [ ] M35.9 Layout's work in proportion to the page on every pass
+       Done 2026-10-16: a font's shaping face and plans kept
+       (`self_cell`, no `unsafe` of ours), a word measured afresh 14.6
+       to 2.2 us; the measures in sixteen shards.
+- [x] M35.9 Layout's work in proportion to the page on every pass
        (measured at M13): the box tree, rebuilt each pass and growing
        faster than the page (1.1ms at 1,000 paragraphs, 80ms at
        16,000), and the fragments, every one copied into each new
@@ -2293,6 +2332,14 @@ process seams.
        release, 17 in a debug build and more under the address
        sanitizer, which overflowed Windows' 1 MiB main thread at M25; the
        shell's main thread has 32 MiB since (`engine::STACK_SIZE`).
+       Done 2026-10-16 but the recursion (G127): `Arc<ComputedStyle>`
+       from the cascade to the fragments; fragments relative to their
+       parent, their children shared with the cache; a change that only
+       repaints lays nothing out; items, cells and content widths kept by
+       the cache; the box tree kept between passes. A paragraph appended
+       to 1,000, 12.1 to 1.44 ms a frame; a card's title in a flex grid
+       of 1,000, 190 to 6.9 ms; a cell's text in a 1,000-row table, 41.4
+       to 19.5 ms, past the budget still (G142).
 - [ ] M35.10 Compositing v2 (found at M19, `docs/design/compositing.md`
        section 2): the document's tiles drawn opaque over the canvas
        colour, so that a frame without them draws the page through at
@@ -2302,19 +2349,26 @@ process seams.
        drawing them again; raster at the device transform for a layer
        that does not animate, and a layer's raster scale kept through
        an animation.
-- [ ] M35.11 A restyle's cost an element and a whole viewport's raster
+       Not done (G130, G131): measured, a turned card's frame 1.9 ms and
+       a moved card's 0.3 ms leave nothing to win that pays for its risk.
+- [x] M35.11 A restyle's cost an element and a whole viewport's raster
        (measured at M25, `benches/dom.rs`): a class toggled on a table
        restyles its elements at 7-8 us each, more than the whole
        cascade's 6, and rasters the viewport again in software in about
        10 ms; a 100-row table's toggle is a 20 ms frame.
-- [ ] M35.12 A realm's bindings loaded compiled: every realm compiles
+       Done 2026-10-16 with M35.2: the 1,000-row table's toggle 80.5 to
+       47.3 ms a frame, past the budget still (G142); the viewport's
+       raster on the software backend as it was.
+- [x] M35.12 A realm's bindings loaded compiled: every realm compiles
        the DOM's bootstrap, 3,300 lines of JavaScript, 4.5 ms of the
        5 ms a realm now takes to make (0.12 ms before M25); 9,158 lines
        and 15.6 ms at M27, whose `fetch`, XHR and bodies added 5 ms.
        QuickJS writes and reads compiled code, but `rquickjs` reads it
        only through an `unsafe` function, and `js` writes no `unsafe`:
        a reviewed exception, or a safe reader, first.
-
+       Done 2026-10-16: the bootstrap a module compiled once a process
+       and its bytecode read by every realm, the one reviewed `unsafe`
+       (`docs/security.md`); a realm in 5.3 ms (30.6 before).
 ---
 
 ## M36 — DevTools v0 + remaining storage  ·  new `devtools` crate  ·  Effort: XL  ·  Depends: M25, M34
@@ -2880,6 +2934,81 @@ Deferred from the milestones above, each with what it waits on:
        whose poll is not armed again (mio on Windows clears a socket's
        interest on an event and sets it again only on WouldBlock).
        Named `either:` in the expectations. Found 2026-10-15.
+- [ ] G127 The box tree's build, layout and paint's walk without
+       recursion: a page nested to `dom::MAX_DEPTH` needs the shell's
+       32 MiB of stack (`engine::STACK_SIZE`); an explicit stack is
+       every algorithm of the layout crate rewritten. Found at M35.
+- [ ] G128 A block's in-flow children laid out in parallel: floats,
+       margins that collapse and the space they share make each depend
+       on the one before; only flex items, grid items and table cells
+       are laid out on the pool. Found at M35.
+- [ ] G129 The DOM's tag and attribute names interned and matched by
+       atom: they are strings, hashed for the rule index and the
+       ancestor filter. Found at M35.
+- [ ] G130 Raster at the device transform for a layer that does not
+       animate, and a layer's raster scale kept through an animation
+       (`compositing.md` section 2): a layer is rasterized at its own
+       scale and resampled. Found at M19, registered at M35.
+- [ ] G131 Compositing v2 (M35.10): the document's tiles drawn opaque
+       and composited as copies, and a `will-change` layer composited
+       over the document's tiles rather than into them. Measured at M35
+       (software): a turned card's frame 1.9 ms, a moved card's 0.3 ms,
+       a scroll's 0.7 ms; opaque tiles would save 0.2 ms of a scroll,
+       and layers above the tiles need z-order overlap rules and the
+       composite split from the raster. Found at M35.
+- [ ] G132 Raster on a pool of threads (M35.4): built at M35 and taken
+       out, since a raster's time is the walk of the whole list for the
+       extents and the damage, and the glyph masks, not the tiles'
+       drawing; a glyph cache the workers share and extents found for
+       the region a frame draws first. Found at M35.
+- [ ] G133 The display list kept while nothing that paints changed
+       (M35.4): a frame follows a change, and the list is 0.3-0.5 ms of
+       the 1,000-paragraph page's frame; keying a kept list on every
+       input risks a stale frame. Found at M35.
+- [ ] G134 Layout on eight threads lays the flex grid of 1,000 cards out
+       2.2 times faster, not more; the cause is not found (the locks of
+       the memo and the cache taken a few times an item, the font
+       shards, the system allocator). Found at M35.
+- [ ] G135 A binding's `toString` shows its JavaScript
+       ("createElement(localName) {"), where the reference browser
+       says "function createElement() { [native code] }": libraries
+       that test for native functions take ours for polyfills. Bytecode
+       written without its source would give QuickJS's form. Found at
+       M35.
+- [ ] G136 On Windows a name under `localhost` resolves to `[::1]`
+       first, and a refused `[::1]` connection takes 2 s there: every
+       connection to a server listening on 127.0.0.1 alone waits 250 ms
+       for its second address and leaves a thread for 2 s (the
+       web-platform tests' harness). Found at M35.
+- [ ] G137 Startup past the window: the session's toolbar needs the
+       fonts and the window is made after the session, so the browser
+       waits for its font scan (about 17 ms) before the window rather
+       than while it opens; a renderer takes 26 ms to reach `main`.
+       Found at M35.
+- [ ] G138 An index of fragments by node: a change that only repaints
+       walks the layout twice to find and write its fragments, 1.05 ms
+       on the 1,000-paragraph page. Found at M35.
+- [ ] G139 Pagination over relative fragments: it makes the tree
+       absolute and relative again by two walks, 3.1 -> 4.1 ms of the
+       media bench's print at M35 (T4.3's exception), the print's
+       layout, pagination and paint 54 -> 37 ms. Found at M35.
+- [ ] G140 TodoMVC's frame after its 100 items are deleted, 2.94 ->
+       3.39 ms at M35 by turns (layout 0.10 -> 0.22 ms, raster 2.82 ->
+       3.21 ms; T4.3's exception), the cause not found. Found at M35.
+- [ ] G141 An opacity on 1,000 paragraphs rasterizes the same display
+       lists 1.3 ms slower (4.8 -> 6.0 ms) once its fragments share the
+       cascade's styles rather than copy them, the frame 22.8 -> 15.4 ms;
+       the allocator's state, not found further (T4.3's exception).
+       Found at M35.
+- [ ] G142 A table of 1,000 rows: a cell's text edited is a 19.5 ms
+       frame at M35, its layout visiting every cell to take it from the
+       cache; its class toggled 47.3 ms, its 5,002 elements restyled and
+       the table laid out again. The table's grid kept between passes,
+       and a restyle that keeps what a class cannot reach. Found at M35.
+- [ ] G143 A box with generated content, a first letter or a first line
+       in its subtree is built again at every pass (M35's box tree kept
+       passes over them): a paragraph appended to the pseudo benchmark's
+       page with every pseudo-element styled, 27.2 ms. Found at M35.
 
 ---
 
