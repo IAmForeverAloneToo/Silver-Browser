@@ -1457,7 +1457,10 @@ impl Window {
     fn run_until(&mut self, done: impl Fn(&mut Session) -> bool) {
         let deadline = Instant::now() + WAIT;
         while !done(&mut self.session) {
-            assert!(Instant::now() < deadline, "the session gets there in time");
+            if Instant::now() >= deadline {
+                let text = panel_text(&mut self.session, "panes");
+                panic!("the session gets there in time: {text:?}");
+            }
             self.session.tick();
             self.session.network();
             self.frame();
@@ -1725,8 +1728,21 @@ fn the_panels_console_shows_the_pages_entries_and_evaluates() {
         r#"{"id":99,"method":"console.evaluate","params":{"expression":"console.info('later')"}}"#;
     View::inspect(window.session.engine_mut(), later.to_owned());
     window.run_until(|session| panel_console(session).contains("later"));
-    // An expression typed at the prompt, at the panel's foot, runs in the
-    // page.
+    // An expression typed at the prompt, at the console's foot, runs in
+    // the page: the Console tab first, the second of the panel's tabs.
+    let panel_top = HEIGHT - ((HEIGHT - ui::HEIGHT) as f32 * PANEL_SHARE).round() as u32;
+    window.click(110.0, (panel_top + 10) as f32);
+    window.run_until(|session| {
+        panel_text(session, "pane-console").is_some()
+            && session.panel_mut().is_some_and(|panel| {
+                let document = panel.document();
+                document
+                    .subtree(document.root())
+                    .find(|&node| document.attr(node, "id") == Some("pane-console"))
+                    .and_then(|node| document.attr(node, "class"))
+                    .is_some_and(|class| !class.contains("off"))
+            })
+    });
     window.click(400.0, (HEIGHT - 6) as f32);
     assert_eq!(window.session.focus(), Focus::Panel);
     window.type_text("6*7");
@@ -1734,5 +1750,35 @@ fn the_panels_console_shows_the_pages_entries_and_evaluates() {
     window.run_until(|session| {
         let text = panel_console(session);
         text.contains("> 6*7") && text.contains("42")
+    });
+}
+
+#[test]
+fn the_panels_inspector_shows_the_tree_and_a_picked_nodes_rules() {
+    let server = serve(|path| match path {
+        "/" => html(
+            "<title>Inspected</title><style>.x { color: green }</style>\
+             <body style='margin: 0'><p class=x style='height: 100px'>a paragraph</p>",
+        ),
+        _ => None,
+    });
+    let mut window = Window::with_scripts(Some(server.url("/")));
+    window.settle();
+    window.press_key(Key::F12, NONE);
+    window.run_until(|session| {
+        panel_text(session, "elements-tree").is_some_and(|tree| tree.contains("class=\"x\""))
+    });
+    // A pick, as the panel's button asks for it, then a press on the
+    // paragraph: the panel selects it and shows its rules.
+    let pick = r#"{"id":77,"method":"dom.pick","params":{"on":true}}"#;
+    View::inspect(window.session.engine_mut(), pick.to_owned());
+    window.click(100.0, 60.0);
+    window.run_until(|session| {
+        panel_text(session, "elements-styles")
+            .is_some_and(|styles| styles.contains(".x {") && styles.contains("color: green;"))
+    });
+    window.run_until(|session| {
+        panel_text(session, "elements-computed")
+            .is_some_and(|computed| computed.contains("rgb(0, 128, 0)"))
     });
 }

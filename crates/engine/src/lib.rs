@@ -472,6 +472,15 @@ pub struct Engine {
     inspected: Vec<String>,
     /// The node the element inspector selected (M36): the console's `$0`.
     selected: Option<NodeId>,
+    /// The node the inspector highlights in the page, whether it picks
+    /// the node under the pointer, whether the press that picked is down,
+    /// the document's version the panel last read, and the frame with
+    /// the highlight drawn over it.
+    highlighted: Option<NodeId>,
+    picking: bool,
+    picked_press: bool,
+    dom_told: Option<u64>,
+    overlay: Vec<u8>,
 }
 
 /// A document and everything the engine made from it (M15): what the
@@ -1242,6 +1251,11 @@ impl Engine {
             panel: false,
             inspected: Vec::new(),
             selected: None,
+            highlighted: None,
+            picking: false,
+            picked_press: false,
+            dom_told: None,
+            overlay: Vec::new(),
         }
     }
 
@@ -1875,6 +1889,9 @@ impl Engine {
     /// scripts on, the boundary events of the elements left and entered
     /// come first, then `pointermove` and `mousemove`.
     pub fn pointer_move(&mut self, x: f32, y: f32) {
+        if self.pick_at(x, y, false) {
+            return;
+        }
         if self.popup_move(x, y) {
             return;
         }
@@ -1920,6 +1937,9 @@ impl Engine {
     /// one is held, with scripts on or off; with scripts on, `pointerdown`
     /// and, unless it was canceled, `mousedown`.
     pub fn pointer_down(&mut self, x: f32, y: f32, button: Button, count: u32) {
+        if self.pick_at(x, y, true) {
+            return;
+        }
         self.keyboard = false;
         // An open list takes the press (M26.8).
         if self.popup_press(x, y) {
@@ -2466,6 +2486,9 @@ impl Engine {
     /// press; `auxclick` for another, and `contextmenu` after it for the
     /// secondary one. With scripts off, the activation alone.
     pub fn pointer_up(&mut self, x: f32, y: f32, button: Button, count: u32) {
+        if self.picked_release() {
+            return;
+        }
         // A press a frame took (M33.2) comes up in it, wherever.
         if self.shown.pressed_frame.is_some()
             && let Some((node, fx, fy)) = self.pointer_frame(x, y)
@@ -5234,6 +5257,11 @@ impl Engine {
     /// dropped; or in the entry reloaded or traversed to, at its saved
     /// scroll position.
     fn commit(&mut self, shown: Shown, url: Option<Url>, handling: Handling) {
+        // The inspector's nodes were the old document's (M36).
+        self.selected = None;
+        self.highlighted = None;
+        self.picking = false;
+        self.dom_told = None;
         self.history.current_mut().scroll = self.shown.scroll_target;
         let left_state = self.history.current().state;
         // A new document at a URL with a fragment is scrolled to it.
@@ -6233,6 +6261,10 @@ impl Engine {
         self.drawing_at = None;
         if empty {
             return &[];
+        }
+        // The inspector's highlight over it (M36.2).
+        if self.highlighted.is_some() && self.overlaid(width, height).is_some() {
+            return &self.overlay;
         }
         self.backend.last_frame()
     }

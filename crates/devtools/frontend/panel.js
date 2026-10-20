@@ -1,9 +1,10 @@
 "use strict";
 // The panel's frame (M36): the bridge to the browser, the tabs, and the
 // line naming the page inspected. Each tool registers itself below it
-// with `tool(name, title, build)`; `build(pane)` fills its pane once,
-// and what it returns may have `shown()`, called each time it is shown,
-// and `navigated()`, called when the page inspected changes.
+// with `tool(name, title, build)`; `build(pane)` fills its pane as the
+// panel starts, and what it returns may have `shown()`, called each time
+// it is shown, and `navigated()`, called when the page inspected
+// changes.
 //
 // Everything shown of the page is the page's to choose: it is put in as
 // text (`textContent`), never as markup.
@@ -80,7 +81,7 @@ function tool(name, title, build) {
   pane.id = "pane-" + name;
   document.getElementById("tabs").appendChild(button);
   document.getElementById("panes").appendChild(pane);
-  const entry = { name, button, pane, build, made: null };
+  const entry = { name, button, pane, made: build(pane) || {} };
   button.addEventListener("click", () => show(entry));
   tools.push(entry);
   if (shown === null) {
@@ -96,9 +97,6 @@ function show(entry) {
   shown = entry;
   entry.button.classList.add("on");
   entry.pane.classList.remove("off");
-  if (entry.made === null) {
-    entry.made = entry.build(entry.pane) || {};
-  }
   if (entry.made.shown) {
     entry.made.shown();
   }
@@ -116,7 +114,7 @@ function inspected() {
 on("page.navigated", () => {
   inspected();
   for (const entry of tools) {
-    if (entry.made && entry.made.navigated) {
+    if (entry.made.navigated) {
       entry.made.navigated();
     }
   }

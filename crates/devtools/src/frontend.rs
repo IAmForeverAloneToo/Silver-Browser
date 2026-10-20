@@ -19,6 +19,7 @@ const STYLE: &str = include_str!("../frontend/panel.css");
 /// The scripts, in the order they run: the frame, the tools, the start.
 const SCRIPTS: &[&str] = &[
     include_str!("../frontend/panel.js"),
+    include_str!("../frontend/elements.js"),
     include_str!("../frontend/console.js"),
     include_str!("../frontend/start.js"),
 ];

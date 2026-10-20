@@ -1016,6 +1016,7 @@ pub trait Recascade {
 /// line's run — but for a pseudo-element of an element asked with the
 /// element's own style as parent, whose style the cascade kept.
 pub struct Recascader<'a> {
+    sheets: &'a Stylesheets,
     document: &'a Document,
     styles: &'a Styles,
     cascader: RefCell<Cascader<'a>>,
@@ -1031,11 +1032,266 @@ impl Stylesheets {
         context: &'a CascadeContext<'a>,
     ) -> Recascader<'a> {
         Recascader {
+            sheets: self,
             document,
             styles,
             cascader: RefCell::new(self.cascader(document, context)),
         }
     }
+}
+
+/// A declaration block that applied to an element (M36, the DevTools'
+/// element inspector): its origin, its selector and specificity, the
+/// conditional and layer rules around it, and its declarations.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchedRule {
+    pub origin: RuleOrigin,
+    /// The selector list as written, empty for a style attribute or
+    /// presentational hints.
+    pub selector: String,
+    /// The highest specificity of the selectors of it that matched.
+    pub specificity: (u32, u32, u32),
+    /// The at-rules it is inside, outermost first: `@media ...`,
+    /// `@supports ...`, `@layer ...`.
+    pub conditions: Vec<String>,
+    pub declarations: Vec<MatchedDeclaration>,
+}
+
+/// Where a matched rule is from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleOrigin {
+    /// The browser's own stylesheet.
+    UserAgent,
+    /// The document's stylesheet of this index among its sheets.
+    Author(usize),
+    /// HTML's presentational hints and SVG's presentation attributes.
+    Hints,
+    /// The element's `style` attribute.
+    Inline,
+}
+
+/// A declaration of a matched rule: overridden when one later in the
+/// cascade's order sets every longhand it sets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchedDeclaration {
+    pub name: String,
+    pub value: String,
+    pub important: bool,
+    pub overridden: bool,
+}
+
+impl Recascader<'_> {
+    /// The declaration blocks that apply to `element` itself (its
+    /// pseudo-elements aside), the first that wins first (M36): the
+    /// style attribute's, then the rules by their cascade order, each
+    /// declaration marked overridden where a later one sets what it
+    /// sets.
+    pub fn matched_rules(&self, element: NodeId) -> Vec<MatchedRule> {
+        let mut cascader = self.cascader.borrow_mut();
+        let cascader = &mut *cascader;
+        let document = self.document;
+        let svg = document.svg_tag(element).is_some();
+        // Each block's declarations by cascade key: (tier, layer,
+        // specificity, order, block, declaration).
+        let mut blocks: Vec<MatchedRule> = Vec::new();
+        let mut keys: Vec<(u8, u32, Specificity, u32, usize, usize)> = Vec::new();
+        let mut order = 0u32;
+        let ua = ua();
+        for (in_force, author) in [(&cascader.ua, false), (&cascader.author, true)] {
+            if author {
+                // The hints come before every author sheet's rules.
+                let hints = hint_declarations(document, element);
+                if !hints.is_empty() {
+                    add_block(
+                        &mut blocks,
+                        &mut keys,
+                        &mut order,
+                        RuleOrigin::Hints,
+                        String::new(),
+                        Specificity::default(),
+                        Vec::new(),
+                        (TierBase::AuthorSheet, 0, 0),
+                        &hints,
+                    );
+                }
+            }
+            in_force.candidates(document, element, &mut cascader.candidates);
+            let candidates = std::mem::take(&mut cascader.candidates);
+            for (place, specificity) in
+                matching_rules(&mut cascader.matcher, (element, svg), in_force, &candidates)
+            {
+                let rule = &in_force[place as usize];
+                let (sheet, selector, conditions) = if author {
+                    self.sheets.rules.described(&self.sheets.sheets, rule.rule)
+                } else {
+                    ua.rules
+                        .described(std::slice::from_ref(&ua.sheet), rule.rule)
+                };
+                let (origin, base) = if author {
+                    (RuleOrigin::Author(sheet as usize), TierBase::AuthorSheet)
+                } else {
+                    (RuleOrigin::UserAgent, TierBase::UserAgent)
+                };
+                add_block(
+                    &mut blocks,
+                    &mut keys,
+                    &mut order,
+                    origin,
+                    selector,
+                    specificity,
+                    conditions,
+                    (base, rule.layer, rule.important_layer),
+                    rule.declarations,
+                );
+            }
+            cascader.candidates = candidates;
+        }
+        if let Some(style_attr) = document.attr(element, "style")
+            && cascader
+                .context
+                .inline_styles
+                .is_none_or(|inline| inline.allowed(element, style_attr))
+            && let Ok(decls) = css::parse_style_attribute(style_attr)
+        {
+            add_block(
+                &mut blocks,
+                &mut keys,
+                &mut order,
+                RuleOrigin::Inline,
+                String::new(),
+                Specificity::default(),
+                Vec::new(),
+                (TierBase::AuthorInline, 0, 0),
+                &decls,
+            );
+        }
+        // From the winner down, a declaration is overridden when what it
+        // sets is set already.
+        keys.sort_by_key(|&(tier, layer, specificity, order, ..)| {
+            (tier, layer, specificity, order)
+        });
+        let mut set: HashSet<String> = HashSet::new();
+        for &(.., block, index) in keys.iter().rev() {
+            let declaration = &mut blocks[block].declarations[index];
+            let longhands: Vec<String> = match crate::animate::longhands_of(&declaration.name) {
+                list if list.is_empty() => vec![declaration.name.clone()],
+                list => list
+                    .iter()
+                    .map(|longhand| format!("{longhand:?}"))
+                    .collect(),
+            };
+            let mut new = false;
+            for longhand in longhands {
+                new |= set.insert(longhand);
+            }
+            declaration.overridden = !new;
+        }
+        // The rules from the winner down, each by its first place in the
+        // cascade's order: the style attribute first, then the most
+        // specific, and so on.
+        let mut ranked: Vec<(Option<CascadeKey>, MatchedRule)> = blocks
+            .into_iter()
+            .enumerate()
+            .map(|(block, rule)| {
+                let rank = keys
+                    .iter()
+                    .filter(|key| key.4 == block)
+                    .map(|&(tier, layer, specificity, order, ..)| (tier, layer, specificity, order))
+                    .min();
+                (rank, rule)
+            })
+            .collect();
+        ranked.sort_by_key(|(rank, _)| std::cmp::Reverse(*rank));
+        ranked.into_iter().map(|(_, rule)| rule).collect()
+    }
+}
+
+/// A declaration's place in the cascade's order: its tier, layer,
+/// specificity and order.
+type CascadeKey = (u8, u32, Specificity, u32);
+
+/// Adds the block of `declarations` to `blocks`, and each declaration's
+/// cascade key to `keys`.
+#[allow(clippy::too_many_arguments)]
+fn add_block(
+    blocks: &mut Vec<MatchedRule>,
+    keys: &mut Vec<(u8, u32, Specificity, u32, usize, usize)>,
+    order: &mut u32,
+    origin: RuleOrigin,
+    selector: String,
+    specificity: Specificity,
+    conditions: Vec<String>,
+    (base, layer, important_layer): (TierBase, u32, u32),
+    declarations: &[css::Declaration],
+) {
+    let block = blocks.len();
+    for (index, decl) in declarations.iter().enumerate() {
+        let layer = if decl.important {
+            important_layer
+        } else {
+            layer
+        };
+        keys.push((
+            tier(base, decl.important),
+            layer,
+            specificity,
+            *order,
+            block,
+            index,
+        ));
+        *order += 1;
+    }
+    blocks.push(MatchedRule {
+        origin,
+        selector,
+        specificity: (specificity.0, specificity.1, specificity.2),
+        conditions,
+        declarations: declarations
+            .iter()
+            .map(|decl| MatchedDeclaration {
+                name: decl.name.clone(),
+                value: crate::serialize::tokens(&decl.value),
+                important: decl.important,
+                overridden: false,
+            })
+            .collect(),
+    });
+}
+
+/// The rules of `sheet` whose selectors match `element` itself, by their
+/// places, each with the highest specificity of those that matched, of
+/// `candidates` only, as [`collect_from_sheet`] tries them.
+fn matching_rules<'a>(
+    matcher: &mut Matcher<'a>,
+    (element, svg): (NodeId, bool),
+    sheet: &[ParsedRule<'a>],
+    candidates: &[(u32, u32)],
+) -> Vec<(u32, Specificity)> {
+    let mut out = Vec::new();
+    let mut next = 0;
+    while next < candidates.len() {
+        let place = candidates[next].0;
+        let start = next;
+        while next < candidates.len() && candidates[next].0 == place {
+            next += 1;
+        }
+        let rule = &sheet[place as usize];
+        if rule.svg_only && !svg {
+            continue;
+        }
+        let list: &'a SelectorList = rule.list;
+        let mut best: Option<Specificity> = None;
+        for &(_, index) in &candidates[start..next] {
+            let selector = &list.0[index as usize];
+            if selector.pseudo_element.is_none() && matcher.matches_element(element, selector) {
+                best = best.max(Some(selector.specificity));
+            }
+        }
+        if let Some(specificity) = best {
+            out.push((place, specificity));
+        }
+    }
+    out
 }
 
 impl Recascader<'_> {
@@ -2083,6 +2339,8 @@ struct LengthBases<'a> {
 /// declarations and of important ones (M20). A rule whose prelude does
 /// not parse is dropped before this, per css-syntax-3 (M4.10).
 pub(crate) struct ParsedRule<'s> {
+    /// Its place among the rule set's rules: what describes it (M36).
+    pub(crate) rule: u32,
     pub(crate) list: &'s SelectorList,
     pub(crate) declarations: &'s [css::Declaration],
     pub(crate) layer: u32,
@@ -2192,24 +2450,7 @@ fn declarations_for<'a>(
     // HTML's presentational hints (M21.6): author declarations with no
     // specificity, before every author sheet's, so that any author rule
     // overrides them.
-    let hints = document.tag(element).map_or_else(String::new, |tag| {
-        let attr = |name: &str| document.attr(element, name).map(str::to_string);
-        lists::list_hints(tag, attr)
-            + &images::img_hints(tag, attr)
-            + &images::frame_hints(tag, attr)
-    });
-    // SVG's presentation attributes (M32), built as declarations, never
-    // as text a value could add another to.
-    let svg_hints = match (document.svg_tag(element), document.attrs(element)) {
-        (Some(tag), Some(attrs)) => svg::svg_hints(tag, attrs),
-        _ => Vec::new(),
-    };
-    let html_hints = if hints.is_empty() {
-        Vec::new()
-    } else {
-        css::parse_style_attribute(&hints).unwrap_or_default()
-    };
-    for decl in html_hints.into_iter().chain(svg_hints) {
+    for decl in hint_declarations(document, element) {
         out.element().push(Applied {
             tier: tier(TierBase::AuthorSheet, false),
             layer: 0,
@@ -2250,6 +2491,29 @@ fn declarations_for<'a>(
         }
     }
     out
+}
+
+/// `element`'s presentational hints (M21.6) and, for an SVG element,
+/// its presentation attributes (M32), built as declarations, never as
+/// text a value could add another to.
+fn hint_declarations(document: &Document, element: NodeId) -> Vec<css::Declaration> {
+    let hints = document.tag(element).map_or_else(String::new, |tag| {
+        let attr = |name: &str| document.attr(element, name).map(str::to_string);
+        lists::list_hints(tag, attr)
+            + &images::img_hints(tag, attr)
+            + &images::frame_hints(tag, attr)
+    });
+    let svg_hints = match (document.svg_tag(element), document.attrs(element)) {
+        (Some(tag), Some(attrs)) => svg::svg_hints(tag, attrs),
+        _ => Vec::new(),
+    };
+    let mut declarations = if hints.is_empty() {
+        Vec::new()
+    } else {
+        css::parse_style_attribute(&hints).unwrap_or_default()
+    };
+    declarations.extend(svg_hints);
+    declarations
 }
 
 /// Matches `sheet`'s rules against `element` and its pseudo-elements,
@@ -7904,6 +8168,77 @@ mod tests {
             (s.border_spacing.horizontal, s.border_spacing.vertical),
             (1.0, 1.0)
         );
+    }
+
+    #[test]
+    fn the_rules_that_matched_are_given_in_cascade_order_with_what_they_lost() {
+        let sheets = Stylesheets::new(vec![
+            sheet(
+                "p { color: red; margin: 1px }                  @media screen { @layer base { p.x { color: green } } }                  #i, .never { color: blue !important; padding-top: 2px }                  div { color: gray } p::first-line { color: pink }",
+            ),
+            sheet("p { margin-top: 3px }"),
+        ]);
+        let document = Document::from_node(
+            &html::parse_document("<p id=i class=x style='padding-top: 9px; color: black'>x</p>")
+                .unwrap(),
+        );
+        let context = CascadeContext::default();
+        let styles = sheets.cascade(&document, &context);
+        let p = first(&document, "p");
+        let rules = sheets
+            .recascader(&document, &styles, &context)
+            .matched_rules(p);
+        let names: Vec<(RuleOrigin, &str)> = rules
+            .iter()
+            .map(|rule| (rule.origin, rule.selector.as_str()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                (RuleOrigin::Inline, ""),
+                (RuleOrigin::Author(0), "#i, .never"),
+                (RuleOrigin::Author(1), "p"),
+                (RuleOrigin::Author(0), "p"),
+                (RuleOrigin::Author(0), "p.x"),
+                (RuleOrigin::UserAgent, "p"),
+            ],
+            "{rules:#?}"
+        );
+        let decl = |rule: usize, name: &str| {
+            rules[rule]
+                .declarations
+                .iter()
+                .find(|d| d.name == name)
+                .unwrap_or_else(|| panic!("{name} in {:?}", rules[rule]))
+                .clone()
+        };
+        // The important color wins over the inline one; the inline
+        // padding-top over the rule's, which is not important.
+        assert!(decl(0, "color").overridden);
+        assert!(!decl(1, "color").overridden && decl(1, "color").important);
+        assert!(!decl(0, "padding-top").overridden);
+        assert!(decl(1, "padding-top").overridden);
+        assert_eq!(rules[1].specificity, (1, 0, 0));
+        // The later sheet's margin-top leaves the shorthand the rest.
+        assert!(!decl(2, "margin-top").overridden);
+        assert!(!decl(3, "margin").overridden);
+        assert_eq!(decl(3, "margin").value, "1px");
+        // A layered rule loses to the unlayered ones, and says where it is.
+        assert!(decl(4, "color").overridden);
+        assert_eq!(rules[4].conditions, ["@media screen", "@layer base"]);
+        // An image's width attribute is a hint.
+        let document = Document::from_node(&html::parse_document("<img width=7>").unwrap());
+        let styles = sheets.cascade(&document, &context);
+        let img = first(&document, "img");
+        let rules = sheets
+            .recascader(&document, &styles, &context)
+            .matched_rules(img);
+        let hints = rules
+            .iter()
+            .find(|rule| rule.origin == RuleOrigin::Hints)
+            .expect("hints");
+        assert_eq!(hints.declarations[0].name, "width");
+        assert_eq!(hints.declarations[0].value, "7px");
     }
 
     #[test]

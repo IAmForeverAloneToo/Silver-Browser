@@ -383,10 +383,12 @@ impl RuleSet {
         let rules = self
             .rules
             .iter()
-            .filter(|rule| rule.block.is_none_or(|b| holds[b as usize]))
-            .map(|rule| {
+            .enumerate()
+            .filter(|(_, rule)| rule.block.is_none_or(|b| holds[b as usize]))
+            .map(|(index, rule)| {
                 let place = places[rule.layer as usize];
                 ParsedRule {
+                    rule: index as u32,
                     list: &rule.list,
                     declarations: declarations_at(
                         &sheets[rule.sheet as usize],
@@ -508,6 +510,36 @@ impl RuleSet {
     }
 
     /// The path a rule's `(start, len)` names.
+    /// Rule `rule` of these, of `sheets`, as the DevTools show it (M36):
+    /// its sheet's index, its selector list as written, and the at-rules
+    /// around it, outermost first, each with its prelude.
+    pub(crate) fn described(
+        &self,
+        sheets: &[css::Stylesheet],
+        rule: u32,
+    ) -> (u32, String, Vec<String>) {
+        let rule = &self.rules[rule as usize];
+        let sheet = &sheets[rule.sheet as usize];
+        let path = self.path(rule.path);
+        let mut conditions = Vec::new();
+        let mut rules = sheet.rules.as_slice();
+        let (&last, blocks) = path.split_last().expect("a rule's path is never empty");
+        for &index in blocks {
+            if let Rule::At(at) = &rules[index as usize] {
+                let prelude = crate::serialize::tokens(&at.prelude);
+                conditions.push(format!("@{} {prelude}", at.name).trim_end().to_owned());
+                if let Some(Block::Rules(inner)) = &at.block {
+                    rules = inner;
+                }
+            }
+        }
+        let selector = match &rules[last as usize] {
+            Rule::Qualified(qualified) => crate::serialize::tokens(&qualified.prelude),
+            Rule::At(_) => String::new(),
+        };
+        (rule.sheet, selector, conditions)
+    }
+
     fn path(&self, (start, len): (u32, u32)) -> &[u32] {
         &self.paths[start as usize..(start + len) as usize]
     }

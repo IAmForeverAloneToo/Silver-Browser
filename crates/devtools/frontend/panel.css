@@ -119,3 +119,31 @@ body {
   color: var(--text);
   background-color: var(--page);
 }
+
+/* The element inspector (M36.2). */
+.elements { display: flex; flex-direction: column; overflow: hidden; }
+.split { display: flex; flex: 1 1 auto; min-height: 0; }
+.dom { flex: 3 1 0; overflow: auto; border-right: 1px solid var(--line); }
+.side { flex: 2 1 0; overflow: auto; }
+.heading {
+  padding: 2px 8px;
+  background-color: var(--bar);
+  border-bottom: 1px solid var(--line);
+  font-weight: bold;
+}
+.line { white-space: nowrap; padding-right: 8px; }
+.line:hover { background-color: var(--bar); }
+.line.selected { background-color: var(--selected); }
+.leaf { display: inline-block; width: 12px; }
+.tag { color: var(--accent); }
+.attr-name { color: var(--warn); }
+.attr-value { color: var(--error); }
+.text { color: var(--text); }
+.rule { padding: 4px 8px; border-bottom: 1px solid var(--line); }
+.rule-head .source { float: right; }
+.decl { padding-left: 12px; white-space: pre-wrap; }
+.decl.overridden { text-decoration: line-through; color: var(--quiet); }
+.check { margin: 0 4px 0 0; }
+.add { width: 90%; margin-left: 12px; font-family: monospace; font-size: var(--mono); }
+.edit { font-family: monospace; font-size: var(--mono); }
+.bar button.on { background-color: var(--selected); }

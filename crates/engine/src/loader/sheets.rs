@@ -956,6 +956,32 @@ impl Page {
     /// `media`. The first titled sheet's title names the preferred set,
     /// and a sheet with another title is left out (CSSOM §6.1's add
     /// steps).
+    /// What names each of [`Page::sheets`], in the same order, for the
+    /// DevTools (M36): a fetched sheet's URL, or `<style>`.
+    pub(crate) fn sheet_names(&self) -> Vec<String> {
+        let preferred = self
+            .owners
+            .iter()
+            .find(|owner| !owner.title.is_empty() && matches!(owner.sheet, Slot::Ready(_)))
+            .map(|owner| owner.title.as_str());
+        self.owners
+            .iter()
+            .filter_map(|owner| match &owner.sheet {
+                Slot::Ready(sheet)
+                    if owner.title.is_empty() || Some(owner.title.as_str()) == preferred =>
+                {
+                    Some(
+                        sheet
+                            .location
+                            .as_ref()
+                            .map_or_else(|| "<style>".to_owned(), ToString::to_string),
+                    )
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     pub(crate) fn sheets(&self) -> Vec<css::Stylesheet> {
         let preferred = self
             .owners

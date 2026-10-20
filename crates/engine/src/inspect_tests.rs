@@ -3,6 +3,8 @@
 
 use devtools::{Json, Request};
 
+use dom::NodeId;
+
 use crate::testing::*;
 use crate::{LoadState, Url};
 
@@ -475,4 +477,352 @@ fn the_consoles_dollar_zero_is_gone_after_the_expression() {
     );
     let entries = entries_until(&mut tab, "after false");
     assert!(!entries.iter().any(|entry| entry.text == "after true"));
+}
+
+/// What the page answers `method` with `params`: its result, or why not.
+fn ask(tab: &mut Tab, method: &str, params: Json) -> Result<Json, String> {
+    let request = devtools::Request {
+        id: 1,
+        method: method.to_owned(),
+        params,
+    };
+    tab.engine.inspect(&request.write());
+    let answers = tab.engine.take_inspected();
+    let answer = answers
+        .iter()
+        .rev()
+        .find(|answer| answer.starts_with(r#"{"id":1,"#))
+        .unwrap_or_else(|| panic!("no answer to {method}: {answers:?}"));
+    let answer = Json::parse(answer).expect("JSON");
+    match answer.get("result") {
+        Some(result) => Ok(result.clone()),
+        None => Err(answer
+            .get("error")
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+            .to_owned()),
+    }
+}
+
+/// The number of the first element of tag `tag`.
+fn node_of(tab: &Tab, tag: &str) -> u64 {
+    let document = &tab.engine.shown.document;
+    document
+        .subtree(document.root())
+        .find(|&node| document.tag(node) == Some(tag))
+        .unwrap_or_else(|| panic!("no {tag}"))
+        .to_bits()
+}
+
+fn children(node: &Json) -> &[Json] {
+    node.get("children")
+        .and_then(Json::as_array)
+        .unwrap_or_default()
+}
+
+fn name(node: &Json) -> &str {
+    node.get("name").and_then(Json::as_str).unwrap_or_default()
+}
+
+const INSPECTED: &str = "<!doctype html><html><head><style>
+p { color: red; margin: 0 }
+.x { color: green }
+</style></head>
+<body>
+  <p class=x id=p style='padding: 4px'>Text <b>bold</b></p>
+  <div id=d onmousedown=\"document.title += 'd'\" onmouseup=\"document.title += 'u'\" onclick=\"document.title += 'c'\" style='width: 100px; height: 50px; background: #fff'></div>
+</body></html>";
+
+/// A tab showing `page`, laid out and drawn at 320 by 240.
+fn inspected(page: &'static str) -> (Tab, net::test_server::TestServer) {
+    let server = serve(page);
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.load(server.url("/"));
+    tab.engine.frame(320, 240);
+    (tab, server)
+}
+
+#[test]
+fn the_tree_is_given_as_deep_as_it_is_open() {
+    let (mut tab, _server) = inspected(INSPECTED);
+    let tree = ask(&mut tab, "dom.tree", Json::object([])).expect("a tree");
+    assert_eq!(name(&tree), "#document");
+    let html = &children(&tree)[0];
+    assert_eq!(name(html), "html");
+    let names: Vec<&str> = children(html).iter().map(name).collect();
+    assert_eq!(names, ["head", "body"]);
+    // The head is closed; the body open, its white space left out.
+    assert!(children(html)[0].get("children").is_none());
+    assert_eq!(
+        children(html)[0].get("childCount").and_then(Json::as_u64),
+        Some(1)
+    );
+    let body = &children(html)[1];
+    let names: Vec<&str> = children(body).iter().map(name).collect();
+    assert_eq!(names, ["p", "div"]);
+    let p = &children(body)[0];
+    assert_eq!(
+        p.get("attributes"),
+        Some(&Json::parse(r#"[["class","x"],["id","p"],["style","padding: 4px"]]"#).unwrap())
+    );
+    // A node asked for, opened where the panel opened it.
+    let p_id = p.get("id").and_then(Json::as_u64).expect("an id");
+    let p = ask(
+        &mut tab,
+        "dom.tree",
+        Json::object([("node", Json::from(p_id)), ("open", Json::Array(vec![]))]),
+    )
+    .expect("a node");
+    let kids = children(&p);
+    assert_eq!(kids[0].get("text").and_then(Json::as_str), Some("Text "));
+    assert_eq!(kids[0].get("type").and_then(Json::as_u64), Some(3));
+    assert_eq!(name(&kids[1]), "b");
+    assert!(
+        ask(
+            &mut tab,
+            "dom.tree",
+            Json::object([("node", Json::from(12345678u64))])
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn the_rules_that_matched_and_the_computed_values_are_given() {
+    let (mut tab, server) = inspected(INSPECTED);
+    let p = node_of(&tab, "p");
+    let matched = ask(
+        &mut tab,
+        "css.matched",
+        Json::object([("node", Json::from(p))]),
+    )
+    .expect("rules");
+    let inline = matched.get("inline").expect("inline");
+    assert_eq!(
+        inline
+            .get("declarations")
+            .and_then(|d| d.as_array())
+            .map(<[Json]>::len),
+        Some(1)
+    );
+    let rules = matched
+        .get("rules")
+        .and_then(Json::as_array)
+        .expect("rules");
+    let selectors: Vec<&str> = rules
+        .iter()
+        .map(|rule| {
+            rule.get("selector")
+                .and_then(Json::as_str)
+                .unwrap_or_default()
+        })
+        .collect();
+    assert_eq!(selectors, [".x", "p", "p"]);
+    assert_eq!(
+        rules[0].get("source").and_then(Json::as_str),
+        Some("<style>")
+    );
+    assert_eq!(
+        rules[2].get("source").and_then(Json::as_str),
+        Some("user agent stylesheet")
+    );
+    let overridden = |rule: &Json, name: &str| {
+        rule.get("declarations")
+            .and_then(Json::as_array)
+            .and_then(|decls| {
+                decls
+                    .iter()
+                    .find(|d| d.get("name").and_then(Json::as_str) == Some(name))
+            })
+            .and_then(|d| d.get("overridden"))
+            .and_then(Json::as_bool)
+    };
+    assert_eq!(overridden(&rules[0], "color"), Some(false));
+    assert_eq!(overridden(&rules[1], "color"), Some(true));
+    let computed = ask(
+        &mut tab,
+        "css.computed",
+        Json::object([("node", Json::from(p))]),
+    )
+    .expect("values");
+    let value = |name: &str| {
+        computed
+            .as_array()
+            .and_then(|pairs| {
+                pairs.iter().find_map(|pair| match pair.as_array() {
+                    Some([n, v]) if n.as_str() == Some(name) => v.as_str(),
+                    _ => None,
+                })
+            })
+            .map(str::to_owned)
+    };
+    assert_eq!(value("color").as_deref(), Some("rgb(0, 128, 0)"));
+    assert_eq!(value("padding-top").as_deref(), Some("4px"));
+    drop(server);
+}
+
+#[test]
+fn an_edit_in_the_inspector_changes_the_page_its_policy_aside() {
+    let server = net::test_server::TestServer::plain(|_| {
+        net::test_server::Reply::with_fields(
+            200,
+            &[
+                ("Content-Type", "text/html"),
+                ("Content-Security-Policy", "style-src 'none'"),
+            ],
+            b"<p style='color: red'>x</p>",
+        )
+    });
+    let mut tab = Tab::new();
+    tab.load(server.url("/"));
+    let p = node_of(&tab, "p");
+    let color = |tab: &mut Tab| {
+        let node = NodeId::from_bits(p).expect("a node");
+        let styles = tab.engine.styles();
+        style::serialize::computed_value(styles.get(node).expect("a style"), "color")
+    };
+    // The page's policy refuses its own style attribute.
+    assert_eq!(color(&mut tab).as_deref(), Some("rgb(0, 0, 0)"));
+    // Reading the tree asks to be told of changes.
+    ask(&mut tab, "dom.tree", Json::object([])).expect("a tree");
+    let edit = devtools::Request {
+        id: 2,
+        method: "css.setStyle".to_owned(),
+        params: Json::object([("node", Json::from(p)), ("text", Json::from("color: blue"))]),
+    };
+    tab.engine.inspect(&edit.write());
+    assert_eq!(color(&mut tab).as_deref(), Some("rgb(0, 0, 255)"));
+    let updated = tab.engine.take_inspected();
+    assert_eq!(
+        updated,
+        [
+            r#"{"id":2,"result":null}"#,
+            r#"{"event":"dom.updated","params":{}}"#
+        ]
+    );
+    // Told once.
+    assert!(tab.engine.take_inspected().is_empty());
+    let set = Json::object([
+        ("node", Json::from(p)),
+        ("name", Json::from("data-x")),
+        ("value", Json::from("1")),
+    ]);
+    ask(&mut tab, "dom.setAttribute", set).expect("set");
+    let node = NodeId::from_bits(p).expect("a node");
+    assert_eq!(tab.engine.shown.document.attr(node, "data-x"), Some("1"));
+    let remove = Json::object([("node", Json::from(p)), ("name", Json::from("data-x"))]);
+    ask(&mut tab, "dom.removeAttribute", remove).expect("removed");
+    assert_eq!(tab.engine.shown.document.attr(node, "data-x"), None);
+    let bad = Json::object([
+        ("node", Json::from(p)),
+        ("name", Json::from("a b")),
+        ("value", Json::from("1")),
+    ]);
+    assert!(ask(&mut tab, "dom.setAttribute", bad).is_err());
+}
+
+#[test]
+fn the_node_selected_is_highlighted_in_the_page_and_is_dollar_zero() {
+    let (mut tab, _server) = inspected(INSPECTED);
+    let d = node_of(&tab, "div");
+    let before = tab
+        .engine
+        .frame_at(320, 240, crate::FrameTime::at(std::time::Duration::ZERO))
+        .to_vec();
+    ask(
+        &mut tab,
+        "dom.select",
+        Json::object([("node", Json::from(d))]),
+    )
+    .expect("selected");
+    assert!(tab.engine.needs_frame());
+    let after = tab
+        .engine
+        .frame_at(320, 240, crate::FrameTime::at(std::time::Duration::ZERO))
+        .to_vec();
+    // The white div, 100 by 50 at the body's margin, is blue now.
+    let pixel = |frame: &[u8], x: usize, y: usize| {
+        let at = (y * 320 + x) * 4;
+        [frame[at], frame[at + 1], frame[at + 2]]
+    };
+    let (x, y) = (8 + 50, tab_div_top(&mut tab) + 25);
+    assert_eq!(pixel(&before, x, y), [255, 255, 255]);
+    assert_eq!(pixel(&after, x, y), [159, 197, 231]);
+    // Nothing else is.
+    assert_eq!(pixel(&after, 300, 230), pixel(&before, 300, 230));
+    // `$0` is the node selected.
+    let answer = ask(
+        &mut tab,
+        "console.evaluate",
+        Json::object([("expression", Json::from("$0.id"))]),
+    )
+    .expect("evaluated");
+    assert_eq!(
+        answer
+            .get("result")
+            .and_then(|r| r.get("value"))
+            .and_then(Json::as_str),
+        Some("d")
+    );
+    // The highlight goes when asked.
+    ask(
+        &mut tab,
+        "dom.highlight",
+        Json::object([("node", Json::Null)]),
+    )
+    .expect("cleared");
+    let cleared = tab
+        .engine
+        .frame_at(320, 240, crate::FrameTime::at(std::time::Duration::ZERO))
+        .to_vec();
+    assert_eq!(pixel(&cleared, x, y), [255, 255, 255]);
+}
+
+/// Where the div's top is in the viewport.
+fn tab_div_top(tab: &mut Tab) -> usize {
+    let document = &tab.engine.shown.document;
+    let div = document
+        .subtree(document.root())
+        .find(|&node| document.tag(node) == Some("div"))
+        .expect("a div");
+    tab.engine.border_box(div).expect("a box").0.y as usize
+}
+
+#[test]
+fn a_pick_selects_what_is_under_the_pointer_and_the_page_hears_nothing() {
+    let (mut tab, _server) = inspected(INSPECTED);
+    let d = node_of(&tab, "div");
+    ask(
+        &mut tab,
+        "dom.pick",
+        Json::object([("on", Json::from(true))]),
+    )
+    .expect("picking");
+    let y = tab_div_top(&mut tab) as f32 + 10.0;
+    tab.engine.pointer_move(20.0, y);
+    assert_eq!(tab.engine.highlighted.map(NodeId::to_bits), Some(d));
+    tab.engine.pointer_down(20.0, y, crate::Button::Primary, 1);
+    tab.engine.pointer_up(20.0, y, crate::Button::Primary, 1);
+    tab.engine.run_tasks();
+    assert_eq!(tab.engine.title(), "", "the page heard nothing");
+    let picked = tab.engine.take_inspected();
+    let event = Json::parse(&picked[0]).expect("JSON");
+    assert_eq!(
+        event.get("event").and_then(Json::as_str),
+        Some("dom.picked")
+    );
+    let params = event.get("params").expect("params");
+    assert_eq!(params.get("node").and_then(Json::as_u64), Some(d));
+    let path = params.get("path").and_then(Json::as_array).expect("a path");
+    assert_eq!(path.len(), 3, "the document, html, body");
+    // Picking is over: a click is the page's again.
+    tab.engine.pointer_down(20.0, y, crate::Button::Primary, 1);
+    tab.engine.pointer_up(20.0, y, crate::Button::Primary, 1);
+    tab.engine.run_tasks();
+    assert_eq!(tab.engine.title(), "duc");
+    // A navigation lets go of the nodes.
+    tab.load(Url::parse("data:text/html,<p>other").expect("a URL"));
+    assert_eq!(tab.engine.selected, None);
+    assert_eq!(tab.engine.highlighted, None);
 }
