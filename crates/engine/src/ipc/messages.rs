@@ -240,6 +240,8 @@ wire_enum! {
         /// IndexedDB's request of the storage key's databases (M36.7), as
         /// `crate::idb::serve` reads it.
         7 => Idb { request: String },
+        /// The bytes the storage key uses (M36.8), answered as a length.
+        8 => Usage {},
     }
 }
 

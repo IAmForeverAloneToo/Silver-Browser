@@ -1864,6 +1864,11 @@ impl View for RemoteTab {
         Some(self.log.clone())
     }
 
+    fn storage_inspect(&mut self, message: &str) -> String {
+        let url = self.state().url.clone();
+        crate::storage::devtools::inspect(&self.storage, &self.jar, url.as_ref(), message)
+    }
+
     fn run_tasks(&mut self) -> bool {
         let changed = self.take_events();
         self.handovers.expire();

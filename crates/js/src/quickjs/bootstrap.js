@@ -8552,6 +8552,12 @@
       return true;
     }
 
+    // The Storage Standard's StorageManager (M36.8), of a secure
+    // context's window.
+    get storage() {
+      return storageManager;
+    }
+
     get cookieEnabled() {
       return true;
     }
@@ -16796,6 +16802,39 @@
     enumerable: true,
     configurable: true,
   });
+
+  // ---- StorageManager (the Storage Standard, section 6; M36.8) -------------
+
+  // What the document's storage key uses and may use, and whether its
+  // storage is persistent: it never is, as the browser does not evict.
+  class StorageManager {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("StorageManager");
+      }
+    }
+
+    estimate() {
+      return new $Promise((resolve, reject) => {
+        try {
+          const used = native.storageUsage();
+          resolve({ usage: $Number(used[0]), quota: $Number(used[1]) });
+        } catch (e) {
+          reject(new $TypeError("Failed to execute 'estimate' on 'StorageManager': Access is denied."));
+        }
+      });
+    }
+
+    persisted() {
+      return new $Promise((resolve) => resolve(false));
+    }
+
+    persist() {
+      return new $Promise((resolve) => resolve(false));
+    }
+  }
+  expose(StorageManager, "StorageManager");
+  const storageManager = new StorageManager(KEY);
 
   // The DevTools panel's bridge (M36, docs/design/devtools.md): in the
   // panel's page alone, `devtools.send(message)` queues a message for

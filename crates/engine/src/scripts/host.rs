@@ -1286,6 +1286,12 @@ impl DocumentHost {
             Call::Idb(request) => {
                 self.with_areas(|areas, key| Answer::String(areas.idb(key, &request)))
             }
+            Call::StorageUsage => self.with_areas(|areas, key| {
+                Answer::Strings(vec![
+                    areas.usage(key).to_string(),
+                    crate::storage::devtools::SITE_QUOTA.to_string(),
+                ])
+            }),
             Call::IdbWake => {
                 let now = self.now();
                 self.outputs.messages.push((now, js::Task::Idb));

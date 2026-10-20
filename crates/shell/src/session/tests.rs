@@ -1606,6 +1606,7 @@ fn the_router_answers_the_browsers_requests_and_passes_the_pages_answers_alone()
 struct Recorder {
     url: Option<Url>,
     log: Option<std::sync::Arc<engine::network_log::NetworkLog>>,
+    storage: Vec<String>,
     out: Vec<String>,
     sent: Vec<String>,
     asked: Vec<String>,
@@ -1629,6 +1630,10 @@ impl crate::devtools::End for Recorder {
     }
     fn network_log(&self) -> Option<std::sync::Arc<engine::network_log::NetworkLog>> {
         self.log.clone()
+    }
+    fn storage_inspect(&mut self, message: &str) -> String {
+        self.storage.push(message.to_owned());
+        r#"{"id":1,"result":[]}"#.to_owned()
     }
 }
 
@@ -1852,5 +1857,37 @@ fn the_panels_network_log_lists_the_pages_requests() {
     window.press_key(Key::F12, NONE);
     window.run_until(|session| {
         panel_text(session, "network-list").is_some_and(|list| list.contains("look.css"))
+    });
+}
+
+#[test]
+fn the_router_asks_the_browsers_own_records_of_a_sites_storage() {
+    let mut router = crate::devtools::Router::default();
+    let mut panel = Recorder::default();
+    let mut page = Recorder {
+        url: Some(Url::parse("https://a.test/").expect("a URL")),
+        ..Recorder::default()
+    };
+    router.route(&mut panel, &mut page);
+    panel.sent.clear();
+    panel.out = vec![r#"{"id":1,"method":"storage.local"}"#.to_owned()];
+    router.route(&mut panel, &mut page);
+    // Not the page's to answer: the tab's storage is asked.
+    assert!(page.asked.is_empty());
+    assert_eq!(page.storage, [r#"{"id":1,"method":"storage.local"}"#]);
+    assert_eq!(panel.sent, [r#"{"id":1,"result":[]}"#]);
+}
+
+#[test]
+fn the_panels_storage_shows_what_the_site_keeps() {
+    let server = serve(|path| match path {
+        "/" => html("<title>Keeps</title><script>localStorage.setItem('theme', 'dark')</script>"),
+        _ => None,
+    });
+    let mut window = Window::with_scripts(Some(server.url("/")));
+    window.settle();
+    window.press_key(Key::F12, NONE);
+    window.run_until(|session| {
+        panel_text(session, "storage-local").is_some_and(|text| text.contains("themedark"))
     });
 }

@@ -578,6 +578,22 @@ impl Jar {
         Some(out)
     }
 
+    /// Takes out the cookies `remove` says to (M36: the DevTools' storage
+    /// panel, a site's clearing): how many it took out.
+    pub fn remove_where(&mut self, remove: impl Fn(&Cookie) -> bool) -> usize {
+        let before = self.cookies.len();
+        let mut kept = false;
+        self.cookies.retain(|cookie| {
+            let gone = remove(cookie);
+            kept |= gone && cookie.expires.is_some();
+            !gone
+        });
+        if kept {
+            self.kept += 1;
+        }
+        before - self.cookies.len()
+    }
+
     /// Takes out the cookies expired at `now`.
     fn remove_expired(&mut self, now: SystemTime) {
         let before = self.cookies.len();

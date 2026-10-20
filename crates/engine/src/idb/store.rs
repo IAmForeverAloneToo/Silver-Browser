@@ -231,6 +231,15 @@ impl IdbStore {
         self.origins.contains_key(origin)
     }
 
+    /// The storage keys it holds databases for.
+    pub fn origins(&self) -> Vec<String> {
+        self.origins
+            .iter()
+            .filter(|(_, origin)| !origin.databases.is_empty())
+            .map(|(key, _)| key.clone())
+            .collect()
+    }
+
     /// The bytes `origin`'s databases hold.
     pub fn used(&self, origin: &str) -> u64 {
         self.origins.get(origin).map_or(0, |o| o.used)

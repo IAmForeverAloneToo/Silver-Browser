@@ -17,6 +17,9 @@ use profile::{Changes, Profile};
 
 use crate::loader::PageId;
 
+pub(crate) mod devtools;
+#[cfg(test)]
+mod devtools_tests;
 #[cfg(test)]
 mod isolation_tests;
 #[cfg(test)]
@@ -154,12 +157,20 @@ pub(crate) trait Areas: Send + Sync {
     ) -> Result<Option<Option<String>>, OverQuota>;
     fn remove(&self, local: bool, key: &AreaKey, item: &str) -> Option<String>;
     fn clear(&self, local: bool, key: &AreaKey) -> bool;
+    /// The bytes the storage key uses (`navigator.storage.estimate()`,
+    /// M36.8).
+    fn usage(&self, key: &AreaKey) -> u64;
     /// IndexedDB's `request` of the storage key's databases (M36.7), as
     /// [`crate::idb::serve`] answers it.
     fn idb(&self, key: &AreaKey, request: &str) -> String;
 }
 
 impl Areas for Mutex<Storage> {
+    fn usage(&self, key: &AreaKey) -> u64 {
+        let mut storage = self.lock().unwrap_or_else(PoisonError::into_inner);
+        devtools::usage(&mut storage, &key.serialization())
+    }
+
     fn idb(&self, key: &AreaKey, request: &str) -> String {
         let mut storage = self.lock().unwrap_or_else(PoisonError::into_inner);
         let origin = key.serialization();
@@ -282,6 +293,11 @@ fn units(text: &str) -> usize {
 }
 
 impl Area {
+    /// The UTF-16 code units its keys and values hold.
+    pub(crate) fn used(&self) -> usize {
+        self.used
+    }
+
     /// How many items it has.
     pub(crate) fn len(&self) -> usize {
         self.items.len()
@@ -410,6 +426,26 @@ impl Storage {
             idb: crate::idb::IdbStore::default(),
             idb_unwritten: Vec::new(),
         }
+    }
+
+    /// Every storage key the storage keeps anything for (M36.8): in the
+    /// profile, or in memory not yet written.
+    pub(crate) fn sites(&self) -> Vec<String> {
+        let mut sites: std::collections::BTreeSet<String> = self
+            .profile
+            .as_ref()
+            .and_then(|profile| profile.storage_keys().ok())
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        sites.extend(
+            self.local
+                .iter()
+                .filter(|(_, area)| area.len() > 0)
+                .map(|(key, _)| key.clone()),
+        );
+        sites.extend(self.idb.origins());
+        sites.into_iter().collect()
     }
 
     /// IndexedDB's store, `origin`'s databases read from the profile if

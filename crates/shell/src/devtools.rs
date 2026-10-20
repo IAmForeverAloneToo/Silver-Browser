@@ -93,6 +93,12 @@ impl Router {
             };
             if let Some(answer) = self.answer(&request, log.as_deref()) {
                 panel.devtools_send(answer);
+            } else if request.domain() == "storage" {
+                // What the site keeps: the browser's own records (M36.8).
+                let answer = page.storage_inspect(&message);
+                if !answer.is_empty() {
+                    panel.devtools_send(answer);
+                }
             } else if self.forwarded.len() >= MAX_FORWARDED {
                 panel.devtools_send(devtools::error(request.id, "too many requests"));
             } else {
@@ -234,6 +240,10 @@ pub(crate) trait End {
     fn network_log(&self) -> Option<std::sync::Arc<NetworkLog>> {
         None
     }
+    fn storage_inspect(&mut self, message: &str) -> String {
+        let _ = message;
+        String::new()
+    }
 }
 
 impl<V: View> End for V {
@@ -254,5 +264,8 @@ impl<V: View> End for V {
     }
     fn network_log(&self) -> Option<std::sync::Arc<NetworkLog>> {
         View::network_log(self)
+    }
+    fn storage_inspect(&mut self, message: &str) -> String {
+        View::storage_inspect(self, message)
     }
 }

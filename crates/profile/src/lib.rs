@@ -699,6 +699,26 @@ impl Profile {
         })
     }
 
+    /// The storage keys the profile keeps `localStorage` items or
+    /// IndexedDB databases for (M36.8), in order, each once.
+    pub fn storage_keys(&self) -> Result<Vec<String>, Error> {
+        self.guarded(|db| {
+            let txn = db.begin_read().map_err(failed)?;
+            let mut keys = std::collections::BTreeSet::new();
+            let local = txn.open_table(LOCAL_STORAGE).map_err(failed)?;
+            for entry in local.iter().map_err(failed)? {
+                let (key, _) = entry.map_err(failed)?;
+                keys.insert(key.value().0.to_owned());
+            }
+            let databases = txn.open_table(IDB_DATABASES).map_err(failed)?;
+            for entry in databases.iter().map_err(failed)? {
+                let (key, _) = entry.map_err(failed)?;
+                keys.insert(key.value().0.to_owned());
+            }
+            Ok(keys.into_iter().collect())
+        })
+    }
+
     /// The cookies kept, records of `net`'s encoding, in their order.
     pub fn cookies(&self) -> Result<Vec<Vec<u8>>, Error> {
         self.guarded(|db| self.read_records(db, COOKIES))

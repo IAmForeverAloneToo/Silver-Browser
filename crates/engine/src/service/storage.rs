@@ -104,6 +104,9 @@ impl StorageService {
             StorageOp::Clear {} => Answer::StorageCleared {
                 cleared: storage.clear_area(local, &key),
             },
+            StorageOp::Usage {} => Answer::StorageLength {
+                length: crate::storage::devtools::usage(&mut storage, &key),
+            },
             StorageOp::Idb { request } => Answer::Idb {
                 answer: crate::idb::serve(storage.idb(&key), &key, &request),
             },

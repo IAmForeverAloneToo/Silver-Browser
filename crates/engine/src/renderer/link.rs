@@ -314,6 +314,13 @@ impl RemoteAreas {
 }
 
 impl Areas for RemoteAreas {
+    fn usage(&self, key: &AreaKey) -> u64 {
+        match self.ask(true, key, StorageOp::Usage {}) {
+            Some(Answer::StorageLength { length }) => length,
+            _ => 0,
+        }
+    }
+
     fn idb(&self, key: &AreaKey, request: &str) -> String {
         let op = StorageOp::Idb {
             request: request.to_owned(),

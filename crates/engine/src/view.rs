@@ -147,6 +147,13 @@ pub trait View {
     fn network_log(&self) -> Option<Arc<crate::network_log::NetworkLog>> {
         None
     }
+
+    /// The panel's request `message` of the storage panel's (M36.8), of
+    /// the page shown, which the browser answers from its own records.
+    fn storage_inspect(&mut self, message: &str) -> String {
+        let _ = message;
+        String::new()
+    }
 }
 
 impl View for Engine {
@@ -338,5 +345,10 @@ impl View for Engine {
     }
     fn network_log(&self) -> Option<Arc<crate::network_log::NetworkLog>> {
         Some(self.network.log().clone())
+    }
+    fn storage_inspect(&mut self, message: &str) -> String {
+        let jar = self.network.cookies();
+        let url = Engine::url(self).cloned();
+        crate::storage::devtools::inspect(&self.storage, &jar, url.as_ref(), message)
     }
 }

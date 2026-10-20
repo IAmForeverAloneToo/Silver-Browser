@@ -405,6 +405,8 @@ pub enum Call {
     DevToolsAnswer(String),
     /// IndexedDB's request (M36.7), as JSON: its answer, as JSON.
     Idb(String),
+    /// The bytes the document's storage key uses (M36.8).
+    StorageUsage,
     /// A request of IndexedDB's completed: its task is to be queued.
     IdbWake,
     /// The document's URL in parts, as `Location` gives them: `href`,

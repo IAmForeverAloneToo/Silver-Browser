@@ -160,3 +160,10 @@ body {
 .bar button.kind.on { background-color: var(--selected); }
 .section { padding: 2px 0; }
 .body-text { margin: 0; padding: 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* What a site keeps (M36.8). */
+.storage { display: flex; flex-direction: column; overflow: hidden; }
+.store-body { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.usage { margin-left: auto; align-self: center; }
+.database { padding: 2px 8px; }
+.remove { font-size: 11px; }

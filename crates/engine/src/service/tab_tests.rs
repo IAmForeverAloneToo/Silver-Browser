@@ -531,3 +531,18 @@ fn a_renderers_page_keeps_its_indexed_db_in_the_browser() {
     // The renderer keeps no storage of its own: the request crossed to
     // the browser's, through its storage service.
 }
+
+#[test]
+fn a_tab_answers_the_storage_panel_from_the_browsers_storage() {
+    let server = serve("<script>localStorage.setItem('k', 'v'); console.log('set')</script>");
+    let mut remote = tab();
+    remote.set_scripting(true);
+    remote.navigate(server.url("/"));
+    let mut lines = Vec::new();
+    settle(&mut remote, |tab| {
+        lines.extend(tab.take_console().into_iter().map(|entry| entry.text));
+        lines.iter().any(|line| line == "set")
+    });
+    let answer = remote.storage_inspect(r#"{"id":5,"method":"storage.local"}"#);
+    assert_eq!(answer, r#"{"id":5,"result":[["k","v"]]}"#);
+}
