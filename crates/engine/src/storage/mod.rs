@@ -154,9 +154,18 @@ pub(crate) trait Areas: Send + Sync {
     ) -> Result<Option<Option<String>>, OverQuota>;
     fn remove(&self, local: bool, key: &AreaKey, item: &str) -> Option<String>;
     fn clear(&self, local: bool, key: &AreaKey) -> bool;
+    /// IndexedDB's `request` of the storage key's databases (M36.7), as
+    /// [`crate::idb::serve`] answers it.
+    fn idb(&self, key: &AreaKey, request: &str) -> String;
 }
 
 impl Areas for Mutex<Storage> {
+    fn idb(&self, key: &AreaKey, request: &str) -> String {
+        let mut storage = self.lock().unwrap_or_else(PoisonError::into_inner);
+        let origin = key.serialization();
+        crate::idb::serve(storage.idb(&origin), &origin, request)
+    }
+
     fn length(&self, local: bool, key: &AreaKey) -> usize {
         let mut storage = self.lock().unwrap_or_else(PoisonError::into_inner);
         storage.area(local, &key.serialization()).len()
@@ -404,8 +413,7 @@ impl Storage {
     }
 
     /// IndexedDB's store, `origin`'s databases read from the profile if
-    /// they were not (M36.4). The bindings reach it from M36.7.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// they were not (M36.4).
     pub(crate) fn idb(&mut self, origin: &str) -> &mut crate::idb::IdbStore {
         if !self.idb.knows(origin) {
             let (databases, records) = self

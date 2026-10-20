@@ -443,6 +443,11 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                     .get::<_, Function<'_>>("evaluate")?
                     .call::<_, Value<'_>>((expression.as_str(), selected))
             }),
+            Task::Idb => self.stepped(&entries, |_, entries| {
+                entries
+                    .get::<_, Function<'_>>("idb")?
+                    .call::<_, Value<'_>>(())
+            }),
             Task::DevTools(message) => self.stepped(&entries, |_, entries| {
                 entries
                     .get::<_, Function<'_>>("devtools")?

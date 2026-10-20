@@ -104,6 +104,9 @@ impl StorageService {
             StorageOp::Clear {} => Answer::StorageCleared {
                 cleared: storage.clear_area(local, &key),
             },
+            StorageOp::Idb { request } => Answer::Idb {
+                answer: crate::idb::serve(storage.idb(&key), &key, &request),
+            },
         };
         drop(storage);
         let _ = reply.send(&ToRenderer::Answer { call, answer });

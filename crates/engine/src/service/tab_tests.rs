@@ -507,3 +507,27 @@ fn the_tabs_network_log_is_the_browsers_and_hides_what_the_page_could_not_read()
     let whole = log.entry(id).expect("the entry");
     assert_eq!(whole.get("body"), Some(&devtools::Json::Null));
 }
+
+#[test]
+fn a_renderers_page_keeps_its_indexed_db_in_the_browser() {
+    let server = serve(
+        "<script>
+         const open = indexedDB.open('db', 1);
+         open.onupgradeneeded = () => open.result.createObjectStore('s').put('kept', 'k');
+         open.onsuccess = () => {
+           open.result.transaction('s').objectStore('s').get('k').onsuccess = (e) =>
+             console.log('got ' + e.target.result);
+         };
+         </script>",
+    );
+    let mut remote = tab();
+    remote.set_scripting(true);
+    remote.navigate(server.url("/"));
+    let mut lines = Vec::new();
+    settle(&mut remote, |tab| {
+        lines.extend(tab.take_console().into_iter().map(|entry| entry.text));
+        lines.iter().any(|line| line == "got kept")
+    });
+    // The renderer keeps no storage of its own: the request crossed to
+    // the browser's, through its storage service.
+}

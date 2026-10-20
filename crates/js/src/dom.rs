@@ -403,6 +403,10 @@ pub enum Call {
     /// The answer of a DevTools console's evaluation (M36,
     /// [`crate::Task::Evaluate`]): refused but while one runs.
     DevToolsAnswer(String),
+    /// IndexedDB's request (M36.7), as JSON: its answer, as JSON.
+    Idb(String),
+    /// A request of IndexedDB's completed: its task is to be queued.
+    IdbWake,
     /// The document's URL in parts, as `Location` gives them: `href`,
     /// `origin`, `protocol`, `host`, `hostname`, `port`, `pathname`,
     /// `search`, `hash`.

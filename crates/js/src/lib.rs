@@ -349,6 +349,9 @@ pub enum Task {
         expression: String,
         selected: Option<Handle>,
     },
+    /// IndexedDB's next request completed (M36.7): its event is
+    /// dispatched, a microtask checkpoint after each listener.
+    Idb,
 }
 
 /// Where a message is delivered (M31).

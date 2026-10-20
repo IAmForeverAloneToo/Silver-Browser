@@ -1422,7 +1422,7 @@ workers/constructors/Worker/same-origin.html	https_port_8000	another origin's sc
 workers/constructors/Worker/same-origin.html	javascript_url	another origin's script: the reference browser throws a SecurityError from the constructor (probe p3), as this engine does, where the standard fails the fetch
 workers/constructors/Worker/same-origin.html	port_81	another origin's script: the reference browser throws a SecurityError from the constructor (probe p3), as this engine does, where the standard fails the fetch
 workers/constructors/Worker/same-origin.html	unsupported_scheme	another origin's script: the reference browser throws a SecurityError from the constructor (probe p3), as this engine does, where the standard fails the fetch
-workers/data-url.html	indexedDB is present	no IndexedDB (M36.4)
+workers/data-url.html	indexedDB is present	no IndexedDB in workers (M36: windows only)
 workers/dedicated-worker-parse-error-failure.html	Classic worker construction for script with syntax error should dispatch an event named error.	a syntax error is an ErrorEvent at the Worker in the reference browser (probe p3), as here, where the test wants a plain Event
 workers/dedicated-worker-parse-error-failure.html	Static import on classic worker should dispatch an event named error.	a syntax error is an ErrorEvent at the Worker in the reference browser (probe p3), as here, where the test wants a plain Event
 workers/dedicated-worker-runtime-error-is-not-parse-error.html	Script parse error dispatches plain Event at Worker	a syntax error is an ErrorEvent at the Worker in the reference browser (probe p3), as here, where the test wants a plain Event

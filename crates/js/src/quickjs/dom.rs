@@ -459,6 +459,8 @@ const NATIVES: &[(&str, Decode)] = &[
     ("storageClear", |a| Ok(Call::StorageClear(a.bool(0)))),
     ("devtoolsSend", |a| Ok(Call::DevToolsSend(a.string(0)?))),
     ("devtoolsAnswer", |a| Ok(Call::DevToolsAnswer(a.string(0)?))),
+    ("idb", |a| Ok(Call::Idb(a.string(0)?))),
+    ("idbWake", |_| Ok(Call::IdbWake)),
     ("navigate", |a| {
         Ok(Call::Navigate {
             url: a.string(0)?,

@@ -314,6 +314,17 @@ impl RemoteAreas {
 }
 
 impl Areas for RemoteAreas {
+    fn idb(&self, key: &AreaKey, request: &str) -> String {
+        let op = StorageOp::Idb {
+            request: request.to_owned(),
+        };
+        match self.ask(true, key, op) {
+            Some(Answer::Idb { answer }) => answer,
+            _ => r#"{"error":{"name":"UnknownError","message":"The browser did not answer."}}"#
+                .to_owned(),
+        }
+    }
+
     fn length(&self, local: bool, key: &AreaKey) -> usize {
         match self.ask(local, key, StorageOp::Length {}) {
             Some(Answer::StorageLength { length }) => usize::try_from(length).unwrap_or(0),

@@ -1283,6 +1283,14 @@ impl DocumentHost {
                 }
                 Ok(Answer::Nothing)
             }
+            Call::Idb(request) => {
+                self.with_areas(|areas, key| Answer::String(areas.idb(key, &request)))
+            }
+            Call::IdbWake => {
+                let now = self.now();
+                self.outputs.messages.push((now, js::Task::Idb));
+                Ok(Answer::Nothing)
+            }
             Call::DevToolsAnswer(answer) => {
                 if !self.evaluating {
                     return Err(DomError::not_supported());

@@ -237,6 +237,9 @@ wire_enum! {
         4 => Set { item: String, value: String },
         5 => Remove { item: String },
         6 => Clear {},
+        /// IndexedDB's request of the storage key's databases (M36.7), as
+        /// `crate::idb::serve` reads it.
+        7 => Idb { request: String },
     }
 }
 
@@ -259,6 +262,8 @@ wire_enum! {
         5 => StorageCleared { cleared: bool },
         /// The browser's number for a new frame, if it gives one.
         6 => Frame { key: Option<u32> },
+        /// IndexedDB's answer (M36.7).
+        7 => Idb { answer: String },
     }
 }
 

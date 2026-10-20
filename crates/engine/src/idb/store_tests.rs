@@ -589,3 +589,58 @@ fn a_record_is_kept_with_its_index_keys() {
         ]
     ));
 }
+
+#[test]
+fn the_requests_crossing_as_json_are_read_strictly() {
+    let mut store = IdbStore::default();
+    let error = |answer: String| {
+        let json = devtools::Json::parse(&answer).expect("JSON");
+        json.get("error")
+            .and_then(|e| e.get("name"))
+            .and_then(devtools::Json::as_str)
+            .map(str::to_owned)
+    };
+    assert_eq!(
+        error(super::serve(&mut store, O, "not json")),
+        Some("DataError".into())
+    );
+    assert_eq!(
+        error(super::serve(&mut store, O, r#"{"op":"nope"}"#)),
+        Some("DataError".into())
+    );
+    assert_eq!(
+        error(super::serve(
+            &mut store,
+            O,
+            r#"{"op":"open","name":"d","version":0}"#
+        )),
+        Some("TypeError".into())
+    );
+    let opened = super::serve(&mut store, O, r#"{"op":"open","name":"d","version":2}"#);
+    let txn = devtools::Json::parse(&opened)
+        .ok()
+        .and_then(|j| j.get("result")?.get("txn")?.as_u64())
+        .expect("an upgrade");
+    let ask = |store: &mut IdbStore, text: String| super::serve(store, O, &text);
+    ask(
+        &mut store,
+        format!(r#"{{"op":"createStore","txn":{txn},"name":"s"}}"#),
+    );
+    // A backwards range and a key past its depth are refused.
+    let range = r#"{"lower":{"n":2},"upper":{"n":1}}"#;
+    assert_eq!(
+        error(ask(
+            &mut store,
+            format!(r#"{{"op":"count","txn":{txn},"store":"s","range":{range}}}"#)
+        )),
+        Some("DataError".into())
+    );
+    // A key as deep as an array key may go is deeper than the protocol's
+    // JSON: the parser refuses it before the key is read.
+    let deep = format!("{}{{\"n\":1}}{}", "{\"a\":[".repeat(40), "]}".repeat(40));
+    assert!(devtools::Json::parse(&deep).is_err());
+    // Every kind of key goes there and back.
+    let keys = r#"{"a":[{"n":-1.5},{"d":0},{"s":"x"},{"b":"AAH/"},{"a":[]}]}"#;
+    let key = super::key_of(&devtools::Json::parse(keys).unwrap()).expect("a key");
+    assert_eq!(super::key_json(&key).write(), keys);
+}
