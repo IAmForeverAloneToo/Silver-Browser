@@ -1891,3 +1891,136 @@ fn the_panels_storage_shows_what_the_site_keeps() {
         panel_text(session, "storage-local").is_some_and(|text| text.contains("themedark"))
     });
 }
+
+/// M36.5's demo: a to-do list kept in IndexedDB, seeded from the server.
+const TODO_IDB: &str = include_str!("../../../engine/tests/demos/todo-idb.html");
+
+/// Runs `script` in the DevTools panel's own page, as the user's hand on
+/// its controls: its value's preview.
+fn in_panel(session: &mut Session, script: &str) -> devtools::Json {
+    use devtools::Json;
+    let panel = session.panel_mut().expect("the panel is open");
+    let request = devtools::Request {
+        id: 1,
+        method: "console.evaluate".to_owned(),
+        params: Json::object([("expression", Json::from(script))]),
+    };
+    panel.inspect(&request.write());
+    let answer = panel.take_inspected().pop().expect("an answer");
+    let answer = Json::parse(&answer).expect("JSON");
+    answer
+        .get("result")
+        .and_then(|r| r.get("result"))
+        .cloned()
+        .unwrap_or_else(|| panic!("{answer:?}"))
+}
+
+/// Types `text` into the panel's element of id `id` and presses Enter.
+fn type_in_panel(session: &mut Session, id: &str, text: &str) {
+    let script = format!(
+        "const at = document.getElementById({id:?}); at.focus(); at.value = {text:?}; \
+         at.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter' }}))"
+    );
+    in_panel(session, &script);
+}
+
+/// Clicks the panel's element `selector`.
+fn click_in_panel(session: &mut Session, selector: &str) {
+    in_panel(
+        session,
+        &format!("document.querySelector({selector:?}).click()"),
+    );
+}
+
+/// M36.5: the to-do list debugged through the panel alone. Its entries
+/// come from the server (the request in the network log) and are kept
+/// in IndexedDB (the records in the storage panel); completing one throws
+/// (the error in the console, with its stack); a completed one is not
+/// struck out (the element inspected, its rules read, its style edited);
+/// and what was kept is there when the page is loaded again.
+#[test]
+fn the_to_do_list_is_debugged_through_the_panel() {
+    let server = serve(|path| match path {
+        "/" => html(TODO_IDB),
+        "/seed.json" => Some(Reply::ok(
+            "application/json",
+            br#"["buy milk","write tests"]"#,
+        )),
+        _ => None,
+    });
+    let memory = profile::Memory::new();
+    let mut window = Window::on_profile(Some(server.url("/")), &memory);
+    window.run_until(|session| session.title().starts_with("todos: 2"));
+    window.press_key(Key::F12, NONE);
+    window.run_until(|session| {
+        panel_text(session, "elements-tree").is_some_and(|tree| tree.contains("todoapp"))
+    });
+    // The bug, met as the user meets it: an entry completed, from the
+    // console's prompt.
+    click_in_panel(&mut window.session, "#tab-console");
+    type_in_panel(
+        &mut window.session,
+        "console-prompt",
+        "document.querySelector('.toggle').click()",
+    );
+    window.run_until(|session| {
+        panel_console(session).contains("Uncaught ReferenceError: updat is not defined")
+    });
+    // Its place, the page's.
+    let console = panel_console(&mut window.session);
+    assert!(
+        console.contains("todo-idb") || console.contains(server.url("/").as_str()),
+        "{console}"
+    );
+    // The entry completed, inspected: the console's node revealed in the
+    // element inspector, its rules read.
+    type_in_panel(
+        &mut window.session,
+        "console-prompt",
+        "document.querySelector('.completed label')",
+    );
+    window.run_until(|session| panel_console(session).contains("<label>"));
+    click_in_panel(&mut window.session, "#console-lines .result .v-node");
+    window.run_until(|session| {
+        panel_text(session, "elements-styles")
+            .is_some_and(|styles| styles.contains(".todo-list li label {"))
+    });
+    // No rule strikes it out: `li.complete` is not its class.
+    let styles = panel_text(&mut window.session, "elements-styles").unwrap_or_default();
+    assert!(!styles.contains("line-through"), "{styles}");
+    // Edited: its style attribute strikes it out, as the page then shows.
+    type_in_panel(
+        &mut window.session,
+        "elements-add-style",
+        "text-decoration: line-through",
+    );
+    // (getComputedStyle's list has no text-decoration, so the computed
+    // pane cannot show it: the label's own style and the tree do.)
+    window.run_until(|session| {
+        panel_text(session, "elements-styles")
+            .is_some_and(|styles| styles.contains("element.style {text-decoration: line-through;"))
+            && panel_text(session, "elements-tree")
+                .is_some_and(|tree| tree.contains("style=\"text-decoration: line-through\""))
+    });
+    // The request that seeded it, in the network log.
+    click_in_panel(&mut window.session, "#tab-network");
+    window.run_until(|session| {
+        panel_text(session, "network-list").is_some_and(|list| list.contains("seed.json"))
+    });
+    // Its records, in the storage panel.
+    click_in_panel(&mut window.session, "#tab-storage");
+    window.run_until(|session| {
+        panel_text(session, "storage-idb").is_some_and(|idb| {
+            idb.contains("todos (version 1)")
+                && idb.contains("buy milk")
+                && idb.contains("write tests")
+        })
+    });
+    // Loaded again, the list is what was kept, the first entry done.
+    window.session.flush_profile().expect("written");
+    let mut again = Window::on_profile(Some(server.url("/")), &memory);
+    again.run_until(|session| session.title().starts_with("todos: 2"));
+    let requests = server.requests();
+    let seeded = requests.iter().filter(|r| r.target == "/seed.json").count();
+    assert_eq!(seeded, 1, "the second load reads what was kept");
+}

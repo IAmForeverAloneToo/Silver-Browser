@@ -253,6 +253,23 @@ tool("elements", "Elements", (pane) => {
     call("dom.pick", { on }).catch(() => {});
   });
 
+  // A node revealed (a click on it in the console): its ancestors asked
+  // for, then as a pick.
+  revealer = (id) => {
+    call("dom.path", { node: id }).then((path) => opened_down(id, path), () => {});
+  };
+  function opened_down(id, path) {
+    for (const ancestor of path) {
+      opened.add(ancestor);
+    }
+    call("dom.tree", { open: [...opened] }).then((node) => {
+      tree.textContent = "";
+      rows.clear();
+      tree.appendChild(row(node, 0));
+      select(id);
+    }, () => {});
+  }
+
   // The node picked in the page: the tree opened down to it, selected.
   on("dom.picked", (params) => {
     pick.classList.remove("on");

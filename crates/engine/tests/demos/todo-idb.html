@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>todos</title>
+<!--
+  M36.5's acceptance demo: TodoMVC's to-do list in plain DOM and
+  scripts, its entries kept in IndexedDB and seeded from the server's
+  /seed.json the first time. It has two bugs of its own, which the
+  DevTools find: completing an entry throws (a misspelt function), and a
+  completed entry is not struck out (a misspelt class in its rule).
+-->
+<style>
+  body { font: 14px sans-serif; background: #f5f5f5; margin: 0 }
+  .todoapp { background: #fff; margin: 40px auto; width: 550px }
+  h1 { text-align: center; color: #b83f45; font-size: 64px; margin: 0 }
+  .new-todo { box-sizing: border-box; width: 100%; padding: 16px 16px 16px 60px; font-size: 24px; border: 0 }
+  .todo-list { list-style: none; margin: 0; padding: 0 }
+  .todo-list li { position: relative; font-size: 24px; border-bottom: 1px solid #ededed }
+  .todo-list li .toggle { position: absolute; top: 0; bottom: 0; margin: auto 0; width: 40px }
+  .todo-list li label { display: block; padding: 15px 15px 15px 60px; line-height: 1.2 }
+  .todo-list li.complete label { color: #949494; text-decoration: line-through }
+  .footer { padding: 10px 15px; color: #777 }
+</style>
+</head>
+<body>
+<section class="todoapp">
+  <header><h1>todos</h1><input class="new-todo" placeholder="What needs to be done?"></header>
+  <ul class="todo-list"></ul>
+  <footer class="footer"><span class="todo-count"></span></footer>
+</section>
+<script>
+const list = document.querySelector('.todo-list');
+const input = document.querySelector('.new-todo');
+const count = document.querySelector('.todo-count');
+let db = null;
+
+function update() {
+  const left = list.querySelectorAll('li:not(.completed)').length;
+  count.textContent = left + (left === 1 ? ' item left' : ' items left');
+}
+
+function show(entry) {
+  const li = document.createElement('li');
+  li.dataset.id = String(entry.id);
+  if (entry.done) {
+    li.classList.add('completed');
+  }
+  const toggle = document.createElement('input');
+  toggle.type = 'checkbox';
+  toggle.className = 'toggle';
+  toggle.checked = entry.done;
+  const label = document.createElement('label');
+  label.textContent = entry.title;
+  li.appendChild(toggle);
+  li.appendChild(label);
+  list.appendChild(li);
+}
+
+function save(entry, then) {
+  const t = db.transaction('todos', 'readwrite');
+  const request = t.objectStore('todos').put(entry);
+  request.onsuccess = () => then && then(request.result);
+}
+
+function load() {
+  const request = db.transaction('todos').objectStore('todos').getAll();
+  request.onsuccess = () => {
+    list.textContent = '';
+    request.result.forEach(show);
+    update();
+    document.title = 'todos: ' + request.result.length;
+  };
+}
+
+input.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && input.value.trim() !== '') {
+    save({ title: input.value.trim(), done: false }, load);
+    input.value = '';
+  }
+});
+
+list.addEventListener('change', (event) => {
+  if (!event.target.classList.contains('toggle')) {
+    return;
+  }
+  const li = event.target.parentNode;
+  const done = event.target.checked;
+  li.classList.toggle('completed', done);
+  save({ id: Number(li.dataset.id), title: li.querySelector('label').textContent, done });
+  // The first bug: there is no updat().
+  updat();
+});
+
+const open = indexedDB.open('todos', 1);
+open.onupgradeneeded = () => {
+  open.result.createObjectStore('todos', { keyPath: 'id', autoIncrement: true });
+};
+open.onsuccess = () => {
+  db = open.result;
+  const counted = db.transaction('todos').objectStore('todos').count();
+  counted.onsuccess = () => {
+    if (counted.result > 0) {
+      load();
+      return;
+    }
+    // The first visit: the entries the server suggests.
+    fetch('/seed.json')
+      .then((response) => response.json())
+      .then((seed) => {
+        let left = seed.length;
+        seed.forEach((title) => save({ title, done: false }, () => {
+          left -= 1;
+          if (left === 0) {
+            load();
+          }
+        }));
+      });
+  };
+};
+</script>
+</body>
+</html>

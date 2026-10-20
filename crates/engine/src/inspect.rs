@@ -192,6 +192,16 @@ impl Engine {
     fn inspect_dom(&mut self, request: &Request) -> Option<Result<Json, String>> {
         Some(match request.method.as_str() {
             "dom.tree" => self.dom_tree(request),
+            // A node's ancestors, the document first.
+            "dom.path" => self.node_param(request, "node").map(|node| {
+                let document = &self.shown.document;
+                let mut path: Vec<Json> = document
+                    .ancestors(node)
+                    .map(|ancestor| Json::from(ancestor.to_bits()))
+                    .collect();
+                path.reverse();
+                Json::Array(path)
+            }),
             "dom.select" => self.node_param(request, "node").map(|node| {
                 self.selected = Some(node);
                 self.set_highlight(Some(node));

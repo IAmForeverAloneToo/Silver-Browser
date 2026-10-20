@@ -102,6 +102,20 @@ function show(entry) {
   }
 }
 
+// Shows the node of the page numbered `id` in the element inspector,
+// selected: what the inspector registers as `revealer`.
+let revealer = null;
+function reveal(id) {
+  for (const entry of tools) {
+    if (entry.name === "elements") {
+      show(entry);
+    }
+  }
+  if (revealer !== null) {
+    revealer(id);
+  }
+}
+
 // The line naming the page inspected, its URL and title, again each
 // time it navigates.
 function inspected() {

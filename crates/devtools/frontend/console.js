@@ -44,6 +44,8 @@ function nodeNode(p) {
   }
   const node = el("span", "v-node", text);
   node.dataset.node = String(p.node);
+  // A click reveals it in the element inspector.
+  node.addEventListener("click", () => reveal(p.node));
   return node;
 }
 
