@@ -14375,6 +14375,16 @@
   const $ErrorIsError = Error.isError;
   // An error's stack is an accessor of Error.prototype's in QuickJS-ng.
   const ErrorStackGet = getOwnPropertyDescriptor(Error.prototype, "stack").get;
+  // So are Error.stackTraceLimit and Error.prepareStackTrace, of the
+  // realm's own state: a call is logged with the originals' values set,
+  // so that what the page put there runs nothing of its own, and the
+  // previews' brand checks, which throw for most objects, build no stack.
+  const stackLimit = getOwnPropertyDescriptor($Error, "stackTraceLimit");
+  const prepareStack = getOwnPropertyDescriptor($Error, "prepareStackTrace");
+  // The frames a call's stack is built with: its place, past the
+  // bindings' own frames, or all of it for an error or a trace.
+  const STACK_PLACE = 8;
+  const STACK_WHOLE = 64;
   const RegExpSourceGet = getOwnPropertyDescriptor(RegExp.prototype, "source").get;
   const $RegExpPrototype = RegExp.prototype;
   const $ArrayIsArray = Array.isArray;
@@ -14390,25 +14400,12 @@
   const $MapForEach = uncurry(Map.prototype.forEach);
   const $ObjectIs = Object.is;
   const ObjectHasOwn = Object.hasOwn;
-  const $NumberToString = uncurry(Number.prototype.toString);
   const $NumberIsFinite = Number.isFinite;
 
-  // `text` as a JSON string.
+  // `text`, a string, as a JSON string: the original stringify, which
+  // runs nothing of the page's for a string.
   function quote(text) {
-    let out = '"';
-    for (let i = 0; i < text.length; i++) {
-      const c = CharCodeAt(text, i);
-      if (c === 0x22) {
-        out += '\\"';
-      } else if (c === 0x5c) {
-        out += "\\\\";
-      } else if (c < 0x20 || c === 0x2028 || c === 0x2029) {
-        out += "\\u" + StringSlice("000" + $NumberToString(c, 16), -4);
-      } else {
-        out += text[i];
-      }
-    }
-    return out + '"';
+    return JSONStringify(text);
   }
 
   // The class an object is of, as the reference browser names it: its
@@ -14631,11 +14628,20 @@
   function logger(level, kind, args, first) {
     let made = "";
     let stack = "";
+    const limit = ReflectApply(stackLimit.get, $Error, []);
+    const prepare = ReflectApply(prepareStack.get, $Error, []);
     try {
+      ReflectApply(prepareStack.set, $Error, [undefined]);
+      ReflectApply(stackLimit.set, $Error, [0]);
       made = previews(args, first);
+      const whole = level === CONSOLE_ERROR || kind === "trace";
+      ReflectApply(stackLimit.set, $Error, [whole ? STACK_WHOLE : STACK_PLACE]);
       stack = stackHere();
     } catch (e) {
       made = "";
+    } finally {
+      ReflectApply(stackLimit.set, $Error, [limit]);
+      ReflectApply(prepareStack.set, $Error, [prepare]);
     }
     consoleMessage(level, kind, made, stack, args, first);
   }

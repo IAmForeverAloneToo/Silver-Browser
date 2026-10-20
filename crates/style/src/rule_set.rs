@@ -509,7 +509,6 @@ impl RuleSet {
         (holds, places)
     }
 
-    /// The path a rule's `(start, len)` names.
     /// Rule `rule` of these, of `sheets`, as the DevTools show it (M36):
     /// its sheet's index, its selector list as written, and the at-rules
     /// around it, outermost first, each with its prelude.
@@ -540,6 +539,7 @@ impl RuleSet {
         (rule.sheet, selector, conditions)
     }
 
+    /// The path a rule's `(start, len)` names.
     fn path(&self, (start, len): (u32, u32)) -> &[u32] {
         &self.paths[start as usize..(start + len) as usize]
     }

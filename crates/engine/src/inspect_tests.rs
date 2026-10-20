@@ -351,6 +351,52 @@ fn the_console_standards_methods_and_an_errors_stack() {
     assert_eq!(texts[15], "done");
 }
 
+const LIMITED: &str = "<script>
+let prepared = 0;
+Error.prepareStackTrace = (error, frames) => { prepared++; return 'prepared'; };
+Error.stackTraceLimit = 0;
+function deep(n) { if (n === 0) { console.trace('t'); return; } deep(n - 1); }
+deep(20);
+console.log('plain', { a: 1 }, new Date(0), new Map());
+console.log('q\"\\\\\\n\\u2028\\ud800');
+console.log('after', prepared, Error.stackTraceLimit, typeof Error.prepareStackTrace);
+console.log('done');
+</script>";
+
+#[test]
+fn a_console_call_keeps_its_place_whatever_the_page_did_to_errors_stacks() {
+    let server = serve(LIMITED);
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(server.url("/"));
+    let entries = entries_until(&mut tab, "done");
+    // A trace has all its frames, past the page's limit and the
+    // default's ten.
+    let trace = &entries[0];
+    let deep = trace.stack.iter().filter(|f| f.function == "deep").count();
+    assert_eq!(deep, 21, "{:?}", trace.stack);
+    assert_eq!((trace.line, trace.stack[0].line), (5, 5));
+    // A call's place, its limit zero.
+    let plain = &entries[1];
+    assert_eq!(plain.line, 7, "{plain:?}");
+    let previews = args(plain);
+    let types: Vec<&str> = previews
+        .iter()
+        .map(|arg| field(arg, &["type"]).as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(types, ["string", "object", "date", "map"]);
+    // A string's preview, its escapes written back: a lone surrogate
+    // read as U+FFFD.
+    let quoted = args(&entries[2]);
+    assert_eq!(
+        field(&quoted[0], &["value"]).as_str(),
+        Some("q\"\\\n\u{2028}\u{FFFD}")
+    );
+    // The page's prepareStackTrace never ran, and both are the page's
+    // again after.
+    assert_eq!(entries[3].text, "after 0 0 function");
+}
+
 #[test]
 fn the_console_evaluates_in_the_page_its_policy_aside() {
     let server = net::test_server::TestServer::plain(|_| {

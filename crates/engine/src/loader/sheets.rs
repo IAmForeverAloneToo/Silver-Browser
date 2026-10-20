@@ -949,13 +949,6 @@ impl Page {
         self.owners.iter().all(|owner| owner.sheet.settled())
     }
 
-    /// The sheets that apply, in cascade order: each element's in tree
-    /// order, the rules of the sheets it imports in place of its
-    /// `@import` rules, and each in the blocks of its conditions: an
-    /// import's layer, `supports()` and media, and the element's
-    /// `media`. The first titled sheet's title names the preferred set,
-    /// and a sheet with another title is left out (CSSOM §6.1's add
-    /// steps).
     /// What names each of [`Page::sheets`], in the same order, for the
     /// DevTools (M36): a fetched sheet's URL, or `<style>`.
     pub(crate) fn sheet_names(&self) -> Vec<String> {
@@ -982,6 +975,13 @@ impl Page {
             .collect()
     }
 
+    /// The sheets that apply, in cascade order: each element's in tree
+    /// order, the rules of the sheets it imports in place of its
+    /// `@import` rules, and each in the blocks of its conditions: an
+    /// import's layer, `supports()` and media, and the element's
+    /// `media`. The first titled sheet's title names the preferred set,
+    /// and a sheet with another title is left out (CSSOM section 6.1's
+    /// add steps).
     pub(crate) fn sheets(&self) -> Vec<css::Stylesheet> {
         let preferred = self
             .owners
