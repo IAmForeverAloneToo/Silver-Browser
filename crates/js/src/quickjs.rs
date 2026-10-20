@@ -833,19 +833,28 @@ fn install<'js, H: ScriptingHost>(
         global.set("self", global.clone())?;
     }
     // The console's one native (M36): the bootstrap's console calls it
-    // with a call's level, kind, previews and stack, then the call's
-    // arguments, which it formats as the Console Standard's formatter
-    // does. Formatting may run the page's code, so the host is borrowed
-    // only once the text is made.
+    // with a call's level, kind, previews and stack, then the array of
+    // the call's arguments and the first of them to log, which it formats
+    // as the Console Standard's formatter does. The array is the call's
+    // own, so that a heap spent needs nothing more of it. Formatting may
+    // run the page's code, so the host is borrowed only once the text is
+    // made.
     let console_host = host.clone();
     let console = Function::new(
         ctx.clone(),
         move |ctx: Ctx<'js>, args: Rest<Value<'js>>| -> rquickjs::Result<()> {
-            let mut head = args.0;
-            if head.len() < 4 {
+            let head = args.0;
+            if head.len() < 6 {
                 return Ok(());
             }
-            let rest = head.split_off(4);
+            let first = head[5].as_int().unwrap_or(0).max(0) as usize;
+            let rest: Vec<Value<'js>> = match head[4].as_array() {
+                Some(array) => array
+                    .iter::<Value<'js>>()
+                    .skip(first)
+                    .collect::<rquickjs::Result<_>>()?,
+                None => Vec::new(),
+            };
             let string = |value: &Value<'js>| {
                 value
                     .as_string()

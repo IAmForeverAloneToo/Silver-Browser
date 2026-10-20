@@ -14596,12 +14596,18 @@
   // Logs `args` (Console Standard's Logger) at `level` as a call of
   // `kind`, with the stack where it was called: its place, and all of
   // it for an error or a trace.
+  // A call whose previews or stack cannot be made, its heap spent, has
+  // its text alone.
   function logger(level, kind, args, first) {
-    const call = [level, kind, previews(args, first), stackHere()];
-    for (let i = first; i < args.length; i++) {
-      ArrayPush(call, args[i]);
+    let made = "";
+    let stack = "";
+    try {
+      made = previews(args, first);
+      stack = stackHere();
+    } catch (e) {
+      made = "";
     }
-    ReflectApply(consoleMessage, undefined, call);
+    consoleMessage(level, kind, made, stack, args, first);
   }
 
   const consoleCounts = new $Map();

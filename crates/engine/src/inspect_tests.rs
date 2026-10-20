@@ -414,16 +414,21 @@ fn the_console_evaluates_in_the_page_its_policy_aside() {
 
 #[test]
 fn a_resource_that_fails_is_said_on_the_console() {
-    let server =
-        serve("<img src=/missing.png><script>setTimeout(() => console.log('done'), 50)</script>");
+    let server = serve("<img src=/missing.png>");
     let mut tab = Tab::new();
-    tab.engine.set_scripting(true);
     tab.engine.navigate(server.url("/"));
-    let entries = entries_until(&mut tab, "done");
-    let failed = entries
+    let deadline = std::time::Instant::now() + WAIT;
+    let mut entries = Vec::new();
+    while !entries
         .iter()
-        .find(|entry| entry.source == crate::ConsoleSource::Network)
-        .unwrap_or_else(|| panic!("{entries:#?}"));
+        .any(|entry: &crate::ConsoleEntry| entry.source == crate::ConsoleSource::Network)
+    {
+        assert!(std::time::Instant::now() < deadline, "{entries:#?}");
+        tab.engine.poll_network();
+        entries.extend(tab.engine.take_console());
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let failed = &entries[0];
     assert_eq!(
         failed.text,
         format!(

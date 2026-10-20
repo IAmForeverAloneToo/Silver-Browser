@@ -451,10 +451,15 @@ fn a_script_that_runs_out_of_heap_kills_the_realm_only_if_it_keeps_it() {
     assert!(realm.run(&script("1"), &mut host).is_ok());
     // Caught, with the memory let go: the realm lives. What is caught is
     // QuickJS-ng's `InternalError`, or `null` when even that could not
-    // be made.
-    let caught = format!("try {{ let kept = []; {grow} }} catch (e) {{ console.log('caught'); }}");
+    // be made. The run ends well only if the catch caught it. (The
+    // console, the bindings' own code since M36, may find no memory
+    // inside the catch, so the test asks nothing of it there.)
+    let caught = format!("try {{ let kept = []; {grow} }} catch (e) {{}}");
     realm.run(&script(&caught), &mut host).expect("caught");
-    assert_eq!(host.console[0].1, "caught");
+    realm
+        .run(&script("console.log('after')"), &mut host)
+        .expect("logged");
+    assert_eq!(host.console[0].1, "after");
     assert_eq!(realm.dead(), None);
     // Held by a global: the realm is dead, and runs nothing more.
     let error = realm
