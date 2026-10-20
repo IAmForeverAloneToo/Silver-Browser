@@ -105,6 +105,7 @@ pub mod ipc;
 mod keys;
 mod loader;
 mod navigation;
+pub mod network_log;
 mod pages;
 mod permissions;
 mod print;

@@ -293,6 +293,9 @@ pub(crate) struct Network {
     /// The answers its clients' requests into a more private address
     /// space wait on (M33.4).
     permissions: Arc<crate::permissions::Permissions>,
+    /// The tab's network log (M36.3), which every client of the engine
+    /// tells what it does.
+    log: Arc<crate::network_log::NetworkLog>,
     flights: HashMap<FetchId, Flight>,
     next: FetchId,
     /// Where each page's document is in its tab (M33.2): what a frame's
@@ -319,6 +322,7 @@ impl Network {
             cache: Arc::default(),
             hsts: Arc::default(),
             permissions: Arc::default(),
+            log: Arc::default(),
             flights: HashMap::new(),
             next: 0,
             partitions: HashMap::new(),
@@ -413,6 +417,12 @@ impl Network {
             .with_cache(self.cache.clone())
             .with_hsts(self.hsts.clone())
             .with_local_network_gate(self.permissions.clone())
+            .with_observer(self.log.clone())
+    }
+
+    /// The tab's network log.
+    pub(crate) fn log(&self) -> &Arc<crate::network_log::NetworkLog> {
+        &self.log
     }
 
     /// The client fetches are made with, made now if none is yet.
@@ -438,6 +448,7 @@ impl Network {
         network.remote_cookies = self.remote_cookies.clone();
         network.cookies = self.cookies.clone();
         network.cache = self.cache.clone();
+        network.log = self.log.clone();
         network
     }
 

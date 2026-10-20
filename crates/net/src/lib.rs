@@ -26,6 +26,7 @@ pub mod hsts;
 pub mod http;
 mod infra;
 pub mod mime;
+pub mod observe;
 pub mod referrer;
 #[cfg(any(test, feature = "test-server"))]
 pub mod test_server;

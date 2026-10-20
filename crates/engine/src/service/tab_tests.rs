@@ -419,7 +419,10 @@ fn the_devtools_panel_and_the_page_it_inspects_speak_through_the_browser() {
         .collect();
     let request = devtools::Request::parse(&asked[0]).expect("a request");
     assert_eq!(request.method, "page.info");
-    assert_eq!(panel.url().map(Url::as_str), Some(devtools::PANEL_URL));
+    // Its state may come after its first messages.
+    settle(&mut panel, |tab| {
+        tab.url().map(Url::as_str) == Some(devtools::PANEL_URL)
+    });
     // The page's renderer answers.
     page.inspect(asked[0].clone());
     let answers = taken(&mut page, |tab| tab.take_inspected());
@@ -466,4 +469,41 @@ fn the_devtools_panel_and_the_page_it_inspects_speak_through_the_browser() {
         .map(|(_, lock)| lock)
         .collect();
     assert_eq!(locks, [Some("devtools:".to_owned())]);
+}
+
+#[test]
+fn the_tabs_network_log_is_the_browsers_and_hides_what_the_page_could_not_read() {
+    let images = TestServer::plain(|_| Reply::ok("image/png", b"another origin's image"));
+    let image = images.url("/i.png");
+    let html = format!("<img src='{image}'>");
+    let server = TestServer::plain(move |_| Reply::ok("text/html", html.as_bytes()));
+    let page = server.url("/");
+    let mut remote = tab();
+    remote.navigate(page.clone());
+    settle(&mut remote, |tab| *tab.load_state() == LoadState::Loaded);
+    let log = remote.network_log().expect("a log");
+    let find = |url: &Url| {
+        let list = log.list();
+        list.as_array().and_then(|entries| {
+            entries
+                .iter()
+                .find(|e| e.get("url").and_then(devtools::Json::as_str) == Some(url.as_str()))
+                .cloned()
+        })
+    };
+    // The document, which the browser fetched for the renderer.
+    assert!(find(&page).is_some(), "{:?}", log.list());
+    // The image, another origin's, fetched without CORS: the page could
+    // not read it, and neither does the panel.
+    settle(&mut remote, |_| {
+        find(&image).is_some_and(|e| e.get("end") != Some(&devtools::Json::Null))
+    });
+    let entry = find(&image).expect("the image");
+    assert_eq!(entry.get("hidden"), Some(&devtools::Json::Bool(true)));
+    let id = entry
+        .get("id")
+        .and_then(devtools::Json::as_u64)
+        .expect("an id");
+    let whole = log.entry(id).expect("the entry");
+    assert_eq!(whole.get("body"), Some(&devtools::Json::Null));
 }

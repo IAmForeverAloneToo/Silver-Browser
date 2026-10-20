@@ -199,9 +199,21 @@ mod tests {
         let pooled = format!("{:?}", layout_document(&boxes, 800.0, &fonts));
         assert_eq!(alone, pooled);
         // On a machine of more than one core, the pool's threads did it:
-        // besides the one of the pool of one, more than one.
+        // besides the one of the pool of one, more than one. A busy
+        // machine may leave the work to one of them for a layout, so a few
+        // more are laid out until more have helped (CI found it, M36).
         let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
-        let threads = super::SEEN.lock().map_or(0, |seen| seen.len());
+        let seen = || super::SEEN.lock().map_or(0, |seen| seen.len());
+        for _ in 0..20 {
+            if cores < 2 || seen() > 2 {
+                break;
+            }
+            assert_eq!(
+                format!("{:?}", layout_document(&boxes, 800.0, &fonts)),
+                alone
+            );
+        }
+        let threads = seen();
         assert!(
             cores < 2 || threads > 2,
             "{threads} threads on {cores} cores"

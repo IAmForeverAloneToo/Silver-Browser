@@ -147,3 +147,16 @@ body {
 .add { width: 90%; margin-left: 12px; font-family: monospace; font-size: var(--mono); }
 .edit { font-family: monospace; font-size: var(--mono); }
 .bar button.on { background-color: var(--selected); }
+
+/* The network log (M36.3). */
+.network { display: flex; flex-direction: column; overflow: hidden; }
+.requests { flex: 3 1 0; overflow: auto; border-right: 1px solid var(--line); }
+.detail { flex: 2 1 0; overflow: auto; }
+.request { display: flex; gap: 8px; padding: 1px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.request.selected { background-color: var(--selected); }
+.request.failed { color: var(--error); }
+.req-name { flex: 1 1 auto; overflow: hidden; }
+.req-status, .req-type, .req-size, .req-time { flex: 0 0 auto; color: var(--quiet); }
+.bar button.kind.on { background-color: var(--selected); }
+.section { padding: 2px 0; }
+.body-text { margin: 0; padding: 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }

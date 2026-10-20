@@ -1605,6 +1605,7 @@ fn the_router_answers_the_browsers_requests_and_passes_the_pages_answers_alone()
 #[derive(Default)]
 struct Recorder {
     url: Option<Url>,
+    log: Option<std::sync::Arc<engine::network_log::NetworkLog>>,
     out: Vec<String>,
     sent: Vec<String>,
     asked: Vec<String>,
@@ -1625,6 +1626,9 @@ impl crate::devtools::End for Recorder {
     }
     fn take_inspected(&mut self) -> Vec<String> {
         std::mem::take(&mut self.out)
+    }
+    fn network_log(&self) -> Option<std::sync::Arc<engine::network_log::NetworkLog>> {
+        self.log.clone()
     }
 }
 
@@ -1780,5 +1784,73 @@ fn the_panels_inspector_shows_the_tree_and_a_picked_nodes_rules() {
     window.run_until(|session| {
         panel_text(session, "elements-computed")
             .is_some_and(|computed| computed.contains("rgb(0, 128, 0)"))
+    });
+}
+
+#[test]
+fn the_router_gives_the_panel_the_tabs_network_log() {
+    use devtools::Json;
+    use net::observe::{Observed, Observer};
+    let log = std::sync::Arc::new(engine::network_log::NetworkLog::default());
+    let url = Url::parse("https://a.test/s.css").expect("a URL");
+    let mut router = crate::devtools::Router::default();
+    let mut panel = Recorder::default();
+    let mut page = Recorder {
+        url: Some(url.clone()),
+        log: Some(log.clone()),
+        ..Recorder::default()
+    };
+    router.route(&mut panel, &mut page);
+    panel.sent.clear();
+    log.observe(
+        3,
+        Observed::Request {
+            method: "GET",
+            url: &url,
+            headers: &net::HeaderList::new(),
+            destination: net::Destination::Style,
+            initiator: None,
+        },
+    );
+    // A change of the log is told once.
+    router.route(&mut panel, &mut page);
+    router.route(&mut panel, &mut page);
+    assert_eq!(panel.sent, [r#"{"event":"network.updated","params":{}}"#]);
+    panel.sent.clear();
+    panel.out = vec![
+        r#"{"id":1,"method":"network.list"}"#.to_owned(),
+        r#"{"id":2,"method":"network.entry","params":{"id":3}}"#.to_owned(),
+        r#"{"id":3,"method":"network.entry","params":{"id":9}}"#.to_owned(),
+        r#"{"id":4,"method":"network.clear"}"#.to_owned(),
+    ];
+    router.route(&mut panel, &mut page);
+    assert!(page.asked.is_empty(), "the browser answers them");
+    let list = Json::parse(&panel.sent[0]).expect("JSON");
+    let entries = list.get("result").and_then(Json::as_array).expect("a list");
+    assert_eq!(entries[0].get("type").and_then(Json::as_str), Some("style"));
+    let entry = Json::parse(&panel.sent[1]).expect("JSON");
+    assert_eq!(
+        entry
+            .get("result")
+            .and_then(|e| e.get("url"))
+            .and_then(Json::as_str),
+        Some(url.as_str())
+    );
+    assert_eq!(panel.sent[2], r#"{"id":3,"error":"no such request"}"#);
+    assert_eq!(log.list(), Json::Array(Vec::new()));
+}
+
+#[test]
+fn the_panels_network_log_lists_the_pages_requests() {
+    let server = serve(|path| match path {
+        "/" => html("<title>Requests</title><link rel=stylesheet href=/look.css>"),
+        "/look.css" => Some(Reply::ok("text/css", b"p { color: red }")),
+        _ => None,
+    });
+    let mut window = Window::new(Some(server.url("/")), Platform::Other);
+    window.settle();
+    window.press_key(Key::F12, NONE);
+    window.run_until(|session| {
+        panel_text(session, "network-list").is_some_and(|list| list.contains("look.css"))
     });
 }

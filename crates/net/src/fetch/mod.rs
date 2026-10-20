@@ -550,6 +550,9 @@ pub struct Client {
     gate: Option<Arc<dyn LocalNetworkGate>>,
     /// The time, by which the cache reckons ages.
     clock: WallClock,
+    /// Who is told what it does (M36), and the number of its next fetch.
+    observer: Option<Arc<dyn crate::observe::Observer>>,
+    fetches: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// A clock of the time of day, the system's unless a test gives its own.
@@ -573,6 +576,23 @@ impl Client {
             hsts: Arc::default(),
             gate: None,
             clock: Arc::new(SystemTime::now),
+            observer: None,
+            fetches: Arc::default(),
+        }
+    }
+
+    /// The client, telling `observer` what it does (M36): a tab's
+    /// network log.
+    pub fn with_observer(mut self, observer: Arc<dyn crate::observe::Observer>) -> Client {
+        self.observer = Some(observer);
+        self
+    }
+
+    /// Tells the observer, if there is one, that fetch `fetch` did
+    /// `what`.
+    fn tell(&self, fetch: Option<u64>, what: crate::observe::Observed<'_>) {
+        if let (Some(observer), Some(fetch)) = (&self.observer, fetch) {
+            observer.observe(fetch, what);
         }
     }
 
@@ -653,10 +673,41 @@ impl Client {
     fn fetch_to<'d>(
         &self,
         request: &Request,
-        mut deliver: Option<&mut (dyn FnMut(Delivery<'_>) + 'd)>,
+        deliver: Option<&mut (dyn FnMut(Delivery<'_>) + 'd)>,
     ) -> Result<Response, NetworkError> {
+        use crate::observe::Observed;
+        let fetch = self.observer.as_ref().map(|_| {
+            self.fetches
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        });
+        let streamed = deliver.is_some();
+        let result = self.fetch_hops(request, deliver, fetch);
+        match &result {
+            Ok(response) => {
+                // A body taken whole is told whole; a streamed one was
+                // told as it came.
+                if !streamed && !response.body.is_empty() {
+                    self.tell(fetch, Observed::Body(&response.body));
+                }
+                self.tell(fetch, Observed::End(Ok(response.response_type)));
+            }
+            Err(error) => self.tell(fetch, Observed::End(Err(error))),
+        }
+        result
+    }
+
+    /// [`Client::fetch_to`]'s hops, fetch `fetch` of the observer's.
+    fn fetch_hops<'d>(
+        &self,
+        request: &Request,
+        mut deliver: Option<&mut (dyn FnMut(Delivery<'_>) + 'd)>,
+        fetch: Option<u64>,
+    ) -> Result<Response, NetworkError> {
+        use crate::observe::Observed;
         let mut url = request.url.clone();
         let mut hop = Hop {
+            fetch,
+            cached: Default::default(),
             method: request.method.clone(),
             author: request.headers.clone(),
             body: request.body.clone(),
@@ -688,7 +739,19 @@ impl Client {
             if hop.tainting == ResponseType::Cors && self.wants_preflight(request, &url, &hop) {
                 self.preflight(request, &url, &hop)?;
             }
+            let streamed = deliver.is_some() && matches!(url.scheme(), "http" | "https");
             let mut response = self.scheme_fetch(request, &url, &hop, deliver.as_deref_mut())?;
+            // A streamed response's head was told as it came.
+            if !streamed {
+                self.tell(
+                    fetch,
+                    Observed::Response {
+                        status: response.status,
+                        headers: &response.headers,
+                        cached: hop.cached.get(),
+                    },
+                );
+            }
             self.take_hsts(&url, &response.headers);
             match hop.tainting {
                 ResponseType::Cors => cors_check(request, &response.headers, hop.tainted_origin)?,
@@ -716,6 +779,13 @@ impl Client {
             if hop.url_list.len() > MAX_REDIRECTS {
                 return Err(NetworkError::RedirectLimit);
             }
+            self.tell(
+                fetch,
+                Observed::Redirect {
+                    status: response.status,
+                    to: &location,
+                },
+            );
             hop.redirect(request, &url, &location, response.status)?;
             if let Some(policy) = ReferrerPolicy::from_headers(&response.headers) {
                 hop.referrer_policy = policy;
@@ -735,6 +805,11 @@ impl Client {
         deliver: Option<&mut (dyn FnMut(Delivery<'_>) + 'd)>,
     ) -> Result<Response, NetworkError> {
         let url_list = hop.url_list.as_slice();
+        hop.cached.set(false);
+        // A hop that is no HTTP request is told with no fields.
+        if !matches!(url.scheme(), "http" | "https") {
+            self.tell_request(request, url, hop, &HeaderList::new());
+        }
         match url.scheme() {
             "about" => whole(about(url), deliver),
             "data" => whole(
@@ -747,6 +822,7 @@ impl Client {
             ),
             "http" | "https" => {
                 let headers = self.request_headers(request, url, hop);
+                self.tell_request(request, url, hop, &headers);
                 // The HTTP cache (M28.4): for a GET fetched whole, by the
                 // site the request is for.
                 let mode = cache_mode(request, hop);
@@ -766,6 +842,7 @@ impl Client {
                 if cached && let Some(stale) = mode.reads() {
                     let now = (self.clock)();
                     if let Some(stored) = self.cache.lookup(&site, url, &headers, now, stale) {
+                        hop.cached.set(true);
                         // As the connection to its server would be (M33.4).
                         if let Some(space) = stored.address_space {
                             if let Some(named) = request.target_address_space
@@ -830,6 +907,8 @@ impl Client {
                             url_list,
                             deliver,
                             take_cookies: &take_cookies,
+                            client: self,
+                            fetch: hop.fetch,
                         };
                         self.transport.exchange_streaming(&exchange, &mut stream)?
                     }
@@ -868,6 +947,21 @@ impl Client {
             }
             other => Err(NetworkError::BadScheme(other.to_owned())),
         }
+    }
+
+    /// Tells the observer of a hop's request to `url`, sent with
+    /// `headers`.
+    fn tell_request(&self, request: &Request, url: &Url, hop: &Hop, headers: &HeaderList) {
+        self.tell(
+            hop.fetch,
+            crate::observe::Observed::Request {
+                method: hop.method.as_str(),
+                url,
+                headers,
+                destination: request.destination,
+                initiator: request.initiator.as_ref().map(|initiator| &initiator.url),
+            },
+        );
     }
 
     /// Whether a hop of a CORS request to `url` waits for a preflight
@@ -915,7 +1009,10 @@ impl Client {
             credentials: Credentials::Omit,
             ..request.clone()
         };
+        // A preflight is the client's, not told (M36).
         let preflight_hop = Hop {
+            fetch: None,
+            cached: Default::default(),
             method: Method::OPTIONS,
             author,
             body: None,
@@ -1100,6 +1197,10 @@ fn cache_mode(request: &Request, hop: &Hop) -> CacheMode {
 
 /// Where a fetch stands from hop to hop.
 struct Hop {
+    /// The observer's number for the fetch, when there is one (M36).
+    fetch: Option<u64>,
+    /// Whether this hop's response came from the HTTP cache.
+    cached: std::cell::Cell<bool>,
     method: Method,
     /// The author's fields, less those a redirect dropped.
     author: HeaderList,
@@ -1435,6 +1536,10 @@ struct Streaming<'a, 'd> {
     deliver: &'a mut (dyn FnMut(Delivery<'_>) + 'd),
     /// Stores the head's cookies, first of all.
     take_cookies: &'a dyn Fn(&HeaderList),
+    /// The client, which tells its observer of the head and the body as
+    /// they come (M36), and the observer's number for the fetch.
+    client: &'a Client,
+    fetch: Option<u64>,
 }
 
 impl transport::ResponseStream for Streaming<'_, '_> {
@@ -1446,6 +1551,14 @@ impl transport::ResponseStream for Streaming<'_, '_> {
         space: AddressSpace,
     ) -> bool {
         (self.take_cookies)(headers);
+        self.client.tell(
+            self.fetch,
+            crate::observe::Observed::Response {
+                status,
+                headers,
+                cached: false,
+            },
+        );
         let response = Response {
             url_list: self.url_list.to_vec(),
             status,
@@ -1466,6 +1579,8 @@ impl transport::ResponseStream for Streaming<'_, '_> {
     }
 
     fn body(&mut self, bytes: &[u8]) {
+        self.client
+            .tell(self.fetch, crate::observe::Observed::Body(bytes));
         (self.deliver)(Delivery::Body(bytes));
     }
 }

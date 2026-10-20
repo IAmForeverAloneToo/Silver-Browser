@@ -238,6 +238,8 @@ pub struct RemoteTab {
     panel: bool,
     devtools: Vec<String>,
     inspected: Vec<String>,
+    /// The tab's network log (M36.3), which its client tells.
+    log: Arc<crate::network_log::NetworkLog>,
 }
 
 impl RemoteTab {
@@ -259,11 +261,12 @@ impl RemoteTab {
         let cache: Arc<net::Cache> = Arc::default();
         let hsts: Arc<Mutex<Hsts>> = Arc::default();
         let permissions: Arc<Permissions> = Arc::default();
+        let log: Arc<crate::network_log::NetworkLog> = Arc::default();
         let storage = Arc::new(Mutex::new(Storage::new()));
         let handovers = Handovers::new();
         let registry: SharedRegistry = Arc::default();
         let network = NetworkService::new(
-            client(&jar, &cache, &hsts, &permissions, false),
+            client(&jar, &cache, &hsts, &permissions, &log, false),
             grants.clone(),
         );
         network.hand_over_with(handovers.clone());
@@ -358,6 +361,7 @@ impl RemoteTab {
             panel: false,
             devtools: Vec::new(),
             inspected: Vec::new(),
+            log,
         }
     }
 
@@ -1507,7 +1511,8 @@ impl RemoteTab {
                 .with_cookies(self.jar.clone())
                 .with_cache(self.cache.clone())
                 .with_hsts(self.hsts.clone())
-                .with_local_network_gate(self.permissions.clone()),
+                .with_local_network_gate(self.permissions.clone())
+                .with_observer(self.log.clone()),
         );
     }
 
@@ -1639,6 +1644,7 @@ fn client(
     cache: &Arc<net::Cache>,
     hsts: &Arc<Mutex<Hsts>>,
     permissions: &Arc<Permissions>,
+    log: &Arc<crate::network_log::NetworkLog>,
     compat: bool,
 ) -> Client {
     let client = match compat {
@@ -1650,6 +1656,7 @@ fn client(
         .with_cache(cache.clone())
         .with_hsts(hsts.clone())
         .with_local_network_gate(permissions.clone())
+        .with_observer(log.clone())
 }
 
 impl View for RemoteTab {
@@ -1774,6 +1781,7 @@ impl View for RemoteTab {
             &self.cache,
             &self.hsts,
             &self.permissions,
+            &self.log,
             on,
         ));
         self.send_settings();
@@ -1850,6 +1858,10 @@ impl View for RemoteTab {
 
     fn take_inspected(&mut self) -> Vec<String> {
         std::mem::take(&mut self.inspected)
+    }
+
+    fn network_log(&self) -> Option<Arc<crate::network_log::NetworkLog>> {
+        Some(self.log.clone())
     }
 
     fn run_tasks(&mut self) -> bool {

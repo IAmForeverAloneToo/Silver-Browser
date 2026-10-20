@@ -21,6 +21,7 @@ const SCRIPTS: &[&str] = &[
     include_str!("../frontend/panel.js"),
     include_str!("../frontend/elements.js"),
     include_str!("../frontend/console.js"),
+    include_str!("../frontend/network.js"),
     include_str!("../frontend/start.js"),
 ];
 

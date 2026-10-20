@@ -142,6 +142,11 @@ pub trait View {
     fn take_inspected(&mut self) -> Vec<String> {
         Vec::new()
     }
+
+    /// The tab's network log (M36.3), if it keeps one.
+    fn network_log(&self) -> Option<Arc<crate::network_log::NetworkLog>> {
+        None
+    }
 }
 
 impl View for Engine {
@@ -330,5 +335,8 @@ impl View for Engine {
     }
     fn take_inspected(&mut self) -> Vec<String> {
         Engine::take_inspected(self)
+    }
+    fn network_log(&self) -> Option<Arc<crate::network_log::NetworkLog>> {
+        Some(self.network.log().clone())
     }
 }

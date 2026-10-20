@@ -11,6 +11,7 @@
 use std::collections::{HashSet, VecDeque};
 
 use devtools::{Json, Request};
+use engine::network_log::NetworkLog;
 use engine::{ConsoleEntry, ConsoleKind, ConsoleLevel, ConsoleSource, Url, View};
 
 /// The most requests waiting on the page's answers.
@@ -26,6 +27,8 @@ pub(crate) struct Router {
     /// past `MAX_CONSOLE_ENTRIES`: kept while the panel is closed, so
     /// that it shows what was written before it opened.
     console: VecDeque<ConsoleEntry>,
+    /// The network log's version the panel was last told of (M36.3).
+    network_told: u64,
 }
 
 impl Router {
@@ -76,11 +79,19 @@ impl Router {
     /// Passes what came since the last call between `panel` and `page`.
     pub(crate) fn route(&mut self, panel: &mut impl End, page: &mut impl End) {
         self.watch(page.url(), Some(&mut *panel));
+        let log = page.network_log();
+        // The network log changed: the panel is told, once a change.
+        if let Some(log) = &log
+            && log.version() != self.network_told
+        {
+            self.network_told = log.version();
+            panel.devtools_send(devtools::event("network.updated", Json::object([])));
+        }
         for message in panel.take_devtools() {
             let Ok(request) = Request::parse(&message) else {
                 continue;
             };
-            if let Some(answer) = self.answer(&request) {
+            if let Some(answer) = self.answer(&request, log.as_deref()) {
                 panel.devtools_send(answer);
             } else if self.forwarded.len() >= MAX_FORWARDED {
                 panel.devtools_send(devtools::error(request.id, "too many requests"));
@@ -105,7 +116,7 @@ impl Router {
 
     /// The browser's answer to `request`, when it is about the browser's
     /// own records: `None` for one about the page, which the page answers.
-    fn answer(&mut self, request: &Request) -> Option<String> {
+    fn answer(&mut self, request: &Request, log: Option<&NetworkLog>) -> Option<String> {
         let id = request.id;
         Some(match request.method.as_str() {
             "browser.version" => devtools::result(
@@ -122,6 +133,26 @@ impl Router {
             ),
             "console.clear" => {
                 self.console.clear();
+                devtools::result(id, Json::Null)
+            }
+            // The tab's network log (M36.3).
+            "network.list" => {
+                devtools::result(id, log.map_or(Json::Array(Vec::new()), NetworkLog::list))
+            }
+            "network.entry" => {
+                let entry = request
+                    .param("id")
+                    .and_then(Json::as_u64)
+                    .and_then(|fetch| log?.entry(fetch));
+                match entry {
+                    Some(entry) => devtools::result(id, entry),
+                    None => devtools::error(id, "no such request"),
+                }
+            }
+            "network.clear" => {
+                if let Some(log) = log {
+                    log.clear();
+                }
                 devtools::result(id, Json::Null)
             }
             method if request.domain() == "browser" => {
@@ -200,6 +231,9 @@ pub(crate) trait End {
     fn take_devtools(&mut self) -> Vec<String>;
     fn inspect(&mut self, message: String);
     fn take_inspected(&mut self) -> Vec<String>;
+    fn network_log(&self) -> Option<std::sync::Arc<NetworkLog>> {
+        None
+    }
 }
 
 impl<V: View> End for V {
@@ -217,5 +251,8 @@ impl<V: View> End for V {
     }
     fn take_inspected(&mut self) -> Vec<String> {
         View::take_inspected(self)
+    }
+    fn network_log(&self) -> Option<std::sync::Arc<NetworkLog>> {
+        View::network_log(self)
     }
 }
