@@ -600,3 +600,87 @@ fn a_schema_1_profile_is_sealed_in_place() {
         "the old table gone"
     );
 }
+
+#[test]
+fn indexed_dbs_databases_and_records_are_kept_sealed_and_dropped() {
+    let memory = Memory::new();
+    let a = "https://a.test";
+    {
+        let profile = Profile::in_memory_with(&memory, TEST_WRAP).unwrap();
+        let mut changes = Changes::new();
+        changes.idb_database(a, "db", Some(b"secret-database-meta".to_vec()));
+        changes.idb_record(
+            (a, "db", "s1"),
+            &[1, 0, 2],
+            Some(b"secret-record-one".to_vec()),
+        );
+        changes.idb_record((a, "db", "s1"), &[1, 0, 3], Some(b"two".to_vec()));
+        changes.idb_record((a, "db", "s2"), &[9], Some(b"three".to_vec()));
+        changes.idb_record((a, "other", "s1"), &[1], Some(b"four".to_vec()));
+        changes.idb_database("https://b.test", "db", Some(b"b".to_vec()));
+        changes.idb_record(("https://b.test", "db", "s1"), &[1], Some(b"b's".to_vec()));
+        profile.commit(&changes).unwrap();
+    }
+    for value in [&b"secret-database-meta"[..], b"secret-record-one"] {
+        assert!(
+            !in_the_clear(&memory, value),
+            "{}",
+            String::from_utf8_lossy(value)
+        );
+    }
+    let profile = Profile::in_memory_with(&memory, TEST_WRAP).unwrap();
+    let (databases, records) = profile.idb(a).unwrap();
+    assert_eq!(
+        databases,
+        [("db".to_owned(), b"secret-database-meta".to_vec())]
+    );
+    assert_eq!(records.len(), 4);
+    assert_eq!(
+        records[0],
+        (
+            "db".to_owned(),
+            "s1".to_owned(),
+            vec![1, 0, 2],
+            b"secret-record-one".to_vec()
+        )
+    );
+    // A record deleted, a store's records dropped, a database dropped.
+    let mut changes = Changes::new();
+    changes.idb_record((a, "db", "s1"), &[1, 0, 3], None);
+    changes.idb_store_deleted(a, "db", "s2");
+    changes.idb_database(a, "other", None);
+    profile.commit(&changes).unwrap();
+    let (_, records) = profile.idb(a).unwrap();
+    let left: Vec<(&str, &str, &[u8])> = records
+        .iter()
+        .map(|(d, s, k, _)| (d.as_str(), s.as_str(), k.as_slice()))
+        .collect();
+    assert_eq!(left, [("db", "s1", &[1u8, 0, 2][..])]);
+    // Another storage key's are its own, and stay.
+    let (databases, records) = profile.idb("https://b.test").unwrap();
+    assert_eq!((databases.len(), records.len()), (1, 1));
+    // A record sealed for one place does not open at another.
+    drop(profile);
+    {
+        let db = Database::builder()
+            .create_with_backend(memory.clone())
+            .unwrap();
+        let txn = db.begin_write().unwrap();
+        {
+            let mut table = txn.open_table(IDB_RECORDS).unwrap();
+            let sealed = table
+                .get((a, "db", "s1", &[1u8, 0, 2][..]))
+                .unwrap()
+                .unwrap()
+                .value()
+                .to_vec();
+            table
+                .insert((a, "db", "s1", &[7u8][..]), sealed.as_slice())
+                .unwrap();
+        }
+        txn.commit().unwrap();
+    }
+    let profile = Profile::in_memory_with(&memory, TEST_WRAP).unwrap();
+    let (_, records) = profile.idb(a).unwrap();
+    assert_eq!(records.len(), 1, "the moved record does not open");
+}

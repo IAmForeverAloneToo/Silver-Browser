@@ -239,6 +239,7 @@ version = "0.0.1"
 dependencies = [
  "canvas",
  "css",
+ "devtools",
  "dom",
  "encoding",
  "html",

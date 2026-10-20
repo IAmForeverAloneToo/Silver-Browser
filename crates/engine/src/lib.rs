@@ -99,6 +99,7 @@ pub mod differential;
 mod editing;
 mod focus;
 mod frames;
+pub mod idb;
 mod image_store;
 mod inspect;
 pub mod ipc;

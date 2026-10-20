@@ -165,3 +165,72 @@ fn an_engine_with_no_profile_waits_for_nothing() {
     assert_eq!(tab.engine.next_task_at(), None);
     tab.engine.flush_profile().unwrap();
 }
+
+#[test]
+fn indexed_dbs_committed_transactions_are_kept_in_the_profile() {
+    use crate::idb::{Key, KeyPath, KeyRange, Mode};
+    let memory = Memory::new();
+    let jar = std::sync::Mutex::new(Jar::default());
+    let origin = "https://a.test";
+    {
+        let mut storage = super::Storage::new();
+        storage
+            .set_profile(Profile::in_memory(&memory).unwrap(), &jar)
+            .unwrap();
+        let store = storage.idb(origin);
+        let (_, upgrade) = store.open(origin, "db", Some(1)).unwrap();
+        let upgrade = upgrade.unwrap();
+        store
+            .create_store(upgrade, "s", KeyPath::None, false)
+            .unwrap();
+        store
+            .put(
+                upgrade,
+                "s",
+                Some(Key::string("k")),
+                b"kept".to_vec(),
+                vec![],
+                false,
+            )
+            .unwrap();
+        store.commit(upgrade).unwrap();
+        // One aborted leaves nothing to write.
+        let txn = store
+            .begin(origin, "db", Mode::ReadWrite, vec!["s".into()])
+            .unwrap();
+        store
+            .put(
+                txn,
+                "s",
+                Some(Key::string("lost")),
+                b"lost".to_vec(),
+                vec![],
+                false,
+            )
+            .unwrap();
+        store.abort(txn).unwrap();
+        assert!(storage.flush_at(&jar).is_some());
+        storage.flush(&jar, Duration::ZERO).unwrap();
+        assert_eq!(storage.flush_at(&jar), None);
+    }
+    let mut storage = super::Storage::new();
+    storage
+        .set_profile(Profile::in_memory(&memory).unwrap(), &jar)
+        .unwrap();
+    let store = storage.idb(origin);
+    assert_eq!(store.databases(origin), [("db".to_owned(), 1)]);
+    let txn = store
+        .begin(origin, "db", Mode::ReadOnly, vec!["s".into()])
+        .unwrap();
+    let all = store
+        .get_all(txn, ("s", None), &KeyRange::all(), 0, false)
+        .unwrap();
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].value.as_deref(), Some(&b"kept"[..]));
+    // With no profile, nothing is kept to be written.
+    let mut bare = super::Storage::new();
+    let store = bare.idb(origin);
+    let (_, upgrade) = store.open(origin, "db", None).unwrap();
+    store.commit(upgrade.unwrap()).unwrap();
+    assert!(!store.has_written());
+}

@@ -11,7 +11,7 @@
 # ones made by wasm-smith and any bytes besides; and for the 2D canvas
 # context alone; and for a message's serialized form, made again in a
 # realm; and for the XML parser and SVG, read, drawn, hit and asked (M32);
-# and for the DevTools' JSON (M36).
+# and for the DevTools' JSON, and IndexedDB's keys and store (M36).
 # Not a workspace member: libfuzzer needs nightly, and the normal build
 # must not.
 # `cargo +nightly fuzz run <target>` from the repository root; CI runs
@@ -275,6 +275,18 @@ doc = false
 [[bin]]
 name = "devtools_json"
 path = "fuzz_targets/devtools_json.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "idb_keys"
+path = "fuzz_targets/idb_keys.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "idb_ops"
+path = "fuzz_targets/idb_ops.rs"
 test = false
 doc = false
 bench = false

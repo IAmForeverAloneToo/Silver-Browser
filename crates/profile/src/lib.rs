@@ -46,8 +46,9 @@ pub const FILE: &str = "profile.redb";
 
 /// The version of the tables' layout this code writes. A profile of a
 /// newer one is refused, one of an older one upgraded: 2 seals the
-/// values (M33).
-pub const SCHEMA: u64 = 2;
+/// values (M33); 3 adds IndexedDB's tables (M36), which an older profile
+/// is given empty.
+pub const SCHEMA: u64 = 3;
 
 /// The length of the data key: AES-256's.
 const KEY_BYTES: usize = 32;
@@ -77,6 +78,18 @@ const COOKIES: TableDefinition<u64, &[u8]> = TableDefinition::new("cookies");
 
 /// The HSTS hosts kept (M33.3), as `net` encodes them.
 const HSTS: TableDefinition<u64, &[u8]> = TableDefinition::new("hsts");
+
+/// Each storage key's IndexedDB databases (M36.4): keyed by the storage
+/// key and the database's name, each its description as the engine
+/// encodes it, sealed.
+const IDB_DATABASES: TableDefinition<(&str, &str), &[u8]> = TableDefinition::new("idb_databases");
+
+/// Their records: keyed by the storage key, the database, the object
+/// store and the record's key as the engine encodes keys, so that their
+/// bytes sort as the keys do; each the record as the engine encodes it,
+/// sealed.
+const IDB_RECORDS: TableDefinition<(&str, &str, &str, &[u8]), &[u8]> =
+    TableDefinition::new("idb_records");
 
 /// The permissions sites were given (M33.4), as the engine encodes them.
 const PERMISSIONS: TableDefinition<u64, &[u8]> = TableDefinition::new("permissions");
@@ -164,6 +177,17 @@ fn associated(table: &str, at: &[u8]) -> Vec<u8> {
 }
 
 /// A local item's key as associated data: its origin, a NUL, its key.
+/// Where an IndexedDB record is, as its sealing's associated data: each
+/// part after its length.
+fn record_at(parts: [&[u8]; 4]) -> Vec<u8> {
+    let mut at = Vec::new();
+    for part in parts {
+        at.extend_from_slice(&(part.len() as u64).to_le_bytes());
+        at.extend_from_slice(part);
+    }
+    at
+}
+
 fn item_at(origin: &str, key: &str) -> Vec<u8> {
     let mut at = origin.as_bytes().to_vec();
     at.push(0);
@@ -240,9 +264,36 @@ pub struct Item {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Changes {
     local: Vec<Local>,
+    idb: Vec<Idb>,
     cookies: Option<Vec<Vec<u8>>>,
     hsts: Option<Vec<Vec<u8>>>,
     permissions: Option<Vec<Vec<u8>>>,
+}
+
+/// A change of IndexedDB's (M36.4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Idb {
+    /// A database's description, or none for a database deleted with
+    /// its records.
+    Database {
+        origin: String,
+        name: String,
+        meta: Option<Vec<u8>>,
+    },
+    /// A record, or none for one deleted.
+    Record {
+        origin: String,
+        database: String,
+        store: String,
+        key: Vec<u8>,
+        record: Option<Vec<u8>>,
+    },
+    /// Every record of an object store deleted.
+    StoreDeleted {
+        origin: String,
+        database: String,
+        store: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -271,6 +322,7 @@ impl Changes {
     /// Whether there is nothing to commit.
     pub fn is_empty(&self) -> bool {
         self.local.is_empty()
+            && self.idb.is_empty()
             && self.cookies.is_none()
             && self.hsts.is_none()
             && self.permissions.is_none()
@@ -298,6 +350,42 @@ impl Changes {
     pub fn clear(&mut self, origin: &str) {
         self.local.push(Local::Clear {
             origin: origin.to_owned(),
+        });
+    }
+
+    /// Keeps `origin`'s IndexedDB database `name`'s description, `meta`
+    /// (M36.4), or deletes the database and its records for none.
+    pub fn idb_database(&mut self, origin: &str, name: &str, meta: Option<Vec<u8>>) {
+        self.idb.push(Idb::Database {
+            origin: origin.to_owned(),
+            name: name.to_owned(),
+            meta,
+        });
+    }
+
+    /// Keeps a record of `origin`'s database `database`'s object store
+    /// `store` under the key `key` encodes, or deletes it for none.
+    pub fn idb_record(
+        &mut self,
+        (origin, database, store): (&str, &str, &str),
+        key: &[u8],
+        record: Option<Vec<u8>>,
+    ) {
+        self.idb.push(Idb::Record {
+            origin: origin.to_owned(),
+            database: database.to_owned(),
+            store: store.to_owned(),
+            key: key.to_vec(),
+            record,
+        });
+    }
+
+    /// Deletes every record of an object store.
+    pub fn idb_store_deleted(&mut self, origin: &str, database: &str, store: &str) {
+        self.idb.push(Idb::StoreDeleted {
+            origin: origin.to_owned(),
+            database: database.to_owned(),
+            store: store.to_owned(),
         });
     }
 
@@ -423,6 +511,10 @@ impl Profile {
                 .map_err(|e| unreadable(failed(e)))?;
             txn.open_table(COOKIES).map_err(|e| unreadable(failed(e)))?;
             txn.open_table(HSTS).map_err(|e| unreadable(failed(e)))?;
+            txn.open_table(IDB_DATABASES)
+                .map_err(|e| unreadable(failed(e)))?;
+            txn.open_table(IDB_RECORDS)
+                .map_err(|e| unreadable(failed(e)))?;
             txn.open_table(PERMISSIONS)
                 .map_err(|e| unreadable(failed(e)))?;
             key
@@ -548,6 +640,65 @@ impl Profile {
         Ok(items)
     }
 
+    /// `origin`'s IndexedDB databases (M36.4): each one's name and
+    /// description, and each record's database, object store, encoded
+    /// key and encoding. What does not open is left out.
+    #[allow(clippy::type_complexity)]
+    pub fn idb(
+        &self,
+        origin: &str,
+    ) -> Result<
+        (
+            Vec<(String, Vec<u8>)>,
+            Vec<(String, String, Vec<u8>, Vec<u8>)>,
+        ),
+        Error,
+    > {
+        self.guarded(|db| {
+            let txn = db.begin_read().map_err(failed)?;
+            let databases_table = txn.open_table(IDB_DATABASES).map_err(failed)?;
+            let mut databases = Vec::new();
+            for entry in databases_table.range((origin, "")..).map_err(failed)? {
+                let (key, value) = entry.map_err(failed)?;
+                let (owner, name) = key.value();
+                if owner != origin {
+                    break;
+                }
+                let at = record_at([owner.as_bytes(), name.as_bytes(), b"", b""]);
+                if let Some(meta) = self.key.open(IDB_DATABASES.name(), &at, value.value()) {
+                    databases.push((name.to_owned(), meta));
+                }
+            }
+            let records_table = txn.open_table(IDB_RECORDS).map_err(failed)?;
+            let mut records = Vec::new();
+            for entry in records_table
+                .range((origin, "", "", &[][..])..)
+                .map_err(failed)?
+            {
+                let (key, value) = entry.map_err(failed)?;
+                let (owner, database, store, record_key) = key.value();
+                if owner != origin {
+                    break;
+                }
+                let at = record_at([
+                    owner.as_bytes(),
+                    database.as_bytes(),
+                    store.as_bytes(),
+                    record_key,
+                ]);
+                if let Some(record) = self.key.open(IDB_RECORDS.name(), &at, value.value()) {
+                    records.push((
+                        database.to_owned(),
+                        store.to_owned(),
+                        record_key.to_vec(),
+                        record,
+                    ));
+                }
+            }
+            Ok((databases, records))
+        })
+    }
+
     /// The cookies kept, records of `net`'s encoding, in their order.
     pub fn cookies(&self) -> Result<Vec<Vec<u8>>, Error> {
         self.guarded(|db| self.read_records(db, COOKIES))
@@ -634,6 +785,7 @@ impl Profile {
                 }
             }
         }
+        self.write_idb(&txn, &changes.idb)?;
         let replaced = [
             (COOKIES, &changes.cookies),
             (HSTS, &changes.hsts),
@@ -653,6 +805,96 @@ impl Profile {
             }
         }
         txn.commit().map_err(failed)
+    }
+}
+
+impl Profile {
+    /// Writes IndexedDB's `changes` in `txn`, in order.
+    fn write_idb(&self, txn: &WriteTransaction, changes: &[Idb]) -> Result<(), Error> {
+        if changes.is_empty() {
+            return Ok(());
+        }
+        let mut databases = txn.open_table(IDB_DATABASES).map_err(failed)?;
+        let mut records = txn.open_table(IDB_RECORDS).map_err(failed)?;
+        // The records of a database, or of one of its stores, removed.
+        let drop_records = |records: &mut redb::Table<(&str, &str, &str, &[u8]), &[u8]>,
+                            origin: &str,
+                            database: &str,
+                            store: Option<&str>|
+         -> Result<(), Error> {
+            let mut keys: Vec<(String, Vec<u8>)> = Vec::new();
+            let start = (origin, database, store.unwrap_or_default(), &[][..]);
+            for entry in records.range(start..).map_err(failed)? {
+                let (key, _) = entry.map_err(failed)?;
+                let (o, d, s, k) = key.value();
+                if o != origin || d != database || store.is_some_and(|store| s != store) {
+                    break;
+                }
+                keys.push((s.to_owned(), k.to_vec()));
+            }
+            for (s, k) in keys {
+                records
+                    .remove((origin, database, s.as_str(), k.as_slice()))
+                    .map_err(failed)?;
+            }
+            Ok(())
+        };
+        for change in changes {
+            match change {
+                Idb::Database { origin, name, meta } => {
+                    let at = record_at([origin.as_bytes(), name.as_bytes(), b"", b""]);
+                    match meta {
+                        Some(meta) => {
+                            let sealed = self.key.seal(IDB_DATABASES.name(), &at, meta)?;
+                            databases
+                                .insert((origin.as_str(), name.as_str()), sealed.as_slice())
+                                .map_err(failed)?;
+                        }
+                        None => {
+                            databases
+                                .remove((origin.as_str(), name.as_str()))
+                                .map_err(failed)?;
+                            drop_records(&mut records, origin, name, None)?;
+                        }
+                    }
+                }
+                Idb::Record {
+                    origin,
+                    database,
+                    store,
+                    key,
+                    record,
+                } => {
+                    let place = (
+                        origin.as_str(),
+                        database.as_str(),
+                        store.as_str(),
+                        key.as_slice(),
+                    );
+                    match record {
+                        Some(record) => {
+                            let at = record_at([
+                                origin.as_bytes(),
+                                database.as_bytes(),
+                                store.as_bytes(),
+                                key,
+                            ]);
+                            let sealed = self.key.seal(IDB_RECORDS.name(), &at, record)?;
+                            records.insert(place, sealed.as_slice()).map_err(failed)?;
+                        }
+                        None => {
+                            records.remove(place).map_err(failed)?;
+                        }
+                    }
+                }
+                Idb::StoreDeleted {
+                    origin,
+                    database,
+                    store,
+                } => drop_records(&mut records, origin, database, Some(store))?,
+            }
+        }
+        Ok(())
     }
 }
 

@@ -64,6 +64,11 @@ pub(crate) struct Storage {
     /// changes when they were last written.
     permissions: Option<Arc<Permissions>>,
     permissions_written: Option<u64>,
+    /// IndexedDB's databases (M36.4), each storage key's read from the
+    /// profile at their first use, and what they committed that the
+    /// profile has not had yet.
+    idb: crate::idb::IdbStore,
+    idb_unwritten: Vec<crate::idb::Written>,
 }
 
 /// An area (HTML 12.2.1's storage map): its items, and their order, the
@@ -393,7 +398,24 @@ impl Storage {
             hsts_written: None,
             permissions: None,
             permissions_written: None,
+            idb: crate::idb::IdbStore::default(),
+            idb_unwritten: Vec::new(),
         }
+    }
+
+    /// IndexedDB's store, `origin`'s databases read from the profile if
+    /// they were not (M36.4). The bindings reach it from M36.7.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn idb(&mut self, origin: &str) -> &mut crate::idb::IdbStore {
+        if !self.idb.knows(origin) {
+            let (databases, records) = self
+                .profile
+                .as_ref()
+                .and_then(|profile| profile.idb(origin).ok())
+                .unwrap_or_default();
+            self.idb.load(origin, databases, records);
+        }
+        &mut self.idb
     }
 
     /// Keeps `permissions`, the answers the user gave sites, in the
@@ -442,6 +464,10 @@ impl Storage {
             self.permissions_written = Some(permissions.changes());
         }
         self.profile = Some(profile);
+        // IndexedDB's databases are the profile's from now on.
+        self.idb = crate::idb::IdbStore::default();
+        self.idb.set_writing(true);
+        self.idb_unwritten.clear();
         self.local.clear();
         self.unwritten.clear();
         Ok(())
@@ -544,7 +570,10 @@ impl Storage {
         let hsts = self.hsts_changes() != self.hsts_written;
         let permissions =
             self.permissions.as_ref().map(|p| p.changes()) != self.permissions_written;
-        let waiting = self.cookies_written != Some(count) || !self.unwritten.is_empty();
+        let waiting = self.cookies_written != Some(count)
+            || !self.unwritten.is_empty()
+            || self.idb.has_written()
+            || !self.idb_unwritten.is_empty();
         (waiting || hsts || permissions).then(|| {
             self.flushed
                 .map_or(Duration::ZERO, |at| at + FLUSH_INTERVAL)
@@ -579,6 +608,30 @@ impl Storage {
         {
             changes.permissions(permissions.export());
         }
+        // IndexedDB's committed transactions, in the order they committed.
+        self.idb_unwritten.extend(self.idb.take_written());
+        for written in &self.idb_unwritten {
+            match written {
+                crate::idb::Written::Database { origin, name, meta } => {
+                    changes.idb_database(origin, name, Some(meta.clone()));
+                }
+                crate::idb::Written::DatabaseDeleted { origin, name } => {
+                    changes.idb_database(origin, name, None);
+                }
+                crate::idb::Written::Record {
+                    origin,
+                    database,
+                    store,
+                    key,
+                    record,
+                } => changes.idb_record((origin, database, store), key, record.clone()),
+                crate::idb::Written::StoreDeleted {
+                    origin,
+                    database,
+                    store,
+                } => changes.idb_store_deleted(origin, database, store),
+            }
+        }
         for (origin, unwritten) in &self.unwritten {
             if unwritten.cleared {
                 changes.clear(origin);
@@ -600,6 +653,7 @@ impl Storage {
         self.hsts_written = hsts_count;
         self.permissions_written = permissions_count;
         self.unwritten.clear();
+        self.idb_unwritten.clear();
         Ok(())
     }
 }
