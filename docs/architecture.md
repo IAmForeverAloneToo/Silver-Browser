@@ -2152,3 +2152,50 @@ relative fragments, TodoMVC's frame after a delete, the opacity page's
 raster, a table of 1,000 rows, boxes with generated content built
 anew, and a worker test's error once on macOS. 2,760 tests pass workspace-wide, two ignored. Next milestone:
 DevTools v0 and the remaining storage (M36).
+
+Milestone 36 (DevTools v0 and the remaining storage;
+`docs/design/devtools.md`): the browser's own tools, built of the
+engine (D9, D11). The `devtools` crate (step 1) holds the protocol, JSON
+requests, answers and events of the panel's own, read by a strict
+parser bounded by length and depth, and the frontend's files. The
+panel (step 2) is docked under the page by F12 or Ctrl+Shift+I: a page
+of the browser's, `devtools:panel`, made from a response of its own
+under a CSP of `default-src 'none'`, drawn and scripted by the engine,
+in many processes in a sandboxed renderer of its own that is refused
+every fetch and all storage (`Lock::DevTools`); its `devtools` global
+speaks through the shell's router, which answers the browser's records
+itself and passes the rest to the page inspected, by four messages so
+that a page's renderer cannot answer as the panel. The console (step
+3) is the bindings' script, every Console Standard method, each entry
+a record with its source, time, place, stack and its arguments'
+previews (no getter run), uncaught errors and failed loads among them,
+and an expression evaluated in the page. The element inspector (step
+4): the live tree, the rules that matched with their sheets, selectors,
+conditions and overridden declarations (`Recascader::matched_rules`),
+the computed values, edits of attributes and the style attribute, the
+highlight and the pick. The network log (step 5): the HTTP client's
+observer tells the tab's log each hop's request, redirect, head, body
+and end, an opaque response's body hidden. IndexedDB (steps 6 and 7):
+keys encoded so that their bytes sort as IndexedDB orders them, each
+storage key's databases held in memory once read and written to the
+profile at its flush (`SCHEMA` 3, two sealed tables), the API in
+windows with its requests, transactions, cursors and indices, each
+completion a task of its own. The remaining storage (step 8): every
+site's usage, its clearing, the storage panel, and
+`navigator.storage.estimate()`. The acceptance (step 9): a to-do list
+kept in IndexedDB with two bugs of its own, debugged through the
+panel's controls in a session test. T4.3 found the console's calls
+built a stack for every brand check of their previews and honoured a
+page's `prepareStackTrace`: mended, a thousand calls 29.4 to 17.6ms
+(1.06 before the milestone, an exception), and a realm made 5.55 to
+6.42ms, within its budget. The fuzz runs of the seven targets the milestone made or touched (ten minutes each on six workers) found nothing. Not in this milestone, said
+rather than hidden and registered (G145 to G163): the sources panel
+and the performance panel, the panel undocked, eviction and persistent
+storage, IndexedDB in workers and across realms, lone surrogates in
+string keys, a call's place over several lines, the console in a spent
+heap, invalid declarations counted as overriding, the highlight's used
+values, the network log kept across navigations, IndexedDB values as
+wire text, `navigator.storage` outside secure contexts, the computed
+values `getComputedStyle` lacks, a `Proxy`'s traps in previews, coarse
+tree updates, a console call's cost and a realm's. 2,831 tests pass
+workspace-wide, two ignored. Next milestone: browser chrome v1 (M37).

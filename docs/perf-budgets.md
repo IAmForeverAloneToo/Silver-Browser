@@ -1928,6 +1928,36 @@ that none takes another's kept style): the base given that page, 263
 against 265ms. The GPU backend's raster rows move by 10-20% from run
 to run within each other's ranges; its code is untouched.
 
+### DevTools and IndexedDB (M36)
+
+The Windows machine, release. M36 adds no benchmark: the panel's
+tools run when the user opens them, and IndexedDB's store is held in
+memory once read (`docs/design/devtools.md`). What it costs a page
+with the panel closed is its bindings, larger by 81 KB of script (the
+console's previews, IndexedDB, `navigator.storage`), and its console.
+
+**T4.3.** The benchmarks of the code before M36 (83ccc25) and of M36,
+by turns, four rounds, 24 benches, and the ten with rows past 10% six
+rounds more: the rows past 10% in the first rounds were paint and
+raster stages, in code M36 does not touch, which fell back within 10%
+in the six rounds as others rose in their place. Two rows are the
+milestone's own:
+
+- *A thousand console calls*, 1.06 against 29.4ms when found: the
+  console is the bindings' script now, and each call made its
+  arguments' previews and its stack, each object's preview four brand
+  checks that throw, each building a stack. A call now builds no stack
+  for them and eight frames for its place (sixty-four for an error or
+  a trace): 17.6ms, a string alone 6.8us a call, its stack about 3us
+  and its preview 2.5us. An exception. G162.
+- *A realm made*, 5.55 against 6.42ms (x1.16), within its 8ms budget:
+  the bindings' new script compiled into every realm, as is a worker's
+  start, 7.21 against 7.93ms. An exception. G163.
+
+The flex grid's first frame's style stage, x1.19 and x1.15 in the two
+runs, has no cause in M36's code (the cascade's path gained one `u32`
+a rule) and lies within its spread, 9.6 to 35ms.
+
 ### Over budget, and why
 
 These are known and recorded rather than hidden. Each has the item that

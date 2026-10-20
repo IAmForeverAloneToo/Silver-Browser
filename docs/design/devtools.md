@@ -289,21 +289,21 @@ memory, compared after each).
 
 - *The sources panel and a debugger* (breakpoints, stepping, scopes,
   source maps; T4's fourth panel): QuickJS-ng's debugger interface is
-  not exposed by `rquickjs`. A G item.
+  not exposed by `rquickjs`. G145.
 - *The performance panel* (T4's fifth): the frame statistics M13 keeps
-  are not recorded over time. A G item.
+  are not recorded over time. G146.
 - *Live objects in the console*: a preview is a snapshot (above).
 - *The Chrome DevTools Protocol and remote debugging* (D11).
 - *The panel undocked into a window of its own, resized by a drag, or
   docked at the side*: the window is one surface until M37's tabs and
-  windows. A G item.
+  windows. G147.
 - *The panel's own preferences kept* (its height, the tool open): with
   M37's settings.
 - *The storage of other kinds the panel could show*: the HTTP cache
   (M38), the Cache API and service workers (M39).
 - *Eviction of a site's storage under pressure, and persistent
   storage* (`navigator.storage.persist()`): the profile does not evict
-  yet. A G item.
+  yet. G148.
 - *IndexedDB's `getAllRecords` and the draft's other additions beyond
   3.0*, and `IDBObjectStore.prototype.getAll` with a direction (the
   draft's 4.0).
@@ -344,4 +344,160 @@ gate.
 
 ## 4. Corrected to the code
 
-Filled in at the last step.
+Where the milestone's code came out otherwise than the sections above
+planned, *(corrected)*, by section. The step notes say how each was
+found.
+
+*The protocol.* *(corrected)* `MAX_MESSAGE_BYTES` is 8 MiB, not 16:
+half of `engine::ipc::MAX_MESSAGE`, so that a message always fits in
+one between processes, which a constant assertion in `engine::ipc`
+holds. The parser reads a lone escaped surrogate as U+FFFD and a
+number past a double's range as the largest double (step 1).
+
+*Where the panel is, and what runs it.* *(corrected)* The bridge is
+four messages, not two: the panel's page sends and hears
+`ToBrowser::DevTools` and `ToRenderer::DevTools`, the page inspected
+hears `ToRenderer::Inspect` and answers with `ToBrowser::Inspected`.
+One kind each way would let a page's renderer answer as the panel; the
+router reads the panel's view for requests and the inspected view for
+answers, never the other way, and a page's tab that hears
+`ToBrowser::DevTools` kills its renderer. The panel's page is not
+navigated to: `Engine::show_devtools_panel` makes it from a response
+of its own (CSP `default-src 'none'`, its inline script and style
+alone) through the streamed document path, and the renderer calls it
+for a `Navigate` to `devtools:panel` from the browser; a navigation of
+a page's to `devtools:panel` is a network error, as any unknown
+scheme's. A page has the bridge only when its engine was made a
+panel's and it is under the panel's URL. In one process the panel is
+an engine drawing in software beside the page's GPU backend.
+`Lock::DevTools` is refused every fetch by the network service, and its
+opaque origin keeps it from storage. The router is generic over a
+trait of the five methods it uses, so that its rules are tested
+without a view: it answers `browser.*` itself (`browser.version` in
+v0), passes the rest to the page, and answers the requests still
+waiting "the page navigated" when the page's URL changes. The panel
+takes the keyboard when it opens and when pressed in, the page when it
+is; the status bubble is drawn at the page's bottom, above the panel
+(step 2).
+
+*The console.* *(corrected)* The console namespace is the bindings'
+own script now, every Console Standard method, with one native left,
+`consoleMessage`, that formats the text as before. Previews are made
+in that script as JSON text, by brand checks and own-property
+descriptors, so that no getter of the page's runs; a `Proxy`'s traps
+still can (G160). Besides `PREVIEW_PROPERTIES` and `PREVIEW_DEPTH`,
+`PREVIEW_NODES` (1,000) and `PREVIEW_STRING` (10,000) bound one call's
+previews, and past `MAX_PREVIEW_BYTES` (64 KiB) a call has its text
+alone. QuickJS-ng's `stack` is an accessor of `Error.prototype`'s,
+whose original getter the script keeps: a call's place is its stack's
+first frame past the bindings' own, and the stack is kept for an
+error, an assertion and a trace alone. A call written over several
+lines is placed at its last, where the reference browser places it at
+its first (G152). An entry's time is when the engine took it from the
+document. A policy's refusal is not logged again as a failed load; its
+own line says why. Evaluation needs the page's scripts on (with them
+off, the default, it answers so) and runs as an indirect `eval` in the
+global scope with the original `eval`. The router keeps the console's
+history (`MAX_CONSOLE_ENTRIES`), the panel open or not, cleared when
+the page's URL changes. A console call in a `catch` whose heap is still
+spent may itself run out of memory, where M24's native console
+allocated nothing: the logger then falls back to its text (G153;
+steps 3 and 9).
+
+*The element inspector.* *(corrected)* `Recascader::matched_rules`
+matches the element again on a path of its own, the cascade keeping
+nothing more per declaration; a parsed rule keeps its rule's index, by
+which `RuleSet::described` gives its sheet, its selectors written back
+and the `@media`, `@supports` and `@layer` around it. Blocks are
+ordered by their best cascade key, and a declaration is overridden
+when every longhand it sets is set by a later one; an invalid
+declaration still counts as setting its longhands (G154). The tree's
+updates are coarse: once the panel has read the tree, a change of the
+document's version is told once as `dom.updated`, and the panel reads
+again what it has open (G161). The tree shows elements and text alone,
+the DOM having no comments or doctypes, white space between elements
+left out. The highlight is drawn over the frame the engine returns,
+from the border box and the computed margins, borders and padding,
+percentages resolved against the border box's width and auto margins
+taken as 0 (G155). Edits are of attributes and the `style` attribute;
+a sheet's rules are shown, not edited. The pick swallows the press
+and its release. A node in the console, clicked, is revealed in the
+element inspector by its ancestors (`dom.path`, step 9). The computed
+pane lacks what `getComputedStyle` lacks, `text-decoration` among them
+(G159; steps 4 and 9).
+
+*The network log.* *(corrected)* `net::observe::Observer`, given to a
+client by `with_observer`, is told each hop's request with its final
+fields, each redirect, the head (from the cache or not), the body as it
+comes and the end; a CORS preflight is not told. The log,
+`engine::network_log::NetworkLog`, is shared by a document's frames,
+and in many processes the tab's network service's client has it, so
+that a renderer's document is in it. An opaque response's body is
+hidden, whatever Opaque Response Blocking did with it. Times are
+milliseconds since the log began. The log is not cleared when the page
+navigates (the reference browser's "preserve log"), as the new
+document's request comes before the router knows of the navigation; the
+panel's Clear clears it (G156; step 5).
+
+*IndexedDB.* *(corrected)* Two profile tables, not three:
+`idb_records` keeps each record with its index keys (the script
+evaluated them; the browser cannot), so the indices are made again in
+memory as a storage key's databases are read, and `idb_databases`
+keeps each database's description. A storage key's databases are held
+in memory once read, ranges answered from ordered maps of encoded keys,
+and written to the profile from committed transactions at the
+storage's flush, in one redb transaction with the rest; an abort is
+undone in memory from a journal. Keys are encoded with `0x00` escaped
+and `0x00 0x00` ending a string, a binary or an array part, dates and
+numbers as doubles made to sort, `-0` as 0, `MAX_KEY_DEPTH` (64) arrays
+deep (step 6). IndexedDB is the window's alone: a worker's global has
+no `indexedDB` (G149). Requests cross as JSON through the storage
+areas' trait (`StorageOp::Idb` to the browser's storage service in
+many processes, which checks the storage key as it does Web
+Storage's); keys cross tagged, a string key's lone surrogates becoming
+U+FFFD on the way (G151). The transactions' order is kept by the
+bindings, not by a lock of the service's: those of a database in one
+realm begin in the order they were made, and one whose scope an
+unfinished writer's shares waits for it; transactions of two realms
+(frames of one origin) are not ordered, `versionchange` is told to the
+connections of the same realm alone, and `blocked` is fired but the
+upgrade goes on rather than wait (G150). Each completion is a task of
+its own, its event dispatched with a microtask checkpoint after each
+listener, through request, transaction and database (step 7).
+
+*The remaining storage.* *(corrected)* The storage panel's requests
+are the browser's to answer, from the tab's storage and jar, for the
+page shown's origin (an opaque one keeps nothing); the router never
+asks the page's renderer. The panel lists `localStorage`,
+`sessionStorage`, the cookies that go to the page's host, `HttpOnly`
+ones too, the IndexedDB databases with each store's count and first
+`MAX_PANEL_RECORDS` (100) records, their values as the structured
+clone's wire text (G157), and every storage key held with its bytes.
+`navigator.storage.estimate()` counts `localStorage` at two bytes a
+code unit with the IndexedDB keys and values, against a quota of
+`SITE_QUOTA`; `persisted()` and `persist()` give false. It is defined
+on every window's `navigator`, not only a secure context's (G158), and
+a worker has none (step 8).
+
+*The acceptance* (M36.5). The to-do list is a demo of its own,
+`crates/engine/tests/demos/todo-idb.html`, its entries kept in
+IndexedDB and seeded from the server, with two bugs: a misspelt
+function thrown when an entry is completed, and a misspelt class in the
+rule that would strike a done entry out. The session test
+`the_to_do_list_is_debugged_through_the_panel` drives the panel's own
+controls in the one-process session: the error in the console with its
+place, the entry's label revealed from the console and its rules read,
+its style edited, the seed's request in the network log, the records in
+the storage panel, and the list read back from the profile on a second
+load. Each tool's many-process path is the tab tests' (step 9).
+
+*T4.3.* *(corrected)* The console as the bindings' script cost a
+thousand calls 29.4ms against M24's 1.06: every object's preview made
+brand checks that throw, each building a stack, and the call's own
+stack was built to the page's `Error.stackTraceLimit`, which a page's
+`prepareStackTrace` could also answer. A call now sets both through
+their original accessors (no stack while previews are made, 8 frames
+for its place, 64 for an error or a trace) and puts the page's back
+after: 17.6ms, an exception (G162). A realm made, 5.55 against 6.42ms,
+is the bindings' new script in every realm, within its budget (G163;
+`docs/perf-budgets.md`, "DevTools and IndexedDB (M36)"; step 10).

@@ -254,6 +254,24 @@ font folders; a file it cannot read, it scans for.
   not here (G112); the URL it reports for its page is shown as it
   says (G123). The browser process itself runs unsandboxed, as the
   reference browser's does.
+- **The DevTools panel** (M36, `docs/design/devtools.md`). What the
+  panel shows is the inspected page's to choose (its DOM, rules,
+  console text, responses), so in many processes the panel's page runs
+  in a sandboxed renderer of its own under `Lock::DevTools`: the
+  network service refuses it every fetch and its origin is opaque, so
+  it holds no storage. Its page, `devtools:panel`, is made by the
+  browser from a response of its own under a CSP of `default-src
+  'none'` with its inline script and style alone; no navigation, link
+  or script reaches the scheme. The panel and the page inspected speak
+  through the browser's router, by four messages: the panel's
+  `ToBrowser::DevTools` and `ToRenderer::DevTools`, the page's
+  `ToRenderer::Inspect` and `ToBrowser::Inspected`, so that a page's
+  renderer cannot answer as the panel (a page's renderer that sends
+  `ToBrowser::DevTools` is killed). Every message is JSON read by the
+  `devtools` crate's bounded parser (`MAX_MESSAGE_BYTES`,
+  `MAX_JSON_DEPTH`), and each side's queue is bounded. The storage
+  panel's answers are the browser's, from the tab's own storage and
+  jar, for the page shown's origin alone.
 - **Crashes** (D34). A renderer that dies leaves the browser's own page
   saying so, in the tab or in a frame's hole, until a reload brings it
   back in a new renderer; the browser goes on. On Windows the browser
@@ -331,7 +349,7 @@ that adds a package writing `unsafe` is read with it.
 
 ## 6. Fuzzing
 
-30 libFuzzer targets in `fuzz/` (M33.6, M34), each holding its subject to
+33 libFuzzer targets in `fuzz/` (M33.6, M34, M36), each holding its subject to
 not panicking, to its bounds, and to what it must keep (a round trip,
 a differential comparison with a fresh engine, a policy never allowing
 what it refused):
@@ -345,6 +363,11 @@ what it refused):
   `dom_api`, `input`, `canvas`, `clone`, `frames`;
 - *the network's rules*: `csp`, `referrer`, `hsts`, `cookies`,
   `storage`, `http_cache`;
+- *the DevTools and IndexedDB* (M36): `devtools_json`, the protocol's
+  parser and writer, every value written back the same; `idb_keys`, a
+  key encoded and decoded the same and two keys' bytes ordered as the
+  keys; `idb_ops`, IndexedDB's operations against the store and a model
+  of it, compared after each;
 - *the process boundary*: `ipc_decode`, any bytes read as the
   messages of either side, frame by frame and whole, each decoded one
   encoded again the same; its seeds include messages recorded from a
@@ -407,6 +430,8 @@ earlier milestones say why each is what it is):
 | `canvas` | `MAX_DASHES` | `1_024` | The longest dash list. |
 | `canvas` | `MAX_STROKE_DASHES` | `16_384.0` | The most dashes a stroke is cut into: past it the path is stroked whole, as Skia strokes it past a million (found by fuzzing, M35). |
 | `css` | `MAX_NESTING` | `128` | How deep blocks may nest before a block is kept raw rather than parsed. |
+| `devtools` | `MAX_MESSAGE_BYTES` | `8 << 20` | The longest message the protocol reads or writes, in bytes: half the longest message between processes (`engine::ipc::MAX_MESSAGE`), so that one always fits in one. |
+| `devtools` | `MAX_JSON_DEPTH` | `64` | How deep arrays and objects may nest in a message. |
 | `dom` | `MAX_DEPTH` | `512` | The deepest elements may nest: 512, the HTML parser's cap on its stack of open elements (`html::MAX_DEPTH` is this constant), which keeps the recursive walks over a finished tree within any thread's stack. |
 | `dom` | `MAX_NODES` | `1 << 22` | The most nodes a document may hold alive through its mutation API: about four million, past any real page (the largest have a few hundred thousand) and short of what would exhaust memory before their attributes and text are counted. |
 | `dom` | `MAX_JOURNAL` | `1 << 16` | The most records the journal keeps between two drains. |
@@ -459,7 +484,22 @@ earlier milestones say why each is what it is):
 | `engine` | `HANDOVER_TIMEOUT` | `30 s` | How long a response waits for its renderer before it is given up. |
 | `engine` | `MAX_RENDERERS` | `16` | The most renderers a tab has alive at once, the spare among them. |
 | `engine` | `MAX_SURFACE_PIXELS` | `4096 * 4096` | The most raster pixels a view's frame has: one bigger is drawn clipped. |
+| `engine` | `MAX_IDB_KEY_BYTES` | `64 << 10` | The longest encoded key the store keeps (M36.4): a write of a longer one fails with a `DataError`. |
+| `engine` | `MAX_KEY_DEPTH` | `64` | How deep an array key may nest: a deeper one is no key the store takes. |
+| `engine` | `MAX_IDB_VALUE_BYTES` | `64 << 20` | The largest value the store keeps, its structured serialization. |
+| `engine` | `IDB_ORIGIN_QUOTA` | `512 << 20` | The most a storage key's databases hold together, their keys and values: past it a write fails with a `QuotaExceededError`. |
+| `engine` | `MAX_IDB_RESULTS` | `100_000` | The most records a request gives back at once. |
+| `engine` | `MAX_GENERATED` | `9_007_199_254_740_992.0` | The key generator's largest key (section 2.11): 2^53. |
+| `engine` | `MAX_INSPECTED_MESSAGES` | `1024` | The most answers and events a page inspected may have waiting for the browser: it takes them each turn. |
+| `engine` | `MAX_TREE_NODES` | `5000` | The most nodes one `dom.tree` answer holds: past it, a node's children are left for the panel to ask for. |
+| `engine` | `MAX_TREE_TEXT` | `200` | The most characters of a text node a tree's answer holds. |
+| `engine` | `MAX_NETWORK_ENTRIES` | `1000` | The most requests the log keeps, the oldest dropped. |
+| `engine` | `MAX_BODY_PREVIEW` | `1 << 20` | The most bytes of a response's body the log keeps. |
+| `engine` | `MAX_PANEL_MESSAGES` | `1024` | The most messages the DevTools panel's page may have waiting for the browser (M36): it takes them each turn. |
+| `engine` | `MAX_PANEL_RECORDS` | `100` | The most records of each object store the panel is given. |
+| `engine` | `SITE_QUOTA` | `IDB_ORIGIN_QUOTA + 2 * STORAGE_QUOTA as u64` | The bytes a storage key may use: its `localStorage`, two bytes a code unit, and its IndexedDB databases (`navigator.storage`'s quota). |
 | `silver-browser` | `MAX_CRASH_DUMPS` | `8` | The most dumps kept: past it, the oldest go. |
+| `silver-browser` | `MAX_FORWARDED` | `1024` | The most requests waiting on the page's answers. |
 | `html` | `MAX_DEPTH` | `dom::MAX_DEPTH` | The most elements that may be open at once. |
 | `html` | `MAX_XML_DEPTH` | `512` | The most elements open at once. |
 | `html` | `MAX_ENTITY_EXPANSION` | `1 << 20` | The most characters entities may expand to in a document. |
@@ -481,6 +521,8 @@ earlier milestones say why each is what it is):
 | `js` | `MAX_WASM_TABLE_ELEMENTS` | `10_000_000` | A table's length. |
 | `js` | `MAX_WASM_NESTING` | `64` | Calls between modules and scripts, nested. |
 | `js` | `MAX_WASM_RECURSION` | `10_000` | A module's calls, nested; deeper is a stack overflow (`RangeError`), as the reference browser's is. |
+| `js` | `MAX_STACK_FRAMES` | `64` | The most frames a stack keeps (M36). |
+| `js` | `MAX_PREVIEW_BYTES` | `64 << 10` | The most bytes of a console call's previews (M36): past it, the call has its text alone. |
 | `layout` | `MAX_SET` | `1024` | The most counters one element's set holds. |
 | `layout` | `MAX_COUNTERS` | `1 << 20` | The most counters one walk instantiates. |
 | `layout` | `MAX_GENERATED_TEXT` | `1 << 20` | The longest one pseudo-element's text, in bytes: a `::before`'s, an `::after`'s or a marker's. |
@@ -553,8 +595,11 @@ earlier milestones say why each is what it is):
 | `ui` | `MAX_CHARS` | `1024` | The most characters of a page's title the window shows. |
 | `ui` | `MIN_FIELD_W` | `40.0` | The narrowest the field is drawn. |
 
-Besides these, bounds that are no such constant: a counter keeps to
-32 bits; animation times are finite seconds, `NaN` zero; an easing's
+Besides these, bounds that are no such constant: a console call's
+previews (M36, in the bindings' script) go `PREVIEW_DEPTH` (3) levels
+deep, with `PREVIEW_PROPERTIES` (100) properties an object,
+`PREVIEW_NODES` (1,000) values a call and `PREVIEW_STRING` (10,000)
+characters a string; a counter keeps to 32 bits; animation times are finite seconds, `NaN` zero; an easing's
 output is finite and within 10^9 of zero; a permission prompt waits 60
 seconds (`PROMPT_TIMEOUT`).
 
@@ -574,6 +619,12 @@ seconds (`PROMPT_TIMEOUT`).
 - **`--print-to-pdf` runs its page in the browser's own process**, a
   tool with no window, unsandboxed (G124).
 - **A hung renderer** is not noticed, only a dead one (G120).
+- **`navigator.storage` outside secure contexts** (G158): a page over
+  plain HTTP reads its storage key's usage, where the Storage Standard
+  gives the API to secure contexts alone.
+- **A console argument's preview may run a `Proxy`'s traps** (G160):
+  the page's own code, under its own budget, never the browser's; no
+  getter runs.
 - **Frames are cross-origin to each other** whatever their origins
   (G90): the closed side, but same-origin pages that script their
   frames do not work.

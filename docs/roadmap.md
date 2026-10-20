@@ -2373,14 +2373,45 @@ process seams.
 
 ## M36 — DevTools v0 + remaining storage  ·  new `devtools` crate  ·  Effort: XL  ·  Depends: M25, M34
 
-- [ ] M36.1 Console: log/warn/error objects, network + JS errors.
-- [ ] M36.2 DOM inspector: live tree, style inspection (matched rules +
+- [x] M36.1 Console: log/warn/error objects, network + JS errors.
+       Done 2026-10-21 (`docs/design/devtools.md`): a panel docked under
+       the page (F12, Ctrl+Shift+I), the browser's own `devtools:` page
+       drawn by the engine, in a sandboxed renderer of its own
+       (`Lock::DevTools`) in many processes; its protocol is the
+       `devtools` crate's JSON (D11: our own). Entries are records with
+       their source, time, place, stack and each argument's preview
+       (objects to three levels, no getter run); every Console Standard
+       method; uncaught errors with their stacks; failed loads; an
+       expression evaluated in the page, `$0` the node selected.
+- [x] M36.2 DOM inspector: live tree, style inspection (matched rules +
        computed), attribute editing.
-- [ ] M36.3 Network panel: request log, headers, timing, body preview.
-- [ ] M36.4 Storage UI + IndexedDB implementation (via D10 engine):
+       Done 2026-10-21: the tree, read again when the document changes;
+       the rules that matched (`Recascader::matched_rules`), their
+       sheets, selectors, conditions and overridden declarations; the
+       computed values; attributes and the style attribute edited; the
+       node highlighted and picked in the page; a node in the console
+       revealed in the tree.
+- [x] M36.3 Network panel: request log, headers, timing, body preview.
+       Done 2026-10-21: the client's observer (`net::observe`) tells the
+       tab's log each hop's final request, redirect, head, body and end;
+       the log keeps 1,000 requests and 1 MiB of each body, an opaque
+       response's hidden.
+- [x] M36.4 Storage UI + IndexedDB implementation (via D10 engine):
        `indexedDB.open/getAll/put/delete` + object stores + indexes,
        spec transactions v1.
-- [ ] M36.5 Acceptance: debug the todo-list demo entirely in-engine.
+       Done 2026-10-21: IndexedDB 3.0's API in windows (not workers,
+       G149), keys encoded to sort as they order, the store held in
+       memory and written to the profile (`SCHEMA` 3) at its flush; the
+       storage panel lists and deletes `localStorage`,
+       `sessionStorage`, cookies and databases, every site's usage, and
+       clears a site; `navigator.storage.estimate()`.
+- [x] M36.5 Acceptance: debug the todo-list demo entirely in-engine.
+       Done 2026-10-21: `tests/demos/todo-idb.html`, the to-do list kept
+       in IndexedDB with two bugs of its own, debugged through the
+       panel's own controls in a session test: the error in the
+       console, the entry revealed and its rules read and its style
+       edited, the seed's request in the network log, the records in the
+       storage panel.
 
 ---
 
@@ -3014,6 +3045,65 @@ Deferred from the milestones above, each with what it waits on:
        reported ERROR: the SyntaxError it means to raise taken by the
        worker's own harness for an uncaught one, though the test allows
        them. Not reproduced. Found at M35.
+- [ ] G145 DevTools' sources panel and debugger (T4's fourth tool):
+       breakpoints, stepping, scopes and source maps need QuickJS-ng's
+       debugger interface, which `rquickjs` does not expose. Found at
+       M36.
+- [ ] G146 DevTools' performance panel (T4's fifth tool): the frame
+       statistics M13 keeps are not recorded over time. Found at M36.
+- [ ] G147 The DevTools panel undocked into a window of its own,
+       resized by a drag, or docked at the side: the window is one
+       surface until M37's tabs and windows. Found at M36.
+- [ ] G148 A site's storage evicted under pressure, and persistent
+       storage (`navigator.storage.persist()`, which gives false): the
+       profile does not evict. Found at M36.
+- [ ] G149 IndexedDB in workers: a worker's global has no `indexedDB`,
+       its host reaching no storage areas. Found at M36.
+- [ ] G150 IndexedDB across realms: transactions of two realms of one
+       origin (frames in one renderer) are not ordered against each
+       other; `versionchange` is told to the connections of the same
+       realm alone; `blocked` is fired but the upgrade goes on rather
+       than wait. Found at M36.
+- [ ] G151 An IndexedDB string key's lone surrogates become U+FFFD as
+       the key crosses to the store as JSON. Found at M36.
+- [ ] G152 A console call written over several lines is placed at its
+       last line (QuickJS's place for a call), where the reference
+       browser places it at its first. Found at M36.
+- [ ] G153 A console call in a `catch` whose heap is still spent may
+       itself run out of memory (its previews are the bindings' script);
+       it falls back to its text alone. Found at M36.
+- [ ] G154 The styles pane counts an invalid declaration as setting its
+       longhands, so it marks the earlier ones it would override as
+       overridden. Found at M36.
+- [ ] G155 The element highlight resolves percentages of margins and
+       padding against the border box's width and takes auto margins as
+       0, where the reference draws the used values. Found at M36.
+- [ ] G156 The network log is kept across navigations (the reference's
+       "preserve log" on, with no switch): the new document's request
+       comes before the router knows of the navigation. Found at M36.
+- [ ] G157 The storage panel shows an IndexedDB value as the structured
+       clone's wire text, not as a preview. Found at M36.
+- [ ] G158 `navigator.storage` is defined on every window's
+       `navigator`, not only a secure context's, and a worker has none.
+       Found at M36.
+- [ ] G159 `getComputedStyle` (and so the computed pane) lacks
+       properties `serialize::COMPUTED_PROPERTIES` does not list,
+       `text-decoration` among them. Found at M36.
+- [ ] G160 A console argument's preview may run a `Proxy`'s traps (the
+       page's own code, under its budget); getters are not run. Found at
+       M36.
+- [ ] G161 The element tree's updates are coarse: a change of the
+       document is told once and the panel reads again all it has open,
+       rather than the changed nodes' parents. Found at M36.
+- [ ] G162 A console call costs about 17us (a thousand 17.6 ms, 1.06 ms
+       before M36): its stack for its place and its arguments' previews
+       are made by the bindings' script at every call. Previews made by
+       a native, or only while the panel is open with the text kept
+       otherwise (T4.3's exception). Found at M36.
+- [ ] G163 A realm made 5.55 -> 6.42 ms at M36 (a worker's start 7.21
+       -> 7.93 ms): the bindings' 81 KB more script (the console,
+       IndexedDB, `navigator.storage`) run in every realm. Interfaces
+       made when first reached (T4.3's exception). Found at M36.
 
 ---
 
@@ -3148,7 +3238,7 @@ Deferred from the milestones above, each with what it waits on:
 | D8 | 2D rasterizer | M19 | tiny-skia forever / vello (wgpu-native) / both | both behind the existing `RenderBackend` trait; decided at M19: tiny-skia for the software backend and four wgpu pipelines of our own for the GPU backend, not vello: the two share their glyph masks and polygon coverage, so that text and mitres come out the same in both and the equivalence suite can hold them within two levels inside a shape (see `docs/design/compositing.md`) |
 | D9 | Chrome UI toolkit | M15/M37 | in-engine (softbuffer) / egui / native | in-engine (no extra toolkit; the engine is the toolkit); decided at M15: a `ui` crate beside `engine`, under `shell`, drawing with `paint`, `render` and `text`, and touching no OS (see `docs/design/navigation.md`) |
 | D10 | Profile storage engine | M28 | redb / sled / SQLite / custom files | redb (pure Rust, embedded, single-file); decided at M28 as written: `redb` 4.3.0 behind a leaf crate of its own, `profile`, which forbids `unsafe`, each origin's `localStorage` items and the cookies with an expiry in one file, every write one transaction (see `docs/design/storage.md`) |
-| D11 | DevTools protocol | M36 | custom in-engine UI only / CDP-compatible | custom first; CDP-compat only if external tools wanted |
+| D11 | DevTools protocol | M36 | custom in-engine UI only / CDP-compatible | custom first; CDP-compat only if external tools wanted; decided at M36 as written: JSON requests, answers and events of the panel's own (`{"id", "method", "params"}`), a leaf crate `devtools` with its bounded parser, the panel an engine page of the browser's (see `docs/design/devtools.md`) |
 | D12 | UA string & fingerprint policy | M25 | honest UA / Chrome-mimic | honest minimal UA + minimal API surface (compat escape hatch flag exists but is not default); decided at M25 as written: `Mozilla/5.0 (compatible; SilverBrowser/<version>)` in requests and `navigator.userAgent`, `navigator`'s values HTML's for the Gecko mode or fixed, `screen` the viewport; the shell's `--compat-user-agent` gives the reference browser's string and HTML's Chrome mode (see `docs/design/dom-scripting.md`) |
 | D13 | Process granularity | M34 | per-tab / per-site-instance / hybrid | per-site-instance with LRU cap |
 | D14 | Quirks mode | M40s | full quirks emulation / standards-only + limited quirk stylesheet | limited quirk stylesheet (uqlist-style) driven by T1 data |
