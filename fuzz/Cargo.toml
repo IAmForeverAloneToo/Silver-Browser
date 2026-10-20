@@ -10,7 +10,8 @@
 # the profile, and the HTTP cache; and for WebAssembly modules, valid
 # ones made by wasm-smith and any bytes besides; and for the 2D canvas
 # context alone; and for a message's serialized form, made again in a
-# realm; and for the XML parser and SVG, read, drawn, hit and asked (M32).
+# realm; and for the XML parser and SVG, read, drawn, hit and asked (M32);
+# and for the DevTools' JSON (M36).
 # Not a workspace member: libfuzzer needs nightly, and the normal build
 # must not.
 # `cargo +nightly fuzz run <target>` from the repository root; CI runs
@@ -32,6 +33,7 @@ arbitrary = "1"
 wasm-smith = "0.228"
 canvas = { path = "../crates/canvas" }
 css = { path = "../crates/css" }
+devtools = { path = "../crates/devtools" }
 dom = { path = "../crates/dom" }
 encoding = { path = "../crates/encoding" }
 # Without the GPU backend: the targets draw in software, and wgpu is
@@ -267,6 +269,12 @@ bench = false
 [[bin]]
 name = "ipc_decode"
 path = "fuzz_targets/ipc_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "devtools_json"
+path = "fuzz_targets/devtools_json.rs"
 test = false
 doc = false
 bench = false

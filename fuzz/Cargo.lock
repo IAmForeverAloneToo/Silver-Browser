@@ -199,6 +199,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "devtools"
+version = "0.0.1"
+
+[[package]]
 name = "displaydoc"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -989,6 +993,7 @@ dependencies = [
  "arbitrary",
  "canvas",
  "css",
+ "devtools",
  "dom",
  "encoding",
  "engine",

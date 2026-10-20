@@ -18,6 +18,7 @@ license = "AGPL-3.0-only"
 #   engine -> profile (a leaf: the profile on disk, M28)
 #   engine -> canvas -> { style, text, images, css } (the 2D canvas, M30)
 #   engine, layout -> svg -> { canvas, style, text, dom } (SVG, M32)
+#   engine, shell -> devtools (a leaf: the DevTools' protocol, M36)
 # See docs/architecture.md — the layering contract is binding.
 [workspace.dependencies]
 # Internal crates
@@ -40,6 +41,7 @@ engine = { path = "crates/engine", default-features = false }
 ui = { path = "crates/ui" }
 js = { path = "crates/js" }
 profile = { path = "crates/profile" }
+devtools = { path = "crates/devtools" }
 
 # External crates
 winit = "0.30"
