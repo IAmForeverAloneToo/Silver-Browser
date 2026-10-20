@@ -115,6 +115,29 @@ impl Engine {
         }
     }
 
+    /// The DevTools console's `expression` run in the page shown: its
+    /// value's preview, or its exception's.
+    fn evaluate(&mut self, expression: &str) -> Result<Json, String> {
+        if !self.scripts_run() || self.shown.made {
+            return Err("scripts do not run on this page".to_owned());
+        }
+        let ready = self.ready_state();
+        let window = self.window_env();
+        let selected = self
+            .selected
+            .filter(|&node| self.shown.document.contains(node));
+        let answer = self.shown.evaluate(
+            &mut self.network,
+            window,
+            ready,
+            expression.to_owned(),
+            selected,
+        );
+        self.scripts_ran();
+        let answer = answer.ok_or("the expression ran out of time")?;
+        Json::parse(&answer).map_err(|why| why.to_string())
+    }
+
     /// The result of `request`, or why there is none.
     fn answer(&mut self, request: &Request) -> Result<Json, String> {
         match request.method.as_str() {
@@ -123,6 +146,14 @@ impl Engine {
                 ("url", Json::from(self.url().map(Url::to_string))),
                 ("title", Json::from(self.title())),
             ])),
+            // An expression run in the page (M36.1).
+            "console.evaluate" => {
+                let expression = request
+                    .param("expression")
+                    .and_then(Json::as_str)
+                    .ok_or("no expression")?;
+                self.evaluate(expression)
+            }
             method => Err(format!("no method {method}")),
         }
     }

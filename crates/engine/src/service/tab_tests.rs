@@ -408,7 +408,15 @@ fn the_devtools_panel_and_the_page_it_inspects_speak_through_the_browser() {
     let mut panel = RemoteTab::devtools_panel(&page);
     panel.set_viewport(SIZE.0, SIZE.1);
     // The panel, in a renderer of its own, asks which page it inspects.
-    let asked = taken(&mut panel, |tab| tab.take_devtools());
+    let mut asked = Vec::new();
+    settle(&mut panel, |tab| {
+        asked.extend(tab.take_devtools());
+        asked.iter().any(|message| message.contains("page.info"))
+    });
+    let asked: Vec<String> = asked
+        .into_iter()
+        .filter(|message| message.contains("page.info"))
+        .collect();
     let request = devtools::Request::parse(&asked[0]).expect("a request");
     assert_eq!(request.method, "page.info");
     assert_eq!(panel.url().map(Url::as_str), Some(devtools::PANEL_URL));
@@ -430,8 +438,16 @@ fn the_devtools_panel_and_the_page_it_inspects_speak_through_the_browser() {
         "page.navigated",
         devtools::Json::object([]),
     ));
-    let again = taken(&mut panel, |tab| tab.take_devtools());
-    let again = devtools::Request::parse(&again[0]).expect("a request");
+    let mut again = Vec::new();
+    settle(&mut panel, |tab| {
+        again.extend(tab.take_devtools());
+        again.iter().any(|message| message.contains("page.info"))
+    });
+    let again = again
+        .iter()
+        .find(|message| message.contains("page.info"))
+        .expect("asked again");
+    let again = devtools::Request::parse(again).expect("a request");
     assert_eq!(
         (again.method.as_str(), again.id > request.id),
         ("page.info", true)

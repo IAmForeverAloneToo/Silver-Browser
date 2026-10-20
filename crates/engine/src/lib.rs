@@ -129,6 +129,7 @@ pub use dom::ElementState;
 pub use frames::{MAX_FRAME_DEPTH, MAX_FRAME_HEAP, MAX_FRAMES};
 pub use image_store::MAX_DECODE_THREADS;
 pub use inspect::MAX_INSPECTED_MESSAGES;
+pub use js::{ConsoleKind, MAX_PREVIEW_BYTES, MAX_STACK_FRAMES, StackFrame};
 pub use js::{ConsoleLevel, warm_bindings};
 pub use keys::{Key, KeyOutcome};
 pub use loader::{LoadError, LoadState};
@@ -137,7 +138,8 @@ pub use permissions::{PROMPT_TIMEOUT, Permission, PermissionPrompt};
 pub use print::{PrintError, PrintOptions, PrintedPage};
 pub use profile::{KeyWrap, Profile};
 pub use scripts::{
-    ConsoleEntry, MAX_CONSOLE_ENTRIES, MAX_CONSOLE_MESSAGE, MAX_SCRIPT_BYTES, ScriptState,
+    ConsoleEntry, ConsoleSource, MAX_CONSOLE_ENTRIES, MAX_CONSOLE_MESSAGE, MAX_SCRIPT_BYTES,
+    ScriptState,
 };
 pub use storage::{FLUSH_INTERVAL, STORAGE_QUOTA, StorageDriver};
 pub use style::animation::{AnimationEvent, EventKind, Running as RunningAnimation};
@@ -468,6 +470,8 @@ pub struct Engine {
     /// a page inspected, its answers and events for the panel.
     panel: bool,
     inspected: Vec<String>,
+    /// The node the element inspector selected (M36): the console's `$0`.
+    selected: Option<NodeId>,
 }
 
 /// A document and everything the engine made from it (M15): what the
@@ -702,6 +706,27 @@ impl Shown {
             window,
         };
         self.scripts.dispatch(&mut lent, target, event)
+    }
+
+    /// Runs the DevTools console's `expression` in this document (M36),
+    /// with what the run needs lent: its answer, as JSON.
+    fn evaluate(
+        &mut self,
+        network: &mut loader::Network,
+        window: scripts::WindowEnv,
+        ready: scripts::ReadyState,
+        expression: String,
+        selected: Option<NodeId>,
+    ) -> Option<String> {
+        let mut lent = scripts::Lent {
+            document: &mut self.document,
+            page: &mut self.page,
+            parser: self.parsing.as_mut().map(|parsing| &mut parsing.load),
+            network,
+            ready,
+            window,
+        };
+        self.scripts.evaluate(&mut lent, expression, selected)
     }
 }
 
@@ -1216,6 +1241,7 @@ impl Engine {
             drawing_at: None,
             panel: false,
             inspected: Vec::new(),
+            selected: None,
         }
     }
 
@@ -1662,10 +1688,11 @@ impl Engine {
                 }
                 Ok(None) => {}
                 Err(line) => {
-                    let entry = ConsoleEntry {
-                        level: js::ConsoleLevel::Error,
-                        text: line,
-                    };
+                    let entry = ConsoleEntry::of(
+                        scripts::ConsoleSource::Engine,
+                        js::ConsoleLevel::Error,
+                        line,
+                    );
                     let lines = self.frame_lines(vec![entry], at.as_ref());
                     self.departed.extend(lines);
                     return;
@@ -3784,6 +3811,13 @@ impl Engine {
         let own = self.frame_lines(own, self.shown.page.url());
         entries.extend(own);
         entries.extend(self.take_frame_console());
+        // When it was taken, on the engine's clock (M36).
+        let now = self.now().as_millis() as u64;
+        for entry in &mut entries {
+            if entry.time == 0 {
+                entry.time = now;
+            }
+        }
         entries
     }
 
@@ -4110,6 +4144,7 @@ impl Engine {
         if page != self.shown.page.id() {
             return;
         }
+        self.resource_failed(url, &result);
         // An opaque response, another origin's without CORS, taints a
         // canvas that draws it (M30).
         let clean = result
@@ -4129,6 +4164,29 @@ impl Engine {
             Some(work) => self.decoder.start(page, url.to_owned(), work),
             None => self.image_changed(url),
         }
+    }
+
+    /// Says on the shown document's console that the image or stylesheet
+    /// at `url` could not be had (M36), as the reference browser does: a
+    /// network error, or an error status.
+    fn resource_failed(&mut self, url: &str, result: &Result<net::Response, LoadError>) {
+        let text = match result {
+            // The policy's own line says why, as in the reference browser.
+            Err(LoadError::Network(NetworkError::Csp(_))) => return,
+            Err(error) => format!("Failed to load resource: {url}: {error}"),
+            Ok(response) if response.status >= 400 => format!(
+                "Failed to load resource: the server responded with a status of {} ({url})",
+                response.status
+            ),
+            Ok(_) => return,
+        };
+        let mut entry = ConsoleEntry::of(
+            scripts::ConsoleSource::Network,
+            js::ConsoleLevel::Error,
+            text,
+        );
+        entry.url = url.to_owned();
+        self.shown.scripts.log(entry);
     }
 
     /// Takes a decode thread's result for the shown document.
@@ -4400,6 +4458,19 @@ impl Engine {
             }
             Target::Sheet { owner, path } => {
                 if page == self.shown.page.id() {
+                    // Its URL: the response's, or for a failure, a link's
+                    // own (an import's failure is named by its sheet's).
+                    let url = match &result {
+                        Ok(response) => Some(response.url().to_string()),
+                        Err(_) => self
+                            .shown
+                            .document
+                            .attr(owner, "href")
+                            .filter(|_| path.is_empty())
+                            .and_then(|href| self.shown.page.resolve(&self.shown.document, href))
+                            .map(|url| url.to_string()),
+                    };
+                    self.resource_failed(url.as_deref().unwrap_or_default(), &result);
                     let ok = result.as_ref().is_ok_and(loader::is_stylesheet);
                     let wanted = self.shown.page.awaits(owner, &path, id);
                     if self

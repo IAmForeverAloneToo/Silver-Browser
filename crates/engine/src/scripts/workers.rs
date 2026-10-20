@@ -24,7 +24,7 @@ use super::host::{
     PLATFORM, Timers, image_bitmap, location_parts, offscreen_element, offscreen_source,
 };
 use super::ports::{SharedRouter, lock, port_call};
-use super::{MAX_SCRIPT_BYTES, cut, report_text};
+use super::{ConsoleEntry, ConsoleSource, MAX_SCRIPT_BYTES, cut};
 use crate::loader::Waker;
 use crate::loader::pool::Pool;
 
@@ -84,7 +84,7 @@ pub(crate) enum FromWorker {
     Error(Option<ScriptError>),
     /// A console message of its or of its workers, for its document's
     /// console.
-    Console(ConsoleLevel, String),
+    Console(Box<ConsoleEntry>),
     /// It ended: it closed itself, failed to load, or was stopped.
     Ended,
 }
@@ -262,7 +262,7 @@ pub(crate) enum Received {
     /// A task for the realm: an event at the worker's object.
     Task(Task),
     /// A line for the document's console.
-    Console(ConsoleLevel, String),
+    Console(ConsoleEntry),
     Nothing,
 }
 
@@ -411,7 +411,7 @@ impl Workers {
                 origin: String::new(),
             }),
             FromWorker::Error(error) => Received::Task(Task::WorkerError { worker: id, error }),
-            FromWorker::Console(level, text) => Received::Console(level, text),
+            FromWorker::Console(entry) => Received::Console(*entry),
             FromWorker::Ended => {
                 if let Some(known) = self.known.remove(&id)
                     && known.counted
@@ -698,8 +698,8 @@ fn work(
                 };
                 match received {
                     Received::Task(task) => task,
-                    Received::Console(level, text) => {
-                        host.tell(FromWorker::Console(level, text));
+                    Received::Console(entry) => {
+                        host.tell(FromWorker::Console(Box::new(entry)));
                         continue;
                     }
                     Received::Nothing => continue,
@@ -848,7 +848,12 @@ impl Default for WorkerHost {
 
 impl ScriptingHost for WorkerHost {
     fn console(&mut self, level: ConsoleLevel, message: String) {
-        self.tell(FromWorker::Console(level, cut(message)));
+        self.say(ConsoleSource::Worker, level, message);
+    }
+
+    fn console_record(&mut self, record: js::ConsoleRecord) {
+        let entry = ConsoleEntry::recorded(ConsoleSource::Worker, record);
+        self.tell(FromWorker::Console(Box::new(entry)));
     }
 
     fn title(&mut self) -> String {
@@ -947,7 +952,7 @@ impl ScriptingHost for WorkerHost {
                     Ok(response) => Some(Box::new(super::fetch::answer(&response))),
                     Err(error) => {
                         let text = super::fetch::failure_text(&request.url, error);
-                        self.tell(FromWorker::Console(ConsoleLevel::Error, cut(text)));
+                        self.say(ConsoleSource::Network, ConsoleLevel::Error, text);
                         None
                     }
                 }))
@@ -1003,10 +1008,11 @@ impl ScriptingHost for WorkerHost {
                 let refused = net::csp::enforced(violations.clone()).err();
                 for violation in violations {
                     let level = super::violation_level(&violation);
-                    self.tell(FromWorker::Console(
+                    self.say(
+                        ConsoleSource::Policy,
                         level,
-                        cut(super::violation_text(&violation)),
-                    ));
+                        super::violation_text(&violation),
+                    );
                 }
                 Ok(Answer::String(
                     refused.map_or_else(String::new, |violation| {
@@ -1080,6 +1086,12 @@ impl ScriptingHost for WorkerHost {
 }
 
 impl WorkerHost {
+    /// Writes `text` at `level` on its document's console, as `source`.
+    fn say(&self, source: ConsoleSource, level: ConsoleLevel, text: String) {
+        let entry = ConsoleEntry::of(source, level, cut(text));
+        self.tell(FromWorker::Console(Box::new(entry)));
+    }
+
     /// Says on its document's console what its policies refused, or
     /// would have, at its requests' hops (M33.1).
     fn report_violations(&self) {
@@ -1088,10 +1100,11 @@ impl WorkerHost {
         };
         for violation in csp.take_violations() {
             let level = super::violation_level(&violation);
-            self.tell(FromWorker::Console(
+            self.say(
+                ConsoleSource::Policy,
                 level,
-                cut(super::violation_text(&violation)),
-            ));
+                super::violation_text(&violation),
+            );
         }
     }
 
@@ -1108,7 +1121,7 @@ impl WorkerHost {
                 Ok(Ok(response)) => Some(Box::new(super::fetch::answer(&response))),
                 Ok(Err(error)) => {
                     let text = super::fetch::failure_text(&url, error);
-                    self.tell(FromWorker::Console(ConsoleLevel::Error, cut(text)));
+                    self.say(ConsoleSource::Network, ConsoleLevel::Error, text);
                     None
                 }
                 Err(_) => None,
@@ -1200,8 +1213,8 @@ impl WorkerHost {
         match error.kind {
             ErrorKind::Exception => self.tell(FromWorker::Error(Some(error))),
             ErrorKind::Rejection | ErrorKind::Heap => {
-                if let Some(text) = report_text(&error) {
-                    self.tell(FromWorker::Console(ConsoleLevel::Error, cut(text)));
+                if let Some(entry) = ConsoleEntry::of_error(&error) {
+                    self.tell(FromWorker::Console(Box::new(entry)));
                 }
             }
             ErrorKind::Budget | ErrorKind::Dead | ErrorKind::Handled => {}

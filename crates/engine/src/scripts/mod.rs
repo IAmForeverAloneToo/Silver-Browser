@@ -38,7 +38,8 @@ pub const MAX_SCRIPT_NESTING: usize = 6;
 use dom::{Document, NodeId};
 use encoding::Encoding;
 use js::{
-    Completion, ConsoleLevel, ErrorKind, Limits, QuickJs, Realm, Script, ScriptEngine, ScriptError,
+    Completion, ConsoleKind, ConsoleLevel, ErrorKind, Limits, QuickJs, Realm, Script, ScriptEngine,
+    ScriptError, StackFrame,
 };
 use net::csp::{Csp, Violation};
 use net::{Destination, Request, Response, ResponseType, Url};
@@ -55,11 +56,99 @@ pub const MAX_CONSOLE_ENTRIES: usize = 1_000;
 pub const MAX_CONSOLE_MESSAGE: usize = 16 << 10;
 
 /// A line of a document's console (M24.7): what a script wrote, or an
-/// error it reported.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// error it reported; and since M36 its record for the DevTools panel.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConsoleEntry {
     pub level: ConsoleLevel,
+    /// What the shell prints of it.
     pub text: String,
+    /// What wrote it, and what kind of call it was.
+    pub source: ConsoleSource,
+    pub kind: ConsoleKind,
+    /// When the engine took it, in milliseconds on its clock.
+    pub time: u64,
+    /// Where it was written, or the error was thrown: a URL, line and
+    /// column, the URL empty when it has no place.
+    pub url: String,
+    pub line: u32,
+    pub column: u32,
+    /// The stack, innermost first, at most [`js::MAX_STACK_FRAMES`].
+    pub stack: Vec<StackFrame>,
+    /// The arguments' previews, a JSON array, or empty
+    /// (docs/design/devtools.md, "The console").
+    pub previews: String,
+}
+
+/// What wrote a console entry (M36).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ConsoleSource {
+    /// A script, by the console's methods.
+    #[default]
+    Console,
+    /// An exception or a rejection no script handled.
+    Exception,
+    /// A fetch that failed.
+    Network,
+    /// A policy's refusal or report (Content Security Policy).
+    Policy,
+    /// A worker, by the console's methods.
+    Worker,
+    /// The engine, of the document.
+    Engine,
+}
+
+impl ConsoleEntry {
+    /// An entry of `text` at `level`, written by `source`.
+    pub fn of(source: ConsoleSource, level: ConsoleLevel, text: String) -> ConsoleEntry {
+        ConsoleEntry {
+            level,
+            text,
+            source,
+            ..ConsoleEntry::default()
+        }
+    }
+
+    /// The entry of a console call of a script's, written by `source`.
+    /// Its place is its stack's first frame; the stack is kept for an
+    /// error, an assertion or a trace.
+    pub(crate) fn recorded(source: ConsoleSource, mut record: js::ConsoleRecord) -> ConsoleEntry {
+        let (url, line, column) = record
+            .stack
+            .first()
+            .map(|frame| (frame.url.clone(), frame.line, frame.column))
+            .unwrap_or_default();
+        if record.level != ConsoleLevel::Error && record.kind != ConsoleKind::Trace {
+            record.stack.clear();
+        }
+        ConsoleEntry {
+            level: record.level,
+            text: cut(record.text),
+            source,
+            kind: record.kind,
+            time: 0,
+            url,
+            line,
+            column,
+            stack: record.stack,
+            previews: record.previews,
+        }
+    }
+
+    /// The entry of `error`, reported unhandled: `None` for an error the
+    /// console does not say.
+    pub(crate) fn of_error(error: &ScriptError) -> Option<ConsoleEntry> {
+        let text = report_text(error)?;
+        Some(ConsoleEntry {
+            level: ConsoleLevel::Error,
+            text: cut(text),
+            source: ConsoleSource::Exception,
+            url: error.url.clone(),
+            line: error.line,
+            column: error.column,
+            stack: error.stack.clone(),
+            ..ConsoleEntry::default()
+        })
+    }
 }
 
 /// Where the shown document's scripting stands (M24.7).
@@ -617,10 +706,11 @@ impl Scripts {
             }
         };
         if let Some(text) = failed {
-            self.push(ConsoleEntry {
-                level: ConsoleLevel::Error,
+            self.push(ConsoleEntry::of(
+                ConsoleSource::Network,
+                ConsoleLevel::Error,
                 text,
-            });
+            ));
         }
     }
 
@@ -725,10 +815,11 @@ impl Scripts {
         (element, line): (Option<NodeId>, u32),
     ) {
         for violation in violations {
-            self.push(ConsoleEntry {
-                level: violation_level(&violation),
-                text: violation_text(&violation),
-            });
+            self.push(ConsoleEntry::of(
+                ConsoleSource::Policy,
+                violation_level(&violation),
+                violation_text(&violation),
+            ));
             self.announce(page, document, &violation, (element, line));
         }
     }
@@ -1126,7 +1217,7 @@ impl Scripts {
             };
             match self.host.workers.workers.receive(id, event) {
                 workers::Received::Task(task) => self.posted.push_back((now, task)),
-                workers::Received::Console(level, text) => self.push(ConsoleEntry { level, text }),
+                workers::Received::Console(entry) => self.push(entry),
                 workers::Received::Nothing => {}
             }
         }
@@ -1228,10 +1319,11 @@ impl Scripts {
             let answer = match result {
                 Ok(response) => Some(fetch::answer(&response)),
                 Err(error) => {
-                    self.push(ConsoleEntry {
-                        level: ConsoleLevel::Error,
-                        text: cut(fetch::failure_text(&url, error)),
-                    });
+                    self.push(ConsoleEntry::of(
+                        ConsoleSource::Network,
+                        ConsoleLevel::Error,
+                        cut(fetch::failure_text(&url, error)),
+                    ));
                     None
                 }
             };
@@ -1307,24 +1399,22 @@ impl Scripts {
         self.host.workers.workers.terminate_all();
         self.stopped = true;
         self.just_stopped = true;
-        self.push(ConsoleEntry {
-            level: ConsoleLevel::Error,
-            text: "Scripts stopped on this page: out of memory".to_owned(),
-        });
+        self.push(ConsoleEntry::of(
+            ConsoleSource::Engine,
+            ConsoleLevel::Error,
+            "Scripts stopped on this page: out of memory".to_owned(),
+        ));
     }
 
     /// Reports `error` as HTML section 8.1.4.6 does, to the console: an
     /// uncaught exception and where it was thrown, or a rejection with no
     /// handler; a dead realm's refusal is not an error of the page's.
     pub(crate) fn report(&mut self, error: &ScriptError) {
-        let Some(text) = report_text(error) else {
+        let Some(entry) = ConsoleEntry::of_error(error) else {
             return;
         };
         self.errors += 1;
-        self.push(ConsoleEntry {
-            level: ConsoleLevel::Error,
-            text,
-        });
+        self.push(entry);
     }
 
     /// Queues `task`, which another frame posted (M33.2), from `at`.
@@ -1336,6 +1426,29 @@ impl Scripts {
     /// realm is made: its window has the bridge to the browser.
     pub(crate) fn make_panel(&mut self) {
         self.host.panel = true;
+    }
+
+    /// Runs the DevTools console's `expression` (M36) with `$0` the node
+    /// `selected`: its answer, a JSON object of its value's preview or
+    /// its exception's; `None` when the document runs no scripts or the
+    /// run gave none (its budget ran out).
+    pub(crate) fn evaluate(
+        &mut self,
+        lent: &mut Lent<'_>,
+        expression: String,
+        selected: Option<NodeId>,
+    ) -> Option<String> {
+        if !self.ensure_realm() {
+            return None;
+        }
+        self.host.evaluating = true;
+        let task = js::Task::Evaluate {
+            expression,
+            selected: selected.map(handle),
+        };
+        self.enter(lent, &task, 0);
+        self.host.evaluating = false;
+        self.host.evaluated.take()
     }
 
     /// What the DevTools panel's page sent the browser since this was
@@ -1356,7 +1469,13 @@ impl Scripts {
     /// Writes `text` to the console at `level`: what the engine says of
     /// the document (M33.2: an iframe left empty).
     pub(crate) fn say(&mut self, level: ConsoleLevel, text: String) {
-        self.push(ConsoleEntry { level, text });
+        self.push(ConsoleEntry::of(ConsoleSource::Engine, level, text));
+    }
+
+    /// Writes `entry` to the console: what the engine says of a resource
+    /// of the document's (M36).
+    pub(crate) fn log(&mut self, entry: ConsoleEntry) {
+        self.push(entry);
     }
 
     fn push(&mut self, entry: ConsoleEntry) {
@@ -1962,6 +2081,7 @@ mod tests {
             url: String::new(),
             line: 0,
             column: 0,
+            stack: Vec::new(),
         });
         assert!(scripts.take_console().is_empty());
         assert_eq!(scripts.state(), ScriptState::Running { errors: 0 });

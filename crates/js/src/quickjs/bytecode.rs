@@ -42,7 +42,8 @@ fn compiled() -> Option<&'static [u8]> {
             let runtime = Runtime::new().ok()?;
             let context = Context::full(&runtime).ok()?;
             context.with(|ctx| {
-                let module = Module::declare(ctx, "bootstrap", module_source()).ok()?;
+                let module =
+                    Module::declare(ctx, super::dom::BOOTSTRAP_NAME, module_source()).ok()?;
                 module
                     .write(WriteOptions {
                         endianness: WriteOptionsEndianness::Native,

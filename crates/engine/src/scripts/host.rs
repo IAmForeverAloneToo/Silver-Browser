@@ -241,11 +241,20 @@ pub(crate) struct DocumentHost {
     /// it sent the browser since the engine last took it.
     pub(crate) panel: bool,
     pub(crate) devtools_out: Vec<String>,
+    /// Whether the DevTools console's evaluation runs (M36), and its
+    /// answer once it has one.
+    pub(crate) evaluating: bool,
+    pub(crate) evaluated: Option<String>,
 }
 
 impl ScriptingHost for DocumentHost {
     fn console(&mut self, level: ConsoleLevel, message: String) {
         self.say(level, message);
+    }
+
+    fn console_record(&mut self, record: js::ConsoleRecord) {
+        let entry = ConsoleEntry::recorded(super::ConsoleSource::Console, record);
+        self.outputs.console.push(entry);
     }
 
     fn title(&mut self) -> String {
@@ -1272,6 +1281,13 @@ impl DocumentHost {
                 if let Some(old) = old {
                     self.broadcast(local, Some(key), Some(old), None);
                 }
+                Ok(Answer::Nothing)
+            }
+            Call::DevToolsAnswer(answer) => {
+                if !self.evaluating {
+                    return Err(DomError::not_supported());
+                }
+                self.evaluated = Some(answer);
                 Ok(Answer::Nothing)
             }
             Call::DevToolsSend(message) => {
@@ -2371,10 +2387,11 @@ impl DocumentHost {
 
     /// Writes `message` to the console.
     fn say(&mut self, level: ConsoleLevel, message: String) {
-        self.outputs.console.push(ConsoleEntry {
+        self.outputs.console.push(ConsoleEntry::of(
+            super::ConsoleSource::Engine,
             level,
-            text: cut(message),
-        });
+            cut(message),
+        ));
     }
 
     /// `document.write` (HTML section 8.4.3): the text put in before the

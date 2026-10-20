@@ -153,6 +153,59 @@ pub struct ScriptError {
     pub url: String,
     pub line: u32,
     pub column: u32,
+    /// An `Error`'s stack, innermost first, at most [`MAX_STACK_FRAMES`]
+    /// (M36): none when muted, or for a value that is no `Error`.
+    pub stack: Vec<StackFrame>,
+}
+
+/// The most frames a stack keeps (M36).
+pub const MAX_STACK_FRAMES: usize = 64;
+
+/// The most bytes of a console call's previews (M36): past it, the call
+/// has its text alone.
+pub const MAX_PREVIEW_BYTES: usize = 64 << 10;
+
+/// A frame of a stack (M36): the function called, and where it was.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StackFrame {
+    /// Its name, empty for an anonymous function or a script's body.
+    pub function: String,
+    pub url: String,
+    pub line: u32,
+    pub column: u32,
+}
+
+/// What a console call was (Console Standard, M36): a log of its
+/// arguments, or one of the calls the DevTools panel shows its own way.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ConsoleKind {
+    #[default]
+    Log,
+    /// `dir`: its one argument, open.
+    Dir,
+    /// `table`: its argument's rows and columns.
+    Table,
+    /// `trace`: with the stack where it was called.
+    Trace,
+    /// `group` and `groupCollapsed`: the entries until its end inside it.
+    Group,
+    GroupCollapsed,
+    GroupEnd,
+    /// `clear`: the entries before it dropped from view.
+    Clear,
+}
+
+/// A console call (M36): its level, kind and text, as the shell prints
+/// it; its arguments' previews, a JSON array (docs/design/devtools.md,
+/// "The console"), empty past [`MAX_PREVIEW_BYTES`]; and the stack where
+/// it was called, for an error, an assertion or a trace.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConsoleRecord {
+    pub level: ConsoleLevel,
+    pub kind: ConsoleKind,
+    pub text: String,
+    pub previews: String,
+    pub stack: Vec<StackFrame>,
 }
 
 /// Why a realm can run nothing more.
@@ -163,8 +216,9 @@ pub enum Death {
 }
 
 /// A console method's level (Console Standard section 1.1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ConsoleLevel {
+    #[default]
     Log,
     Info,
     Warn,
@@ -179,6 +233,11 @@ pub enum ConsoleLevel {
 pub trait ScriptingHost: Default + 'static {
     /// A console method was called; `message` is formatted.
     fn console(&mut self, level: ConsoleLevel, message: String);
+    /// A console method was called (M36): the record of it, its text
+    /// formatted. A host that keeps no more than the text has it alone.
+    fn console_record(&mut self, record: ConsoleRecord) {
+        self.console(record.level, record.text);
+    }
     /// `document.title`'s getter (HTML section 3.1.7).
     fn title(&mut self) -> String;
     /// `document.title`'s setter.
@@ -282,6 +341,14 @@ pub enum Task {
     /// A message from the browser to the DevTools panel's page (M36):
     /// `devtools.onmessage` is called with it.
     DevTools(String),
+    /// The DevTools console's `expression`, run in the realm's global
+    /// scope as a script of its own, the page's policies aside, with `$0`
+    /// the node `selected` names (M36): its value's preview, or its
+    /// exception's, is given to the host by [`dom::Call::DevToolsAnswer`].
+    Evaluate {
+        expression: String,
+        selected: Option<Handle>,
+    },
 }
 
 /// Where a message is delivered (M31).

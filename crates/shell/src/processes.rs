@@ -671,9 +671,11 @@ fn check_devtools() -> Result<(), String> {
     let mut panel = page.devtools_panel();
     panel.set_viewport(SIZE.0, SIZE.1);
     panel.frame_at(SIZE.0, SIZE.1, FrameTime::at(Duration::ZERO));
+    // Of what it asks first, which page it inspects.
     let mut asked = Vec::new();
     if !wait_for(&mut panel, |panel| {
         asked.extend(panel.take_devtools());
+        asked.retain(|message| message.contains(r#""method":"page.info""#));
         !asked.is_empty()
     }) {
         return Err("the panel asked nothing".into());

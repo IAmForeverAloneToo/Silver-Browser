@@ -290,7 +290,7 @@ impl<V: View> Session<V> {
             if let Some(panel) = &mut self.panel {
                 panel.set_scale_factor(self.scale);
             }
-            self.router = Router::default();
+            self.router.opened();
             self.panel_keys = self.panel.is_some();
             self.toolbar.blur();
         }
@@ -398,7 +398,7 @@ impl<V: View> Session<V> {
             return;
         }
         self.engine.run_tasks();
-        print_console(&mut self.engine);
+        self.console();
         if let Some(panel) = &mut self.panel {
             panel.run_tasks();
             print_panel_console(panel);
@@ -413,7 +413,7 @@ impl<V: View> Session<V> {
         if let Some(panel) = &mut self.panel {
             panel.set_hidden(hidden);
         }
-        print_console(&mut self.engine);
+        self.console();
         self.sync();
     }
 
@@ -707,7 +707,7 @@ impl<V: View> Session<V> {
     /// page's scripts wrote to its console is printed.
     pub(crate) fn network(&mut self) {
         self.engine.poll_network();
-        print_console(&mut self.engine);
+        self.console();
         if let Some(panel) = &mut self.panel {
             panel.poll_network();
             print_panel_console(panel);
@@ -751,7 +751,7 @@ impl<V: View> Session<V> {
             self.refresh_hover();
             // What the frame's animation callbacks wrote (M30), printed
             // as a task's is.
-            print_console(&mut self.engine);
+            self.console();
         }
         // The DevTools panel under the page (M36).
         if let Some(panel) = &mut self.panel
@@ -1048,6 +1048,20 @@ impl<V: View> Session<V> {
         self.engine.pointer_leave();
     }
 
+    /// What the page wrote to its console since this was last called:
+    /// printed on the standard error, and kept for the DevTools panel,
+    /// which is told of it if it is open (M36).
+    fn console(&mut self) {
+        let entries = self.engine.take_console();
+        for entry in &entries {
+            if let Some(line) = console_line(entry) {
+                eprintln!("{line}");
+            }
+        }
+        self.router.watch(self.engine.url(), self.panel.as_mut());
+        self.router.log(entries, self.panel.as_mut());
+    }
+
     /// Brings the engine and what the window shows of it up to date: the
     /// page's focus, the toolbar, the title, and a notice the engine has.
     fn sync(&mut self) {
@@ -1129,7 +1143,9 @@ fn put(rgba: &[u8], out: &mut [u32]) {
 /// developer would read until the browser has its own (M36).
 pub(crate) fn print_console(engine: &mut impl View) {
     for entry in engine.take_console() {
-        eprintln!("{}", console_line(&entry));
+        if let Some(line) = console_line(&entry) {
+            eprintln!("{line}");
+        }
     }
 }
 
@@ -1137,12 +1153,21 @@ pub(crate) fn print_console(engine: &mut impl View) {
 /// (M36), which is the browser's, to the standard error.
 fn print_panel_console(panel: &mut impl View) {
     for entry in panel.take_console() {
-        eprintln!("devtools {}", console_line(&entry));
+        if let Some(line) = console_line(&entry) {
+            eprintln!("devtools {line}");
+        }
     }
 }
 
-/// A console entry as printed: its level's name, then its text.
-fn console_line(entry: &engine::ConsoleEntry) -> String {
+/// A console entry as printed: its level's name, then its text; nothing
+/// for a group's end or a clearing, which have none (M36).
+fn console_line(entry: &engine::ConsoleEntry) -> Option<String> {
+    if matches!(
+        entry.kind,
+        engine::ConsoleKind::GroupEnd | engine::ConsoleKind::Clear
+    ) {
+        return None;
+    }
     let level = match entry.level {
         engine::ConsoleLevel::Log => "log",
         engine::ConsoleLevel::Info => "info",
@@ -1150,7 +1175,7 @@ fn console_line(entry: &engine::ConsoleEntry) -> String {
         engine::ConsoleLevel::Error => "error",
         engine::ConsoleLevel::Debug => "debug",
     };
-    format!("console: {level} {}", entry.text)
+    Some(format!("console: {level} {}", entry.text))
 }
 
 #[cfg(test)]

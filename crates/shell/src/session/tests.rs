@@ -721,18 +721,35 @@ fn a_failed_start_is_reported() {
 
 #[test]
 fn a_console_entry_prints_with_its_level() {
-    use engine::{ConsoleEntry, ConsoleLevel};
+    use engine::{ConsoleEntry, ConsoleKind, ConsoleLevel, ConsoleSource};
     let line = |level| {
-        console_line(&ConsoleEntry {
+        console_line(&ConsoleEntry::of(
+            ConsoleSource::Console,
             level,
-            text: "x 1".to_owned(),
-        })
+            "x 1".to_owned(),
+        ))
     };
-    assert_eq!(line(ConsoleLevel::Log), "console: log x 1");
-    assert_eq!(line(ConsoleLevel::Info), "console: info x 1");
-    assert_eq!(line(ConsoleLevel::Warn), "console: warn x 1");
-    assert_eq!(line(ConsoleLevel::Error), "console: error x 1");
-    assert_eq!(line(ConsoleLevel::Debug), "console: debug x 1");
+    assert_eq!(line(ConsoleLevel::Log).as_deref(), Some("console: log x 1"));
+    assert_eq!(
+        line(ConsoleLevel::Info).as_deref(),
+        Some("console: info x 1")
+    );
+    assert_eq!(
+        line(ConsoleLevel::Warn).as_deref(),
+        Some("console: warn x 1")
+    );
+    assert_eq!(
+        line(ConsoleLevel::Error).as_deref(),
+        Some("console: error x 1")
+    );
+    assert_eq!(
+        line(ConsoleLevel::Debug).as_deref(),
+        Some("console: debug x 1")
+    );
+    // A group's end and a clearing print nothing.
+    let mut end = ConsoleEntry::of(ConsoleSource::Console, ConsoleLevel::Log, String::new());
+    end.kind = ConsoleKind::GroupEnd;
+    assert_eq!(console_line(&end), None);
 }
 
 #[test]
@@ -1606,4 +1623,116 @@ impl crate::devtools::End for Recorder {
     fn take_inspected(&mut self) -> Vec<String> {
         std::mem::take(&mut self.out)
     }
+}
+
+#[test]
+fn the_router_keeps_the_console_and_gives_it_to_the_panel() {
+    use devtools::Json;
+    use engine::{ConsoleEntry, ConsoleLevel, ConsoleSource};
+    let mut router = crate::devtools::Router::default();
+    let first = Url::parse("https://a.test/").expect("a URL");
+    let none: Option<&mut Recorder> = None;
+    router.watch(Some(&first), none);
+    let mut logged = ConsoleEntry::of(ConsoleSource::Console, ConsoleLevel::Warn, "w 1".to_owned());
+    logged.previews = r#"[{"type":"string","value":"w"},{"type":"number","value":1}]"#.to_owned();
+    logged.url = "https://a.test/".to_owned();
+    logged.line = 3;
+    let mut forged = ConsoleEntry::of(ConsoleSource::Console, ConsoleLevel::Log, "f".to_owned());
+    forged.previews = "not JSON".to_owned();
+    // Written while the panel is closed, the entries are kept.
+    router.log(vec![logged, forged], None::<&mut Recorder>);
+    let mut panel = Recorder::default();
+    let mut page = Recorder {
+        url: Some(first.clone()),
+        ..Recorder::default()
+    };
+    panel.out = vec![r#"{"id":1,"method":"console.history"}"#.to_owned()];
+    router.route(&mut panel, &mut page);
+    assert!(page.asked.is_empty(), "the browser answers it");
+    let history = Json::parse(&panel.sent[0]).expect("JSON");
+    let entries = history
+        .get("result")
+        .and_then(Json::as_array)
+        .expect("entries");
+    assert_eq!(entries.len(), 2);
+    let get = |entry: &Json, name: &str| entry.get(name).cloned();
+    assert_eq!(get(&entries[0], "level"), Some(Json::from("warn")));
+    assert_eq!(get(&entries[0], "line"), Some(Json::from(3u32)));
+    assert_eq!(
+        entries[0]
+            .get("args")
+            .and_then(Json::as_array)
+            .map(<[Json]>::len),
+        Some(2)
+    );
+    // Previews that are not JSON are left out, the text kept.
+    assert_eq!(get(&entries[1], "args"), Some(Json::Array(Vec::new())));
+    assert_eq!(get(&entries[1], "text"), Some(Json::from("f")));
+    // While the panel is open, each entry is told as it comes.
+    panel.sent.clear();
+    let entry = ConsoleEntry::of(ConsoleSource::Network, ConsoleLevel::Error, "n".to_owned());
+    router.log(vec![entry], Some(&mut panel));
+    assert!(panel.sent[0].starts_with(r#"{"event":"console.entry","params":{"level":"error""#));
+    // The panel's clearing clears the history; a navigation does too.
+    panel.sent.clear();
+    panel.out = vec![
+        r#"{"id":2,"method":"console.clear"}"#.to_owned(),
+        r#"{"id":3,"method":"console.history"}"#.to_owned(),
+    ];
+    router.route(&mut panel, &mut page);
+    assert_eq!(panel.sent[1], r#"{"id":3,"result":[]}"#);
+    router.log(
+        vec![ConsoleEntry::of(
+            ConsoleSource::Console,
+            ConsoleLevel::Log,
+            "x".to_owned(),
+        )],
+        None::<&mut Recorder>,
+    );
+    page.url = Some(Url::parse("https://b.test/").expect("a URL"));
+    panel.sent.clear();
+    panel.out = vec![r#"{"id":4,"method":"console.history"}"#.to_owned()];
+    router.route(&mut panel, &mut page);
+    assert_eq!(
+        panel.sent.last().map(String::as_str),
+        Some(r#"{"id":4,"result":[]}"#)
+    );
+}
+
+/// The text of the DevTools panel's console lines.
+fn panel_console(session: &mut Session) -> String {
+    panel_text(session, "console-lines").unwrap_or_default()
+}
+
+#[test]
+fn the_panels_console_shows_the_pages_entries_and_evaluates() {
+    let server = serve(|path| match path {
+        "/" => html(
+            "<title>Logged</title><script>console.log('hello', { a: 1 }); \
+             console.error(new TypeError('broken'))</script>",
+        ),
+        _ => None,
+    });
+    let mut window = Window::with_scripts(Some(server.url("/")));
+    window.settle();
+    window.press_key(Key::F12, NONE);
+    window.run_until(|session| {
+        let text = panel_console(session);
+        text.contains("hello {a: 1}") && text.contains("TypeError: broken")
+    });
+    // What the page writes now comes as it is written.
+    let later =
+        r#"{"id":99,"method":"console.evaluate","params":{"expression":"console.info('later')"}}"#;
+    View::inspect(window.session.engine_mut(), later.to_owned());
+    window.run_until(|session| panel_console(session).contains("later"));
+    // An expression typed at the prompt, at the panel's foot, runs in the
+    // page.
+    window.click(400.0, (HEIGHT - 6) as f32);
+    assert_eq!(window.session.focus(), Focus::Panel);
+    window.type_text("6*7");
+    window.press_key(Key::Enter, NONE);
+    window.run_until(|session| {
+        let text = panel_console(session);
+        text.contains("> 6*7") && text.contains("42")
+    });
 }

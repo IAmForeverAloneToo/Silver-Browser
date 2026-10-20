@@ -400,6 +400,9 @@ pub enum Call {
     /// `devtools.send(message)` of the DevTools panel's page (M36): the
     /// message queued for the browser. Refused in any other document.
     DevToolsSend(String),
+    /// The answer of a DevTools console's evaluation (M36,
+    /// [`crate::Task::Evaluate`]): refused but while one runs.
+    DevToolsAnswer(String),
     /// The document's URL in parts, as `Location` gives them: `href`,
     /// `origin`, `protocol`, `host`, `hostname`, `port`, `pathname`,
     /// `search`, `hash`.

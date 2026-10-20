@@ -66,3 +66,56 @@ body {
 .pane.off { display: none; }
 .mono { font-family: monospace; font-size: var(--mono); }
 .quiet { color: var(--quiet); }
+
+/* The console (M36.1). */
+.console { display: flex; flex-direction: column; overflow: hidden; }
+.bar {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  padding: 2px 4px;
+  border-bottom: 1px solid var(--line);
+  background-color: var(--bar);
+}
+.bar button, .bar input {
+  font-size: 12px;
+  color: var(--text);
+  background-color: var(--page);
+  border: 1px solid var(--line);
+}
+.bar button.level { color: var(--quiet); }
+.bar button.level.on { color: var(--text); background-color: var(--selected); }
+.lines { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.entry {
+  padding: 1px 8px;
+  border-bottom: 1px solid var(--line);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.entry.hidden { display: none; }
+.entry.warn { color: var(--warn); }
+.entry.error { color: var(--error); }
+.entry.input { color: var(--accent); }
+.place { float: right; margin-left: 8px; }
+.group { padding-left: 16px; }
+.group.closed { display: none; }
+.group-head { font-weight: bold; }
+.stack { padding-left: 16px; color: var(--quiet); }
+.toggle::before { content: "\25B8 "; }
+.toggle.open::before { content: "\25BE "; }
+.tree { padding-left: 16px; }
+.name { color: var(--accent); }
+.v-string { color: var(--error); }
+.v-number, .v-bool, .v-bigint { color: var(--accent); }
+.v-null, .v-function, .quiet { color: var(--quiet); }
+.v-node { color: var(--accent); text-decoration: underline; }
+.table { border-collapse: collapse; }
+.table th, .table td { border: 1px solid var(--line); padding: 0 4px; text-align: left; }
+.prompt {
+  flex: 0 0 auto;
+  border: 0;
+  border-top: 1px solid var(--line);
+  padding: 2px 8px;
+  color: var(--text);
+  background-color: var(--page);
+}

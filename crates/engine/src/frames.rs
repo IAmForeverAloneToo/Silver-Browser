@@ -1411,10 +1411,11 @@ impl Engine {
         let shown = self.made(crate::pages::error(at, &error), Some(error));
         self.commit(shown, Some(navigation.url), navigation.handling);
         // The page made has no URL: the line names the one refused.
-        let entry = scripts::ConsoleEntry {
-            level: js::ConsoleLevel::Error,
-            text: line,
-        };
+        let entry = scripts::ConsoleEntry::of(
+            scripts::ConsoleSource::Policy,
+            js::ConsoleLevel::Error,
+            line,
+        );
         let lines = self.frame_lines(vec![entry], Some(at));
         self.departed.extend(lines);
         true

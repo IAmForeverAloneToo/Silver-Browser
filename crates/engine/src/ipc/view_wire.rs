@@ -3,8 +3,8 @@
 //! renderer reports back for the session to read.
 
 use crate::{
-    Button, ColorScheme, ConsoleEntry, ConsoleLevel, Cursor, Key, LoadError, LoadState, Modifiers,
-    Preferences, Scrollbar,
+    Button, ColorScheme, ConsoleEntry, ConsoleKind, ConsoleLevel, ConsoleSource, Cursor, Key,
+    LoadError, LoadState, Modifiers, Preferences, Scrollbar, StackFrame,
 };
 
 use super::codec::{Decoder, Encoder, Malformed, Wire, wire_enum, wire_struct, wire_unit_enum};
@@ -164,11 +164,64 @@ impl Wire for ConsoleEntry {
     fn encode(&self, out: &mut Encoder) {
         self.level.encode(out);
         out.str(&self.text);
+        self.source.encode(out);
+        self.kind.encode(out);
+        self.time.encode(out);
+        out.str(&self.url);
+        self.line.encode(out);
+        self.column.encode(out);
+        self.stack.encode(out);
+        out.str(&self.previews);
     }
     fn decode(input: &mut Decoder<'_>) -> Result<Self, Malformed> {
         Ok(ConsoleEntry {
             level: ConsoleLevel::decode(input)?,
             text: String::decode(input)?,
+            source: ConsoleSource::decode(input)?,
+            kind: ConsoleKind::decode(input)?,
+            time: u64::decode(input)?,
+            url: String::decode(input)?,
+            line: u32::decode(input)?,
+            column: u32::decode(input)?,
+            stack: Vec::decode(input)?,
+            previews: String::decode(input)?,
+        })
+    }
+}
+
+wire_unit_enum!(ConsoleSource {
+    0 => ConsoleSource::Console,
+    1 => ConsoleSource::Exception,
+    2 => ConsoleSource::Network,
+    3 => ConsoleSource::Policy,
+    4 => ConsoleSource::Worker,
+    5 => ConsoleSource::Engine,
+});
+
+wire_unit_enum!(ConsoleKind {
+    0 => ConsoleKind::Log,
+    1 => ConsoleKind::Dir,
+    2 => ConsoleKind::Table,
+    3 => ConsoleKind::Trace,
+    4 => ConsoleKind::Group,
+    5 => ConsoleKind::GroupCollapsed,
+    6 => ConsoleKind::GroupEnd,
+    7 => ConsoleKind::Clear,
+});
+
+impl Wire for StackFrame {
+    fn encode(&self, out: &mut Encoder) {
+        out.str(&self.function);
+        out.str(&self.url);
+        self.line.encode(out);
+        self.column.encode(out);
+    }
+    fn decode(input: &mut Decoder<'_>) -> Result<Self, Malformed> {
+        Ok(StackFrame {
+            function: String::decode(input)?,
+            url: String::decode(input)?,
+            line: u32::decode(input)?,
+            column: u32::decode(input)?,
         })
     }
 }

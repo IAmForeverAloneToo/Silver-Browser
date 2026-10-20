@@ -17,6 +17,8 @@ use crate::{
 
 /// The bindings, run in each new realm before any page's script.
 pub(super) const BOOTSTRAP: &str = include_str!("bootstrap.js");
+/// The name the bootstrap's frames carry in a stack, as its URL.
+pub(super) const BOOTSTRAP_NAME: &str = "bootstrap";
 
 /// What the natives charge the work they report to: the run's steps,
 /// the work not yet a whole step, and the budget's end.
@@ -456,6 +458,7 @@ const NATIVES: &[(&str, Decode)] = &[
     }),
     ("storageClear", |a| Ok(Call::StorageClear(a.bool(0)))),
     ("devtoolsSend", |a| Ok(Call::DevToolsSend(a.string(0)?))),
+    ("devtoolsAnswer", |a| Ok(Call::DevToolsAnswer(a.string(0)?))),
     ("navigate", |a| {
         Ok(Call::Navigate {
             url: a.string(0)?,
@@ -625,8 +628,10 @@ pub(super) fn install<'js, H: ScriptingHost>(
     host: &Slot<H>,
     budget: &Budget,
     entries: &Entries,
+    console: Function<'js>,
 ) -> rquickjs::Result<Object<'js>> {
     let natives = Object::new(ctx.clone())?;
+    natives.set("consoleMessage", console)?;
     // The kind of global the bootstrap makes (M31).
     match kind {
         RealmKind::Window => natives.set("realmKind", "window")?,
@@ -756,6 +761,7 @@ fn install_errors<'js, H: ScriptingHost>(
                         url,
                         line: line as u32,
                         column: column as u32,
+                        stack: Vec::new(),
                     });
                 })
             },

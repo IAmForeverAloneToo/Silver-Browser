@@ -26,8 +26,9 @@ use rquickjs::{
 };
 
 use crate::{
-    Completion, ConsoleLevel, Death, ErrorKind, FetchAnswer, Field, Limits, Realm, RealmKind,
-    Script, ScriptEngine, ScriptError, ScriptingHost, Target, Task,
+    Completion, ConsoleKind, ConsoleLevel, ConsoleRecord, Death, ErrorKind, FetchAnswer, Field,
+    Limits, MAX_PREVIEW_BYTES, MAX_STACK_FRAMES, Realm, RealmKind, Script, ScriptEngine,
+    ScriptError, ScriptingHost, StackFrame, Target, Task,
 };
 
 /// QuickJS-ng 0.16, which `rquickjs` builds from its source.
@@ -103,6 +104,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
             url: String::new(),
             line: 0,
             column: 0,
+            stack: Vec::new(),
         };
         let runtime = Runtime::new().map_err(failed)?;
         runtime.set_memory_limit(limits.heap);
@@ -165,6 +167,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
                 url: String::new(),
                 line: 0,
                 column: 0,
+                stack: Vec::new(),
             })?;
         *entries.borrow_mut() = Some(saved);
         Ok(QuickJsRealm {
@@ -342,6 +345,7 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                 url: script.url.to_owned(),
                 line: 0,
                 column: 0,
+                stack: Vec::new(),
             }),
             other => other,
         };
@@ -427,6 +431,18 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                     .get::<_, Function<'_>>("guardCode")?
                     .call::<_, Value<'_>>(())
             }),
+            Task::Evaluate {
+                expression,
+                selected,
+            } => self.stepped(&entries, |ctx, entries| {
+                let selected = match selected {
+                    Some(handle) => Value::new_float(ctx.clone(), handle.0 as f64),
+                    None => Value::new_null(ctx.clone()),
+                };
+                entries
+                    .get::<_, Function<'_>>("evaluate")?
+                    .call::<_, Value<'_>>((expression.as_str(), selected))
+            }),
             Task::DevTools(message) => self.stepped(&entries, |_, entries| {
                 entries
                     .get::<_, Function<'_>>("devtools")?
@@ -456,6 +472,7 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                 url: String::new(),
                 line: 0,
                 column: 0,
+                stack: Vec::new(),
             }),
             other => other,
         };
@@ -525,6 +542,7 @@ fn dead(death: Death) -> ScriptError {
         url: String::new(),
         line: 0,
         column: 0,
+        stack: Vec::new(),
     }
 }
 
@@ -561,6 +579,7 @@ fn caught_error<'js>(
                 url: url.to_owned(),
                 line: 0,
                 column: 0,
+                stack: Vec::new(),
             },
             muted,
         ),
@@ -684,6 +703,7 @@ fn thrown<'js>(ctx: &Ctx<'js>, value: Value<'js>, url: &str, muted: bool) -> Scr
             url: url.to_owned(),
             line: 0,
             column: 0,
+            stack: Vec::new(),
         },
         muted,
     )
@@ -706,16 +726,15 @@ fn exception_error(exception: &Exception<'_>, url: &str) -> ScriptError {
         Some(text) if !text.is_empty() => format!("{name}: {text}"),
         _ => name,
     };
-    let (at, line, column) = exception
-        .stack()
-        .and_then(|stack| first_frame(&stack))
-        .unwrap_or_else(|| (url.to_owned(), 0, 0));
+    let stack = exception.stack().unwrap_or_default();
+    let (at, line, column) = first_frame(&stack).unwrap_or_else(|| (url.to_owned(), 0, 0));
     ScriptError {
         kind: ErrorKind::Exception,
         message,
         url: at,
         line,
         column,
+        stack: parse_stack(&stack),
     }
 }
 
@@ -736,6 +755,47 @@ fn first_frame(stack: &str) -> Option<(String, u32, u32)> {
     Some((url.to_owned(), line, column))
 }
 
+/// The frames of a stack as QuickJS writes it, innermost first, at most
+/// [`MAX_STACK_FRAMES`] (M36): each `at f (url:line:column)` or `at
+/// url:line:column`; the bindings' own frames, and those of native code,
+/// left out.
+pub(crate) fn parse_stack(stack: &str) -> Vec<StackFrame> {
+    let mut frames = Vec::new();
+    for line in stack.lines() {
+        if frames.len() == MAX_STACK_FRAMES {
+            break;
+        }
+        let Some(frame) = line.trim().strip_prefix("at ") else {
+            continue;
+        };
+        let (function, place) = match frame.strip_suffix(')') {
+            Some(called) => match called.find(" (") {
+                Some(at) => (&called[..at], &called[at + 2..]),
+                None => continue,
+            },
+            None => ("", frame),
+        };
+        let mut parts = place.rsplitn(3, ':');
+        let (Some(column), Some(line), Some(url)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        let (Ok(line), Ok(column)) = (line.parse(), column.parse()) else {
+            continue;
+        };
+        if url == dom::BOOTSTRAP_NAME {
+            continue;
+        }
+        frames.push(StackFrame {
+            function: function.to_owned(),
+            url: url.to_owned(),
+            line,
+            column,
+        });
+    }
+    frames
+}
+
 /// `error`, muted if `muted` (HTML section 8.1.4.6): its details
 /// hidden.
 fn mute(error: ScriptError, muted: bool) -> ScriptError {
@@ -748,6 +808,7 @@ fn mute(error: ScriptError, muted: bool) -> ScriptError {
         url: String::new(),
         line: 0,
         column: 0,
+        stack: Vec::new(),
     }
 }
 
@@ -771,31 +832,72 @@ fn install<'js, H: ScriptingHost>(
         global.set("window", global.clone())?;
         global.set("self", global.clone())?;
     }
-    let console = Object::new(ctx.clone())?;
-    for (name, level) in [
-        ("log", ConsoleLevel::Log),
-        ("info", ConsoleLevel::Info),
-        ("warn", ConsoleLevel::Warn),
-        ("error", ConsoleLevel::Error),
-        ("debug", ConsoleLevel::Debug),
-    ] {
-        let host = host.clone();
-        let method = Function::new(
-            ctx.clone(),
-            move |ctx: Ctx<'js>, args: Rest<Value<'js>>| -> rquickjs::Result<()> {
-                // Formatting may run the page's code, so the host is
-                // borrowed only once the message is made.
-                let Some(message) = console::format(&ctx, &args.0)? else {
+    // The console's one native (M36): the bootstrap's console calls it
+    // with a call's level, kind, previews and stack, then the call's
+    // arguments, which it formats as the Console Standard's formatter
+    // does. Formatting may run the page's code, so the host is borrowed
+    // only once the text is made.
+    let console_host = host.clone();
+    let console = Function::new(
+        ctx.clone(),
+        move |ctx: Ctx<'js>, args: Rest<Value<'js>>| -> rquickjs::Result<()> {
+            let mut head = args.0;
+            if head.len() < 4 {
+                return Ok(());
+            }
+            let rest = head.split_off(4);
+            let string = |value: &Value<'js>| {
+                value
+                    .as_string()
+                    .and_then(|text| text.to_string().ok())
+                    .unwrap_or_default()
+            };
+            let level = match head[0].as_int() {
+                Some(1) => ConsoleLevel::Info,
+                Some(2) => ConsoleLevel::Warn,
+                Some(3) => ConsoleLevel::Error,
+                Some(4) => ConsoleLevel::Debug,
+                _ => ConsoleLevel::Log,
+            };
+            let kind = match string(&head[1]).as_str() {
+                "dir" => ConsoleKind::Dir,
+                "table" => ConsoleKind::Table,
+                "trace" => ConsoleKind::Trace,
+                "group" => ConsoleKind::Group,
+                "groupCollapsed" => ConsoleKind::GroupCollapsed,
+                "groupEnd" => ConsoleKind::GroupEnd,
+                "clear" => ConsoleKind::Clear,
+                _ => ConsoleKind::Log,
+            };
+            let mut previews = string(&head[2]);
+            if previews.len() > MAX_PREVIEW_BYTES {
+                previews = String::new();
+            }
+            let stack = parse_stack(&string(&head[3]));
+            let text = match console::format(&ctx, &rest)? {
+                Some(text) => text,
+                // A log of nothing logs nothing (Logger, step 1).
+                None if matches!(
+                    kind,
+                    ConsoleKind::Log | ConsoleKind::Dir | ConsoleKind::Table | ConsoleKind::Trace
+                ) =>
+                {
                     return Ok(());
-                };
-                with_host(&ctx, &host, |host| host.console(level, message))
-            },
-        )?
-        .with_name(name)?;
-        console.set(name, method)?;
-    }
-    global.set("console", console)?;
-    dom::install(ctx, kind, host, budget, entries)
+                }
+                None => String::new(),
+            };
+            let record = ConsoleRecord {
+                level,
+                kind,
+                text,
+                previews,
+                stack,
+            };
+            with_host(&ctx, &console_host, |host| host.console_record(record))
+        },
+    )?
+    .with_name("consoleMessage")?;
+    dom::install(ctx, kind, host, budget, entries, console)
 }
 
 /// Calls `f` with the host, which is there only while a run the engine

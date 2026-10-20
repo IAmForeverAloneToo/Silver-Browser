@@ -14324,6 +14324,436 @@
     });
   }
 
+  // ---- The console (Console Standard; M36) ---------------------------------
+
+  // The console namespace: each method's arguments formatted by the
+  // natives into the text the shell prints, as before, and each given a
+  // preview for the DevTools panel (docs/design/devtools.md, "The
+  // console"): a snapshot taken when it was logged, as JSON, objects to
+  // PREVIEW_DEPTH levels and PREVIEW_PROPERTIES own properties each, no
+  // getter called, at most PREVIEW_NODES values in all.
+  const consoleMessage = native.consoleMessage;
+  const PREVIEW_DEPTH = 3;
+  const PREVIEW_PROPERTIES = 100;
+  const PREVIEW_NODES = 1000;
+  const PREVIEW_STRING = 10000;
+  const CONSOLE_LOG = 0;
+  const CONSOLE_INFO = 1;
+  const CONSOLE_WARN = 2;
+  const CONSOLE_ERROR = 3;
+  const CONSOLE_DEBUG = 4;
+  const $ErrorIsError = Error.isError;
+  // An error's stack is an accessor of Error.prototype's in QuickJS-ng.
+  const ErrorStackGet = getOwnPropertyDescriptor(Error.prototype, "stack").get;
+  const RegExpSourceGet = getOwnPropertyDescriptor(RegExp.prototype, "source").get;
+  const $RegExpPrototype = RegExp.prototype;
+  const $ArrayIsArray = Array.isArray;
+  const $DateGetTime = uncurry(Date.prototype.getTime);
+  const $DateToISOString = uncurry(Date.prototype.toISOString);
+  const $RegExpToString = uncurry(RegExp.prototype.toString);
+  const $FunctionToString = uncurry(Function.prototype.toString);
+  const $SymbolToString = uncurry(Symbol.prototype.toString);
+  const $BigIntToString = uncurry(BigInt.prototype.toString);
+  const $MapSize = uncurry(getOwnPropertyDescriptor(Map.prototype, "size").get);
+  const $SetSize = uncurry(getOwnPropertyDescriptor(Set.prototype, "size").get);
+  const $SetForEach = uncurry(Set.prototype.forEach);
+  const $MapForEach = uncurry(Map.prototype.forEach);
+  const $ObjectIs = Object.is;
+  const ObjectHasOwn = Object.hasOwn;
+  const $NumberToString = uncurry(Number.prototype.toString);
+  const $NumberIsFinite = Number.isFinite;
+
+  // `text` as a JSON string.
+  function quote(text) {
+    let out = '"';
+    for (let i = 0; i < text.length; i++) {
+      const c = CharCodeAt(text, i);
+      if (c === 0x22) {
+        out += '\\"';
+      } else if (c === 0x5c) {
+        out += "\\\\";
+      } else if (c < 0x20 || c === 0x2028 || c === 0x2029) {
+        out += "\\u" + StringSlice("000" + $NumberToString(c, 16), -4);
+      } else {
+        out += text[i];
+      }
+    }
+    return out + '"';
+  }
+
+  // The class an object is of, as the reference browser names it: its
+  // constructor's own name where its prototype has one, else its tag.
+  function classOf(value) {
+    let proto;
+    try {
+      proto = ReflectGetPrototypeOf(value);
+    } catch (e) {
+      return "Object";
+    }
+    if (proto === null) {
+      return "Object";
+    }
+    const desc = ReflectGetOwnPropertyDescriptor(proto, "constructor");
+    if (desc !== undefined && ObjectHasOwn(desc, "value") && typeof desc.value === "function") {
+      const name = ReflectGetOwnPropertyDescriptor(desc.value, "name");
+      if (name !== undefined && typeof name.value === "string" && name.value !== "") {
+        return name.value;
+      }
+    }
+    return "Object";
+  }
+
+  // An error's stack, as the original getter reads it.
+  function stackOf(error) {
+    try {
+      const stack = ReflectApply(ErrorStackGet, error, []);
+      return typeof stack === "string" ? stack : "";
+    } catch (e) {
+      return "";
+    }
+  }
+
+  // The preview of `value` as JSON, `depth` levels of its properties
+  // more to go, `state` the values made so far and the objects on the
+  // way down.
+  function preview(value, depth, state) {
+    state.nodes++;
+    switch (typeof value) {
+      case "undefined":
+        return '{"type":"undefined"}';
+      case "boolean":
+        return '{"type":"boolean","value":' + (value ? "true" : "false") + "}";
+      case "number":
+        if ($NumberIsFinite(value) && !$ObjectIs(value, -0)) {
+          return '{"type":"number","value":' + $String(value) + "}";
+        }
+        return '{"type":"number","description":' + quote($ObjectIs(value, -0) ? "-0" : $String(value)) + "}";
+      case "string":
+        return '{"type":"string","value":' + quote(StringSlice(value, 0, PREVIEW_STRING)) +
+          (value.length > PREVIEW_STRING ? ',"more":true' : "") + "}";
+      case "bigint":
+        return '{"type":"bigint","description":' + quote($BigIntToString(value) + "n") + "}";
+      case "symbol":
+        return '{"type":"symbol","description":' + quote($SymbolToString(value)) + "}";
+      case "function": {
+        const name = ReflectGetOwnPropertyDescriptor(value, "name");
+        return '{"type":"function","name":' +
+          quote(name !== undefined && typeof name.value === "string" ? name.value : "") + "}";
+      }
+    }
+    if (value === null) {
+      return '{"type":"null"}';
+    }
+    if (isNode(value)) {
+      return nodePreview(value);
+    }
+    for (let i = 0; i < state.path.length; i++) {
+      if (state.path[i] === value) {
+        return '{"type":"object","class":' + quote(classOf(value)) + ',"circular":true}';
+      }
+    }
+    const cls = classOf(value);
+    if ($ErrorIsError(value)) {
+      return errorPreview(value, cls);
+    }
+    if (branded($DateGetTime, value)) {
+      const time = $DateGetTime(value);
+      return '{"type":"date","description":' +
+        quote(time === time ? $DateToISOString(value) : "Invalid Date") + "}";
+    }
+    if (branded((v) => ReflectApply(RegExpSourceGet, v, []), value) &&
+        value !== $RegExpPrototype) {
+      return '{"type":"regexp","description":' + quote($RegExpToString(value)) + "}";
+    }
+    if (depth === 0 || state.nodes >= PREVIEW_NODES) {
+      return '{"type":"object","class":' + quote(cls) + ',"collapsed":true}';
+    }
+    ArrayPush(state.path, value);
+    let out;
+    const map = branded($MapSize, value);
+    if (map || branded($SetSize, value)) {
+      out = entriesPreview(value, map, cls, depth, state);
+    } else {
+      out = propertiesPreview(value, cls, depth, state);
+    }
+    state.path.length--;
+    return out;
+  }
+
+  // An object's own properties, or an array's items and own named
+  // properties: an accessor's value is not read.
+  function propertiesPreview(value, cls, depth, state) {
+    const array = $ArrayIsArray(value);
+    let keys;
+    try {
+      keys = ReflectOwnKeys(value);
+    } catch (e) {
+      return '{"type":"object","class":' + quote(cls) + ',"collapsed":true}';
+    }
+    let out = array
+      ? '{"type":"array","class":' + quote(cls) + ',"length":' + $String(value.length) + ',"properties":['
+      : '{"type":"object","class":' + quote(cls) + ',"properties":[';
+    let shown = 0;
+    let more = false;
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      if (array && key === "length") {
+        continue;
+      }
+      if (shown === PREVIEW_PROPERTIES || state.nodes >= PREVIEW_NODES) {
+        more = true;
+        break;
+      }
+      let desc;
+      try {
+        desc = ReflectGetOwnPropertyDescriptor(value, key);
+      } catch (e) {
+        desc = undefined;
+      }
+      if (desc === undefined) {
+        continue;
+      }
+      const name = typeof key === "symbol" ? $SymbolToString(key) : key;
+      const item = ObjectHasOwn(desc, "value")
+        ? preview(desc.value, depth - 1, state)
+        : '{"type":"accessor"}';
+      out += (shown > 0 ? "," : "") + "[" + quote(name) + "," + item + "]";
+      shown++;
+    }
+    return out + "]" + (more ? ',"more":true' : "") + "}";
+  }
+
+  // A map's entries, or a set's values.
+  function entriesPreview(value, map, cls, depth, state) {
+    const size = map ? $MapSize(value) : $SetSize(value);
+    let out = '{"type":' + (map ? '"map"' : '"set"') + ',"class":' + quote(cls) +
+      ',"size":' + $String(size) + ',"entries":[';
+    let shown = 0;
+    const each = (v, k) => {
+      if (shown === PREVIEW_PROPERTIES || state.nodes >= PREVIEW_NODES) {
+        return;
+      }
+      const item = map
+        ? "[" + preview(k, depth - 1, state) + "," + preview(v, depth - 1, state) + "]"
+        : preview(v, depth - 1, state);
+      out += (shown > 0 ? "," : "") + item;
+      shown++;
+    };
+    if (map) {
+      $MapForEach(value, each);
+    } else {
+      $SetForEach(value, each);
+    }
+    return out + "]" + (shown < size ? ',"more":true' : "") + "}";
+  }
+
+  // An `Error`: its class, message and stack, read as data and never by
+  // a getter.
+  function errorPreview(value, cls) {
+    const own = (name) => {
+      const desc = ReflectGetOwnPropertyDescriptor(value, name);
+      return desc !== undefined && typeof desc.value === "string" ? desc.value : "";
+    };
+    return '{"type":"error","class":' + quote(cls) + ',"message":' + quote(own("message")) +
+      ',"stack":' + quote(stackOf(value)) + "}";
+  }
+
+  // A node: what the reference browser shows of one, its tag, id and
+  // classes, from the document rather than the object, and its handle,
+  // which the element inspector names it by.
+  function nodePreview(node) {
+    const handle = handleOf(node);
+    const kind = native.kind(handle);
+    let out = '{"type":"node","node":' + $String(handle) + ',"nodeType":' + $String(kind);
+    if (kind === 1) {
+      const id = native.attribute(handle, "id");
+      const cls = native.attribute(handle, "class");
+      out += ',"tag":' + quote(native.tag(handle)) +
+        (id !== null ? ',"id":' + quote(id) : "") +
+        (cls !== null ? ',"classes":' + quote(cls) : "");
+    } else {
+      out += ',"name":' + quote(nameOf(node));
+    }
+    return out + "}";
+  }
+
+  // The previews of `args` from `first` on, a JSON array.
+  function previews(args, first) {
+    const state = { __proto__: null, nodes: 0, path: [] };
+    let out = "[";
+    for (let i = first; i < args.length; i++) {
+      out += (i > first ? "," : "") + preview(args[i], PREVIEW_DEPTH, state);
+    }
+    return out + "]";
+  }
+
+  // The stack where the console was called, the bootstrap's own frames
+  // left out by the native.
+  function stackHere() {
+    return stackOf(new $Error());
+  }
+
+  // Logs `args` (Console Standard's Logger) at `level` as a call of
+  // `kind`, with the stack where it was called: its place, and all of
+  // it for an error or a trace.
+  function logger(level, kind, args, first) {
+    const call = [level, kind, previews(args, first), stackHere()];
+    for (let i = first; i < args.length; i++) {
+      ArrayPush(call, args[i]);
+    }
+    ReflectApply(consoleMessage, undefined, call);
+  }
+
+  const consoleCounts = new $Map();
+  const consoleTimers = new $Map();
+  let groupDepth = 0;
+
+  function label(value) {
+    return value === undefined ? "default" : toString(value);
+  }
+
+  const consoleMethods = {
+    log(...args) {
+      logger(CONSOLE_LOG, "log", args, 0);
+    },
+    info(...args) {
+      logger(CONSOLE_INFO, "log", args, 0);
+    },
+    warn(...args) {
+      logger(CONSOLE_WARN, "log", args, 0);
+    },
+    error(...args) {
+      logger(CONSOLE_ERROR, "log", args, 0);
+    },
+    debug(...args) {
+      logger(CONSOLE_DEBUG, "log", args, 0);
+    },
+    assert(condition, ...args) {
+      if (condition) {
+        return;
+      }
+      // "Assertion failed", then the format and its arguments.
+      if (args.length === 0) {
+        args = ["Assertion failed"];
+      } else if (typeof args[0] === "string") {
+        args[0] = "Assertion failed: " + args[0];
+      } else {
+        ArraySplice(args, 0, 0, "Assertion failed:");
+      }
+      logger(CONSOLE_ERROR, "log", args, 0);
+    },
+    clear() {
+      groupDepth = 0;
+      logger(CONSOLE_LOG, "clear", [], 0);
+    },
+    count(name) {
+      const key = label(name);
+      const count = (MapGet(consoleCounts, key) || 0) + 1;
+      MapSet(consoleCounts, key, count);
+      logger(CONSOLE_INFO, "log", [key + ": " + count], 0);
+    },
+    countReset(name) {
+      const key = label(name);
+      if (MapHas(consoleCounts, key)) {
+        MapSet(consoleCounts, key, 0);
+      } else {
+        logger(CONSOLE_WARN, "log", ["Count for '" + key + "' does not exist"], 0);
+      }
+    },
+    dir(item) {
+      logger(CONSOLE_LOG, "dir", [item], 0);
+    },
+    dirxml(...args) {
+      logger(CONSOLE_LOG, "log", args, 0);
+    },
+    group(...args) {
+      groupDepth++;
+      logger(CONSOLE_LOG, "group", args.length === 0 ? ["console.group"] : args, 0);
+    },
+    groupCollapsed(...args) {
+      groupDepth++;
+      logger(CONSOLE_LOG, "groupCollapsed", args.length === 0 ? ["console.groupCollapsed"] : args, 0);
+    },
+    groupEnd() {
+      if (groupDepth > 0) {
+        groupDepth--;
+        logger(CONSOLE_LOG, "groupEnd", [], 0);
+      }
+    },
+    table(data, properties) {
+      // The panel draws the table of the preview; the text is a log's.
+      logger(CONSOLE_LOG, "table", [data], 0);
+    },
+    time(name) {
+      const key = label(name);
+      if (MapHas(consoleTimers, key)) {
+        logger(CONSOLE_WARN, "log", ["Timer '" + key + "' already exists"], 0);
+        return;
+      }
+      MapSet(consoleTimers, key, native.now());
+    },
+    timeLog(name, ...args) {
+      const key = label(name);
+      const start = MapGet(consoleTimers, key);
+      if (start === undefined) {
+        logger(CONSOLE_WARN, "log", ["Timer '" + key + "' does not exist"], 0);
+        return;
+      }
+      ArraySplice(args, 0, 0, key + ": " + (native.now() - start) + " ms");
+      logger(CONSOLE_LOG, "log", args, 0);
+    },
+    timeEnd(name) {
+      const key = label(name);
+      const start = MapGet(consoleTimers, key);
+      if (start === undefined) {
+        logger(CONSOLE_WARN, "log", ["Timer '" + key + "' does not exist"], 0);
+        return;
+      }
+      MapDelete(consoleTimers, key);
+      logger(CONSOLE_INFO, "log", [key + ": " + (native.now() - start) + " ms - timer ended"], 0);
+    },
+    trace(...args) {
+      logger(CONSOLE_LOG, "trace", args.length === 0 ? ["console.trace"] : args, 0);
+    },
+  };
+
+  defineProperty(consoleMethods, toStringTag, { value: "console", configurable: true });
+  defineProperty(global, "console", {
+    value: consoleMethods,
+    writable: true,
+    enumerable: false,
+    configurable: true,
+  });
+
+  // The DevTools console's expression (M36), run as a script of its own
+  // in the global scope, the page's policies aside, with `$0` the node
+  // the element inspector selected unless the page has a `$0` of its
+  // own: its value's preview, or its exception's, given to the host.
+  function* evaluateExpression(text, selected) {
+    const own = ReflectGetOwnPropertyDescriptor(global, "$0");
+    if (own === undefined) {
+      defineProperty(global, "$0", {
+        value: selected === null ? undefined : wrap(selected),
+        writable: true,
+        configurable: true,
+      });
+    }
+    const state = { __proto__: null, nodes: 0, path: [] };
+    let answer;
+    try {
+      const value = OriginalEval(text);
+      answer = '{"result":' + preview(value, PREVIEW_DEPTH, state) + "}";
+    } catch (e) {
+      answer = '{"exception":' + preview(e, PREVIEW_DEPTH, state) + "}";
+    } finally {
+      if (own === undefined) {
+        ReflectDeleteProperty(global, "$0");
+      }
+    }
+    native.devtoolsAnswer(answer);
+    return false;
+  }
+
   // An entry's run that dispatches nothing.
   function* nothing() {
     return false;
@@ -15998,6 +16428,7 @@
     frameList,
     guardCode,
     devtools: devtoolsMessage,
+    evaluate: evaluateExpression,
     fetched,
     // A message's arrival (M31): at the global (`kind` 0), at worker
     // `n`'s object (1) or at port `n` (2).

@@ -379,3 +379,35 @@ fn closing_the_calls_ends_those_that_wait() {
     assert_eq!(waiting.join().expect("joined"), Err(Closed));
     assert!(calls.begin().is_err(), "none asked again");
 }
+
+#[test]
+fn a_console_entry_goes_there_and_back_whole() {
+    use crate::{ConsoleEntry, ConsoleKind, ConsoleLevel, ConsoleSource, StackFrame};
+    let entry = ConsoleEntry {
+        level: ConsoleLevel::Warn,
+        text: "t".to_owned(),
+        source: ConsoleSource::Policy,
+        kind: ConsoleKind::GroupCollapsed,
+        time: 1234,
+        url: "https://a.test/s.js".to_owned(),
+        line: 7,
+        column: 9,
+        stack: vec![StackFrame {
+            function: "f".to_owned(),
+            url: "https://a.test/s.js".to_owned(),
+            line: 7,
+            column: 9,
+        }],
+        previews: "[]".to_owned(),
+    };
+    let message = ToBrowser::Console {
+        view: 1,
+        entries: vec![entry.clone(), ConsoleEntry::default()],
+    };
+    let ToBrowser::Console { entries, .. } =
+        decode_all::<ToBrowser>(&encode(&message)).expect("a message")
+    else {
+        panic!("not the console's");
+    };
+    assert_eq!(entries, [entry, ConsoleEntry::default()]);
+}
