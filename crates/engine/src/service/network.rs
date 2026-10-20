@@ -38,6 +38,8 @@ pub enum Lock {
     File,
     /// Documents of opaque origins alone.
     Opaque,
+    /// The DevTools panel's page alone (M36): no network, no storage.
+    DevTools,
 }
 
 impl std::fmt::Display for Lock {
@@ -46,6 +48,7 @@ impl std::fmt::Display for Lock {
             Lock::Site { scheme, host } => write!(f, "{scheme}://{host}"),
             Lock::File => write!(f, "file:"),
             Lock::Opaque => write!(f, "opaque"),
+            Lock::DevTools => write!(f, "devtools:"),
         }
     }
 }
@@ -55,6 +58,9 @@ impl Lock {
     pub fn of(url: &Url) -> Lock {
         if url.scheme() == "file" {
             return Lock::File;
+        }
+        if url.scheme() == "devtools" {
+            return Lock::DevTools;
         }
         match url.origin().site() {
             net::Site::Schemeful { scheme, host } => Lock::Site { scheme, host },
@@ -422,12 +428,19 @@ impl NetworkService {
             }
             fetches.insert((renderer, id), request.abort.clone());
         }
-        if request.url.scheme() == "file" && *lock != Lock::File {
+        // A `file:` URL is a file renderer's alone; the DevTools panel's
+        // renderer fetches nothing (M36).
+        let refused = match lock {
+            Lock::DevTools => Some("devtools"),
+            Lock::File => None,
+            _ => (request.url.scheme() == "file").then_some("file"),
+        };
+        if let Some(why) = refused {
             self.fetches().remove(&(renderer, id));
             send_done(
                 reply,
                 id,
-                Err(NetworkError::Refused("file".into())),
+                Err(NetworkError::Refused(why.into())),
                 Vec::new(),
             );
             return Ok(());

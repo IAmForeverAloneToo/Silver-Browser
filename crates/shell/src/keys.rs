@@ -25,6 +25,7 @@ pub(crate) enum Key {
     Tab,
     F5,
     F6,
+    F12,
     /// A key that stands for a character in the keyboard's layout, as
     /// the layout has it with the modifiers held but Ctrl.
     Char(String),
@@ -82,6 +83,8 @@ pub(crate) enum Shortcut {
     /// Gives the page the keyboard, at its first area that takes the
     /// focus, or with Shift its last (M26.6).
     ToPage,
+    /// Opens the DevTools panel, or closes it (M36).
+    DevTools,
 }
 
 /// What `key`, pressed with `mods` held on `platform`, asks for: in the
@@ -111,6 +114,9 @@ pub(crate) fn shortcut(
         (_, "[") if mac && command => Some(Shortcut::Back),
         (_, "]") if mac && command => Some(Shortcut::Forward),
         (Key::F5, _) => Some(Shortcut::Reload),
+        (Key::F12, _) => Some(Shortcut::DevTools),
+        (_, "i") if !mac && mods.ctrl && mods.shift && !mods.alt => Some(Shortcut::DevTools),
+        (_, "i") if mac && mods.logo && mods.alt => Some(Shortcut::DevTools),
         (_, "r") if command => Some(Shortcut::Reload),
         (Key::Escape, _) => Some(Shortcut::Escape),
         (_, "c") if command => Some(Shortcut::Copy),
@@ -239,6 +245,8 @@ mod tests {
                 (Key::Insert, CTRL, Copy),
                 (Key::Insert, SHIFT, Paste),
                 (Key::Delete, SHIFT, Cut),
+                (Key::F12, NONE, DevTools),
+                (char("I"), CTRL_SHIFT, DevTools),
             ] {
                 assert_eq!(
                     other(key.clone(), mods, in_field),
@@ -251,6 +259,8 @@ mod tests {
         assert_eq!(other(char("l"), ALT_GR, true), None);
         assert_eq!(other(char("l"), CMD, false), None);
         assert_eq!(other(char("["), CTRL, false), None);
+        // Ctrl+I alone is the page's.
+        assert_eq!(other(char("i"), CTRL, false), None);
     }
 
     #[test]
@@ -275,6 +285,13 @@ mod tests {
         // Ctrl is not Cmd, and Option types characters.
         assert_eq!(mac(char("l"), CTRL, false), None);
         assert_eq!(mac(char("d"), ALT, false), None);
+        let cmd_option = Modifiers {
+            logo: true,
+            alt: true,
+            ..NONE
+        };
+        assert_eq!(mac(char("i"), cmd_option, false), Some(Shortcut::DevTools));
+        assert_eq!(mac(Key::F12, NONE, true), Some(Shortcut::DevTools));
         assert_eq!(mac(Key::Left, ALT, false), None);
         assert_eq!(mac(Key::Insert, SHIFT, true), None);
     }

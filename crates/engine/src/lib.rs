@@ -100,6 +100,7 @@ mod editing;
 mod focus;
 mod frames;
 mod image_store;
+mod inspect;
 pub mod ipc;
 mod keys;
 mod loader;
@@ -127,6 +128,7 @@ use std::time::{Duration, Instant, SystemTime};
 pub use dom::ElementState;
 pub use frames::{MAX_FRAME_DEPTH, MAX_FRAME_HEAP, MAX_FRAMES};
 pub use image_store::MAX_DECODE_THREADS;
+pub use inspect::MAX_INSPECTED_MESSAGES;
 pub use js::{ConsoleLevel, warm_bindings};
 pub use keys::{Key, KeyOutcome};
 pub use loader::{LoadError, LoadState};
@@ -462,6 +464,10 @@ pub struct Engine {
     frame: frames::FrameContext,
     /// The time of the frame being drawn, for the frames drawn into it.
     drawing_at: Option<FrameTime>,
+    /// Whether the engine shows the DevTools panel's page (M36); and, for
+    /// a page inspected, its answers and events for the panel.
+    panel: bool,
+    inspected: Vec<String>,
 }
 
 /// A document and everything the engine made from it (M15): what the
@@ -606,6 +612,10 @@ impl Shown {
     fn new(mut document: Document, page: Page) -> Shown {
         document.take_changes();
         let stylesheets = Stylesheets::new(page.sheets());
+        let mut scripts = scripts::Scripts::default();
+        if page.is_panel() {
+            scripts.make_panel();
+        }
         Shown {
             document,
             page,
@@ -632,7 +642,7 @@ impl Shown {
             next_image_frame: None,
             parsing: None,
             unreached: None,
-            scripts: scripts::Scripts::default(),
+            scripts,
             lifecycle: Lifecycle::default(),
             rendered: None,
             told: HashMap::new(),
@@ -1204,6 +1214,8 @@ impl Engine {
             keyboard: false,
             frame: frames::FrameContext::top(),
             drawing_at: None,
+            panel: false,
+            inspected: Vec::new(),
         }
     }
 
@@ -3636,6 +3648,20 @@ impl Engine {
         self.load_state = LoadState::Loading;
     }
 
+    /// `page`, the DevTools panel's when the engine shows the panel and
+    /// it is under the panel's URL (M36).
+    fn panel_page(&self, page: Page) -> Page {
+        if self.panel
+            && page
+                .url()
+                .is_some_and(|url| url.as_str() == devtools::PANEL_URL)
+        {
+            page.into_panel()
+        } else {
+            page
+        }
+    }
+
     /// Shows the browser's page saying a renderer stopped (M34.4, D34),
     /// under `url`: `why` it did, and the file a dump of it was written
     /// to, if one was. The browser's own engine shows it, for a tab or a
@@ -4576,12 +4602,16 @@ impl Engine {
             .unwrap_or_default();
         let mut page = parsed_page(id, &response, &load, creator.as_ref(), sandbox)
             .with_referrer(referrer.clone());
+        page = self.panel_page(page);
         // A frame's document's requests are made where it is (M33.2).
         let partition = self.partition_for(page.origin());
         self.network.set_partition(id, partition);
         self.place_local_network(&mut page);
         if let Some(navigation) = &mut self.navigation {
             let mut scripts = scripts::Scripts::with_limits(self.script_limits);
+            if page.is_panel() {
+                scripts.make_panel();
+            }
             scripts.set_time_origin(navigation.started);
             scripts.use_router(frames::lock(&self.frame.tree).router());
             navigation.incoming = Incoming::Parsing {
@@ -4972,6 +5002,7 @@ impl Engine {
                 }
                 let csp = net::csp::Csp::from_headers(&response.headers, response.url());
                 incoming = incoming.with_sandbox(sandbox.with(sandbox::Sandbox::from_csp(&csp)));
+                incoming = self.panel_page(incoming);
                 let partition = self.partition_for(incoming.origin());
                 self.network.set_partition(page, partition);
                 self.place_local_network(&mut incoming);

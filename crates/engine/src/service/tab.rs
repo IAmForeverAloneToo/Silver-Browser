@@ -232,6 +232,12 @@ pub struct RemoteTab {
     holding: bool,
     #[cfg(test)]
     held: Option<(ViewId, u64)>,
+    /// Whether the tab shows the DevTools panel (M36), and what its page
+    /// sent the browser; or, a page's tab, what its page answered the
+    /// panel. Each kind is taken from its own kind of tab alone.
+    panel: bool,
+    devtools: Vec<String>,
+    inspected: Vec<String>,
 }
 
 impl RemoteTab {
@@ -349,7 +355,28 @@ impl RemoteTab {
             holding: false,
             #[cfg(test)]
             held: None,
+            panel: false,
+            devtools: Vec::new(),
+            inspected: Vec::new(),
         }
+    }
+
+    /// A tab of one renderer showing the DevTools panel (M36), on this
+    /// tab's launcher, fonts, waker, clock and settings, its scripts on.
+    pub fn devtools_panel(&self) -> RemoteTab {
+        let mut panel = RemoteTab::with_cap(self.launcher.clone(), self.fonts.clone(), 1, false);
+        panel.panel = true;
+        panel.settings = self.settings.clone();
+        panel.settings.scripting = true;
+        panel.clock = self.clock.clone();
+        let waker = self
+            .waker
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        *panel.waker.lock().unwrap_or_else(PoisonError::into_inner) = waker;
+        panel.navigate(Url::parse(devtools::PANEL_URL).expect("the panel's URL parses"));
+        panel
     }
 
     /// The state the session reads: the current segment's.
@@ -1053,6 +1080,10 @@ impl RemoteTab {
             | ToBrowser::Notice { view, .. }
             | ToBrowser::FocusLeft { view }
             | ToBrowser::Copied { view, .. } => Some(*view),
+            // The panel's messages from the panel's tab, the answers to it
+            // from a page's (M36).
+            ToBrowser::DevTools { view, .. } if self.panel => Some(*view),
+            ToBrowser::Inspected { view, .. } if !self.panel => Some(*view),
             _ => None,
         };
         let Some(view) = view_of(&message) else {
@@ -1159,6 +1190,16 @@ impl RemoteTab {
                 {
                     self.copied = Some((text, cut));
                 }
+            }
+            ToBrowser::DevTools { message, .. }
+                if shown && self.devtools.len() < crate::MAX_INSPECTED_MESSAGES =>
+            {
+                self.devtools.push(message);
+            }
+            ToBrowser::Inspected { message, .. }
+                if shown && self.inspected.len() < crate::MAX_INSPECTED_MESSAGES =>
+            {
+                self.inspected.push(message);
             }
             _ => {}
         }
@@ -1785,6 +1826,30 @@ impl View for RemoteTab {
 
     fn set_clock(&mut self, clock: Clock) {
         self.clock = Some(clock);
+    }
+
+    fn devtools_panel(&self) -> Option<RemoteTab> {
+        Some(RemoteTab::devtools_panel(self))
+    }
+
+    fn devtools_send(&mut self, message: String) {
+        if self.panel {
+            self.send(|view| ToRenderer::DevTools { view, message });
+        }
+    }
+
+    fn take_devtools(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.devtools)
+    }
+
+    fn inspect(&mut self, message: String) {
+        if !self.panel {
+            self.send(|view| ToRenderer::Inspect { view, message });
+        }
+    }
+
+    fn take_inspected(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.inspected)
     }
 
     fn run_tasks(&mut self) -> bool {

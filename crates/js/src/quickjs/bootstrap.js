@@ -14329,6 +14329,38 @@
     return false;
   }
 
+  // The DevTools panel's bridge (M36, docs/design/devtools.md): in the
+  // panel's page alone, `devtools.send(message)` queues a message for
+  // the browser, and each of the browser's calls `devtools.onmessage`.
+  const devtoolsObject = native.realmKind === "devtools" ? {
+    send(message) {
+      native.devtoolsSend(toString(message));
+    },
+    onmessage: null,
+  } : undefined;
+  if (devtoolsObject !== undefined) {
+    defineProperty(global, "devtools", {
+      value: devtoolsObject,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+
+  // A message from the browser to the panel's page: what its handler
+  // throws is reported as an uncaught exception.
+  function* devtoolsMessage(text) {
+    const handler = devtoolsObject === undefined ? undefined : devtoolsObject.onmessage;
+    if (typeof handler === "function") {
+      try {
+        handler.call(devtoolsObject, text);
+      } catch (e) {
+        reportException(e);
+      }
+    }
+    return false;
+  }
+
   // Worker `id`'s uncaught error (HTML section 10.2.4, "runtime script
   // errors"): an ErrorEvent at its object, cancelable, then, not
   // canceled, reported here as an error of this realm's own, with no
@@ -15965,6 +15997,7 @@
     frames: runFrames,
     frameList,
     guardCode,
+    devtools: devtoolsMessage,
     fetched,
     // A message's arrival (M31): at the global (`kind` 0), at worker
     // `n`'s object (1) or at port `n` (2).

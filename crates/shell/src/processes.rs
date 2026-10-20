@@ -226,6 +226,7 @@ pub(crate) fn check(what: Option<&str>) -> i32 {
     let checked = match what {
         Some("orphan") => check_orphan(),
         Some("page") => check_page(),
+        Some("devtools") => check_devtools(),
         Some("sandbox") => check_sandbox(),
         Some("crash") => check_crash(),
         Some("kill") => check_kill(),
@@ -651,6 +652,70 @@ fn check_memory(port: Option<String>, pages: Vec<String>) -> Result<(), String> 
             .map_or_else(|| "?".to_owned(), |bytes| kb(bytes).to_string()),
         kb(browser.working_set)
     );
+    Ok(())
+}
+
+/// The DevTools panel in a renderer process of its own (M36): it asks
+/// which page it inspects, the page's renderer answers through the
+/// browser, and the panel is drawn.
+fn check_devtools() -> Result<(), String> {
+    const SIZE: (u32, u32) = (400, 300);
+    let mut page = process_tab(SIZE)?;
+    let url = Url::parse("about:silver").map_err(|_| "about:silver")?;
+    page.navigate(url.clone());
+    if !wait_for(&mut page, |tab| {
+        tab.url() == Some(&url) && *tab.load_state() == LoadState::Loaded
+    }) {
+        return Err(format!("the page did not load: {:?}", page.load_state()));
+    }
+    let mut panel = page.devtools_panel();
+    panel.set_viewport(SIZE.0, SIZE.1);
+    panel.frame_at(SIZE.0, SIZE.1, FrameTime::at(Duration::ZERO));
+    let mut asked = Vec::new();
+    if !wait_for(&mut panel, |panel| {
+        asked.extend(panel.take_devtools());
+        !asked.is_empty()
+    }) {
+        return Err("the panel asked nothing".into());
+    }
+    page.inspect(asked[0].clone());
+    let mut answers = Vec::new();
+    if !wait_for(&mut page, |page| {
+        answers.extend(page.take_inspected());
+        !answers.is_empty()
+    }) {
+        return Err("the page answered nothing".into());
+    }
+    panel.devtools_send(answers[0].clone());
+    let mut drawn = 0;
+    wait_for(&mut panel, |panel| {
+        if panel.needs_frame() {
+            let frame = panel.frame_at(SIZE.0, SIZE.1, FrameTime::at(Duration::ZERO));
+            drawn = frame
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|pixel| pixel[..3] != [255, 255, 255])
+                .count();
+        }
+        drawn > 0
+    });
+    let locks: Vec<String> = panel
+        .renderers()
+        .into_iter()
+        .filter_map(|(_, lock)| lock)
+        .collect();
+    println!(
+        "devtools: panel {:?} in renderer process {:?} locked {}, asked {}, answered {},          {drawn} pixels drawn",
+        panel.load_state(),
+        panel.renderer_process(),
+        locks.join(" "),
+        asked[0],
+        answers[0]
+    );
+    if drawn == 0 {
+        return Err("the panel's renderer drew nothing".into());
+    }
     Ok(())
 }
 

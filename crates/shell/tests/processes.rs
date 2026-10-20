@@ -250,3 +250,21 @@ fn a_renderer_process_shows_a_page_for_the_browser() {
     assert!(out.status.success(), "{said}{complained}");
     assert!(said.starts_with("page: about:silver Loaded, "), "{said}");
 }
+
+#[test]
+fn the_devtools_panel_is_shown_by_a_renderer_process_of_its_own() {
+    let out = Command::new(BROWSER)
+        .args(["--check-processes", "devtools"])
+        .output()
+        .expect("the check ran");
+    let said = String::from_utf8_lossy(&out.stdout);
+    let complained = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{said}{complained}");
+    assert!(
+        said.starts_with("devtools: panel Loaded in renderer process Some("),
+        "{said}"
+    );
+    assert!(said.contains(" locked devtools:, asked "), "{said}");
+    assert!(said.contains(r#""method":"page.info""#), "{said}");
+    assert!(said.contains(r#""title":"Silver Browser""#), "{said}");
+}

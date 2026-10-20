@@ -456,6 +456,29 @@ fn the_browser_decides_the_partition_and_drops_a_referrer_of_another_site() {
 }
 
 #[test]
+fn the_devtools_panels_renderer_fetches_nothing() {
+    let server = serve(|_| Some(Reply::ok("text/plain", b"x")));
+    let panel = Url::parse(devtools::PANEL_URL).expect("a URL");
+    let wired = wired(
+        Lock::of(&panel),
+        FrameGrant {
+            top: panel.origin(),
+            cross_site: false,
+        },
+    );
+    let fetcher = RemoteFetcher::new(wired.link.clone(), 7);
+    for url in [server.url("/"), Url::parse("data:,x").expect("a URL")] {
+        let mut request = Request::get(url, Destination::Empty);
+        request.origin = Some(panel.origin());
+        assert_eq!(
+            fetcher.fetch(&request).map(|r| r.status),
+            Err(NetworkError::Refused("devtools".into()))
+        );
+    }
+    assert!(server.requests().is_empty());
+}
+
+#[test]
 fn an_engine_fetches_and_reaches_its_cookies_through_the_browser() {
     let server = serve(|path| match path {
         "/page.html" => Some(Reply::with_fields(

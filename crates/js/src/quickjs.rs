@@ -427,6 +427,11 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                     .get::<_, Function<'_>>("guardCode")?
                     .call::<_, Value<'_>>(())
             }),
+            Task::DevTools(message) => self.stepped(&entries, |_, entries| {
+                entries
+                    .get::<_, Function<'_>>("devtools")?
+                    .call::<_, Value<'_>>((message.as_str(),))
+            }),
             Task::Fetched { id, answer } => self.context.with(|ctx| {
                 let called = entries.clone().restore(&ctx).and_then(|entries| {
                     let answer = match answer {
@@ -762,7 +767,7 @@ fn install<'js, H: ScriptingHost>(
     global.remove("performance")?;
     global.remove("SharedArrayBuffer")?;
     // A worker's `self` is its scope's (M31), and it has no `window`.
-    if *kind == RealmKind::Window {
+    if matches!(kind, RealmKind::Window | RealmKind::DevTools) {
         global.set("window", global.clone())?;
         global.set("self", global.clone())?;
     }

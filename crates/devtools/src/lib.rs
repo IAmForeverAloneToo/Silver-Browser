@@ -9,8 +9,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod frontend;
 pub mod json;
 pub mod protocol;
 
+pub use frontend::{PANEL_CSP, PANEL_URL};
 pub use json::{Json, JsonError, MAX_JSON_DEPTH, MAX_MESSAGE_BYTES};
-pub use protocol::{Request, RequestError};
+pub use protocol::{Request, RequestError, error, event, result};

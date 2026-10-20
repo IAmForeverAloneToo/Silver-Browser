@@ -2,7 +2,8 @@
 //! docs/design/navigation.md, "The toolbar" and "Keys and the
 //! pointer"): the toolbar across the top, the page under it, a site's
 //! permission prompt over the page's top (M33.4), the status
-//! bubble at the page's bottom left, and the keys, the pointer, the
+//! bubble at the page's bottom left, the DevTools panel under the page
+//! while it is open (M36), and the keys, the pointer, the
 //! input method and the clipboard made calls on the engine and the
 //! toolbar. Its input comes in the shell's own small types rather than
 //! winit's, so that tests drive it with an engine and the test server;
@@ -14,6 +15,7 @@ use engine::address::{self, Address};
 use engine::{Engine, FrameTime, Link, LoadState, PermissionPrompt, Preferences, Url, View};
 use ui::{Action, Choice, PageState, PromptBar, StatusBubble, TooLong, Toolbar};
 
+use crate::devtools::Router;
 use crate::keys::{self, Key, Modifiers, Platform, Shortcut};
 
 /// The toolbar's height: the page starts below it.
@@ -24,6 +26,9 @@ pub(crate) const LINE_PX: f32 = 40.0;
 /// are a double click, and three a triple click.
 const MULTI_CLICK_TIME: Duration = Duration::from_millis(500);
 const MULTI_CLICK_DISTANCE: f32 = 4.0;
+/// The share of the window under the toolbar the DevTools panel takes
+/// while it is open (M36): the page has the rest, above it.
+pub(crate) const PANEL_SHARE: f32 = 0.4;
 
 /// The OS's clipboard, as the session reaches it: an error is what to
 /// tell the user.
@@ -37,6 +42,8 @@ pub(crate) trait Clipboard {
 pub(crate) enum Focus {
     Field,
     Page,
+    /// The DevTools panel (M36).
+    Panel,
 }
 
 /// A mouse button.
@@ -72,6 +79,8 @@ enum Held {
     Track,
     /// The page, which was given the press (M26.5).
     Page,
+    /// The DevTools panel, which was given the press (M36).
+    Panel,
 }
 
 /// A press of the left button: when and where, and how many presses in
@@ -127,6 +136,16 @@ pub(crate) struct Session<V: View = Engine> {
     title: String,
     /// What the status bubble said in the last frame.
     drawn_bubble: Option<String>,
+    /// The DevTools panel while it is open (M36): a view of the same kind
+    /// as the page's, showing the panel's page; whether it has the
+    /// keyboard; the cursor it gives the point under the pointer; and
+    /// what passes messages between it and the page.
+    panel: Option<V>,
+    panel_keys: bool,
+    panel_cursor: engine::Cursor,
+    router: Router,
+    /// The window's size in device pixels, which the regions are cut of.
+    device: (u32, u32),
 }
 
 impl<V: View> Session<V> {
@@ -166,6 +185,11 @@ impl<V: View> Session<V> {
             reports: Vec::new(),
             title: String::new(),
             drawn_bubble: None,
+            panel: None,
+            panel_keys: false,
+            panel_cursor: engine::Cursor::Default,
+            router: Router::default(),
+            device: (0, 0),
         };
         session.sync();
         if start.is_none() {
@@ -205,9 +229,74 @@ impl<V: View> Session<V> {
     pub(crate) fn focus(&self) -> Focus {
         if self.toolbar.is_focused() {
             Focus::Field
+        } else if self.panel_keys && self.panel.is_some() {
+            Focus::Panel
         } else {
             Focus::Page
         }
+    }
+
+    /// The DevTools panel, while it is open (M36).
+    #[cfg(test)]
+    pub(crate) fn panel_mut(&mut self) -> Option<&mut V> {
+        self.panel.as_mut()
+    }
+
+    /// The rows of a window `height` device pixels tall, top to bottom:
+    /// the toolbar's, the page's, and the DevTools panel's (M36), none
+    /// while it is closed.
+    fn rows(&self, height: u32) -> (u32, u32, u32) {
+        let bar = ui::rows(ui::HEIGHT, self.scale).min(height);
+        let rest = height - bar;
+        let panel = match self.panel {
+            Some(_) => (rest as f32 * PANEL_SHARE).round() as u32,
+            None => 0,
+        };
+        (bar, rest - panel, panel)
+    }
+
+    /// Where the DevTools panel starts down the window, in CSS pixels.
+    fn panel_top(&self) -> f32 {
+        let (bar, page, _) = self.rows(self.device.1);
+        (bar + page) as f32 / self.scale
+    }
+
+    /// Whether `y` down the window is over the DevTools panel.
+    fn in_panel(&self, y: f32) -> bool {
+        self.panel.is_some() && y >= self.panel_top()
+    }
+
+    /// The page's and the panel's viewports, in CSS pixels, as the
+    /// window's size and the panel cut them.
+    fn place_views(&mut self) {
+        let css = |v: u32| (v as f32 / self.scale).round() as u32;
+        let (width, height) = self.size;
+        let (_, _, panel) = self.rows(self.device.1);
+        let page = height - ui::HEIGHT.min(height);
+        let panel = css(panel).min(page);
+        self.engine.set_viewport(width, page - panel);
+        if let Some(view) = &mut self.panel {
+            view.set_viewport(width, panel);
+        }
+    }
+
+    /// Opens the DevTools panel under the page, with the keyboard, or
+    /// closes it (M36).
+    pub(crate) fn toggle_devtools(&mut self) {
+        if self.panel.take().is_some() {
+            self.panel_keys = false;
+        } else {
+            self.panel = self.engine.devtools_panel();
+            if let Some(panel) = &mut self.panel {
+                panel.set_scale_factor(self.scale);
+            }
+            self.router = Router::default();
+            self.panel_keys = self.panel.is_some();
+            self.toolbar.blur();
+        }
+        self.place_views();
+        self.sync_window_focus();
+        self.sync();
     }
 
     /// The window's title.
@@ -234,13 +323,10 @@ impl<V: View> Session<V> {
                 ui::Cursor::Text => Shape::Text,
                 ui::Cursor::Arrow => Shape::Arrow,
             }
+        } else if self.in_panel(y) {
+            shape_of(self.panel_cursor)
         } else {
-            match self.cursor {
-                engine::Cursor::Default => Shape::Arrow,
-                engine::Cursor::Pointer => Shape::Hand,
-                engine::Cursor::Text => Shape::Text,
-                other => Shape::Page(other),
-            }
+            shape_of(self.cursor)
         }
     }
 
@@ -248,8 +334,14 @@ impl<V: View> Session<V> {
     /// window, `(x, y, w, h)`, for an input method's window to stand
     /// by; otherwise no input method is wanted.
     pub(crate) fn ime_area(&mut self) -> Option<(f32, f32, f32, f32)> {
-        if self.focus() == Focus::Field {
-            return Some(self.toolbar.caret_area());
+        match self.focus() {
+            Focus::Field => return Some(self.toolbar.caret_area()),
+            Focus::Panel => {
+                let top = self.panel_top();
+                let (x, y, w, h) = self.panel.as_mut()?.caret_area()?;
+                return Some((x, y + top, w, h));
+            }
+            Focus::Page => {}
         }
         // The page's text control focused (M26.8), below the toolbar.
         let (x, y, w, h) = self.engine.caret_area()?;
@@ -265,6 +357,7 @@ impl<V: View> Session<V> {
     /// Whether a frame is wanted.
     pub(crate) fn needs_frame(&self) -> bool {
         self.engine.needs_frame()
+            || self.panel.as_ref().is_some_and(View::needs_frame)
             || self.toolbar.needs_frame()
             || self.drawn_bubble.as_deref() != self.bubble_text()
             || self.drawn_prompt != self.prompt.as_ref().map(|prompt| prompt.id)
@@ -279,23 +372,37 @@ impl<V: View> Session<V> {
     /// When a frame is next wanted, on the clock the frames are drawn
     /// by, when none is now: the end of an animation's delay (M22.3).
     pub(crate) fn next_frame_at(&self) -> Option<Duration> {
-        self.engine.next_frame_at()
+        earliest(
+            self.engine.next_frame_at(),
+            self.panel.as_ref().and_then(View::next_frame_at),
+        )
     }
 
     /// When the page's next task is due, on the same clock (M26): its
     /// next timer.
     pub(crate) fn next_task_at(&self) -> Option<Duration> {
-        self.engine.next_task_at()
+        earliest(
+            self.engine.next_task_at(),
+            self.panel.as_ref().and_then(View::next_task_at),
+        )
     }
 
     /// The page's tasks that are due run (M26): what its scripts wrote
     /// to the console is printed, and what they changed shows.
     pub(crate) fn tick(&mut self) {
-        if self.engine.next_task_at().is_none() {
+        let panel = self
+            .panel
+            .as_ref()
+            .is_some_and(|panel| panel.next_task_at().is_some());
+        if self.engine.next_task_at().is_none() && !panel {
             return;
         }
         self.engine.run_tasks();
         print_console(&mut self.engine);
+        if let Some(panel) = &mut self.panel {
+            panel.run_tasks();
+            print_panel_console(panel);
+        }
         self.sync();
     }
 
@@ -303,6 +410,9 @@ impl<V: View> Session<V> {
     /// the page hears it, and what its scripts wrote is printed.
     pub(crate) fn set_hidden(&mut self, hidden: bool) {
         self.engine.set_hidden(hidden);
+        if let Some(panel) = &mut self.panel {
+            panel.set_hidden(hidden);
+        }
         print_console(&mut self.engine);
         self.sync();
     }
@@ -313,9 +423,8 @@ impl<V: View> Session<V> {
     pub(crate) fn resized(&mut self, width: u32, height: u32) {
         let css = |v: u32| (v as f32 / self.scale).round() as u32;
         self.size = (css(width), css(height));
-        let (width, height) = self.size;
-        self.engine
-            .set_viewport(width, height - ui::HEIGHT.min(height));
+        self.device = (width, height);
+        self.place_views();
     }
 
     /// The window's scale factor changed (M32.4): the page is drawn under
@@ -326,6 +435,9 @@ impl<V: View> Session<V> {
         }
         self.engine.set_scale_factor(scale);
         self.scale = self.engine.scale_factor();
+        if let Some(panel) = &mut self.panel {
+            panel.set_scale_factor(scale);
+        }
         self.resized(width, height);
     }
 
@@ -336,6 +448,9 @@ impl<V: View> Session<V> {
 
     /// The user's preferences, as the shell now reads them (M20.3).
     pub(crate) fn set_preferences(&mut self, preferences: Preferences) {
+        if let Some(panel) = &mut self.panel {
+            panel.set_preferences(preferences);
+        }
         self.engine.set_preferences(preferences);
     }
 
@@ -372,6 +487,7 @@ impl<V: View> Session<V> {
             Key::Tab => "Tab",
             Key::F5 => "F5",
             Key::F6 => "F6",
+            Key::F12 => "F12",
             Key::Char(c) => c.as_str(),
             Key::Other => "Unidentified",
         };
@@ -391,9 +507,13 @@ impl<V: View> Session<V> {
         self.notice = None;
         let in_field = self.focus() == Focus::Field;
         // An open list takes every key (M26.8).
+        let popup = match (self.focus(), &self.panel) {
+            (Focus::Panel, Some(panel)) => panel.popup_open(),
+            _ => self.engine.popup_open(),
+        };
         let shortcut = key
             .as_ref()
-            .filter(|_| in_field || !self.engine.popup_open())
+            .filter(|_| in_field || !popup)
             .and_then(|key| keys::shortcut(key, self.mods, self.platform, in_field));
         match shortcut {
             Some(shortcut) => self.shortcut(shortcut),
@@ -405,7 +525,7 @@ impl<V: View> Session<V> {
                 }
             }
             None => {
-                if self.engine.key_down(&page) == engine::KeyOutcome::FocusLeft {
+                if self.keyed().key_down(&page) == engine::KeyOutcome::FocusLeft {
                     self.toolbar.focus();
                 }
             }
@@ -413,12 +533,21 @@ impl<V: View> Session<V> {
         self.sync();
     }
 
+    /// The view the keys go to when the field has not got them: the
+    /// DevTools panel when it has the keyboard, else the page.
+    fn keyed(&mut self) -> &mut V {
+        match (self.focus(), &mut self.panel) {
+            (Focus::Panel, Some(panel)) => panel,
+            _ => &mut self.engine,
+        }
+    }
+
     /// A key released: the page's, while it has the keyboard (M26.6).
     pub(crate) fn key_up(&mut self, page: engine::Key) {
         if self.composing || self.focus() == Focus::Field {
             return;
         }
-        self.engine.key_up(&page);
+        self.keyed().key_up(&page);
         self.sync();
     }
 
@@ -441,8 +570,9 @@ impl<V: View> Session<V> {
         if self.focus() == Focus::Field {
             self.insert(text);
         } else {
-            // Into the page's text control focused, if any (M26.8).
-            self.engine.insert_text(text);
+            // Into the page's text control focused, if any (M26.8), or
+            // the panel's.
+            self.keyed().insert_text(text);
         }
         self.sync();
     }
@@ -465,6 +595,9 @@ impl<V: View> Session<V> {
         self.toolbar.pointer_left();
         self.hover = None;
         self.engine.pointer_leave();
+        if let Some(panel) = &mut self.panel {
+            panel.pointer_leave();
+        }
     }
 
     /// A mouse button pressed, at `at` on the shell's clock.
@@ -486,11 +619,17 @@ impl<V: View> Session<V> {
     /// page is the page's (M26.5), which follows a link clicked.
     pub(crate) fn release(&mut self, button: Button) {
         let (x, y) = self.pointer;
-        match button {
-            Button::Left => {}
-            Button::Middle => return self.release_page(engine::Button::Auxiliary, 1),
-            Button::Right => return self.release_page(engine::Button::Secondary, 1),
+        let other = match button {
+            Button::Left => None,
+            Button::Middle => Some(engine::Button::Auxiliary),
+            Button::Right => Some(engine::Button::Secondary),
             Button::Back | Button::Forward | Button::Other => return,
+        };
+        if let Some(other) = other {
+            return match self.in_panel(y) {
+                true => self.release_panel(other, 1),
+                false => self.release_page(other, 1),
+            };
         }
         match self.held.take() {
             Some(Held::Toolbar) => {
@@ -503,6 +642,11 @@ impl<V: View> Session<V> {
                 self.release_page(engine::Button::Primary, count);
                 return;
             }
+            Some(Held::Panel) => {
+                let count = self.last_press.as_ref().map_or(1, |press| press.count);
+                self.release_panel(engine::Button::Primary, count);
+                return;
+            }
             Some(Held::Thumb(_) | Held::Track) | None => {}
         }
         self.sync();
@@ -512,9 +656,26 @@ impl<V: View> Session<V> {
     /// A button other than the left pressed over the page: the page's.
     fn press_page(&mut self, button: engine::Button, count: u32) {
         let (x, y) = self.pointer;
-        if self.inside && y >= TOP {
+        if self.inside && self.in_panel(y) {
+            let top = self.panel_top();
+            if let Some(panel) = &mut self.panel {
+                panel.pointer_down(x, y - top, button, count);
+            }
+        } else if self.inside && y >= TOP {
             self.engine.pointer_down(x, y - TOP, button, count);
         }
+    }
+
+    /// A button released over the DevTools panel, or after a press on
+    /// it (M36): the panel's.
+    fn release_panel(&mut self, button: engine::Button, count: u32) {
+        let (x, y) = self.pointer;
+        let top = self.panel_top();
+        if let Some(panel) = &mut self.panel {
+            panel.pointer_up(x, (y - top).max(0.0), button, count);
+        }
+        self.sync();
+        self.refresh_hover();
     }
 
     /// A button released over the page, or after a press on it: the
@@ -531,7 +692,12 @@ impl<V: View> Session<V> {
     pub(crate) fn wheel(&mut self, dy: f32) {
         self.notice = None;
         let (x, y) = self.pointer;
-        if y >= TOP {
+        if self.in_panel(y) {
+            let top = self.panel_top();
+            if let Some(panel) = &mut self.panel {
+                panel.wheel(x, y - top, dy);
+            }
+        } else if y >= TOP {
             self.engine.wheel(x, y - TOP, dy);
         }
         self.refresh_hover();
@@ -542,6 +708,10 @@ impl<V: View> Session<V> {
     pub(crate) fn network(&mut self) {
         self.engine.poll_network();
         print_console(&mut self.engine);
+        if let Some(panel) = &mut self.panel {
+            panel.poll_network();
+            print_panel_console(panel);
+        }
         if let Some(start) = self.start.take() {
             if let LoadState::Failed(error) = self.engine.load_state() {
                 self.reports.push(format!("{start}: {error}"));
@@ -566,10 +736,11 @@ impl<V: View> Session<V> {
         }
         let css = |v: u32| (v as f32 / self.scale).round() as u32;
         self.size = (css(width), css(height));
-        let bar_rows = (ui::rows(ui::HEIGHT, self.scale).min(height)) as usize;
+        self.device = (width, height);
+        let (bar_rows, page_height, panel_rows) = self.rows(height);
+        let bar_rows = bar_rows as usize;
         let bar = self.toolbar.frame(width, self.scale);
         put(&bar[..bar_rows * w * 4], &mut out[..bar_rows * w]);
-        let page_height = height - bar_rows as u32;
         if page_height > 0 {
             let page = self.engine.frame_at(width, page_height, time);
             // Past the engine's frame cap, the last frame stays shown.
@@ -581,6 +752,17 @@ impl<V: View> Session<V> {
             // What the frame's animation callbacks wrote (M30), printed
             // as a task's is.
             print_console(&mut self.engine);
+        }
+        // The DevTools panel under the page (M36).
+        if let Some(panel) = &mut self.panel
+            && panel_rows > 0
+        {
+            let pixels = panel.frame_at(width, panel_rows, time);
+            if pixels.len() == w * panel_rows as usize * 4 {
+                let at = (bar_rows + page_height as usize) * w;
+                put(pixels, &mut out[at..]);
+            }
+            print_panel_console(panel);
         }
         // The permission prompt over the top of the page (M33.4).
         self.drawn_prompt = self.prompt.as_ref().map(|prompt| prompt.id);
@@ -598,7 +780,9 @@ impl<V: View> Session<V> {
             && page_height >= bubble_rows
             && let Some((bubble_w, pixels)) = self.bubble.frame(text, width / 2, self.scale)
         {
-            let (bubble_w, top) = (bubble_w as usize, (height - bubble_rows) as usize);
+            // At the page's bottom, above the panel.
+            let bottom = bar_rows as u32 + page_height;
+            let (bubble_w, top) = (bubble_w as usize, (bottom - bubble_rows) as usize);
             for (row, line) in pixels.chunks_exact(bubble_w * 4).enumerate() {
                 let at = (top + row) * w;
                 put(line, &mut out[at..at + bubble_w]);
@@ -649,26 +833,27 @@ impl<V: View> Session<V> {
                 Ok(text) => self.insert(&text),
                 Err(error) => self.notice = Some(clipboard_notice(&error)),
             },
-            // The page's text control focused, if any (M26.8).
+            // The page's text control focused, if any (M26.8), or the
+            // panel's.
             Shortcut::Copy => {
-                if let Some(text) = self.engine.copy() {
+                if let Some(text) = self.keyed().copy() {
                     self.copy(&text);
                 }
             }
             Shortcut::Cut => {
                 // The text leaves the control only once the clipboard
                 // has it.
-                if let Some(text) = self.engine.copy_to_cut()
+                if let Some(text) = self.keyed().copy_to_cut()
                     && self.copy(&text)
                 {
-                    self.engine.cut();
+                    self.keyed().cut();
                 }
             }
             Shortcut::Paste => {
-                if self.engine.can_paste() {
+                if self.keyed().can_paste() {
                     match self.clipboard.get() {
                         Ok(text) => {
-                            self.engine.paste(&text);
+                            self.keyed().paste(&text);
                         }
                         Err(error) => self.notice = Some(clipboard_notice(&error)),
                     }
@@ -682,9 +867,11 @@ impl<V: View> Session<V> {
             Shortcut::Edit(edit) => self.toolbar.command(edit),
             Shortcut::ToPage => {
                 self.toolbar.blur();
+                self.panel_keys = false;
                 self.sync_window_focus();
                 self.engine.focus_next(self.mods.shift);
             }
+            Shortcut::DevTools => self.toggle_devtools(),
         }
     }
 
@@ -730,7 +917,11 @@ impl<V: View> Session<V> {
     /// A page's scroll: the page's height less a line, so a line of
     /// context stays.
     fn page_step(&self) -> f32 {
-        let height = self.size.1 as f32 - TOP;
+        let bottom = match self.panel {
+            Some(_) => self.panel_top(),
+            None => self.size.1 as f32,
+        };
+        let height = bottom - TOP;
         (height - LINE_PX).max(LINE_PX)
     }
 
@@ -755,6 +946,18 @@ impl<V: View> Session<V> {
             self.held = Some(Held::Toolbar);
             return;
         }
+        // The DevTools panel takes the press, and the keyboard (M36).
+        if self.in_panel(y) {
+            self.toolbar.blur();
+            self.panel_keys = true;
+            self.sync_window_focus();
+            let top = self.panel_top();
+            if let Some(panel) = &mut self.panel {
+                panel.pointer_down(x, y - top, engine::Button::Primary, count);
+            }
+            self.held = Some(Held::Panel);
+            return;
+        }
         // The prompt's bar, over the page (M33.4): its buttons answer it.
         if let Some(prompt) = &self.prompt
             && y < TOP + ui::prompt::HEIGHT as f32
@@ -767,6 +970,7 @@ impl<V: View> Session<V> {
             return;
         }
         self.toolbar.blur();
+        self.panel_keys = false;
         self.sync_window_focus();
         let y = y - TOP;
         let page = self.page_step();
@@ -806,6 +1010,26 @@ impl<V: View> Session<V> {
         let free = !matches!(self.held, Some(Held::Toolbar | Held::Thumb(_)));
         self.hover = None;
         self.cursor = engine::Cursor::Default;
+        self.panel_cursor = engine::Cursor::Default;
+        // The panel has the pointer over it, or while a press on it is
+        // held (M36).
+        let to_panel = match self.held {
+            Some(Held::Panel) => true,
+            Some(Held::Page) => false,
+            _ => self.in_panel(y),
+        };
+        if self.inside && free && to_panel {
+            let top = self.panel_top();
+            if let Some(panel) = &mut self.panel {
+                panel.pointer_move(x, y - top);
+                self.panel_cursor = panel.cursor_at(x, y - top);
+            }
+            self.engine.pointer_leave();
+            return;
+        }
+        if let Some(panel) = &mut self.panel {
+            panel.pointer_leave();
+        }
         if self.inside && free && y >= TOP {
             let y = y - TOP;
             let on_bar = self
@@ -851,13 +1075,39 @@ impl<V: View> Session<V> {
             loading: *self.engine.load_state() == LoadState::Loading,
         });
         self.title = ui::window_title(&self.engine.title(), url.as_deref());
+        // The DevTools' messages passed on (M36).
+        if let Some(panel) = &mut self.panel {
+            self.router.route(panel, &mut self.engine);
+        }
     }
 
     /// The page has the system's focus while the window has it and the
     /// field does not (M26.6).
     fn sync_window_focus(&mut self) {
-        let page = self.window_focused && self.focus() == Focus::Page;
-        self.engine.set_window_focus(page);
+        let focus = self.focus();
+        self.engine
+            .set_window_focus(self.window_focused && focus == Focus::Page);
+        if let Some(panel) = &mut self.panel {
+            panel.set_window_focus(self.window_focused && focus == Focus::Panel);
+        }
+    }
+}
+
+/// The shape of the pointer over a view that gives `cursor`.
+fn shape_of(cursor: engine::Cursor) -> Shape {
+    match cursor {
+        engine::Cursor::Default => Shape::Arrow,
+        engine::Cursor::Pointer => Shape::Hand,
+        engine::Cursor::Text => Shape::Text,
+        other => Shape::Page(other),
+    }
+}
+
+/// The earlier of two times, either of which may be none.
+fn earliest(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
     }
 }
 
@@ -880,6 +1130,14 @@ fn put(rgba: &[u8], out: &mut [u32]) {
 pub(crate) fn print_console(engine: &mut impl View) {
     for entry in engine.take_console() {
         eprintln!("{}", console_line(&entry));
+    }
+}
+
+/// Prints what the DevTools panel's own scripts wrote to their console
+/// (M36), which is the browser's, to the standard error.
+fn print_panel_console(panel: &mut impl View) {
+    for entry in panel.take_console() {
+        eprintln!("devtools {}", console_line(&entry));
     }
 }
 

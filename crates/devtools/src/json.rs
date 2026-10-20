@@ -9,8 +9,10 @@
 
 use std::fmt;
 
-/// The longest message the protocol reads or writes, in bytes.
-pub const MAX_MESSAGE_BYTES: usize = 16 << 20;
+/// The longest message the protocol reads or writes, in bytes: half the
+/// longest message between processes (`engine::ipc::MAX_MESSAGE`), so
+/// that one always fits in one.
+pub const MAX_MESSAGE_BYTES: usize = 8 << 20;
 
 /// How deep arrays and objects may nest in a message.
 pub const MAX_JSON_DEPTH: usize = 64;

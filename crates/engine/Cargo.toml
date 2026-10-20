@@ -12,6 +12,7 @@ gpu = ["render/gpu"]
 
 [dependencies]
 js.workspace = true
+devtools.workspace = true
 canvas.workspace = true
 css.workspace = true
 dom.workspace = true

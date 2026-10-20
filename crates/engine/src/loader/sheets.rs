@@ -66,6 +66,9 @@ pub(crate) struct Page {
     /// `document.referrer`.
     referrer_policy: Option<ReferrerPolicy>,
     referrer: String,
+    /// Whether it is the DevTools panel's page (M36), which the browser
+    /// alone shows: its window has the bridge to the browser.
+    panel: bool,
 }
 
 /// What a page's fetches are made with.
@@ -274,6 +277,7 @@ impl Page {
             refused_base: RefCell::default(),
             referrer_policy: None,
             referrer: String::new(),
+            panel: false,
         }
     }
 
@@ -315,6 +319,7 @@ impl Page {
             refused_base: RefCell::default(),
             referrer_policy: None,
             referrer: String::new(),
+            panel: false,
         }
     }
 
@@ -345,6 +350,17 @@ impl Page {
         }
         self.sandbox = sandbox;
         self
+    }
+
+    /// The page, the DevTools panel's (M36).
+    pub(crate) fn into_panel(mut self) -> Page {
+        self.panel = true;
+        self
+    }
+
+    /// Whether it is the DevTools panel's page.
+    pub(crate) fn is_panel(&self) -> bool {
+        self.panel
     }
 
     /// The document's sandboxing flags.

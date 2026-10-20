@@ -827,7 +827,13 @@ impl Scripts {
             return false;
         }
         if self.realm.is_none() {
-            match QuickJs.realm::<DocumentHost>(self.limits) {
+            // The DevTools panel's page has its bridge (M36).
+            let kind = if self.host.panel {
+                js::RealmKind::DevTools
+            } else {
+                js::RealmKind::Window
+            };
+            match QuickJs.realm_of::<DocumentHost>(kind, self.limits, None) {
                 Ok(realm) => {
                     self.realm = Some(realm);
                     self.code_guarded = false;
@@ -1324,6 +1330,18 @@ impl Scripts {
     /// Queues `task`, which another frame posted (M33.2), from `at`.
     pub(crate) fn post(&mut self, at: Duration, task: js::Task) {
         self.posted.push_back((at, task));
+    }
+
+    /// Makes the document the DevTools panel's page (M36), before its
+    /// realm is made: its window has the bridge to the browser.
+    pub(crate) fn make_panel(&mut self) {
+        self.host.panel = true;
+    }
+
+    /// What the DevTools panel's page sent the browser since this was
+    /// last asked.
+    pub(crate) fn take_devtools(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.host.devtools_out)
     }
 
     /// Makes the document's ports and workers' known to the tab's

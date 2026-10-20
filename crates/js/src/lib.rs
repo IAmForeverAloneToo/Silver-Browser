@@ -94,6 +94,9 @@ pub enum RealmKind {
     /// 10.2.1.2), with only the interfaces Web IDL exposes there, and
     /// the name its creator gave it.
     DedicatedWorker { name: String },
+    /// The browser's DevTools panel's page (M36, docs/design/devtools.md):
+    /// a window with the global `devtools`, its bridge to the browser.
+    DevTools,
 }
 
 /// A classic script to run (HTML section 8.1.4.1).
@@ -276,6 +279,9 @@ pub enum Task {
     /// (M33.1): `eval` and the function constructors ask the host from
     /// now on.
     GuardCode,
+    /// A message from the browser to the DevTools panel's page (M36):
+    /// `devtools.onmessage` is called with it.
+    DevTools(String),
 }
 
 /// Where a message is delivered (M31).

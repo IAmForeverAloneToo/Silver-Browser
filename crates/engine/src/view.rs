@@ -111,6 +111,37 @@ pub trait View {
     fn has_page_frame(&self) -> bool {
         true
     }
+
+    /// A view of the same kind showing the browser's DevTools panel
+    /// (M36), on this one's fonts, clock, waker and preferences; `None`
+    /// where there is none.
+    fn devtools_panel(&self) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        None
+    }
+
+    /// The panel's page hears `message` from the browser.
+    fn devtools_send(&mut self, message: String) {
+        let _ = message;
+    }
+
+    /// What the panel's page sent the browser since this was last asked.
+    fn take_devtools(&mut self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// The page shown is asked the panel's request `message`.
+    fn inspect(&mut self, message: String) {
+        let _ = message;
+    }
+
+    /// What the page shown answered the panel, and told it, since this
+    /// was last asked.
+    fn take_inspected(&mut self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 impl View for Engine {
@@ -284,5 +315,20 @@ impl View for Engine {
     }
     fn set_profile(&mut self, profile: Profile) -> Result<(), profile::Error> {
         Engine::set_profile(self, profile)
+    }
+    fn devtools_panel(&self) -> Option<Engine> {
+        Some(Engine::devtools_panel(self))
+    }
+    fn devtools_send(&mut self, message: String) {
+        Engine::devtools_send(self, message)
+    }
+    fn take_devtools(&mut self) -> Vec<String> {
+        Engine::take_devtools(self)
+    }
+    fn inspect(&mut self, message: String) {
+        Engine::inspect(self, &message)
+    }
+    fn take_inspected(&mut self) -> Vec<String> {
+        Engine::take_inspected(self)
     }
 }

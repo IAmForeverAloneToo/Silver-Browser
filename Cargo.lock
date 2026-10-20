@@ -663,6 +663,7 @@ version = "0.0.1"
 dependencies = [
  "canvas",
  "css",
+ "devtools",
  "dom",
  "encoding",
  "flate2",
@@ -2463,6 +2464,7 @@ name = "silver-browser"
 version = "0.0.1"
 dependencies = [
  "arboard",
+ "devtools",
  "engine",
  "net",
  "objc2-app-kit 0.3.2",

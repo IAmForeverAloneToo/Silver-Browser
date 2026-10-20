@@ -1433,3 +1433,177 @@ fn a_sites_prompt_shows_under_the_toolbar_and_its_buttons_answer_it() {
     assert_eq!(printer.requests().len(), 1);
     assert!(app.requests().is_empty());
 }
+
+impl Window {
+    /// Runs the window as the shell does, its tasks and the DevTools
+    /// panel's too, until `done` holds.
+    fn run_until(&mut self, done: impl Fn(&mut Session) -> bool) {
+        let deadline = Instant::now() + WAIT;
+        while !done(&mut self.session) {
+            assert!(Instant::now() < deadline, "the session gets there in time");
+            self.session.tick();
+            self.session.network();
+            self.frame();
+            let _ = self.woken.recv_timeout(Duration::from_millis(5));
+        }
+    }
+}
+
+/// The text of the element of id `id` in the DevTools panel's page.
+fn panel_text(session: &mut Session, id: &str) -> Option<String> {
+    let document = session.panel_mut()?.document();
+    document
+        .subtree(document.root())
+        .find(|&node| document.attr(node, "id") == Some(id))
+        .map(|node| document.text_content(node))
+}
+
+#[test]
+fn f12_opens_the_devtools_panel_under_the_page_and_closes_it() {
+    let server = two_pages();
+    let mut window = Window::new(Some(server.url("/")), Platform::Other);
+    window.settle();
+    let whole = window.session.engine().viewport();
+    assert_eq!(whole, (WIDTH, HEIGHT - ui::HEIGHT));
+    window.press_key(Key::F12, NONE);
+    // The panel takes the window's lower part and the keyboard; the page
+    // is laid out to what is left.
+    assert_eq!(window.session.focus(), Focus::Panel);
+    let panel_height = ((HEIGHT - ui::HEIGHT) as f32 * PANEL_SHARE).round() as u32;
+    assert_eq!(
+        window.session.engine().viewport(),
+        (WIDTH, HEIGHT - ui::HEIGHT - panel_height)
+    );
+    assert_eq!(
+        window.session.panel_mut().map(|panel| panel.viewport()),
+        Some((WIDTH, panel_height))
+    );
+    // Through the router, the panel names the page it inspects.
+    let named = format!("First - {}", server.url("/"));
+    window.run_until(|session| panel_text(session, "inspected").as_deref() == Some(&named));
+    // The panel is drawn under the page: its rows are not the page's.
+    let frame = window.frame();
+    let top = (HEIGHT - panel_height) as usize;
+    let row = |y: usize| frame[y * WIDTH as usize..(y + 1) * WIDTH as usize].to_vec();
+    // Its first row is the panel page's top border, its line colour,
+    // whole: the panel's page does not scroll.
+    let border = row(top);
+    let differ: Vec<_> = border
+        .iter()
+        .enumerate()
+        .filter(|&(_, &p)| p != 0xccd0da)
+        .collect();
+    assert!(differ.is_empty(), "{differ:x?}");
+    // A navigation is told to the panel, which names the new page.
+    window.click(50.0, 60.0);
+    let named = format!("Second - {}", server.url("/second"));
+    window.run_until(|session| panel_text(session, "inspected").as_deref() == Some(&named));
+    // A press on the page gives it the keyboard; one on the panel, the
+    // panel; F12 closes the panel from either.
+    window.click(400.0, (HEIGHT - panel_height - 20) as f32);
+    assert_eq!(window.session.focus(), Focus::Page);
+    window.click(400.0, (HEIGHT - 20) as f32);
+    assert_eq!(window.session.focus(), Focus::Panel);
+    window.press_key(Key::F12, NONE);
+    assert!(window.session.panel_mut().is_none());
+    assert_eq!(window.session.focus(), Focus::Page);
+    assert_eq!(window.session.engine().viewport(), whole);
+    // Ctrl+Shift+I opens it again.
+    window.chord(
+        "I",
+        Modifiers {
+            ctrl: true,
+            shift: true,
+            ..NONE
+        },
+    );
+    assert!(window.session.panel_mut().is_some());
+}
+
+#[test]
+fn the_router_answers_the_browsers_requests_and_passes_the_pages_answers_alone() {
+    use devtools::Json;
+    let server = two_pages();
+    let mut router = crate::devtools::Router::default();
+    let mut panel = Recorder::default();
+    let mut page = Recorder {
+        url: Some(server.url("/")),
+        ..Recorder::default()
+    };
+    // The first route tells the panel which page it inspects.
+    router.route(&mut panel, &mut page);
+    let told = panel.sent.remove(0);
+    assert!(told.starts_with(r#"{"event":"page.navigated""#), "{told}");
+    panel.out = vec![
+        r#"{"id":1,"method":"browser.version"}"#.to_owned(),
+        r#"{"id":2,"method":"page.info"}"#.to_owned(),
+        r#"{"id":3,"method":"browser.nothing"}"#.to_owned(),
+        "not a request".to_owned(),
+    ];
+    page.out = vec![
+        // An answer to a request the page was not given, and one to a
+        // request it was.
+        r#"{"id":1,"result":"forged"}"#.to_owned(),
+        r#"{"id":2,"result":{"title":"First"}}"#.to_owned(),
+        r#"{"id":2,"result":"again"}"#.to_owned(),
+        r#"{"event":"dom.changed","params":{}}"#.to_owned(),
+        r#"{"neither":true}"#.to_owned(),
+    ];
+    router.route(&mut panel, &mut page);
+    assert_eq!(page.asked, [r#"{"id":2,"method":"page.info"}"#]);
+    let version = Json::parse(&panel.sent[0]).expect("JSON");
+    assert_eq!(
+        version
+            .get("result")
+            .and_then(|r| r.get("name"))
+            .and_then(Json::as_str),
+        Some("Silver Browser")
+    );
+    assert_eq!(
+        panel.sent[1],
+        r#"{"id":3,"error":"no method browser.nothing"}"#
+    );
+    assert_eq!(
+        &panel.sent[2..],
+        [
+            r#"{"id":2,"result":{"title":"First"}}"#,
+            r#"{"event":"dom.changed","params":{}}"#,
+        ]
+    );
+    // A request still waiting when the page navigates is answered so.
+    panel.sent.clear();
+    panel.out = vec![r#"{"id":9,"method":"dom.tree"}"#.to_owned()];
+    router.route(&mut panel, &mut page);
+    page.url = Some(server.url("/second"));
+    router.route(&mut panel, &mut page);
+    assert_eq!(panel.sent[0], r#"{"id":9,"error":"the page navigated"}"#);
+    assert!(panel.sent[1].contains("/second"), "{:?}", panel.sent);
+}
+
+/// A view of the tests' own for the router: what it was sent and asked,
+/// and what it has to give.
+#[derive(Default)]
+struct Recorder {
+    url: Option<Url>,
+    out: Vec<String>,
+    sent: Vec<String>,
+    asked: Vec<String>,
+}
+
+impl crate::devtools::End for Recorder {
+    fn url(&self) -> Option<&Url> {
+        self.url.as_ref()
+    }
+    fn devtools_send(&mut self, message: String) {
+        self.sent.push(message);
+    }
+    fn take_devtools(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.out)
+    }
+    fn inspect(&mut self, message: String) {
+        self.asked.push(message);
+    }
+    fn take_inspected(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.out)
+    }
+}

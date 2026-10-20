@@ -33,5 +33,8 @@ pub const IPC_VERSION: u32 = 1;
 /// pieces of at most [`MAX_CHUNK`].
 pub const MAX_MESSAGE: usize = 16 << 20;
 
+// A DevTools message (M36) fits in one between processes.
+const _: () = assert!(devtools::MAX_MESSAGE_BYTES * 2 <= MAX_MESSAGE);
+
 /// The longest piece of a body in one message.
 pub const MAX_CHUNK: usize = 1 << 20;

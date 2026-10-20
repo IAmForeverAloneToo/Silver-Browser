@@ -388,3 +388,66 @@ fn a_renderer_that_lies_about_frames_is_killed() {
         "{policy}"
     );
 }
+
+/// What `take` gives of `tab` until it gives something.
+fn taken(tab: &mut RemoteTab, take: fn(&mut RemoteTab) -> Vec<String>) -> Vec<String> {
+    let mut messages = Vec::new();
+    settle(tab, |tab| {
+        messages.extend(take(tab));
+        !messages.is_empty()
+    });
+    messages
+}
+
+#[test]
+fn the_devtools_panel_and_the_page_it_inspects_speak_through_the_browser() {
+    let server = serve("<title>Inspected</title><p>A page.");
+    let mut page = tab();
+    page.navigate(server.url("/"));
+    settle(&mut page, |tab| *tab.load_state() == LoadState::Loaded);
+    let mut panel = RemoteTab::devtools_panel(&page);
+    panel.set_viewport(SIZE.0, SIZE.1);
+    // The panel, in a renderer of its own, asks which page it inspects.
+    let asked = taken(&mut panel, |tab| tab.take_devtools());
+    let request = devtools::Request::parse(&asked[0]).expect("a request");
+    assert_eq!(request.method, "page.info");
+    assert_eq!(panel.url().map(Url::as_str), Some(devtools::PANEL_URL));
+    // The page's renderer answers.
+    page.inspect(asked[0].clone());
+    let answers = taken(&mut page, |tab| tab.take_inspected());
+    let answer = devtools::Json::parse(&answers[0]).expect("JSON");
+    assert_eq!(
+        answer.get("id").and_then(devtools::Json::as_u64),
+        Some(request.id)
+    );
+    let result = answer.get("result").expect("a result");
+    assert_eq!(
+        result.get("title").and_then(devtools::Json::as_str),
+        Some("Inspected")
+    );
+    // The browser's event reaches the panel's page, which asks again.
+    panel.devtools_send(devtools::event(
+        "page.navigated",
+        devtools::Json::object([]),
+    ));
+    let again = taken(&mut panel, |tab| tab.take_devtools());
+    let again = devtools::Request::parse(&again[0]).expect("a request");
+    assert_eq!(
+        (again.method.as_str(), again.id > request.id),
+        ("page.info", true)
+    );
+    // Each end hears and speaks as its own kind of tab alone.
+    page.devtools_send("{}".to_owned());
+    panel.inspect(asked[0].clone());
+    thread::sleep(Duration::from_millis(100));
+    page.poll_network();
+    panel.poll_network();
+    assert!(page.take_devtools().is_empty() && panel.take_inspected().is_empty());
+    // The panel's renderer holds a lock of its own.
+    let locks: Vec<_> = panel
+        .renderers()
+        .into_iter()
+        .map(|(_, lock)| lock)
+        .collect();
+    assert_eq!(locks, [Some("devtools:".to_owned())]);
+}

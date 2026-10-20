@@ -455,6 +455,7 @@ const NATIVES: &[(&str, Decode)] = &[
         Ok(Call::StorageRemove(a.bool(0), a.string(1)?))
     }),
     ("storageClear", |a| Ok(Call::StorageClear(a.bool(0)))),
+    ("devtoolsSend", |a| Ok(Call::DevToolsSend(a.string(0)?))),
     ("navigate", |a| {
         Ok(Call::Navigate {
             url: a.string(0)?,
@@ -629,6 +630,7 @@ pub(super) fn install<'js, H: ScriptingHost>(
     // The kind of global the bootstrap makes (M31).
     match kind {
         RealmKind::Window => natives.set("realmKind", "window")?,
+        RealmKind::DevTools => natives.set("realmKind", "devtools")?,
         RealmKind::DedicatedWorker { name } => {
             natives.set("realmKind", "worker")?;
             natives.set("workerName", name.as_str())?;

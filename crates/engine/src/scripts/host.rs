@@ -237,6 +237,10 @@ pub(crate) struct DocumentHost {
     pub(crate) canvases: Canvases,
     /// The document's workers and its inbox (M31).
     pub(crate) workers: DocumentWorkers,
+    /// Whether the document is the DevTools panel's page (M36), and what
+    /// it sent the browser since the engine last took it.
+    pub(crate) panel: bool,
+    pub(crate) devtools_out: Vec<String>,
 }
 
 impl ScriptingHost for DocumentHost {
@@ -1268,6 +1272,21 @@ impl DocumentHost {
                 if let Some(old) = old {
                     self.broadcast(local, Some(key), Some(old), None);
                 }
+                Ok(Answer::Nothing)
+            }
+            Call::DevToolsSend(message) => {
+                if !self.panel {
+                    return Err(DomError::not_supported());
+                }
+                if message.len() > devtools::MAX_MESSAGE_BYTES
+                    || self.devtools_out.len() >= MAX_PANEL_MESSAGES
+                {
+                    return Err(DomError::new(
+                        "QuotaExceededError",
+                        "The browser has not taken the panel's messages.",
+                    ));
+                }
+                self.devtools_out.push(message);
                 Ok(Answer::Nothing)
             }
             Call::StorageClear(local) => {
@@ -3239,6 +3258,10 @@ fn has_activation_behaviour(document: &Document, node: NodeId) -> bool {
         _ => false,
     }
 }
+
+/// The most messages the DevTools panel's page may have waiting for the
+/// browser (M36): it takes them each turn.
+pub(crate) const MAX_PANEL_MESSAGES: usize = 1024;
 
 /// `navigator.platform` (HTML section 8.10.1.1): the value every browser
 /// on this system gives.

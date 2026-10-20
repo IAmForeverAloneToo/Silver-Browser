@@ -96,6 +96,11 @@ wire_enum! {
         /// `text::FontFiles`), which the renderer reads rather than
         /// scanning the system's: sent after the hello, before any view.
         25 => Fonts { primary: (String, u32), fallbacks: Vec<(u8, (String, u32))> },
+        /// The view, the DevTools panel's (M36), hears `message` from the
+        /// browser.
+        26 => DevTools { view: u32, message: String },
+        /// The view's page is asked the panel's request `message` (M36).
+        27 => Inspect { view: u32, message: String },
     }
 }
 
@@ -214,6 +219,10 @@ wire_enum! {
         /// The sandboxing flags the next document of the renderer's frame
         /// `key` is made with, as its parent says.
         19 => FramePolicy { key: u32, sandbox: u32 },
+        /// What the view, the DevTools panel's (M36), sent the browser.
+        20 => DevTools { view: u32, message: String },
+        /// What the view's page answered the panel, or told it (M36).
+        21 => Inspected { view: u32, message: String },
     }
 }
 

@@ -229,7 +229,18 @@ impl Host {
             ToRenderer::DestroyView { view } => {
                 self.views.remove(&view);
             }
+            // The DevTools panel's page is shown by its URL from the
+            // browser alone (M36): no navigation reaches it.
+            ToRenderer::Navigate { view, url } if url.as_str() == devtools::PANEL_URL => {
+                self.view(view)?.engine.show_devtools_panel();
+            }
             ToRenderer::Navigate { view, url } => self.view(view)?.engine.navigate(url),
+            ToRenderer::DevTools { view, message } => {
+                self.view(view)?.engine.devtools_send(message);
+            }
+            ToRenderer::Inspect { view, message } => {
+                self.view(view)?.engine.inspect(&message);
+            }
             ToRenderer::NavigateHandedOver {
                 view,
                 url,
@@ -368,6 +379,14 @@ impl Host {
             }
             if let Some(text) = view.engine.take_notice() {
                 out.push(ToBrowser::Notice { view: id, text });
+            }
+            // The DevTools' messages (M36): the panel's, or the answers of
+            // the page it inspects.
+            for message in view.engine.take_devtools() {
+                out.push(ToBrowser::DevTools { view: id, message });
+            }
+            for message in view.engine.take_inspected() {
+                out.push(ToBrowser::Inspected { view: id, message });
             }
             for key in view.engine.take_remote_drops() {
                 out.push(ToBrowser::FrameDropped { key });

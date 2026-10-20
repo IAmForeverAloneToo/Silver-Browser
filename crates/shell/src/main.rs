@@ -40,6 +40,7 @@
 #![deny(unsafe_code)]
 
 mod crashes;
+mod devtools;
 mod keys;
 mod platform;
 mod processes;
@@ -702,6 +703,7 @@ fn key_of(key: &winit::keyboard::Key) -> Option<Key> {
             NamedKey::Tab => Key::Tab,
             NamedKey::F5 => Key::F5,
             NamedKey::F6 => Key::F6,
+            NamedKey::F12 => Key::F12,
             NamedKey::Shift
             | NamedKey::Control
             | NamedKey::Alt

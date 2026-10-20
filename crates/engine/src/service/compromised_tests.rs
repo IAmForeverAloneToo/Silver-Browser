@@ -356,6 +356,16 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
             "a navigation by",
         ),
         (
+            "a page's renderer speaking as the DevTools panel",
+            Box::new(move |_| {
+                vec![said(ToBrowser::DevTools {
+                    view: 1,
+                    message: r#"{"id":1,"method":"browser.version"}"#.to_owned(),
+                })]
+            }),
+            "DevTools",
+        ),
+        (
             "a surface it was not given",
             Box::new(move |_| {
                 vec![said(ToBrowser::Frame {
