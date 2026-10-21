@@ -2,7 +2,9 @@
 //! docs/design/processes.md): a session in a tab of renderers (threads
 //! here, the protocol the same) whose page fetches, keeps storage and a
 //! cookie, frames another site's page that posts it a message, is
-//! clicked and typed in, then goes to another site and back; its
+//! clicked and typed in (the click opening a tab, saving a file and
+//! asking to close the tab, M37), its storage change heard by another
+//! tab of the same context, then goes to another site and back; its
 //! messages each way, as they crossed the pipes, a few of each kind, one
 //! frame to a file.
 //!
@@ -105,7 +107,10 @@ fn server() -> TestServer {
                  <iframe src='http://b.localhost:{port}/child'></iframe>\
                  <script>localStorage.setItem('k', 'v'); document.cookie = 'c=1';\
                  fetch('/data').then(r => r.text()).then(t => console.log('data', t));\
-                 addEventListener('message', e => console.log('got', e.data));</script>"
+                 addEventListener('message', e => console.log('got', e.data));\
+                 addEventListener('click', () => {{ window.open('/other'); \
+                 const a = document.createElement('a'); a.href = '/data'; a.download = 'x.txt'; document.body.append(a); \
+                 a.click(); localStorage.setItem('k2', 'w'); window.close(); }});</script>"
             ),
             "/child" => "<p>child</p><script>parent.postMessage('hi', '*');</script>".to_owned(),
             "/data" => "{\"a\": 1}".to_owned(),
@@ -160,7 +165,9 @@ fn main() {
         inner: ThreadLauncher::with_fonts(fonts()),
         logs: logs.clone(),
     });
-    let mut tab = RemoteTab::with_cap(launcher, fonts(), 16, false);
+    let context = engine::Context::new();
+    let launcher: Arc<dyn Launcher> = launcher;
+    let mut tab = RemoteTab::in_context_with_cap(launcher.clone(), fonts(), 16, false, &context);
     tab.set_viewport(400, 300);
     tab.set_scripting(true);
     let url = |host: &str, path: &str| {
@@ -169,11 +176,20 @@ fn main() {
     tab.navigate(url("a.localhost", "/"));
     run(&mut tab, Duration::from_secs(2));
     assert_eq!(*tab.load_state(), LoadState::Loaded);
+    // Another tab of the context on the same site, which hears the
+    // first's storage change.
+    let mut other = RemoteTab::in_context_with_cap(launcher, fonts(), 16, false, &context);
+    other.set_viewport(400, 300);
+    other.set_scripting(true);
+    other.navigate(url("a.localhost", "/other"));
+    run(&mut other, Duration::from_secs(1));
     tab.pointer_move(20.0, 10.0);
     tab.pointer_down(20.0, 10.0, Button::Primary, 1);
     tab.pointer_up(20.0, 10.0, Button::Primary, 1);
     tab.insert_text("typed");
     run(&mut tab, Duration::from_millis(500));
+    run(&mut other, Duration::from_millis(500));
+    drop(other);
     tab.navigate(url("c.localhost", "/other"));
     run(&mut tab, Duration::from_secs(1));
     tab.go_back();

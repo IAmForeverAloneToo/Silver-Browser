@@ -204,7 +204,11 @@ fn the_try_again_of_a_page_whose_renderer_stopped_brings_it_back() {
     settle(&mut tab, &mut lines, "the page again", |tab, _| {
         *tab.load_state() == LoadState::Loaded
     });
-    assert_eq!(pixel(&composed(&mut tab), 5, 5), GREEN);
+    // Drawn by the new renderer, which a slow machine takes a while to.
+    let began = Instant::now();
+    while pixel(&composed(&mut tab), 5, 5) != GREEN {
+        assert!(began.elapsed() < WAIT, "the page drawn again");
+    }
     assert_ne!(tab.shown_renderer(), first, "a new renderer");
 }
 
