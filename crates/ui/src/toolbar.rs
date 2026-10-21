@@ -56,6 +56,14 @@ pub struct PageState<'a> {
     pub loading: bool,
 }
 
+/// What the field holds of a tab's own (M37): the user's edit, and the
+/// text of a navigation it started that is under way.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FieldState {
+    edit: Option<String>,
+    pending: Option<(String, String)>,
+}
+
 /// A part of the toolbar the pointer can be over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Part {
@@ -186,6 +194,31 @@ impl Toolbar {
             (self.can_go_back, self.can_go_forward, self.loading) = buttons;
             self.changed = true;
         }
+    }
+
+    /// Takes what the field holds of the tab shown's own, leaving it to
+    /// show the next tab's page (M37).
+    pub fn take_state(&mut self) -> FieldState {
+        let edit = self.edited.then(|| self.field.text().to_owned());
+        self.edited = false;
+        self.changed = true;
+        FieldState {
+            edit,
+            pending: self.pending.take(),
+        }
+    }
+
+    /// Puts back what the field held of a tab's own, as
+    /// [`Toolbar::take_state`] took it; the next [`Toolbar::update`]
+    /// shows its page otherwise.
+    pub fn restore(&mut self, state: FieldState) {
+        self.edited = state.edit.is_some();
+        if let Some(edit) = &state.edit {
+            self.field.set_text(edit);
+            self.scroll_x = 0.0;
+        }
+        self.pending = state.pending;
+        self.changed = true;
     }
 
     /// The field's text.

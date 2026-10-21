@@ -1,6 +1,7 @@
 //! The window's contents and what input does to them (M15,
 //! docs/design/navigation.md, "The toolbar" and "Keys and the
-//! pointer"): the toolbar across the top, the page under it, a site's
+//! pointer"): the tab strip across the top (M37, docs/design/chrome.md,
+//! "Tabs"), the toolbar under it, the tab shown's page under that, a site's
 //! permission prompt over the page's top (M33.4), the status
 //! bubble at the page's bottom left, the DevTools panel under the page
 //! while it is open (M36), and the keys, the pointer, the
@@ -13,13 +14,23 @@ use std::time::{Duration, Instant};
 
 use engine::address::{self, Address};
 use engine::{Engine, FrameTime, Link, LoadState, PermissionPrompt, Preferences, Url, View};
-use ui::{Action, Choice, PageState, PromptBar, StatusBubble, TooLong, Toolbar};
+use ui::{
+    Action, Choice, FieldState, PageState, PromptBar, StatusBubble, StripAction, TabItem, TabStrip,
+    TooLong, Toolbar,
+};
 
 use crate::devtools::Router;
 use crate::keys::{self, Key, Modifiers, Platform, Shortcut};
 
-/// The toolbar's height: the page starts below it.
-const TOP: f32 = ui::HEIGHT as f32;
+/// The tab strip's height (M37): the toolbar starts below it.
+const STRIP: f32 = ui::tabs::HEIGHT as f32;
+/// The strip's and the toolbar's height: the page starts below them.
+const TOP: f32 = STRIP + ui::HEIGHT as f32;
+/// The most tabs a window holds (M37).
+pub(crate) const MAX_TABS: usize = 500;
+/// The most renderers a window's tabs keep alive together (M37): past
+/// it, the hidden tab least recently shown is discarded.
+pub(crate) const MAX_ALL_RENDERERS: usize = 48;
 /// One wheel notch, or one arrow key, scrolls this far.
 pub(crate) const LINE_PX: f32 = 40.0;
 /// Presses of the left button at most this long apart, and this far,
@@ -72,6 +83,8 @@ pub(crate) enum Shape {
 
 /// What the left button was pressed on, while it is held.
 enum Held {
+    /// The tab strip (M37).
+    Strip,
     Toolbar,
     /// The scrollbar's thumb, grabbed this far below its top.
     Thumb(f32),
@@ -92,10 +105,52 @@ struct Press {
     count: u32,
 }
 
+/// A tab the window holds but does not show (M37): its view and its
+/// DevTools panel put aside, hidden; or, discarded, its URL and title
+/// alone, to be loaded again when it is shown. Kept boxed, so that a
+/// tab shown or put aside moves no view across the stack: a page's
+/// scripts may use only `js::MAX_SCRIPT_STACK` below where its runtime
+/// began, and a tab switch runs them (`visibilitychange`).
+struct Parked<V> {
+    view: Option<Box<V>>,
+    panel: Option<Box<V>>,
+    panel_keys: bool,
+    router: Router,
+    /// Whether the address field had the keyboard, and what it held of
+    /// the tab's own.
+    field: bool,
+    field_state: FieldState,
+    /// A discarded tab's URL and title.
+    url: Option<Url>,
+    title: String,
+    /// When it was last shown, as the count of tabs shown.
+    shown: u64,
+}
+
 /// The window's contents: the page an engine shows (M15), or one a
-/// renderer shows, through the browser's proxy of it (M34.5).
+/// renderer shows, through the browser's proxy of it (M34.5); and the
+/// other tabs (M37).
 pub(crate) struct Session<V: View = Engine> {
+    /// The tab shown's view.
     engine: V,
+    /// Every tab, in the strip's order: the one shown a `None`, its
+    /// parts in the session's own fields; and its index.
+    tabs: Vec<Option<Box<Parked<V>>>>,
+    active: usize,
+    /// What makes a new tab's view, of the window's profile.
+    maker: Box<dyn FnMut() -> V>,
+    strip: TabStrip,
+    /// Whether the middle button was pressed on the strip, while it is
+    /// held.
+    strip_middle: bool,
+    /// How many times a tab was shown: a parked tab's `shown`.
+    shows: u64,
+    /// Whether the window is hidden, and the preferences its views are
+    /// given, for each new one.
+    hidden: bool,
+    preferences: Option<Preferences>,
+    /// Whether the last tab was closed: the window is to close.
+    closing: bool,
     toolbar: Toolbar,
     bubble: StatusBubble,
     /// The permission prompt the engine wants shown (M33.4), its bar, and
@@ -153,15 +208,24 @@ impl<V: View> Session<V> {
     /// field focused when the command line asked for nothing.
     pub(crate) fn new(
         mut engine: V,
+        maker: Box<dyn FnMut() -> V>,
         clipboard: Box<dyn Clipboard>,
         platform: Platform,
         start: Option<Url>,
     ) -> Session<V> {
         let fonts = engine.fonts().clone();
-        let about_silver = || Url::parse("about:silver").expect("about:silver parses");
-        engine.navigate(start.clone().unwrap_or_else(about_silver));
+        engine.navigate(start.clone().unwrap_or_else(start_page));
         let mut session = Session {
             engine,
+            tabs: vec![None],
+            active: 0,
+            maker,
+            strip: TabStrip::new(fonts.clone()),
+            strip_middle: false,
+            shows: 1,
+            hidden: false,
+            preferences: None,
+            closing: false,
             toolbar: Toolbar::new(fonts.clone()),
             prompt: None,
             prompt_bar: PromptBar::new(fonts.clone()),
@@ -197,6 +261,246 @@ impl<V: View> Session<V> {
         }
         session.sync_window_focus();
         session
+    }
+
+    /// How many tabs the window holds, and the index of the one shown
+    /// (M37).
+    #[cfg(test)]
+    pub(crate) fn tab_count(&self) -> usize {
+        self.tabs.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn active(&self) -> usize {
+        self.active
+    }
+
+    /// Whether the last tab was closed: the window is to close (M37).
+    pub(crate) fn wants_close(&self) -> bool {
+        self.closing
+    }
+
+    /// The tabs as the strip shows them.
+    pub(crate) fn tab_items(&self) -> Vec<TabItem> {
+        let item = |view: &V| TabItem {
+            title: tab_title(&view.title(), view.url()),
+            loading: *view.load_state() == LoadState::Loading,
+        };
+        self.tabs
+            .iter()
+            .map(|tab| match tab {
+                None => item(&self.engine),
+                Some(parked) if parked.view.is_some() => {
+                    item(parked.view.as_deref().expect("a view"))
+                }
+                Some(parked) => TabItem {
+                    title: tab_title(&parked.title, parked.url.as_ref()),
+                    loading: false,
+                },
+            })
+            .collect()
+    }
+
+    /// A new tab's view, of the window's profile, under its scale and
+    /// preferences, hidden, sized as the page would be.
+    fn make_view(&mut self) -> V {
+        let mut view = (self.maker)();
+        view.set_scale_factor(self.scale);
+        if let Some(preferences) = self.preferences {
+            view.set_preferences(preferences);
+        }
+        view.set_hidden(true);
+        view.set_window_focus(false);
+        let (width, height) = self.size;
+        view.set_viewport(width, height.saturating_sub(TOP as u32));
+        view
+    }
+
+    /// Opens a tab after the one shown, showing `url` or else the start
+    /// page with the address field focused, and shows it if `show`
+    /// (M37); whether there was room for it.
+    pub(crate) fn new_tab(&mut self, url: Option<Url>, show: bool) -> bool {
+        if self.tabs.len() >= MAX_TABS {
+            self.notice = Some(format!("A window holds at most {MAX_TABS} tabs"));
+            return false;
+        }
+        let mut view = self.make_view();
+        let field = url.is_none();
+        view.navigate(url.unwrap_or_else(start_page));
+        let at = self.active + 1;
+        self.tabs.insert(
+            at,
+            Some(Box::new(Parked {
+                view: Some(Box::new(view)),
+                panel: None,
+                panel_keys: false,
+                router: Router::default(),
+                field,
+                field_state: FieldState::default(),
+                url: None,
+                title: String::new(),
+                shown: self.shows,
+            })),
+        );
+        if show {
+            self.switch_to(at);
+        }
+        self.cap_renderers();
+        self.sync();
+        true
+    }
+
+    /// Shows tab `index`, the one shown put aside, hidden (M37). A
+    /// discarded tab is loaded again.
+    pub(crate) fn switch_to(&mut self, index: usize) {
+        if index == self.active || index >= self.tabs.len() {
+            return;
+        }
+        let Some(mut incoming) = self.tabs[index].take() else {
+            return;
+        };
+        let view = match incoming.view.take() {
+            Some(view) => *view,
+            None => {
+                let mut view = self.make_view();
+                if let Some(url) = incoming.url.take() {
+                    view.navigate(url);
+                }
+                view
+            }
+        };
+        let field = self.toolbar.is_focused();
+        self.toolbar.blur();
+        let field_state = self.toolbar.take_state();
+        let mut left = std::mem::replace(&mut self.engine, view);
+        left.set_hidden(true);
+        left.set_window_focus(false);
+        left.pointer_leave();
+        let mut left_panel =
+            std::mem::replace(&mut self.panel, incoming.panel.take().map(|panel| *panel));
+        if let Some(panel) = &mut left_panel {
+            panel.set_hidden(true);
+            panel.set_window_focus(false);
+        }
+        let left_keys = std::mem::replace(&mut self.panel_keys, incoming.panel_keys);
+        let left_router = std::mem::replace(&mut self.router, std::mem::take(&mut incoming.router));
+        self.shows += 1;
+        self.tabs[self.active] = Some(Box::new(Parked {
+            view: Some(Box::new(left)),
+            panel: left_panel.map(Box::new),
+            panel_keys: left_keys,
+            router: left_router,
+            field,
+            field_state,
+            url: None,
+            title: String::new(),
+            shown: self.shows,
+        }));
+        self.active = index;
+        self.engine.set_hidden(self.hidden);
+        if let Some(panel) = &mut self.panel {
+            panel.set_hidden(self.hidden);
+        }
+        self.hover = None;
+        self.held = None;
+        self.notice = None;
+        self.toolbar.restore(incoming.field_state);
+        if incoming.field {
+            self.toolbar.focus();
+        }
+        self.place_views();
+        self.sync_window_focus();
+        self.sync();
+        self.refresh_hover();
+    }
+
+    /// Closes tab `index` (M37): the one shown gives way to the next, or
+    /// the one before; the last closes the window.
+    pub(crate) fn close_tab(&mut self, index: usize) {
+        if index >= self.tabs.len() {
+            return;
+        }
+        if self.tabs.len() == 1 {
+            self.engine.closed();
+            self.closing = true;
+            return;
+        }
+        if index == self.active {
+            let next = if index + 1 < self.tabs.len() {
+                index + 1
+            } else {
+                index - 1
+            };
+            self.switch_to(next);
+        }
+        let parked = self.tabs.remove(index);
+        if index < self.active {
+            self.active -= 1;
+        }
+        if let Some(mut view) = parked.and_then(|parked| parked.view) {
+            view.closed();
+        }
+        self.sync();
+    }
+
+    /// Moves the tab at `from` to `to` in the strip (M37).
+    pub(crate) fn move_tab(&mut self, from: usize, to: usize) {
+        if from >= self.tabs.len() || to >= self.tabs.len() || from == to {
+            return;
+        }
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+        self.active = if from == self.active {
+            to
+        } else if from < self.active && to >= self.active {
+            self.active - 1
+        } else if from > self.active && to <= self.active {
+            self.active + 1
+        } else {
+            self.active
+        };
+        self.sync();
+    }
+
+    /// Lets go of a hidden tab's renderers (M37): its page is loaded
+    /// again from its URL when it is next shown.
+    pub(crate) fn discard(&mut self, index: usize) {
+        if let Some(Some(parked)) = self.tabs.get_mut(index)
+            && let Some(view) = parked.view.take()
+        {
+            parked.url = view.url().cloned();
+            parked.title = view.title();
+            parked.panel = None;
+            parked.panel_keys = false;
+        }
+    }
+
+    /// Discards the hidden tabs least recently shown while the window's
+    /// tabs keep more than [`MAX_ALL_RENDERERS`] renderers alive.
+    fn cap_renderers(&mut self) {
+        loop {
+            let count = |view: &V| view.renderer_count();
+            let mut total = count(&self.engine) + self.panel.as_ref().map_or(0, count);
+            for parked in self.tabs.iter().flatten() {
+                total += parked.view.as_deref().map_or(0, count);
+                total += parked.panel.as_deref().map_or(0, count);
+            }
+            if total <= MAX_ALL_RENDERERS {
+                return;
+            }
+            let shown: Vec<Option<u64>> = self
+                .tabs
+                .iter()
+                .map(|tab| match tab {
+                    Some(parked) if parked.view.is_some() => Some(parked.shown),
+                    _ => None,
+                })
+                .collect();
+            match least_recently_shown(&shown) {
+                Some(index) => self.discard(index),
+                None => return,
+            }
+        }
     }
 
     /// Whether the frame drawn holds the page's own pixels (M35.6).
@@ -243,10 +547,11 @@ impl<V: View> Session<V> {
     }
 
     /// The rows of a window `height` device pixels tall, top to bottom:
-    /// the toolbar's, the page's, and the DevTools panel's (M36), none
-    /// while it is closed.
+    /// the tab strip's and the toolbar's, the page's, and the DevTools
+    /// panel's (M36), none while it is closed.
     fn rows(&self, height: u32) -> (u32, u32, u32) {
-        let bar = ui::rows(ui::HEIGHT, self.scale).min(height);
+        let bar =
+            (ui::rows(ui::tabs::HEIGHT, self.scale) + ui::rows(ui::HEIGHT, self.scale)).min(height);
         let rest = height - bar;
         let panel = match self.panel {
             Some(_) => (rest as f32 * PANEL_SHARE).round() as u32,
@@ -272,7 +577,7 @@ impl<V: View> Session<V> {
         let css = |v: u32| (v as f32 / self.scale).round() as u32;
         let (width, height) = self.size;
         let (_, _, panel) = self.rows(self.device.1);
-        let page = height - ui::HEIGHT.min(height);
+        let page = height - (TOP as u32).min(height);
         let panel = css(panel).min(page);
         self.engine.set_viewport(width, page - panel);
         if let Some(view) = &mut self.panel {
@@ -316,10 +621,11 @@ impl<V: View> Session<V> {
     /// The pointer's shape where it is.
     pub(crate) fn shape(&self) -> Shape {
         let (x, y) = self.pointer;
-        if !self.inside {
+        // Over the tab strip (M37), the arrow.
+        if !self.inside || y < STRIP {
             Shape::Arrow
         } else if y < TOP {
-            match self.toolbar.cursor(x, y) {
+            match self.toolbar.cursor(x, y - STRIP) {
                 ui::Cursor::Text => Shape::Text,
                 ui::Cursor::Arrow => Shape::Arrow,
             }
@@ -335,7 +641,10 @@ impl<V: View> Session<V> {
     /// by; otherwise no input method is wanted.
     pub(crate) fn ime_area(&mut self) -> Option<(f32, f32, f32, f32)> {
         match self.focus() {
-            Focus::Field => return Some(self.toolbar.caret_area()),
+            Focus::Field => {
+                let (x, y, w, h) = self.toolbar.caret_area();
+                return Some((x, y + STRIP, w, h));
+            }
             Focus::Panel => {
                 let top = self.panel_top();
                 let (x, y, w, h) = self.panel.as_mut()?.caret_area()?;
@@ -359,6 +668,7 @@ impl<V: View> Session<V> {
         self.engine.needs_frame()
             || self.panel.as_ref().is_some_and(View::needs_frame)
             || self.toolbar.needs_frame()
+            || self.strip.needs_frame()
             || self.drawn_bubble.as_deref() != self.bubble_text()
             || self.drawn_prompt != self.prompt.as_ref().map(|prompt| prompt.id)
     }
@@ -381,15 +691,32 @@ impl<V: View> Session<V> {
     /// When the page's next task is due, on the same clock (M26): its
     /// next timer.
     pub(crate) fn next_task_at(&self) -> Option<Duration> {
-        earliest(
+        let mut at = earliest(
             self.engine.next_task_at(),
             self.panel.as_ref().and_then(View::next_task_at),
-        )
+        );
+        // The hidden tabs' too (M37).
+        for parked in self.tabs.iter().flatten() {
+            for view in parked.view.iter().chain(&parked.panel) {
+                at = earliest(at, view.next_task_at());
+            }
+        }
+        at
     }
 
     /// The page's tasks that are due run (M26): what its scripts wrote
     /// to the console is printed, and what they changed shows.
     pub(crate) fn tick(&mut self) {
+        // The hidden tabs' tasks (M37), their timers held back as an
+        // occluded window's are.
+        for parked in self.tabs.iter_mut().flatten() {
+            if let Some(view) = &mut parked.view
+                && view.next_task_at().is_some()
+            {
+                view.run_tasks();
+                print_console(view.as_mut());
+            }
+        }
         let panel = self
             .panel
             .as_ref()
@@ -409,6 +736,7 @@ impl<V: View> Session<V> {
     /// The window is hidden, covered or minimized, or shown again (M26):
     /// the page hears it, and what its scripts wrote is printed.
     pub(crate) fn set_hidden(&mut self, hidden: bool) {
+        self.hidden = hidden;
         self.engine.set_hidden(hidden);
         if let Some(panel) = &mut self.panel {
             panel.set_hidden(hidden);
@@ -438,6 +766,11 @@ impl<V: View> Session<V> {
         if let Some(panel) = &mut self.panel {
             panel.set_scale_factor(scale);
         }
+        for parked in self.tabs.iter_mut().flatten() {
+            for view in parked.view.iter_mut().chain(&mut parked.panel) {
+                view.set_scale_factor(scale);
+            }
+        }
         self.resized(width, height);
     }
 
@@ -448,8 +781,14 @@ impl<V: View> Session<V> {
 
     /// The user's preferences, as the shell now reads them (M20.3).
     pub(crate) fn set_preferences(&mut self, preferences: Preferences) {
+        self.preferences = Some(preferences);
         if let Some(panel) = &mut self.panel {
             panel.set_preferences(preferences);
+        }
+        for parked in self.tabs.iter_mut().flatten() {
+            for view in parked.view.iter_mut().chain(&mut parked.panel) {
+                view.set_preferences(preferences);
+            }
         }
         self.engine.set_preferences(preferences);
     }
@@ -485,6 +824,7 @@ impl<V: View> Session<V> {
             Key::PageDown => "PageDown",
             Key::Space => " ",
             Key::Tab => "Tab",
+            Key::F4 => "F4",
             Key::F5 => "F5",
             Key::F6 => "F6",
             Key::F12 => "F12",
@@ -585,7 +925,16 @@ impl<V: View> Session<V> {
         if let Some(Held::Thumb(grab)) = self.held {
             self.drag_thumb(grab);
         }
-        self.toolbar.pointer_moved(x, y);
+        // The strip, while the pointer is over it or a tab is held there
+        // (M37): a tab dragged moves.
+        if y < STRIP || matches!(self.held, Some(Held::Strip)) {
+            if let Some(StripAction::Move { from, to }) = self.strip.pointer_moved(x, y) {
+                self.move_tab(from, to);
+            }
+        } else {
+            self.strip.pointer_left();
+        }
+        self.toolbar.pointer_moved(x, y - STRIP);
         self.refresh_hover();
     }
 
@@ -593,6 +942,7 @@ impl<V: View> Session<V> {
     pub(crate) fn pointer_left(&mut self) {
         self.inside = false;
         self.toolbar.pointer_left();
+        self.strip.pointer_left();
         self.hover = None;
         self.engine.pointer_leave();
         if let Some(panel) = &mut self.panel {
@@ -603,8 +953,15 @@ impl<V: View> Session<V> {
     /// A mouse button pressed, at `at` on the shell's clock.
     pub(crate) fn press(&mut self, button: Button, at: Duration) {
         self.notice = None;
+        let (x, y) = self.pointer;
         match button {
             Button::Left => self.press_left(at),
+            // On the strip, the middle button closes the tab it is
+            // released on (M37).
+            Button::Middle if self.inside && y < STRIP => {
+                self.strip.press(x, y, true);
+                self.strip_middle = true;
+            }
             Button::Middle => self.press_page(engine::Button::Auxiliary, 1),
             Button::Right => self.press_page(engine::Button::Secondary, 1),
             Button::Back => self.engine.go_back(),
@@ -625,6 +982,13 @@ impl<V: View> Session<V> {
             Button::Right => Some(engine::Button::Secondary),
             Button::Back | Button::Forward | Button::Other => return,
         };
+        if button == Button::Middle && std::mem::take(&mut self.strip_middle) {
+            if let Some(action) = self.strip.release(x, y) {
+                self.strip_act(action);
+            }
+            self.sync();
+            return;
+        }
         if let Some(other) = other {
             return match self.in_panel(y) {
                 true => self.release_panel(other, 1),
@@ -632,8 +996,13 @@ impl<V: View> Session<V> {
             };
         }
         match self.held.take() {
+            Some(Held::Strip) => {
+                if let Some(action) = self.strip.release(x, y) {
+                    self.strip_act(action);
+                }
+            }
             Some(Held::Toolbar) => {
-                if let Some(action) = self.toolbar.release(x, y) {
+                if let Some(action) = self.toolbar.release(x, y - STRIP) {
                     self.act(action);
                 }
             }
@@ -692,7 +1061,9 @@ impl<V: View> Session<V> {
     pub(crate) fn wheel(&mut self, dy: f32) {
         self.notice = None;
         let (x, y) = self.pointer;
-        if self.in_panel(y) {
+        if y < STRIP {
+            self.strip.wheel(dy);
+        } else if self.in_panel(y) {
             let top = self.panel_top();
             if let Some(panel) = &mut self.panel {
                 panel.wheel(x, y - top, dy);
@@ -706,6 +1077,18 @@ impl<V: View> Session<V> {
     /// A fetch finished: the engine takes what arrived, and what the
     /// page's scripts wrote to its console is printed.
     pub(crate) fn network(&mut self) {
+        // The hidden tabs take what arrived for them too (M37).
+        for parked in self.tabs.iter_mut().flatten() {
+            if let Some(view) = &mut parked.view {
+                view.poll_network();
+                print_console(view.as_mut());
+            }
+            if let Some(panel) = &mut parked.panel {
+                panel.poll_network();
+                print_panel_console(panel.as_mut());
+            }
+        }
+        self.cap_renderers();
         self.engine.poll_network();
         self.console();
         if let Some(panel) = &mut self.panel {
@@ -739,8 +1122,16 @@ impl<V: View> Session<V> {
         self.device = (width, height);
         let (bar_rows, page_height, panel_rows) = self.rows(height);
         let bar_rows = bar_rows as usize;
+        // The strip, then the toolbar (M37).
+        let strip_rows = (ui::rows(ui::tabs::HEIGHT, self.scale) as usize).min(bar_rows);
+        let strip = self.strip.frame(width, self.scale);
+        put(&strip[..strip_rows * w * 4], &mut out[..strip_rows * w]);
+        let toolbar_rows = bar_rows - strip_rows;
         let bar = self.toolbar.frame(width, self.scale);
-        put(&bar[..bar_rows * w * 4], &mut out[..bar_rows * w]);
+        put(
+            &bar[..toolbar_rows * w * 4],
+            &mut out[strip_rows * w..bar_rows * w],
+        );
         if page_height > 0 {
             let page = self.engine.frame_at(width, page_height, time);
             // Past the engine's frame cap, the last frame stays shown.
@@ -872,6 +1263,28 @@ impl<V: View> Session<V> {
                 self.engine.focus_next(self.mods.shift);
             }
             Shortcut::DevTools => self.toggle_devtools(),
+            Shortcut::NewTab => {
+                self.new_tab(None, true);
+            }
+            Shortcut::CloseTab => self.close_tab(self.active),
+            Shortcut::NextTab => self.switch_to((self.active + 1) % self.tabs.len()),
+            Shortcut::PreviousTab => {
+                self.switch_to((self.active + self.tabs.len() - 1) % self.tabs.len());
+            }
+            Shortcut::SelectTab(index) => self.switch_to(index.min(self.tabs.len() - 1)),
+            Shortcut::LastTab => self.switch_to(self.tabs.len() - 1),
+        }
+    }
+
+    /// Carries out what the tab strip asks for (M37).
+    fn strip_act(&mut self, action: StripAction) {
+        match action {
+            StripAction::Select(index) => self.switch_to(index),
+            StripAction::Close(index) => self.close_tab(index),
+            StripAction::New => {
+                self.new_tab(None, true);
+            }
+            StripAction::Move { from, to } => self.move_tab(from, to),
         }
     }
 
@@ -941,8 +1354,16 @@ impl<V: View> Session<V> {
             _ => 1,
         };
         self.last_press = Some(Press { at, x, y, count });
+        // A tab pressed is shown at once (M37).
+        if y < STRIP {
+            if let Some(action) = self.strip.press(x, y, false) {
+                self.strip_act(action);
+            }
+            self.held = Some(Held::Strip);
+            return;
+        }
         if y < TOP {
-            self.toolbar.press(x, y, count, self.mods.shift);
+            self.toolbar.press(x, y - STRIP, count, self.mods.shift);
             self.held = Some(Held::Toolbar);
             return;
         }
@@ -1007,7 +1428,10 @@ impl<V: View> Session<V> {
     /// over the scrollbar, nor dragging on the toolbar or the thumb.
     fn refresh_hover(&mut self) {
         let (x, y) = self.pointer;
-        let free = !matches!(self.held, Some(Held::Toolbar | Held::Thumb(_)));
+        let free = !matches!(
+            self.held,
+            Some(Held::Strip | Held::Toolbar | Held::Thumb(_))
+        );
         self.hover = None;
         self.cursor = engine::Cursor::Default;
         self.panel_cursor = engine::Cursor::Default;
@@ -1089,6 +1513,8 @@ impl<V: View> Session<V> {
             loading: *self.engine.load_state() == LoadState::Loading,
         });
         self.title = ui::window_title(&self.engine.title(), url.as_deref());
+        let items = self.tab_items();
+        self.strip.update(items, self.active);
         // The DevTools' messages passed on (M36).
         if let Some(panel) = &mut self.panel {
             self.router.route(panel, &mut self.engine);
@@ -1115,6 +1541,32 @@ fn shape_of(cursor: engine::Cursor) -> Shape {
         engine::Cursor::Text => Shape::Text,
         other => Shape::Page(other),
     }
+}
+
+/// The start page (M37: the settings' choice to come).
+fn start_page() -> Url {
+    Url::parse("about:silver").expect("about:silver parses")
+}
+
+/// What a tab's title is in the strip: the page's title, or its URL
+/// while it has none.
+fn tab_title(title: &str, url: Option<&Url>) -> String {
+    match (title.trim(), url) {
+        ("", Some(url)) => url.as_str().to_owned(),
+        ("", None) => "New tab".to_owned(),
+        (title, _) => title.to_owned(),
+    }
+}
+
+/// The index of the tab least recently shown of those `shown` gives a
+/// time for: the one to discard first.
+fn least_recently_shown(shown: &[Option<u64>]) -> Option<usize> {
+    shown
+        .iter()
+        .enumerate()
+        .filter_map(|(index, at)| at.map(|at| (at, index)))
+        .min()
+        .map(|(_, index)| index)
 }
 
 /// The earlier of two times, either of which may be none.

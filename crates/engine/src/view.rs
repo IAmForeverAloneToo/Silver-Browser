@@ -112,6 +112,16 @@ pub trait View {
         true
     }
 
+    /// How many renderer processes the view keeps alive (M37): the
+    /// browser's cap across its tabs counts them.
+    fn renderer_count(&self) -> usize {
+        0
+    }
+
+    /// The tab the view shows is closed (M37): what it kept of its own,
+    /// its `sessionStorage`, is let go.
+    fn closed(&mut self) {}
+
     /// A view of the same kind showing the browser's DevTools panel
     /// (M36), on this one's fonts, clock, waker and preferences; `None`
     /// where there is none.
@@ -328,6 +338,11 @@ impl View for Engine {
     fn set_profile(&mut self, profile: Profile) -> Result<(), profile::Error> {
         Engine::set_profile(self, profile)
     }
+    fn closed(&mut self) {
+        let tab = self.tab;
+        self.storage().forget_tab(tab);
+    }
+
     fn devtools_panel(&self) -> Option<Engine> {
         Some(Engine::devtools_panel(self))
     }

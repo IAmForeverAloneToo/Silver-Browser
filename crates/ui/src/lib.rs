@@ -5,21 +5,24 @@
 //! shaping — and touches no OS: the shell gives it input and shows its
 //! pixels, and gives it what it shows of the page.
 //!
-//! The permission prompt (M33.4) is drawn and given input the same way.
+//! The permission prompt (M33.4) is drawn and given input the same way,
+//! and so is the tab strip (M37).
 
 #![forbid(unsafe_code)]
 
 pub mod field;
 pub mod prompt;
 pub mod status;
+pub mod tabs;
 mod title;
 pub mod toolbar;
 
 pub use field::{Command, TextField, TooLong};
 pub use prompt::{Choice, PromptBar};
 pub use status::StatusBubble;
+pub use tabs::{StripAction, StripPart, TabItem, TabStrip};
 pub use title::window_title;
-pub use toolbar::{Action, Cursor, Escape, HEIGHT, PageState, Part, Toolbar};
+pub use toolbar::{Action, Cursor, Escape, FieldState, HEIGHT, PageState, Part, Toolbar};
 
 /// The device pixels `css` CSS pixels take at the display's `scale`
 /// (M32.4), rounded up: the rows a bar of that height is drawn in.

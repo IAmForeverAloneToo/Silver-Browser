@@ -23,6 +23,7 @@ pub(crate) enum Key {
     PageDown,
     Space,
     Tab,
+    F4,
     F5,
     F6,
     F12,
@@ -85,6 +86,16 @@ pub(crate) enum Shortcut {
     ToPage,
     /// Opens the DevTools panel, or closes it (M36).
     DevTools,
+    /// Opens a new tab, shown, on the start page (M37).
+    NewTab,
+    /// Closes the tab shown.
+    CloseTab,
+    /// Shows the next tab, or the one before, round the strip.
+    NextTab,
+    PreviousTab,
+    /// Shows the tab of this index, or the last.
+    SelectTab(usize),
+    LastTab,
 }
 
 /// What `key`, pressed with `mods` held on `platform`, asks for: in the
@@ -118,6 +129,26 @@ pub(crate) fn shortcut(
         (_, "i") if !mac && mods.ctrl && mods.shift && !mods.alt => Some(Shortcut::DevTools),
         (_, "i") if mac && mods.logo && mods.alt => Some(Shortcut::DevTools),
         (_, "r") if command => Some(Shortcut::Reload),
+        // The tabs (M37).
+        (_, "t") if command && !mods.shift => Some(Shortcut::NewTab),
+        (_, "w") if command && !mods.shift => Some(Shortcut::CloseTab),
+        (Key::F4, _) if !mac && mods.ctrl && !mods.alt => Some(Shortcut::CloseTab),
+        (Key::Tab, _) if mods.ctrl && !mods.alt && !mods.logo => Some(match mods.shift {
+            true => Shortcut::PreviousTab,
+            false => Shortcut::NextTab,
+        }),
+        (Key::PageDown, _) if !mac && mods.ctrl && !mods.shift && !mods.alt => {
+            Some(Shortcut::NextTab)
+        }
+        (Key::PageUp, _) if !mac && mods.ctrl && !mods.shift && !mods.alt => {
+            Some(Shortcut::PreviousTab)
+        }
+        (Key::Right, _) if mac && mods.logo && mods.alt => Some(Shortcut::NextTab),
+        (Key::Left, _) if mac && mods.logo && mods.alt => Some(Shortcut::PreviousTab),
+        (_, "9") if command => Some(Shortcut::LastTab),
+        (_, n) if command && n.len() == 1 && ("1"..="8").contains(&n) => {
+            Some(Shortcut::SelectTab(n.parse::<usize>().unwrap_or(1) - 1))
+        }
         (Key::Escape, _) => Some(Shortcut::Escape),
         (_, "c") if command => Some(Shortcut::Copy),
         (_, "x") if command => Some(Shortcut::Cut),
@@ -363,7 +394,11 @@ mod tests {
                 Some(Shortcut::ToPage)
             );
         }
-        assert_eq!(shortcut(&Key::Tab, CTRL, Platform::Other, true), None);
+        // Ctrl+Tab goes to the next tab from the field too (M37).
+        assert_eq!(
+            shortcut(&Key::Tab, CTRL, Platform::Other, true),
+            Some(Shortcut::NextTab)
+        );
         // The page's keys do nothing in the field: Space types.
         for key in [Key::Space, Key::Up, Key::PageDown, char("a")] {
             assert_eq!(shortcut(&key, NONE, Platform::Other, true), None, "{key:?}");
@@ -401,5 +436,36 @@ mod tests {
             assert_eq!(types_text(mods, Platform::Other), other, "{mods:?}");
             assert_eq!(types_text(mods, Platform::Mac), mac, "{mods:?}");
         }
+    }
+
+    #[test]
+    fn the_tabs_keys() {
+        use Shortcut::*;
+        let other = |key: Key, mods| shortcut(&key, mods, Platform::Other, false);
+        let mac = |key: Key, mods| shortcut(&key, mods, Platform::Mac, false);
+        assert_eq!(other(char("t"), CTRL), Some(NewTab));
+        assert_eq!(mac(char("t"), CMD), Some(NewTab));
+        assert_eq!(other(char("t"), NONE), None, "a t typed");
+        assert_eq!(other(char("w"), CTRL), Some(CloseTab));
+        assert_eq!(mac(char("w"), CMD), Some(CloseTab));
+        assert_eq!(other(Key::F4, CTRL), Some(CloseTab));
+        assert_eq!(mac(Key::F4, CTRL), None);
+        assert_eq!(other(Key::Tab, CTRL), Some(NextTab));
+        assert_eq!(other(Key::Tab, CTRL_SHIFT), Some(PreviousTab));
+        assert_eq!(mac(Key::Tab, CTRL), Some(NextTab));
+        assert_eq!(other(Key::PageDown, CTRL), Some(NextTab));
+        assert_eq!(other(Key::PageUp, CTRL), Some(PreviousTab));
+        let cmd_option = Modifiers {
+            logo: true,
+            alt: true,
+            ..NONE
+        };
+        assert_eq!(mac(Key::Right, cmd_option), Some(NextTab));
+        assert_eq!(mac(Key::Left, cmd_option), Some(PreviousTab));
+        assert_eq!(other(char("1"), CTRL), Some(SelectTab(0)));
+        assert_eq!(other(char("8"), CTRL), Some(SelectTab(7)));
+        assert_eq!(mac(char("3"), CMD), Some(SelectTab(2)));
+        assert_eq!(other(char("9"), CTRL), Some(LastTab));
+        assert_eq!(other(char("0"), CTRL), None);
     }
 }

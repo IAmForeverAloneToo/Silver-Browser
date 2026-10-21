@@ -265,6 +265,11 @@ impl<V: View> ApplicationHandler<NetworkWake> for Browser<V> {
     /// delay draws no frame before it ends, and a timer runs when it is
     /// due.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // The last tab closed closes the window (M37).
+        if self.session.wants_close() {
+            event_loop.exit();
+            return;
+        }
         self.session.tick();
         if let Some(window) = self.window.clone() {
             self.update(&window);
@@ -701,6 +706,7 @@ fn key_of(key: &winit::keyboard::Key) -> Option<Key> {
             NamedKey::PageDown => Key::PageDown,
             NamedKey::Space => Key::Space,
             NamedKey::Tab => Key::Tab,
+            NamedKey::F4 => Key::F4,
             NamedKey::F5 => Key::F5,
             NamedKey::F6 => Key::F6,
             NamedKey::F12 => Key::F12,
@@ -1031,9 +1037,12 @@ fn show(line: &CommandLine) {
         }
     };
     startup::mark("fonts");
-    let tab = engine::service::RemoteTab::new(Arc::new(launcher), fonts);
-    startup::mark("tab");
-    run(tab, line, profile);
+    // The window's tabs share one context, the profile's (M37).
+    let context = engine::Context::new();
+    let launcher: Arc<dyn engine::service::Launcher> = Arc::new(launcher);
+    let make =
+        move || engine::service::RemoteTab::in_context(launcher.clone(), fonts.clone(), &context);
+    run(make, line, profile);
 }
 
 /// Shows the page in an engine of the browser's own process (M34.6,
@@ -1064,27 +1073,33 @@ fn show(line: &CommandLine) {
     if let Some(why) = fallback {
         eprintln!("silver-browser: {why}; drawing in software");
     }
-    run(engine, line, profile);
+    // The window's tabs share one context, the profile's (M37); each tab
+    // after the first draws on the backend the first had.
+    let context = engine::Context::new();
+    let backend = engine.backend();
+    let fonts = View::fonts(&engine).clone();
+    let mut first = Some(engine);
+    let make = move || {
+        let mut engine = first.take().unwrap_or_else(|| {
+            Engine::new_on(backend)
+                .map(|(engine, _)| engine)
+                .unwrap_or_else(|_| Engine::with_fonts(fonts.clone()))
+        });
+        engine.join(&context);
+        engine
+    };
+    run(make, line, profile);
 }
 
-/// Shows the page `engine` shows in a window until it is closed, with
-/// the profile `profile` reads, which it has before its first navigation.
-fn run(mut engine: impl View, line: &CommandLine, profile: impl FnOnce() -> ReadProfile) {
+/// Shows the pages of the views `make` makes, one a tab, in a window
+/// until it is closed, with the profile `profile` reads, which the
+/// first has before its first navigation; the others share it (M37).
+fn run<V: View + 'static>(
+    mut make: impl FnMut() -> V + 'static,
+    line: &CommandLine,
+    profile: impl FnOnce() -> ReadProfile,
+) {
     let (start, asked) = (line.start.clone(), line.asked);
-    if let Some(bytes) = line.layer_budget {
-        engine.set_layer_budget(bytes);
-    }
-    // The window's theme is known once there is a window.
-    engine.set_preferences(preferences(asked, None, platform::reduced_motion()));
-    engine.set_scripting(line.window_scripts());
-    if line.compat {
-        engine.set_compat_user_agent(true);
-    }
-    if let Some(why) = use_profile(&mut engine, profile()) {
-        eprintln!("silver-browser: {why}");
-    }
-    startup::mark("profile");
-
     let event_loop = match EventLoop::<NetworkWake>::with_user_event().build() {
         Ok(event_loop) => event_loop,
         Err(e) => {
@@ -1097,16 +1112,44 @@ fn run(mut engine: impl View, line: &CommandLine, profile: impl FnOnce() -> Read
     // The proxy is sent across threads but need not be shared between
     // them on every platform, so a lock makes it so.
     let proxy = Mutex::new(event_loop.create_proxy());
-    engine.set_waker(Arc::new(move || {
+    let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
         let proxy = proxy.lock().unwrap_or_else(PoisonError::into_inner);
         // An event loop gone has no one to wake.
         let _ = proxy.send_event(NetworkWake);
-    }));
-    // The engine's tasks and the frames read one clock (M26).
+    });
+    // The views' tasks and the frames read one clock (M26).
     let began = Instant::now();
-    engine.set_clock(Arc::new(move || began.elapsed()));
+    let clock: engine::Clock = Arc::new(move || began.elapsed());
+    let (layer_budget, scripts, compat) = (line.layer_budget, line.window_scripts(), line.compat);
+    // Every tab's view as the command line asks; the window's theme is
+    // known once there is a window.
+    let mut configured = move || {
+        let mut view = make();
+        if let Some(bytes) = layer_budget {
+            view.set_layer_budget(bytes);
+        }
+        view.set_preferences(preferences(asked, None, platform::reduced_motion()));
+        view.set_scripting(scripts);
+        if compat {
+            view.set_compat_user_agent(true);
+        }
+        view.set_waker(waker.clone());
+        view.set_clock(clock.clone());
+        view
+    };
+    let mut engine = configured();
+    if let Some(why) = use_profile(&mut engine, profile()) {
+        eprintln!("silver-browser: {why}");
+    }
+    startup::mark("profile");
     let clipboard = Box::new(SystemClipboard::default());
-    let session = Session::new(engine, clipboard, Platform::current(), start);
+    let session = Session::new(
+        engine,
+        Box::new(configured),
+        clipboard,
+        Platform::current(),
+        start,
+    );
     startup::mark("session");
 
     let mut browser = Browser::new(session, asked, began);

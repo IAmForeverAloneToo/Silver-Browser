@@ -318,3 +318,30 @@ fn a_renderer_draws_with_the_font_files_the_browser_sent() {
     assert!(sent.iter().any(|&byte| byte < 128), "text drawn");
     assert_eq!(sent, frame(ThreadLauncher::with_fonts(fonts())));
 }
+
+#[test]
+fn a_hidden_tab_keeps_no_spare() {
+    // M37: the tab shown keeps the window's one spare.
+    let server = server(Arc::default());
+    let mut tab = tab(16, true);
+    let first = url(&server, "a.localhost", "/p");
+    tab.navigate(first.clone());
+    at(&mut tab, &first);
+    settle(&mut tab, "the spare", |tab| {
+        tab.frame_at(200, 150, FrameTime::at(Duration::ZERO));
+        tab.renderers().len() == 2
+    });
+    assert_eq!(tab.renderer_count(), 2);
+    tab.set_hidden(true);
+    assert_eq!(tab.renderers().len(), 1);
+    assert!(tab.renderers().iter().all(|(_, lock)| lock.is_some()));
+    // Shown again, it starts one.
+    tab.set_hidden(false);
+    assert_eq!(tab.renderers().len(), 2);
+    // A page of another site while hidden takes a renderer of its own.
+    tab.set_hidden(true);
+    let other = url(&server, "b.localhost", "/p");
+    tab.navigate(other.clone());
+    at(&mut tab, &other);
+    assert_eq!(tab.renderers().len(), 2, "no spare beside it");
+}

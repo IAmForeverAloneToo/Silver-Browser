@@ -1,5 +1,5 @@
-//! The toolbar, the status bubble and the window's title, with the
-//! bundled test font: the same pixels on every machine.
+//! The toolbar, the status bubble, the tab strip and the window's
+//! title, with the bundled test font: the same pixels on every machine.
 
 use text::FontCollection;
 
@@ -418,4 +418,183 @@ fn the_prompt_bar_draws_its_text_and_its_buttons() {
     // Twice the rows at twice the scale.
     let doubled = bar.frame(text, WIDTH * 2, 2.0).len();
     assert_eq!(doubled, (WIDTH * 2 * prompt::HEIGHT * 2 * 4) as usize);
+}
+
+/// A strip `width` pixels wide of `count` tabs, `shown` the one shown.
+fn strip(width: u32, count: usize, shown: usize) -> TabStrip {
+    let mut strip = TabStrip::new(fonts());
+    let tabs = (0..count)
+        .map(|n| TabItem {
+            title: format!("Page {n}"),
+            loading: false,
+        })
+        .collect();
+    strip.update(tabs, shown);
+    strip.frame(width, 1.0);
+    strip
+}
+
+/// The middle of tab `n`'s title, and of its close button.
+fn tab_at(strip: &TabStrip, n: usize) -> (f32, f32) {
+    (6.0 + strip.tab_width() * (n as f32 + 0.3), 18.0)
+}
+
+fn close_at(strip: &TabStrip, n: usize) -> (f32, f32) {
+    (6.0 + strip.tab_width() * (n as f32 + 1.0) - 18.0, 18.0)
+}
+
+fn strip_click(strip: &mut TabStrip, (x, y): (f32, f32), middle: bool) -> Vec<StripAction> {
+    strip.pointer_moved(x, y);
+    let mut done: Vec<StripAction> = strip.press(x, y, middle).into_iter().collect();
+    done.extend(strip.release(x, y));
+    done
+}
+
+#[test]
+fn tabs_are_their_width_while_they_fit_and_narrower_as_more_come() {
+    assert_eq!(strip(800, 3, 0).tab_width(), tabs::TAB_WIDTH);
+    let crowded = strip(800, 10, 0).tab_width();
+    assert!(
+        crowded < tabs::TAB_WIDTH && crowded > tabs::MIN_TAB_WIDTH,
+        "{crowded}"
+    );
+    assert_eq!(strip(800, 100, 0).tab_width(), tabs::MIN_TAB_WIDTH);
+}
+
+#[test]
+fn a_tab_pressed_is_shown_and_its_close_button_closes_it() {
+    let mut strip = strip(800, 3, 0);
+    assert_eq!(
+        {
+            let at = tab_at(&strip, 2);
+            strip_click(&mut strip, at, false)
+        },
+        [StripAction::Select(2)]
+    );
+    strip.update(
+        (0..3)
+            .map(|n| TabItem {
+                title: format!("Page {n}"),
+                loading: false,
+            })
+            .collect(),
+        2,
+    );
+    let close = close_at(&strip, 2);
+    assert_eq!(strip.part_at(close.0, close.1), Some(StripPart::Close(2)));
+    assert_eq!(
+        strip_click(&mut strip, close, false),
+        [StripAction::Close(2)]
+    );
+    // A tab neither shown nor under the pointer has no close button.
+    strip.pointer_left();
+    let other = close_at(&strip, 0);
+    assert_eq!(strip.part_at(other.0, other.1), Some(StripPart::Tab(0)));
+}
+
+#[test]
+fn the_middle_button_closes_a_tab_and_the_new_tab_button_opens_one() {
+    let mut strip = strip(800, 3, 0);
+    assert_eq!(
+        {
+            let at = tab_at(&strip, 1);
+            strip_click(&mut strip, at, true)
+        },
+        [StripAction::Close(1)]
+    );
+    let new = (6.0 + 3.0 * tabs::TAB_WIDTH + 3.0 + 14.0, 18.0);
+    assert_eq!(strip.part_at(new.0, new.1), Some(StripPart::New));
+    assert_eq!(strip_click(&mut strip, new, false), [StripAction::New]);
+    // A close button pressed and released elsewhere closes nothing.
+    let mut strip = self::strip(800, 3, 0);
+    let close = close_at(&strip, 0);
+    strip.pointer_moved(close.0, close.1);
+    assert_eq!(strip.press(close.0, close.1, false), None);
+    assert_eq!(strip.release(400.0, 18.0), None);
+}
+
+#[test]
+fn a_tab_dragged_moves_among_the_others() {
+    let mut strip = strip(800, 3, 0);
+    let (x, y) = tab_at(&strip, 0);
+    strip.pointer_moved(x, y);
+    assert_eq!(strip.press(x, y, false), Some(StripAction::Select(0)));
+    assert_eq!(
+        strip.pointer_moved(x + 3.0, y),
+        None,
+        "a tremble is no drag"
+    );
+    assert_eq!(
+        strip.pointer_moved(x + tabs::TAB_WIDTH * 0.7, y),
+        Some(StripAction::Move { from: 0, to: 1 })
+    );
+    assert_eq!(
+        strip.pointer_moved(x + tabs::TAB_WIDTH * 1.7, y),
+        Some(StripAction::Move { from: 1, to: 2 })
+    );
+    assert_eq!(strip.release(x + tabs::TAB_WIDTH * 1.7, y), None);
+}
+
+#[test]
+fn many_tabs_scroll_and_the_one_shown_stays_in_sight() {
+    let mut strip = strip(400, 40, 39);
+    let w = strip.tab_width();
+    assert_eq!(w, tabs::MIN_TAB_WIDTH);
+    // The last tab, shown, is in sight at the strip's right end.
+    let room = 400.0 - 6.0 * 3.0 - 28.0;
+    assert_eq!(
+        strip.part_at(6.0 + room - w / 2.0, 18.0),
+        Some(StripPart::Tab(39))
+    );
+    strip.wheel(-10_000.0);
+    assert_eq!(strip.part_at(6.0 + w / 2.0, 18.0), Some(StripPart::Tab(0)));
+    // Scrolled to the far end, a tab before the view shown is brought
+    // back into it.
+    strip.wheel(10_000.0);
+    let tabs = (0..40)
+        .map(|n| TabItem {
+            title: format!("Page {n}"),
+            loading: false,
+        })
+        .collect();
+    strip.update(tabs, 3);
+    assert_eq!(strip.part_at(6.0 + w / 2.0, 18.0), Some(StripPart::Tab(3)));
+    // Tabs that fit do not scroll.
+    let mut few = self::strip(800, 2, 0);
+    few.wheel(500.0);
+    assert_eq!(few.part_at(6.0 + 10.0, 18.0), Some(StripPart::Tab(0)));
+}
+
+#[test]
+fn the_tab_shown_is_joined_to_the_toolbar_and_a_load_is_marked() {
+    let mut strip = TabStrip::new(fonts());
+    strip.update(
+        vec![
+            TabItem {
+                title: "Shown".into(),
+                loading: false,
+            },
+            TabItem {
+                title: "Loading".into(),
+                loading: true,
+            },
+        ],
+        0,
+    );
+    let frame = strip.frame(WIDTH, 1.0).to_vec();
+    let at = |x: u32, y: u32| {
+        let i = ((y * WIDTH + x) * 4) as usize;
+        [frame[i], frame[i + 1], frame[i + 2]]
+    };
+    let bottom = tabs::HEIGHT - 1;
+    // Under the tab shown, the toolbar's colour; under the other, the
+    // strip's edge.
+    assert_eq!(at(100, bottom), [0xED, 0xED, 0xED]);
+    assert_eq!(at(6 + 220 + 100, bottom), [0xB4, 0xB4, 0xB4]);
+    // The other tab's mark: the dot's blue before its title.
+    let blue = (6 + 220 + 10..6 + 220 + 22).any(|x| at(x, 18) == [0x38, 0x74, 0xD8]);
+    assert!(blue, "the loading mark");
+    // Each title is drawn.
+    let dark = |from: u32| (from + 10..from + 120).any(|x| (8..30).any(|y| at(x, y)[0] < 0x80));
+    assert!(dark(6) && dark(6 + 220));
 }

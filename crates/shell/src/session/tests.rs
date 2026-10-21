@@ -59,6 +59,21 @@ impl Clipboard for Board {
     }
 }
 
+/// The tab strip's height, and the strip's and the toolbar's together:
+/// the page's top (M37).
+const STRIP_H: u32 = ui::tabs::HEIGHT;
+const TOP_H: u32 = STRIP_H + ui::HEIGHT;
+
+/// What makes a tab's engine for a window that opens none.
+fn plain_maker() -> Box<dyn FnMut() -> Engine> {
+    Box::new(|| {
+        Engine::with_fonts(
+            text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
+                .expect("the bundled font parses"),
+        )
+    })
+}
+
 /// A window: the session, the channel its engine's waker sends on, the
 /// clipboard, and the shell's clock.
 struct Window {
@@ -97,17 +112,31 @@ impl Window {
     ) -> Window {
         let fonts = text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
             .expect("the bundled font parses");
-        let mut engine = Engine::with_fonts(fonts);
-        engine.set_scripting(scripts);
+        // Every tab of the window in one context (M37), as the shell's.
+        let context = engine::Context::new();
+        let (wake, woken) = channel();
+        let maker = move || {
+            let mut engine = Engine::with_fonts(fonts.clone());
+            engine.join(&context);
+            engine.set_scripting(scripts);
+            let wake = wake.clone();
+            engine.set_waker(move || {
+                let _ = wake.send(());
+            });
+            engine
+        };
+        let mut engine = maker();
         if let Some(profile) = profile {
             engine.set_profile(profile).expect("the profile reads");
         }
-        let (wake, woken) = channel();
-        engine.set_waker(move || {
-            let _ = wake.send(());
-        });
         let board = Board::default();
-        let mut session = Session::new(engine, Box::new(board.clone()), platform, start);
+        let mut session = Session::new(
+            engine,
+            Box::new(maker),
+            Box::new(board.clone()),
+            platform,
+            start,
+        );
         session.resized(WIDTH, HEIGHT);
         let mut window = Window {
             session,
@@ -238,7 +267,7 @@ fn html(body: &str) -> Option<Reply> {
 }
 
 /// Two pages, the first with a link to the second as a block across
-/// the top of the page: at (50, 60) in the window, below the toolbar.
+/// the top of the page: at (50, 92) in the window, below the toolbar.
 fn two_pages() -> TestServer {
     serve(|path| match path {
         "/" => html(
@@ -285,16 +314,16 @@ fn an_address_typed_and_entered_is_loaded_and_its_links_followed_back_and_forth(
     assert_eq!(window.text(), first.as_str());
     assert_eq!(window.session.title(), "First — Silver Browser");
     // The link: where it goes in the bubble, a hand over it.
-    window.session.pointer_moved(50.0, 60.0);
+    window.session.pointer_moved(50.0, 92.0);
     let second = server.url("/second");
     assert_eq!(window.session.bubble_text(), Some(second.as_str()));
     assert_eq!(window.session.shape(), Shape::Hand);
-    window.session.pointer_moved(50.0, 400.0);
+    window.session.pointer_moved(50.0, 432.0);
     assert_eq!(window.session.bubble_text(), None);
     assert_eq!(window.session.shape(), Shape::Arrow);
-    window.session.pointer_moved(300.0, 20.0);
+    window.session.pointer_moved(300.0, 52.0);
     assert_eq!(window.session.shape(), Shape::Text, "over the field");
-    window.click(50.0, 60.0);
+    window.click(50.0, 92.0);
     window.settle();
     assert_eq!(window.session.title(), "Second — Silver Browser");
     assert_eq!(window.text(), second.as_str());
@@ -307,7 +336,7 @@ fn an_address_typed_and_entered_is_loaded_and_its_links_followed_back_and_forth(
     window.session.press(Button::Forward, window.clock);
     window.settle();
     assert_eq!(window.text(), second.as_str());
-    window.click(20.0, 20.0);
+    window.click(20.0, 52.0);
     window.settle();
     assert_eq!(window.text(), first.as_str());
     window.session.press(Button::Back, window.clock);
@@ -330,28 +359,28 @@ fn the_bubble_says_where_a_link_goes_before_any_notice() {
     window.settle();
     // A link the browser cannot follow: the notice shows once the
     // pointer leaves it.
-    window.click(50.0, 60.0);
+    window.click(50.0, 92.0);
     assert_eq!(
         window.session.bubble_text(),
         Some("mailto:someone@example.com")
     );
-    window.session.pointer_moved(50.0, 400.0);
+    window.session.pointer_moved(50.0, 432.0);
     let notice = window.session.bubble_text().expect("a notice").to_owned();
     assert!(notice.contains("mailto"), "{notice}");
     // A press on a link released off it follows nothing.
-    window.press_at(50.0, 160.0, window.clock + Duration::from_secs(5));
-    window.session.pointer_moved(50.0, 400.0);
+    window.press_at(50.0, 192.0, window.clock + Duration::from_secs(5));
+    window.session.pointer_moved(50.0, 432.0);
     window.session.release(Button::Left);
     assert_eq!(*window.session.engine().load_state(), LoadState::Loaded);
     // A drag from the field over the page finds no link.
     window.chord("l", CTRL);
-    window.press_at(300.0, 20.0, window.clock + Duration::from_secs(10));
-    window.session.pointer_moved(50.0, 160.0);
+    window.press_at(300.0, 52.0, window.clock + Duration::from_secs(10));
+    window.session.pointer_moved(50.0, 192.0);
     assert_eq!(window.session.bubble_text(), None);
     assert_eq!(window.session.shape(), Shape::Arrow);
     window.session.release(Button::Left);
     // The pointer leaving the window takes the bubble with it.
-    window.session.pointer_moved(50.0, 160.0);
+    window.session.pointer_moved(50.0, 192.0);
     window.frame();
     window.session.pointer_left();
     assert_eq!(window.session.bubble_text(), None);
@@ -545,34 +574,34 @@ fn presses_in_quick_succession_select_a_word_then_all() {
     let server = two_pages();
     let mut window = Window::new(Some(server.url("/path")), Platform::Other);
     window.settle();
-    window.click(300.0, 20.0);
+    window.click(300.0, 52.0);
     assert_eq!(window.session.focus(), Focus::Field);
     window.press_key(Key::End, NONE);
     let (end, ..) = window.session.ime_area().expect("the caret");
     let at = end - 3.0;
     let t = window.clock + Duration::from_secs(5);
-    window.press_at(at, 20.0, t);
+    window.press_at(at, 52.0, t);
     window.session.release(Button::Left);
     assert_eq!(window.selected(), None, "a click places the caret");
-    window.press_at(at, 20.0, t + Duration::from_millis(200));
+    window.press_at(at, 52.0, t + Duration::from_millis(200));
     window.session.release(Button::Left);
     assert_eq!(window.selected().as_deref(), Some("path"));
-    window.press_at(at, 20.0, t + Duration::from_millis(400));
+    window.press_at(at, 52.0, t + Duration::from_millis(400));
     window.session.release(Button::Left);
     assert_eq!(
         window.selected().as_deref(),
         Some(server.url("/path").as_str())
     );
     // Too late, or too far, is a click again.
-    window.press_at(at, 20.0, t + Duration::from_millis(1000));
+    window.press_at(at, 52.0, t + Duration::from_millis(1000));
     window.session.release(Button::Left);
     assert_eq!(window.selected(), None);
-    window.press_at(at + 20.0, 20.0, t + Duration::from_millis(1100));
+    window.press_at(at + 20.0, 52.0, t + Duration::from_millis(1100));
     window.session.release(Button::Left);
     assert_eq!(window.selected(), None);
     // Shift with a press selects from the caret.
     window.mods(SHIFT);
-    window.press_at(at - 30.0, 20.0, t + Duration::from_millis(3000));
+    window.press_at(at - 30.0, 52.0, t + Duration::from_millis(3000));
     window.session.release(Button::Left);
     window.mods(NONE);
     assert!(
@@ -598,22 +627,22 @@ fn a_press_on_the_page_takes_the_keyboard_and_the_keys_scroll_it() {
     window.press_key(Key::Enter, NONE);
     window.settle();
     window.chord("l", CTRL);
-    window.click(400.0, 300.0);
+    window.click(400.0, 332.0);
     assert_eq!(window.session.focus(), Focus::Page);
     window.press_key(Key::Down, NONE);
     assert_eq!(window.session.engine().scroll_target(), LINE_PX);
     // A page is the page's height, below the toolbar, less a line.
     window.press_key(Key::Space, NONE);
-    let page = (HEIGHT - ui::HEIGHT) as f32 - LINE_PX;
+    let page = (HEIGHT - TOP_H) as f32 - LINE_PX;
     assert_eq!(window.session.engine().scroll_target(), LINE_PX + page);
     window.press_key(Key::Home, NONE);
     assert_eq!(window.session.engine().scroll_target(), 0.0);
     // The wheel scrolls the page under the pointer, not over the
     // toolbar.
-    window.session.pointer_moved(400.0, 20.0);
+    window.session.pointer_moved(400.0, 52.0);
     window.session.wheel(LINE_PX);
     assert_eq!(window.session.engine().scroll_target(), 0.0);
-    window.session.pointer_moved(400.0, 300.0);
+    window.session.pointer_moved(400.0, 332.0);
     window.session.wheel(LINE_PX);
     assert_eq!(window.session.engine().scroll_target(), LINE_PX);
     window.press_key(Key::Home, NONE);
@@ -621,14 +650,12 @@ fn a_press_on_the_page_takes_the_keyboard_and_the_keys_scroll_it() {
     // The scrollbar is over the link at the page's right edge: no link
     // there. Its thumb, at the top, follows a drag.
     let bar_x = (WIDTH - 4) as f32;
-    window.session.pointer_moved(bar_x, 60.0);
+    window.session.pointer_moved(bar_x, 92.0);
     assert_eq!(window.session.bubble_text(), None);
-    window.session.pointer_moved(50.0, 60.0);
+    window.session.pointer_moved(50.0, 92.0);
     assert!(window.session.bubble_text().is_some(), "the link");
-    window.press_at(bar_x, ui::HEIGHT as f32 + 5.0, window.clock);
-    window
-        .session
-        .pointer_moved(bar_x, ui::HEIGHT as f32 + 105.0);
+    window.press_at(bar_x, TOP_H as f32 + 5.0, window.clock);
+    window.session.pointer_moved(bar_x, TOP_H as f32 + 105.0);
     window.session.release(Button::Left);
     assert!(window.session.engine().scroll_target() > 0.0, "dragged");
     // In the field, the space is typed.
@@ -669,8 +696,14 @@ fn the_toolbar_is_drawn_above_the_page_and_the_bubble_over_it() {
     window.settle();
     let frame = window.frame();
     let at = |frame: &[u32], x: u32, y: u32| frame[(y * WIDTH + x) as usize];
-    assert_eq!(at(&frame, 0, 0), 0xEDEDED, "the toolbar");
-    assert_eq!(at(&frame, 400, ui::HEIGHT - 1), 0xC9C9C9, "its edge");
+    assert_eq!(at(&frame, 0, 0), 0xD6D6D6, "the tab strip");
+    assert_eq!(
+        at(&frame, 100, STRIP_H - 1),
+        0xEDEDED,
+        "the tab joined to it"
+    );
+    assert_eq!(at(&frame, 0, STRIP_H + 2), 0xEDEDED, "the toolbar");
+    assert_eq!(at(&frame, 400, TOP_H - 1), 0xC9C9C9, "its edge");
     assert_eq!(at(&frame, 400, 300), 0x00FF00, "the page");
     assert_eq!(at(&frame, 2, HEIGHT - 30), 0x00FF00, "no bubble");
     assert_eq!(
@@ -679,7 +712,7 @@ fn the_toolbar_is_drawn_above_the_page_and_the_bubble_over_it() {
         "the page's bottom"
     );
     assert!(!window.session.needs_frame());
-    window.session.pointer_moved(50.0, 60.0);
+    window.session.pointer_moved(50.0, 92.0);
     assert!(window.session.needs_frame(), "the bubble comes");
     let frame = window.frame();
     assert_eq!(at(&frame, 2, HEIGHT - 5), 0xF2F2F2, "the bubble");
@@ -838,7 +871,7 @@ fn the_page_hovers_and_sets_the_cursor_under_the_pointer() {
     let mut window = Window::new(Some(server.url("/")), Platform::Other);
     window.settle();
     window.frame();
-    let top = ui::HEIGHT as f32;
+    let top = TOP_H as f32;
     // Hovered, the element takes its :hover style, whose cursor shows.
     window.session.pointer_moved(10.0, top + 10.0);
     assert_eq!(window.session.shape(), Shape::Page(engine::Cursor::Wait));
@@ -888,6 +921,7 @@ fn a_page_loaded_before_the_first_frame_reads_the_windows_page_area() {
     });
     let mut session = Session::new(
         engine,
+        plain_maker(),
         Box::new(Board::default()),
         Platform::Other,
         Some(server.url("/")),
@@ -903,7 +937,7 @@ fn a_page_loaded_before_the_first_frame_reads_the_windows_page_area() {
     }
     assert_eq!(
         session.engine().title(),
-        format!("{WIDTH} by {}", HEIGHT - ui::HEIGHT)
+        format!("{WIDTH} by {}", HEIGHT - TOP_H)
     );
 }
 
@@ -928,7 +962,7 @@ fn a_table_a_script_builds_is_styled_by_the_class_it_toggles() {
     let mut window = Window::with_scripts(Some(server.url("/")));
     window.settle();
     let out = window.frame();
-    let at = |x: u32, y: u32| out[((ui::HEIGHT + y) * WIDTH + x) as usize] & 0x00ff_ffff;
+    let at = |x: u32, y: u32| out[((TOP_H + y) * WIDTH + x) as usize] & 0x00ff_ffff;
     for (x, y) in [(0, 0), (20, 15), (199, 149), (100, 75)] {
         assert_eq!(at(x, y), 0x7f2f4f, "({x}, {y})");
     }
@@ -1057,7 +1091,7 @@ fn the_to_do_list_takes_entries_marks_them_done_and_lets_them_go() {
     });
     let mut window = Window::with_scripts(Some(server.url("/")));
     window.settle();
-    let top = ui::HEIGHT as f32;
+    let top = TOP_H as f32;
     let entries = |window: &Window| {
         let engine = window.session.engine();
         let document = engine.document();
@@ -1089,7 +1123,7 @@ fn the_to_do_list_takes_entries_marks_them_done_and_lets_them_go() {
     window.click(100.0, top + 50.0);
     assert_eq!(entries(&window), ["milk done", "eggs"]);
     let out = window.frame();
-    let at = |x: u32, y: u32| out[((ui::HEIGHT + y) * WIDTH + x) as usize] & 0x00ff_ffff;
+    let at = |x: u32, y: u32| out[((TOP_H + y) * WIDTH + x) as usize] & 0x00ff_ffff;
     assert_eq!(at(100, 50), 0x7f2f4f, "done");
     assert_eq!(at(100, 74), 0x2f4f7f, "not done");
     // The second taken out by its button: the click reaches the
@@ -1097,7 +1131,7 @@ fn the_to_do_list_takes_entries_marks_them_done_and_lets_them_go() {
     window.click(290.0, top + 74.0);
     assert_eq!(entries(&window), ["milk done"]);
     let out = window.frame();
-    let at = |x: u32, y: u32| out[((ui::HEIGHT + y) * WIDTH + x) as usize] & 0x00ff_ffff;
+    let at = |x: u32, y: u32| out[((TOP_H + y) * WIDTH + x) as usize] & 0x00ff_ffff;
     assert_eq!(at(100, 74), 0xffffff, "gone");
 }
 
@@ -1127,7 +1161,7 @@ fn the_search_form_is_sent_with_enter_and_with_its_button_scripts_on_and_off() {
         let server = search_server();
         let mut window = Window::running(Some(server.url("/")), Platform::Other, scripts);
         window.settle();
-        let top = ui::HEIGHT as f32;
+        let top = TOP_H as f32;
         let from = if scripts { "script" } else { "page" };
         // Typed, then Enter: implicit submission.
         window.click(100.0, top + 12.0);
@@ -1271,7 +1305,7 @@ fn a_page_signs_in_by_fetch_and_reads_another_origin_by_cors_with_credentials() 
     });
     let mut window = Window::with_scripts(Some(server.url("/")));
     window.settle();
-    let top = ui::HEIGHT as f32;
+    let top = TOP_H as f32;
     window.click(60.0, top + 15.0);
     // The answers come as the network brings them, each a task the
     // window's tick runs.
@@ -1296,7 +1330,7 @@ fn a_page_signs_in_by_fetch_and_reads_another_origin_by_cors_with_credentials() 
         window.session.title()
     );
     let out = window.frame();
-    let at = |x: u32, y: u32| out[((ui::HEIGHT + y) * WIDTH + x) as usize] & 0x00ff_ffff;
+    let at = |x: u32, y: u32| out[((TOP_H + y) * WIDTH + x) as usize] & 0x00ff_ffff;
     assert_eq!(at(90, 50), 0x2f6f4f, "two visits wide");
     assert_eq!(at(110, 50), 0xffffff, "and no wider");
     // The session cookie went with the second request only; the other
@@ -1336,7 +1370,7 @@ fn the_window_is_drawn_at_its_scale_and_its_pointer_taken_by_it() {
     window.session.set_scale(2.0, WIDTH, HEIGHT);
     let twice = window.frame();
     let w = WIDTH as usize;
-    let edge = ui::HEIGHT as usize - 1;
+    let edge = TOP_H as usize - 1;
     // The toolbar's bottom edge, a row at 1, two rows twice as far down
     // at 2.
     assert_eq!(twice[(2 * edge) * w], once[edge * w]);
@@ -1344,13 +1378,14 @@ fn the_window_is_drawn_at_its_scale_and_its_pointer_taken_by_it() {
     assert_ne!(twice[edge * w], once[edge * w]);
     // The field ends short of the toolbar's right edge, in CSS pixels:
     // the bar's own colour there, as above the buttons.
-    assert_eq!(twice[40 * w + w - 4], once[2 * w + 10]);
+    let bar = STRIP_H as usize;
+    assert_eq!(twice[(2 * bar + 40) * w + w - 4], once[(bar + 2) * w + 10]);
     // The page's viewport is the window's CSS pixels under the toolbar.
     let (vw, vh) = window.session.engine().viewport();
-    assert_eq!((vw, vh), (WIDTH / 2, HEIGHT / 2 - ui::HEIGHT));
-    // A pointer at device (700, 40) is at CSS (350, 20): over the
+    assert_eq!((vw, vh), (WIDTH / 2, HEIGHT / 2 - TOP_H));
+    // A pointer at device (700, 104) is at CSS (350, 52): over the
     // address field, where at a pixel to a pixel it would be on the page.
-    window.session.pointer_moved(700.0, 40.0);
+    window.session.pointer_moved(700.0, 104.0);
     assert_eq!(window.session.shape(), Shape::Text);
 }
 
@@ -1398,7 +1433,13 @@ fn a_sites_prompt_shows_under_the_toolbar_and_its_buttons_answer_it() {
     });
     let board = Board::default();
     let start = Some(page.url("/"));
-    let mut session = Session::new(engine, Box::new(board.clone()), Platform::Other, start);
+    let mut session = Session::new(
+        engine,
+        plain_maker(),
+        Box::new(board.clone()),
+        Platform::Other,
+        start,
+    );
     session.resized(WIDTH, HEIGHT);
     let mut window = Window {
         session,
@@ -1411,10 +1452,10 @@ fn a_sites_prompt_shows_under_the_toolbar_and_its_buttons_answer_it() {
     assert_eq!(prompt.permission, engine::Permission::LocalNetwork);
     let frame = window.frame();
     let at = |frame: &[u32], x: u32, y: u32| frame[(y * WIDTH + x) as usize];
-    let bar = ui::HEIGHT + ui::prompt::HEIGHT / 2;
+    let bar = TOP_H + ui::prompt::HEIGHT / 2;
     assert_eq!(at(&frame, 3, bar), 0xFFF8E1, "the prompt's bar");
     assert_eq!(
-        at(&frame, 3, ui::HEIGHT + ui::prompt::HEIGHT + 5),
+        at(&frame, 3, TOP_H + ui::prompt::HEIGHT + 5),
         0x00FF00,
         "the page under it"
     );
@@ -1484,15 +1525,15 @@ fn f12_opens_the_devtools_panel_under_the_page_and_closes_it() {
     let mut window = Window::new(Some(server.url("/")), Platform::Other);
     window.settle();
     let whole = window.session.engine().viewport();
-    assert_eq!(whole, (WIDTH, HEIGHT - ui::HEIGHT));
+    assert_eq!(whole, (WIDTH, HEIGHT - TOP_H));
     window.press_key(Key::F12, NONE);
     // The panel takes the window's lower part and the keyboard; the page
     // is laid out to what is left.
     assert_eq!(window.session.focus(), Focus::Panel);
-    let panel_height = ((HEIGHT - ui::HEIGHT) as f32 * PANEL_SHARE).round() as u32;
+    let panel_height = ((HEIGHT - TOP_H) as f32 * PANEL_SHARE).round() as u32;
     assert_eq!(
         window.session.engine().viewport(),
-        (WIDTH, HEIGHT - ui::HEIGHT - panel_height)
+        (WIDTH, HEIGHT - TOP_H - panel_height)
     );
     assert_eq!(
         window.session.panel_mut().map(|panel| panel.viewport()),
@@ -1515,7 +1556,7 @@ fn f12_opens_the_devtools_panel_under_the_page_and_closes_it() {
         .collect();
     assert!(differ.is_empty(), "{differ:x?}");
     // A navigation is told to the panel, which names the new page.
-    window.click(50.0, 60.0);
+    window.click(50.0, 92.0);
     let named = format!("Second - {}", server.url("/second"));
     window.run_until(|session| panel_text(session, "inspected").as_deref() == Some(&named));
     // A press on the page gives it the keyboard; one on the panel, the
@@ -1739,7 +1780,7 @@ fn the_panels_console_shows_the_pages_entries_and_evaluates() {
     window.run_until(|session| panel_console(session).contains("later"));
     // An expression typed at the prompt, at the console's foot, runs in
     // the page: the Console tab first, the second of the panel's tabs.
-    let panel_top = HEIGHT - ((HEIGHT - ui::HEIGHT) as f32 * PANEL_SHARE).round() as u32;
+    let panel_top = HEIGHT - ((HEIGHT - TOP_H) as f32 * PANEL_SHARE).round() as u32;
     window.click(110.0, (panel_top + 10) as f32);
     window.run_until(|session| {
         panel_text(session, "pane-console").is_some()
@@ -1781,7 +1822,7 @@ fn the_panels_inspector_shows_the_tree_and_a_picked_nodes_rules() {
     // paragraph: the panel selects it and shows its rules.
     let pick = r#"{"id":77,"method":"dom.pick","params":{"on":true}}"#;
     View::inspect(window.session.engine_mut(), pick.to_owned());
-    window.click(100.0, 60.0);
+    window.click(100.0, 92.0);
     window.run_until(|session| {
         panel_text(session, "elements-styles")
             .is_some_and(|styles| styles.contains(".x {") && styles.contains("color: green;"))
@@ -2023,4 +2064,225 @@ fn the_to_do_list_is_debugged_through_the_panel() {
     let requests = server.requests();
     let seeded = requests.iter().filter(|r| r.target == "/seed.json").count();
     assert_eq!(seeded, 1, "the second load reads what was kept");
+}
+
+/// The middle of tab `n` in the strip, as wide as tabs are while there
+/// is room (M37).
+fn tab_in_strip(n: usize) -> (f32, f32) {
+    (6.0 + ui::tabs::TAB_WIDTH * n as f32 + 60.0, 18.0)
+}
+
+/// The new-tab button after `count` tabs.
+fn new_tab_button(count: usize) -> (f32, f32) {
+    (6.0 + ui::tabs::TAB_WIDTH * count as f32 + 3.0 + 14.0, 18.0)
+}
+
+/// The strip's titles, in its order.
+fn titles(session: &Session) -> Vec<String> {
+    session
+        .tab_items()
+        .into_iter()
+        .map(|item| item.title)
+        .collect()
+}
+
+/// Pages that say their own name, and whether they are seen.
+fn named_pages() -> TestServer {
+    serve(|path| {
+        let name = path.trim_start_matches('/');
+        html(&format!(
+            "<title>{name}</title><script>document.addEventListener('visibilitychange', \
+             () => document.title = '{name} ' + document.visibilityState)</script><p>{name}"
+        ))
+    })
+}
+
+#[test]
+fn tabs_open_switch_and_close_by_the_keys() {
+    let server = named_pages();
+    let mut window = Window::with_scripts(Some(server.url("/a")));
+    window.settle();
+    assert_eq!(window.session.tab_count(), 1);
+    // Ctrl+T: a new tab after the one shown, on the start page, the
+    // field with the keyboard.
+    window.chord("t", CTRL);
+    assert_eq!(
+        (window.session.tab_count(), window.session.active()),
+        (2, 1)
+    );
+    assert_eq!(window.session.focus(), Focus::Field);
+    assert_eq!(
+        window.session.engine().url().map(Url::as_str),
+        Some("about:silver")
+    );
+    window.type_text(server.url("/b").as_str());
+    window.press_key(Key::Enter, NONE);
+    window.settle();
+    window.wait_until(|session| session.title().starts_with("b "));
+    // The window's title is the tab shown's; the first tab, hidden, heard
+    // it.
+    window.wait_until(|session| titles(session)[0] == "a hidden");
+    // Ctrl+Tab and Ctrl+Shift+Tab go round; Ctrl+1 and Ctrl+9 jump.
+    window.press_key(Key::Tab, CTRL);
+    assert_eq!(window.session.active(), 0);
+    window.wait_until(|session| session.title().starts_with("a visible"));
+    window.press_key(Key::Tab, CTRL);
+    assert_eq!(window.session.active(), 1);
+    window.press_key(Key::Tab, CTRL);
+    assert_eq!(window.session.active(), 0, "round the strip");
+    window.press_key(
+        Key::Tab,
+        Modifiers {
+            shift: true,
+            ..CTRL
+        },
+    );
+    assert_eq!(window.session.active(), 1);
+    window.chord("1", CTRL);
+    assert_eq!(window.session.active(), 0);
+    window.chord("9", CTRL);
+    assert_eq!(window.session.active(), 1);
+    window.press_key(Key::PageUp, CTRL);
+    assert_eq!(window.session.active(), 0);
+    // Ctrl+W closes the tab shown; the last one closes the window.
+    window.chord("w", CTRL);
+    assert_eq!(window.session.tab_count(), 1);
+    assert!(window.session.title().starts_with("b "));
+    assert!(!window.session.wants_close());
+    window.press_key(Key::F4, CTRL);
+    assert!(window.session.wants_close());
+}
+
+#[test]
+fn the_strip_shows_the_tabs_and_takes_the_pointer() {
+    let server = named_pages();
+    let mut window = Window::with_scripts(Some(server.url("/a")));
+    window.settle();
+    window.wait_until(|session| titles(session) == ["a"]);
+    // The new-tab button opens one, shown.
+    let (x, y) = new_tab_button(1);
+    window.click(x, y);
+    assert_eq!(
+        (window.session.tab_count(), window.session.active()),
+        (2, 1)
+    );
+    // A tab pressed is shown.
+    let (x, y) = tab_in_strip(0);
+    window.click(x, y);
+    assert_eq!(window.session.active(), 0);
+    window.wait_until(|session| session.title().starts_with("a visible"));
+    // The middle button closes the tab it is released on.
+    let (x, y) = tab_in_strip(1);
+    window.session.pointer_moved(x, y);
+    window.session.press(Button::Middle, window.clock);
+    window.session.release(Button::Middle);
+    assert_eq!(window.session.tab_count(), 1);
+    // The close button of the tab shown closes it, the window with it.
+    let close = (6.0 + ui::tabs::TAB_WIDTH - 18.0, 18.0);
+    window.click(close.0, close.1);
+    assert!(window.session.wants_close());
+}
+
+#[test]
+fn a_tab_dragged_along_the_strip_moves() {
+    let server = named_pages();
+    let mut window = Window::with_scripts(Some(server.url("/a")));
+    window.settle();
+    for name in ["b", "c"] {
+        window.chord("t", CTRL);
+        window.type_text(server.url(&format!("/{name}")).as_str());
+        window.press_key(Key::Enter, NONE);
+        window.settle();
+    }
+    let first_words = |session: &Session| -> Vec<String> {
+        titles(session)
+            .into_iter()
+            .map(|title| title.split(' ').next().unwrap_or_default().to_owned())
+            .collect()
+    };
+    window.wait_until(|session| first_words(session) == ["a", "b", "c"]);
+    // The first tab, dragged two tabs' width right, is last.
+    let (x, y) = tab_in_strip(0);
+    window.session.pointer_moved(x, y);
+    window.session.press(Button::Left, window.clock);
+    assert_eq!(window.session.active(), 0, "a tab pressed is shown");
+    for step in 1..=10 {
+        let dx = ui::tabs::TAB_WIDTH * 2.0 * step as f32 / 10.0;
+        window.session.pointer_moved(x + dx, y);
+    }
+    window.session.release(Button::Left);
+    assert_eq!(first_words(&window.session), ["b", "c", "a"]);
+    assert_eq!(window.session.active(), 2, "the tab shown moved with it");
+}
+
+#[test]
+fn each_tab_keeps_its_own_edit_of_the_field() {
+    let server = named_pages();
+    let mut window = Window::with_scripts(Some(server.url("/a")));
+    window.settle();
+    window.chord("l", CTRL);
+    window.type_text("half typed");
+    window.chord("t", CTRL);
+    assert_eq!(window.session.toolbar().text(), "about:silver");
+    window.chord("1", CTRL);
+    assert_eq!(window.session.toolbar().text(), "half typed");
+    assert_eq!(window.session.focus(), Focus::Field);
+}
+
+#[test]
+fn a_discarded_tab_is_loaded_again_when_shown() {
+    let server = named_pages();
+    let mut window = Window::with_scripts(Some(server.url("/a")));
+    window.settle();
+    window.chord("t", CTRL);
+    window.session.discard(0);
+    // It keeps its title in the strip, and loads its page again when
+    // shown.
+    assert!(titles(&window.session)[0].starts_with("a"));
+    window.chord("1", CTRL);
+    window.settle();
+    assert_eq!(window.session.engine().url(), Some(&server.url("/a")));
+    window.wait_until(|session| session.title().starts_with("a"));
+    // A tab shown is never discarded.
+    window.session.discard(0);
+    assert_eq!(window.session.engine().url(), Some(&server.url("/a")));
+}
+
+#[test]
+fn the_tab_shown_least_recently_is_discarded_first() {
+    assert_eq!(
+        least_recently_shown(&[Some(5), None, Some(2), Some(9)]),
+        Some(2)
+    );
+    assert_eq!(least_recently_shown(&[None, None]), None);
+}
+
+#[test]
+fn a_hidden_tabs_timers_and_loads_go_on() {
+    let server = serve(|path| match path {
+        "/timer" => html(
+            "<title>waiting</title><script>setTimeout(() => document.title = 'timed', 400)</script>",
+        ),
+        _ => html("<title>loaded</title><p>loaded"),
+    });
+    let mut window = Window::with_scripts(Some(server.url("/timer")));
+    window.settle();
+    // A tab opened behind the one shown loads there.
+    assert!(window.session.new_tab(Some(server.url("/other")), false));
+    assert_eq!(window.session.active(), 0);
+    window.wait_until(|session| titles(session)[1] == "loaded");
+    // The tab shown put aside: its timer still runs, hidden.
+    window.chord("t", CTRL);
+    assert_eq!(window.session.active(), 1);
+    assert_eq!(
+        titles(&window.session)[0],
+        "waiting",
+        "put aside before its timer"
+    );
+    let deadline = Instant::now() + WAIT;
+    while titles(&window.session)[0] != "timed" {
+        assert!(Instant::now() < deadline, "the hidden tab's timer runs");
+        window.session.tick();
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }

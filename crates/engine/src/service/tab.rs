@@ -645,6 +645,7 @@ impl RemoteTab {
     /// page waits for its renderer to start.
     fn start_spare(&mut self) {
         if self.spare
+            && !self.settings.hidden
             && self.frames > 0
             && self.renderers.values().all(|slot| slot.lock.is_some())
             && self.renderers.len() < self.cap
@@ -1892,6 +1893,25 @@ impl View for RemoteTab {
     fn set_hidden(&mut self, hidden: bool) {
         self.settings.hidden = hidden;
         self.send_settings();
+        // A hidden tab keeps no spare renderer (M37): the tab shown has
+        // the one a window keeps.
+        if hidden {
+            let spares: Vec<u32> = self
+                .renderers
+                .iter()
+                .filter(|(_, slot)| slot.lock.is_none())
+                .map(|(number, _)| *number)
+                .collect();
+            for number in spares {
+                self.forget(number);
+            }
+        } else {
+            self.start_spare();
+        }
+    }
+
+    fn renderer_count(&self) -> usize {
+        self.renderers.len()
     }
 
     fn set_window_focus(&mut self, focused: bool) {
