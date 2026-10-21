@@ -174,7 +174,12 @@ pub struct RemoteTab {
     hsts: Arc<Mutex<Hsts>>,
     permissions: Arc<Permissions>,
     renderers: BTreeMap<u32, Slot>,
-    next_renderer: u32,
+    /// What the tab shares with the other tabs of its profile (M37): its
+    /// renderers are numbered by it. The tab's number in it, and its own
+    /// as one that hears of changes of Web Storage areas.
+    context: crate::Context,
+    tab: u64,
+    listener: u64,
     next_view: u32,
     /// The most renderers alive at once, and whether one waits, unlocked,
     /// for the next site.
@@ -232,6 +237,10 @@ pub struct RemoteTab {
     holding: bool,
     #[cfg(test)]
     held: Option<(ViewId, u64)>,
+    /// How many changes of Web Storage areas it told its renderers: for
+    /// the tests.
+    #[cfg(test)]
+    relayed: u64,
     /// Whether the tab shows the DevTools panel (M36), and what its page
     /// sent the browser; or, a page's tab, what its page answered the
     /// panel. Each kind is taken from its own kind of tab alone.
@@ -249,6 +258,16 @@ impl RemoteTab {
         RemoteTab::with_cap(launcher, fonts, MAX_RENDERERS, true)
     }
 
+    /// A tab of `context` (M37), sharing its cookies, cache, HSTS hosts,
+    /// permissions and storage with the context's other tabs.
+    pub fn in_context(
+        launcher: Arc<dyn Launcher>,
+        fonts: text::FontCollection,
+        context: &crate::Context,
+    ) -> RemoteTab {
+        RemoteTab::in_context_with_cap(launcher, fonts, MAX_RENDERERS, true, context)
+    }
+
     /// A tab of at most `cap` renderers, one of them spare if `spare`.
     pub fn with_cap(
         launcher: Arc<dyn Launcher>,
@@ -256,13 +275,26 @@ impl RemoteTab {
         cap: usize,
         spare: bool,
     ) -> RemoteTab {
+        RemoteTab::in_context_with_cap(launcher, fonts, cap, spare, &crate::Context::new())
+    }
+
+    /// A tab of `context` of at most `cap` renderers, one of them spare if
+    /// `spare`.
+    pub fn in_context_with_cap(
+        launcher: Arc<dyn Launcher>,
+        fonts: text::FontCollection,
+        cap: usize,
+        spare: bool,
+        context: &crate::Context,
+    ) -> RemoteTab {
         let grants = Grants::new();
-        let jar: Arc<Mutex<Jar>> = Arc::default();
-        let cache: Arc<net::Cache> = Arc::default();
-        let hsts: Arc<Mutex<Hsts>> = Arc::default();
-        let permissions: Arc<Permissions> = Arc::default();
+        let jar: Arc<Mutex<Jar>> = context.jar().clone();
+        let cache: Arc<net::Cache> = context.cache().clone();
+        let hsts: Arc<Mutex<Hsts>> = context.hsts().clone();
+        let permissions: Arc<Permissions> = context.permissions().clone();
         let log: Arc<crate::network_log::NetworkLog> = Arc::default();
-        let storage = Arc::new(Mutex::new(Storage::new()));
+        let storage = context.shared_storage().clone();
+        let tab = context.new_tab();
         let handovers = Handovers::new();
         let registry: SharedRegistry = Arc::default();
         let network = NetworkService::new(
@@ -302,9 +334,15 @@ impl RemoteTab {
                 }
             }),
         );
+        let listener = {
+            let mut shared = storage.lock().unwrap_or_else(PoisonError::into_inner);
+            let listener = shared.listen();
+            shared.set_waker(listener, wake.clone());
+            listener
+        };
         let services = Arc::new(Services(vec![
             network.clone(),
-            StorageService::new(storage.clone(), grants.clone()),
+            StorageService::new(storage.clone(), grants.clone(), tab),
             FramesService::new(registry.clone(), grants.clone(), frame_sender, wake),
         ]));
         RemoteTab {
@@ -321,7 +359,9 @@ impl RemoteTab {
             hsts,
             permissions,
             renderers: BTreeMap::new(),
-            next_renderer: 1,
+            context: context.clone(),
+            tab,
+            listener,
             next_view: 1,
             cap: cap.max(1),
             spare,
@@ -358,6 +398,8 @@ impl RemoteTab {
             holding: false,
             #[cfg(test)]
             held: None,
+            #[cfg(test)]
+            relayed: 0,
             panel: false,
             devtools: Vec::new(),
             inspected: Vec::new(),
@@ -478,8 +520,7 @@ impl RemoteTab {
             ));
             return None;
         }
-        let number = self.next_renderer;
-        self.next_renderer += 1;
+        let number = self.context.new_renderer();
         let serve: Arc<dyn super::Serve> = self.services.clone();
         match Renderer::start(
             self.launcher.as_ref(),
@@ -752,7 +793,7 @@ impl RemoteTab {
     /// Takes what the renderers and the services said; whether anything
     /// changed.
     fn take_events(&mut self) -> bool {
-        let mut changed = false;
+        let mut changed = self.relay_storage_changes();
         while let Ok(notice) = self.handed.try_recv() {
             changed = true;
             self.hand_over(notice);
@@ -1482,10 +1523,68 @@ impl RemoteTab {
     /// Keeps what the browsing keeps in `profile` from now on (M28): the
     /// browser's cookies, HSTS hosts, permissions and `localStorage`.
     pub fn set_profile(&mut self, profile: Profile) -> Result<(), profile::Error> {
-        let mut storage = self.storage.lock().unwrap_or_else(PoisonError::into_inner);
-        storage.set_hsts(self.hsts.clone());
-        storage.set_permissions(self.permissions.clone());
-        storage.set_profile(profile, &self.jar)
+        self.context.set_profile(profile)
+    }
+
+    /// The tab's number in its context (M37).
+    pub fn tab(&self) -> u64 {
+        self.tab
+    }
+
+    /// Tells the tab's renderers of the changes of Web Storage areas
+    /// made elsewhere (M37): each renderer whose lock admits the area's
+    /// origin, but the one that made it; a `sessionStorage` area's only
+    /// in its own tab. Whether there were any.
+    fn relay_storage_changes(&mut self) -> bool {
+        let changes = self
+            .storage
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take_changes(self.listener);
+        for change in &changes {
+            if let crate::storage::Scope::Session(tab) = change.scope
+                && tab != self.tab
+            {
+                continue;
+            }
+            for (number, slot) in &self.renderers {
+                if change.source == crate::storage::Source::Renderer(*number)
+                    || change.owner.is_opaque()
+                    || !slot
+                        .lock
+                        .as_ref()
+                        .is_some_and(|lock| lock.admits(&change.owner))
+                {
+                    continue;
+                }
+                #[cfg(test)]
+                {
+                    self.relayed += 1;
+                }
+                let _ = slot.renderer.send(&ToRenderer::StorageChanged {
+                    local: change.scope.is_local(),
+                    origin: change.owner.clone(),
+                    partition: change.partition.clone(),
+                    key: change.key.clone(),
+                    old: change.old.clone(),
+                    new: change.new.clone(),
+                    url: change.url.clone(),
+                });
+            }
+        }
+        !changes.is_empty()
+    }
+
+    /// The numbers of the tab's renderers alive.
+    #[cfg(test)]
+    pub(crate) fn renderer_numbers(&self) -> Vec<u32> {
+        self.renderers.keys().copied().collect()
+    }
+
+    /// How many changes of Web Storage areas it told its renderers.
+    #[cfg(test)]
+    pub(crate) fn storage_changes_sent(&self) -> u64 {
+        self.relayed
     }
 
     /// How many frames the renderer sent.
@@ -1601,6 +1700,9 @@ impl Drop for RemoteTab {
         for slot in self.renderers.values() {
             slot.renderer.shutdown();
         }
+        let mut storage = self.storage.lock().unwrap_or_else(PoisonError::into_inner);
+        storage.forget(self.listener);
+        storage.forget_tab(self.tab);
     }
 }
 
@@ -1866,7 +1968,7 @@ impl View for RemoteTab {
 
     fn storage_inspect(&mut self, message: &str) -> String {
         let url = self.state().url.clone();
-        crate::storage::devtools::inspect(&self.storage, &self.jar, url.as_ref(), message)
+        crate::storage::devtools::inspect(&self.storage, &self.jar, self.tab, url.as_ref(), message)
     }
 
     fn run_tasks(&mut self) -> bool {

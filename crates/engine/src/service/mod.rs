@@ -8,6 +8,8 @@
 mod adversarial_tests;
 #[cfg(test)]
 mod compromised_tests;
+#[cfg(test)]
+mod context_tests;
 mod frames;
 mod handover;
 mod network;

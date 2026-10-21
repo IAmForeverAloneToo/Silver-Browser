@@ -62,6 +62,21 @@ impl Link {
         self.calls.call(&self.sender, ask)
     }
 
+    /// Tells the browser of `change`, which frame `frame`'s document made
+    /// (M37), for the other renderers.
+    pub(crate) fn storage_changed(&self, frame: u32, change: &crate::storage::Change) {
+        let _ = self.send(&ToBrowser::StorageChanged {
+            frame,
+            local: change.scope.is_local(),
+            origin: change.owner.clone(),
+            partition: change.partition.clone(),
+            key: change.key.clone(),
+            old: change.old.clone(),
+            new: change.new.clone(),
+            url: change.url.clone(),
+        });
+    }
+
     /// The browser's number for a new frame under its frame `parent`
     /// (M34); none when it refuses one.
     pub(crate) fn new_frame(&self, parent: u32) -> Option<u32> {

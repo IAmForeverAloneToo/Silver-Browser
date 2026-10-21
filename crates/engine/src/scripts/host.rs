@@ -472,21 +472,24 @@ impl DocumentHost {
         let (Some(page), Some(storage)) = (&self.page, &self.window.storage) else {
             return;
         };
-        let origin = self.storage_key(page).serialization();
+        let area = self.storage_key(page);
+        let origin = area.serialization();
+        let (listener, tab) = self.window.listener;
         let mut storage = storage.lock().unwrap_or_else(PoisonError::into_inner);
-        if self.window.storage_peer {
-            storage.broadcast(storage::Change {
-                local,
-                origin,
-                key,
-                old,
-                new,
-                url: page
-                    .url()
-                    .map_or_else(String::new, |url| url.as_str().to_owned()),
-                page: page.id(),
-            });
-        }
+        storage.broadcast(storage::Change {
+            scope: storage::Scope::of(local, tab),
+            origin,
+            key,
+            old,
+            new,
+            url: page
+                .url()
+                .map_or_else(String::new, |url| url.as_str().to_owned()),
+            page: page.id(),
+            source: storage::Source::Engine(listener),
+            owner: area.origin,
+            partition: area.partition,
+        });
     }
 
     /// Answers `call`.

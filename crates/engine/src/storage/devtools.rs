@@ -13,7 +13,7 @@ use devtools::{Json, Request};
 use net::Url;
 use net::cookies::Jar;
 
-use super::{STORAGE_QUOTA, Storage};
+use super::{STORAGE_QUOTA, Scope, Storage};
 use crate::idb::{IDB_ORIGIN_QUOTA, KeyRange, Mode, key_json};
 
 /// The most records of each object store the panel is given.
@@ -26,7 +26,7 @@ pub const SITE_QUOTA: u64 = IDB_ORIGIN_QUOTA + 2 * STORAGE_QUOTA as u64;
 /// The bytes `origin` uses: its `localStorage`'s code units, two bytes
 /// each, and its IndexedDB databases' keys and values.
 pub(crate) fn usage(storage: &mut Storage, origin: &str) -> u64 {
-    let local = storage.area(true, origin).used() as u64 * 2;
+    let local = storage.area(Scope::Local, origin).used() as u64 * 2;
     local + storage.idb(origin).used(origin)
 }
 
@@ -35,6 +35,7 @@ pub(crate) fn usage(storage: &mut Storage, origin: &str) -> u64 {
 pub(crate) fn inspect(
     storage: &Mutex<Storage>,
     jar: &Mutex<Jar>,
+    tab: u64,
     url: Option<&Url>,
     message: &str,
 ) -> String {
@@ -42,7 +43,7 @@ pub(crate) fn inspect(
         return String::new();
     };
     let answered = match url {
-        Some(url) if !url.origin().is_opaque() => answer(storage, jar, url, &request),
+        Some(url) if !url.origin().is_opaque() => answer(storage, jar, tab, url, &request),
         _ => Err("the page keeps nothing".to_owned()),
     };
     match answered {
@@ -55,6 +56,7 @@ pub(crate) fn inspect(
 pub(crate) fn answer(
     storage: &Mutex<Storage>,
     jar: &Mutex<Jar>,
+    tab: u64,
     url: &Url,
     request: &Request,
 ) -> Result<Json, String> {
@@ -73,7 +75,7 @@ pub(crate) fn answer(
     };
     Ok(match request.method.as_str() {
         "storage.local" | "storage.session" => {
-            let area = storage.area(request.method == "storage.local", &origin);
+            let area = storage.area(Scope::of(request.method == "storage.local", tab), &origin);
             let keys = area.keys().to_vec();
             Json::Array(
                 keys.iter()
@@ -88,7 +90,7 @@ pub(crate) fn answer(
         }
         "storage.removeItem" => {
             let local = param("area") != "session";
-            storage.remove_item(local, &origin, param("key"));
+            storage.remove_item(Scope::of(local, tab), &origin, param("key"));
             Json::Null
         }
         "storage.cookies" => {
@@ -154,8 +156,8 @@ pub(crate) fn answer(
 
 /// Clears what `origin` keeps, and the cookies that go to `host`.
 fn clear_site(storage: &mut Storage, jar: &Mutex<Jar>, origin: &str, host: &str) {
-    storage.clear_area(true, origin);
-    storage.clear_area(false, origin);
+    storage.clear_area(Scope::Local, origin);
+    storage.clear_sessions(origin);
     let store = storage.idb(origin);
     for (name, _) in store.databases(origin) {
         store.delete_database(origin, &name);

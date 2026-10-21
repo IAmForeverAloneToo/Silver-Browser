@@ -95,6 +95,9 @@
 #![forbid(unsafe_code)]
 
 pub mod address;
+mod context;
+#[cfg(test)]
+mod context_tests;
 pub mod differential;
 mod editing;
 mod focus;
@@ -127,6 +130,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
+pub use context::Context;
 pub use dom::ElementState;
 pub use frames::{MAX_FRAME_DEPTH, MAX_FRAME_HEAP, MAX_FRAMES};
 pub use image_store::MAX_DECODE_THREADS;
@@ -421,6 +425,11 @@ pub struct Engine {
     /// The profile what the browsing keeps is written to, and the Web
     /// Storage areas (M28), which scripts reach through their host.
     storage: Arc<Mutex<storage::Storage>>,
+    /// The tab's number in its context (M37), whose `sessionStorage`
+    /// areas the engine's documents use, and the engine's own number as
+    /// one that hears of changes in `storage` events.
+    tab: u64,
+    listener: u64,
     /// The Web Storage areas the browser keeps, in a renderer (M34.1); the
     /// storage's own otherwise.
     areas: Option<Arc<dyn storage::Areas>>,
@@ -1194,6 +1203,11 @@ impl Engine {
         let mut shown = Shown::new(document, page);
         shown.initial = true;
         let blank = Url::parse("about:blank").expect("about:blank parses");
+        let storage = Arc::new(Mutex::new(storage::Storage::new()));
+        let listener = storage
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .listen();
         Engine {
             backend,
             decoder: Decoder::new(Some(fonts.clone())),
@@ -1230,7 +1244,9 @@ impl Engine {
                 let made = Instant::now();
                 Arc::new(move || made.elapsed())
             },
-            storage: Arc::new(Mutex::new(storage::Storage::new())),
+            storage,
+            tab: 0,
+            listener,
             areas: None,
             storage_events: VecDeque::new(),
             hidden: false,
@@ -1846,10 +1862,13 @@ impl Engine {
             focused: self.window_focused,
             keyboard: self.keyboard,
             storage: Some(self.storage.clone()),
-            storage_peer: self.storage_peers(),
+            listener: (self.listener, self.tab),
             areas: Some(match &self.areas {
                 Some(areas) => areas.clone(),
-                None => self.storage.clone(),
+                None => Arc::new(storage::TabAreas {
+                    storage: self.storage.clone(),
+                    tab: self.tab,
+                }),
             }),
             drawables: Some(self.shown.drawables.clone()),
             frames: Some(frames::FramesEnv {
@@ -3300,8 +3319,8 @@ impl Engine {
             .and_then(scripts::Scripts::next_task_at);
         let storage = self.storage();
         let flush = storage.flush_at(&self.network.cookies());
-        let events =
-            (!self.storage_events.is_empty() || storage.has_changes()).then_some(Duration::ZERO);
+        let events = (!self.storage_events.is_empty() || storage.has_changes(self.listener))
+            .then_some(Duration::ZERO);
         drop(storage);
         let frames = self
             .frames_next_task_at()
@@ -3319,9 +3338,12 @@ impl Engine {
 
     /// Queues a `storage` event (HTML 12.2.1, M28) for each change of an
     /// area taken, at each document alive of its origin other than the
-    /// one that made it: the one shown and the one on its way.
+    /// one that made it: the one shown and the one on its way; a
+    /// `sessionStorage` area's only in its own tab (M37). In a renderer,
+    /// a change this engine's document made goes to the browser too, for
+    /// the other renderers.
     fn queue_storage_events(&mut self) {
-        let changes = self.storage().take_changes();
+        let changes = self.storage().take_changes(self.listener);
         if changes.is_empty() {
             return;
         }
@@ -3335,14 +3357,25 @@ impl Engine {
         }
         let text = |value: Option<String>| value.map_or(js::Field::Null, js::Field::String);
         for change in changes {
+            if change.source == storage::Source::Engine(self.listener)
+                && let Some(link) = &self.link
+            {
+                link.storage_changed(self.frame.key, &change);
+            }
+            if let storage::Scope::Session(tab) = change.scope
+                && tab != self.tab
+            {
+                continue;
+            }
+            let own = change.source == storage::Source::Engine(self.listener);
             let event = js::EventInit::new("StorageEvent", "storage")
                 .with("key", text(change.key))
                 .with("oldValue", text(change.old))
                 .with("newValue", text(change.new))
                 .with("url", js::Field::String(change.url))
-                .with("storageArea", js::Field::Storage(change.local));
+                .with("storageArea", js::Field::Storage(change.scope.is_local()));
             for (page, origin) in &pages {
-                if *page != change.page
+                if !(own && *page == change.page)
                     && !origin.is_opaque()
                     && origin.serialization() == change.origin
                 {
@@ -3402,16 +3435,32 @@ impl Engine {
         }
     }
 
-    /// Whether the document shown and the one on its way share an
-    /// origin (M28): a change of an area in one is then told to the
-    /// other.
-    fn storage_peers(&self) -> bool {
-        match &self.navigation {
-            Some(Navigation {
-                incoming: Incoming::Parsing { page, .. },
-                ..
-            }) => !page.origin().is_opaque() && page.origin() == self.shown.page.origin(),
-            _ => false,
+    /// Makes the engine a tab of `context` (M37): its cookies, cache,
+    /// HSTS hosts, permissions and storage the context's from now on,
+    /// and a tab number of its own for its `sessionStorage`. For an
+    /// engine that has fetched nothing yet.
+    pub fn join(&mut self, context: &Context) {
+        self.network.join(context);
+        let tab = context.new_tab();
+        self.share_storage(context.shared_storage().clone(), tab);
+    }
+
+    /// The engine's tab number in its context (M37).
+    pub fn tab(&self) -> u64 {
+        self.tab
+    }
+
+    /// Uses `storage` from now on, as tab `tab`, hearing of its changes.
+    pub(crate) fn share_storage(&mut self, storage: Arc<Mutex<storage::Storage>>, tab: u64) {
+        let listener = self.listener;
+        self.storage().forget(listener);
+        self.storage = storage;
+        self.tab = tab;
+        let listener = self.storage().listen();
+        self.listener = listener;
+        if let Some(waker) = self.waker.clone() {
+            let listener = self.listener;
+            self.storage().set_waker(listener, waker);
         }
     }
 
@@ -5421,6 +5470,8 @@ impl Engine {
     fn use_waker(&mut self, waker: loader::Waker) {
         self.network.set_waker(waker.clone());
         self.decoder.set_waker(waker.clone());
+        let listener = self.listener;
+        self.storage().set_waker(listener, waker.clone());
         self.waker = Some(waker);
     }
 
@@ -7205,6 +7256,8 @@ impl Drop for Engine {
     fn drop(&mut self) {
         let _ = self.flush_profile();
         self.network.cancel_all();
+        let listener = self.listener;
+        self.storage().forget(listener);
     }
 }
 

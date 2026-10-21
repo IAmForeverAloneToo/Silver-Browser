@@ -349,6 +349,6 @@ impl View for Engine {
     fn storage_inspect(&mut self, message: &str) -> String {
         let jar = self.network.cookies();
         let url = Engine::url(self).cloned();
-        crate::storage::devtools::inspect(&self.storage, &jar, url.as_ref(), message)
+        crate::storage::devtools::inspect(&self.storage, &jar, self.tab, url.as_ref(), message)
     }
 }

@@ -101,6 +101,19 @@ wire_enum! {
         26 => DevTools { view: u32, message: String },
         /// The view's page is asked the panel's request `message` (M36).
         27 => Inspect { view: u32, message: String },
+        /// A Web Storage area of `origin` in `partition` changed in
+        /// another renderer (M37): `localStorage`'s if `local`, else the
+        /// tab's `sessionStorage`'s; the renderer's documents of the area
+        /// hear of it in `storage` events.
+        28 => StorageChanged {
+            local: bool,
+            origin: Origin,
+            partition: Option<Partition>,
+            key: Option<String>,
+            old: Option<String>,
+            new: Option<String>,
+            url: String,
+        },
     }
 }
 
@@ -223,6 +236,19 @@ wire_enum! {
         20 => DevTools { view: u32, message: String },
         /// What the view's page answered the panel, or told it (M36).
         21 => Inspected { view: u32, message: String },
+        /// Frame `frame`'s document changed a Web Storage area of `origin`
+        /// in `partition` (M37), for the browser to tell the other
+        /// renderers: `localStorage`'s if `local`, else `sessionStorage`'s.
+        22 => StorageChanged {
+            frame: u32,
+            local: bool,
+            origin: Origin,
+            partition: Option<Partition>,
+            key: Option<String>,
+            old: Option<String>,
+            new: Option<String>,
+            url: String,
+        },
     }
 }
 

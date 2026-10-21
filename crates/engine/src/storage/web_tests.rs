@@ -398,10 +398,13 @@ fn a_change_is_heard_by_the_other_document_of_the_origin_alone() {
     let mut tab = scripted(None);
     load(&mut tab, server.url("/a.html"));
     assert!(console(&mut tab).is_empty());
+    // Its own change heard by none.
+    tab.engine.queue_storage_events();
+    assert!(tab.engine.storage_events.is_empty());
     tab.engine.navigate(server.url("/b.html"));
     tab.wait_until(|engine| {
         let storage = engine.storage();
-        storage.has_changes()
+        storage.has_changes(engine.listener)
     });
     // Queued, not fired, until the tasks run.
     assert!(console(&mut tab).is_empty());
@@ -443,8 +446,9 @@ fn the_document_on_its_way_hears_the_one_shown() {
     let mut tab = scripted(None);
     let clock = tab.hand_clock();
     load(&mut tab, server.url("/a-timer.html"));
+    tab.engine.queue_storage_events();
     tab.engine.navigate(server.url("/b.html"));
-    tab.wait_until(|engine| engine.storage().has_changes());
+    tab.wait_until(|engine| engine.storage().has_changes(engine.listener));
     tab.engine.run_tasks();
     assert_eq!(console(&mut tab).len(), 5);
     assert!(incoming_console(&mut tab).is_empty());
@@ -467,6 +471,6 @@ fn a_change_with_no_other_document_of_the_origin_is_heard_by_none() {
     // Another origin's change, on its way while `/a.html` is shown.
     tab.engine.navigate(other.url("/c.html"));
     tab.wait_until(|engine| incoming(engine).is_none());
-    assert!(!tab.engine.storage().has_changes());
+    tab.engine.queue_storage_events();
     assert!(tab.engine.storage_events.is_empty());
 }

@@ -13,19 +13,71 @@ use net::{Origin, Partition};
 
 use super::network::Grants;
 use crate::ipc::{Answer, Sender, StorageOp, ToBrowser, ToRenderer};
-use crate::storage::{AreaKey, Storage};
+use crate::storage::{AreaKey, Change, Scope, Source, Storage};
 
-/// The browser's Web Storage, for every renderer.
+/// The browser's Web Storage, for a tab's renderers.
 pub struct StorageService {
     storage: Arc<Mutex<Storage>>,
     grants: Arc<Grants>,
+    /// The tab's number in its context (M37), whose `sessionStorage`
+    /// areas its renderers use.
+    tab: u64,
 }
 
 impl StorageService {
-    /// The service of `storage`, the browser's, checking renderers against
-    /// `grants`.
-    pub(crate) fn new(storage: Arc<Mutex<Storage>>, grants: Arc<Grants>) -> Arc<StorageService> {
-        Arc::new(StorageService { storage, grants })
+    /// The service of `storage`, the browser's, for tab `tab`'s
+    /// renderers, checking them against `grants`.
+    pub(crate) fn new(
+        storage: Arc<Mutex<Storage>>,
+        grants: Arc<Grants>,
+        tab: u64,
+    ) -> Arc<StorageService> {
+        Arc::new(StorageService {
+            storage,
+            grants,
+            tab,
+        })
+    }
+
+    /// A change frame `frame` of renderer `renderer` says its document
+    /// made (M37), checked as an operation is, for the other renderers
+    /// of the context to hear of.
+    #[allow(clippy::too_many_arguments)]
+    fn changed(
+        &self,
+        renderer: u32,
+        frame: u32,
+        local: bool,
+        origin: net::Origin,
+        partition: Option<Partition>,
+        key: Option<String>,
+        old: Option<String>,
+        new: Option<String>,
+        url: String,
+    ) -> Result<(), String> {
+        let area = self.key(renderer, frame, origin, partition)?;
+        // A URL of another origin is the renderer's word alone: left out.
+        let url = net::Url::parse(&url)
+            .ok()
+            .filter(|url| url.origin() == area.origin)
+            .map_or_else(String::new, |url| url.as_str().to_owned());
+        let change = Change {
+            scope: Scope::of(local, self.tab),
+            origin: area.serialization(),
+            key,
+            old,
+            new,
+            url,
+            page: 0,
+            source: Source::Renderer(renderer),
+            owner: area.origin,
+            partition: area.partition,
+        };
+        self.storage
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .broadcast(change);
+        Ok(())
     }
 
     /// The area key a frame of renderer `renderer` may use for `origin`
@@ -52,6 +104,22 @@ impl StorageService {
         message: ToBrowser,
         reply: &Sender<ToRenderer>,
     ) -> Result<Option<ToBrowser>, String> {
+        if let ToBrowser::StorageChanged {
+            frame,
+            local,
+            origin,
+            partition,
+            key,
+            old,
+            new,
+            url,
+        } = message
+        {
+            self.changed(
+                renderer, frame, local, origin, partition, key, old, new, url,
+            )?;
+            return Ok(None);
+        }
         let ToBrowser::Storage {
             call,
             frame,
@@ -65,23 +133,24 @@ impl StorageService {
         };
         let key = self.key(renderer, frame, origin, partition)?;
         let key = key.serialization();
+        let scope = Scope::of(local, self.tab);
         let mut storage = self.storage.lock().unwrap_or_else(PoisonError::into_inner);
         let answer = match op {
             StorageOp::Length {} => Answer::StorageLength {
-                length: storage.area(local, &key).len() as u64,
+                length: storage.area(scope, &key).len() as u64,
             },
             StorageOp::Key { index } => Answer::StorageValue {
                 value: usize::try_from(index)
                     .ok()
-                    .and_then(|index| storage.area(local, &key).key(index)),
+                    .and_then(|index| storage.area(scope, &key).key(index)),
             },
             StorageOp::Keys {} => Answer::StorageKeys {
-                keys: storage.area(local, &key).keys().to_vec(),
+                keys: storage.area(scope, &key).keys().to_vec(),
             },
             StorageOp::Get { item } => Answer::StorageValue {
-                value: storage.area(local, &key).get(&item).map(str::to_owned),
+                value: storage.area(scope, &key).get(&item).map(str::to_owned),
             },
-            StorageOp::Set { item, value } => match storage.set_item(local, &key, &item, &value) {
+            StorageOp::Set { item, value } => match storage.set_item(scope, &key, &item, &value) {
                 Err(_) => Answer::StorageSet {
                     stored: false,
                     old: None,
@@ -99,10 +168,10 @@ impl StorageService {
                 },
             },
             StorageOp::Remove { item } => Answer::StorageValue {
-                value: storage.remove_item(local, &key, &item),
+                value: storage.remove_item(scope, &key, &item),
             },
             StorageOp::Clear {} => Answer::StorageCleared {
-                cleared: storage.clear_area(local, &key),
+                cleared: storage.clear_area(scope, &key),
             },
             StorageOp::Usage {} => Answer::StorageLength {
                 length: crate::storage::devtools::usage(&mut storage, &key),

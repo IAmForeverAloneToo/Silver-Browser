@@ -8,7 +8,7 @@
 //! the last one.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use super::link::Link;
@@ -57,6 +57,10 @@ pub(crate) struct Host {
     /// The files of the browser's fonts, when it sent them and no fonts
     /// were given (M35.6), read at the first view.
     font_files: Option<text::FontFiles>,
+    /// What every view's engine tells its changes of Web Storage areas
+    /// through (M37), so that the renderer's documents hear of each
+    /// other's; the areas themselves are the browser's.
+    storage: Arc<Mutex<crate::storage::Storage>>,
 }
 
 /// Since when a renderer's views have all been hidden, and whether it
@@ -117,6 +121,7 @@ impl Host {
             wake,
             idle: Idle::new(crate::IDLE_TRIM_AFTER),
             font_files: None,
+            storage: Arc::new(Mutex::new(crate::storage::Storage::new())),
         }
     }
 
@@ -179,6 +184,7 @@ impl Host {
         if self.views.contains_key(&view) {
             return Err(format!("view {view} again"));
         }
+        engine.share_storage(self.storage.clone(), 0);
         let wake = self.wake.clone();
         engine.set_waker(move || wake());
         let began = self.began;
@@ -240,6 +246,35 @@ impl Host {
             }
             ToRenderer::Inspect { view, message } => {
                 self.view(view)?.engine.inspect(&message);
+            }
+            ToRenderer::StorageChanged {
+                local,
+                origin,
+                partition,
+                key,
+                old,
+                new,
+                url,
+            } => {
+                let area = crate::storage::AreaKey {
+                    origin: origin.clone(),
+                    partition: partition.clone(),
+                };
+                self.storage
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .broadcast(crate::storage::Change {
+                        scope: crate::storage::Scope::of(local, 0),
+                        origin: area.serialization(),
+                        key,
+                        old,
+                        new,
+                        url,
+                        page: 0,
+                        source: crate::storage::Source::Elsewhere,
+                        owner: origin,
+                        partition,
+                    });
             }
             ToRenderer::NavigateHandedOver {
                 view,

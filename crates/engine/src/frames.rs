@@ -863,7 +863,7 @@ impl Engine {
         let mut child = Engine::with_backend(fonts, backend);
         child.network = self.network.for_frame();
         child.clock = self.clock.clone();
-        child.storage = self.storage.clone();
+        child.share_storage(self.storage.clone(), self.tab);
         child.areas = self.areas.clone();
         child.scripting = self.scripting;
         child.script_limits = js::Limits {

@@ -27,6 +27,10 @@ mod tests;
 #[cfg(test)]
 mod web_tests;
 
+/// The most changes an engine's documents may have waiting to hear of
+/// in `storage` events (M37): past it the oldest are dropped.
+pub(crate) const MAX_WAITING_CHANGES: usize = 1024;
+
 /// The least time between two writes of the profile: a change waits at
 /// most this long to be written, and a crash loses at most this much.
 pub const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
@@ -51,14 +55,17 @@ pub(crate) struct Storage {
     /// Each origin's `localStorage` area, by its serialization, read
     /// from the profile at its first use.
     local: HashMap<String, Area>,
-    /// The tab's `sessionStorage` areas, by origin: the engine's alone.
-    session: HashMap<String, Area>,
+    /// Each tab's `sessionStorage` areas, by the tab's number and the
+    /// origin (M37: the tabs of a context share the storage).
+    session: HashMap<(u64, String), Area>,
     /// What changed in the `localStorage` areas since the profile was
     /// written, by origin.
     unwritten: HashMap<String, Unwritten>,
-    /// The changes other documents are to hear of in a `storage` event,
-    /// for the engine to fire.
-    changes: Vec<Change>,
+    /// Those that hear of changes in `storage` events (M37): each
+    /// engine, by its number, with the changes it has not taken; and the
+    /// next number.
+    listeners: HashMap<u64, Listener>,
+    next_listener: u64,
     /// The engine's HSTS hosts (M33.3), and their count of changes when
     /// they were last written.
     hsts: Option<Arc<Mutex<net::Hsts>>>,
@@ -100,12 +107,56 @@ struct Unwritten {
     keys: HashSet<String>,
 }
 
+/// One that hears of changes: an engine, or a tab that tells its
+/// renderers.
+#[derive(Default)]
+struct Listener {
+    changes: Vec<Change>,
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+/// Which area of an origin: its `localStorage`, or a tab's
+/// `sessionStorage`, by the tab's number (M37).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Scope {
+    Local,
+    Session(u64),
+}
+
+impl Scope {
+    /// The `localStorage` area if `local`, else tab `tab`'s
+    /// `sessionStorage` one.
+    pub(crate) fn of(local: bool, tab: u64) -> Scope {
+        match local {
+            true => Scope::Local,
+            false => Scope::Session(tab),
+        }
+    }
+
+    pub(crate) fn is_local(self) -> bool {
+        self == Scope::Local
+    }
+}
+
+/// Where a change was made: which document is not to hear of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Source {
+    /// A document of the engine listening as this number, its page the
+    /// change's.
+    Engine(u64),
+    /// In the browser (M37): a document of the renderer of this number,
+    /// whose own documents heard of it there.
+    Renderer(u32),
+    /// Another renderer's, the browser says: every document hears of it.
+    Elsewhere,
+}
+
 /// A change of an area that other documents of its origin hear of
 /// (HTML 12.2.1's "broadcast"): `None`s for `null`s, all three for a
 /// `clear()`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Change {
-    pub(crate) local: bool,
+    pub(crate) scope: Scope,
     pub(crate) origin: String,
     pub(crate) key: Option<String>,
     pub(crate) old: Option<String>,
@@ -114,6 +165,11 @@ pub(crate) struct Change {
     pub(crate) url: String,
     /// That document's page, which hears nothing of it.
     pub(crate) page: PageId,
+    pub(crate) source: Source,
+    /// The area's storage key, its origin and partition: by its origin
+    /// the browser picks the renderers that may hear of it (M37).
+    pub(crate) owner: net::Origin,
+    pub(crate) partition: Option<net::Partition>,
 }
 
 /// Whose area a document's scripts reach (the Storage Standard's storage
@@ -165,37 +221,52 @@ pub(crate) trait Areas: Send + Sync {
     fn idb(&self, key: &AreaKey, request: &str) -> String;
 }
 
-impl Areas for Mutex<Storage> {
+/// A tab's Web Storage in an engine of its own (M37): the context's
+/// storage, `sessionStorage` the tab's own.
+pub(crate) struct TabAreas {
+    pub(crate) storage: Arc<Mutex<Storage>>,
+    pub(crate) tab: u64,
+}
+
+impl TabAreas {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Storage> {
+        self.storage.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl Areas for TabAreas {
     fn usage(&self, key: &AreaKey) -> u64 {
-        let mut storage = self.lock().unwrap_or_else(PoisonError::into_inner);
-        devtools::usage(&mut storage, &key.serialization())
+        devtools::usage(&mut self.lock(), &key.serialization())
     }
 
     fn idb(&self, key: &AreaKey, request: &str) -> String {
-        let mut storage = self.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut storage = self.lock();
         let origin = key.serialization();
         crate::idb::serve(storage.idb(&origin), &origin, request)
     }
 
     fn length(&self, local: bool, key: &AreaKey) -> usize {
-        let mut storage = self.lock().unwrap_or_else(PoisonError::into_inner);
-        storage.area(local, &key.serialization()).len()
+        let scope = Scope::of(local, self.tab);
+        self.lock().area(scope, &key.serialization()).len()
     }
 
     fn key(&self, local: bool, key: &AreaKey, index: usize) -> Option<String> {
-        let mut storage = self.lock().unwrap_or_else(PoisonError::into_inner);
-        storage.area(local, &key.serialization()).key(index)
+        let scope = Scope::of(local, self.tab);
+        self.lock().area(scope, &key.serialization()).key(index)
     }
 
     fn keys(&self, local: bool, key: &AreaKey) -> Vec<String> {
-        let mut storage = self.lock().unwrap_or_else(PoisonError::into_inner);
-        storage.area(local, &key.serialization()).keys().to_vec()
+        let scope = Scope::of(local, self.tab);
+        self.lock()
+            .area(scope, &key.serialization())
+            .keys()
+            .to_vec()
     }
 
     fn get(&self, local: bool, key: &AreaKey, item: &str) -> Option<String> {
-        let mut storage = self.lock().unwrap_or_else(PoisonError::into_inner);
-        storage
-            .area(local, &key.serialization())
+        let scope = Scope::of(local, self.tab);
+        self.lock()
+            .area(scope, &key.serialization())
             .get(item)
             .map(str::to_owned)
     }
@@ -207,18 +278,19 @@ impl Areas for Mutex<Storage> {
         item: &str,
         value: &str,
     ) -> Result<Option<Option<String>>, OverQuota> {
-        let mut storage = self.lock().unwrap_or_else(PoisonError::into_inner);
-        storage.set_item(local, &key.serialization(), item, value)
+        let scope = Scope::of(local, self.tab);
+        self.lock()
+            .set_item(scope, &key.serialization(), item, value)
     }
 
     fn remove(&self, local: bool, key: &AreaKey, item: &str) -> Option<String> {
-        let mut storage = self.lock().unwrap_or_else(PoisonError::into_inner);
-        storage.remove_item(local, &key.serialization(), item)
+        let scope = Scope::of(local, self.tab);
+        self.lock().remove_item(scope, &key.serialization(), item)
     }
 
     fn clear(&self, local: bool, key: &AreaKey) -> bool {
-        let mut storage = self.lock().unwrap_or_else(PoisonError::into_inner);
-        storage.clear_area(local, &key.serialization())
+        let scope = Scope::of(local, self.tab);
+        self.lock().clear_area(scope, &key.serialization())
     }
 }
 
@@ -247,27 +319,32 @@ impl StorageDriver {
 
     /// `setItem`: false when the area cannot hold it.
     pub fn set(&mut self, local: bool, origin: &str, key: &str, value: &str) -> bool {
-        self.storage.set_item(local, origin, key, value).is_ok()
+        self.storage
+            .set_item(Scope::of(local, 0), origin, key, value)
+            .is_ok()
     }
 
     /// `removeItem`: the value the item had.
     pub fn remove(&mut self, local: bool, origin: &str, key: &str) -> Option<String> {
-        self.storage.remove_item(local, origin, key)
+        self.storage.remove_item(Scope::of(local, 0), origin, key)
     }
 
     /// `clear()`: whether the area had an item.
     pub fn clear(&mut self, local: bool, origin: &str) -> bool {
-        self.storage.clear_area(local, origin)
+        self.storage.clear_area(Scope::of(local, 0), origin)
     }
 
     /// `getItem`.
     pub fn get(&mut self, local: bool, origin: &str, key: &str) -> Option<String> {
-        self.storage.area(local, origin).get(key).map(str::to_owned)
+        self.storage
+            .area(Scope::of(local, 0), origin)
+            .get(key)
+            .map(str::to_owned)
     }
 
     /// The area's keys and values, in their order.
     pub fn items(&mut self, local: bool, origin: &str) -> Vec<(String, String)> {
-        let area = self.storage.area(local, origin);
+        let area = self.storage.area(Scope::of(local, 0), origin);
         let keys = area.keys().to_vec();
         keys.into_iter()
             .map(|key| {
@@ -418,7 +495,8 @@ impl Storage {
             local: HashMap::new(),
             session: HashMap::new(),
             unwritten: HashMap::new(),
-            changes: Vec::new(),
+            listeners: HashMap::new(),
+            next_listener: 1,
             hsts: None,
             hsts_written: None,
             permissions: None,
@@ -517,12 +595,11 @@ impl Storage {
         Ok(())
     }
 
-    /// The `localStorage` area of `origin` if `local`, else its
-    /// `sessionStorage` area; a `localStorage` area is read from the
-    /// profile at its first use, empty if it cannot be.
-    pub(crate) fn area(&mut self, local: bool, origin: &str) -> &mut Area {
-        if !local {
-            return self.session.entry(origin.to_owned()).or_default();
+    /// The area of `origin` in `scope`; a `localStorage` area is read
+    /// from the profile at its first use, empty if it cannot be.
+    pub(crate) fn area(&mut self, scope: Scope, origin: &str) -> &mut Area {
+        if let Scope::Session(tab) = scope {
+            return self.session.entry((tab, origin.to_owned())).or_default();
         }
         let profile = &self.profile;
         self.local.entry(origin.to_owned()).or_insert_with(|| {
@@ -538,42 +615,57 @@ impl Storage {
     /// answers, a change noted to be written.
     pub(crate) fn set_item(
         &mut self,
-        local: bool,
+        scope: Scope,
         origin: &str,
         key: &str,
         value: &str,
     ) -> Result<Option<Option<String>>, OverQuota> {
-        let changed = self.area(local, origin).set(key, value)?;
+        let changed = self.area(scope, origin).set(key, value)?;
         if changed.is_some() {
-            self.changed(local, origin, Some(key));
+            self.changed(scope, origin, Some(key));
         }
         Ok(changed)
     }
 
     /// `removeItem` of `origin`'s area: the value it had, the change
     /// noted to be written.
-    pub(crate) fn remove_item(&mut self, local: bool, origin: &str, key: &str) -> Option<String> {
-        let old = self.area(local, origin).remove(key);
+    pub(crate) fn remove_item(&mut self, scope: Scope, origin: &str, key: &str) -> Option<String> {
+        let old = self.area(scope, origin).remove(key);
         if old.is_some() {
-            self.changed(local, origin, Some(key));
+            self.changed(scope, origin, Some(key));
         }
         old
     }
 
     /// `clear()` of `origin`'s area: whether it had an item, the change
     /// noted to be written.
-    pub(crate) fn clear_area(&mut self, local: bool, origin: &str) -> bool {
-        let had = self.area(local, origin).clear();
+    pub(crate) fn clear_area(&mut self, scope: Scope, origin: &str) -> bool {
+        let had = self.area(scope, origin).clear();
         if had {
-            self.changed(local, origin, None);
+            self.changed(scope, origin, None);
         }
         had
     }
 
+    /// Clears `origin`'s `sessionStorage` areas in every tab (M37): a
+    /// site cleared.
+    pub(crate) fn clear_sessions(&mut self, origin: &str) {
+        for ((_, of), area) in &mut self.session {
+            if of == origin {
+                area.clear();
+            }
+        }
+    }
+
+    /// Forgets tab `tab`'s `sessionStorage` areas: the tab closed.
+    pub(crate) fn forget_tab(&mut self, tab: u64) {
+        self.session.retain(|(of, _), _| *of != tab);
+    }
+
     /// Notes that `key` of `origin`'s `localStorage` changed, or, for
     /// `None`, that it was cleared, to be written.
-    fn changed(&mut self, local: bool, origin: &str, key: Option<&str>) {
-        if !local || self.profile.is_none() {
+    fn changed(&mut self, scope: Scope, origin: &str, key: Option<&str>) {
+        if !scope.is_local() || self.profile.is_none() {
             return;
         }
         let unwritten = self.unwritten.entry(origin.to_owned()).or_default();
@@ -588,19 +680,55 @@ impl Storage {
         }
     }
 
-    /// Queues `change` for the other documents of its origin.
+    /// A new listener's number: from now on it hears of every change
+    /// (M37), until [`Storage::forget`].
+    pub(crate) fn listen(&mut self) -> u64 {
+        let id = self.next_listener;
+        self.next_listener += 1;
+        self.listeners.insert(id, Listener::default());
+        id
+    }
+
+    /// Hears nothing more for listener `id`.
+    pub(crate) fn forget(&mut self, id: u64) {
+        self.listeners.remove(&id);
+    }
+
+    /// What listener `id` calls when a change comes for it.
+    pub(crate) fn set_waker(&mut self, id: u64, wake: Arc<dyn Fn() + Send + Sync>) {
+        if let Some(listener) = self.listeners.get_mut(&id) {
+            listener.wake = Some(wake);
+        }
+    }
+
+    /// Queues `change` for every listener, waking each, to be told to
+    /// the other documents of its origin; a listener with
+    /// [`MAX_WAITING_CHANGES`] waiting drops its oldest.
     pub(crate) fn broadcast(&mut self, change: Change) {
-        self.changes.push(change);
+        for listener in self.listeners.values_mut() {
+            if listener.changes.len() == MAX_WAITING_CHANGES {
+                listener.changes.remove(0);
+            }
+            listener.changes.push(change.clone());
+            if let Some(wake) = &listener.wake {
+                wake();
+            }
+        }
     }
 
-    /// Whether changes wait to be told to other documents.
-    pub(crate) fn has_changes(&self) -> bool {
-        !self.changes.is_empty()
+    /// Whether changes wait for listener `id`.
+    pub(crate) fn has_changes(&self, id: u64) -> bool {
+        self.listeners
+            .get(&id)
+            .is_some_and(|listener| !listener.changes.is_empty())
     }
 
-    /// The changes queued for other documents, taken.
-    pub(crate) fn take_changes(&mut self) -> Vec<Change> {
-        std::mem::take(&mut self.changes)
+    /// The changes waiting for listener `id`, taken.
+    pub(crate) fn take_changes(&mut self, id: u64) -> Vec<Change> {
+        self.listeners
+            .get_mut(&id)
+            .map(|listener| std::mem::take(&mut listener.changes))
+            .unwrap_or_default()
     }
 
     /// When the profile is next to be written, if something waits:

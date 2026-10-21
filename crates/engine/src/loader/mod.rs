@@ -452,6 +452,16 @@ impl Network {
         network
     }
 
+    /// Fetches from now on in `context` (M37): its cookies, cache, HSTS
+    /// hosts and permissions, a client made anew at the next fetch.
+    pub(crate) fn join(&mut self, context: &crate::Context) {
+        self.cookies = context.jar().clone();
+        self.cache = context.cache().clone();
+        self.hsts = context.hsts().clone();
+        self.permissions = context.permissions().clone();
+        self.client = None;
+    }
+
     /// The engine's HSTS hosts (M33.3).
     pub(crate) fn hsts(&self) -> Arc<Mutex<net::Hsts>> {
         self.hsts.clone()

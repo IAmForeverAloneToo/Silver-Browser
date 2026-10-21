@@ -24,6 +24,14 @@ struct Wired {
     bad: mpsc::Receiver<String>,
 }
 
+/// The browser's areas, as tab 1's renderers reach them.
+fn browser(wired: &Wired) -> crate::storage::TabAreas {
+    crate::storage::TabAreas {
+        storage: wired.storage.clone(),
+        tab: 1,
+    }
+}
+
 fn wired(lock: Lock, frames: &[(u32, FrameGrant)]) -> Wired {
     let grants = Grants::new();
     assert!(grants.set_lock(1, lock));
@@ -31,7 +39,7 @@ fn wired(lock: Lock, frames: &[(u32, FrameGrant)]) -> Wired {
         grants.grant_frame(1, *frame, grant.clone());
     }
     let storage = Arc::new(Mutex::new(Storage::new()));
-    let service = StorageService::new(storage.clone(), grants);
+    let service = StorageService::new(storage.clone(), grants, 1);
     let ((browser_in, browser_out), (renderer_in, renderer_out)) = ipc::duplex();
     let reply = Sender::<ToRenderer>::new(browser_out);
     let (said, bad) = mpsc::channel();
@@ -103,7 +111,7 @@ fn a_renderers_areas_are_the_browsers() {
     assert_eq!(areas.remove(true, &key, "a").as_deref(), Some("3"));
     assert_eq!(areas.remove(true, &key, "a"), None);
     // The browser's storage holds them: the renderer holds nothing.
-    assert_eq!(wired.storage.get(true, &key, "b").as_deref(), Some("2"));
+    assert_eq!(browser(&wired).get(true, &key, "b").as_deref(), Some("2"));
     assert!(areas.clear(true, &key));
     assert!(!areas.clear(true, &key));
     assert_eq!(areas.length(true, &key), 0);
@@ -146,7 +154,7 @@ fn a_frame_of_another_site_has_its_areas_apart_by_the_top() {
         }),
     };
     assert_eq!(
-        wired.storage.get(true, &partitioned, "k").as_deref(),
+        browser(&wired).get(true, &partitioned, "k").as_deref(),
         Some("under a")
     );
     assert!(wired.bad.try_recv().is_err());
@@ -227,7 +235,7 @@ fn an_engines_scripts_reach_the_browsers_areas() {
     let lines = tab.run_until(|lines| !lines.is_empty());
     assert_eq!(lines, ["1 v one"]);
     assert_eq!(
-        wired.storage.get(true, &key(&site), "k").as_deref(),
+        browser(&wired).get(true, &key(&site), "k").as_deref(),
         Some("v")
     );
     // Another engine, as another renderer of the site, finds them.
@@ -260,7 +268,7 @@ fn a_frames_scripts_reach_the_browsers_areas_too() {
     tab.engine.navigate(page);
     tab.run_until(|lines| lines.iter().any(|line| line.ends_with("] set")));
     assert_eq!(
-        wired.storage.get(true, &key(&site), "f").as_deref(),
+        browser(&wired).get(true, &key(&site), "f").as_deref(),
         Some("framed")
     );
     assert!(wired.bad.try_recv().is_err());

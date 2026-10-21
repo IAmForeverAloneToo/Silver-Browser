@@ -277,11 +277,11 @@ pub(crate) struct WindowEnv {
     pub(crate) keyboard: bool,
     /// What the shown document's `img`s give a canvas to draw (M30).
     pub(crate) drawables: Option<canvas::SharedDrawables>,
-    /// The engine's storage, for `localStorage` and `sessionStorage`
-    /// (M28), and whether another document alive shares this one's
-    /// origin, to hear of its changes.
+    /// The engine's storage (M28), which its changes are told through,
+    /// and the engine's number as one that hears of them with its tab's
+    /// (M37).
     pub(crate) storage: Option<Arc<Mutex<crate::storage::Storage>>>,
-    pub(crate) storage_peer: bool,
+    pub(crate) listener: (u64, u64),
     /// The areas themselves: the engine's storage's, or the browser's in
     /// a renderer (M34.1).
     pub(crate) areas: Option<Arc<dyn crate::storage::Areas>>,

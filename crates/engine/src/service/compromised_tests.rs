@@ -160,7 +160,8 @@ fn fetch(frame: u32, request: Request) -> Said {
 fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
     let other = victim(server);
     let origin = other.origin();
-    let (o1, o2, o3, o4, o5) = (
+    let (o1, o2, o3, o4, o5, o6) = (
+        origin.clone(),
         origin.clone(),
         origin.clone(),
         origin.clone(),
@@ -290,6 +291,22 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
                     op: StorageOp::Get {
                         item: "secret".into(),
                     },
+                })]
+            }),
+            "the storage of",
+        ),
+        (
+            "another site's storage changed",
+            Box::new(move |frame| {
+                vec![said(ToBrowser::StorageChanged {
+                    frame,
+                    local: true,
+                    origin: o6,
+                    partition: None,
+                    key: Some("secret".into()),
+                    old: None,
+                    new: Some("forged".into()),
+                    url: String::new(),
                 })]
             }),
             "the storage of",
