@@ -132,7 +132,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 pub use context::Context;
 pub use dom::ElementState;
-pub use frames::{MAX_FRAME_DEPTH, MAX_FRAME_HEAP, MAX_FRAMES};
+pub use frames::{MAX_FRAME_DEPTH, MAX_FRAME_HEAP, MAX_FRAMES, OpenTab};
 pub use image_store::MAX_DECODE_THREADS;
 pub use inspect::MAX_INSPECTED_MESSAGES;
 pub use js::{ConsoleKind, MAX_PREVIEW_BYTES, MAX_STACK_FRAMES, StackFrame};
@@ -244,8 +244,10 @@ pub struct Modifiers {
     pub meta: bool,
 }
 
-/// What a middle click on a link says: tabs are M37's.
-pub const NO_NEW_TAB: &str = "Links open in this tab: there are no other tabs yet";
+/// What the notice says of a tab a script asked for without the user's
+/// activation (M37), which is not opened.
+pub const POPUP_BLOCKED: &str =
+    "A popup was blocked: the page asked for a new tab the user did not ask for";
 
 /// The least time between two timers of a hidden document (M26): its
 /// timers run once a second at most, as the reference browser throttles
@@ -430,6 +432,8 @@ pub struct Engine {
     /// one that hears of changes in `storage` events.
     tab: u64,
     listener: u64,
+    /// Whether a script opened the tab (M37).
+    opened_by_script: bool,
     /// The Web Storage areas the browser keeps, in a renderer (M34.1); the
     /// storage's own otherwise.
     areas: Option<Arc<dyn storage::Areas>>,
@@ -1247,6 +1251,7 @@ impl Engine {
             storage,
             tab: 0,
             listener,
+            opened_by_script: false,
             areas: None,
             storage_events: VecDeque::new(),
             hidden: false,
@@ -1582,6 +1587,15 @@ impl Engine {
     ///
     /// A refusal leaves a notice saying why, but for `javascript:`.
     pub fn follow_link(&mut self, link: &Link) {
+        // A link clicked with Ctrl (Cmd on macOS) opens in a new tab,
+        // behind this one, or shown with Shift (M37).
+        if self.modifiers.ctrl || self.modifiers.meta {
+            if let Some(url) = self.link_url(link) {
+                let show = self.modifiers.shift;
+                self.open_tab(url, show, false);
+            }
+            return;
+        }
         let document = &self.shown.document;
         if link.page != self.shown.page.id() || !connected(document, link.node) {
             return;
@@ -1607,8 +1621,11 @@ impl Engine {
                 // Another frame named by its target (M33.2).
                 let target = frames::element_target(&self.shown.document, link.node);
                 match self.other_navigable(&target, &url, true) {
-                    Ok(Some(frame)) => self.navigate_other(frame, url, false, None, source.origin),
-                    Ok(None) => self.navigate_replacing(url, false, Some(source)),
+                    Ok(frames::Chosen::Frame(frame)) => {
+                        self.navigate_other(frame, url, false, None, source.origin);
+                    }
+                    Ok(frames::Chosen::Here) => self.navigate_replacing(url, false, Some(source)),
+                    Ok(frames::Chosen::NewTab) => self.open_tab(url, true, false),
                     Err(line) => self.shown.scripts.say(js::ConsoleLevel::Error, line),
                 }
             }
@@ -1644,12 +1661,35 @@ impl Engine {
                 if let Some(element) = navigation.element {
                     source = self.element_referrer(source, element);
                 }
+                // A link a click with Ctrl activated opens in a new tab
+                // (M37), as the engine's own activation does.
+                let modified = self.modifiers.ctrl || self.modifiers.meta;
+                if navigation.element.is_some() && !navigation.form && modified {
+                    let show = self.modifiers.shift;
+                    self.open_tab(url, show, false);
+                    return;
+                }
                 match self.other_navigable(&navigation.target, &url, false) {
-                    Ok(Some(frame)) => {
+                    Ok(frames::Chosen::Frame(frame)) => {
                         self.navigate_other(frame, url, false, navigation.post, source.origin);
                     }
-                    Ok(None) if navigation.form => self.submit_to(url, navigation.post, source),
-                    Ok(None) => self.navigate_with(url, navigation.post, source),
+                    Ok(frames::Chosen::Here) if navigation.form => {
+                        self.submit_to(url, navigation.post, source);
+                    }
+                    Ok(frames::Chosen::Here) => self.navigate_with(url, navigation.post, source),
+                    // A new tab by the user's activation alone (M37); a form
+                    // posted to one is posted here (a gap).
+                    Ok(frames::Chosen::NewTab) if navigation.post.is_some() => {
+                        self.submit_to(url, navigation.post, source);
+                    }
+                    Ok(frames::Chosen::NewTab) => {
+                        let now = self.now();
+                        if frames::lock(&self.frame.tree).consume_activation(now) {
+                            self.open_tab(url, true, false);
+                        } else {
+                            self.notice = Some(POPUP_BLOCKED.to_owned());
+                        }
+                    }
                     Err(line) => self.shown.scripts.say(js::ConsoleLevel::Error, line),
                 }
             }
@@ -1714,11 +1754,16 @@ impl Engine {
             let origin = page.origin().clone();
             let at = page.url().cloned();
             match self.navigable_for(page, &navigation.target, &url, false) {
-                Ok(Some(frame)) => {
+                Ok(frames::Chosen::Frame(frame)) => {
                     self.navigate_other(frame, url, false, navigation.post, origin);
                     return;
                 }
-                Ok(None) => {}
+                // A page on its way opens no tab: no user activated it.
+                Ok(frames::Chosen::NewTab) => {
+                    self.notice = Some(POPUP_BLOCKED.to_owned());
+                    return;
+                }
+                Ok(frames::Chosen::Here) => {}
                 Err(line) => {
                     let entry = ConsoleEntry::of(
                         scripts::ConsoleSource::Engine,
@@ -1962,6 +2007,9 @@ impl Engine {
             return;
         }
         self.keyboard = false;
+        // The user's activation, which lets a script open a tab (M37).
+        let now = self.now();
+        frames::lock(&self.frame.tree).activate(now);
         // An open list takes the press (M26.8).
         if self.popup_press(x, y) {
             self.buttons |= button.bit();
@@ -2278,6 +2326,8 @@ impl Engine {
     /// no text control has the focus.
     pub fn key_down(&mut self, key: &Key) -> KeyOutcome {
         self.keyboard = true;
+        let now = self.now();
+        frames::lock(&self.frame.tree).activate(now);
         if self.shown.popup.is_some() {
             return self.popup_key(key);
         }
@@ -2589,8 +2639,15 @@ impl Engine {
                     None,
                 );
                 let canceled = self.fire(at, event) == Some(true);
-                if button == Button::Auxiliary && !canceled && self.link_around(clicked).is_some() {
-                    self.notice = Some(NO_NEW_TAB.to_owned());
+                // A link clicked with the middle button opens in a new
+                // tab, behind this one, or shown with Shift (M37).
+                if button == Button::Auxiliary
+                    && !canceled
+                    && let Some(link) = self.link_around(clicked)
+                    && let Some(url) = self.link_url(&link)
+                {
+                    let show = self.modifiers.shift;
+                    self.open_tab(url, show, false);
                 }
                 if button == Button::Secondary && self.shown.document.contains(clicked) {
                     let event =
@@ -3433,6 +3490,49 @@ impl Engine {
         if let Some(navigation) = asked {
             self.incoming_navigation(navigation);
         }
+    }
+
+    /// The URL a link goes to, if a new tab may open it (M37): resolved
+    /// against its document, of a scheme a tab starts on.
+    fn link_url(&self, link: &Link) -> Option<Url> {
+        let document = &self.shown.document;
+        if link.page != self.shown.page.id() || !connected(document, link.node) {
+            return None;
+        }
+        let href = document.attr(link.node, "href")?;
+        let url = self.shown.page.resolve(document, href)?;
+        frames::opens_in_tab(&url).then_some(url)
+    }
+
+    /// Asks the browser to open `url` in a new tab (M37), shown at once
+    /// if `show`, by a script if `by_script`: the tab's own frame tree
+    /// keeps the request for the tab's top engine to give.
+    fn open_tab(&mut self, url: Url, show: bool, by_script: bool) {
+        if frames::opens_in_tab(&url) {
+            frames::lock(&self.frame.tree).open(frames::OpenTab {
+                url,
+                show,
+                by_script,
+            });
+        }
+    }
+
+    /// The tabs the tab's documents asked the browser to open since this
+    /// was last asked (M37).
+    pub fn take_opened(&mut self) -> Vec<frames::OpenTab> {
+        frames::lock(&self.frame.tree).take_opened()
+    }
+
+    /// Whether the tab's top-level document asked to close it since this
+    /// was last asked (M37), whoever opened it.
+    pub(crate) fn take_close_asked(&mut self) -> bool {
+        frames::lock(&self.frame.tree).take_close_asked()
+    }
+
+    /// Whether a script opened the tab (M37): its `window.close()` closes
+    /// it.
+    pub fn set_opened_by_script(&mut self, by_script: bool) {
+        self.opened_by_script = by_script;
     }
 
     /// Makes the engine a tab of `context` (M37): its cookies, cache,

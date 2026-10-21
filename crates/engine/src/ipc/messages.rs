@@ -249,6 +249,11 @@ wire_enum! {
             new: Option<String>,
             url: String,
         },
+        /// The view's documents asked for a tab of `url` (M37), shown at once
+        /// if `show`, by a script if `by_script`.
+        23 => OpenTab { view: u32, url: Url, show: bool, by_script: bool },
+        /// The view's top-level document asked to close its tab (M37).
+        24 => CloseTab { view: u32 },
     }
 }
 

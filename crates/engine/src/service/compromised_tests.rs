@@ -626,3 +626,52 @@ fn a_compromised_renderer_has_no_body_of_another_sites_download() {
     );
     assert!(response.body.is_empty(), "{:?}", response.body);
 }
+
+#[test]
+fn a_compromised_renderer_opens_no_tab_of_another_scheme() {
+    // M37: a tab is opened only for a page of the web's or a blank one,
+    // whatever a renderer asks; asking is no reason to kill it. A tab's
+    // first view is its number 1.
+    let server = server();
+    let web = url(&server, "elsewhere.localhost", "/page");
+    let asked = web.clone();
+    let attack: Attack = Box::new(move |_| {
+        [
+            "file:///c:/windows/win.ini",
+            "javascript:alert(1)",
+            "about:silver",
+        ]
+        .into_iter()
+        .map(|url| {
+            said(ToBrowser::OpenTab {
+                view: 1,
+                url: Url::parse(url).expect("parses"),
+                show: true,
+                by_script: true,
+            })
+        })
+        .chain([said(ToBrowser::OpenTab {
+            view: 1,
+            url: asked,
+            show: false,
+            by_script: false,
+        })])
+        .collect()
+    });
+    let (mut tab, _) = tab(vec![attack]);
+    tab.navigate(url(&server, "attacker.localhost", "/page"));
+    let mut opened = Vec::new();
+    settle(&mut tab, "the tab asked for", |tab| {
+        opened.extend(tab.take_opened());
+        !opened.is_empty()
+    });
+    assert_eq!(
+        opened,
+        [crate::OpenTab {
+            url: web,
+            show: false,
+            by_script: false
+        }]
+    );
+    assert!(!tab.renderers().is_empty(), "the renderer lives");
+}

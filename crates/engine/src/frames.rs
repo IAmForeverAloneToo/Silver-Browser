@@ -114,6 +114,42 @@ pub(crate) struct FrameTree {
     keys: HashMap<FrameId, u32>,
     remote: HashSet<FrameId>,
     forward: Option<Forward>,
+    /// When the user last activated one of the tab's documents (HTML's
+    /// transient activation, M37), on the engines' clock; the tabs its
+    /// documents asked the browser to open; and whether the top-level
+    /// document asked to close the tab.
+    activation: Option<Duration>,
+    opened: Vec<OpenTab>,
+    close_asked: bool,
+}
+
+/// How long a user's activation lets a script open a tab (HTML's
+/// transient activation duration; the reference browser's five seconds).
+pub(crate) const ACTIVATION_SPAN: Duration = Duration::from_secs(5);
+
+/// A tab a document asked the browser to open (M37): its URL, whether it
+/// is shown at once, and whether a script opened it, which may close it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenTab {
+    pub url: Url,
+    pub show: bool,
+    pub by_script: bool,
+}
+
+/// What a link's, a form's or a script's target chooses (HTML 7.3.1,
+/// "the rules for choosing a navigable", M37): this frame, another of
+/// the tab's, or a new tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Chosen {
+    Here,
+    Frame(FrameId),
+    NewTab,
+}
+
+/// Whether `url` may open in a new tab (M37): a page of the web's, or a
+/// blank one; another scheme is no page a tab can start on.
+pub(crate) fn opens_in_tab(url: &Url) -> bool {
+    matches!(url.scheme(), "http" | "https") || url.as_str() == "about:blank"
 }
 
 /// Where a renderer sends what one of its frames posts to a frame another
@@ -134,7 +170,46 @@ impl FrameTree {
             keys: HashMap::new(),
             remote: HashSet::new(),
             forward: None,
+            activation: None,
+            opened: Vec::new(),
+            close_asked: false,
         }))
+    }
+
+    /// The user activated one of the tab's documents at `now` (M37).
+    pub(crate) fn activate(&mut self, now: Duration) {
+        self.activation = Some(now);
+    }
+
+    /// Whether the user activated a document of the tab within
+    /// [`ACTIVATION_SPAN`] of `now`, consuming it (HTML's "consume user
+    /// activation"): one activation opens one tab.
+    pub(crate) fn consume_activation(&mut self, now: Duration) -> bool {
+        let active = self
+            .activation
+            .is_some_and(|at| now.saturating_sub(at) <= ACTIVATION_SPAN);
+        self.activation = None;
+        active
+    }
+
+    /// Asks the browser to open `tab`.
+    pub(crate) fn open(&mut self, tab: OpenTab) {
+        self.opened.push(tab);
+    }
+
+    /// The tabs asked for since this was last asked.
+    pub(crate) fn take_opened(&mut self) -> Vec<OpenTab> {
+        std::mem::take(&mut self.opened)
+    }
+
+    /// The top-level document asks to close the tab.
+    pub(crate) fn ask_close(&mut self) {
+        self.close_asked = true;
+    }
+
+    /// Whether it asked since this was last asked.
+    pub(crate) fn take_close_asked(&mut self) -> bool {
+        std::mem::take(&mut self.close_asked)
     }
 
     /// Frame `id` is the browser's frame `key` (M34).
@@ -1309,20 +1384,19 @@ impl Engine {
         self.load_state = LoadState::Loading;
     }
 
-    /// The navigable a link or form whose target is `name` goes to, when
-    /// it is another frame of the tab (HTML 7.3.1, "the rules for
-    /// choosing a navigable", M33.2): `_parent`, `_top`, or a frame named
-    /// so that this one may navigate; `_blank`, or a name found nowhere,
-    /// which ask for a new tab the browser has not (M37), go to the top
-    /// from a frame. `None` for this frame's own. A sandboxed document's
-    /// navigation to `url` its flags refuse, by the user's activation or
-    /// not, goes nowhere: the console's line saying so.
+    /// The navigable a link or form whose target is `name` goes to (HTML
+    /// 7.3.1, "the rules for choosing a navigable", M33.2): `_parent`,
+    /// `_top`, or a frame named so that this one may navigate; a new tab
+    /// for `_blank`, or a name found nowhere (M37); this frame's own
+    /// otherwise. A sandboxed document's navigation to `url` its flags
+    /// refuse, by the user's activation or not, goes nowhere: the
+    /// console's line saying so.
     pub(crate) fn other_navigable(
         &self,
         name: &str,
         url: &Url,
         activated: bool,
-    ) -> Result<Option<FrameId>, String> {
+    ) -> Result<Chosen, String> {
         self.navigable_for(&self.shown.page, name, url, activated)
     }
 
@@ -1334,7 +1408,7 @@ impl Engine {
         name: &str,
         url: &Url,
         activated: bool,
-    ) -> Result<Option<FrameId>, String> {
+    ) -> Result<Chosen, String> {
         let me = self.frame.id;
         let tree = lock(&self.frame.tree);
         let origin = page.origin();
@@ -1344,28 +1418,25 @@ impl Engine {
                 "Blocked opening '{url}' in a new window because the request was made in a \
                  sandboxed frame whose 'allow-popups' permission is not set."
             )),
-            false => Ok(tree.top(me)),
+            false => Ok(Chosen::NewTab),
         };
         let chosen = match name.to_ascii_lowercase().as_str() {
             "" | "_self" => me,
             "_parent" => tree.parent(me).unwrap_or(me),
             "_top" => tree.top(me),
-            "_blank" => new_tab()?,
+            "_blank" => return new_tab(),
             _ => match tree.find_named(name) {
                 Some(id) if tree.may_navigate(me, id, (origin, sandbox), activated) => id,
                 Some(id) if sandbox.any() => id,
                 Some(_) => me,
-                None => new_tab()?,
+                None => return new_tab(),
             },
         };
         if chosen == me {
-            return Ok(None);
+            return Ok(Chosen::Here);
         }
-        if !sandbox.any()
-            || name.eq_ignore_ascii_case("_blank")
-            || tree.may_navigate(me, chosen, (origin, sandbox), activated)
-        {
-            return Ok(Some(chosen));
+        if !sandbox.any() || tree.may_navigate(me, chosen, (origin, sandbox), activated) {
+            return Ok(Chosen::Frame(chosen));
         }
         let target = tree
             .nodes

@@ -112,6 +112,23 @@ pub trait View {
         true
     }
 
+    /// The tabs its documents asked the browser to open since this was
+    /// last asked (M37).
+    fn take_opened(&mut self) -> Vec<crate::frames::OpenTab> {
+        Vec::new()
+    }
+
+    /// Whether its top-level document asked to close the tab since this
+    /// was last asked, and a script opened the tab, which lets it (M37).
+    fn take_close_request(&mut self) -> bool {
+        false
+    }
+
+    /// Whether a script opened the tab the view shows (M37).
+    fn set_opened_by_script(&mut self, by_script: bool) {
+        let _ = by_script;
+    }
+
     /// How many renderer processes the view keeps alive (M37): the
     /// browser's cap across its tabs counts them.
     fn renderer_count(&self) -> usize {
@@ -341,6 +358,18 @@ impl View for Engine {
     fn closed(&mut self) {
         let tab = self.tab;
         self.storage().forget_tab(tab);
+    }
+
+    fn take_opened(&mut self) -> Vec<crate::frames::OpenTab> {
+        Engine::take_opened(self)
+    }
+
+    fn take_close_request(&mut self) -> bool {
+        self.take_close_asked() && self.opened_by_script
+    }
+
+    fn set_opened_by_script(&mut self, by_script: bool) {
+        Engine::set_opened_by_script(self, by_script);
     }
 
     fn devtools_panel(&self) -> Option<Engine> {

@@ -2286,3 +2286,73 @@ fn a_hidden_tabs_timers_and_loads_go_on() {
         std::thread::sleep(Duration::from_millis(20));
     }
 }
+
+#[test]
+fn a_link_middle_clicked_opens_behind_and_a_closed_tab_comes_back() {
+    let server = two_pages();
+    let mut window = Window::new(Some(server.url("/")), Platform::Other);
+    window.settle();
+    // The middle button on the link: a tab after this one, not shown.
+    window.session.pointer_moved(50.0, 92.0);
+    window.session.press(Button::Middle, window.clock);
+    window.session.release(Button::Middle);
+    assert_eq!(
+        (window.session.tab_count(), window.session.active()),
+        (2, 0)
+    );
+    assert_eq!(window.session.engine().url(), Some(&server.url("/")));
+    window.wait_until(|session| titles(session) == ["First", "Second"]);
+    // Closed, it opens again with Ctrl+Shift+T, shown.
+    window.chord("2", CTRL);
+    window.chord("w", CTRL);
+    assert_eq!(window.session.tab_count(), 1);
+    window.chord(
+        "t",
+        Modifiers {
+            shift: true,
+            ..CTRL
+        },
+    );
+    assert_eq!(
+        (window.session.tab_count(), window.session.active()),
+        (2, 1)
+    );
+    window.settle();
+    assert_eq!(window.session.engine().url(), Some(&server.url("/second")));
+}
+
+#[test]
+fn a_tab_a_script_opened_is_shown_and_its_window_close_closes_it() {
+    let server = serve(|path| match path {
+        "/" => html(
+            "<title>opener</title><body style='margin:0'>\
+             <button style='display:block;height:40px' onclick=\"window.open('/opened')\">open</button>\
+             <button style='display:block;height:40px' onclick='window.close()'>close</button>",
+        ),
+        "/opened" => html(
+            "<title>opened</title><body style='margin:0'>\
+             <button style='display:block;height:40px' onclick='window.close()'>close</button>",
+        ),
+        _ => None,
+    });
+    let mut window = Window::with_scripts(Some(server.url("/")));
+    window.settle();
+    // The user's own tab is not closed by its page.
+    window.click(20.0, TOP_H as f32 + 60.0);
+    window.session.tick();
+    assert_eq!(window.session.tab_count(), 1);
+    // A click opens the script's tab, shown.
+    window.click(20.0, TOP_H as f32 + 20.0);
+    window.session.tick();
+    assert_eq!(
+        (window.session.tab_count(), window.session.active()),
+        (2, 1)
+    );
+    window.settle();
+    window.wait_until(|session| session.title().starts_with("opened"));
+    // Its page closes it.
+    window.click(20.0, TOP_H as f32 + 20.0);
+    window.session.tick();
+    assert_eq!(window.session.tab_count(), 1);
+    assert!(window.session.title().starts_with("opener"));
+}

@@ -1328,6 +1328,8 @@ impl DocumentHost {
                 }
                 Ok(Answer::Nothing)
             }
+            Call::OpenWindow { url, target } => self.open_window(&url, &target),
+            Call::CloseWindow => self.close_window(),
             Call::Navigate { url, replace } => {
                 let parsed = self
                     .page
@@ -2204,6 +2206,99 @@ impl DocumentHost {
 
     /// The serialization of the document's origin, `null` without a
     /// page.
+    /// `window.open(url, target)` (M37): the navigable `target` names,
+    /// navigated as a link to `url` is; or else a new tab, opened when the
+    /// user activated the tab within [`crate::frames::ACTIVATION_SPAN`]
+    /// and the document's sandbox allows popups, its activation
+    /// consumed. No window is given back: every tab opens as with
+    /// `noopener`.
+    fn open_window(&mut self, url: &str, target: &str) -> Result<Answer, DomError> {
+        let parsed = match url {
+            "" => net::Url::parse("about:blank").ok(),
+            _ => self
+                .page
+                .as_ref()
+                .and_then(|page| page.resolve(&self.document, url)),
+        };
+        let Some(url) = parsed else {
+            return Err(DomError::new(
+                "SyntaxError",
+                format!(
+                    "Failed to execute 'open' on 'Window': Unable to open a window with invalid URL '{url}'."
+                ),
+            ));
+        };
+        let Some(env) = self.window.frames.clone() else {
+            return Ok(Answer::Nothing);
+        };
+        let lower = target.to_ascii_lowercase();
+        let named = match lower.as_str() {
+            "_self" | "_parent" | "_top" => true,
+            "_blank" => false,
+            _ => crate::frames::lock(&env.tree).find_named(target).is_some(),
+        };
+        if named {
+            self.outputs.navigation = Some(ScriptNavigation {
+                url: Some(url),
+                replace: false,
+                reload: false,
+                link: true,
+                post: None,
+                target: target.to_owned(),
+                form: false,
+                element: None,
+            });
+            return Ok(Answer::Nothing);
+        }
+        let sandboxed = self
+            .page
+            .as_ref()
+            .is_some_and(|page| page.sandbox().has(Sandbox::AUXILIARY_NAVIGATION));
+        if sandboxed {
+            self.say(
+                ConsoleLevel::Error,
+                format!(
+                    "Blocked opening '{url}' in a new window because the request was made in a \
+                     sandboxed frame whose 'allow-popups' permission is not set."
+                ),
+            );
+            return Ok(Answer::Nothing);
+        }
+        if !crate::frames::opens_in_tab(&url) {
+            return Ok(Answer::Nothing);
+        }
+        let now = self
+            .window
+            .clock
+            .as_ref()
+            .map(|clock| clock())
+            .unwrap_or_default();
+        let mut tree = crate::frames::lock(&env.tree);
+        if !tree.consume_activation(now) {
+            drop(tree);
+            self.outputs.notice = Some(crate::POPUP_BLOCKED.to_owned());
+            return Ok(Answer::Nothing);
+        }
+        tree.open(crate::frames::OpenTab {
+            url,
+            show: true,
+            by_script: true,
+        });
+        Ok(Answer::Nothing)
+    }
+
+    /// `window.close()` (M37): the top-level document asks to close its
+    /// tab, which the browser does if a script opened it.
+    fn close_window(&mut self) -> Result<Answer, DomError> {
+        if let Some(env) = &self.window.frames {
+            let mut tree = crate::frames::lock(&env.tree);
+            if tree.parent(env.id).is_none() {
+                tree.ask_close();
+            }
+        }
+        Ok(Answer::Nothing)
+    }
+
     /// Answers a call about the tab's frames (M33.2): from the tree, a
     /// message or a navigation put in another frame's inbox. An engine
     /// that has no frames answers as a top-level window with none.

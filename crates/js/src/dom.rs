@@ -422,6 +422,16 @@ pub enum Call {
     },
     /// The document fetched again, after the run.
     Reload,
+    /// `window.open(url, target)` (M37): a URL parsed against the
+    /// document's base URL, `about:blank` for none, opened in a new tab
+    /// or in the navigable `target` names; a `SyntaxError` for one that
+    /// does not parse.
+    OpenWindow {
+        url: String,
+        target: String,
+    },
+    /// `window.close()` (M37): the tab closed, if a script opened it.
+    CloseWindow,
     /// What `navigator` reports (D12): its user agent string, its
     /// platform, and its compatibility mode, `gecko` or `chrome`.
     NavigatorInfo,

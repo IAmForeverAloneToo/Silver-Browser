@@ -529,6 +529,13 @@ pub(crate) fn framing(make: Make) {
         let path = format!("/frames.html?{late}");
         let defended = attack(make, true, false, "a.localhost", &path, &[]);
         assert_eq!(defended.pwned, set(&[]), "{late}: {defended:?}");
+        // A popup a script opens without the user's activation is refused
+        // with the sandbox gone too (M37): the popup blocker's.
+        if late == "popup" {
+            let open = attack(make, false, false, "a.localhost", &path, &[]);
+            assert!(!open.pwned.contains(attack_name), "{late}: {open:?}");
+            continue;
+        }
         let open = attack(make, false, false, "a.localhost", &path, &[attack_name]);
         assert!(open.pwned.contains(attack_name), "{late}: {open:?}");
     }

@@ -9,7 +9,7 @@ use dom::ElementState;
 use super::script_tests::scripted;
 use super::tests::load_all;
 use crate::testing::*;
-use crate::{Button, LoadState, NO_NEW_TAB};
+use crate::{Button, LoadState};
 
 /// The console's lines since they were last taken.
 fn lines(tab: &mut Tab) -> Vec<String> {
@@ -308,14 +308,23 @@ fn a_click_follows_the_link_it_is_in_unless_canceled() {
         });
         assert!(tab.engine.can_go_back(), "{page} {scripts}");
     }
-    // Canceled, it goes nowhere; a middle click says why it opens nothing.
+    // Canceled, it goes nowhere; a middle click asks for a new tab, behind
+    // this one (M37), and this one stays.
     let mut tab = Tab::new();
     tab.engine.set_scripting(true);
     load_all(&mut tab, server.url("/one.html"));
     click(&mut tab, 50.0, Button::Primary);
     assert_eq!(lines(&mut tab), ["stopped"]);
+    assert!(tab.engine.take_opened().is_empty());
     click(&mut tab, 10.0, Button::Auxiliary);
-    assert_eq!(tab.engine.take_notice().as_deref(), Some(NO_NEW_TAB));
+    assert_eq!(
+        tab.engine.take_opened(),
+        [crate::OpenTab {
+            url: two.clone(),
+            show: false,
+            by_script: false
+        }]
+    );
     assert_eq!(tab.engine.load_state(), &LoadState::Loaded);
     assert_eq!(tab.engine.url(), Some(&server.url("/one.html")));
 }

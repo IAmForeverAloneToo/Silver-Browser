@@ -37,6 +37,8 @@ mod lna_tests;
 #[cfg(test)]
 mod mixed_tests;
 #[cfg(test)]
+mod open_tests;
+#[cfg(test)]
 mod origin_tests;
 #[cfg(test)]
 mod partition_tests;

@@ -28,6 +28,8 @@ const STRIP: f32 = ui::tabs::HEIGHT as f32;
 const TOP: f32 = STRIP + ui::HEIGHT as f32;
 /// The most tabs a window holds (M37).
 pub(crate) const MAX_TABS: usize = 500;
+/// The most tabs closed the window keeps, to open again (M37).
+pub(crate) const MAX_CLOSED: usize = 10;
 /// The most renderers a window's tabs keep alive together (M37): past
 /// it, the hidden tab least recently shown is discarded.
 pub(crate) const MAX_ALL_RENDERERS: usize = 48;
@@ -151,6 +153,11 @@ pub(crate) struct Session<V: View = Engine> {
     preferences: Option<Preferences>,
     /// Whether the last tab was closed: the window is to close.
     closing: bool,
+    /// The URLs of the tabs closed last, the last at the end.
+    closed: Vec<Url>,
+    /// Whether the tabs pages asked for are being opened: the opening
+    /// syncs, which opens none again.
+    opening: bool,
     toolbar: Toolbar,
     bubble: StatusBubble,
     /// The permission prompt the engine wants shown (M33.4), its bar, and
@@ -226,6 +233,8 @@ impl<V: View> Session<V> {
             hidden: false,
             preferences: None,
             closing: false,
+            closed: Vec::new(),
+            opening: false,
             toolbar: Toolbar::new(fonts.clone()),
             prompt: None,
             prompt_bar: PromptBar::new(fonts.clone()),
@@ -320,14 +329,21 @@ impl<V: View> Session<V> {
     /// page with the address field focused, and shows it if `show`
     /// (M37); whether there was room for it.
     pub(crate) fn new_tab(&mut self, url: Option<Url>, show: bool) -> bool {
+        self.insert_tab(url, show, self.active + 1, false)
+    }
+
+    /// Opens a tab at `at` in the strip, as [`Session::new_tab`] does; a
+    /// script's if `by_script`, which its `window.close()` closes.
+    fn insert_tab(&mut self, url: Option<Url>, show: bool, at: usize, by_script: bool) -> bool {
         if self.tabs.len() >= MAX_TABS {
             self.notice = Some(format!("A window holds at most {MAX_TABS} tabs"));
             return false;
         }
         let mut view = self.make_view();
+        view.set_opened_by_script(by_script);
         let field = url.is_none();
         view.navigate(url.unwrap_or_else(start_page));
-        let at = self.active + 1;
+        let at = at.min(self.tabs.len());
         self.tabs.insert(
             at,
             Some(Box::new(Parked {
@@ -437,10 +453,58 @@ impl<V: View> Session<V> {
         if index < self.active {
             self.active -= 1;
         }
-        if let Some(mut view) = parked.and_then(|parked| parked.view) {
-            view.closed();
+        if let Some(parked) = parked {
+            let url = match &parked.view {
+                Some(view) => view.url().cloned(),
+                None => parked.url.clone(),
+            };
+            if let Some(url) = url {
+                if self.closed.len() == MAX_CLOSED {
+                    self.closed.remove(0);
+                }
+                self.closed.push(url);
+            }
+            if let Some(mut view) = parked.view {
+                view.closed();
+            }
         }
         self.sync();
+    }
+
+    /// Opens again, shown, the tab closed last (M37).
+    pub(crate) fn reopen_tab(&mut self) {
+        if let Some(url) = self.closed.pop() {
+            self.new_tab(Some(url), true);
+        }
+    }
+
+    /// Opens the tabs the views of the tabs asked for, each after the one
+    /// that asked, and closes those a script asked to close (M37).
+    fn open_asked(&mut self) {
+        let mut asked = Vec::new();
+        for (index, tab) in self.tabs.iter_mut().enumerate() {
+            let view = match tab {
+                None => Some(&mut self.engine),
+                Some(parked) => parked.view.as_deref_mut(),
+            };
+            if let Some(view) = view {
+                let opened = view.take_opened();
+                let close = view.take_close_request();
+                if !opened.is_empty() || close {
+                    asked.push((index, opened, close));
+                }
+            }
+        }
+        // The last tabs first, so that each one's index holds.
+        for (index, opened, close) in asked.into_iter().rev() {
+            for (k, tab) in opened.into_iter().enumerate() {
+                let show = tab.show && index == self.active;
+                self.insert_tab(Some(tab.url), show, index + 1 + k, tab.by_script);
+            }
+            if close {
+                self.close_tab(index);
+            }
+        }
     }
 
     /// Moves the tab at `from` to `to` in the strip (M37).
@@ -1273,6 +1337,7 @@ impl<V: View> Session<V> {
             }
             Shortcut::SelectTab(index) => self.switch_to(index.min(self.tabs.len() - 1)),
             Shortcut::LastTab => self.switch_to(self.tabs.len() - 1),
+            Shortcut::ReopenTab => self.reopen_tab(),
         }
     }
 
@@ -1513,6 +1578,12 @@ impl<V: View> Session<V> {
             loading: *self.engine.load_state() == LoadState::Loading,
         });
         self.title = ui::window_title(&self.engine.title(), url.as_deref());
+        // The tabs pages asked for, or asked to close (M37).
+        if !self.opening {
+            self.opening = true;
+            self.open_asked();
+            self.opening = false;
+        }
         let items = self.tab_items();
         self.strip.update(items, self.active);
         // The DevTools' messages passed on (M36).

@@ -546,3 +546,48 @@ fn a_tab_answers_the_storage_panel_from_the_browsers_storage() {
     let answer = remote.storage_inspect(r#"{"id":5,"method":"storage.local"}"#);
     assert_eq!(answer, r#"{"id":5,"result":[["k","v"]]}"#);
 }
+
+#[test]
+fn a_renderers_page_asks_the_browser_for_tabs_and_to_close() {
+    // M37: a link of target `_blank`, and `window.close()`, reach the
+    // browser; only a tab a script opened is closed by it.
+    let server = TestServer::plain(|request| match request.target.as_str() {
+        "/" => Reply::ok(
+            "text/html",
+            b"<body style='margin:0'><a href=/next target=_blank \
+              style='display:block;height:40px'>blank</a>\
+              <button style='display:block;height:40px' onclick='window.close()'>close</button>",
+        ),
+        _ => Reply::ok("text/html", b"<title>next</title>"),
+    });
+    let mut tab = tab();
+    tab.set_scripting(true);
+    tab.navigate(server.url("/"));
+    shown(&mut tab);
+    let click = |tab: &mut RemoteTab, y: f32| {
+        tab.pointer_move(10.0, y);
+        tab.pointer_down(10.0, y, Button::Primary, 1);
+        tab.pointer_up(10.0, y, Button::Primary, 1);
+    };
+    click(&mut tab, 20.0);
+    let mut opened = Vec::new();
+    settle(&mut tab, |tab| {
+        opened.extend(tab.take_opened());
+        !opened.is_empty()
+    });
+    assert_eq!(
+        opened,
+        [crate::OpenTab {
+            url: server.url("/next"),
+            show: true,
+            by_script: false
+        }]
+    );
+    click(&mut tab, 60.0);
+    thread::sleep(Duration::from_millis(200));
+    settle(&mut tab, |_| true);
+    assert!(!tab.take_close_request(), "the user's own tab");
+    tab.set_opened_by_script(true);
+    click(&mut tab, 60.0);
+    settle(&mut tab, |tab| tab.take_close_request());
+}

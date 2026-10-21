@@ -423,6 +423,18 @@ impl Host {
             for message in view.engine.take_inspected() {
                 out.push(ToBrowser::Inspected { view: id, message });
             }
+            // The tabs its documents asked for, and its closing (M37).
+            for tab in view.engine.take_opened() {
+                out.push(ToBrowser::OpenTab {
+                    view: id,
+                    url: tab.url,
+                    show: tab.show,
+                    by_script: tab.by_script,
+                });
+            }
+            if view.engine.take_close_asked() {
+                out.push(ToBrowser::CloseTab { view: id });
+            }
             for key in view.engine.take_remote_drops() {
                 out.push(ToBrowser::FrameDropped { key });
             }

@@ -469,6 +469,13 @@ const NATIVES: &[(&str, Decode)] = &[
         })
     }),
     ("reload", |_| Ok(Call::Reload)),
+    ("openWindow", |a| {
+        Ok(Call::OpenWindow {
+            url: a.string(0)?,
+            target: a.string(1)?,
+        })
+    }),
+    ("closeWindow", |_| Ok(Call::CloseWindow)),
     ("navigator", |_| Ok(Call::NavigatorInfo)),
     ("viewport", |_| Ok(Call::Viewport)),
     ("documentInfo", |_| Ok(Call::DocumentInfo)),

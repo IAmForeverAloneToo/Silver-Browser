@@ -8773,6 +8773,19 @@
       return native.viewport()[2];
     }
 
+    // A new tab, or the navigable `target` names (M37): opened as with
+    // `noopener`, so no window is given back.
+    open(url = "", target = "_blank", features = "") {
+      void features;
+      native.openWindow(str(url), str(target) || "_blank");
+      return null;
+    }
+
+    // The tab closed, when a script opened it (M37).
+    close() {
+      native.closeWindow();
+    }
+
     // The window's relatives among the tab's frames (M33.2): itself at
     // the top.
     get top() {

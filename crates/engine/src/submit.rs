@@ -270,10 +270,15 @@ impl crate::Engine {
                 };
                 // Another frame named by its target (M33.2).
                 match self.other_navigable(&submission.target, &url, true) {
-                    Ok(Some(frame)) => {
+                    Ok(crate::frames::Chosen::Frame(frame)) => {
                         self.navigate_other(frame, url, false, submission.post, source.origin);
                     }
-                    Ok(None) => self.submit_to(url, submission.post, source),
+                    // A form sent to a new tab (M37): a GET opens one; a
+                    // POST is sent here (a gap).
+                    Ok(crate::frames::Chosen::NewTab) if submission.post.is_none() => {
+                        self.open_tab(url, true, false);
+                    }
+                    Ok(_) => self.submit_to(url, submission.post, source),
                     Err(line) => self.shown.scripts.say(js::ConsoleLevel::Error, line),
                 }
             }

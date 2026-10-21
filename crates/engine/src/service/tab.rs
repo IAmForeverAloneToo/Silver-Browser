@@ -249,7 +249,16 @@ pub struct RemoteTab {
     inspected: Vec<String>,
     /// The tab's network log (M36.3), which its client tells.
     log: Arc<crate::network_log::NetworkLog>,
+    /// The tabs its pages asked for (M37), whether its page asked to close
+    /// it, and whether a script opened it, which lets it.
+    opened: Vec<crate::frames::OpenTab>,
+    close_asked: bool,
+    opened_by_script: bool,
 }
+
+/// The most tabs a tab's pages may have asked for that the browser has
+/// not yet opened (M37).
+const MAX_OPENING: usize = 16;
 
 impl RemoteTab {
     /// A tab whose renderers `launcher` starts, its own interface drawn
@@ -404,6 +413,9 @@ impl RemoteTab {
             devtools: Vec::new(),
             inspected: Vec::new(),
             log,
+            opened: Vec::new(),
+            close_asked: false,
+            opened_by_script: false,
         }
     }
 
@@ -1125,7 +1137,9 @@ impl RemoteTab {
             | ToBrowser::Console { view, .. }
             | ToBrowser::Notice { view, .. }
             | ToBrowser::FocusLeft { view }
-            | ToBrowser::Copied { view, .. } => Some(*view),
+            | ToBrowser::Copied { view, .. }
+            | ToBrowser::OpenTab { view, .. }
+            | ToBrowser::CloseTab { view } => Some(*view),
             // The panel's messages from the panel's tab, the answers to it
             // from a page's (M36).
             ToBrowser::DevTools { view, .. } if self.panel => Some(*view),
@@ -1247,6 +1261,25 @@ impl RemoteTab {
             {
                 self.inspected.push(message);
             }
+            // A tab the page shown asked for (M37): a page of the web's or a
+            // blank one, at most MAX_OPENING waiting; the renderer's word
+            // for the user's activation, the browser's tabs bounded.
+            ToBrowser::OpenTab {
+                url,
+                show,
+                by_script,
+                ..
+            } if (shown || framed)
+                && crate::frames::opens_in_tab(&url)
+                && self.opened.len() < MAX_OPENING =>
+            {
+                self.opened.push(crate::frames::OpenTab {
+                    url,
+                    show,
+                    by_script,
+                });
+            }
+            ToBrowser::CloseTab { .. } if shown => self.close_asked = true,
             _ => {}
         }
         Ok(())
@@ -1912,6 +1945,18 @@ impl View for RemoteTab {
 
     fn renderer_count(&self) -> usize {
         self.renderers.len()
+    }
+
+    fn take_opened(&mut self) -> Vec<crate::frames::OpenTab> {
+        std::mem::take(&mut self.opened)
+    }
+
+    fn take_close_request(&mut self) -> bool {
+        std::mem::take(&mut self.close_asked) && self.opened_by_script
+    }
+
+    fn set_opened_by_script(&mut self, by_script: bool) {
+        self.opened_by_script = by_script;
     }
 
     fn set_window_focus(&mut self, focused: bool) {

@@ -96,6 +96,8 @@ pub(crate) enum Shortcut {
     /// Shows the tab of this index, or the last.
     SelectTab(usize),
     LastTab,
+    /// Opens again the tab closed last.
+    ReopenTab,
 }
 
 /// What `key`, pressed with `mods` held on `platform`, asks for: in the
@@ -131,6 +133,7 @@ pub(crate) fn shortcut(
         (_, "r") if command => Some(Shortcut::Reload),
         // The tabs (M37).
         (_, "t") if command && !mods.shift => Some(Shortcut::NewTab),
+        (_, "t") if command && mods.shift => Some(Shortcut::ReopenTab),
         (_, "w") if command && !mods.shift => Some(Shortcut::CloseTab),
         (Key::F4, _) if !mac && mods.ctrl && !mods.alt => Some(Shortcut::CloseTab),
         (Key::Tab, _) if mods.ctrl && !mods.alt && !mods.logo => Some(match mods.shift {
