@@ -622,7 +622,10 @@ fn names_and_ports_that_fail() {
 #[test]
 fn the_tls_configuration() {
     let config = tls::client_config(&[]);
-    assert_eq!(config.alpn_protocols, [b"http/1.1".to_vec()]);
+    assert_eq!(
+        config.alpn_protocols,
+        [b"h2".to_vec(), b"http/1.1".to_vec()]
+    );
     assert!(!config.enable_early_data);
 }
 

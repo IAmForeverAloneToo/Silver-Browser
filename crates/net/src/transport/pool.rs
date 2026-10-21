@@ -1,7 +1,7 @@
 //! Connections kept for reuse, by origin: at most a few open to one
 //! origin at once, and an idle one closed after a while.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use crate::address_space::AddressSpace;
 use crate::error::{AbortHandle, NetworkError};
+use crate::h2::conn::Connection as H2Connection;
 
 use super::ABORT_POLL;
 use super::stream::Stream;
@@ -41,8 +42,19 @@ struct Origin {
     open: usize,
 }
 
+/// The most origins the pool remembers speak HTTP/1.1 alone: past it,
+/// it forgets them all.
+const MAX_KNOWN_ORIGINS: usize = 1024;
+
 struct State {
     origins: HashMap<OriginKey, Origin>,
+    /// Each origin's HTTP/2 connection (M38), every fetch to it sharing
+    /// it; the origins a first connection is being made to, whose
+    /// fetches wait for what its TLS chose; and those that chose
+    /// HTTP/1.1.
+    h2: HashMap<OriginKey, Arc<H2Connection>>,
+    probing: HashSet<OriginKey>,
+    h1: HashSet<OriginKey>,
     reaper_running: bool,
     /// The pool was dropped: its idle connections were closed, none is
     /// parked any more, and its reaper ends, woken.
@@ -84,6 +96,9 @@ impl Pool {
         Pool(Arc::new(Shared {
             state: Mutex::new(State {
                 origins: HashMap::new(),
+                h2: HashMap::new(),
+                probing: HashSet::new(),
+                h1: HashSet::new(),
                 reaper_running: false,
                 closed: false,
                 #[cfg(test)]
@@ -145,6 +160,64 @@ impl Pool {
         }
     }
 
+    /// What a fetch to an `https:` origin uses (M38): its HTTP/2
+    /// connection; or, when nothing is known of it, the first
+    /// connection, made by this fetch, whose choice the others wait
+    /// for; or HTTP/1.1.
+    pub(crate) fn speaks(
+        &self,
+        key: &OriginKey,
+        abort: &AbortHandle,
+    ) -> Result<Speaks, NetworkError> {
+        let shared = &self.0;
+        let mut state = shared.lock();
+        loop {
+            if abort.is_aborted() {
+                return Err(NetworkError::Aborted);
+            }
+            if let Some(connection) = state.h2.get(key) {
+                if connection.usable() {
+                    return Ok(Speaks::H2(connection.clone()));
+                }
+                state.h2.remove(key);
+            }
+            if state.h1.contains(key) {
+                return Ok(Speaks::H1);
+            }
+            if state.probing.insert(key.clone()) {
+                return Ok(Speaks::Probe(Probe {
+                    shared: shared.clone(),
+                    key: key.clone(),
+                }));
+            }
+            state = shared
+                .changed
+                .wait_timeout(state, ABORT_POLL)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+
+    /// Keeps `connection` as the origin's HTTP/2 connection.
+    pub(crate) fn keep_h2(&self, key: &OriginKey, connection: Arc<H2Connection>) {
+        let mut state = self.0.lock();
+        state.h1.remove(key);
+        state.h2.insert(key.clone(), connection);
+        drop(state);
+        self.0.changed.notify_all();
+    }
+
+    /// The origin speaks HTTP/1.1 alone.
+    pub(crate) fn speaks_h1(&self, key: &OriginKey) {
+        let mut state = self.0.lock();
+        if state.h1.len() >= MAX_KNOWN_ORIGINS {
+            state.h1.clear();
+        }
+        state.h1.insert(key.clone());
+        drop(state);
+        self.0.changed.notify_all();
+    }
+
     /// How many connections to the origin are open, and how many of
     /// them idle.
     #[cfg(test)]
@@ -157,13 +230,38 @@ impl Pool {
     }
 }
 
+/// What a fetch to an origin is to use.
+pub(crate) enum Speaks {
+    H2(Arc<H2Connection>),
+    /// A first connection, whose choice the others wait for.
+    Probe(Probe),
+    H1,
+}
+
+/// A first connection to an origin being made: dropped, the fetches
+/// waiting for it go on, as they would after a choice of HTTP/1.1 had
+/// none been made (the connection failed).
+pub(crate) struct Probe {
+    shared: Arc<Shared>,
+    key: OriginKey,
+}
+
+impl Drop for Probe {
+    fn drop(&mut self) {
+        self.shared.lock().probing.remove(&self.key);
+        self.shared.changed.notify_all();
+    }
+}
+
 impl Drop for Pool {
     /// Closes the idle connections now rather than when their time runs
     /// out, and wakes the reaper to end: a dropped pool, an engine's,
-    /// leaves no thread behind it (M35).
+    /// leaves no thread behind it (M35). Its HTTP/2 connections end
+    /// once idle.
     fn drop(&mut self) {
         let mut state = self.0.lock();
         state.closed = true;
+        state.h2.clear();
         let mut idle = Vec::new();
         for origin in state.origins.values_mut() {
             origin.open -= origin.idle.len();

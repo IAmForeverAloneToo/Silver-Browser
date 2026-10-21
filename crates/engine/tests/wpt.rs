@@ -860,6 +860,7 @@ fn a_template_is_filled_as_wptserve_fills_it() {
         connection: 0,
         index: 0,
         sni: None,
+        stream: 0,
     };
     let filled = substitute(
         "{{host}} {{domains[www1]}} {{hosts[alt][]}} {{hosts[][www2]}} \

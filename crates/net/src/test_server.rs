@@ -1,5 +1,6 @@
 //! A server for tests: a thread on 127.0.0.1 that answers each request
-//! with what a script says, plain or over TLS, and counts connections.
+//! with what a script says, plain or over TLS, in HTTP/1.1 or, when its
+//! TLS chooses it, HTTP/2 (M38), and counts connections.
 //! It is built for `net`'s own tests and, behind the `test-server`
 //! feature, for the engine's.
 
@@ -20,6 +21,8 @@ use rustls::{ServerConfig, ServerConnection, StreamOwned};
 
 use crate::Url;
 
+mod h2;
+
 /// A request as the server read it.
 #[derive(Debug, Clone)]
 pub struct ServerRequest {
@@ -34,6 +37,8 @@ pub struct ServerRequest {
     pub index: usize,
     /// The name the client sent by SNI, over TLS.
     pub sni: Option<String>,
+    /// The HTTP/2 stream it came on; 0 over HTTP/1.1.
+    pub stream: u32,
 }
 
 impl ServerRequest {
@@ -67,6 +72,14 @@ pub enum Reply {
     /// session in one flight, then holds the TCP connection open and
     /// silent until the server stops: only TLS says it is over.
     SendWithCloseNotify(Vec<u8>),
+    /// Over HTTP/2, refuses the stream (`REFUSED_STREAM`); over
+    /// HTTP/1.1, closes the connection.
+    Refuse,
+    /// Over HTTP/2, a `GOAWAY` saying this stream was not processed;
+    /// over HTTP/1.1, closes the connection.
+    GoAway,
+    /// Writes these bytes as they are: over HTTP/2, frames a test made.
+    Frames(Vec<u8>),
 }
 
 impl Reply {
@@ -96,6 +109,11 @@ struct Shared {
     connections: AtomicUsize,
     open: AtomicUsize,
     most_open: AtomicUsize,
+    /// The most HTTP/2 streams one connection had waiting for their
+    /// replies at once (M38).
+    most_streams: AtomicUsize,
+    /// The HTTP/2 streams the clients reset.
+    resets: AtomicUsize,
     requests: Mutex<Vec<ServerRequest>>,
     /// The connections being served, by number, so that stopping can
     /// shut them down and end the reads waiting on them.
@@ -133,6 +151,8 @@ impl TestServer {
             connections: AtomicUsize::new(0),
             open: AtomicUsize::new(0),
             most_open: AtomicUsize::new(0),
+            most_streams: AtomicUsize::new(0),
+            resets: AtomicUsize::new(0),
             requests: Mutex::new(Vec::new()),
             sockets: Mutex::new(HashMap::new()),
             stop: AtomicBool::new(false),
@@ -201,6 +221,17 @@ impl TestServer {
         self.shared.most_open.load(Ordering::SeqCst)
     }
 
+    /// The most HTTP/2 streams one connection had waiting for their
+    /// replies at once.
+    pub fn most_streams(&self) -> usize {
+        self.shared.most_streams.load(Ordering::SeqCst)
+    }
+
+    /// How many HTTP/2 streams the clients reset.
+    pub fn resets(&self) -> usize {
+        self.shared.resets.load(Ordering::SeqCst)
+    }
+
     /// Every request read so far, in the order they came.
     pub fn requests(&self) -> Vec<ServerRequest> {
         lock(&self.shared.requests).clone()
@@ -258,11 +289,19 @@ impl Write for ServerStream {
 
 /// Answers the requests on one connection until it closes, the script
 /// closes it, or the server stops.
-fn serve(shared: &Shared, tcp: TcpStream, connection: usize) -> io::Result<()> {
+fn serve(shared: &Arc<Shared>, tcp: TcpStream, connection: usize) -> io::Result<()> {
     let mut stream = match &shared.tls {
         Some(config) => {
             let tls = ServerConnection::new(config.clone()).map_err(io::Error::other)?;
-            ServerStream::Tls(Box::new(StreamOwned::new(tls, tcp)))
+            let mut tls = StreamOwned::new(tls, tcp);
+            while tls.conn.is_handshaking() {
+                tls.conn.complete_io(&mut tls.sock)?;
+            }
+            // The client chose HTTP/2 (M38).
+            if tls.conn.alpn_protocol() == Some(b"h2") {
+                return h2::serve(shared, tls, connection);
+            }
+            ServerStream::Tls(Box::new(tls))
         }
         None => ServerStream::Plain(tcp),
     };
@@ -306,7 +345,12 @@ fn serve(shared: &Shared, tcp: TcpStream, connection: usize) -> io::Result<()> {
                     }
                     break;
                 }
-                Reply::Close => return Ok(()),
+                Reply::Close | Reply::Refuse | Reply::GoAway => return Ok(()),
+                Reply::Frames(bytes) => {
+                    stream.write_all(&bytes)?;
+                    stream.flush()?;
+                    break;
+                }
                 Reply::Hang => {
                     hang(shared);
                     return Ok(());
@@ -392,6 +436,7 @@ fn read_request(
         connection: 0,
         index: 0,
         sni: None,
+        stream: 0,
     }))
 }
 
@@ -440,6 +485,13 @@ impl TestAuthority {
     /// valid over the given years.
     pub fn server(&self, names: &[&str], years: (i32, i32)) -> Arc<ServerConfig> {
         self.server_speaking(names, years, rustls::DEFAULT_VERSIONS)
+    }
+
+    /// As [`TestAuthority::server`], offering HTTP/2 by ALPN (M38).
+    pub fn server_h2(&self, names: &[&str], years: (i32, i32)) -> Arc<ServerConfig> {
+        let mut config = (*self.server(names, years)).clone();
+        config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        Arc::new(config)
     }
 
     /// As [`TestAuthority::server`], speaking only `versions` of TLS.

@@ -77,6 +77,10 @@ impl Waiter {
     }
 }
 
+/// A TLS connection's socket, as the HTTP/2 connection's thread owns it
+/// (M38).
+pub(crate) type TlsSocket = StreamOwned<ClientConnection, TcpStream>;
+
 pub(crate) enum Socket {
     Plain(TcpStream),
     Tls(Box<StreamOwned<ClientConnection, TcpStream>>),

@@ -49,6 +49,9 @@ impl Default for Limits {
 pub enum Version {
     Http10,
     Http11,
+    /// HTTP/2 (M38): a response read from a stream of a connection the
+    /// transport keeps.
+    Http2,
 }
 
 /// A response, read whole.
@@ -161,6 +164,7 @@ impl fmt::Display for Version {
         f.write_str(match self {
             Version::Http10 => "HTTP/1.0",
             Version::Http11 => "HTTP/1.1",
+            Version::Http2 => "HTTP/2",
         })
     }
 }

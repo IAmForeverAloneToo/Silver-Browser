@@ -387,7 +387,7 @@ fn network_error(url: &Url, place: &str, error: &NetworkError) -> (String, Strin
                 tls_failure(failure)
             ),
         ),
-        NetworkError::Malformed(_) | NetworkError::UnaskedUpgrade => (
+        NetworkError::Malformed(_) | NetworkError::UnaskedUpgrade | NetworkError::Http2(_) => (
             reach,
             format!("{place} sent a response that breaks the rules of HTTP."),
         ),

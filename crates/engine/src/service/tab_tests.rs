@@ -543,8 +543,15 @@ fn a_tab_answers_the_storage_panel_from_the_browsers_storage() {
         lines.extend(tab.take_console().into_iter().map(|entry| entry.text));
         lines.iter().any(|line| line == "set")
     });
-    let answer = remote.storage_inspect(r#"{"id":5,"method":"storage.local"}"#);
-    assert_eq!(answer, r#"{"id":5,"result":[["k","v"]]}"#);
+    // The write crosses to the browser's storage on its own way: the
+    // console's line may come first (CI, M38).
+    let wanted = r#"{"id":5,"result":[["k","v"]]}"#;
+    let mut answer = String::new();
+    settle(&mut remote, |tab| {
+        answer = tab.storage_inspect(r#"{"id":5,"method":"storage.local"}"#);
+        answer == wanted
+    });
+    assert_eq!(answer, wanted);
 }
 
 #[test]

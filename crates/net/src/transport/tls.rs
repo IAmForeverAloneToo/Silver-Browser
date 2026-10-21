@@ -34,7 +34,8 @@ pub(crate) fn client_config(extra_roots: &[CertificateDer<'static>]) -> Arc<Clie
         .expect("the provider supports both versions")
         .with_root_certificates(roots)
         .with_no_client_auth();
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    // HTTP/2 first (M38), as browsers offer it.
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     config.enable_early_data = false;
     Arc::new(config)
 }
