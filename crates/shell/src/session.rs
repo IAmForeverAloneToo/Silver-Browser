@@ -1485,6 +1485,7 @@ impl<V: View> Session<V> {
             Shortcut::Back => self.engine.go_back(),
             Shortcut::Forward => self.engine.go_forward(),
             Shortcut::Reload => self.engine.reload(),
+            Shortcut::HardReload => self.engine.reload_bypassing_cache(),
             Shortcut::Escape if in_field => {
                 self.toolbar.escape();
             }

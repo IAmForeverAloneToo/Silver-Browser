@@ -99,6 +99,7 @@ mod tests {
                 ],
                 b"hello",
             ),
+            "/stream" => Reply::ok("text/plain", b"hello"),
             _ => Reply::with_fields(404, &[], b""),
         });
         let told = Arc::new(Told::default());
@@ -130,6 +131,20 @@ mod tests {
             ]
         );
         // Streamed: the head as it comes, then the body.
+        let request = Request::get(server.url("/stream"), crate::Destination::Document);
+        client
+            .fetch_streaming(&request, &mut |_: Delivery<'_>| {})
+            .expect("fetched");
+        assert_eq!(
+            told.take(),
+            [
+                "2 request GET /stream Document ua=true",
+                "2 response 200 cached=false",
+                "2 body 5",
+                "2 end Basic",
+            ]
+        );
+        // Streamed from the cache (M38): told as it is handed over.
         let request = Request::get(server.url("/here"), crate::Destination::Document);
         client
             .fetch_streaming(&request, &mut |_: Delivery<'_>| {})
@@ -137,10 +152,10 @@ mod tests {
         assert_eq!(
             told.take(),
             [
-                "2 request GET /here Document ua=true",
-                "2 response 200 cached=false",
-                "2 body 5",
-                "2 end Basic",
+                "3 request GET /here Document ua=true",
+                "3 response 200 cached=true",
+                "3 body 5",
+                "3 end Basic",
             ]
         );
         // A failure, and a data: URL, which no server answers.
@@ -152,7 +167,7 @@ mod tests {
         assert!(
             told.take()
                 .last()
-                .is_some_and(|line| line.starts_with("3 failed"))
+                .is_some_and(|line| line.starts_with("4 failed"))
         );
         let request = Request::get(
             crate::Url::parse("data:,abc").expect("a URL"),
@@ -162,10 +177,10 @@ mod tests {
         assert_eq!(
             told.take(),
             [
-                "4 request GET ,abc Empty ua=false",
-                "4 response 200 cached=false",
-                "4 body 3",
-                "4 end Basic",
+                "5 request GET ,abc Empty ua=false",
+                "5 response 200 cached=false",
+                "5 body 3",
+                "5 end Basic",
             ]
         );
     }

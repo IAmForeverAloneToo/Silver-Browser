@@ -97,9 +97,8 @@ fn gives(cache: &Cache, seconds: u64, stale: bool) -> bool {
             &url("http://a.test/r"),
             &HeaderList::new(),
             at(seconds),
-            stale,
         )
-        .is_some()
+        .is_some_and(|hit| stale || hit.fresh)
 }
 
 /// The last second at which `cache`'s response is fresh, if any,
@@ -293,9 +292,9 @@ fn vary_keeps_a_variant_for_each_value_of_its_fields() {
                 &url("http://a.test/r"),
                 &fields(pairs),
                 t0(),
-                false,
             )
-            .map(|stored| stored.body)
+            .filter(|hit| hit.fresh)
+            .map(|hit| hit.stored.body)
     };
     store("text/html", b"html");
     store("image/png", b"png");
@@ -313,14 +312,8 @@ fn entries_are_kept_by_site_and_url_without_its_fragment() {
     let cache = holding(200, &[("Cache-Control", "max-age=60")]);
     let find = |site_url: &str, target: &str| {
         cache
-            .lookup(
-                &site(site_url),
-                &url(target),
-                &HeaderList::new(),
-                t0(),
-                false,
-            )
-            .is_some()
+            .lookup(&site(site_url), &url(target), &HeaderList::new(), t0())
+            .is_some_and(|hit| hit.fresh)
     };
     assert!(find("http://a.test/", "http://a.test/r#part"));
     // Another port of the same host is the same site.
@@ -356,9 +349,8 @@ fn the_cache_keeps_within_its_bounds_dropping_the_least_used() {
                 &url(&format!("http://a.test/{name}")),
                 &HeaderList::new(),
                 t0(),
-                false,
             )
-            .is_some()
+            .is_some_and(|hit| hit.fresh)
     };
     put("big", MAX_CACHE_ENTRY_BYTES + 1);
     assert!(!has("big"));
@@ -493,14 +485,14 @@ fn a_fresh_response_is_used_again_and_a_stale_one_fetched_again() {
     let none = get(&server, "/res");
     assert_eq!(body(client.fetch(&none)), "1");
     assert_eq!(body(client.fetch(&none)), "2");
-    // A document, which streams, neither reads nor writes.
+    // A document, which streams, reads and writes it too (M38).
     let document = Request::get(server.url("/res?cc=max-age=60&d"), Destination::Document);
     let mut deliver = |_: crate::fetch::Delivery<'_>| {};
     client.fetch_streaming(&document, &mut deliver).unwrap();
     client.fetch_streaming(&document, &mut deliver).unwrap();
     assert_eq!(
         body(client.fetch(&get(&server, "/res?cc=max-age=60&d"))),
-        "3"
+        "1"
     );
 }
 
@@ -720,9 +712,8 @@ fn what_one_top_level_site_cached_another_does_not_find() {
                 &url("http://b.test/r"),
                 &HeaderList::new(),
                 at(1),
-                false,
             )
-            .is_some()
+            .is_some_and(|hit| hit.fresh)
     };
     assert!(finds(&under("http://a.test/", "http://b.test/")));
     assert!(!finds(&under("http://c.test/", "http://b.test/")));

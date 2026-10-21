@@ -763,7 +763,11 @@ fn a_download_leaves_the_page_shown_and_is_saved() {
 fn an_image_is_a_page_saying_it_cannot_be_shown_yet() {
     let server = serve(|path| match path {
         "/a" => Some(page("a")),
-        "/photo" => Some(Reply::ok("image/png", b"\x89PNG\r\n\x1a\n")),
+        "/photo" => Some(Reply::with_fields(
+            200,
+            &[("Content-Type", "image/png"), ("Cache-Control", "no-store")],
+            b"\x89PNG\r\n\x1a\n",
+        )),
         "/song" => Some(Reply::ok("audio/ogg", b"OggS")),
         _ => None,
     });

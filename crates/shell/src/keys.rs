@@ -100,6 +100,8 @@ pub(crate) enum Shortcut {
     ReopenTab,
     /// Shows the downloads page.
     Downloads,
+    /// Reloads, bypassing the HTTP cache (M38).
+    HardReload,
     /// Opens a window of the window's profile, a private window, or
     /// closes the window (M37).
     NewWindow,
@@ -133,6 +135,10 @@ pub(crate) fn shortcut(
         (Key::Right, _) if !mac && mods.alt && !mods.ctrl => Some(Shortcut::Forward),
         (_, "[") if mac && command => Some(Shortcut::Back),
         (_, "]") if mac && command => Some(Shortcut::Forward),
+        // Shift or Ctrl with F5, or Shift with the command's R, bypass
+        // the cache (M38).
+        (Key::F5, _) if !mac && (mods.shift || mods.ctrl) => Some(Shortcut::HardReload),
+        (_, "r") if command && mods.shift => Some(Shortcut::HardReload),
         (Key::F5, _) => Some(Shortcut::Reload),
         (Key::F12, _) => Some(Shortcut::DevTools),
         (_, "i") if !mac && mods.ctrl && mods.shift && !mods.alt => Some(Shortcut::DevTools),
@@ -285,6 +291,10 @@ mod tests {
                 (Key::Right, ALT, Forward),
                 (Key::F5, NONE, Reload),
                 (char("r"), CTRL, Reload),
+                // Bypassing the cache (M38).
+                (char("R"), CTRL_SHIFT, HardReload),
+                (Key::F5, CTRL, HardReload),
+                (Key::F5, SHIFT, HardReload),
                 (Key::Escape, NONE, Escape),
                 (char("c"), CTRL, Copy),
                 (char("x"), CTRL, Cut),
@@ -321,6 +331,15 @@ mod tests {
                 (char("]"), CMD, Forward),
                 (Key::F5, NONE, Reload),
                 (char("r"), CMD, Reload),
+                (
+                    char("R"),
+                    Modifiers {
+                        logo: true,
+                        shift: true,
+                        ..NONE
+                    },
+                    HardReload,
+                ),
                 (Key::Escape, NONE, Escape),
                 (char("c"), CMD, Copy),
                 (char("x"), CMD, Cut),

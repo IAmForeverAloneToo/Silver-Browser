@@ -750,3 +750,27 @@ fn the_tabs_of_a_context_share_its_connections() {
     settle(&mut second, |tab| *tab.load_state() == LoadState::Loaded);
     assert_eq!(server.connections(), 1);
 }
+
+#[test]
+fn a_renderers_reload_may_bypass_the_cache() {
+    // M38: the tab asks its renderer for a reload bypassing the cache.
+    let server = serve("<title>t</title>");
+    let mut remote = tab();
+    remote.navigate(server.url("/"));
+    settle(&mut remote, |tab| *tab.load_state() == LoadState::Loaded);
+    View::reload_bypassing_cache(&mut remote);
+    settle(&mut remote, |_| {
+        server
+            .requests()
+            .iter()
+            .filter(|request| request.target == "/")
+            .count()
+            == 2
+    });
+    let last = server
+        .requests()
+        .into_iter()
+        .rfind(|request| request.target == "/")
+        .expect("the reload");
+    assert_eq!(last.header("Cache-Control"), Some("no-cache"));
+}

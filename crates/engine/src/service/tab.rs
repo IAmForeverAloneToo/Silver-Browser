@@ -1912,6 +1912,15 @@ impl View for RemoteTab {
         }
     }
 
+    fn reload_bypassing_cache(&mut self) {
+        if self.shown_view().is_some() {
+            self.send(|view| ToRenderer::ReloadBypassingCache { view });
+            return;
+        }
+        // A page whose renderer is gone has nothing to bypass.
+        self.reload();
+    }
+
     fn reload(&mut self) {
         if self.shown_view().is_some() {
             self.send(|view| ToRenderer::Reload { view });

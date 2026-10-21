@@ -1,12 +1,14 @@
-//! The HTTP cache, version 0 (M28.4, docs/design/storage.md): RFC
-//! 9111's private cache, in memory, of a client and the clients that
-//! share it. It keeps the responses to the `GET`s fetched whole, not a
-//! document's, which streams, and gives one back while it is fresh as
+//! The HTTP cache (M28.4, docs/design/storage.md; M38,
+//! docs/design/http.md): RFC 9111's private cache, of a client and the
+//! clients that share it. It keeps the responses to `GET`s, a
+//! document's too, and gives one back while it is fresh as
 //! `Cache-Control`, `Expires`, `Age`, `Date` and `Last-Modified` say,
-//! or, for a request's `force-cache` and `only-if-cached` modes, fresh
-//! or not. It does not revalidate: what is stale is fetched again
-//! (M38). It is partitioned by the site a request is made for, so that
-//! no site can learn from the cache what another's pages fetched.
+//! and the request's own directives allow; one that is not is
+//! revalidated with its validators (`ETag`, `Last-Modified`), a `304`
+//! freshening it (RFC 9111 4.3). Fetch's cache modes decide how a
+//! request uses it ([`decide`]). It is partitioned by the site a request
+//! is made for, so that no site can learn from the cache what another's
+//! pages fetched.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
@@ -15,6 +17,8 @@ use std::time::{Duration, SystemTime};
 use crate::url::Site;
 use crate::{AddressSpace, HeaderList, Url};
 
+#[cfg(test)]
+mod revalidation_tests;
 #[cfg(test)]
 mod tests;
 
@@ -38,8 +42,8 @@ pub enum CacheMode {
     NoStore,
     /// The cache is not read; what comes is stored.
     Reload,
-    /// The cache is not read, a stored response wanting revalidation,
-    /// which version 0 does not do; what comes is stored.
+    /// A stored response is revalidated before it is used (M38); what
+    /// comes is stored.
     NoCache,
     /// A response stored is used, fresh or stale; what comes is stored.
     ForceCache,
@@ -62,15 +66,75 @@ impl CacheMode {
         })
     }
 
-    /// Whether a stored response may answer, and whether a stale one
-    /// may: `None` when the cache is not read.
-    pub(crate) fn reads(self) -> Option<bool> {
-        match self {
-            CacheMode::Default => Some(false),
-            CacheMode::ForceCache | CacheMode::OnlyIfCached => Some(true),
-            CacheMode::NoStore | CacheMode::Reload | CacheMode::NoCache => None,
-        }
+    /// Whether the cache is read at all.
+    pub(crate) fn reads(self) -> bool {
+        !matches!(self, CacheMode::NoStore | CacheMode::Reload)
     }
+}
+
+/// What a request does with what the cache holds for it (Fetch's
+/// HTTP-network-or-cache fetch, M38).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Decision {
+    /// The stored response answers as it is.
+    Use(Stored),
+    /// The request goes out conditional on these validators; a `304`
+    /// lets the stored response answer.
+    Validate {
+        etag: Option<Vec<u8>>,
+        last_modified: Option<Vec<u8>>,
+    },
+    /// The request goes out as it is.
+    Network,
+    /// An `only-if-cached` request with nothing stored.
+    NotCached,
+}
+
+/// What a request in `mode` does with `hit`, what the cache found: a
+/// fresh response answers; a stale one the request accepts answers;
+/// else it is revalidated if it can be. `no-cache` revalidates even a
+/// fresh one but one `immutable` (RFC 8246: a reload need not ask about
+/// it); `force-cache` and `only-if-cached` take anything.
+pub fn decide(mode: CacheMode, hit: Option<Hit>) -> Decision {
+    let Some(hit) = hit else {
+        return match mode {
+            CacheMode::OnlyIfCached => Decision::NotCached,
+            _ => Decision::Network,
+        };
+    };
+    let validate = |hit: Hit| match (hit.etag, hit.last_modified) {
+        (None, None) => Decision::Network,
+        (etag, last_modified) => Decision::Validate {
+            etag,
+            last_modified,
+        },
+    };
+    match mode {
+        CacheMode::NoStore | CacheMode::Reload => Decision::Network,
+        CacheMode::ForceCache | CacheMode::OnlyIfCached => Decision::Use(hit.stored),
+        CacheMode::Default if hit.fresh || hit.stale_ok => Decision::Use(hit.stored),
+        CacheMode::NoCache if hit.fresh && hit.immutable => Decision::Use(hit.stored),
+        CacheMode::Default | CacheMode::NoCache => validate(hit),
+    }
+}
+
+/// A stored response a request found, and what may be done with it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hit {
+    /// The response, its `Age` what it is now (RFC 9111 5.1).
+    pub stored: Stored,
+    /// Whether it is fresh, by its own lifetime and the request's
+    /// directives.
+    pub fresh: bool,
+    /// Whether, stale, the request takes it all the same (its
+    /// `max-stale`), its server not having asked otherwise
+    /// (`must-revalidate`).
+    pub stale_ok: bool,
+    /// Its validators.
+    pub etag: Option<Vec<u8>>,
+    pub last_modified: Option<Vec<u8>>,
+    /// `immutable` (RFC 8246).
+    pub immutable: bool,
 }
 
 /// A field's cache directives (RFC 9111 5.2), their names lowercased,
@@ -182,19 +246,124 @@ struct Entry {
     /// 4.2.1 and 4.2.3).
     lifetime: Duration,
     initial_age: Duration,
-    /// `no-cache`: never used fresh without revalidating.
+    /// `no-cache`: never used fresh without revalidating;
+    /// `must-revalidate`: never used stale without; `immutable`.
     no_cache: bool,
+    must_revalidate: bool,
+    immutable: bool,
     /// When it was last used, by the cache's count.
     used: u64,
 }
+
+/// A stored response's times and its server's directives, from its
+/// header fields: what [`Entry`] keeps besides the response.
+struct Timing {
+    response_time: SystemTime,
+    lifetime: Duration,
+    initial_age: Duration,
+    no_cache: bool,
+    must_revalidate: bool,
+    immutable: bool,
+}
+
+/// `stored`'s timing, sent at `request_time` and come at
+/// `response_time` (RFC 9111 4.2).
+fn timing(stored: &Stored, request_time: SystemTime, response_time: SystemTime) -> Timing {
+    let said = Directives::of(&stored.headers, b"cache-control");
+    let headers = &stored.headers;
+    let date = http_date(headers, b"date").unwrap_or(response_time);
+    let lifetime = if let Some(seconds) = said.seconds("max-age") {
+        Duration::from_secs(seconds)
+    } else if headers.contains(b"expires") {
+        http_date(headers, b"expires")
+            .and_then(|expires| expires.duration_since(date).ok())
+            .unwrap_or_default()
+    } else if heuristic(stored.status) || said.has("public") {
+        // 10% of the time since it was last modified, as the
+        // reference browser's heuristic.
+        http_date(headers, b"last-modified")
+            .and_then(|modified| date.duration_since(modified).ok())
+            .map_or(Duration::ZERO, |since| since / 10)
+    } else {
+        Duration::ZERO
+    };
+    let age = headers
+        .get(b"age")
+        .and_then(|value| delta_seconds(String::from_utf8_lossy(&value).trim()))
+        .map_or(Duration::ZERO, Duration::from_secs);
+    let apparent = response_time.duration_since(date).unwrap_or_default();
+    let delay = response_time
+        .duration_since(request_time)
+        .unwrap_or_default();
+    Timing {
+        response_time,
+        lifetime,
+        initial_age: apparent.max(age + delay),
+        no_cache: said.has("no-cache"),
+        must_revalidate: said.has("must-revalidate") || said.has("proxy-revalidate"),
+        immutable: said.has("immutable"),
+    }
+}
+
+/// The fields a `304` does not change in what is stored (RFC 9111 3.2):
+/// those that frame the stored body.
+const KEPT_BY_304: [&[u8]; 4] = [
+    b"content-length",
+    b"content-encoding",
+    b"transfer-encoding",
+    b"content-range",
+];
 
 impl Entry {
     fn current_age(&self, now: SystemTime) -> Duration {
         self.initial_age + now.duration_since(self.response_time).unwrap_or_default()
     }
 
-    fn fresh(&self, now: SystemTime) -> bool {
-        !self.no_cache && self.lifetime > self.current_age(now)
+    fn set_timing(&mut self, timing: Timing) {
+        self.response_time = timing.response_time;
+        self.lifetime = timing.lifetime;
+        self.initial_age = timing.initial_age;
+        self.no_cache = timing.no_cache;
+        self.must_revalidate = timing.must_revalidate;
+        self.immutable = timing.immutable;
+    }
+
+    /// What a request with the fields `request` may do with the entry at
+    /// `now`: whether it is fresh, by its lifetime and the request's
+    /// `max-age`, `min-fresh` and `no-cache` (RFC 9111 5.2.1), and
+    /// whether, stale, the request's `max-stale` takes it.
+    fn hit(&self, request: &HeaderList, now: SystemTime) -> Hit {
+        let asked = Directives::of(request, b"cache-control");
+        let age = self.current_age(now);
+        let left = self.lifetime.saturating_sub(age);
+        let fresh = !self.no_cache
+            && !asked.has("no-cache")
+            && self.lifetime > age
+            && asked
+                .seconds("max-age")
+                .is_none_or(|most| age <= Duration::from_secs(most))
+            && asked
+                .seconds("min-fresh")
+                .is_none_or(|least| left >= Duration::from_secs(least));
+        let stale_ok = !fresh
+            && !self.no_cache
+            && !self.must_revalidate
+            && asked.has("max-stale")
+            && asked
+                .seconds("max-stale")
+                .is_none_or(|most| age.saturating_sub(self.lifetime) <= Duration::from_secs(most));
+        let mut stored = self.stored.clone();
+        stored
+            .headers
+            .set(b"age", age.as_secs().to_string().as_bytes());
+        Hit {
+            stored,
+            fresh,
+            stale_ok,
+            etag: self.stored.headers.get(b"etag"),
+            last_modified: self.stored.headers.get(b"last-modified"),
+            immutable: self.immutable,
+        }
     }
 
     fn bytes(&self) -> usize {
@@ -260,16 +429,43 @@ impl Cache {
     }
 
     /// The response stored for a `GET` of `url` for `site` with the
-    /// fields `request` (RFC 9111 4): one whose `Vary` fields the
-    /// request has the same, fresh at `now` or, if `stale`, any; the
-    /// latest stored of those.
+    /// fields `request` (RFC 9111 4): the latest stored whose `Vary`
+    /// fields the request has the same, and what the request may do with
+    /// it at `now`.
     pub fn lookup(
         &self,
         site: &Partition,
         url: &Url,
         request: &HeaderList,
         now: SystemTime,
-        stale: bool,
+    ) -> Option<Hit> {
+        let mut inner = self.lock();
+        inner.uses += 1;
+        let uses = inner.uses;
+        let variants = inner.entries.get_mut(&key(site, url))?;
+        let entry = variants.iter_mut().rev().find(|entry| {
+            entry
+                .vary
+                .iter()
+                .all(|(name, value)| request.get(name) == *value)
+        })?;
+        entry.used = uses;
+        Some(entry.hit(request, now))
+    }
+
+    /// Freshens what is stored for a `GET` of `url` for `site` with the
+    /// fields `request` by `not_modified`'s fields, a `304`'s, sent at
+    /// `request_time` and come at `response_time` (RFC 9111 4.3.4): its
+    /// fields replaced by the `304`'s but those that frame its body, its
+    /// times taken anew. The response it now is, if one was stored.
+    pub fn freshen(
+        &self,
+        site: &Partition,
+        url: &Url,
+        request: &HeaderList,
+        not_modified: &HeaderList,
+        request_time: SystemTime,
+        response_time: SystemTime,
     ) -> Option<Stored> {
         let mut inner = self.lock();
         inner.uses += 1;
@@ -280,10 +476,26 @@ impl Cache {
                 .vary
                 .iter()
                 .all(|(name, value)| request.get(name) == *value)
-                && (stale || entry.fresh(now))
         })?;
+        let mut names: Vec<Vec<u8>> = Vec::new();
+        for (name, _) in not_modified.iter() {
+            let name = name.to_ascii_lowercase();
+            if !KEPT_BY_304.contains(&name.as_slice()) && !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        for name in names {
+            entry.stored.headers.delete(&name);
+            for (other, value) in not_modified.iter() {
+                if other.eq_ignore_ascii_case(&name) {
+                    entry.stored.headers.append(&name, value);
+                }
+            }
+        }
+        let timing = timing(&entry.stored, request_time, response_time);
+        entry.set_timing(timing);
         entry.used = uses;
-        Some(entry.stored.clone())
+        Some(entry.hit(request, response_time).stored)
     }
 
     /// Stores the response `stored` to a `GET` of `url` for `site` with
@@ -328,32 +540,8 @@ impl Cache {
         {
             return;
         }
-        let headers = &stored.headers;
-        let date = http_date(headers, b"date").unwrap_or(response_time);
-        let lifetime = if let Some(seconds) = said.seconds("max-age") {
-            Duration::from_secs(seconds)
-        } else if headers.contains(b"expires") {
-            http_date(headers, b"expires")
-                .and_then(|expires| expires.duration_since(date).ok())
-                .unwrap_or_default()
-        } else if heuristic(stored.status) || said.has("public") {
-            // 10% of the time since it was last modified, as the
-            // reference browser's heuristic.
-            http_date(headers, b"last-modified")
-                .and_then(|modified| date.duration_since(modified).ok())
-                .map_or(Duration::ZERO, |since| since / 10)
-        } else {
-            Duration::ZERO
-        };
-        let age = headers
-            .get(b"age")
-            .and_then(|value| delta_seconds(String::from_utf8_lossy(&value).trim()))
-            .map_or(Duration::ZERO, Duration::from_secs);
-        let apparent = response_time.duration_since(date).unwrap_or_default();
-        let delay = response_time
-            .duration_since(request_time)
-            .unwrap_or_default();
-        let entry = Entry {
+        let timing = timing(&stored, request_time, response_time);
+        let mut entry = Entry {
             vary: vary
                 .into_iter()
                 .map(|name| {
@@ -362,15 +550,17 @@ impl Cache {
                 })
                 .collect(),
             response_time,
-            lifetime,
-            initial_age: apparent.max(age + delay),
-            no_cache: said.has("no-cache"),
+            lifetime: Duration::ZERO,
+            initial_age: Duration::ZERO,
+            no_cache: false,
+            must_revalidate: false,
+            immutable: false,
             used: 0,
             stored,
         };
+        entry.set_timing(timing);
         let mut inner = self.lock();
         inner.uses += 1;
-        let mut entry = entry;
         entry.used = inner.uses;
         let bytes = entry.bytes();
         let variants = inner.entries.entry(key(site, url)).or_default();

@@ -204,8 +204,15 @@ pub(crate) fn serve(route: impl Fn(&str) -> Option<Reply> + Send + Sync + 'stati
     })
 }
 
+/// An HTML page, never kept by the HTTP cache: since M38 a document is,
+/// and a traversal would take it from there, where the tests mean a
+/// document fetched again. A test of the cache serves its own.
 pub(crate) fn html(body: &str) -> Reply {
-    Reply::ok("text/html", body.as_bytes())
+    Reply::with_fields(
+        200,
+        &[("Content-Type", "text/html"), ("Cache-Control", "no-store")],
+        body.as_bytes(),
+    )
 }
 
 pub(crate) fn css(body: &str) -> Reply {

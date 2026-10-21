@@ -308,6 +308,9 @@ pub(crate) struct Network {
     /// Where each page's document is in its tab (M33.2): what a frame's
     /// requests but its navigations are made in.
     partitions: HashMap<PageId, net::Partition>,
+    /// The pages whose requests bypass the HTTP cache (M38): those a
+    /// reload bypassing it made.
+    bypassing: std::collections::HashSet<PageId>,
     /// Each page's document's policies (M33.1): what its requests are
     /// checked against, unless they carry their own.
     csps: HashMap<PageId, net::csp::Csp>,
@@ -335,6 +338,7 @@ impl Network {
             flights: HashMap::new(),
             next: 0,
             partitions: HashMap::new(),
+            bypassing: std::collections::HashSet::new(),
             csps: HashMap::new(),
             referrer_policies: HashMap::new(),
             local_networks: HashMap::new(),
@@ -381,6 +385,11 @@ impl Network {
             Some(csp) => self.csps.insert(page, csp),
             None => self.csps.remove(&page),
         };
+    }
+
+    /// Page `page`'s requests bypass the HTTP cache from now on (M38).
+    pub(crate) fn bypass_cache(&mut self, page: PageId) {
+        self.bypassing.insert(page);
     }
 
     /// Page `page`'s requests are made in `partition` from now on (M33.2);
@@ -519,6 +528,9 @@ impl Network {
         if request.local_network.is_none() && request.mode != net::Mode::Navigate {
             request.local_network = self.local_networks.get(&page).cloned();
         }
+        if self.bypassing.contains(&page) {
+            request.cache = net::CacheMode::Reload;
+        }
         let streamed = target == Target::Document;
         let client = self.client();
         let id = self.next;
@@ -549,6 +561,10 @@ impl Network {
     /// for `owner`'s sheets. Their results are not taken, even those that
     /// have finished and wait to be. Says whether there were any.
     pub(crate) fn cancel(&mut self, page: PageId, owner: Option<NodeId>) -> bool {
+        // A page left bypasses nothing any more.
+        if owner.is_none() {
+            self.bypassing.remove(&page);
+        }
         let before = self.flights.len();
         self.flights.retain(|_, flight| {
             let cancelled = flight.page == page

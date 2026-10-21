@@ -494,6 +494,8 @@ pub struct Engine {
     /// The submission a mixed form page holds back, for its "Send
     /// anyway" (M33.3): dropped by any other navigation.
     pending_form: Option<PendingForm>,
+    /// Whether the reload being started bypasses the HTTP cache (M38).
+    bypassing_cache: bool,
     /// Whether an error page's "Try again" is the owner's to do (M37):
     /// the page a tab shows for a renderer gone, whose reload is the
     /// tab's. Then whether it was asked for since the owner last asked.
@@ -1298,6 +1300,7 @@ impl Engine {
             modifiers: Modifiers::default(),
             posting: false,
             pending_form: None,
+            bypassing_cache: false,
             retry_by_owner: false,
             retry_asked: false,
             window_focused: true,
@@ -4004,6 +4007,19 @@ impl Engine {
             // Its container's document asks for it (M33.4).
             request.local_network = self.frame_local_network(&url);
         }
+        // The HTTP cache by how the navigation came (M38): a reload
+        // revalidates the document, one bypassing the cache neither reads
+        // it nor lets the document's subresources read it, and a
+        // traversal takes what is stored, stale or not.
+        request.cache = match handling {
+            Handling::Reload if self.bypassing_cache => {
+                self.network.bypass_cache(id);
+                net::CacheMode::Reload
+            }
+            Handling::Reload => net::CacheMode::NoCache,
+            Handling::Traverse(_) => net::CacheMode::ForceCache,
+            Handling::Push | Handling::Replace => net::CacheMode::Default,
+        };
         self.network.fetch(id, Target::Document, request);
         self.navigation = Some(Navigation {
             url,
@@ -4314,6 +4330,15 @@ impl Engine {
     /// Fetches the current entry's URL again and shows the new document
     /// in the same entry, at its scroll position, as HTML's reload does.
     /// A document given to the engine has no URL, and is not reloaded.
+    /// [`Engine::reload`], bypassing the HTTP cache (M38): the document
+    /// and its subresources fetched from the network whatever is stored,
+    /// as the reference browser's Ctrl+Shift+R does.
+    pub fn reload_bypassing_cache(&mut self) {
+        self.bypassing_cache = true;
+        self.reload();
+        self.bypassing_cache = false;
+    }
+
     pub fn reload(&mut self) {
         if let Some(url) = self.history.current().url.clone() {
             // A form's POST is not sent again by itself (M26.9).

@@ -39,7 +39,7 @@ fn lasting(content_type: &str, body: &[u8]) -> Reply {
 }
 
 #[test]
-fn a_pages_fresh_subresources_come_from_the_cache_and_its_document_does_not() {
+fn a_pages_fresh_subresources_come_from_the_cache_and_so_does_a_fresh_document() {
     let server = serve(|path| match path {
         "/page.html" => Some(Reply::with_fields(
             200,
@@ -56,10 +56,19 @@ fn a_pages_fresh_subresources_come_from_the_cache_and_its_document_does_not() {
     });
     let mut tab = Tab::new();
     load_all(&mut tab, server.url("/page.html"));
+    // A reload asks for the document again (M38: revalidating it; with
+    // no validator, whole), its fresh subresources from the cache.
     tab.engine.reload();
     tab.settle();
+    let reload = server
+        .requests()
+        .into_iter()
+        .rfind(|request| request.target == "/page.html")
+        .expect("the reload's request");
+    assert_eq!(reload.header("Cache-Control"), Some("max-age=0"));
+    // A navigation to it again: fresh, from the cache (M38).
     load_all(&mut tab, server.url("/page.html"));
-    assert_eq!(reached(&server, "/page.html"), 3);
+    assert_eq!(reached(&server, "/page.html"), 2);
     assert_eq!(reached(&server, "/fetched.css"), 3);
     assert_eq!(reached(&server, "/kept.css"), 1);
     assert_eq!(tab.names(), ["a", "b"]);
@@ -139,4 +148,89 @@ fn the_engines_of_a_context_share_its_connections() {
     tab.engine.join(&other);
     tab.load(server.url("/"));
     assert_eq!(server.connections(), 2);
+}
+
+#[test]
+fn a_reload_bypassing_the_cache_fetches_the_page_and_its_subresources() {
+    // M38: Ctrl+Shift+R's reload neither reads the cache nor lets the
+    // document's subresources read it.
+    let server = serve(|path| match path {
+        "/page.html" => Some(lasting(
+            "text/html",
+            b"<link rel=stylesheet href=kept.css><p class=a>text</p>",
+        )),
+        "/kept.css" => Some(lasting("text/css", b".a { color: red }")),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    load_all(&mut tab, server.url("/page.html"));
+    tab.engine.reload_bypassing_cache();
+    tab.settle();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while reached(&server, "/kept.css") < 2 {
+        assert!(Instant::now() < deadline, "the sheet fetched again");
+        tab.engine.poll_network();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(reached(&server, "/page.html"), 2);
+    let requests = server.requests();
+    let last = |target: &str| {
+        requests
+            .iter()
+            .rfind(|request| request.target == target)
+            .expect("a request")
+            .clone()
+    };
+    for target in ["/page.html", "/kept.css"] {
+        assert_eq!(
+            last(target).header("Cache-Control"),
+            Some("no-cache"),
+            "{target}"
+        );
+        assert_eq!(last(target).header("Pragma"), Some("no-cache"), "{target}");
+    }
+    // A plain reload after: the sheet from the cache again.
+    tab.engine.reload();
+    tab.settle();
+    assert_eq!(reached(&server, "/kept.css"), 2);
+}
+
+#[test]
+fn a_traversal_takes_the_document_stored_stale_or_not() {
+    // M38: the back-forward cache did not keep it (a sheet was on its
+    // way), but the HTTP cache did; going back takes it as it is, as
+    // the reference browser's history does.
+    let gate = Gate::new();
+    let server = {
+        let gate = gate.clone();
+        serve(move |path| match path {
+            "/old.html" => Some(Reply::with_fields(
+                200,
+                &[
+                    ("Content-Type", "text/html"),
+                    ("Cache-Control", "max-age=0"),
+                ],
+                b"<title>old</title><body><p>old</p><link rel=stylesheet href=slow.css></body>",
+            )),
+            "/slow.css" => {
+                gate.wait();
+                Some(css("p { color: red }"))
+            }
+            "/b" => Some(html("<title>b</title>")),
+            _ => None,
+        })
+    };
+    let mut tab = Tab::new();
+    tab.engine.navigate(server.url("/old.html"));
+    tab.wait_until(|engine| engine.navigation.is_none());
+    tab.load(server.url("/b"));
+    assert_eq!(tab.engine.history.kept_len(), 0, "not kept whole");
+    gate.open();
+    tab.engine.go_back();
+    tab.wait_until(|engine| engine.navigation.is_none());
+    assert_eq!(tab.engine.title(), "old");
+    assert_eq!(reached(&server, "/old.html"), 1, "not asked again");
+    // A navigation to it, though: stale, so asked again.
+    tab.load(server.url("/old.html"));
+    assert_eq!(reached(&server, "/old.html"), 2);
 }

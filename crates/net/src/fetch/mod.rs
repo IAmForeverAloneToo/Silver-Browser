@@ -15,7 +15,7 @@ use std::borrow::Cow;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::SystemTime;
 
-use crate::cache::{Cache, CacheMode, Stored};
+use crate::cache::{Cache, CacheMode, Decision, Stored};
 use crate::cookies::{self, Jar};
 use crate::csp::Csp;
 use crate::data_url;
@@ -774,7 +774,8 @@ impl Client {
             }
             let streamed = deliver.is_some() && matches!(url.scheme(), "http" | "https");
             let mut response = self.scheme_fetch(request, &url, &hop, deliver.as_deref_mut())?;
-            // A streamed response's head was told as it came.
+            // A streamed response's head was told as it came, one from
+            // the cache as it was handed over (M38).
             if !streamed {
                 self.tell(
                     fetch,
@@ -840,6 +841,7 @@ impl Client {
     ) -> Result<Response, NetworkError> {
         let url_list = hop.url_list.as_slice();
         hop.cached.set(false);
+        hop.protocol.set(None);
         // A hop that is no HTTP request is told with no fields.
         if !matches!(url.scheme(), "http" | "https") {
             self.tell_request(request, url, hop, &HeaderList::new());
@@ -855,13 +857,36 @@ impl Client {
                 deliver,
             ),
             "http" | "https" => {
-                let headers = self.request_headers(request, url, hop);
-                self.tell_request(request, url, hop, &headers);
-                // The HTTP cache (M28.4): for a GET fetched whole, by the
-                // site the request is for.
+                let mut headers = self.request_headers(request, url, hop);
+                // The HTTP cache (M28.4, M38): for a GET, a document's
+                // too, by the site the request is for.
                 let mode = cache_mode(request, hop);
-                let cached = hop.method.as_str() == "GET" && deliver.is_none();
+                let cached = hop.method.as_str() == "GET";
                 let site = partition_key(request, hop).1;
+                let decision = match cached && mode.reads() {
+                    true => {
+                        let now = (self.clock)();
+                        let hit = self.cache.lookup(&site, url, &headers, now);
+                        crate::cache::decide(mode, hit)
+                    }
+                    false => Decision::Network,
+                };
+                // A stored response with validators: the request is
+                // conditional on them (RFC 9111 4.3.1).
+                let validating = matches!(decision, Decision::Validate { .. });
+                if let Decision::Validate {
+                    etag,
+                    last_modified,
+                } = &decision
+                {
+                    if let Some(etag) = etag {
+                        headers.append(b"If-None-Match", etag);
+                    }
+                    if let Some(modified) = last_modified {
+                        headers.append(b"If-Modified-Since", modified);
+                    }
+                }
+                self.tell_request(request, url, hop, &headers);
                 let initiator = request
                     .initiator
                     .as_ref()
@@ -873,37 +898,15 @@ impl Client {
                     }),
                     _ => None,
                 };
-                if cached && let Some(stale) = mode.reads() {
-                    let now = (self.clock)();
-                    if let Some(stored) = self.cache.lookup(&site, url, &headers, now, stale) {
+                match decision {
+                    Decision::Use(stored) => {
                         hop.cached.set(true);
-                        // As the connection to its server would be (M33.4).
-                        if let Some(space) = stored.address_space {
-                            if let Some(named) = request.target_address_space
-                                && named != space
-                            {
-                                return Err(NetworkError::TargetAddressSpace {
-                                    named,
-                                    reached: space,
-                                });
-                            }
-                            transport::reachable(initiator, space, ask, &request.abort)?;
-                        }
-                        return Ok(Response {
-                            url_list: vec![url.clone()],
-                            status: stored.status,
-                            status_message: stored.status_message,
-                            mime_type: mime::extract_mime_type(&stored.headers),
-                            headers: stored.headers,
-                            body: stored.body,
-                            address_space: stored.address_space,
-                            response_type: ResponseType::Basic,
-                            cors_exposed: Vec::new(),
-                        });
+                        let response =
+                            self.cached_response(request, url, stored, initiator, ask)?;
+                        return Ok(self.handed(hop, response, url, deliver));
                     }
-                    if mode == CacheMode::OnlyIfCached {
-                        return Err(NetworkError::NotCached);
-                    }
+                    Decision::NotCached => return Err(NetworkError::NotCached),
+                    Decision::Validate { .. } | Decision::Network => {}
                 }
                 let request_time = (self.clock)();
                 // A POST or a PUT without a body says its length is 0.
@@ -930,33 +933,63 @@ impl Client {
                 // redirect's too: before a document's scripts run.
                 let take_cookies =
                     |headers: &HeaderList| self.take_cookies(request, url, hop, headers);
-                let received = match deliver {
+                let mut stream = deliver.map(|deliver| Streaming {
+                    url,
+                    url_list,
+                    deliver,
+                    take_cookies: &take_cookies,
+                    client: self,
+                    fetch: hop.fetch,
+                    protocol: None,
+                    revalidating: validating,
+                    delivered: false,
+                    kept: cached.then(Vec::new),
+                });
+                let received = match &mut stream {
                     None => {
                         let received = self.transport.exchange(&exchange)?;
                         take_cookies(&received.response.headers);
                         received
                     }
-                    Some(deliver) => {
-                        let mut stream = Streaming {
-                            url,
-                            url_list,
-                            deliver,
-                            take_cookies: &take_cookies,
-                            client: self,
-                            fetch: hop.fetch,
-                            protocol: None,
-                        };
-                        self.transport.exchange_streaming(&exchange, &mut stream)?
-                    }
+                    Some(stream) => self.transport.exchange_streaming(&exchange, stream)?,
                 };
                 let response = received.response;
                 hop.protocol.set(Some(response.version));
-                if cached && mode != CacheMode::NoStore {
+                // Not modified (M38): the stored response, freshened,
+                // answers, handed over as a stream would be.
+                if validating && response.status == 304 {
+                    let now = (self.clock)();
+                    if let Some(stored) = self.cache.freshen(
+                        &site,
+                        url,
+                        &headers,
+                        &response.headers,
+                        request_time,
+                        now,
+                    ) {
+                        hop.cached.set(true);
+                        let response =
+                            self.cached_response(request, url, stored, initiator, ask)?;
+                        let deliver = stream.map(|stream| stream.deliver);
+                        return Ok(self.handed(hop, response, url, deliver));
+                    }
+                }
+                // What the cache keeps of a streamed body: what was read
+                // aside as it was handed over, unless it outgrew what an
+                // entry may hold; of a body not streamed, the body.
+                let body = match &stream {
+                    Some(stream) if stream.delivered => stream.kept.clone(),
+                    _ => Some(response.body.clone()),
+                };
+                if cached
+                    && mode != CacheMode::NoStore
+                    && let Some(body) = body
+                {
                     let stored = Stored {
                         status: response.status,
                         status_message: response.reason.clone(),
                         headers: response.headers.clone(),
-                        body: response.body.clone(),
+                        body,
                         address_space: Some(received.address_space),
                     };
                     let now = (self.clock)();
@@ -984,6 +1017,70 @@ impl Client {
             }
             other => Err(NetworkError::BadScheme(other.to_owned())),
         }
+    }
+
+    /// A response from the cache for `url`, handed to `deliver` as a
+    /// streamed one would be (M38), its head and body told the observer
+    /// as they go; a redirect, which the fetch follows, is not handed.
+    fn handed(
+        &self,
+        hop: &Hop,
+        response: Response,
+        url: &Url,
+        deliver: Option<&mut (dyn FnMut(Delivery<'_>) + '_)>,
+    ) -> Response {
+        match deliver {
+            Some(deliver) if matches!(location(&response, url), Ok(None)) => {
+                self.tell(
+                    hop.fetch,
+                    crate::observe::Observed::Response {
+                        status: response.status,
+                        headers: &response.headers,
+                        cached: true,
+                        protocol: None,
+                    },
+                );
+                if !response.body.is_empty() {
+                    self.tell(hop.fetch, crate::observe::Observed::Body(&response.body));
+                }
+                whole(Ok(response), Some(deliver)).expect("a response")
+            }
+            _ => response,
+        }
+    }
+
+    /// The response `stored` answers with for `url`, as the connection
+    /// to its server would be checked (M33.4).
+    fn cached_response(
+        &self,
+        request: &Request,
+        url: &Url,
+        stored: Stored,
+        initiator: Option<AddressSpace>,
+        ask: Option<transport::Ask<'_>>,
+    ) -> Result<Response, NetworkError> {
+        if let Some(space) = stored.address_space {
+            if let Some(named) = request.target_address_space
+                && named != space
+            {
+                return Err(NetworkError::TargetAddressSpace {
+                    named,
+                    reached: space,
+                });
+            }
+            transport::reachable(initiator, space, ask, &request.abort)?;
+        }
+        Ok(Response {
+            url_list: vec![url.clone()],
+            status: stored.status,
+            status_message: stored.status_message,
+            mime_type: mime::extract_mime_type(&stored.headers),
+            headers: stored.headers,
+            body: stored.body,
+            address_space: stored.address_space,
+            response_type: ResponseType::Basic,
+            cors_exposed: Vec::new(),
+        })
     }
 
     /// Tells the observer of a hop's request to `url`, sent with
@@ -1588,6 +1685,14 @@ struct Streaming<'a, 'd> {
     fetch: Option<u64>,
     /// The protocol the response comes in, which the transport says.
     protocol: Option<crate::http::Version>,
+    /// Whether the request is conditional on a stored response's
+    /// validators (M38): a `304` is then not handed over, the stored
+    /// response answering instead.
+    revalidating: bool,
+    /// Whether the head was handed over, and the body read aside for the
+    /// cache, while it fits an entry.
+    delivered: bool,
+    kept: Option<Vec<u8>>,
 }
 
 impl transport::ResponseStream for Streaming<'_, '_> {
@@ -1603,6 +1708,9 @@ impl transport::ResponseStream for Streaming<'_, '_> {
         space: AddressSpace,
     ) -> bool {
         (self.take_cookies)(headers);
+        if self.revalidating && status == 304 {
+            return false;
+        }
         self.client.tell(
             self.fetch,
             crate::observe::Observed::Response {
@@ -1628,12 +1736,19 @@ impl transport::ResponseStream for Streaming<'_, '_> {
             return false;
         }
         (self.deliver)(Delivery::Head(&response));
+        self.delivered = true;
         true
     }
 
     fn body(&mut self, bytes: &[u8]) {
         self.client
             .tell(self.fetch, crate::observe::Observed::Body(bytes));
+        if let Some(kept) = &mut self.kept {
+            match kept.len() + bytes.len() <= crate::cache::MAX_CACHE_ENTRY_BYTES {
+                true => kept.extend_from_slice(bytes),
+                false => self.kept = None,
+            }
+        }
         (self.deliver)(Delivery::Body(bytes));
     }
 }

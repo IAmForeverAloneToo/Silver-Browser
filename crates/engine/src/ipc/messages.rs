@@ -114,6 +114,8 @@ wire_enum! {
             new: Option<String>,
             url: String,
         },
+        /// The view reloads, bypassing the HTTP cache (M38).
+        29 => ReloadBypassingCache { view: u32 },
     }
 }
 

@@ -322,6 +322,9 @@ impl Host {
                 self.view(view)?.engine.traverse(delta as isize);
             }
             ToRenderer::Reload { view } => self.view(view)?.engine.reload(),
+            ToRenderer::ReloadBypassingCache { view } => {
+                self.view(view)?.engine.reload_bypassing_cache();
+            }
             ToRenderer::Stop { view } => self.view(view)?.engine.stop(),
             ToRenderer::Resize {
                 view,

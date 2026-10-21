@@ -21,6 +21,10 @@ pub trait View {
     fn go_back(&mut self);
     fn go_forward(&mut self);
     fn reload(&mut self);
+    /// Reloads, bypassing the HTTP cache (M38).
+    fn reload_bypassing_cache(&mut self) {
+        self.reload();
+    }
     fn stop(&mut self);
     fn can_go_back(&self) -> bool;
     fn can_go_forward(&self) -> bool;
@@ -210,6 +214,9 @@ impl View for Engine {
     }
     fn reload(&mut self) {
         Engine::reload(self)
+    }
+    fn reload_bypassing_cache(&mut self) {
+        Engine::reload_bypassing_cache(self)
     }
     fn stop(&mut self) {
         Engine::stop(self)
