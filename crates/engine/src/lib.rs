@@ -1236,7 +1236,9 @@ impl Engine {
         let mut shown = Shown::new(document, page);
         shown.initial = true;
         let blank = Url::parse("about:blank").expect("about:blank parses");
-        let storage = Arc::new(Mutex::new(storage::Storage::new()));
+        let mut storage = storage::Storage::new();
+        storage.set_cache(network.cache());
+        let storage = Arc::new(Mutex::new(storage));
         let listener = storage
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -3720,7 +3722,9 @@ impl Engine {
         self.storage().set_hsts(self.network.hsts());
         self.storage()
             .set_permissions(self.network.permissions().clone());
+        self.storage().set_cache(self.network.cache());
         self.storage().set_profile(profile, &cookies)?;
+        storage::load_cache(&self.storage, &self.network.cache());
         // The settings it holds are its context's (M37).
         if let Some(context) = &self.context {
             context.read_settings();

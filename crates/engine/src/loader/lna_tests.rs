@@ -311,9 +311,18 @@ fn the_answers_outlive_the_engine_in_its_profile() {
     let prompt = prompted(&mut tab, &mut lines);
     tab.engine.answer_prompt(prompt.id, Some(true));
     said(&mut tab, &mut lines, "one got local");
-    // Written as the engine's tasks ran, with no flush asked for.
-    let kept = Profile::in_memory(&memory.snapshot()).unwrap();
-    assert_eq!(kept.permissions().unwrap().len(), 1);
+    // Written as the engine's tasks ran, with no flush asked for:
+    // within an interval of the last write (M38: the HTTP cache's).
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let kept = Profile::in_memory(&memory.snapshot()).unwrap();
+        if kept.permissions().unwrap().len() == 1 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "not written");
+        tab.engine.run_tasks();
+        std::thread::sleep(Duration::from_millis(10));
+    }
     drop(tab);
     let mut tab = on(&memory);
     let mut lines = Vec::new();

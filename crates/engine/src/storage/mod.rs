@@ -4,7 +4,9 @@
 //! the tab's `sessionStorage` in memory. The cookies with an expiry
 //! join the jar when the engine is given a profile, an origin's items
 //! are read from it at their first use, and what changes is written in
-//! one transaction no more than once in [`FLUSH_INTERVAL`].
+//! one transaction no more than once in [`FLUSH_INTERVAL`]. The HTTP
+//! cache's entries are written with them (M38), and read back by
+//! [`load_cache`].
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -83,6 +85,35 @@ pub(crate) struct Storage {
     /// changed since it was last written (M37).
     settings_read: Option<Vec<u8>>,
     settings_unwritten: Option<Vec<u8>>,
+    /// The HTTP cache (M38); the records of its entries the profile held
+    /// when it was given, until taken; its changes taken, not yet
+    /// written.
+    cache: Option<Arc<net::Cache>>,
+    cache_read: Option<Vec<(u64, Vec<u8>)>>,
+    cache_unwritten: Vec<net::cache::Change>,
+}
+
+/// Keeps `cache` in the profile of `storage` (M38), when it has one:
+/// takes in the entries the profile held, their bodies read through
+/// `storage` at their first use, not holding the cache's lock.
+pub(crate) fn load_cache(storage: &Arc<Mutex<Storage>>, cache: &Arc<net::Cache>) {
+    let records = {
+        let mut storage = storage.lock().unwrap_or_else(PoisonError::into_inner);
+        storage.set_cache(cache.clone());
+        storage.cache_read.take()
+    };
+    let Some(records) = records else {
+        return;
+    };
+    let storage = Arc::downgrade(storage);
+    cache.load(
+        records,
+        Arc::new(move |id| {
+            let storage = storage.upgrade()?;
+            let storage = storage.lock().unwrap_or_else(PoisonError::into_inner);
+            storage.profile.as_ref()?.cache_body(id).ok().flatten()
+        }),
+    );
 }
 
 /// An area (HTML 12.2.1's storage map): its items, and their order, the
@@ -509,7 +540,21 @@ impl Storage {
             idb_unwritten: Vec::new(),
             settings_read: None,
             settings_unwritten: None,
+            cache: None,
+            cache_read: None,
+            cache_unwritten: Vec::new(),
         }
+    }
+
+    /// Writes the changes of `cache`, the HTTP cache, to the profile too
+    /// (M38), and clears a site's entries with its data.
+    pub(crate) fn set_cache(&mut self, cache: Arc<net::Cache>) {
+        self.cache = Some(cache);
+    }
+
+    /// The HTTP cache, when it has one.
+    pub(crate) fn cache(&self) -> Option<&Arc<net::Cache>> {
+        self.cache.as_ref()
     }
 
     /// The settings the profile held when it was given, taken (M37).
@@ -605,6 +650,11 @@ impl Storage {
         }
         self.settings_read = profile.settings()?.into_iter().next();
         self.settings_unwritten = None;
+        self.cache_read = match self.cache {
+            Some(_) => Some(profile.cache_entries()?),
+            None => None,
+        };
+        self.cache_unwritten.clear();
         self.profile = Some(profile);
         // IndexedDB's databases are the profile's from now on.
         self.idb = crate::idb::IdbStore::default();
@@ -766,7 +816,9 @@ impl Storage {
             || self.settings_unwritten.is_some()
             || !self.unwritten.is_empty()
             || self.idb.has_written()
-            || !self.idb_unwritten.is_empty();
+            || !self.idb_unwritten.is_empty()
+            || !self.cache_unwritten.is_empty()
+            || self.cache.as_ref().is_some_and(|cache| cache.has_changes());
         (waiting || hsts || permissions).then(|| {
             self.flushed
                 .map_or(Duration::ZERO, |at| at + FLUSH_INTERVAL)
@@ -840,6 +892,18 @@ impl Storage {
         if let Some(settings) = &self.settings_unwritten {
             changes.settings(vec![settings.clone()]);
         }
+        // The HTTP cache's, once it has read what the profile held.
+        if let Some(cache) = self.cache.as_ref().filter(|_| self.cache_read.is_none()) {
+            self.cache_unwritten.extend(cache.take_changes());
+        }
+        for change in &self.cache_unwritten {
+            match change {
+                net::cache::Change::Put { id, record, body } => {
+                    changes.cache_put(*id, record.clone(), body.clone());
+                }
+                net::cache::Change::Delete { id } => changes.cache_delete(*id),
+            }
+        }
         if changes.is_empty() {
             return Ok(());
         }
@@ -851,6 +915,7 @@ impl Storage {
         self.permissions_written = permissions_count;
         self.unwritten.clear();
         self.idb_unwritten.clear();
+        self.cache_unwritten.clear();
         Ok(())
     }
 }

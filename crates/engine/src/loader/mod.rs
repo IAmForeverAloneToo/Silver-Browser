@@ -492,6 +492,11 @@ impl Network {
         self.client = None;
     }
 
+    /// The engine's HTTP cache.
+    pub(crate) fn cache(&self) -> Arc<net::Cache> {
+        self.cache.clone()
+    }
+
     /// The engine's HSTS hosts (M33.3).
     pub(crate) fn hsts(&self) -> Arc<Mutex<net::Hsts>> {
         self.hsts.clone()

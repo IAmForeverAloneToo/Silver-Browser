@@ -52,13 +52,15 @@ impl Context {
     pub fn new() -> Context {
         let hsts: Arc<Mutex<net::Hsts>> = Arc::default();
         let permissions: Arc<Permissions> = Arc::default();
+        let cache: Arc<net::Cache> = Arc::default();
         let mut storage = Storage::new();
         storage.set_hsts(hsts.clone());
         storage.set_permissions(permissions.clone());
+        storage.set_cache(cache.clone());
         Context {
             shared: Arc::new(Shared {
                 jar: Arc::default(),
-                cache: Arc::default(),
+                cache,
                 transport: Arc::new(net::transport::Transport::new(
                     net::transport::Config::default(),
                 )),
@@ -82,6 +84,7 @@ impl Context {
     /// when it cannot be read.
     pub fn set_profile(&self, profile: Profile) -> Result<(), profile::Error> {
         self.storage().set_profile(profile, &self.shared.jar)?;
+        crate::storage::load_cache(&self.shared.storage, &self.shared.cache);
         self.read_settings();
         Ok(())
     }

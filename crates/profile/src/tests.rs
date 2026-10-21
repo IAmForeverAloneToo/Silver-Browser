@@ -706,3 +706,67 @@ fn the_settings_are_kept_sealed_and_replaced_whole() {
     profile.commit(&changes).unwrap();
     assert_eq!(profile.settings().unwrap(), [b"next".to_vec()]);
 }
+
+#[test]
+fn the_http_caches_entries_and_bodies_are_kept_sealed_and_deleted() {
+    // M38: schema 5's tables.
+    let memory = Memory::new();
+    let profile = Profile::in_memory_with(&memory, TEST_WRAP).unwrap();
+    assert!(profile.cache_entries().unwrap().is_empty());
+    assert_eq!(profile.cache_body(1).unwrap(), None);
+    let mut changes = Changes::new();
+    changes.cache_put(
+        1,
+        b"secret-entry-one".to_vec(),
+        Some(b"secret-body-one".to_vec()),
+    );
+    changes.cache_put(2, b"secret-entry-two".to_vec(), Some(b"body-two".to_vec()));
+    assert!(!changes.is_empty());
+    profile.commit(&changes).unwrap();
+    drop(profile);
+    assert!(!in_the_clear(&memory, b"secret-entry-one"));
+    assert!(!in_the_clear(&memory, b"secret-body-one"));
+    let profile = Profile::in_memory_with(&memory, TEST_WRAP).unwrap();
+    assert_eq!(
+        profile.cache_entries().unwrap(),
+        [
+            (1, b"secret-entry-one".to_vec()),
+            (2, b"secret-entry-two".to_vec())
+        ]
+    );
+    assert_eq!(
+        profile.cache_body(1).unwrap(),
+        Some(b"secret-body-one".to_vec())
+    );
+    // A record changed with its body kept, then one deleted.
+    let mut changes = Changes::new();
+    changes.cache_put(1, b"entry-one-again".to_vec(), None);
+    changes.cache_delete(2);
+    profile.commit(&changes).unwrap();
+    assert_eq!(
+        profile.cache_entries().unwrap(),
+        [(1, b"entry-one-again".to_vec())]
+    );
+    assert_eq!(
+        profile.cache_body(1).unwrap(),
+        Some(b"secret-body-one".to_vec())
+    );
+    assert_eq!(profile.cache_body(2).unwrap(), None);
+    drop(profile);
+    // A body moved to another number does not open.
+    {
+        let db = Database::builder()
+            .create_with_backend(memory.clone())
+            .unwrap();
+        let txn = db.begin_write().unwrap();
+        {
+            let mut bodies = txn.open_table(HTTP_CACHE_BODIES).unwrap();
+            let sealed = bodies.get(1).unwrap().unwrap().value().to_vec();
+            bodies.insert(3, sealed.as_slice()).unwrap();
+        }
+        txn.commit().unwrap();
+    }
+    let profile = Profile::in_memory_with(&memory, TEST_WRAP).unwrap();
+    assert_eq!(profile.cache_body(3).unwrap(), None);
+    assert!(profile.cache_body(1).unwrap().is_some());
+}

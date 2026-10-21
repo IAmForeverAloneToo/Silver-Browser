@@ -46,9 +46,9 @@ pub const FILE: &str = "profile.redb";
 
 /// The version of the tables' layout this code writes. A profile of a
 /// newer one is refused, one of an older one upgraded: 2 seals the
-/// values (M33); 3 adds IndexedDB's tables (M36), and 4 the settings'
-/// (M37), which an older profile is given empty.
-pub const SCHEMA: u64 = 4;
+/// values (M33); 3 adds IndexedDB's tables (M36), 4 the settings' (M37)
+/// and 5 the HTTP cache's (M38), which an older profile is given empty.
+pub const SCHEMA: u64 = 5;
 
 /// The length of the data key: AES-256's.
 const KEY_BYTES: usize = 32;
@@ -96,6 +96,14 @@ const PERMISSIONS: TableDefinition<u64, &[u8]> = TableDefinition::new("permissio
 
 /// The browser's settings (M37), as the engine encodes them.
 const SETTINGS: TableDefinition<u64, &[u8]> = TableDefinition::new("settings");
+
+/// The HTTP cache's entries (M38), by the cache's numbers for them: each
+/// its key, times and head as `net` encodes them, sealed.
+const HTTP_CACHE: TableDefinition<u64, &[u8]> = TableDefinition::new("http_cache");
+
+/// Their bodies, by the same numbers, sealed: read when an entry is
+/// first used.
+const HTTP_CACHE_BODIES: TableDefinition<u64, &[u8]> = TableDefinition::new("http_cache_bodies");
 
 /// A profile open: one database, one writer.
 pub struct Profile {
@@ -272,6 +280,20 @@ pub struct Changes {
     hsts: Option<Vec<Vec<u8>>>,
     permissions: Option<Vec<Vec<u8>>>,
     settings: Option<Vec<Vec<u8>>>,
+    cache: Vec<Cached>,
+}
+
+/// A change of the HTTP cache's (M38).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Cached {
+    /// An entry's record, and its body unless it is unchanged.
+    Put {
+        id: u64,
+        record: Vec<u8>,
+        body: Option<Vec<u8>>,
+    },
+    /// An entry and its body deleted.
+    Delete { id: u64 },
 }
 
 /// A change of IndexedDB's (M36.4).
@@ -331,6 +353,7 @@ impl Changes {
             && self.hsts.is_none()
             && self.permissions.is_none()
             && self.settings.is_none()
+            && self.cache.is_empty()
     }
 
     /// Sets `origin`'s item `key` to `value`, `order` its place.
@@ -414,6 +437,17 @@ impl Changes {
 
     /// Replaces the settings kept with `records`, of the engine's
     /// encoding (M37).
+    /// Keeps the HTTP cache's entry `id` (M38): its record, and its body
+    /// unless it is unchanged.
+    pub fn cache_put(&mut self, id: u64, record: Vec<u8>, body: Option<Vec<u8>>) {
+        self.cache.push(Cached::Put { id, record, body });
+    }
+
+    /// Deletes the HTTP cache's entry `id` and its body.
+    pub fn cache_delete(&mut self, id: u64) {
+        self.cache.push(Cached::Delete { id });
+    }
+
     pub fn settings(&mut self, records: Vec<Vec<u8>>) {
         self.settings = Some(records);
     }
@@ -529,6 +563,10 @@ impl Profile {
             txn.open_table(PERMISSIONS)
                 .map_err(|e| unreadable(failed(e)))?;
             txn.open_table(SETTINGS)
+                .map_err(|e| unreadable(failed(e)))?;
+            txn.open_table(HTTP_CACHE)
+                .map_err(|e| unreadable(failed(e)))?;
+            txn.open_table(HTTP_CACHE_BODIES)
                 .map_err(|e| unreadable(failed(e)))?;
             key
         };
@@ -753,6 +791,41 @@ impl Profile {
         self.guarded(|db| self.read_records(db, SETTINGS))
     }
 
+    /// The HTTP cache's entries (M38), each with its number; one that
+    /// does not open is left out.
+    pub fn cache_entries(&self) -> Result<Vec<(u64, Vec<u8>)>, Error> {
+        self.guarded(|db| {
+            let txn = db.begin_read().map_err(failed)?;
+            let table = txn.open_table(HTTP_CACHE).map_err(failed)?;
+            let mut entries = Vec::new();
+            for entry in table.iter().map_err(failed)? {
+                let (id, sealed) = entry.map_err(failed)?;
+                let id = id.value();
+                if let Some(record) =
+                    self.key
+                        .open(HTTP_CACHE.name(), &id.to_le_bytes(), sealed.value())
+                {
+                    entries.push((id, record));
+                }
+            }
+            Ok(entries)
+        })
+    }
+
+    /// The body of the HTTP cache's entry `id`, if it is kept and opens.
+    pub fn cache_body(&self, id: u64) -> Result<Option<Vec<u8>>, Error> {
+        self.guarded(|db| {
+            let txn = db.begin_read().map_err(failed)?;
+            let table = txn.open_table(HTTP_CACHE_BODIES).map_err(failed)?;
+            let Some(sealed) = table.get(id).map_err(failed)? else {
+                return Ok(None);
+            };
+            Ok(self
+                .key
+                .open(HTTP_CACHE_BODIES.name(), &id.to_le_bytes(), sealed.value()))
+        })
+    }
+
     /// The records of `definition`, in their order; one that does not
     /// open is left out.
     fn read_records(
@@ -824,6 +897,27 @@ impl Profile {
             }
         }
         self.write_idb(&txn, &changes.idb)?;
+        if !changes.cache.is_empty() {
+            let mut entries = txn.open_table(HTTP_CACHE).map_err(failed)?;
+            let mut bodies = txn.open_table(HTTP_CACHE_BODIES).map_err(failed)?;
+            for change in &changes.cache {
+                match change {
+                    Cached::Put { id, record, body } => {
+                        let at = id.to_le_bytes();
+                        let sealed = self.key.seal(HTTP_CACHE.name(), &at, record)?;
+                        entries.insert(*id, sealed.as_slice()).map_err(failed)?;
+                        if let Some(body) = body {
+                            let sealed = self.key.seal(HTTP_CACHE_BODIES.name(), &at, body)?;
+                            bodies.insert(*id, sealed.as_slice()).map_err(failed)?;
+                        }
+                    }
+                    Cached::Delete { id } => {
+                        entries.remove(*id).map_err(failed)?;
+                        bodies.remove(*id).map_err(failed)?;
+                    }
+                }
+            }
+        }
         let replaced = [
             (COOKIES, &changes.cookies),
             (HSTS, &changes.hsts),

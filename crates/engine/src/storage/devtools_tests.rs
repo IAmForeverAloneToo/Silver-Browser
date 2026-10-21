@@ -51,6 +51,37 @@ fn a_sites_storage_is_listed_deleted_and_cleared() {
     tab.engine.navigate(server.url("/"));
     let lines = tab.run_until(|lines| lines.iter().any(|l| l.starts_with("persisted")));
     assert_eq!(lines, ["estimate true true", "persisted false"]);
+    // M38: what the HTTP cache keeps is the site's too.
+    let cache = tab.engine.network.cache();
+    let site = net::cache::Partition::from(server.url("/").origin().site());
+    let fresh = || {
+        let hit = cache.lookup(
+            &site,
+            &server.url("/r"),
+            &net::HeaderList::new(),
+            std::time::SystemTime::now(),
+        );
+        hit.is_some_and(|hit| hit.fresh)
+    };
+    cache.store(
+        &site,
+        &server.url("/r"),
+        &net::HeaderList::new(),
+        net::cache::Stored {
+            status: 200,
+            status_message: b"OK".to_vec(),
+            headers: {
+                let mut headers = net::HeaderList::new();
+                headers.append(b"Cache-Control", b"max-age=600");
+                headers
+            },
+            body: b"r".to_vec(),
+            address_space: None,
+        },
+        std::time::SystemTime::now(),
+        std::time::SystemTime::now(),
+    );
+    assert!(fresh());
     let local = ask(&mut tab, 1, "storage.local", Json::object([]));
     assert_eq!(local, Json::parse(r#"[["theme","dark"]]"#).unwrap());
     let session = ask(&mut tab, 2, "storage.session", Json::object([]));
@@ -106,6 +137,7 @@ fn a_sites_storage_is_listed_deleted_and_cleared() {
     }
     let usage = ask(&mut tab, 12, "storage.usage", Json::object([]));
     assert_eq!(usage.get("usage").and_then(Json::as_u64), Some(0));
+    assert!(!fresh(), "its cache entries gone");
     // A page of an opaque origin keeps nothing.
     tab.load(net::Url::parse("data:text/html,x").expect("a URL"));
     let refused = tab

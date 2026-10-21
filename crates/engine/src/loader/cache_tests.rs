@@ -234,3 +234,48 @@ fn a_traversal_takes_the_document_stored_stale_or_not() {
     tab.load(server.url("/old.html"));
     assert_eq!(reached(&server, "/old.html"), 2);
 }
+
+#[test]
+fn the_profile_keeps_the_cache_for_the_next_start() {
+    // M38: the entries are written with the profile and read back by
+    // the next context of it, their bodies at first use.
+    let server = serve(|path| match path {
+        "/page.html" => Some(lasting(
+            "text/html",
+            b"<link rel=stylesheet href=kept.css><p class=a>text</p>",
+        )),
+        "/kept.css" => Some(lasting("text/css", b".a { color: red }")),
+        _ => None,
+    });
+    let memory = profile::Memory::new();
+    {
+        let context = crate::Context::new();
+        context
+            .set_profile(profile::Profile::in_memory(&memory).unwrap())
+            .unwrap();
+        let mut tab = Tab::new();
+        tab.engine.join(&context);
+        load_all(&mut tab, server.url("/page.html"));
+        context.flush_profile(Duration::from_secs(10)).unwrap();
+    }
+    let asked = || {
+        (
+            reached(&server, "/page.html"),
+            reached(&server, "/kept.css"),
+        )
+    };
+    assert_eq!(asked(), (1, 1));
+    let context = crate::Context::new();
+    context
+        .set_profile(profile::Profile::in_memory(&memory).unwrap())
+        .unwrap();
+    let mut tab = Tab::new();
+    tab.engine.join(&context);
+    load_all(&mut tab, server.url("/page.html"));
+    assert_eq!(asked(), (1, 1), "nothing asked again");
+    assert_eq!(tab.names(), ["a"]);
+    // A context with no profile has none of it.
+    let mut alone = Tab::new();
+    load_all(&mut alone, server.url("/page.html"));
+    assert_eq!(asked(), (2, 2));
+}

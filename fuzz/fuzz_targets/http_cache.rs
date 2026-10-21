@@ -3,19 +3,26 @@
 //! `Age` and `Last-Modified` at times it says, `Vary`, a status, a
 //! body's size) stored for a few sites and URLs as the clock moves on,
 //! looked up with the fields a request has, fresh or stale, and made to
-//! go by an unsafe method. Nothing panics; a lookup gives back only a
+//! go by an unsafe method; and (M38) written to a profile, a map here,
+//! and read back by a new cache, as a browser started again does, and
+//! the input's own bytes read as a record. Nothing panics; a lookup gives back only a
 //! response stored for its site and URL, whose `Vary` fields the
 //! request has the same, never one `no-store` or `Vary: *`; what it
-//! gives as fresh is fresh by RFC 9111's arithmetic written again here,
-//! for the table's directives; and the cache keeps within its bounds.
+//! says is fresh is fresh by RFC 9111's arithmetic written again here,
+//! for the table's directives, and the other way round; a record that
+//! reads writes back as it was; and the cache keeps within its bounds.
 
 #![no_main]
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use libfuzzer_sys::fuzz_target;
-use net::cache::{Cache, MAX_CACHE_BYTES, MAX_CACHE_ENTRIES, Partition, Stored};
+use net::cache::{
+    Cache, Change, MAX_CACHE_BYTES, MAX_CACHE_ENTRIES, MAX_PROFILE_CACHE_BYTES, Partition, Stored,
+};
 use net::url::Site;
 use net::{HeaderList, Url};
 
@@ -143,9 +150,26 @@ impl Record {
     }
 }
 
-fuzz_target!(|data: &[u8]| {
-    let mut input = Input(data);
+/// The profile's two tables.
+type Tables = (BTreeMap<u64, Vec<u8>>, BTreeMap<u64, Vec<u8>>);
+
+/// A new cache given the profile `disk`.
+fn restarted(disk: &Arc<Mutex<Tables>>) -> Cache {
     let cache = Cache::new();
+    let records = disk.lock().unwrap().0.clone().into_iter().collect();
+    let bodies = disk.clone();
+    cache.load(
+        records,
+        Arc::new(move |id| bodies.lock().unwrap().1.get(&id).cloned()),
+    );
+    cache
+}
+
+fuzz_target!(|data: &[u8]| {
+    net::cache::fuzz_record(data);
+    let mut input = Input(data);
+    let disk: Arc<Mutex<Tables>> = Arc::default();
+    let mut cache = restarted(&disk);
     let mut now = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
     let mut records: Vec<Record> = Vec::new();
     let mut steps = 0;
@@ -159,7 +183,7 @@ fuzz_target!(|data: &[u8]| {
         request.append(b"Accept", accept.as_bytes());
         // Time passes, from nothing to a day.
         now += Duration::from_secs(u64::from(input.byte()).pow(2));
-        match op % 4 {
+        match op % 5 {
             0 | 1 => {
                 let flags = input.byte();
                 let mut fields = HeaderList::new();
@@ -238,10 +262,9 @@ fuzz_target!(|data: &[u8]| {
                 });
             }
             2 => {
-                let stale = input.byte() & 1 != 0;
-                if let Some(stored) =
-                    cache.lookup(&Partition::from(site.clone()), &url, &request, now, stale)
+                if let Some(hit) = cache.lookup(&Partition::from(site.clone()), &url, &request, now)
                 {
+                    let stored = &hit.stored;
                     let id: usize = String::from_utf8(stored.headers.get(b"x-id").unwrap())
                         .unwrap()
                         .parse()
@@ -262,14 +285,36 @@ fuzz_target!(|data: &[u8]| {
                             .get(b"vary")
                             .is_none_or(|v| !v.contains(&b'*'))
                     );
-                    if !stale && let Some(fresh) = record.fresh(now) {
-                        assert!(fresh, "a stale response given as fresh");
+                    if let Some(fresh) = record.fresh(now) {
+                        assert_eq!(hit.fresh, fresh, "freshness not RFC 9111's");
                     }
                 }
             }
-            _ => cache.invalidate(&Partition::from(site.clone()), &url),
+            3 => cache.invalidate(&Partition::from(site.clone()), &url),
+            _ => {
+                let mut tables = disk.lock().unwrap();
+                for change in cache.take_changes() {
+                    match change {
+                        Change::Put { id, record, body } => {
+                            tables.0.insert(id, record);
+                            if let Some(body) = body {
+                                tables.1.insert(id, body);
+                            }
+                        }
+                        Change::Delete { id } => {
+                            tables.0.remove(&id);
+                            tables.1.remove(&id);
+                        }
+                    }
+                }
+                drop(tables);
+                if input.byte() & 1 != 0 {
+                    cache = restarted(&disk);
+                }
+            }
         }
         let (count, bytes) = cache.size();
         assert!(count <= MAX_CACHE_ENTRIES && bytes <= MAX_CACHE_BYTES);
+        assert!(cache.profile_bytes() <= MAX_PROFILE_CACHE_BYTES);
     }
 });

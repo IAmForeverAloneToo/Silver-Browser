@@ -13,12 +13,15 @@ use super::FLUSH_INTERVAL;
 use crate::testing::*;
 
 /// A server whose pages set cookies, and one that reads them.
+/// Its pages are not stored (M38): the HTTP cache's writes are not
+/// the cookies'.
 fn cookie_server() -> TestServer {
     serve(|path| match path {
         "/set.html" => Some(Reply::with_fields(
             200,
             &[
                 ("Content-Type", "text/html"),
+                ("Cache-Control", "no-store"),
                 ("Set-Cookie", "kept=1; Max-Age=3600"),
                 ("Set-Cookie", "session=1"),
             ],
@@ -28,13 +31,18 @@ fn cookie_server() -> TestServer {
             200,
             &[
                 ("Content-Type", "text/html"),
+                ("Cache-Control", "no-store"),
                 ("Set-Cookie", "more=1; Max-Age=3600"),
             ],
             b"<p>more</p>",
         )),
         "/session.html" => Some(Reply::with_fields(
             200,
-            &[("Content-Type", "text/html"), ("Set-Cookie", "other=1")],
+            &[
+                ("Content-Type", "text/html"),
+                ("Cache-Control", "no-store"),
+                ("Set-Cookie", "other=1"),
+            ],
             b"<p>session</p>",
         )),
         "/read.html" => Some(html("<p>read</p>")),

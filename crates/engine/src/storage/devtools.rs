@@ -165,6 +165,10 @@ fn clear_site(storage: &mut Storage, jar: &Mutex<Jar>, origin: &str, host: &str)
     jar.lock()
         .unwrap_or_else(PoisonError::into_inner)
         .remove_where(|cookie| goes_to(cookie, host));
+    // M38: what the HTTP cache keeps for the site, at the top or framed.
+    if let (Some(cache), Ok(url)) = (storage.cache(), Url::parse(origin)) {
+        cache.clear_site(&url.origin().site());
+    }
 }
 
 /// Whether `cookie` goes to `host`: its own, or a domain's it is under.

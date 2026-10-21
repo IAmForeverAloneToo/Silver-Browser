@@ -8,23 +8,31 @@
 //! freshening it (RFC 9111 4.3). Fetch's cache modes decide how a
 //! request uses it ([`decide`]). It is partitioned by the site a request
 //! is made for, so that no site can learn from the cache what another's
-//! pages fetched.
+//! pages fetched. Given a profile it keeps its entries there too (M38):
+//! their records read when it is given, their bodies at first use.
 
-use std::collections::HashMap;
-use std::sync::{Mutex, PoisonError};
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use crate::url::Site;
 use crate::{AddressSpace, HeaderList, Url};
 
 #[cfg(test)]
+mod persistence_tests;
+mod record;
+#[cfg(test)]
 mod revalidation_tests;
 #[cfg(test)]
 mod tests;
 
-/// The most the cache's bodies hold in all: past it, the least
-/// recently used entries go first.
+/// The most the cache's bodies hold in memory: past it, the least
+/// recently used go first, to the profile if it keeps them.
 pub const MAX_CACHE_BYTES: usize = 64 << 20;
+
+/// The most the bodies the profile keeps hold (M38): past it, the least
+/// recently used entries go first.
+pub const MAX_PROFILE_CACHE_BYTES: usize = 256 << 20;
 
 /// The largest body the cache keeps.
 pub const MAX_CACHE_ENTRY_BYTES: usize = 8 << 20;
@@ -253,6 +261,12 @@ struct Entry {
     immutable: bool,
     /// When it was last used, by the cache's count.
     used: u64,
+    /// Its number, the profile's key of it (M38); its body's length;
+    /// whether the body is in memory; whether the profile keeps it.
+    id: u64,
+    body_len: usize,
+    in_memory: bool,
+    persisted: bool,
 }
 
 /// A stored response's times and its server's directives, from its
@@ -366,8 +380,14 @@ impl Entry {
         }
     }
 
+    /// Its body's bytes in memory.
     fn bytes(&self) -> usize {
-        self.stored.body.len()
+        if self.in_memory { self.body_len } else { 0 }
+    }
+
+    /// Its body's bytes in the profile.
+    fn profile_bytes(&self) -> usize {
+        if self.persisted { self.body_len } else { 0 }
     }
 }
 
@@ -390,20 +410,68 @@ impl From<Site> for Partition {
     }
 }
 
+/// How the cache reads the body the profile keeps of the entry it
+/// numbers so (M38), if it is there.
+pub type BodyReader = Arc<dyn Fn(u64) -> Option<Vec<u8>> + Send + Sync>;
+
+/// A change the profile is to be given (M38), by the entry's number: its
+/// record, with its body when that is new; or the entry gone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Change {
+    Put {
+        id: u64,
+        record: Vec<u8>,
+        body: Option<Vec<u8>>,
+    },
+    Delete {
+        id: u64,
+    },
+}
+
 /// The cache: entries by partition and URL, each URL's variants.
 #[derive(Debug, Default)]
 pub struct Cache {
     inner: Mutex<Inner>,
 }
 
-#[derive(Debug, Default)]
+/// What of an entry the profile has not been given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Dirty {
+    /// Its record.
+    Record,
+    /// Its record and its body.
+    Body,
+    /// That it is gone.
+    Gone,
+}
+
+#[derive(Default)]
 struct Inner {
     entries: HashMap<(Partition, String), Vec<Entry>>,
-    /// The bytes of the bodies, and the entries, in all.
+    /// The bytes of the bodies in memory, of those the profile keeps,
+    /// and the entries, in all.
     bytes: usize,
+    profile_bytes: usize,
     count: usize,
     /// The count of uses, for which was used last.
     uses: u64,
+    /// The next entry's number.
+    next_id: u64,
+    /// How bodies the profile keeps are read, once the cache keeps its
+    /// entries in one (M38).
+    reader: Option<BodyReader>,
+    /// What changed that the profile has not been given.
+    dirty: BTreeMap<u64, Dirty>,
+}
+
+impl std::fmt::Debug for Inner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Inner")
+            .field("count", &self.count)
+            .field("bytes", &self.bytes)
+            .field("profile_bytes", &self.profile_bytes)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The cache's key of `url`: without its fragment.
@@ -413,19 +481,181 @@ fn key(site: &Partition, url: &Url) -> (Partition, String) {
     (site.clone(), text.to_owned())
 }
 
+/// Whether `entry`, kept under `key`, is worth keeping in the profile:
+/// not an opaque site's, and of use to a later browsing without asking
+/// the network, fresh for a while or with a validator; one that is
+/// neither is used again only by a traversal, and kept in memory.
+fn keepable(key: &(Partition, String), entry: &Entry) -> bool {
+    !matches!(key.0.top, Site::Opaque(_))
+        && !matches!(key.0.frame, Site::Opaque(_))
+        && (!entry.lifetime.is_zero()
+            || entry.stored.headers.contains(b"etag")
+            || entry.stored.headers.contains(b"last-modified"))
+}
+
 impl Cache {
     pub fn new() -> Cache {
         Cache::default()
     }
 
-    /// How many entries it keeps, and their bodies' bytes.
+    /// How many entries it keeps, and their bodies' bytes in memory.
     pub fn size(&self) -> (usize, usize) {
         let inner = self.lock();
         (inner.count, inner.bytes)
     }
 
+    /// The bytes of the bodies it keeps in the profile.
+    pub fn profile_bytes(&self) -> usize {
+        self.lock().profile_bytes
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Keeps the entries in a profile from now on (M38): takes in those
+    /// it kept, `records` by their numbers, their bodies to be read by
+    /// `reader` at their first use, and gives it those stored so far.
+    /// A record that does not read is deleted.
+    pub fn load(&self, records: Vec<(u64, Vec<u8>)>, reader: BodyReader) {
+        let mut inner = self.lock();
+        inner.dirty.clear();
+        inner.reader = Some(reader);
+        let top = records.iter().map(|(id, _)| id + 1).max().unwrap_or(0);
+        let mut read = Vec::new();
+        for (id, bytes) in records {
+            match record::decode(id, &bytes) {
+                Some(record) => read.push(record),
+                None => {
+                    inner.dirty.insert(id, Dirty::Gone);
+                }
+            }
+        }
+        let base = read.iter().map(|r| r.entry.used).max().unwrap_or(0);
+        // What this browsing stored: numbered after the profile's, used
+        // after them, and written; a body another profile kept is gone.
+        let mut next_id = top.max(inner.next_id);
+        let mut dirty = Vec::new();
+        for (key, variants) in &mut inner.entries {
+            variants.retain(|entry| entry.in_memory);
+            for entry in variants {
+                entry.id = next_id;
+                next_id += 1;
+                entry.used += base;
+                entry.persisted = keepable(key, entry);
+                if entry.persisted {
+                    dirty.push(entry.id);
+                }
+            }
+        }
+        inner.entries.retain(|_, variants| !variants.is_empty());
+        inner.next_id = next_id;
+        inner.uses += base;
+        for id in dirty {
+            inner.dirty.insert(id, Dirty::Body);
+        }
+        for record::Record { key, entry } in read {
+            let variants = inner.entries.entry(key).or_default();
+            if variants.iter().any(|other| other.vary == entry.vary) {
+                inner.dirty.insert(entry.id, Dirty::Gone);
+            } else {
+                variants.push(entry);
+            }
+        }
+        for variants in inner.entries.values_mut() {
+            variants.sort_by_key(|entry| entry.response_time);
+        }
+        let all = inner.entries.values().flatten();
+        let (count, bytes, profile_bytes) = all.fold((0, 0, 0), |(n, m, p), entry| {
+            (n + 1, m + entry.bytes(), p + entry.profile_bytes())
+        });
+        inner.count = count;
+        inner.bytes = bytes;
+        inner.profile_bytes = profile_bytes;
+        inner.evict();
+    }
+
+    /// Whether there are changes the profile has not been given.
+    pub fn has_changes(&self) -> bool {
+        !self.lock().dirty.is_empty()
+    }
+
+    /// The changes the profile has not been given, taken: the bodies
+    /// they hold may leave memory after.
+    pub fn take_changes(&self) -> Vec<Change> {
+        let mut inner = self.lock();
+        let dirty = std::mem::take(&mut inner.dirty);
+        let mut changes = Vec::with_capacity(dirty.len());
+        {
+            let mut found = HashMap::new();
+            for (key, variants) in &inner.entries {
+                for entry in variants {
+                    if dirty.contains_key(&entry.id) {
+                        found.insert(entry.id, (key, entry));
+                    }
+                }
+            }
+            for (id, what) in dirty {
+                let put =
+                    found
+                        .get(&id)
+                        .filter(|_| what != Dirty::Gone)
+                        .and_then(|(key, entry)| {
+                            let record = record::encode(key, entry)?;
+                            let body = (what == Dirty::Body && entry.in_memory)
+                                .then(|| entry.stored.body.clone());
+                            Some(Change::Put { id, record, body })
+                        });
+                changes.push(put.unwrap_or(Change::Delete { id }));
+            }
+        }
+        inner.evict();
+        changes
+    }
+
+    /// The cache locked, and the number of the entry a request with the
+    /// fields `request` finds under `key`, its body in memory: read from
+    /// the profile, the cache not locked meanwhile, if it was not. `None`
+    /// if none is found, or its body does not read (the entry then
+    /// gone).
+    fn loaded(
+        &self,
+        key: &(Partition, String),
+        request: &HeaderList,
+    ) -> Option<(std::sync::MutexGuard<'_, Inner>, u64)> {
+        let inner = self.lock();
+        let index = inner.find(key, request)?;
+        let entry = &inner.entries.get(key)?[index];
+        let id = entry.id;
+        if entry.in_memory {
+            return Some((inner, id));
+        }
+        let reader = inner.reader.clone();
+        drop(inner);
+        let body = reader.and_then(|read| read(id));
+        let mut inner = self.lock();
+        let index = inner.position(key, id)?;
+        inner.uses += 1;
+        let uses = inner.uses;
+        let entry = &mut inner.entries.get_mut(key)?[index];
+        if entry.in_memory {
+            return Some((inner, id));
+        }
+        match body.filter(|body| body.len() == entry.body_len) {
+            Some(body) => {
+                entry.stored.body = body;
+                entry.in_memory = true;
+                entry.used = uses;
+                inner.bytes += entry.body_len;
+                inner.evict();
+                inner.position(key, id)?;
+                Some((inner, id))
+            }
+            None => {
+                inner.remove_at(key, index);
+                None
+            }
+        }
     }
 
     /// The response stored for a `GET` of `url` for `site` with the
@@ -439,16 +669,12 @@ impl Cache {
         request: &HeaderList,
         now: SystemTime,
     ) -> Option<Hit> {
-        let mut inner = self.lock();
+        let key = key(site, url);
+        let (mut inner, id) = self.loaded(&key, request)?;
         inner.uses += 1;
         let uses = inner.uses;
-        let variants = inner.entries.get_mut(&key(site, url))?;
-        let entry = variants.iter_mut().rev().find(|entry| {
-            entry
-                .vary
-                .iter()
-                .all(|(name, value)| request.get(name) == *value)
-        })?;
+        let index = inner.position(&key, id)?;
+        let entry = &mut inner.entries.get_mut(&key)?[index];
         entry.used = uses;
         Some(entry.hit(request, now))
     }
@@ -467,16 +693,12 @@ impl Cache {
         request_time: SystemTime,
         response_time: SystemTime,
     ) -> Option<Stored> {
-        let mut inner = self.lock();
+        let key = key(site, url);
+        let (mut inner, id) = self.loaded(&key, request)?;
         inner.uses += 1;
         let uses = inner.uses;
-        let variants = inner.entries.get_mut(&key(site, url))?;
-        let entry = variants.iter_mut().rev().find(|entry| {
-            entry
-                .vary
-                .iter()
-                .all(|(name, value)| request.get(name) == *value)
-        })?;
+        let index = inner.position(&key, id)?;
+        let entry = &mut inner.entries.get_mut(&key)?[index];
         let mut names: Vec<Vec<u8>> = Vec::new();
         for (name, _) in not_modified.iter() {
             let name = name.to_ascii_lowercase();
@@ -495,7 +717,12 @@ impl Cache {
         let timing = timing(&entry.stored, request_time, response_time);
         entry.set_timing(timing);
         entry.used = uses;
-        Some(entry.hit(request, response_time).stored)
+        let stored = entry.hit(request, response_time).stored;
+        let persisted = entry.persisted;
+        if persisted {
+            inner.mark(id, Dirty::Record);
+        }
+        Some(stored)
     }
 
     /// Stores the response `stored` to a `GET` of `url` for `site` with
@@ -541,6 +768,7 @@ impl Cache {
             return;
         }
         let timing = timing(&stored, request_time, response_time);
+        let key = key(site, url);
         let mut entry = Entry {
             vary: vary
                 .into_iter()
@@ -556,23 +784,27 @@ impl Cache {
             must_revalidate: false,
             immutable: false,
             used: 0,
+            id: 0,
+            body_len: stored.body.len(),
+            in_memory: true,
+            persisted: false,
             stored,
         };
         entry.set_timing(timing);
         let mut inner = self.lock();
         inner.uses += 1;
         entry.used = inner.uses;
-        let bytes = entry.bytes();
-        let variants = inner.entries.entry(key(site, url)).or_default();
-        let same = variants.iter().position(|old| old.vary == entry.vary);
-        let replaced = same.map(|index| variants.remove(index));
-        variants.push(entry);
-        if let Some(old) = replaced {
-            inner.bytes -= old.bytes();
-            inner.count -= 1;
+        entry.id = inner.next_id;
+        inner.next_id += 1;
+        entry.persisted = inner.reader.is_some() && keepable(&key, &entry);
+        let same = inner
+            .entries
+            .get(&key)
+            .and_then(|variants| variants.iter().position(|old| old.vary == entry.vary));
+        if let Some(index) = same {
+            inner.remove_at(&key, index);
         }
-        inner.bytes += bytes;
-        inner.count += 1;
+        inner.add(key, entry);
         inner.evict();
     }
 
@@ -580,41 +812,152 @@ impl Cache {
     /// unsafe method's response that is not an error came.
     pub fn invalidate(&self, site: &Partition, url: &Url) {
         let mut inner = self.lock();
-        if let Some(variants) = inner.entries.remove(&key(site, url)) {
-            inner.count -= variants.len();
-            inner.bytes -= variants.iter().map(Entry::bytes).sum::<usize>();
+        let key = key(site, url);
+        while inner.entries.contains_key(&key) {
+            inner.remove_at(&key, 0);
+        }
+    }
+
+    /// Removes what is stored for `site`, at the top or in a frame
+    /// (M38): the user cleared its data.
+    pub fn clear_site(&self, site: &Site) {
+        let mut inner = self.lock();
+        let keys: Vec<_> = inner
+            .entries
+            .keys()
+            .filter(|(partition, _)| partition.top == *site || partition.frame == *site)
+            .cloned()
+            .collect();
+        for key in keys {
+            while inner.entries.contains_key(&key) {
+                inner.remove_at(&key, 0);
+            }
         }
     }
 }
 
+/// For fuzzing (M38): reads `data` as a record, which, if it reads,
+/// writes back as it was.
+#[doc(hidden)]
+pub fn fuzz_record(data: &[u8]) {
+    if let Some(read) = record::decode(1, data) {
+        assert_eq!(
+            record::encode(&read.key, &read.entry).as_deref(),
+            Some(data)
+        );
+    }
+}
+
 impl Inner {
-    /// Takes out the least recently used entries until the cache is
-    /// within [`MAX_CACHE_BYTES`] and [`MAX_CACHE_ENTRIES`].
-    fn evict(&mut self) {
-        while self.bytes > MAX_CACHE_BYTES || self.count > MAX_CACHE_ENTRIES {
-            let Some((key, index)) = self
-                .entries
+    /// The index of the latest variant under `key` whose `Vary` fields
+    /// `request` has the same.
+    fn find(&self, key: &(Partition, String), request: &HeaderList) -> Option<usize> {
+        self.entries.get(key)?.iter().rposition(|entry| {
+            entry
+                .vary
                 .iter()
-                .flat_map(|(key, variants)| {
-                    variants
-                        .iter()
-                        .enumerate()
-                        .map(move |(index, entry)| (entry.used, key, index))
-                })
-                .min_by_key(|(used, _, _)| *used)
-                .map(|(_, key, index)| (key.clone(), index))
+                .all(|(name, value)| request.get(name) == *value)
+        })
+    }
+
+    /// The index of the entry numbered `id` under `key`.
+    fn position(&self, key: &(Partition, String), id: u64) -> Option<usize> {
+        self.entries
+            .get(key)?
+            .iter()
+            .position(|entry| entry.id == id)
+    }
+
+    /// Notes that the profile is to be given `what` of entry `id`.
+    fn mark(&mut self, id: u64, what: Dirty) {
+        let now = self.dirty.entry(id).or_insert(what);
+        if what != Dirty::Record {
+            *now = what;
+        }
+    }
+
+    fn add(&mut self, key: (Partition, String), entry: Entry) {
+        self.bytes += entry.bytes();
+        self.profile_bytes += entry.profile_bytes();
+        self.count += 1;
+        if entry.persisted {
+            self.mark(entry.id, Dirty::Body);
+        }
+        self.entries.entry(key).or_default().push(entry);
+    }
+
+    fn remove_at(&mut self, key: &(Partition, String), index: usize) {
+        let Some(variants) = self.entries.get_mut(key) else {
+            return;
+        };
+        let entry = variants.remove(index);
+        if variants.is_empty() {
+            self.entries.remove(key);
+        }
+        self.bytes -= entry.bytes();
+        self.profile_bytes -= entry.profile_bytes();
+        self.count -= 1;
+        if entry.persisted {
+            self.mark(entry.id, Dirty::Gone);
+        }
+    }
+
+    /// The key and index of the least recently used entry `which` takes.
+    fn least_used(&self, which: impl Fn(&Entry) -> bool) -> Option<((Partition, String), usize)> {
+        self.entries
+            .iter()
+            .flat_map(|(key, variants)| {
+                variants
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, entry)| which(entry))
+                    .map(move |(index, entry)| (entry.used, key, index))
+            })
+            .min_by_key(|(used, _, _)| *used)
+            .map(|(_, key, index)| (key.clone(), index))
+    }
+
+    /// Takes out the least recently used entries until the cache is
+    /// within [`MAX_CACHE_ENTRIES`] and [`MAX_PROFILE_CACHE_BYTES`], and
+    /// their bodies from memory until it is within [`MAX_CACHE_BYTES`]:
+    /// an entry the profile keeps keeps its record, its body read again
+    /// at its next use, unless the profile has not had it yet.
+    fn evict(&mut self) {
+        while self.count > MAX_CACHE_ENTRIES {
+            let Some((key, index)) = self.least_used(|_| true) else {
+                return;
+            };
+            self.remove_at(&key, index);
+        }
+        while self.profile_bytes > MAX_PROFILE_CACHE_BYTES {
+            let Some((key, index)) = self.least_used(|entry| entry.persisted) else {
+                return;
+            };
+            self.remove_at(&key, index);
+        }
+        while self.bytes > MAX_CACHE_BYTES {
+            let dirty = &self.dirty;
+            let Some((key, index)) = self.least_used(|entry| {
+                entry.in_memory
+                    && entry.body_len > 0
+                    && !(entry.persisted && dirty.get(&entry.id) == Some(&Dirty::Body))
+            }) else {
+                return;
+            };
+            let Some(entry) = self
+                .entries
+                .get_mut(&key)
+                .and_then(|variants| variants.get_mut(index))
             else {
                 return;
             };
-            let Some(variants) = self.entries.get_mut(&key) else {
-                return;
-            };
-            let entry = variants.remove(index);
-            if variants.is_empty() {
-                self.entries.remove(&key);
+            if entry.persisted {
+                entry.stored.body = Vec::new();
+                entry.in_memory = false;
+                self.bytes -= entry.body_len;
+            } else {
+                self.remove_at(&key, index);
             }
-            self.bytes -= entry.bytes();
-            self.count -= 1;
         }
     }
 }
