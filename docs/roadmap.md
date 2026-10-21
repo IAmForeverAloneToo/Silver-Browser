@@ -2417,23 +2417,55 @@ process seams.
 
 ## M37 — Browser chrome v1  ·  `shell`  ·  Effort: XL  ·  Depends: M15, M34
 
-- [ ] M37.1 Tab system: multiple renderers, tab strip UI (in-engine
+- [x] M37.1 Tab system: multiple renderers, tab strip UI (in-engine
        drawing — D9), per-tab history, crash placeholders.
-- [ ] M37.2 Downloads: download manager, progress, open-folder,
+       Done 2026-10-21 (`docs/design/chrome.md`): a strip drawn by the
+       engine above the toolbar, each tab its own view and history, the
+       tabs of a window in one context (its jar, cache, storage and
+       downloads); the keys and the mouse of the reference browser; a
+       hidden tab's renderers let go past 48 across them, its page
+       loaded again when shown; tabs a page opens (`window.open`,
+       `_blank`) with the user's activation; a stopped renderer's page
+       with "Try again".
+- [x] M37.2 Downloads: download manager, progress, open-folder,
        `Content-Disposition` handling, safe default paths. (Since M15 a
        response that would be a download leaves the page shown, with a
        notice, `docs/design/navigation.md`.)
-- [ ] M37.3 Settings: startup page, search-engine selection, JS/CSP
+       Done 2026-10-21: `Content-Disposition` read (RFC 6266 and 8187),
+       a name made safe, saved under a partial name in the user's
+       folder with the mark of the web, a file that runs code held until
+       kept; saved by the network service as it streams in many
+       processes; `about:downloads` (Ctrl+J) lists, cancels, keeps,
+       opens and shows them.
+- [x] M37.3 Settings: startup page, search-engine selection, JS/CSP
        toggles (no-scripts mode), dark mode, engine feature flags,
        languages (`Accept-Language`, fixed at `en-US,en;q=0.9` since
        M14).
-- [ ] M37.4 Error/network pages polish; `about:` pages (`about:silver`
+       Done 2026-10-21: `about:settings`, kept in the profile (`SCHEMA`
+       4): the start page and new tabs' page, the search engine the
+       address field searches with, scripts, light or dark, the
+       languages (`Accept-Language`, `navigator.languages`), third-party
+       cookies (G93), the downloads folder, the GPU, and the session
+       restored. A CSP toggle is not offered: it would remove a defence
+       a page asked for.
+- [x] M37.4 Error/network pages polish; `about:` pages (`about:silver`
        = engine demo gallery — the M1 demo document graduates here).
-- [ ] M37.5 Profile system: multi-profile v1 (per-profile cookie/storage
+       Done 2026-10-21: the made pages in light and dark with "Try
+       again" where a retry may help; `about:silver` links the engine's
+       demonstrations, each under `about:silver/<name>` with its scripts
+       and images; `about:version`.
+- [x] M37.5 Profile system: multi-profile v1 (per-profile cookie/storage
        jars).
+       Done 2026-10-21: several windows, those of a profile sharing its
+       context; Ctrl+N, Ctrl+Shift+N for a private window held in memory;
+       `about:profiles` and `--profile-name`, the profiles folders beside
+       the default's.
 - [ ] M37.6 Acceptance: daily-driving dogfood sessions begin (T1 gate:
        the developer uses it for 30 minutes of real browsing weekly and
        files the failures).
+       Ready 2026-10-21: `docs/dogfood.md` and a session test of a day's
+       browsing on local servers; the first session is the
+       maintainer's, and ticks this.
 
 ---
 
@@ -2842,8 +2874,8 @@ Deferred from the milestones above, each with what it waits on:
        Found at M33.
 - [ ] G92 The joint session history: a frame's navigations as entries
        of the tab's history. Found at M33.
-- [ ] G93 Blocking third-party cookies as a setting (D25). With M37.3's
-       settings. Found at M33.
+- [x] G93 Blocking third-party cookies as a setting (D25). With M37.3's
+       settings. Found at M33. Done at M37: `about:settings`.
 - [ ] G94 Trusted Types (`require-trusted-types-for`,
        `trusted-types`). Found at M33.
 - [ ] G95 `report-to` and the Reporting API (`Reporting-Endpoints`),
@@ -3104,6 +3136,46 @@ Deferred from the milestones above, each with what it waits on:
        -> 7.93 ms): the bindings' 81 KB more script (the console,
        IndexedDB, `navigator.storage`) run in every realm. Interfaces
        made when first reached (T4.3's exception). Found at M36.
+- [ ] G164 A tab discarded past `MAX_ALL_RENDERERS` keeps its URL and
+       title, not its history or its `sessionStorage`, as the reference
+       browser's does. Found at M37.
+- [ ] G165 QuickJS checks a script's native stack against where its
+       runtime began (rquickjs refreshes it only with its `parallel`
+       feature): a deep caller can make a script's stack overflow early.
+       Found at M37.
+- [ ] G166 Tabs a page opens are `noopener`: `window.open` gives back
+       `null`, `opener` is `null`, no `sessionStorage` copy, no referrer;
+       a form posted to a new tab is posted in the tab itself. Found at
+       M37.
+- [ ] G167 A renderer reports a tab its page opens with the activation
+       it keeps: a compromised one opens tabs of the web without the
+       user (bounded by `MAX_OPENING`). Found at M37.
+- [ ] G168 The one-process build holds a download whole in memory
+       before saving it. Found at M37.
+- [ ] G169 A download is decided by the response's head alone: one a
+       renderer sniffs to be binary (no `Content-Type`) is shown, not
+       saved. Found at M37.
+- [ ] G170 Downloads go to `%USERPROFILE%\Downloads` (or `~/Downloads`),
+       not the known folder where the user moved it. Found at M37.
+- [ ] G171 `blob:` URLs (`URL.createObjectURL`) and so downloads made by
+       a page's script. Found at M37.
+- [ ] G172 The downloads list is not kept in the profile. Found at M37.
+- [ ] G173 Workers' `navigator.languages` stays `en-US`. Found at M37.
+- [ ] G174 The status bubble and the permission bar stay light in the
+       dark appearance. Found at M37.
+- [ ] G175 `about:silver`'s demonstrations have an opaque origin, so the
+       to-do list kept in IndexedDB is not among them. Found at M37.
+- [ ] G176 A frame whose renderer stopped has no "Try again": its page
+       takes no input. Found at M37.
+- [ ] G177 Several windows: the session restored is the tabs of the
+       window that changed last; the renderers' budget is shared
+       evenly, not by use; renderer numbers start again in each
+       context. Found at M37.
+- [ ] G178 A profile open in another browser process is refused, not
+       handed to it with the request. Found at M37.
+- [ ] G179 The windows' event handling (the shell's `Browser`) has no
+       test of its own: the session tests stop at the session. Found at
+       M37.
 
 ---
 

@@ -1958,6 +1958,19 @@ The flex grid's first frame's style stage, x1.19 and x1.15 in the two
 runs, has no cause in M36's code (the cascade's path gained one `u32`
 a rule) and lies within its spread, 9.6 to 35ms.
 
+### Browser chrome v1 (M37)
+
+The Windows machine, release. M37 adds no benchmark: its tabs, windows,
+pages and settings are the shell's, which the benches do not drive.
+
+**T4.3.** The benchmarks of the code before M37 (d46175d8b) and of
+M37, by turns, four rounds, 24 benches, and the two with rows past 10%
+four rounds more: the composite bench's style stage for a card moved
+(0.040 against 0.045ms) came back to x1.00, the storage bench's page
+of 100 stylesheets (5.03 against 5.67ms) to x1.06. The one row past
+10% that stays is `about:silver` shown, 0.75 against 0.90ms: the page
+now holds the gallery of the engine's demonstrations. No exception.
+
 ### Over budget, and why
 
 These are known and recorded rather than hidden. Each has the item that

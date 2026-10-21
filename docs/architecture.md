@@ -2199,3 +2199,46 @@ wire text, `navigator.storage` outside secure contexts, the computed
 values `getComputedStyle` lacks, a `Proxy`'s traps in previews, coarse
 tree updates, a console call's cost and a realm's. 2,831 tests pass
 workspace-wide, two ignored. Next milestone: browser chrome v1 (M37).
+
+Milestone 37 (browser chrome v1; `docs/design/chrome.md`): what turns
+the engine into a browser to use. The context (step 1): what a
+profile's tabs share, the jar, cache, HSTS, permissions, storage and
+downloads, in `engine::Context`, which an engine joins and a remote tab
+is made in; `storage` events heard across its tabs, relayed by the
+browser to the renderers of the change's origin. Tabs (step 2): a
+strip drawn by the engine above the toolbar (`ui::tabs`), each tab its
+own view and history, the shown one's parts in the session's fields
+and the others parked, hidden tabs' renderers let go past 48. Pages
+opening tabs (step 3): `window.open` and `_blank` with the user's
+activation, kept in the frame tree and opened by the browser after the
+tab that asked, `http`, `https` and `about:blank` alone. Downloads
+(step 4): `Content-Disposition` read, a name made safe, saved by the
+network service as it streams, marked as from the internet, a file
+that runs code held until kept. The browser's own pages (step 5):
+`about:downloads` and the others, in a renderer locked to them
+(`Lock::Internal`), speaking through the DevTools panel's bridge to the
+shell's router. Settings (step 6): `about:settings`, one sealed record
+in the profile (`SCHEMA` 4), applied by the context (third-party
+cookies, `Accept-Language`, the downloads folder) and the session
+(scripts, the languages, light or dark, the search engine, the start
+page, the session restored). The made pages (step 7): `about:silver`
+the gallery of the engine's demonstrations, each answered by the
+engine under `about:silver/<name>`; `about:version`; error pages in
+light and dark with "Try again". Profiles and windows (step 8):
+several windows, those of a profile sharing its context, a private
+window's held in memory, `about:profiles` and `--profile-name`. The
+acceptance (step 9): a session test of a day's browsing and
+`docs/dogfood.md`; the maintainer's first half hour is theirs. CI
+found a download name cut to its bound ending in a dot (the fuzzer)
+and a finished download that woke nothing: mended. T4.3 found nothing
+past 10% but `about:silver`'s own new gallery. The fuzz runs of the four targets the milestone made or touched (`content_disposition`, `ipc_decode`, `storage`, `cookies`; ten minutes each on six workers) found nothing; CI's had found the name cut ending in a dot. Not in
+this milestone, said rather than hidden and registered (G164 to G179):
+a discarded tab's history, QuickJS's stack check, `opener` and the
+other edges of tabs a page opens, a compromised renderer's tabs, the
+one-process build's downloads in memory, sniffed downloads, the known
+downloads folder, `blob:` URLs, the downloads list kept, workers'
+languages, the dark bubble, the gallery's IndexedDB demo, a frame's
+"Try again", several windows' sessions and budget, a profile handed to
+the browser that has it, and the windows' event handling untested.
+2,918 tests pass workspace-wide, two ignored. Next milestone:
+HTTP/2 and a real cache (M38).

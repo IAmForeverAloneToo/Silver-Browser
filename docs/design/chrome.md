@@ -378,4 +378,88 @@ gate.
 
 ## 4. Corrected to the code
 
-Filled in at the last step.
+What the steps found that the sections above did not say, or said
+otherwise. The G items named are in `docs/roadmap.md`.
+
+- **The context and `storage` events (step 1).** `storage` events were
+  heard only between the document an engine shows and the one on its
+  way (M28), not among one renderer's engines as `processes.md` said.
+  Now `Storage` keeps a queue for each listener (an engine, a remote
+  tab), `MAX_WAITING_CHANGES` (1024) each, and broadcasts every change
+  with its scope (`localStorage`, or one tab's `sessionStorage`), its
+  source and its key's origin and partition. A renderer's change goes
+  to the browser as `ToBrowser::StorageChanged`, checked as an
+  operation of its lock and frame (a forged one kills it); each tab
+  relays it as `ToRenderer::StorageChanged` to its renderers whose lock
+  admits the origin, but the maker's. In a renderer, the document that
+  made a change is known only within that renderer.
+- **Tabs (step 2).** The strip is 32 px, the page's top 72. A hidden
+  remote tab keeps no spare renderer. Past `MAX_ALL_RENDERERS` the
+  hidden tab shown least recently is discarded: it keeps its URL and
+  title, not its history or its `sessionStorage` (G164). QuickJS checks
+  a script's native stack against where its runtime began, so moving a
+  large engine deeper overflowed it: parked tabs are boxed; the check
+  itself stays (G165).
+- **Pages opening tabs (step 3).** A renderer reports the tab a page
+  opens with its activation, and the browser opens only `http`,
+  `https` and `about:blank`, at most `MAX_OPENING` (16) waiting: a
+  compromised renderer can open such tabs without the user (G167).
+  `window.open` gives back `null`, `opener` is `null`, a form posted to
+  a new tab is posted in the tab itself, and new tabs get no referrer
+  (G166).
+- **Downloads (step 4).** There are no `blob:` URLs in the engine, so
+  no page-made downloads and no `MAX_PAGE_DOWNLOAD` (G171). The browser
+  decides a download by the response's head alone: a response a
+  renderer sniffs to be binary is not saved (G169). The one-process
+  build buffers a download in memory (G168); the folder is
+  `%USERPROFILE%\Downloads`, not the known folder if the user moved it
+  (G170); the list is not kept in the profile (G172). A download is
+  written on a thread of its own and wakes the browser with each
+  notice. The fuzzer found a name cut to `MAX_FILE_NAME` ending in a
+  dot; a cut name now ends in neither a dot nor a space.
+- **The browser's pages (step 5).** The bridge is the DevTools panel's
+  own (`devtools.send`, `devtools.onmessage`), not a new `silver`
+  global, and the pages are the engine's (`engine::internal`), since a
+  renderer makes them. Their scripts run whatever the setting, which
+  comes back at the next navigation; they are never kept by the
+  back-forward cache.
+- **Settings (step 6).** One sealed record of JSON in the `settings`
+  table, each member read with its default when missing or not
+  understood. The context applies them itself: the jar's third-party
+  block (G93, done), the clients' `Accept-Language`, the downloads'
+  folder. `navigator.languages` follows them in windows, read when a
+  realm is made; workers keep `en-US` (G173). The status bubble and the
+  permission bar stay light in the dark appearance (G174). Step 9
+  found that an engine given a profile (the one-process build) never
+  read the settings it held; it reads them through the context it
+  joined.
+- **The made pages (step 7).** The demonstrations are not made pages:
+  a made page runs no scripts and fetches no images. Each is a
+  navigation the engine answers itself under `about:silver/<name>`, an
+  opaque origin, its scripts as the setting says, its images `data:`
+  URLs put in when it is served; the to-do list kept in IndexedDB is
+  left out, since an opaque origin has none (G175). The gallery is
+  hidden in print, so the print reference of `about:silver` holds.
+  `about:version` is an internal page: the profile's folder is the
+  shell's to know; the commit is `git`'s at build time. "Try again"
+  (`about:silver-reload`) shows for the network errors a retry may help
+  and for a page lost; the crash page's is the tab's to do, the tab
+  giving that page the pointer; a frame's crash page has none (G176).
+- **Profiles and windows (step 8).** A profile's name may not be one
+  Windows keeps for a device either. Ctrl+Shift+W closes a window.
+  `MAX_ALL_RENDERERS` is shared evenly among the windows (at least one
+  each). The session restored is the tabs of the window that changed
+  last, not every window's, and two windows' renderers may share a
+  number in the logs (G177). A profile open in another browser process
+  is refused, not handed to it (G178). The windows' event handling has
+  no test of its own, only the gate's smoke run (G179).
+- **T4.3 and the fuzz runs (step 10).** Nothing past 10% slower but
+  `about:silver`'s own page, shown 0.75 against 0.90 ms with the
+  gallery; the storage bench's page of 100 stylesheets, x1.13 in the
+  first four rounds, x1.06 in four more. The fuzz runs of the four targets the milestone made or touched (`content_disposition`, `ipc_decode`, `storage`, `cookies`; ten minutes each on six workers) found nothing; CI's had found the name cut ending in a dot. `ipc_decode`'s
+  seeds now hold the messages M37 added, recorded from a session that
+  opens a tab, saves a file, asks to close and changes storage another
+  tab of its context hears.
+- **The acceptance (step 9).** `a_day_of_browsing_on_local_servers`
+  and `docs/dogfood.md`. The maintainer's first half hour is theirs to
+  do.

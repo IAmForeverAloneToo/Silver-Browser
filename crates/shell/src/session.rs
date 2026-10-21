@@ -32,8 +32,9 @@ const TOP: f32 = STRIP + ui::HEIGHT as f32;
 pub(crate) const MAX_TABS: usize = 500;
 /// The most tabs closed the window keeps, to open again (M37).
 pub(crate) const MAX_CLOSED: usize = 10;
-/// The most renderers a window's tabs keep alive together (M37): past
-/// it, the hidden tab least recently shown is discarded.
+/// The most renderers the windows' tabs keep alive together (M37),
+/// shared out among the windows: past a window's share, its hidden tab
+/// least recently shown is discarded.
 pub(crate) const MAX_ALL_RENDERERS: usize = 48;
 /// One wheel notch, or one arrow key, scrolls this far.
 pub(crate) const LINE_PX: f32 = 40.0;

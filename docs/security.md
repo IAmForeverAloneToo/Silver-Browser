@@ -272,6 +272,22 @@ font folders; a file it cannot read, it scans for.
   `MAX_JSON_DEPTH`), and each side's queue is bounded. The storage
   panel's answers are the browser's, from the tab's own storage and
   jar, for the page shown's origin alone.
+- **The browser's pages and downloads** (M37,
+  `docs/design/chrome.md`). `about:downloads`, `about:settings`,
+  `about:version` and `about:profiles` run in a renderer locked to them
+  alone (`Lock::Internal`), refused every fetch and all storage as the
+  DevTools panel's, under its policy, speaking through its bridge; the
+  shell answers them from its own records, and no link, script or
+  frame reaches them. A download is decided by the browser from the
+  response's head and saved by the network service as it streams,
+  never given to a renderer, when the frame's sandbox allows it; its
+  name is made safe (no path, separator, device name, control or
+  bidirectional character), it is written under a partial name, marked
+  as from the internet (the Zone.Identifier stream on Windows), and a
+  file that runs code is held until the user keeps it. A page's tabs
+  (`window.open`, `_blank`) open only `http`, `https` and
+  `about:blank`, with the user's activation, at most `MAX_OPENING`
+  waiting.
 - **Crashes** (D34). A renderer that dies leaves the browser's own page
   saying so, in the tab or in a frame's hole, until a reload brings it
   back in a new renderer; the browser goes on. On Windows the browser
@@ -349,7 +365,7 @@ that adds a package writing `unsafe` is read with it.
 
 ## 6. Fuzzing
 
-33 libFuzzer targets in `fuzz/` (M33.6, M34, M36), each holding its subject to
+34 libFuzzer targets in `fuzz/` (M33.6, M34, M36, M37), each holding its subject to
 not panicking, to its bounds, and to what it must keep (a round trip,
 a differential comparison with a fresh engine, a policy never allowing
 what it refused):
@@ -362,7 +378,8 @@ what it refused):
 - *the engine*: `style_document`, `animations`, `pipeline`, `mutation`,
   `dom_api`, `input`, `canvas`, `clone`, `frames`;
 - *the network's rules*: `csp`, `referrer`, `hsts`, `cookies`,
-  `storage`, `http_cache`;
+  `storage`, `http_cache`, and `content_disposition` (M37), the header
+  read and the name a download is saved under made safe;
 - *the DevTools and IndexedDB* (M36): `devtools_json`, the protocol's
   parser and writer, every value written back the same; `idb_keys`, a
   key encoded and decoded the same and two keys' bytes ordered as the
@@ -498,8 +515,19 @@ earlier milestones say why each is what it is):
 | `engine` | `MAX_PANEL_MESSAGES` | `1024` | The most messages the DevTools panel's page may have waiting for the browser (M36): it takes them each turn. |
 | `engine` | `MAX_PANEL_RECORDS` | `100` | The most records of each object store the panel is given. |
 | `engine` | `SITE_QUOTA` | `IDB_ORIGIN_QUOTA + 2 * STORAGE_QUOTA as u64` | The bytes a storage key may use: its `localStorage`, two bytes a code unit, and its IndexedDB databases (`navigator.storage`'s quota). |
+| `engine` | `MAX_DOWNLOADS` | `100` | The most downloads the list keeps: past it, the oldest finished ones leave it (their files stay). |
+| `engine` | `MAX_FILE_NAME` | `200` | The longest name a download is saved under, in bytes. |
+| `engine` | `MAX_OPENING` | `16` | The most tabs a tab's pages may have asked for that the browser has not yet opened (M37). |
+| `engine` | `MAX_SESSION_TABS` | `500` | The most tabs a restored session keeps. |
+| `engine` | `MAX_SETTING_BYTES` | `64 << 10` | The longest a setting's value may be, written as JSON. |
+| `engine` | `MAX_WAITING_CHANGES` | `1024` | The most changes an engine's documents may have waiting to hear of in `storage` events (M37): past it the oldest are dropped. |
 | `silver-browser` | `MAX_CRASH_DUMPS` | `8` | The most dumps kept: past it, the oldest go. |
 | `silver-browser` | `MAX_FORWARDED` | `1024` | The most requests waiting on the page's answers. |
+| `silver-browser` | `MAX_ALL_RENDERERS` | `48` | The most renderers the windows' tabs keep alive together (M37), shared out among the windows: past a window's share, its hidden tab least recently shown is discarded. |
+| `silver-browser` | `MAX_CLOSED` | `10` | The most tabs closed the window keeps, to open again (M37). |
+| `silver-browser` | `MAX_PROFILE_NAME` | `64` | The longest a profile's name may be, in bytes. |
+| `silver-browser` | `MAX_TABS` | `500` | The most tabs a window holds (M37). |
+| `silver-browser` | `MAX_WINDOWS` | `50` | The most windows the browser holds. |
 | `html` | `MAX_DEPTH` | `dom::MAX_DEPTH` | The most elements that may be open at once. |
 | `html` | `MAX_XML_DEPTH` | `512` | The most elements open at once. |
 | `html` | `MAX_ENTITY_EXPANSION` | `1 << 20` | The most characters entities may expand to in a document. |
@@ -554,6 +582,7 @@ earlier milestones say why each is what it is):
 | `net` | `MAX_REFERRER` | `4096` | The longest referrer sent whole: past it, the origin alone (section 8.3, step 6). |
 | `net` | `MAX_CONNECTIONS_PER_ORIGIN` | `6` | How many connections may be open to one origin (M14.3). |
 | `net` | `MAX_TLS_PARTITIONS` | `64` | The most partitions whose TLS sessions are kept apart at once: past them, all are forgotten. |
+| `net` | `MAX_DISPOSITION` | `8 << 10` | The longest `Content-Disposition` value read, in bytes: past it, the rest is left out. |
 | `paint` | `MAX_GRADIENT_PIXELS` | `1 << 22` | The most pixels a gradient is rendered with: a larger tile is rendered smaller and stretched over it. |
 | `paint` | `MIN_PERIOD` | `0.5` | The period below which a repeating gradient is drawn as its average colour, the pixels being too coarse to show it (section 3.3). |
 | `paint` | `MAX_THREADS` | `8` | The most threads a gradient is rendered on, a band of rows each. |
@@ -637,7 +666,12 @@ seconds (`PROMPT_TIMEOUT`).
 - **No revocation or Certificate Transparency** (G100), **no Encrypted
   Client Hello** (G101).
 - **Third-party cookies are sent** (`SameSite=None`), as the reference
-  browser sends them; blocking them is a setting to come (G93).
+  browser sends them, unless the user's setting blocks them (G93, M37).
+- **A renderer opens tabs** of the web with the activation it reports
+  (G167): a compromised one can open them without the user, at most
+  `MAX_OPENING` waiting.
+- **A download is decided by its head** (G169): a binary response with
+  no type is shown, not saved, never run.
 - **Trusted Types** (G94), **the Reporting API** (G95), **Permissions
   Policy** past Local Network Access (G96), **the Permissions API**
   (G97), **Subresource Integrity** (G43).
