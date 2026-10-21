@@ -453,6 +453,9 @@ pub struct Engine {
     languages: Vec<String>,
     /// Where the tab's downloads are saved (M37): its context's.
     downloads: downloads::Downloads,
+    /// The context the engine joined (M37), whose settings a profile
+    /// given it holds.
+    context: Option<Context>,
     /// The Web Storage areas the browser keeps, in a renderer (M34.1); the
     /// storage's own otherwise.
     areas: Option<Arc<dyn storage::Areas>>,
@@ -1279,6 +1282,7 @@ impl Engine {
             own_scripting: None,
             languages: vec!["en-US".to_owned(), "en".to_owned()],
             downloads: downloads::Downloads::new(),
+            context: None,
             areas: None,
             storage_events: VecDeque::new(),
             hidden: false,
@@ -3668,6 +3672,7 @@ impl Engine {
     pub fn join(&mut self, context: &Context) {
         self.network.join(context);
         self.downloads = context.downloads().clone();
+        self.context = Some(context.clone());
         let tab = context.new_tab();
         self.share_storage(context.shared_storage().clone(), tab);
     }
@@ -3712,7 +3717,12 @@ impl Engine {
         self.storage().set_hsts(self.network.hsts());
         self.storage()
             .set_permissions(self.network.permissions().clone());
-        self.storage().set_profile(profile, &cookies)
+        self.storage().set_profile(profile, &cookies)?;
+        // The settings it holds are its context's (M37).
+        if let Some(context) = &self.context {
+            context.read_settings();
+        }
+        Ok(())
     }
 
     /// The prompt the shell is to show (M33.4): a site's request waits

@@ -75,15 +75,19 @@ impl Context {
     /// [`crate::Engine::set_profile`] says; fails, and does not use it,
     /// when it cannot be read.
     pub fn set_profile(&self, profile: Profile) -> Result<(), profile::Error> {
-        let mut storage = self.storage();
-        storage.set_profile(profile, &self.shared.jar)?;
-        let read = storage.take_read_settings();
-        drop(storage);
+        self.storage().set_profile(profile, &self.shared.jar)?;
+        self.read_settings();
+        Ok(())
+    }
+
+    /// Takes as its settings those the profile just given holds, if it
+    /// holds any.
+    pub(crate) fn read_settings(&self) {
+        let read = self.storage().take_read_settings();
         if let Some(bytes) = read {
             *self.settings_lock() = crate::settings::Settings::from_bytes(&bytes);
             self.settings_changed();
         }
-        Ok(())
     }
 
     /// The settings (M37).

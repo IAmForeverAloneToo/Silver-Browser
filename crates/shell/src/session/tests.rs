@@ -110,10 +110,20 @@ impl Window {
         scripts: bool,
         profile: Option<profile::Profile>,
     ) -> Window {
+        Window::in_context(start, platform, scripts, profile, engine::Context::new())
+    }
+
+    /// A window whose tabs are all in `context` (M37), as the shell's
+    /// windows of one profile are in one.
+    fn in_context(
+        start: Option<Url>,
+        platform: Platform,
+        scripts: bool,
+        profile: Option<profile::Profile>,
+        context: engine::Context,
+    ) -> Window {
         let fonts = text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
             .expect("the bundled font parses");
-        // Every tab of the window in one context (M37), as the shell's.
-        let context = engine::Context::new();
         let tabs = context.clone();
         let (wake, woken) = channel();
         let maker = move || {
@@ -2791,4 +2801,167 @@ fn the_profiles_page_lists_makes_and_opens_profiles() {
     assert!(window.session.take_window_requests().is_empty());
     assert!(!dir.join("out").exists());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The pages of a day's browsing (M37.6): a page linking to another
+/// and to a file, and one saying the cookies it was sent.
+fn days_pages() -> TestServer {
+    serve(|path| match path {
+        "/" => html(
+            "<title>Home</title><body style='margin:0'>\
+             <a href=/second style='display:block;height:100px'>next</a>\
+             <a href=/notes style='display:block;height:100px'>notes</a>\
+             <script>document.cookie = 'seen=1; Max-Age=3600'</script>",
+        ),
+        "/second" => html("<title>Second</title><p>the second page"),
+        "/cookies" => {
+            html("<title>-</title><script>document.title = document.cookie || 'none'</script>")
+        }
+        "/notes" => Some(Reply::with_fields(
+            200,
+            &[("Content-Disposition", "attachment; filename=\"notes.txt\"")],
+            b"notes",
+        )),
+        _ => None,
+    })
+}
+
+#[test]
+fn a_day_of_browsing_on_local_servers() {
+    // M37.6: what the maintainer's sessions do, on local servers: a
+    // link opened in a new tab, a search from the address field, a file
+    // downloaded and found in its folder, a setting changed and kept
+    // across a restart, the session restored, and a private window
+    // keeping nothing.
+    use std::net::{IpAddr, Ipv4Addr};
+    let folder = std::env::temp_dir().join(format!("silver-day-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+    let server = days_pages();
+    let memory = profile::Memory::new();
+    let mut window = Window::on_profile(Some(server.url("/")), &memory);
+    window.settle();
+    window
+        .session
+        .engine()
+        .downloads()
+        .set_folder(folder.clone());
+
+    // A link opened in a new tab, behind: the middle button.
+    window.session.pointer_moved(50.0, TOP_H as f32 + 50.0);
+    window.session.press(Button::Middle, window.clock);
+    window.session.release(Button::Middle);
+    window.wait_until(|session| titles(session) == ["Home", "Second"]);
+
+    // A search from the address field: the engine's page for the words,
+    // its host this machine, where nothing listens.
+    window.chord("t", CTRL);
+    let here = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    window.session.engine_mut().set_network(net::Client::new(
+        net::transport::Config::default().resolve("duckduckgo.com", here),
+    ));
+    window.type_text("silver browser");
+    window.press_key(Key::Enter, NONE);
+    window.settle();
+    assert_eq!(
+        window.session.engine().url().map(Url::as_str),
+        Some("https://duckduckgo.com/?q=silver+browser")
+    );
+    window.chord("w", CTRL);
+
+    // A file downloaded, found in the folder.
+    window.chord("1", CTRL);
+    window.settle();
+    window.click(50.0, TOP_H as f32 + 150.0);
+    let saved = folder.join("notes.txt");
+    // The file is written aside, which wakes nothing: the window ticks.
+    let deadline = Instant::now() + WAIT;
+    while !saved.exists() {
+        assert!(Instant::now() < deadline, "the file is saved in time");
+        tick_a_while(&mut window);
+    }
+    assert_eq!(std::fs::read(&saved).unwrap(), b"notes");
+
+    // A setting changed, and the tabs kept as the session.
+    window.session.context().update_settings(|settings| {
+        settings.search = engine::settings::Search::Bing;
+        settings.start = engine::settings::Start::Restore;
+    });
+    window.session.tick();
+    assert_eq!(window.session.tab_count(), 2);
+    window.session.flush_profile().unwrap();
+    drop(window);
+
+    // The browser again: the setting kept, the tabs restored, the
+    // cookie sent.
+    let mut again = Window::on_profile(None, &memory);
+    let settings = again.session.context().settings();
+    assert_eq!(settings.search, engine::settings::Search::Bing);
+    assert_eq!(
+        settings.session,
+        [server.url("/").as_str(), server.url("/second").as_str()]
+    );
+    again.session.restore(
+        settings
+            .session
+            .iter()
+            .map(|url| Url::parse(url).unwrap())
+            .collect(),
+    );
+    again.settle();
+    assert_eq!(again.session.tab_count(), 2);
+    again.wait_until(|session| titles(session) == ["Home", "Second"]);
+    again.session.engine_mut().navigate(server.url("/cookies"));
+    again.wait_until(|session| session.engine().title() == "seen=1");
+
+    // A private window: its own context, held in memory, which sends
+    // nothing the profile kept and keeps nothing once it closes.
+    let mut contexts = crate::windows::Contexts::new(
+        None,
+        Box::new(|_: &std::path::Path| Err("no profiles here".to_owned())),
+    );
+    contexts.add(
+        crate::windows::Kept::Nothing,
+        again.session.context().clone(),
+    );
+    let (kept, context) = contexts
+        .open_for(
+            &crate::windows::WindowRequest::Private,
+            &crate::windows::Kept::Nothing,
+        )
+        .unwrap();
+    let mut private = Window::in_context(
+        Some(server.url("/cookies")),
+        Platform::Other,
+        true,
+        None,
+        context,
+    );
+    private.wait_until(|session| session.engine().title() == "none");
+    private.session.engine_mut().navigate(server.url("/"));
+    private.settle();
+    private
+        .session
+        .engine_mut()
+        .navigate(server.url("/cookies"));
+    private.wait_until(|session| session.engine().title() == "seen=1");
+    drop(private);
+    assert!(
+        contexts.closed(&kept).is_some(),
+        "let go of with its window"
+    );
+    let (_, context) = contexts
+        .open_for(
+            &crate::windows::WindowRequest::Private,
+            &crate::windows::Kept::Nothing,
+        )
+        .unwrap();
+    let mut next = Window::in_context(
+        Some(server.url("/cookies")),
+        Platform::Other,
+        true,
+        None,
+        context,
+    );
+    next.wait_until(|session| session.engine().title() == "none");
+    let _ = std::fs::remove_dir_all(&folder);
 }

@@ -131,6 +131,30 @@ fn the_settings_are_kept_in_the_profile_through_the_context() {
 }
 
 #[test]
+fn an_engine_given_a_profile_takes_the_settings_it_holds() {
+    // The one-process build's tabs: engines joined to a context, the
+    // profile given to the first.
+    let memory = Memory::new();
+    let context = Context::new();
+    context
+        .set_profile(Profile::in_memory(&memory).unwrap())
+        .unwrap();
+    context.update_settings(|settings| settings.search = Search::Bing);
+    context
+        .flush_profile(std::time::Duration::from_secs(10))
+        .unwrap();
+    let again = Context::new();
+    let mut engine = crate::Engine::with_fonts(
+        text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0).unwrap(),
+    );
+    engine.join(&again);
+    engine
+        .set_profile(Profile::in_memory(&memory).unwrap())
+        .unwrap();
+    assert_eq!(again.settings().search, Search::Bing);
+}
+
+#[test]
 fn the_languages_go_with_requests_and_to_navigator_languages() {
     let server = serve(|_| {
         Some(html(
