@@ -1048,15 +1048,46 @@ impl RemoteTab {
     }
 
     /// The browser's page saying the renderer of `url`'s document stopped,
-    /// and why, in an engine of the browser's own.
-    fn stopped_page(&self, url: Option<Url>, why: &str, dump: Option<&str>) -> Engine {
+    /// and why, in an engine of the browser's own; with `retry`, a "Try
+    /// again" the tab does.
+    fn stopped_page(&self, url: Option<Url>, why: &str, dump: Option<&str>, retry: bool) -> Engine {
         let mut engine = Engine::with_fonts(self.fonts.clone());
         engine.set_preferences(self.settings.preferences);
         if self.settings.scale.is_finite() && self.settings.scale > 0.0 {
             engine.set_scale_factor(self.settings.scale);
         }
-        engine.show_stopped(url, why, dump);
+        engine.show_stopped(url, why, dump, retry);
         engine
+    }
+
+    /// The page saying the shown page's renderer stopped, when it is shown
+    /// (M37): it takes the pointer.
+    fn stopped_shown(&mut self) -> Option<&mut Engine> {
+        if self.shown_view().is_some() {
+            return None;
+        }
+        match &mut self.stopped {
+            Some((index, engine)) if *index == self.current => Some(engine),
+            _ => None,
+        }
+    }
+
+    /// Gives the page saying the renderer stopped, if it is shown, the
+    /// pointer's `input`: whether it took it. Its "Try again" brings the
+    /// page back.
+    fn stopped_input(&mut self, input: impl FnOnce(&mut Engine)) -> bool {
+        let Some(engine) = self.stopped_shown() else {
+            return false;
+        };
+        input(engine);
+        let retry = engine.take_retry();
+        if engine.needs_frame() {
+            self.fresh = true;
+        }
+        if retry {
+            View::reload(self);
+        }
+        true
     }
 
     /// Renderer `number` is gone (M34.4, D34): its segments wait to be
@@ -1104,7 +1135,7 @@ impl RemoteTab {
             let Some(parent) = parent else {
                 continue;
             };
-            let engine = self.stopped_page(url, &said, dump.as_deref());
+            let engine = self.stopped_page(url, &said, dump.as_deref(), false);
             self.stopped_frames.insert(
                 key,
                 Stopped {
@@ -1132,7 +1163,7 @@ impl RemoteTab {
                 }
                 None => format!("The page's renderer stopped: {said}"),
             });
-            let mut engine = self.stopped_page(url, &said, dump.as_deref());
+            let mut engine = self.stopped_page(url, &said, dump.as_deref(), true);
             engine.set_viewport(self.viewport.0.max(1), self.viewport.1.max(1));
             self.stopped = Some((self.current, engine));
             self.fresh = true;
@@ -1698,6 +1729,12 @@ impl RemoteTab {
         }
     }
 
+    /// The page saying the shown page's renderer stopped, if it is shown.
+    #[cfg(test)]
+    pub(crate) fn stopped_engine(&mut self) -> Option<&mut Engine> {
+        self.stopped_shown()
+    }
+
     /// Each time a frame's parent was told it loaded, and why.
     #[cfg(test)]
     pub(crate) fn told_loaded(&self) -> &[String] {
@@ -2175,6 +2212,9 @@ impl View for RemoteTab {
     }
 
     fn pointer_move(&mut self, x: f32, y: f32) {
+        if self.stopped_input(|engine| engine.pointer_move(x, y)) {
+            return;
+        }
         self.pointer(x, y, |x, y| Input::PointerMove { x, y });
     }
 
@@ -2188,6 +2228,9 @@ impl View for RemoteTab {
     }
 
     fn pointer_down(&mut self, x: f32, y: f32, button: Button, count: u32) {
+        if self.stopped_input(|engine| engine.pointer_down(x, y, button, count)) {
+            return;
+        }
         if let Some((view, fx, fy)) = self.view_at(x, y) {
             let framed = self.frame_views.contains_key(&view);
             let (dx, dy) = self.offset_of(view);
@@ -2208,6 +2251,9 @@ impl View for RemoteTab {
     }
 
     fn pointer_up(&mut self, x: f32, y: f32, button: Button, count: u32) {
+        if self.stopped_input(|engine| engine.pointer_up(x, y, button, count)) {
+            return;
+        }
         self.pointer(x, y, |x, y| Input::PointerUp {
             x,
             y,
@@ -2221,7 +2267,10 @@ impl View for RemoteTab {
         self.pointer(x, y, |x, y| Input::Wheel { x, y, dy });
     }
 
-    fn cursor_at(&mut self, _: f32, _: f32) -> Cursor {
+    fn cursor_at(&mut self, x: f32, y: f32) -> Cursor {
+        if let Some(engine) = self.stopped_shown() {
+            return engine.cursor_at(x, y);
+        }
         self.pointed_state().cursor
     }
 

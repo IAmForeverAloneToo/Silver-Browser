@@ -1,5 +1,6 @@
 //! The pages the browser makes (docs/design/navigation.md, "Pages the
-//! browser makes"): `about:silver`, and the pages shown in place of a
+//! browser makes"): `about:silver` and the demonstrations it links to
+//! (M37), and the pages shown in place of a
 //! response there is nothing to show for — a network error, an error
 //! status with an empty body, a type this version cannot show — and the
 //! text documents made from text responses.
@@ -19,13 +20,276 @@ use crate::LoadError;
 /// browser.
 pub(crate) const ABOUT_SILVER: &str = include_str!("about-silver.html");
 
-/// The style of the pages the browser makes in place of a response.
+/// The style of the pages the browser makes in place of a response, in
+/// light and dark after the setting (M37): `prefers-color-scheme`.
 const STYLE: &str = "\
-html { background-color: #f6f6f4; }\
-body { margin: 48px; color: #202124; }\
-h1 { font-size: 24px; color: #202124; }\
-p { color: #3c4043; }\
-.detail { color: #6b6e72; font-size: 14px; }";
+:root { --page: #f6f6f4; --heading: #202124; --text: #3c4043; --quiet: #6b6e72; \
+--accent: #1a73e8; --on-accent: #ffffff; }\
+@media (prefers-color-scheme: dark) { :root { --page: #202124; --heading: #e8eaed; \
+--text: #bdc1c6; --quiet: #9aa0a6; --accent: #8ab4f8; --on-accent: #202124; } }\
+html { background-color: var(--page); }\
+body { margin: 48px; color: var(--heading); }\
+h1 { font-size: 24px; color: var(--heading); }\
+p { color: var(--text); }\
+a { color: var(--accent); }\
+.detail { color: var(--quiet); font-size: 14px; }\
+.button { display: inline-block; padding: 8px 16px; background-color: var(--accent); \
+color: var(--on-accent); text-decoration: none; }";
+
+/// The address of an error page's "Try again" (M37), which the engine
+/// follows only from a page it made: a reload of the page that failed.
+pub(crate) const RELOAD: &str = "about:silver-reload";
+
+/// The engine's demonstration pages (`tests/demos/`), each shown under
+/// `about:silver/<name>` with its scripts and its images (M37): its
+/// name, what `about:silver` calls it, and its markup.
+pub(crate) const DEMOS: &[(&str, &str, &str)] = &[
+    (
+        "canvas-chart",
+        "A chart drawn on a canvas",
+        include_str!("../tests/demos/canvas-chart.html"),
+    ),
+    (
+        "svg-chart",
+        "The same chart in SVG",
+        include_str!("../tests/demos/svg-chart.html"),
+    ),
+    (
+        "svg-icons",
+        "Icons in SVG, inline and as images",
+        include_str!("../tests/demos/svg-icons.html"),
+    ),
+    (
+        "photo-grid",
+        "A grid of photos: JPEG, PNG, WebP and GIF",
+        include_str!("../tests/demos/photo-grid.html"),
+    ),
+    (
+        "colour-fade",
+        "A colour fade, a CSS animation",
+        include_str!("../tests/demos/colour-fade.html"),
+    ),
+    (
+        "spinner",
+        "A spinner, a CSS transform animated",
+        include_str!("../tests/demos/spinner.html"),
+    ),
+    (
+        "particles",
+        "Particles, a script drawing each frame",
+        include_str!("../tests/demos/particles.html"),
+    ),
+    (
+        "mandelbrot",
+        "The Mandelbrot set, drawn by workers",
+        include_str!("../tests/demos/mandelbrot.html"),
+    ),
+    (
+        "scripts",
+        "Scripts changing the page",
+        include_str!("../tests/demos/scripts.html"),
+    ),
+];
+
+/// The files the demonstrations' images are, by their paths there.
+const DEMO_FILES: &[(&str, &[u8])] = &[
+    (
+        "photos/bands-1.gif",
+        include_bytes!("../tests/demos/photos/bands-1.gif"),
+    ),
+    (
+        "photos/bands-2.gif",
+        include_bytes!("../tests/demos/photos/bands-2.gif"),
+    ),
+    (
+        "photos/hills-1.jpg",
+        include_bytes!("../tests/demos/photos/hills-1.jpg"),
+    ),
+    (
+        "photos/hills-2.jpg",
+        include_bytes!("../tests/demos/photos/hills-2.jpg"),
+    ),
+    (
+        "photos/hills-3.jpg",
+        include_bytes!("../tests/demos/photos/hills-3.jpg"),
+    ),
+    (
+        "photos/hills-4.webp",
+        include_bytes!("../tests/demos/photos/hills-4.webp"),
+    ),
+    (
+        "photos/hills-5.webp",
+        include_bytes!("../tests/demos/photos/hills-5.webp"),
+    ),
+    (
+        "photos/hills-6.webp",
+        include_bytes!("../tests/demos/photos/hills-6.webp"),
+    ),
+    (
+        "photos/spinner.gif",
+        include_bytes!("../tests/demos/photos/spinner.gif"),
+    ),
+    (
+        "photos/valley-1.png",
+        include_bytes!("../tests/demos/photos/valley-1.png"),
+    ),
+    (
+        "photos/valley-2.png",
+        include_bytes!("../tests/demos/photos/valley-2.png"),
+    ),
+    (
+        "photos/valley-3.png",
+        include_bytes!("../tests/demos/photos/valley-3.png"),
+    ),
+    (
+        "icons/arrow-left.svg",
+        include_bytes!("../tests/demos/icons/arrow-left.svg"),
+    ),
+    (
+        "icons/arrow-right.svg",
+        include_bytes!("../tests/demos/icons/arrow-right.svg"),
+    ),
+    (
+        "icons/bell.svg",
+        include_bytes!("../tests/demos/icons/bell.svg"),
+    ),
+    (
+        "icons/bookmark.svg",
+        include_bytes!("../tests/demos/icons/bookmark.svg"),
+    ),
+    (
+        "icons/calendar.svg",
+        include_bytes!("../tests/demos/icons/calendar.svg"),
+    ),
+    (
+        "icons/chat.svg",
+        include_bytes!("../tests/demos/icons/chat.svg"),
+    ),
+    (
+        "icons/check.svg",
+        include_bytes!("../tests/demos/icons/check.svg"),
+    ),
+    (
+        "icons/clock.svg",
+        include_bytes!("../tests/demos/icons/clock.svg"),
+    ),
+    (
+        "icons/close.svg",
+        include_bytes!("../tests/demos/icons/close.svg"),
+    ),
+    (
+        "icons/cloud.svg",
+        include_bytes!("../tests/demos/icons/cloud.svg"),
+    ),
+    (
+        "icons/dot.svg",
+        include_bytes!("../tests/demos/icons/dot.svg"),
+    ),
+    (
+        "icons/download.svg",
+        include_bytes!("../tests/demos/icons/download.svg"),
+    ),
+    (
+        "icons/heart.svg",
+        include_bytes!("../tests/demos/icons/heart.svg"),
+    ),
+    (
+        "icons/home.svg",
+        include_bytes!("../tests/demos/icons/home.svg"),
+    ),
+    (
+        "icons/lock.svg",
+        include_bytes!("../tests/demos/icons/lock.svg"),
+    ),
+    (
+        "icons/mail.svg",
+        include_bytes!("../tests/demos/icons/mail.svg"),
+    ),
+    (
+        "icons/menu.svg",
+        include_bytes!("../tests/demos/icons/menu.svg"),
+    ),
+    (
+        "icons/minus.svg",
+        include_bytes!("../tests/demos/icons/minus.svg"),
+    ),
+    (
+        "icons/pause.svg",
+        include_bytes!("../tests/demos/icons/pause.svg"),
+    ),
+    (
+        "icons/pin.svg",
+        include_bytes!("../tests/demos/icons/pin.svg"),
+    ),
+    (
+        "icons/play.svg",
+        include_bytes!("../tests/demos/icons/play.svg"),
+    ),
+    (
+        "icons/plus.svg",
+        include_bytes!("../tests/demos/icons/plus.svg"),
+    ),
+    (
+        "icons/search.svg",
+        include_bytes!("../tests/demos/icons/search.svg"),
+    ),
+    (
+        "icons/settings.svg",
+        include_bytes!("../tests/demos/icons/settings.svg"),
+    ),
+    (
+        "icons/star.svg",
+        include_bytes!("../tests/demos/icons/star.svg"),
+    ),
+    (
+        "icons/stop.svg",
+        include_bytes!("../tests/demos/icons/stop.svg"),
+    ),
+    (
+        "icons/sun.svg",
+        include_bytes!("../tests/demos/icons/sun.svg"),
+    ),
+    (
+        "icons/tile.svg",
+        include_bytes!("../tests/demos/icons/tile.svg"),
+    ),
+    (
+        "icons/user.svg",
+        include_bytes!("../tests/demos/icons/user.svg"),
+    ),
+    (
+        "icons/warning.svg",
+        include_bytes!("../tests/demos/icons/warning.svg"),
+    ),
+];
+
+/// The markup of the demonstration `name`, its images' paths turned
+/// into `data:` URLs: its URL, under `about:`, has an opaque path that
+/// nothing resolves against.
+pub(crate) fn demo(name: &str) -> Option<String> {
+    let (_, _, markup) = DEMOS.iter().find(|(at, _, _)| *at == name)?;
+    let mut markup = (*markup).to_owned();
+    for (path, bytes) in DEMO_FILES {
+        let essence = match path.rsplit('.').next() {
+            Some("gif") => "image/gif",
+            Some("jpg") => "image/jpeg",
+            Some("png") => "image/png",
+            Some("webp") => "image/webp",
+            _ => "image/svg+xml",
+        };
+        let url = format!(
+            "data:{essence};base64,{}",
+            crate::network_log::base64(bytes)
+        );
+        for quote in ['"', '\''] {
+            markup = markup.replace(
+                &format!("src={quote}{path}{quote}"),
+                &format!("src={quote}{url}{quote}"),
+            );
+        }
+    }
+    Some(markup)
+}
 
 /// The style HTML lets the user agent add to a text document: lines
 /// wrap, so a long one can be read.
@@ -45,14 +309,42 @@ pub(crate) fn error(url: &Url, error: &LoadError) -> Document {
             format!("{place} does not allow this page to show it in a frame."),
         ),
     };
-    page(
-        &heading,
-        &heading,
-        vec![
-            paragraph("", explanation),
-            paragraph("detail", url.as_str().to_owned()),
-            paragraph("detail", format!("The error: {error}.")),
-        ],
+    let mut paragraphs = vec![
+        paragraph("", explanation),
+        paragraph("detail", url.as_str().to_owned()),
+        paragraph("detail", format!("The error: {error}.")),
+    ];
+    if retries(error) {
+        paragraphs.push(try_again());
+    }
+    page(&heading, &heading, paragraphs)
+}
+
+/// Whether trying `error`'s load again may help: a network that failed
+/// on the way, not a refusal that would come again.
+fn retries(error: &LoadError) -> bool {
+    match error {
+        LoadError::Lost => true,
+        LoadError::Framed => false,
+        LoadError::Network(error) => matches!(
+            error,
+            NetworkError::Resolve(_)
+                | NetworkError::Connect(_)
+                | NetworkError::Truncated
+                | NetworkError::Io(_)
+                | NetworkError::Timeout
+                | NetworkError::Aborted
+        ),
+    }
+}
+
+/// The "Try again" button of an error page.
+fn try_again() -> Element {
+    Element::new("p").push(
+        Element::new("a")
+            .attr("class", "button")
+            .attr("href", RELOAD)
+            .text("Try again"),
     )
 }
 
@@ -239,11 +531,11 @@ pub(crate) fn resubmission(url: &Url) -> Document {
 /// stopped (M34.4, D34), under `url` when it had one: `why` it stopped,
 /// and the file a dump of it was written to, if one was, for the user to
 /// share if they choose. A reload brings the page back in a new
-/// renderer.
-pub(crate) fn stopped(url: Option<&Url>, why: &str, dump: Option<&str>) -> Document {
+/// renderer, as does its "Try again" when it has one (M37).
+pub(crate) fn stopped(url: Option<&Url>, why: &str, dump: Option<&str>, retry: bool) -> Document {
     let mut paragraphs = vec![paragraph(
         "",
-        "The process that showed this page stopped. Reload to show it again.".to_owned(),
+        "The process that showed this page stopped.".to_owned(),
     )];
     if let Some(url) = url {
         paragraphs.push(paragraph("detail", url.as_str().to_owned()));
@@ -254,6 +546,9 @@ pub(crate) fn stopped(url: Option<&Url>, why: &str, dump: Option<&str>) -> Docum
             "detail",
             format!("A record of what it was doing is in {dump}. Nothing was sent anywhere."),
         ));
+    }
+    if retry {
+        paragraphs.push(try_again());
     }
     page("Page stopped", "This page stopped", paragraphs)
 }

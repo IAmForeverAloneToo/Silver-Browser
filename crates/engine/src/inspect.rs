@@ -33,9 +33,22 @@ impl Engine {
     /// a response of the engine's own under the panel's policy, for
     /// `handling` once shown, its window given the bridge.
     pub(crate) fn show_own_page(&mut self, url: Url, body: &str, handling: Handling) {
+        self.panel = true;
+        self.answer_navigation(url, body, Some(devtools::PANEL_CSP), handling);
+    }
+
+    /// Navigates to `url`, for `handling`, answered by the engine itself
+    /// with the HTML `body`, under the policy `csp` when given (M37): a
+    /// document parsed as it arrives, its scripts run as any page's.
+    pub(crate) fn answer_navigation(
+        &mut self,
+        url: Url,
+        body: &str,
+        csp: Option<&str>,
+        handling: Handling,
+    ) {
         self.cancel_navigation();
         let id = self.new_page_id();
-        self.panel = true;
         self.navigation = Some(Navigation {
             url: url.clone(),
             incoming: Incoming::Fetching(id),
@@ -48,7 +61,9 @@ impl Engine {
         self.load_state = LoadState::Loading;
         let mut headers = net::HeaderList::new();
         headers.append(b"Content-Type", b"text/html;charset=utf-8");
-        headers.append(b"Content-Security-Policy", devtools::PANEL_CSP.as_bytes());
+        if let Some(csp) = csp {
+            headers.append(b"Content-Security-Policy", csp.as_bytes());
+        }
         let head = net::Response {
             url_list: vec![url],
             status: 200,

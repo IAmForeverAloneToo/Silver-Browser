@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>About Silver Browser</title>
+<!--
+  about:version (M37, docs/design/chrome.md, "The browser's pages"): the
+  browser's version, the engine's commit, the build and the profile's
+  folder, for a report of a fault. A page of the browser's own, reached
+  by no link; it asks the browser through the bridge the DevTools panel
+  has.
+-->
+<style>
+  :root { color-scheme: light dark; --fg: #1f1f1f; --muted: #5f6368; --bg: #f7f7f7;
+          --card: #ffffff; --edge: #dadce0 }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg: #e8eaed; --muted: #9aa0a6; --bg: #202124; --card: #2d2e31;
+            --edge: #3c4043 }
+  }
+  body { margin: 0; font: 14px sans-serif; background: var(--bg); color: var(--fg) }
+  main { max-width: 720px; margin: 32px auto; padding: 0 16px }
+  h1 { font-size: 24px; font-weight: normal; margin: 0 0 16px }
+  table { background: var(--card); border: 1px solid var(--edge); border-collapse: collapse;
+          width: 100% }
+  th, td { text-align: left; padding: 8px 12px; border-top: 1px solid var(--edge) }
+  th { color: var(--muted); font-weight: normal; width: 30% }
+</style>
+</head>
+<body>
+<main>
+<h1>Silver Browser</h1>
+<table>
+  <tr><th>Version</th><td id="version"></td></tr>
+  <tr><th>Engine commit</th><td id="commit"></td></tr>
+  <tr><th>Build</th><td id="build"></td></tr>
+  <tr><th>Processes</th><td id="processes"></td></tr>
+  <tr><th>Profile</th><td id="profile"></td></tr>
+</table>
+</main>
+<script>
+"use strict";
+devtools.onmessage = (text) => {
+  let message;
+  try {
+    message = JSON.parse(text);
+  } catch (e) {
+    return;
+  }
+  const about = message.result;
+  if (message.id !== 1 || !about) {
+    return;
+  }
+  for (const name of ["version", "commit", "build", "processes", "profile"]) {
+    document.getElementById(name).textContent = String(about[name]);
+  }
+};
+devtools.send(JSON.stringify({ id: 1, method: "version.get", params: {} }));
+</script>
+</body>
+</html>

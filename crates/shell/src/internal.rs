@@ -1,12 +1,13 @@
 //! The browser's own pages' requests (M37, docs/design/chrome.md, "The
-//! browser's pages"): the shell answers what `about:downloads` and
-//! `about:settings` ask through the DevTools panel's bridge, from the
-//! window's downloads and its context's settings, and tells the
+//! browser's pages"): the shell answers what `about:downloads`,
+//! `about:settings` and `about:version` ask through the DevTools panel's
+//! bridge, from the window's downloads, its context's settings and the
+//! build, and tells the
 //! downloads page when they change. A page's requests are read only from a tab
 //! that shows one of these pages: the bridge is theirs alone, and in
 //! many processes their renderer is locked to them.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use devtools::{Json, Request};
 use engine::settings::{LANGUAGES, SEARCHES};
@@ -22,11 +23,22 @@ pub(crate) struct Pages {
     /// The downloads as last told to the page shown, to tell it again
     /// when they change.
     told: Option<String>,
+    /// The folder of the profile kept, for `about:version`.
+    profile: Option<PathBuf>,
 }
 
 impl Pages {
     pub(crate) fn new(opener: Opener) -> Pages {
-        Pages { opener, told: None }
+        Pages {
+            opener,
+            told: None,
+            profile: None,
+        }
+    }
+
+    /// The profile kept is in `folder`; none is, with none.
+    pub(crate) fn set_profile_folder(&mut self, folder: Option<PathBuf>) {
+        self.profile = folder;
     }
 
     /// The page shown changed: it is told the downloads afresh.
@@ -41,7 +53,8 @@ impl Pages {
             self.told = None;
             return;
         };
-        let settings = url.as_str() == engine::internal::SETTINGS;
+        let page = url.as_str().to_owned();
+        let downloads_page = page == engine::internal::DOWNLOADS;
         let Some(downloads) = view.downloads() else {
             return;
         };
@@ -49,9 +62,10 @@ impl Pages {
             let Ok(request) = Request::parse(&message) else {
                 continue;
             };
-            let answered = match settings {
-                true => settings_answer(context, &request),
-                false => self.answer(&downloads, &request),
+            let answered = match page.as_str() {
+                engine::internal::SETTINGS => settings_answer(context, &request),
+                engine::internal::VERSION => self.version_answer(&request),
+                _ => self.answer(&downloads, &request),
             };
             let answer = match answered {
                 Ok(result) => devtools::result(request.id, result),
@@ -59,7 +73,7 @@ impl Pages {
             };
             view.devtools_send(answer);
         }
-        if settings {
+        if !downloads_page {
             return;
         }
         let list = list_json(&downloads.list());
@@ -71,6 +85,39 @@ impl Pages {
                 Json::object([("downloads", list)]),
             ));
         }
+    }
+
+    /// The answer to `request` of the version page: the browser's
+    /// version, the engine's commit, the build and the profile's folder.
+    fn version_answer(&self, request: &Request) -> Result<Json, String> {
+        if request.method != "version.get" {
+            return Err(format!("no method {}", request.method));
+        }
+        let build = format!(
+            "{}, {}",
+            if cfg!(debug_assertions) {
+                "debug"
+            } else {
+                "release"
+            },
+            env!("SILVER_TARGET")
+        );
+        let processes = if cfg!(feature = "single-process") {
+            "one: the pages are shown in the browser's own process"
+        } else {
+            "a renderer for each site, sandboxed"
+        };
+        let profile = match &self.profile {
+            Some(folder) => folder.display().to_string(),
+            None => "none: nothing is kept this time".to_owned(),
+        };
+        Ok(Json::object([
+            ("version", Json::from(env!("CARGO_PKG_VERSION"))),
+            ("commit", Json::from(env!("SILVER_COMMIT"))),
+            ("build", Json::from(build.as_str())),
+            ("processes", Json::from(processes)),
+            ("profile", Json::from(profile.as_str())),
+        ]))
     }
 
     /// The answer to `request` of the downloads page.

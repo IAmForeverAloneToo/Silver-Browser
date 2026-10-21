@@ -114,6 +114,8 @@ mod internal_tests;
 pub mod ipc;
 mod keys;
 mod loader;
+#[cfg(test)]
+mod made_pages_tests;
 mod navigation;
 pub mod network_log;
 mod pages;
@@ -489,6 +491,11 @@ pub struct Engine {
     /// The submission a mixed form page holds back, for its "Send
     /// anyway" (M33.3): dropped by any other navigation.
     pending_form: Option<PendingForm>,
+    /// Whether an error page's "Try again" is the owner's to do (M37):
+    /// the page a tab shows for a renderer gone, whose reload is the
+    /// tab's. Then whether it was asked for since the owner last asked.
+    retry_by_owner: bool,
+    retry_asked: bool,
     /// Whether the window has the system's focus, and whether the last
     /// input was a key rather than the pointer (M26.6).
     window_focused: bool,
@@ -1287,6 +1294,8 @@ impl Engine {
             modifiers: Modifiers::default(),
             posting: false,
             pending_form: None,
+            retry_by_owner: false,
+            retry_asked: false,
             window_focused: true,
             keyboard: false,
             frame: frames::FrameContext::top(),
@@ -3633,6 +3642,13 @@ impl Engine {
         frames::lock(&self.frame.tree).take_opened()
     }
 
+    /// Whether the "Try again" of the page [`Engine::show_stopped`] shows
+    /// was followed since this was last asked (M37): its owner brings
+    /// the page back.
+    pub fn take_retry(&mut self) -> bool {
+        std::mem::take(&mut self.retry_asked)
+    }
+
     /// Whether the tab's top-level document asked to close it since this
     /// was last asked (M37), whoever opened it.
     pub(crate) fn take_close_asked(&mut self) -> bool {
@@ -3881,8 +3897,23 @@ impl Engine {
                         self.go_back();
                         return;
                     }
+                    // An error page's "Try again" (M37).
+                    ("silver-reload", _) => {
+                        match self.retry_by_owner {
+                            true => self.retry_asked = true,
+                            false => self.reload(),
+                        }
+                        return;
+                    }
                     _ => {}
                 }
+            }
+            // A demonstration (M37): a page of an opaque origin like any
+            // other, its scripts and images its own, from a response of
+            // the engine's own.
+            if let Some(markup) = url.path_str().strip_prefix("silver/").and_then(pages::demo) {
+                self.answer_navigation(url, &markup, None, handling);
+                return;
             }
             let shown = if url.path_str() == "silver" {
                 let mut page = Page::fetched(
@@ -3994,10 +4025,13 @@ impl Engine {
     /// under `url`: `why` it did, and the file a dump of it was written
     /// to, if one was. The browser's own engine shows it, for a tab or a
     /// frame whose renderer is gone.
-    pub fn show_stopped(&mut self, url: Option<Url>, why: &str, dump: Option<&str>) {
+    /// With `retry`, it has a "Try again", which the owner does
+    /// ([`Engine::take_retry`]).
+    pub fn show_stopped(&mut self, url: Option<Url>, why: &str, dump: Option<&str>, retry: bool) {
         self.cancel_navigation();
+        self.retry_by_owner = true;
         let shown = self.made(
-            pages::stopped(url.as_ref(), why, dump),
+            pages::stopped(url.as_ref(), why, dump, retry),
             Some(LoadError::Lost),
         );
         self.commit(shown, url, Handling::Replace);

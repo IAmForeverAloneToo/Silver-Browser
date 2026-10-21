@@ -1,6 +1,6 @@
 //! The browser's own pages (M37, docs/design/chrome.md, "The browser's
-//! pages"): `about:downloads` (and, with the settings and the profiles,
-//! the pages for them), each made by the engine from the HTML bundled
+//! pages"): `about:downloads`, `about:settings` and `about:version`
+//! (and, with the profiles, the page for them), each made by the engine from the HTML bundled
 //! here under the DevTools panel's policy, its scripts on, its window
 //! given the panel's bridge to the browser, which answers its requests
 //! from its own records. A page reaches none of them: a link, a script
@@ -14,11 +14,14 @@ use net::Url;
 pub const DOWNLOADS: &str = "about:downloads";
 /// The settings page's URL.
 pub const SETTINGS: &str = "about:settings";
+/// The page of the browser's version and build.
+pub const VERSION: &str = "about:version";
 
 /// Each page's URL and markup.
 const PAGES: &[(&str, &str)] = &[
     (DOWNLOADS, include_str!("internal/downloads.html")),
     (SETTINGS, include_str!("internal/settings.html")),
+    (VERSION, include_str!("internal/version.html")),
 ];
 
 /// Whether `url` is one of the browser's own pages.

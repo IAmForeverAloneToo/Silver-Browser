@@ -164,6 +164,50 @@ fn a_page_whose_renderer_stopped_says_so_until_reloaded() {
     assert_ne!(tab.shown_renderer(), first, "a new renderer");
 }
 
+/// Where the page saying the renderer stopped has its "Try again".
+fn try_again(tab: &mut RemoteTab) -> (f32, f32) {
+    let engine = tab.stopped_engine().expect("the page saying so");
+    engine.frame(SIZE.0, SIZE.1);
+    let document = engine.document();
+    let link = document
+        .subtree(document.root())
+        .find(|&node| document.attr(node, "href") == Some(crate::pages::RELOAD))
+        .expect("a Try again");
+    let fragment = engine
+        .fragments(SIZE.0 as f32)
+        .into_iter()
+        .find(|fragment| fragment.node == link)
+        .expect("laid out");
+    (fragment.x + 4.0, fragment.top() + 4.0)
+}
+
+#[test]
+fn the_try_again_of_a_page_whose_renderer_stopped_brings_it_back() {
+    let server = server();
+    let mut tab = tab();
+    let mut lines = Vec::new();
+    tab.navigate(url(&server, "a.localhost", "/green"));
+    settle(&mut tab, &mut lines, "the page", |tab, _| {
+        *tab.load_state() == LoadState::Loaded
+    });
+    let first = tab.shown_renderer();
+    tab.kill_renderer();
+    settle(&mut tab, &mut lines, "the renderer gone", |tab, _| {
+        *tab.load_state() == LoadState::Failed(LoadError::Lost)
+    });
+    composed(&mut tab);
+    let (x, y) = try_again(&mut tab);
+    assert_eq!(tab.cursor_at(x, y), crate::Cursor::Pointer, "a link");
+    tab.pointer_move(x, y);
+    tab.pointer_down(x, y, Button::Primary, 1);
+    tab.pointer_up(x, y, Button::Primary, 1);
+    settle(&mut tab, &mut lines, "the page again", |tab, _| {
+        *tab.load_state() == LoadState::Loaded
+    });
+    assert_eq!(pixel(&composed(&mut tab), 5, 5), GREEN);
+    assert_ne!(tab.shown_renderer(), first, "a new renderer");
+}
+
 #[test]
 fn a_frame_whose_renderer_stopped_says_so_and_comes_back_when_navigated() {
     let server = server();

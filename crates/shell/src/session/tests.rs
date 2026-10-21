@@ -2646,3 +2646,27 @@ fn the_tabs_are_kept_and_a_session_is_restored() {
     assert_eq!(again.session.engine().url(), Some(&server.url("/a")));
     again.wait_until(|session| titles(session)[1].starts_with('b'));
 }
+
+#[test]
+fn the_version_page_says_the_version_the_commit_the_build_and_the_profile() {
+    let mut window = Window::new(None, Platform::Other);
+    window.settle();
+    let folder = std::env::temp_dir().join("silver-version-page");
+    window.session.set_profile_folder(Some(folder.clone()));
+    window.type_text("about:version");
+    window.press_key(Key::Enter, NONE);
+    let deadline = Instant::now() + WAIT;
+    let text = loop {
+        let document = window.session.engine().document();
+        let text = document.text_content(document.root());
+        if text.contains(env!("CARGO_PKG_VERSION")) {
+            break text;
+        }
+        assert!(Instant::now() < deadline, "the page asks: {text}");
+        tick_a_while(&mut window);
+    };
+    assert!(text.contains(env!("SILVER_COMMIT")), "{text}");
+    assert!(text.contains(env!("SILVER_TARGET")), "{text}");
+    assert!(text.contains(&folder.display().to_string()), "{text}");
+    assert_eq!(window.session.engine().title(), "About Silver Browser");
+}

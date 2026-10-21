@@ -611,6 +611,12 @@ impl<V: View> Session<V> {
         &self.context
     }
 
+    /// The profile kept is in `folder`, for `about:version`; none is,
+    /// with none.
+    pub(crate) fn set_profile_folder(&mut self, folder: Option<std::path::PathBuf>) {
+        self.pages.set_profile_folder(folder);
+    }
+
     /// What opens a downloaded file from now on: the tests'.
     #[cfg(test)]
     pub(crate) fn set_opener(&mut self, opener: crate::internal::Opener) {

@@ -1146,9 +1146,16 @@ fn run<V: View + 'static>(
         view
     };
     let mut engine = configured();
-    if let Some(why) = use_profile(&mut engine, profile()) {
+    let read = profile();
+    let folder = match &read {
+        Ok(Some((dir, _))) => Some(dir.clone()),
+        _ => None,
+    };
+    let unkept = use_profile(&mut engine, read);
+    if let Some(why) = &unkept {
         eprintln!("silver-browser: {why}");
     }
+    let folder = folder.filter(|_| unkept.is_none());
     // Downloads go to the user's folder (M37), unless the settings chose
     // another.
     let settings = context.settings();
@@ -1171,6 +1178,7 @@ fn run<V: View + 'static>(
         Platform::current(),
         start,
     );
+    session.set_profile_folder(folder);
     // The command line's word stands over the settings' (M37).
     session.set_forced(session::Forced {
         scripts: line.scripts,
