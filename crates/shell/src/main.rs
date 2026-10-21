@@ -41,6 +41,7 @@
 
 mod crashes;
 mod devtools;
+mod internal;
 mod keys;
 mod platform;
 mod processes;

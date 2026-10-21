@@ -672,3 +672,29 @@ fn a_renderers_link_with_a_download_attribute_is_saved_by_the_browser() {
     assert_eq!(tab.url(), Some(&server.url("/")));
     let _ = std::fs::remove_dir_all(&folder);
 }
+
+#[test]
+fn the_browsers_own_page_is_in_a_renderer_locked_to_it_and_talks_through_the_bridge() {
+    // M37: about:downloads in a renderer of its own, locked Internal,
+    // whose page's requests reach the browser and whose answers come
+    // back.
+    let mut tab = tab();
+    tab.set_scripting(false);
+    tab.navigate(crate::Url::parse(crate::internal::DOWNLOADS).unwrap());
+    let mut asked = Vec::new();
+    settle(&mut tab, |tab| {
+        asked.extend(tab.take_devtools());
+        !asked.is_empty()
+    });
+    assert!(asked[0].contains("downloads.list"), "{asked:?}");
+    let locks: Vec<_> = tab.renderers().into_iter().map(|(_, lock)| lock).collect();
+    assert_eq!(locks, [Some("internal".to_owned())]);
+    let request = devtools::Request::parse(&asked[0]).unwrap();
+    let going = devtools::Json::parse(
+        "[{\"id\":1,\"name\":\"a.zip\",\"url\":\"https://a.test/a.zip\",\"received\":1,\
+         \"total\":9,\"state\":\"in progress\",\"why\":null}]",
+    )
+    .unwrap();
+    tab.devtools_send(devtools::result(request.id, going));
+    settle(&mut tab, |tab| tab.title() == "Downloads (1 in progress)");
+}

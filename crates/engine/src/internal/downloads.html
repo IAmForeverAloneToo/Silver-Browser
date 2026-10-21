@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Downloads</title>
+<!--
+  about:downloads (M37, docs/design/chrome.md, "The browser's pages"): the
+  window's downloads, newest first, with what may be done to each. A page
+  of the browser's own, made by it and reached by no link; its requests
+  go to the browser through the bridge the DevTools panel has, and every
+  name and URL shown is put in as text.
+-->
+<style>
+  :root { color-scheme: light dark; --fg: #1f1f1f; --muted: #5f6368; --bg: #f7f7f7;
+          --card: #ffffff; --edge: #dadce0; --accent: #1a73e8; --bad: #b3261e }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg: #e8eaed; --muted: #9aa0a6; --bg: #202124; --card: #2d2e31;
+            --edge: #3c4043; --accent: #8ab4f8; --bad: #f28b82 }
+  }
+  body { margin: 0; font: 14px sans-serif; background: var(--bg); color: var(--fg) }
+  main { max-width: 720px; margin: 32px auto; padding: 0 16px }
+  h1 { font-size: 24px; font-weight: normal; margin: 0 0 16px }
+  .empty { color: var(--muted) }
+  .item { background: var(--card); border: 1px solid var(--edge); border-radius: 8px;
+          padding: 12px 16px; margin: 0 0 12px }
+  .name { font-weight: bold; overflow-wrap: anywhere }
+  .url { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; margin: 2px 0 6px }
+  .state { margin: 0 0 8px }
+  .state.bad { color: var(--bad) }
+  .bar { height: 4px; background: var(--edge); border-radius: 2px; margin: 0 0 8px }
+  .bar div { height: 4px; background: var(--accent); border-radius: 2px }
+  button { font: inherit; color: var(--accent); background: none; border: 1px solid var(--edge);
+           border-radius: 4px; padding: 4px 10px; margin: 0 6px 0 0; cursor: pointer }
+</style>
+</head>
+<body>
+<main>
+<h1>Downloads</h1>
+<div id="list"></div>
+</main>
+<script>
+"use strict";
+const pending = new Map();
+let next = 1;
+
+// Request `method` of the browser: a promise of its result.
+function call(method, params) {
+  const id = next++;
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+    devtools.send(JSON.stringify({ id, method, params: params || {} }));
+  });
+}
+
+devtools.onmessage = (text) => {
+  let message;
+  try {
+    message = JSON.parse(text);
+  } catch (e) {
+    return;
+  }
+  if (message.event === "downloads.updated") {
+    show(message.params.downloads);
+    return;
+  }
+  const waiting = pending.get(message.id);
+  if (waiting) {
+    pending.delete(message.id);
+    if ("error" in message) {
+      waiting.reject(message.error);
+    } else {
+      waiting.resolve(message.result);
+    }
+  }
+};
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) {
+    node.className = cls;
+  }
+  if (text !== undefined) {
+    node.textContent = text;
+  }
+  return node;
+}
+
+function size(bytes) {
+  if (bytes < 1024) {
+    return bytes + " B";
+  }
+  if (bytes < 1024 * 1024) {
+    return (bytes / 1024).toFixed(1) + " KB";
+  }
+  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+function button(text, method, id) {
+  const b = el("button", "", text);
+  b.dataset.action = method;
+  b.addEventListener("click", () => {
+    call(method, { id }).then(refresh, refresh);
+  });
+  return b;
+}
+
+// What each state says, and may be done.
+function describe(d) {
+  const got = size(d.received) + (d.total ? " of " + size(d.total) : "");
+  switch (d.state) {
+    case "in progress":
+      return { text: "Saving: " + got, actions: [["Cancel", "downloads.cancel"]] };
+    case "complete":
+      return { text: "Saved: " + size(d.received),
+               actions: [["Open", "downloads.open"], ["Show in folder", "downloads.show"],
+                         ["Remove from list", "downloads.remove"]] };
+    case "held":
+      return { text: "This file can run code on this computer. It is kept aside until you keep it.",
+               bad: true,
+               actions: [["Keep", "downloads.keep"], ["Remove from list", "downloads.remove"]] };
+    case "cancelled":
+      return { text: "Cancelled", actions: [["Remove from list", "downloads.remove"]] };
+    default:
+      return { text: "Failed: " + (d.why || ""), bad: true,
+               actions: [["Remove from list", "downloads.remove"]] };
+  }
+}
+
+function show(downloads) {
+  // The tab's title says how many are under way.
+  const going = downloads.filter((d) => d.state === "in progress").length;
+  document.title = going ? "Downloads (" + going + " in progress)" : "Downloads";
+  const list = document.getElementById("list");
+  list.textContent = "";
+  if (!downloads.length) {
+    list.appendChild(el("p", "empty", "Nothing has been downloaded yet."));
+    return;
+  }
+  for (const d of downloads.slice().reverse()) {
+    const item = el("div", "item");
+    item.dataset.id = String(d.id);
+    item.appendChild(el("div", "name", d.name));
+    item.appendChild(el("div", "url", d.url));
+    const what = describe(d);
+    item.appendChild(el("div", what.bad ? "state bad" : "state", what.text));
+    if (d.state === "in progress" && d.total) {
+      const bar = el("div", "bar");
+      const done = el("div");
+      done.style.width = Math.min(100, Math.round(100 * d.received / d.total)) + "%";
+      bar.appendChild(done);
+      item.appendChild(bar);
+    }
+    for (const [text, method] of what.actions) {
+      item.appendChild(button(text, method, d.id));
+    }
+    list.appendChild(item);
+  }
+}
+
+function refresh() {
+  call("downloads.list").then(show, () => {});
+}
+
+refresh();
+</script>
+</body>
+</html>

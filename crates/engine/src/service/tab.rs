@@ -1157,13 +1157,23 @@ impl RemoteTab {
             | ToBrowser::CloseTab { view } => Some(*view),
             // The panel's messages from the panel's tab, the answers to it
             // from a page's (M36).
-            ToBrowser::DevTools { view, .. } if self.panel => Some(*view),
+            ToBrowser::DevTools { view, .. } => Some(*view),
             ToBrowser::Inspected { view, .. } if !self.panel => Some(*view),
             _ => None,
         };
         let Some(view) = view_of(&message) else {
             return Err(format!("{message:?} out of place"));
         };
+        // The panel's messages, or those of the browser's own pages (M37),
+        // from a renderer locked to them alone; any other's is a lie.
+        if matches!(message, ToBrowser::DevTools { .. })
+            && !self.panel
+            && !self
+                .segment_of(number, view)
+                .is_ok_and(|index| self.segments[index].lock == Lock::Internal)
+        {
+            return Err(format!("{message:?} out of place"));
+        }
         let id = (number, view);
         let framed = self.frame_views.contains_key(&id);
         let segment = match framed {
@@ -2027,7 +2037,10 @@ impl View for RemoteTab {
     }
 
     fn devtools_send(&mut self, message: String) {
-        if self.panel {
+        let internal = self
+            .segment()
+            .is_some_and(|segment| segment.lock == Lock::Internal);
+        if self.panel || internal {
             self.send(|view| ToRenderer::DevTools { view, message });
         }
     }

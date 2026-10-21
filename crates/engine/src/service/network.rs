@@ -40,6 +40,8 @@ pub enum Lock {
     Opaque,
     /// The DevTools panel's page alone (M36): no network, no storage.
     DevTools,
+    /// The browser's own pages alone (M37): no network, no storage.
+    Internal,
 }
 
 impl std::fmt::Display for Lock {
@@ -49,6 +51,7 @@ impl std::fmt::Display for Lock {
             Lock::File => write!(f, "file:"),
             Lock::Opaque => write!(f, "opaque"),
             Lock::DevTools => write!(f, "devtools:"),
+            Lock::Internal => write!(f, "internal"),
         }
     }
 }
@@ -61,6 +64,9 @@ impl Lock {
         }
         if url.scheme() == "devtools" {
             return Lock::DevTools;
+        }
+        if crate::internal::is_internal(url) {
+            return Lock::Internal;
         }
         match url.origin().site() {
             net::Site::Schemeful { scheme, host } => Lock::Site { scheme, host },
@@ -476,6 +482,7 @@ impl NetworkService {
         // renderer fetches nothing (M36).
         let refused = match lock {
             Lock::DevTools => Some("devtools"),
+            Lock::Internal => Some("internal"),
             Lock::File => None,
             _ => (request.url.scheme() == "file").then_some("file"),
         };

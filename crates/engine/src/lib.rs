@@ -108,6 +108,9 @@ mod frames;
 pub mod idb;
 mod image_store;
 mod inspect;
+pub mod internal;
+#[cfg(test)]
+mod internal_tests;
 pub mod ipc;
 mod keys;
 mod loader;
@@ -438,6 +441,9 @@ pub struct Engine {
     listener: u64,
     /// Whether a script opened the tab (M37).
     opened_by_script: bool,
+    /// The user's scripting setting while an internal page, whose
+    /// scripts always run, is shown (M37).
+    own_scripting: Option<bool>,
     /// Where the tab's downloads are saved (M37): its context's.
     downloads: downloads::Downloads,
     /// The Web Storage areas the browser keeps, in a renderer (M34.1); the
@@ -1258,6 +1264,7 @@ impl Engine {
             tab: 0,
             listener,
             opened_by_script: false,
+            own_scripting: None,
             downloads: downloads::Downloads::new(),
             areas: None,
             storage_events: VecDeque::new(),
@@ -1382,7 +1389,10 @@ impl Engine {
             && left.parsing.is_none()
             && left.scripts.keepable()
             && !self.frame.is_frame()
-            && left.frames.values().all(frames::Frame::settled);
+            && left.frames.values().all(frames::Frame::settled)
+            // The browser's own pages are made again (M37): their scripts
+            // run whatever the setting the page coming back has.
+            && !left.page.url().is_some_and(internal::is_internal);
         self.unload(&mut left, kept);
         if kept {
             left.scripts.collect();
@@ -3829,6 +3839,12 @@ impl Engine {
         self.cancel_navigation();
         self.posting = post.is_some();
         let pending_form = self.pending_form.take();
+        // The browser's own pages (M37), of a tab's top-level document.
+        if internal::is_internal(&url) && !self.frame.is_frame() {
+            self.show_internal(url, handling);
+            return;
+        }
+        self.leave_internal();
         if url.scheme() == "about" && url.path_str() != "blank" {
             // A mixed form page's links, followed from that page alone
             // (M33.3): "Send anyway" sends what it held back, in its
@@ -3947,9 +3963,9 @@ impl Engine {
     /// it is under the panel's URL (M36).
     fn panel_page(&self, page: Page) -> Page {
         if self.panel
-            && page
-                .url()
-                .is_some_and(|url| url.as_str() == devtools::PANEL_URL)
+            && page.url().is_some_and(|url| {
+                url.as_str() == devtools::PANEL_URL || internal::is_internal(url)
+            })
         {
             page.into_panel()
         } else {
@@ -4026,6 +4042,11 @@ impl Engine {
     /// M33 and M34 (roadmap risk R2). A document already loaded keeps how
     /// it was parsed; the `scripting` media feature follows at once.
     pub fn set_scripting(&mut self, on: bool) {
+        // An internal page's scripts run whatever the setting (M37).
+        if self.own_scripting.is_some() {
+            self.own_scripting = Some(on);
+            return;
+        }
         self.for_each_frame(&mut |frame| frame.set_scripting(on));
         self.scripting = on;
         let media = self.media(self.viewport);
@@ -4041,7 +4062,7 @@ impl Engine {
 
     /// Whether scripts run.
     pub fn scripting(&self) -> bool {
-        self.scripting
+        self.own_scripting.unwrap_or(self.scripting)
     }
 
     /// Whether the shown document's scripts run: scripting is on, and
@@ -4185,6 +4206,9 @@ impl Engine {
             return;
         };
         let (state, url, scroll) = (entry.state, entry.url.clone(), entry.scroll);
+        if !url.as_ref().is_some_and(internal::is_internal) {
+            self.leave_internal();
+        }
         self.cancel_navigation();
         self.history.current_mut().scroll = self.shown.scroll_target;
         let left_state = self.history.current().state;

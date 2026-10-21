@@ -20,6 +20,7 @@ use ui::{
 };
 
 use crate::devtools::Router;
+use crate::internal::Pages;
 use crate::keys::{self, Key, Modifiers, Platform, Shortcut};
 
 /// The tab strip's height (M37): the toolbar starts below it.
@@ -158,6 +159,8 @@ pub(crate) struct Session<V: View = Engine> {
     /// Whether the tabs pages asked for are being opened: the opening
     /// syncs, which opens none again.
     opening: bool,
+    /// What answers the browser's own pages (M37).
+    pages: Pages,
     toolbar: Toolbar,
     bubble: StatusBubble,
     /// The permission prompt the engine wants shown (M33.4), its bar, and
@@ -235,6 +238,7 @@ impl<V: View> Session<V> {
             closing: false,
             closed: Vec::new(),
             opening: false,
+            pages: Pages::new(Box::new(crate::platform::open_path)),
             toolbar: Toolbar::new(fonts.clone()),
             prompt: None,
             prompt_bar: PromptBar::new(fonts.clone()),
@@ -413,6 +417,7 @@ impl<V: View> Session<V> {
             shown: self.shows,
         }));
         self.active = index;
+        self.pages.reset();
         self.engine.set_hidden(self.hidden);
         if let Some(panel) = &mut self.panel {
             panel.set_hidden(self.hidden);
@@ -469,6 +474,28 @@ impl<V: View> Session<V> {
             }
         }
         self.sync();
+    }
+
+    /// Shows the downloads page (M37): the tab that shows it, or a new
+    /// one.
+    pub(crate) fn show_downloads(&mut self) {
+        let page = Url::parse(engine::internal::DOWNLOADS).expect("the page's URL parses");
+        let showing = self.tabs.iter().position(|tab| match tab {
+            None => self.engine.url() == Some(&page),
+            Some(parked) => parked.view.as_ref().and_then(|view| view.url()) == Some(&page),
+        });
+        match showing {
+            Some(index) => self.switch_to(index),
+            None => {
+                self.new_tab(Some(page), true);
+            }
+        }
+    }
+
+    /// What opens a downloaded file from now on: the tests'.
+    #[cfg(test)]
+    pub(crate) fn set_opener(&mut self, opener: crate::internal::Opener) {
+        self.pages = Pages::new(opener);
     }
 
     /// Opens again, shown, the tab closed last (M37).
@@ -1338,6 +1365,7 @@ impl<V: View> Session<V> {
             Shortcut::SelectTab(index) => self.switch_to(index.min(self.tabs.len() - 1)),
             Shortcut::LastTab => self.switch_to(self.tabs.len() - 1),
             Shortcut::ReopenTab => self.reopen_tab(),
+            Shortcut::Downloads => self.show_downloads(),
         }
     }
 
@@ -1596,6 +1624,8 @@ impl<V: View> Session<V> {
         if let Some(panel) = &mut self.panel {
             self.router.route(panel, &mut self.engine);
         }
+        // The browser's own page shown answered (M37).
+        self.pages.serve(&mut self.engine);
     }
 
     /// The page has the system's focus while the window has it and the

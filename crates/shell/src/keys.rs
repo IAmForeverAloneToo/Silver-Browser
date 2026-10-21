@@ -98,6 +98,8 @@ pub(crate) enum Shortcut {
     LastTab,
     /// Opens again the tab closed last.
     ReopenTab,
+    /// Shows the downloads page.
+    Downloads,
 }
 
 /// What `key`, pressed with `mods` held on `platform`, asks for: in the
@@ -134,6 +136,8 @@ pub(crate) fn shortcut(
         // The tabs (M37).
         (_, "t") if command && !mods.shift => Some(Shortcut::NewTab),
         (_, "t") if command && mods.shift => Some(Shortcut::ReopenTab),
+        (_, "j") if !mac && mods.ctrl && !mods.shift && !mods.alt => Some(Shortcut::Downloads),
+        (_, "j") if mac && mods.logo && mods.shift && !mods.alt => Some(Shortcut::Downloads),
         (_, "w") if command && !mods.shift => Some(Shortcut::CloseTab),
         (Key::F4, _) if !mac && mods.ctrl && !mods.alt => Some(Shortcut::CloseTab),
         (Key::Tab, _) if mods.ctrl && !mods.alt && !mods.logo => Some(match mods.shift {
@@ -470,5 +474,13 @@ mod tests {
         assert_eq!(mac(char("3"), CMD), Some(SelectTab(2)));
         assert_eq!(other(char("9"), CTRL), Some(LastTab));
         assert_eq!(other(char("0"), CTRL), None);
+        assert_eq!(other(char("j"), CTRL), Some(Downloads));
+        let cmd_shift = Modifiers {
+            logo: true,
+            shift: true,
+            ..NONE
+        };
+        assert_eq!(mac(char("j"), cmd_shift), Some(Downloads));
+        assert_eq!(mac(char("j"), CMD), None);
     }
 }

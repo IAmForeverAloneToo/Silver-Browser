@@ -78,6 +78,46 @@ fn downloads_folder_in(var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf
         .map(|path| path.join("Downloads"))
 }
 
+/// Opens the file at `path` with the program the system has for it, or,
+/// if `reveal`, shows it selected in its folder (M37, the downloads
+/// page): Explorer on Windows, `open` on macOS, `xdg-open` elsewhere,
+/// which on Linux shows the folder alone. The path is a download's the
+/// browser saved, never a page's word.
+pub(crate) fn open_path(path: &std::path::Path, reveal: bool) -> Result<(), String> {
+    let mut command;
+    #[cfg(windows)]
+    {
+        command = std::process::Command::new("explorer.exe");
+        if reveal {
+            let mut select = std::ffi::OsString::from("/select,");
+            select.push(path.as_os_str());
+            command.arg(select);
+        } else {
+            command.arg(path);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        command = std::process::Command::new("open");
+        if reveal {
+            command.arg("-R");
+        }
+        command.arg(path);
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        command = std::process::Command::new("xdg-open");
+        match (reveal, path.parent()) {
+            (true, Some(folder)) => command.arg(folder),
+            _ => command.arg(path),
+        };
+    }
+    command
+        .spawn()
+        .map(drop)
+        .map_err(|e| format!("{} could not be opened: {e}", path.display()))
+}
+
 /// What keeps the profile's data key (M33, D27): on Windows, DPAPI for
 /// the user (`CryptProtectData`), which only the same user on the same
 /// machine can undo; elsewhere the key is kept as it is, macOS's

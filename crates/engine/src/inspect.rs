@@ -24,15 +24,22 @@ impl Engine {
     /// the global `devtools`. No navigation reaches it: this is its only
     /// way in.
     pub fn show_devtools_panel(&mut self) {
-        self.cancel_navigation();
         let url = Url::parse(devtools::PANEL_URL).expect("the panel's URL parses");
+        self.scripting = true;
+        self.show_own_page(url, &devtools::frontend::page(), Handling::Replace);
+    }
+
+    /// Shows the browser's own page `body` at `url` (M36, M37): made from
+    /// a response of the engine's own under the panel's policy, for
+    /// `handling` once shown, its window given the bridge.
+    pub(crate) fn show_own_page(&mut self, url: Url, body: &str, handling: Handling) {
+        self.cancel_navigation();
         let id = self.new_page_id();
         self.panel = true;
-        self.scripting = true;
         self.navigation = Some(Navigation {
             url: url.clone(),
             incoming: Incoming::Fetching(id),
-            handling: Handling::Replace,
+            handling,
             started: self.time_origin(),
             creator: None,
             sandbox: self.creation_sandbox(),
@@ -54,8 +61,29 @@ impl Engine {
             cors_exposed: Vec::new(),
         };
         self.document_head(id, head.clone());
-        self.document_body(id, devtools::frontend::page().as_bytes());
+        self.document_body(id, body.as_bytes());
         self.document_arrived(id, Ok(head));
+    }
+
+    /// Shows the browser's page at `url` (M37), for `handling`: its
+    /// scripts run whatever the user's setting, which comes back with
+    /// the next page.
+    pub(crate) fn show_internal(&mut self, url: Url, handling: Handling) {
+        let Some(body) = crate::internal::page(&url) else {
+            return;
+        };
+        if self.own_scripting.is_none() {
+            self.own_scripting = Some(self.scripting);
+        }
+        self.scripting = true;
+        self.show_own_page(url, body, handling);
+    }
+
+    /// The user's scripting setting back, as an internal page is left.
+    pub(crate) fn leave_internal(&mut self) {
+        if let Some(scripting) = self.own_scripting.take() {
+            self.scripting = scripting;
+        }
     }
 
     /// An engine showing the DevTools panel's page (M36), on this one's

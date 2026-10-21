@@ -2385,3 +2385,117 @@ fn a_download_is_saved_and_the_window_says_so() {
     assert_eq!(window.session.engine().url(), Some(&server.url("/")));
     let _ = std::fs::remove_dir_all(&folder);
 }
+
+/// Runs `script` in the page the window shows: its value's preview.
+fn in_page(session: &mut Session, script: &str) -> devtools::Json {
+    use devtools::Json;
+    let engine = session.engine_mut();
+    let request = devtools::Request {
+        id: 1,
+        method: "console.evaluate".to_owned(),
+        params: Json::object([("expression", Json::from(script))]),
+    };
+    engine.inspect(&request.write());
+    let answer = engine.take_inspected().pop().expect("an answer");
+    let answer = Json::parse(&answer).expect("JSON");
+    answer
+        .get("result")
+        .and_then(|r| r.get("result"))
+        .cloned()
+        .unwrap_or_else(|| panic!("{answer:?}"))
+}
+
+#[test]
+fn the_downloads_page_lists_what_was_saved_and_opens_it() {
+    use std::sync::{Arc, Mutex};
+    let folder = std::env::temp_dir().join(format!("silver-session-page-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+    let server = serve(|path| match path {
+        "/" => html("<title>page</title>"),
+        "/tool.exe" => Some(Reply::ok("application/octet-stream", b"MZ")),
+        _ => Some(Reply::with_fields(
+            200,
+            &[("Content-Disposition", "attachment; filename=\"notes.txt\"")],
+            b"notes",
+        )),
+    });
+    let mut window = Window::new(Some(server.url("/")), Platform::Other);
+    window.settle();
+    let opened: Arc<Mutex<Vec<(std::path::PathBuf, bool)>>> = Arc::default();
+    let record = opened.clone();
+    window.session.set_opener(Box::new(move |path, reveal| {
+        record.lock().unwrap().push((path.to_owned(), reveal));
+        Ok(())
+    }));
+    window
+        .session
+        .engine()
+        .downloads()
+        .set_folder(folder.clone());
+    for (path, saved) in [
+        ("/notes", "notes.txt"),
+        ("/tool.exe", "tool.exe.silverdownload"),
+    ] {
+        window.session.engine_mut().navigate(server.url(path));
+        let saved = folder.join(saved);
+        window.wait_until(|_| saved.exists());
+    }
+    // Ctrl+J: the page, in a tab of its own, listing both.
+    window.chord("j", CTRL);
+    assert_eq!(window.session.tab_count(), 2);
+    let listed = |session: &Session| {
+        let document = session.engine().document();
+        let text = document.text_content(document.root());
+        text.contains("notes.txt") && text.contains("tool.exe") && text.contains("kept aside")
+    };
+    let deadline = Instant::now() + WAIT;
+    while !listed(&window.session) {
+        assert!(Instant::now() < deadline, "the page lists them");
+        window.session.tick();
+        window.session.network();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // Its buttons: open the saved file, show it in its folder, keep the
+    // one held.
+    let press = |window: &mut Window, name: &str, action: &str| {
+        in_page(
+            &mut window.session,
+            &format!(
+                "[...document.querySelectorAll('.item')].find(i => i.textContent.includes({name:?}))\
+                 .querySelector('[data-action=\"{action}\"]').click()"
+            ),
+        );
+        for _ in 0..20 {
+            window.session.tick();
+            window.session.network();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    press(&mut window, "notes.txt", "downloads.open");
+    press(&mut window, "notes.txt", "downloads.show");
+    assert_eq!(
+        *opened.lock().unwrap(),
+        [
+            (folder.join("notes.txt"), false),
+            (folder.join("notes.txt"), true)
+        ]
+    );
+    // A file held is not opened, whatever the page asks.
+    in_page(&mut window.session, "call('downloads.open', { id: 1 })");
+    for _ in 0..20 {
+        window.session.tick();
+        window.session.network();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(opened.lock().unwrap().len(), 2);
+    press(&mut window, "tool.exe", "downloads.keep");
+    assert!(folder.join("tool.exe").exists());
+    // Ctrl+J again shows the same tab.
+    window.chord("1", CTRL);
+    window.chord("j", CTRL);
+    assert_eq!(
+        (window.session.tab_count(), window.session.active()),
+        (2, 1)
+    );
+    let _ = std::fs::remove_dir_all(&folder);
+}
