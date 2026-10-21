@@ -78,6 +78,50 @@ fn a_name_is_made_safe() {
     let long = format!("{}.tar.gz", "\u{e9}".repeat(300));
     let cut = name(&long);
     assert!(cut.len() <= MAX_FILE_NAME && cut.ends_with(".gz"), "{cut}");
+    // Cut where a dot or a space was, it ends in neither (found by the
+    // fuzzer): an extension too long to keep is cut with the rest.
+    for inner in [".", ". ."] {
+        let long = format!("{}{inner}{}", "a".repeat(MAX_FILE_NAME - 1), "b".repeat(30));
+        let cut = name(&long);
+        assert_eq!(cut, "a".repeat(MAX_FILE_NAME - 1), "{inner:?}");
+    }
+    let long = format!("{} {}.txt", "a".repeat(MAX_FILE_NAME - 5), "b".repeat(30));
+    assert_eq!(
+        name(&long),
+        format!("{}.txt", "a".repeat(MAX_FILE_NAME - 5))
+    );
+    let long = format!("{}.{}.txt", "a".repeat(MAX_FILE_NAME - 5), "b".repeat(30));
+    let cut = name(&long);
+    assert!(!cut.contains(".."), "{cut}");
+    assert!(cut.ends_with(".txt") && cut.len() <= MAX_FILE_NAME, "{cut}");
+}
+
+#[test]
+fn a_download_wakes_the_browser_when_it_ends_or_says_something() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let folder = folder("woken");
+    let downloads = Downloads::new();
+    downloads.set_folder(folder.clone());
+    // What the browser reads each time it is woken.
+    let woken = Arc::new(AtomicUsize::new(0));
+    let heard: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let (count, said, list) = (woken.clone(), heard.clone(), downloads.clone());
+    downloads.set_waker(Arc::new(move || {
+        count.fetch_add(1, Ordering::SeqCst);
+        said.lock().unwrap().extend(list.take_notices());
+    }));
+    let mut sink = downloads
+        .start(&url("https://a.test/f.txt"), None, "text/plain", None)
+        .expect("started");
+    let started = woken.load(Ordering::SeqCst);
+    assert_eq!(*heard.lock().unwrap(), ["Saving f.txt"]);
+    assert!(sink.write(b"bytes"));
+    assert_eq!(woken.load(Ordering::SeqCst), started, "not each piece");
+    sink.finish();
+    assert_eq!(*heard.lock().unwrap(), ["Saving f.txt", "Saved f.txt"]);
+    assert_eq!(downloads.list()[0].state, DownloadState::Complete);
+    let _ = std::fs::remove_dir_all(&folder);
 }
 
 #[test]
@@ -310,5 +354,30 @@ fn a_link_with_a_download_attribute_is_saved_under_its_name() {
             .is_some_and(|url| url.as_str().ends_with("/elsewhere.txt"))
     });
     assert_eq!(files(&folder).len(), 3);
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+#[test]
+fn an_engines_waker_wakes_it_for_its_downloads() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let folder = folder("engine-woken");
+    let mut engine = crate::Engine::with_fonts(
+        text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0).unwrap(),
+    );
+    engine.join(&crate::Context::new());
+    let woken = Arc::new(AtomicUsize::new(0));
+    let count = woken.clone();
+    engine.set_waker(move || {
+        count.fetch_add(1, Ordering::SeqCst);
+    });
+    let before = woken.load(Ordering::SeqCst);
+    engine.downloads().set_folder(folder.clone());
+    let sink = engine
+        .downloads()
+        .start(&url("https://a.test/f.txt"), None, "text/plain", None)
+        .expect("started");
+    sink.finish();
+    assert!(woken.load(Ordering::SeqCst) >= before + 2);
     let _ = std::fs::remove_dir_all(&folder);
 }

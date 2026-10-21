@@ -5740,6 +5740,7 @@ impl Engine {
     /// the shell's way to be woken to call [`Engine::poll_network`].
     pub fn set_waker(&mut self, waker: impl Fn() + Send + Sync + 'static) {
         let waker: loader::Waker = std::sync::Arc::new(waker);
+        self.downloads.set_waker(waker.clone());
         self.use_waker(waker.clone());
         self.for_each_frame(&mut |frame| frame.use_waker(waker.clone()));
     }

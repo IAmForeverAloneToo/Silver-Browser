@@ -157,6 +157,9 @@ struct State {
     list: Vec<Download>,
     next: u64,
     notices: Vec<String>,
+    /// What wakes the browser when a download ends or has a notice:
+    /// the thread it is written on wakes nothing else.
+    waker: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Downloads {
@@ -166,6 +169,20 @@ impl Downloads {
 
     fn state(&self) -> MutexGuard<'_, State> {
         self.shared.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Wakes the browser with `waker` when a download's state changes or
+    /// it has something to say, from now on.
+    pub fn set_waker(&self, waker: Arc<dyn Fn() + Send + Sync>) {
+        self.state().waker = Some(waker);
+    }
+
+    /// Wakes the browser, out of the lock.
+    fn wake(&self) {
+        let waker = self.state().waker.clone();
+        if let Some(waker) = waker {
+            waker();
+        }
     }
 
     /// Saves downloads into `folder` from now on.
@@ -229,6 +246,8 @@ impl Downloads {
             state: DownloadState::InProgress,
         });
         prune(&mut state.list);
+        drop(state);
+        self.wake();
         Ok(Sink {
             downloads: self.clone(),
             id,
@@ -306,8 +325,11 @@ impl Downloads {
         }
     }
 
+    /// Says `text`, waking the browser: each end of a download, its
+    /// state changed first, says something.
     fn notice(&self, text: String) {
         self.state().notices.push(text);
+        self.wake();
     }
 }
 
@@ -611,9 +633,14 @@ fn cut(name: &str) -> String {
     while !stem.is_char_boundary(end) {
         end -= 1;
     }
+    // Cut, it may end where a dot or a space was inside it.
+    let cut = match stem[..end].trim_end_matches(['.', ' ']) {
+        "" => "download",
+        cut => cut,
+    };
     match extension {
-        Some(extension) => format!("{}.{extension}", &stem[..end]),
-        None => stem[..end].to_owned(),
+        Some(extension) => format!("{cut}.{extension}"),
+        None => cut.to_owned(),
     }
 }
 

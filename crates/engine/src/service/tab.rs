@@ -2080,6 +2080,7 @@ impl View for RemoteTab {
 
     fn set_waker(&mut self, waker: Arc<dyn Fn() + Send + Sync>) {
         self.permissions.set_waker(waker.clone());
+        self.context.downloads().set_waker(waker.clone());
         *self.waker.lock().unwrap_or_else(PoisonError::into_inner) = Some(waker);
     }
 
