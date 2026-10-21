@@ -1,0 +1,6 @@
+€:method:GET
+:path:/
+
+:method:GET
+cookie:a=b
+authorization:secret

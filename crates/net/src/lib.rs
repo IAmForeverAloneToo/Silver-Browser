@@ -22,6 +22,7 @@ pub mod data_url;
 pub mod disposition;
 mod error;
 pub mod fetch;
+pub mod h2;
 pub mod headers;
 pub mod hsts;
 pub mod http;

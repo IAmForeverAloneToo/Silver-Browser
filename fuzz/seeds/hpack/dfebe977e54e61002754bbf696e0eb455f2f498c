@@ -1,0 +1,8 @@
+€:method:GET
+:path:/
+
+:meth:GET
+'path:/
+
+:mmethod:GET
+cookie:acet

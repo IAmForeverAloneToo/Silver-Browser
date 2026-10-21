@@ -1,0 +1,12 @@
+.:G
+;p:~
+
+:mdret
+GET
+;qath:/
+
+G
+;p:~
+
+:mdretaccept-language
+GET:m
