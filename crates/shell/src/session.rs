@@ -22,6 +22,7 @@ use ui::{
 use crate::devtools::Router;
 use crate::internal::Pages;
 use crate::keys::{self, Key, Modifiers, Platform, Shortcut};
+use crate::windows::WindowRequest;
 
 /// The tab strip's height (M37): the toolbar starts below it.
 const STRIP: f32 = ui::tabs::HEIGHT as f32;
@@ -154,6 +155,12 @@ pub(crate) struct Session<V: View = Engine> {
     preferences: Option<Preferences>,
     /// Whether the last tab was closed: the window is to close.
     closing: bool,
+    /// The windows the window asked the browser for since it last asked
+    /// (M37); whether it is private; and how many renderers its tabs may
+    /// keep alive, its share of [`MAX_ALL_RENDERERS`].
+    window_requests: Vec<WindowRequest>,
+    private: bool,
+    renderer_budget: usize,
     /// The URLs of the tabs closed last, the last at the end.
     closed: Vec<Url>,
     /// Whether the tabs pages asked for are being opened: the opening
@@ -250,6 +257,9 @@ impl<V: View> Session<V> {
             hidden: false,
             preferences: None,
             closing: false,
+            window_requests: Vec::new(),
+            private: false,
+            renderer_budget: MAX_ALL_RENDERERS,
             closed: Vec::new(),
             opening: false,
             pages: Pages::new(Box::new(crate::platform::open_path)),
@@ -310,6 +320,58 @@ impl<V: View> Session<V> {
     /// Whether the last tab was closed: the window is to close (M37).
     pub(crate) fn wants_close(&self) -> bool {
         self.closing
+    }
+
+    /// The windows asked for since this was last asked (M37): by the
+    /// keys, or from `about:profiles`.
+    pub(crate) fn take_window_requests(&mut self) -> Vec<WindowRequest> {
+        std::mem::take(&mut self.window_requests)
+    }
+
+    /// Says `notice` until the next input (M37).
+    pub(crate) fn tell(&mut self, notice: String) {
+        self.notice = Some(notice);
+    }
+
+    /// Closes the window, its tabs with it (M37).
+    pub(crate) fn close_window(&mut self) {
+        if self.closing {
+            return;
+        }
+        self.engine.closed();
+        for parked in self.tabs.iter_mut().flatten() {
+            if let Some(view) = &mut parked.view {
+                view.closed();
+            }
+        }
+        self.closing = true;
+    }
+
+    /// Makes the window a private one (M37): its strip marked and its
+    /// title saying so.
+    pub(crate) fn set_private(&mut self, private: bool) {
+        self.private = private;
+        self.strip.set_private(private);
+        self.sync();
+    }
+
+    /// Whether the window is a private one.
+    #[cfg(test)]
+    pub(crate) fn is_private(&self) -> bool {
+        self.private
+    }
+
+    /// The profile the window keeps, by the name `about:profiles` gives
+    /// it, and the folder the profiles are in (M37).
+    pub(crate) fn set_profiles(&mut self, name: String, root: Option<std::path::PathBuf>) {
+        self.pages.set_profiles(name, root);
+    }
+
+    /// Lets the window's tabs keep `budget` renderers alive (M37): its
+    /// share, among the windows, of [`MAX_ALL_RENDERERS`].
+    pub(crate) fn set_renderer_budget(&mut self, budget: usize) {
+        self.renderer_budget = budget.max(1);
+        self.cap_renderers();
     }
 
     /// The tabs as the strip shows them.
@@ -692,7 +754,7 @@ impl<V: View> Session<V> {
     }
 
     /// Discards the hidden tabs least recently shown while the window's
-    /// tabs keep more than [`MAX_ALL_RENDERERS`] renderers alive.
+    /// tabs keep more than their budget of renderers alive.
     fn cap_renderers(&mut self) {
         loop {
             let count = |view: &V| view.renderer_count();
@@ -701,7 +763,7 @@ impl<V: View> Session<V> {
                 total += parked.view.as_deref().map_or(0, count);
                 total += parked.panel.as_deref().map_or(0, count);
             }
-            if total <= MAX_ALL_RENDERERS {
+            if total <= self.renderer_budget {
                 return;
             }
             let shown: Vec<Option<u64>> = self
@@ -1502,6 +1564,10 @@ impl<V: View> Session<V> {
             Shortcut::LastTab => self.switch_to(self.tabs.len() - 1),
             Shortcut::ReopenTab => self.reopen_tab(),
             Shortcut::Downloads => self.show_downloads(),
+            // The windows (M37).
+            Shortcut::NewWindow => self.window_requests.push(WindowRequest::New),
+            Shortcut::PrivateWindow => self.window_requests.push(WindowRequest::Private),
+            Shortcut::CloseWindow => self.close_window(),
         }
     }
 
@@ -1753,6 +1819,9 @@ impl<V: View> Session<V> {
             loading: *self.engine.load_state() == LoadState::Loading,
         });
         self.title = ui::window_title(&self.engine.title(), url.as_deref());
+        if self.private {
+            self.title.push_str(" (Private)");
+        }
         // The tabs pages asked for, or asked to close (M37).
         if !self.opening {
             self.opening = true;
@@ -1768,6 +1837,7 @@ impl<V: View> Session<V> {
         // The browser's own page shown answered (M37), and the settings
         // applied when they changed; the tabs kept for the session.
         self.pages.serve(&mut self.engine, &self.context);
+        self.window_requests.extend(self.pages.take_requests());
         self.apply_settings();
         self.keep_session();
     }

@@ -128,8 +128,16 @@ pub struct TabStrip {
     /// Where the pointer is while a tab is dragged.
     pointer_x: f32,
     colors: Colors,
+    /// Whether the window is a private one (M37): a band across the
+    /// strip's top says so.
+    private: bool,
     changed: bool,
 }
+
+/// The band across a private window's strip.
+pub const PRIVATE_MARK: Rgba8 = Rgba8::rgb(0x7B, 0x3F, 0xC4);
+/// How tall it is.
+pub const PRIVATE_BAND: f32 = 3.0;
 
 impl TabStrip {
     pub fn new(fonts: FontCollection) -> TabStrip {
@@ -144,6 +152,7 @@ impl TabStrip {
             press: None,
             pointer_x: 0.0,
             colors: LIGHT,
+            private: false,
             changed: true,
         }
     }
@@ -159,6 +168,14 @@ impl TabStrip {
             if moved {
                 self.keep_shown_in_view();
             }
+        }
+    }
+
+    /// Marks the strip as a private window's, or not.
+    pub fn set_private(&mut self, private: bool) {
+        if private != self.private {
+            self.private = private;
+            self.changed = true;
         }
     }
 
@@ -425,6 +442,15 @@ impl TabStrip {
             });
         }
         items.extend(plus(x + w / 2.0, y + h / 2.0, c.dimmed));
+        if self.private {
+            items.push(DisplayItem::Rect {
+                x: 0.0,
+                y: 0.0,
+                w: width,
+                h: PRIVATE_BAND,
+                color: PRIVATE_MARK,
+            });
+        }
         DisplayList { items }
     }
 

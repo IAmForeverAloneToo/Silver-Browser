@@ -27,6 +27,9 @@ winit.workspace = true
 softbuffer.workspace = true
 arboard.workspace = true
 
+# A profile in memory: a private window's (M37).
+profile.workspace = true
+
 # The user's preferences where the operating system says them (M20.3).
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
@@ -37,5 +40,3 @@ objc2-app-kit.workspace = true
 [dev-dependencies]
 # The scripted server, and the bundled font, the session's tests run on.
 net = { workspace = true, features = ["test-server"] }
-# A profile in memory, for the windows that keep what they keep (M28).
-profile.workspace = true

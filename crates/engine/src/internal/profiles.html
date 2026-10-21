@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Profiles</title>
+<!--
+  about:profiles (M37, docs/design/chrome.md, "Profiles"): the profiles
+  there are, each opened in a window of its own, and a new one made. A
+  page of the browser's own, reached by no link; its requests go to the
+  browser through the bridge the DevTools panel has.
+-->
+<style>
+  :root { color-scheme: light dark; --fg: #1f1f1f; --muted: #5f6368; --bg: #f7f7f7;
+          --card: #ffffff; --edge: #dadce0; --accent: #1a73e8; --bad: #b3261e }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg: #e8eaed; --muted: #9aa0a6; --bg: #202124; --card: #2d2e31;
+            --edge: #3c4043; --accent: #8ab4f8; --bad: #f28b82 }
+  }
+  body { margin: 0; font: 14px sans-serif; background: var(--bg); color: var(--fg) }
+  main { max-width: 720px; margin: 32px auto; padding: 0 16px }
+  h1 { font-size: 24px; font-weight: normal; margin: 0 0 16px }
+  section { background: var(--card); border: 1px solid var(--edge); border-radius: 8px;
+            padding: 12px 16px; margin: 0 0 12px }
+  li { margin: 6px 0 }
+  .note { color: var(--muted); font-size: 12px }
+  .bad { color: var(--bad) }
+  select, input, button { font: inherit }
+</style>
+</head>
+<body>
+<main>
+<h1>Profiles</h1>
+<section>
+  <p>This window keeps the profile <b id="current"></b>.</p>
+  <ul id="list"></ul>
+  <p class="note">Each profile keeps its own cookies, storage, settings and tabs. A
+    private window (Ctrl+Shift+N) keeps nothing once it closes.</p>
+</section>
+<section>
+  <label>A new profile <input type="text" id="name" maxlength="64"></label>
+  <button id="make">Make</button>
+  <p id="said" class="bad"></p>
+</section>
+</main>
+<script>
+"use strict";
+const pending = new Map();
+let next = 1;
+
+function call(method, params) {
+  const id = next++;
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+    devtools.send(JSON.stringify({ id, method, params: params || {} }));
+  });
+}
+
+devtools.onmessage = (text) => {
+  let message;
+  try {
+    message = JSON.parse(text);
+  } catch (e) {
+    return;
+  }
+  const waiting = pending.get(message.id);
+  if (waiting) {
+    pending.delete(message.id);
+    if ("error" in message) {
+      waiting.reject(message.error);
+    } else {
+      waiting.resolve(message.result);
+    }
+  }
+};
+
+const $ = (id) => document.getElementById(id);
+
+function show(result) {
+  $("current").textContent = result.current;
+  const list = $("list");
+  list.textContent = "";
+  for (const name of result.profiles) {
+    const item = document.createElement("li");
+    const label = document.createElement("span");
+    label.textContent = name + " ";
+    const open = document.createElement("button");
+    open.textContent = "Open in a new window";
+    open.onclick = () => {
+      $("said").textContent = "";
+      call("profiles.open", { name }).catch((why) => { $("said").textContent = String(why); });
+    };
+    item.append(label, open);
+    list.append(item);
+  }
+}
+
+function load() {
+  call("profiles.list").then(show, (why) => { $("said").textContent = String(why); });
+}
+
+$("make").onclick = () => {
+  $("said").textContent = "";
+  call("profiles.create", { name: $("name").value }).then((result) => {
+    $("name").value = "";
+    show(result);
+  }, (why) => { $("said").textContent = String(why); });
+};
+
+load();
+</script>
+</body>
+</html>

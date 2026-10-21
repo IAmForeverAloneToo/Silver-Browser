@@ -1,8 +1,8 @@
 //! The browser's own pages' requests (M37, docs/design/chrome.md, "The
 //! browser's pages"): the shell answers what `about:downloads`,
-//! `about:settings` and `about:version` ask through the DevTools panel's
-//! bridge, from the window's downloads, its context's settings and the
-//! build, and tells the
+//! `about:settings`, `about:version` and `about:profiles` ask through
+//! the DevTools panel's bridge, from the window's downloads, its
+//! context's settings, the build and the profiles' folder, and tells the
 //! downloads page when they change. A page's requests are read only from a tab
 //! that shows one of these pages: the bridge is theirs alone, and in
 //! many processes their renderer is locked to them.
@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use devtools::{Json, Request};
 use engine::settings::{LANGUAGES, SEARCHES};
 use engine::{Context, Download, DownloadState, Downloads, View};
+
+use crate::windows::{self, WindowRequest};
 
 /// What opens a downloaded file, or shows it in its folder when
 /// `reveal`: the system's, but in the tests.
@@ -25,6 +27,12 @@ pub(crate) struct Pages {
     told: Option<String>,
     /// The folder of the profile kept, for `about:version`.
     profile: Option<PathBuf>,
+    /// The name of the profile kept, and the folder the profiles are in,
+    /// for `about:profiles`; and the windows it asked for since they
+    /// were last taken.
+    profile_name: String,
+    profiles_root: Option<PathBuf>,
+    requests: Vec<WindowRequest>,
 }
 
 impl Pages {
@@ -33,7 +41,21 @@ impl Pages {
             opener,
             told: None,
             profile: None,
+            profile_name: windows::DEFAULT_NAME.to_owned(),
+            profiles_root: None,
+            requests: Vec::new(),
         }
+    }
+
+    /// The profile kept is `name`'s; the profiles are in `root`.
+    pub(crate) fn set_profiles(&mut self, name: String, root: Option<PathBuf>) {
+        self.profile_name = name;
+        self.profiles_root = root;
+    }
+
+    /// The windows `about:profiles` asked for since this was last asked.
+    pub(crate) fn take_requests(&mut self) -> Vec<WindowRequest> {
+        std::mem::take(&mut self.requests)
     }
 
     /// The profile kept is in `folder`; none is, with none.
@@ -65,6 +87,7 @@ impl Pages {
             let answered = match page.as_str() {
                 engine::internal::SETTINGS => settings_answer(context, &request),
                 engine::internal::VERSION => self.version_answer(&request),
+                engine::internal::PROFILES => self.profiles_answer(&request),
                 _ => self.answer(&downloads, &request),
             };
             let answer = match answered {
@@ -118,6 +141,50 @@ impl Pages {
             ("processes", Json::from(processes)),
             ("profile", Json::from(profile.as_str())),
         ]))
+    }
+
+    /// The answer to `request` of the profiles page: the profiles there
+    /// are and the window's, one made, or one opened in a new window.
+    fn profiles_answer(&mut self, request: &Request) -> Result<Json, String> {
+        let name = || {
+            request
+                .param("name")
+                .and_then(Json::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| "no profile named".to_owned())
+        };
+        match request.method.as_str() {
+            "profiles.list" => Ok(self.profiles_json()),
+            "profiles.create" => {
+                windows::make_profile(self.profiles_root.as_deref(), name()?.trim())?;
+                Ok(self.profiles_json())
+            }
+            "profiles.open" => {
+                let name = name()?;
+                if !windows::profiles_in(self.profiles_root.as_deref()).contains(&name) {
+                    return Err(format!("there is no profile {name}"));
+                }
+                self.requests.push(WindowRequest::Profile(name));
+                Ok(Json::Null)
+            }
+            method => Err(format!("no method {method}")),
+        }
+    }
+
+    /// The profiles, and the window's, as the page reads them.
+    fn profiles_json(&self) -> Json {
+        Json::object([
+            ("current", Json::from(self.profile_name.as_str())),
+            (
+                "profiles",
+                Json::Array(
+                    windows::profiles_in(self.profiles_root.as_deref())
+                        .iter()
+                        .map(|name| Json::from(name.as_str()))
+                        .collect(),
+                ),
+            ),
+        ])
     }
 
     /// The answer to `request` of the downloads page.

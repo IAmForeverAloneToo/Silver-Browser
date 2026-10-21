@@ -2670,3 +2670,125 @@ fn the_version_page_says_the_version_the_commit_the_build_and_the_profile() {
     assert!(text.contains(&folder.display().to_string()), "{text}");
     assert_eq!(window.session.engine().title(), "About Silver Browser");
 }
+
+#[test]
+fn the_keys_ask_for_windows_and_close_this_one() {
+    use crate::windows::WindowRequest;
+    let mut window = Window::new(None, Platform::Other);
+    window.settle();
+    window.chord("n", CTRL);
+    window.chord(
+        "N",
+        Modifiers {
+            shift: true,
+            ..CTRL
+        },
+    );
+    assert_eq!(
+        window.session.take_window_requests(),
+        [WindowRequest::New, WindowRequest::Private]
+    );
+    assert!(window.session.take_window_requests().is_empty());
+    // Cmd on macOS.
+    let mut mac = Window::new(None, Platform::Mac);
+    mac.settle();
+    mac.chord("n", CMD);
+    assert_eq!(mac.session.take_window_requests(), [WindowRequest::New]);
+    assert!(!window.session.wants_close());
+    window.chord(
+        "W",
+        Modifiers {
+            shift: true,
+            ..CTRL
+        },
+    );
+    assert!(
+        window.session.wants_close(),
+        "the window closes, its tabs with it"
+    );
+}
+
+#[test]
+fn a_private_window_is_marked_in_its_strip_and_title() {
+    let mark = {
+        let c = ui::tabs::PRIVATE_MARK;
+        (u32::from(c.r) << 16) | (u32::from(c.g) << 8) | u32::from(c.b)
+    };
+    let mut window = Window::new(None, Platform::Other);
+    window.settle();
+    let frame = window.frame();
+    assert_ne!(frame[(WIDTH / 2) as usize] & 0x00ff_ffff, mark);
+    assert!(!window.session.title().contains("Private"));
+    window.session.set_private(true);
+    window.settle();
+    assert!(window.session.is_private());
+    assert!(
+        window.session.title().ends_with(" (Private)"),
+        "{}",
+        window.session.title()
+    );
+    let frame = window.frame();
+    for x in [2, WIDTH / 2, WIDTH - 3] {
+        assert_eq!(frame[x as usize] & 0x00ff_ffff, mark, "{x}");
+    }
+    // Under the band, the strip as it was.
+    assert_ne!(frame[(4 * WIDTH + WIDTH / 2) as usize] & 0x00ff_ffff, mark);
+}
+
+#[test]
+fn the_profiles_page_lists_makes_and_opens_profiles() {
+    use crate::windows::WindowRequest;
+    let dir = std::env::temp_dir()
+        .join("silver-profiles-page")
+        .join(std::process::id().to_string());
+    let _ = std::fs::remove_dir_all(&dir);
+    let root = dir.join("Profiles");
+    let mut window = Window::new(None, Platform::Other);
+    window.settle();
+    window
+        .session
+        .set_profiles("Default".to_owned(), Some(root.clone()));
+    window.type_text("about:profiles");
+    window.press_key(Key::Enter, NONE);
+    let text = |window: &Window| {
+        let document = window.session.engine().document();
+        document.text_content(document.root())
+    };
+    let wait_for = |window: &mut Window, what: &str| {
+        let deadline = Instant::now() + WAIT;
+        while !text(window).contains(what) {
+            assert!(Instant::now() < deadline, "{what}: {}", text(window));
+            tick_a_while(window);
+        }
+    };
+    wait_for(&mut window, "Open in a new window");
+    assert!(text(&window).contains("keeps the profile Default"));
+    // One made: its folder, listed.
+    in_page(
+        &mut window.session,
+        "call('profiles.create', { name: 'Work' }).then(show)",
+    );
+    wait_for(&mut window, "Work");
+    assert!(root.join("Work").is_dir());
+    // One opened: a window asked for.
+    in_page(
+        &mut window.session,
+        "call('profiles.open', { name: 'Work' })",
+    );
+    tick_a_while(&mut window);
+    assert_eq!(
+        window.session.take_window_requests(),
+        [WindowRequest::Profile("Work".to_owned())]
+    );
+    // Neither one not there, nor a name a profile may not have.
+    in_page(
+        &mut window.session,
+        "call('profiles.open', { name: 'Nowhere' }); \
+         call('profiles.create', { name: '../out' }).catch((why) => { \
+         document.getElementById('said').textContent = String(why); })",
+    );
+    wait_for(&mut window, "letters, digits");
+    assert!(window.session.take_window_requests().is_empty());
+    assert!(!dir.join("out").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}

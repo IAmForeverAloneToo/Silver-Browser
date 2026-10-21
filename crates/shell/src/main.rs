@@ -47,10 +47,13 @@ mod platform;
 mod processes;
 mod session;
 mod startup;
+mod windows;
 
+use std::cell::RefCell;
 use std::ffi::OsString;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
@@ -70,6 +73,7 @@ use winit::window::{CursorIcon, Theme, Window, WindowId};
 
 use keys::{Key, Modifiers, Platform};
 use session::{Button, Clipboard, Session, Shape};
+use windows::{Contexts, Kept};
 
 /// Window configuration.
 const WINDOW_WIDTH: u32 = 1280;
@@ -79,30 +83,44 @@ const WINDOW_HEIGHT: u32 = 800;
 #[derive(Debug, Clone, Copy)]
 struct NetworkWake;
 
-/// The browser application: window + surface + the session.
+/// One of the browser's windows (M37): the OS's window, its surface, and
+/// the session it shows, of the context that keeps `kept`.
 ///
 /// The window lives behind an `Arc` because softbuffer's `Context` and
 /// `Surface` each hold their own handle to it (raw-window-handle 0.6
 /// provides the impls for `Arc<T>`).
-struct Browser<V: View> {
+struct Slot<V: View> {
     window: Option<Arc<Window>>,
     context: Option<softbuffer::Context<Arc<Window>>>,
     surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
     /// The size the surface was last given.
     surface_size: SurfaceSize,
     session: Session<V>,
-    /// The clock frames are drawn by and clicks counted on: the time
-    /// since the browser began.
-    start: Instant,
     /// What the window was last given, so that it is given only what
     /// changed.
     shown: Shown,
-    /// The preferences the command line gave.
-    asked: Asked,
     /// The window's theme, when the system says it.
     theme: Option<Theme>,
     /// When the last frame began.
     drawn: Option<Instant>,
+    kept: Kept,
+}
+
+/// What makes the session of a new window, in a context keeping what
+/// [`Kept`] says.
+type NewWindow<V> = Box<dyn FnMut(engine::Context, &Kept, &Contexts) -> Session<V>>;
+
+/// The browser application: its windows, each a session (M37); the
+/// contexts they share; and what makes a new one's session.
+struct Browser<V: View> {
+    slots: Vec<Slot<V>>,
+    /// The clock frames are drawn by and clicks counted on: the time
+    /// since the browser began.
+    start: Instant,
+    /// The preferences the command line gave.
+    asked: Asked,
+    contexts: Contexts,
+    new_window: NewWindow<V>,
 }
 
 /// The size a surface was last given: it is given another only when
@@ -131,32 +149,61 @@ struct Shown {
     ime: Option<Option<(i32, i32, u32, u32)>>,
 }
 
-impl<V: View> Browser<V> {
-    fn new(session: Session<V>, asked: Asked, start: Instant) -> Self {
-        Browser {
+impl<V: View> Slot<V> {
+    fn new(session: Session<V>, kept: Kept) -> Slot<V> {
+        Slot {
             window: None,
             context: None,
             surface: None,
             surface_size: SurfaceSize::default(),
             session,
-            start,
             shown: Shown::default(),
-            asked,
             theme: None,
             drawn: None,
+            kept,
         }
     }
 
     /// Gives the session the user's preferences as they now stand.
-    fn read_preferences(&mut self) {
-        let preferences = preferences(self.asked, self.theme, platform::reduced_motion());
+    fn read_preferences(&mut self, asked: Asked) {
+        let preferences = preferences(asked, self.theme, platform::reduced_motion());
         self.session.set_preferences(preferences);
+    }
+
+    /// Opens the slot's OS window, with its surface; why not, if it
+    /// could not be.
+    fn open(&mut self, event_loop: &ActiveEventLoop, asked: Asked) -> Result<(), String> {
+        let attributes = Window::default_attributes()
+            .with_title(self.session.title())
+            .with_inner_size(PhysicalSize::new(WINDOW_WIDTH, WINDOW_HEIGHT))
+            .with_resizable(true);
+        let window = event_loop
+            .create_window(attributes)
+            .map_err(|e| format!("window creation failed: {e}"))?;
+        startup::mark("window");
+        let window = Arc::new(window);
+        let context = softbuffer::Context::new(window.clone())
+            .map_err(|e| format!("softbuffer context creation failed: {e}"))?;
+        let surface = softbuffer::Surface::new(&context, window.clone())
+            .map_err(|e| format!("softbuffer surface creation failed: {e}"))?;
+        let size = window.inner_size();
+        self.session
+            .set_scale(window.scale_factor() as f32, size.width, size.height);
+        self.theme = window.theme();
+        self.read_preferences(asked);
+        self.context = Some(context);
+        self.surface = Some(surface);
+        self.surface_size = SurfaceSize::default();
+        self.window = Some(window.clone());
+        self.update();
+        window.request_redraw();
+        Ok(())
     }
 
     /// Renders one frame and presents it, then draws ahead in the time
     /// the frame's budget leaves (M19.4). Failures skip the frame
     /// (logged) rather than taking the process down.
-    fn draw(&mut self) {
+    fn draw(&mut self, start: Instant) {
         let began = Instant::now();
         self.drawn = Some(began);
         let Some(window) = self.window.as_ref() else {
@@ -178,7 +225,7 @@ impl<V: View> Browser<V> {
         }
         match surface.buffer_mut() {
             Ok(mut buffer) => {
-                let time = FrameTime::at(self.start.elapsed());
+                let time = FrameTime::at(start.elapsed());
                 self.session
                     .draw(size.width, size.height, time, &mut buffer);
                 if let Err(e) = buffer.present() {
@@ -194,10 +241,13 @@ impl<V: View> Browser<V> {
     /// Gives the window what the session now asks for — its title, the
     /// pointer's shape, the input method — and asks for a frame when
     /// the session wants one; prints what is to be reported.
-    fn update(&mut self, window: &Window) {
+    fn update(&mut self) {
         for report in self.session.take_reports() {
             eprintln!("silver-browser: {report}");
         }
+        let Some(window) = self.window.clone() else {
+            return;
+        };
         if self.session.title() != self.shown.title {
             self.shown.title = self.session.title().to_owned();
             window.set_title(&self.shown.title);
@@ -239,6 +289,105 @@ impl<V: View> Browser<V> {
     }
 }
 
+impl<V: View> Browser<V> {
+    fn new(
+        first: Session<V>,
+        kept: Kept,
+        contexts: Contexts,
+        new_window: NewWindow<V>,
+        asked: Asked,
+        start: Instant,
+    ) -> Self {
+        Browser {
+            slots: vec![Slot::new(first, kept)],
+            start,
+            asked,
+            contexts,
+            new_window,
+        }
+    }
+
+    /// Opens the windows the windows asked for (M37): each in the
+    /// context its request names, one of those open or one made.
+    fn open_asked(&mut self, event_loop: &ActiveEventLoop) {
+        let mut asked = Vec::new();
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            for request in slot.session.take_window_requests() {
+                asked.push((index, request, slot.kept.clone()));
+            }
+        }
+        for (index, request, of) in asked {
+            if self.slots.len() >= windows::MAX_WINDOWS {
+                self.slots[index].session.tell(format!(
+                    "The browser holds at most {} windows",
+                    windows::MAX_WINDOWS
+                ));
+                continue;
+            }
+            let (kept, context) = match self.contexts.open_for(&request, &of) {
+                Ok(opened) => opened,
+                Err(why) => {
+                    self.slots[index]
+                        .session
+                        .tell(format!("No window was opened: {why}"));
+                    continue;
+                }
+            };
+            give_downloads_folder(&context);
+            let session = (self.new_window)(context, &kept, &self.contexts);
+            let mut slot = Slot::new(session, kept);
+            match slot.open(event_loop, self.asked) {
+                Ok(()) => self.slots.push(slot),
+                Err(why) => {
+                    eprintln!("silver-browser: {why}");
+                    self.let_go(slot);
+                }
+            }
+        }
+    }
+
+    /// Closes the windows whose sessions asked to close: the context of
+    /// the last of a profile's is written out and let go of.
+    fn close_asked(&mut self) {
+        let mut index = 0;
+        while index < self.slots.len() {
+            if self.slots[index].session.wants_close() {
+                let slot = self.slots.remove(index);
+                self.let_go(slot);
+            } else {
+                index += 1;
+            }
+        }
+    }
+
+    /// Lets go of the window `slot`: when it was the last of its
+    /// context's, what changed is written, and a download under way in
+    /// it ends.
+    fn let_go(&mut self, mut slot: Slot<V>) {
+        if let Some(context) = self.contexts.closed(&slot.kept) {
+            if let Err(e) = slot.session.flush_profile() {
+                eprintln!("silver-browser: the profile was not written: {e}");
+            }
+            context.downloads().cancel_all();
+        }
+    }
+
+    /// Shares [`session::MAX_ALL_RENDERERS`] among the windows.
+    fn share_renderers(&mut self) {
+        let budget = session::MAX_ALL_RENDERERS / self.slots.len().max(1);
+        for slot in &mut self.slots {
+            slot.session.set_renderer_budget(budget);
+        }
+    }
+
+    /// The window of `id`.
+    fn slot(&mut self, id: WindowId) -> Option<&mut Slot<V>> {
+        self.slots
+            .iter_mut()
+            .find(|slot| slot.window.as_ref().is_some_and(|window| window.id() == id))
+    }
+}
+
 /// When a frame the page wants may be drawn, if not now: a frame's
 /// budget after the last began, sixty a second as a display shows them,
 /// since a software surface presents at once, with no vertical sync to
@@ -250,40 +399,50 @@ fn frame_due(drawn: Option<Instant>, now: Instant) -> Option<Instant> {
 }
 
 impl<V: View> ApplicationHandler<NetworkWake> for Browser<V> {
-    /// The time the session asked to be woken at has come (M22.3): the
+    /// The time a session asked to be woken at has come (M22.3): the
     /// end of an animation's delay, which wants a frame.
     fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
-        if let StartCause::ResumeTimeReached { .. } = cause
-            && let Some(window) = &self.window
-        {
-            window.request_redraw();
+        if let StartCause::ResumeTimeReached { .. } = cause {
+            for slot in &self.slots {
+                if let Some(window) = &slot.window {
+                    window.request_redraw();
+                }
+            }
         }
     }
 
-    /// Runs the page's tasks that are due (M26), then waits for the next
-    /// event, or, when the session wants no frame now but will at a time,
-    /// or has a task due later, until then: an animation waiting out its
-    /// delay draws no frame before it ends, and a timer runs when it is
-    /// due.
+    /// Opens and closes the windows asked for, runs each window's tasks
+    /// that are due (M26), then waits for the next event, or, when no
+    /// session wants a frame now but one will at a time, or has a task
+    /// due later, until then: an animation waiting out its delay draws
+    /// no frame before it ends, and a timer runs when it is due. The
+    /// browser ends with its last window (M37).
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        // The last tab closed closes the window (M37).
-        if self.session.wants_close() {
+        self.open_asked(event_loop);
+        self.close_asked();
+        if self.slots.is_empty() {
             event_loop.exit();
             return;
         }
-        self.session.tick();
-        if let Some(window) = self.window.clone() {
-            self.update(&window);
+        self.share_renderers();
+        let mut at: Option<Duration> = None;
+        for slot in &mut self.slots {
+            slot.session.tick();
+            slot.update();
+            // A frame wanted now waits for the next tick.
+            let next = match slot.session.needs_frame() {
+                true => frame_due(slot.drawn, Instant::now()).map(|due| due - self.start),
+                false => slot.session.next_frame_at(),
+            };
+            let next = match (next, slot.session.next_task_at()) {
+                (Some(frame), Some(task)) => Some(frame.min(task)),
+                (frame, task) => frame.or(task),
+            };
+            at = match (at, next) {
+                (Some(at), Some(next)) => Some(at.min(next)),
+                (at, next) => at.or(next),
+            };
         }
-        // A frame wanted now waits for the next tick.
-        let frame = match self.session.needs_frame() {
-            true => frame_due(self.drawn, Instant::now()).map(|due| due - self.start),
-            false => self.session.next_frame_at(),
-        };
-        let at = match (frame, self.session.next_task_at()) {
-            (Some(frame), Some(task)) => Some(frame.min(task)),
-            (frame, task) => frame.or(task),
-        };
         let flow = match at {
             Some(at) => ControlFlow::WaitUntil(self.start + at),
             None => ControlFlow::Wait,
@@ -291,118 +450,86 @@ impl<V: View> ApplicationHandler<NetworkWake> for Browser<V> {
         event_loop.set_control_flow(flow);
     }
 
-    /// A fetch finished: the engine takes what arrived.
+    /// A fetch finished: each window's views take what arrived.
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _wake: NetworkWake) {
-        self.session.network();
-        if let Some(window) = self.window.clone() {
-            self.update(&window);
+        for slot in &mut self.slots {
+            slot.session.network();
+            slot.update();
         }
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
-            return; // Already running (e.g. resume after suspend).
-        }
-
-        let attributes = Window::default_attributes()
-            .with_title(self.session.title())
-            .with_inner_size(PhysicalSize::new(WINDOW_WIDTH, WINDOW_HEIGHT))
-            .with_resizable(true);
-
-        match event_loop.create_window(attributes) {
-            Ok(window) => {
-                startup::mark("window");
-                let window = Arc::new(window);
-                match softbuffer::Context::new(window.clone()) {
-                    Ok(context) => match softbuffer::Surface::new(&context, window.clone()) {
-                        Ok(surface) => {
-                            let size = window.inner_size();
-                            self.session.set_scale(
-                                window.scale_factor() as f32,
-                                size.width,
-                                size.height,
-                            );
-                            self.theme = window.theme();
-                            self.read_preferences();
-                            self.context = Some(context);
-                            self.surface = Some(surface);
-                            self.surface_size = SurfaceSize::default();
-                            self.window = Some(window.clone());
-                            self.update(&window);
-                            window.request_redraw();
-                        }
-                        Err(e) => {
-                            eprintln!("softbuffer surface creation failed: {e}");
-                            event_loop.exit();
-                        }
-                    },
-                    Err(e) => {
-                        eprintln!("softbuffer context creation failed: {e}");
-                        event_loop.exit();
-                    }
-                }
+        let asked = self.asked;
+        for slot in &mut self.slots {
+            if slot.window.is_some() {
+                continue; // Already running (e.g. resume after suspend).
             }
-            Err(e) => {
-                eprintln!("window creation failed: {e}");
+            if let Err(why) = slot.open(event_loop, asked) {
+                eprintln!("{why}");
                 event_loop.exit();
+                return;
             }
         }
     }
 
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _window_id: WindowId,
-        event: WindowEvent,
-    ) {
-        let Some(window) = self.window.clone() else {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        let (start, asked) = (self.start, self.asked);
+        let Some(slot) = self.slot(id) else {
+            return;
+        };
+        let Some(window) = slot.window.clone() else {
             return;
         };
         match event {
+            // The window closes; the browser with its last (M37).
             WindowEvent::CloseRequested => {
-                event_loop.exit();
+                slot.session.close_window();
+                self.close_asked();
+                if self.slots.is_empty() {
+                    event_loop.exit();
+                }
                 return;
             }
-            WindowEvent::RedrawRequested => self.draw(),
+            WindowEvent::RedrawRequested => slot.draw(start),
             WindowEvent::Resized(size) => {
                 if let (Some(w), Some(h)) =
                     (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
-                    && let Some(surface) = self.surface.as_mut()
-                    && self.surface_size.wants((w, h))
+                    && let Some(surface) = slot.surface.as_mut()
+                    && slot.surface_size.wants((w, h))
                     && let Err(e) = surface.resize(w, h)
                 {
-                    self.surface_size = SurfaceSize::default();
+                    slot.surface_size = SurfaceSize::default();
                     eprintln!("surface resize failed: {e}");
                 }
-                self.session.resized(size.width, size.height);
+                slot.session.resized(size.width, size.height);
                 window.request_redraw();
             }
             // The window moved to a display of another scale, or the
             // display's changed (M32.4); its new size comes as a resize.
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 let size = window.inner_size();
-                self.session
+                slot.session
                     .set_scale(scale_factor as f32, size.width, size.height);
                 window.request_redraw();
             }
             WindowEvent::ThemeChanged(theme) => {
-                self.theme = Some(theme);
-                self.read_preferences();
+                slot.theme = Some(theme);
+                slot.read_preferences(asked);
             }
             WindowEvent::Focused(focused) => {
-                self.session.set_window_focus(focused);
+                slot.session.set_window_focus(focused);
                 if focused {
-                    self.read_preferences();
+                    slot.read_preferences(asked);
                 }
             }
             // Covered or minimized: the page is hidden (M26).
             WindowEvent::Occluded(occluded) => {
-                self.session.set_hidden(occluded);
+                slot.session.set_hidden(occluded);
                 window.request_redraw();
             }
             WindowEvent::ModifiersChanged(modifiers) => {
                 let state = modifiers.state();
-                self.session.modifiers(Modifiers {
+                slot.session.modifiers(Modifiers {
                     shift: state.shift_key(),
                     ctrl: state.control_key(),
                     alt: state.alt_key(),
@@ -413,15 +540,15 @@ impl<V: View> ApplicationHandler<NetworkWake> for Browser<V> {
                 let page = page_key(&event);
                 match event.state {
                     ElementState::Pressed => {
-                        self.session.key_down(key_of(&event.logical_key), page);
+                        slot.session.key_down(key_of(&event.logical_key), page);
                     }
-                    ElementState::Released => self.session.key_up(page),
+                    ElementState::Released => slot.session.key_up(page),
                 }
             }
             WindowEvent::Ime(ime) => match ime {
-                Ime::Preedit(text, _) => self.session.preedit(&text),
-                Ime::Commit(text) => self.session.commit(&text),
-                Ime::Enabled | Ime::Disabled => self.session.preedit(""),
+                Ime::Preedit(text, _) => slot.session.preedit(&text),
+                Ime::Commit(text) => slot.session.commit(&text),
+                Ime::Enabled | Ime::Disabled => slot.session.preedit(""),
             },
             WindowEvent::MouseWheel { delta, .. } => {
                 // Positive deltas reveal content above (the content
@@ -429,15 +556,15 @@ impl<V: View> ApplicationHandler<NetworkWake> for Browser<V> {
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, lines) => -lines * session::LINE_PX,
                     // Device pixels, taken as CSS pixels by the scale.
-                    MouseScrollDelta::PixelDelta(p) => -p.y as f32 / self.session.scale(),
+                    MouseScrollDelta::PixelDelta(p) => -p.y as f32 / slot.session.scale(),
                 };
-                self.session.wheel(dy);
+                slot.session.wheel(dy);
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.session
+                slot.session
                     .pointer_moved(position.x as f32, position.y as f32);
             }
-            WindowEvent::CursorLeft { .. } => self.session.pointer_left(),
+            WindowEvent::CursorLeft { .. } => slot.session.pointer_left(),
             WindowEvent::MouseInput { state, button, .. } => {
                 let button = match button {
                     MouseButton::Left => Button::Left,
@@ -448,13 +575,13 @@ impl<V: View> ApplicationHandler<NetworkWake> for Browser<V> {
                     _ => Button::Other,
                 };
                 match state {
-                    ElementState::Pressed => self.session.press(button, self.start.elapsed()),
-                    ElementState::Released => self.session.release(button),
+                    ElementState::Pressed => slot.session.press(button, start.elapsed()),
+                    ElementState::Released => slot.session.release(button),
                 }
             }
             _ => return,
         }
-        self.update(&window);
+        slot.update();
     }
 }
 
@@ -891,6 +1018,25 @@ fn command_line(args: impl Iterator<Item = OsString>) -> Result<CommandLine, Str
             };
             continue;
         }
+        // A profile by its name (M37), in the profiles' folder.
+        if arg == "--profile-name" {
+            if line.profile != Keep::Default {
+                return Err(
+                    "--profile, --profile-name and --temporary-profile: one at most".to_owned(),
+                );
+            }
+            let name = args
+                .next()
+                .ok_or_else(|| "--profile-name takes the name of a profile".to_owned())?;
+            let name = name
+                .to_str()
+                .ok_or_else(|| "a profile's name is text".to_owned())?;
+            if name != windows::DEFAULT_NAME {
+                let contexts = Contexts::new(platform::profile_directory(), Box::new(no_profile));
+                line.profile = Keep::In(contexts.folder_of(name)?);
+            }
+            continue;
+        }
         if arg == "--print-to-pdf" {
             let path = args
                 .next()
@@ -983,7 +1129,8 @@ fn main() {
                  [--prefers-color-scheme light|dark] [--prefers-reduced-motion] \
                  [--enable-scripts | --disable-scripts] [--compat-user-agent] \
                  [--print-to-pdf <path>] [--startup-trace] \
-                 [--profile <dir> | --temporary-profile] [URL or path]"
+                 [--profile <dir> | --profile-name <name> | --temporary-profile] \
+                 [URL or path]"
             );
             std::process::exit(2);
         }
@@ -1033,9 +1180,9 @@ fn show(line: &CommandLine) {
     // The window's tabs share one context, the profile's (M37).
     let context = engine::Context::new();
     let launcher: Arc<dyn engine::service::Launcher> = Arc::new(launcher);
-    let tabs = context.clone();
-    let make =
-        move || engine::service::RemoteTab::in_context(launcher.clone(), fonts.clone(), &tabs);
+    let make = move |context: &engine::Context| {
+        engine::service::RemoteTab::in_context(launcher.clone(), fonts.clone(), context)
+    };
     run(make, line, profile, context);
 }
 
@@ -1083,27 +1230,31 @@ fn show(line: &CommandLine) {
     // The window's tabs share one context, the profile's (M37); each tab
     // after the first draws on the backend the first had.
     let context = engine::Context::new();
-    let tabs = context.clone();
     let backend = engine.backend();
     let fonts = View::fonts(&engine).clone();
     let mut first = Some(engine);
-    let make = move || {
+    let make = move |context: &engine::Context| {
         let mut engine = first.take().unwrap_or_else(|| {
             Engine::new_on(backend)
                 .map(|(engine, _)| engine)
                 .unwrap_or_else(|_| Engine::with_fonts(fonts.clone()))
         });
-        engine.join(&tabs);
+        engine.join(context);
         engine
     };
     run(make, line, move || read, context);
 }
 
-/// Shows the pages of the views `make` makes, one a tab, in a window
-/// until it is closed, with the profile `profile` reads, which the
-/// first has before its first navigation; the others share it (M37).
+/// The views of every window's tabs (M37), each in the context it is
+/// given.
+type Views<V> = Rc<RefCell<dyn FnMut(&engine::Context) -> V>>;
+
+/// Shows the pages of the views `make` makes, one a tab, in windows
+/// until the last is closed: the first's with the profile `profile`
+/// reads, which its first view has before its first navigation, the
+/// others of their own (M37).
 fn run<V: View + 'static>(
-    mut make: impl FnMut() -> V + 'static,
+    mut make: impl FnMut(&engine::Context) -> V + 'static,
     line: &CommandLine,
     profile: impl FnOnce() -> ReadProfile,
     context: engine::Context,
@@ -1132,8 +1283,8 @@ fn run<V: View + 'static>(
     let (layer_budget, compat) = (line.layer_budget, line.compat);
     // Every tab's view as the command line asks; the window's theme is
     // known once there is a window.
-    let mut configured = move || {
-        let mut view = make();
+    let configured = move |context: &engine::Context| {
+        let mut view = make(context);
         if let Some(bytes) = layer_budget {
             view.set_layer_budget(bytes);
         }
@@ -1145,7 +1296,8 @@ fn run<V: View + 'static>(
         view.set_clock(clock.clone());
         view
     };
-    let mut engine = configured();
+    let views: Views<V> = Rc::new(RefCell::new(configured));
+    let mut engine = (views.borrow_mut())(&context);
     let read = profile();
     let folder = match &read {
         Ok(Some((dir, _))) => Some(dir.clone()),
@@ -1156,34 +1308,23 @@ fn run<V: View + 'static>(
         eprintln!("silver-browser: {why}");
     }
     let folder = folder.filter(|_| unkept.is_none());
-    // Downloads go to the user's folder (M37), unless the settings chose
-    // another.
-    let settings = context.settings();
-    let downloads = engine.downloads();
-    if let (Some(downloads), Some(folder), None) = (
-        &downloads,
-        platform::downloads_folder(),
-        &settings.downloads_folder,
-    ) {
-        downloads.set_folder(folder);
-    }
+    give_downloads_folder(&context);
     startup::mark("profile");
-    let clipboard = Box::new(SystemClipboard::default());
+    let settings = context.settings();
     let restore = start.is_none() && settings.start == engine::settings::Start::Restore;
-    let mut session = Session::new(
-        engine,
-        Box::new(configured),
-        context,
-        clipboard,
-        Platform::current(),
-        start,
-    );
-    session.set_profile_folder(folder);
+    // The windows' contexts, by the profiles they keep (M37).
+    let kept = match folder {
+        Some(folder) => Kept::Folder(folder),
+        None => Kept::Nothing,
+    };
+    let mut contexts = Contexts::new(platform::profile_directory(), Box::new(open_folder));
+    contexts.add(kept.clone(), context.clone());
     // The command line's word stands over the settings' (M37).
-    session.set_forced(session::Forced {
+    let forced = session::Forced {
         scripts: line.scripts,
         color_scheme: asked.color_scheme.is_some(),
-    });
+    };
+    let mut session = window_session(&views, engine, context, start, &kept, &contexts, forced);
     // The tabs open when the browser last ended.
     if restore {
         let urls = settings
@@ -1195,20 +1336,75 @@ fn run<V: View + 'static>(
     }
     startup::mark("session");
 
-    let mut browser = Browser::new(session, asked, began);
+    let new_window: NewWindow<V> = Box::new(move |context, kept, contexts| {
+        let engine = (views.borrow_mut())(&context);
+        window_session(&views, engine, context, None, kept, contexts, forced)
+    });
+    let mut browser = Browser::new(session, kept, contexts, new_window, asked, began);
     let ran = event_loop.run_app(&mut browser);
-    // A download under way ends with the browser (M37).
-    if let Some(downloads) = &downloads {
-        downloads.cancel_all();
-    }
-    // The window has closed: what changed since the last write is
-    // written now.
-    if let Err(e) = browser.session.flush_profile() {
-        eprintln!("silver-browser: the profile was not written: {e}");
+    // The windows open when the browser ended: what changed since the
+    // last write is written now, and a download under way ends (M37).
+    for slot in std::mem::take(&mut browser.slots) {
+        browser.let_go(slot);
     }
     if ran.is_err() {
         std::process::exit(1);
     }
+}
+
+/// The session of a window (M37) showing `engine` in `context`, which
+/// keeps `kept`, its tabs' views made by `views`: the command line's
+/// word `forced` over the settings, and a private window marked.
+fn window_session<V: View + 'static>(
+    views: &Views<V>,
+    engine: V,
+    context: engine::Context,
+    start: Option<Url>,
+    kept: &Kept,
+    contexts: &Contexts,
+    forced: session::Forced,
+) -> Session<V> {
+    let made = views.clone();
+    let tabs = context.clone();
+    let maker = Box::new(move || (made.borrow_mut())(&tabs));
+    let clipboard = Box::new(SystemClipboard::default());
+    let mut session = Session::new(
+        engine,
+        maker,
+        context,
+        clipboard,
+        Platform::current(),
+        start,
+    );
+    session.set_forced(forced);
+    session.set_private(*kept == Kept::Private);
+    session.set_profiles(contexts.name_of(kept), contexts.root());
+    session.set_profile_folder(match kept {
+        Kept::Folder(folder) => Some(folder.clone()),
+        _ => None,
+    });
+    session
+}
+
+/// Downloads go to the user's folder (M37), unless the settings chose
+/// another.
+fn give_downloads_folder(context: &engine::Context) {
+    if context.settings().downloads_folder.is_none()
+        && let Some(folder) = platform::downloads_folder()
+    {
+        context.downloads().set_folder(folder);
+    }
+}
+
+/// Opens the profile in `folder`, its values sealed under a key the
+/// system keeps for the user (D27).
+fn open_folder(folder: &Path) -> Result<Profile, String> {
+    Profile::open_with(folder, platform::key_wrap()).map_err(|e| unkept(folder, &e.to_string()))
+}
+
+/// Opens no profile: the command line's, which only names folders.
+fn no_profile(folder: &Path) -> Result<Profile, String> {
+    Err(format!("{} is not opened here", folder.display()))
 }
 
 #[cfg(test)]
@@ -1643,6 +1839,23 @@ mod tests {
                 Err("--profile and --temporary-profile: one at most".to_owned())
             );
         }
+    }
+
+    #[test]
+    fn a_profile_may_be_named_on_the_command_line() {
+        let keep = |args: &[&str]| command_line(args.iter().map(OsString::from)).map(|l| l.profile);
+        let root = platform::profile_directory()
+            .and_then(|dir| dir.parent().map(|parent| parent.join("Profiles")));
+        if let Some(root) = root {
+            assert_eq!(
+                keep(&["--profile-name", "Work"]),
+                Ok(Keep::In(root.join("Work")))
+            );
+        }
+        assert_eq!(keep(&["--profile-name", "Default"]), Ok(Keep::Default));
+        assert!(keep(&["--profile-name", "../x"]).is_err());
+        assert!(keep(&["--profile-name"]).is_err());
+        assert!(keep(&["--temporary-profile", "--profile-name", "Work"]).is_err());
     }
 
     #[test]

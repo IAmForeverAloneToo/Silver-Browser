@@ -100,6 +100,11 @@ pub(crate) enum Shortcut {
     ReopenTab,
     /// Shows the downloads page.
     Downloads,
+    /// Opens a window of the window's profile, a private window, or
+    /// closes the window (M37).
+    NewWindow,
+    PrivateWindow,
+    CloseWindow,
 }
 
 /// What `key`, pressed with `mods` held on `platform`, asks for: in the
@@ -139,6 +144,10 @@ pub(crate) fn shortcut(
         (_, "j") if !mac && mods.ctrl && !mods.shift && !mods.alt => Some(Shortcut::Downloads),
         (_, "j") if mac && mods.logo && mods.shift && !mods.alt => Some(Shortcut::Downloads),
         (_, "w") if command && !mods.shift => Some(Shortcut::CloseTab),
+        (_, "w") if command && mods.shift => Some(Shortcut::CloseWindow),
+        // The windows (M37).
+        (_, "n") if command && !mods.shift => Some(Shortcut::NewWindow),
+        (_, "n") if command && mods.shift => Some(Shortcut::PrivateWindow),
         (Key::F4, _) if !mac && mods.ctrl && !mods.alt => Some(Shortcut::CloseTab),
         (Key::Tab, _) if mods.ctrl && !mods.alt && !mods.logo => Some(match mods.shift {
             true => Shortcut::PreviousTab,
