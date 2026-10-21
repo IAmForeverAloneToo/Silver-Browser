@@ -8,9 +8,11 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
+use std::net::Shutdown;
 use std::net::TcpStream;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
@@ -37,6 +39,35 @@ enum Out {
     Reset(u32, ErrorCode),
     GoAway(u32),
     Close,
+    /// What the reader's thread read from the socket, and its end.
+    Tls(Vec<u8>),
+    Eof,
+}
+
+/// Writes `bytes` to the client: through the TLS connection, as much
+/// as it buffers at a time, and its records to the socket, never
+/// reading from it, which the reader's thread alone does.
+fn send(tls: &mut StreamOwned<ServerConnection, TcpStream>, mut bytes: &[u8]) -> io::Result<()> {
+    loop {
+        let taken = tls.conn.writer().write(bytes)?;
+        bytes = &bytes[taken..];
+        while tls.conn.wants_write() {
+            tls.conn.write_tls(&mut tls.sock)?;
+        }
+        if bytes.is_empty() {
+            return tls.sock.flush();
+        }
+    }
+}
+
+/// Shuts the socket down when the connection's loop ends, which ends
+/// the reader's thread too.
+struct Closer(TcpStream);
+
+impl Drop for Closer {
+    fn drop(&mut self) {
+        let _ = self.0.shutdown(Shutdown::Both);
+    }
 }
 
 /// A request arriving.
@@ -54,7 +85,6 @@ pub(super) fn serve(
     mut tls: StreamOwned<ServerConnection, TcpStream>,
     connection: usize,
 ) -> io::Result<()> {
-    tls.sock.set_read_timeout(Some(Duration::from_millis(5)))?;
     let sni = tls.conn.server_name().map(str::to_owned);
     let mut input: Vec<u8> = Vec::new();
     // The client's preface, then frames.
@@ -75,22 +105,83 @@ pub(super) fn serve(
     let mut receive_windows: HashMap<u32, i64> = HashMap::new();
     let mut index = 0usize;
     let (sender, outgoing): (Sender<Out>, Receiver<Out>) = mpsc::channel();
+    // The socket is read on a thread of its own, which hands what it
+    // reads to this loop as the replies' threads hand their frames: the
+    // loop wakes at once for either, where a read with a timeout made
+    // each reply wait for the timer (15.6 ms on Windows).
+    tls.sock.set_read_timeout(None)?;
+    let _closer = Closer(tls.sock.try_clone()?);
+    {
+        let mut socket = tls.sock.try_clone()?;
+        let sender = sender.clone();
+        thread::spawn(move || {
+            let mut buffer = vec![0u8; 16_384];
+            loop {
+                match socket.read(&mut buffer) {
+                    Ok(0) | Err(_) => {
+                        let _ = sender.send(Out::Eof);
+                        return;
+                    }
+                    Ok(n) => {
+                        if sender.send(Out::Tls(buffer[..n].to_vec())).is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+    }
     let mut out = Vec::new();
     Frame::Settings {
         ack: false,
         values: vec![(setting::MAX_CONCURRENT_STREAMS, 100)],
     }
     .write(&mut out);
-    tls.write_all(&out)?;
-    tls.flush()?;
+    send(&mut tls, &out)?;
     loop {
         if shared.stop.load(Ordering::SeqCst) {
             return Ok(());
         }
-        // What the replies' threads sent.
+        // What the replies' threads and the reader's sent; no wait while
+        // a body has room in the client's windows to go on.
+        let room = connection_window > 0
+            && pending
+                .keys()
+                .any(|stream| windows.get(stream).copied().unwrap_or(client_initial) > 0);
+        let wait = if room {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(50)
+        };
+        let first = match outgoing.recv_timeout(wait) {
+            Ok(item) => Some(item),
+            Err(RecvTimeoutError::Timeout) => None,
+            Err(RecvTimeoutError::Disconnected) => return Ok(()),
+        };
         let mut out = Vec::new();
-        while let Ok(item) = outgoing.try_recv() {
+        let mut chunk = [0u8; 16_384];
+        let items: Vec<Out> = first
+            .into_iter()
+            .chain(std::iter::from_fn(|| outgoing.try_recv().ok()))
+            .collect();
+        for item in items {
             match item {
+                Out::Tls(bytes) => {
+                    let mut rest = &bytes[..];
+                    while !rest.is_empty() {
+                        tls.conn.read_tls(&mut rest)?;
+                        tls.conn.process_new_packets().map_err(io::Error::other)?;
+                    }
+                    loop {
+                        match tls.conn.reader().read(&mut chunk) {
+                            Ok(0) => return Ok(()),
+                            Ok(n) => input.extend_from_slice(&chunk[..n]),
+                            Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                            Err(e) => return Err(e),
+                        }
+                    }
+                }
+                Out::Eof => return Ok(()),
                 Out::Head {
                     stream,
                     fields,
@@ -122,8 +213,7 @@ pub(super) fn serve(
                 }
                 .write(&mut out),
                 Out::Close => {
-                    tls.write_all(&out)?;
-                    tls.flush()?;
+                    send(&mut tls, &out)?;
                     return Ok(());
                 }
             }
@@ -167,23 +257,7 @@ pub(super) fn serve(
             }
         }
         if !out.is_empty() {
-            tls.write_all(&out)?;
-            tls.flush()?;
-        }
-        // What the client sent.
-        let mut chunk = [0u8; 16_384];
-        match tls.read(&mut chunk) {
-            Ok(0) => return Ok(()),
-            Ok(n) => input.extend_from_slice(&chunk[..n]),
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                continue;
-            }
-            Err(e) => return Err(e),
+            send(&mut tls, &out)?;
         }
         if !prefaced {
             if input.len() < frame::PREFACE.len() {
@@ -318,8 +392,7 @@ pub(super) fn serve(
                             debug: Vec::new(),
                         }
                         .write(&mut reply);
-                        tls.write_all(&reply)?;
-                        tls.flush()?;
+                        send(&mut tls, &reply)?;
                         return Ok(());
                     }
                     if let Some(request) = incoming.get_mut(&stream) {
@@ -369,8 +442,7 @@ pub(super) fn serve(
         }
         input.drain(..at);
         if !reply.is_empty() {
-            tls.write_all(&reply)?;
-            tls.flush()?;
+            send(&mut tls, &reply)?;
         }
     }
 }

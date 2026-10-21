@@ -3,6 +3,8 @@
 //! own, their results taken on the engine's thread.
 
 #[cfg(test)]
+mod acceptance_tests;
+#[cfg(test)]
 pub(crate) mod adversarial_tests;
 #[cfg(test)]
 mod body_tests;

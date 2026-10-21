@@ -152,6 +152,26 @@ fn a_server_without_http2_is_spoken_to_as_before() {
 }
 
 #[test]
+fn requests_one_after_another_are_not_held_back_by_the_test_server() {
+    // M38: the server's loop wakes for a reply at once, not at a read's
+    // timeout (a 15.6 ms tick on Windows), which the benches' times
+    // would carry. Two hundred here take about a tenth of a second; held
+    // back a tick each, three.
+    let (server, transport) = h2_server(|_| Reply::ok("text/plain", b"x"));
+    get(&transport, &server.url("/")).unwrap();
+    let started = Instant::now();
+    for _ in 0..200 {
+        get(&transport, &server.url("/")).unwrap();
+    }
+    assert_eq!(server.connections(), 1);
+    assert!(
+        started.elapsed() < Duration::from_millis(1500),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
 fn a_body_larger_than_a_window_comes_whole() {
     // Larger than a stream's window and than the connection's.
     let body: Vec<u8> = (0..20 << 20).map(|n: usize| (n % 251) as u8).collect();
