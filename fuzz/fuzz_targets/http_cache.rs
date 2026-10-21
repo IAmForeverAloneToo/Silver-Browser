@@ -313,8 +313,14 @@ fuzz_target!(|data: &[u8]| {
                 }
             }
         }
+        // A body the profile has not had yet waits in memory, past its
+        // bound, until it has; never past the profile's too.
         let (count, bytes) = cache.size();
-        assert!(count <= MAX_CACHE_ENTRIES && bytes <= MAX_CACHE_BYTES);
+        assert!(count <= MAX_CACHE_ENTRIES);
         assert!(cache.profile_bytes() <= MAX_PROFILE_CACHE_BYTES);
+        assert!(bytes <= MAX_CACHE_BYTES + MAX_PROFILE_CACHE_BYTES);
+        if !cache.has_changes() {
+            assert!(bytes <= MAX_CACHE_BYTES, "{bytes} once written");
+        }
     }
 });

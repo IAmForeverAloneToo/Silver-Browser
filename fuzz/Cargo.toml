@@ -291,6 +291,12 @@ test = false
 doc = false
 
 [[bin]]
+name = "preload_scan"
+path = "fuzz_targets/preload_scan.rs"
+test = false
+doc = false
+
+[[bin]]
 name = "devtools_json"
 path = "fuzz_targets/devtools_json.rs"
 test = false

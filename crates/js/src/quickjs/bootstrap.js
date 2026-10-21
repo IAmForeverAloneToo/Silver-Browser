@@ -7924,6 +7924,9 @@
       ["type", "type", "string"],
       ["hreflang", "hreflang", "string"],
       ["disabled", "disabled", "boolean"],
+      // M38: what a preload is fetched as, and how.
+      ["as", "as", "string"],
+      ["crossOrigin", "crossorigin", "cors"],
     ]],
     ["HTMLImageElement", [
       ["src", "src", "url"],

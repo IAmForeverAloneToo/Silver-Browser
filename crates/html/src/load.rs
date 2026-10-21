@@ -3,12 +3,15 @@
 //! (or all of them, if fewer), the bytes decoded as they come and fed to
 //! the [`Parser`], and the parse started again from the first byte when a
 //! `<meta>` changes a tentative encoding (HTML section 13.2.3.4: a reload
-//! in place, for which the caller drops the document it built).
+//! in place, for which the caller drops the document it built). Asked
+//! to, it gives the decoded text to a [`Scanner`] too (M38), whose
+//! hints the caller takes.
 
 use dom::Document;
 use encoding::{DecoderMode, Encoding, UTF_8};
 
 use crate::encoding_sniffing::{self, Confidence, PRESCAN_LENGTH};
+use crate::preload::{Hint, Scanner};
 use crate::{Parser, Stop};
 
 /// What a step of [`Load::parse`] did.
@@ -33,6 +36,7 @@ struct Decoding {
     /// How many of the bytes the decoder has been given.
     fed: usize,
     parser: Parser,
+    scanner: Option<Scanner>,
 }
 
 /// A document's bytes, as they arrive, parsed.
@@ -43,6 +47,10 @@ pub struct Load {
     bytes: Vec<u8>,
     ended: bool,
     decoding: Option<Decoding>,
+    /// Whether the text is scanned for hints too (M38), and those
+    /// found and not taken, from every start.
+    scanning: bool,
+    hints: Vec<Hint>,
 }
 
 impl Load {
@@ -56,7 +64,24 @@ impl Load {
             bytes: Vec::new(),
             ended: false,
             decoding: None,
+            scanning: false,
+            hints: Vec::new(),
         }
+    }
+
+    /// Scans the text for hints too (M38), from now on; asked before
+    /// the first bytes, from the first.
+    pub fn set_scanning(&mut self, on: bool) {
+        self.scanning = on;
+    }
+
+    /// The hints found since they were last taken: after a restart, the
+    /// new encoding's again.
+    pub fn take_hints(&mut self) -> Vec<Hint> {
+        if let Some(scanner) = self.decoding.as_mut().and_then(|d| d.scanner.as_mut()) {
+            self.hints.extend(scanner.take_hints());
+        }
+        std::mem::take(&mut self.hints)
     }
 
     /// The next bytes of the document.
@@ -100,6 +125,9 @@ impl Load {
 
     /// Starts decoding in `encoding`, from the first byte.
     fn start(&mut self, encoding: Encoding, confidence: Confidence) {
+        if let Some(scanner) = self.decoding.as_mut().and_then(|d| d.scanner.as_mut()) {
+            self.hints.extend(scanner.take_hints());
+        }
         let (decoded_with, skip) = match encoding::bom_sniff(&self.bytes) {
             Some((bom, length)) => (bom, length),
             None if encoding.can_decode() => (encoding, 0),
@@ -115,6 +143,7 @@ impl Load {
             decoder,
             fed: skip,
             parser: Parser::new(self.scripting),
+            scanner: self.scanning.then(|| Scanner::new(self.scripting)),
         });
     }
 
@@ -137,8 +166,14 @@ impl Load {
             .decode(&self.bytes[decoding.fed..], self.ended, &mut text);
         decoding.fed = self.bytes.len();
         decoding.parser.feed(&text);
+        if let Some(scanner) = &mut decoding.scanner {
+            scanner.feed(&text);
+        }
         if self.ended {
             decoding.parser.end();
+            if let Some(scanner) = &mut decoding.scanner {
+                scanner.end();
+            }
         }
     }
 
@@ -258,5 +293,33 @@ mod tests {
         assert_eq!(node.text_content(), "a");
         assert_eq!(load.encoding(), Some(UTF_8));
         assert_eq!(load.confidence(), Some(Confidence::Certain));
+    }
+
+    #[test]
+    fn a_scanning_load_hints_at_what_arrives_before_it_is_parsed() {
+        let mut load = Load::new(Some(UTF_8), true);
+        load.set_scanning(true);
+        load.push(b"<script src=a.js></script><img src=b.png>");
+        load.end();
+        let urls: Vec<String> = load.take_hints().into_iter().map(|h| h.url).collect();
+        assert_eq!(urls, ["a.js", "b.png"], "nothing parsed yet");
+        assert!(load.take_hints().is_empty());
+        // A restart scans again; the caller keeps one request a URL.
+        let mut bytes = b"<img src=x.png>".to_vec();
+        bytes.extend(vec![b' '; PRESCAN_LENGTH]);
+        bytes.extend_from_slice(b"<meta charset=windows-1252>");
+        let mut load = Load::new(None, false);
+        load.set_scanning(true);
+        load.push(&bytes);
+        load.end();
+        let mut document = Document::new();
+        while load.parse(&mut document, 100) != Progress::Restarted {}
+        let urls: Vec<String> = load.take_hints().into_iter().map(|h| h.url).collect();
+        assert_eq!(urls, ["x.png", "x.png"]);
+        // Not asked: none.
+        let mut load = Load::new(None, false);
+        load.push(b"<img src=x.png>");
+        load.end();
+        assert!(load.take_hints().is_empty());
     }
 }

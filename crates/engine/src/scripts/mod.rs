@@ -1804,8 +1804,18 @@ pub(crate) enum ScriptType {
 /// The type of the script `element` is, by its `type` and `language`
 /// attributes; `None` when it is not a script at all.
 pub(crate) fn script_type(document: &Document, element: NodeId) -> Option<ScriptType> {
-    let type_attr = document.attr(element, "type");
-    let language = document.attr(element, "language");
+    script_type_of(
+        document.attr(element, "type"),
+        document.attr(element, "language"),
+    )
+}
+
+/// The type of a script whose `type` and `language` attributes are
+/// these (M38: the preload scanner's hints have no element).
+pub(crate) fn script_type_of(
+    type_attr: Option<&str>,
+    language: Option<&str>,
+) -> Option<ScriptType> {
     let block_type = match (type_attr, language) {
         (Some(""), _) | (None, Some("")) | (None, None) => "text/javascript".to_owned(),
         (Some(value), _) => value.to_owned(),

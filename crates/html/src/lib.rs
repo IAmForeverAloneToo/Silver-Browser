@@ -17,6 +17,7 @@
 pub mod encoding_sniffing;
 mod load;
 mod named_references;
+pub mod preload;
 mod serialize;
 pub mod tokenizer;
 pub mod tree_builder;

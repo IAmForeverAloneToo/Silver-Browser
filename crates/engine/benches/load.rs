@@ -154,11 +154,12 @@ fn back(server: &TestServer, kept: bool) -> Duration {
         .iter()
         .map(|request| request.target.clone())
         .collect();
-    if kept {
-        assert!(asked.is_empty(), "from the cache: {asked:?}");
-    } else {
-        assert!(asked.contains(&"/page.html".to_owned()), "fetched again");
-    }
+    // Not kept, the document is parsed again from the HTTP cache, whose
+    // stored response a traversal takes (M38).
+    assert!(
+        !asked.contains(&"/page.html".to_owned()),
+        "from the cache: {asked:?}"
+    );
     took
 }
 

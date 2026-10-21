@@ -379,6 +379,9 @@ pub struct Engine {
     compat_user_agent: bool,
     /// Whether scripts run: off unless asked (M24, risk R2).
     scripting: bool,
+    /// Whether a document's text is scanned ahead of its parser for
+    /// what to preload (M38): on but in benches that compare.
+    preload_scanner: bool,
     /// What a document's realm may use, the defaults but in tests.
     script_limits: js::Limits,
     /// What the user should be told of a navigation that showed no page:
@@ -868,6 +871,25 @@ const SCRIPTS_STOPPED: &str = "Scripts stopped on this page: out of memory";
 /// arrive (M24.8): the window draws between slices.
 const PARSE_SLICE: usize = 4096;
 
+/// Preloads what the scanner found in `parsing`'s text since it last
+/// looked (M38), for `page`; scripts when `scripting` and its sandbox
+/// let them run.
+fn preload_hints(
+    network: &mut loader::Network,
+    page: &mut loader::Page,
+    document: &Document,
+    parsing: &mut loader::Parsing,
+    scripting: bool,
+) {
+    let hints = parsing.load.take_hints();
+    if !hints.is_empty() {
+        let scripting = scripting && !page.sandbox().has(sandbox::Sandbox::SCRIPTS);
+        parsing
+            .hints
+            .preload(hints, page, document, scripting, network);
+    }
+}
+
 /// The page of a document parsed from `head`'s response with `load`,
 /// its encoding as the load has found it (M24.8), what it takes from a
 /// `creator` for a frame's local document (M33.2).
@@ -1256,6 +1278,7 @@ impl Engine {
             waker: None,
             compat_user_agent: false,
             scripting: false,
+            preload_scanner: true,
             script_limits: js::Limits::default(),
             notice: None,
             next_page: 1,
@@ -3190,6 +3213,20 @@ impl Engine {
             self.shown.lifecycle.loaded = true;
             self.fire(document, js::EventInit::new("Event", "readystatechange"));
             self.fire(js::Target::Window, js::EventInit::new("Event", "load"));
+            // A `<link rel=preload>` nothing took (M38), as the reference
+            // browser says.
+            for url in self.network.unused_preloads(self.shown.page.id()) {
+                let mut entry = ConsoleEntry::of(
+                    scripts::ConsoleSource::Network,
+                    js::ConsoleLevel::Warn,
+                    format!(
+                        "The resource {url} was preloaded using link preload but not used \
+                         by the window's load event."
+                    ),
+                );
+                entry.url = url;
+                self.shown.scripts.log(entry);
+            }
             self.fire(
                 js::Target::Window,
                 js::EventInit::new("PageTransitionEvent", "pageshow")
@@ -4122,6 +4159,13 @@ impl Engine {
     /// for, since no untrusted script is to run before the isolation of
     /// M33 and M34 (roadmap risk R2). A document already loaded keeps how
     /// it was parsed; the `scripting` media feature follows at once.
+    /// Scans documents ahead of their parser for what to preload (M38),
+    /// or not; on by default.
+    pub fn set_preload_scanner(&mut self, on: bool) {
+        self.for_each_frame(&mut |frame| frame.set_preload_scanner(on));
+        self.preload_scanner = on;
+    }
+
     pub fn set_scripting(&mut self, on: bool) {
         // An internal page's scripts run whatever the setting (M37).
         if self.own_scripting.is_some() {
@@ -4448,6 +4492,15 @@ impl Engine {
     /// are not yet wanted (M23.1). A page with no URL fetches nothing,
     /// nor does one the browser made.
     fn request_images(&mut self) {
+        // The `<link rel=preload>`s of the tree (M38), which the scanner
+        // may not have seen.
+        if !self.shown.made {
+            loader::preload::preload_links(
+                &self.shown.document,
+                &mut self.shown.page,
+                &mut self.network,
+            );
+        }
         if self.shown.made {
             return;
         }
@@ -4799,7 +4852,8 @@ impl Engine {
         match target {
             Target::Document => self.document_arrived(page, result),
             Target::Icon => self.icon_arrived(page, result),
-            Target::Report => {}
+            // A preload's waits in the network for a request (M38).
+            Target::Report | Target::Preload => {}
             Target::Image { url } => self.image_arrived(page, &url, result),
             Target::Fetch => {
                 // A task, run when tasks are (M27.1).
@@ -5039,6 +5093,7 @@ impl Engine {
             )));
         let scripting = self.scripting && !sandbox.has(sandbox::Sandbox::SCRIPTS);
         let mut load = html::Load::new(transport, scripting);
+        load.set_scanning(self.preload_scanner);
         load.push(&response.body);
         if ended {
             load.end();
@@ -5077,6 +5132,7 @@ impl Engine {
                     creator,
                     sandbox,
                     referrer,
+                    hints: loader::preload::Hints::default(),
                 }),
             };
         }
@@ -5090,6 +5146,7 @@ impl Engine {
     fn parse_incoming(&mut self) {
         let media = self.media(self.viewport);
         let window = self.window_env();
+        let scripting = self.scripting;
         let Some(Navigation {
             incoming:
                 Incoming::Parsing {
@@ -5102,8 +5159,10 @@ impl Engine {
         else {
             return;
         };
-        // The parser waits for its pending parsing-blocking script (M24.3).
+        // What the scanner found ahead of the parser (M38), before the
+        // parser waits for its pending parsing-blocking script (M24.3).
         // A realm that dies says so once its document is shown.
+        preload_hints(&mut self.network, page, document, parsing, scripting);
         let loader::Parsing { load, scripts, .. } = &mut **parsing;
         let mut lent = scripts::Lent {
             document,
@@ -5191,6 +5250,7 @@ impl Engine {
     /// the next frame, its sheets and images fetched (M24.8).
     fn parse_shown(&mut self) {
         let window = self.window_env();
+        let scripting = self.scripting;
         let Shown {
             document,
             page,
@@ -5201,7 +5261,9 @@ impl Engine {
         else {
             return;
         };
-        // The parser waits for its pending parsing-blocking script (M24.3).
+        // What the scanner found ahead of the parser (M38); the parser
+        // waits for its pending parsing-blocking script (M24.3).
+        preload_hints(&mut self.network, page, document, parsing, scripting);
         let mut lent = scripts::Lent {
             document,
             page,
@@ -5933,6 +5995,14 @@ impl Engine {
             self.shown
                 .page
                 .rescan(&self.shown.document, &mut self.network, None);
+            // A `<link rel=preload>` put in or changed (M38).
+            if !self.shown.made {
+                loader::preload::preload_links(
+                    &self.shown.document,
+                    &mut self.shown.page,
+                    &mut self.network,
+                );
+            }
             self.update_load_state();
             sheets = Some(self.shown.page.sheets())
                 .filter(|sheets| sheets != self.shown.stylesheets.sheets());

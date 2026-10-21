@@ -68,7 +68,7 @@ use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -278,6 +278,15 @@ const ALT_HOST: &str = "not-web-platform.localhost";
 /// subdomains at 127.0.0.1, where its one server listens: a name under
 /// `localhost` would try `::1` first, which on Windows takes a while to
 /// be refused at each new connection.
+/// The connections every test's client shares (M38): each test has a
+/// client of its own, its cookies and cache, but a test's requests go
+/// on the connections earlier tests left open. With the preload
+/// scanner a page asks for its scripts at once, on several connections;
+/// a set of them for each of thousands of tests used up Windows'
+/// ephemeral ports, which a closed connection holds for minutes.
+static TRANSPORT: LazyLock<Arc<net::transport::Transport>> =
+    LazyLock::new(|| Arc::new(net::transport::Transport::new(runner_hosts())));
+
 fn runner_hosts() -> net::transport::Config {
     let mut config = net::transport::Config::default();
     let here = std::net::IpAddr::from([127, 0, 0, 1]);
@@ -731,7 +740,7 @@ fn load_waking(server: &TestServer, path: &str) -> Result<Loaded, String> {
             .expect("the bundled font parses"),
     );
     engine.set_scripting(true);
-    engine.set_network(net::Client::new(runner_hosts()));
+    engine.set_network(net::Client::new(runner_hosts()).with_transport(TRANSPORT.clone()));
     let clock = HandClock::default();
     let hand = clock.clone();
     engine.set_clock(Arc::new(move || hand.now()));

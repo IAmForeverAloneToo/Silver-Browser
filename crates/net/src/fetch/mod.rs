@@ -139,7 +139,7 @@ impl Method {
 }
 
 /// What the response is for (Fetch's request destination).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Destination {
     /// A document to show.
     Document,
@@ -191,7 +191,7 @@ impl Destination {
 }
 
 /// Fetch's request mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mode {
     /// A navigation: the load of a document.
     Navigate,
@@ -218,7 +218,7 @@ impl Mode {
 /// Fetch's credentials mode: whether cookies go with the request and
 /// are taken from its response (M27.4), and what a CORS response must
 /// allow.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Credentials {
     Omit,
     /// Only while the request is same origin.

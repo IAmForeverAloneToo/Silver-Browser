@@ -435,7 +435,9 @@ fn deferred_scripts_run_in_order_once_parsed_and_async_ones_as_they_come() {
         "/d0.js" => Some(script("d0", 0)),
         "/d1.js" => Some(script("d1", 900)),
         "/d2.js" => Some(script("d2", 0)),
-        "/soon.js" => Some(script("soon", 0)),
+        // M38: preloaded as the page arrives, so later than the inline
+        // one is parsed.
+        "/soon.js" => Some(script("soon", 200)),
         "/block.js" => Some(script("block", 450)),
         _ => None,
     });
@@ -659,6 +661,9 @@ fn a_document_whose_realm_died_fetches_no_more_scripts() {
         heap: 8 << 20,
         ..js::Limits::default()
     };
+    // The scanner's speculative request would fetch it (M38); the
+    // scripts themselves are what is tested.
+    tab.engine.set_preload_scanner(false);
     load_all(&mut tab, server.url("/page.html"));
     assert!(matches!(
         tab.engine.scripts(),

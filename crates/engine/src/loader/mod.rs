@@ -45,6 +45,9 @@ mod partition_tests;
 #[cfg(test)]
 mod pointer_tests;
 pub(crate) mod pool;
+pub(crate) mod preload;
+#[cfg(test)]
+mod preload_tests;
 #[cfg(test)]
 mod referrer_tests;
 #[cfg(test)]
@@ -178,6 +181,89 @@ pub(crate) enum Target {
     Fetch,
     /// A violation's report (M33.1), whose answer nobody reads.
     Report,
+    /// A preload (M38): the scanner's hint or a `<link rel=preload>`,
+    /// whose response a later request of the same key takes.
+    Preload,
+}
+
+/// The most preloads a page makes (M38).
+pub(crate) const MAX_PRELOADS: usize = 128;
+
+/// What a preload is kept by (M38, HTML's preload key): the page, the
+/// URL without its fragment, the destination, and the request's mode
+/// and credentials.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct PreloadKey {
+    page: PageId,
+    url: String,
+    destination: net::Destination,
+    mode: net::Mode,
+    credentials: net::Credentials,
+}
+
+impl PreloadKey {
+    fn of(page: PageId, request: &Request) -> PreloadKey {
+        let url = request.url.as_str();
+        PreloadKey {
+            page,
+            url: url
+                .split_once('#')
+                .map_or(url, |(before, _)| before)
+                .to_owned(),
+            destination: request.destination,
+            mode: request.mode,
+            credentials: request.credentials,
+        }
+    }
+}
+
+/// The policies `request` is held to, as plain values: none as an empty
+/// list.
+fn policies_of(request: &Request) -> Vec<(String, net::csp::Disposition, bool)> {
+    request
+        .csp
+        .as_ref()
+        .map(|csp| csp.parts().policies)
+        .unwrap_or_default()
+}
+
+/// Whether `request`, held to policies a preload of its key was not,
+/// may take that preload, `state`: one come, whose every URL, the first
+/// and each a redirect led to, its policies allow; not one on its way,
+/// whose redirects are not known yet.
+fn allowed(state: &Preloaded, request: &Request) -> bool {
+    let (Preloaded::Come(come), Some(csp)) = (state, &request.csp) else {
+        return matches!(state, Preloaded::Come(_)) && request.csp.is_none();
+    };
+    let Ok(response) = &**come else {
+        return false;
+    };
+    response.url_list.iter().enumerate().all(|(hops, url)| {
+        csp.request_violations(
+            request.destination,
+            (url, url),
+            hops,
+            &request.nonce,
+            request.parser_inserted,
+        )
+        .is_empty()
+    })
+}
+
+/// A preload not yet taken: on its way, or come.
+enum Preloaded {
+    Flying(FetchId),
+    Come(Box<Result<Response, LoadError>>),
+}
+
+struct Preload {
+    state: Preloaded,
+    /// The policies it was made under: a request held to others, which
+    /// a script's `<meta>` gave the page since, does not take it.
+    policies: Vec<(String, net::csp::Disposition, bool)>,
+    /// A `<link rel=preload>`'s, which the console names if nothing
+    /// takes it.
+    explicit: bool,
 }
 
 /// A fetch in flight.
@@ -320,6 +406,13 @@ pub(crate) struct Network {
     /// What lets each page's requests ask their way into a more private
     /// address space (M33.4); none for a page that may not.
     local_networks: HashMap<PageId, net::LocalNetworkAccess>,
+    /// The preloads not yet taken (M38), the fetches each is, and every
+    /// key a page preloaded, taken or not, so that none is preloaded
+    /// twice; results a request took that came before it, to be taken.
+    preloads: HashMap<PreloadKey, Preload>,
+    preloading: HashMap<FetchId, PreloadKey>,
+    preloaded: std::collections::HashSet<PreloadKey>,
+    ready: std::collections::VecDeque<Arrived>,
 }
 
 impl Network {
@@ -342,6 +435,10 @@ impl Network {
             csps: HashMap::new(),
             referrer_policies: HashMap::new(),
             local_networks: HashMap::new(),
+            preloads: HashMap::new(),
+            preloading: HashMap::new(),
+            preloaded: std::collections::HashSet::new(),
+            ready: std::collections::VecDeque::new(),
         }
     }
 
@@ -518,8 +615,102 @@ impl Network {
         self.pool.waker()
     }
 
+    /// Preloads `request` for `page` (M38), unless its key was preloaded
+    /// before or the page made [`MAX_PRELOADS`]; `explicit` for a
+    /// `<link rel=preload>`'s. Says whether it did.
+    pub(crate) fn preload(&mut self, page: PageId, request: Request, explicit: bool) -> bool {
+        let key = PreloadKey::of(page, &request);
+        let made = self.preloaded.iter().filter(|k| k.page == page).count();
+        if self.preloaded.contains(&key) || made >= MAX_PRELOADS {
+            if let Some(preload) = self.preloads.get_mut(&key) {
+                preload.explicit |= explicit;
+            }
+            return false;
+        }
+        let policies = policies_of(&request);
+        let id = self.fetch(page, Target::Preload, request);
+        self.preloaded.insert(key.clone());
+        self.preloading.insert(id, key.clone());
+        self.preloads.insert(
+            key,
+            Preload {
+                state: Preloaded::Flying(id),
+                policies,
+                explicit,
+            },
+        );
+        true
+    }
+
+    /// The URLs of `page`'s `<link rel=preload>`s nothing took (M38),
+    /// each said once.
+    pub(crate) fn unused_preloads(&mut self, page: PageId) -> Vec<String> {
+        let mut urls: Vec<String> = self
+            .preloads
+            .iter_mut()
+            .filter(|(key, preload)| key.page == page && preload.explicit)
+            .map(|(key, preload)| {
+                preload.explicit = false;
+                key.url.clone()
+            })
+            .collect();
+        urls.sort();
+        urls
+    }
+
+    /// The preload of `request`'s key, taken for `target` (M38): its
+    /// fetch, now `target`'s, or its result, given at the next
+    /// [`Network::take`].
+    fn take_preload(
+        &mut self,
+        page: PageId,
+        target: &Target,
+        request: &Request,
+    ) -> Option<FetchId> {
+        if matches!(
+            target,
+            Target::Document | Target::Preload | Target::Report | Target::Fetch
+        ) || self.preloads.is_empty()
+        {
+            return None;
+        }
+        let preload = self.preloads.remove(&PreloadKey::of(page, request))?;
+        if preload.policies != policies_of(request) && !allowed(&preload.state, request) {
+            // Fetched again, held to what holds now; the preload's
+            // answer is not wanted.
+            if let Preloaded::Flying(id) = preload.state {
+                self.preloading.remove(&id);
+                self.abort(id);
+            }
+            return None;
+        }
+        match preload.state {
+            Preloaded::Flying(id) => {
+                self.preloading.remove(&id);
+                let flight = self.flights.get_mut(&id)?;
+                flight.target = target.clone();
+                Some(id)
+            }
+            Preloaded::Come(result) => {
+                let id = self.next;
+                self.next += 1;
+                self.ready.push_back(Arrived {
+                    id,
+                    page,
+                    target: target.clone(),
+                    result: *result,
+                });
+                if let Some(wake) = self.waker() {
+                    wake();
+                }
+                Some(id)
+            }
+        }
+    }
+
     /// Starts fetching `request` for `target` of `page`; a document's
-    /// response comes in pieces as it arrives.
+    /// response comes in pieces as it arrives. A preload of its key
+    /// (M38) is taken rather than fetched again.
     pub(crate) fn fetch(&mut self, page: PageId, target: Target, mut request: Request) -> FetchId {
         if request.partition.is_none() && request.mode != net::Mode::Navigate {
             request.partition = self.partitions.get(&page).cloned();
@@ -535,6 +726,9 @@ impl Network {
         }
         if self.bypassing.contains(&page) {
             request.cache = net::CacheMode::Reload;
+        }
+        if let Some(id) = self.take_preload(page, &target, &request) {
+            return id;
         }
         let streamed = target == Target::Document;
         let client = self.client();
@@ -566,9 +760,12 @@ impl Network {
     /// for `owner`'s sheets. Their results are not taken, even those that
     /// have finished and wait to be. Says whether there were any.
     pub(crate) fn cancel(&mut self, page: PageId, owner: Option<NodeId>) -> bool {
-        // A page left bypasses nothing any more.
+        // A page left bypasses nothing any more, nor keeps its preloads.
         if owner.is_none() {
             self.bypassing.remove(&page);
+            self.preloads.retain(|key, _| key.page != page);
+            self.preloaded.retain(|key| key.page != page);
+            self.ready.retain(|arrived| arrived.page != page);
         }
         let before = self.flights.len();
         self.flights.retain(|_, flight| {
@@ -581,6 +778,8 @@ impl Network {
             }
             !cancelled
         });
+        self.preloading
+            .retain(|id, _| self.flights.contains_key(id));
         self.flights.len() != before
     }
 
@@ -589,6 +788,7 @@ impl Network {
         if let Some(flight) = self.flights.remove(&id) {
             flight.abort.abort();
         }
+        self.ready.retain(|arrived| arrived.id != id);
     }
 
     /// Aborts and forgets every fetch.
@@ -597,11 +797,18 @@ impl Network {
             flight.abort.abort();
         }
         self.flights.clear();
+        self.preloads.clear();
+        self.preloading.clear();
+        self.preloaded.clear();
+        self.ready.clear();
     }
 
     /// A finished fetch still wanted, or a piece of a document's
     /// response on its way, if one has come.
     pub(crate) fn take(&mut self) -> Option<Taken> {
+        if let Some(arrived) = self.ready.pop_front() {
+            return Some(Taken::Arrived(arrived));
+        }
         while let Some((id, result)) = self.pool.try_take() {
             let page = |flights: &HashMap<FetchId, Flight>| flights.get(&id).map(|f| f.page);
             let taken = match result {
@@ -613,6 +820,25 @@ impl Network {
                 }
                 Ok(Fetched::Done(result)) => self.arrived(id, Ok(result)).map(Taken::Arrived),
                 Err(Lost) => self.arrived(id, Err(Lost)).map(Taken::Arrived),
+            };
+            // A preload come before anything asked for it waits to be;
+            // one its policy refused at a redirect goes, for the request
+            // to be refused itself, and say so.
+            let taken = match taken {
+                Some(Taken::Arrived(arrived)) if arrived.target == Target::Preload => {
+                    if let Some(key) = self.preloading.remove(&arrived.id) {
+                        if matches!(
+                            arrived.result,
+                            Err(LoadError::Network(NetworkError::Csp(_)))
+                        ) {
+                            self.preloads.remove(&key);
+                        } else if let Some(preload) = self.preloads.get_mut(&key) {
+                            preload.state = Preloaded::Come(Box::new(arrived.result));
+                        }
+                    }
+                    None
+                }
+                taken => taken,
             };
             if taken.is_some() {
                 return taken;
@@ -639,9 +865,9 @@ impl Network {
         })
     }
 
-    /// How many fetches are in flight.
+    /// How many fetches are in flight, or come and not yet taken.
     pub(crate) fn in_flight(&self) -> usize {
-        self.flights.len()
+        self.flights.len() + self.ready.len()
     }
 
     #[cfg(test)]
@@ -799,6 +1025,8 @@ pub(crate) struct Parsing {
     pub(crate) sandbox: crate::sandbox::Sandbox,
     /// The referrer of the request that brought it (M33.3).
     pub(crate) referrer: String,
+    /// What the preload scanner's hints are resolved against (M38).
+    pub(crate) hints: preload::Hints,
 }
 
 /// The language the response's `Content-Language` gives its document,
