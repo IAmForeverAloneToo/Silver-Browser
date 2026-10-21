@@ -315,7 +315,8 @@ impl RemoteTab {
                 &log,
                 context.accept_language(),
                 false,
-            ),
+            )
+            .with_transport(context.transport().clone()),
             grants.clone(),
         );
         network.hand_over_with(handovers.clone());
@@ -1984,15 +1985,18 @@ impl View for RemoteTab {
 
     fn set_compat_user_agent(&mut self, on: bool) {
         self.settings.compat_user_agent = on;
-        self.network.replace_client(client(
-            &self.jar,
-            &self.cache,
-            &self.hsts,
-            &self.permissions,
-            &self.log,
-            self.context.accept_language(),
-            on,
-        ));
+        self.network.replace_client(
+            client(
+                &self.jar,
+                &self.cache,
+                &self.hsts,
+                &self.permissions,
+                &self.log,
+                self.context.accept_language(),
+                on,
+            )
+            .with_transport(self.context.transport().clone()),
+        );
         self.send_settings();
     }
 

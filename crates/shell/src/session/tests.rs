@@ -2517,14 +2517,28 @@ fn the_downloads_page_lists_what_was_saved_and_opens_it() {
     }
     // Its buttons: open the saved file, show it in its folder, keep the
     // one held.
+    // A button comes once its download's state allows it: listed, a
+    // download may still be under way (CI, M38).
     let press = |window: &mut Window, name: &str, action: &str| {
-        in_page(
-            &mut window.session,
-            &format!(
-                "[...document.querySelectorAll('.item')].find(i => i.textContent.includes({name:?}))\
-                 .querySelector('[data-action=\"{action}\"]').click()"
-            ),
-        );
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let pressed = in_page(
+                &mut window.session,
+                &format!(
+                    "(() => {{ const item = [...document.querySelectorAll('.item')]\
+                     .find(i => i.textContent.includes({name:?})); \
+                     const button = item && item.querySelector('[data-action=\"{action}\"]'); \
+                     if (!button) return 'waiting'; button.click(); return 'pressed'; }})()"
+                ),
+            );
+            if format!("{pressed:?}").contains("pressed") {
+                break;
+            }
+            assert!(Instant::now() < deadline, "{name}'s {action}");
+            window.session.tick();
+            window.session.network();
+            std::thread::sleep(Duration::from_millis(5));
+        }
         for _ in 0..20 {
             window.session.tick();
             window.session.network();

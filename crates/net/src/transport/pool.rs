@@ -207,6 +207,47 @@ impl Pool {
         self.0.changed.notify_all();
     }
 
+    /// Whether another host of `key`'s scheme, port and partition has an
+    /// HTTP/2 connection, which a request to it might share.
+    pub(crate) fn may_coalesce(&self, key: &OriginKey) -> bool {
+        self.0.lock().h2.keys().any(|other| same_reach(other, key))
+    }
+
+    /// An HTTP/2 connection to another host of `key`'s scheme, port and
+    /// partition that may carry `key`'s requests (RFC 9113 9.1.1): one
+    /// connected to an address of `host`'s, `addresses`, whose
+    /// certificate is valid for `host`; `key`'s from now on.
+    pub(crate) fn coalesce(
+        &self,
+        key: &OriginKey,
+        host: &crate::Host,
+        addresses: &[std::net::SocketAddr],
+    ) -> Option<Arc<H2Connection>> {
+        let mut state = self.0.lock();
+        let found = state
+            .h2
+            .iter()
+            .find(|(other, connection)| {
+                same_reach(other, key)
+                    && connection.usable()
+                    && addresses
+                        .iter()
+                        .any(|address| address.ip() == connection.peer.ip())
+                    && connection.covers(host)
+            })
+            .map(|(_, connection)| connection.clone())?;
+        state.h2.insert(key.clone(), found.clone());
+        drop(state);
+        self.0.changed.notify_all();
+        Some(found)
+    }
+
+    /// Forgets `key`'s HTTP/2 connection: one another host's, which
+    /// answered that it may not carry `key`'s requests.
+    pub(crate) fn forget_h2(&self, key: &OriginKey) {
+        self.0.lock().h2.remove(key);
+    }
+
     /// The origin speaks HTTP/1.1 alone.
     pub(crate) fn speaks_h1(&self, key: &OriginKey) {
         let mut state = self.0.lock();
@@ -228,6 +269,12 @@ impl Pool {
             .get(key)
             .map_or((0, 0), |origin| (origin.open, origin.idle.len()))
     }
+}
+
+/// Whether two origins' requests may share a connection: of one scheme,
+/// port and partition.
+fn same_reach(one: &OriginKey, other: &OriginKey) -> bool {
+    one.scheme == other.scheme && one.port == other.port && one.partition == other.partition
 }
 
 /// What a fetch to an origin is to use.

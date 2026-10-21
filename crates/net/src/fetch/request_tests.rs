@@ -746,6 +746,7 @@ fn origin_is_null_from_an_https_document_to_http_for_an_unsafe_method() {
     let hop = Hop {
         fetch: None,
         cached: Default::default(),
+        protocol: Default::default(),
         method: Method::POST,
         author: HeaderList::new(),
         body: None,
@@ -765,6 +766,7 @@ fn origin_is_null_from_an_https_document_to_http_for_an_unsafe_method() {
     let get = Hop {
         fetch: None,
         cached: Default::default(),
+        protocol: Default::default(),
         method: Method::GET,
         ..hop
     };
@@ -780,6 +782,7 @@ fn metadata_goes_to_trustworthy_urls_and_user_only_with_navigations() {
     let hop = |url: &Url| Hop {
         fetch: None,
         cached: Default::default(),
+        protocol: Default::default(),
         method: Method::GET,
         author: HeaderList::new(),
         body: None,

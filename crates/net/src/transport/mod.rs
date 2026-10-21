@@ -158,6 +158,8 @@ pub struct Exchange<'a> {
     pub abort: &'a AbortHandle,
     /// The most the body may hold, when less than the configured limit.
     pub body_limit: Option<usize>,
+    /// Its `priority` (RFC 9218), sent over HTTP/2 (M38).
+    pub priority: Option<&'a str>,
 }
 
 /// What a request asks the user with for its way into a more private
@@ -208,6 +210,8 @@ pub trait ResponseStream {
     ) -> bool;
     /// A piece of the body, its content codings removed.
     fn body(&mut self, bytes: &[u8]);
+    /// The response comes in `version` (M38), said before its head.
+    fn protocol(&mut self, _version: http::Version) {}
 }
 
 /// The reader's sink for a streamed exchange: the stream told of the
@@ -437,32 +441,55 @@ impl Transport {
         };
         let to_head = exchange.method == "HEAD";
         let mut fresh = false;
-        // How many times the request went again on HTTP/2 (M38).
+        // How many times the request went again on HTTP/2 (M38), and
+        // whether it is to go on a connection of its host's own.
         let mut retries = 0;
+        let mut own = false;
         loop {
-            // An `https:` origin's HTTP/2 connection, or the first
-            // connection to find out whether it speaks it.
+            // An `https:` origin's HTTP/2 connection, another host's that
+            // may carry its requests, or the first connection to find out
+            // whether it speaks it.
             let mut probe = None;
+            let mut resolved = None;
             if url.scheme() == "https" {
+                let mut shared = None;
                 match self.pool.speaks(&key, exchange.abort)? {
-                    Speaks::H2(connection) => {
-                        match self.exchange_h2(&connection, exchange, stream.as_deref_mut(), limits)
-                        {
-                            Err(H2Failure::Retry) if retries < 2 => {
-                                retries += 1;
-                                continue;
+                    Speaks::H2(connection) => shared = Some(connection),
+                    Speaks::Probe(first) => {
+                        if !own && self.pool.may_coalesce(&key) && matches!(host, Host::Domain(_)) {
+                            let addresses = self.addresses(exchange)?;
+                            match self.pool.coalesce(&key, host, &addresses) {
+                                Some(connection) => shared = Some(connection),
+                                None => resolved = Some(addresses),
                             }
-                            Err(H2Failure::Retry) => {
-                                return Err(NetworkError::Http2(
-                                    "the server did not process the request".to_owned(),
-                                ));
-                            }
-                            Err(H2Failure::Error(error)) => return Err(error),
-                            Ok(received) => return Ok(received),
+                        }
+                        if shared.is_none() {
+                            probe = Some(first);
                         }
                     }
-                    Speaks::Probe(first) => probe = Some(first),
                     Speaks::H1 => {}
+                }
+                if let Some(connection) = shared {
+                    match self.exchange_h2(&connection, exchange, stream.as_deref_mut(), limits) {
+                        // A connection that may not carry this host's
+                        // requests (9.1.2): again, on one of its own.
+                        Ok(received) if received.response.status == 421 && !own => {
+                            self.pool.forget_h2(&key);
+                            own = true;
+                            continue;
+                        }
+                        Err(H2Failure::Retry) if retries < 2 => {
+                            retries += 1;
+                            continue;
+                        }
+                        Err(H2Failure::Retry) => {
+                            return Err(NetworkError::Http2(
+                                "the server did not process the request".to_owned(),
+                            ));
+                        }
+                        Err(H2Failure::Error(error)) => return Err(error),
+                        Ok(received) => return Ok(received),
+                    }
                 }
             }
             let mut lease = self.pool.checkout(&key, fresh, exchange.abort)?;
@@ -473,7 +500,7 @@ impl Transport {
                 self.pool.speaks_h1(&key);
             }
             if !reused {
-                match self.open(exchange)? {
+                match self.open(exchange, resolved.take())? {
                     Opened::H1(connection) => {
                         if url.scheme() == "https" {
                             self.pool.speaks_h1(&key);
@@ -523,6 +550,9 @@ impl Transport {
                 return Err(error);
             }
             connection.reader.get_mut().lend(exchange.abort);
+            if let Some(stream) = stream.as_deref_mut() {
+                stream.protocol(http::Version::Http11);
+            }
             let mut decoding = stream.as_deref_mut().map(|stream| Decoding {
                 stream,
                 space: connection.space,
@@ -626,6 +656,9 @@ impl Transport {
             Err(Unopened::Unusable) => return Err(H2Failure::Retry),
             Err(Unopened::Aborted) => return fail(NetworkError::Aborted),
         };
+        if let Some(stream) = stream.as_deref_mut() {
+            stream.protocol(http::Version::Http2);
+        }
         let to_head = exchange.method == "HEAD";
         let mut head: Option<(u16, HeaderList)> = None;
         let mut decoder: Option<content_coding::Decoder> = None;
@@ -712,12 +745,10 @@ impl Transport {
         })
     }
 
-    /// A new connection to the exchange's URL's host: resolved,
-    /// connected to an address its page may reach, or that the user lets
-    /// it (M33.4), and over TLS for `https:`; speaking HTTP/2 when its
-    /// TLS chose it (M38).
-    fn open(&self, exchange: &Exchange) -> Result<Opened, NetworkError> {
-        let (url, partition, abort) = (exchange.url, exchange.partition, exchange.abort);
+    /// The addresses of the exchange's URL's host: as the tests give
+    /// them, else resolved.
+    fn addresses(&self, exchange: &Exchange) -> Result<Vec<SocketAddr>, NetworkError> {
+        let url = exchange.url;
         let host = url.host().expect("an http: or https: URL has a host");
         let port = url.port_or_default().expect("and a port");
         let given = match host {
@@ -729,9 +760,26 @@ impl Transport {
                 .map(|&(_, address)| vec![SocketAddr::new(address, port)]),
             _ => None,
         };
-        let addresses = match given {
+        match given {
+            Some(addresses) => Ok(addresses),
+            None => connect::resolve_abortable(host, port, exchange.abort),
+        }
+    }
+
+    /// A new connection to the exchange's URL's host, at `resolved` if
+    /// its addresses are known: connected to an address its page may
+    /// reach, or that the user lets it (M33.4), and over TLS for
+    /// `https:`; speaking HTTP/2 when its TLS chose it (M38).
+    fn open(
+        &self,
+        exchange: &Exchange,
+        resolved: Option<Vec<SocketAddr>>,
+    ) -> Result<Opened, NetworkError> {
+        let (url, partition, abort) = (exchange.url, exchange.partition, exchange.abort);
+        let host = url.host().expect("an http: or https: URL has a host");
+        let addresses = match resolved {
             Some(addresses) => addresses,
-            None => connect::resolve_abortable(host, port, abort)?,
+            None => self.addresses(exchange)?,
         };
         let allowed = |address| {
             let target = self.config.space_of(address);
@@ -761,7 +809,7 @@ impl Transport {
                     read_timeout: timeout,
                     idle_timeout: self.config.idle_timeout,
                 };
-                return H2Connection::start(tls, waiter, space, settings)
+                return H2Connection::start(tls, waiter, space, address, settings)
                     .map(Opened::H2)
                     .map_err(|e| NetworkError::Connect(e.to_string()));
             }
@@ -825,6 +873,9 @@ fn h2_request(exchange: &Exchange) -> Result<h2::Request, NetworkError> {
             b"content-length".to_vec(),
             body.len().to_string().into_bytes(),
         ));
+    }
+    if let Some(priority) = exchange.priority {
+        fields.push((b"priority".to_vec(), priority.as_bytes().to_vec()));
     }
     Ok(h2::Request {
         fields,

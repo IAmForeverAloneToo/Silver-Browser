@@ -120,3 +120,23 @@ fn a_scripts_fetch_uses_the_cache_as_its_mode_says() {
     // The first, then no-store and reload.
     assert_eq!(reached(&server, "/r"), 3);
 }
+
+#[test]
+fn the_engines_of_a_context_share_its_connections() {
+    // M38: the context holds the transport, so a second tab of the
+    // profile takes the first's idle connection.
+    let server = serve(|_| Some(html("<title>t</title>")));
+    let context = crate::Context::new();
+    for _ in 0..2 {
+        let mut tab = Tab::new();
+        tab.engine.join(&context);
+        tab.load(server.url("/"));
+    }
+    assert_eq!(server.connections(), 1);
+    // Engines of two contexts do not.
+    let other = crate::Context::new();
+    let mut tab = Tab::new();
+    tab.engine.join(&other);
+    tab.load(server.url("/"));
+    assert_eq!(server.connections(), 2);
+}

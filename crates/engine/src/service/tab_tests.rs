@@ -734,3 +734,19 @@ fn a_tabs_requests_and_pages_take_the_contexts_languages() {
         .map(|(_, value)| value.clone());
     assert_eq!(sent.as_deref(), Some("de,en;q=0.9"));
 }
+
+#[test]
+fn the_tabs_of_a_context_share_its_connections() {
+    // M38: the browser's clients of a profile's tabs share the context's
+    // transport, so the second tab takes the first's idle connection.
+    let server = serve("<title>t</title>");
+    let context = crate::Context::new();
+    let launcher = Arc::new(ThreadLauncher::with_fonts(fonts()));
+    let mut first = RemoteTab::in_context(launcher.clone(), fonts(), &context);
+    first.navigate(server.url("/"));
+    settle(&mut first, |tab| *tab.load_state() == LoadState::Loaded);
+    let mut second = RemoteTab::in_context(launcher, fonts(), &context);
+    second.navigate(server.url("/"));
+    settle(&mut second, |tab| *tab.load_state() == LoadState::Loaded);
+    assert_eq!(server.connections(), 1);
+}

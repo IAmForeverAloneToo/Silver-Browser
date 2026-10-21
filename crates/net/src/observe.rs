@@ -32,6 +32,8 @@ pub enum Observed<'a> {
         status: u16,
         headers: &'a HeaderList,
         cached: bool,
+        /// The protocol it came in, if it came from the network (M38).
+        protocol: Option<crate::http::Version>,
     },
     /// A piece of its body, its content codings removed.
     Body(&'a [u8]),

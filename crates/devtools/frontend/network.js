@@ -100,6 +100,7 @@ tool("network", "Network", (pane) => {
         ["Method", entry.method],
         ["Status", entry.error ? entry.error : String(entry.status)],
         ["Type", entry.type],
+        ["Protocol", entry.protocol || ""],
         ["Initiator", entry.initiator || ""],
       ].concat(entry.urls.length > 1 ? [["Redirected from", entry.urls.slice(0, -1).join(" -> ")]] : [])));
       const ms = (t) => (t === null ? "" : Math.round(t - entry.start) + " ms");

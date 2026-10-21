@@ -285,6 +285,12 @@ test = false
 doc = false
 
 [[bin]]
+name = "h2_client"
+path = "fuzz_targets/h2_client.rs"
+test = false
+doc = false
+
+[[bin]]
 name = "devtools_json"
 path = "fuzz_targets/devtools_json.rs"
 test = false

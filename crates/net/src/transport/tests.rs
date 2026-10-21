@@ -52,6 +52,7 @@ fn send_in(
         target: None,
         abort,
         body_limit: None,
+        priority: None,
     })
 }
 
@@ -408,6 +409,7 @@ fn a_server_that_takes_nothing_times_the_request_out() {
         target: None,
         abort: &AbortHandle::new(),
         body_limit: None,
+        priority: None,
     });
     assert_eq!(result.unwrap_err(), NetworkError::Timeout);
     assert!(
@@ -535,6 +537,7 @@ fn a_page_asks_the_user_for_a_more_private_space() {
             target,
             abort: &AbortHandle::new(),
             body_limit: None,
+            priority: None,
         })
     };
     let gate = |allow, wait| Answering {

@@ -52,6 +52,7 @@ fn exchange(
         target: None,
         abort,
         body_limit: None,
+        priority: None,
     })
 }
 
@@ -224,6 +225,7 @@ fn a_streamed_response_and_a_coded_one() {
                 target: None,
                 abort: &AbortHandle::new(),
                 body_limit: None,
+                priority: None,
             },
             &mut collect,
         )
@@ -425,4 +427,147 @@ fn a_status_with_no_body_and_a_head_request() {
 fn the_connections_error_codes_have_their_names() {
     assert_eq!(ErrorCode::REFUSED_STREAM.name(), "REFUSED_STREAM");
     assert_eq!(ErrorCode(0x99).name(), "0x99");
+}
+
+/// A URL on `server` under `host`, which the transport resolves to it.
+fn at(server: &TestServer, host: &str, path: &str) -> Url {
+    Url::parse(&format!("https://{host}:{}{path}", server.port())).unwrap()
+}
+
+/// A transport resolving `hosts` to this machine and trusting `root`.
+fn resolving(root: &rustls::pki_types::CertificateDer<'static>, hosts: &[&str]) -> Transport {
+    let here = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+    let config = hosts
+        .iter()
+        .fold(Config::default().trust(root.clone()), |config, host| {
+            config.resolve(host, here)
+        });
+    Transport::new(config)
+}
+
+#[test]
+fn a_connection_carries_another_hosts_requests_when_its_certificate_covers_it() {
+    let authority = TestAuthority::new();
+    let server = TestServer::tls(
+        authority.server_h2(&["a.test", "b.test"], VALID),
+        |request| {
+            Reply::ok(
+                "text/plain",
+                request.header("host").unwrap_or_default().as_bytes(),
+            )
+        },
+    );
+    let transport = resolving(&authority.root, &["a.test", "b.test", "c.test"]);
+    let body = |url: Url| get(&transport, &url).map(|r| r.response.body);
+    let port = server.port();
+    assert_eq!(
+        body(at(&server, "a.test", "/")).unwrap(),
+        format!("a.test:{port}").into_bytes()
+    );
+    assert_eq!(
+        body(at(&server, "b.test", "/")).unwrap(),
+        format!("b.test:{port}").into_bytes()
+    );
+    assert_eq!(server.connections(), 1, "b.test on a.test's connection");
+    // A host the certificate does not cover is not carried: it opens its
+    // own, whose TLS refuses the certificate.
+    assert!(matches!(
+        body(at(&server, "c.test", "/")),
+        Err(NetworkError::Tls(_))
+    ));
+    assert_eq!(server.connections(), 2);
+}
+
+#[test]
+fn a_misdirected_request_goes_again_on_its_hosts_own_connection() {
+    let authority = TestAuthority::new();
+    let server = TestServer::tls(
+        authority.server_h2(&["a.test", "b.test"], VALID),
+        |request| {
+            let host = request.header("host").unwrap_or_default();
+            match (request.connection, host.starts_with("b.test")) {
+                (0, true) => {
+                    Reply::with_fields(421, &[("Content-Type", "text/plain")], b"not here")
+                }
+                _ => Reply::ok("text/plain", b"here"),
+            }
+        },
+    );
+    let transport = resolving(&authority.root, &["a.test", "b.test"]);
+    get(&transport, &at(&server, "a.test", "/")).unwrap();
+    let received = get(&transport, &at(&server, "b.test", "/")).unwrap();
+    assert_eq!(received.response.status, 200);
+    assert_eq!(server.connections(), 2);
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!((requests[1].connection, requests[2].connection), (0, 1));
+}
+
+#[test]
+fn clients_given_one_transport_share_its_connections() {
+    let authority = TestAuthority::new();
+    let server = TestServer::tls(authority.server_h2(&["127.0.0.1"], VALID), |_| {
+        Reply::ok("text/plain", b"x")
+    });
+    let transport = Arc::new(Transport::new(
+        Config::default().trust(authority.root.clone()),
+    ));
+    for _ in 0..2 {
+        let client = crate::fetch::Client::default().with_transport(transport.clone());
+        let request = crate::fetch::Request::get(server.url("/"), crate::fetch::Destination::Empty);
+        client.fetch(&request).unwrap();
+    }
+    assert_eq!(server.connections(), 1);
+}
+
+#[test]
+fn a_requests_priority_goes_with_it_over_http2_alone() {
+    let authority = TestAuthority::new();
+    let server = TestServer::tls(authority.server_h2(&["127.0.0.1"], VALID), |_| {
+        Reply::ok("text/plain", b"x")
+    });
+    let client = crate::fetch::Client::new(Config::default().trust(authority.root.clone()));
+    for destination in [
+        crate::fetch::Destination::Image,
+        crate::fetch::Destination::Style,
+        crate::fetch::Destination::Empty,
+    ] {
+        let request = crate::fetch::Request::get(server.url("/"), destination);
+        client.fetch(&request).unwrap();
+    }
+    let priorities: Vec<Option<String>> = server
+        .requests()
+        .iter()
+        .map(|request| request.header("priority").map(str::to_owned))
+        .collect();
+    assert_eq!(
+        priorities,
+        [Some("u=5, i".to_owned()), Some("u=0".to_owned()), None]
+    );
+    // Over HTTP/1.1, none.
+    let plain = TestServer::plain(|_| Reply::ok("text/plain", b"x"));
+    let request = crate::fetch::Request::get(plain.url("/"), crate::fetch::Destination::Image);
+    crate::fetch::Client::default().fetch(&request).unwrap();
+    assert_eq!(plain.requests()[0].header("priority"), None);
+}
+
+#[test]
+fn a_host_at_another_address_is_not_carried() {
+    let authority = TestAuthority::new();
+    let server = TestServer::tls(authority.server_h2(&["a.test", "d.test"], VALID), |_| {
+        Reply::ok("text/plain", b"x")
+    });
+    // d.test is at another address of this machine, where the server is
+    // not: its own connection fails, as it must not take a.test's.
+    let here = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+    let elsewhere = std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 2));
+    let transport = Transport::new(
+        Config::default()
+            .trust(authority.root.clone())
+            .resolve("a.test", here)
+            .resolve("d.test", elsewhere),
+    );
+    get(&transport, &at(&server, "a.test", "/")).unwrap();
+    assert!(get(&transport, &at(&server, "d.test", "/")).is_err());
+    assert_eq!(server.requests().len(), 1);
 }

@@ -79,6 +79,20 @@ pub const COMPAT_USER_AGENT: &str = concat!(
 /// (M37.3).
 const ACCEPT_LANGUAGE: &[u8] = b"en-US,en;q=0.9";
 
+/// The urgency of a request of `destination` (RFC 9218), which HTTP/2
+/// sends (M38): a document's and a stylesheet's first, as they hold the
+/// page back; an image's last and taken bit by bit; a fetch's the
+/// default, unsaid.
+fn priority(destination: Destination) -> Option<&'static str> {
+    match destination {
+        Destination::Document | Destination::Iframe => Some("u=0, i"),
+        Destination::Style => Some("u=0"),
+        Destination::Script | Destination::Worker => Some("u=1"),
+        Destination::Image => Some("u=5, i"),
+        Destination::Empty | Destination::Report => None,
+    }
+}
+
 /// The content codings [`crate::transport`] removes.
 const ACCEPT_ENCODING: &[u8] = b"gzip, deflate";
 
@@ -531,7 +545,7 @@ impl Response {
 /// Fetches. One client serves every fetch, and its connections are
 /// shared among them.
 pub struct Client {
-    transport: Transport,
+    transport: Arc<Transport>,
     body_limit: usize,
     /// The `User-Agent` its requests send.
     user_agent: &'static str,
@@ -571,7 +585,7 @@ impl Client {
     pub fn new(config: transport::Config) -> Client {
         Client {
             body_limit: config.limits.body_bytes,
-            transport: Transport::new(config),
+            transport: Arc::new(Transport::new(config)),
             user_agent: USER_AGENT,
             preflights: cors::PreflightCache::default(),
             cookies: Arc::default(),
@@ -642,6 +656,13 @@ impl Client {
     /// The client's cookie jar.
     pub fn cookies(&self) -> &Arc<Mutex<Jar>> {
         &self.cookies
+    }
+
+    /// The client, its connections those of `transport` (M38): a
+    /// context's, which every tab of a profile shares.
+    pub fn with_transport(mut self, transport: Arc<Transport>) -> Client {
+        self.transport = transport;
+        self
     }
 
     /// The client, its fetches keeping their responses in `cache`
@@ -719,6 +740,7 @@ impl Client {
         let mut hop = Hop {
             fetch,
             cached: Default::default(),
+            protocol: Default::default(),
             method: request.method.clone(),
             author: request.headers.clone(),
             body: request.body.clone(),
@@ -760,6 +782,7 @@ impl Client {
                         status: response.status,
                         headers: &response.headers,
                         cached: hop.cached.get(),
+                        protocol: hop.protocol.get(),
                     },
                 );
             }
@@ -901,6 +924,7 @@ impl Client {
                     target: request.target_address_space,
                     abort: &request.abort,
                     body_limit: request.body_limit,
+                    priority: priority(request.destination),
                 };
                 // Set-Cookie is taken as soon as the head comes, a
                 // redirect's too: before a document's scripts run.
@@ -920,11 +944,13 @@ impl Client {
                             take_cookies: &take_cookies,
                             client: self,
                             fetch: hop.fetch,
+                            protocol: None,
                         };
                         self.transport.exchange_streaming(&exchange, &mut stream)?
                     }
                 };
                 let response = received.response;
+                hop.protocol.set(Some(response.version));
                 if cached && mode != CacheMode::NoStore {
                     let stored = Stored {
                         status: response.status,
@@ -1024,6 +1050,7 @@ impl Client {
         let preflight_hop = Hop {
             fetch: None,
             cached: Default::default(),
+            protocol: Default::default(),
             method: Method::OPTIONS,
             author,
             body: None,
@@ -1216,8 +1243,10 @@ fn cache_mode(request: &Request, hop: &Hop) -> CacheMode {
 struct Hop {
     /// The observer's number for the fetch, when there is one (M36).
     fetch: Option<u64>,
-    /// Whether this hop's response came from the HTTP cache.
+    /// Whether this hop's response came from the HTTP cache, and the
+    /// protocol it came in (M38).
     cached: std::cell::Cell<bool>,
+    protocol: std::cell::Cell<Option<crate::http::Version>>,
     method: Method,
     /// The author's fields, less those a redirect dropped.
     author: HeaderList,
@@ -1557,9 +1586,15 @@ struct Streaming<'a, 'd> {
     /// they come (M36), and the observer's number for the fetch.
     client: &'a Client,
     fetch: Option<u64>,
+    /// The protocol the response comes in, which the transport says.
+    protocol: Option<crate::http::Version>,
 }
 
 impl transport::ResponseStream for Streaming<'_, '_> {
+    fn protocol(&mut self, version: crate::http::Version) {
+        self.protocol = Some(version);
+    }
+
     fn head(
         &mut self,
         status: u16,
@@ -1574,6 +1609,7 @@ impl transport::ResponseStream for Streaming<'_, '_> {
                 status,
                 headers,
                 cached: false,
+                protocol: self.protocol,
             },
         );
         let response = Response {

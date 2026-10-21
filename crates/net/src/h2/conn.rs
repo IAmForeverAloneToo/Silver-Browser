@@ -5,11 +5,13 @@
 
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
+use std::net::SocketAddr;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use mio::Waker;
+use rustls::pki_types::{CertificateDer, ServerName};
 
 use super::frame::ErrorCode;
 use super::hpack;
@@ -131,6 +133,10 @@ pub(crate) struct Connection {
     shared: Arc<Shared>,
     /// The address space of the server it reached.
     pub(crate) space: AddressSpace,
+    /// The address it reached, and the server's certificate, for a
+    /// request to another host that may share it (9.1.1).
+    pub(crate) peer: SocketAddr,
+    certificate: Option<CertificateDer<'static>>,
 }
 
 /// Why a stream could not be opened.
@@ -156,8 +162,14 @@ impl Connection {
         socket: TlsSocket,
         waiter: Waiter,
         space: AddressSpace,
+        peer: SocketAddr,
         settings: Settings,
     ) -> io::Result<Arc<Connection>> {
+        let certificate = socket
+            .conn
+            .peer_certificates()
+            .and_then(|chain| chain.first())
+            .map(|certificate| certificate.clone().into_owned());
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 commands: VecDeque::new(),
@@ -175,7 +187,28 @@ impl Connection {
         std::thread::Builder::new()
             .name("http/2".to_owned())
             .spawn(move || worker.run())?;
-        Ok(Arc::new(Connection { shared, space }))
+        Ok(Arc::new(Connection {
+            shared,
+            space,
+            peer,
+            certificate,
+        }))
+    }
+
+    /// Whether the server's certificate is valid for `host`: the
+    /// connection may then carry its requests too.
+    pub(crate) fn covers(&self, host: &crate::Host) -> bool {
+        let Some(certificate) = &self.certificate else {
+            return false;
+        };
+        let Ok(parsed) = rustls::server::ParsedCertificate::try_from(certificate) else {
+            return false;
+        };
+        let name = match host {
+            crate::Host::Domain(name) => ServerName::try_from(name.clone()).ok(),
+            _ => None,
+        };
+        name.is_some_and(|name| rustls::client::verify_server_name(&parsed, &name).is_ok())
     }
 
     /// Whether the connection takes new streams.

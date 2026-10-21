@@ -25,6 +25,9 @@ pub struct Context {
 struct Shared {
     jar: Arc<Mutex<Jar>>,
     cache: Arc<net::Cache>,
+    /// The connections (M38): every tab of the profile shares them, the
+    /// partition in their key keeping sites apart.
+    transport: Arc<net::transport::Transport>,
     hsts: Arc<Mutex<net::Hsts>>,
     permissions: Arc<Permissions>,
     storage: Arc<Mutex<Storage>>,
@@ -56,6 +59,9 @@ impl Context {
             shared: Arc::new(Shared {
                 jar: Arc::default(),
                 cache: Arc::default(),
+                transport: Arc::new(net::transport::Transport::new(
+                    net::transport::Config::default(),
+                )),
                 hsts,
                 permissions,
                 storage: Arc::new(Mutex::new(storage)),
@@ -200,6 +206,10 @@ impl Context {
 
     pub(crate) fn cache(&self) -> &Arc<net::Cache> {
         &self.shared.cache
+    }
+
+    pub(crate) fn transport(&self) -> &Arc<net::transport::Transport> {
+        &self.shared.transport
     }
 
     pub(crate) fn hsts(&self) -> &Arc<Mutex<net::Hsts>> {

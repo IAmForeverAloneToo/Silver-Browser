@@ -290,6 +290,9 @@ pub(crate) struct Network {
     cookies: Arc<Mutex<net::cookies::Jar>>,
     /// The HTTP cache every client of the engine keeps (M28.4).
     cache: Arc<net::Cache>,
+    /// The connections of the context joined (M38), which its clients
+    /// share; none, each client its own.
+    transport: Option<Arc<net::transport::Transport>>,
     /// The HSTS hosts every client of the engine keeps (M33.3).
     hsts: Arc<Mutex<net::Hsts>>,
     /// The answers its clients' requests into a more private address
@@ -324,6 +327,7 @@ impl Network {
             remote_cookies: None,
             cookies: Arc::default(),
             cache: Arc::default(),
+            transport: None,
             hsts: Arc::default(),
             permissions: Arc::default(),
             log: Arc::default(),
@@ -417,6 +421,10 @@ impl Network {
 
     /// `client` keeping the engine's cookies and cache.
     fn shared(&self, client: Client) -> Client {
+        let client = match &self.transport {
+            Some(transport) => client.with_transport(transport.clone()),
+            None => client,
+        };
         let client = client
             .with_cookies(self.cookies.clone())
             .with_cache(self.cache.clone())
@@ -457,6 +465,7 @@ impl Network {
         network.remote_cookies = self.remote_cookies.clone();
         network.cookies = self.cookies.clone();
         network.cache = self.cache.clone();
+        network.transport = self.transport.clone();
         network.log = self.log.clone();
         network.languages = self.languages.clone();
         network
@@ -467,6 +476,7 @@ impl Network {
     pub(crate) fn join(&mut self, context: &crate::Context) {
         self.cookies = context.jar().clone();
         self.cache = context.cache().clone();
+        self.transport = Some(context.transport().clone());
         self.hsts = context.hsts().clone();
         self.permissions = context.permissions().clone();
         self.languages = Some(context.accept_language().clone());

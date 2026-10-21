@@ -46,6 +46,8 @@ struct Entry {
     status: Option<u16>,
     response_headers: Vec<(String, String)>,
     cached: bool,
+    /// The protocol the response came in: `http/1.1` or `h2` (M38).
+    protocol: &'static str,
     start: f64,
     head: Option<f64>,
     end: Option<f64>,
@@ -103,6 +105,7 @@ impl Observer for NetworkLog {
                 status: None,
                 response_headers: Vec::new(),
                 cached: false,
+                protocol: "",
                 start: now,
                 head: None,
                 end: None,
@@ -140,7 +143,14 @@ impl Observer for NetworkLog {
                 status,
                 headers,
                 cached,
+                protocol,
             } => {
+                entry.protocol = match protocol {
+                    Some(net::http::Version::Http2) => "h2",
+                    Some(net::http::Version::Http11) => "http/1.1",
+                    Some(net::http::Version::Http10) => "http/1.0",
+                    None => "",
+                };
                 entry.status = Some(status);
                 entry.response_headers = fields(headers);
                 entry.cached = cached;
@@ -294,6 +304,7 @@ fn summary(entry: &Entry) -> Json {
         ("status", Json::from(entry.status.map(u32::from))),
         ("mime", Json::from(mime)),
         ("cached", Json::from(entry.cached)),
+        ("protocol", Json::from(entry.protocol)),
         ("size", Json::from(entry.size)),
         ("start", Json::from(entry.start)),
         ("head", Json::from(entry.head)),
@@ -382,6 +393,13 @@ mod tests {
             Some("image")
         );
         assert_eq!(field(by_url("/s.css"), "mime").as_str(), Some("text/css"));
+        // The protocol each came in (M38): the document streamed, the
+        // sheet whole.
+        assert_eq!(field(by_url("/"), "protocol").as_str(), Some("http/1.1"));
+        assert_eq!(
+            field(by_url("/s.css"), "protocol").as_str(),
+            Some("http/1.1")
+        );
         let css = field(by_url("/s.css"), "id").as_u64().expect("an id");
         let entry = log.entry(css).expect("the entry");
         assert_eq!(field(&entry, "body").as_str(), Some("p { color: red }"));
