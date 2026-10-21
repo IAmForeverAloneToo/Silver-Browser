@@ -28,6 +28,7 @@ struct Shared {
     hsts: Arc<Mutex<net::Hsts>>,
     permissions: Arc<Permissions>,
     storage: Arc<Mutex<Storage>>,
+    downloads: crate::downloads::Downloads,
     tabs: AtomicU64,
     renderers: AtomicU32,
 }
@@ -53,6 +54,7 @@ impl Context {
                 hsts,
                 permissions,
                 storage: Arc::new(Mutex::new(storage)),
+                downloads: crate::downloads::Downloads::new(),
                 tabs: AtomicU64::new(1),
                 renderers: AtomicU32::new(1),
             }),
@@ -75,6 +77,11 @@ impl Context {
     /// Whether `other` is this context.
     pub fn same(&self, other: &Context) -> bool {
         Arc::ptr_eq(&self.shared, &other.shared)
+    }
+
+    /// The downloads of the context's tabs (M37).
+    pub fn downloads(&self) -> &crate::downloads::Downloads {
+        &self.shared.downloads
     }
 
     /// Forgets what tab `tab` kept of its own: its `sessionStorage`.

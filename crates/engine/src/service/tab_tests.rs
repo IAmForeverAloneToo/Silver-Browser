@@ -591,3 +591,84 @@ fn a_renderers_page_asks_the_browser_for_tabs_and_to_close() {
     click(&mut tab, 60.0);
     settle(&mut tab, |tab| tab.take_close_request());
 }
+
+#[test]
+fn the_browser_saves_a_download_its_renderer_never_has() {
+    // M37: the body streamed to the downloads folder by the browser;
+    // the page shown stays.
+    let folder = std::env::temp_dir().join(format!("silver-tab-download-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+    let body: Vec<u8> = (0..300_000u32).map(|n| (n % 251) as u8).collect();
+    let served = body.clone();
+    let server = TestServer::plain(move |request| match request.target.as_str() {
+        "/" => Reply::ok("text/html", b"<title>page</title>"),
+        _ => Reply::with_fields(200, &[("Content-Type", "application/zip")], &served),
+    });
+    let mut tab = tab();
+    tab.downloads()
+        .expect("a tab saves")
+        .set_folder(folder.clone());
+    tab.navigate(server.url("/"));
+    shown(&mut tab);
+    tab.navigate(server.url("/files/archive.zip"));
+    let saved = folder.join("archive.zip");
+    settle(&mut tab, |_| saved.exists());
+    assert_eq!(std::fs::read(&saved).unwrap(), body);
+    assert_eq!(tab.url(), Some(&server.url("/")), "the page shown stays");
+    let notices = tab.downloads().unwrap().take_notices();
+    assert_eq!(notices, ["Saving archive.zip", "Saved archive.zip"]);
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+#[test]
+fn a_frame_sandboxed_without_downloads_saves_nothing() {
+    let folder = std::env::temp_dir().join(format!("silver-tab-sandboxed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+    let server = TestServer::plain(|request| match request.target.as_str() {
+        "/" => Reply::ok(
+            "text/html",
+            b"<iframe sandbox src=/files/blocked.zip></iframe>\
+              <iframe sandbox='allow-downloads' src=/files/allowed.zip></iframe>",
+        ),
+        _ => Reply::with_fields(200, &[("Content-Type", "application/zip")], b"PK"),
+    });
+    let mut tab = tab();
+    tab.downloads()
+        .expect("a tab saves")
+        .set_folder(folder.clone());
+    tab.navigate(server.url("/"));
+    let allowed = folder.join("allowed.zip");
+    settle(&mut tab, |_| allowed.exists());
+    thread::sleep(Duration::from_millis(200));
+    settle(&mut tab, |_| true);
+    assert!(!folder.join("blocked.zip").exists());
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+#[test]
+fn a_renderers_link_with_a_download_attribute_is_saved_by_the_browser() {
+    let folder = std::env::temp_dir().join(format!("silver-tab-attribute-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+    let server = TestServer::plain(|request| match request.target.as_str() {
+        "/" => Reply::ok(
+            "text/html",
+            b"<body style='margin:0'><a href=/files/raw.txt download=kept.txt \
+              style='display:block;height:40px'>save</a>",
+        ),
+        _ => Reply::ok("text/plain", b"raw"),
+    });
+    let mut tab = tab();
+    tab.downloads()
+        .expect("a tab saves")
+        .set_folder(folder.clone());
+    tab.navigate(server.url("/"));
+    shown(&mut tab);
+    tab.pointer_move(10.0, 20.0);
+    tab.pointer_down(10.0, 20.0, Button::Primary, 1);
+    tab.pointer_up(10.0, 20.0, Button::Primary, 1);
+    let saved = folder.join("kept.txt");
+    settle(&mut tab, |_| saved.exists());
+    assert_eq!(std::fs::read(&saved).unwrap(), b"raw");
+    assert_eq!(tab.url(), Some(&server.url("/")));
+    let _ = std::fs::remove_dir_all(&folder);
+}

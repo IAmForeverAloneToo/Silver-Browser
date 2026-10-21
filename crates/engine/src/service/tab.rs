@@ -349,6 +349,21 @@ impl RemoteTab {
             shared.set_waker(listener, wake.clone());
             listener
         };
+        // Downloads saved by the browser (M37), of a frame whose sandbox
+        // lets it start them.
+        let sandboxes = registry.clone();
+        network.save_downloads(
+            context.downloads().clone(),
+            Arc::new(move |key| {
+                super::frames::lock(&sandboxes)
+                    .frames
+                    .get(&key)
+                    .is_none_or(|info| {
+                        !crate::sandbox::Sandbox::from_bits(info.sandbox)
+                            .has(crate::sandbox::Sandbox::DOWNLOADS)
+                    })
+            }),
+        );
         let services = Arc::new(Services(vec![
             network.clone(),
             StorageService::new(storage.clone(), grants.clone(), tab),
@@ -1949,6 +1964,10 @@ impl View for RemoteTab {
 
     fn take_opened(&mut self) -> Vec<crate::frames::OpenTab> {
         std::mem::take(&mut self.opened)
+    }
+
+    fn downloads(&self) -> Option<crate::downloads::Downloads> {
+        Some(self.context.downloads().clone())
     }
 
     fn take_close_request(&mut self) -> bool {

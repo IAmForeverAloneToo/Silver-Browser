@@ -62,6 +62,12 @@ impl Link {
         self.calls.call(&self.sender, ask)
     }
 
+    /// Asks the browser to save `url`, which frame `frame`'s document
+    /// links to with a `download` attribute naming `name` (M37).
+    pub(crate) fn download(&self, frame: u32, url: Url, name: Option<String>) {
+        let _ = self.send(&ToBrowser::Download { frame, url, name });
+    }
+
     /// Tells the browser of `change`, which frame `frame`'s document made
     /// (M37), for the other renderers.
     pub(crate) fn storage_changed(&self, frame: u32, change: &crate::storage::Change) {

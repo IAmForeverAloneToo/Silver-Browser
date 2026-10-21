@@ -19,6 +19,7 @@ mod content_coding;
 pub mod cookies;
 pub mod csp;
 pub mod data_url;
+pub mod disposition;
 mod error;
 pub mod fetch;
 pub mod headers;
@@ -35,6 +36,7 @@ pub mod url;
 
 pub use address_space::{AddressSpace, LocalNetworkAccess, LocalNetworkGate};
 pub use cache::{Cache, CacheMode};
+pub use disposition::{Disposition, content_disposition};
 pub use error::{AbortHandle, NetworkError, TlsFailure};
 pub use fetch::{
     COMPAT_USER_AGENT, Client, Credentials, Delivery, Destination, Exposed, Initiator, Method,

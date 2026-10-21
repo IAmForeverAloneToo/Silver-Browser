@@ -99,6 +99,9 @@ mod context;
 #[cfg(test)]
 mod context_tests;
 pub mod differential;
+pub mod downloads;
+#[cfg(test)]
+mod downloads_tests;
 mod editing;
 mod focus;
 mod frames;
@@ -132,6 +135,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 pub use context::Context;
 pub use dom::ElementState;
+pub use downloads::{Download, DownloadState, Downloads};
 pub use frames::{MAX_FRAME_DEPTH, MAX_FRAME_HEAP, MAX_FRAMES, OpenTab};
 pub use image_store::MAX_DECODE_THREADS;
 pub use inspect::MAX_INSPECTED_MESSAGES;
@@ -434,6 +438,8 @@ pub struct Engine {
     listener: u64,
     /// Whether a script opened the tab (M37).
     opened_by_script: bool,
+    /// Where the tab's downloads are saved (M37): its context's.
+    downloads: downloads::Downloads,
     /// The Web Storage areas the browser keeps, in a renderer (M34.1); the
     /// storage's own otherwise.
     areas: Option<Arc<dyn storage::Areas>>,
@@ -1252,6 +1258,7 @@ impl Engine {
             tab: 0,
             listener,
             opened_by_script: false,
+            downloads: downloads::Downloads::new(),
             areas: None,
             storage_events: VecDeque::new(),
             hidden: false,
@@ -1587,6 +1594,10 @@ impl Engine {
     ///
     /// A refusal leaves a notice saying why, but for `javascript:`.
     pub fn follow_link(&mut self, link: &Link) {
+        // A link to be saved (M37).
+        if self.download_link(link.node) {
+            return;
+        }
         // A link clicked with Ctrl (Cmd on macOS) opens in a new tab,
         // behind this one, or shown with Shift (M37).
         if self.modifiers.ctrl || self.modifiers.meta {
@@ -1661,8 +1672,15 @@ impl Engine {
                 if let Some(element) = navigation.element {
                     source = self.element_referrer(source, element);
                 }
-                // A link a click with Ctrl activated opens in a new tab
-                // (M37), as the engine's own activation does.
+                // A link to be saved, and one a click with Ctrl activated,
+                // which opens in a new tab (M37), as the engine's own
+                // activation does.
+                if let Some(element) = navigation.element
+                    && !navigation.form
+                    && self.download_link(element)
+                {
+                    return;
+                }
                 let modified = self.modifiers.ctrl || self.modifiers.meta;
                 if navigation.element.is_some() && !navigation.form && modified {
                     let show = self.modifiers.shift;
@@ -3492,6 +3510,81 @@ impl Engine {
         }
     }
 
+    /// Saves `response` of `url`, whose body is `essence`, into the
+    /// downloads folder (M37), on a thread of its own.
+    fn save(&mut self, url: &Url, response: &net::Response, essence: &str) {
+        let name = response
+            .headers
+            .get(b"Content-Disposition")
+            .and_then(|value| net::content_disposition(&value).filename);
+        let total = Some(response.body.len() as u64);
+        match self.downloads.start(url, name.as_deref(), essence, total) {
+            Ok(mut sink) => {
+                let body = response.body.clone();
+                let spawned = std::thread::Builder::new()
+                    .name("download".to_owned())
+                    .spawn(move || {
+                        if sink.write(&body) {
+                            sink.finish();
+                        }
+                    });
+                if spawned.is_err() {
+                    self.notice = Some(format!("{url} was not saved: no thread"));
+                }
+            }
+            Err(why) => self.notice = Some(format!("{url} was not saved: {why}")),
+        }
+    }
+
+    /// Saves what the link `node` goes to if it has a `download`
+    /// attribute and goes to its document's own origin or to `data:`
+    /// (HTML's "allowed to download", M37): whether it did; another
+    /// origin's is followed as a link, as the reference browser does. A
+    /// sandbox without `allow-downloads` saves nothing, and says so.
+    fn download_link(&mut self, node: NodeId) -> bool {
+        let document = &self.shown.document;
+        if !connected(document, node) {
+            return false;
+        }
+        let Some(name) = document.attr(node, "download") else {
+            return false;
+        };
+        let name = Some(name.trim().to_owned()).filter(|name| !name.is_empty());
+        let Some(href) = document.attr(node, "href") else {
+            return false;
+        };
+        let Some(url) = self.shown.page.resolve(document, href) else {
+            return false;
+        };
+        let origin = self.shown.page.origin().clone();
+        if url.scheme() != "data" && (origin.is_opaque() || url.origin() != origin) {
+            return false;
+        }
+        if self.shown.page.sandbox().has(sandbox::Sandbox::DOWNLOADS) {
+            self.shown.scripts.say(
+                js::ConsoleLevel::Error,
+                "Download is disallowed. The frame initiating or instantiating the download is \
+                 sandboxed, but the flag 'allow-downloads' is not set."
+                    .to_owned(),
+            );
+            return true;
+        }
+        if let Some(link) = &self.link {
+            link.download(self.frame.key, url, name);
+            return true;
+        }
+        let request =
+            net::Request::get(url, net::Destination::Document).from_document(origin, true);
+        let client = self.network.client();
+        downloads::fetch(self.downloads.clone(), client, request, name);
+        true
+    }
+
+    /// The tab's downloads (M37): its context's.
+    pub fn downloads(&self) -> &downloads::Downloads {
+        &self.downloads
+    }
+
     /// The URL a link goes to, if a new tab may open it (M37): resolved
     /// against its document, of a scheme a tab starts on.
     fn link_url(&self, link: &Link) -> Option<Url> {
@@ -3541,6 +3634,7 @@ impl Engine {
     /// engine that has fetched nothing yet.
     pub fn join(&mut self, context: &Context) {
         self.network.join(context);
+        self.downloads = context.downloads().clone();
         let tab = context.new_tab();
         self.share_storage(context.shared_storage().clone(), tab);
     }
@@ -5286,10 +5380,10 @@ impl Engine {
                 );
                 self.settle_load_state();
             }
+            // In a renderer, the browser saved it from its response (M37).
+            loader::Outcome::Download(_) if self.link.is_some() => self.settle_load_state(),
             loader::Outcome::Download(essence) => {
-                self.notice = Some(format!(
-                    "Not saved: {at} is a {essence} file, and saving files comes in a later version"
-                ));
+                self.save(&at, &response, &essence);
                 self.settle_load_state();
             }
             loader::Outcome::Nothing => self.settle_load_state(),

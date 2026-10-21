@@ -1569,6 +1569,12 @@ impl<V: View> Session<V> {
         if let Some(notice) = self.engine.take_notice() {
             self.notice = Some(notice);
         }
+        // What the window's downloads say (M37).
+        if let Some(downloads) = self.engine.downloads()
+            && let Some(notice) = downloads.take_notices().pop()
+        {
+            self.notice = Some(notice);
+        }
         self.prompt = self.engine.permission_prompt();
         let url = self.engine.url().map(|url| url.as_str().to_owned());
         self.toolbar.update(PageState {

@@ -218,7 +218,13 @@ pub struct NetworkService {
     /// who hears of each document committed.
     remote: Mutex<Option<Remote>>,
     committed: Mutex<Option<Committed>>,
+    /// Where a navigation's response that makes no document is saved
+    /// (M37), and whether a frame's sandbox lets it start one.
+    downloads: Mutex<Option<(crate::downloads::Downloads, Allowed)>>,
 }
+
+/// Whether the frame the browser numbers so may start a download.
+type Allowed = Arc<dyn Fn(u32) -> bool + Send + Sync>;
 
 /// Whether the frame the browser numbers so is shown by another renderer.
 type Remote = Arc<dyn Fn(u32) -> bool + Send + Sync>;
@@ -243,7 +249,17 @@ impl NetworkService {
             notify: Mutex::new(None),
             remote: Mutex::new(None),
             committed: Mutex::new(None),
+            downloads: Mutex::new(None),
         })
+    }
+
+    /// Saves the downloads of navigations into `downloads` from now on
+    /// (M37), of the frames `allowed` lets start them.
+    pub(crate) fn save_downloads(&self, downloads: crate::downloads::Downloads, allowed: Allowed) {
+        *self
+            .downloads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some((downloads, allowed));
     }
 
     /// The client's cookie jar.
@@ -266,7 +282,6 @@ impl NetworkService {
             .unwrap_or_else(PoisonError::into_inner) = Some(handovers);
     }
 
-    /// Tells `notify` of each response handed over.
     /// Asks `remote` whether a frame is shown by another renderer, and
     /// tells `committed` of each document committed (M34).
     pub(crate) fn watch_frames(&self, remote: Remote, committed: Committed) {
@@ -277,6 +292,7 @@ impl NetworkService {
             .unwrap_or_else(PoisonError::into_inner) = Some(committed);
     }
 
+    /// Tells `notify` of each response handed over.
     pub fn on_handover(&self, notify: Notify) {
         *self.notify.lock().unwrap_or_else(PoisonError::into_inner) = Some(notify);
     }
@@ -338,6 +354,34 @@ impl NetworkService {
             ToBrowser::CancelFetch { id } => {
                 if let Some(abort) = self.fetches().remove(&(renderer, id)) {
                     abort.abort();
+                }
+                Ok(None)
+            }
+            // A link's `download` attribute (M37): a URL of the renderer's
+            // own site, or `data:`, saved by the browser as the frame's
+            // sandbox lets it; another site's is the renderer's lie.
+            ToBrowser::Download { frame, url, name } => {
+                let (lock, grant) = self.grants.frame(renderer, frame)?;
+                if url.scheme() != "data" && !lock.admits_url(&url) {
+                    return Err(format!("a download of {url}, not the renderer's"));
+                }
+                let downloads = self
+                    .downloads
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone();
+                if let Some((downloads, allowed)) = downloads
+                    && allowed(frame)
+                {
+                    let client = self
+                        .client
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .clone();
+                    let mut request = Request::get(url.clone(), net::Destination::Document)
+                        .from_document(url.origin(), true);
+                    request.partition = partition(None, &grant)?;
+                    crate::downloads::fetch(downloads, client, request, name);
                 }
                 Ok(None)
             }
@@ -481,6 +525,11 @@ impl NetworkService {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
+        let downloads = self
+            .downloads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
         let lock = lock.clone();
         let answer = reply.clone();
         let spawned = thread::Builder::new()
@@ -490,8 +539,10 @@ impl NetworkService {
                 let abort = request.abort.clone();
                 let mut moved: Option<u64> = None;
                 // The body of another site's response that makes no
-                // document (a download), which no renderer has (M34.7).
+                // document (a download), which no renderer has (M34.7); a
+                // download's body is the browser's to save (M37).
                 let mut withheld = false;
+                let mut sink: Option<crate::downloads::Sink> = None;
                 let result = match streamed {
                     true => client
                         .fetch_streaming(&request, &mut |delivery| match delivery {
@@ -501,6 +552,21 @@ impl NetworkService {
                                     && head.url_list.last().is_some_and(|url| {
                                         super::frames::elsewhere(&Lock::of(url), &lock)
                                     });
+                                if navigation
+                                    && let crate::loader::Outcome::Download(essence) =
+                                        crate::loader::outcome(head)
+                                {
+                                    withheld = true;
+                                    sink = downloads.as_ref().and_then(|(downloads, allowed)| {
+                                        allowed(frame)
+                                            .then(|| {
+                                                crate::downloads::start_response(
+                                                    downloads, head, &essence, None,
+                                                )
+                                            })
+                                            .flatten()
+                                    });
+                                }
                                 if navigation
                                     && commits(head)
                                     && let Some(url) = head.url_list.last()
@@ -547,7 +613,14 @@ impl NetworkService {
                                         abort.abort();
                                     }
                                 }
-                                _ if withheld => {}
+                                _ if withheld => {
+                                    if let Some(saving) = &mut sink
+                                        && !saving.write(bytes)
+                                    {
+                                        sink = None;
+                                        abort.abort();
+                                    }
+                                }
                                 _ => send_body(&reply, id, bytes),
                             },
                         })
@@ -562,6 +635,12 @@ impl NetworkService {
                         renderer_head(&response)
                     }),
                 };
+                if let Some(saving) = sink.take() {
+                    match &result {
+                        Ok(_) => saving.finish(),
+                        Err(error) => saving.fail(error.to_string()),
+                    }
+                }
                 let violations = request
                     .csp
                     .as_ref()

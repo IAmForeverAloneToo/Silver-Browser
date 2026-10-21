@@ -1141,6 +1141,11 @@ fn run<V: View + 'static>(
     if let Some(why) = use_profile(&mut engine, profile()) {
         eprintln!("silver-browser: {why}");
     }
+    // Downloads go to the user's folder (M37).
+    let downloads = engine.downloads();
+    if let (Some(downloads), Some(folder)) = (&downloads, platform::downloads_folder()) {
+        downloads.set_folder(folder);
+    }
     startup::mark("profile");
     let clipboard = Box::new(SystemClipboard::default());
     let session = Session::new(
@@ -1154,6 +1159,10 @@ fn run<V: View + 'static>(
 
     let mut browser = Browser::new(session, asked, began);
     let ran = event_loop.run_app(&mut browser);
+    // A download under way ends with the browser (M37).
+    if let Some(downloads) = &downloads {
+        downloads.cancel_all();
+    }
     // The window has closed: what changed since the last write is
     // written now.
     if let Err(e) = browser.session.flush_profile() {

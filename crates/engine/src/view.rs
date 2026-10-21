@@ -129,6 +129,12 @@ pub trait View {
         let _ = by_script;
     }
 
+    /// The downloads of the view's tab (M37), its context's, if it saves
+    /// any.
+    fn downloads(&self) -> Option<crate::downloads::Downloads> {
+        None
+    }
+
     /// How many renderer processes the view keeps alive (M37): the
     /// browser's cap across its tabs counts them.
     fn renderer_count(&self) -> usize {
@@ -362,6 +368,10 @@ impl View for Engine {
 
     fn take_opened(&mut self) -> Vec<crate::frames::OpenTab> {
         Engine::take_opened(self)
+    }
+
+    fn downloads(&self) -> Option<crate::downloads::Downloads> {
+        Some(self.downloads.clone())
     }
 
     fn take_close_request(&mut self) -> bool {

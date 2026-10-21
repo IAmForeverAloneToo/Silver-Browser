@@ -172,7 +172,7 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
     let named = origin.serialization();
     let navigation = other.clone();
     let (u4, u5, u6) = (other.clone(), other.clone(), other.clone());
-    let (u7, u8) = (other.clone(), other.clone());
+    let (u7, u8, u9) = (other.clone(), other.clone(), other.clone());
     vec![
         (
             "a forged cookie to another site",
@@ -294,6 +294,17 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
                 })]
             }),
             "the storage of",
+        ),
+        (
+            "another site's download",
+            Box::new(move |frame| {
+                vec![said(ToBrowser::Download {
+                    frame,
+                    url: u9,
+                    name: None,
+                })]
+            }),
+            "a download of",
         ),
         (
             "another site's storage changed",

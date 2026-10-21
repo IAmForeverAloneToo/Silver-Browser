@@ -705,7 +705,7 @@ fn a_204_or_a_205_leaves_the_page_and_the_history_as_they_were() {
 }
 
 #[test]
-fn a_download_leaves_the_page_shown_with_a_notice() {
+fn a_download_leaves_the_page_shown_and_is_saved() {
     let server = serve(|path| match path {
         "/a" => Some(page("a")),
         "/report" => Some(Reply::with_fields(
@@ -728,24 +728,32 @@ fn a_download_leaves_the_page_shown_with_a_notice() {
         )),
         _ => None,
     });
+    let folder =
+        std::env::temp_dir().join(format!("silver-navigation-download-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
     let mut tab = Tab::new();
+    tab.engine.downloads().set_folder(folder.clone());
     tab.load(server.url("/a"));
-    for (path, essence) in [
-        ("/report", "text/html"),
-        ("/archive", "application/zip"),
-        ("/paper", "application/pdf"),
+    // M37: saved, under the name the response gives, or its URL's with
+    // its type's extension.
+    for (path, name) in [
+        ("/report", "report.html"),
+        ("/archive", "archive.zip"),
+        ("/paper", "paper.pdf"),
     ] {
         tab.load(server.url(path));
         assert_eq!(shown(&tab.engine), "a 0", "{path}");
         assert_eq!(tab.engine.history.len(), 1);
         assert_eq!(tab.engine.load_state(), &LoadState::Loaded);
-        let notice = tab.engine.take_notice().expect("a notice");
-        assert!(
-            notice.contains(path) && notice.contains(essence),
-            "{notice}"
-        );
-        assert_eq!(tab.engine.take_notice(), None, "told once");
+        assert_eq!(tab.engine.take_notice(), None);
+        let saved = folder.join(name);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !saved.exists() {
+            assert!(std::time::Instant::now() < deadline, "{name}");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
+    let _ = std::fs::remove_dir_all(&folder);
     // Any other disposition shows the document.
     tab.load(server.url("/inline"));
     assert_eq!(shown(&tab.engine), "inline 0");

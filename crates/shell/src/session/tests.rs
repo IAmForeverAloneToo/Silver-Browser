@@ -2356,3 +2356,32 @@ fn a_tab_a_script_opened_is_shown_and_its_window_close_closes_it() {
     assert_eq!(window.session.tab_count(), 1);
     assert!(window.session.title().starts_with("opener"));
 }
+
+#[test]
+fn a_download_is_saved_and_the_window_says_so() {
+    let folder =
+        std::env::temp_dir().join(format!("silver-session-download-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+    let server = serve(|path| match path {
+        "/" => html("<title>page</title>"),
+        _ => Some(Reply::with_fields(
+            200,
+            &[("Content-Disposition", "attachment; filename=\"notes.txt\"")],
+            b"notes",
+        )),
+    });
+    let mut window = Window::new(Some(server.url("/")), Platform::Other);
+    window.settle();
+    window
+        .session
+        .engine()
+        .downloads()
+        .set_folder(folder.clone());
+    window.chord("l", CTRL);
+    window.type_text(server.url("/get").as_str());
+    window.press_key(Key::Enter, NONE);
+    window.wait_until(|session| session.bubble_text() == Some("Saved notes.txt"));
+    assert_eq!(std::fs::read(folder.join("notes.txt")).unwrap(), b"notes");
+    assert_eq!(window.session.engine().url(), Some(&server.url("/")));
+    let _ = std::fs::remove_dir_all(&folder);
+}

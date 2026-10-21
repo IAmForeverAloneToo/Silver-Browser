@@ -254,6 +254,10 @@ wire_enum! {
         23 => OpenTab { view: u32, url: Url, show: bool, by_script: bool },
         /// The view's top-level document asked to close its tab (M37).
         24 => CloseTab { view: u32 },
+        /// Frame `frame`'s document follows a link with a `download`
+        /// attribute to `url` (M37): the browser saves it, under `name`
+        /// when the response suggests none.
+        25 => Download { frame: u32, url: Url, name: Option<String> },
     }
 }
 

@@ -61,6 +61,23 @@ fn profile_directory_in(var: impl Fn(&str) -> Option<OsString>) -> Option<PathBu
     }
 }
 
+/// Where downloads are saved (M37, docs/design/chrome.md, "Downloads"):
+/// the user's `Downloads` folder, `%USERPROFILE%\Downloads` on Windows
+/// and `~/Downloads` elsewhere; `None` when the environment does not
+/// say where the user's folder is.
+pub(crate) fn downloads_folder() -> Option<PathBuf> {
+    downloads_folder_in(|name| std::env::var_os(name))
+}
+
+/// [`downloads_folder`] with the environment's variables read by `var`.
+fn downloads_folder_in(var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    let home = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    var(home)
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .map(|path| path.join("Downloads"))
+}
+
 /// What keeps the profile's data key (M33, D27): on Windows, DPAPI for
 /// the user (`CryptProtectData`), which only the same user on the same
 /// machine can undo; elsewhere the key is kept as it is, macOS's
@@ -1532,5 +1549,26 @@ mod tests {
                 Some(PathBuf::from("/home/u/.local/share/silver-browser/profile"))
             );
         }
+    }
+
+    #[test]
+    fn downloads_go_to_the_users_downloads_folder() {
+        assert_eq!(downloads_folder_in(env(&[])), None);
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                downloads_folder_in(env(&[("USERPROFILE", r"C:\Users\u")])),
+                Some(PathBuf::from(r"C:\Users\u\Downloads"))
+            );
+            assert_eq!(
+                downloads_folder_in(env(&[("USERPROFILE", "relative")])),
+                None
+            );
+        }
+        #[cfg(not(windows))]
+        assert_eq!(
+            downloads_folder_in(env(&[("HOME", "/home/u")])),
+            Some(PathBuf::from("/home/u/Downloads"))
+        );
     }
 }
