@@ -8481,7 +8481,16 @@
 
   const plugins = new PluginArray(KEY);
   const mimeTypes = new MimeTypeArray(KEY);
-  const languages = Object.freeze(["en-US", "en"]);
+  // The user's languages (M37): what the host says after the user
+  // agent's three, the default two when it says none.
+  let languages = null;
+  function languageList() {
+    if (languages === null) {
+      const said = ArraySlice(agentInfo(), 3);
+      languages = Object.freeze(said.length ? said : ["en-US", "en"]);
+    }
+    return languages;
+  }
 
   class Navigator {
     constructor(key) {
@@ -8541,11 +8550,11 @@
     }
 
     get language() {
-      return "en-US";
+      return languageList()[0];
     }
 
     get languages() {
-      return languages;
+      return languageList();
     }
 
     get onLine() {

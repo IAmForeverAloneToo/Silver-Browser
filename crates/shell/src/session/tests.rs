@@ -114,10 +114,11 @@ impl Window {
             .expect("the bundled font parses");
         // Every tab of the window in one context (M37), as the shell's.
         let context = engine::Context::new();
+        let tabs = context.clone();
         let (wake, woken) = channel();
         let maker = move || {
             let mut engine = Engine::with_fonts(fonts.clone());
-            engine.join(&context);
+            engine.join(&tabs);
             engine.set_scripting(scripts);
             let wake = wake.clone();
             engine.set_waker(move || {
@@ -133,10 +134,16 @@ impl Window {
         let mut session = Session::new(
             engine,
             Box::new(maker),
+            context,
             Box::new(board.clone()),
             platform,
             start,
         );
+        // The window's scripts as asked, whatever the settings (M37).
+        session.set_forced(Forced {
+            scripts: Some(scripts),
+            color_scheme: false,
+        });
         session.resized(WIDTH, HEIGHT);
         let mut window = Window {
             session,
@@ -388,29 +395,62 @@ fn the_bubble_says_where_a_link_goes_before_any_notice() {
 }
 
 #[test]
-fn what_is_not_an_address_stays_in_the_field_with_a_notice() {
+fn an_address_of_another_program_stays_in_the_field_with_a_notice() {
     let mut window = Window::new(None, Platform::Other);
     window.settle();
-    window.type_text("two words");
+    window.type_text("mailto:someone@example.com");
     window.press_key(Key::Enter, NONE);
     assert_eq!(window.session.focus(), Focus::Field);
-    assert_eq!(window.text(), "two words");
+    assert_eq!(window.text(), "mailto:someone@example.com");
     let notice = window.session.bubble_text().expect("a notice").to_owned();
-    assert!(notice.starts_with("Not an address"), "{notice}");
+    assert!(notice.contains("mailto"), "{notice}");
     // Shown until the next input.
     window.frame();
     assert!(!window.session.needs_frame());
     window.press_key(Key::End, NONE);
     assert_eq!(window.session.bubble_text(), None);
     assert!(window.session.needs_frame(), "the bubble goes");
-    window.chord("a", CTRL);
-    window.type_text("mailto:someone@example.com");
-    window.press_key(Key::Enter, NONE);
-    assert!(window.session.bubble_text().unwrap().contains("mailto"));
-    assert_eq!(window.text(), "mailto:someone@example.com");
     assert_eq!(
         window.session.engine().url().unwrap().as_str(),
         "about:silver"
+    );
+}
+
+#[test]
+fn what_is_not_an_address_is_searched_for_with_the_engine_chosen() {
+    use std::net::{IpAddr, Ipv4Addr};
+    // M37: the search engines' hosts are this machine, where nothing
+    // listens on 443: no request leaves it, and the search's page is the
+    // error page under the search's URL.
+    let here = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let config = net::transport::Config::default()
+        .resolve("duckduckgo.com", here)
+        .resolve("www.bing.com", here);
+    let mut window = Window::new(None, Platform::Other);
+    window.settle();
+    window
+        .session
+        .engine_mut()
+        .set_network(net::Client::new(config));
+    window.type_text("two words?");
+    window.press_key(Key::Enter, NONE);
+    window.settle();
+    assert_eq!(
+        window.session.engine().url().map(Url::as_str),
+        Some("https://duckduckgo.com/?q=two+words%3F")
+    );
+    // Another engine chosen in the settings.
+    window
+        .session
+        .context()
+        .update_settings(|settings| settings.search = engine::settings::Search::Bing);
+    window.chord("l", CTRL);
+    window.type_text("cats");
+    window.press_key(Key::Enter, NONE);
+    window.settle();
+    assert_eq!(
+        window.session.engine().url().map(Url::as_str),
+        Some("https://www.bing.com/search?q=cats")
     );
 }
 
@@ -922,10 +962,15 @@ fn a_page_loaded_before_the_first_frame_reads_the_windows_page_area() {
     let mut session = Session::new(
         engine,
         plain_maker(),
+        engine::Context::new(),
         Box::new(Board::default()),
         Platform::Other,
         Some(server.url("/")),
     );
+    session.set_forced(Forced {
+        scripts: Some(true),
+        color_scheme: false,
+    });
     session.resized(WIDTH, HEIGHT);
     let deadline = Instant::now() + WAIT;
     while *session.engine().load_state() == LoadState::Loading {
@@ -1436,10 +1481,15 @@ fn a_sites_prompt_shows_under_the_toolbar_and_its_buttons_answer_it() {
     let mut session = Session::new(
         engine,
         plain_maker(),
+        engine::Context::new(),
         Box::new(board.clone()),
         Platform::Other,
         start,
     );
+    session.set_forced(Forced {
+        scripts: Some(true),
+        color_scheme: false,
+    });
     session.resized(WIDTH, HEIGHT);
     let mut window = Window {
         session,
@@ -2498,4 +2548,101 @@ fn the_downloads_page_lists_what_was_saved_and_opens_it() {
         (2, 1)
     );
     let _ = std::fs::remove_dir_all(&folder);
+}
+
+/// Ticks the window a while, as its loop does.
+fn tick_a_while(window: &mut Window) {
+    for _ in 0..30 {
+        window.session.tick();
+        window.session.network();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn the_settings_page_changes_the_settings_and_the_window_applies_them() {
+    let mut window = Window::with_scripts(None);
+    window.settle();
+    window
+        .session
+        .set_preferences(engine::Preferences::default());
+    window.type_text("about:settings");
+    window.press_key(Key::Enter, NONE);
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let document = window.session.engine().document();
+        if document
+            .text_content(document.root())
+            .contains("Brave Search")
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the page reads the settings");
+        tick_a_while(&mut window);
+    }
+    let choose = |window: &mut Window, id: &str, value: &str| {
+        in_page(
+            &mut window.session,
+            &format!(
+                "const at = document.getElementById({id:?}); at.value = {value:?}; \
+                 at.dispatchEvent(new Event('change'))"
+            ),
+        );
+        tick_a_while(window);
+    };
+    choose(&mut window, "search", "Bing");
+    choose(&mut window, "appearance", "dark");
+    let settings = window.session.context().settings();
+    assert_eq!(settings.search, engine::settings::Search::Bing);
+    assert_eq!(settings.appearance, engine::settings::Appearance::Dark);
+    // The window drawn dark: the toolbar's bar.
+    let frame = window.frame();
+    let at = |x: u32, y: u32| frame[(y * WIDTH + x) as usize] & 0x00ff_ffff;
+    assert_eq!(at(2, STRIP_H + 2), 0x35363A);
+    // A value it may not have is refused, the setting kept.
+    in_page(
+        &mut window.session,
+        "call('settings.set', { name: 'start', value: 'javascript:x' })",
+    );
+    tick_a_while(&mut window);
+    assert_eq!(
+        window.session.context().settings().start,
+        engine::settings::Start::Silver
+    );
+}
+
+#[test]
+fn a_new_tab_opens_on_a_blank_page_when_the_settings_say_so() {
+    let mut window = Window::new(None, Platform::Other);
+    window.settle();
+    window
+        .session
+        .context()
+        .update_settings(|settings| settings.new_tab_start = false);
+    window.chord("t", CTRL);
+    assert_eq!(
+        window.session.engine().url().map(Url::as_str),
+        Some("about:blank")
+    );
+}
+
+#[test]
+fn the_tabs_are_kept_and_a_session_is_restored() {
+    let server = named_pages();
+    let mut window = Window::new(Some(server.url("/a")), Platform::Other);
+    window.settle();
+    window.session.new_tab(Some(server.url("/b")), false);
+    window.wait_until(|session| titles(session)[1].starts_with('b'));
+    let kept = window.session.context().settings().session;
+    assert_eq!(kept, [server.url("/a").as_str(), server.url("/b").as_str()]);
+    // Another window restores them.
+    let mut again = Window::new(None, Platform::Other);
+    again.settle();
+    again
+        .session
+        .restore(kept.iter().map(|url| Url::parse(url).unwrap()).collect());
+    assert_eq!(again.session.tab_count(), 2);
+    again.settle();
+    assert_eq!(again.session.engine().url(), Some(&server.url("/a")));
+    again.wait_until(|session| titles(session)[1].starts_with('b'));
 }

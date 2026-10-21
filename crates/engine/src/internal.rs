@@ -12,9 +12,14 @@ use net::Url;
 
 /// The downloads page's URL.
 pub const DOWNLOADS: &str = "about:downloads";
+/// The settings page's URL.
+pub const SETTINGS: &str = "about:settings";
 
 /// Each page's URL and markup.
-const PAGES: &[(&str, &str)] = &[(DOWNLOADS, include_str!("internal/downloads.html"))];
+const PAGES: &[(&str, &str)] = &[
+    (DOWNLOADS, include_str!("internal/downloads.html")),
+    (SETTINGS, include_str!("internal/settings.html")),
+];
 
 /// Whether `url` is one of the browser's own pages.
 pub fn is_internal(url: &Url) -> bool {

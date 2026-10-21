@@ -553,6 +553,9 @@ pub struct Client {
     /// Who is told what it does (M36), and the number of its next fetch.
     observer: Option<Arc<dyn crate::observe::Observer>>,
     fetches: Arc<std::sync::atomic::AtomicU64>,
+    /// The `Accept-Language` its requests send (M37: the settings'), if
+    /// not [`ACCEPT_LANGUAGE`].
+    languages: Option<Arc<Mutex<String>>>,
 }
 
 /// A clock of the time of day, the system's unless a test gives its own.
@@ -578,11 +581,19 @@ impl Client {
             clock: Arc::new(SystemTime::now),
             observer: None,
             fetches: Arc::default(),
+            languages: None,
         }
     }
 
     /// The client, telling `observer` what it does (M36): a tab's
     /// network log.
+    /// The client, sending the `Accept-Language` `languages` holds as it
+    /// changes (M37).
+    pub fn with_languages(mut self, languages: Arc<Mutex<String>>) -> Client {
+        self.languages = Some(languages);
+        self
+    }
+
     pub fn with_observer(mut self, observer: Arc<dyn crate::observe::Observer>) -> Client {
         self.observer = Some(observer);
         self
@@ -1120,7 +1131,13 @@ impl Client {
             headers.append(b"Accept", request.destination.accept());
         }
         if !author.contains(b"Accept-Language") {
-            headers.append(b"Accept-Language", ACCEPT_LANGUAGE);
+            match &self.languages {
+                Some(languages) => {
+                    let languages = languages.lock().unwrap_or_else(PoisonError::into_inner);
+                    headers.append(b"Accept-Language", languages.as_bytes());
+                }
+                None => headers.append(b"Accept-Language", ACCEPT_LANGUAGE),
+            }
         }
         headers.append(b"Accept-Encoding", ACCEPT_ENCODING);
         for (name, value) in author.iter() {

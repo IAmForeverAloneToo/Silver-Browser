@@ -79,6 +79,10 @@ pub(crate) struct Storage {
     /// profile has not had yet.
     idb: crate::idb::IdbStore,
     idb_unwritten: Vec<crate::idb::Written>,
+    /// The settings as read from the profile, until taken, and as they
+    /// changed since it was last written (M37).
+    settings_read: Option<Vec<u8>>,
+    settings_unwritten: Option<Vec<u8>>,
 }
 
 /// An area (HTML 12.2.1's storage map): its items, and their order, the
@@ -503,6 +507,20 @@ impl Storage {
             permissions_written: None,
             idb: crate::idb::IdbStore::default(),
             idb_unwritten: Vec::new(),
+            settings_read: None,
+            settings_unwritten: None,
+        }
+    }
+
+    /// The settings the profile held when it was given, taken (M37).
+    pub(crate) fn take_read_settings(&mut self) -> Option<Vec<u8>> {
+        self.settings_read.take()
+    }
+
+    /// Keeps the settings `bytes` in the profile at the next write.
+    pub(crate) fn keep_settings(&mut self, bytes: Vec<u8>) {
+        if self.profile.is_some() {
+            self.settings_unwritten = Some(bytes);
         }
     }
 
@@ -585,6 +603,8 @@ impl Storage {
             permissions.restore(&profile.permissions()?);
             self.permissions_written = Some(permissions.changes());
         }
+        self.settings_read = profile.settings()?.into_iter().next();
+        self.settings_unwritten = None;
         self.profile = Some(profile);
         // IndexedDB's databases are the profile's from now on.
         self.idb = crate::idb::IdbStore::default();
@@ -743,6 +763,7 @@ impl Storage {
         let permissions =
             self.permissions.as_ref().map(|p| p.changes()) != self.permissions_written;
         let waiting = self.cookies_written != Some(count)
+            || self.settings_unwritten.is_some()
             || !self.unwritten.is_empty()
             || self.idb.has_written()
             || !self.idb_unwritten.is_empty();
@@ -816,11 +837,15 @@ impl Storage {
                 }
             }
         }
+        if let Some(settings) = &self.settings_unwritten {
+            changes.settings(vec![settings.clone()]);
+        }
         if changes.is_empty() {
             return Ok(());
         }
         self.flushed = Some(now);
         profile.commit(&changes)?;
+        self.settings_unwritten = None;
         self.cookies_written = Some(count);
         self.hsts_written = hsts_count;
         self.permissions_written = permissions_count;

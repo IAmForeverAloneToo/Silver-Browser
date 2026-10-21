@@ -129,6 +129,12 @@ pub trait View {
         let _ = by_script;
     }
 
+    /// The user's languages from now on (M37): its documents'
+    /// `navigator.languages`.
+    fn set_languages(&mut self, languages: Vec<String>) {
+        let _ = languages;
+    }
+
     /// The downloads of the view's tab (M37), its context's, if it saves
     /// any.
     fn downloads(&self) -> Option<crate::downloads::Downloads> {
@@ -372,6 +378,10 @@ impl View for Engine {
 
     fn downloads(&self) -> Option<crate::downloads::Downloads> {
         Some(self.downloads.clone())
+    }
+
+    fn set_languages(&mut self, languages: Vec<String>) {
+        Engine::set_languages(self, languages);
     }
 
     fn take_close_request(&mut self) -> bool {

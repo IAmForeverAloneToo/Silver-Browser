@@ -124,6 +124,9 @@ mod sandbox;
 mod scripts;
 mod select;
 pub mod service;
+pub mod settings;
+#[cfg(test)]
+mod settings_tests;
 mod storage;
 mod submit;
 mod svg_images;
@@ -444,6 +447,8 @@ pub struct Engine {
     /// The user's scripting setting while an internal page, whose
     /// scripts always run, is shown (M37).
     own_scripting: Option<bool>,
+    /// The user's languages, the most wanted first (M37).
+    languages: Vec<String>,
     /// Where the tab's downloads are saved (M37): its context's.
     downloads: downloads::Downloads,
     /// The Web Storage areas the browser keeps, in a renderer (M34.1); the
@@ -1265,6 +1270,7 @@ impl Engine {
             listener,
             opened_by_script: false,
             own_scripting: None,
+            languages: vec!["en-US".to_owned(), "en".to_owned()],
             downloads: downloads::Downloads::new(),
             areas: None,
             storage_events: VecDeque::new(),
@@ -1930,6 +1936,7 @@ impl Engine {
             media: self.media(self.viewport),
             fonts: Some(self.layout_fonts.clone()),
             compat: self.compat_user_agent,
+            languages: self.languages.clone(),
             clock: Some(self.clock.clone()),
             hidden: self.hidden,
             focused: self.window_focused,
@@ -3647,6 +3654,16 @@ impl Engine {
         self.downloads = context.downloads().clone();
         let tab = context.new_tab();
         self.share_storage(context.shared_storage().clone(), tab);
+    }
+
+    /// The user's languages from now on, the most wanted first (M37): a
+    /// document's `navigator.languages`, read when its realm is made.
+    pub fn set_languages(&mut self, languages: Vec<String>) {
+        if languages.is_empty() {
+            return;
+        }
+        self.for_each_frame(&mut |frame| frame.set_languages(languages.clone()));
+        self.languages = languages;
     }
 
     /// The engine's tab number in its context (M37).

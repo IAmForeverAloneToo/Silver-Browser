@@ -1,14 +1,16 @@
 //! The browser's own pages' requests (M37, docs/design/chrome.md, "The
-//! browser's pages"): the shell answers what `about:downloads` asks
-//! through the DevTools panel's bridge, from the window's downloads, and
-//! tells it when they change. A page's requests are read only from a tab
+//! browser's pages"): the shell answers what `about:downloads` and
+//! `about:settings` ask through the DevTools panel's bridge, from the
+//! window's downloads and its context's settings, and tells the
+//! downloads page when they change. A page's requests are read only from a tab
 //! that shows one of these pages: the bridge is theirs alone, and in
 //! many processes their renderer is locked to them.
 
 use std::path::Path;
 
 use devtools::{Json, Request};
-use engine::{Download, DownloadState, Downloads, View};
+use engine::settings::{LANGUAGES, SEARCHES};
+use engine::{Context, Download, DownloadState, Downloads, View};
 
 /// What opens a downloaded file, or shows it in its folder when
 /// `reveal`: the system's, but in the tests.
@@ -34,11 +36,12 @@ impl Pages {
 
     /// Answers what the internal page `view` shows asked, and tells it of
     /// the downloads' changes; nothing for a view that shows none.
-    pub(crate) fn serve(&mut self, view: &mut impl View) {
-        if !view.url().is_some_and(engine::internal::is_internal) {
+    pub(crate) fn serve(&mut self, view: &mut impl View, context: &Context) {
+        let Some(url) = view.url().filter(|url| engine::internal::is_internal(url)) else {
             self.told = None;
             return;
-        }
+        };
+        let settings = url.as_str() == engine::internal::SETTINGS;
         let Some(downloads) = view.downloads() else {
             return;
         };
@@ -46,11 +49,18 @@ impl Pages {
             let Ok(request) = Request::parse(&message) else {
                 continue;
             };
-            let answer = match self.answer(&downloads, &request) {
+            let answered = match settings {
+                true => settings_answer(context, &request),
+                false => self.answer(&downloads, &request),
+            };
+            let answer = match answered {
                 Ok(result) => devtools::result(request.id, result),
                 Err(why) => devtools::error(request.id, &why),
             };
             view.devtools_send(answer);
+        }
+        if settings {
+            return;
         }
         let list = list_json(&downloads.list());
         let written = list.write();
@@ -101,6 +111,52 @@ impl Pages {
             method => Err(format!("no method {method}")),
         }
     }
+}
+
+/// The answer to `request` of the settings page: the settings with the
+/// choices they have, or one set.
+fn settings_answer(context: &Context, request: &Request) -> Result<Json, String> {
+    match request.method.as_str() {
+        "settings.get" => Ok(settings_json(context)),
+        "settings.set" => {
+            let name = request
+                .param("name")
+                .and_then(Json::as_str)
+                .ok_or("no setting named")?
+                .to_owned();
+            // The session restored is the browser's to keep.
+            if name == "session" {
+                return Err("no setting session".to_owned());
+            }
+            let value = request.param("value").cloned().unwrap_or(Json::Null);
+            let mut result = Ok(());
+            let mut settings = context.settings();
+            settings.set(&name, &value)?;
+            context.update_settings(|kept| result = kept.set(&name, &value));
+            result.map(|()| settings_json(context))
+        }
+        method => Err(format!("no method {method}")),
+    }
+}
+
+/// The settings and the choices they have, as the page reads them.
+fn settings_json(context: &Context) -> Json {
+    Json::object([
+        ("settings", context.settings().to_json()),
+        (
+            "searches",
+            Json::Array(SEARCHES.iter().map(|s| Json::from(s.name())).collect()),
+        ),
+        (
+            "languages",
+            Json::Array(
+                LANGUAGES
+                    .iter()
+                    .map(|(tag, name)| Json::Array(vec![Json::from(*tag), Json::from(*name)]))
+                    .collect(),
+            ),
+        ),
+    ])
 }
 
 /// The downloads as the page reads them.

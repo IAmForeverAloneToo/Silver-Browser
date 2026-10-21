@@ -684,3 +684,25 @@ fn indexed_dbs_databases_and_records_are_kept_sealed_and_dropped() {
     let (_, records) = profile.idb(a).unwrap();
     assert_eq!(records.len(), 1, "the moved record does not open");
 }
+
+#[test]
+fn the_settings_are_kept_sealed_and_replaced_whole() {
+    // M37: schema 4's table.
+    let memory = Memory::new();
+    let profile = Profile::in_memory_with(&memory, TEST_WRAP).unwrap();
+    assert!(profile.settings().unwrap().is_empty());
+    let mut changes = Changes::new();
+    changes.settings(vec![b"secret-settings-record".to_vec()]);
+    profile.commit(&changes).unwrap();
+    drop(profile);
+    assert!(!in_the_clear(&memory, b"secret-settings-record"));
+    let profile = Profile::in_memory_with(&memory, TEST_WRAP).unwrap();
+    assert_eq!(
+        profile.settings().unwrap(),
+        [b"secret-settings-record".to_vec()]
+    );
+    let mut changes = Changes::new();
+    changes.settings(vec![b"next".to_vec()]);
+    profile.commit(&changes).unwrap();
+    assert_eq!(profile.settings().unwrap(), [b"next".to_vec()]);
+}

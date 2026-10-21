@@ -46,9 +46,9 @@ pub const FILE: &str = "profile.redb";
 
 /// The version of the tables' layout this code writes. A profile of a
 /// newer one is refused, one of an older one upgraded: 2 seals the
-/// values (M33); 3 adds IndexedDB's tables (M36), which an older profile
-/// is given empty.
-pub const SCHEMA: u64 = 3;
+/// values (M33); 3 adds IndexedDB's tables (M36), and 4 the settings'
+/// (M37), which an older profile is given empty.
+pub const SCHEMA: u64 = 4;
 
 /// The length of the data key: AES-256's.
 const KEY_BYTES: usize = 32;
@@ -93,6 +93,9 @@ const IDB_RECORDS: TableDefinition<(&str, &str, &str, &[u8]), &[u8]> =
 
 /// The permissions sites were given (M33.4), as the engine encodes them.
 const PERMISSIONS: TableDefinition<u64, &[u8]> = TableDefinition::new("permissions");
+
+/// The browser's settings (M37), as the engine encodes them.
+const SETTINGS: TableDefinition<u64, &[u8]> = TableDefinition::new("settings");
 
 /// A profile open: one database, one writer.
 pub struct Profile {
@@ -268,6 +271,7 @@ pub struct Changes {
     cookies: Option<Vec<Vec<u8>>>,
     hsts: Option<Vec<Vec<u8>>>,
     permissions: Option<Vec<Vec<u8>>>,
+    settings: Option<Vec<Vec<u8>>>,
 }
 
 /// A change of IndexedDB's (M36.4).
@@ -326,6 +330,7 @@ impl Changes {
             && self.cookies.is_none()
             && self.hsts.is_none()
             && self.permissions.is_none()
+            && self.settings.is_none()
     }
 
     /// Sets `origin`'s item `key` to `value`, `order` its place.
@@ -405,6 +410,12 @@ impl Changes {
     /// engine's encoding (M33.4).
     pub fn permissions(&mut self, permissions: Vec<Vec<u8>>) {
         self.permissions = Some(permissions);
+    }
+
+    /// Replaces the settings kept with `records`, of the engine's
+    /// encoding (M37).
+    pub fn settings(&mut self, records: Vec<Vec<u8>>) {
+        self.settings = Some(records);
     }
 }
 
@@ -516,6 +527,8 @@ impl Profile {
             txn.open_table(IDB_RECORDS)
                 .map_err(|e| unreadable(failed(e)))?;
             txn.open_table(PERMISSIONS)
+                .map_err(|e| unreadable(failed(e)))?;
+            txn.open_table(SETTINGS)
                 .map_err(|e| unreadable(failed(e)))?;
             key
         };
@@ -735,6 +748,11 @@ impl Profile {
         self.guarded(|db| self.read_records(db, PERMISSIONS))
     }
 
+    /// The settings kept (M37), records of the engine's encoding.
+    pub fn settings(&self) -> Result<Vec<Vec<u8>>, Error> {
+        self.guarded(|db| self.read_records(db, SETTINGS))
+    }
+
     /// The records of `definition`, in their order; one that does not
     /// open is left out.
     fn read_records(
@@ -810,6 +828,7 @@ impl Profile {
             (COOKIES, &changes.cookies),
             (HSTS, &changes.hsts),
             (PERMISSIONS, &changes.permissions),
+            (SETTINGS, &changes.settings),
         ];
         for (definition, records) in replaced {
             let Some(records) = records else {

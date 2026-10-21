@@ -161,6 +161,15 @@ pub(crate) struct Session<V: View = Engine> {
     opening: bool,
     /// What answers the browser's own pages (M37).
     pages: Pages,
+    /// The window's profile's context (M37): its settings, applied when
+    /// they change; the command line's word on scripts and the colour
+    /// scheme, which the settings do not override; and the tabs' URLs as
+    /// last kept for the session restored.
+    context: engine::Context,
+    settings_seen: Option<u64>,
+    forced: Forced,
+    base_preferences: Option<Preferences>,
+    kept_session: Vec<String>,
     toolbar: Toolbar,
     bubble: StatusBubble,
     /// The permission prompt the engine wants shown (M33.4), its bar, and
@@ -219,12 +228,17 @@ impl<V: View> Session<V> {
     pub(crate) fn new(
         mut engine: V,
         maker: Box<dyn FnMut() -> V>,
+        context: engine::Context,
         clipboard: Box<dyn Clipboard>,
         platform: Platform,
         start: Option<Url>,
     ) -> Session<V> {
         let fonts = engine.fonts().clone();
-        engine.navigate(start.clone().unwrap_or_else(start_page));
+        engine.navigate(
+            start
+                .clone()
+                .unwrap_or_else(|| start_url(&context.settings())),
+        );
         let mut session = Session {
             engine,
             tabs: vec![None],
@@ -239,6 +253,11 @@ impl<V: View> Session<V> {
             closed: Vec::new(),
             opening: false,
             pages: Pages::new(Box::new(crate::platform::open_path)),
+            context,
+            settings_seen: None,
+            forced: Forced::default(),
+            base_preferences: None,
+            kept_session: Vec::new(),
             toolbar: Toolbar::new(fonts.clone()),
             prompt: None,
             prompt_bar: PromptBar::new(fonts.clone()),
@@ -322,6 +341,9 @@ impl<V: View> Session<V> {
         if let Some(preferences) = self.preferences {
             view.set_preferences(preferences);
         }
+        let settings = self.context.settings();
+        view.set_scripting(self.forced.scripts.unwrap_or(settings.scripts));
+        view.set_languages(settings.languages.clone());
         view.set_hidden(true);
         view.set_window_focus(false);
         let (width, height) = self.size;
@@ -346,7 +368,12 @@ impl<V: View> Session<V> {
         let mut view = self.make_view();
         view.set_opened_by_script(by_script);
         let field = url.is_none();
-        view.navigate(url.unwrap_or_else(start_page));
+        let settings = self.context.settings();
+        let new_tab = match settings.new_tab_start {
+            true => start_url(&settings),
+            false => blank(),
+        };
+        view.navigate(url.unwrap_or(new_tab));
         let at = at.min(self.tabs.len());
         self.tabs.insert(
             at,
@@ -490,6 +517,98 @@ impl<V: View> Session<V> {
                 self.new_tab(Some(page), true);
             }
         }
+    }
+
+    /// Shows `urls`, the session restored (M37): the first in the tab
+    /// shown, the others in tabs after it.
+    pub(crate) fn restore(&mut self, urls: Vec<Url>) {
+        let mut urls = urls.into_iter();
+        if let Some(first) = urls.next() {
+            self.engine.navigate(first);
+        }
+        for (k, url) in urls.enumerate() {
+            self.insert_tab(Some(url), false, self.active + 1 + k, false);
+        }
+        self.sync();
+    }
+
+    /// The command line's word on scripts and the colour scheme, which
+    /// the settings do not override (M37).
+    pub(crate) fn set_forced(&mut self, forced: Forced) {
+        self.forced = forced;
+        self.settings_seen = None;
+        self.apply_settings();
+    }
+
+    /// `preferences` as the appearance setting has them, unless the
+    /// command line chose the colour scheme.
+    fn appearance(&self, mut preferences: Preferences) -> Preferences {
+        if !self.forced.color_scheme {
+            match self.context.settings().appearance {
+                engine::settings::Appearance::System => {}
+                engine::settings::Appearance::Light => {
+                    preferences.color_scheme = engine::ColorScheme::Light;
+                }
+                engine::settings::Appearance::Dark => {
+                    preferences.color_scheme = engine::ColorScheme::Dark;
+                }
+            }
+        }
+        preferences
+    }
+
+    /// Applies the settings to every tab when they changed since last
+    /// (M37): scripts, the appearance, the languages.
+    fn apply_settings(&mut self) {
+        let seen = self.context.settings_changes();
+        if self.settings_seen == Some(seen) {
+            return;
+        }
+        self.settings_seen = Some(seen);
+        let settings = self.context.settings();
+        let scripts = self.forced.scripts.unwrap_or(settings.scripts);
+        let languages = settings.languages.clone();
+        let apply = |view: &mut V| {
+            view.set_scripting(scripts);
+            view.set_languages(languages.clone());
+        };
+        apply(&mut self.engine);
+        for parked in self.tabs.iter_mut().flatten() {
+            if let Some(view) = &mut parked.view {
+                apply(view);
+            }
+        }
+        if let Some(base) = self.base_preferences {
+            self.set_preferences(base);
+        }
+    }
+
+    /// Keeps the tabs' URLs in the settings when they changed (M37), for
+    /// the session restored: pages of the web's alone.
+    fn keep_session(&mut self) {
+        let mut urls = Vec::new();
+        for tab in &self.tabs {
+            let url = match tab {
+                None => self.engine.url().cloned(),
+                Some(parked) => match &parked.view {
+                    Some(view) => view.url().cloned(),
+                    None => parked.url.clone(),
+                },
+            };
+            if let Some(url) = url.filter(|url| matches!(url.scheme(), "http" | "https")) {
+                urls.push(url.as_str().to_owned());
+            }
+        }
+        if urls != self.kept_session {
+            self.context.keep_session(urls.clone());
+            self.kept_session = urls;
+        }
+    }
+
+    /// The window's context (M37).
+    #[cfg(test)]
+    pub(crate) fn context(&self) -> &engine::Context {
+        &self.context
     }
 
     /// What opens a downloaded file from now on: the tests'.
@@ -872,6 +991,17 @@ impl<V: View> Session<V> {
 
     /// The user's preferences, as the shell now reads them (M20.3).
     pub(crate) fn set_preferences(&mut self, preferences: Preferences) {
+        // The system's, which the appearance setting may override (M37).
+        self.base_preferences = Some(preferences);
+        let preferences = self.appearance(preferences);
+        self.toolbar.set_colors(match preferences.color_scheme {
+            engine::ColorScheme::Dark => ui::toolbar::DARK,
+            engine::ColorScheme::Light => ui::toolbar::LIGHT,
+        });
+        self.strip.set_colors(match preferences.color_scheme {
+            engine::ColorScheme::Dark => ui::tabs::DARK,
+            engine::ColorScheme::Light => ui::tabs::LIGHT,
+        });
         self.preferences = Some(preferences);
         if let Some(panel) = &mut self.panel {
             panel.set_preferences(preferences);
@@ -1390,6 +1520,11 @@ impl<V: View> Session<V> {
             Action::Stop => self.engine.stop(),
             Action::Navigate(text) => match address::parse(&text) {
                 Address::Url(url) => self.engine.navigate(url),
+                // What is no address is searched for (M37).
+                Address::NotAnAddress => {
+                    let search = self.context.settings().search;
+                    self.engine.navigate(search.url_for(&text));
+                }
                 refused => {
                     // The field keeps the text, and the keyboard.
                     self.toolbar.keep_editing();
@@ -1624,8 +1759,11 @@ impl<V: View> Session<V> {
         if let Some(panel) = &mut self.panel {
             self.router.route(panel, &mut self.engine);
         }
-        // The browser's own page shown answered (M37).
-        self.pages.serve(&mut self.engine);
+        // The browser's own page shown answered (M37), and the settings
+        // applied when they changed; the tabs kept for the session.
+        self.pages.serve(&mut self.engine, &self.context);
+        self.apply_settings();
+        self.keep_session();
     }
 
     /// The page has the system's focus while the window has it and the
@@ -1650,9 +1788,31 @@ fn shape_of(cursor: engine::Cursor) -> Shape {
     }
 }
 
-/// The start page (M37: the settings' choice to come).
-fn start_page() -> Url {
+/// The page `settings` start on (M37): `about:silver`, a blank page, or
+/// a page chosen; a session restored starts on the gallery, its tabs
+/// opened beside it by the shell.
+pub(crate) fn start_url(settings: &engine::settings::Settings) -> Url {
+    match &settings.start {
+        engine::settings::Start::Blank => blank(),
+        engine::settings::Start::Page(url) => Url::parse(url).unwrap_or_else(|_| silver()),
+        engine::settings::Start::Silver | engine::settings::Start::Restore => silver(),
+    }
+}
+
+fn silver() -> Url {
     Url::parse("about:silver").expect("about:silver parses")
+}
+
+fn blank() -> Url {
+    Url::parse("about:blank").expect("about:blank parses")
+}
+
+/// What the command line chose, which the settings do not override
+/// (M37): scripts on or off, and whether it named the colour scheme.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Forced {
+    pub(crate) scripts: Option<bool>,
+    pub(crate) color_scheme: bool,
 }
 
 /// What a tab's title is in the strip: the page's title, or its URL

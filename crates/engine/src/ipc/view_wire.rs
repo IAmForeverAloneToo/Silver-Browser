@@ -239,6 +239,8 @@ wire_struct! {
         pub scale: f32,
         pub modifiers: Modifiers,
         pub layer_budget: Option<u64>,
+        /// The user's languages (M37).
+        pub languages: Vec<String>,
     }
 }
 
@@ -253,6 +255,7 @@ impl Default for Settings {
             scale: 1.0,
             modifiers: Modifiers::default(),
             layer_budget: None,
+            languages: Vec::new(),
         }
     }
 }

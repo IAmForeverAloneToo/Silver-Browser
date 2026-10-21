@@ -946,6 +946,7 @@ impl Engine {
             ..self.script_limits
         };
         child.compat_user_agent = self.compat_user_agent;
+        child.languages = self.languages.clone();
         child.preferences = self.preferences;
         child.media_type = self.media_type;
         child.scale = self.scale;

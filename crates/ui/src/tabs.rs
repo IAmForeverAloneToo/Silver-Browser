@@ -57,6 +57,18 @@ pub const LIGHT: Colors = Colors {
     mark: Rgba8::rgb(0x38, 0x74, 0xD8),
 };
 
+/// The dark strip, joined to the dark toolbar.
+pub const DARK: Colors = Colors {
+    strip: Rgba8::rgb(0x20, 0x21, 0x24),
+    tab: Rgba8::rgb(0x20, 0x21, 0x24),
+    shown: Rgba8::rgb(0x35, 0x36, 0x3A),
+    hover: Rgba8::rgb(0x2A, 0x2B, 0x2E),
+    edge: Rgba8::rgb(0x3C, 0x40, 0x43),
+    text: Rgba8::rgb(0xE8, 0xEA, 0xED),
+    dimmed: Rgba8::rgb(0xBD, 0xC1, 0xC6),
+    mark: Rgba8::rgb(0x8A, 0xB4, 0xF8),
+};
+
 /// A tab as the strip shows it: given by the shell from the page.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TabItem {

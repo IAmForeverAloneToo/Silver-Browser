@@ -1369,11 +1369,9 @@ impl DocumentHost {
                 } else {
                     (net::USER_AGENT, "gecko")
                 };
-                Ok(Answer::Strings(vec![
-                    agent.to_owned(),
-                    PLATFORM.to_owned(),
-                    mode.to_owned(),
-                ]))
+                let mut info = vec![agent.to_owned(), PLATFORM.to_owned(), mode.to_owned()];
+                info.extend(self.window.languages.iter().cloned());
+                Ok(Answer::Strings(info))
             }
             Call::Viewport => {
                 let (width, height) = self.window.viewport;

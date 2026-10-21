@@ -520,6 +520,7 @@ fn apply(engine: &mut Engine, settings: &Settings) {
     if let Some(bytes) = settings.layer_budget {
         engine.set_layer_budget(usize::try_from(bytes).unwrap_or(usize::MAX));
     }
+    engine.set_languages(settings.languages.clone());
 }
 
 /// Gives `input` to `view`'s engine; what the browser is to be told of

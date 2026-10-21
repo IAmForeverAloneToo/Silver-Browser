@@ -307,7 +307,15 @@ impl RemoteTab {
         let handovers = Handovers::new();
         let registry: SharedRegistry = Arc::default();
         let network = NetworkService::new(
-            client(&jar, &cache, &hsts, &permissions, &log, false),
+            client(
+                &jar,
+                &cache,
+                &hsts,
+                &permissions,
+                &log,
+                context.accept_language(),
+                false,
+            ),
             grants.clone(),
         );
         network.hand_over_with(handovers.clone());
@@ -1806,6 +1814,7 @@ fn client(
     hsts: &Arc<Mutex<Hsts>>,
     permissions: &Arc<Permissions>,
     log: &Arc<crate::network_log::NetworkLog>,
+    languages: &Arc<Mutex<String>>,
     compat: bool,
 ) -> Client {
     let client = match compat {
@@ -1818,6 +1827,7 @@ fn client(
         .with_hsts(hsts.clone())
         .with_local_network_gate(permissions.clone())
         .with_observer(log.clone())
+        .with_languages(languages.clone())
 }
 
 impl View for RemoteTab {
@@ -1943,6 +1953,7 @@ impl View for RemoteTab {
             &self.hsts,
             &self.permissions,
             &self.log,
+            self.context.accept_language(),
             on,
         ));
         self.send_settings();
@@ -1978,6 +1989,13 @@ impl View for RemoteTab {
 
     fn downloads(&self) -> Option<crate::downloads::Downloads> {
         Some(self.context.downloads().clone())
+    }
+
+    fn set_languages(&mut self, languages: Vec<String>) {
+        if self.settings.languages != languages {
+            self.settings.languages = languages;
+            self.send_settings();
+        }
     }
 
     fn take_close_request(&mut self) -> bool {

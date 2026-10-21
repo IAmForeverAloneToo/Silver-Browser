@@ -698,3 +698,32 @@ fn the_browsers_own_page_is_in_a_renderer_locked_to_it_and_talks_through_the_bri
     tab.devtools_send(devtools::result(request.id, going));
     settle(&mut tab, |tab| tab.title() == "Downloads (1 in progress)");
 }
+
+#[test]
+fn a_tabs_requests_and_pages_take_the_contexts_languages() {
+    // M37: the browser's client sends the settings' languages, and the
+    // renderer's pages read them.
+    let server = TestServer::plain(|_| {
+        Reply::ok(
+            "text/html",
+            b"<script>document.title = navigator.languages.join()</script>",
+        )
+    });
+    let context = crate::Context::new();
+    context.update_settings(|settings| {
+        settings.languages = vec!["de".to_owned(), "en".to_owned()];
+    });
+    let launcher = Arc::new(ThreadLauncher::with_fonts(fonts()));
+    let mut tab = RemoteTab::in_context(launcher, fonts(), &context);
+    tab.set_viewport(SIZE.0, SIZE.1);
+    tab.set_scripting(true);
+    tab.set_languages(context.settings().languages);
+    tab.navigate(server.url("/"));
+    settle(&mut tab, |tab| tab.title() == "de,en");
+    let sent = server.requests()[0]
+        .headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("Accept-Language"))
+        .map(|(_, value)| value.clone());
+    assert_eq!(sent.as_deref(), Some("de,en;q=0.9"));
+}

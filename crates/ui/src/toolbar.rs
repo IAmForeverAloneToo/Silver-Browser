@@ -32,17 +32,49 @@ const MIN_FIELD_W: f32 = 40.0;
 /// that focused the field, to drag rather than tremble.
 const DRAG_THRESHOLD: f32 = 4.0;
 
-const BAR: Rgba8 = Rgba8::rgb(0xED, 0xED, 0xED);
-const BAR_EDGE: Rgba8 = Rgba8::rgb(0xC9, 0xC9, 0xC9);
-const HOVER: Rgba8 = Rgba8::rgb(0xDA, 0xDA, 0xDA);
-const PRESSED: Rgba8 = Rgba8::rgb(0xC8, 0xC8, 0xC8);
-const ICON: Rgba8 = Rgba8::rgb(0x3C, 0x3C, 0x3C);
-const ICON_DIMMED: Rgba8 = Rgba8::rgb(0xAA, 0xAA, 0xAA);
-const FIELD: Rgba8 = Rgba8::rgb(0xFF, 0xFF, 0xFF);
-const FIELD_EDGE: Rgba8 = Rgba8::rgb(0xB8, 0xB8, 0xB8);
-const FOCUS: Rgba8 = Rgba8::rgb(0x38, 0x74, 0xD8);
-const TEXT: Rgba8 = Rgba8::rgb(0x1F, 0x1F, 0x1F);
-const SELECTION: Rgba8 = Rgba8::rgb(0xB4, 0xD2, 0xFA);
+/// The toolbar's colours: light, and dark (M37's settings).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Colors {
+    pub bar: Rgba8,
+    pub bar_edge: Rgba8,
+    pub hover: Rgba8,
+    pub pressed: Rgba8,
+    pub icon: Rgba8,
+    pub icon_dimmed: Rgba8,
+    pub field: Rgba8,
+    pub field_edge: Rgba8,
+    pub focus: Rgba8,
+    pub text: Rgba8,
+    pub selection: Rgba8,
+}
+
+pub const LIGHT: Colors = Colors {
+    bar: Rgba8::rgb(0xED, 0xED, 0xED),
+    bar_edge: Rgba8::rgb(0xC9, 0xC9, 0xC9),
+    hover: Rgba8::rgb(0xDA, 0xDA, 0xDA),
+    pressed: Rgba8::rgb(0xC8, 0xC8, 0xC8),
+    icon: Rgba8::rgb(0x3C, 0x3C, 0x3C),
+    icon_dimmed: Rgba8::rgb(0xAA, 0xAA, 0xAA),
+    field: Rgba8::rgb(0xFF, 0xFF, 0xFF),
+    field_edge: Rgba8::rgb(0xB8, 0xB8, 0xB8),
+    focus: Rgba8::rgb(0x38, 0x74, 0xD8),
+    text: Rgba8::rgb(0x1F, 0x1F, 0x1F),
+    selection: Rgba8::rgb(0xB4, 0xD2, 0xFA),
+};
+
+pub const DARK: Colors = Colors {
+    bar: Rgba8::rgb(0x35, 0x36, 0x3A),
+    bar_edge: Rgba8::rgb(0x20, 0x21, 0x24),
+    hover: Rgba8::rgb(0x48, 0x49, 0x4D),
+    pressed: Rgba8::rgb(0x56, 0x57, 0x5B),
+    icon: Rgba8::rgb(0xE8, 0xEA, 0xED),
+    icon_dimmed: Rgba8::rgb(0x7A, 0x7C, 0x80),
+    field: Rgba8::rgb(0x20, 0x21, 0x24),
+    field_edge: Rgba8::rgb(0x5F, 0x63, 0x68),
+    focus: Rgba8::rgb(0x8A, 0xB4, 0xF8),
+    text: Rgba8::rgb(0xE8, 0xEA, 0xED),
+    selection: Rgba8::rgb(0x39, 0x4D, 0x6E),
+};
 
 /// What the toolbar shows of the page: given by the shell from the
 /// engine, which the toolbar knows nothing of.
@@ -126,6 +158,8 @@ pub struct Toolbar {
     hover: Option<Part>,
     /// The part the left button was pressed on.
     pressed: Option<Part>,
+    /// Its colours (M37).
+    colors: Colors,
     /// While the button is held after a press that focused the field:
     /// where it was pressed, for a drag to select from.
     focusing: Option<f32>,
@@ -157,6 +191,7 @@ impl Toolbar {
             loading: false,
             hover: None,
             pressed: None,
+            colors: LIGHT,
             focusing: None,
             scroll_x: 0.0,
             stops: vec![0.0],
@@ -192,6 +227,14 @@ impl Toolbar {
         let buttons = (page.can_go_back, page.can_go_forward, page.loading);
         if buttons != (self.can_go_back, self.can_go_forward, self.loading) {
             (self.can_go_back, self.can_go_forward, self.loading) = buttons;
+            self.changed = true;
+        }
+    }
+
+    /// Draws with `colors` from now on (M37).
+    pub fn set_colors(&mut self, colors: Colors) {
+        if colors != self.colors {
+            self.colors = colors;
             self.changed = true;
         }
     }
@@ -477,14 +520,14 @@ impl Toolbar {
                 y: 0.0,
                 w: width,
                 h: HEIGHT as f32,
-                color: BAR,
+                color: self.colors.bar,
             },
             DisplayItem::Rect {
                 x: 0.0,
                 y: HEIGHT as f32 - 1.0,
                 w: width,
                 h: 1.0,
-                color: BAR_EDGE,
+                color: self.colors.bar_edge,
             },
         ];
         for part in [Part::Back, Part::Forward, Part::Reload] {
@@ -527,7 +570,7 @@ impl Toolbar {
                 y,
                 w,
                 h,
-                color: PRESSED,
+                color: self.colors.pressed,
             });
         } else if enabled && self.hover == Some(part) {
             items.push(DisplayItem::Rect {
@@ -535,10 +578,14 @@ impl Toolbar {
                 y,
                 w,
                 h,
-                color: HOVER,
+                color: self.colors.hover,
             });
         }
-        let color = if enabled { ICON } else { ICON_DIMMED };
+        let color = if enabled {
+            self.colors.icon
+        } else {
+            self.colors.icon_dimmed
+        };
         let (cx, cy) = (x + w / 2.0, y + h / 2.0);
         match part {
             Part::Back => items.push(arrow(cx, cy, -1.0, color)),
@@ -552,9 +599,9 @@ impl Toolbar {
     fn draw_field(&self, items: &mut Vec<DisplayItem>) {
         let (x, y, w, h) = self.rect(Part::Field);
         let (edge, thickness) = if self.focused {
-            (FOCUS, 2.0)
+            (self.colors.focus, 2.0)
         } else {
-            (FIELD_EDGE, 1.0)
+            (self.colors.field_edge, 1.0)
         };
         items.push(DisplayItem::Rect {
             x,
@@ -568,7 +615,7 @@ impl Toolbar {
             y: y + thickness,
             w: w - 2.0 * thickness,
             h: h - 2.0 * thickness,
-            color: FIELD,
+            color: self.colors.field,
         });
         let (inner_x, inner_w) = (x + PADDING, w - 2.0 * PADDING);
         items.push(DisplayItem::PushClip {
@@ -588,7 +635,7 @@ impl Toolbar {
                 y: y + 4.0,
                 w: end - start,
                 h: h - 8.0,
-                color: SELECTION,
+                color: self.colors.selection,
             });
         }
         // Only the characters in view are drawn.
@@ -611,7 +658,7 @@ impl Toolbar {
                 x: origin + self.x_of(first),
                 y: baseline,
                 size: FONT_SIZE,
-                color: TEXT,
+                color: self.colors.text,
             });
         }
         if self.focused && selection.is_empty() {
@@ -620,7 +667,7 @@ impl Toolbar {
                 y: y + 5.0,
                 w: 1.0,
                 h: h - 10.0,
-                color: TEXT,
+                color: self.colors.text,
             });
         }
         items.push(DisplayItem::PopClip);

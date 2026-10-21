@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Settings</title>
+<!--
+  about:settings (M37, docs/design/chrome.md, "Settings"): the browser's
+  settings, each changed as it is chosen and kept in the profile. A page
+  of the browser's own, reached by no link; its requests go to the
+  browser through the bridge the DevTools panel has.
+-->
+<style>
+  :root { color-scheme: light dark; --fg: #1f1f1f; --muted: #5f6368; --bg: #f7f7f7;
+          --card: #ffffff; --edge: #dadce0; --accent: #1a73e8; --bad: #b3261e }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg: #e8eaed; --muted: #9aa0a6; --bg: #202124; --card: #2d2e31;
+            --edge: #3c4043; --accent: #8ab4f8; --bad: #f28b82 }
+  }
+  body { margin: 0; font: 14px sans-serif; background: var(--bg); color: var(--fg) }
+  main { max-width: 720px; margin: 32px auto; padding: 0 16px }
+  h1 { font-size: 24px; font-weight: normal; margin: 0 0 16px }
+  section { background: var(--card); border: 1px solid var(--edge); border-radius: 8px;
+            padding: 12px 16px; margin: 0 0 12px }
+  h2 { font-size: 15px; margin: 0 0 8px }
+  label { display: block; margin: 6px 0 }
+  .note { color: var(--muted); font-size: 12px; margin: 4px 0 0 }
+  .bad { color: var(--bad) }
+  input[type=text] { width: 60% }
+  select, input, button { font: inherit }
+  li { margin: 4px 0 }
+</style>
+</head>
+<body>
+<main>
+<h1>Settings</h1>
+<section>
+  <h2>On start</h2>
+  <label><select id="start">
+    <option value="silver">The engine's gallery, about:silver</option>
+    <option value="blank">A blank page</option>
+    <option value="page">A page</option>
+    <option value="restore">The tabs open when the browser last ended</option>
+  </select></label>
+  <label id="start-page-row"><input type="text" id="start-page" placeholder="https://"></label>
+  <label>New tabs open <select id="newTab">
+    <option value="start">the start page</option>
+    <option value="blank">a blank page</option>
+  </select></label>
+</section>
+<section>
+  <h2>Search</h2>
+  <label>Text typed in the address field that is no address searches with
+    <select id="search"></select></label>
+  <p class="note">Nothing is sent as it is typed: no suggestions.</p>
+</section>
+<section>
+  <h2>Pages</h2>
+  <label><input type="checkbox" id="scripts"> Run pages' scripts</label>
+  <label>Appearance <select id="appearance">
+    <option value="system">As the system</option>
+    <option value="light">Light</option>
+    <option value="dark">Dark</option>
+  </select></label>
+  <p class="note">Dark draws the browser's own parts dark and asks pages for their dark
+    colours; a page without them stays light.</p>
+</section>
+<section>
+  <h2>Languages</h2>
+  <ol id="languages"></ol>
+  <label>Add <select id="add-language"></select></label>
+  <p class="note">Sent to sites as Accept-Language, the first most wanted.</p>
+</section>
+<section>
+  <h2>Privacy</h2>
+  <label><input type="checkbox" id="blockThirdPartyCookies"> Block third-party cookies</label>
+  <p class="note">A frame or a request of another site than the page's neither sends nor
+    sets cookies.</p>
+</section>
+<section>
+  <h2>Downloads</h2>
+  <label>Save to <input type="text" id="downloadsFolder" placeholder="The Downloads folder">
+    <button id="save-folder">Save</button></label>
+</section>
+<section>
+  <h2>Engine</h2>
+  <label><input type="checkbox" id="gpu"> Draw pages on the GPU</label>
+  <p class="note">Takes effect at the next start, in the one-process build.</p>
+</section>
+<p id="said" class="bad"></p>
+</main>
+<script>
+"use strict";
+const pending = new Map();
+let next = 1;
+let current = null;
+let languageNames = [];
+
+function call(method, params) {
+  const id = next++;
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+    devtools.send(JSON.stringify({ id, method, params: params || {} }));
+  });
+}
+
+devtools.onmessage = (text) => {
+  let message;
+  try {
+    message = JSON.parse(text);
+  } catch (e) {
+    return;
+  }
+  const waiting = pending.get(message.id);
+  if (waiting) {
+    pending.delete(message.id);
+    if ("error" in message) {
+      waiting.reject(message.error);
+    } else {
+      waiting.resolve(message.result);
+    }
+  }
+};
+
+const $ = (id) => document.getElementById(id);
+
+// Sets setting `name` to `value`, saying why when the browser refuses.
+function set(name, value) {
+  $("said").textContent = "";
+  call("settings.set", { name, value }).then(show, (why) => {
+    $("said").textContent = String(why);
+    load();
+  });
+}
+
+function option(value, text) {
+  const node = document.createElement("option");
+  node.value = value;
+  node.textContent = text;
+  return node;
+}
+
+function show(answer) {
+  if (!answer || !answer.settings) {
+    return;
+  }
+  current = answer.settings;
+  languageNames = answer.languages;
+  const s = current;
+  const fixed = ["silver", "blank", "restore"];
+  $("start").value = fixed.includes(s.start) ? s.start : "page";
+  $("start-page-row").hidden = $("start").value !== "page";
+  $("start-page").value = fixed.includes(s.start) ? "" : s.start;
+  $("newTab").value = s.newTab;
+  const search = $("search");
+  search.textContent = "";
+  for (const name of answer.searches) {
+    search.appendChild(option(name, name));
+  }
+  search.value = s.search;
+  $("scripts").checked = s.scripts;
+  $("appearance").value = s.appearance;
+  $("blockThirdPartyCookies").checked = s.blockThirdPartyCookies;
+  $("downloadsFolder").value = s.downloadsFolder || "";
+  $("gpu").checked = s.gpu;
+  const list = $("languages");
+  list.textContent = "";
+  const nameOf = (tag) => (languageNames.find((l) => l[0] === tag) || [tag, tag])[1];
+  s.languages.forEach((tag, index) => {
+    const item = document.createElement("li");
+    item.appendChild(document.createTextNode(nameOf(tag) + " "));
+    if (index > 0) {
+      const up = document.createElement("button");
+      up.textContent = "Up";
+      up.addEventListener("click", () => {
+        const order = s.languages.slice();
+        order.splice(index - 1, 0, order.splice(index, 1)[0]);
+        set("languages", order);
+      });
+      item.appendChild(up);
+    }
+    if (s.languages.length > 1) {
+      const remove = document.createElement("button");
+      remove.textContent = "Remove";
+      remove.addEventListener("click", () => {
+        set("languages", s.languages.filter((l) => l !== tag));
+      });
+      item.appendChild(remove);
+    }
+    list.appendChild(item);
+  });
+  const add = $("add-language");
+  add.textContent = "";
+  add.appendChild(option("", "Choose a language"));
+  for (const [tag, name] of languageNames) {
+    if (!s.languages.includes(tag)) {
+      add.appendChild(option(tag, name));
+    }
+  }
+}
+
+function load() {
+  call("settings.get").then(show, () => {});
+}
+
+$("start").addEventListener("change", () => {
+  const value = $("start").value;
+  $("start-page-row").hidden = value !== "page";
+  if (value !== "page") {
+    set("start", value);
+  }
+});
+$("start-page").addEventListener("change", () => set("start", $("start-page").value));
+$("newTab").addEventListener("change", () => set("newTab", $("newTab").value));
+$("search").addEventListener("change", () => set("search", $("search").value));
+$("scripts").addEventListener("change", () => set("scripts", $("scripts").checked));
+$("appearance").addEventListener("change", () => set("appearance", $("appearance").value));
+$("blockThirdPartyCookies").addEventListener("change",
+  () => set("blockThirdPartyCookies", $("blockThirdPartyCookies").checked));
+$("gpu").addEventListener("change", () => set("gpu", $("gpu").checked));
+$("add-language").addEventListener("change", () => {
+  const tag = $("add-language").value;
+  if (tag && current) {
+    set("languages", current.languages.concat([tag]));
+  }
+});
+$("save-folder").addEventListener("click", () => {
+  const folder = $("downloadsFolder").value.trim();
+  set("downloadsFolder", folder === "" ? null : folder);
+});
+
+load();
+</script>
+</body>
+</html>

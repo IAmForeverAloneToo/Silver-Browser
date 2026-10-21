@@ -104,6 +104,22 @@ pub struct Jar {
     next: u64,
     /// How many times the cookies with an expiry have changed.
     kept: u64,
+    /// Whether a third party's cookies are blocked (M37, the browser's
+    /// setting, G93): a context neither same-site nor top-level sends and
+    /// sets none.
+    block_third_party: bool,
+}
+
+impl Jar {
+    /// Blocks a third party's cookies from now on, or lets them be (M37).
+    pub fn set_block_third_party(&mut self, block: bool) {
+        self.block_third_party = block;
+    }
+
+    /// Whether `context` is a third party's whose cookies are blocked.
+    fn blocks(&self, context: &Context) -> bool {
+        self.block_third_party && !context.same_site && !context.top_level
+    }
 }
 
 /// The version of the records [`Jar::export`] makes.
@@ -397,6 +413,9 @@ impl Jar {
         context: Context,
         now: SystemTime,
     ) -> bool {
+        if self.blocks(&context) {
+            return false;
+        }
         self.remove_expired(now);
         let Some(parsed) = parse(line, now) else {
             return false;
@@ -526,6 +545,9 @@ impl Jar {
         context: Context,
         now: SystemTime,
     ) -> Option<Vec<u8>> {
+        if self.blocks(&context) {
+            return None;
+        }
         self.remove_expired(now);
         let host = canonical_host(url)?;
         let path = url.path_str();

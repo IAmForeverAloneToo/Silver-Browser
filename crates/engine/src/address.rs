@@ -49,11 +49,9 @@ impl Address {
             Address::Unsupported(scheme) => Some(format!(
                 "{scheme}: addresses open in another program, which this version cannot do"
             )),
-            Address::NotAnAddress => Some(
-                "Not an address: type a web address, such as example.com; searching comes \
-                 in a later version"
-                    .to_owned(),
-            ),
+            Address::NotAnAddress => {
+                Some("Not an address: type a web address, such as example.com".to_owned())
+            }
         }
     }
 }

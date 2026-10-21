@@ -827,14 +827,6 @@ struct CommandLine {
     profile: Keep,
 }
 
-impl CommandLine {
-    /// Whether the window's pages run their scripts: as the command line
-    /// says, else where pages are renderers' (M34).
-    fn window_scripts(&self) -> bool {
-        self.scripts.unwrap_or(!cfg!(feature = "single-process"))
-    }
-}
-
 /// The profile the command line asks for (M28).
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Keep {
@@ -1041,9 +1033,10 @@ fn show(line: &CommandLine) {
     // The window's tabs share one context, the profile's (M37).
     let context = engine::Context::new();
     let launcher: Arc<dyn engine::service::Launcher> = Arc::new(launcher);
+    let tabs = context.clone();
     let make =
-        move || engine::service::RemoteTab::in_context(launcher.clone(), fonts.clone(), &context);
-    run(make, line, profile);
+        move || engine::service::RemoteTab::in_context(launcher.clone(), fonts.clone(), &tabs);
+    run(make, line, profile, context);
 }
 
 /// Shows the page in an engine of the browser's own process (M34.6,
@@ -1053,13 +1046,26 @@ fn show(line: &CommandLine) {
     let profile = read_profile_aside(&line.profile);
     // The bindings compiled while the window opens (M35.12), as a
     // renderer compiles them as it starts.
-    if line.window_scripts() {
-        let _ = std::thread::Builder::new()
-            .name("bindings".to_owned())
-            .stack_size(8 << 20)
-            .spawn(engine::warm_bindings);
-    }
-    let wanted = if line.software {
+    let _ = std::thread::Builder::new()
+        .name("bindings".to_owned())
+        .stack_size(8 << 20)
+        .spawn(engine::warm_bindings);
+    // The settings' GPU choice (M37), read from the profile before the
+    // engine is made.
+    let read = profile();
+    let gpu = match &read {
+        Ok(Some((_, profile))) => profile
+            .settings()
+            .ok()
+            .and_then(|records| {
+                records
+                    .first()
+                    .map(|bytes| engine::settings::Settings::from_bytes(bytes).gpu)
+            })
+            .unwrap_or(true),
+        _ => true,
+    };
+    let wanted = if line.software || !gpu {
         engine::Backend::Software
     } else {
         engine::Backend::Gpu
@@ -1077,6 +1083,7 @@ fn show(line: &CommandLine) {
     // The window's tabs share one context, the profile's (M37); each tab
     // after the first draws on the backend the first had.
     let context = engine::Context::new();
+    let tabs = context.clone();
     let backend = engine.backend();
     let fonts = View::fonts(&engine).clone();
     let mut first = Some(engine);
@@ -1086,10 +1093,10 @@ fn show(line: &CommandLine) {
                 .map(|(engine, _)| engine)
                 .unwrap_or_else(|_| Engine::with_fonts(fonts.clone()))
         });
-        engine.join(&context);
+        engine.join(&tabs);
         engine
     };
-    run(make, line, profile);
+    run(make, line, move || read, context);
 }
 
 /// Shows the pages of the views `make` makes, one a tab, in a window
@@ -1099,6 +1106,7 @@ fn run<V: View + 'static>(
     mut make: impl FnMut() -> V + 'static,
     line: &CommandLine,
     profile: impl FnOnce() -> ReadProfile,
+    context: engine::Context,
 ) {
     let (start, asked) = (line.start.clone(), line.asked);
     let event_loop = match EventLoop::<NetworkWake>::with_user_event().build() {
@@ -1121,7 +1129,7 @@ fn run<V: View + 'static>(
     // The views' tasks and the frames read one clock (M26).
     let began = Instant::now();
     let clock: engine::Clock = Arc::new(move || began.elapsed());
-    let (layer_budget, scripts, compat) = (line.layer_budget, line.window_scripts(), line.compat);
+    let (layer_budget, compat) = (line.layer_budget, line.compat);
     // Every tab's view as the command line asks; the window's theme is
     // known once there is a window.
     let mut configured = move || {
@@ -1130,7 +1138,6 @@ fn run<V: View + 'static>(
             view.set_layer_budget(bytes);
         }
         view.set_preferences(preferences(asked, None, platform::reduced_motion()));
-        view.set_scripting(scripts);
         if compat {
             view.set_compat_user_agent(true);
         }
@@ -1142,20 +1149,42 @@ fn run<V: View + 'static>(
     if let Some(why) = use_profile(&mut engine, profile()) {
         eprintln!("silver-browser: {why}");
     }
-    // Downloads go to the user's folder (M37).
+    // Downloads go to the user's folder (M37), unless the settings chose
+    // another.
+    let settings = context.settings();
     let downloads = engine.downloads();
-    if let (Some(downloads), Some(folder)) = (&downloads, platform::downloads_folder()) {
+    if let (Some(downloads), Some(folder), None) = (
+        &downloads,
+        platform::downloads_folder(),
+        &settings.downloads_folder,
+    ) {
         downloads.set_folder(folder);
     }
     startup::mark("profile");
     let clipboard = Box::new(SystemClipboard::default());
-    let session = Session::new(
+    let restore = start.is_none() && settings.start == engine::settings::Start::Restore;
+    let mut session = Session::new(
         engine,
         Box::new(configured),
+        context,
         clipboard,
         Platform::current(),
         start,
     );
+    // The command line's word stands over the settings' (M37).
+    session.set_forced(session::Forced {
+        scripts: line.scripts,
+        color_scheme: asked.color_scheme.is_some(),
+    });
+    // The tabs open when the browser last ended.
+    if restore {
+        let urls = settings
+            .session
+            .iter()
+            .filter_map(|url| engine::Url::parse(url).ok())
+            .collect();
+        session.restore(urls);
+    }
     startup::mark("session");
 
     let mut browser = Browser::new(session, asked, began);
@@ -1376,7 +1405,7 @@ mod tests {
     }
 
     #[test]
-    fn scripts_run_in_renderers_unless_the_command_line_says_otherwise() {
+    fn the_command_line_may_turn_scripts_on_or_off() {
         let line = |args: &[&str]| command_line(args.iter().map(OsString::from));
         let scripts = |args: &[&str]| line(args).map(|l| l.scripts);
         assert_eq!(scripts(&[]), Ok(None));
@@ -1386,11 +1415,7 @@ mod tests {
             Ok(Some(false))
         );
         assert!(scripts(&["--enable-scripts", "--disable-scripts"]).is_err());
-        // The window's pages run them where they are renderers'.
-        let window = |args: &[&str]| line(args).map(|l| l.window_scripts());
-        assert_eq!(window(&[]), Ok(!cfg!(feature = "single-process")));
-        assert_eq!(window(&["--disable-scripts"]), Ok(false));
-        assert_eq!(window(&["--enable-scripts"]), Ok(true));
+        // With neither, the settings decide (M37).
     }
 
     #[test]

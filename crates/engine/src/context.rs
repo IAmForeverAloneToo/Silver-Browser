@@ -29,6 +29,11 @@ struct Shared {
     permissions: Arc<Permissions>,
     storage: Arc<Mutex<Storage>>,
     downloads: crate::downloads::Downloads,
+    /// The settings (M37), and how many times they changed; the
+    /// `Accept-Language` the context's clients send, from them.
+    settings: Mutex<crate::settings::Settings>,
+    settings_changes: AtomicU64,
+    accept_language: Arc<Mutex<String>>,
     tabs: AtomicU64,
     renderers: AtomicU32,
 }
@@ -55,6 +60,11 @@ impl Context {
                 permissions,
                 storage: Arc::new(Mutex::new(storage)),
                 downloads: crate::downloads::Downloads::new(),
+                settings: Mutex::new(crate::settings::Settings::default()),
+                settings_changes: AtomicU64::new(0),
+                accept_language: Arc::new(Mutex::new(
+                    crate::settings::Settings::default().accept_language(),
+                )),
                 tabs: AtomicU64::new(1),
                 renderers: AtomicU32::new(1),
             }),
@@ -65,7 +75,88 @@ impl Context {
     /// [`crate::Engine::set_profile`] says; fails, and does not use it,
     /// when it cannot be read.
     pub fn set_profile(&self, profile: Profile) -> Result<(), profile::Error> {
-        self.storage().set_profile(profile, &self.shared.jar)
+        let mut storage = self.storage();
+        storage.set_profile(profile, &self.shared.jar)?;
+        let read = storage.take_read_settings();
+        drop(storage);
+        if let Some(bytes) = read {
+            *self.settings_lock() = crate::settings::Settings::from_bytes(&bytes);
+            self.settings_changed();
+        }
+        Ok(())
+    }
+
+    /// The settings (M37).
+    pub fn settings(&self) -> crate::settings::Settings {
+        self.settings_lock().clone()
+    }
+
+    /// How many times the settings changed: a reader of them reads again
+    /// when it does.
+    pub fn settings_changes(&self) -> u64 {
+        self.shared.settings_changes.load(Ordering::Relaxed)
+    }
+
+    /// Changes the settings by `change`, keeping them in the profile.
+    pub fn update_settings(&self, change: impl FnOnce(&mut crate::settings::Settings)) {
+        let bytes = {
+            let mut settings = self.settings_lock();
+            change(&mut settings);
+            settings.to_bytes()
+        };
+        self.storage().keep_settings(bytes);
+        self.settings_changed();
+    }
+
+    /// Keeps the tabs' URLs `urls` for the session restored (M37): the
+    /// settings' own, but no change of them that readers act on.
+    pub fn keep_session(&self, urls: Vec<String>) {
+        let bytes = {
+            let mut settings = self.settings_lock();
+            let value = devtools::Json::Array(
+                urls.iter()
+                    .map(|u| devtools::Json::from(u.as_str()))
+                    .collect(),
+            );
+            let _ = settings.set("session", &value);
+            settings.to_bytes()
+        };
+        self.storage().keep_settings(bytes);
+    }
+
+    /// What follows from the settings in the context itself: the jar's
+    /// third-party cookies, the clients' languages, the downloads'
+    /// folder; and their count of changes.
+    fn settings_changed(&self) {
+        let settings = self.settings();
+        self.shared
+            .jar
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .set_block_third_party(settings.block_third_party_cookies);
+        *self
+            .shared
+            .accept_language
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = settings.accept_language();
+        if let Some(folder) = &settings.downloads_folder {
+            self.shared
+                .downloads
+                .set_folder(std::path::PathBuf::from(folder));
+        }
+        self.shared.settings_changes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn settings_lock(&self) -> std::sync::MutexGuard<'_, crate::settings::Settings> {
+        self.shared
+            .settings
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The `Accept-Language` the context's clients send.
+    pub(crate) fn accept_language(&self) -> &Arc<Mutex<String>> {
+        &self.shared.accept_language
     }
 
     /// Writes to the profile what changed since it was last written, at

@@ -268,6 +268,8 @@ pub(crate) struct WindowEnv {
     pub(crate) media: style::Media,
     pub(crate) fonts: Option<text::FontCollection>,
     pub(crate) compat: bool,
+    /// The user's languages, the most wanted first (M37).
+    pub(crate) languages: Vec<String>,
     pub(crate) clock: Option<crate::Clock>,
     /// Whether the window is hidden: minimized or covered (M26).
     pub(crate) hidden: bool,

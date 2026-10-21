@@ -298,6 +298,8 @@ pub(crate) struct Network {
     /// The tab's network log (M36.3), which every client of the engine
     /// tells what it does.
     log: Arc<crate::network_log::NetworkLog>,
+    /// The `Accept-Language` its clients send, its context's (M37).
+    languages: Option<Arc<Mutex<String>>>,
     flights: HashMap<FetchId, Flight>,
     next: FetchId,
     /// Where each page's document is in its tab (M33.2): what a frame's
@@ -325,6 +327,7 @@ impl Network {
             hsts: Arc::default(),
             permissions: Arc::default(),
             log: Arc::default(),
+            languages: None,
             flights: HashMap::new(),
             next: 0,
             partitions: HashMap::new(),
@@ -414,12 +417,16 @@ impl Network {
 
     /// `client` keeping the engine's cookies and cache.
     fn shared(&self, client: Client) -> Client {
-        client
+        let client = client
             .with_cookies(self.cookies.clone())
             .with_cache(self.cache.clone())
             .with_hsts(self.hsts.clone())
             .with_local_network_gate(self.permissions.clone())
-            .with_observer(self.log.clone())
+            .with_observer(self.log.clone());
+        match &self.languages {
+            Some(languages) => client.with_languages(languages.clone()),
+            None => client,
+        }
     }
 
     /// The tab's network log.
@@ -451,6 +458,7 @@ impl Network {
         network.cookies = self.cookies.clone();
         network.cache = self.cache.clone();
         network.log = self.log.clone();
+        network.languages = self.languages.clone();
         network
     }
 
@@ -461,6 +469,7 @@ impl Network {
         self.cache = context.cache().clone();
         self.hsts = context.hsts().clone();
         self.permissions = context.permissions().clone();
+        self.languages = Some(context.accept_language().clone());
         self.client = None;
     }
 
