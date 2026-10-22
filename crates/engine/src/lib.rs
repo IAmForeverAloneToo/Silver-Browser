@@ -4079,6 +4079,10 @@ impl Engine {
             Handling::Traverse(_) => net::CacheMode::ForceCache,
             Handling::Push | Handling::Replace => net::CacheMode::Default,
         };
+        // A navigation a document started names it as its client (M39).
+        if request.origin.is_some() || matches!(handling, Handling::Reload) {
+            request.client = Some(self.shown.scripts.service_id());
+        }
         self.network.fetch(id, Target::Document, request);
         self.navigation = Some(Navigation {
             url,
@@ -5194,6 +5198,10 @@ impl Engine {
             scripts.make_panel();
         }
         scripts.use_router(frames::lock(&self.frame.tree).router());
+        // Its id the one its navigation reserved (M39 step 6).
+        if let Some(reserved) = self.network.take_reserved(id) {
+            scripts.set_service_id(reserved);
+        }
         // The new one is a client, its controller decided now (M39): its
         // requests go to its service worker first.
         let client = self.service_worker_client(&page, &scripts);

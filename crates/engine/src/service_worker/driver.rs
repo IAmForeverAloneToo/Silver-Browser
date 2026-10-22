@@ -300,6 +300,12 @@ fn run(weak: &Weak<Inner>, receiver: &Receiver<Message>) {
         };
         let effects = {
             let mut storage = lock(&inner.storage);
+            // The registry's clock: its last checks, and when they are
+            // stale.
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| since.as_secs());
+            storage.registry().set_now(now);
             match message {
                 Message::Schedule(job, done) => {
                     let ticket = storage.service_workers(&job.key).schedule(*job);

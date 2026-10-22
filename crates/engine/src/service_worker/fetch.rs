@@ -121,22 +121,23 @@ pub(crate) fn handle_fetch(
     workers: &WeakServiceWorkers,
     request: &Request,
 ) -> Option<Result<Response, NetworkError>> {
-    // Navigations are matched by their URL (step 6).
-    if request.mode == Mode::Navigate {
-        return None;
-    }
-    let id = request.client.as_ref()?;
     let workers = workers.upgrade()?;
-    let registration = workers.client(id)?.controller?;
-    let version = workers.query_any(|registry| {
-        let reg = registry.registration(registration)?;
-        let v = registry.version(reg.active?)?;
-        v.handles("fetch").then_some(v.id)
-    })?;
+    let (version, data) = if request.mode == Mode::Navigate {
+        navigation(&workers, request)?
+    } else {
+        let id = request.client.as_ref()?;
+        let registration = workers.client(id)?.controller?;
+        let version = workers.query_any(|registry| {
+            let reg = registry.registration(registration)?;
+            let v = registry.version(reg.active?)?;
+            v.handles("fetch").then_some(v.id)
+        })?;
+        (version, event_json(request, id, ""))
+    };
     let (sender, receiver) = channel();
     workers.fetch_event(
         version,
-        event_json(request, id, ""),
+        data,
         Box::new(move |responded| {
             let _ = sender.send(responded);
         }),
@@ -160,6 +161,50 @@ pub(crate) fn handle_fetch(
         ))),
         Responded::Given(response) => Some(checked(request, *response)),
     }
+}
+
+/// A navigation's version and its FetchEvent (M39 step 6): the
+/// registration of its URL's storage key whose scope is the longest
+/// prefix of it, its active version listening for fetch; its
+/// resultingClientId the document's to be, its clientId the document
+/// that started it, if one did. A registration found stale is checked
+/// for an update (Soft Update).
+fn navigation(workers: &super::ServiceWorkers, request: &Request) -> Option<(u64, String)> {
+    let origin = request.url.origin();
+    if origin.is_opaque()
+        || !matches!(request.url.scheme(), "http" | "https")
+        || !request.url.is_potentially_trustworthy()
+    {
+        return None;
+    }
+    // Its storage key: its frame's place, and its own origin's against
+    // the top's.
+    let partition = request.partition.clone().map(|frame| net::Partition {
+        cross_site: frame.cross_site || !frame.top.same_site(&origin),
+        top: frame.top,
+    });
+    let key = crate::storage::AreaKey { origin, partition }.serialization();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    let (registration, version, stale) = workers.query(&key, |registry| {
+        let id = registry.matching(&key, &request.url)?;
+        let reg = registry.registration(id)?;
+        let v = registry.version(reg.active?)?;
+        let stale = reg
+            .last_check
+            .is_some_and(|at| now.saturating_sub(at) > super::STALE_AFTER);
+        Some((id, v.handles("fetch").then_some(v.id), stale))
+    })?;
+    if stale {
+        workers.soft_update(registration);
+    }
+    let reserved = request
+        .reserved_client
+        .clone()
+        .unwrap_or_else(super::new_client_id);
+    let source = request.client.as_deref().unwrap_or_default();
+    Some((version?, event_json(request, source, &reserved)))
 }
 
 /// A request as a `FetchEvent` reads it, with its client's ids.

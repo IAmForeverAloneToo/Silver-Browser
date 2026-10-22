@@ -381,6 +381,9 @@ pub(crate) struct Network {
     /// them.
     service_clients: HashMap<PageId, String>,
     intercept: Option<crate::service_worker::WeakServiceWorkers>,
+    /// The ids reserved for the documents its navigations make, by their
+    /// pages (M39 step 6).
+    reserved: HashMap<PageId, String>,
     /// Made at the first fetch: a document given to the engine needs
     /// none.
     client: Option<Arc<dyn Fetcher>>,
@@ -438,6 +441,7 @@ impl Network {
             pool: Pool::new(MAX_FETCH_THREADS),
             service_clients: HashMap::new(),
             intercept: None,
+            reserved: HashMap::new(),
             client: None,
             remote_cookies: None,
             cookies: Arc::default(),
@@ -546,6 +550,12 @@ impl Network {
         }
     }
 
+    /// The id reserved for the document of `page`'s navigation, taken
+    /// (M39 step 6).
+    pub(crate) fn take_reserved(&mut self, page: PageId) -> Option<String> {
+        self.reserved.remove(&page)
+    }
+
     /// The document of `page` is the client `id` (M39), or no client.
     pub(crate) fn set_service_client(&mut self, page: PageId, id: Option<String>) {
         match id {
@@ -611,6 +621,9 @@ impl Network {
         network.transport = self.transport.clone();
         network.log = self.log.clone();
         network.languages = self.languages.clone();
+        // A frame's navigations and requests go to its service worker as
+        // its tab's do (M39).
+        network.intercept = self.intercept.clone();
         network
     }
 
@@ -786,17 +799,28 @@ impl Network {
             request.cache = net::CacheMode::Reload;
         }
         // The tab's icon and a policy's report are the browser's, no
-        // client's (M39).
-        if request.client.is_none() && !matches!(target, Target::Icon | Target::Report) {
+        // client's; a document's request names its source's, given it
+        // (M39).
+        if request.client.is_none()
+            && !matches!(target, Target::Icon | Target::Report | Target::Document)
+        {
             request.client = self.service_clients.get(&page).cloned();
         }
         if let Some(id) = self.take_preload(page, &target, &request) {
             return id;
         }
         let streamed = target == Target::Document;
+        // A navigation reserves its document's client id (M39 step 6).
+        if target == Target::Document && self.intercept.is_some() {
+            let reserved = request
+                .reserved_client
+                .get_or_insert_with(crate::service_worker::new_client_id)
+                .clone();
+            self.reserved.insert(page, reserved);
+        }
         let mut client = self.client();
         // A client's request goes to its service worker first (M39).
-        if request.client.is_some()
+        if (request.client.is_some() || request.reserved_client.is_some())
             && let Some(workers) = &self.intercept
         {
             client = Arc::new(crate::service_worker::fetch::Intercepting {
@@ -836,6 +860,7 @@ impl Network {
         if owner.is_none() {
             self.bypassing.remove(&page);
             self.service_clients.remove(&page);
+            self.reserved.remove(&page);
             self.preloads.retain(|key, _| key.page != page);
             self.preloaded.retain(|key| key.page != page);
             self.preload_counts.remove(&page);

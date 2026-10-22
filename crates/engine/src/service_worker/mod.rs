@@ -1226,6 +1226,15 @@ impl Registry {
         keys.into_iter().collect()
     }
 
+    /// Makes registration `id`'s last check `ago` seconds older, for the
+    /// tests.
+    #[cfg(test)]
+    pub(crate) fn age(&mut self, id: u64, ago: u64) {
+        if let Some(reg) = self.registrations.get_mut(&id) {
+            reg.last_check = reg.last_check.map(|at| at.saturating_sub(ago));
+        }
+    }
+
     /// Whether the storage key's registrations were read.
     pub fn knows(&self, key: &str) -> bool {
         self.loaded.contains(key)

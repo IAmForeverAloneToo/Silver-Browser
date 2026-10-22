@@ -337,6 +337,9 @@ pub struct Request {
     /// id of the document it is made for, which a service worker
     /// controlling that document is given the request of.
     pub client: Option<String>,
+    /// Fetch's reserved client (M39 step 6): a navigation's, the id the
+    /// document it makes is to have.
+    pub reserved_client: Option<String>,
 }
 
 impl Request {
@@ -387,6 +390,7 @@ impl Request {
             local_network: None,
             target_address_space: None,
             client: None,
+            reserved_client: None,
         }
     }
 

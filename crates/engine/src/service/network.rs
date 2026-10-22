@@ -232,30 +232,32 @@ pub struct NetworkService {
     service_workers: Mutex<Option<crate::service_worker::WeakServiceWorkers>>,
 }
 
-/// The service worker's answer to a renderer's `request` (M39 step 5),
-/// if the client it names is one of a site of `lock`'s and controlled;
-/// a client it may not name is dropped from the request.
-fn intercepted(
+/// What fetches a renderer's `request` (M39 steps 5, 6): through its
+/// service workers first, when there are, a navigation by its URL and a
+/// subresource by its client, which must be one of a site of `lock`'s
+/// or is dropped from the request; else `client`.
+fn fetcher_for(
     workers: Option<&crate::service_worker::WeakServiceWorkers>,
     client: &Arc<Client>,
     request: &mut Request,
     lock: &Lock,
-) -> Option<Result<net::Response, NetworkError>> {
-    let workers = workers?;
-    let id = request.client.clone()?;
-    let admitted = workers
-        .upgrade()
-        .and_then(|driver| driver.client(&id))
-        .is_some_and(|entry| lock.admits(&entry.url.origin()));
-    if !admitted {
-        request.client = None;
-        return None;
+) -> Arc<dyn crate::loader::Fetcher> {
+    let Some(workers) = workers else {
+        return client.clone();
+    };
+    if let Some(id) = request.client.clone() {
+        let admitted = workers
+            .upgrade()
+            .and_then(|driver| driver.client(&id))
+            .is_some_and(|entry| lock.admits(&entry.url.origin()));
+        if !admitted {
+            request.client = None;
+        }
     }
-    crate::service_worker::fetch::Intercepting {
+    Arc::new(crate::service_worker::fetch::Intercepting {
         inner: client.clone(),
         workers: workers.clone(),
-    }
-    .answer(request, 0)
+    })
 }
 
 /// Whether the frame the browser numbers so may start a download.
@@ -588,7 +590,7 @@ impl NetworkService {
                 let reply = answer;
                 // A client's request goes to its service worker first.
                 let mut request = request;
-                let answered = intercepted(service_workers.as_ref(), &client, &mut request, &lock);
+                let fetcher = fetcher_for(service_workers.as_ref(), &client, &mut request, &lock);
                 let abort = request.abort.clone();
                 let mut moved: Option<u64> = None;
                 // The body of another site's response that makes no
@@ -596,17 +598,8 @@ impl NetworkService {
                 // download's body is the browser's to save (M37).
                 let mut withheld = false;
                 let mut sink: Option<crate::downloads::Sink> = None;
-                let result = match (answered, streamed) {
-                    (Some(answered), _) => answered.map(|response| {
-                        let response = filtered(response);
-                        let _ = reply.send(&ToRenderer::FetchHead {
-                            id,
-                            response: renderer_head(&response),
-                        });
-                        send_body(&reply, id, &response.body);
-                        renderer_head(&response)
-                    }),
-                    (None, true) => client
+                let result = match streamed {
+                    true => fetcher
                         .fetch_streaming(&request, &mut |delivery| match delivery {
                             Delivery::Head(head) => {
                                 withheld = navigation
@@ -687,7 +680,7 @@ impl NetworkService {
                             },
                         })
                         .map(|response| renderer_head(&response)),
-                    (None, false) => client.fetch(&request).map(|response| {
+                    false => fetcher.fetch(&request).map(|response| {
                         let response = filtered(response);
                         let _ = reply.send(&ToRenderer::FetchHead {
                             id,

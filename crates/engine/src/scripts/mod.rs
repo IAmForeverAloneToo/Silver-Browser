@@ -1235,6 +1235,16 @@ impl Scripts {
             .send(workers::WorkerMessage::ServiceWorker(task));
     }
 
+    /// Its id as the service workers' client (M39).
+    pub(crate) fn service_id(&self) -> String {
+        self.host.workers.service_id.clone()
+    }
+
+    /// Its id as the service workers' client is `id` (M39 step 6).
+    pub(crate) fn set_service_id(&mut self, id: String) {
+        self.host.workers.set_service_id(id);
+    }
+
     /// Takes what the document's workers sent (M31): their messages,
     /// errors and ends queued as tasks from `now`, their console lines
     /// put in the document's console.

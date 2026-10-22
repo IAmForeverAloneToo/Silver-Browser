@@ -1,7 +1,8 @@
 //! A controlled document's requests through its service worker (M39 step
 //! 5): `FetchEvent`, `respondWith` and what it may answer, the fallback
 //! to the network, as the reference browser answered probe p2's page
-//! (scratchpad `m39/pages/p2`, Chrome 155), its navigations aside.
+//! (scratchpad `m39/pages/p2`, Chrome 155): its subresources (step 5),
+//! its reload and its frame (step 6).
 
 use net::test_server::{Reply, TestServer};
 
@@ -40,12 +41,13 @@ self.addEventListener('fetch', e => {{
   else if (p === 'redirect') e.respondWith(Response.redirect('real.txt', 302));
   else if (p === 'opaque') e.respondWith(fetch('{elsewhere}/p2/real.txt', {{mode: 'no-cors'}}));
   else if (p === 'cached') e.respondWith(caches.match(e.request));
+  else if (p === 'frame.html') e.respondWith(new Response('<p>made frame</p><script>parent.postMessage(\"frame text \" + document.querySelector(\"p\").textContent + \" controlled \" + !!navigator.serviceWorker.controller, \"*\")</scr' + 'ipt>', {{headers: {{'content-type': 'text/html'}}}}));
 }});
 self.addEventListener('message', e => e.source.postMessage(seen.join(' ')));"
     )
 }
 
-/// Probe p2's page, its frame aside, its log the console's.
+/// Probe p2's page, its log the console's.
 fn page(elsewhere: &str) -> String {
     format!(
         "<!doctype html><script>
@@ -81,6 +83,11 @@ const show = async (name, p) => {{
   await show('cached', fetch('cached'));
   const img = new Image(); img.src = 'img.png';
   await new Promise(r => {{ img.onload = img.onerror = r; }});
+  // A frame's realm is its own here (D24): it says what it has.
+  const told = new Promise(r => addEventListener('message', e => r(e.data), {{once: true}}));
+  const iframe = document.createElement('iframe'); iframe.src = 'frame.html';
+  document.body.append(iframe);
+  log(await told);
   const seen = await new Promise(r => {{ navigator.serviceWorker.onmessage = e => r(e.data); navigator.serviceWorker.controller.postMessage('seen?'); }});
   log('sw saw ' + seen);
   log('done');
@@ -133,8 +140,87 @@ fn a_controlled_documents_requests_go_through_its_worker_as_the_reference_browse
             "opaque-to-cors: TypeError: Failed to fetch",
             "post: 201 \"Made\" type basic url /p2/synth redirected false ct text/x-made x 1 body \"made POST \"",
             "cached: 200 \"\" type basic url /p2/cached redirected false ct text/plain;charset=UTF-8 x cache body \"from the cache\"",
-            "sw saw synth:cors::GET:c-:FetchEvent real.txt:cors::GET:c-:FetchEvent missing.txt:cors::GET:c-:FetchEvent error:cors::GET:c-:FetchEvent reject:cors::GET:c-:FetchEvent twice:cors::GET:c-:FetchEvent twice InvalidStateError: Failed to execute 'respondWith' on 'FetchEvent': respondWith() was already called. late:cors::GET:c-:FetchEvent late InvalidStateError: Failed to execute 'respondWith' on 'FetchEvent': The event handler is already finished. redirect:cors::GET:c-:FetchEvent real.txt:cors::GET:c-:FetchEvent real.txt:no-cors::GET:c-:FetchEvent opaque:cors::GET:c-:FetchEvent synth:cors::POST:c-:FetchEvent cached:cors::GET:c-:FetchEvent img.png:no-cors:image:GET:c-:FetchEvent",
+            "frame text made frame controlled true",
+            "sw saw index.html:navigate:document:GET:cr:FetchEvent synth:cors::GET:c-:FetchEvent real.txt:cors::GET:c-:FetchEvent missing.txt:cors::GET:c-:FetchEvent error:cors::GET:c-:FetchEvent reject:cors::GET:c-:FetchEvent twice:cors::GET:c-:FetchEvent twice InvalidStateError: Failed to execute 'respondWith' on 'FetchEvent': respondWith() was already called. late:cors::GET:c-:FetchEvent late InvalidStateError: Failed to execute 'respondWith' on 'FetchEvent': The event handler is already finished. redirect:cors::GET:c-:FetchEvent real.txt:cors::GET:c-:FetchEvent real.txt:no-cors::GET:c-:FetchEvent opaque:cors::GET:c-:FetchEvent synth:cors::POST:c-:FetchEvent cached:cors::GET:c-:FetchEvent img.png:no-cors:image:GET:c-:FetchEvent frame.html:navigate:iframe:GET:-r:FetchEvent",
             "done",
         ]
+    );
+}
+
+#[test]
+fn a_navigation_a_stale_registration_controls_checks_it_for_an_update() {
+    // M39 step 6: Soft Update, a day after the last check.
+    let fetched = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = fetched.clone();
+    let server = serve(move |path| match path {
+        "/s/page.html" => Some(html(
+            "<script>navigator.serviceWorker.register('sw.js').then(() => navigator.serviceWorker.ready).then(() => console.log('ready'));</script>",
+        )),
+        "/s/sw.js" => {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some(js("self.onfetch = () => {};"))
+        }
+        _ => None,
+    });
+    let context = crate::Context::new();
+    let mut tab = Tab::new();
+    tab.engine.join(&context);
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(server.url("/s/page.html"));
+    tab.run_until(|lines| lines.iter().any(|l| l == "ready"));
+    assert_eq!(fetched.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let key = server.url("/").origin().serialization();
+    let scope = server.url("/s/");
+    // A fresh registration is not checked again.
+    tab.engine.navigate(server.url("/s/page.html"));
+    tab.run_until(|lines| lines.iter().any(|l| l == "ready"));
+    assert_eq!(fetched.load(std::sync::atomic::Ordering::SeqCst), 1);
+    // Two days on, the next navigation it controls checks it.
+    {
+        let mut storage = context.shared_storage().lock().unwrap();
+        let registry = storage.service_workers(&key);
+        let id = registry.get(&key, scope.as_str()).expect("registered");
+        registry.age(id, 2 * 24 * 60 * 60);
+    }
+    tab.engine.navigate(server.url("/s/page.html"));
+    wait_for(|| fetched.load(std::sync::atomic::Ordering::SeqCst) == 2);
+}
+
+#[test]
+fn a_navigations_resulting_client_is_the_document_it_makes() {
+    // M39 step 6: the id the navigation reserved is its document's.
+    let server = serve(|path| {
+        match path {
+        "/r/page.html" => Some(html(
+            "<script>
+             (async () => {
+               if (!navigator.serviceWorker.controller) {
+                 await navigator.serviceWorker.register('sw.js');
+                 await navigator.serviceWorker.ready;
+                 location.reload();
+                 return;
+               }
+               navigator.serviceWorker.onmessage = (e) => console.log(e.data);
+               navigator.serviceWorker.controller.postMessage('who');
+             })();
+             </script>",
+        )),
+        "/r/sw.js" => Some(js(
+            "self.onfetch = (e) => { if (e.request.mode === 'navigate') e.waitUntil(caches.open('r').then(c => c.put('/resulting', new Response(e.resultingClientId)))); };
+             self.onmessage = async (e) => {
+               const resulting = await (await caches.match('/resulting')).text();
+               e.source.postMessage('resulting is the document ' + (resulting === e.source.id) + ' ' + (resulting.length > 0));
+             };",
+        )),
+        _ => None,
+    }
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(server.url("/r/page.html"));
+    let lines = tab.run_until(|lines| lines.iter().any(|l| l.starts_with("resulting")));
+    assert!(
+        lines.contains(&"resulting is the document true true".to_owned()),
+        "{lines:?}"
     );
 }

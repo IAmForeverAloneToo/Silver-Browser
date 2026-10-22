@@ -368,6 +368,7 @@ impl Wire for Request {
         self.local_network.encode(out);
         self.target_address_space.encode(out);
         self.client.encode(out);
+        self.reserved_client.encode(out);
     }
     fn decode(input: &mut Decoder<'_>) -> Result<Self, Malformed> {
         Ok(Request {
@@ -400,6 +401,7 @@ impl Wire for Request {
             local_network: Option::decode(input)?,
             target_address_space: Option::decode(input)?,
             client: Option::decode(input)?,
+            reserved_client: Option::decode(input)?,
         })
     }
 }

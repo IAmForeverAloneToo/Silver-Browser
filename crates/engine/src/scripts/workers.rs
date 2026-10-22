@@ -571,6 +571,12 @@ impl DocumentWorkers {
         }
     }
 
+    /// Its id as the service workers' client is `id` (M39 step 6): the one
+    /// its navigation reserved.
+    pub(crate) fn set_service_id(&mut self, id: String) {
+        self.service_id = id;
+    }
+
     /// Whether its ports' router is `router`.
     pub(crate) fn uses(&self, router: &SharedRouter) -> bool {
         Arc::ptr_eq(&self.router, router)

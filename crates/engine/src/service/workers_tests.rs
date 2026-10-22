@@ -316,3 +316,52 @@ fn a_renderers_controlled_page_has_its_requests_answered_by_a_worker_renderer() 
     );
     assert_eq!(host.renderers(), 1);
 }
+
+#[test]
+fn a_renderers_navigation_is_answered_by_a_worker_renderer() {
+    // M39 step 6: the browser gives the navigation to the version whose
+    // scope it is in; the document it makes is controlled.
+    let server = TestServer::plain(|request| {
+        match request.target.as_str() {
+        "/sw.js" => Reply::with_fields(
+            200,
+            &[("Content-Type", "text/javascript")],
+            b"self.onfetch = (e) => {
+                if (e.request.mode === 'navigate' && e.request.url.endsWith('/made'))
+                  e.respondWith(new Response('<p>made</p><script>console.log(\"made page controlled \" + !!navigator.serviceWorker.controller + \" \" + document.querySelector(\"p\").textContent)</scr' + 'ipt>', {headers: {'content-type': 'text/html'}}));
+              };",
+        ),
+        _ => Reply::ok(
+            "text/html",
+            b"<script>
+             (async () => {
+               await navigator.serviceWorker.register('/sw.js');
+               await navigator.serviceWorker.ready;
+               location.href = '/made';
+             })().catch(e => console.log('failed ' + e.name + ': ' + e.message));
+             </script>",
+        ),
+    }
+    });
+    let context = crate::Context::new();
+    let launcher = Arc::new(ThreadLauncher::with_fonts(fonts()));
+    let host = super::workers::install(&context, launcher.clone()).expect("the first");
+    let mut tab = RemoteTab::in_context(launcher, fonts(), &context);
+    tab.set_scripting(true);
+    tab.navigate(server.url("/page"));
+    let mut lines = Vec::new();
+    settle(&mut tab, |tab| {
+        lines.extend(tab.take_console().into_iter().map(|entry| entry.text));
+        lines
+            .iter()
+            .any(|l| l.starts_with("made page") || l.starts_with("failed"))
+    });
+    assert!(
+        lines.contains(&"made page controlled true made".to_owned()),
+        "{lines:?}"
+    );
+    // The server never saw it.
+    let asked: Vec<String> = server.requests().iter().map(|r| r.target.clone()).collect();
+    assert!(!asked.contains(&"/made".to_owned()), "{asked:?}");
+    assert_eq!(host.renderers(), 1);
+}
