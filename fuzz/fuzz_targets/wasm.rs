@@ -36,6 +36,7 @@ const LIMITS: Limits = Limits {
     heap: 16 << 20,
     steps: 200,
     stack: js::MAX_SCRIPT_STACK,
+    secure: true,
 };
 
 /// What a script does with `bytes` and `args`: the module compiled,

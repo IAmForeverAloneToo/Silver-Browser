@@ -460,6 +460,9 @@ const NATIVES: &[(&str, Decode)] = &[
     ("devtoolsSend", |a| Ok(Call::DevToolsSend(a.string(0)?))),
     ("devtoolsAnswer", |a| Ok(Call::DevToolsAnswer(a.string(0)?))),
     ("idb", |a| Ok(Call::Idb(a.string(0)?))),
+    ("caches", |a| {
+        Ok(Call::Caches(a.string(0)?, a.bytes(1)?.unwrap_or_default()))
+    }),
     ("idbWake", |_| Ok(Call::IdbWake)),
     ("storageUsage", |_| Ok(Call::StorageUsage)),
     ("navigate", |a| {
@@ -635,6 +638,7 @@ const NATIVES: &[(&str, Decode)] = &[
 pub(super) fn install<'js, H: ScriptingHost>(
     ctx: &Ctx<'js>,
     kind: &RealmKind,
+    secure: bool,
     host: &Slot<H>,
     budget: &Budget,
     entries: &Entries,
@@ -642,6 +646,8 @@ pub(super) fn install<'js, H: ScriptingHost>(
 ) -> rquickjs::Result<Object<'js>> {
     let natives = Object::new(ctx.clone())?;
     natives.set("consoleMessage", console)?;
+    // Whether the realm is a secure context's (M39).
+    natives.set("secure", secure)?;
     // The kind of global the bootstrap makes (M31).
     match kind {
         RealmKind::Window => natives.set("realmKind", "window")?,
@@ -883,6 +889,12 @@ fn value<'js>(ctx: &Ctx<'js>, answer: Answer) -> rquickjs::Result<Value<'js>> {
             array.into_value()
         }
         Answer::Bytes(bytes) => rquickjs::ArrayBuffer::new(ctx.clone(), bytes)?.into_value(),
+        Answer::Pair(text, bytes) => {
+            let array = Array::new(ctx.clone())?;
+            array.set(0, rquickjs::String::from_str(ctx.clone(), &text)?)?;
+            array.set(1, rquickjs::ArrayBuffer::new(ctx.clone(), bytes)?)?;
+            array.into_value()
+        }
     })
 }
 

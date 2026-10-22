@@ -213,6 +213,10 @@ pub(crate) struct Start {
     /// What lets its creator's requests ask their way into a more private
     /// address space (M33.4), which its requests do too.
     pub(crate) local_network: Option<net::LocalNetworkAccess>,
+    /// The storage its creator reaches and its storage key (M39): the
+    /// Cache API's caches it shares; none when its creator's storage is
+    /// refused.
+    pub(crate) storage: Option<(Arc<dyn crate::storage::Areas>, crate::storage::AreaKey)>,
 }
 
 /// A worker its owner knows of: how to reach it and stop it.
@@ -552,8 +556,11 @@ fn run(setup: Setup) {
     let kind = RealmKind::DedicatedWorker {
         name: start.name.clone(),
     };
-    let Ok(mut realm) = QuickJs.realm_of::<WorkerHost>(kind, Limits::worker(), Some(stop.clone()))
-    else {
+    let limits = Limits {
+        secure: start.secure,
+        ..Limits::worker()
+    };
+    let Ok(mut realm) = QuickJs.realm_of::<WorkerHost>(kind, limits, Some(stop.clone())) else {
         return ended(Some(None));
     };
     let origin = if url.scheme() == "data" {
@@ -580,6 +587,7 @@ fn run(setup: Setup) {
             origin: origin.clone(),
         }),
         client: Some(start.client.clone()),
+        storage: start.storage.clone(),
         origin,
         url: Some(url.clone()),
         secure: start.secure,
@@ -768,6 +776,9 @@ pub(crate) struct WorkerHost {
     /// What its requests are made by: its URL and origin.
     initiator: Option<Initiator>,
     client: Option<Arc<dyn Fetcher>>,
+    /// The storage its creator reaches and its storage key, for the Cache
+    /// API (M39).
+    storage: Option<(Arc<dyn crate::storage::Areas>, crate::storage::AreaKey)>,
     origin: Origin,
     url: Option<Url>,
     secure: bool,
@@ -817,6 +828,7 @@ impl Default for WorkerHost {
             owner: None,
             initiator: None,
             client: None,
+            storage: None,
             origin: Origin::Opaque(0),
             url: None,
             secure: false,
@@ -1057,6 +1069,8 @@ impl ScriptingHost for WorkerHost {
                             .unwrap_or_else(|| net::csp::Csp::none(self.origin.clone())),
                         referrer_policy: net::ReferrerPolicy::default(),
                         local_network: self.local_network.clone(),
+                        // A nested worker reaches its creator's caches.
+                        storage: self.storage.clone(),
                     }),
                 )))
             }
@@ -1072,6 +1086,16 @@ impl ScriptingHost for WorkerHost {
                 }
                 Ok(Answer::Nothing)
             }
+            Call::Caches(request, bytes) => match &self.storage {
+                Some((areas, key)) => {
+                    let (answer, bytes) = areas.caches(key, &request, &bytes);
+                    Ok(Answer::Pair(answer, bytes))
+                }
+                None => Err(DomError::new(
+                    "SecurityError",
+                    "Cache storage is disabled for this worker's origin.",
+                )),
+            },
             _ => Err(DomError::not_supported()),
         }
     }

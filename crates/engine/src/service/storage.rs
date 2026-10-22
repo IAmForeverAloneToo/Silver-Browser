@@ -179,6 +179,13 @@ impl StorageService {
             StorageOp::Idb { request } => Answer::Idb {
                 answer: crate::idb::serve(storage.idb(&key), &key, &request),
             },
+            StorageOp::Caches { request, bytes } => {
+                let (answer, bytes) = storage.serve_caches(&key, &request, &bytes.0);
+                Answer::Caches {
+                    answer,
+                    bytes: crate::ipc::Bytes(bytes),
+                }
+            }
         };
         drop(storage);
         let _ = reply.send(&ToRenderer::Answer { call, answer });

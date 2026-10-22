@@ -70,6 +70,10 @@ pub struct Limits {
     pub steps: u32,
     /// [`MAX_SCRIPT_STACK`].
     pub stack: usize,
+    /// Whether the realm is a secure context's (M39): the interfaces Web
+    /// IDL marks `[SecureContext]` (the Cache API, service workers) are
+    /// its alone. True by default.
+    pub secure: bool,
 }
 
 impl Default for Limits {
@@ -78,6 +82,7 @@ impl Default for Limits {
             heap: MAX_SCRIPT_HEAP,
             steps: MAX_SCRIPT_STEPS,
             stack: MAX_SCRIPT_STACK,
+            secure: true,
         }
     }
 }

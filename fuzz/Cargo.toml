@@ -297,6 +297,12 @@ test = false
 doc = false
 
 [[bin]]
+name = "cache_api"
+path = "fuzz_targets/cache_api.rs"
+test = false
+doc = false
+
+[[bin]]
 name = "devtools_json"
 path = "fuzz_targets/devtools_json.rs"
 test = false

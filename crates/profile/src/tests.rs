@@ -770,3 +770,86 @@ fn the_http_caches_entries_and_bodies_are_kept_sealed_and_deleted() {
     assert_eq!(profile.cache_body(3).unwrap(), None);
     assert!(profile.cache_body(1).unwrap().is_some());
 }
+
+#[test]
+fn the_cache_apis_caches_entries_and_bodies_are_kept_sealed_by_storage_key() {
+    // M39: schema 6's tables.
+    let memory = Memory::new();
+    let profile = Profile::in_memory_with(&memory, TEST_WRAP).unwrap();
+    let key = "https://a.test";
+    assert_eq!(profile.cache_api(key).unwrap(), (Vec::new(), Vec::new()));
+    let mut changes = Changes::new();
+    changes.cache_api_cache(key, 1, Some(b"secret-cache-one".to_vec()));
+    changes.cache_api_cache(key, 2, Some(b"cache-two".to_vec()));
+    changes.cache_api_cache("https://b.test", 1, Some(b"other key".to_vec()));
+    changes.cache_api_entry(
+        key,
+        7,
+        Some(b"secret-entry".to_vec()),
+        Some(b"secret-body".to_vec()),
+    );
+    changes.cache_api_entry(key, 8, Some(b"entry-eight".to_vec()), Some(Vec::new()));
+    assert!(!changes.is_empty());
+    profile.commit(&changes).unwrap();
+    drop(profile);
+    for secret in [&b"secret-cache-one"[..], b"secret-entry", b"secret-body"] {
+        assert!(!in_the_clear(&memory, secret));
+    }
+    let profile = Profile::in_memory_with(&memory, TEST_WRAP).unwrap();
+    let (caches, entries) = profile.cache_api(key).unwrap();
+    assert_eq!(
+        caches,
+        [
+            (1, b"secret-cache-one".to_vec()),
+            (2, b"cache-two".to_vec())
+        ]
+    );
+    assert_eq!(
+        entries,
+        [(7, b"secret-entry".to_vec()), (8, b"entry-eight".to_vec())]
+    );
+    assert_eq!(
+        profile.cache_api_body(key, 7).unwrap(),
+        Some(b"secret-body".to_vec())
+    );
+    assert_eq!(profile.cache_api_body(key, 8).unwrap(), Some(Vec::new()));
+    assert_eq!(profile.cache_api_body("https://b.test", 7).unwrap(), None);
+    assert!(
+        profile
+            .storage_keys()
+            .unwrap()
+            .contains(&"https://b.test".to_owned())
+    );
+    // A record changed with its body kept; an entry and a cache gone.
+    let mut changes = Changes::new();
+    changes.cache_api_entry(key, 7, Some(b"entry-again".to_vec()), None);
+    changes.cache_api_entry(key, 8, None, None);
+    changes.cache_api_cache(key, 2, None);
+    profile.commit(&changes).unwrap();
+    let (caches, entries) = profile.cache_api(key).unwrap();
+    assert_eq!(caches.len(), 1);
+    assert_eq!(entries, [(7, b"entry-again".to_vec())]);
+    assert_eq!(
+        profile.cache_api_body(key, 7).unwrap(),
+        Some(b"secret-body".to_vec())
+    );
+    assert_eq!(profile.cache_api_body(key, 8).unwrap(), None);
+    drop(profile);
+    // A body moved to another key does not open.
+    {
+        let db = Database::builder()
+            .create_with_backend(memory.clone())
+            .unwrap();
+        let txn = db.begin_write().unwrap();
+        {
+            let mut bodies = txn.open_table(CACHE_API_BODIES).unwrap();
+            let sealed = bodies.get((key, 7)).unwrap().unwrap().value().to_vec();
+            bodies
+                .insert(("https://b.test", 7), sealed.as_slice())
+                .unwrap();
+        }
+        txn.commit().unwrap();
+    }
+    let profile = Profile::in_memory_with(&memory, TEST_WRAP).unwrap();
+    assert_eq!(profile.cache_api_body("https://b.test", 7).unwrap(), None);
+}

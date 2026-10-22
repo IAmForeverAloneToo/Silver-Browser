@@ -81,6 +81,11 @@ pub(crate) struct Storage {
     /// profile has not had yet.
     idb: crate::idb::IdbStore,
     idb_unwritten: Vec<crate::idb::Written>,
+    /// The Cache API's store (M39), each storage key's read from the
+    /// profile at its first use, and what it changed that the profile
+    /// has not had yet.
+    caches: crate::caches::Store,
+    caches_unwritten: Vec<crate::caches::Written>,
     /// The settings as read from the profile, until taken, and as they
     /// changed since it was last written (M37).
     settings_read: Option<Vec<u8>>,
@@ -254,6 +259,10 @@ pub(crate) trait Areas: Send + Sync {
     /// IndexedDB's `request` of the storage key's databases (M36.7), as
     /// [`crate::idb::serve`] answers it.
     fn idb(&self, key: &AreaKey, request: &str) -> String;
+    /// The Cache API's `request` of the storage key's caches (M39), the
+    /// bodies it carries in `bytes`, as [`crate::caches::serve`] answers
+    /// it.
+    fn caches(&self, key: &AreaKey, request: &str, bytes: &[u8]) -> (String, Vec<u8>);
 }
 
 /// A tab's Web Storage in an engine of its own (M37): the context's
@@ -278,6 +287,11 @@ impl Areas for TabAreas {
         let mut storage = self.lock();
         let origin = key.serialization();
         crate::idb::serve(storage.idb(&origin), &origin, request)
+    }
+
+    fn caches(&self, key: &AreaKey, request: &str, bytes: &[u8]) -> (String, Vec<u8>) {
+        self.lock()
+            .serve_caches(&key.serialization(), request, bytes)
     }
 
     fn length(&self, local: bool, key: &AreaKey) -> usize {
@@ -538,6 +552,8 @@ impl Storage {
             permissions_written: None,
             idb: crate::idb::IdbStore::default(),
             idb_unwritten: Vec::new(),
+            caches: crate::caches::Store::default(),
+            caches_unwritten: Vec::new(),
             settings_read: None,
             settings_unwritten: None,
             cache: None,
@@ -586,7 +602,37 @@ impl Storage {
                 .map(|(key, _)| key.clone()),
         );
         sites.extend(self.idb.origins());
+        sites.extend(self.caches.keys_with_caches());
         sites.into_iter().collect()
+    }
+
+    /// The Cache API's store, `key`'s caches read from the profile if
+    /// they were not (M39).
+    pub(crate) fn caches(&mut self, key: &str) -> &mut crate::caches::Store {
+        if !self.caches.knows(key) {
+            let (caches, entries) = self
+                .profile
+                .as_ref()
+                .and_then(|profile| profile.cache_api(key).ok())
+                .unwrap_or_default();
+            self.caches.load(key, caches, entries);
+        }
+        &mut self.caches
+    }
+
+    /// Answers the Cache API's `request` of `key`'s caches (M39), a body
+    /// the profile keeps read from it when matched.
+    pub(crate) fn serve_caches(
+        &mut self,
+        key: &str,
+        request: &str,
+        bytes: &[u8],
+    ) -> (String, Vec<u8>) {
+        self.caches(key);
+        let profile = self.profile.as_ref();
+        let body_of =
+            |id: u64| profile.and_then(|profile| profile.cache_api_body(key, id).ok().flatten());
+        crate::caches::serve(&mut self.caches, key, request, bytes, &body_of)
     }
 
     /// IndexedDB's store, `origin`'s databases read from the profile if
@@ -656,10 +702,14 @@ impl Storage {
         };
         self.cache_unwritten.clear();
         self.profile = Some(profile);
-        // IndexedDB's databases are the profile's from now on.
+        // IndexedDB's databases are the profile's from now on, and the
+        // Cache API's caches (M39).
         self.idb = crate::idb::IdbStore::default();
         self.idb.set_writing(true);
         self.idb_unwritten.clear();
+        self.caches = crate::caches::Store::default();
+        self.caches.set_writing(true);
+        self.caches_unwritten.clear();
         self.local.clear();
         self.unwritten.clear();
         Ok(())
@@ -817,6 +867,8 @@ impl Storage {
             || !self.unwritten.is_empty()
             || self.idb.has_written()
             || !self.idb_unwritten.is_empty()
+            || self.caches.has_written()
+            || !self.caches_unwritten.is_empty()
             || !self.cache_unwritten.is_empty()
             || self.cache.as_ref().is_some_and(|cache| cache.has_changes());
         (waiting || hsts || permissions).then(|| {
@@ -892,6 +944,21 @@ impl Storage {
         if let Some(settings) = &self.settings_unwritten {
             changes.settings(vec![settings.clone()]);
         }
+        // The Cache API's (M39), in the order they were made.
+        self.caches_unwritten.extend(self.caches.take_written());
+        for written in &self.caches_unwritten {
+            match written {
+                crate::caches::Written::Cache { key, id, record } => {
+                    changes.cache_api_cache(key, *id, record.clone());
+                }
+                crate::caches::Written::Entry {
+                    key,
+                    id,
+                    record,
+                    body,
+                } => changes.cache_api_entry(key, *id, record.clone(), body.clone()),
+            }
+        }
         // The HTTP cache's, once it has read what the profile held.
         if let Some(cache) = self.cache.as_ref().filter(|_| self.cache_read.is_none()) {
             self.cache_unwritten.extend(cache.take_changes());
@@ -916,6 +983,7 @@ impl Storage {
         self.unwritten.clear();
         self.idb_unwritten.clear();
         self.cache_unwritten.clear();
+        self.caches_unwritten.clear();
         Ok(())
     }
 }

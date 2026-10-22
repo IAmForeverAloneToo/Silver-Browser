@@ -40,6 +40,7 @@ const LIMITS: Limits = Limits {
     heap: 4 << 20,
     steps: 50,
     stack: js::MAX_SCRIPT_STACK,
+    secure: true,
 };
 
 fuzz_target!(|data: &[u8]| {

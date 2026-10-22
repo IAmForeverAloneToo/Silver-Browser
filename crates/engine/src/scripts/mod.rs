@@ -915,7 +915,7 @@ impl Scripts {
 
     /// Makes the realm if there is none: whether there is one now. A
     /// realm that cannot be made stops the document's scripts.
-    fn ensure_realm(&mut self) -> bool {
+    fn ensure_realm(&mut self, secure: bool) -> bool {
         if self.stopped {
             return false;
         }
@@ -926,7 +926,11 @@ impl Scripts {
             } else {
                 js::RealmKind::Window
             };
-            match QuickJs.realm_of::<DocumentHost>(kind, self.limits, None) {
+            let limits = js::Limits {
+                secure,
+                ..self.limits
+            };
+            match QuickJs.realm_of::<DocumentHost>(kind, limits, None) {
                 Ok(realm) => {
                     self.realm = Some(realm);
                     self.code_guarded = false;
@@ -991,7 +995,8 @@ impl Scripts {
         event: js::EventInit,
     ) -> Option<bool> {
         if self.realm.is_none()
-            && (!has_handlers(lent.document, &mut self.handlers) || !self.ensure_realm())
+            && (!has_handlers(lent.document, &mut self.handlers)
+                || !self.ensure_realm(lent.page.is_secure_context()))
         {
             return None;
         }
@@ -1059,7 +1064,7 @@ impl Scripts {
         script: &Script<'_>,
         how: How,
     ) -> Option<Completion> {
-        if !self.ensure_realm() {
+        if !self.ensure_realm(lent.page.is_secure_context()) {
             return None;
         }
         self.guard_code(lent);
@@ -1440,7 +1445,7 @@ impl Scripts {
         expression: String,
         selected: Option<NodeId>,
     ) -> Option<String> {
-        if !self.ensure_realm() {
+        if !self.ensure_realm(lent.page.is_secure_context()) {
             return None;
         }
         self.host.evaluating = true;

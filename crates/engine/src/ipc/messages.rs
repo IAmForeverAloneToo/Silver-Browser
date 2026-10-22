@@ -279,6 +279,10 @@ wire_enum! {
         7 => Idb { request: String },
         /// The bytes the storage key uses (M36.8), answered as a length.
         8 => Usage {},
+        /// The Cache API's request of the storage key's caches (M39), the
+        /// bodies it carries in `bytes`, as `crate::caches::serve` reads
+        /// it.
+        9 => Caches { request: String, bytes: Bytes },
     }
 }
 
@@ -303,6 +307,8 @@ wire_enum! {
         6 => Frame { key: Option<u32> },
         /// IndexedDB's answer (M36.7).
         7 => Idb { answer: String },
+        /// The Cache API's answer (M39), the bodies it gives in `bytes`.
+        8 => Caches { answer: String, bytes: Bytes },
     }
 }
 

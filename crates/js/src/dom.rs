@@ -405,6 +405,10 @@ pub enum Call {
     DevToolsAnswer(String),
     /// IndexedDB's request (M36.7), as JSON: its answer, as JSON.
     Idb(String),
+    /// The Cache API's request (M39), as JSON, and the bodies it carries:
+    /// its answer, as JSON, and the bodies it gives
+    /// ([`Answer::Pair`]).
+    Caches(String, Vec<u8>),
     /// The bytes the document's storage key uses (M36.8).
     StorageUsage,
     /// A request of IndexedDB's completed: its task is to be queued.
@@ -662,6 +666,9 @@ pub enum Answer {
     /// Bytes, which the script receives as a new `ArrayBuffer` (M30: a
     /// canvas's pixels).
     Bytes(Vec<u8>),
+    /// A string and bytes, which the script receives as an array of the
+    /// string and a new `ArrayBuffer` (M39: the Cache API's answer).
+    Pair(String, Vec<u8>),
 }
 
 /// Why a call failed: the exception the script gets, a `DOMException`

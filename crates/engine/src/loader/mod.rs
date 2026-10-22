@@ -9,6 +9,8 @@ pub(crate) mod adversarial_tests;
 #[cfg(test)]
 mod body_tests;
 #[cfg(test)]
+mod cache_api_tests;
+#[cfg(test)]
 mod cache_tests;
 #[cfg(test)]
 mod control_tests;

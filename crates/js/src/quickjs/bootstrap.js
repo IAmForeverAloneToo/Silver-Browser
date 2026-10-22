@@ -177,6 +177,11 @@
   const GLOBAL_INTERFACE = WORKER ? "WorkerGlobalScope" : "Window";
   const GLOBAL_CLASS = WORKER ? "DedicatedWorkerGlobalScope" : "Window";
 
+  // Whether the realm is a secure context's (M39): the interfaces Web
+  // IDL marks `[SecureContext]` are its alone.
+  const SECURE = native.secure === true;
+  const SECURE_ONLY = { __proto__: null, Cache: true, CacheStorage: true };
+
   // Of the interfaces the bindings make, those a dedicated worker has
   // too (true) or alone ("worker"); the others are the window's.
   const WORKER_INTERFACES = {
@@ -189,7 +194,7 @@
     OffscreenCanvas: true, OffscreenCanvasRenderingContext2D: true, Path2D: true,
     Performance: true, ProgressEvent: true, QuotaExceededError: true, Request: true,
     Response: true, TextMetrics: true, URLSearchParams: true, Worker: true,
-    MessageChannel: true, MessagePort: true,
+    MessageChannel: true, MessagePort: true, Cache: true, CacheStorage: true,
     WorkerGlobalScope: "worker", WorkerLocation: "worker", WorkerNavigator: "worker",
     XMLHttpRequest: true, XMLHttpRequestEventTarget: true, XMLHttpRequestUpload: true,
   };
@@ -223,6 +228,9 @@
     madeInterfaces[name] = cls;
     const where = WORKER_INTERFACES[name];
     if (WORKER ? where === undefined : where === "worker") {
+      return cls;
+    }
+    if (SECURE_ONLY[name] && !SECURE) {
       return cls;
     }
     defineProperty(global, name, {
@@ -4379,6 +4387,387 @@
     enumerable: true,
     configurable: true,
   });
+
+  // ---- The Cache API (Service Workers 5, M39) ----
+
+  // A request as the engine's store takes it.
+  function cacheRequestOf(request) {
+    const state = requestState(request);
+    return {
+      method: state.method, url: state.url,
+      headers: cloneList(headersState(state.headers).list),
+    };
+  }
+
+  // The request a `RequestInfo` names, as `method` of `iface` reads it.
+  function cacheRequest(info, method, iface) {
+    if (isRequest(info)) return info;
+    try {
+      return new Request(info);
+    } catch (e) {
+      const was = "Failed to construct 'Request': ";
+      if ((e instanceof $TypeError) && StringSlice(e.message, 0, was.length) === was) {
+        e.message = prefix(method, iface) + StringSlice(e.message, was.length);
+      }
+      throw e;
+    }
+  }
+
+  // A `CacheQueryOptions` dictionary.
+  function cacheOptions(options) {
+    const given = options === undefined || options === null ? {} : options;
+    return {
+      ignoreSearch: !!given.ignoreSearch,
+      ignoreMethod: !!given.ignoreMethod,
+      ignoreVary: !!given.ignoreVary,
+    };
+  }
+
+  // Asks the engine's store `op`, the bodies in `bodies` appended after
+  // one another and named in `op` by offset and length: the answer's
+  // result, and the bytes its bodies are in. Throws the answer's error.
+  function cacheCall(op, bodies, method, iface) {
+    let total = 0;
+    for (let i = 0; i < bodies.length; i++) total += viewLength(bodies[i]);
+    const all = new $Uint8Array(total);
+    let at = 0;
+    for (let i = 0; i < bodies.length; i++) {
+      TypedArraySet(all, bodies[i], at);
+      at += viewLength(bodies[i]);
+    }
+    let pair;
+    try {
+      pair = native.caches(JSONStringify(op), total === 0 ? null : binaryString(all));
+    } catch (e) {
+      throw failed(e, method, iface);
+    }
+    const answer = JSONParse(pair[0]);
+    if (answer.error !== undefined) {
+      const error = answer.error;
+      if (error.name === "TypeError") throw new $TypeError(prefix(method, iface) + error.message);
+      throw new $DOMException(prefix(method, iface) + error.message, error.name);
+    }
+    return { result: answer.result, bytes: pair[1] };
+  }
+
+  // A response of the store's, with its body.
+  function cachedResponse(json, bytes) {
+    const at = json.body[0];
+    const length = json.body[1];
+    return new Response(KEY, {
+      type: json.type, urlList: json.urls, status: json.status, statusText: json.statusText,
+      headers: makeHeaders("immutable", json.headers),
+      body: bodyFrom(TypedArraySlice(new $Uint8Array(bytes), at, at + length)),
+    });
+  }
+
+  // A request of the store's.
+  function cachedRequest(json) {
+    return new Request(KEY, {
+      method: json.method, url: json.url, headers: makeHeaders("request", json.headers),
+      body: bodyFrom(null), mode: "cors", credentials: "same-origin", cache: "default",
+      redirect: "follow", referrer: "about:client", referrerPolicy: "", integrity: "",
+      keepalive: false, duplex: "half", signal: new AbortSignal(KEY), targetAddressSpace: "",
+    });
+  }
+
+  // Whether a `Vary` value names `*` among its comma-separated names.
+  function varyHasStar(value) {
+    let start = 0;
+    while (start <= value.length) {
+      let end = StringIndexOf(value, ",", start);
+      if (end < 0) end = value.length;
+      let a = start;
+      let b = end;
+      while (a < b && (CharCodeAt(value, a) === 0x20 || CharCodeAt(value, a) === 0x09)) a++;
+      while (b > a && (CharCodeAt(value, b - 1) === 0x20 || CharCodeAt(value, b - 1) === 0x09)) b--;
+      if (StringSlice(value, a, b) === "*") return true;
+      start = end + 1;
+    }
+    return false;
+  }
+
+  // The checks `put` and `addAll` make of a request and of the response
+  // it is to be kept with (Service Workers 5.4.6), thrown as `method`
+  // of `Cache` words them.
+  function checkCacheRequest(request, method) {
+    const state = requestState(request);
+    const scheme = StringSlice(state.url, 0, StringIndexOf(state.url, ":"));
+    if (scheme !== "http" && scheme !== "https") {
+      throw new $TypeError(prefix(method, "Cache") + "Request scheme '" + scheme + "' is unsupported");
+    }
+    if (state.method !== "GET") {
+      throw new $TypeError(prefix(method, "Cache") + "Request method '" + state.method + "' is unsupported");
+    }
+  }
+
+  function checkCacheResponse(response, method) {
+    const state = responseState(response);
+    if (state.status === 206) {
+      throw new $TypeError(prefix(method, "Cache") + "Partial response (status code 206) is unsupported");
+    }
+    const vary = combined(headersState(state.headers).list, "vary");
+    if (vary !== null && varyHasStar(vary)) {
+      throw new $TypeError(prefix(method, "Cache") + "Vary header contains *");
+    }
+    if (state.body.bytes !== null && state.body.used) {
+      throw new $TypeError(prefix(method, "Cache") + "Response body is already used");
+    }
+  }
+
+  // A put of a batch, the response's body taken.
+  function cachePut(request, response, bodies, offset) {
+    const state = responseState(response);
+    const bytes = state.body.bytes === null ? new $Uint8Array(0) : state.body.bytes;
+    if (state.body.bytes !== null) state.body.used = true;
+    ArrayPush(bodies, bytes);
+    return {
+      put: {
+        request: cacheRequestOf(request),
+        response: {
+          type: state.type, urls: ArraySlice(state.urlList), status: state.status,
+          statusText: state.statusText, headers: cloneList(headersState(state.headers).list),
+          body: [offset, viewLength(bytes)],
+        },
+      },
+    };
+  }
+
+  let cacheNumber;
+  class Cache {
+    #cache;
+
+    constructor(key, number) {
+      if (key !== KEY) throw new $TypeError("Illegal constructor");
+      this.#cache = number;
+    }
+
+    static {
+      cacheNumber = (cache) => cache.#cache;
+    }
+
+    match(request, options) {
+      try {
+        need(arguments.length, 1, "match", "Cache");
+        const query = cacheRequestOf(cacheRequest(request, "match", "Cache"));
+        const { result, bytes } = cacheCall(
+          { op: "match", cache: this.#cache, request: query, options: cacheOptions(options), all: false },
+          [], "match", "Cache",
+        );
+        return resolved(result.length === 0 ? undefined : cachedResponse(result[0], bytes));
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+
+    matchAll(request, options) {
+      try {
+        const query = request === undefined ? null : cacheRequestOf(cacheRequest(request, "matchAll", "Cache"));
+        const { result, bytes } = cacheCall(
+          { op: "match", cache: this.#cache, request: query, options: cacheOptions(options), all: true },
+          [], "matchAll", "Cache",
+        );
+        const out = [];
+        for (let i = 0; i < result.length; i++) ArrayPush(out, cachedResponse(result[i], bytes));
+        return resolved(out);
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+
+    add(request) {
+      try {
+        need(arguments.length, 1, "add", "Cache");
+        return this.#addAll([cacheRequest(request, "add", "Cache")], "add");
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+
+    addAll(requests) {
+      try {
+        need(arguments.length, 1, "addAll", "Cache");
+        const list = [];
+        for (const request of requests) ArrayPush(list, cacheRequest(request, "addAll", "Cache"));
+        return this.#addAll(list, "addAll");
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+
+    // Add All (Service Workers 5.4.4): each request fetched, then all
+    // put in one batch, or none.
+    #addAll(requests, method) {
+      const seen = [];
+      for (let i = 0; i < requests.length; i++) {
+        checkCacheRequest(requests[i], method);
+        const url = requestState(requests[i]).url;
+        if (ArrayIncludes(seen, url)) {
+          throw new $DOMException(
+            prefix(method, "Cache") + "Cache.addAll(): duplicate requests (" + url + ")",
+            "InvalidStateError",
+          );
+        }
+        ArrayPush(seen, url);
+      }
+      const cache = this.#cache;
+      const fetching = [];
+      for (let i = 0; i < requests.length; i++) ArrayPush(fetching, fetch(requests[i]));
+      return $Promise.all(fetching).then(
+        (responses) => {
+          const ops = [];
+          const bodies = [];
+          let offset = 0;
+          for (let i = 0; i < responses.length; i++) {
+            const state = responseState(responses[i]);
+            if (state.type === "error" || state.status < 200 || state.status > 299) {
+              throw new $TypeError(prefix(method, "Cache") + "Request failed");
+            }
+            checkCacheResponse(responses[i], method);
+            const op = cachePut(requests[i], responses[i], bodies, offset);
+            offset += op.put.response.body[1];
+            ArrayPush(ops, op);
+          }
+          cacheCall({ op: "batch", cache, ops }, bodies, method, "Cache");
+          return undefined;
+        },
+        () => {
+          throw new $TypeError(prefix(method, "Cache") + "Request failed");
+        },
+      );
+    }
+
+    put(request, response) {
+      try {
+        need(arguments.length, 2, "put", "Cache");
+        const key = cacheRequest(request, "put", "Cache");
+        if (!isResponse(response)) {
+          throw new $TypeError(prefix("put", "Cache") + "parameter 2 is not of type 'Response'.");
+        }
+        checkCacheRequest(key, "put");
+        checkCacheResponse(response, "put");
+        const bodies = [];
+        const op = cachePut(key, response, bodies, 0);
+        cacheCall({ op: "batch", cache: this.#cache, ops: [op] }, bodies, "put", "Cache");
+        return resolved(undefined);
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+
+    delete(request, options) {
+      try {
+        need(arguments.length, 1, "delete", "Cache");
+        const query = cacheRequestOf(cacheRequest(request, "delete", "Cache"));
+        const { result } = cacheCall(
+          { op: "batch", cache: this.#cache, ops: [{ delete: { request: query, options: cacheOptions(options) } }] },
+          [], "delete", "Cache",
+        );
+        return resolved(result[0]);
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+
+    keys(request, options) {
+      try {
+        const query = request === undefined ? null : cacheRequestOf(cacheRequest(request, "keys", "Cache"));
+        const { result } = cacheCall(
+          { op: "requests", cache: this.#cache, request: query, options: cacheOptions(options) },
+          [], "keys", "Cache",
+        );
+        const out = [];
+        for (let i = 0; i < result.length; i++) ArrayPush(out, cachedRequest(result[i]));
+        return resolved(out);
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+  }
+  expose(Cache, "Cache");
+
+  class CacheStorage {
+    constructor(key) {
+      if (key !== KEY) throw new $TypeError("Illegal constructor");
+    }
+
+    match(request, options) {
+      try {
+        need(arguments.length, 1, "match", "CacheStorage");
+        const query = cacheRequestOf(cacheRequest(request, "match", "CacheStorage"));
+        const given = options === undefined || options === null ? {} : options;
+        const name = given.cacheName === undefined ? null : str(given.cacheName);
+        const { result, bytes } = cacheCall(
+          { op: "matchAny", request: query, options: cacheOptions(options), name },
+          [], "match", "CacheStorage",
+        );
+        return resolved(result === null ? undefined : cachedResponse(result, bytes));
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+
+    has(name) {
+      try {
+        need(arguments.length, 1, "has", "CacheStorage");
+        return resolved(cacheCall({ op: "has", name: str(name) }, [], "has", "CacheStorage").result);
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+
+    open(name) {
+      try {
+        need(arguments.length, 1, "open", "CacheStorage");
+        const number = cacheCall({ op: "open", name: str(name) }, [], "open", "CacheStorage").result;
+        return resolved(new Cache(KEY, number));
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+
+    delete(name) {
+      try {
+        need(arguments.length, 1, "delete", "CacheStorage");
+        return resolved(cacheCall({ op: "delete", name: str(name) }, [], "delete", "CacheStorage").result);
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+
+    keys() {
+      try {
+        return resolved(cacheCall({ op: "names" }, [], "keys", "CacheStorage").result);
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+  }
+  expose(CacheStorage, "CacheStorage");
+
+  // `caches`: the realm's one `CacheStorage`, a secure context's alone;
+  // reading it in a context whose storage is refused (a sandbox without
+  // `allow-same-origin`, an opaque origin) throws.
+  if (SECURE) {
+    const storage = new CacheStorage(KEY);
+    defineProperty(global, "caches", {
+      get() {
+        try {
+          cacheCall({ op: "check" }, [], "", "");
+        } catch (e) {
+          const was = "Failed to execute '' on '': ";
+          throw new $DOMException(
+            "Failed to read the 'caches' property from '" + GLOBAL_INTERFACE + "': " +
+              (StringSlice(e.message, 0, was.length) === was ? StringSlice(e.message, was.length) : e.message),
+            e.name,
+          );
+        }
+        return storage;
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  }
 
   // ---- XMLHttpRequest (XMLHttpRequest Standard, M27.6) ----
 
@@ -16849,7 +17238,10 @@
       return new $Promise((resolve, reject) => {
         try {
           const used = native.storageUsage();
-          resolve({ usage: $Number(used[0]), quota: $Number(used[1]) });
+          // What uses it (M39): the caches, as the reference names them.
+          const details = {};
+          if ($Number(used[2]) > 0) details.caches = $Number(used[2]);
+          resolve({ usage: $Number(used[0]), quota: $Number(used[1]), usageDetails: details });
         } catch (e) {
           reject(new $TypeError("Failed to execute 'estimate' on 'StorageManager': Access is denied."));
         }

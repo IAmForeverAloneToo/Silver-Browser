@@ -533,6 +533,31 @@ fn a_renderers_page_keeps_its_indexed_db_in_the_browser() {
 }
 
 #[test]
+fn a_renderers_page_keeps_its_caches_in_the_browser() {
+    // M39: the Cache API's requests cross to the browser's storage, the
+    // bodies both ways.
+    let server = serve(
+        "<script>
+         (async () => {
+           const c = await caches.open('c');
+           await c.put('k', new Response(new Uint8Array([0, 1, 255, 128]), {headers: {'x-v': '1'}}));
+           const r = await caches.match('k');
+           const bytes = new Uint8Array(await r.arrayBuffer());
+           console.log('got ' + Array.from(bytes).join(',') + ' ' + r.headers.get('x-v'));
+         })();
+         </script>",
+    );
+    let mut remote = tab();
+    remote.set_scripting(true);
+    remote.navigate(server.url("/"));
+    let mut lines = Vec::new();
+    settle(&mut remote, |tab| {
+        lines.extend(tab.take_console().into_iter().map(|entry| entry.text));
+        lines.iter().any(|line| line == "got 0,1,255,128 1")
+    });
+}
+
+#[test]
 fn a_tab_answers_the_storage_panel_from_the_browsers_storage() {
     let server = serve("<script>localStorage.setItem('k', 'v'); console.log('set')</script>");
     let mut remote = tab();

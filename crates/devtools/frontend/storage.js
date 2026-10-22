@@ -120,6 +120,21 @@ tool("storage", "Storage", (pane) => {
         idb.appendChild(box);
       }
     }, () => {});
+    const caches = section("Cache storage", "storage-caches");
+    call("storage.caches").then((list) => {
+      for (const cache of list) {
+        const box = el("div", "database");
+        const head = el("div", "rule-head");
+        head.appendChild(el("span", "", cache.name + " (" + cache.entries.length + " entries)"));
+        const drop = el("button", "remove", "Delete cache");
+        drop.addEventListener("click", () => call("storage.deleteCache", { name: cache.name }).then(load, load));
+        head.appendChild(drop);
+        box.appendChild(head);
+        box.appendChild(table(["URL", "Type", "Status", "Bytes"],
+          cache.entries.map((e) => ({ cells: [e.url, e.type, String(e.status), String(e.size)] })), null));
+        caches.appendChild(box);
+      }
+    }, () => {});
     const sites = section("Every site's storage", "storage-sites");
     call("storage.sites").then((list) => {
       sites.appendChild(table(["Site", "Bytes"],

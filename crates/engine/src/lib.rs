@@ -95,6 +95,7 @@
 #![forbid(unsafe_code)]
 
 pub mod address;
+pub mod caches;
 mod context;
 #[cfg(test)]
 mod context_tests;

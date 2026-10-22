@@ -20,14 +20,17 @@ use crate::idb::{IDB_ORIGIN_QUOTA, KeyRange, Mode, key_json};
 pub const MAX_PANEL_RECORDS: usize = 100;
 
 /// The bytes a storage key may use: its `localStorage`, two bytes a
-/// code unit, and its IndexedDB databases (`navigator.storage`'s quota).
-pub const SITE_QUOTA: u64 = IDB_ORIGIN_QUOTA + 2 * STORAGE_QUOTA as u64;
+/// code unit, its IndexedDB databases and (M39) its caches
+/// (`navigator.storage`'s quota).
+pub const SITE_QUOTA: u64 =
+    IDB_ORIGIN_QUOTA + 2 * STORAGE_QUOTA as u64 + crate::caches::CACHE_QUOTA;
 
 /// The bytes `origin` uses: its `localStorage`'s code units, two bytes
 /// each, and its IndexedDB databases' keys and values.
 pub(crate) fn usage(storage: &mut Storage, origin: &str) -> u64 {
     let local = storage.area(Scope::Local, origin).used() as u64 * 2;
-    local + storage.idb(origin).used(origin)
+    let idb = storage.idb(origin).used(origin);
+    local + idb + storage.caches(origin).usage(origin)
 }
 
 /// The answer to the panel's `message` of the page at `url`, as the
@@ -112,6 +115,40 @@ pub(crate) fn answer(
             Json::Null
         }
         "storage.idb" => idb_json(&mut storage, &origin),
+        // The Cache API's caches (M39): each one's entries, their URLs,
+        // types, statuses and bodies' sizes.
+        "storage.caches" => Json::Array(
+            storage
+                .caches(&origin)
+                .summary(&origin)
+                .into_iter()
+                .map(|(name, entries)| {
+                    Json::object([
+                        ("name", Json::from(name)),
+                        (
+                            "entries",
+                            Json::Array(
+                                entries
+                                    .into_iter()
+                                    .map(|(url, kind, status, size)| {
+                                        Json::object([
+                                            ("url", Json::from(url)),
+                                            ("type", Json::from(kind)),
+                                            ("status", Json::from(u64::from(status))),
+                                            ("size", Json::from(size)),
+                                        ])
+                                    })
+                                    .collect(),
+                            ),
+                        ),
+                    ])
+                })
+                .collect(),
+        ),
+        "storage.deleteCache" => {
+            storage.caches(&origin).delete(&origin, param("name"));
+            Json::Null
+        }
         "storage.deleteDatabase" => {
             storage.idb(&origin).delete_database(&origin, param("name"));
             Json::Null
@@ -162,6 +199,7 @@ fn clear_site(storage: &mut Storage, jar: &Mutex<Jar>, origin: &str, host: &str)
     for (name, _) in store.databases(origin) {
         store.delete_database(origin, &name);
     }
+    storage.caches(origin).clear(origin);
     jar.lock()
         .unwrap_or_else(PoisonError::into_inner)
         .remove_where(|cookie| goes_to(cookie, host));

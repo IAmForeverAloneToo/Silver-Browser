@@ -156,7 +156,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
         let entries: Entries = Rc::default();
         let saved = context
             .with(|ctx| {
-                install(&ctx, kind, &host, &budget, &entries)
+                install(&ctx, kind, limits.secure, &host, &budget, &entries)
                     .map(|entries| Persistent::save(&ctx, entries))
                     .catch(&ctx)
                     .map_err(|e| e.to_string())
@@ -825,6 +825,7 @@ fn mute(error: ScriptError, muted: bool) -> ScriptError {
 fn install<'js, H: ScriptingHost>(
     ctx: &Ctx<'js>,
     kind: &RealmKind,
+    secure: bool,
     host: &Slot<H>,
     budget: &dom::Budget,
     entries: &Entries,
@@ -911,7 +912,7 @@ fn install<'js, H: ScriptingHost>(
         },
     )?
     .with_name("consoleMessage")?;
-    dom::install(ctx, kind, host, budget, entries, console)
+    dom::install(ctx, kind, secure, host, budget, entries, console)
 }
 
 /// Calls `f` with the host, which is there only while a run the engine

@@ -342,6 +342,21 @@ impl Areas for RemoteAreas {
         }
     }
 
+    fn caches(&self, key: &AreaKey, request: &str, bytes: &[u8]) -> (String, Vec<u8>) {
+        let op = StorageOp::Caches {
+            request: request.to_owned(),
+            bytes: Bytes(bytes.to_vec()),
+        };
+        match self.ask(true, key, op) {
+            Some(Answer::Caches { answer, bytes }) => (answer, bytes.0),
+            _ => (
+                r#"{"error":{"name":"UnknownError","message":"The browser did not answer."}}"#
+                    .to_owned(),
+                Vec::new(),
+            ),
+        }
+    }
+
     fn idb(&self, key: &AreaKey, request: &str) -> String {
         let op = StorageOp::Idb {
             request: request.to_owned(),

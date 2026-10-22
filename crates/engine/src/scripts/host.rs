@@ -1038,6 +1038,12 @@ impl DocumentHost {
                     csp: page.policies().clone(),
                     referrer_policy: page.referrer_policy(&self.document),
                     local_network: page.local_network().cloned(),
+                    // Its creator's storage key's caches (M39), unless
+                    // its creator's storage is refused.
+                    storage: match (self.storage_refused().is_empty(), &self.window.areas) {
+                        (true, Some(areas)) => Some((areas.clone(), self.storage_key(page))),
+                        _ => None,
+                    },
                 };
                 Ok(Answer::Number(f64::from(self.workers.workers.start(start))))
             }
@@ -1289,10 +1295,34 @@ impl DocumentHost {
             Call::Idb(request) => {
                 self.with_areas(|areas, key| Answer::String(areas.idb(key, &request)))
             }
+            Call::Caches(request, bytes) => {
+                // The reference browser's words for a sandbox's (M39).
+                if self
+                    .page
+                    .as_ref()
+                    .is_some_and(|page| page.sandbox().has(Sandbox::ORIGIN))
+                {
+                    return Err(DomError::new(
+                        "SecurityError",
+                        "Cache storage is disabled because the context is sandboxed and lacks the 'allow-same-origin' flag.",
+                    ));
+                }
+                self.with_areas(|areas, key| {
+                    let (answer, bytes) = areas.caches(key, &request, &bytes);
+                    Answer::Pair(answer, bytes)
+                })
+            }
             Call::StorageUsage => self.with_areas(|areas, key| {
+                // The caches' share too (M39), for `usageDetails`.
+                let (caches, _) = areas.caches(key, r#"{"op":"usage"}"#, &[]);
+                let caches = devtools::Json::parse(&caches)
+                    .ok()
+                    .and_then(|answer| answer.get("result").and_then(devtools::Json::as_u64))
+                    .unwrap_or(0);
                 Answer::Strings(vec![
                     areas.usage(key).to_string(),
                     crate::storage::devtools::SITE_QUOTA.to_string(),
+                    caches.to_string(),
                 ])
             }),
             Call::IdbWake => {

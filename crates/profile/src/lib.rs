@@ -46,9 +46,10 @@ pub const FILE: &str = "profile.redb";
 
 /// The version of the tables' layout this code writes. A profile of a
 /// newer one is refused, one of an older one upgraded: 2 seals the
-/// values (M33); 3 adds IndexedDB's tables (M36), 4 the settings' (M37)
-/// and 5 the HTTP cache's (M38), which an older profile is given empty.
-pub const SCHEMA: u64 = 5;
+/// values (M33); 3 adds IndexedDB's tables (M36), 4 the settings' (M37),
+/// 5 the HTTP cache's (M38) and 6 the Cache API's (M39), which an older
+/// profile is given empty.
+pub const SCHEMA: u64 = 6;
 
 /// The length of the data key: AES-256's.
 const KEY_BYTES: usize = 32;
@@ -90,6 +91,22 @@ const IDB_DATABASES: TableDefinition<(&str, &str), &[u8]> = TableDefinition::new
 /// sealed.
 const IDB_RECORDS: TableDefinition<(&str, &str, &str, &[u8]), &[u8]> =
     TableDefinition::new("idb_records");
+
+/// The Cache API's caches (M39): keyed by the storage key and the
+/// cache's number, which is also its place among the key's caches;
+/// each its record as the engine encodes it, sealed.
+const CACHE_API: TableDefinition<(&str, u64), &[u8]> = TableDefinition::new("cache_api");
+
+/// Their entries, by the storage key and the entry's number (its place
+/// among its cache's): each its record, the cache's number in it,
+/// sealed.
+const CACHE_API_ENTRIES: TableDefinition<(&str, u64), &[u8]> =
+    TableDefinition::new("cache_api_entries");
+
+/// The entries' bodies, by the same keys, sealed: read when an entry is
+/// matched.
+const CACHE_API_BODIES: TableDefinition<(&str, u64), &[u8]> =
+    TableDefinition::new("cache_api_bodies");
 
 /// The permissions sites were given (M33.4), as the engine encodes them.
 const PERMISSIONS: TableDefinition<u64, &[u8]> = TableDefinition::new("permissions");
@@ -199,6 +216,15 @@ fn record_at(parts: [&[u8]; 4]) -> Vec<u8> {
     at
 }
 
+/// Where a record numbered `id` of the storage key `key` is, as its
+/// seal's associated data holds it (M39).
+fn numbered_at(key: &str, id: u64) -> Vec<u8> {
+    let mut at = key.as_bytes().to_vec();
+    at.push(0);
+    at.extend_from_slice(&id.to_le_bytes());
+    at
+}
+
 fn item_at(origin: &str, key: &str) -> Vec<u8> {
     let mut at = origin.as_bytes().to_vec();
     at.push(0);
@@ -281,6 +307,27 @@ pub struct Changes {
     permissions: Option<Vec<Vec<u8>>>,
     settings: Option<Vec<Vec<u8>>>,
     cache: Vec<Cached>,
+    cache_api: Vec<CacheApi>,
+}
+
+/// A change of the Cache API's (M39), by the storage key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CacheApi {
+    /// A cache's record, or the cache gone (its entries are deleted one
+    /// by one).
+    Cache {
+        key: String,
+        id: u64,
+        record: Option<Vec<u8>>,
+    },
+    /// An entry's record and, unless it is unchanged, its body; or the
+    /// entry and its body gone.
+    Entry {
+        key: String,
+        id: u64,
+        record: Option<Vec<u8>>,
+        body: Option<Vec<u8>>,
+    },
 }
 
 /// A change of the HTTP cache's (M38).
@@ -354,6 +401,7 @@ impl Changes {
             && self.permissions.is_none()
             && self.settings.is_none()
             && self.cache.is_empty()
+            && self.cache_api.is_empty()
     }
 
     /// Sets `origin`'s item `key` to `value`, `order` its place.
@@ -437,6 +485,34 @@ impl Changes {
 
     /// Replaces the settings kept with `records`, of the engine's
     /// encoding (M37).
+    /// Keeps the Cache API's cache `id` of the storage key `key` (M39),
+    /// its record, or deletes it with `None`.
+    pub fn cache_api_cache(&mut self, key: &str, id: u64, record: Option<Vec<u8>>) {
+        self.cache_api.push(CacheApi::Cache {
+            key: key.to_owned(),
+            id,
+            record,
+        });
+    }
+
+    /// Keeps the Cache API's entry `id` of the storage key `key` (M39):
+    /// its record, and its body unless it is unchanged; or deletes it
+    /// and its body with `None`.
+    pub fn cache_api_entry(
+        &mut self,
+        key: &str,
+        id: u64,
+        record: Option<Vec<u8>>,
+        body: Option<Vec<u8>>,
+    ) {
+        self.cache_api.push(CacheApi::Entry {
+            key: key.to_owned(),
+            id,
+            record,
+            body,
+        });
+    }
+
     /// Keeps the HTTP cache's entry `id` (M38): its record, and its body
     /// unless it is unchanged.
     pub fn cache_put(&mut self, id: u64, record: Vec<u8>, body: Option<Vec<u8>>) {
@@ -568,6 +644,9 @@ impl Profile {
                 .map_err(|e| unreadable(failed(e)))?;
             txn.open_table(HTTP_CACHE_BODIES)
                 .map_err(|e| unreadable(failed(e)))?;
+            for table in [CACHE_API, CACHE_API_ENTRIES, CACHE_API_BODIES] {
+                txn.open_table(table).map_err(|e| unreadable(failed(e)))?;
+            }
             key
         };
         txn.commit().map_err(|e| unreadable(failed(e)))?;
@@ -750,8 +829,57 @@ impl Profile {
         })
     }
 
-    /// The storage keys the profile keeps `localStorage` items or
-    /// IndexedDB databases for (M36.8), in order, each once.
+    /// The Cache API's caches and entries of the storage key `key`
+    /// (M39), each with its number and record, in their numbers' order;
+    /// what does not open is left out.
+    #[allow(clippy::type_complexity)]
+    pub fn cache_api(
+        &self,
+        key: &str,
+    ) -> Result<(Vec<(u64, Vec<u8>)>, Vec<(u64, Vec<u8>)>), Error> {
+        self.guarded(|db| {
+            let txn = db.begin_read().map_err(failed)?;
+            let read = |definition: TableDefinition<(&str, u64), &[u8]>| {
+                let table = txn.open_table(definition).map_err(failed)?;
+                let mut out = Vec::new();
+                for entry in table.range((key, 0)..).map_err(failed)? {
+                    let (at_key, value) = entry.map_err(failed)?;
+                    let (owner, id) = at_key.value();
+                    if owner != key {
+                        break;
+                    }
+                    let at = numbered_at(owner, id);
+                    if let Some(record) = self.key.open(definition.name(), &at, value.value()) {
+                        out.push((id, record));
+                    }
+                }
+                Ok::<_, Error>(out)
+            };
+            let caches = read(CACHE_API)?;
+            let entries = read(CACHE_API_ENTRIES)?;
+            Ok((caches, entries))
+        })
+    }
+
+    /// The body of the Cache API's entry `id` of the storage key `key`,
+    /// if it is kept and opens.
+    pub fn cache_api_body(&self, key: &str, id: u64) -> Result<Option<Vec<u8>>, Error> {
+        self.guarded(|db| {
+            let txn = db.begin_read().map_err(failed)?;
+            let table = txn.open_table(CACHE_API_BODIES).map_err(failed)?;
+            let Some(sealed) = table.get((key, id)).map_err(failed)? else {
+                return Ok(None);
+            };
+            Ok(self.key.open(
+                CACHE_API_BODIES.name(),
+                &numbered_at(key, id),
+                sealed.value(),
+            ))
+        })
+    }
+
+    /// The storage keys the profile keeps `localStorage` items,
+    /// IndexedDB databases or (M39) caches for, in order, each once.
     pub fn storage_keys(&self) -> Result<Vec<String>, Error> {
         self.guarded(|db| {
             let txn = db.begin_read().map_err(failed)?;
@@ -763,6 +891,11 @@ impl Profile {
             }
             let databases = txn.open_table(IDB_DATABASES).map_err(failed)?;
             for entry in databases.iter().map_err(failed)? {
+                let (key, _) = entry.map_err(failed)?;
+                keys.insert(key.value().0.to_owned());
+            }
+            let caches = txn.open_table(CACHE_API).map_err(failed)?;
+            for entry in caches.iter().map_err(failed)? {
                 let (key, _) = entry.map_err(failed)?;
                 keys.insert(key.value().0.to_owned());
             }
@@ -897,6 +1030,7 @@ impl Profile {
             }
         }
         self.write_idb(&txn, &changes.idb)?;
+        self.write_cache_api(&txn, &changes.cache_api)?;
         if !changes.cache.is_empty() {
             let mut entries = txn.open_table(HTTP_CACHE).map_err(failed)?;
             let mut bodies = txn.open_table(HTTP_CACHE_BODIES).map_err(failed)?;
@@ -942,6 +1076,57 @@ impl Profile {
 }
 
 impl Profile {
+    /// Writes the Cache API's `changes` in `txn`, in order.
+    fn write_cache_api(&self, txn: &WriteTransaction, changes: &[CacheApi]) -> Result<(), Error> {
+        if changes.is_empty() {
+            return Ok(());
+        }
+        let mut caches = txn.open_table(CACHE_API).map_err(failed)?;
+        let mut entries = txn.open_table(CACHE_API_ENTRIES).map_err(failed)?;
+        let mut bodies = txn.open_table(CACHE_API_BODIES).map_err(failed)?;
+        for change in changes {
+            match change {
+                CacheApi::Cache { key, id, record } => {
+                    let place = (key.as_str(), *id);
+                    match record {
+                        Some(record) => {
+                            let at = numbered_at(key, *id);
+                            let sealed = self.key.seal(CACHE_API.name(), &at, record)?;
+                            caches.insert(place, sealed.as_slice()).map_err(failed)?;
+                        }
+                        None => {
+                            caches.remove(place).map_err(failed)?;
+                        }
+                    }
+                }
+                CacheApi::Entry {
+                    key,
+                    id,
+                    record,
+                    body,
+                } => {
+                    let place = (key.as_str(), *id);
+                    let at = numbered_at(key, *id);
+                    match record {
+                        Some(record) => {
+                            let sealed = self.key.seal(CACHE_API_ENTRIES.name(), &at, record)?;
+                            entries.insert(place, sealed.as_slice()).map_err(failed)?;
+                            if let Some(body) = body {
+                                let sealed = self.key.seal(CACHE_API_BODIES.name(), &at, body)?;
+                                bodies.insert(place, sealed.as_slice()).map_err(failed)?;
+                            }
+                        }
+                        None => {
+                            entries.remove(place).map_err(failed)?;
+                            bodies.remove(place).map_err(failed)?;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Writes IndexedDB's `changes` in `txn`, in order.
     fn write_idb(&self, txn: &WriteTransaction, changes: &[Idb]) -> Result<(), Error> {
         if changes.is_empty() {

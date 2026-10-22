@@ -150,3 +150,49 @@ fn a_sites_storage_is_listed_deleted_and_cleared() {
         .storage_inspect(r#"{"id":13,"method":"storage.local"}"#);
     assert_eq!(refused, r#"{"id":13,"error":"the page keeps nothing"}"#);
 }
+
+#[test]
+fn a_sites_caches_are_listed_deleted_and_cleared() {
+    // M39: the Cache API's caches in the storage panel.
+    let server = TestServer::plain(|request| {
+        if request.target != "/" {
+            return Reply::with_fields(404, &[], b"");
+        }
+        Reply::with_fields(
+            200,
+            &[("Content-Type", "text/html")],
+            b"<script>(async () => {
+              await (await caches.open('one')).put('/a', new Response('12345'));
+              await (await caches.open('two')).put('/b', new Response('x'));
+              console.log('kept');
+            })();</script>",
+        )
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(server.url("/"));
+    tab.run_until(|lines| lines.iter().any(|l| l == "kept"));
+    let origin = server.url("/").origin().serialization();
+    let listed = ask(&mut tab, 1, "storage.caches", Json::object([]));
+    let text = listed.write().replace(&origin, "ORIGIN");
+    assert_eq!(
+        text,
+        r#"[{"name":"one","entries":[{"url":"ORIGIN/a","type":"default","status":200,"size":5}]},{"name":"two","entries":[{"url":"ORIGIN/b","type":"default","status":200,"size":1}]}]"#
+    );
+    // Listed among the sites, with what they use.
+    let sites = ask(&mut tab, 2, "storage.sites", Json::object([]));
+    assert!(sites.write().contains(&origin), "{}", sites.write());
+    ask(
+        &mut tab,
+        3,
+        "storage.deleteCache",
+        Json::object([("name", Json::from("one"))]),
+    );
+    let listed = ask(&mut tab, 4, "storage.caches", Json::object([]));
+    assert_eq!(listed.as_array().map(<[Json]>::len), Some(1));
+    ask(&mut tab, 5, "storage.clearSite", Json::object([]));
+    assert_eq!(
+        ask(&mut tab, 6, "storage.caches", Json::object([])),
+        Json::Array(vec![])
+    );
+}

@@ -38,6 +38,7 @@ const LIMITS: Limits = Limits {
     heap: 16 << 20,
     steps: 50,
     stack: js::MAX_SCRIPT_STACK,
+    secure: true,
 };
 
 /// The listeners: what came is read whole and cloned again.
