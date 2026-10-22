@@ -138,8 +138,12 @@ fn over_http2_the_page_takes_one_connection_and_many_streams_at_once() {
     );
     let mut tab = Tab::new();
     tab.engine.set_scripting(true);
+    // The name resolved here: the system's resolver may take a while
+    // for a `.localhost` name (G180), which the time is not about.
     tab.engine.set_network(net::Client::new(
-        Config::default().trust(authority.root.clone()),
+        Config::default()
+            .trust(authority.root.clone())
+            .resolve("a.localhost", std::net::IpAddr::from([127, 0, 0, 1])),
     ));
     let url = net::Url::parse(&format!("https://a.localhost:{}/page.html", server.port())).unwrap();
     let started = Instant::now();
