@@ -273,3 +273,57 @@ fn a_frames_scripts_reach_the_browsers_areas_too() {
     );
     assert!(wired.bad.try_recv().is_err());
 }
+
+#[test]
+fn a_renderers_service_worker_requests_are_held_to_its_documents_origin() {
+    // M39: the registry is reached as the areas are, by the browser's key
+    // for the frame, and the document's URL is of that key's origin.
+    let site = url("https://a.test/").origin();
+    let wired = wired(Lock::of(&url("https://a.test/")), &[(7, top_of(&site))]);
+    let ask = |page_url: &str| {
+        wired
+            .link
+            .send(&ToBrowser::Storage {
+                call: 2,
+                frame: 7,
+                local: true,
+                origin: site.clone(),
+                partition: None,
+                op: StorageOp::ServiceWorker {
+                    request: r#"{"op":"check"}"#.to_owned(),
+                    url: Box::new(url(page_url)),
+                    base: Box::new(url(page_url)),
+                    page: 1,
+                },
+            })
+            .expect("sent");
+    };
+    // A document of its own origin: answered, the browser's storage here
+    // having no service workers.
+    let areas = RemoteAreas::new(wired.link.clone(), 7);
+    let client = crate::service_worker::page::Client {
+        key: site.serialization(),
+        partition: None,
+        origin: site.clone(),
+        base: url("https://a.test/page"),
+        url: url("https://a.test/page"),
+        page: 1,
+        tell: Arc::new(|_| true),
+        listening: Arc::default(),
+    };
+    assert_eq!(
+        areas.service_worker(&client, r#"{"op":"check"}"#),
+        crate::storage::NO_SERVICE_WORKERS
+    );
+    assert!(wired.bad.try_recv().is_err());
+    // One claiming another origin's URL is killed.
+    ask("https://victim.test/");
+    assert_eq!(
+        wired.bad.recv_timeout(WAIT).expect("a bad message"),
+        "a document of https://victim.test/ for https://a.test"
+    );
+    assert_eq!(
+        refused(&wired, 7, url("https://victim.test/").origin(), None),
+        "the storage of https://victim.test"
+    );
+}

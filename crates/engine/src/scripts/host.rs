@@ -1334,6 +1334,7 @@ impl DocumentHost {
                     origin: page.origin().clone(),
                     base,
                     url,
+                    page: page.id(),
                     tell: std::sync::Arc::new(move |text| {
                         inbox.send(super::workers::WorkerMessage::ServiceWorker(text));
                         inbox.alive()

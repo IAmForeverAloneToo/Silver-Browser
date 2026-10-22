@@ -41,7 +41,9 @@ struct Shared {
     settings_changes: AtomicU64,
     accept_language: Arc<Mutex<String>>,
     tabs: AtomicU64,
-    renderers: AtomicU32,
+    renderers: Arc<AtomicU32>,
+    /// Whether its service workers run in worker renderers (M39).
+    worker_renderers: crate::service::Claimed,
 }
 
 impl Default for Context {
@@ -93,7 +95,8 @@ impl Context {
                 settings_changes: AtomicU64::new(0),
                 accept_language,
                 tabs: AtomicU64::new(1),
-                renderers: AtomicU32::new(1),
+                renderers: Arc::new(AtomicU32::new(1)),
+                worker_renderers: crate::service::Claimed::default(),
             }),
         }
     }
@@ -225,6 +228,18 @@ impl Context {
     /// A new renderer's number, never one another tab's renderer had.
     pub(crate) fn new_renderer(&self) -> u32 {
         self.shared.renderers.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// What numbers its renderers, for one that must not keep the
+    /// context alive.
+    pub(crate) fn renderer_numbers(&self) -> Arc<AtomicU32> {
+        self.shared.renderers.clone()
+    }
+
+    /// True the first time it is asked: its service workers are to run
+    /// in worker renderers (M39).
+    pub(crate) fn claim_worker_renderers(&self) -> bool {
+        self.shared.worker_renderers.claim()
     }
 
     pub(crate) fn jar(&self) -> &Arc<Mutex<Jar>> {

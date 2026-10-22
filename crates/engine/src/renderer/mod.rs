@@ -13,6 +13,7 @@ use crate::ipc::{self, IPC_VERSION, Sender, ToBrowser, ToRenderer};
 
 mod host;
 pub(crate) mod link;
+mod workers;
 
 use host::Host;
 pub use host::MAX_SURFACE_PIXELS;

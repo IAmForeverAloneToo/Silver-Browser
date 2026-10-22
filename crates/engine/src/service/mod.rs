@@ -31,6 +31,9 @@ mod tab;
 mod tab_tests;
 #[cfg(test)]
 mod tests;
+mod workers;
+#[cfg(test)]
+mod workers_tests;
 
 pub use handover::{HANDOVER_TIMEOUT, HandoverNotice, Handovers, MAX_HANDOVER_BUFFER};
 pub use network::{FrameGrant, Grant, Grants, Lock, MAX_RENDERER_FETCHES, NetworkService};
@@ -40,3 +43,5 @@ pub use process::{
 };
 pub use storage::StorageService;
 pub use tab::{MAX_RENDERERS, RemoteTab};
+pub(crate) use workers::Claimed;
+pub use workers::{WORKER_RENDERER_IDLE, WorkerRenderers};

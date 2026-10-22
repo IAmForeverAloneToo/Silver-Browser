@@ -4,9 +4,10 @@
 //! cookie, frames another site's page that posts it a message, is
 //! clicked and typed in (the click opening a tab, saving a file and
 //! asking to close the tab, M37), its storage change heard by another
-//! tab of the same context, then goes to another site and back; its
-//! messages each way, as they crossed the pipes, a few of each kind, one
-//! frame to a file.
+//! tab of the same context, then goes to another site and back; it
+//! registers a service worker, which runs in a worker renderer (M39);
+//! its messages each way, as they crossed the pipes, a few of each kind,
+//! one frame to a file.
 //!
 //! ```text
 //! cargo run -p engine --example ipc_seeds -- fuzz/seeds/ipc_decode
@@ -101,12 +102,18 @@ fn server() -> TestServer {
     TestServer::plain(|request| {
         let host = request.header("Host").unwrap_or_default().to_owned();
         let port = host.rsplit(':').next().unwrap_or_default().to_owned();
+        if request.target == "/sw.js" {
+            return Reply::ok(
+                "text/javascript",
+                b"self.oninstall = (e) => { skipWaiting();                   e.waitUntil(caches.open('c').then(c => c.put('/x', new Response('x')))); };",
+            );
+        }
         let body = match request.target.as_str() {
             "/" => format!(
                 "<title>seeds</title><input id=i>\
                  <iframe src='http://b.localhost:{port}/child'></iframe>\
                  <script>localStorage.setItem('k', 'v'); document.cookie = 'c=1';\
-                 fetch('/data').then(r => r.text()).then(t => console.log('data', t));\
+                 fetch('/data').then(r => r.text()).then(t => console.log('data', t));                 navigator.serviceWorker.register('/sw.js').then(r => r.update());\
                  addEventListener('message', e => console.log('got', e.data));\
                  addEventListener('click', () => {{ window.open('/other'); \
                  const a = document.createElement('a'); a.href = '/data'; a.download = 'x.txt'; document.body.append(a); \

@@ -558,6 +558,50 @@ fn a_renderers_page_keeps_its_caches_in_the_browser() {
 }
 
 #[test]
+fn a_renderers_page_registers_a_service_worker_through_the_browser() {
+    // M39: the page's requests cross to the browser's registry, which
+    // tells the page of its job and of its worker's states.
+    let server = TestServer::plain(|request| {
+        match request.target.as_str() {
+        "/sw.js" => Reply::with_fields(
+            200,
+            &[("Content-Type", "text/javascript")],
+            b"self.oninstall = (e) => e.waitUntil(Promise.resolve());",
+        ),
+        _ => Reply::ok(
+            "text/html",
+            b"<script>
+             (async () => {
+               const reg = await navigator.serviceWorker.register('sw.js');
+               const w = reg.installing;
+               const states = [];
+               w.onstatechange = () => states.push(w.state);
+               const ready = await navigator.serviceWorker.ready;
+               while (!states.includes('activated')) await new Promise(r => setTimeout(r, 20));
+               const all = await navigator.serviceWorker.getRegistrations();
+               console.log('registered ' + (ready === reg) + ' ' + states.join(',') + ' ' + all.length);
+             })().catch(e => console.log('failed ' + e.name + ': ' + e.message));
+             </script>",
+        ),
+    }
+    });
+    let mut remote = tab();
+    remote.set_scripting(true);
+    remote.navigate(server.url("/"));
+    let mut lines = Vec::new();
+    settle(&mut remote, |tab| {
+        lines.extend(tab.take_console().into_iter().map(|entry| entry.text));
+        lines
+            .iter()
+            .any(|line| line.starts_with("registered") || line.starts_with("failed"))
+    });
+    assert!(
+        lines.contains(&"registered true installed,activating,activated 1".to_owned()),
+        "{lines:?}"
+    );
+}
+
+#[test]
 fn a_tab_answers_the_storage_panel_from_the_browsers_storage() {
     let server = serve("<script>localStorage.setItem('k', 'v'); console.log('set')</script>");
     let mut remote = tab();

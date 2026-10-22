@@ -76,9 +76,38 @@ pub(crate) struct Service {
     imports: Vec<(Url, Arc<[u8]>)>,
     /// Its version's scripts, which it imports from once evaluated.
     stored: Vec<(Url, Arc<[u8]>)>,
-    workers: WeakServiceWorkers,
+    upstream: Arc<dyn Upstream>,
     /// What its registration's methods ask as.
     client: Client,
+    /// Told when its thread ends.
+    ended: Option<Box<dyn FnOnce() + Send>>,
+}
+
+/// Where a running version's own requests go: its registry's driver, in
+/// this process or the browser's.
+pub(crate) trait Upstream: Send + Sync {
+    /// `skipWaiting()` of `version`.
+    fn skip_waiting(&self, version: u64);
+    /// A request of its registration's methods, as `client`'s.
+    fn serve(&self, client: &Client, request: &str) -> String;
+}
+
+/// The registry's driver in this process.
+struct OneProcess(WeakServiceWorkers);
+
+impl Upstream for OneProcess {
+    fn skip_waiting(&self, version: u64) {
+        if let Some(workers) = self.0.upgrade() {
+            workers.skip_waiting(version);
+        }
+    }
+
+    fn serve(&self, client: &Client, request: &str) -> String {
+        match self.0.upgrade() {
+            Some(workers) => crate::service_worker::page::serve(&workers, client, request),
+            None => crate::storage::NO_SERVICE_WORKERS.to_owned(),
+        }
+    }
 }
 
 impl Service {
@@ -145,9 +174,7 @@ impl Service {
                 r#"{"result":null}"#.to_owned()
             }
             Some("skipWaiting") => {
-                if let Some(workers) = self.workers.upgrade() {
-                    workers.skip_waiting(self.version);
-                }
+                self.upstream.skip_waiting(self.version);
                 r#"{"result":null}"#.to_owned()
             }
             Some("listened") => {
@@ -166,12 +193,7 @@ impl Service {
                 r#"{"result":null}"#.to_owned()
             }
             // Its registration's own methods, as a client's.
-            _ => match self.workers.upgrade() {
-                Some(workers) => {
-                    crate::service_worker::page::serve(&workers, &self.client, request)
-                }
-                None => crate::storage::NO_SERVICE_WORKERS.to_owned(),
-            },
+            _ => self.upstream.serve(&self.client, request),
         }
     }
 
@@ -194,6 +216,9 @@ impl Service {
         let running = self.running.clone();
         self.leave(&mut lock(&running));
         self.fail_events();
+        if let Some(ended) = self.ended.take() {
+            ended();
+        }
     }
 
     /// Fails its events: it stops.
@@ -270,80 +295,56 @@ pub(crate) fn in_process_with_host(
     (workers, host)
 }
 
-/// The versions of a context's service workers, run on its threads.
-#[derive(Clone)]
-pub(crate) struct InProcess {
-    shared: Arc<Shared>,
+/// A version to start: what it is, its scripts, its own view, where its
+/// requests go, and who hears what its evaluation did and when it ends.
+pub(crate) struct Launch {
+    pub(crate) start: Start,
+    /// Its version's scripts kept, which it imports from: none when it
+    /// is evaluated.
+    pub(crate) stored: Vec<(Url, Arc<[u8]>)>,
+    /// `{view, worker}`, what `registration` and `serviceWorker` are.
+    pub(crate) own: String,
+    pub(crate) client: Arc<dyn Fetcher>,
+    pub(crate) areas: Arc<dyn Areas>,
+    pub(crate) upstream: Arc<dyn Upstream>,
+    pub(crate) evaluated: Option<Done<Option<Evaluated>>>,
+    pub(crate) ended: Option<Box<dyn FnOnce() + Send>>,
 }
 
-struct Shared {
+/// The versions running in this process, each on a thread of its own.
+#[derive(Clone, Default)]
+pub(crate) struct Versions {
     running: RunningMap,
-    client: Arc<dyn Fetcher>,
-    areas: Arc<dyn Areas>,
-    /// The context's service workers, for `skipWaiting()` and to start a
-    /// version again from its scripts.
-    workers: Mutex<Option<WeakServiceWorkers>>,
 }
 
-impl InProcess {
-    /// Versions whose scripts fetch with `client` and reach `areas`.
-    pub(crate) fn new(client: Arc<dyn Fetcher>, areas: Arc<dyn Areas>) -> InProcess {
-        InProcess {
-            shared: Arc::new(Shared {
-                running: Arc::default(),
-                client,
-                areas,
-                workers: Mutex::new(None),
-            }),
-        }
-    }
-
-    /// The context's service workers, which its versions reach.
-    pub(crate) fn set_workers(&self, workers: WeakServiceWorkers) {
-        *lock(&self.shared.workers) = Some(workers);
-    }
-
-    /// Whether version `version` runs, for the tests.
+impl Versions {
+    /// Whether version `version` runs.
     #[cfg(test)]
     pub(crate) fn runs(&self, version: u64) -> bool {
-        lock(&self.shared.running).contains_key(&version)
+        lock(&self.running).contains_key(&version)
     }
 
-    fn workers(&self) -> Option<WeakServiceWorkers> {
-        lock(&self.shared.workers).clone()
-    }
-
-    /// Starts `start`'s version: evaluated for its job when `evaluated`
-    /// is given, else started again from its scripts kept (`stored`).
-    fn start(
-        &self,
-        start: &Start,
-        stored: Vec<(Url, Arc<[u8]>)>,
-        evaluated: Option<Done<Option<Evaluated>>>,
-    ) -> Option<Inbox> {
-        let workers = self.workers()?;
-        let driver = workers.upgrade()?;
-        let own = driver.query(&start.key, |registry| {
-            let view = registry.view(start.registration)?;
-            let worker = registry.version(start.version).map(|v| {
-                Json::object([
-                    ("id", Json::from(v.id)),
-                    ("scriptURL", Json::from(v.script.as_str())),
-                    ("state", Json::from(v.state.name())),
-                ])
-            });
-            Some(
-                Json::object([
-                    ("view", view_json(&view)),
-                    ("worker", worker.unwrap_or(Json::Null)),
-                ])
-                .write(),
-            )
-        })?;
+    /// Starts `launch`'s version, stopping the one given an event longest
+    /// ago past [`MAX_RUNNING_SERVICE_WORKERS`]; false if it could not.
+    pub(crate) fn launch(&self, launch: Launch) -> bool {
+        let Launch {
+            start,
+            stored,
+            own,
+            client,
+            areas,
+            upstream,
+            evaluated,
+            ended,
+        } = launch;
         let (me, mailbox) = inbox(None);
         let stop = Arc::new(AtomicBool::new(false));
         {
-            let mut running = lock(&self.shared.running);
+            let mut running = lock(&self.running);
+            if let Some(gone) = running.remove(&start.version) {
+                gone.stop.store(true, Ordering::SeqCst);
+                gone.to.send(WorkerMessage::Stop);
+            }
             if running.len() >= MAX_RUNNING_SERVICE_WORKERS
                 && let Some(oldest) = running.iter().min_by_key(|(_, r)| r.used).map(|(v, _)| *v)
                 && let Some(gone) = running.remove(&oldest)
@@ -366,7 +367,7 @@ impl InProcess {
         let service = Service {
             version: start.version,
             stop: stop.clone(),
-            running: self.shared.running.clone(),
+            running: self.running.clone(),
             own,
             events: HashMap::new(),
             next_event: 0,
@@ -375,13 +376,14 @@ impl InProcess {
             recording: evaluated.is_some(),
             imports: Vec::new(),
             stored,
-            workers,
+            upstream,
             client: Client {
                 key: start.key.clone(),
                 partition: start.partition.clone(),
                 origin: origin.clone(),
                 base: start.script.clone(),
                 url: start.script.clone(),
+                page: 0,
                 tell: Arc::new(move |text| {
                     tell.send(WorkerMessage::ServiceWorker(text));
                     tell.alive()
@@ -389,22 +391,23 @@ impl InProcess {
                 // Its host tells it the notices already.
                 listening: Arc::new(AtomicBool::new(true)),
             },
+            ended,
         };
         let setup = super::workers::ServiceSetup {
             script: start.script.clone(),
             source: start.source.clone(),
             address_space: space_of(&start.script),
             partition: start.partition.clone(),
-            client: self.shared.client.clone(),
+            client,
             storage: Some((
-                self.shared.areas.clone(),
+                areas,
                 AreaKey {
                     origin,
                     partition: start.partition.clone(),
                 },
             )),
             mailbox,
-            me: me.clone(),
+            me,
             stop,
             service,
             evaluated,
@@ -413,63 +416,193 @@ impl InProcess {
             .name(format!("service worker {}", start.version))
             .stack_size(SERVICE_WORKER_STACK)
             .spawn(move || super::workers::run_service(setup));
-        match spawned {
-            Ok(_) => Some(me),
-            Err(_) => {
-                lock(&self.shared.running).remove(&start.version);
-                None
+        if spawned.is_err() {
+            lock(&self.running).remove(&start.version);
+            return false;
+        }
+        true
+    }
+
+    /// Gives version `version` the extendable event `kind`; `done` back
+    /// when it does not run.
+    pub(crate) fn give(
+        &self,
+        version: u64,
+        kind: &str,
+        done: Done<bool>,
+    ) -> Result<(), Done<bool>> {
+        let mut running = lock(&self.running);
+        match running.get_mut(&version) {
+            Some(r) => {
+                r.used = Instant::now();
+                r.to.send(WorkerMessage::Extendable(kind.to_owned(), done));
+                Ok(())
+            }
+            None => Err(done),
+        }
+    }
+
+    /// Stops version `version`, if it runs.
+    pub(crate) fn terminate(&self, version: u64) {
+        if let Some(gone) = lock(&self.running).remove(&version) {
+            gone.stop.store(true, Ordering::SeqCst);
+            gone.to.send(WorkerMessage::Stop);
+        }
+    }
+
+    /// Version `version`, if it runs, hears the task `text`.
+    pub(crate) fn tell_version(&self, version: u64, text: &str) {
+        if let Some(r) = lock(&self.running).get(&version) {
+            r.to.send(WorkerMessage::ServiceWorker(text.to_owned()));
+        }
+    }
+
+    /// The running versions of storage key `key` hear the task `text`.
+    pub(crate) fn tell(&self, key: &str, text: &str) {
+        for r in lock(&self.running).values() {
+            if r.key == key {
+                r.to.send(WorkerMessage::ServiceWorker(text.to_owned()));
             }
         }
+    }
+}
+
+/// A version's own view: its registration's and itself, as the bindings
+/// read them.
+pub(crate) fn own_json(
+    registry: &crate::service_worker::Registry,
+    start: &Start,
+) -> Option<String> {
+    let view = registry.view(start.registration)?;
+    let worker = registry.version(start.version).map(|v| {
+        Json::object([
+            ("id", Json::from(v.id)),
+            ("scriptURL", Json::from(v.script.as_str())),
+            ("state", Json::from(v.state.name())),
+        ])
+    });
+    Some(
+        Json::object([
+            ("view", view_json(&view)),
+            ("worker", worker.unwrap_or(Json::Null)),
+        ])
+        .write(),
+    )
+}
+
+/// A version's scripts, by their URLs.
+pub(crate) type Scripts = Vec<(Url, Arc<[u8]>)>;
+
+/// What starts version `version` again: its start and its scripts kept.
+pub(crate) fn restart_of(
+    registry: &crate::service_worker::Registry,
+    version: u64,
+) -> Option<(Start, Scripts)> {
+    let v = registry.version(version)?;
+    let reg = registry.registration(v.registration)?;
+    let (_, source) = v.resources.first()?;
+    Some((
+        Start {
+            version,
+            registration: reg.id,
+            key: reg.key.clone(),
+            scope: reg.scope.clone(),
+            script: v.script.clone(),
+            source: source.clone(),
+            partition: reg.partition.clone(),
+        },
+        v.resources[1..].to_vec(),
+    ))
+}
+
+/// The versions of a context's service workers, run on threads of this
+/// process.
+#[derive(Clone)]
+pub(crate) struct InProcess {
+    shared: Arc<Shared>,
+}
+
+struct Shared {
+    versions: Versions,
+    client: Arc<dyn Fetcher>,
+    areas: Arc<dyn Areas>,
+    /// The context's service workers, for `skipWaiting()` and to start a
+    /// version again from its scripts.
+    workers: Mutex<Option<WeakServiceWorkers>>,
+}
+
+impl InProcess {
+    /// Versions whose scripts fetch with `client` and reach `areas`.
+    pub(crate) fn new(client: Arc<dyn Fetcher>, areas: Arc<dyn Areas>) -> InProcess {
+        InProcess {
+            shared: Arc::new(Shared {
+                versions: Versions::default(),
+                client,
+                areas,
+                workers: Mutex::new(None),
+            }),
+        }
+    }
+
+    /// The context's service workers, which its versions reach.
+    pub(crate) fn set_workers(&self, workers: WeakServiceWorkers) {
+        *lock(&self.shared.workers) = Some(workers);
+    }
+
+    /// Whether version `version` runs, for the tests.
+    #[cfg(test)]
+    pub(crate) fn runs(&self, version: u64) -> bool {
+        self.shared.versions.runs(version)
+    }
+
+    /// Starts `start`'s version: evaluated for its job when `evaluated`
+    /// is given, else started again from its scripts kept (`stored`).
+    fn start(
+        &self,
+        start: Start,
+        stored: Vec<(Url, Arc<[u8]>)>,
+        evaluated: Option<Done<Option<Evaluated>>>,
+    ) -> bool {
+        let Some(workers) = lock(&self.shared.workers).clone() else {
+            return false;
+        };
+        let Some(own) = workers
+            .upgrade()
+            .and_then(|driver| driver.query(&start.key, |registry| own_json(registry, &start)))
+        else {
+            return false;
+        };
+        self.shared.versions.launch(Launch {
+            start,
+            stored,
+            own,
+            client: self.shared.client.clone(),
+            areas: self.shared.areas.clone(),
+            upstream: Arc::new(OneProcess(workers)),
+            evaluated,
+            ended: None,
+        })
     }
 
     /// Gives version `version` the extendable event `kind`, starting it
     /// again from its scripts if it stopped.
     fn dispatch(&self, version: u64, kind: &str, done: Done<bool>) {
-        {
-            let mut running = lock(&self.shared.running);
-            if let Some(r) = running.get_mut(&version) {
-                r.used = Instant::now();
-                r.to.send(WorkerMessage::Extendable(kind.to_owned(), done));
-                return;
-            }
-        }
-        let Some(started) = self.restart(version) else {
+        let Err(done) = self.shared.versions.give(version, kind, done) else {
+            return;
+        };
+        let restart = lock(&self.shared.workers)
+            .clone()
+            .and_then(|workers| workers.upgrade())
+            .and_then(|driver| driver.query_any(|registry| restart_of(registry, version)));
+        let Some((start, stored)) = restart else {
             return done(false);
         };
-        let running = lock(&self.shared.running);
-        match running.get(&version) {
-            Some(r) => {
-                r.to.send(WorkerMessage::Extendable(kind.to_owned(), done));
-            }
-            None => {
-                drop(running);
-                drop(started);
-                done(false);
-            }
+        if !self.start(start, stored, None) {
+            return done(false);
         }
-    }
-
-    /// Starts version `version` again from what its registry keeps.
-    fn restart(&self, version: u64) -> Option<Inbox> {
-        let driver = self.workers()?.upgrade()?;
-        let (start, stored) = driver.query_any(|registry| {
-            let v = registry.version(version)?;
-            let reg = registry.registration(v.registration)?;
-            let (_, source) = v.resources.first()?;
-            Some((
-                Start {
-                    version,
-                    registration: reg.id,
-                    key: reg.key.clone(),
-                    scope: reg.scope.clone(),
-                    script: v.script.clone(),
-                    source: source.clone(),
-                    partition: reg.partition.clone(),
-                },
-                v.resources[1..].to_vec(),
-            ))
-        })?;
-        self.start(&start, stored, None)
+        if let Err(done) = self.shared.versions.give(version, kind, done) {
+            done(false);
+        }
     }
 }
 
@@ -479,7 +612,7 @@ impl ServiceWorkerHost for InProcess {
         let done = Arc::new(Mutex::new(Some(done)));
         let once = done.clone();
         let started = self.start(
-            &start,
+            start,
             Vec::new(),
             Some(Box::new(move |result| {
                 if let Some(done) = lock(&once).take() {
@@ -487,9 +620,7 @@ impl ServiceWorkerHost for InProcess {
                 }
             })),
         );
-        if started.is_none()
-            && let Some(done) = lock(&done).take()
-        {
+        if !started && let Some(done) = lock(&done).take() {
             done(None);
         }
     }
@@ -503,18 +634,10 @@ impl ServiceWorkerHost for InProcess {
     }
 
     fn terminate(&self, version: u64) {
-        if let Some(gone) = lock(&self.shared.running).remove(&version) {
-            gone.stop.store(true, Ordering::SeqCst);
-            gone.to.send(WorkerMessage::Stop);
-        }
+        self.shared.versions.terminate(version);
     }
 
     fn notice(&self, key: &str, notice: &Notice, view: &View) {
-        let text = notice_json(notice, view);
-        for r in lock(&self.shared.running).values() {
-            if r.key == key {
-                r.to.send(WorkerMessage::ServiceWorker(text.clone()));
-            }
-        }
+        self.shared.versions.tell(key, &notice_json(notice, view));
     }
 }

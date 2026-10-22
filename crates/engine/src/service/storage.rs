@@ -7,6 +7,8 @@
 //! quota is the browser's, and so is the profile the `localStorage`
 //! areas are written to.
 
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use net::{Origin, Partition};
@@ -15,6 +17,10 @@ use super::network::Grants;
 use crate::ipc::{Answer, Sender, StorageOp, ToBrowser, ToRenderer};
 use crate::storage::{AreaKey, Change, Scope, Source, Storage};
 
+/// A document asking the service workers (M39): its number, whether it
+/// hears their notices, and whether it is still its frame's.
+type Asker = (u64, Arc<AtomicBool>, Arc<AtomicBool>);
+
 /// The browser's Web Storage, for a tab's renderers.
 pub struct StorageService {
     storage: Arc<Mutex<Storage>>,
@@ -22,6 +28,10 @@ pub struct StorageService {
     /// The tab's number in its context (M37), whose `sessionStorage`
     /// areas its renderers use.
     tab: u64,
+    /// Each renderer's frame's document that asked the service workers
+    /// (M39): its number, whether it hears their notices, and whether it
+    /// is still the frame's.
+    clients: Mutex<HashMap<(u32, u32), Asker>>,
 }
 
 impl StorageService {
@@ -36,6 +46,68 @@ impl StorageService {
             storage,
             grants,
             tab,
+            clients: Mutex::default(),
+        })
+    }
+
+    /// A request of the service workers' of document `page` of frame
+    /// `frame` of renderer `renderer` (M39), of `area`, its URL `url`
+    /// the area's origin's; what it hears later goes to the renderer.
+    #[allow(clippy::too_many_arguments)]
+    fn service_worker(
+        &self,
+        renderer: u32,
+        frame: u32,
+        area: AreaKey,
+        request: &str,
+        url: net::Url,
+        base: net::Url,
+        page: u64,
+        reply: &Sender<ToRenderer>,
+    ) -> Result<String, String> {
+        if url.origin() != area.origin {
+            return Err(format!(
+                "a document of {} for {}",
+                url,
+                area.origin.serialization()
+            ));
+        }
+        let (listening, alive) = {
+            let mut clients = self.clients.lock().unwrap_or_else(PoisonError::into_inner);
+            let entry = clients
+                .entry((renderer, frame))
+                .or_insert_with(|| (page, Arc::default(), Arc::new(AtomicBool::new(true))));
+            if entry.0 != page {
+                // The frame's document before it hears nothing more.
+                entry.2.store(false, Ordering::SeqCst);
+                *entry = (page, Arc::default(), Arc::new(AtomicBool::new(true)));
+            }
+            (entry.1.clone(), entry.2.clone())
+        };
+        let sender = reply.clone();
+        let client = crate::service_worker::page::Client {
+            key: area.serialization(),
+            partition: area.partition.clone(),
+            origin: area.origin,
+            base,
+            url,
+            page,
+            tell: Arc::new(move |task| {
+                alive.load(Ordering::SeqCst)
+                    && sender
+                        .send(&ToRenderer::ServiceWorkerTask { frame, page, task })
+                        .is_ok()
+            }),
+            listening,
+        };
+        let driver = self
+            .storage
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .service_worker_driver();
+        Ok(match driver {
+            Some(driver) => crate::service_worker::page::serve(&driver, &client, request),
+            None => crate::storage::NO_SERVICE_WORKERS.to_owned(),
         })
     }
 
@@ -131,8 +203,23 @@ impl StorageService {
         else {
             return Ok(Some(message));
         };
-        let key = self.key(renderer, frame, origin, partition)?;
-        let key = key.serialization();
+        let area = self.key(renderer, frame, origin, partition)?;
+        if let StorageOp::ServiceWorker {
+            request,
+            url,
+            base,
+            page,
+        } = op
+        {
+            let answer =
+                self.service_worker(renderer, frame, area, &request, *url, *base, page, reply)?;
+            let _ = reply.send(&ToRenderer::Answer {
+                call,
+                answer: Answer::ServiceWorker { answer },
+            });
+            return Ok(None);
+        }
+        let key = area.serialization();
         let scope = Scope::of(local, self.tab);
         let mut storage = self.storage.lock().unwrap_or_else(PoisonError::into_inner);
         let answer = match op {
@@ -186,6 +273,7 @@ impl StorageService {
                     bytes: crate::ipc::Bytes(bytes),
                 }
             }
+            StorageOp::ServiceWorker { .. } => return Ok(None),
         };
         drop(storage);
         let _ = reply.send(&ToRenderer::Answer { call, answer });

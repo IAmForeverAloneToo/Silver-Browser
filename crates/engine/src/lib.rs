@@ -4466,6 +4466,23 @@ impl Engine {
 
     /// Takes what the workers of the document shown and of the one on
     /// its way sent (M31), queued as their tasks.
+    /// Gives document `page` of frame `frame`, this engine's or one of
+    /// its frames', what the service workers told it through the browser
+    /// (M39); whether it was there.
+    pub(crate) fn service_worker_task(&mut self, frame: u32, page: PageId, task: &str) -> bool {
+        let mut found = false;
+        let mut give = |engine: &mut Engine| {
+            if found || engine.frame.key != frame || engine.shown.page.id() != page {
+                return;
+            }
+            engine.shown.scripts.tell_service_worker(task.to_owned());
+            found = true;
+        };
+        give(self);
+        self.for_each_frame(&mut give);
+        found
+    }
+
     fn take_worker_messages(&mut self) {
         let now = self.now();
         self.shown.scripts.take_worker_messages(now);

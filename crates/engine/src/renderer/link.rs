@@ -359,15 +359,24 @@ impl Areas for RemoteAreas {
 
     fn service_worker(
         &self,
-        _client: &crate::service_worker::page::Client,
+        client: &crate::service_worker::page::Client,
         request: &str,
     ) -> String {
-        // A renderer's documents reach the registry at step 3b (M39):
-        // until then their container is there, its operations refused.
-        if request.contains(r#""op":"check""#) {
-            return r#"{"result":null}"#.to_owned();
+        let key = AreaKey {
+            origin: client.origin.clone(),
+            partition: client.partition.clone(),
+        };
+        let op = StorageOp::ServiceWorker {
+            request: request.to_owned(),
+            url: Box::new(client.url.clone()),
+            base: Box::new(client.base.clone()),
+            page: client.page,
+        };
+        match self.ask(true, &key, op) {
+            Some(Answer::ServiceWorker { answer }) => answer,
+            _ => r#"{"error":{"name":"UnknownError","message":"The browser did not answer."}}"#
+                .to_owned(),
         }
-        crate::storage::NO_SERVICE_WORKERS.to_owned()
     }
 
     fn idb(&self, key: &AreaKey, request: &str) -> String {

@@ -1203,6 +1203,15 @@ impl Scripts {
         canceled
     }
 
+    /// Gives the document what the service workers told it (M39), as its
+    /// own host would.
+    pub(crate) fn tell_service_worker(&self, task: String) {
+        self.host
+            .workers
+            .inbox()
+            .send(workers::WorkerMessage::ServiceWorker(task));
+    }
+
     /// Takes what the document's workers sent (M31): their messages,
     /// errors and ends queued as tasks from `now`, their console lines
     /// put in the document's console.

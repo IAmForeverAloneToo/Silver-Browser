@@ -116,6 +116,33 @@ wire_enum! {
         },
         /// The view reloads, bypassing the HTTP cache (M38).
         29 => ReloadBypassingCache { view: u32 },
+        /// What the service workers tell the document `page` of frame
+        /// `frame` (M39): a task of `js::Task::ServiceWorker`.
+        30 => ServiceWorkerTask { frame: u32, page: u64, task: String },
+        /// A worker renderer runs `version` (M39, D35) as frame `frame`:
+        /// evaluated for its job if `evaluate`, else started again from
+        /// its scripts kept (`stored`); `own` is its registration's view
+        /// and its own, as the bindings read them.
+        31 => StartServiceWorker {
+            version: u64,
+            frame: u32,
+            registration: u64,
+            key: String,
+            scope: Box<Url>,
+            script: Box<Url>,
+            source: Bytes,
+            stored: Vec<(Url, Bytes)>,
+            own: String,
+            partition: Option<Partition>,
+            evaluate: bool,
+        },
+        /// The browser's extendable event `event` of type `kind` for
+        /// `version`.
+        32 => ServiceWorkerEvent { version: u64, event: u64, kind: String },
+        /// The running versions of storage key `key` hear `task`.
+        33 => ServiceWorkerNotice { key: String, task: String },
+        /// `version` stops.
+        34 => StopServiceWorker { version: u64 },
     }
 }
 
@@ -260,6 +287,22 @@ wire_enum! {
         /// attribute to `url` (M37): the browser saves it, under `name`
         /// when the response suggests none.
         25 => Download { frame: u32, url: Url, name: Option<String> },
+        /// What `version`'s script did when it was evaluated (M39): the
+        /// events it listens for and the scripts it imported, or none when
+        /// it threw or did not run.
+        26 => ServiceWorkerEvaluated {
+            version: u64,
+            listened: Option<Vec<String>>,
+            imports: Vec<(Url, Bytes)>,
+        },
+        /// The browser's event `event` of `version` ended, its promises
+        /// all fulfilled if `ok`; not `ran` when the version was not
+        /// running, for the browser to start it again.
+        27 => ServiceWorkerEventDone { version: u64, event: u64, ok: bool, ran: bool },
+        /// `skipWaiting()` of `version`.
+        28 => ServiceWorkerSkipWaiting { version: u64 },
+        /// `version` stopped, idle or past an event's limit.
+        29 => ServiceWorkerStopped { version: u64 },
     }
 }
 
@@ -283,6 +326,10 @@ wire_enum! {
         /// bodies it carries in `bytes`, as `crate::caches::serve` reads
         /// it.
         9 => Caches { request: String, bytes: Bytes },
+        /// A request of the service workers' (M39) of document `page`, of
+        /// `url`, its own URLs parsed against `base`, as
+        /// `crate::service_worker::page::serve` reads it.
+        10 => ServiceWorker { request: String, url: Box<Url>, base: Box<Url>, page: u64 },
     }
 }
 
@@ -309,6 +356,8 @@ wire_enum! {
         7 => Idb { answer: String },
         /// The Cache API's answer (M39), the bodies it gives in `bytes`.
         8 => Caches { answer: String, bytes: Bytes },
+        /// The service workers' answer (M39).
+        9 => ServiceWorker { answer: String },
     }
 }
 

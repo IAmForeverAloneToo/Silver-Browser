@@ -22,6 +22,9 @@ pub(crate) struct Client {
     pub(crate) origin: Origin,
     pub(crate) base: Url,
     pub(crate) url: Url,
+    /// The document's number in its engine, which a renderer's tasks
+    /// name.
+    pub(crate) page: u64,
     /// Queues a task of the text given in the client; false once the
     /// client is gone.
     pub(crate) tell: Arc<dyn Fn(String) -> bool + Send + Sync>,

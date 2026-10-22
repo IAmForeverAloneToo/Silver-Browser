@@ -296,6 +296,8 @@ impl RemoteTab {
         spare: bool,
         context: &crate::Context,
     ) -> RemoteTab {
+        // The context's service workers run in worker renderers (M39).
+        super::workers::install(context, launcher.clone());
         let grants = Grants::new();
         let jar: Arc<Mutex<Jar>> = context.jar().clone();
         let cache: Arc<net::Cache> = context.cache().clone();

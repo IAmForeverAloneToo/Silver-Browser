@@ -61,6 +61,8 @@ pub(crate) struct Host {
     /// through (M37), so that the renderer's documents hear of each
     /// other's; the areas themselves are the browser's.
     storage: Arc<Mutex<crate::storage::Storage>>,
+    /// The service workers the browser runs in it (M39).
+    workers: super::workers::ServiceWorkerSide,
 }
 
 /// Since when a renderer's views have all been hidden, and whether it
@@ -114,6 +116,7 @@ impl Host {
         wake: Arc<dyn Fn() + Send + Sync>,
     ) -> Host {
         Host {
+            workers: super::workers::ServiceWorkerSide::new(link.clone()),
             link,
             fonts,
             began: Instant::now(),
@@ -219,6 +222,9 @@ impl Host {
     /// Carries out `message`; false when the renderer is to end. Err for
     /// what the browser never sends.
     pub(crate) fn handle(&mut self, message: ToRenderer) -> Result<bool, String> {
+        let Some(message) = self.workers.handle(message) else {
+            return Ok(true);
+        };
         match message {
             ToRenderer::Shutdown {} => return Ok(false),
             ToRenderer::Hello { .. } => return Err("a second hello".into()),
@@ -362,6 +368,15 @@ impl Host {
             }
             ToRenderer::Cut { view } => {
                 self.view(view)?.engine.cut();
+            }
+            // What the service workers tell a document (M39); one gone
+            // since hears nothing.
+            ToRenderer::ServiceWorkerTask { frame, page, task } => {
+                for view in self.views.values_mut() {
+                    if view.engine.service_worker_task(frame, page, &task) {
+                        break;
+                    }
+                }
             }
             other => return Err(format!("{other:?} out of place")),
         }
