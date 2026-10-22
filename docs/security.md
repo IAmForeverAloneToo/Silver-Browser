@@ -205,7 +205,10 @@ can still ask DPAPI, as it can for the reference browser. The HTTP
 cache's entries and bodies are sealed the same way (M38), each under
 its number, so a body moved to another entry does not open; a record
 that does not read whole is deleted, and an opaque site's entries are
-never written.
+never written. The Cache API's caches, entries and bodies, and the
+service workers' registrations with their active versions' scripts
+(M39, `SCHEMA` 6), are sealed the same way under their storage key and
+number; a record that does not read is passed over.
 
 ### 4.10 The process boundary
 
@@ -304,6 +307,23 @@ font folders; a file it cannot read, it scans for.
   (`window.open`, `_blank`) open only `http`, `https` and
   `about:blank`, with the user's activation, at most `MAX_OPENING`
   waiting.
+- **Service workers** (M39, D35, `docs/design/service-workers.md`).
+  The registrations, their jobs and the Cache API's entries are the
+  browser's, in the context. A renderer's document asks for them
+  through the browser's storage service, by the storage key the
+  browser computes from its own grants, its URL held to that key's
+  origin, or the renderer is killed; the requests it makes name a
+  client the network service admits only if of a site its lock
+  allows. A version runs in a *worker renderer* of its site, locked
+  and sandboxed as any renderer, its fetches and caches checked as a
+  document's; one answering for a version the browser did not start
+  in it is killed. A worker's response to a request is checked as
+  Handle Fetch checks it (opaque for `no-cors` alone, an
+  opaque-redirect for `manual` alone, no `cors` response to a
+  same-origin request) before it reaches the client, which applies
+  its own checks after. `navigator.serviceWorker` and `caches` exist
+  in secure contexts alone, and a sandbox without
+  `allow-same-origin` is refused them.
 - **Crashes** (D34). A renderer that dies leaves the browser's own page
   saying so, in the tab or in a frame's hole, until a reload brings it
   back in a new renderer; the browser goes on. On Windows the browser
@@ -381,7 +401,7 @@ that adds a package writing `unsafe` is read with it.
 
 ## 6. Fuzzing
 
-37 libFuzzer targets in `fuzz/` (M33.6, M34, M36, M37, M38), each holding its subject to
+39 libFuzzer targets in `fuzz/` (M33.6, M34, M36, M37, M38, M39), each holding its subject to
 not panicking, to its bounds, and to what it must keep (a round trip,
 a differential comparison with a fresh engine, a policy never allowing
 what it refused):
@@ -410,6 +430,12 @@ what it refused):
   key encoded and decoded the same and two keys' bytes ordered as the
   keys; `idb_ops`, IndexedDB's operations against the store and a model
   of it, compared after each;
+- *service workers and the Cache API* (M39): `cache_api`, any
+  sequence of puts, matches, deletes and keys with their options
+  against a model of the standard's query, every record written and
+  read back the same; `sw_registry`, any sequence of jobs over scopes
+  and script URLs against the registration rules and a model of
+  matching;
 - *the process boundary*: `ipc_decode`, any bytes read as the
   messages of either side, frame by frame and whole, each decoded one
   encoded again the same; its seeds include messages recorded from a
@@ -539,7 +565,7 @@ earlier milestones say why each is what it is):
 | `engine` | `MAX_BODY_PREVIEW` | `1 << 20` | The most bytes of a response's body the log keeps. |
 | `engine` | `MAX_PANEL_MESSAGES` | `1024` | The most messages the DevTools panel's page may have waiting for the browser (M36): it takes them each turn. |
 | `engine` | `MAX_PANEL_RECORDS` | `100` | The most records of each object store the panel is given. |
-| `engine` | `SITE_QUOTA` | `IDB_ORIGIN_QUOTA + 2 * STORAGE_QUOTA as u64` | The bytes a storage key may use: its `localStorage`, two bytes a code unit, and its IndexedDB databases (`navigator.storage`'s quota). |
+| `engine` | `SITE_QUOTA` | `IDB_ORIGIN_QUOTA + 2 * STORAGE_QUOTA as u64 + CACHE_QUOTA` | The bytes a storage key may use: its `localStorage`, two bytes a code unit, its IndexedDB databases and (M39) its caches (`navigator.storage`'s quota). |
 | `engine` | `MAX_DOWNLOADS` | `100` | The most downloads the list keeps: past it, the oldest finished ones leave it (their files stay). |
 | `engine` | `MAX_FILE_NAME` | `200` | The longest name a download is saved under, in bytes. |
 | `engine` | `MAX_OPENING` | `16` | The most tabs a tab's pages may have asked for that the browser has not yet opened (M37). |
@@ -547,6 +573,20 @@ earlier milestones say why each is what it is):
 | `engine` | `MAX_SETTING_BYTES` | `64 << 10` | The longest a setting's value may be, written as JSON. |
 | `engine` | `MAX_WAITING_CHANGES` | `1024` | The most changes an engine's documents may have waiting to hear of in `storage` events (M37): past it the oldest are dropped. |
 | `engine` | `MAX_PRELOADS` | `128` | The most preloads a page makes (M38). |
+| `engine` | `CACHE_QUOTA` | `512 << 20` | The most a storage key's caches may hold, in bytes (M39): their bodies, their requests' and responses' heads, and `OPAQUE_PADDING` for each opaque response. |
+| `engine` | `OPAQUE_PADDING` | `7 << 20` | What an opaque response counts toward the quota and `estimate()`, whatever its size, so that a page cannot learn another origin's response's size from them. |
+| `engine` | `MAX_CACHES` | `256` | The most caches a storage key keeps. |
+| `engine` | `MAX_CACHE_NAME` | `1024` | The longest a cache's name may be, in bytes. |
+| `engine` | `MAX_ORPHANS` | `16` | The most caches deleted while a script may still hold them that a storage key keeps answering from, in memory: past it, the oldest go. |
+| `engine` | `MAX_REGISTRATIONS` | `100` | The most service worker registrations a storage key has. |
+| `engine` | `MAX_IMPORTED_SCRIPTS` | `64` | The most scripts a version imports. |
+| `engine` | `MAX_VERSION_BYTES` | `64 << 20` | The most a version's scripts hold together, in bytes. |
+| `engine` | `STALE_AFTER` | `24 * 60 * 60` | How long after its last check a registration is stale, in seconds: its scripts are then fetched past the HTTP cache. |
+| `engine` | `SERVICE_WORKER_IDLE` | `30 s` | How long a version runs with no event pending before it is stopped: the reference browser's. |
+| `engine` | `SERVICE_WORKER_EVENT_LIMIT` | `300 s` | How long an event may keep its version: past it, the version is stopped and the event fails. |
+| `engine` | `MAX_RUNNING_SERVICE_WORKERS` | `32` | The most versions a context runs at once: past it, the one given an event longest ago is stopped. |
+| `engine` | `WORKER_RENDERER_IDLE` | `30 s` | How long a worker renderer lives with no version running in it. |
+| `engine` | `MAX_REDIRECTS` | `20` | The most redirects of a version's that are followed: Fetch's. |
 | `silver-browser` | `MAX_CRASH_DUMPS` | `8` | The most dumps kept: past it, the oldest go. |
 | `silver-browser` | `MAX_FORWARDED` | `1024` | The most requests waiting on the page's answers. |
 | `silver-browser` | `MAX_ALL_RENDERERS` | `48` | The most renderers the windows' tabs keep alive together (M37), shared out among the windows: past a window's share, its hidden tab least recently shown is discarded. |
@@ -728,6 +768,11 @@ seconds (`PROMPT_TIMEOUT`).
   hop's, a stylesheet's and a worker's own requests' referrers, and the
   mixed form not held when sent into another frame or redirected to
   `http:`.
+- **Service workers' edges** (M39): a version runs under no policy of
+  its own (G185); worker renderers are not counted toward
+  `MAX_ALL_RENDERERS`, each site with a running version having one
+  (G187); a worker's response has no bound of its own past its realm's
+  heap and `MAX_MESSAGE` (G191).
 - **The profile encryption's edges** (G109): pages freed when an older
   profile was sealed keep their values in the clear until written
   again.

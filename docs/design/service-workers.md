@@ -383,4 +383,86 @@ the page with no worker; and a worker's start.
 
 ## 4. Corrected to the code
 
-Filled in at the last step.
+What the work found that this note did not say, or said otherwise, by
+step:
+
+- **The Cache API (step 1).** `SCHEMA` 6 holds three tables: the
+  caches by storage key, their entries (each its cache, request,
+  response head and body length) and the bodies apart, each sealed
+  with its numbers as associated data. The renderer's requests are
+  `StorageOp::Caches`, JSON operations with the bodies in one run of
+  bytes after them. A key's caches count toward `SITE_QUOTA` too. A
+  deleted cache's object still reads what it held, from memory, up to
+  16 of them a key. A request read back by `keys()` keeps its method,
+  URL and fields; the rest are the defaults. The opaque padding is a
+  fixed 7 MiB (the reference pads by a rule of its own).
+- **The registry (step 2).** The registry hands out what a job needs
+  done (a script fetched, a version run, an event dispatched, a promise
+  settled, a notice) as effects and is told how each went; a thread of
+  the context's, the driver, does them. Every script check counts as
+  the registration's last check, since the HTTP cache does not say
+  whether it answered. After an activation Try Activate runs again,
+  so a version that installed meanwhile does not wait for nothing.
+  `getRegistrations()` lists in scope order, as the reference does. A
+  registration's row in the profile is apart from its number in
+  memory, so that a key read late cannot take another's. The pages'
+  objects came at step 3, where a version can run.
+- **The worker's global (step 3).** The pages' objects follow the
+  registry's notices, each carrying the registration's view at that
+  moment, and `ready` settles by the realm's own objects, never ahead
+  of them. `type: "module"` is refused as a script that does not
+  evaluate, where the reference registers it (G41). A version keeps no
+  policies of its own (G185). A version's requests come from its
+  script's host's address space.
+- **Renderers (step 3b).** A renderer's documents reach the registry
+  through the browser's storage service, keyed from the browser's own
+  grants, their URL held to that key's origin or the renderer is
+  killed. Worker renderers are bounded by the sites with running
+  versions, not counted toward `MAX_ALL_RENDERERS` (G187). A response
+  carried between processes takes its request's URL when it has none:
+  an empty URL list failed to decode and killed the renderer.
+- **Clients and messages (step 4).** Dedicated workers are not clients,
+  nor do `about:blank` and `srcdoc` frames inherit a controller (G186):
+  a document becomes a client at its commit when a registration of its
+  URL has an active version. A document is left at its successor's
+  commit. `MessagePort`s do not cross to or from a service worker
+  (`DataCloneError`), and a page's messages are dispatched at once, not
+  held until `startMessages()` (G184). `openWindow` and `focus` are
+  always refused, with the reference's words. A renderer's document is
+  known as nested only in a context of another site.
+- **Fetch (steps 5 and 6).** The fetch's request carries its client's id
+  (`net::Request.client`) and a navigation the id its document is to
+  have (`reserved_client`); the interception wraps the engine network's
+  client in one process and the browser network service's fetcher for a
+  renderer's, which admits a client of a site its lock allows or drops
+  it. The tab's icon and a policy's report carry no client. A worker's
+  redirect is followed through it again, 20 at most. A synchronous
+  `XMLHttpRequest` and a dedicated worker's requests are not given to a
+  worker (G186). An opaque response's body is not a script's to keep:
+  what a version answers with from another origin without CORS is empty.
+  A worker's response is bounded by its realm's heap, and from a worker
+  renderer by `ipc::MAX_MESSAGE` (16 MiB), not by a bound of its own
+  (G191). A renderer's document's client id is the browser's, given at
+  its commit, not its navigation's `resultingClientId` (G188). The
+  registry's clock was never set, so every navigation was stale: the
+  driver sets it with each message. `fetch()` takes a navigation's
+  request, which only a `FetchEvent` gives a script.
+- **DevTools.** The storage panel lists a site's service workers, their
+  versions and states, and unregisters them; "Update", "Stop", the
+  clients, a version's console and the network panel's mark of a
+  worker's response are not there (G189).
+- **The acceptance (step 7).** The web-platform tests' `service-workers`
+  directory is not run: its tests are testharness.js tests against
+  wptserve's handlers, which the runner stands in for neither of, and a
+  checkout is a download. The probe-matched tests (probes 1 to 6) stand
+  in (G190). The engine has no `URL` class (G68): the tests'
+  workers cut paths by hand.
+- **T4.3 and the fuzz runs (step 8).** Nothing found: `cache_api`,
+  `sw_registry` and `ipc_decode` ten minutes each on six workers, the
+  last's seeds holding a worker's fetch, claim and a reload. T4.3 found
+  nothing of M39's: the head x0.967 the base over 151 rows, the rows
+  past 10% in stages it does not touch. CI's runs found three tests
+  whose outcome was their machine's timing: the HTTP/2 acceptance's
+  time bound on macOS (now fifteen replies' time), a preload nothing
+  took still on its way at the load, and a worker done before its
+  page's load (WPT's synchronous `report-error` tests, `either:`).

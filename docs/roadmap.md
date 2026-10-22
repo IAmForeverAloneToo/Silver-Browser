@@ -2515,22 +2515,49 @@ process seams.
 The gate (T3 usage demand) opened at the maintainer's word, 2026-10-22
 (`docs/design/service-workers.md`).
 
-- [ ] M39.1 The Cache API: `CacheStorage` and `Cache` in windows and
+- [x] M39.1 The Cache API: `CacheStorage` and `Cache` in windows and
        workers, by storage key, kept in the profile, within a quota,
        in `estimate()` and the DevTools storage panel.
-- [ ] M39.2 Registration and lifecycle: `navigator.serviceWorker`, the
+       Done 2026-10-22: the standard's query and batches, sealed in the
+       profile (`SCHEMA` 6), bodies read when matched, 512 MiB a key
+       with an opaque response counted as 7 MiB, in secure contexts'
+       windows, dedicated workers and service workers alone, a
+       renderer's through the browser's storage service.
+- [x] M39.2 Registration and lifecycle: `navigator.serviceWorker`, the
        standard's jobs (register, update, unregister), install and
        activate with `waitUntil`, `skipWaiting`, updates byte for byte
        and a day apart, registrations kept in the profile.
-- [ ] M39.3 The service worker: `ServiceWorkerGlobalScope` in a thread
+       Done 2026-10-22: the registry a state machine whose effects a
+       driver thread of the context's does; Start Register's and the
+       script's checks in the reference browser's words; a registration
+       and its active version's scripts kept in the profile.
+- [x] M39.3 The service worker: `ServiceWorkerGlobalScope` in a thread
        of a renderer of its site (D35), its events and lifetime,
        `Clients`, `postMessage` both ways, `claim`.
-- [ ] M39.4 Fetch interception: navigations by scope and the requests
+       Done 2026-10-22: a version a thread of a worker renderer of its
+       site, started for an event and stopped after 30 s idle or an
+       event past 5 minutes, 32 running at most; in one process a
+       thread of its own; clients by ids of a UUID's form, controllers,
+       `controllerchange`.
+- [x] M39.4 Fetch interception: navigations by scope and the requests
        of controlled clients given to the worker as `FetchEvent`s,
        `respondWith` and the fallback to the network.
-- [ ] M39.5 Acceptance: a site whose worker kept its pages opens with
+       Done 2026-10-22: requests carry their client and navigations
+       their reserved client; Handle Fetch in the engine's network and
+       the browser's network service, a version's response checked as
+       the standard checks it, its redirects followed through it; Soft
+       Update a day on.
+- [x] M39.5 Acceptance: a site whose worker kept its pages opens with
        its server stopped, in another tab and after the profile is
        opened again; WPT's `service-workers` subset; a bench.
+       Done 2026-10-22: the site whole from its worker, the server
+       asked for nothing, in another tab and after the profile is
+       opened again; its changed worker installs, waits and takes over
+       on `skipWaiting`. WPT's directory is not run (G190); probes of
+       the reference browser stand in. The `service_workers` bench: a
+       page of twenty resources held back 10 ms, 56.3 ms with no
+       worker, 58.8 ms through one passing each request on, 11.8 ms
+       through one answering from its cache; a worker's start 40.7 ms.
 
 ---
 
@@ -3242,6 +3269,34 @@ Deferred from the milestones above, each with what it waits on:
        known values alone; `<link rel=preload>` as `font`, `fetch`,
        `track` and the others is not preloaded (the engine fetches no
        fonts; a script's `fetch()` carries its own init). Found at M38.
+- [ ] G184 `MessagePort`s do not cross to or from a service worker
+       (a `DataCloneError`), and a page's messages from its service
+       workers are dispatched at once, not held until
+       `startMessages()`, `onmessage` or its load. Found at M39.
+- [ ] G185 A service worker's version keeps no policies of its own:
+       its script's Content Security Policy and referrer policy are
+       not kept, and it runs under none. Found at M39.
+- [ ] G186 What a service worker is not given: a synchronous
+       `XMLHttpRequest`'s request and a dedicated worker's; dedicated
+       workers are not clients, nor do `about:blank` and `srcdoc`
+       frames take their parent's controller. Found at M39.
+- [ ] G187 Worker renderers are not counted toward
+       `MAX_ALL_RENDERERS`: each site with a running version has one.
+       Found at M39.
+- [ ] G188 A renderer's document's client id is the browser's, given at
+       its commit, not the `resultingClientId` its navigation's
+       `FetchEvent` had (in one process they are the same). Found at
+       M39.
+- [ ] G189 DevTools for service workers: "Update" and "Stop" in the
+       storage panel, a registration's clients, a version's console
+       (it goes nowhere), and the network panel's mark of a response
+       a worker gave. Found at M39.
+- [ ] G190 The web-platform tests' `service-workers` directory is not
+       run: its tests are testharness.js tests against wptserve's
+       handlers, neither of which the runner has. Found at M39.
+- [ ] G191 A service worker's response has no bound of its own: its
+       realm's heap holds it, and `ipc::MAX_MESSAGE` from a worker
+       renderer. Found at M39.
 
 ---
 

@@ -1994,6 +1994,27 @@ once what the cache holds fresh is not preloaded. The scanner's
 tokenizing costs nothing measurable; the rest were paint, raster and
 style stages in code M38 does not touch, within 10% over six rounds.
 
+### Service workers (M39)
+
+The Windows machine, release. The `service_workers` bench: a page of
+twenty resources (six sheets, six scripts that block the parser, eight
+images) whose every reply the server holds back 10 ms, loaded in a new
+tab of the context its worker was registered in: 56.3 ms with no
+worker, 58.8 ms through a worker that passes each request to the
+network (about 0.1 ms a request, its `FetchEvent` and answer between
+threads), 11.8 ms through one that answers from its cache. A one-line
+worker's start, `register()` to `ready` (its script fetched, evaluated,
+installed and activated): 40.7 ms.
+
+**T4.3.** The benchmarks of the code before M39 (2a0f50405) and of M39,
+by turns, 25 benches, four rounds. Across the 151 rows the head's
+medians are x0.967 the base's; 9 rows past x1.10 and 18 under x0.91.
+Those past 10% are paint, raster and style stages and the values
+bench's first row (bimodal, 1.5 or 3 ms, on both sides), in code M39
+does not touch; six rounds more of their six benches, run while the
+machine was loaded by other programs, moved them both ways. No
+exception.
+
 ### Over budget, and why
 
 These are known and recorded rather than hidden. Each has the item that

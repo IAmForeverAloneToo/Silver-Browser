@@ -2278,3 +2278,41 @@ by the system's resolver, the scanner on the engine's thread, a use
 not written to the profile, `as` beyond style, script and image.
 2,998 tests pass workspace-wide, two ignored. Next: the long tail,
 gated (M39+), service workers and the Cache API first.
+
+Milestone 39 (service workers and the Cache API;
+`docs/design/service-workers.md`, D35): a site that works offline. The
+Cache API (step 1): `engine::caches`, a storage key's caches in the
+context's storage beside IndexedDB, the standard's query and batches,
+sealed in the profile (`SCHEMA` 6), a quota with opaque responses
+padded; `CacheStorage` and `Cache` in secure contexts' windows and
+workers, a renderer's through the browser's storage service. The
+registry (step 2): `engine::service_worker`, registrations and versions
+and the standard's jobs as a state machine that hands out effects, a
+driver thread of the context's doing them; the script's checks in the
+reference browser's words; kept in the profile. The worker (step 3):
+`RealmKind::ServiceWorker` on M31's worker loop, its events and
+lifetime, and in documents `navigator.serviceWorker` and its objects
+following the registry's notices; in one process a thread a version
+(`InProcess`), in many a thread of a *worker renderer* of its site
+(step 3b, `service::workers`), locked and sandboxed as any renderer.
+Clients and messages (step 4): the driver's client table, ids of a
+UUID's form, controllers, `Clients` and `postMessage` both ways,
+`claim` and `controllerchange`. Interception (steps 5 and 6): requests
+carry their client and navigations their reserved client; the
+`Intercepting` fetcher gives a controlled client's requests, and a
+navigation of a registration's scope, to its version as a `FetchEvent`
+and checks the answer, in the engine's network and the browser's
+network service alike; Soft Update a day on. The acceptance (step 7): a
+site whose worker keeps its pages shown whole with its server down, in
+another tab and after the profile is opened again, and its update
+taking over on `skipWaiting`; the `service_workers` bench. The runs
+found: notices that `ready` outran, an empty URL list that killed a
+renderer, a document's worker set made again, an inbox's waker not
+shared by its clones, the registry's clock never set: mended. Not in
+this milestone, said rather than hidden and registered (G184 to G191):
+ports to and from a worker, a version's policies, sync XHR's and
+dedicated workers' requests, worker renderers uncounted, a renderer's
+client id, DevTools for workers, WPT's `service-workers` directory, a
+response's own bound. 3,057 tests pass workspace-wide, two ignored.
+Next: the long tail, gated (M40+).
+
