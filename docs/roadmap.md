@@ -2471,17 +2471,42 @@ process seams.
 
 ## M38 — HTTP/2 + real cache  ·  `net`  ·  Effort: L  ·  Depends: M27
 
-- [ ] M38.1 HTTP/2: streams/priorities/flow-control, HPACK, connection
+- [x] M38.1 HTTP/2: streams/priorities/flow-control, HPACK, connection
        coalescing (rustls ALPN).
-- [ ] M38.2 Cache: `Cache-Control` (max-age, no-store, no-cache,
+       Done 2026-10-22 (`docs/design/http.md`): HPACK and frames, a
+       connection's thread driving a session without a socket, streams
+       up to 100 at once with flow control both ways, retries of what a
+       connection that ended did not process, RFC 9218 priorities by
+       destination; the connections a profile's tabs share, coalesced
+       when the certificate covers the host and the address is among
+       its own; the protocol in the network log.
+- [x] M38.2 Cache: `Cache-Control` (max-age, no-store, no-cache,
        immutable), conditional requests (`ETag`/`If-None-Match`,
        `Last-Modified`), `Vary`, 304 handling, disk-backed via profile.
-- [ ] M38.3 Preload/scanner: speculative subresource discovery during
+       Done 2026-10-22: revalidation with validators, a `304` freshening
+       what is stored, the request's own directives, `must-revalidate`
+       and `immutable`, documents through the cache, a reload asking
+       again and Ctrl+Shift+R bypassing it, a traversal taking what is
+       stored; kept sealed in the profile (`SCHEMA` 5), 64 MiB of bodies
+       in memory and 256 MiB in the profile, each body read at its first
+       use.
+- [x] M38.3 Preload/scanner: speculative subresource discovery during
        HTML tokenization (the architecture doc predicted this — the
        tokenizer emits resource hints as it sees tags).
-- [ ] M38.4 Acceptance: cached repeat-load of a 20-resource page makes
+       Done 2026-10-22: a second tokenizer reads the text ahead of the
+       parser, past a script that blocks it; its hints preloaded as the
+       page's own requests would be made, held to its policies, and
+       taken by them; `<link rel=preload>`, and the console's word for
+       one nothing took.
+- [x] M38.4 Acceptance: cached repeat-load of a 20-resource page makes
        zero network requests; HTTP/2 multiplexing verified against a
        test server.
+       Done 2026-10-22: the page of twenty asks for none from another tab
+       of its profile, nor after the profile is opened again; over
+       HTTP/2, one connection and fifteen streams or more at once. The
+       `http` bench: twenty resources held back 40 ms, 215.6 ms over
+       HTTP/1.1 and 98.2 ms over HTTP/2; a blocked page, 348.9 ms
+       without the scanner and 129.1 ms with it.
 
 ---
 
@@ -3076,7 +3101,9 @@ Deferred from the milestones above, each with what it waits on:
        `workers/interfaces/WorkerUtils/importScripts/report-error-setTimeout-same-origin.sub.any.worker.html`
        reported ERROR: the SyntaxError it means to raise taken by the
        worker's own harness for an uncaught one, though the test allows
-       them. Not reproduced. Found at M35.
+       them. Not reproduced. Found at M35. Seen again at M37 and M38
+       (`report-error-same-origin`, `report-error-setTimeout-cross-origin`,
+       ERROR the same way).
 - [ ] G145 DevTools' sources panel and debugger (T4's fourth tool):
        breakpoints, stepping, scopes and source maps need QuickJS-ng's
        debugger interface, which `rquickjs` does not expose. Found at
@@ -3142,7 +3169,9 @@ Deferred from the milestones above, each with what it waits on:
 - [ ] G165 QuickJS checks a script's native stack against where its
        runtime began (rquickjs refreshes it only with its `parallel`
        feature): a deep caller can make a script's stack overflow early.
-       Found at M37.
+       Found at M37. At M38 Windows CI's timing ran a sandboxed frame's
+       script out of it in a debug build, whose frames are larger; a
+       debug build now has twice the stack (512 KiB).
 - [ ] G166 Tabs a page opens are `noopener`: `window.open` gives back
        `null`, `opener` is `null`, no `sessionStorage` copy, no referrer;
        a form posted to a new tab is posted in the tab itself. Found at
@@ -3176,6 +3205,21 @@ Deferred from the milestones above, each with what it waits on:
 - [ ] G179 The windows' event handling (the shell's `Browser`) has no
        test of its own: the session tests stop at the session. Found at
        M37.
+- [ ] G180 A name under `.localhost` goes to the system's resolver
+       (about 260 ms on Windows, and possibly the network's DNS), where
+       browsers answer `localhost` and its subdomains with loopback
+       themselves (RFC 6761). Found at M38.
+- [ ] G181 The preload scanner and its preloads run on the engine's
+       thread: about 17 us a preload, a page of 100 sheets a server
+       answers at once 7.0 -> 8.7 ms (T4.3's exception). The scanner on
+       a thread of its own, and preloads issued in a batch. Found at M38.
+- [ ] G182 A use of a cached response is not written to the profile:
+       across a restart, the least recently used are told by when they
+       were stored or freshened. Found at M38.
+- [ ] G183 `HTMLLinkElement.as` reflects any string rather than the
+       known values alone; `<link rel=preload>` as `font`, `fetch`,
+       `track` and the others is not preloaded (the engine fetches no
+       fonts; a script's `fetch()` carries its own init). Found at M38.
 
 ---
 

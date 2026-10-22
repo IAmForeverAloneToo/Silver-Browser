@@ -1971,6 +1971,29 @@ of 100 stylesheets (5.03 against 5.67ms) to x1.06. The one row past
 10% that stays is `about:silver` shown, 0.75 against 0.90ms: the page
 now holds the gallery of the engine's demonstrations. No exception.
 
+### HTTP/2 and the cache (M38)
+
+The Windows machine, release. The `http` bench: a page of twenty
+resources (six sheets, six scripts that block the parser, eight images)
+whose every reply the server holds back 40 ms, over TLS, a new engine
+and client each run: 215.6 ms over HTTP/1.1 (six connections), 98.2 ms
+over HTTP/2 (one, its streams at once), about two replies' time. A page
+whose first script, held back, blocks the parser before ten more:
+348.9 ms without the preload scanner, 129.1 ms with it.
+
+**T4.3.** The benchmarks of the code before M38 (87ecae34e) and of
+M38, by turns, 24 benches; the first two rounds, run while another
+program built on the machine (one round 47 minutes against 13), set
+aside, four clean rounds compared, and the benches with rows past 10%
+six rounds more beside a build with the scanner off. One row stays,
+the milestone's own: the storage bench's page of 100 stylesheets from
+a server that answers at once, 7.0 against 8.7 ms (x1.24), about 17 us
+a preload on the engine's thread, where nothing is gained by a preload;
+an exception, G181. The same page again from the cache came to x0.93
+once what the cache holds fresh is not preloaded. The scanner's
+tokenizing costs nothing measurable; the rest were paint, raster and
+style stages in code M38 does not touch, within 10% over six rounds.
+
 ### Over budget, and why
 
 These are known and recorded rather than hidden. Each has the item that

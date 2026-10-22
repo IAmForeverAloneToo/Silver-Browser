@@ -2242,3 +2242,39 @@ languages, the dark bubble, the gallery's IndexedDB demo, a frame's
 the browser that has it, and the windows' event handling untested.
 2,918 tests pass workspace-wide, two ignored. Next milestone:
 HTTP/2 and a real cache (M38).
+
+Milestone 38 (HTTP/2 and a real cache; `docs/design/http.md`): the
+network a browser of today speaks. HPACK and frames (step 1),
+`net::h2`, RFC 7541's examples byte for byte. The client (step 2): a
+connection's thread owns its TLS socket and drives `h2::session`, the
+protocol without a socket, for the fetches, which open streams
+through a queue and hear their events on channels; flow control both
+ways, at most 100 streams, retries of what an ending connection did
+not process; the pool probes an origin's ALPN once and remembers the
+origins that chose HTTP/1.1. Shared, coalesced, prioritized (step 3):
+the context holds the transport, so a profile's tabs share
+connections; a connection serves another host its certificate and
+address fit; priorities by destination; the protocol in the network
+log. Revalidation (step 4): a lookup's freshness by the stored
+response and the request's directives, conditional requests and `304`,
+documents through the cache, a reload asking again, Ctrl+Shift+R
+bypassing the cache for the page and its subresources, a traversal
+taking what is stored. The cache in the profile (step 5): `SCHEMA` 5's
+two sealed tables, records read when the profile is given and bodies
+at first use, 64 MiB in memory and 256 MiB kept. The preload scanner
+(step 6): `html::preload`, a second tokenizer fed by `html::Load`,
+hints the engine preloads as the page would ask, held to its policies,
+taken by the page's own requests; `<link rel=preload>`. The acceptance
+(step 7): a page of twenty asked for once by a profile's tabs and by
+none after it is opened again; over HTTP/2 on one connection; the
+`http` bench. CI and the runs found: a test server waking on a timer's
+tick, Windows' ephemeral ports used up by the WPT harness's
+connections, a memory bound passed until a flush, a record time
+Windows cannot hold, a preload taking a violation's report from the
+page's own request: mended. T4.3 found the preloads' main-thread cost
+on a page of 100 sheets (the exception, G181). Not in this milestone,
+said rather than hidden and registered (G180 to G183): `.localhost`
+by the system's resolver, the scanner on the engine's thread, a use
+not written to the profile, `as` beyond style, script and image.
+2,998 tests pass workspace-wide, two ignored. Next: the long tail,
+gated (M39+), service workers and the Cache API first.

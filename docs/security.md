@@ -137,6 +137,18 @@ reference browser does; a form from a secure page to `http:` waits for
 the user on a warning page. Revocation and Certificate Transparency
 (G100) and Encrypted Client Hello (G101) are not checked or used.
 
+HTTP/2 (M38) is spoken over TLS alone, by ALPN; never in the clear.
+A connection is used for another host of its scheme and port only when
+its certificate is valid for that host and its address is among the
+host's own (RFC 9113 9.1.1), and a `421` undoes that; connections are
+kept apart by the partition, as HTTP/1.1's are. HPACK never indexes
+`authorization` or a short cookie (RFC 7541 7.1.3), and its table and
+the decoded header list keep their bounds; a server sending more than
+`MAX_H2_CONTROL_FRAMES` control frames a second, or past this end's
+windows, ends its connection. The HTTP cache is partitioned by the
+top-level site and the frame's (M33.2), its responses of `no-store`
+never kept.
+
 ### 4.5 The local network
 
 Local Network Access (M33.4): a request from a public page to the
@@ -189,7 +201,11 @@ the table and the key as associated data (M33); the data key is
 wrapped by DPAPI for the user on Windows, so that another user of the
 machine, or the files copied off it, read nothing. On macOS and Linux
 the key is not wrapped yet (G98). Another program running as the user
-can still ask DPAPI, as it can for the reference browser.
+can still ask DPAPI, as it can for the reference browser. The HTTP
+cache's entries and bodies are sealed the same way (M38), each under
+its number, so a body moved to another entry does not open; a record
+that does not read whole is deleted, and an opaque site's entries are
+never written.
 
 ### 4.10 The process boundary
 
@@ -365,7 +381,7 @@ that adds a package writing `unsafe` is read with it.
 
 ## 6. Fuzzing
 
-34 libFuzzer targets in `fuzz/` (M33.6, M34, M36, M37), each holding its subject to
+37 libFuzzer targets in `fuzz/` (M33.6, M34, M36, M37, M38), each holding its subject to
 not panicking, to its bounds, and to what it must keep (a round trip,
 a differential comparison with a fresh engine, a policy never allowing
 what it refused):
@@ -379,7 +395,16 @@ what it refused):
   `dom_api`, `input`, `canvas`, `clone`, `frames`;
 - *the network's rules*: `csp`, `referrer`, `hsts`, `cookies`,
   `storage`, `http_cache`, and `content_disposition` (M37), the header
-  read and the name a download is saved under made safe;
+  read and the name a download is saved under made safe; `http_cache`
+  (M38) also writes its entries to a profile and reads them back, a
+  record that reads writing back as it was, and checks freshness both
+  ways;
+- *HTTP/2 and the scanner* (M38): `hpack`, any bytes decoded within the
+  table's bound and any header list encoded and decoded the same;
+  `h2_client`, a client session fed any server bytes over three
+  streams, every stream ending and none hearing after its end;
+  `preload_scan`, any text scanned whole and in pieces giving the same
+  hints, each URL its element's own;
 - *the DevTools and IndexedDB* (M36): `devtools_json`, the protocol's
   parser and writer, every value written back the same; `idb_keys`, a
   key encoded and decoded the same and two keys' bytes ordered as the
@@ -521,6 +546,7 @@ earlier milestones say why each is what it is):
 | `engine` | `MAX_SESSION_TABS` | `500` | The most tabs a restored session keeps. |
 | `engine` | `MAX_SETTING_BYTES` | `64 << 10` | The longest a setting's value may be, written as JSON. |
 | `engine` | `MAX_WAITING_CHANGES` | `1024` | The most changes an engine's documents may have waiting to hear of in `storage` events (M37): past it the oldest are dropped. |
+| `engine` | `MAX_PRELOADS` | `128` | The most preloads a page makes (M38). |
 | `silver-browser` | `MAX_CRASH_DUMPS` | `8` | The most dumps kept: past it, the oldest go. |
 | `silver-browser` | `MAX_FORWARDED` | `1024` | The most requests waiting on the page's answers. |
 | `silver-browser` | `MAX_ALL_RENDERERS` | `48` | The most renderers the windows' tabs keep alive together (M37), shared out among the windows: past a window's share, its hidden tab least recently shown is discarded. |
@@ -541,7 +567,7 @@ earlier milestones say why each is what it is):
 | `js` | `MAX_HANDLE` | `(1 << 53) - 1` | The largest number a handle may be: what a script's number holds exactly. |
 | `js` | `MAX_SCRIPT_HEAP` | `256 << 20` | The most heap a realm may hold, in bytes. |
 | `js` | `MAX_SCRIPT_STEPS` | `10_000` | The interrupt checks a run may take, each about 10,000 of QuickJS-ng's operations: 2 to 5 seconds of running code. |
-| `js` | `MAX_SCRIPT_STACK` | `256 << 10` | The native stack a realm's scripts may use, in bytes. |
+| `js` | `MAX_SCRIPT_STACK` | `256 << 10` | The native stack a realm's scripts may use, in bytes (twice it in a debug build, M38). |
 | `js` | `MAX_ANSWERS` | `1024` | The answers kept, by pattern and value, before they are forgotten. |
 | `js` | `MAX_WASM_MODULE_BYTES` | `64 << 20` | The largest module a realm compiles. |
 | `js` | `MAX_WASM_MEMORY` | `256 << 20` | What a realm's memories and tables hold, in all. |
@@ -562,7 +588,9 @@ earlier milestones say why each is what it is):
 | `layout` | `MAX_WORKER_THREADS` | `8` | The most threads layout's pool has (M35.3): fewer on a machine with fewer cores. |
 | `layout` | `MAX_ITEM_LAYOUTS` | `4` | The most layouts of one flex item, grid item or cell the layout cache keeps (M35.9). |
 | `layout` | `MAX_PAGES` | `10_000` | The most pages a document is cut into: what is below the last is on none. |
-| `net` | `MAX_CACHE_BYTES` | `64 << 20` | The most the cache's bodies hold in all: past it, the least recently used entries go first. |
+| `net` | `MAX_CACHE_BYTES` | `64 << 20` | The most the cache's bodies hold in memory: past it, the least recently used go first, to the profile if it keeps them. |
+| `net` | `MAX_PROFILE_CACHE_BYTES` | `256 << 20` | The most the bodies the profile keeps hold (M38): past it, the least recently used entries go first. |
+| `net` | `MAX_FIELDS` | `1024` | The most fields a cache record's head or `Vary` holds. |
 | `net` | `MAX_CACHE_ENTRY_BYTES` | `8 << 20` | The largest body the cache keeps. |
 | `net` | `MAX_CACHE_ENTRIES` | `10_000` | The most entries the cache keeps. |
 | `net` | `MAX_COOKIE_SIZE` | `4096` | The most bytes a cookie's name and value may hold together. |
@@ -583,6 +611,14 @@ earlier milestones say why each is what it is):
 | `net` | `MAX_CONNECTIONS_PER_ORIGIN` | `6` | How many connections may be open to one origin (M14.3). |
 | `net` | `MAX_TLS_PARTITIONS` | `64` | The most partitions whose TLS sessions are kept apart at once: past them, all are forgotten. |
 | `net` | `MAX_DISPOSITION` | `8 << 10` | The longest `Content-Disposition` value read, in bytes: past it, the rest is left out. |
+| `net` | `H2_STREAM_WINDOW` | `6 << 20` | The window this end gives each stream: the reference browser's. |
+| `net` | `H2_CONNECTION_WINDOW` | `15 << 20` | The window this end gives the connection. |
+| `net` | `MAX_H2_STREAMS` | `100` | The most streams this end opens at once on a connection, whatever more the server allows. |
+| `net` | `MAX_H2_CONTROL_FRAMES` | `1000` | The most control frames (`PING`, `SETTINGS`, empty `DATA`) a server may send in a second before the connection ends with `ENHANCE_YOUR_CALM`. |
+| `net` | `MAX_HEADER_LIST_SIZE` | `crate::http::HEADER_LIMIT` | The most a response's header fields may take, decoded, which this end announces (`SETTINGS_MAX_HEADER_LIST_SIZE`): HTTP/1.1's bound. |
+| `net` | `MAX_FRAME_SIZE` | `16_384` | The largest frame payload either end takes until it says otherwise (`SETTINGS_MAX_FRAME_SIZE`'s initial value), which this end keeps. |
+| `net` | `HPACK_TABLE_SIZE` | `4096` | The dynamic table's size HTTP/2 starts with on both ends (RFC 9113 6.5.2), which this end keeps. |
+| `net` | `MAX_KNOWN_ORIGINS` | `1024` | The most origins the pool remembers speak HTTP/1.1 alone: past it, it forgets them all. |
 | `paint` | `MAX_GRADIENT_PIXELS` | `1 << 22` | The most pixels a gradient is rendered with: a larger tile is rendered smaller and stretched over it. |
 | `paint` | `MIN_PERIOD` | `0.5` | The period below which a repeating gradient is drawn as its average colour, the pixels being too coarse to show it (section 3.3). |
 | `paint` | `MAX_THREADS` | `8` | The most threads a gradient is rendered on, a band of rows each. |
@@ -665,6 +701,9 @@ seconds (`PROMPT_TIMEOUT`).
   until an update service (T6.3) can.
 - **No revocation or Certificate Transparency** (G100), **no Encrypted
   Client Hello** (G101).
+- **A `.localhost` name goes to the system's resolver** (G180), which
+  may ask the network's DNS, where browsers answer it with loopback
+  themselves.
 - **Third-party cookies are sent** (`SameSite=None`), as the reference
   browser sends them, unless the user's setting blocks them (G93, M37).
 - **A renderer opens tabs** of the web with the activation it reports

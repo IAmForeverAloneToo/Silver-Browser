@@ -287,4 +287,77 @@ follows, with and without the scanner.
 
 ## 4. Corrected to the code
 
-Filled in at the last step.
+What the work found that this note did not say, or said otherwise, by
+step:
+
+- **HPACK and frames (step 1).** The Huffman table is RFC 7541's
+  Appendix B, taken from the `h2` crate's copy in the local cargo cache
+  and checked canonical and against the RFC's examples; the static
+  table too. The `hpack` fuzz target found, in its first minute, an
+  integer of many zero continuation bytes shifting past 64 bits: one
+  shifting past 28 bits is refused.
+- **The client (step 2).** The protocol is `h2::session`, with no
+  socket, driven frame by frame by its tests; `h2::conn`'s thread only
+  reads and writes the socket for it. The split came from the sabotage
+  pass: through a real server, the send windows could not be told
+  apart. The connection window is given back as the fetches take the
+  bytes, not as they arrive, so what waits in the streams' channels
+  stays within it. A connection that ends retries the GET and HEAD
+  streams that heard nothing, at most twice. The origins that chose
+  HTTP/1.1 are remembered, 1,024 at most. The protocol in the network
+  log moved to step 3.
+- **Shared, coalesced, prioritized (step 3).** The context holds the
+  transport; a tab made alone has a context, so connections, of its
+  own. Coalescing as section 1 says, the certificate checked with
+  `rustls`'s `verify_server_name` against the one kept at the
+  handshake; a `421` forgets it.
+- **Revalidation (step 4).** A fresh `immutable` entry answers a
+  `no-cache` request without asking, whoever asked (the note said a
+  reload). Since documents are stored and a traversal takes them
+  stale, the engine tests' pages say `no-store`, keeping what they
+  meant.
+- **The cache in the profile (step 5).** `MAX_DISK_CACHE_BYTES` is
+  `MAX_PROFILE_CACHE_BYTES` (the profile may be memory), and
+  `MAX_DISK_CACHE_ENTRIES` the one `MAX_CACHE_ENTRIES` of the whole
+  cache. Kept in the profile is what a later browsing can use without
+  the network: fresh for a while or with a validator, and not an opaque
+  site's; a response with neither (a `404` icon) stays in memory, or
+  every page view would write the profile. A use writes nothing, so the
+  order of use across a restart is that of storing and freshening. A
+  body the profile has not had yet stays in memory until it has: past
+  `MAX_CACHE_BYTES` for at most a flush's interval, never past both
+  bounds together (CI's fuzz job found the first bound passed). Step 4
+  had left the `http_cache` target calling the old lookup, which the
+  gate does not build; each step now checks the fuzz crate builds.
+- **The scanner (step 6).** A lazy image is not left out: the engine
+  has no lazy loading, so it fetches them all. Nor is a sheet whose
+  media does not match: the engine fetches every sheet. Preloads are
+  held to the page's policies as they stand, recording nothing; one
+  its policy would refuse or report is not made, and one refused at a
+  redirect is dropped, so that the page's own request says so at its
+  own element (a preload's violation was otherwise taken by a script's
+  preparation). The scanner hints at a `<meta>` that sets a Content
+  Security Policy or a referrer policy, after which nothing is
+  preloaded; a request held to policies a script's `<meta>` gave since
+  takes a preload only if it has come and every URL of its response is
+  allowed (WPT's `img-src-self-unique-origin`). `as` is `style`,
+  `script` or `image`: the engine fetches no fonts, and a script's
+  `fetch()` has its own init. `HTMLLinkElement` reflects `as` and
+  `crossOrigin`. The WPT harness's clients share one transport: with
+  the scanner, each of thousands of tests opened several connections
+  at once and used up Windows' ephemeral ports.
+- **The acceptance (step 7).** The HTTP/2 test server woke for a reply
+  only when a read timed out, a Windows timer's tick each; a reader
+  thread now feeds the same channel. Per request on one connection:
+  15 to 21 ms before, 0.5 ms after. A `.localhost` name goes to the
+  system's resolver, a quarter of a second on Windows (G180).
+- **T4.3 and the fuzz runs (step 8).** A preload costs about 17 us on
+  the engine's thread, nothing gained when a local server answers at
+  once: a page of 100 sheets 7.0 against 8.7 ms, T4.3's exception
+  (G181). What the cache holds fresh is no longer preloaded, the policy
+  check is skipped when a page has none, and the tree's link preloads
+  are looked for when links change, not at every insertion. The
+  `http_cache` run found a record time Windows' clock (100 ns steps)
+  cannot hold, now refused. `ipc_decode`'s seeds hold the hard reload's
+  message. Windows CI ran a sandboxed frame's script out of its stack
+  in a debug build (G165): a debug build has twice the stack.
