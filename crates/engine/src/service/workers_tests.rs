@@ -259,3 +259,60 @@ fn a_version_in_a_worker_renderer_and_a_renderers_page_message_each_other() {
     );
     assert_eq!(host.renderers(), 1);
 }
+
+#[test]
+fn a_renderers_controlled_page_has_its_requests_answered_by_a_worker_renderer() {
+    // M39 step 5: the page's requests reach the browser, which gives them
+    // to the version in its worker renderer; what it does not answer goes
+    // to the network.
+    let server = TestServer::plain(|request| {
+        match request.target.as_str() {
+        "/sw.js" => Reply::with_fields(
+            200,
+            &[("Content-Type", "text/javascript")],
+            b"self.onfetch = (e) => {
+                if (e.request.url.endsWith('/made')) e.respondWith(new Response('made by the worker', {headers: {'x-sw': 'yes'}}));
+                else if (e.request.url.endsWith('/kept')) e.respondWith(caches.match('/kept'));
+              };
+              self.oninstall = (e) => e.waitUntil(caches.open('c').then(c => c.put('/kept', new Response('kept at install'))));",
+        ),
+        "/real" => Reply::ok("text/plain", b"from the network"),
+        _ => Reply::ok(
+            "text/html",
+            b"<script>
+             (async () => {
+               if (!navigator.serviceWorker.controller) {
+                 await navigator.serviceWorker.register('/sw.js');
+                 await navigator.serviceWorker.ready;
+                 location.reload();
+                 return;
+               }
+               const read = async (path) => { const r = await fetch(path); return (await r.text()) + ' ' + r.headers.get('x-sw'); };
+               console.log('answered ' + await read('/made') + ', ' + await read('/kept') + ', ' + await read('/real'));
+             })().catch(e => console.log('failed ' + e.name + ': ' + e.message));
+             </script>",
+        ),
+    }
+    });
+    let context = crate::Context::new();
+    let launcher = Arc::new(ThreadLauncher::with_fonts(fonts()));
+    let host = super::workers::install(&context, launcher.clone()).expect("the first");
+    let mut tab = RemoteTab::in_context(launcher, fonts(), &context);
+    tab.set_scripting(true);
+    tab.navigate(server.url("/page"));
+    let mut lines = Vec::new();
+    settle(&mut tab, |tab| {
+        lines.extend(tab.take_console().into_iter().map(|entry| entry.text));
+        lines
+            .iter()
+            .any(|l| l.starts_with("answered") || l.starts_with("failed"))
+    });
+    assert!(
+        lines.contains(
+            &"answered made by the worker yes, kept at install null, from the network null"
+                .to_owned()
+        ),
+        "{lines:?}"
+    );
+    assert_eq!(host.renderers(), 1);
+}

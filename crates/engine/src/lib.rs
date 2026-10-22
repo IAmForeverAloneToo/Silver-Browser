@@ -1276,6 +1276,9 @@ impl Engine {
             storage.clone(),
             network.client(),
         ));
+        if let Some(workers) = &own_service_workers {
+            network.intercept_with(workers.downgrade());
+        }
         Engine {
             backend,
             decoder: Decoder::new(Some(fonts.clone())),
@@ -3728,6 +3731,8 @@ impl Engine {
         self.downloads = context.downloads().clone();
         self.context = Some(context.clone());
         self.own_service_workers = None;
+        self.network
+            .intercept_with(context.service_workers().downgrade());
         let tab = context.new_tab();
         self.share_storage(context.shared_storage().clone(), tab);
     }
@@ -4483,6 +4488,52 @@ impl Engine {
         found
     }
 
+    /// The storage areas the engine's documents reach: the browser's in a
+    /// renderer, the engine's storage's otherwise.
+    fn areas(&self) -> Arc<dyn storage::Areas> {
+        match &self.areas {
+            Some(areas) => areas.clone(),
+            None => Arc::new(storage::TabAreas {
+                storage: self.storage.clone(),
+                tab: self.tab,
+            }),
+        }
+    }
+
+    /// The document of `page` as the service workers' client (M39): its
+    /// id if a registration of its URL controls it, so that its requests
+    /// go to it first; none for a document that may have none.
+    fn service_worker_client(&self, page: &Page, scripts: &scripts::Scripts) -> Option<String> {
+        let url = page.url()?.clone();
+        if !matches!(url.scheme(), "http" | "https")
+            || !page.is_secure_context()
+            || page.origin().is_opaque()
+            || page.sandbox().has(sandbox::Sandbox::ORIGIN)
+        {
+            return None;
+        }
+        let partition = self.frame_partition().map(|frame| net::Partition {
+            cross_site: frame.cross_site || !frame.top.same_site(page.origin()),
+            top: frame.top,
+        });
+        let key = storage::AreaKey {
+            origin: page.origin().clone(),
+            partition,
+        };
+        let client = scripts.service_client(&key, page.id(), url, self.frame.is_frame());
+        let answer = self.areas().service_worker(&client, r#"{"op":"commit"}"#);
+        // Its id as the registry knows it: the browser's, in a renderer.
+        let result = devtools::Json::parse(&answer).ok()?.get("result")?.clone();
+        let controlled = result
+            .get("controller")
+            .is_some_and(|controller| *controller != devtools::Json::Null);
+        let id = result
+            .get("id")
+            .and_then(devtools::Json::as_str)?
+            .to_owned();
+        controlled.then_some(id)
+    }
+
     fn take_worker_messages(&mut self) {
         let now = self.now();
         self.shown.scripts.take_worker_messages(now);
@@ -5138,13 +5189,17 @@ impl Engine {
         self.place_local_network(&mut page);
         // The document shown is left: a client no more (M39).
         self.shown.scripts.leave_service_workers();
+        let mut scripts = scripts::Scripts::with_limits(self.script_limits);
+        if page.is_panel() {
+            scripts.make_panel();
+        }
+        scripts.use_router(frames::lock(&self.frame.tree).router());
+        // The new one is a client, its controller decided now (M39): its
+        // requests go to its service worker first.
+        let client = self.service_worker_client(&page, &scripts);
+        self.network.set_service_client(id, client);
         if let Some(navigation) = &mut self.navigation {
-            let mut scripts = scripts::Scripts::with_limits(self.script_limits);
-            if page.is_panel() {
-                scripts.make_panel();
-            }
             scripts.set_time_origin(navigation.started);
-            scripts.use_router(frames::lock(&self.frame.tree).router());
             navigation.incoming = Incoming::Parsing {
                 page: Box::new(page),
                 document: Box::new(Document::new()),

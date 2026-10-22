@@ -1203,6 +1203,20 @@ impl Scripts {
         canceled
     }
 
+    /// The document as the service workers' client (M39), as
+    /// [`workers::DocumentWorkers::service_client`] makes it.
+    pub(crate) fn service_client(
+        &self,
+        key: &crate::storage::AreaKey,
+        page: u64,
+        url: net::Url,
+        nested: bool,
+    ) -> crate::service_worker::page::Client {
+        self.host
+            .workers
+            .service_client(key, page, url.clone(), url, nested)
+    }
+
     /// The document is left for another, whose response came (M39): it is
     /// the service workers' client no more.
     pub(crate) fn leave_service_workers(&self) {
@@ -1494,7 +1508,12 @@ impl Scripts {
     /// `router` (M33.2), so that a port may go to another frame: before
     /// its realm is made, while it has none.
     pub(crate) fn use_router(&mut self, router: ports::SharedRouter) {
-        if self.realm.is_none() && !self.host.workers.workers.any() {
+        // The router it has already keeps its inbox, which the service
+        // workers may have been given (M39).
+        if self.realm.is_none()
+            && !self.host.workers.workers.any()
+            && !self.host.workers.uses(&router)
+        {
             self.host.workers = workers::DocumentWorkers::with_router(router);
         }
     }

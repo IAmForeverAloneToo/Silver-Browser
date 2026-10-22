@@ -10,7 +10,7 @@ use crate::ipc::{Bytes, ToBrowser, ToRenderer};
 use crate::renderer::link::{Link, RemoteAreas, RemoteFetcher};
 use crate::scripts::service_workers::{Launch, Upstream, Versions};
 use crate::service_worker::page::Client;
-use crate::service_worker::{Evaluated, Start};
+use crate::service_worker::{Evaluated, Responded, Start};
 use crate::storage::Areas;
 
 /// The browser, as a version's registry.
@@ -146,6 +146,37 @@ impl ServiceWorkerSide {
                         version,
                         event,
                         ok: false,
+                        ran: false,
+                    });
+                }
+                None
+            }
+            ToRenderer::ServiceWorkerFetch {
+                version,
+                event,
+                data,
+            } => {
+                let link = self.link.clone();
+                let done = Box::new(move |responded: Responded| {
+                    let (answer, response) = match responded {
+                        Responded::Network => (0, None),
+                        Responded::Failed => (1, None),
+                        Responded::Given(response) => (2, Some(response)),
+                    };
+                    let _ = link.send(&ToBrowser::ServiceWorkerResponded {
+                        version,
+                        event,
+                        answer,
+                        response,
+                        ran: true,
+                    });
+                });
+                if self.versions.give_fetch(version, data, done).is_err() {
+                    let _ = self.link.send(&ToBrowser::ServiceWorkerResponded {
+                        version,
+                        event,
+                        answer: 0,
+                        response: None,
                         ran: false,
                     });
                 }

@@ -143,6 +143,9 @@ wire_enum! {
         33 => ServiceWorkerNotice { key: String, task: String },
         /// `version` stops.
         34 => StopServiceWorker { version: u64 },
+        /// The browser's `FetchEvent` `event` for `version` (M39 step 5):
+        /// its request and its clients' ids, as JSON.
+        35 => ServiceWorkerFetch { version: u64, event: u64, data: String },
     }
 }
 
@@ -303,6 +306,16 @@ wire_enum! {
         28 => ServiceWorkerSkipWaiting { version: u64 },
         /// `version` stopped, idle or past an event's limit.
         29 => ServiceWorkerStopped { version: u64 },
+        /// How `version` answered the browser's `FetchEvent` `event` (M39
+        /// step 5): `answer` 0 for none (the network's), 1 for a network
+        /// error, 2 for `response`; not `ran` when it was not running.
+        30 => ServiceWorkerResponded {
+            version: u64,
+            event: u64,
+            answer: u8,
+            response: Option<Box<Response>>,
+            ran: bool,
+        },
     }
 }
 

@@ -412,6 +412,8 @@ pub enum Call {
     /// A request of the service workers' host (M39), as JSON: its
     /// answer, as JSON.
     ServiceWorker(String),
+    /// A `FetchEvent`'s answer (M39): its head as JSON and its body.
+    ServiceWorkerRespond(String, Vec<u8>),
     /// The bytes the document's storage key uses (M36.8).
     StorageUsage,
     /// A request of IndexedDB's completed: its task is to be queued.

@@ -322,6 +322,7 @@ impl RemoteTab {
             grants.clone(),
         );
         network.hand_over_with(handovers.clone());
+        network.intercept_with(context.service_workers().downgrade());
         let waker: Arc<Mutex<Option<crate::loader::Waker>>> = Arc::default();
         let wake = waking(&waker);
         let (sender, events) = mpsc::channel();

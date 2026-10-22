@@ -66,6 +66,8 @@ pub(crate) mod security_tests;
 #[cfg(test)]
 mod service_worker_client_tests;
 #[cfg(test)]
+mod service_worker_fetch_tests;
+#[cfg(test)]
 mod service_worker_tests;
 mod sheets;
 #[cfg(test)]
@@ -373,6 +375,12 @@ impl Cookies for Mutex<Jar> {
 /// on, and those in flight, each of which can be aborted.
 pub(crate) struct Network {
     pool: Pool<Fetched>,
+    /// The documents that are service workers' clients, by their pages,
+    /// each its client's id (M39), and the service workers their requests
+    /// go to first; none in a renderer, whose requests the browser gives
+    /// them.
+    service_clients: HashMap<PageId, String>,
+    intercept: Option<crate::service_worker::WeakServiceWorkers>,
     /// Made at the first fetch: a document given to the engine needs
     /// none.
     client: Option<Arc<dyn Fetcher>>,
@@ -428,6 +436,8 @@ impl Network {
     pub(crate) fn new() -> Network {
         Network {
             pool: Pool::new(MAX_FETCH_THREADS),
+            service_clients: HashMap::new(),
+            intercept: None,
             client: None,
             remote_cookies: None,
             cookies: Arc::default(),
@@ -525,6 +535,23 @@ impl Network {
     pub(crate) fn set_remote(&mut self, fetcher: Arc<dyn Fetcher>, cookies: Arc<dyn Cookies>) {
         self.client = Some(fetcher);
         self.remote_cookies = Some(cookies);
+        self.intercept = None;
+    }
+
+    /// Gives the requests of service workers' clients to `workers` first
+    /// (M39), unless the browser does.
+    pub(crate) fn intercept_with(&mut self, workers: crate::service_worker::WeakServiceWorkers) {
+        if self.remote_cookies.is_none() {
+            self.intercept = Some(workers);
+        }
+    }
+
+    /// The document of `page` is the client `id` (M39), or no client.
+    pub(crate) fn set_service_client(&mut self, page: PageId, id: Option<String>) {
+        match id {
+            Some(id) => self.service_clients.insert(page, id),
+            None => self.service_clients.remove(&page),
+        };
     }
 
     /// The cookies `document.cookie` reads and writes.
@@ -758,11 +785,25 @@ impl Network {
         if self.bypassing.contains(&page) {
             request.cache = net::CacheMode::Reload;
         }
+        // The tab's icon and a policy's report are the browser's, no
+        // client's (M39).
+        if request.client.is_none() && !matches!(target, Target::Icon | Target::Report) {
+            request.client = self.service_clients.get(&page).cloned();
+        }
         if let Some(id) = self.take_preload(page, &target, &request) {
             return id;
         }
         let streamed = target == Target::Document;
-        let client = self.client();
+        let mut client = self.client();
+        // A client's request goes to its service worker first (M39).
+        if request.client.is_some()
+            && let Some(workers) = &self.intercept
+        {
+            client = Arc::new(crate::service_worker::fetch::Intercepting {
+                inner: client,
+                workers: workers.clone(),
+            });
+        }
         let id = self.next;
         self.next += 1;
         self.flights.insert(
@@ -794,6 +835,7 @@ impl Network {
         // A page left bypasses nothing any more, nor keeps its preloads.
         if owner.is_none() {
             self.bypassing.remove(&page);
+            self.service_clients.remove(&page);
             self.preloads.retain(|key, _| key.page != page);
             self.preloaded.retain(|key| key.page != page);
             self.preload_counts.remove(&page);

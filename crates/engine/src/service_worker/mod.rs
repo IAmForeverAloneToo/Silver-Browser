@@ -17,6 +17,7 @@ mod clients;
 mod driver;
 #[cfg(test)]
 mod driver_tests;
+pub(crate) mod fetch;
 mod fuzz;
 pub(crate) mod page;
 mod record;
@@ -26,7 +27,8 @@ mod tests;
 
 pub(crate) use clients::new_client_id;
 pub use driver::{
-    Done, Listener, ServiceWorkerHost, ServiceWorkers, Settled, Start, WeakServiceWorkers,
+    Done, Listener, Responded, ServiceWorkerHost, ServiceWorkers, Settled, Start,
+    WeakServiceWorkers,
 };
 pub use fuzz::fuzz_registry;
 

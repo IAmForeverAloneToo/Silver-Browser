@@ -213,7 +213,7 @@
     XMLHttpRequestUpload: "notservice", ServiceWorker: true, ServiceWorkerRegistration: true,
     ServiceWorkerContainer: true, ServiceWorkerGlobalScope: "service", ExtendableEvent: "service",
     InstallEvent: "service", ExtendableMessageEvent: "service", Clients: "service", Client: "service",
-    WindowClient: "service",
+    WindowClient: "service", FetchEvent: "service",
   };
 
   // Whether an interface `where` says so is the realm's.
@@ -4117,7 +4117,7 @@
     get method() { return this.#state.method; }
     get url() { return this.#state.url; }
     get headers() { return this.#state.headers; }
-    get destination() { this.#state; return ""; }
+    get destination() { return this.#state.destination || ""; }
     get referrer() {
       const referrer = this.#state.referrer;
       return referrer === "no-referrer" ? "" : referrer;
@@ -10089,7 +10089,14 @@
   // global.
   function* swExtendable(type, id, data) {
     let event;
-    if (type === "message") {
+    if (type === "fetch") {
+      event = new FetchEvent("fetch", {
+        request: swRequest(data.request),
+        clientId: data.clientId,
+        resultingClientId: data.resultingClientId,
+      });
+      WeakMapGet(fetchStates, event).id = id;
+    } else if (type === "message") {
       let message = null;
       let kind = "message";
       try {
@@ -10110,6 +10117,10 @@
     state.id = id;
     yield* dispatching(global, event);
     state.dispatched = true;
+    // A request no handler answered goes to the network.
+    if (type === "fetch" && !WeakMapGet(fetchStates, event).called) {
+      swRespond(id, "network");
+    }
     extendEnd(state);
     return false;
   }
@@ -10296,6 +10307,118 @@
   expose(ExtendableMessageEvent, "ExtendableMessageEvent");
 
   const swClients = SERVICE ? new Clients(KEY) : null;
+
+  // ---- FetchEvent (Service Workers 4.5; M39 step 5) -------------------
+
+  // A FetchEvent's members, and its answer's state: whether respondWith
+  // was called, and the host's number for it (0 for one a script made).
+  const fetchStates = new $WeakMap();
+
+  // The request a FetchEvent is given, from the host's JSON.
+  function swRequest(json) {
+    const list = [];
+    for (let i = 0; i < json.headers.length; i++) ArrayPush(list, json.headers[i]);
+    return new Request(KEY, {
+      method: json.method, url: json.url, headers: makeHeaders("request", list),
+      body: bodyFrom(json.body === null ? null : new $Uint8Array(json.body)), mode: json.mode,
+      credentials: json.credentials, cache: json.cache, redirect: json.redirect,
+      referrer: json.referrer === "" ? "no-referrer" : json.referrer, referrerPolicy: "",
+      integrity: "", keepalive: false, duplex: "half", signal: new AbortSignal(KEY),
+      targetAddressSpace: "", destination: json.destination,
+    });
+  }
+
+  // The host hears a FetchEvent's answer: none (the network's), a
+  // network error, or a response, its body's bytes apart.
+  function swRespond(id, answer, response) {
+    if (id === 0) return;
+    if (answer !== "response") {
+      native.serviceWorkerRespond(JSONStringify({ id, answer }), null);
+      return;
+    }
+    if (!isResponse(response)) {
+      swRespond(id, "error");
+      return;
+    }
+    const state = responseState(response);
+    if (state.type === "error" || (state.body.bytes !== null && state.body.used)) {
+      swRespond(id, "error");
+      return;
+    }
+    const bytes = state.body.bytes === null ? new $Uint8Array(0) : state.body.bytes;
+    if (state.body.bytes !== null) state.body.used = true;
+    native.serviceWorkerRespond(JSONStringify({
+      id, answer: "response",
+      response: {
+        type: state.type, urls: ArraySlice(state.urlList), status: state.status,
+        statusText: state.statusText, headers: cloneList(headersState(state.headers).list),
+      },
+    }), viewLength(bytes) === 0 ? null : binaryString(bytes));
+  }
+
+  class FetchEvent extends ExtendableEvent {
+    constructor(type, eventInitDict = undefined) {
+      const args = eventArgs(arguments.length, type, eventInitDict, EVENT_INIT, "FetchEvent");
+      super(args[0], args[1]);
+      const given = eventInitDict === undefined || eventInitDict === null ? {} : eventInitDict;
+      if (!isRequest(given.request)) {
+        throw new $TypeError("Failed to construct 'FetchEvent': Failed to read the 'request' property from 'FetchEventInit': " +
+          (given.request === undefined ? "Required member is undefined." : "Failed to convert value to 'Request'."));
+      }
+      WeakMapSet(fetchStates, this, {
+        request: given.request,
+        clientId: given.clientId === undefined ? "" : str(given.clientId),
+        resultingClientId: given.resultingClientId === undefined ? "" : str(given.resultingClientId),
+        handled: resolved(undefined),
+        called: false,
+        id: 0,
+      });
+    }
+
+    get request() {
+      return WeakMapGet(fetchStates, this).request;
+    }
+
+    get clientId() {
+      return WeakMapGet(fetchStates, this).clientId;
+    }
+
+    get resultingClientId() {
+      return WeakMapGet(fetchStates, this).resultingClientId;
+    }
+
+    get replacesClientId() {
+      return "";
+    }
+
+    get handled() {
+      return WeakMapGet(fetchStates, this).handled;
+    }
+
+    get preloadResponse() {
+      return resolved(undefined);
+    }
+
+    respondWith(r) {
+      const where = prefix("respondWith", "FetchEvent");
+      need(arguments.length, 1, "respondWith", "FetchEvent");
+      const state = WeakMapGet(fetchStates, this);
+      if (extendState(this).dispatched) {
+        throw new $DOMException(where + "The event handler is already finished.", "InvalidStateError");
+      }
+      if (state.called) {
+        throw new $DOMException(where + "respondWith() was already called.", "InvalidStateError");
+      }
+      state.called = true;
+      // Its promise keeps the event, as waitUntil's do.
+      if (eventState(this).trusted) this.waitUntil(r);
+      this.stopImmediatePropagation();
+      const id = state.id;
+      PromiseThen(resolved(r), (response) => swRespond(id, "response", response),
+        () => swRespond(id, "error"));
+    }
+  }
+  expose(FetchEvent, "FetchEvent");
 
   // ---- A service worker's global scope (Service Workers 4.1) ----------
 

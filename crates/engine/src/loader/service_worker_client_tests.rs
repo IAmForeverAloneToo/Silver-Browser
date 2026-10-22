@@ -157,6 +157,9 @@ fn a_new_version_claims_its_clients_and_they_hear_controllerchange() {
         const changed = new Promise(r => { navigator.serviceWorker.oncontrollerchange = r; });
         await reg.update();
         await changed;
+        // controllerchange comes as it activates: activated, by a while.
+        const c = navigator.serviceWorker.controller;
+        while (c.state !== 'activated') await new Promise(r => setTimeout(r, 10));
         log('controllerchange, now V ' + await ask(navigator.serviceWorker.controller) + ' ' + navigator.serviceWorker.controller.state);
         log('done');
       })().catch(e => log('error ' + e.name + ': ' + e.message));

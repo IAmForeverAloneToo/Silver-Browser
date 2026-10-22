@@ -20,7 +20,7 @@ use super::storage::StorageService;
 use crate::ipc::{Bytes, ToBrowser, ToRenderer};
 use crate::scripts::service_workers::{own_json, restart_of};
 use crate::service_worker::{
-    Done, Evaluated, Notice, ServiceWorkerHost, Start, View, WeakServiceWorkers,
+    Done, Evaluated, Notice, Responded, ServiceWorkerHost, Start, View, WeakServiceWorkers,
 };
 
 /// How long a worker renderer lives with no version running in it.
@@ -50,14 +50,31 @@ struct Placed {
     key: String,
 }
 
-/// An event sent and not yet done: its version, its type, whether it was
-/// sent again after its version started again, and who hears its end.
+/// An event sent and not yet done: its version, its type and data,
+/// whether it was sent again after its version started again, and who
+/// hears its end.
 struct Pending {
     version: u64,
     kind: String,
     data: Option<String>,
     again: bool,
-    done: Done<bool>,
+    done: Waiter,
+}
+
+/// Who hears an event's end: an extendable event's, or a fetch's answer.
+enum Waiter {
+    Extend(Done<bool>),
+    Fetch(Done<Responded>),
+}
+
+impl Waiter {
+    /// The event did not run: it failed, or the fetch goes to the network.
+    fn fail(self) {
+        match self {
+            Waiter::Extend(done) => done(false),
+            Waiter::Fetch(done) => done(Responded::Network),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -252,14 +269,7 @@ impl Inner {
 
     /// Sends version `version` the event `kind`, starting it again from
     /// its scripts if it runs nowhere.
-    fn dispatch(
-        &self,
-        version: u64,
-        kind: &str,
-        data: Option<String>,
-        again: bool,
-        done: Done<bool>,
-    ) {
+    fn dispatch(&self, version: u64, kind: &str, data: Option<String>, again: bool, done: Waiter) {
         let placed = lock_state(&self.state).versions.get(&version).cloned();
         let placed = match placed {
             Some(placed) => placed,
@@ -269,14 +279,14 @@ impl Inner {
                     .upgrade()
                     .and_then(|driver| driver.query_any(|registry| restart_of(registry, version)));
                 let Some((start, stored)) = restart else {
-                    return done(false);
+                    return done.fail();
                 };
                 if !self.start(&start, &stored, false) {
-                    return done(false);
+                    return done.fail();
                 }
                 match lock_state(&self.state).versions.get(&version).cloned() {
                     Some(placed) => placed,
-                    None => return done(false),
+                    None => return done.fail(),
                 }
             }
         };
@@ -298,18 +308,24 @@ impl Inner {
             .values()
             .find(|site| site.number == placed.renderer)
             .is_some_and(|site| {
-                site.renderer
-                    .send(&ToRenderer::ServiceWorkerEvent {
+                let message = match kind {
+                    "fetch" => ToRenderer::ServiceWorkerFetch {
+                        version,
+                        event,
+                        data: data.unwrap_or_default(),
+                    },
+                    _ => ToRenderer::ServiceWorkerEvent {
                         version,
                         event,
                         kind: kind.to_owned(),
                         data,
-                    })
-                    .is_ok()
+                    },
+                };
+                site.renderer.send(&message).is_ok()
             });
         if !sent && let Some(pending) = state.events.remove(&event) {
             drop(state);
-            (pending.done)(false);
+            pending.done.fail();
         }
     }
 
@@ -374,12 +390,54 @@ impl Inner {
                     }
                     drop(state);
                     if pending.again {
-                        return (pending.done)(false);
+                        return pending.done.fail();
                     }
                     return self.dispatch(version, &pending.kind, pending.data, true, pending.done);
                 }
                 drop(state);
-                (pending.done)(ok);
+                match pending.done {
+                    Waiter::Extend(done) => done(ok),
+                    Waiter::Fetch(done) => done(Responded::Network),
+                }
+            }
+            ToBrowser::ServiceWorkerResponded {
+                version,
+                event,
+                answer,
+                response,
+                ran,
+            } => {
+                let mut state = lock_state(&self.state);
+                if !owns(&state, version) {
+                    return;
+                }
+                let Some(pending) = state
+                    .events
+                    .remove(&event)
+                    .filter(|pending| pending.version == version)
+                else {
+                    return;
+                };
+                if !ran {
+                    if let Some(placed) = state.versions.remove(&version) {
+                        self.grants.revoke_frame(placed.renderer, placed.frame);
+                    }
+                    drop(state);
+                    if pending.again {
+                        return pending.done.fail();
+                    }
+                    return self.dispatch(version, &pending.kind, pending.data, true, pending.done);
+                }
+                drop(state);
+                let responded = match (answer, response) {
+                    (2, Some(response)) => Responded::Given(response),
+                    (1, _) => Responded::Failed,
+                    _ => Responded::Network,
+                };
+                match pending.done {
+                    Waiter::Fetch(done) => done(responded),
+                    Waiter::Extend(done) => done(false),
+                }
             }
             ToBrowser::ServiceWorkerSkipWaiting { version } => {
                 if owns(&lock_state(&self.state), version)
@@ -434,7 +492,7 @@ impl Inner {
             done(None);
         }
         for pending in failed {
-            (pending.done)(false);
+            pending.done.fail();
         }
     }
 
@@ -512,7 +570,8 @@ impl ServiceWorkerHost for WorkerRenderers {
     }
 
     fn install(&self, version: u64, done: Done<bool>) {
-        self.inner.dispatch(version, "install", None, false, done);
+        self.inner
+            .dispatch(version, "install", None, false, Waiter::Extend(done));
     }
 
     fn activate(&self, version: u64, done: Done<()>) {
@@ -521,13 +580,18 @@ impl ServiceWorkerHost for WorkerRenderers {
             "activate",
             None,
             false,
-            Box::new(move |_| done(())),
+            Waiter::Extend(Box::new(move |_| done(()))),
         );
     }
 
     fn message(&self, version: u64, data: String, done: Done<bool>) {
         self.inner
-            .dispatch(version, "message", Some(data), false, done);
+            .dispatch(version, "message", Some(data), false, Waiter::Extend(done));
+    }
+
+    fn fetch(&self, version: u64, data: String, done: Done<Responded>) {
+        self.inner
+            .dispatch(version, "fetch", Some(data), false, Waiter::Fetch(done));
     }
 
     fn terminate(&self, version: u64) {

@@ -68,6 +68,12 @@ pub(crate) enum WorkerMessage {
     /// type, a message event's data, and what hears whether its promises
     /// all fulfilled.
     Extendable(String, Option<String>, crate::service_worker::Done<bool>),
+    /// A `FetchEvent` for a service worker's global (M39 step 5): its
+    /// request as JSON, and what hears how it was answered.
+    Fetch(
+        String,
+        crate::service_worker::Done<crate::service_worker::Responded>,
+    ),
 }
 
 impl WorkerMessage {
@@ -103,7 +109,9 @@ pub(crate) enum FromWorker {
 pub(crate) struct Inbox {
     sender: Sender<WorkerMessage>,
     queued: Arc<AtomicUsize>,
-    wake: Option<Waker>,
+    /// What wakes the receiver, shared by every clone: one given after a
+    /// clone was taken wakes for it too.
+    wake: Arc<std::sync::OnceLock<Waker>>,
     /// Gone once the realm's mailbox is.
     alive: std::sync::Weak<()>,
 }
@@ -123,7 +131,7 @@ impl Inbox {
             self.queued.fetch_sub(bytes, Ordering::SeqCst);
             return true;
         }
-        if let Some(wake) = &self.wake {
+        if let Some(wake) = self.wake.get() {
             wake();
         }
         true
@@ -185,11 +193,15 @@ pub(crate) fn inbox(wake: Option<Waker>) -> (Inbox, Mailbox) {
     let (sender, receiver) = channel();
     let queued = Arc::new(AtomicUsize::new(0));
     let alive = Arc::new(());
+    let woken = Arc::new(std::sync::OnceLock::new());
+    if let Some(wake) = wake {
+        let _ = woken.set(wake);
+    }
     (
         Inbox {
             sender,
             queued: queued.clone(),
-            wake,
+            wake: woken,
             alive: Arc::downgrade(&alive),
         },
         Mailbox {
@@ -519,11 +531,49 @@ impl DocumentWorkers {
     /// Wakes the engine's owner with `wake` when a worker or a port
     /// sends.
     pub(crate) fn set_wake(&mut self, wake: Option<Waker>) {
-        if self.inbox.wake.is_none() && wake.is_some() {
-            self.inbox.wake = wake;
-            self.workers.inbox = self.inbox.clone();
-            lock(&self.router).set_inbox(self.realm, self.inbox.clone());
+        if let Some(wake) = wake {
+            // Every clone of the inbox shares it: the workers', the
+            // router's, the service workers' (M39).
+            let _ = self.inbox.wake.set(wake);
         }
+    }
+
+    /// The document as the service workers' client (M39): of storage key
+    /// `key`, its page `page`, its URL and base, nested in a frame or
+    /// not; their tasks come to its inbox.
+    pub(crate) fn service_client(
+        &self,
+        key: &crate::storage::AreaKey,
+        page: u64,
+        url: Url,
+        base: Url,
+        nested: bool,
+    ) -> crate::service_worker::page::Client {
+        let inbox = self.inbox();
+        let watched = inbox.clone();
+        let gone = self.service_gone.clone();
+        crate::service_worker::page::Client {
+            key: key.serialization(),
+            partition: key.partition.clone(),
+            origin: key.origin.clone(),
+            base,
+            url,
+            page,
+            id: self.service_id.clone(),
+            nested,
+            version: None,
+            alive: Arc::new(move || watched.alive() && !gone.load(Ordering::SeqCst)),
+            tell: Arc::new(move |text| {
+                inbox.send(WorkerMessage::ServiceWorker(text));
+                inbox.alive()
+            }),
+            listening: self.service_listening.clone(),
+        }
+    }
+
+    /// Whether its ports' router is `router`.
+    pub(crate) fn uses(&self, router: &SharedRouter) -> bool {
+        Arc::ptr_eq(&self.router, router)
     }
 
     /// The document's inbox, which the service workers' host tells (M39).
@@ -878,6 +928,10 @@ impl WorkerHost {
                 return;
             }
             WorkerMessage::ServiceWorker(text) => Task::ServiceWorker(text),
+            WorkerMessage::Fetch(data, done) => match host.service.as_mut() {
+                Some(service) => Task::ServiceWorker(service.fetch_event(&data, done)),
+                None => return,
+            },
             WorkerMessage::Extendable(kind, data, done) => match host.service.as_mut() {
                 Some(service) => Task::ServiceWorker(service.event(&kind, data.as_deref(), done)),
                 None => return,
@@ -1185,6 +1239,13 @@ impl ScriptingHost for WorkerHost {
             )),
             Call::ServiceWorker(request) => match self.service.as_mut() {
                 Some(service) => Ok(Answer::String(service.call(&request))),
+                None => Err(DomError::not_supported()),
+            },
+            Call::ServiceWorkerRespond(head, body) => match self.service.as_mut() {
+                Some(service) => {
+                    service.respond(&head, body);
+                    Ok(Answer::Nothing)
+                }
                 None => Err(DomError::not_supported()),
             },
             Call::Canvas(call) => self.canvas(*call),

@@ -333,6 +333,10 @@ pub struct Request {
     /// `targetAddressSpace`): a local or loopback one lets an `http:`
     /// request of a secure page past mixed content.
     pub target_address_space: Option<AddressSpace>,
+    /// Fetch's request client, as the service workers know it (M39): the
+    /// id of the document it is made for, which a service worker
+    /// controlling that document is given the request of.
+    pub client: Option<String>,
 }
 
 impl Request {
@@ -382,6 +386,7 @@ impl Request {
             partition: None,
             local_network: None,
             target_address_space: None,
+            client: None,
         }
     }
 

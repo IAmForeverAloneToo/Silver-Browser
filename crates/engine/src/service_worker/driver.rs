@@ -24,6 +24,19 @@ pub type Done<T> = Box<dyn FnOnce(T) + Send>;
 /// registration's view; it is dropped once it answers false.
 pub type Listener = Arc<dyn Fn(&str, &Notice, &View) -> bool + Send + Sync>;
 
+/// Whether what it is asked of is still there.
+pub type Alive = Arc<dyn Fn() -> bool + Send + Sync>;
+
+/// How a version answered a fetch (M39 step 5): not at all, so the
+/// request goes to the network; with a network error; or with a
+/// response.
+#[derive(Debug)]
+pub enum Responded {
+    Network,
+    Failed,
+    Given(Box<net::Response>),
+}
+
 /// How a job's promise settled, and its registration's view then.
 #[derive(Clone, Debug)]
 pub struct Settled {
@@ -67,6 +80,12 @@ pub trait ServiceWorkerHost: Send + Sync {
     /// source, as JSON; `done` hears whether its promises fulfilled.
     fn message(&self, _version: u64, _data: String, done: Done<bool>) {
         done(false);
+    }
+    /// Dispatches a `FetchEvent` at the version (M39 step 5): `data` its
+    /// request and its clients' ids, as JSON; `done` hears how it
+    /// answered.
+    fn fetch(&self, _version: u64, _data: String, done: Done<Responded>) {
+        done(Responded::Network);
     }
 }
 
@@ -129,6 +148,8 @@ struct Inner {
     fetcher: Arc<dyn Fetcher>,
     host: Mutex<Arc<dyn ServiceWorkerHost>>,
     listeners: Mutex<Vec<Listener>>,
+    /// The listeners that live while their client does.
+    living: Mutex<Vec<(Alive, Listener)>>,
     /// The clients, by their ids.
     clients: Mutex<HashMap<String, super::clients::ClientEntry>>,
     /// The thread's channel, the thread started at the first message.
@@ -148,6 +169,7 @@ impl ServiceWorkers {
             fetcher,
             host: Mutex::new(Arc::new(NoHost)),
             listeners: Mutex::new(Vec::new()),
+            living: Mutex::new(Vec::new()),
             clients: Mutex::new(HashMap::new()),
             sender: OnceLock::new(),
         });
@@ -183,6 +205,26 @@ impl ServiceWorkers {
     /// Has `listener` hear every notice from now on.
     pub fn listen(&self, listener: Listener) {
         lock(&self.inner.listeners).push(listener);
+    }
+
+    /// Has `listener` hear every notice while `alive` holds: the
+    /// listeners of clients gone are dropped as one comes.
+    pub(crate) fn listen_while(
+        &self,
+        alive: Arc<dyn Fn() -> bool + Send + Sync>,
+        listener: Listener,
+    ) {
+        let mut listeners = lock(&self.inner.living);
+        listeners.retain(|(alive, listener)| {
+            let keep = alive();
+            if !keep {
+                lock(&self.inner.listeners).retain(|l| !Arc::ptr_eq(l, listener));
+            }
+            keep
+        });
+        listeners.push((alive, listener.clone()));
+        drop(listeners);
+        self.listen(listener);
     }
 
     /// What `query` finds in the registry, `key`'s registrations read
@@ -234,6 +276,12 @@ impl ServiceWorkers {
     /// takes it.
     pub(crate) fn post_message(&self, version: u64, data: String) {
         host(&self.inner).message(version, data, Box::new(|_| {}));
+    }
+
+    /// A `FetchEvent` for `version`, as [`ServiceWorkerHost::fetch`]
+    /// takes it.
+    pub(crate) fn fetch_event(&self, version: u64, data: String, done: Done<Responded>) {
+        host(&self.inner).fetch(version, data, done);
     }
 
     /// Soft Update of the registration.

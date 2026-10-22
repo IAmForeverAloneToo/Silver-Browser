@@ -135,21 +135,36 @@ pub(crate) fn serve(workers: &ServiceWorkers, client: &Client, request: &str) ->
     let Ok(request) = Json::parse(request) else {
         return error("TypeError", "Invalid request.");
     };
+    // A document committed (M39 step 5): a client only under a
+    // registration with an active version, the rest left alone.
+    if request.get("op").and_then(Json::as_str) == Some("commit") {
+        let controlled = workers.query(&client.key, |registry| {
+            let id = registry.matching(&client.key, &client.url)?;
+            registry.registration(id)?.active
+        });
+        if controlled.is_none() {
+            return result(Json::object([("controller", Json::Null)]));
+        }
+    }
     listen(workers, client);
     let text = |name: &str| request.get(name).and_then(Json::as_str).map(str::to_owned);
     let number = |name: &str| request.get(name).and_then(Json::as_u64);
     match text("op").as_deref() {
         // The document as a client: its controller's version.
-        Some("check") => {
+        Some("check" | "commit") => {
             let controller = workers
                 .client(&client.id)
                 .and_then(|entry| workers.controller_of(&entry));
-            result(Json::object([(
-                "controller",
-                controller
-                    .as_ref()
-                    .map_or(Json::Null, super::clients::shown_json),
-            )]))
+            result(Json::object([
+                (
+                    "controller",
+                    controller
+                        .as_ref()
+                        .map_or(Json::Null, super::clients::shown_json),
+                ),
+                // Its id, which the browser gives a renderer's document.
+                ("id", Json::from(client.id.as_str())),
+            ]))
         }
         Some("gone") => {
             workers.client_gone(&client.id);
@@ -294,12 +309,16 @@ fn listen(workers: &ServiceWorkers, client: &Client) {
     }
     let key = client.key.clone();
     let tell = client.tell.clone();
-    workers.listen(Arc::new(move |of: &str, notice: &Notice, view: &View| {
-        if of != key {
-            return true;
-        }
-        tell(notice_json(notice, view))
-    }));
+    let alive = client.alive.clone();
+    workers.listen_while(
+        alive,
+        Arc::new(move |of: &str, notice: &Notice, view: &View| {
+            if of != key {
+                return true;
+            }
+            tell(notice_json(notice, view))
+        }),
+    );
 }
 
 /// What a version's `clients` and its clients' objects ask (M39): the

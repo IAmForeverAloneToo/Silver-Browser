@@ -1312,6 +1312,8 @@ impl DocumentHost {
                     Answer::Pair(answer, bytes)
                 })
             }
+            // A version's alone (M39).
+            Call::ServiceWorkerRespond(..) => Err(DomError::not_supported()),
             Call::ServiceWorker(request) => {
                 // The reference browser's words for a sandbox's (M39).
                 if self
@@ -1327,28 +1329,13 @@ impl DocumentHost {
                 let page = self.page.as_ref().ok_or_else(DomError::not_supported)?;
                 let url = page.url().cloned().ok_or_else(DomError::not_supported)?;
                 let base = page.base_url(&self.document).unwrap_or_else(|| url.clone());
-                let inbox = self.workers.inbox();
-                let watched = inbox.clone();
-                let gone = self.workers.service_gone.clone();
-                let client = crate::service_worker::page::Client {
-                    key: self.storage_key(page).serialization(),
-                    partition: self.partition(),
-                    origin: page.origin().clone(),
-                    base,
+                let client = self.workers.service_client(
+                    &self.storage_key(page),
+                    page.id(),
                     url,
-                    page: page.id(),
-                    id: self.workers.service_id.clone(),
-                    nested: self.window.partition.is_some(),
-                    version: None,
-                    alive: std::sync::Arc::new(move || {
-                        watched.alive() && !gone.load(std::sync::atomic::Ordering::SeqCst)
-                    }),
-                    tell: std::sync::Arc::new(move |text| {
-                        inbox.send(super::workers::WorkerMessage::ServiceWorker(text));
-                        inbox.alive()
-                    }),
-                    listening: self.workers.service_listening.clone(),
-                };
+                    base,
+                    self.window.partition.is_some(),
+                );
                 self.with_areas(|areas, _| Answer::String(areas.service_worker(&client, &request)))
             }
             Call::StorageUsage => self.with_areas(|areas, key| {

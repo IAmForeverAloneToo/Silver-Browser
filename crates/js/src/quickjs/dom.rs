@@ -461,6 +461,12 @@ const NATIVES: &[(&str, Decode)] = &[
     ("devtoolsAnswer", |a| Ok(Call::DevToolsAnswer(a.string(0)?))),
     ("idb", |a| Ok(Call::Idb(a.string(0)?))),
     ("serviceWorker", |a| Ok(Call::ServiceWorker(a.string(0)?))),
+    ("serviceWorkerRespond", |a| {
+        Ok(Call::ServiceWorkerRespond(
+            a.string(0)?,
+            a.bytes(1)?.unwrap_or_default(),
+        ))
+    }),
     ("caches", |a| {
         Ok(Call::Caches(a.string(0)?, a.bytes(1)?.unwrap_or_default()))
     }),

@@ -228,7 +228,8 @@ fn a_sites_service_workers_are_listed_and_unregistered() {
     // M39: the registrations in the storage panel.
     let server = serve(|path| match path {
         "/" => Some(html("<p>page</p>")),
-        "/sw.js" => Some(Reply::with_fields(
+        // Its scope is not the page's: no client keeps it.
+        "/w/sw.js" => Some(Reply::with_fields(
             200,
             &[("Content-Type", "text/javascript")],
             b"1",
@@ -246,8 +247,8 @@ fn a_sites_service_workers_are_listed_and_unregistered() {
         crate::service_worker::Job {
             kind: crate::service_worker::JobKind::Register,
             key: origin.clone(),
-            scope: server.url("/"),
-            script: server.url("/sw.js"),
+            scope: server.url("/w/"),
+            script: server.url("/w/sw.js"),
             update_via_cache: crate::service_worker::UpdateViaCache::Imports,
             force_bypass: false,
             partition: None,
@@ -272,7 +273,7 @@ fn a_sites_service_workers_are_listed_and_unregistered() {
     });
     assert_eq!(
         listed,
-        r#"[{"scope":"ORIGIN/","versions":[{"slot":"active","script":"ORIGIN/sw.js","state":"activated"}]}]"#
+        r#"[{"scope":"ORIGIN/w/","versions":[{"slot":"active","script":"ORIGIN/w/sw.js","state":"activated"}]}]"#
     );
     let sites = ask(&mut tab, 2, "storage.sites", Json::object([]));
     assert!(sites.write().contains(&origin), "{}", sites.write());
@@ -280,7 +281,7 @@ fn a_sites_service_workers_are_listed_and_unregistered() {
         &mut tab,
         3,
         "storage.unregister",
-        Json::object([("scope", Json::from(format!("{origin}/")))]),
+        Json::object([("scope", Json::from(format!("{origin}/w/")))]),
     );
     wait_for(|| {
         ask(&mut tab, 4, "storage.serviceWorkers", Json::object([])) == Json::Array(vec![])

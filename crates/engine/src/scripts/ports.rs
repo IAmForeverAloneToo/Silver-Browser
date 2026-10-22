@@ -46,11 +46,6 @@ pub(crate) fn lock(router: &SharedRouter) -> MutexGuard<'_, Router> {
 }
 
 impl Router {
-    /// Realm `realm`'s port messages go to `inbox` from now on.
-    pub(crate) fn set_inbox(&mut self, realm: u32, inbox: Inbox) {
-        self.realms.insert(realm, inbox);
-    }
-
     /// Sends realm `realm`, a worker's document's, `message` (M31.4: a
     /// worker's frame); the realms are the tab's since M33.2.
     pub(crate) fn send_to(&self, realm: u32, message: WorkerMessage) {

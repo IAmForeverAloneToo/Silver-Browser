@@ -20,7 +20,7 @@ use super::workers::{Inbox, Mailbox, WorkerHost, WorkerMessage, inbox};
 use crate::loader::Fetcher;
 use crate::service_worker::page::{Client, notice_json, view_json};
 use crate::service_worker::{
-    Done, Evaluated, Notice, ServiceWorkerHost, Start, View, WeakServiceWorkers,
+    Done, Evaluated, Notice, Responded, ServiceWorkerHost, Start, View, WeakServiceWorkers,
 };
 use crate::storage::{AreaKey, Areas};
 
@@ -66,6 +66,9 @@ pub(crate) struct Service {
     /// `{view, worker}`: its registration and itself when it started.
     own: String,
     events: HashMap<u32, (Instant, Done<bool>)>,
+    /// The fetch events not yet answered, by the same numbers, each with
+    /// its request's URL.
+    fetches: HashMap<u32, (Done<Responded>, Option<Url>)>,
     next_event: u32,
     idle_since: Instant,
     /// The event types its global listens for, once asked.
@@ -136,6 +139,62 @@ impl Service {
             ("data", data),
         ])
         .write()
+    }
+
+    /// The task of a `FetchEvent` of `data` (M39 step 5), whose answer
+    /// `done` hears; it keeps its version as any extendable event does.
+    pub(crate) fn fetch_event(&mut self, data: &str, done: Done<Responded>) -> String {
+        self.next_event += 1;
+        let id = self.next_event;
+        self.events.insert(id, (Instant::now(), Box::new(|_| {})));
+        let data = Json::parse(data).unwrap_or(Json::Null);
+        let url = data
+            .get("request")
+            .and_then(|request| request.get("url"))
+            .and_then(Json::as_str)
+            .and_then(|url| Url::parse(url).ok());
+        self.fetches.insert(id, (done, url));
+        Json::object([
+            ("type", Json::from("event")),
+            ("kind", Json::from("fetch")),
+            ("id", Json::from(id)),
+            ("data", data),
+        ])
+        .write()
+    }
+
+    /// A `FetchEvent`'s answer: `{id, answer}`, the answer `network`,
+    /// `error`, or `response` with its head, its body `body`.
+    pub(crate) fn respond(&mut self, head: &str, body: Vec<u8>) {
+        let Ok(head) = Json::parse(head) else {
+            return;
+        };
+        let Some((done, url)) = head
+            .get("id")
+            .and_then(Json::as_u64)
+            .and_then(|id| u32::try_from(id).ok())
+            .and_then(|id| self.fetches.remove(&id))
+        else {
+            return;
+        };
+        let responded = match head.get("answer").and_then(Json::as_str) {
+            Some("response") => match head
+                .get("response")
+                .and_then(|response| crate::service_worker::fetch::given(response, body))
+            {
+                // A response made by script has its request's URL.
+                Some(mut response) => {
+                    if response.url_list.is_empty() {
+                        response.url_list.extend(url);
+                    }
+                    Responded::Given(Box::new(response))
+                }
+                None => Responded::Failed,
+            },
+            Some("error") => Responded::Failed,
+            _ => Responded::Network,
+        };
+        done(responded);
     }
 
     pub(crate) fn recording(&self) -> bool {
@@ -230,6 +289,10 @@ impl Service {
     fn fail_events(&mut self) {
         for (_, (_, done)) in self.events.drain() {
             done(false);
+        }
+        // A fetch it never answered goes to the network.
+        for (_, (done, _)) in self.fetches.drain() {
+            done(Responded::Network);
         }
     }
 
@@ -375,6 +438,7 @@ impl Versions {
             running: self.running.clone(),
             own,
             events: HashMap::new(),
+            fetches: HashMap::new(),
             next_event: 0,
             idle_since: Instant::now(),
             listened: None,
@@ -446,6 +510,25 @@ impl Versions {
             Some(r) => {
                 r.used = Instant::now();
                 r.to.send(WorkerMessage::Extendable(kind.to_owned(), data, done));
+                Ok(())
+            }
+            None => Err(done),
+        }
+    }
+
+    /// Gives version `version` the `FetchEvent` of `data`; `done` back
+    /// when it does not run.
+    pub(crate) fn give_fetch(
+        &self,
+        version: u64,
+        data: String,
+        done: Done<Responded>,
+    ) -> Result<(), Done<Responded>> {
+        let mut running = lock(&self.running);
+        match running.get_mut(&version) {
+            Some(r) => {
+                r.used = Instant::now();
+                r.to.send(WorkerMessage::Fetch(data, done));
                 Ok(())
             }
             None => Err(done),
@@ -645,6 +728,25 @@ impl ServiceWorkerHost for InProcess {
 
     fn message(&self, version: u64, data: String, done: Done<bool>) {
         self.dispatch(version, "message", Some(data), done);
+    }
+
+    fn fetch(&self, version: u64, data: String, done: Done<Responded>) {
+        let Err(done) = self.shared.versions.give_fetch(version, data.clone(), done) else {
+            return;
+        };
+        let restart = lock(&self.shared.workers)
+            .clone()
+            .and_then(|workers| workers.upgrade())
+            .and_then(|driver| driver.query_any(|registry| restart_of(registry, version)));
+        let Some((start, stored)) = restart else {
+            return done(Responded::Network);
+        };
+        if !self.start(start, stored, None) {
+            return done(Responded::Network);
+        }
+        if let Err(done) = self.shared.versions.give_fetch(version, data, done) {
+            done(Responded::Network);
+        }
     }
 
     fn terminate(&self, version: u64) {
