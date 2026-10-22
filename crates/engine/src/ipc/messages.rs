@@ -137,8 +137,8 @@ wire_enum! {
             evaluate: bool,
         },
         /// The browser's extendable event `event` of type `kind` for
-        /// `version`.
-        32 => ServiceWorkerEvent { version: u64, event: u64, kind: String },
+        /// `version`, a message's with `data`.
+        32 => ServiceWorkerEvent { version: u64, event: u64, kind: String, data: Option<String> },
         /// The running versions of storage key `key` hear `task`.
         33 => ServiceWorkerNotice { key: String, task: String },
         /// `version` stops.

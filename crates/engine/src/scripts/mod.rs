@@ -1203,6 +1203,15 @@ impl Scripts {
         canceled
     }
 
+    /// The document is left for another, whose response came (M39): it is
+    /// the service workers' client no more.
+    pub(crate) fn leave_service_workers(&self) {
+        self.host
+            .workers
+            .service_gone
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// Gives the document what the service workers told it (M39), as its
     /// own host would.
     pub(crate) fn tell_service_worker(&self, task: String) {

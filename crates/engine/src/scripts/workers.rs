@@ -65,8 +65,9 @@ pub(crate) enum WorkerMessage {
     /// task of `js::Task::ServiceWorker`.
     ServiceWorker(String),
     /// An extendable event for a service worker's global (M39): its
-    /// type, and what hears whether its promises all fulfilled.
-    Extendable(String, crate::service_worker::Done<bool>),
+    /// type, a message event's data, and what hears whether its promises
+    /// all fulfilled.
+    Extendable(String, Option<String>, crate::service_worker::Done<bool>),
 }
 
 impl WorkerMessage {
@@ -484,6 +485,10 @@ pub(crate) struct DocumentWorkers {
     realm: u32,
     /// Whether the document hears the service workers' notices (M39).
     pub(crate) service_listening: Arc<AtomicBool>,
+    /// Its id as their client.
+    pub(crate) service_id: String,
+    /// Whether it was left for another document: no client any more.
+    pub(crate) service_gone: Arc<AtomicBool>,
 }
 
 impl Default for DocumentWorkers {
@@ -504,6 +509,8 @@ impl DocumentWorkers {
             router,
             realm,
             service_listening: Arc::default(),
+            service_id: crate::service_worker::new_client_id(),
+            service_gone: Arc::default(),
         }
     }
 }
@@ -871,8 +878,8 @@ impl WorkerHost {
                 return;
             }
             WorkerMessage::ServiceWorker(text) => Task::ServiceWorker(text),
-            WorkerMessage::Extendable(kind, done) => match host.service.as_mut() {
-                Some(service) => Task::ServiceWorker(service.event(&kind, done)),
+            WorkerMessage::Extendable(kind, data, done) => match host.service.as_mut() {
+                Some(service) => Task::ServiceWorker(service.event(&kind, data.as_deref(), done)),
                 None => return,
             },
             WorkerMessage::ToWorker(data) => Task::Message {

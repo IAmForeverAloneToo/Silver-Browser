@@ -120,15 +120,20 @@ impl Service {
         }
     }
 
-    /// The task of the extendable event `kind`, whose end `done` hears.
-    pub(crate) fn event(&mut self, kind: &str, done: Done<bool>) -> String {
+    /// The task of the extendable event `kind`, a message's with `data`,
+    /// whose end `done` hears.
+    pub(crate) fn event(&mut self, kind: &str, data: Option<&str>, done: Done<bool>) -> String {
         self.next_event += 1;
         let id = self.next_event;
         self.events.insert(id, (Instant::now(), done));
+        let data = data
+            .and_then(|data| Json::parse(data).ok())
+            .unwrap_or(Json::Null);
         Json::object([
             ("type", Json::from("event")),
             ("kind", Json::from(kind)),
             ("id", Json::from(id)),
+            ("data", data),
         ])
         .write()
     }
@@ -384,6 +389,10 @@ impl Versions {
                 base: start.script.clone(),
                 url: start.script.clone(),
                 page: 0,
+                id: String::new(),
+                nested: false,
+                version: Some(start.version),
+                alive: Arc::new(|| true),
                 tell: Arc::new(move |text| {
                     tell.send(WorkerMessage::ServiceWorker(text));
                     tell.alive()
@@ -429,13 +438,14 @@ impl Versions {
         &self,
         version: u64,
         kind: &str,
+        data: Option<String>,
         done: Done<bool>,
     ) -> Result<(), Done<bool>> {
         let mut running = lock(&self.running);
         match running.get_mut(&version) {
             Some(r) => {
                 r.used = Instant::now();
-                r.to.send(WorkerMessage::Extendable(kind.to_owned(), done));
+                r.to.send(WorkerMessage::Extendable(kind.to_owned(), data, done));
                 Ok(())
             }
             None => Err(done),
@@ -586,8 +596,8 @@ impl InProcess {
 
     /// Gives version `version` the extendable event `kind`, starting it
     /// again from its scripts if it stopped.
-    fn dispatch(&self, version: u64, kind: &str, done: Done<bool>) {
-        let Err(done) = self.shared.versions.give(version, kind, done) else {
+    fn dispatch(&self, version: u64, kind: &str, data: Option<String>, done: Done<bool>) {
+        let Err(done) = self.shared.versions.give(version, kind, data.clone(), done) else {
             return;
         };
         let restart = lock(&self.shared.workers)
@@ -600,7 +610,7 @@ impl InProcess {
         if !self.start(start, stored, None) {
             return done(false);
         }
-        if let Err(done) = self.shared.versions.give(version, kind, done) {
+        if let Err(done) = self.shared.versions.give(version, kind, data, done) {
             done(false);
         }
     }
@@ -626,11 +636,15 @@ impl ServiceWorkerHost for InProcess {
     }
 
     fn install(&self, version: u64, done: Done<bool>) {
-        self.dispatch(version, "install", done);
+        self.dispatch(version, "install", None, done);
     }
 
     fn activate(&self, version: u64, done: Done<()>) {
-        self.dispatch(version, "activate", Box::new(move |_| done(())));
+        self.dispatch(version, "activate", None, Box::new(move |_| done(())));
+    }
+
+    fn message(&self, version: u64, data: String, done: Done<bool>) {
+        self.dispatch(version, "message", Some(data), done);
     }
 
     fn terminate(&self, version: u64) {

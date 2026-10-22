@@ -308,6 +308,10 @@ fn a_renderers_service_worker_requests_are_held_to_its_documents_origin() {
         base: url("https://a.test/page"),
         url: url("https://a.test/page"),
         page: 1,
+        id: String::new(),
+        nested: false,
+        version: None,
+        alive: Arc::new(|| true),
         tell: Arc::new(|_| true),
         listening: Arc::default(),
     };

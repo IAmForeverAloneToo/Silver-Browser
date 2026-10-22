@@ -5136,6 +5136,8 @@ impl Engine {
         let partition = self.partition_for(page.origin());
         self.network.set_partition(id, partition);
         self.place_local_network(&mut page);
+        // The document shown is left: a client no more (M39).
+        self.shown.scripts.leave_service_workers();
         if let Some(navigation) = &mut self.navigation {
             let mut scripts = scripts::Scripts::with_limits(self.script_limits);
             if page.is_panel() {

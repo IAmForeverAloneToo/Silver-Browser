@@ -64,6 +64,8 @@ mod script_tests;
 #[cfg(test)]
 pub(crate) mod security_tests;
 #[cfg(test)]
+mod service_worker_client_tests;
+#[cfg(test)]
 mod service_worker_tests;
 mod sheets;
 #[cfg(test)]

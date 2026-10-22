@@ -18,8 +18,25 @@ use crate::ipc::{Answer, Sender, StorageOp, ToBrowser, ToRenderer};
 use crate::storage::{AreaKey, Change, Scope, Source, Storage};
 
 /// A document asking the service workers (M39): its number, whether it
-/// hears their notices, and whether it is still its frame's.
-type Asker = (u64, Arc<AtomicBool>, Arc<AtomicBool>);
+/// hears their notices, whether it is still its frame's, and its id as
+/// their client.
+struct Asker {
+    page: u64,
+    listening: Arc<AtomicBool>,
+    alive: Arc<AtomicBool>,
+    id: String,
+}
+
+impl Asker {
+    fn new(page: u64) -> Asker {
+        Asker {
+            page,
+            listening: Arc::default(),
+            alive: Arc::new(AtomicBool::new(true)),
+            id: crate::service_worker::new_client_id(),
+        }
+    }
+}
 
 /// The browser's Web Storage, for a tab's renderers.
 pub struct StorageService {
@@ -32,7 +49,13 @@ pub struct StorageService {
     /// (M39): its number, whether it hears their notices, and whether it
     /// is still the frame's.
     clients: Mutex<HashMap<(u32, u32), Asker>>,
+    /// The versions worker renderers run, by their renderer and frame:
+    /// a worker renderers' service's (M39).
+    versions: Option<Versions>,
 }
+
+/// Service workers' versions by their renderer and frame (M39).
+pub(crate) type Versions = Arc<Mutex<HashMap<(u32, u32), u64>>>;
 
 impl StorageService {
     /// The service of `storage`, the browser's, for tab `tab`'s
@@ -47,6 +70,23 @@ impl StorageService {
             grants,
             tab,
             clients: Mutex::default(),
+            versions: None,
+        })
+    }
+
+    /// The worker renderers' service, whose frames are the versions of
+    /// `versions` (M39).
+    pub(crate) fn of_versions(
+        storage: Arc<Mutex<Storage>>,
+        grants: Arc<Grants>,
+        versions: Versions,
+    ) -> Arc<StorageService> {
+        Arc::new(StorageService {
+            storage,
+            grants,
+            tab: 0,
+            clients: Mutex::default(),
+            versions: Some(versions),
         })
     }
 
@@ -72,18 +112,42 @@ impl StorageService {
                 area.origin.serialization()
             ));
         }
-        let (listening, alive) = {
+        // A version asks as itself: a client of none.
+        let version = self.versions.as_ref().and_then(|versions| {
+            versions
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&(renderer, frame))
+                .copied()
+        });
+        let (listening, alive, id) = {
             let mut clients = self.clients.lock().unwrap_or_else(PoisonError::into_inner);
             let entry = clients
                 .entry((renderer, frame))
-                .or_insert_with(|| (page, Arc::default(), Arc::new(AtomicBool::new(true))));
-            if entry.0 != page {
+                .or_insert_with(|| Asker::new(page));
+            if entry.page != page {
                 // The frame's document before it hears nothing more.
-                entry.2.store(false, Ordering::SeqCst);
-                *entry = (page, Arc::default(), Arc::new(AtomicBool::new(true)));
+                entry.alive.store(false, Ordering::SeqCst);
+                *entry = Asker::new(page);
             }
-            (entry.1.clone(), entry.2.clone())
+            if version.is_some() {
+                // Its host tells it the notices already.
+                entry.listening.store(true, Ordering::SeqCst);
+                entry.id.clear();
+            }
+            (
+                entry.listening.clone(),
+                entry.alive.clone(),
+                entry.id.clone(),
+            )
         };
+        // A frame in a context of another site is taken for nested; one of
+        // its own site, the browser cannot tell from its grant.
+        let nested = self
+            .grants
+            .frame(renderer, frame)
+            .is_ok_and(|(_, grant)| grant.cross_site);
+        let watched = alive.clone();
         let sender = reply.clone();
         let client = crate::service_worker::page::Client {
             key: area.serialization(),
@@ -92,6 +156,10 @@ impl StorageService {
             base,
             url,
             page,
+            id,
+            nested,
+            version,
+            alive: Arc::new(move || watched.load(Ordering::SeqCst)),
             tell: Arc::new(move |task| {
                 alive.load(Ordering::SeqCst)
                     && sender

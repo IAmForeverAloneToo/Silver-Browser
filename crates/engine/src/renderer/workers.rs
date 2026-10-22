@@ -130,6 +130,7 @@ impl ServiceWorkerSide {
                 version,
                 event,
                 kind,
+                data,
             } => {
                 let link = self.link.clone();
                 let done = Box::new(move |ok| {
@@ -140,7 +141,7 @@ impl ServiceWorkerSide {
                         ran: true,
                     });
                 });
-                if self.versions.give(version, &kind, done).is_err() {
+                if self.versions.give(version, &kind, data, done).is_err() {
                     let _ = self.link.send(&ToBrowser::ServiceWorkerEventDone {
                         version,
                         event,

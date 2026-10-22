@@ -212,7 +212,8 @@
     XMLHttpRequest: "notservice", XMLHttpRequestEventTarget: "notservice",
     XMLHttpRequestUpload: "notservice", ServiceWorker: true, ServiceWorkerRegistration: true,
     ServiceWorkerContainer: true, ServiceWorkerGlobalScope: "service", ExtendableEvent: "service",
-    InstallEvent: "service",
+    InstallEvent: "service", ExtendableMessageEvent: "service", Clients: "service", Client: "service",
+    WindowClient: "service",
   };
 
   // Whether an interface `where` says so is the realm's.
@@ -812,7 +813,7 @@
         }
         throw new $TypeError(where + "Failed to convert value to 'Storage'.");
       case "MessageEventSource?":
-        if (value === null || value === global || isPort(value)) {
+        if (value === null || value === global || isPort(value) || WeakSetHas(swSources, value)) {
           return value;
         }
         throw new $TypeError(where +
@@ -9723,6 +9724,12 @@
   // scheduled.
   const swRegistrations = new $Map();
   const swWorkers = new $Map();
+  // The ServiceWorker and Client objects, which a message's source may
+  // be.
+  const swSources = new $WeakSet();
+  // The document's controller, once it asked (M39 step 4).
+  let swController = null;
+  let swContainer = null;
   const swPromises = new $Map();
   let swNextPromise = 1;
   let swSetState;
@@ -9777,14 +9784,32 @@
   }
 
   class ServiceWorker extends EventTarget {
+    #id;
     #scriptURL;
     #state;
 
     constructor(key, shown) {
       if (key !== KEY) throw illegalConstructor("ServiceWorker");
       super();
+      this.#id = shown.id;
       this.#scriptURL = shown.scriptURL;
       this.#state = shown.state;
+      WeakSetAdd(swSources, this);
+    }
+
+    // A message for the version (M39 step 4): a structured clone, which
+    // the version hears as an ExtendableMessageEvent. Ports do not cross
+    // to a service worker here.
+    postMessage(message, transfer) {
+      const iface = "ServiceWorker";
+      need(arguments.length, 1, "postMessage", iface);
+      const ports = postTransfer(transfer, "postMessage", iface);
+      if (ports.length > 0) {
+        throw new $DOMException(prefix("postMessage", iface) +
+          "A MessagePort could not be transferred to a service worker.", "DataCloneError");
+      }
+      const record = serialize(message, ports, prefix("postMessage", iface), null);
+      swCall({ op: "postMessage", version: this.#id, data: wire(record) });
     }
 
     static {
@@ -9915,7 +9940,7 @@
     }
 
     get controller() {
-      return null;
+      return swController;
     }
 
     get ready() {
@@ -9977,13 +10002,18 @@
     let container = null;
     defineProperty(Navigator.prototype, "serviceWorker", {
       get() {
+        let asked;
         try {
-          swCall({ op: "check" });
+          asked = swCall({ op: "check" });
         } catch (e) {
           throw new $DOMException(
             "Failed to read the 'serviceWorker' property from 'Navigator': " + e.message, e.name);
         }
-        if (container === null) container = new ServiceWorkerContainer(KEY);
+        if (container === null) {
+          container = new ServiceWorkerContainer(KEY);
+          swContainer = container;
+          swController = asked === null ? null : swWorker(asked.controller);
+        }
         return container;
       },
       enumerable: true,
@@ -10057,8 +10087,24 @@
 
   // Dispatches the host's extendable event `type` numbered `id` at the
   // global.
-  function* swExtendable(type, id) {
-    const event = type === "install" ? new InstallEvent(type) : new ExtendableEvent(type);
+  function* swExtendable(type, id, data) {
+    let event;
+    if (type === "message") {
+      let message = null;
+      let kind = "message";
+      try {
+        message = deserialize(unwire(data.data));
+      } catch {
+        kind = "messageerror";
+      }
+      event = new ExtendableMessageEvent(kind, {
+        data: message,
+        origin: data.origin,
+        source: swClient(data.source),
+      });
+    } else {
+      event = type === "install" ? new InstallEvent(type) : new ExtendableEvent(type);
+    }
     eventState(event).trusted = true;
     const state = extendState(event);
     state.id = id;
@@ -10067,6 +10113,189 @@
     extendEnd(state);
     return false;
   }
+
+  // ---- Clients (Service Workers 4.2, 4.3; M39 step 4) -----------------
+
+  let swClientOf;
+
+  class Client {
+    #client;
+
+    constructor(key, client) {
+      if (key !== KEY) throw illegalConstructor("Client");
+      this.#client = client;
+      WeakSetAdd(swSources, this);
+    }
+
+    static {
+      swClientOf = (client) => client.#client;
+    }
+
+    get url() {
+      return this.#client.url;
+    }
+
+    get frameType() {
+      return this.#client.frameType;
+    }
+
+    get id() {
+      return this.#client.id;
+    }
+
+    get type() {
+      return this.#client.type;
+    }
+
+    postMessage(message, transfer) {
+      const iface = "Client";
+      need(arguments.length, 1, "postMessage", iface);
+      const ports = postTransfer(transfer, "postMessage", iface);
+      if (ports.length > 0) {
+        throw new $DOMException(prefix("postMessage", iface) +
+          "A MessagePort could not be transferred from a service worker.", "DataCloneError");
+      }
+      const record = serialize(message, ports, prefix("postMessage", iface), null);
+      swCall({ op: "clients.postMessage", client: this.#client.id, data: wire(record) });
+    }
+  }
+  expose(Client, "Client");
+
+  class WindowClient extends Client {
+    constructor(key, client) {
+      if (key !== KEY) throw illegalConstructor("WindowClient");
+      super(KEY, client);
+    }
+
+    get visibilityState() {
+      return swClientOf(this).visibilityState;
+    }
+
+    get focused() {
+      return swClientOf(this).focused;
+    }
+
+    get ancestorOrigins() {
+      return ObjectFreeze([]);
+    }
+
+    focus() {
+      try {
+        swCall({ op: "clients.focus", client: swClientOf(this).id });
+        return resolved(this);
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+
+    navigate(url) {
+      try {
+        need(arguments.length, 1, "navigate", "WindowClient");
+        swCall({ op: "clients.navigate", client: swClientOf(this).id, url: str(url) });
+        return resolved(null);
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+  }
+  expose(WindowClient, "WindowClient");
+
+  function swClient(client) {
+    return client === null || client === undefined ? null : new WindowClient(KEY, client);
+  }
+
+  class Clients {
+    constructor(key) {
+      if (key !== KEY) throw illegalConstructor("Clients");
+    }
+
+    get(id) {
+      try {
+        need(arguments.length, 1, "get", "Clients");
+        return resolved(swClient(swCall({ op: "clients.get", client: str(id) })) ?? undefined);
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+
+    matchAll(options) {
+      try {
+        const given = options === undefined || options === null ? {} : options;
+        const type = given.type === undefined ? "window" : str(given.type);
+        const found = swCall({
+          op: "clients.matchAll",
+          includeUncontrolled: !!given.includeUncontrolled,
+          type,
+        });
+        const out = [];
+        for (let i = 0; i < found.length; i++) ArrayPush(out, swClient(found[i]));
+        return resolved(out);
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+
+    openWindow(url) {
+      try {
+        need(arguments.length, 1, "openWindow", "Clients");
+        swCall({ op: "clients.openWindow", url: str(url) });
+        return resolved(null);
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+
+    claim() {
+      try {
+        swCall({ op: "clients.claim" });
+        return resolved(undefined);
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+  }
+  expose(Clients, "Clients");
+
+  // An ExtendableMessageEvent's members (Service Workers 4.6).
+  const extendableMessages = new $WeakMap();
+
+  class ExtendableMessageEvent extends ExtendableEvent {
+    constructor(type, eventInitDict = undefined) {
+      const args = eventArgs(arguments.length, type, eventInitDict, EVENT_INIT, "ExtendableMessageEvent");
+      super(args[0], args[1]);
+      const given = eventInitDict === undefined || eventInitDict === null ? {} : eventInitDict;
+      WeakMapSet(extendableMessages, this, {
+        data: given.data === undefined ? null : given.data,
+        origin: given.origin === undefined ? "" : str(given.origin),
+        lastEventId: given.lastEventId === undefined ? "" : str(given.lastEventId),
+        source: given.source === undefined ? null : given.source,
+        ports: ObjectFreeze(given.ports === undefined ? [] : ArraySlice(given.ports, 0)),
+      });
+    }
+
+    get data() {
+      return WeakMapGet(extendableMessages, this).data;
+    }
+
+    get origin() {
+      return WeakMapGet(extendableMessages, this).origin;
+    }
+
+    get lastEventId() {
+      return WeakMapGet(extendableMessages, this).lastEventId;
+    }
+
+    get source() {
+      return WeakMapGet(extendableMessages, this).source;
+    }
+
+    get ports() {
+      return WeakMapGet(extendableMessages, this).ports;
+    }
+  }
+  expose(ExtendableMessageEvent, "ExtendableMessageEvent");
+
+  const swClients = SERVICE ? new Clients(KEY) : null;
 
   // ---- A service worker's global scope (Service Workers 4.1) ----------
 
@@ -10093,6 +10322,10 @@
 
     get serviceWorker() {
       return swSelf().worker;
+    }
+
+    get clients() {
+      return swClients;
     }
 
     skipWaiting() {
@@ -10156,7 +10389,25 @@
         return false;
       }
       case "event":
-        return yield* swExtendable(told.kind, told.id);
+        return yield* swExtendable(told.kind, told.id, told.data);
+      // A version's message for the document (M39 step 4).
+      case "message":
+        if (swContainer === null) return false;
+        return yield* messageEvent(swContainer, told.data, told.origin, swWorker(told.source));
+      // The document's controller changed: claimed, or a new version
+      // activated.
+      case "controller": {
+        swController = swWorker(told.version);
+        if (swContainer !== null) {
+          const event = new Event("controllerchange");
+          eventState(event).trusted = true;
+          yield* dispatching(swContainer, event);
+        }
+        return false;
+      }
+      case "navigate":
+        if (!WORKER) global.location.href = told.url;
+        return false;
       case "listened": {
         const listeners = listenersOf(global);
         const types = [];

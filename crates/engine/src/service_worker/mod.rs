@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use net::Url;
 
+mod clients;
 mod driver;
 #[cfg(test)]
 mod driver_tests;
@@ -23,6 +24,7 @@ pub mod rules;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use clients::new_client_id;
 pub use driver::{
     Done, Listener, ServiceWorkerHost, ServiceWorkers, Settled, Start, WeakServiceWorkers,
 };

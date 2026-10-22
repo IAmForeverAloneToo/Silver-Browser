@@ -55,6 +55,7 @@ struct Placed {
 struct Pending {
     version: u64,
     kind: String,
+    data: Option<String>,
     again: bool,
     done: Done<bool>,
 }
@@ -83,6 +84,9 @@ struct Inner {
     workers: WeakServiceWorkers,
     state: Mutex<State>,
     events: Mutex<mpsc::Sender<(u32, Event)>>,
+    /// The running versions by their renderer and frame, which the
+    /// storage service asks as them.
+    frames: super::storage::Versions,
 }
 
 /// Has `context`'s versions run in worker renderers `launcher` starts,
@@ -105,7 +109,12 @@ pub(crate) fn install(
             .with_languages(context.accept_language().clone()),
         grants.clone(),
     );
-    let storage = StorageService::new(context.shared_storage().clone(), grants.clone(), 0);
+    let frames: super::storage::Versions = Arc::default();
+    let storage = StorageService::of_versions(
+        context.shared_storage().clone(),
+        grants.clone(),
+        frames.clone(),
+    );
     let services: Arc<dyn Serve> = Arc::new(Services(vec![network, storage]));
     let (sender, receiver) = mpsc::channel();
     let numbers = context.renderer_numbers();
@@ -117,6 +126,7 @@ pub(crate) fn install(
         workers: context.service_workers().downgrade(),
         state: Mutex::new(State::default()),
         events: Mutex::new(sender),
+        frames,
     });
     let weak = Arc::downgrade(&inner);
     let _ = thread::Builder::new()
@@ -203,6 +213,7 @@ impl Inner {
             },
         };
         self.grants.grant_frame(number, frame, grant);
+        self::lock(&self.frames).insert((number, frame), start.version);
         if let Some(old) = state.versions.insert(
             start.version,
             Placed {
@@ -212,6 +223,7 @@ impl Inner {
             },
         ) {
             self.grants.revoke_frame(old.renderer, old.frame);
+            self::lock(&self.frames).remove(&(old.renderer, old.frame));
         }
         if let Some(site) = state.sites.get_mut(&lock) {
             site.empty_since = None;
@@ -240,7 +252,14 @@ impl Inner {
 
     /// Sends version `version` the event `kind`, starting it again from
     /// its scripts if it runs nowhere.
-    fn dispatch(&self, version: u64, kind: &str, again: bool, done: Done<bool>) {
+    fn dispatch(
+        &self,
+        version: u64,
+        kind: &str,
+        data: Option<String>,
+        again: bool,
+        done: Done<bool>,
+    ) {
         let placed = lock_state(&self.state).versions.get(&version).cloned();
         let placed = match placed {
             Some(placed) => placed,
@@ -269,6 +288,7 @@ impl Inner {
             Pending {
                 version,
                 kind: kind.to_owned(),
+                data: data.clone(),
                 again,
                 done,
             },
@@ -283,6 +303,7 @@ impl Inner {
                         version,
                         event,
                         kind: kind.to_owned(),
+                        data,
                     })
                     .is_ok()
             });
@@ -355,7 +376,7 @@ impl Inner {
                     if pending.again {
                         return (pending.done)(false);
                     }
-                    return self.dispatch(version, &pending.kind, true, pending.done);
+                    return self.dispatch(version, &pending.kind, pending.data, true, pending.done);
                 }
                 drop(state);
                 (pending.done)(ok);
@@ -386,6 +407,7 @@ impl Inner {
             return;
         };
         self.grants.revoke_frame(placed.renderer, placed.frame);
+        lock(&self.frames).remove(&(placed.renderer, placed.frame));
         let evaluation = state.evaluating.remove(&version);
         let events: Vec<u64> = state
             .events
@@ -490,12 +512,22 @@ impl ServiceWorkerHost for WorkerRenderers {
     }
 
     fn install(&self, version: u64, done: Done<bool>) {
-        self.inner.dispatch(version, "install", false, done);
+        self.inner.dispatch(version, "install", None, false, done);
     }
 
     fn activate(&self, version: u64, done: Done<()>) {
+        self.inner.dispatch(
+            version,
+            "activate",
+            None,
+            false,
+            Box::new(move |_| done(())),
+        );
+    }
+
+    fn message(&self, version: u64, data: String, done: Done<bool>) {
         self.inner
-            .dispatch(version, "activate", false, Box::new(move |_| done(())));
+            .dispatch(version, "message", Some(data), false, done);
     }
 
     fn terminate(&self, version: u64) {

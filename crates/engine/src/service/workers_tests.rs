@@ -211,3 +211,51 @@ fn a_worker_renderer_that_answers_for_another_version_is_cut_off() {
     wait(|| cut.load(std::sync::atomic::Ordering::SeqCst));
     wait(|| host.renderers() == 0);
 }
+
+#[test]
+fn a_version_in_a_worker_renderer_and_a_renderers_page_message_each_other() {
+    // M39 step 4: the page a client of the browser's, the version asking
+    // as itself; messages both ways through the browser.
+    let server = TestServer::plain(|request| {
+        match request.target.as_str() {
+        "/sw.js" => Reply::with_fields(
+            200,
+            &[("Content-Type", "text/javascript")],
+            b"self.onactivate = (e) => e.waitUntil(clients.claim());
+              self.onmessage = async (e) => {
+                const all = await clients.matchAll();
+                e.source.postMessage('got ' + e.data.n + ' from ' + e.source.type + ' ' + all.length + ' ' + (all[0].id === e.source.id));
+              };",
+        ),
+        _ => Reply::ok(
+            "text/html",
+            b"<script>
+             (async () => {
+               await navigator.serviceWorker.register('sw.js');
+               await new Promise(r => { navigator.serviceWorker.oncontrollerchange = r; });
+               navigator.serviceWorker.onmessage = (e) => console.log('heard ' + e.data + ' ' + (e.source === navigator.serviceWorker.controller));
+               navigator.serviceWorker.controller.postMessage({n: 7});
+             })().catch(e => console.log('failed ' + e.name + ': ' + e.message));
+             </script>",
+        ),
+    }
+    });
+    let context = crate::Context::new();
+    let launcher = Arc::new(ThreadLauncher::with_fonts(fonts()));
+    let host = super::workers::install(&context, launcher.clone()).expect("the first");
+    let mut tab = RemoteTab::in_context(launcher, fonts(), &context);
+    tab.set_scripting(true);
+    tab.navigate(server.url("/"));
+    let mut lines = Vec::new();
+    settle(&mut tab, |tab| {
+        lines.extend(tab.take_console().into_iter().map(|entry| entry.text));
+        lines
+            .iter()
+            .any(|l| l.starts_with("heard") || l.starts_with("failed"))
+    });
+    assert!(
+        lines.contains(&"heard got 7 from window 1 true true".to_owned()),
+        "{lines:?}"
+    );
+    assert_eq!(host.renderers(), 1);
+}

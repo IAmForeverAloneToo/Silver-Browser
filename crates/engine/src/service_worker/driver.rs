@@ -62,6 +62,12 @@ pub trait ServiceWorkerHost: Send + Sync {
     /// The versions of storage key `key` hear `notice`: their
     /// registration objects change.
     fn notice(&self, _key: &str, _notice: &Notice, _view: &View) {}
+    /// Dispatches a client's message at the version (M39, an
+    /// `ExtendableMessageEvent`): `data` its message, its origin and its
+    /// source, as JSON; `done` hears whether its promises fulfilled.
+    fn message(&self, _version: u64, _data: String, done: Done<bool>) {
+        done(false);
+    }
 }
 
 /// The host when none was given: no script runs, so no version
@@ -123,6 +129,8 @@ struct Inner {
     fetcher: Arc<dyn Fetcher>,
     host: Mutex<Arc<dyn ServiceWorkerHost>>,
     listeners: Mutex<Vec<Listener>>,
+    /// The clients, by their ids.
+    clients: Mutex<HashMap<String, super::clients::ClientEntry>>,
     /// The thread's channel, the thread started at the first message.
     sender: OnceLock<Sender<Message>>,
 }
@@ -140,6 +148,7 @@ impl ServiceWorkers {
             fetcher,
             host: Mutex::new(Arc::new(NoHost)),
             listeners: Mutex::new(Vec::new()),
+            clients: Mutex::new(HashMap::new()),
             sender: OnceLock::new(),
         });
         // The registry changed outside: the thread, started if it was not,
@@ -214,6 +223,19 @@ impl ServiceWorkers {
         self.send(Message::Use(registration, controlled));
     }
 
+    /// The clients, locked.
+    pub(crate) fn clients(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<String, super::clients::ClientEntry>> {
+        lock(&self.inner.clients)
+    }
+
+    /// A client's message for `version`, as [`ServiceWorkerHost::message`]
+    /// takes it.
+    pub(crate) fn post_message(&self, version: u64, data: String) {
+        host(&self.inner).message(version, data, Box::new(|_| {}));
+    }
+
     /// Soft Update of the registration.
     pub fn soft_update(&self, registration: u64) {
         self.send(Message::SoftUpdate(registration));
@@ -261,7 +283,7 @@ fn run(weak: &Weak<Inner>, receiver: &Receiver<Message>) {
 
 /// Does `effect`, what comes of it sent to the thread by `sender`.
 fn perform(
-    inner: &Inner,
+    inner: &Arc<Inner>,
     sender: &Sender<Message>,
     effect: Effect,
     waiting: &mut HashMap<u64, Done<Settled>>,
@@ -342,6 +364,20 @@ fn perform(
         }
         Effect::Notice { key, notice, view } => {
             host(inner).notice(&key, &notice, &view);
+            // Activate: the registration's clients have the new version
+            // for their controller.
+            if let Notice::Slot {
+                registration,
+                slot: super::Slot::Active,
+                version: Some(_),
+            } = notice
+                && let Some(shown) = &view.active
+            {
+                ServiceWorkers {
+                    inner: inner.clone(),
+                }
+                .new_active(registration, shown);
+            }
             let listeners = lock(&inner.listeners).clone();
             let gone: Vec<Listener> = listeners
                 .into_iter()
@@ -355,7 +391,7 @@ fn perform(
     }
 }
 
-fn host(inner: &Inner) -> Arc<dyn ServiceWorkerHost> {
+fn host(inner: &Arc<Inner>) -> Arc<dyn ServiceWorkerHost> {
     lock(&inner.host).clone()
 }
 
