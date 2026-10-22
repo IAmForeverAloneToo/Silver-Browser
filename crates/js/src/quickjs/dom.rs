@@ -460,6 +460,7 @@ const NATIVES: &[(&str, Decode)] = &[
     ("devtoolsSend", |a| Ok(Call::DevToolsSend(a.string(0)?))),
     ("devtoolsAnswer", |a| Ok(Call::DevToolsAnswer(a.string(0)?))),
     ("idb", |a| Ok(Call::Idb(a.string(0)?))),
+    ("serviceWorker", |a| Ok(Call::ServiceWorker(a.string(0)?))),
     ("caches", |a| {
         Ok(Call::Caches(a.string(0)?, a.bytes(1)?.unwrap_or_default()))
     }),
@@ -652,6 +653,7 @@ pub(super) fn install<'js, H: ScriptingHost>(
     match kind {
         RealmKind::Window => natives.set("realmKind", "window")?,
         RealmKind::DevTools => natives.set("realmKind", "devtools")?,
+        RealmKind::ServiceWorker => natives.set("realmKind", "serviceworker")?,
         RealmKind::DedicatedWorker { name } => {
             natives.set("realmKind", "worker")?;
             natives.set("workerName", name.as_str())?;

@@ -61,6 +61,12 @@ pub(crate) enum WorkerMessage {
     /// A worker's frame for placeholder `n` of the document (M31.4): its
     /// offscreen's size and pixels.
     Frame(super::canvas::Commit),
+    /// What the service workers' host tells the realm (M39), as JSON: a
+    /// task of `js::Task::ServiceWorker`.
+    ServiceWorker(String),
+    /// An extendable event for a service worker's global (M39): its
+    /// type, and what hears whether its promises all fulfilled.
+    Extendable(String, crate::service_worker::Done<bool>),
 }
 
 impl WorkerMessage {
@@ -69,7 +75,8 @@ impl WorkerMessage {
         match self {
             WorkerMessage::ToWorker(data)
             | WorkerMessage::FromWorker(_, FromWorker::Message(data))
-            | WorkerMessage::Port(_, data) => data.len(),
+            | WorkerMessage::Port(_, data)
+            | WorkerMessage::ServiceWorker(data) => data.len(),
             _ => 0,
         }
     }
@@ -96,6 +103,8 @@ pub(crate) struct Inbox {
     sender: Sender<WorkerMessage>,
     queued: Arc<AtomicUsize>,
     wake: Option<Waker>,
+    /// Gone once the realm's mailbox is.
+    alive: std::sync::Weak<()>,
 }
 
 impl Inbox {
@@ -118,12 +127,18 @@ impl Inbox {
         }
         true
     }
+
+    /// Whether the realm it sends to is still there.
+    pub(crate) fn alive(&self) -> bool {
+        self.alive.strong_count() > 0
+    }
 }
 
 /// A realm's inbox as it takes from it.
 pub(crate) struct Mailbox {
     receiver: Receiver<WorkerMessage>,
     queued: Arc<AtomicUsize>,
+    _alive: Arc<()>,
 }
 
 /// What waiting on a mailbox gave.
@@ -168,13 +183,19 @@ impl Mailbox {
 pub(crate) fn inbox(wake: Option<Waker>) -> (Inbox, Mailbox) {
     let (sender, receiver) = channel();
     let queued = Arc::new(AtomicUsize::new(0));
+    let alive = Arc::new(());
     (
         Inbox {
             sender,
             queued: queued.clone(),
             wake,
+            alive: Arc::downgrade(&alive),
         },
-        Mailbox { receiver, queued },
+        Mailbox {
+            receiver,
+            queued,
+            _alive: alive,
+        },
     )
 }
 
@@ -461,6 +482,8 @@ pub(crate) struct DocumentWorkers {
     inbox: Inbox,
     router: SharedRouter,
     realm: u32,
+    /// Whether the document hears the service workers' notices (M39).
+    pub(crate) service_listening: Arc<AtomicBool>,
 }
 
 impl Default for DocumentWorkers {
@@ -480,6 +503,7 @@ impl DocumentWorkers {
             inbox,
             router,
             realm,
+            service_listening: Arc::default(),
         }
     }
 }
@@ -493,6 +517,11 @@ impl DocumentWorkers {
             self.workers.inbox = self.inbox.clone();
             lock(&self.router).set_inbox(self.realm, self.inbox.clone());
         }
+    }
+
+    /// The document's inbox, which the service workers' host tells (M39).
+    pub(crate) fn inbox(&self) -> Inbox {
+        self.inbox.clone()
     }
 
     /// A port's call of the document's (M31.5).
@@ -629,6 +658,124 @@ fn run(setup: Setup) {
     }
 }
 
+/// What a service worker's version is given to run (M39): its script,
+/// where it fetches from, its storage, its mailbox, and its own part of
+/// its host.
+pub(crate) struct ServiceSetup {
+    pub(crate) script: Url,
+    pub(crate) source: Arc<[u8]>,
+    pub(crate) address_space: net::AddressSpace,
+    pub(crate) partition: Option<net::Partition>,
+    pub(crate) client: Arc<dyn Fetcher>,
+    pub(crate) storage: Option<(Arc<dyn crate::storage::Areas>, crate::storage::AreaKey)>,
+    pub(crate) mailbox: Mailbox,
+    pub(crate) me: Inbox,
+    pub(crate) stop: Arc<AtomicBool>,
+    pub(crate) service: super::service_workers::Service,
+    /// Told what its script did when it is evaluated for its job; none
+    /// for a version started again for an event.
+    pub(crate) evaluated:
+        Option<crate::service_worker::Done<Option<crate::service_worker::Evaluated>>>,
+}
+
+/// A service worker's thread (M39): its script run in a realm of its
+/// own, what it did told when it is evaluated for its job, then its
+/// event loop until it is stopped or retires.
+pub(crate) fn run_service(setup: ServiceSetup) {
+    let ServiceSetup {
+        script,
+        source,
+        address_space,
+        partition,
+        client,
+        storage,
+        mailbox,
+        me,
+        stop,
+        service,
+        mut evaluated,
+    } = setup;
+    let mut tell = |result: Option<crate::service_worker::Evaluated>| {
+        if let Some(done) = evaluated.take() {
+            done(result);
+        }
+    };
+    let limits = Limits {
+        secure: true,
+        ..Limits::worker()
+    };
+    let Ok(mut realm) =
+        QuickJs.realm_of::<WorkerHost>(RealmKind::ServiceWorker, limits, Some(stop.clone()))
+    else {
+        return tell(None);
+    };
+    let origin = script.origin();
+    let router = SharedRouter::default();
+    let realm_id = lock(&router).add_realm(me.clone());
+    let pool = Pool::new(MAX_WORKER_FETCH_THREADS);
+    let woken = me.clone();
+    pool.set_waker(Arc::new(move || {
+        woken.send(WorkerMessage::Wake);
+    }));
+    let mut host = WorkerHost {
+        pool: Some(pool),
+        initiator: Some(Initiator {
+            url: script.clone(),
+            address_space,
+            origin: origin.clone(),
+        }),
+        client: Some(client),
+        storage,
+        origin: origin.clone(),
+        url: Some(script.clone()),
+        secure: true,
+        clock: Instant::now(),
+        epoch_ms: SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64()
+            * 1000.0,
+        router: Some(router.clone()),
+        realm: realm_id,
+        partition,
+        // Its script's policies are not kept with it: it has none.
+        csp: Some(net::csp::Csp::none(origin)),
+        service: Some(service),
+        ..WorkerHost::default()
+    };
+    let text = utf8_decode(&source);
+    let run = Script {
+        source: &text,
+        url: script.as_str(),
+        line: 1,
+        muted: false,
+    };
+    let result = realm.run(&run, &mut host).map(|_| false);
+    let threw = result.is_err();
+    host.finish(&mut *realm, result, &stop);
+    if threw || realm.dead().is_some() {
+        tell(None);
+    } else {
+        // The events it listens for, its imports kept.
+        let ask = Task::ServiceWorker(r#"{"type":"listened"}"#.to_owned());
+        let result = realm.enter(&ask, &mut host);
+        host.finish(&mut *realm, result, &stop);
+        let service = host.service.as_mut().expect("a service worker's");
+        let events = service.take_listened();
+        tell(Some(crate::service_worker::Evaluated {
+            events,
+            imports: service.end_recording(),
+        }));
+        if !stop.load(Ordering::SeqCst) {
+            work(&mut *realm, &mut host, &mailbox, &stop);
+        }
+    }
+    lock(&router).remove_realm(realm_id);
+    if let Some(service) = host.service.as_mut() {
+        service.end();
+    }
+}
+
 /// A worker's event loop (HTML section 10.2.4): its timers, and the
 /// messages of its owner and of its own workers, in the order they are
 /// due, each a task with its microtask checkpoint, until it closes or
@@ -665,20 +812,54 @@ fn work(
             host.finish(realm, result, stop);
             continue;
         }
-        let wait = [host.timers.next_due(), frame_due]
-            .into_iter()
-            .flatten()
-            .min()
-            .map(|due| due.saturating_sub(now));
+        // A service worker's own bounds (M39): an event past its limit
+        // stops it, and so does its idleness.
+        let bound = host
+            .service
+            .as_ref()
+            .map(super::service_workers::Service::due);
+        if bound.is_some_and(|due| due <= Instant::now()) {
+            match super::service_workers::retire(host, mailbox) {
+                Some(message) => {
+                    host.handle(realm, message, stop);
+                    continue;
+                }
+                None => return,
+            }
+        }
+        let wait = [
+            host.timers.next_due().map(|due| due.saturating_sub(now)),
+            frame_due.map(|due| due.saturating_sub(now)),
+            bound.map(|due| due.saturating_duration_since(Instant::now())),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
         let message = match mailbox.take(wait) {
             Waited::Message(message) => message,
             Waited::TimedOut => continue,
             Waited::Gone => return,
         };
+        if matches!(message, WorkerMessage::Stop) {
+            return;
+        }
+        host.handle(realm, message, stop);
+    }
+}
+
+impl WorkerHost {
+    /// Runs what `message` asks of the worker's realm.
+    fn handle(
+        &mut self,
+        realm: &mut dyn Realm<WorkerHost>,
+        message: WorkerMessage,
+        stop: &AtomicBool,
+    ) {
+        let host = self;
         let task = match message {
             WorkerMessage::Stop => return,
             // Frames are the document's alone.
-            WorkerMessage::Frame(_) => continue,
+            WorkerMessage::Frame(_) => return,
             WorkerMessage::Wake => {
                 for task in host.take_fetched() {
                     if host.closing || stop.load(Ordering::SeqCst) {
@@ -687,8 +868,13 @@ fn work(
                     let result = realm.enter(&task, host);
                     host.finish(realm, result, stop);
                 }
-                continue;
+                return;
             }
+            WorkerMessage::ServiceWorker(text) => Task::ServiceWorker(text),
+            WorkerMessage::Extendable(kind, done) => match host.service.as_mut() {
+                Some(service) => Task::ServiceWorker(service.event(&kind, done)),
+                None => return,
+            },
             WorkerMessage::ToWorker(data) => Task::Message {
                 target: MessageTarget::Global,
                 data,
@@ -708,9 +894,9 @@ fn work(
                     Received::Task(task) => task,
                     Received::Console(entry) => {
                         host.tell(FromWorker::Console(Box::new(entry)));
-                        continue;
+                        return;
                     }
-                    Received::Nothing => continue,
+                    Received::Nothing => return,
                 }
             }
         };
@@ -819,6 +1005,8 @@ pub(crate) struct WorkerHost {
     local_network: Option<net::LocalNetworkAccess>,
     realm: u32,
     work: u64,
+    /// A service worker's own (M39); none for a dedicated worker.
+    pub(super) service: Option<super::service_workers::Service>,
 }
 
 impl Default for WorkerHost {
@@ -854,6 +1042,7 @@ impl Default for WorkerHost {
             csp: None,
             local_network: None,
             work: 0,
+            service: None,
         }
     }
 }
@@ -987,6 +1176,10 @@ impl ScriptingHost for WorkerHost {
                 self.import_script(&url)
                     .map_or_else(Vec::new, |(text, url)| vec![text, url]),
             )),
+            Call::ServiceWorker(request) => match self.service.as_mut() {
+                Some(service) => Ok(Answer::String(service.call(&request))),
+                None => Err(DomError::not_supported()),
+            },
             Call::Canvas(call) => self.canvas(*call),
             Call::PostToOwner(data) => {
                 if data.len() > MAX_MESSAGE_BYTES {
@@ -1158,8 +1351,16 @@ impl WorkerHost {
     /// A script `importScripts` runs (HTML's "fetch a classic
     /// worker-imported script"): fetched as a script, which needs an ok
     /// status and a JavaScript type, decoded as UTF-8; its text and URL.
-    fn import_script(&self, url: &str) -> Option<(String, String)> {
+    fn import_script(&mut self, url: &str) -> Option<(String, String)> {
         let url = Url::parse(url).ok()?;
+        // A service worker's (M39): fetched while it is evaluated and kept
+        // as its version's, after that only those kept.
+        if let Some(service) = &self.service
+            && !service.recording()
+        {
+            let body = service.stored(&url)?;
+            return Some((utf8_decode(&body), url.to_string()));
+        }
         let mut request = Request::get(url, Destination::Script)
             .initiated_by(self.initiator.clone()?)
             .with_body_limit(MAX_SCRIPT_BYTES);
@@ -1175,6 +1376,9 @@ impl WorkerHost {
                 .is_some_and(net::MimeType::is_javascript)
         {
             return None;
+        }
+        if let Some(service) = self.service.as_mut() {
+            service.record(response.url().clone(), &response.body);
         }
         Some((utf8_decode(&response.body), response.url().to_string()))
     }

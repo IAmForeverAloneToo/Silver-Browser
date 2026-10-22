@@ -453,6 +453,11 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                     .get::<_, Function<'_>>("devtools")?
                     .call::<_, Value<'_>>((message.as_str(),))
             }),
+            Task::ServiceWorker(message) => self.stepped(&entries, |_, entries| {
+                entries
+                    .get::<_, Function<'_>>("serviceWorker")?
+                    .call::<_, Value<'_>>((message.as_str(),))
+            }),
             Task::Fetched { id, answer } => self.context.with(|ctx| {
                 let called = entries.clone().restore(&ctx).and_then(|entries| {
                     let answer = match answer {

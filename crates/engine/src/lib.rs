@@ -461,6 +461,9 @@ pub struct Engine {
     /// The context the engine joined (M37), whose settings a profile
     /// given it holds.
     context: Option<Context>,
+    /// The service workers of the engine's own storage, until it joins a
+    /// context (M39).
+    own_service_workers: Option<service_worker::ServiceWorkers>,
     /// The Web Storage areas the browser keeps, in a renderer (M34.1); the
     /// storage's own otherwise.
     areas: Option<Arc<dyn storage::Areas>>,
@@ -1269,6 +1272,10 @@ impl Engine {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .listen();
+        let own_service_workers = Some(scripts::service_workers::in_process(
+            storage.clone(),
+            network.client(),
+        ));
         Engine {
             backend,
             decoder: Decoder::new(Some(fonts.clone())),
@@ -1314,6 +1321,7 @@ impl Engine {
             languages: vec!["en-US".to_owned(), "en".to_owned()],
             downloads: downloads::Downloads::new(),
             context: None,
+            own_service_workers,
             areas: None,
             storage_events: VecDeque::new(),
             hidden: false,
@@ -3719,6 +3727,7 @@ impl Engine {
         self.network.join(context);
         self.downloads = context.downloads().clone();
         self.context = Some(context.clone());
+        self.own_service_workers = None;
         let tab = context.new_tab();
         self.share_storage(context.shared_storage().clone(), tab);
     }

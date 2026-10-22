@@ -17,6 +17,9 @@ mod cssom;
 mod fetch;
 mod host;
 pub(crate) mod ports;
+pub(crate) mod service_workers;
+#[cfg(test)]
+mod service_workers_tests;
 #[cfg(test)]
 mod wasm_tests;
 pub(crate) mod workers;
@@ -1218,6 +1221,11 @@ impl Scripts {
                         origin: String::new(),
                     };
                     self.posted.push_back((now, task));
+                    continue;
+                }
+                // What the service workers' host told the document (M39).
+                workers::WorkerMessage::ServiceWorker(text) => {
+                    self.posted.push_back((now, js::Task::ServiceWorker(text)));
                     continue;
                 }
                 _ => continue,

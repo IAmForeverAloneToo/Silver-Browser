@@ -169,35 +169,58 @@
   // The kind of realm (M31): a document's window, or a dedicated
   // worker's global scope, which has only the interfaces Web IDL
   // exposes in a dedicated worker, and the name its creator gave it.
-  const WORKER = native.realmKind === "worker";
-  const WORKER_NAME = WORKER ? native.workerName : "";
+  // A service worker's (M39) is a worker's too.
+  const DEDICATED = native.realmKind === "worker";
+  const SERVICE = native.realmKind === "serviceworker";
+  const WORKER = DEDICATED || SERVICE;
+  const WORKER_NAME = DEDICATED ? native.workerName : "";
 
   // The interface of the members the window and the workers share,
   // which they name in their errors, and the global's own.
   const GLOBAL_INTERFACE = WORKER ? "WorkerGlobalScope" : "Window";
-  const GLOBAL_CLASS = WORKER ? "DedicatedWorkerGlobalScope" : "Window";
+  const GLOBAL_CLASS = SERVICE
+    ? "ServiceWorkerGlobalScope"
+    : WORKER
+      ? "DedicatedWorkerGlobalScope"
+      : "Window";
 
   // Whether the realm is a secure context's (M39): the interfaces Web
   // IDL marks `[SecureContext]` are its alone.
   const SECURE = native.secure === true;
-  const SECURE_ONLY = { __proto__: null, Cache: true, CacheStorage: true };
+  const SECURE_ONLY = {
+    __proto__: null, Cache: true, CacheStorage: true, ServiceWorker: true,
+    ServiceWorkerContainer: true, ServiceWorkerRegistration: true,
+  };
 
-  // Of the interfaces the bindings make, those a dedicated worker has
-  // too (true) or alone ("worker"); the others are the window's.
+  // Of the interfaces the bindings make, those every worker has too
+  // (true), the workers alone ("worker"), a dedicated worker alone
+  // ("dedicated"), a service worker alone ("service", M39), or the
+  // window and a dedicated worker ("notservice"); the others are the
+  // window's.
   const WORKER_INTERFACES = {
     __proto__: null,
     AbortController: true, AbortSignal: true, Blob: true, CanvasGradient: true,
     CanvasPattern: true, CustomEvent: true, DOMMatrix: true, DOMMatrixReadOnly: true,
-    DOMPoint: true, DOMPointReadOnly: true, DedicatedWorkerGlobalScope: "worker",
+    DOMPoint: true, DOMPointReadOnly: true, DedicatedWorkerGlobalScope: "dedicated",
     ErrorEvent: true, Event: true, EventTarget: true, File: true, FormData: true,
     Headers: true, ImageBitmap: true, ImageData: true, MessageEvent: true,
     OffscreenCanvas: true, OffscreenCanvasRenderingContext2D: true, Path2D: true,
-    Performance: true, ProgressEvent: true, QuotaExceededError: true, Request: true,
-    Response: true, TextMetrics: true, URLSearchParams: true, Worker: true,
+    Performance: true, ProgressEvent: "notservice", QuotaExceededError: true, Request: true,
+    Response: true, TextMetrics: true, URLSearchParams: true, Worker: "notservice",
     MessageChannel: true, MessagePort: true, Cache: true, CacheStorage: true,
     WorkerGlobalScope: "worker", WorkerLocation: "worker", WorkerNavigator: "worker",
-    XMLHttpRequest: true, XMLHttpRequestEventTarget: true, XMLHttpRequestUpload: true,
+    XMLHttpRequest: "notservice", XMLHttpRequestEventTarget: "notservice",
+    XMLHttpRequestUpload: "notservice", ServiceWorker: true, ServiceWorkerRegistration: true,
+    ServiceWorkerContainer: true, ServiceWorkerGlobalScope: "service", ExtendableEvent: "service",
+    InstallEvent: "service",
   };
+
+  // Whether an interface `where` says so is the realm's.
+  function exposedHere(where) {
+    if (SERVICE) return where === true || where === "worker" || where === "service";
+    if (WORKER) return where === true || where === "worker" || where === "dedicated" || where === "notservice";
+    return where === undefined || where === true || where === "notservice";
+  }
 
   // Every interface the bindings make, by name, exposed or not.
   const madeInterfaces = { __proto__: null };
@@ -226,8 +249,7 @@
     }
     defineProperty(proto, toStringTag, { value: name, configurable: true });
     madeInterfaces[name] = cls;
-    const where = WORKER_INTERFACES[name];
-    if (WORKER ? where === undefined : where === "worker") {
+    if (!exposedHere(WORKER_INTERFACES[name])) {
       return cls;
     }
     if (SECURE_ONLY[name] && !SECURE) {
@@ -9693,10 +9715,472 @@
   }
   expose(DedicatedWorkerGlobalScope, "DedicatedWorkerGlobalScope");
 
-  setPrototypeOf(global, WORKER ? DedicatedWorkerGlobalScope.prototype : Window.prototype);
+  // ---- Service workers (M39, Service Workers section 3) ---------------
+
+  // The realm's objects of the registrations and versions it has seen,
+  // one each (the standard's "get the service worker registration
+  // object"), by the browser's numbers; and the promises of the jobs it
+  // scheduled.
+  const swRegistrations = new $Map();
+  const swWorkers = new $Map();
+  const swPromises = new $Map();
+  let swNextPromise = 1;
+  let swSetState;
+  let swSetSlot;
+
+  // A request of the service workers' host: its result, or its error
+  // thrown, in the host's words.
+  function swCall(request) {
+    const answer = JSONParse(native.serviceWorker(JSONStringify(request)));
+    if (answer.error !== undefined) {
+      throw answer.error.name === "TypeError"
+        ? new $TypeError(answer.error.message)
+        : new $DOMException(answer.error.message, answer.error.name);
+    }
+    return answer.result;
+  }
+
+  // The object of version `shown` ({id, scriptURL, state}), made the
+  // first time; null for none.
+  function swWorker(shown) {
+    if (shown === null || shown === undefined) return null;
+    let worker = MapGet(swWorkers, shown.id);
+    if (worker === undefined) {
+      worker = new ServiceWorker(KEY, shown);
+      MapSet(swWorkers, shown.id, worker);
+    }
+    return worker;
+  }
+
+  // The object of the registration `view` shows, made the first time
+  // with its slots as the view has them.
+  function swRegistration(view) {
+    let reg = MapGet(swRegistrations, view.id);
+    if (reg === undefined) {
+      reg = new ServiceWorkerRegistration(KEY, view);
+      MapSet(swRegistrations, view.id, reg);
+    }
+    return reg;
+  }
+
+  // A job scheduled: its promise, settled by the host's task.
+  function swJob(request) {
+    const number = swNextPromise++;
+    request.promise = number;
+    let settle;
+    const promise = new $Promise((resolve, reject) => {
+      settle = { resolve, reject };
+    });
+    swCall(request);
+    MapSet(swPromises, number, settle);
+    return promise;
+  }
+
+  class ServiceWorker extends EventTarget {
+    #scriptURL;
+    #state;
+
+    constructor(key, shown) {
+      if (key !== KEY) throw illegalConstructor("ServiceWorker");
+      super();
+      this.#scriptURL = shown.scriptURL;
+      this.#state = shown.state;
+    }
+
+    static {
+      swSetState = (worker, state) => {
+        const changed = worker.#state !== state;
+        worker.#state = state;
+        return changed;
+      };
+    }
+
+    get scriptURL() {
+      return this.#scriptURL;
+    }
+
+    get state() {
+      return this.#state;
+    }
+  }
+  defineHandlers(ServiceWorker.prototype, ["statechange", "error"], false);
+  expose(ServiceWorker, "ServiceWorker");
+
+  class ServiceWorkerRegistration extends EventTarget {
+    #id;
+    #scope;
+    #updateViaCache;
+    #slots;
+
+    constructor(key, view) {
+      if (key !== KEY) throw illegalConstructor("ServiceWorkerRegistration");
+      super();
+      this.#id = view.id;
+      this.#scope = view.scope;
+      this.#updateViaCache = view.updateViaCache;
+      this.#slots = {
+        __proto__: null,
+        installing: swWorker(view.installing),
+        waiting: swWorker(view.waiting),
+        active: swWorker(view.active),
+      };
+    }
+
+    static {
+      swSetSlot = (reg, slot, worker, updateViaCache) => {
+        reg.#slots[slot] = worker;
+        reg.#updateViaCache = updateViaCache;
+      };
+    }
+
+    get installing() {
+      return this.#slots.installing;
+    }
+
+    get waiting() {
+      return this.#slots.waiting;
+    }
+
+    get active() {
+      return this.#slots.active;
+    }
+
+    get scope() {
+      return this.#scope;
+    }
+
+    get updateViaCache() {
+      return this.#updateViaCache;
+    }
+
+    update() {
+      try {
+        return swJob({ op: "update", registration: this.#id, scope: this.#scope });
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+
+    unregister() {
+      try {
+        return swJob({ op: "unregister", registration: this.#id, scope: this.#scope });
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+  }
+  defineHandlers(ServiceWorkerRegistration.prototype, ["updatefound"], false);
+  expose(ServiceWorkerRegistration, "ServiceWorkerRegistration");
+
+  // A RegistrationOptions member that is one of an enumeration's values.
+  function swEnum(value, fallback, values, member, type) {
+    if (value === undefined) return fallback;
+    const text = str(value);
+    if (!ArrayIncludes(values, text)) {
+      throw new $TypeError(
+        prefix("register", "ServiceWorkerContainer") + "Failed to read the '" + member +
+          "' property from 'RegistrationOptions': The provided value '" + text +
+          "' is not a valid enum value of type " + type + ".",
+      );
+    }
+    return text;
+  }
+
+  // `ready`'s promise, settled once a registration of the document's
+  // URL has an active version.
+  let swReady = null;
+
+  // The registry may be ahead of the notices the realm has run: the
+  // registration's object, as they made it, decides.
+  function swCheckReady() {
+    if (swReady === null || swReady.done) return;
+    let view;
+    try {
+      view = swCall({ op: "getRegistration", url: null });
+    } catch {
+      return;
+    }
+    if (view === null) return;
+    const reg = swRegistration(view);
+    if (reg.active !== null) {
+      swReady.done = true;
+      swReady.resolve(reg);
+    }
+  }
+
+  class ServiceWorkerContainer extends EventTarget {
+    constructor(key) {
+      if (key !== KEY) throw illegalConstructor("ServiceWorkerContainer");
+      super();
+    }
+
+    get controller() {
+      return null;
+    }
+
+    get ready() {
+      if (swReady === null) {
+        let resolve;
+        const promise = new $Promise((r) => {
+          resolve = r;
+        });
+        swReady = { promise, resolve, done: false };
+        swCheckReady();
+      }
+      return swReady.promise;
+    }
+
+    register(scriptURL, options) {
+      try {
+        need(arguments.length, 1, "register", "ServiceWorkerContainer");
+        const given = options === undefined || options === null ? {} : options;
+        const scope = given.scope === undefined ? null : str(given.scope);
+        const type = swEnum(given.type, "classic", ["classic", "module"], "type", "WorkerType");
+        const updateViaCache = swEnum(given.updateViaCache, "imports", ["imports", "all", "none"],
+          "updateViaCache", "ServiceWorkerUpdateViaCache");
+        return swJob({ op: "register", script: str(scriptURL), scope, type, updateViaCache });
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+
+    getRegistration(clientURL) {
+      try {
+        const url = clientURL === undefined ? null : str(clientURL);
+        const view = swCall({ op: "getRegistration", url });
+        return resolved(view === null ? undefined : swRegistration(view));
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+
+    getRegistrations() {
+      try {
+        const views = swCall({ op: "getRegistrations" });
+        const out = [];
+        for (let i = 0; i < views.length; i++) ArrayPush(out, swRegistration(views[i]));
+        return resolved(out);
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+
+    startMessages() {}
+  }
+  defineHandlers(ServiceWorkerContainer.prototype, ["controllerchange", "message", "messageerror"], false);
+  expose(ServiceWorkerContainer, "ServiceWorkerContainer");
+
+  // `navigator.serviceWorker`: the document's one container, a secure
+  // context's alone; reading it where storage is refused (a sandbox
+  // without `allow-same-origin`) throws.
+  if (!WORKER && SECURE) {
+    let container = null;
+    defineProperty(Navigator.prototype, "serviceWorker", {
+      get() {
+        try {
+          swCall({ op: "check" });
+        } catch (e) {
+          throw new $DOMException(
+            "Failed to read the 'serviceWorker' property from 'Navigator': " + e.message, e.name);
+        }
+        if (container === null) container = new ServiceWorkerContainer(KEY);
+        return container;
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  }
+
+  // ---- Extendable events (Service Workers 4.4) -----------------------
+
+  // An extendable event's state: the promises its waitUntil holds,
+  // whether one rejected, its dispatch done, and the host's number for
+  // it (0 for one a script made).
+  const extendStates = new $WeakMap();
+
+  function extendState(event) {
+    let state = WeakMapGet(extendStates, event);
+    if (state === undefined) {
+      state = { pending: 0, rejected: false, dispatched: false, id: 0, ended: false };
+      WeakMapSet(extendStates, event, state);
+    }
+    return state;
+  }
+
+  // The host's event is done once dispatched with nothing pending: the
+  // host hears whether every promise fulfilled.
+  function extendEnd(state) {
+    if (state.ended || !state.dispatched || state.pending > 0 || state.id === 0) return;
+    state.ended = true;
+    swCall({ op: "eventDone", id: state.id, ok: !state.rejected });
+  }
+
+  class ExtendableEvent extends Event {
+    constructor(type, eventInitDict = undefined) {
+      const args = eventArgs(arguments.length, type, eventInitDict, EVENT_INIT, "ExtendableEvent");
+      super(args[0], args[1]);
+    }
+
+    waitUntil(promise) {
+      const where = prefix("waitUntil", "ExtendableEvent");
+      need(arguments.length, 1, "waitUntil", "ExtendableEvent");
+      if (!eventState(this).trusted) {
+        throw new $DOMException(where + "Can not call waitUntil on a script constructed ExtendableEvent.",
+          "InvalidStateError");
+      }
+      const state = extendState(this);
+      if (state.dispatched && state.pending === 0) {
+        throw new $DOMException(
+          where + "The event handler is already finished and no extend lifetime promises are outstanding.",
+          "InvalidStateError");
+      }
+      state.pending++;
+      const settled = () => {
+        state.pending--;
+        extendEnd(state);
+      };
+      PromiseThen(resolved(promise), settled, () => {
+        state.rejected = true;
+        settled();
+      });
+    }
+  }
+  expose(ExtendableEvent, "ExtendableEvent");
+
+  class InstallEvent extends ExtendableEvent {
+    constructor(type, eventInitDict = undefined) {
+      const args = eventArgs(arguments.length, type, eventInitDict, EVENT_INIT, "InstallEvent");
+      super(args[0], args[1]);
+    }
+  }
+  expose(InstallEvent, "InstallEvent");
+
+  // Dispatches the host's extendable event `type` numbered `id` at the
+  // global.
+  function* swExtendable(type, id) {
+    const event = type === "install" ? new InstallEvent(type) : new ExtendableEvent(type);
+    eventState(event).trusted = true;
+    const state = extendState(event);
+    state.id = id;
+    yield* dispatching(global, event);
+    state.dispatched = true;
+    extendEnd(state);
+    return false;
+  }
+
+  // ---- A service worker's global scope (Service Workers 4.1) ----------
+
+  // The version's own registration and worker, made the first time from
+  // the host's view.
+  let swOwn = null;
+
+  function swSelf() {
+    if (swOwn === null) {
+      const own = swCall({ op: "self" });
+      swOwn = { registration: swRegistration(own.view), worker: swWorker(own.worker) };
+    }
+    return swOwn;
+  }
+
+  class ServiceWorkerGlobalScope extends WorkerGlobalScope {
+    constructor() {
+      throw illegalConstructor("ServiceWorkerGlobalScope");
+    }
+
+    get registration() {
+      return swSelf().registration;
+    }
+
+    get serviceWorker() {
+      return swSelf().worker;
+    }
+
+    skipWaiting() {
+      try {
+        swCall({ op: "skipWaiting" });
+        return resolved(undefined);
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+  }
+  expose(ServiceWorkerGlobalScope, "ServiceWorkerGlobalScope");
+
+  // What the host tells the realm (M39): a job's promise settled, a
+  // registration's slot or a version's state changed, `updatefound`, an
+  // extendable event, or a question of the events the global listens
+  // for.
+  function* swTask(text) {
+    const told = JSONParse(text);
+    switch (told.type) {
+      case "settle": {
+        const settle = MapGet(swPromises, told.promise);
+        if (settle === undefined) return false;
+        MapDelete(swPromises, told.promise);
+        if (told.error !== undefined) {
+          settle.reject(told.error.name === "TypeError"
+            ? new $TypeError(told.error.message)
+            : new $DOMException(told.error.message, told.error.name));
+        } else if (told.view !== undefined) {
+          settle.resolve(swRegistration(told.view));
+        } else {
+          settle.resolve(told.result);
+        }
+        return false;
+      }
+      case "slot": {
+        const reg = MapGet(swRegistrations, told.registration);
+        if (reg !== undefined) {
+          swSetSlot(reg, told.slot, swWorker(told.view[told.slot]), told.view.updateViaCache);
+        }
+        return false;
+      }
+      case "state": {
+        const worker = MapGet(swWorkers, told.version);
+        if (worker !== undefined && swSetState(worker, told.state)) {
+          const event = new Event("statechange");
+          eventState(event).trusted = true;
+          yield* dispatching(worker, event);
+        }
+        // `ready` settles once the active version's state is told.
+        if (!WORKER) swCheckReady();
+        return false;
+      }
+      case "updatefound": {
+        const reg = MapGet(swRegistrations, told.registration);
+        if (reg !== undefined) {
+          const event = new Event("updatefound");
+          eventState(event).trusted = true;
+          yield* dispatching(reg, event);
+        }
+        return false;
+      }
+      case "event":
+        return yield* swExtendable(told.kind, told.id);
+      case "listened": {
+        const listeners = listenersOf(global);
+        const types = [];
+        for (let i = 0; i < listeners.length; i++) {
+          if (!ArrayIncludes(types, listeners[i].type)) ArrayPush(types, listeners[i].type);
+        }
+        swCall({ op: "listened", types });
+        return false;
+      }
+    }
+    return false;
+  }
+
+  setPrototypeOf(
+    global,
+    SERVICE
+      ? ServiceWorkerGlobalScope.prototype
+      : WORKER
+        ? DedicatedWorkerGlobalScope.prototype
+        : Window.prototype,
+  );
   // The global is tagged by its prototype, not by QuickJS-ng's own tag.
   ReflectDeleteProperty(global, toStringTag);
-  if (WORKER) {
+  if (DEDICATED) {
     // [Replaceable] (HTML section 10.2.1.2): a script's own `name`
     // replaces it.
     defineProperty(global, "name", {
@@ -9993,8 +10477,12 @@
   // message handlers, the global's own.
   defineHandlers(WorkerGlobalScope.prototype,
     ["error", "languagechange", "rejectionhandled", "unhandledrejection"], false);
-  if (WORKER) {
+  if (DEDICATED) {
     defineHandlers(global, ["message", "messageerror"], false);
+  }
+  // A service worker's (M39).
+  if (SERVICE) {
+    defineHandlers(global, ["install", "activate", "fetch", "message", "messageerror"], false);
   }
   defineHandlers(AbortSignal.prototype, ["abort"], false);
   const BODIES = ["body", "frameset"];
@@ -14740,7 +15228,7 @@
 
   // A dedicated worker's own members (HTML section 10.2.1.2): a message
   // to its owner, and close().
-  if (WORKER) {
+  if (DEDICATED) {
     defineProperty(global, "postMessage", {
       value: function postMessage(message) {
         const a = arguments;
@@ -18929,6 +19417,7 @@
     guardCode,
     devtools: devtoolsMessage,
     idb: idbTask,
+    serviceWorker: swTask,
     evaluate: evaluateExpression,
     fetched,
     // A message's arrival (M31): at the global (`kind` 0), at worker

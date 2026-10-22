@@ -108,6 +108,9 @@ pub enum RealmKind {
     /// 10.2.1.2), with only the interfaces Web IDL exposes there, and
     /// the name its creator gave it.
     DedicatedWorker { name: String },
+    /// A service worker's `ServiceWorkerGlobalScope` (M39, Service
+    /// Workers 4.1), with the interfaces Web IDL exposes there.
+    ServiceWorker,
     /// The browser's DevTools panel's page (M36, docs/design/devtools.md):
     /// a window with the global `devtools`, its bridge to the browser.
     DevTools,
@@ -366,6 +369,10 @@ pub enum Task {
     /// IndexedDB's next request completed (M36.7): its event is
     /// dispatched, a microtask checkpoint after each listener.
     Idb,
+    /// What the service workers' host tells the realm (M39), as JSON: a
+    /// job's promise settled, a registration's or a version's change,
+    /// or an event for a service worker's global.
+    ServiceWorker(String),
 }
 
 /// Where a message is delivered (M31).

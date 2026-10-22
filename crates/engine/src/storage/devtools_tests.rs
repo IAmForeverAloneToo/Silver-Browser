@@ -252,8 +252,8 @@ fn a_sites_service_workers_are_listed_and_unregistered() {
             force_bypass: false,
             partition: None,
         },
-        Box::new(move |outcome| {
-            let _ = sender.send(outcome);
+        Box::new(move |settled: crate::service_worker::Settled| {
+            let _ = sender.send(settled.outcome);
         }),
     );
     receiver

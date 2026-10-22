@@ -357,6 +357,19 @@ impl Areas for RemoteAreas {
         }
     }
 
+    fn service_worker(
+        &self,
+        _client: &crate::service_worker::page::Client,
+        request: &str,
+    ) -> String {
+        // A renderer's documents reach the registry at step 3b (M39):
+        // until then their container is there, its operations refused.
+        if request.contains(r#""op":"check""#) {
+            return r#"{"result":null}"#.to_owned();
+        }
+        crate::storage::NO_SERVICE_WORKERS.to_owned()
+    }
+
     fn idb(&self, key: &AreaKey, request: &str) -> String {
         let op = StorageOp::Idb {
             request: request.to_owned(),

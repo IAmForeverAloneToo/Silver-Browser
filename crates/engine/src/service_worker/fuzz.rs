@@ -186,7 +186,9 @@ fn drive(
                     registry.installed(version, ok);
                 }
                 Effect::Activate { version } => registry.activated(version),
-                Effect::Settle { ticket, outcome } => {
+                Effect::Settle {
+                    ticket, outcome, ..
+                } => {
                     assert!(
                         settled.insert(ticket, outcome).is_none(),
                         "a promise settles once"

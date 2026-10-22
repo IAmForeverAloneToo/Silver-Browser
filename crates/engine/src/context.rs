@@ -78,7 +78,7 @@ impl Context {
             .with_local_network_gate(permissions.clone())
             .with_languages(accept_language.clone());
         let service_workers =
-            crate::service_worker::ServiceWorkers::new(storage.clone(), Arc::new(client));
+            crate::scripts::service_workers::in_process(storage.clone(), Arc::new(client));
         Context {
             shared: Arc::new(Shared {
                 jar,

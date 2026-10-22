@@ -76,8 +76,8 @@ fn register(context: &Context, server: &TestServer, script: &str) -> Receiver<Ou
             force_bypass: false,
             partition: None,
         },
-        Box::new(move |outcome| {
-            let _ = sender.send(outcome);
+        Box::new(move |settled: crate::service_worker::Settled| {
+            let _ = sender.send(settled.outcome);
         }),
     );
     receiver
@@ -110,11 +110,12 @@ fn a_job_fetches_its_script_and_the_host_runs_its_version() {
     let hearing = heard.clone();
     context
         .service_workers()
-        .listen(Arc::new(move |key: &str, notice: &Notice| {
+        .listen(Arc::new(move |key: &str, notice: &Notice, _: &View| {
             hearing
                 .lock()
                 .unwrap()
                 .push((key.to_owned(), notice.clone()));
+            true
         }));
     let outcome = register(&context, &server, "/sw.js")
         .recv_timeout(Duration::from_secs(20))

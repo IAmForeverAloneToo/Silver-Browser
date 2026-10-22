@@ -1312,6 +1312,36 @@ impl DocumentHost {
                     Answer::Pair(answer, bytes)
                 })
             }
+            Call::ServiceWorker(request) => {
+                // The reference browser's words for a sandbox's (M39).
+                if self
+                    .page
+                    .as_ref()
+                    .is_some_and(|page| page.sandbox().has(Sandbox::ORIGIN))
+                {
+                    return Err(DomError::new(
+                        "SecurityError",
+                        "Service worker is disabled because the context is sandboxed and lacks the 'allow-same-origin' flag.",
+                    ));
+                }
+                let page = self.page.as_ref().ok_or_else(DomError::not_supported)?;
+                let url = page.url().cloned().ok_or_else(DomError::not_supported)?;
+                let base = page.base_url(&self.document).unwrap_or_else(|| url.clone());
+                let inbox = self.workers.inbox();
+                let client = crate::service_worker::page::Client {
+                    key: self.storage_key(page).serialization(),
+                    partition: self.partition(),
+                    origin: page.origin().clone(),
+                    base,
+                    url,
+                    tell: std::sync::Arc::new(move |text| {
+                        inbox.send(super::workers::WorkerMessage::ServiceWorker(text));
+                        inbox.alive()
+                    }),
+                    listening: self.workers.service_listening.clone(),
+                };
+                self.with_areas(|areas, _| Answer::String(areas.service_worker(&client, &request)))
+            }
             Call::StorageUsage => self.with_areas(|areas, key| {
                 // The caches' share too (M39), for `usageDetails`.
                 let (caches, _) = areas.caches(key, r#"{"op":"usage"}"#, &[]);

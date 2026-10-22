@@ -12,7 +12,7 @@ use std::thread;
 
 use net::{CacheMode, Destination, NetworkError, Redirect, Request, Url};
 
-use super::{Effect, Evaluated, FetchFailure, Fetched, Job, Notice, Outcome};
+use super::{Effect, Evaluated, FetchFailure, Fetched, Job, Notice, Outcome, View};
 use crate::loader::Fetcher;
 use crate::scripts::MAX_SCRIPT_BYTES;
 use crate::storage::Storage;
@@ -20,8 +20,16 @@ use crate::storage::Storage;
 /// What is called when something asked for is done.
 pub type Done<T> = Box<dyn FnOnce(T) + Send>;
 
-/// What a listener hears: a storage key's notice.
-pub type Listener = Arc<dyn Fn(&str, &Notice) + Send + Sync>;
+/// What a listener hears: a storage key's notice, with its
+/// registration's view; it is dropped once it answers false.
+pub type Listener = Arc<dyn Fn(&str, &Notice, &View) -> bool + Send + Sync>;
+
+/// How a job's promise settled, and its registration's view then.
+#[derive(Clone, Debug)]
+pub struct Settled {
+    pub outcome: Outcome,
+    pub view: Option<View>,
+}
 
 /// A version to run: its numbers, its registration's storage key and
 /// scope, and its script.
@@ -51,6 +59,9 @@ pub trait ServiceWorkerHost: Send + Sync {
     fn activate(&self, version: u64, done: Done<()>);
     /// Stops the version, if it runs.
     fn terminate(&self, version: u64);
+    /// The versions of storage key `key` hear `notice`: their
+    /// registration objects change.
+    fn notice(&self, _key: &str, _notice: &Notice, _view: &View) {}
 }
 
 /// The host when none was given: no script runs, so no version
@@ -75,7 +86,7 @@ impl ServiceWorkerHost for NoHost {
 
 /// What the driver's thread is told, in order.
 enum Message {
-    Schedule(Box<Job>, Done<Outcome>),
+    Schedule(Box<Job>, Done<Settled>),
     Fetched(u64, Result<Fetched, FetchFailure>),
     Evaluated(u64, Option<Evaluated>),
     Installed(u64, bool),
@@ -93,6 +104,18 @@ enum Message {
 #[derive(Clone)]
 pub struct ServiceWorkers {
     inner: Arc<Inner>,
+}
+
+/// The context's service workers, not kept alive by this.
+#[derive(Clone)]
+pub struct WeakServiceWorkers {
+    inner: Weak<Inner>,
+}
+
+impl WeakServiceWorkers {
+    pub fn upgrade(&self) -> Option<ServiceWorkers> {
+        self.inner.upgrade().map(|inner| ServiceWorkers { inner })
+    }
 }
 
 struct Inner {
@@ -123,12 +146,24 @@ impl ServiceWorkers {
         // does its effects. Called with the storage locked, so it locks
         // nothing.
         let weak = Arc::downgrade(&inner);
-        lock(&inner.storage).set_registry_wake(Arc::new(move || {
+        let mut storage = lock(&inner.storage);
+        storage.set_service_workers(WeakServiceWorkers {
+            inner: weak.clone(),
+        });
+        storage.set_registry_wake(Arc::new(move || {
             if let Some(inner) = weak.upgrade() {
                 ServiceWorkers { inner }.send(Message::Pump);
             }
         }));
+        drop(storage);
         ServiceWorkers { inner }
+    }
+
+    /// A handle that does not keep them alive.
+    pub fn downgrade(&self) -> WeakServiceWorkers {
+        WeakServiceWorkers {
+            inner: Arc::downgrade(&self.inner),
+        }
     }
 
     /// Runs versions with `host` from now on.
@@ -147,6 +182,11 @@ impl ServiceWorkers {
         query(lock(&self.inner.storage).service_workers(key))
     }
 
+    /// What `query` finds in the registry as it is, no key read.
+    pub fn query_any<T>(&self, query: impl FnOnce(&super::Registry) -> T) -> T {
+        query(lock(&self.inner.storage).registry())
+    }
+
     fn send(&self, message: Message) {
         let sender = self.inner.sender.get_or_init(|| {
             let (sender, receiver) = channel();
@@ -160,7 +200,7 @@ impl ServiceWorkers {
     }
 
     /// Schedule Job: `done` hears how its promise settles.
-    pub fn schedule(&self, job: Job, done: Done<Outcome>) {
+    pub fn schedule(&self, job: Job, done: Done<Settled>) {
         self.send(Message::Schedule(Box::new(job), done));
     }
 
@@ -183,7 +223,7 @@ impl ServiceWorkers {
 /// The driver's thread: each message given to the registry, then its
 /// effects done, until the context goes.
 fn run(weak: &Weak<Inner>, receiver: &Receiver<Message>) {
-    let mut waiting: HashMap<u64, Done<Outcome>> = HashMap::new();
+    let mut waiting: HashMap<u64, Done<Settled>> = HashMap::new();
     while let Ok(message) = receiver.recv() {
         let Some(inner) = weak.upgrade() else {
             return;
@@ -224,7 +264,7 @@ fn perform(
     inner: &Inner,
     sender: &Sender<Message>,
     effect: Effect,
-    waiting: &mut HashMap<u64, Done<Outcome>>,
+    waiting: &mut HashMap<u64, Done<Settled>>,
 ) {
     match effect {
         Effect::Fetch {
@@ -291,15 +331,25 @@ fn perform(
             );
         }
         Effect::Terminate { version } => host(inner).terminate(version),
-        Effect::Settle { ticket, outcome } => {
+        Effect::Settle {
+            ticket,
+            outcome,
+            view,
+        } => {
             if let Some(done) = waiting.remove(&ticket) {
-                done(outcome);
+                done(Settled { outcome, view });
             }
         }
-        Effect::Notice { key, notice } => {
+        Effect::Notice { key, notice, view } => {
+            host(inner).notice(&key, &notice, &view);
             let listeners = lock(&inner.listeners).clone();
-            for listener in listeners {
-                listener(&key, &notice);
+            let gone: Vec<Listener> = listeners
+                .into_iter()
+                .filter(|listener| !listener(&key, &notice, &view))
+                .collect();
+            if !gone.is_empty() {
+                lock(&inner.listeners)
+                    .retain(|listener| !gone.iter().any(|g| Arc::ptr_eq(g, listener)));
             }
         }
     }

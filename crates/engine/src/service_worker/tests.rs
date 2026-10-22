@@ -64,7 +64,9 @@ fn run(registry: &mut Registry, body: &[u8], events: &[&str]) -> Vec<Effect> {
 
 fn settled(effects: &[Effect], ticket: u64) -> Option<&Outcome> {
     effects.iter().find_map(|effect| match effect {
-        Effect::Settle { ticket: t, outcome } if *t == ticket => Some(outcome),
+        Effect::Settle {
+            ticket: t, outcome, ..
+        } if *t == ticket => Some(outcome),
         _ => None,
     })
 }

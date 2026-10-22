@@ -63,6 +63,8 @@ mod sandbox_tests;
 mod script_tests;
 #[cfg(test)]
 pub(crate) mod security_tests;
+#[cfg(test)]
+mod service_worker_tests;
 mod sheets;
 #[cfg(test)]
 mod state_tests;

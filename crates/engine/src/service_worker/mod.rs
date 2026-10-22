@@ -17,12 +17,15 @@ mod driver;
 #[cfg(test)]
 mod driver_tests;
 mod fuzz;
+pub(crate) mod page;
 mod record;
 pub mod rules;
 #[cfg(test)]
 mod tests;
 
-pub use driver::{Done, Listener, ServiceWorkerHost, ServiceWorkers, Start};
+pub use driver::{
+    Done, Listener, ServiceWorkerHost, ServiceWorkers, Settled, Start, WeakServiceWorkers,
+};
 pub use fuzz::fuzz_registry;
 
 /// The most registrations a storage key has.
@@ -288,9 +291,19 @@ pub enum Effect {
     /// The version will not run again: stop it if it runs.
     Terminate { version: u64 },
     /// The promise of `ticket` settles.
-    Settle { ticket: u64, outcome: Outcome },
+    /// A registration's, with its view at that moment.
+    Settle {
+        ticket: u64,
+        outcome: Outcome,
+        view: Option<View>,
+    },
     /// The clients of storage key `key` hear `notice`.
-    Notice { key: String, notice: Notice },
+    /// With the registration's view at that moment.
+    Notice {
+        key: String,
+        notice: Notice,
+        view: View,
+    },
 }
 
 /// What the clients of a storage key hear, in order: the tasks the
@@ -308,6 +321,26 @@ pub enum Notice {
     State { version: u64, state: State },
     /// `updatefound` at the registration.
     UpdateFound { registration: u64 },
+}
+
+/// A version as its clients see it: its number, script and state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Shown {
+    pub id: u64,
+    pub script: Url,
+    pub state: State,
+}
+
+/// A registration as its clients see it at a moment: its scope, its
+/// `updateViaCache` and its slots.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct View {
+    pub id: u64,
+    pub scope: Url,
+    pub update_via_cache: UpdateViaCache,
+    pub installing: Option<Shown>,
+    pub waiting: Option<Shown>,
+    pub active: Option<Shown>,
 }
 
 /// Where a running job is.
@@ -513,12 +546,53 @@ impl Registry {
             return;
         }
         running.settled = true;
-        for ticket in running.tickets.clone() {
+        let tickets = running.tickets.clone();
+        let view = match outcome {
+            Outcome::Registration(registration) => self.view(registration),
+            _ => None,
+        };
+        for ticket in tickets {
             self.effects.push(Effect::Settle {
                 ticket,
                 outcome: outcome.clone(),
+                view: view.clone(),
             });
         }
+    }
+
+    /// A version as its clients see it now.
+    fn shown(&self, version: Option<u64>) -> Option<Shown> {
+        let v = self.versions.get(&version?)?;
+        Some(Shown {
+            id: v.id,
+            script: v.script.clone(),
+            state: v.state,
+        })
+    }
+
+    /// The registration as its clients see it now.
+    pub fn view(&self, registration: u64) -> Option<View> {
+        let reg = self.registrations.get(&registration)?;
+        Some(View {
+            id: reg.id,
+            scope: reg.scope.clone(),
+            update_via_cache: reg.update_via_cache,
+            installing: self.shown(reg.installing),
+            waiting: self.shown(reg.waiting),
+            active: self.shown(reg.active),
+        })
+    }
+
+    /// The registration's clients hear `notice`, with its view now.
+    fn notify(&mut self, registration: u64, notice: Notice) {
+        let (Some(reg), Some(view)) = (
+            self.registrations.get(&registration),
+            self.view(registration),
+        ) else {
+            return;
+        };
+        let key = reg.key.clone();
+        self.effects.push(Effect::Notice { key, notice, view });
     }
 
     fn reject(&mut self, id: u64, name: &'static str, words: &str) {
@@ -875,11 +949,7 @@ impl Registry {
         self.set_slot(registration, Slot::Installing, Some(version));
         self.set_state(version, State::Installing);
         self.settle(id, Outcome::Registration(registration));
-        let key = self.registrations[&registration].key.clone();
-        self.effects.push(Effect::Notice {
-            key,
-            notice: Notice::UpdateFound { registration },
-        });
+        self.notify(registration, Notice::UpdateFound { registration });
         self.jobs.get_mut(&id).expect("running").stage = Stage::Installing {
             registration,
             version,
@@ -1087,18 +1157,17 @@ impl Registry {
             return;
         };
         *reg.slot(slot) = version;
-        let key = reg.key.clone();
         if slot == Slot::Active {
-            self.dirty.insert((key.clone(), reg.row), registration);
+            self.dirty.insert((reg.key.clone(), reg.row), registration);
         }
-        self.effects.push(Effect::Notice {
-            key,
-            notice: Notice::Slot {
+        self.notify(
+            registration,
+            Notice::Slot {
                 registration,
                 slot,
                 version,
             },
-        });
+        );
     }
 
     /// Update Worker State.
@@ -1114,10 +1183,7 @@ impl Registry {
         if reg.active == Some(version) {
             self.dirty.insert((reg.key.clone(), reg.row), registration);
         }
-        self.effects.push(Effect::Notice {
-            key: reg.key.clone(),
-            notice: Notice::State { version, state },
-        });
+        self.notify(registration, Notice::State { version, state });
     }
 
     /// A client of the registration's came (`controlled`) or went.

@@ -94,6 +94,8 @@ pub(crate) struct Storage {
     /// What has the registry's effects done when it changed outside its
     /// driver: the driver's wake.
     registry_wake: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// The registry's driver, which its clients' jobs go to.
+    service_workers: Option<crate::service_worker::WeakServiceWorkers>,
     /// The settings as read from the profile, until taken, and as they
     /// changed since it was last written (M37).
     settings_read: Option<Vec<u8>>,
@@ -271,7 +273,16 @@ pub(crate) trait Areas: Send + Sync {
     /// bodies it carries in `bytes`, as [`crate::caches::serve`] answers
     /// it.
     fn caches(&self, key: &AreaKey, request: &str, bytes: &[u8]) -> (String, Vec<u8>);
+    /// A request of the client's `navigator.serviceWorker` or a
+    /// registration's (M39), as
+    /// [`crate::service_worker::page::serve`] answers it.
+    fn service_worker(&self, client: &crate::service_worker::page::Client, request: &str)
+    -> String;
 }
+
+/// The answer to a service worker's request where there is no driver.
+pub(crate) const NO_SERVICE_WORKERS: &str =
+    r#"{"error":{"name":"NotSupportedError","message":"Service workers are not available."}}"#;
 
 /// A tab's Web Storage in an engine of its own (M37): the context's
 /// storage, `sessionStorage` the tab's own.
@@ -300,6 +311,18 @@ impl Areas for TabAreas {
     fn caches(&self, key: &AreaKey, request: &str, bytes: &[u8]) -> (String, Vec<u8>) {
         self.lock()
             .serve_caches(&key.serialization(), request, bytes)
+    }
+
+    fn service_worker(
+        &self,
+        client: &crate::service_worker::page::Client,
+        request: &str,
+    ) -> String {
+        let driver = self.lock().service_worker_driver();
+        match driver {
+            Some(driver) => crate::service_worker::page::serve(&driver, client, request),
+            None => NO_SERVICE_WORKERS.to_owned(),
+        }
     }
 
     fn length(&self, local: bool, key: &AreaKey) -> usize {
@@ -565,6 +588,7 @@ impl Storage {
             registry: crate::service_worker::Registry::default(),
             registry_unwritten: Vec::new(),
             registry_wake: None,
+            service_workers: None,
             settings_read: None,
             settings_unwritten: None,
             cache: None,
@@ -655,6 +679,19 @@ impl Storage {
     /// its driver.
     pub(crate) fn set_registry_wake(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
         self.registry_wake = Some(wake);
+    }
+
+    /// Has the registry's clients reach `driver` from now on.
+    pub(crate) fn set_service_workers(
+        &mut self,
+        driver: crate::service_worker::WeakServiceWorkers,
+    ) {
+        self.service_workers = Some(driver);
+    }
+
+    /// The registry's driver, while it lives.
+    pub(crate) fn service_worker_driver(&self) -> Option<crate::service_worker::ServiceWorkers> {
+        self.service_workers.as_ref()?.upgrade()
     }
 
     /// The registry changed outside its driver: its effects are done.
