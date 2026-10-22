@@ -86,6 +86,14 @@ pub(crate) struct Storage {
     /// has not had yet.
     caches: crate::caches::Store,
     caches_unwritten: Vec<crate::caches::Written>,
+    /// The service workers' registry (M39), each storage key's
+    /// registrations read from the profile at their first use, and what
+    /// changed that the profile has not had yet.
+    registry: crate::service_worker::Registry,
+    registry_unwritten: Vec<crate::service_worker::Written>,
+    /// What has the registry's effects done when it changed outside its
+    /// driver: the driver's wake.
+    registry_wake: Option<Arc<dyn Fn() + Send + Sync>>,
     /// The settings as read from the profile, until taken, and as they
     /// changed since it was last written (M37).
     settings_read: Option<Vec<u8>>,
@@ -554,6 +562,9 @@ impl Storage {
             idb_unwritten: Vec::new(),
             caches: crate::caches::Store::default(),
             caches_unwritten: Vec::new(),
+            registry: crate::service_worker::Registry::default(),
+            registry_unwritten: Vec::new(),
+            registry_wake: None,
             settings_read: None,
             settings_unwritten: None,
             cache: None,
@@ -603,6 +614,7 @@ impl Storage {
         );
         sites.extend(self.idb.origins());
         sites.extend(self.caches.keys_with_caches());
+        sites.extend(self.registry.keys());
         sites.into_iter().collect()
     }
 
@@ -618,6 +630,38 @@ impl Storage {
             self.caches.load(key, caches, entries);
         }
         &mut self.caches
+    }
+
+    /// The service workers' registry, `key`'s registrations read from the
+    /// profile if they were not (M39).
+    pub(crate) fn service_workers(&mut self, key: &str) -> &mut crate::service_worker::Registry {
+        if !self.registry.knows(key) {
+            let records = self
+                .profile
+                .as_ref()
+                .and_then(|profile| profile.service_workers(key).ok())
+                .unwrap_or_default();
+            self.registry.load(key, records);
+        }
+        &mut self.registry
+    }
+
+    /// The registry as it is, no key read.
+    pub(crate) fn registry(&mut self) -> &mut crate::service_worker::Registry {
+        &mut self.registry
+    }
+
+    /// Has the registry's effects done by `wake` when it changes outside
+    /// its driver.
+    pub(crate) fn set_registry_wake(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
+        self.registry_wake = Some(wake);
+    }
+
+    /// The registry changed outside its driver: its effects are done.
+    pub(crate) fn wake_registry(&self) {
+        if let Some(wake) = &self.registry_wake {
+            wake();
+        }
     }
 
     /// Answers the Cache API's `request` of `key`'s caches (M39), a body
@@ -710,6 +754,9 @@ impl Storage {
         self.caches = crate::caches::Store::default();
         self.caches.set_writing(true);
         self.caches_unwritten.clear();
+        self.registry = crate::service_worker::Registry::default();
+        self.registry.set_writing(true);
+        self.registry_unwritten.clear();
         self.local.clear();
         self.unwritten.clear();
         Ok(())
@@ -869,6 +916,8 @@ impl Storage {
             || !self.idb_unwritten.is_empty()
             || self.caches.has_written()
             || !self.caches_unwritten.is_empty()
+            || self.registry.has_written()
+            || !self.registry_unwritten.is_empty()
             || !self.cache_unwritten.is_empty()
             || self.cache.as_ref().is_some_and(|cache| cache.has_changes());
         (waiting || hsts || permissions).then(|| {
@@ -959,6 +1008,11 @@ impl Storage {
                 } => changes.cache_api_entry(key, *id, record.clone(), body.clone()),
             }
         }
+        // The service workers' registrations (M39).
+        self.registry_unwritten.extend(self.registry.take_written());
+        for written in &self.registry_unwritten {
+            changes.service_worker(&written.key, written.id, written.record.clone());
+        }
         // The HTTP cache's, once it has read what the profile held.
         if let Some(cache) = self.cache.as_ref().filter(|_| self.cache_read.is_none()) {
             self.cache_unwritten.extend(cache.take_changes());
@@ -984,6 +1038,7 @@ impl Storage {
         self.idb_unwritten.clear();
         self.cache_unwritten.clear();
         self.caches_unwritten.clear();
+        self.registry_unwritten.clear();
         Ok(())
     }
 }

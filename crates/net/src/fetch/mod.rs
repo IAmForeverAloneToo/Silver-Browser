@@ -87,7 +87,7 @@ fn priority(destination: Destination) -> Option<&'static str> {
     match destination {
         Destination::Document | Destination::Iframe => Some("u=0, i"),
         Destination::Style => Some("u=0"),
-        Destination::Script | Destination::Worker => Some("u=1"),
+        Destination::Script | Destination::Worker | Destination::ServiceWorker => Some("u=1"),
         Destination::Image => Some("u=5, i"),
         Destination::Empty | Destination::Report => None,
     }
@@ -153,6 +153,8 @@ pub enum Destination {
     Script,
     /// A dedicated worker's script (M31).
     Worker,
+    /// A service worker's script, or one it imports (M39).
+    ServiceWorker,
     /// No destination: a script's `fetch` or `XMLHttpRequest` (M27).
     Empty,
     /// A violation's report (M33.1): a policy's `report-uri`'s POST.
@@ -169,6 +171,7 @@ impl Destination {
             Destination::Image => "image",
             Destination::Script => "script",
             Destination::Worker => "worker",
+            Destination::ServiceWorker => "serviceworker",
             Destination::Empty => "empty",
             Destination::Report => "report",
         }
@@ -184,6 +187,7 @@ impl Destination {
             Destination::Image => b"image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5",
             Destination::Script
             | Destination::Worker
+            | Destination::ServiceWorker
             | Destination::Empty
             | Destination::Report => b"*/*",
         }
@@ -348,16 +352,17 @@ impl Request {
             mode: match destination {
                 Destination::Document | Destination::Iframe => Mode::Navigate,
                 Destination::Empty => Mode::Cors,
-                Destination::Worker => Mode::SameOrigin,
+                Destination::Worker | Destination::ServiceWorker => Mode::SameOrigin,
                 Destination::Style
                 | Destination::Image
                 | Destination::Script
                 | Destination::Report => Mode::NoCors,
             },
             credentials: match destination {
-                Destination::Empty | Destination::Worker | Destination::Report => {
-                    Credentials::SameOrigin
-                }
+                Destination::Empty
+                | Destination::Worker
+                | Destination::ServiceWorker
+                | Destination::Report => Credentials::SameOrigin,
                 _ => Credentials::Include,
             },
             redirect: Redirect::Follow,

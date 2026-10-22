@@ -199,7 +199,7 @@ fn fetch_directives(destination: Destination) -> (&'static [&'static str], &'sta
         ),
         Destination::Image => (&["img-src", "default-src"], "the image"),
         Destination::Iframe => (&["frame-src", "child-src", "default-src"], "the frame"),
-        Destination::Worker => (
+        Destination::Worker | Destination::ServiceWorker => (
             &["worker-src", "child-src", "script-src", "default-src"],
             "the worker",
         ),

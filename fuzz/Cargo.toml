@@ -303,6 +303,12 @@ test = false
 doc = false
 
 [[bin]]
+name = "sw_registry"
+path = "fuzz_targets/sw_registry.rs"
+test = false
+doc = false
+
+[[bin]]
 name = "devtools_json"
 path = "fuzz_targets/devtools_json.rs"
 test = false

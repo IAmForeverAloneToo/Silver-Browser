@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 mod fuzz;
-mod record;
+pub(crate) mod record;
 mod serve;
 #[cfg(test)]
 mod tests;

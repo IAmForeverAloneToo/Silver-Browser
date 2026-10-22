@@ -19,11 +19,11 @@ pub(super) struct EntryRecord {
     pub(super) body_len: u64,
 }
 
-fn put_u32(out: &mut Vec<u8>, n: usize) {
+pub(crate) fn put_u32(out: &mut Vec<u8>, n: usize) {
     out.extend_from_slice(&u32::try_from(n).unwrap_or(u32::MAX).to_le_bytes());
 }
 
-fn put_text(out: &mut Vec<u8>, text: &str) {
+pub(crate) fn put_text(out: &mut Vec<u8>, text: &str) {
     put_u32(out, text.len());
     out.extend_from_slice(text.as_bytes());
 }
@@ -117,7 +117,7 @@ pub(super) fn decode_entry(bytes: &[u8]) -> Option<EntryRecord> {
 }
 
 /// What is left of a record to read.
-struct Reader<'a>(&'a [u8]);
+pub(crate) struct Reader<'a>(pub(crate) &'a [u8]);
 
 impl<'a> Reader<'a> {
     fn take(&mut self, n: usize) -> Option<&'a [u8]> {
@@ -126,11 +126,11 @@ impl<'a> Reader<'a> {
         Some(taken)
     }
 
-    fn array<const N: usize>(&mut self) -> Option<[u8; N]> {
+    pub(crate) fn array<const N: usize>(&mut self) -> Option<[u8; N]> {
         self.take(N)?.try_into().ok()
     }
 
-    fn u8(&mut self) -> Option<u8> {
+    pub(crate) fn u8(&mut self) -> Option<u8> {
         Some(self.take(1)?[0])
     }
 
@@ -138,13 +138,19 @@ impl<'a> Reader<'a> {
         usize::try_from(u32::from_le_bytes(self.array()?)).ok()
     }
 
-    fn count(&mut self) -> Option<usize> {
+    pub(crate) fn count(&mut self) -> Option<usize> {
         self.u32().filter(|&n| n <= MAX_ITEMS)
     }
 
-    fn text(&mut self) -> Option<String> {
+    pub(crate) fn text(&mut self) -> Option<String> {
         let n = self.u32()?;
         String::from_utf8(self.take(n)?.to_vec()).ok()
+    }
+
+    /// A run of bytes after its length.
+    pub(crate) fn bytes(&mut self) -> Option<&'a [u8]> {
+        let n = self.u32()?;
+        self.take(n)
     }
 
     fn pairs(&mut self) -> Option<Vec<(String, String)>> {

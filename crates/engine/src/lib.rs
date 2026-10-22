@@ -127,6 +127,7 @@ mod sandbox;
 mod scripts;
 mod select;
 pub mod service;
+pub mod service_worker;
 pub mod settings;
 #[cfg(test)]
 mod settings_tests;

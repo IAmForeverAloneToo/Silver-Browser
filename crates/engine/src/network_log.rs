@@ -190,6 +190,7 @@ fn destination_name(destination: net::Destination) -> &'static str {
         Script => "script",
         Image => "image",
         Worker => "worker",
+        ServiceWorker => "serviceworker",
         Empty => "fetch",
         Report => "report",
     }

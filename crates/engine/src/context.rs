@@ -1,8 +1,8 @@
 //! What the tabs of one profile share (M37, docs/design/chrome.md, "The
 //! context"): the cookie jar, the HTTP cache, the HSTS hosts, the
-//! permissions, the storage and its writing to the profile, and the
-//! numbers of tabs and renderers, so that no two tabs' renderers share
-//! one. A tab is made in a context ([`crate::Engine::join`],
+//! permissions, the storage and its writing to the profile, the service
+//! workers (M39), and the numbers of tabs and renderers, so that no two
+//! tabs' renderers share one. A tab is made in a context ([`crate::Engine::join`],
 //! [`crate::service::RemoteTab::in_context`]); a tab made alone has a
 //! context of its own.
 
@@ -32,6 +32,9 @@ struct Shared {
     permissions: Arc<Permissions>,
     storage: Arc<Mutex<Storage>>,
     downloads: crate::downloads::Downloads,
+    /// The service workers' jobs and versions (M39, D35), their
+    /// registry in the storage.
+    service_workers: crate::service_worker::ServiceWorkers,
     /// The settings (M37), and how many times they changed; the
     /// `Accept-Language` the context's clients send, from them.
     settings: Mutex<crate::settings::Settings>,
@@ -57,22 +60,38 @@ impl Context {
         storage.set_hsts(hsts.clone());
         storage.set_permissions(permissions.clone());
         storage.set_cache(cache.clone());
+        let jar: Arc<Mutex<Jar>> = Arc::default();
+        let transport = Arc::new(net::transport::Transport::new(
+            net::transport::Config::default(),
+        ));
+        let accept_language = Arc::new(Mutex::new(
+            crate::settings::Settings::default().accept_language(),
+        ));
+        let storage = Arc::new(Mutex::new(storage));
+        // The service workers' scripts are fetched as the tabs' requests
+        // are: the context's cookies, cache and connections.
+        let client = net::Client::default()
+            .with_transport(transport.clone())
+            .with_cookies(jar.clone())
+            .with_cache(cache.clone())
+            .with_hsts(hsts.clone())
+            .with_local_network_gate(permissions.clone())
+            .with_languages(accept_language.clone());
+        let service_workers =
+            crate::service_worker::ServiceWorkers::new(storage.clone(), Arc::new(client));
         Context {
             shared: Arc::new(Shared {
-                jar: Arc::default(),
+                jar,
                 cache,
-                transport: Arc::new(net::transport::Transport::new(
-                    net::transport::Config::default(),
-                )),
+                transport,
                 hsts,
                 permissions,
-                storage: Arc::new(Mutex::new(storage)),
+                storage,
                 downloads: crate::downloads::Downloads::new(),
+                service_workers,
                 settings: Mutex::new(crate::settings::Settings::default()),
                 settings_changes: AtomicU64::new(0),
-                accept_language: Arc::new(Mutex::new(
-                    crate::settings::Settings::default().accept_language(),
-                )),
+                accept_language,
                 tabs: AtomicU64::new(1),
                 renderers: AtomicU32::new(1),
             }),
@@ -181,6 +200,11 @@ impl Context {
     /// Whether `other` is this context.
     pub fn same(&self, other: &Context) -> bool {
         Arc::ptr_eq(&self.shared, &other.shared)
+    }
+
+    /// The service workers of the context's tabs (M39).
+    pub fn service_workers(&self) -> &crate::service_worker::ServiceWorkers {
+        &self.shared.service_workers
     }
 
     /// The downloads of the context's tabs (M37).

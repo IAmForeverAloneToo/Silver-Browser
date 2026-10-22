@@ -772,6 +772,62 @@ fn the_http_caches_entries_and_bodies_are_kept_sealed_and_deleted() {
 }
 
 #[test]
+fn the_service_workers_registrations_are_kept_sealed_by_storage_key() {
+    // M39: schema 6's table.
+    let memory = Memory::new();
+    let profile = Profile::in_memory_with(&memory, TEST_WRAP).unwrap();
+    let key = "https://a.test";
+    assert!(profile.service_workers(key).unwrap().is_empty());
+    let mut changes = Changes::new();
+    changes.service_worker(key, 3, Some(b"secret-registration".to_vec()));
+    changes.service_worker(key, 9, Some(b"nine".to_vec()));
+    changes.service_worker("https://c.test", 3, Some(b"other key".to_vec()));
+    assert!(!changes.is_empty());
+    profile.commit(&changes).unwrap();
+    drop(profile);
+    assert!(!in_the_clear(&memory, b"secret-registration"));
+    let profile = Profile::in_memory_with(&memory, TEST_WRAP).unwrap();
+    assert_eq!(
+        profile.service_workers(key).unwrap(),
+        [(3, b"secret-registration".to_vec()), (9, b"nine".to_vec())]
+    );
+    assert!(
+        profile
+            .storage_keys()
+            .unwrap()
+            .contains(&"https://c.test".to_owned())
+    );
+    let mut changes = Changes::new();
+    changes.service_worker(key, 3, None);
+    profile.commit(&changes).unwrap();
+    assert_eq!(
+        profile.service_workers(key).unwrap(),
+        [(9, b"nine".to_vec())]
+    );
+    drop(profile);
+    // A record moved to another key does not open.
+    {
+        let db = Database::builder()
+            .create_with_backend(memory.clone())
+            .unwrap();
+        let txn = db.begin_write().unwrap();
+        {
+            let mut table = txn.open_table(SERVICE_WORKERS).unwrap();
+            let sealed = table.get((key, 9)).unwrap().unwrap().value().to_vec();
+            table
+                .insert(("https://c.test", 9), sealed.as_slice())
+                .unwrap();
+        }
+        txn.commit().unwrap();
+    }
+    let profile = Profile::in_memory_with(&memory, TEST_WRAP).unwrap();
+    assert_eq!(
+        profile.service_workers("https://c.test").unwrap(),
+        [(3, b"other key".to_vec())]
+    );
+}
+
+#[test]
 fn the_cache_apis_caches_entries_and_bodies_are_kept_sealed_by_storage_key() {
     // M39: schema 6's tables.
     let memory = Memory::new();

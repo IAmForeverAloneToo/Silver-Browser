@@ -34,8 +34,8 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use aws_lc_rs::aead::{AES_256_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
 use redb::{
-    Database, ReadableDatabase, ReadableTable, StorageBackend, TableDefinition, TableHandle,
-    WriteTransaction,
+    Database, ReadTransaction, ReadableDatabase, ReadableTable, StorageBackend, TableDefinition,
+    TableHandle, WriteTransaction,
 };
 
 #[cfg(test)]
@@ -107,6 +107,12 @@ const CACHE_API_ENTRIES: TableDefinition<(&str, u64), &[u8]> =
 /// matched.
 const CACHE_API_BODIES: TableDefinition<(&str, u64), &[u8]> =
     TableDefinition::new("cache_api_bodies");
+
+/// The service workers' registrations (M39), by the storage key and the
+/// registration's number: each its record as the engine encodes it,
+/// its active version's scripts in it, sealed.
+const SERVICE_WORKERS: TableDefinition<(&str, u64), &[u8]> =
+    TableDefinition::new("service_workers");
 
 /// The permissions sites were given (M33.4), as the engine encodes them.
 const PERMISSIONS: TableDefinition<u64, &[u8]> = TableDefinition::new("permissions");
@@ -308,6 +314,7 @@ pub struct Changes {
     settings: Option<Vec<Vec<u8>>>,
     cache: Vec<Cached>,
     cache_api: Vec<CacheApi>,
+    service_workers: Vec<(String, u64, Option<Vec<u8>>)>,
 }
 
 /// A change of the Cache API's (M39), by the storage key.
@@ -402,6 +409,7 @@ impl Changes {
             && self.settings.is_none()
             && self.cache.is_empty()
             && self.cache_api.is_empty()
+            && self.service_workers.is_empty()
     }
 
     /// Sets `origin`'s item `key` to `value`, `order` its place.
@@ -511,6 +519,12 @@ impl Changes {
             record,
             body,
         });
+    }
+
+    /// Keeps the service workers' registration `id` of the storage key
+    /// `key` (M39), its record, or deletes it with `None`.
+    pub fn service_worker(&mut self, key: &str, id: u64, record: Option<Vec<u8>>) {
+        self.service_workers.push((key.to_owned(), id, record));
     }
 
     /// Keeps the HTTP cache's entry `id` (M38): its record, and its body
@@ -644,7 +658,12 @@ impl Profile {
                 .map_err(|e| unreadable(failed(e)))?;
             txn.open_table(HTTP_CACHE_BODIES)
                 .map_err(|e| unreadable(failed(e)))?;
-            for table in [CACHE_API, CACHE_API_ENTRIES, CACHE_API_BODIES] {
+            for table in [
+                CACHE_API,
+                CACHE_API_ENTRIES,
+                CACHE_API_BODIES,
+                SERVICE_WORKERS,
+            ] {
                 txn.open_table(table).map_err(|e| unreadable(failed(e)))?;
             }
             key
@@ -839,26 +858,44 @@ impl Profile {
     ) -> Result<(Vec<(u64, Vec<u8>)>, Vec<(u64, Vec<u8>)>), Error> {
         self.guarded(|db| {
             let txn = db.begin_read().map_err(failed)?;
-            let read = |definition: TableDefinition<(&str, u64), &[u8]>| {
-                let table = txn.open_table(definition).map_err(failed)?;
-                let mut out = Vec::new();
-                for entry in table.range((key, 0)..).map_err(failed)? {
-                    let (at_key, value) = entry.map_err(failed)?;
-                    let (owner, id) = at_key.value();
-                    if owner != key {
-                        break;
-                    }
-                    let at = numbered_at(owner, id);
-                    if let Some(record) = self.key.open(definition.name(), &at, value.value()) {
-                        out.push((id, record));
-                    }
-                }
-                Ok::<_, Error>(out)
-            };
-            let caches = read(CACHE_API)?;
-            let entries = read(CACHE_API_ENTRIES)?;
+            let caches = self.numbered(&txn, CACHE_API, key)?;
+            let entries = self.numbered(&txn, CACHE_API_ENTRIES, key)?;
             Ok((caches, entries))
         })
+    }
+
+    /// The service workers' registrations of the storage key `key` (M39),
+    /// each with its number and record, in their numbers' order; what
+    /// does not open is left out.
+    pub fn service_workers(&self, key: &str) -> Result<Vec<(u64, Vec<u8>)>, Error> {
+        self.guarded(|db| {
+            let txn = db.begin_read().map_err(failed)?;
+            self.numbered(&txn, SERVICE_WORKERS, key)
+        })
+    }
+
+    /// The records of `definition` under the storage key `key`, each with
+    /// its number, those that open.
+    fn numbered(
+        &self,
+        txn: &ReadTransaction,
+        definition: TableDefinition<(&str, u64), &[u8]>,
+        key: &str,
+    ) -> Result<Vec<(u64, Vec<u8>)>, Error> {
+        let table = txn.open_table(definition).map_err(failed)?;
+        let mut out = Vec::new();
+        for entry in table.range((key, 0)..).map_err(failed)? {
+            let (at_key, value) = entry.map_err(failed)?;
+            let (owner, id) = at_key.value();
+            if owner != key {
+                break;
+            }
+            let at = numbered_at(owner, id);
+            if let Some(record) = self.key.open(definition.name(), &at, value.value()) {
+                out.push((id, record));
+            }
+        }
+        Ok(out)
     }
 
     /// The body of the Cache API's entry `id` of the storage key `key`,
@@ -879,7 +916,8 @@ impl Profile {
     }
 
     /// The storage keys the profile keeps `localStorage` items,
-    /// IndexedDB databases or (M39) caches for, in order, each once.
+    /// IndexedDB databases or (M39) caches or service workers for, in
+    /// order, each once.
     pub fn storage_keys(&self) -> Result<Vec<String>, Error> {
         self.guarded(|db| {
             let txn = db.begin_read().map_err(failed)?;
@@ -894,10 +932,12 @@ impl Profile {
                 let (key, _) = entry.map_err(failed)?;
                 keys.insert(key.value().0.to_owned());
             }
-            let caches = txn.open_table(CACHE_API).map_err(failed)?;
-            for entry in caches.iter().map_err(failed)? {
-                let (key, _) = entry.map_err(failed)?;
-                keys.insert(key.value().0.to_owned());
+            for definition in [CACHE_API, SERVICE_WORKERS] {
+                let table = txn.open_table(definition).map_err(failed)?;
+                for entry in table.iter().map_err(failed)? {
+                    let (key, _) = entry.map_err(failed)?;
+                    keys.insert(key.value().0.to_owned());
+                }
             }
             Ok(keys.into_iter().collect())
         })
@@ -1031,6 +1071,22 @@ impl Profile {
         }
         self.write_idb(&txn, &changes.idb)?;
         self.write_cache_api(&txn, &changes.cache_api)?;
+        if !changes.service_workers.is_empty() {
+            let mut table = txn.open_table(SERVICE_WORKERS).map_err(failed)?;
+            for (key, id, record) in &changes.service_workers {
+                let place = (key.as_str(), *id);
+                match record {
+                    Some(record) => {
+                        let at = numbered_at(key, *id);
+                        let sealed = self.key.seal(SERVICE_WORKERS.name(), &at, record)?;
+                        table.insert(place, sealed.as_slice()).map_err(failed)?;
+                    }
+                    None => {
+                        table.remove(place).map_err(failed)?;
+                    }
+                }
+            }
+        }
         if !changes.cache.is_empty() {
             let mut entries = txn.open_table(HTTP_CACHE).map_err(failed)?;
             let mut bodies = txn.open_table(HTTP_CACHE_BODIES).map_err(failed)?;

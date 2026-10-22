@@ -41,6 +41,7 @@ wire_unit_enum!(Destination {
     5 => Destination::Worker,
     6 => Destination::Empty,
     7 => Destination::Report,
+    8 => Destination::ServiceWorker,
 });
 
 wire_unit_enum!(Mode {

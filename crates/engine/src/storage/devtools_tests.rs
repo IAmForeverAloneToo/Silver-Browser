@@ -196,3 +196,95 @@ fn a_sites_caches_are_listed_deleted_and_cleared() {
         Json::Array(vec![])
     );
 }
+
+/// A host that runs nothing but says each version's script listened for
+/// nothing and ran; and whether it was asked to stop one.
+struct Ran(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl crate::service_worker::ServiceWorkerHost for Ran {
+    fn evaluate(
+        &self,
+        _start: crate::service_worker::Start,
+        done: crate::service_worker::Done<Option<crate::service_worker::Evaluated>>,
+    ) {
+        done(Some(crate::service_worker::Evaluated::default()));
+    }
+
+    fn install(&self, _version: u64, done: crate::service_worker::Done<bool>) {
+        done(true);
+    }
+
+    fn activate(&self, _version: u64, done: crate::service_worker::Done<()>) {
+        done(());
+    }
+
+    fn terminate(&self, _version: u64) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn a_sites_service_workers_are_listed_and_unregistered() {
+    // M39: the registrations in the storage panel.
+    let server = serve(|path| match path {
+        "/" => Some(html("<p>page</p>")),
+        "/sw.js" => Some(Reply::with_fields(
+            200,
+            &[("Content-Type", "text/javascript")],
+            b"1",
+        )),
+        _ => None,
+    });
+    let context = crate::Context::new();
+    let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    context
+        .service_workers()
+        .set_host(std::sync::Arc::new(Ran(stopped.clone())));
+    let origin = server.url("/").origin().serialization();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    context.service_workers().schedule(
+        crate::service_worker::Job {
+            kind: crate::service_worker::JobKind::Register,
+            key: origin.clone(),
+            scope: server.url("/"),
+            script: server.url("/sw.js"),
+            update_via_cache: crate::service_worker::UpdateViaCache::Imports,
+            force_bypass: false,
+            partition: None,
+        },
+        Box::new(move |outcome| {
+            let _ = sender.send(outcome);
+        }),
+    );
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("registered");
+    let mut tab = Tab::new();
+    tab.engine.join(&context);
+    tab.engine.navigate(server.url("/"));
+    tab.wait_until(|engine| engine.load_state() == &crate::LoadState::Loaded);
+    let mut listed = String::new();
+    wait_for(|| {
+        listed = ask(&mut tab, 1, "storage.serviceWorkers", Json::object([]))
+            .write()
+            .replace(&origin, "ORIGIN");
+        listed.contains("activated")
+    });
+    assert_eq!(
+        listed,
+        r#"[{"scope":"ORIGIN/","versions":[{"slot":"active","script":"ORIGIN/sw.js","state":"activated"}]}]"#
+    );
+    let sites = ask(&mut tab, 2, "storage.sites", Json::object([]));
+    assert!(sites.write().contains(&origin), "{}", sites.write());
+    ask(
+        &mut tab,
+        3,
+        "storage.unregister",
+        Json::object([("scope", Json::from(format!("{origin}/")))]),
+    );
+    wait_for(|| {
+        ask(&mut tab, 4, "storage.serviceWorkers", Json::object([])) == Json::Array(vec![])
+    });
+    // Its version stopped.
+    wait_for(|| stopped.load(std::sync::atomic::Ordering::SeqCst));
+}

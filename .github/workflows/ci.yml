@@ -165,7 +165,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [html_parse, css_stylesheet, selector_parse, style_document, pipeline, mutation, encoding_decode, url_parse, mime_sniff, http_response, media_query, values, animations, image_decode, script, dom_api, input, csp, referrer, hsts, frames, cookies, storage, http_cache, wasm, canvas, clone, xml_parse, svg, ipc_decode, devtools_json, idb_keys, idb_ops, content_disposition, hpack, h2_client, preload_scan, cache_api]
+        target: [html_parse, css_stylesheet, selector_parse, style_document, pipeline, mutation, encoding_decode, url_parse, mime_sniff, http_response, media_query, values, animations, image_decode, script, dom_api, input, csp, referrer, hsts, frames, cookies, storage, http_cache, wasm, canvas, clone, xml_parse, svg, ipc_decode, devtools_json, idb_keys, idb_ops, content_disposition, hpack, h2_client, preload_scan, cache_api, sw_registry]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master

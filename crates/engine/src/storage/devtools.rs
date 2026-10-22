@@ -149,6 +149,54 @@ pub(crate) fn answer(
             storage.caches(&origin).delete(&origin, param("name"));
             Json::Null
         }
+        // M39: the site's service workers, each registration's scope and
+        // its versions.
+        "storage.serviceWorkers" => Json::Array(
+            storage
+                .service_workers(&origin)
+                .summary(&origin)
+                .into_iter()
+                .map(|(_, scope, versions)| {
+                    Json::object([
+                        ("scope", Json::from(scope)),
+                        (
+                            "versions",
+                            Json::Array(
+                                versions
+                                    .into_iter()
+                                    .map(|(slot, script, state)| {
+                                        Json::object([
+                                            ("slot", Json::from(slot.name())),
+                                            ("script", Json::from(script)),
+                                            ("state", Json::from(state.name())),
+                                        ])
+                                    })
+                                    .collect(),
+                            ),
+                        ),
+                    ])
+                })
+                .collect(),
+        ),
+        "storage.unregister" => {
+            let scope = Url::parse(param("scope")).map_err(|_| "no scope".to_owned())?;
+            if scope.origin().serialization() != origin {
+                return Err(format!("no scope {scope}"));
+            }
+            storage
+                .service_workers(&origin)
+                .schedule(crate::service_worker::Job {
+                    kind: crate::service_worker::JobKind::Unregister,
+                    key: origin.clone(),
+                    script: scope.clone(),
+                    scope,
+                    update_via_cache: crate::service_worker::UpdateViaCache::Imports,
+                    force_bypass: false,
+                    partition: None,
+                });
+            storage.wake_registry();
+            Json::Null
+        }
         "storage.deleteDatabase" => {
             storage.idb(&origin).delete_database(&origin, param("name"));
             Json::Null
@@ -200,6 +248,9 @@ fn clear_site(storage: &mut Storage, jar: &Mutex<Jar>, origin: &str, host: &str)
         store.delete_database(origin, &name);
     }
     storage.caches(origin).clear(origin);
+    // M39: its service workers unregistered and stopped.
+    storage.service_workers(origin).clear_key(origin);
+    storage.wake_registry();
     jar.lock()
         .unwrap_or_else(PoisonError::into_inner)
         .remove_where(|cookie| goes_to(cookie, host));

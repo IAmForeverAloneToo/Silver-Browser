@@ -135,6 +135,21 @@ tool("storage", "Storage", (pane) => {
         caches.appendChild(box);
       }
     }, () => {});
+    const workers = section("Service workers", "storage-workers");
+    call("storage.serviceWorkers").then((list) => {
+      for (const reg of list) {
+        const box = el("div", "database");
+        const head = el("div", "rule-head");
+        head.appendChild(el("span", "", reg.scope));
+        const drop = el("button", "remove", "Unregister");
+        drop.addEventListener("click", () => call("storage.unregister", { scope: reg.scope }).then(load, load));
+        head.appendChild(drop);
+        box.appendChild(head);
+        box.appendChild(table(["Version", "Script", "State"],
+          reg.versions.map((v) => ({ cells: [v.slot, v.script, v.state] })), null));
+        workers.appendChild(box);
+      }
+    }, () => {});
     const sites = section("Every site's storage", "storage-sites");
     call("storage.sites").then((list) => {
       sites.appendChild(table(["Site", "Bytes"],
