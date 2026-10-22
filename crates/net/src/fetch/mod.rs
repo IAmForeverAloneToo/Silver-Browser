@@ -1490,6 +1490,22 @@ fn cookie_context(request: &Request, hop: &Hop) -> cookies::Context {
     }
 }
 
+/// The cache's key of what `request` asks for, as its first hop is
+/// kept (M38): for a preload, which is not made when the cache holds it
+/// fresh.
+pub fn cache_site(request: &Request) -> crate::cache::Partition {
+    let first = request.url.origin();
+    let asking = request.origin.clone().unwrap_or_else(|| first.clone());
+    let top = request
+        .partition
+        .as_ref()
+        .map_or_else(|| asking.clone(), |partition| partition.top.clone());
+    crate::cache::Partition {
+        top: top.site(),
+        frame: asking.site(),
+    }
+}
+
 /// What a request is kept apart by (M33.2): the key of its top-level
 /// site (its partition's, else its origin's, else the first URL's, for
 /// a load the user asked for), and the cache's key, that site and the

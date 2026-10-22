@@ -43,15 +43,17 @@ impl Policies {
     /// Whether `request` is one to preload: no violation of the policy
     /// at its first URL.
     fn allow(&self, request: &Request) -> bool {
-        self.csp
-            .request_violations(
-                request.destination,
-                (&request.url, &request.url),
-                0,
-                &request.nonce,
-                request.parser_inserted,
-            )
-            .is_empty()
+        self.csp.is_empty()
+            || self
+                .csp
+                .request_violations(
+                    request.destination,
+                    (&request.url, &request.url),
+                    0,
+                    &request.nonce,
+                    request.parser_inserted,
+                )
+                .is_empty()
     }
 }
 
@@ -59,6 +61,9 @@ impl Policies {
 /// carries it (M33.1): none when an attribute looks like markup a
 /// `<script>` or `<style>` swallowed; white space around it not its.
 fn nonce(attrs: &[(String, String)]) -> String {
+    if !attrs.iter().any(|(name, _)| name == "nonce") {
+        return String::new();
+    }
     let injected = |text: &str| {
         let lower = text.to_ascii_lowercase();
         lower.contains("<script") || lower.contains("<style")

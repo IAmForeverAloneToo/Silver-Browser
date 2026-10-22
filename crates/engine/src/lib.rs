@@ -873,7 +873,9 @@ const PARSE_SLICE: usize = 4096;
 
 /// Preloads what the scanner found in `parsing`'s text since it last
 /// looked (M38), for `page`; scripts when `scripting` and its sandbox
-/// let them run.
+/// let them run. Not inlined: its requests would widen the parse's
+/// frame, below which the document's scripts run (G165).
+#[inline(never)]
 fn preload_hints(
     network: &mut loader::Network,
     page: &mut loader::Page,
@@ -4492,15 +4494,6 @@ impl Engine {
     /// are not yet wanted (M23.1). A page with no URL fetches nothing,
     /// nor does one the browser made.
     fn request_images(&mut self) {
-        // The `<link rel=preload>`s of the tree (M38), which the scanner
-        // may not have seen.
-        if !self.shown.made {
-            loader::preload::preload_links(
-                &self.shown.document,
-                &mut self.shown.page,
-                &mut self.network,
-            );
-        }
         if self.shown.made {
             return;
         }
@@ -5995,7 +5988,8 @@ impl Engine {
             self.shown
                 .page
                 .rescan(&self.shown.document, &mut self.network, None);
-            // A `<link rel=preload>` put in or changed (M38).
+            // A `<link rel=preload>` put in or changed (M38), one a
+            // script made while the page was parsed too.
             if !self.shown.made {
                 loader::preload::preload_links(
                     &self.shown.document,

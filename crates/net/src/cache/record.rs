@@ -121,7 +121,14 @@ pub(super) fn decode(id: u64, bytes: &[u8]) -> Option<Record> {
     if body_len > super::MAX_CACHE_ENTRY_BYTES {
         return None;
     }
-    let response_time = UNIX_EPOCH.checked_add(read.duration()?)?;
+    // A time the platform's clock cannot hold exactly (Windows keeps
+    // 100 ns steps) is none the cache wrote: refused, as a record must
+    // write back as it was (found by fuzzing).
+    let since = read.duration()?;
+    let response_time = UNIX_EPOCH.checked_add(since)?;
+    if response_time.duration_since(UNIX_EPOCH).ok()? != since {
+        return None;
+    }
     let lifetime = read.duration()?;
     let initial_age = read.duration()?;
     let flags = read.u8()?;

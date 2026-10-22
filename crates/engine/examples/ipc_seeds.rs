@@ -194,6 +194,9 @@ fn main() {
     run(&mut tab, Duration::from_secs(1));
     tab.go_back();
     run(&mut tab, Duration::from_secs(1));
+    // A reload bypassing the cache (M38).
+    tab.reload_bypassing_cache();
+    run(&mut tab, Duration::from_secs(1));
     drop(tab);
 
     std::fs::create_dir_all(&dir).expect("the folder");

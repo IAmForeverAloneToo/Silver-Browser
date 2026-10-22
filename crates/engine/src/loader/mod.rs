@@ -414,6 +414,7 @@ pub(crate) struct Network {
     preloads: HashMap<PreloadKey, Preload>,
     preloading: HashMap<FetchId, PreloadKey>,
     preloaded: std::collections::HashSet<PreloadKey>,
+    preload_counts: HashMap<PageId, usize>,
     ready: std::collections::VecDeque<Arrived>,
 }
 
@@ -440,6 +441,7 @@ impl Network {
             preloads: HashMap::new(),
             preloading: HashMap::new(),
             preloaded: std::collections::HashSet::new(),
+            preload_counts: HashMap::new(),
             ready: std::collections::VecDeque::new(),
         }
     }
@@ -618,20 +620,35 @@ impl Network {
     }
 
     /// Preloads `request` for `page` (M38), unless its key was preloaded
-    /// before or the page made [`MAX_PRELOADS`]; `explicit` for a
-    /// `<link rel=preload>`'s. Says whether it did.
-    pub(crate) fn preload(&mut self, page: PageId, request: Request, explicit: bool) -> bool {
+    /// before, the page made [`MAX_PRELOADS`], or the HTTP cache holds
+    /// it fresh, so that the page's own request is answered at once;
+    /// `explicit` for a `<link rel=preload>`'s. Says whether it did.
+    pub(crate) fn preload(&mut self, page: PageId, mut request: Request, explicit: bool) -> bool {
         let key = PreloadKey::of(page, &request);
-        let made = self.preloaded.iter().filter(|k| k.page == page).count();
+        let made = self.preload_counts.get(&page).copied().unwrap_or(0);
         if self.preloaded.contains(&key) || made >= MAX_PRELOADS {
             if let Some(preload) = self.preloads.get_mut(&key) {
                 preload.explicit |= explicit;
             }
             return false;
         }
+        if request.partition.is_none() {
+            request.partition = self.partitions.get(&page).cloned();
+        }
+        let fresh = request.cache == net::CacheMode::Default
+            && !self.bypassing.contains(&page)
+            && self.cache.fresh(
+                &net::fetch::cache_site(&request),
+                &request.url,
+                std::time::SystemTime::now(),
+            );
+        self.preloaded.insert(key.clone());
+        *self.preload_counts.entry(page).or_default() += 1;
+        if fresh {
+            return false;
+        }
         let policies = policies_of(&request);
         let id = self.fetch(page, Target::Preload, request);
-        self.preloaded.insert(key.clone());
         self.preloading.insert(id, key.clone());
         self.preloads.insert(
             key,
@@ -642,6 +659,12 @@ impl Network {
             },
         );
         true
+    }
+
+    /// How many preloads wait for a request to take them, for the tests.
+    #[cfg(test)]
+    pub(crate) fn preloads_waiting(&self) -> usize {
+        self.preloads.len()
     }
 
     /// The URLs of `page`'s `<link rel=preload>`s nothing took (M38),
@@ -767,6 +790,7 @@ impl Network {
             self.bypassing.remove(&page);
             self.preloads.retain(|key, _| key.page != page);
             self.preloaded.retain(|key| key.page != page);
+            self.preload_counts.remove(&page);
             self.ready.retain(|arrived| arrived.page != page);
         }
         let before = self.flights.len();
@@ -802,6 +826,7 @@ impl Network {
         self.preloads.clear();
         self.preloading.clear();
         self.preloaded.clear();
+        self.preload_counts.clear();
         self.ready.clear();
     }
 

@@ -145,7 +145,16 @@ fn a_link_preload_is_taken_by_its_request_and_one_nothing_took_is_said() {
     let mut tab = Tab::new();
     tab.engine.set_scripting(true);
     load_all(&mut tab, server.url("/page.html"));
-    assert_eq!(reached(&server, "/used.png"), 1, "taken");
+    assert_eq!(
+        reached(&server, "/used.png"),
+        1,
+        "taken: {:?}",
+        server
+            .requests()
+            .iter()
+            .map(|request| request.target.clone())
+            .collect::<Vec<_>>()
+    );
     assert_eq!(reached(&server, "/unused.js"), 1);
     assert_eq!(reached(&server, "/font.woff"), 0, "no font is fetched");
     // A CORS preload is not a plain image's: asked again.
@@ -339,4 +348,57 @@ fn a_request_held_to_a_policy_a_script_gave_since_does_not_take_the_preload() {
             .any(|line| line.starts_with("Content-Security-Policy refused the image")),
         "{lines:?}"
     );
+}
+
+#[test]
+fn what_the_cache_holds_fresh_is_not_preloaded() {
+    // M38: the page's own request is answered at once from the cache;
+    // a preload would only cost. The script is held the second time.
+    let gate = Gate::new();
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let server = {
+        let (gate, asked) = (gate.clone(), asked.clone());
+        serve(move |path| match path {
+            "/page.html" => Some(html("<script src=slow.js></script><img src=kept.png>")),
+            "/slow.js" => {
+                if asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0 {
+                    gate.wait();
+                }
+                Some(Reply::with_fields(
+                    200,
+                    &[
+                        ("Content-Type", "text/javascript"),
+                        ("Cache-Control", "no-store"),
+                    ],
+                    b"var x = 1;",
+                ))
+            }
+            "/kept.png" => Some(Reply::with_fields(
+                200,
+                &[
+                    ("Content-Type", "image/png"),
+                    ("Cache-Control", "max-age=600"),
+                ],
+                b"",
+            )),
+            _ => None,
+        })
+    };
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, server.url("/page.html"));
+    assert_eq!(reached(&server, "/kept.png"), 1);
+    tab.engine.navigate(server.url("/page.html"));
+    let deadline = Instant::now() + WAIT;
+    while reached(&server, "/slow.js") < 2 {
+        assert!(Instant::now() < deadline);
+        tab.engine.poll_network();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    idle(&mut tab, 100);
+    // The script, preloaded, its request taking it; no image.
+    assert_eq!(tab.engine.network.preloads_waiting(), 0);
+    gate.open();
+    finish(&mut tab, &server.url("/page.html"));
+    assert_eq!(reached(&server, "/kept.png"), 1, "from the cache");
 }

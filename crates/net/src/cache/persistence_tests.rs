@@ -394,3 +394,79 @@ fn clearing_a_site_drops_its_partitions() {
     disk.flush(&cache);
     assert_eq!(disk.records.lock().unwrap().len(), 1);
 }
+
+#[test]
+fn fresh_says_whether_a_variant_is_fresh_without_reading_it() {
+    // M38: what a preload need not ask for.
+    let disk = Disk::default();
+    let cache = disk.cache();
+    let at = |s: u64| t0() + Duration::from_secs(s);
+    put(&cache, "https://a.test/", "lasting", LASTING, b"x");
+    put(&cache, "https://a.test/", "now", &[("ETag", "\"v\"")], b"x");
+    put(
+        &cache,
+        "https://a.test/",
+        "asked",
+        &[("Cache-Control", "no-cache, max-age=600")],
+        b"x",
+    );
+    let fresh = |path: &str, s: u64| {
+        cache.fresh(
+            &site("https://a.test/"),
+            &url(&format!("https://a.test/{path}")),
+            at(s),
+        )
+    };
+    assert!(fresh("lasting", 0) && fresh("lasting", 599) && !fresh("lasting", 600));
+    assert!(!fresh("now", 0), "stale from the first, validators or not");
+    assert!(!fresh("asked", 0), "no-cache is never fresh");
+    assert!(!fresh("missing", 0));
+    assert!(!cache.fresh(
+        &site("https://b.test/"),
+        &url("https://a.test/lasting"),
+        at(0)
+    ));
+    // A body in the profile alone is not read.
+    disk.flush(&cache);
+    let again = disk.cache();
+    assert!(again.fresh(
+        &site("https://a.test/"),
+        &url("https://a.test/lasting"),
+        at(0)
+    ));
+    assert_eq!(disk.reads(), 0);
+}
+
+#[test]
+fn a_record_whose_time_the_clock_cannot_hold_is_refused() {
+    // Found by fuzzing (M38): Windows keeps time in 100 ns steps.
+    let cache = Cache::new();
+    put(&cache, "https://a.test/", "r", LASTING, b"x");
+    let inner = cache.lock();
+    let (key, variants) = inner.entries.iter().next().unwrap();
+    let mut bytes = record::encode(key, &variants[0]).unwrap();
+    // The response time's nanoseconds: after the version, the four
+    // sites' strings, the URL, Vary's count, the status, its message,
+    // the fields, the address space and the body's length.
+    let text = |s: &str| 4 + s.len();
+    let mut at = 1 + text("https") + text("a.test") + text("https") + text("a.test");
+    at += text("https://a.test/r") + 4 + 2 + text("OK") + 4;
+    for (name, value) in variants[0].stored.headers.iter() {
+        at += 4 + name.len() + 4 + value.len();
+    }
+    at += 1 + 8 + 8;
+    let nanos = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+    assert_eq!(nanos, 0, "the response time's nanoseconds");
+    assert_eq!(
+        bytes[at - 8..at],
+        1_800_000_000u64.to_le_bytes(),
+        "its seconds"
+    );
+    bytes[at..at + 4].copy_from_slice(&(nanos / 100 * 100 + 1).to_le_bytes());
+    let read = record::decode(1, &bytes);
+    if cfg!(windows) {
+        assert!(read.is_none());
+    } else {
+        assert!(read.is_some_and(|r| r.entry.response_time == t0() + Duration::new(0, 1)));
+    }
+}

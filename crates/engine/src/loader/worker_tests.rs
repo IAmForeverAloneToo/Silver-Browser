@@ -353,7 +353,13 @@ fn a_documents_workers_end_with_it() {
             && engine.load_state() == &LoadState::Loaded
     });
     assert_eq!(live.load(Ordering::SeqCst), 0);
-    assert!(tab.engine.take_console().is_empty());
+    let said: Vec<String> = tab
+        .engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .collect();
+    assert!(said.is_empty(), "{said:?}");
 }
 
 #[test]

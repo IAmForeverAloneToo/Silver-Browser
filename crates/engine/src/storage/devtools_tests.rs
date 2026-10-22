@@ -36,7 +36,12 @@ fn ask(tab: &mut Tab, id: u64, method: &str, params: Json) -> Json {
 
 #[test]
 fn a_sites_storage_is_listed_deleted_and_cleared() {
-    let server = TestServer::plain(|_| {
+    // The page alone sets the cookie: a later request (its icon) setting
+    // it again after the site is cleared would race the test.
+    let server = TestServer::plain(|request| {
+        if request.target != "/" {
+            return Reply::with_fields(404, &[], b"");
+        }
         Reply::with_fields(
             200,
             &[

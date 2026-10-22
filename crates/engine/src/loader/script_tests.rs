@@ -436,9 +436,10 @@ fn deferred_scripts_run_in_order_once_parsed_and_async_ones_as_they_come() {
         "/d1.js" => Some(script("d1", 900)),
         "/d2.js" => Some(script("d2", 0)),
         // M38: preloaded as the page arrives, so later than the inline
-        // one is parsed.
+        // one is parsed; and well before the blocking one, on a slow
+        // machine too.
         "/soon.js" => Some(script("soon", 200)),
-        "/block.js" => Some(script("block", 450)),
+        "/block.js" => Some(script("block", 1500)),
         _ => None,
     });
     let mut tab = scripting();

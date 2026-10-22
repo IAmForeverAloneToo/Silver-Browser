@@ -679,6 +679,18 @@ impl Cache {
         Some(entry.hit(request, now))
     }
 
+    /// Whether a response stored for `url` for `site`, any of its
+    /// variants, is fresh at `now` by its own lifetime (M38): what a
+    /// preload need not ask the network for. Nothing is read or cloned.
+    pub fn fresh(&self, site: &Partition, url: &Url, now: SystemTime) -> bool {
+        let inner = self.lock();
+        inner.entries.get(&key(site, url)).is_some_and(|variants| {
+            variants
+                .iter()
+                .any(|entry| !entry.no_cache && entry.lifetime > entry.current_age(now))
+        })
+    }
+
     /// Freshens what is stored for a `GET` of `url` for `site` with the
     /// fields `request` by `not_modified`'s fields, a `304`'s, sent at
     /// `request_time` and come at `response_time` (RFC 9111 4.3.4): its
