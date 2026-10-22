@@ -158,7 +158,8 @@ fn over_http2_the_page_takes_one_connection_and_many_streams_at_once() {
     assert_eq!(server.connections(), 1);
     // The scanner asked for the twenty at once, the page first: here
     // about two replies' time, where one connection of HTTP/1.1 would
-    // take twenty-one; the bound is loose, for slow machines.
+    // take twenty-one; the bound is loose, for slow machines (macOS's
+    // runners took ten and a half).
     assert!(server.most_streams() >= 15, "{}", server.most_streams());
-    assert!(took < HELD * 10, "{took:?}");
+    assert!(took < HELD * 15, "{took:?}");
 }

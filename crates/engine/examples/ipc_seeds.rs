@@ -5,7 +5,8 @@
 //! clicked and typed in (the click opening a tab, saving a file and
 //! asking to close the tab, M37), its storage change heard by another
 //! tab of the same context, then goes to another site and back; it
-//! registers a service worker, which runs in a worker renderer (M39);
+//! registers a service worker, which runs in a worker renderer and
+//! answers its requests and its reload's (M39);
 //! its messages each way, as they crossed the pipes, a few of each kind,
 //! one frame to a file.
 //!
@@ -105,7 +106,7 @@ fn server() -> TestServer {
         if request.target == "/sw.js" {
             return Reply::ok(
                 "text/javascript",
-                b"self.oninstall = (e) => { skipWaiting();                   e.waitUntil(caches.open('c').then(c => c.put('/x', new Response('x')))); };",
+                b"self.oninstall = (e) => { skipWaiting();                   e.waitUntil(caches.open('c').then(c => c.put('/x', new Response('x')))); };                   self.onactivate = (e) => e.waitUntil(clients.claim());                   self.onfetch = (e) => { if (e.request.url.endsWith('/data')) e.respondWith(fetch(e.request)); };",
             );
         }
         let body = match request.target.as_str() {
@@ -203,6 +204,9 @@ fn main() {
     run(&mut tab, Duration::from_secs(1));
     // A reload bypassing the cache (M38).
     tab.reload_bypassing_cache();
+    run(&mut tab, Duration::from_secs(1));
+    // A reload its service worker answers (M39).
+    tab.reload();
     run(&mut tab, Duration::from_secs(1));
     drop(tab);
 

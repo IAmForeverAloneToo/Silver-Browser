@@ -15,3 +15,7 @@ fuzz/sabotage-artifacts
 
 # The acceptance module of M29 built in place
 crates/engine/tests/wasm/numbers/target
+
+# T4.3: the list of a tree's bench executables (silver-handover/tooling/t43.sh)
+/head-benches.txt
+/base-benches.txt

@@ -145,6 +145,8 @@ fn a_link_preload_is_taken_by_its_request_and_one_nothing_took_is_said() {
     let mut tab = Tab::new();
     tab.engine.set_scripting(true);
     load_all(&mut tab, server.url("/page.html"));
+    // A preload nothing took may still be on its way at the load.
+    tab.wait_until(|_| reached(&server, "/unused.js") >= 1 && reached(&server, "/cors.png") >= 2);
     assert_eq!(
         reached(&server, "/used.png"),
         1,
