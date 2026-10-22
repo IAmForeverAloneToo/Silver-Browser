@@ -51,6 +51,9 @@ pub(crate) fn request(
         )));
     }
     let mode = match call.mode.as_str() {
+        // A navigation's request, which only a service worker's FetchEvent
+        // gives a script (M39): no constructor makes one.
+        "navigate" => Mode::Navigate,
         "same-origin" => Mode::SameOrigin,
         "no-cors" => Mode::NoCors,
         "cors" => Mode::Cors,
@@ -222,7 +225,9 @@ mod tests {
             c.mode = "no-cors".to_owned();
             c.method = "PUT".to_owned();
         }));
-        assert!(refused(|c| c.mode = "navigate".to_owned()));
+        // A FetchEvent's navigation may be fetched (M39).
+        assert!(!refused(|c| c.mode = "navigate".to_owned()));
+        assert!(refused(|c| c.mode = "websocket".to_owned()));
         assert!(refused(|c| c.credentials = "always".to_owned()));
         assert!(refused(|c| c.redirect = "never".to_owned()));
         assert!(refused(|c| c.body = Some(b"x".to_vec())));
