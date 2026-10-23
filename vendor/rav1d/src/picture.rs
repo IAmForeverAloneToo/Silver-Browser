@@ -104,12 +104,17 @@ unsafe extern "C" fn dav1d_default_picture_alloc(
     p_c: *mut Dav1dPicture,
     cookie: Option<SendSyncNonNull<c_void>>,
 ) -> Dav1dResult {
-    // SAFETY: Guaranteed by safety preconditions.
-    let p = unsafe { p_c.read() }.to::<Rav1dPicture>();
-    let hbd = (p.p.bpc > 8) as c_int;
-    let aligned_w = p.p.w + 127 & !127;
-    let has_chroma = p.p.layout != Rav1dPixelLayout::I400;
-    let ss_hor = (p.p.layout != Rav1dPixelLayout::I444) as c_int;
+    // Silver: only the parameters are read. Converting the whole picture
+    // made an empty ITU-T T.35 list, which the `mem::forget` that went
+    // with it leaked.
+    // SAFETY: Guaranteed by safety preconditions; the parameters are plain integers.
+    let params = crate::include::dav1d::picture::Rav1dPictureParameters::from(unsafe {
+        ptr::read(&raw const (*p_c).p)
+    });
+    let hbd = (params.bpc > 8) as c_int;
+    let aligned_w = params.w + 127 & !127;
+    let has_chroma = params.layout != Rav1dPixelLayout::I400;
+    let ss_hor = (params.layout != Rav1dPixelLayout::I444) as c_int;
     let mut y_stride = (aligned_w << hbd) as ptrdiff_t;
     let mut uv_stride = if has_chroma { y_stride >> ss_hor } else { 0 };
     if y_stride & 1023 == 0 {
@@ -119,7 +124,7 @@ unsafe extern "C" fn dav1d_default_picture_alloc(
         uv_stride += RAV1D_PICTURE_ALIGNMENT as isize;
     }
     let stride = [y_stride, uv_stride];
-    let [y_sz, uv_sz] = p.p.pic_len(stride);
+    let [y_sz, uv_sz] = params.pic_len(stride);
     let pic_size = y_sz + 2 * uv_sz;
 
     let pool = cookie.unwrap().cast::<Arc<MemPool<u8>>>();
@@ -154,9 +159,6 @@ unsafe extern "C" fn dav1d_default_picture_alloc(
     p_c.stride = stride;
     p_c.data = data.map(NonNull::new);
     p_c.allocator_data = Some(SendSyncNonNull::from_box(buf).cast::<c_void>());
-    // The caller will create the real `Rav1dPicture` from the `Dav1dPicture` fields set above,
-    // so we don't want to drop the `Rav1dPicture` we created for convenience here.
-    mem::forget(p);
 
     Rav1dResult::Ok(()).into()
 }

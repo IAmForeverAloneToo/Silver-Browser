@@ -15,10 +15,19 @@ yet. Without it, a corrupted keyframe makes the decoder's error cleanup
 unwrap a frame header it no longer has: a panic that is not sound to
 unwind through (M40's fuzzing).
 
+And two changes of ours, each marked "Silver:", for leaks CI's
+LeakSanitizer found (48 bytes a time, an empty ITU-T T.35 list): in
+`include/dav1d/picture.rs`, a picture handed to C carries no reference
+to an empty list (`dav1d_picture_unref` wrote back an emptied picture
+holding one, as did a `dav1d_get_picture` that had no picture, and
+nothing released them); in `src/picture.rs`, the default picture
+allocator reads only the picture's parameters (it converted the whole
+picture, making such a list, and forgot it).
+
 Left out of the published crate: its assembly (`src/**/*.asm`, `*.S`,
 built only with the `asm` feature, which this build does not turn on),
 its lock file and toolchain file, its scripts, and its `THANKS.md`,
 `NEWS.dav1d` and `CONTRIBUTING.md`; in `COPYING`, the copyright sign is
 written "(c)" (the repository is ASCII). Added to its `Cargo.toml`:
 `[lints.rust] warnings = "allow"`, the cap a registry crate's warnings
-get. Dropped once a release of `rav1d` carries the fix.
+get. Dropped once a release of `rav1d` carries these fixes.

@@ -498,6 +498,12 @@ impl From<Rav1dPicture> for Dav1dPicture {
             mastering_display,
             itut_t35,
         } = value;
+        // Silver: an empty list is not handed to C. A C picture's
+        // reference is released only by `dav1d_picture_unref`, which
+        // writes back an emptied picture, and `dav1d_get_picture`'s
+        // EAGAIN writes an empty one: each kept a reference to a fresh
+        // empty list nobody released.
+        let itut_t35 = Some(itut_t35).filter(|list| list.len() != 0);
         Self {
             // [`DRav1d::from_rav1d`] is called right after [`parse_seq_hdr`].
             seq_hdr: seq_hdr.as_ref().map(|arc| (&arc.as_ref().dav1d).into()),
@@ -513,14 +519,16 @@ impl From<Rav1dPicture> for Dav1dPicture {
             content_light: content_light.as_ref().map(|arc| arc.as_ref().into()),
             mastering_display: mastering_display.as_ref().map(|arc| arc.as_ref().into()),
             // [`DRav1d::from_rav1d`] is called in [`rav1d_parse_obus`].
-            itut_t35: Some(NonNull::new(itut_t35.dav1d.as_ptr().cast_mut()).unwrap()),
-            n_itut_t35: itut_t35.len(),
+            itut_t35: itut_t35
+                .as_ref()
+                .map(|list| NonNull::new(list.dav1d.as_ptr().cast_mut()).unwrap()),
+            n_itut_t35: itut_t35.as_ref().map_or(0, |list| list.len()),
             reserved: Default::default(),
             frame_hdr_ref: frame_hdr.map(RawArc::from_arc),
             seq_hdr_ref: seq_hdr.map(RawArc::from_arc),
             content_light_ref: content_light.map(RawArc::from_arc),
             mastering_display_ref: mastering_display.map(RawArc::from_arc),
-            itut_t35_ref: Some(itut_t35).map(RawArc::from_arc),
+            itut_t35_ref: itut_t35.map(RawArc::from_arc),
             reserved_ref: Default::default(),
             // Order flipped so that the borrow comes before the move.
             allocator_data: data.as_ref().and_then(|arc| arc.allocator_data),
