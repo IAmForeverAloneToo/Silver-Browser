@@ -435,9 +435,9 @@ fn fragment_lines(
                 f.node
             ));
         };
-        // A canvas's bitmap, an outer svg's drawing and a frame name
-        // their element, by its place too: the two engines number their
-        // nodes as they made them (M31, M32, M33).
+        // A canvas's bitmap, an outer svg's drawing, a frame and a video
+        // name their element, by its place too: the two engines number
+        // their nodes as they made them (M31, M32, M33, M40).
         let kind = match &f.kind {
             FragmentKind::Replaced(Replaced::Canvas {
                 node,
@@ -453,6 +453,9 @@ fn fragment_lines(
             ),
             FragmentKind::Replaced(Replaced::Frame { node }) => {
                 format!("Replaced(Frame of node {:?})", places.get(node))
+            }
+            FragmentKind::Replaced(Replaced::Video { node, video }) => {
+                format!("Replaced(Video of node {:?} {video:?})", places.get(node))
             }
             kind => format!("{kind:?}"),
         };

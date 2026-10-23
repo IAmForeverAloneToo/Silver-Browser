@@ -401,6 +401,15 @@ impl Page {
     /// last `<meta name=referrer>` in tree order that names one (HTML
     /// section 4.2.5.1, applied as the parser meets it, legacy names
     /// mapped), else its response's or its creator's, else the default.
+    /// Gives `network` the policies `document` has now, the `<meta>`
+    /// ones parsed so far among them, for a fetch started before the
+    /// page looks at the document again (M40).
+    pub(crate) fn update_policies(&mut self, document: &Document, network: &mut Network) {
+        let csp = self.csp(document).clone();
+        network.set_csp(self.context.id, Some(csp));
+        network.set_referrer_policy(self.context.id, Some(self.referrer_policy(document)));
+    }
+
     pub(crate) fn referrer_policy(&self, document: &Document) -> ReferrerPolicy {
         document
             .subtree(document.root())

@@ -914,3 +914,93 @@ log('ready');
     press(&mut tab, "MediaPlayPause");
     assert_eq!(tab.run_until(|l| !l.is_empty()), ["handler pause"]);
 }
+
+#[test]
+fn media_src_blocks_an_elements_src_set_before_it_is_inserted() {
+    // WPT's media-src-blocked.sub.html: the source set while the element
+    // is out of the document, then inserted.
+    let body = "<meta http-equiv=Content-Security-Policy content=\"media-src 'none'\"><body>\
+        <script>const log = (s) => console.log(s);\n\
+        document.addEventListener('securitypolicyviolation', e => log('violation ' + e.violatedDirective + ' ' + (e.blockedURI.startsWith('http:') ? 'http' : e.blockedURI)));\n\
+        let left = 3;\n\
+        for (const kind of ['video', 'audio', 'data']) {\n\
+          const m = document.createElement(kind === 'data' ? 'video' : kind);\n\
+          m.src = kind === 'data' ? 'data:video/mp4;base64,AAAA' : '/media/clip.webm';\n\
+          m.onloadeddata = () => log(kind + ' loaded');\n\
+          m.onerror = () => { log(kind + ' error ' + m.error.code); if (--left === 0) log('done'); };\n\
+          document.body.appendChild(m);\n\
+        }\n\
+        log('ready');</script>";
+    let page = TestServer::plain(move |request| match request.target.as_str() {
+        "/page.html" => html(body),
+        "/media/clip.webm" => ranged(request, "video/webm", CLIP),
+        _ => Reply::with_fields(404, &[], b""),
+    });
+    let mut lines = run(&page, false);
+    lines.retain(|l| !l.starts_with("Content-Security-Policy refused media from"));
+    lines.sort();
+    assert_eq!(
+        lines,
+        [
+            "audio error 4",
+            "data error 4",
+            "video error 4",
+            // A data: URL is reported by its scheme alone.
+            "violation media-src data",
+            "violation media-src http",
+            "violation media-src http"
+        ]
+    );
+}
+
+#[test]
+fn muted_follows_its_attribute_until_it_is_set_and_an_empty_src_starts_loading() {
+    // WPT's muted.html and resource-selection-invoke-set-src.html.
+    let page = server(
+        r#"
+const a = document.createElement('audio');
+const seen = [a.muted];
+a.addEventListener('volumechange', () => log('volumechange'));
+a.setAttribute('muted', '');
+seen.push(a.muted);
+a.removeAttribute('muted');
+seen.push(a.muted);
+a.muted = false;
+a.setAttribute('muted', '');
+seen.push(a.muted);
+log('muted ' + seen.join(' '));
+const v = document.createElement('video');
+for (const e of ['loadstart', 'error']) v.addEventListener(e, () => {
+  log(e);
+  if (e === 'error') log('done');
+});
+v.src = '';
+log('ready');
+"#,
+    );
+    assert_eq!(
+        run(&page, false),
+        ["muted false true false false", "loadstart", "error"]
+    );
+}
+
+#[test]
+fn media_src_blocks_a_load_a_script_asks_for() {
+    // The fetch a run's load() starts, before the page looks again.
+    let body = "<meta http-equiv=Content-Security-Policy content=\"media-src 'none'\"><body>\
+        <video></video><script>const log = (s) => console.log(s);\n\
+        const v = document.querySelector('video');\n\
+        v.onloadeddata = () => log('loaded');\n\
+        v.onerror = () => { log('error ' + v.error.code); log('done'); };\n\
+        v.setAttribute('src', '/media/clip.webm');\n\
+        v.load();\n\
+        log('ready');</script>";
+    let page = TestServer::plain(move |request| match request.target.as_str() {
+        "/page.html" => html(body),
+        "/media/clip.webm" => ranged(request, "video/webm", CLIP),
+        _ => Reply::with_fields(404, &[], b""),
+    });
+    let mut lines = run(&page, false);
+    lines.retain(|l| !l.starts_with("Content-Security-Policy refused media from"));
+    assert_eq!(lines, ["error 4"]);
+}

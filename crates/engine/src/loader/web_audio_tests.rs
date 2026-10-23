@@ -429,7 +429,7 @@ c.resume().then(() => log('resumed ' + c.state));
     assert_eq!(
         lines,
         [
-            "made running",
+            "made suspended",
             "moved true",
             "statechange suspended",
             "after suspend suspended",
@@ -514,7 +514,9 @@ if (rate) {
     for rate in [48000, 44100] {
         tab.engine.navigate(page.url(&format!("/tone{rate}.html")));
         let lines = tab.run_until(|lines| lines.iter().any(|l| l.starts_with("state")));
-        assert_eq!(lines.last().unwrap(), &format!("state running {rate}"));
+        // Running once its first task is told (WPT's
+        // constructor-allowed-to-start.html).
+        assert_eq!(lines.last().unwrap(), &format!("state suspended {rate}"));
         capture.samples.lock().unwrap().clear();
         // A fifth of a second of sound, at the output's rate.
         wait_for(|| capture.samples.lock().unwrap().len() >= 9600 * 2);
@@ -528,4 +530,64 @@ if (rate) {
         // the mixer.
         assert!(samples.chunks(2).all(|f| f[0] == f[1]), "{rate}");
     }
+}
+
+#[test]
+fn the_runners_autoplay_starts_a_context_in_a_task_after_it_is_made() {
+    // WPT's constructor-allowed-to-start.html, as the web-platform tests'
+    // runner lets sound start without the user's activation (M40 step 9).
+    let _turn = audio_turn();
+    let page = server(
+        r#"
+const c = new AudioContext();
+log('made ' + c.state);
+c.onstatechange = () => { log('statechange ' + c.state); c.close().then(() => log('done')); };
+"#,
+    );
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.set_autoplay(true);
+    tab.engine.navigate(page.url("/page.html"));
+    let lines = until_done(&mut tab);
+    assert_eq!(lines[..2], ["made suspended", "statechange running"]);
+}
+
+#[test]
+fn options_and_floats_are_checked_as_the_reference_checks_them() {
+    // WPT's ctor-*.html, pannernode-setposition-throws.html,
+    // createPeriodicWaveInfiniteValuesThrows.html and audionode.html.
+    let page = server(
+        r#"
+const c = new OfflineAudioContext(1, 128, 48000);
+const t = (what, f) => { try { f(); log(what + ' ok'); } catch (e) { log(what + ' ' + e.name); } };
+t('number options', () => new GainNode(c, 42));
+t('bad mode', () => new GainNode(c, { channelCountMode: 'foobar' }));
+t('bad interpretation', () => new GainNode(c, { channelInterpretation: 'foobar' }));
+t('good options', () => new GainNode(c, { channelCountMode: 'explicit', channelInterpretation: 'discrete' }));
+t('context options', () => new AudioContext(1));
+const p = new PannerNode(c);
+t('far position', () => p.setPosition(1, 0, 2 * 3.4028234663852886e38));
+log('position ' + p.positionX.value + ' ' + p.positionZ.value);
+t('far orientation', () => p.setOrientation(0, 2 * 3.4028234663852886e38, 0));
+log('orientation ' + p.orientationX.value);
+t('infinite wave', () => c.createPeriodicWave(new Float32Array([0, Infinity]), new Float32Array(2)));
+log('done');
+"#,
+    );
+    let mut tab = open(&page);
+    assert_eq!(
+        until_done(&mut tab),
+        [
+            "number options TypeError",
+            "bad mode TypeError",
+            "bad interpretation TypeError",
+            "good options ok",
+            "context options TypeError",
+            "far position TypeError",
+            "position 0 0",
+            "far orientation TypeError",
+            "orientation 1",
+            "infinite wave TypeError",
+        ]
+    );
 }

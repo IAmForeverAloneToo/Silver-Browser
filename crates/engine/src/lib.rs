@@ -4237,6 +4237,13 @@ impl Engine {
         self.preload_scanner = on;
     }
 
+    /// Lets pages start sound without the user's activation, or not
+    /// (M40): the web-platform tests' runner's, as the reference browser
+    /// is run for them (`--autoplay-policy=no-user-gesture-required`).
+    pub fn set_autoplay(&mut self, on: bool) {
+        frames::lock(&self.frame.tree).set_autoplay(on);
+    }
+
     pub fn set_scripting(&mut self, on: bool) {
         // An internal page's scripts run whatever the setting (M37).
         if self.own_scripting.is_some() {
@@ -5432,7 +5439,7 @@ impl Engine {
                     }
                     // A media element parsed, or given its `src` (M40).
                     if changes.iter().any(may_touch_images) {
-                        let activated = frames::lock(&self.frame.tree).has_been_activated();
+                        let activated = frames::lock(&self.frame.tree).may_start_sound();
                         parsing.scripts.media_changed(
                             &changes,
                             document,
@@ -5462,7 +5469,7 @@ impl Engine {
                     page.rescan(document, &mut self.network, Some(&media));
                 }
                 if changes.iter().any(may_touch_images) {
-                    let activated = frames::lock(&self.frame.tree).has_been_activated();
+                    let activated = frames::lock(&self.frame.tree).may_start_sound();
                     parsing.scripts.media_changed(
                         &changes,
                         document,
@@ -6252,12 +6259,12 @@ impl Engine {
         // A media element's `src`, its `<source>` children, or the element
         // in or out (M40).
         if changes.iter().any(may_touch_images) && !self.shown.made {
-            let activated = frames::lock(&self.frame.tree).has_been_activated();
+            let activated = frames::lock(&self.frame.tree).may_start_sound();
             let shown = &mut self.shown;
             shown.scripts.media_changed(
                 &changes,
                 &shown.document,
-                &shown.page,
+                &mut shown.page,
                 &mut self.network,
                 activated,
             );
@@ -8092,6 +8099,26 @@ mod tests {
         }
         let shown = engine.frame(200, 100);
         assert_eq!(px(&shown, 200, 5, 5), [255, 0, 0, 255], "the frame's div");
+        let mut fresh = test_engine();
+        fresh.set_scripting(true);
+        if let Err(difference) = differential::compare_with_fresh(&mut engine, &mut fresh, 200, 100)
+        {
+            panic!("{difference}");
+        }
+    }
+
+    #[test]
+    fn a_video_a_script_made_compares_with_a_fresh_engine_by_its_place() {
+        // As a frame's: a video's box names its element, which the two
+        // engines number apart (found by mutation at M40).
+        let mut engine = test_engine();
+        engine.set_scripting(true);
+        engine.load_document("<p>a</p><p>b</p>");
+        differential::run_script(
+            &mut engine,
+            "var v = document.createElement('video');              document.body.insertBefore(v, document.body.firstChild);",
+        );
+        engine.frame(200, 100);
         let mut fresh = test_engine();
         fresh.set_scripting(true);
         if let Err(difference) = differential::compare_with_fresh(&mut engine, &mut fresh, 200, 100)

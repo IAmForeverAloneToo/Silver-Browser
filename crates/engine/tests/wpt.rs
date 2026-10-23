@@ -740,6 +740,9 @@ fn load_waking(server: &TestServer, path: &str) -> Result<Loaded, String> {
             .expect("the bundled font parses"),
     );
     engine.set_scripting(true);
+    // Sound starts without a user's activation, as the reference
+    // browser is run for the tests (M40).
+    engine.set_autoplay(true);
     engine.set_network(net::Client::new(runner_hosts()).with_transport(TRANSPORT.clone()));
     let clock = HandClock::default();
     let hand = clock.clone();

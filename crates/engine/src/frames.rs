@@ -121,6 +121,9 @@ pub(crate) struct FrameTree {
     activation: Option<Duration>,
     /// Whether there was ever one (M40).
     activated: bool,
+    /// Whether sound may start without one (M40): the web-platform
+    /// tests' runner's, as the reference browser is run for them.
+    autoplay: bool,
     opened: Vec<OpenTab>,
     close_asked: bool,
 }
@@ -174,6 +177,7 @@ impl FrameTree {
             forward: None,
             activation: None,
             activated: false,
+            autoplay: false,
             opened: Vec::new(),
             close_asked: false,
         }))
@@ -185,11 +189,16 @@ impl FrameTree {
         self.activated = true;
     }
 
-    /// Whether the user has ever activated a document of the tab (HTML's
-    /// sticky activation, kept for the tab, M40): what lets a page start
-    /// its sound.
-    pub(crate) fn has_been_activated(&self) -> bool {
-        self.activated
+    /// Whether a page may start its sound: the user has ever activated a
+    /// document of the tab (HTML's sticky activation, kept for the tab,
+    /// M40), or the runner lets it without.
+    pub(crate) fn may_start_sound(&self) -> bool {
+        self.activated || self.autoplay
+    }
+
+    /// Lets sound start without the user's activation, or not (M40).
+    pub(crate) fn set_autoplay(&mut self, on: bool) {
+        self.autoplay = on;
     }
 
     /// Whether the user activated a document of the tab within

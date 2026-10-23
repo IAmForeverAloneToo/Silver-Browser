@@ -1360,7 +1360,7 @@ impl DocumentHost {
                     .window
                     .frames
                     .as_ref()
-                    .is_some_and(|env| crate::frames::lock(&env.tree).has_been_activated());
+                    .is_some_and(|env| crate::frames::lock(&env.tree).may_start_sound());
                 // A `MediaElementAudioSourceNode`'s element, by its handle.
                 let element = devtools::Json::parse(&request)
                     .ok()
@@ -1952,7 +1952,7 @@ impl DocumentHost {
                     .window
                     .frames
                     .as_ref()
-                    .is_some_and(|env| crate::frames::lock(&env.tree).has_been_activated());
+                    .is_some_and(|env| crate::frames::lock(&env.tree).may_start_sound());
                 let env = crate::playback::Env {
                     document: &self.document,
                     page: self.page.as_ref(),

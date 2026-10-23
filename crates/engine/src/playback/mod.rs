@@ -132,6 +132,9 @@ struct Player {
     rate: f64,
     volume: f64,
     muted: bool,
+    /// Whether `muted` was set, by script or the controls: until then
+    /// the `muted` attribute gives it, as it changes (WPT, M40 step 9).
+    muted_set: bool,
     error: Option<Failure>,
     current_src: String,
     can_autoplay: bool,
@@ -176,6 +179,7 @@ impl Player {
             rate: 1.0,
             volume: 1.0,
             muted: document.attr(node, "muted").is_some(),
+            muted_set: false,
             error: None,
             current_src: String::new(),
             can_autoplay: true,
@@ -203,6 +207,15 @@ impl Player {
         match &self.pipeline {
             Some(pipeline) if self.ready >= HAVE_METADATA && !self.seeking => pipeline.position(),
             _ => self.position,
+        }
+    }
+
+    /// The `muted` attribute's state, while `muted` was never set.
+    fn follow_muted(&mut self, document: &Document) {
+        let muted = document.attr(self.node, "muted").is_some();
+        if !self.muted_set && self.muted != muted {
+            self.muted = muted;
+            set_gain(self);
         }
     }
 
@@ -337,6 +350,11 @@ pub(crate) struct Players {
 }
 
 impl Players {
+    /// Whether a load asked for a fetch not yet started.
+    pub(crate) fn fetch_pending(&self) -> bool {
+        self.players.values().any(|p| p.pending_fetch.is_some())
+    }
+
     /// Starts the fetches the loads asked for, each with `start` (the
     /// engine's network, its page's policies on the request), and their
     /// pipelines, which tell through `inbox`.
@@ -473,6 +491,7 @@ impl Players {
         let Some(player) = self.player(node, env.document) else {
             return;
         };
+        player.follow_muted(env.document);
         match action {
             Control::Play => {
                 if player.paused {
@@ -485,6 +504,7 @@ impl Players {
             }
             Control::Mute => {
                 player.muted = !player.muted;
+                player.muted_set = true;
                 queued.push(Action::Event(node, "volumechange"));
                 set_gain(player);
             }
@@ -624,6 +644,7 @@ impl Players {
         let player = self
             .player(node, env.document)
             .ok_or(("TypeError", "Illegal invocation".to_owned()))?;
+        player.follow_muted(env.document);
         let answer = match what {
             "state" => player.snapshot(env.document),
             "load" => {
@@ -656,6 +677,7 @@ impl Players {
             }
             "muted" => {
                 let muted = op.get("value").and_then(Json::as_bool).unwrap_or(false);
+                player.muted_set = true;
                 if player.muted != muted {
                     player.muted = muted;
                     queued.push(Action::Event(node, "volumechange"));
@@ -728,6 +750,12 @@ impl Players {
                     if name == "src" && is_media(*element) =>
                 {
                     loads.push(*element);
+                }
+                // The attribute's sound while `muted` was never set.
+                dom::Change::AttributeChanged { element, name, .. } if name == "muted" => {
+                    if let Some(player) = self.players.get_mut(element) {
+                        player.follow_muted(document);
+                    }
                 }
                 dom::Change::Inserted { parent, child } => {
                     for node in document.subtree(*child) {
@@ -883,6 +911,9 @@ fn select(player: &mut Player, env: &Env<'_>, out: &mut Vec<Action>) {
     player.src_seen = document.attr(node, "src").map(str::to_owned);
     if let Some(src) = document.attr(node, "src") {
         if src.is_empty() {
+            // HTML fires `loadstart` before it looks at the value (WPT's
+            // resource-selection-invoke-set-src.html).
+            out.push(Action::Event(node, "loadstart"));
             fail(
                 player,
                 Failure {

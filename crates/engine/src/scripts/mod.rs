@@ -1457,6 +1457,13 @@ impl Scripts {
 
     /// Starts the media fetches the run's loads asked for (M40).
     fn start_media(&mut self, lent: &mut Lent<'_>) {
+        if !self.host.media.fetch_pending() {
+            return;
+        }
+        // The policies the document has now: a script parsed after a
+        // `<meta>` policy runs before the page looks again (WPT's
+        // media-src-blocked.sub.html).
+        lent.page.update_policies(lent.document, lent.network);
         let page = lent.page.id();
         let inbox = self.host.workers.inbox();
         let network = &mut *lent.network;
@@ -1471,7 +1478,7 @@ impl Scripts {
         &mut self,
         changes: &[dom::Change],
         document: &Document,
-        page: &Page,
+        page: &mut Page,
         network: &mut Network,
         activated: bool,
     ) {
@@ -1483,6 +1490,10 @@ impl Scripts {
             activated,
         };
         self.host.media.changed(changes, &env);
+        // The policies the document has now, as a run's fetches have.
+        if self.host.media.fetch_pending() {
+            page.update_policies(document, network);
+        }
         let id = page.id();
         self.host
             .media
@@ -1812,6 +1823,17 @@ fn report_url(text: &str) -> String {
     }
 }
 
+/// What a report names of a blocked URL (CSP's "strip URL for use in
+/// reports"): one of a scheme other than HTTP's, `data:` and `blob:`
+/// among them, by its scheme alone (WPT's
+/// media-src-blocked-data-url.html, M40).
+fn blocked_report_url(text: &str) -> String {
+    match Url::parse(text) {
+        Ok(url) if !matches!(url.scheme(), "http" | "https") => url.scheme().to_owned(),
+        _ => report_url(text),
+    }
+}
+
 /// Whether `violation` was of something at a URL, a request, rather
 /// than of the document's own content: then it names no source file.
 fn of_a_request(violation: &Violation) -> bool {
@@ -1842,7 +1864,7 @@ fn violation_event(violation: &Violation, page: &Page, line: u32) -> js::EventIn
         .with("referrer", js::Field::String(page.referrer().to_owned()))
         .with(
             "blockedURI",
-            js::Field::String(report_url(&violation.blocked)),
+            js::Field::String(blocked_report_url(&violation.blocked)),
         )
         .with(
             "violatedDirective",
@@ -1888,7 +1910,7 @@ fn report_body(violation: &Violation, page: &Page, line: u32) -> String {
         ("effective-directive", violation.effective.clone()),
         ("original-policy", violation.policy.clone()),
         ("disposition", violation.disposition.name().to_owned()),
-        ("blocked-uri", report_url(&violation.blocked)),
+        ("blocked-uri", blocked_report_url(&violation.blocked)),
     ]
     .iter()
     .map(|(name, value)| format!("\"{name}\":{}", json_string(value)))

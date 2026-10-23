@@ -19822,12 +19822,21 @@
   }
 
   // Web IDL's float and double: finite, or a TypeError.
+  // A float past its range is infinite once rounded, and throws too.
   function audioFloat(value, words, double) {
-    const v = +value;
+    const v = double ? +value : MathFround(+value);
     if (!$NumberIsFinite(v)) {
       throw new $TypeError(words + "The provided " + (double ? "double" : "float") + " value is non-finite.");
     }
-    return double ? v : MathFround(v);
+    return v;
+  }
+
+  // Floats all converted before any is used: one non-finite throws
+  // with none set (WPT's pannernode-setposition-throws.html).
+  function audioFloats(values, words) {
+    const out = [];
+    for (let i = 0; i < values.length; i++) ArrayPush(out, audioFloat(values[i], words, false));
+    return out;
   }
 
   function audioTime(value, what, words) {
@@ -20255,11 +20264,30 @@
 
   // The options every node takes: its channel count, mode and
   // interpretation.
+  // Options that are not a dictionary, and a mode or interpretation
+  // that is not of its enum, throw as the reference's (WPT, M40 step 9).
   function audioNodeOptions(node, options) {
     if (options === undefined || options === null) return;
-    if (options.channelCount !== undefined) node.channelCount = options.channelCount;
-    if (options.channelCountMode !== undefined) node.channelCountMode = options.channelCountMode;
-    if (options.channelInterpretation !== undefined) node.channelInterpretation = options.channelInterpretation;
+    const iface = node.constructor.name;
+    const words = "Failed to construct '" + iface + "': ";
+    if (typeof options !== "object" && typeof options !== "function") {
+      throw new $TypeError(words + "The provided value is not of type '" + StringSlice(iface, 0, -4) + "Options" + "'.");
+    }
+    const enumOf = (name, type, values) => {
+      const value = options[name];
+      if (value === undefined) return undefined;
+      const text = str(value);
+      if (!listed(values, text)) {
+        throw new $TypeError(words + "Failed to read the '" + name + "' property from 'AudioNodeOptions': The provided value '" + text + "' is not a valid enum value of type " + type + ".");
+      }
+      return text;
+    };
+    const count = options.channelCount;
+    const mode = enumOf("channelCountMode", "ChannelCountMode", ["max", "clamped-max", "explicit"]);
+    const interp = enumOf("channelInterpretation", "ChannelInterpretation", ["speakers", "discrete"]);
+    if (count !== undefined) node.channelCount = count;
+    if (mode !== undefined) node.channelCountMode = mode;
+    if (interp !== undefined) node.channelInterpretation = interp;
   }
 
   function audioInitParams(node, options, names) {
@@ -20623,16 +20651,18 @@
 
     setPosition(x, y, z) {
       need(arguments.length, 3, "setPosition", "PannerNode");
-      this.positionX.value = x;
-      this.positionY.value = y;
-      this.positionZ.value = z;
+      const values = audioFloats([x, y, z], prefix("setPosition", "PannerNode"));
+      this.positionX.value = values[0];
+      this.positionY.value = values[1];
+      this.positionZ.value = values[2];
     }
 
     setOrientation(x, y, z) {
       need(arguments.length, 3, "setOrientation", "PannerNode");
-      this.orientationX.value = x;
-      this.orientationY.value = y;
-      this.orientationZ.value = z;
+      const values = audioFloats([x, y, z], prefix("setOrientation", "PannerNode"));
+      this.orientationX.value = values[0];
+      this.orientationY.value = values[1];
+      this.orientationZ.value = values[2];
     }
 
     static {
@@ -20677,19 +20707,21 @@
 
     setPosition(x, y, z) {
       need(arguments.length, 3, "setPosition", "AudioListener");
-      this.positionX.value = x;
-      this.positionY.value = y;
-      this.positionZ.value = z;
+      const values = audioFloats([x, y, z], prefix("setPosition", "AudioListener"));
+      this.positionX.value = values[0];
+      this.positionY.value = values[1];
+      this.positionZ.value = values[2];
     }
 
     setOrientation(x, y, z, xUp, yUp, zUp) {
       need(arguments.length, 6, "setOrientation", "AudioListener");
-      this.forwardX.value = x;
-      this.forwardY.value = y;
-      this.forwardZ.value = z;
-      this.upX.value = xUp;
-      this.upY.value = yUp;
-      this.upZ.value = zUp;
+      const values = audioFloats([x, y, z, xUp, yUp, zUp], prefix("setOrientation", "AudioListener"));
+      this.forwardX.value = values[0];
+      this.forwardY.value = values[1];
+      this.forwardZ.value = values[2];
+      this.upX.value = values[3];
+      this.upY.value = values[4];
+      this.upZ.value = values[5];
     }
   }
   expose(AudioListener, "AudioListener");
@@ -20953,6 +20985,11 @@
       }
       const re = new $Float32Array(real);
       const im = new $Float32Array(imag);
+      for (let i = 0; i < re.length; i++) {
+        if (!$NumberIsFinite(re[i]) || !$NumberIsFinite(im[i])) {
+          throw new $TypeError(words + "The provided float value is non-finite.");
+        }
+      }
       const op = { op: "wave", ctx: audioContextId(context), length: re.length, disableNormalization: !!given.disableNormalization };
       this.#id = audioCall(op, floatBytes([re, im]), words, null).result;
     }
@@ -21025,6 +21062,8 @@
     }
     get listener() { return this.#listener; }
     get state() { return this.#state; }
+    // The render quantum, the standard's and the reference's (probe p1).
+    get renderQuantumSize() { return 128; }
 
     createBuffer(numberOfChannels, length, sampleRate) {
       need(arguments.length, 3, "createBuffer", "BaseAudioContext");
@@ -21123,6 +21162,9 @@
       const given = options === undefined || options === null ? {} : options;
       const op = { op: "newContext", offline: false };
       const words = "Failed to construct 'AudioContext': ";
+      if (typeof given !== "object" && typeof given !== "function") {
+        throw new $TypeError(words + "The provided value is not of type 'AudioContextOptions'.");
+      }
       if (given.sampleRate !== undefined) {
         const rate = audioFloat(given.sampleRate, words, false);
         if (!(rate >= 3000 && rate <= 768000)) {

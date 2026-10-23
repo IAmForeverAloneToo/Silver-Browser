@@ -624,11 +624,14 @@ impl WebAudio {
             },
         };
         // A realtime context made once the user has activated the page
-        // runs at once; before, it waits for `resume()` and an activation.
+        // runs at once, but is `suspended` until the task that tells it
+        // so, the standard's control message (WPT, M40 step 9); before,
+        // it waits for `resume()` and an activation.
         if !offline && env.activated {
             context.run();
+            context.teller.state(State::Running);
         }
-        let state = context.state.name();
+        let state = State::Suspended.name();
         self.contexts.insert(id, context);
         Ok((
             Json::object([

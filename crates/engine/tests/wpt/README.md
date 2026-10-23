@@ -20,7 +20,7 @@ cargo run -p engine --example wpt -- pull <checkout>
 which rewrites them, `MANIFEST` and this file. `tests/wpt.rs` runs
 them; `expectations.txt` names those expected to fail, and why.
 
-With them are the testharness.js tests of `fetch/api/headers`, `fetch/api/request`, `fetch/api/response`, `fetch/api/basic`, `xhr`, `url` (the `urlsearchparams-*` tests), `FileAPI/blob`, `webstorage`, `wasm/jsapi` (the `interface.*` tests), `wasm/jsapi` (the `prototypes.*` tests), `wasm/jsapi/constructor`, `wasm/jsapi/global`, `wasm/jsapi/instance`, `wasm/jsapi/memory`, `wasm/jsapi/module`, `wasm/jsapi/table`, `html/canvas/element`, `html/canvas/offscreen`, `workers`, `webmessaging`, `html/infrastructure/safe-passing-of-structured-data`, `html/webappapis/structured-clone`, `content-security-policy`, `html/browsers/sandboxing`, `referrer-policy`, `html/semantics/embedded-content/the-iframe-element` (M27, M29, M31)
+With them are the testharness.js tests of `fetch/api/headers`, `fetch/api/request`, `fetch/api/response`, `fetch/api/basic`, `xhr`, `url` (the `urlsearchparams-*` tests), `FileAPI/blob`, `webstorage`, `wasm/jsapi` (the `interface.*` tests), `wasm/jsapi` (the `prototypes.*` tests), `wasm/jsapi/constructor`, `wasm/jsapi/global`, `wasm/jsapi/instance`, `wasm/jsapi/memory`, `wasm/jsapi/module`, `wasm/jsapi/table`, `html/canvas/element`, `html/canvas/offscreen`, `workers`, `webmessaging`, `html/infrastructure/safe-passing-of-structured-data`, `html/webappapis/structured-clone`, `content-security-policy`, `html/browsers/sandboxing`, `referrer-policy`, `html/semantics/embedded-content/the-iframe-element`, `webaudio`, `html/semantics/embedded-content/media-elements` (M27, M29, M31, M40)
 that the runner's one server can serve: no Python handler, no `.sub`
 template, no other host, nothing over `https:`, no shared or
 service worker and no module worker. `resources/testharness.js` is
@@ -37,8 +37,8 @@ subtest they fail is named in `expectations.txt`, and why.
 | checklayout | 70 |
 | crashtest | 101 |
 | reftest | 2909 |
-| testharness | 4278 |
-| all | 7358 |
+| testharness | 4660 |
+| all | 7740 |
 
 ## Left out
 
@@ -47,16 +47,16 @@ The first reason the rule found for each test it left out:
 | Reason | Tests |
 | --- | ---: |
 | script | 3153 |
-| Python handler | 1867 |
+| Python handler | 1985 |
 | @font-face | 902 |
 | declaration of font | 713 |
 | CDATA section in XHTML | 550 |
 | declaration of display | 505 |
 | the manual reftests (by the reftest rule) | 407 |
 | layers (beginLayer, not in the standard) | 374 |
+| https: | 337 |
 | not a reftest, a check-layout test or a crashtest | 292 |
-| https: | 270 |
-| not a testharness test | 260 |
+| not a testharness test | 275 |
 | selector | 241 |
 | declaration of line-height | 230 |
 | declaration of writing-mode | 207 |
@@ -68,6 +68,7 @@ The first reason the rule found for each test it left out:
 | declaration of direction | 91 |
 | SVG <pattern> (G87) | 87 |
 | declaration of border-radius | 85 |
+| wptserve pipe | 82 |
 | declaration of white-space | 81 |
 | declaration of container-type | 78 |
 | wptserve substitution (.sub) | 69 |
@@ -75,8 +76,8 @@ The first reason the rule found for each test it left out:
 | element <object> | 56 |
 | declaration of font-weight | 54 |
 | element <canvas> | 52 |
+| a window | 48 |
 | self-closing <div/> in XHTML | 48 |
-| a window | 47 |
 | element <video> | 47 |
 | element <embed> | 46 |
 | declaration of background | 44 |
@@ -86,7 +87,6 @@ The first reason the rule found for each test it left out:
 | declaration of transform | 36 |
 | nested rule | 36 |
 | element <hr> | 35 |
-| wptserve pipe | 35 |
 | @counter-style | 34 |
 | @scope | 32 |
 | declaration of visibility | 32 |
@@ -326,6 +326,7 @@ The first reason the rule found for each test it left out:
 | missing file css/selectors/data:text/css,.a{--x:%22%EF%89%BB%22;}.b{} | 1 |
 | missing file css/selectors/data:text/css,a{xyz | 1 |
 | missing file dom/nodes/insertion-removing-steps/data:text/css,%23div{display:none} | 1 |
+| missing file media-source/mediasource-util.js | 1 |
 | missing file svg/painting/reftests/about:blank | 1 |
 | missing file svg/styling/render/transform-origin-not-explicit-style-ref.svg | 1 |
 | not well-formed XML: error on line 1 at column 1: Start tag expected, '<' not found | 1 |

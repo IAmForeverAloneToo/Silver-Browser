@@ -172,6 +172,9 @@ const TESTHARNESS_DIRECTORIES: &[(&str, &str)] = &[
     ("html/browsers/sandboxing", ""),
     ("referrer-policy", ""),
     ("html/semantics/embedded-content/the-iframe-element", ""),
+    // Audio, video and Web Audio (M40).
+    ("webaudio", ""),
+    ("html/semantics/embedded-content/media-elements", ""),
 ];
 
 /// Tests the rule would take that are left out by name, and why: what the
@@ -255,6 +258,10 @@ const SUPPORT_DIRECTORIES: &[&str] = &[
     "referrer-policy/generic",
     "html/semantics/embedded-content/the-iframe-element/support",
     "html/semantics/embedded-content/the-iframe-element/resources",
+    // M40's: the clips, and Web Audio's helpers and sounds.
+    "media",
+    "webaudio/resources",
+    "webaudio/js",
 ];
 
 /// How deep `@import`s may go; the engine fetches no deeper.
@@ -2207,7 +2214,7 @@ fn readme(
          ```\n\n\
          which rewrites them, `MANIFEST` and this file. `tests/wpt.rs` runs\n\
          them; `expectations.txt` names those expected to fail, and why.\n\n\
-         With them are the testharness.js tests of {testharness} (M27, M29, M31)\n\
+         With them are the testharness.js tests of {testharness} (M27, M29, M31, M40)\n\
          that the runner's one server can serve: no Python handler, no `.sub`\n\
          template, no other host, nothing over `https:`, no shared or\n\
          service worker and no module worker. `resources/testharness.js` is\n\

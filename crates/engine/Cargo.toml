@@ -149,6 +149,11 @@ harness = false
 name = "jank"
 harness = false
 
+[[bench]]
+# A video's pictures, a Web Audio quantum and a playing page's frames (M40).
+name = "playback"
+harness = false
+
 [dev-dependencies]
 # The scripted server the loader's tests fetch from.
 net = { workspace = true, features = ["test-server"] }
