@@ -12,7 +12,8 @@
 # context alone; and for a message's serialized form, made again in a
 # realm; and for the XML parser and SVG, read, drawn, hit and asked (M32);
 # and for the DevTools' JSON, and IndexedDB's keys and store (M36); and
-# for media's containers and decoders, AV1's among them (M40).
+# for media's containers and decoders, AV1's among them, and Web Audio's
+# graphs (M40).
 # Not a workspace member: libfuzzer needs nightly, and the normal build
 # must not.
 # `cargo +nightly fuzz run <target>` from the repository root; CI runs
@@ -51,7 +52,12 @@ render = { path = "../crates/render", default-features = false }
 style = { path = "../crates/style" }
 svg = { path = "../crates/svg" }
 media = { path = "../crates/media" }
+audio = { path = "../crates/audio" }
 text = { path = "../crates/text" }
+
+# rav1d with the fix its release lacks, as the workspace (vendor/README.md).
+[patch.crates-io]
+rav1d = { path = "../vendor/rav1d" }
 
 # The fuzz build checks overflow everywhere; not in tiny-skia, whose
 # 16-bit lanes wrap on purpose (the workspace's dev profile says why).
@@ -345,6 +351,13 @@ bench = false
 [[bin]]
 name = "av1_decode"
 path = "fuzz_targets/av1_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "audio_graph"
+path = "fuzz_targets/audio_graph.rs"
 test = false
 doc = false
 bench = false

@@ -88,6 +88,30 @@ impl From<symphonia::core::errors::Error> for Error {
     }
 }
 
+/// Makes a panic inside `rav1d` end the process rather than unwind: its
+/// C-shaped state is not sound to unwind through (M40's fuzzing found a
+/// guard released on freed memory while unwinding from its panic), so
+/// such a panic is never caught by [`guarded`]. Other panics go to the
+/// hook there was. Installed by the first AV1 decoder a process makes;
+/// later calls do nothing.
+pub fn abort_on_decoder_panic() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if info.location().is_some_and(|l| l.file().contains("rav1d")) {
+                eprintln!(
+                    "media: the AV1 decoder panicked: {info}
+{}",
+                    std::backtrace::Backtrace::capture()
+                );
+                std::process::abort();
+            }
+            previous(info);
+        }));
+    });
+}
+
 /// `f()`, a panic in it caught as [`Error::Panicked`]: the crates read
 /// bytes a page chose.
 fn guarded<T>(f: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {

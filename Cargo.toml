@@ -2,7 +2,8 @@
 resolver = "3"
 members = ["crates/*"]
 # The fuzz targets need nightly and libfuzzer; they build on their own.
-exclude = ["fuzz"]
+# The vendored crates are dependencies, not members (vendor/README.md).
+exclude = ["fuzz", "vendor"]
 
 [workspace.package]
 version = "0.0.1"
@@ -20,6 +21,7 @@ license = "AGPL-3.0-only"
 #   engine, layout -> svg -> { canvas, style, text, dom } (SVG, M32)
 #   engine, shell -> devtools (a leaf: the DevTools' protocol, M36)
 #   engine -> media (a leaf: containers and decoders, M40)
+#   engine -> audio (a leaf: Web Audio's rendering, M40)
 # See docs/architecture.md — the layering contract is binding.
 [workspace.dependencies]
 # Internal crates
@@ -44,6 +46,7 @@ js = { path = "crates/js" }
 profile = { path = "crates/profile" }
 devtools = { path = "crates/devtools" }
 media = { path = "crates/media" }
+audio = { path = "crates/audio" }
 
 # External crates
 winit = "0.30"
@@ -170,6 +173,10 @@ wasmparser = { version = "0.228", default-features = false, features = ["std"] }
 # debugging, and unoptimised they put every frame far past the budget.
 # Nor do they carry debug information: theirs was most of each test
 # binary's debug symbols, a few hundred megabytes a binary on Windows.
+# rav1d 1.1.0 with the upstream fix its release lacks (vendor/README.md).
+[patch.crates-io]
+rav1d = { path = "vendor/rav1d" }
+
 [profile.dev.package."*"]
 opt-level = 3
 debug = false

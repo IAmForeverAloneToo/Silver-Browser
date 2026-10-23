@@ -273,3 +273,27 @@ fn resampling_keeps_a_tone_and_gives_the_frames_the_ratio_says() {
     pieces.extend(r.flush());
     assert_eq!(&pieces[..out.len()], &out[..]);
 }
+
+#[test]
+fn units_that_made_rav1d_panic_in_its_error_cleanup_fail_or_decode_but_never_panic() {
+    // M40's fuzzing: with one frame context, rav1d 1.1.0 unwrapped a frame
+    // header its error cleanup had dropped. The fuzz target's format: each
+    // unit a little-endian 16-bit length and its bytes.
+    for input in [
+        &include_bytes!("../../../fuzz/seeds/av1_decode/rav1d-cleanup-1")[..],
+        &include_bytes!("../../../fuzz/seeds/av1_decode/rav1d-cleanup-2")[..],
+        &include_bytes!("../../../fuzz/seeds/av1_decode/rav1d-cleanup-3")[..],
+    ] {
+        let mut decoder = PictureDecoder::av1().unwrap();
+        let mut rest = input;
+        let mut timestamp = 0;
+        while rest.len() >= 2 {
+            let len = usize::from(u16::from_le_bytes([rest[0], rest[1]])).min(rest.len() - 2);
+            timestamp += 1;
+            let result = decoder.decode_bytes(&rest[2..2 + len], timestamp);
+            assert_ne!(result.err(), Some(Error::Panicked));
+            rest = &rest[2 + len..];
+        }
+        assert_ne!(decoder.drain().err(), Some(Error::Panicked));
+    }
+}

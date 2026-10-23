@@ -3,7 +3,9 @@
 //! `unsafe`. Each block says why it holds. The decoder runs on one
 //! thread with one frame in flight (`max_frame_delay` 1), so that each
 //! temporal unit sent comes back as its picture before the next is sent;
-//! its frames are bounded at [`MAX_VIDEO_SIZE`] squared pixels.
+//! its frames are bounded at [`MAX_VIDEO_SIZE`] squared pixels. rav1d is
+//! the vendored 1.1.0 with the upstream fix its release lacks
+//! (`vendor/README.md`).
 
 #![allow(unsafe_code)]
 
@@ -24,10 +26,38 @@ use rav1d::src::lib::{
 use crate::yuv::{Layout, Planes, Range};
 use crate::{Error, MAX_VIDEO_SIZE};
 
+/// The rounds of sending a unit and taking pictures before a decoder
+/// that takes none of it is given up on.
+const MAX_ROUNDS: u32 = 64;
+
 /// `dav1d`'s "try again": its result for a picture not ready, or data
 /// not taken until a picture is.
 fn again(result: i32) -> bool {
     result == -libc::EAGAIN
+}
+
+/// Whether `unit` holds a sequence header OBU.
+fn has_sequence_header(unit: &[u8]) -> bool {
+    let mut at = 0;
+    while at < unit.len() {
+        let header = unit[at];
+        if (header >> 3) & 0xF == 1 {
+            return true;
+        }
+        at += 1 + usize::from((header >> 2) & 1);
+        let mut size = 0usize;
+        let mut shift = 0;
+        while let Some(&b) = unit.get(at) {
+            at += 1;
+            size |= usize::from(b & 0x7F) << shift;
+            shift += 7;
+            if b & 0x80 == 0 || shift >= 56 {
+                break;
+            }
+        }
+        at = at.saturating_add(size);
+    }
+    false
 }
 
 /// A decoded frame, converted: its time (the timestamp it was sent
@@ -42,10 +72,16 @@ pub(crate) struct Frame {
 /// One `dav1d` context.
 pub(crate) struct Av1 {
     context: Option<Dav1dContext>,
+    /// Whether it has taken a sequence header: until then it is given
+    /// no unit without one (rav1d 1.1.0's error cleanup panics on frames
+    /// it has no sequence for).
+    sequenced: bool,
 }
 
 impl Av1 {
     pub(crate) fn new() -> Result<Av1, Error> {
+        // Whatever process decodes AV1 never unwinds through rav1d.
+        crate::abort_on_decoder_panic();
         let mut settings = MaybeUninit::<Dav1dSettings>::uninit();
         // SAFETY: `dav1d_default_settings` writes a whole `Dav1dSettings`
         // through the pointer, which points at memory of that type and
@@ -53,6 +89,8 @@ impl Av1 {
         unsafe { dav1d_default_settings(NonNull::from(&mut settings).cast()) };
         // SAFETY: written whole just above.
         let mut settings = unsafe { settings.assume_init() };
+        // One thread, one frame in flight: rav1d 1.1.0's threaded path
+        // deadlocked now and then on a malformed stream (M40's fuzzing).
         settings.n_threads = 1;
         settings.max_frame_delay = 1;
         settings.frame_size_limit = MAX_VIDEO_SIZE * MAX_VIDEO_SIZE;
@@ -69,7 +107,10 @@ impl Av1 {
         if result.0 != 0 || context.is_none() {
             return Err(Error::Malformed(format!("dav1d_open: {}", result.0)));
         }
-        Ok(Av1 { context })
+        Ok(Av1 {
+            context,
+            sequenced: false,
+        })
     }
 
     /// Sends one temporal unit, `bytes`, stamped `timestamp`, and returns
@@ -80,6 +121,12 @@ impl Av1 {
         };
         let mut frames = Vec::new();
         if bytes.is_empty() {
+            return Ok(frames);
+        }
+        let sequence = has_sequence_header(bytes);
+        if !self.sequenced && !sequence {
+            // Nothing to decode it against: skipped, until a keyframe
+            // brings its sequence header.
             return Ok(frames);
         }
         let mut data = Dav1dData::default();
@@ -95,6 +142,7 @@ impl Av1 {
         // decoder, and `bytes` cannot overlap a buffer made now.
         unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer, bytes.len()) };
         data.m.timestamp = timestamp;
+        let mut rounds = 0;
         loop {
             // SAFETY: `context` is the open context; `data` is a live
             // `Dav1dData` made by `dav1d_data_create`, whose bytes the
@@ -104,15 +152,21 @@ impl Av1 {
                 self.drop_data(&mut data);
                 return Err(Error::Malformed(format!("dav1d_send_data: {}", sent.0)));
             }
-            self.take(&context, &mut frames)?;
+            if let Err(e) = self.take(&context, &mut frames) {
+                self.drop_data(&mut data);
+                return Err(e);
+            }
             if data.sz == 0 {
+                self.sequenced |= sequence;
                 break;
             }
-            if again(sent.0) && frames.is_empty() {
-                // Neither data taken nor a picture given: the unit is
-                // not one the decoder can use.
+            // Not all taken: its threads are busy, and the next take
+            // waits for a picture (dav1d's own loop). A decoder that
+            // takes nothing for long is given up on.
+            rounds += 1;
+            if rounds > MAX_ROUNDS {
                 self.drop_data(&mut data);
-                break;
+                return Err(Error::Malformed("dav1d took none of a unit".to_owned()));
             }
         }
         Ok(frames)

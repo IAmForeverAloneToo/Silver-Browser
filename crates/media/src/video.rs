@@ -167,7 +167,14 @@ impl PictureDecoder {
                 std::mem::forget(self.av1.take());
                 Err(Error::Panicked)
             }
-            Err(e) => Err(e),
+            Err(e) => {
+                // A unit it refused leaves rav1d's state in a way a later
+                // one can trip over (its error path then unwraps a frame
+                // header it dropped, M40's fuzzing): it starts over, and
+                // decodes again from the next keyframe.
+                self.reset()?;
+                Err(e)
+            }
         }
     }
 
