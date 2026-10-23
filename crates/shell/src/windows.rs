@@ -181,6 +181,7 @@ impl Contexts {
             return Ok((kept, open.context.clone()));
         }
         let context = Context::new();
+        context.set_audio_output(crate::audio::output());
         match &kept {
             Kept::Folder(folder) => {
                 let profile = (self.opener)(folder)?;

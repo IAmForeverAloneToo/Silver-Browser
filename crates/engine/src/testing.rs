@@ -312,3 +312,35 @@ pub(crate) fn text(engine: &Engine) -> String {
 
 pub(crate) const RED: (f32, f32, f32) = (1.0, 0.0, 0.0);
 pub(crate) const BLACK: (f32, f32, f32) = (0.0, 0.0, 0.0);
+
+/// A sink that keeps what it is given and plays it at once (M40).
+/// Its samples may be taken; what it played only grows.
+#[derive(Default)]
+pub(crate) struct Capture {
+    pub(crate) samples: Mutex<Vec<f32>>,
+    played: AtomicU64,
+}
+
+impl crate::AudioSink for Capture {
+    fn write(&self, samples: &[f32]) {
+        self.samples
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extend_from_slice(samples);
+        self.played.fetch_add(
+            (samples.len() / crate::audio_output::OUTPUT_CHANNELS) as u64,
+            Ordering::Relaxed,
+        );
+    }
+
+    fn played(&self) -> u64 {
+        self.played.load(Ordering::Relaxed)
+    }
+}
+
+/// The process's mixer is one: the tests that run an `AudioContext` take
+/// turns (M40).
+pub(crate) fn audio_turn() -> std::sync::MutexGuard<'static, ()> {
+    static TURN: Mutex<()> = Mutex::new(());
+    TURN.lock().unwrap_or_else(PoisonError::into_inner)
+}

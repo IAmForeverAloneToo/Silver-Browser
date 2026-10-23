@@ -35,6 +35,9 @@ pub(crate) struct Link {
     calls: Calls<Answer>,
     fetches: Mutex<Option<HashMap<u64, mpsc::Sender<Part>>>>,
     next_fetch: AtomicU64,
+    /// What the browser last said the output played of the renderer's
+    /// sound (M40).
+    played: AtomicU64,
 }
 
 impl Link {
@@ -44,6 +47,7 @@ impl Link {
             calls: Calls::new(),
             fetches: Mutex::new(Some(HashMap::new())),
             next_fetch: AtomicU64::new(1),
+            played: AtomicU64::new(0),
         })
     }
 
@@ -60,6 +64,19 @@ impl Link {
     /// and waits for its answer.
     pub(crate) fn call(&self, ask: impl FnOnce(u64) -> ToBrowser) -> Result<Answer, Closed> {
         self.calls.call(&self.sender, ask)
+    }
+
+    /// Sends a block of the renderer's sound (M40).
+    pub(crate) fn audio(&self, samples: &[f32]) {
+        let bytes = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let _ = self.send(&ToBrowser::Audio {
+            samples: Bytes(bytes),
+        });
+    }
+
+    /// The frames of the renderer's sound the browser said were played.
+    pub(crate) fn audio_played(&self) -> u64 {
+        self.played.load(Ordering::Relaxed)
     }
 
     /// Asks the browser to save `url`, which frame `frame`'s document
@@ -102,6 +119,10 @@ impl Link {
                 if !self.calls.answer(call, answer) {
                     return Err(format!("an answer to no question ({call})"));
                 }
+                return Ok(None);
+            }
+            ToRenderer::AudioPlayed { frames } => {
+                self.played.fetch_max(frames, Ordering::Relaxed);
                 return Ok(None);
             }
             ToRenderer::FetchHead { id, response } => (id, Part::Head(response)),

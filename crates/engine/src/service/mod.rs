@@ -6,6 +6,9 @@
 
 #[cfg(test)]
 mod adversarial_tests;
+mod audio;
+#[cfg(test)]
+mod audio_tests;
 #[cfg(test)]
 mod compromised_tests;
 #[cfg(test)]
@@ -35,6 +38,7 @@ mod workers;
 #[cfg(test)]
 mod workers_tests;
 
+pub use audio::AudioService;
 pub use handover::{HANDOVER_TIMEOUT, HandoverNotice, Handovers, MAX_HANDOVER_BUFFER};
 pub use network::{FrameGrant, Grant, Grants, Lock, MAX_RENDERER_FETCHES, NetworkService};
 pub use process::{

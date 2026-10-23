@@ -1435,9 +1435,9 @@ impl Scripts {
 
     /// Whether the back-forward cache may keep the document: not when
     /// its realm died, nor while it has workers (M31), which end with it
-    /// as it goes.
+    /// as it goes, nor while an `AudioContext` of its is open (M40).
     pub(crate) fn keepable(&self) -> bool {
-        !self.stopped && !self.host.workers.workers.any()
+        !self.stopped && !self.host.workers.workers.any() && !self.host.audio.sounding()
     }
 
     /// Collects the realm's garbage, as when the document is kept.

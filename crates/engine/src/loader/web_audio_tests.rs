@@ -17,7 +17,7 @@ fn server(script: &str) -> TestServer {
          <script>const log = (s) => console.log(s);\n{script}</script>"
     );
     serve(move |path| match path {
-        "/page.html" => Some(html(&body)),
+        p if p.ends_with(".html") => Some(html(&body)),
         "/tone.wav" => Some(Reply::ok("audio/wav", TONE)),
         _ => None,
     })
@@ -389,6 +389,7 @@ fn decode_audio_data_calls_back_and_keeps_the_pages_buffer() {
 
 #[test]
 fn an_audio_context_waits_for_the_users_activation_to_run() {
+    let _turn = audio_turn();
     let first = server(
         r#"
 const c = new AudioContext();
@@ -438,4 +439,93 @@ c.resume().then(() => log('resumed ' + c.state));
             "InvalidStateError: Failed to execute 'resume' on 'AudioContext': Cannot resume a closed AudioContext.",
         ]
     );
+}
+
+/// The zero crossings of the left channel of `samples`, interleaved
+/// stereo.
+fn crossings(samples: &[f32]) -> usize {
+    let left: Vec<f32> = samples.iter().step_by(2).copied().collect();
+    left.windows(2)
+        .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
+        .count()
+}
+
+/// The process's mixer writes to `sink` while this lives; then to a
+/// sink that plays at the clock again.
+struct Sink;
+
+impl Sink {
+    fn set(sink: std::sync::Arc<dyn crate::AudioSink>) -> Sink {
+        crate::audio_output::set_audio_sink(sink);
+        Sink
+    }
+}
+
+impl Drop for Sink {
+    fn drop(&mut self) {
+        crate::audio_output::set_audio_sink(std::sync::Arc::new(
+            crate::audio_output::ClockSink::new(),
+        ));
+    }
+}
+
+/// A sink that says it played ten million frames.
+struct Far;
+
+impl crate::AudioSink for Far {
+    fn write(&self, _: &[f32]) {}
+
+    fn played(&self) -> u64 {
+        10_000_000
+    }
+}
+
+#[test]
+fn an_audio_context_is_heard_at_the_outputs_rate() {
+    let _turn = audio_turn();
+    // A sink that said it played far more than the next one will have:
+    // the mixer starts over with the new one.
+    let _far = Sink::set(std::sync::Arc::new(Far));
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let capture = std::sync::Arc::new(Capture::default());
+    let _sink = Sink::set(capture.clone());
+    let page = server(
+        r#"
+const rate = Number(location.pathname.replace(/\D/g, ''));
+if (rate) {
+  const c = new AudioContext({ sampleRate: rate });
+  const o = c.createOscillator();
+  o.frequency.value = 440;
+  const g = c.createGain();
+  g.gain.value = 0.5;
+  o.connect(g).connect(c.destination);
+  o.start();
+  // A mono destination: the mixer up-mixes it.
+  if (rate === 44100) c.destination.channelCount = 1;
+  log('state ' + c.state + ' ' + c.sampleRate);
+} else {
+  log('blank');
+}
+"#,
+    );
+    let mut tab = open(&page);
+    tab.run_until(|lines| lines.iter().any(|l| l == "blank"));
+    tab.engine.pointer_down(50.0, 50.0, Button::Primary, 1);
+    for rate in [48000, 44100] {
+        tab.engine.navigate(page.url(&format!("/tone{rate}.html")));
+        let lines = tab.run_until(|lines| lines.iter().any(|l| l.starts_with("state")));
+        assert_eq!(lines.last().unwrap(), &format!("state running {rate}"));
+        capture.samples.lock().unwrap().clear();
+        // A fifth of a second of sound, at the output's rate.
+        wait_for(|| capture.samples.lock().unwrap().len() >= 9600 * 2);
+        let samples = capture.samples.lock().unwrap()[..9600 * 2].to_vec();
+        // 440 Hz: 176 crossings in a fifth of a second.
+        let n = crossings(&samples);
+        assert!((173..=179).contains(&n), "{rate}: {n} crossings");
+        let peak = samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!((0.45..=0.5001).contains(&peak), "{rate}: peak {peak}");
+        // Both channels: the mono oscillator up-mixed, by the graph or
+        // the mixer.
+        assert!(samples.chunks(2).all(|f| f[0] == f[1]), "{rate}");
+    }
 }

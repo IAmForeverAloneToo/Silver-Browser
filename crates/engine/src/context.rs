@@ -44,6 +44,9 @@ struct Shared {
     renderers: Arc<AtomicU32>,
     /// Whether its service workers run in worker renderers (M39).
     worker_renderers: crate::service::Claimed,
+    /// The browser's audio output (M40): the renderers' sound goes to
+    /// it.
+    audio_output: Mutex<Arc<dyn crate::AudioOutput>>,
 }
 
 impl Default for Context {
@@ -97,6 +100,7 @@ impl Context {
                 tabs: AtomicU64::new(1),
                 renderers: Arc::new(AtomicU32::new(1)),
                 worker_renderers: crate::service::Claimed::default(),
+                audio_output: Mutex::new(Arc::new(crate::audio_output::ClockOutput)),
             }),
         }
     }
@@ -208,6 +212,25 @@ impl Context {
     /// The service workers of the context's tabs (M39).
     pub fn service_workers(&self) -> &crate::service_worker::ServiceWorkers {
         &self.shared.service_workers
+    }
+
+    /// Where the renderers' sound goes from now (M40): the shell's
+    /// output; until given one, an output that plays at the clock.
+    pub fn set_audio_output(&self, output: Arc<dyn crate::AudioOutput>) {
+        *self
+            .shared
+            .audio_output
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = output;
+    }
+
+    /// The browser's audio output.
+    pub fn audio_output(&self) -> Arc<dyn crate::AudioOutput> {
+        self.shared
+            .audio_output
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// The downloads of the context's tabs (M37).

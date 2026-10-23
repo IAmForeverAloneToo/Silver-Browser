@@ -146,6 +146,9 @@ wire_enum! {
         /// The browser's `FetchEvent` `event` for `version` (M39 step 5):
         /// its request and its clients' ids, as JSON.
         35 => ServiceWorkerFetch { version: u64, event: u64, data: String },
+        /// The frames of the renderer's sound the output played so far
+        /// (M40).
+        36 => AudioPlayed { frames: u64 },
     }
 }
 
@@ -316,6 +319,11 @@ wire_enum! {
             response: Option<Box<Response>>,
             ran: bool,
         },
+        /// A block of the renderer's sound (M40): interleaved stereo
+        /// little-endian floats at the output's rate, at most
+        /// `MAX_AUDIO_BLOCK_FRAMES` frames; an empty one asks what was
+        /// played.
+        31 => Audio { samples: Bytes },
     }
 }
 

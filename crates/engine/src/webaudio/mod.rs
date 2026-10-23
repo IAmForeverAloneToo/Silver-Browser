@@ -206,6 +206,14 @@ fn text<'a>(op: &'a Json, name: &str) -> &'a str {
 }
 
 impl WebAudio {
+    /// Whether an `AudioContext` is open: its document is not kept by
+    /// the back-forward cache, so that its sound stops as it goes.
+    pub(crate) fn sounding(&self) -> bool {
+        self.contexts
+            .values()
+            .any(|c| c.offline.is_none() && c.state != State::Closed)
+    }
+
     /// Whether a context waits for the user's activation to start.
     pub(crate) fn waiting(&self) -> bool {
         self.contexts.values().any(|c| c.waiting)
@@ -583,7 +591,7 @@ impl WebAudio {
             return fail("NotSupportedError", "too many audio contexts");
         }
         let offline = op.get("offline").and_then(Json::as_bool).unwrap_or(false);
-        let rate = number(op, "rate").map_or(mixer::OUTPUT_RATE, |r| r as f32);
+        let rate = number(op, "rate").map_or(mixer::OUTPUT_RATE_F32, |r| r as f32);
         let channels = number(op, "channels")
             .map_or(2, |c| c as usize)
             .clamp(1, audio::MAX_CHANNELS);

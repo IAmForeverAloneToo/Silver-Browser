@@ -7,7 +7,8 @@
 //! data, for the profile (M28), and the key that keeps the profile's
 //! (M33, D27). And the renderers' processes (M34): their launch, their
 //! pipes, the job object that holds them and, on Windows, their sandbox
-//! and the dumps of their crashes.
+//! and the dumps of their crashes. And the audio output's device (M40):
+//! WASAPI's default device on Windows.
 //!
 //! This file is the workspace's one place that writes `unsafe` (M33.5):
 //! its Windows modules allow it, each block with its `// SAFETY:`
@@ -1360,6 +1361,143 @@ mod launch {
 }
 
 // DPAPI and the system's parameters, through `unsafe` (M33.5).
+/// Plays to the default audio device, 48 kHz stereo floats, which the
+/// system converts to the device's own format (M40, D37): `fill` gives
+/// each stretch's frames, interleaved, and says whether to go on. Err
+/// when there is no device, or it went.
+pub(crate) fn play_audio(fill: &mut dyn FnMut(&mut [f32]) -> bool) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        audio::play(fill)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = fill;
+        Err("no audio output on this platform".to_owned())
+    }
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod audio {
+    use std::time::Duration;
+
+    use ::windows::Win32::Media::Audio::{
+        AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+        AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, IAudioClient, IAudioRenderClient,
+        IMMDeviceEnumerator, MMDeviceEnumerator, WAVEFORMATEX, eConsole, eRender,
+    };
+    use ::windows::Win32::System::Com::{
+        CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
+    };
+
+    /// `WAVE_FORMAT_IEEE_FLOAT`.
+    const FLOAT: u16 = 3;
+    /// The shared stream's buffer: 40 ms, in 100 ns.
+    const BUFFER: i64 = 400_000;
+    /// The least a stretch written: 10 ms of frames.
+    const LEAST: u32 = 480;
+
+    pub(super) fn play(fill: &mut dyn FnMut(&mut [f32]) -> bool) -> Result<(), String> {
+        // SAFETY: COM for this thread, the output's own, in the
+        // multithreaded apartment; undone below when it succeeded.
+        let init = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        if init.is_err() {
+            return Err(format!("COM: {init:?}"));
+        }
+        let result = stream(fill);
+        // SAFETY: balances the call above on this thread, every COM
+        // object of `stream` released when it returned.
+        unsafe { CoUninitialize() };
+        result
+    }
+
+    fn stream(fill: &mut dyn FnMut(&mut [f32]) -> bool) -> Result<(), String> {
+        let failed =
+            |what: &'static str| move |error: ::windows::core::Error| format!("{what}: {error}");
+        // SAFETY: COM is initialized on this thread; the class and the
+        // interface are the system's device enumerator's.
+        let devices: IMMDeviceEnumerator =
+            unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
+                .map_err(failed("the devices"))?;
+        // SAFETY: a live enumerator, asked for the default output.
+        let device = unsafe { devices.GetDefaultAudioEndpoint(eRender, eConsole) }
+            .map_err(failed("the default device"))?;
+        // SAFETY: a live device, activated with no parameters.
+        let client: IAudioClient =
+            unsafe { device.Activate(CLSCTX_ALL, None) }.map_err(failed("the client"))?;
+        let format = WAVEFORMATEX {
+            wFormatTag: FLOAT,
+            nChannels: 2,
+            nSamplesPerSec: 48_000,
+            nAvgBytesPerSec: 48_000 * 8,
+            nBlockAlign: 8,
+            wBitsPerSample: 32,
+            cbSize: 0,
+        };
+        // SAFETY: a live client, initialized once, in shared mode; the
+        // format is ours, read during the call.
+        unsafe {
+            client.Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+                BUFFER,
+                0,
+                &format,
+                None,
+            )
+        }
+        .map_err(failed("the stream"))?;
+        // SAFETY: an initialized client.
+        let size = unsafe { client.GetBufferSize() }.map_err(failed("the buffer"))?;
+        // SAFETY: an initialized client, asked for its render client.
+        let render: IAudioRenderClient =
+            unsafe { client.GetService() }.map_err(failed("the render client"))?;
+        // SAFETY: an initialized client, started once, stopped below.
+        unsafe { client.Start() }.map_err(failed("the start"))?;
+        let mut frames = Vec::new();
+        let result = loop {
+            // SAFETY: a started client.
+            let padding = match unsafe { client.GetCurrentPadding() } {
+                Ok(padding) => padding,
+                Err(error) => break Err(format!("the device went: {error}")),
+            };
+            let free = size.saturating_sub(padding);
+            if free >= LEAST {
+                frames.resize(free as usize * 2, 0.0);
+                let more = fill(&mut frames);
+                // SAFETY: the started client's render client, asked for
+                // no more frames than its buffer has free.
+                let buffer = match unsafe { render.GetBuffer(free) } {
+                    Ok(buffer) => buffer,
+                    Err(error) => break Err(format!("the device went: {error}")),
+                };
+                // SAFETY: the buffer holds `free` frames of the format
+                // given, two floats each, aligned for them and ours to
+                // write until released; `frames` is as long, and apart.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        frames.as_ptr(),
+                        buffer.cast::<f32>(),
+                        frames.len(),
+                    );
+                }
+                // SAFETY: releases the frames taken above, all written.
+                if let Err(error) = unsafe { render.ReleaseBuffer(free, 0) } {
+                    break Err(format!("the device went: {error}"));
+                }
+                if !more {
+                    break Ok(());
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        // SAFETY: the started client, stopped once.
+        let _ = unsafe { client.Stop() };
+        result
+    }
+}
+
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod windows {

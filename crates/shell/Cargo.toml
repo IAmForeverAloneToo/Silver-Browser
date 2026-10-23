@@ -33,6 +33,8 @@ profile.workspace = true
 # The user's preferences where the operating system says them (M20.3).
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
+# The audio output, WASAPI (M40).
+windows.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit.workspace = true

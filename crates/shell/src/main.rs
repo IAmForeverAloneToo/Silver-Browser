@@ -39,6 +39,7 @@
 // `unsafe` in the platform module alone (M33.5), which allows it.
 #![deny(unsafe_code)]
 
+mod audio;
 mod crashes;
 mod devtools;
 mod internal;
@@ -1177,8 +1178,10 @@ fn show(line: &CommandLine) {
         }
     };
     startup::mark("fonts");
-    // The window's tabs share one context, the profile's (M37).
+    // The window's tabs share one context, the profile's (M37); the
+    // renderers' sound goes to the browser's output (M40).
     let context = engine::Context::new();
+    context.set_audio_output(audio::output());
     let launcher: Arc<dyn engine::service::Launcher> = Arc::new(launcher);
     let make = move |context: &engine::Context| {
         engine::service::RemoteTab::in_context(launcher.clone(), fonts.clone(), context)
@@ -1230,6 +1233,10 @@ fn show(line: &CommandLine) {
     // The window's tabs share one context, the profile's (M37); each tab
     // after the first draws on the backend the first had.
     let context = engine::Context::new();
+    context.set_audio_output(audio::output());
+    // The engines' sound, mixed in this process, goes straight to the
+    // output (M40).
+    engine::audio_output::set_audio_sink(engine::AudioOutput::source(&*audio::output()));
     let backend = engine.backend();
     let fonts = View::fonts(&engine).clone();
     let mut first = Some(engine);

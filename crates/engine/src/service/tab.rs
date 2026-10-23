@@ -30,6 +30,7 @@ use std::time::{Duration, Instant};
 use net::cookies::Jar;
 use net::{Client, Hsts, Url};
 
+use super::audio::AudioService;
 use super::frames::{FrameEvent, FrameInfo, FramesService, SharedRegistry};
 use super::handover::{HandoverNotice, Handovers};
 use super::network::{FrameGrant, Grants, Lock, NetworkService};
@@ -380,6 +381,7 @@ impl RemoteTab {
             network.clone(),
             StorageService::new(storage.clone(), grants.clone(), tab),
             FramesService::new(registry.clone(), grants.clone(), frame_sender, wake),
+            AudioService::new(context.audio_output()),
         ]));
         RemoteTab {
             fonts,

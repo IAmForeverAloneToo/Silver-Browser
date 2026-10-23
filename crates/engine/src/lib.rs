@@ -95,6 +95,7 @@
 #![forbid(unsafe_code)]
 
 pub mod address;
+pub mod audio_output;
 pub mod caches;
 mod context;
 #[cfg(test)]
@@ -144,6 +145,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
+pub use audio_output::{AudioOutput, AudioSink};
 pub use context::Context;
 pub use dom::ElementState;
 pub use downloads::{Download, DownloadState, Downloads};

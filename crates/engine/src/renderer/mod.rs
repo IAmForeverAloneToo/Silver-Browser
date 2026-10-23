@@ -30,6 +30,20 @@ pub fn opaque_origins_of(process: u32) -> u64 {
 }
 
 /// What the renderer's main thread is woken by.
+/// The renderer's audio sink: its blocks sent to the browser, what was
+/// played as the browser says.
+pub(crate) struct BrowserSink(pub(crate) Arc<Link>);
+
+impl crate::AudioSink for BrowserSink {
+    fn write(&self, samples: &[f32]) {
+        self.0.audio(samples);
+    }
+
+    fn played(&self) -> u64 {
+        self.0.audio_played()
+    }
+}
+
 enum Input {
     Message(Box<ToRenderer>),
     /// The browser's channel ended, or said what is no message.
@@ -47,7 +61,7 @@ pub fn run(
     input: impl Read + Send + 'static,
     output: impl Write + Send + 'static,
 ) -> Result<(), String> {
-    run_with(input, output, None)
+    run_in(input, output, None, true)
 }
 
 /// [`run`], its views drawing with `fonts` rather than the system's: the
@@ -56,6 +70,18 @@ pub fn run_with(
     input: impl Read + Send + 'static,
     output: impl Write + Send + 'static,
     fonts: Option<text::FontCollection>,
+) -> Result<(), String> {
+    run_in(input, output, fonts, false)
+}
+
+/// [`run_with`]; with `sound`, the process's sound goes to the browser
+/// (a renderer's own process: in a thread, as the tests run renderers,
+/// the process's mixer is not the renderer's to take).
+fn run_in(
+    input: impl Read + Send + 'static,
+    output: impl Write + Send + 'static,
+    fonts: Option<text::FontCollection>,
+    sound: bool,
 ) -> Result<(), String> {
     // The bindings compiled while the renderer waits for its first page
     // (M35.12): every realm it makes reads them; one asked for first
@@ -112,6 +138,10 @@ pub fn run_with(
         message => return Err(format!("{message:?} before the hello")),
     }
 
+    // The renderer's sound goes to the browser (M40, D37).
+    if sound {
+        crate::audio_output::set_audio_sink(Arc::new(BrowserSink(link.clone())));
+    }
     let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
         let _ = waking.send(Input::Wake);
     });

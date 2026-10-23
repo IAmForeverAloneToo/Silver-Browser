@@ -149,6 +149,15 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
 ] }
+# The browser's audio output (M40, D37, docs/design/audio-video.md):
+# WASAPI's COM interfaces, through the version of the crate wgpu already
+# brings, with the features those calls need alone.
+windows = { version = "0.62", features = [
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSAccessibility", "NSWorkspace"] }
 
 # The JavaScript engine (M24, roadmap D1, docs/design/scripting.md):
