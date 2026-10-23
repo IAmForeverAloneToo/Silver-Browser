@@ -2487,6 +2487,17 @@ impl Engine {
         }
         let m = self.modifiers;
         let plain = !m.ctrl && !m.alt && !m.meta;
+        // A media key (M40 step 8): the session's action, or its default.
+        if key.key.starts_with("Media") {
+            let shown = &mut self.shown;
+            if shown
+                .scripts
+                .media_key(&key.key, &shown.document, &shown.page, &mut self.network)
+            {
+                self.changed = true;
+                return KeyOutcome::Taken;
+            }
+        }
         // A focused media element's controls (M40): the space plays or
         // pauses, the arrows skip five seconds.
         if plain

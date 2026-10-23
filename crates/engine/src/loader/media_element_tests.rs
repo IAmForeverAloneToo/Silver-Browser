@@ -298,6 +298,30 @@ impl Drop for Sink {
 
 /// The left channel's zero crossings and peak, and the right's peak, of
 /// interleaved stereo `samples`.
+/// A fifth of a second of `samples`' sound with no gap in it (a busy
+/// machine's mixer may run dry a moment): where its left channel never
+/// stays at silence a millisecond.
+fn unbroken(samples: &[f32], loud: f32) -> &[f32] {
+    let frames = samples.len() / 2;
+    let window = 9600;
+    let mut at = (0..frames)
+        .find(|&i| samples[i * 2].abs() > loud)
+        .expect("sound");
+    while at + window <= frames {
+        let left: Vec<f32> = samples[at * 2..(at + window) * 2]
+            .iter()
+            .step_by(2)
+            .copied()
+            .collect();
+        let gap = left.windows(48).position(|w| w.iter().all(|s| *s == 0.0));
+        match gap {
+            None => return &samples[at * 2..(at + window) * 2],
+            Some(g) => at += g + 48,
+        }
+    }
+    panic!("no fifth of a second without a gap");
+}
+
 fn heard(samples: &[f32]) -> (usize, f32, f32) {
     let left: Vec<f32> = samples.iter().step_by(2).copied().collect();
     let right = samples
@@ -355,8 +379,7 @@ addEventListener('keydown', async () => {
     assert_eq!(lines, ["played"]);
     // The clip: 440 Hz on the left at about half scale, the right silent.
     let first = capture.samples.lock().unwrap().clone();
-    let start = first.iter().position(|s| s.abs() > 0.1).expect("sound") & !1;
-    let (crossings, left, right) = heard(&first[start..start + 9600 * 2]);
+    let (crossings, left, right) = heard(unbroken(&first, 0.1));
     assert!((173..=179).contains(&crossings), "{crossings}");
     assert!((0.50..=0.53).contains(&left), "{left}");
     assert!(right < 1e-3, "{right}");
@@ -375,8 +398,7 @@ addEventListener('keydown', async () => {
     );
     // Through the graph, at half the gain.
     let second = capture.samples.lock().unwrap().clone();
-    let start = second.iter().position(|s| s.abs() > 0.05).expect("sound") & !1;
-    let (crossings, left, _) = heard(&second[start..start + 9600 * 2]);
+    let (crossings, left, _) = heard(unbroken(&second, 0.05));
     assert!((173..=179).contains(&crossings), "{crossings}");
     assert!((0.25..=0.27).contains(&left), "{left}");
 }
@@ -784,4 +806,111 @@ fn a_videos_box_takes_its_pictures_size_on_a_page_with_no_script() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert_eq!(size, Some((160.0, 120.0)));
+}
+
+#[test]
+fn the_media_session_and_drm_answer_as_the_reference_does() {
+    let page = server(
+        r#"
+log('ready');
+(async () => {
+  const ms = navigator.mediaSession;
+  log('mediaSession ' + Object.prototype.toString.call(ms) + ' state ' + ms.playbackState + ' metadata ' + ms.metadata + ' same ' + (ms === navigator.mediaSession));
+  const md = new MediaMetadata({title: 'T', artist: 'A', album: 'B', artwork: [{src: 'a.png', sizes: '96x96', type: 'image/png'}]});
+  ms.metadata = md;
+  log('metadata ' + md.title + '/' + md.artist + '/' + md.album + ' art ' + JSON.stringify(md.artwork).replace(location.origin, '') + ' chapters ' + (md.chapterInfo ? md.chapterInfo.length : 'none'));
+  for (const a of ['play', 'seekto', 'enterpictureinpicture', 'voiceactivity', 'bogus'])
+    try { ms.setActionHandler(a, () => {}); log('action ' + a + ' ok'); } catch (e) { log('action ' + a + ': ' + e.name + ': ' + e.message); }
+  ms.playbackState = 'bogus'; log('state bogus -> ' + ms.playbackState);
+  for (const s of [{duration: 10, position: 11}, {duration: -1}, {playbackRate: 0, duration: 1}, {}])
+    try { ms.setPositionState(s); log('position ' + JSON.stringify(s) + ' ok'); } catch (e) { log('position ' + JSON.stringify(s) + ': ' + e.name + ': ' + e.message); }
+  for (const ks of ['org.w3.clearkey', 'com.widevine.alpha', 'com.example.none'])
+    await navigator.requestMediaKeySystemAccess(ks, [{initDataTypes: ['webm'], videoCapabilities: [{contentType: 'video/webm; codecs="vp9"'}]}])
+      .then(a => log(ks + ' granted ' + a.keySystem), e => log(ks + ': ' + e.name + ': ' + e.message));
+  log('getAutoplayPolicy ' + typeof navigator.getAutoplayPolicy + ' MediaKeys ' + typeof window.MediaKeys);
+  const v = document.createElement('video');
+  log('mediaKeys ' + v.mediaKeys);
+  await v.setMediaKeys(null).then(() => log('setMediaKeys(null) resolved'), e => log('setMediaKeys: ' + e.name));
+  log('done');
+})().catch(e => log('failed ' + e));
+"#,
+    );
+    let lines = run(&page, false);
+    let unsupported = "NotSupportedError: Unsupported keySystem or supportedConfigurations.";
+    assert_eq!(
+        lines,
+        [
+            "mediaSession [object MediaSession] state none metadata null same true".to_owned(),
+            "metadata T/A/B art [{\"sizes\":\"96x96\",\"src\":\"/a.png\",\"type\":\"image/png\"}] chapters 0".to_owned(),
+            "action play ok".to_owned(),
+            "action seekto ok".to_owned(),
+            "action enterpictureinpicture ok".to_owned(),
+            "action voiceactivity: TypeError: Failed to execute 'setActionHandler' on 'MediaSession': The provided value 'voiceactivity' is not a valid enum value of type MediaSessionAction.".to_owned(),
+            "action bogus: TypeError: Failed to execute 'setActionHandler' on 'MediaSession': The provided value 'bogus' is not a valid enum value of type MediaSessionAction.".to_owned(),
+            "state bogus -> none".to_owned(),
+            "position {\"duration\":10,\"position\":11}: TypeError: Failed to execute 'setPositionState' on 'MediaSession': The provided position cannot be greater than the duration.".to_owned(),
+            "position {\"duration\":-1}: TypeError: Failed to execute 'setPositionState' on 'MediaSession': The provided duration cannot be less than zero.".to_owned(),
+            "position {\"playbackRate\":0,\"duration\":1}: TypeError: Failed to execute 'setPositionState' on 'MediaSession': The provided playbackRate cannot be equal to zero.".to_owned(),
+            "position {} ok".to_owned(),
+            format!("org.w3.clearkey: {unsupported}"),
+            format!("com.widevine.alpha: {unsupported}"),
+            format!("com.example.none: {unsupported}"),
+            "getAutoplayPolicy undefined MediaKeys undefined".to_owned(),
+            "mediaKeys null".to_owned(),
+            "setMediaKeys(null) resolved".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn a_media_key_calls_the_sessions_handler_or_plays_and_pauses() {
+    let _turn = audio_turn();
+    let page = server(
+        r#"
+const v = document.createElement('video');
+v.src = '/media/clip.webm';
+document.body.appendChild(v);
+for (const e of ['play', 'pause']) v.addEventListener(e, () => log(e));
+v.addEventListener('canplaythrough', () => log('loaded'), { once: true });
+log('ready');
+addEventListener('keydown', async (e) => {
+  if (e.key !== 'x') return;
+  await v.play();
+  log('played');
+});
+"#,
+    );
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(page.url("/page.html"));
+    tab.run_until(|lines| lines.iter().any(|l| l == "loaded"));
+    let press = |tab: &mut Tab, key: &str| {
+        tab.engine.key_down(&crate::Key::new(key, ""));
+    };
+    // The page plays it (after a key, its activation); the play and
+    // pause key then pauses it, and again plays it.
+    tab.engine
+        .key_down(&crate::Key::new("x", "KeyX").with_text("x"));
+    let lines = tab.run_until(|lines| lines.iter().any(|l| l == "played"));
+    assert_eq!(lines, ["play", "played"]);
+    press(&mut tab, "MediaPlayPause");
+    assert_eq!(tab.run_until(|l| !l.is_empty()), ["pause"]);
+    press(&mut tab, "MediaPlayPause");
+    assert_eq!(tab.run_until(|l| !l.is_empty()), ["play"]);
+    // A handler for "pause" takes the key instead.
+    let page2 = server(
+        r#"
+const v = document.createElement('video');
+v.src = '/media/clip.webm';
+document.body.appendChild(v);
+v.addEventListener('pause', () => log('element paused'));
+navigator.mediaSession.playbackState = 'playing';
+navigator.mediaSession.setActionHandler('pause', (details) => log('handler ' + details.action));
+log('ready');
+"#,
+    );
+    tab.engine.navigate(page2.url("/page.html"));
+    tab.run_until(|lines| lines.iter().any(|l| l == "ready"));
+    press(&mut tab, "MediaPlayPause");
+    assert_eq!(tab.run_until(|l| !l.is_empty()), ["handler pause"]);
 }

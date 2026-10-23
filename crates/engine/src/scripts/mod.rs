@@ -1412,6 +1412,30 @@ impl Scripts {
         self.posted = kept;
     }
 
+    /// A media key pressed on the document (M40 step 8): whether it did
+    /// something.
+    pub(crate) fn media_key(
+        &mut self,
+        key: &str,
+        document: &Document,
+        page: &Page,
+        network: &mut Network,
+    ) -> bool {
+        let inbox = self.host.workers.inbox();
+        let env = crate::playback::Env {
+            document,
+            page: Some(page),
+            inbox: Some(inbox.clone()),
+            activated: true,
+        };
+        let done = self.host.media.media_key(key, &env);
+        let id = page.id();
+        self.host
+            .media
+            .start_pending(|request| network.media(id, request), Some(&inbox));
+        done
+    }
+
     /// What the document's media elements show (M40).
     pub(crate) fn media_states(&self) -> Vec<(NodeId, layout::MediaState)> {
         self.host.media.states()

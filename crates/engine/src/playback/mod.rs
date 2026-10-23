@@ -326,6 +326,11 @@ fn normalized(mut ranges: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
 #[derive(Default)]
 pub(crate) struct Players {
     players: HashMap<NodeId, Player>,
+    /// The document's media session (M40 step 8): its playback state
+    /// and the actions it has handlers for.
+    session: (String, Vec<String>),
+    /// The element that played last, which a media key acts on.
+    last_played: Option<NodeId>,
     /// Whether what an element shows may have changed since the last
     /// frame.
     changed: bool,
@@ -473,6 +478,7 @@ impl Players {
                 if player.paused {
                     // No promise waits on the user's own play.
                     let _ = play(player, 0, env, &mut queued);
+                    self.last_played = Some(node);
                 } else {
                     pause(player, env, &mut queued);
                 }
@@ -496,6 +502,65 @@ impl Players {
             }
         }
         queue(env, queued);
+    }
+
+    /// A media key pressed (M40 step 8, Media Session): the session's
+    /// handler for its action, if the page set one; else its default
+    /// action on the element that played last (play and pause, stop
+    /// pausing it). The press is the user's activation.
+    pub(crate) fn media_key(&mut self, key: &str, env: &Env<'_>) -> bool {
+        let state = self.session.0.as_str();
+        let target = self
+            .last_played
+            .filter(|node| self.players.contains_key(node))
+            .or_else(|| {
+                self.players
+                    .values()
+                    .find(|p| p.pipeline.is_some() && !p.paused)
+                    .map(|p| p.node)
+            });
+        let paused = target
+            .and_then(|node| self.players.get(&node))
+            .is_none_or(|p| p.paused);
+        let action = match key {
+            "MediaPlayPause" => match state {
+                "playing" => "pause",
+                "paused" => "play",
+                _ if paused => "play",
+                _ => "pause",
+            },
+            "MediaPlay" => "play",
+            "MediaPause" => "pause",
+            "MediaStop" => "stop",
+            "MediaTrackNext" => "nexttrack",
+            "MediaTrackPrevious" => "previoustrack",
+            _ => return false,
+        };
+        if self.session.1.iter().any(|a| a == action) {
+            if let Some(inbox) = &env.inbox {
+                let message = Json::object([("session", Json::from(action))]);
+                let _ = inbox.send(WorkerMessage::Media(message.write()));
+            }
+            return true;
+        }
+        let Some(node) = target else {
+            return false;
+        };
+        let mut queued = Vec::new();
+        let Some(player) = self.players.get_mut(&node) else {
+            return false;
+        };
+        match action {
+            "play" if player.paused => {
+                let _ = play(player, 0, env, &mut queued);
+            }
+            "pause" | "stop" if !player.paused => pause(player, env, &mut queued),
+            "play" | "pause" | "stop" => {}
+            _ => return false,
+        }
+        self.changed = true;
+        queue(env, queued);
+        true
     }
 
     /// Whether a frame is wanted for what the elements show: one plays,
@@ -532,6 +597,21 @@ impl Players {
         node: Option<NodeId>,
     ) -> Result<Json, (&'static str, String)> {
         let what = op.get("op").and_then(Json::as_str).unwrap_or("");
+        if what == "session" {
+            let state = op.get("state").and_then(Json::as_str).unwrap_or("none");
+            let actions = op
+                .get("actions")
+                .and_then(Json::as_array)
+                .map(|list| {
+                    list.iter()
+                        .filter_map(Json::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            self.session = (state.to_owned(), actions);
+            return Ok(Json::Null);
+        }
         if what == "canPlayType" {
             let kind = op.get("type").and_then(Json::as_str).unwrap_or("");
             return Ok(Json::from(media::can_play_type(kind).as_str()));
@@ -553,6 +633,7 @@ impl Players {
             "play" => {
                 let promise = op.get("promise").and_then(Json::as_f64).unwrap_or(0.0) as u64;
                 play(player, promise, env, &mut queued)?;
+                self.last_played = Some(node);
                 Json::Null
             }
             "pause" => {

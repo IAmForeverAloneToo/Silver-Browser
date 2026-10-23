@@ -22,6 +22,10 @@ yanked = "deny"
 ignore = [
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained; the font parser behind text, pending roadmap decision D7" },
     { id = "RUSTSEC-2026-0206", reason = "rustybuzz is unmaintained; the shaper behind text, pending roadmap decision D7" },
+    # clipboard-win 5.4.1 (arboard's, the shell's clipboard) was yanked on
+    # 2026-10-23; a later release would be a download the maintainer
+    # approves. Until then the one version is acknowledged.
+    { crate = "clipboard-win@5.4.1", reason = "yanked upstream; its replacement awaits the maintainer's approval to download" },
     # rav1d (M40, D36) builds its decoder with paste's macros: code that
     # runs in the compiler, none of it in the browser.
     { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained; a compile-time macro crate of rav1d's, nothing of it runs (M40, D36)" },

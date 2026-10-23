@@ -21627,6 +21627,10 @@
   // hear (its actions then carried out in this task).
   function* mediaTask(text) {
     const told = JSONParse(text);
+    // A media key's action (M40): the session's handler.
+    if (told.session !== undefined) {
+      return yield* sessionAction(told.session);
+    }
     let actions = told.actions;
     if (told.report !== undefined) {
       actions = mediaCall({ op: "report", node: told.node, generation: told.generation, report: told.report }, "");
@@ -21652,6 +21656,214 @@
     }
     return false;
   }
+
+  // ---- Media Session (M40) --------------------------------------------------
+  // The document's session: its metadata, its playback state and its
+  // action handlers, which the media keys call (the engine is told which
+  // there are), as the reference's.
+
+  const SESSION_ACTIONS = [
+    "play", "pause", "seekbackward", "seekforward", "previoustrack", "nexttrack", "skipad", "stop",
+    "seekto", "togglemicrophone", "togglecamera", "hangup", "previousslide", "nextslide",
+    "enterpictureinpicture",
+  ];
+  const SESSION_STATES = ["none", "paused", "playing"];
+
+  let sessionHandlers = null;
+
+  function listed(list, value) {
+    for (let i = 0; i < list.length; i++) {
+      if (list[i] === value) return true;
+    }
+    return false;
+  }
+
+  function sessionTell(state) {
+    const actions = [];
+    if (sessionHandlers !== null) {
+      MapForEach(sessionHandlers, (_, action) => ArrayPush(actions, action));
+    }
+    mediaCall({ op: "session", state, actions }, "");
+  }
+
+  class MediaMetadata {
+    #title = ""; #artist = ""; #album = ""; #artwork = [];
+
+    constructor(init) {
+      const given = init === undefined || init === null ? {} : init;
+      if (given.title !== undefined) this.#title = str(given.title);
+      if (given.artist !== undefined) this.#artist = str(given.artist);
+      if (given.album !== undefined) this.#album = str(given.album);
+      if (given.artwork !== undefined) this.artwork = given.artwork;
+    }
+
+    get title() { return this.#title; }
+    set title(v) { this.#title = str(v); }
+    get artist() { return this.#artist; }
+    set artist(v) { this.#artist = str(v); }
+    get album() { return this.#album; }
+    set album(v) { this.#album = str(v); }
+    get artwork() { return this.#artwork; }
+    set artwork(list) {
+      const out = [];
+      const n = list === null || list === undefined ? 0 : list.length >>> 0;
+      for (let i = 0; i < n; i++) {
+        const image = list[i];
+        if (image === null || typeof image !== "object" || image.src === undefined) {
+          throw new $TypeError("Failed to set the 'artwork' property on 'MediaMetadata': Failed to read the 'src' property from 'MediaImage': Required member is undefined.");
+        }
+        const src = native.resolveUrl(str(image.src));
+        if (src === null) {
+          throw new $TypeError("Failed to set the 'artwork' property on 'MediaMetadata': '" + str(image.src) + "' can't be resolved to a valid URL.");
+        }
+        ArrayPush(out, ObjectFreeze({
+          sizes: image.sizes === undefined ? "" : str(image.sizes),
+          src,
+          type: image.type === undefined ? "" : str(image.type),
+        }));
+      }
+      this.#artwork = ObjectFreeze(out);
+    }
+    get chapterInfo() { return ObjectFreeze([]); }
+  }
+  expose(MediaMetadata, "MediaMetadata");
+
+  class MediaSession {
+    #metadata = null;
+    #state = "none";
+
+    constructor(key) {
+      if (key !== KEY) throw illegalConstructor("MediaSession");
+      sessionHandlers = new $Map();
+    }
+
+    get metadata() { return this.#metadata; }
+    set metadata(v) {
+      if (v !== null && !(v instanceof MediaMetadata)) {
+        throw new $TypeError("Failed to set the 'metadata' property on 'MediaSession': Failed to convert value to 'MediaMetadata'.");
+      }
+      this.#metadata = v;
+    }
+
+    get playbackState() { return this.#state; }
+    set playbackState(v) {
+      const state = str(v);
+      if (!listed(SESSION_STATES, state)) return;
+      this.#state = state;
+      sessionTell(state);
+    }
+
+    setActionHandler(action, handler) {
+      need(arguments.length, 2, "setActionHandler", "MediaSession");
+      const name = str(action);
+      if (!listed(SESSION_ACTIONS, name)) {
+        throw new $TypeError(prefix("setActionHandler", "MediaSession") + "The provided value '" + name + "' is not a valid enum value of type MediaSessionAction.");
+      }
+      if (handler === null) {
+        MapDelete(sessionHandlers, name);
+      } else if (typeof handler === "function") {
+        MapSet(sessionHandlers, name, handler);
+      } else {
+        throw new $TypeError(prefix("setActionHandler", "MediaSession") + "The callback provided as parameter 2 is not a function.");
+      }
+      sessionTell(this.#state);
+    }
+
+    setPositionState(state) {
+      const words = prefix("setPositionState", "MediaSession");
+      if (state === undefined || state === null) return;
+      if (typeof state !== "object") {
+        throw new $TypeError(words + "The provided value is not of type 'MediaPositionState'.");
+      }
+      if (state.duration === undefined && state.position === undefined && state.playbackRate === undefined) {
+        return;
+      }
+      const duration = state.duration === undefined ? undefined : +state.duration;
+      if (duration === undefined) {
+        throw new $TypeError(words + "The duration must be provided and must be greater than or equal to zero.");
+      }
+      if (duration < 0) {
+        throw new $TypeError(words + "The provided duration cannot be less than zero.");
+      }
+      if (state.position !== undefined && +state.position > duration) {
+        throw new $TypeError(words + "The provided position cannot be greater than the duration.");
+      }
+      if (state.position !== undefined && +state.position < 0) {
+        throw new $TypeError(words + "The provided position cannot be less than zero.");
+      }
+      if (state.playbackRate !== undefined && +state.playbackRate === 0) {
+        throw new $TypeError(words + "The provided playbackRate cannot be equal to zero.");
+      }
+    }
+  }
+  expose(MediaSession, "MediaSession");
+
+  if (!WORKER) {
+    let session = null;
+    defineProperty(Navigator.prototype, "mediaSession", {
+      get() {
+        if (session === null) session = new MediaSession(KEY);
+        return session;
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  }
+
+  // An action of the session, from a media key: its handler called.
+  function* sessionAction(action) {
+    const handler = sessionHandlers === null ? undefined : MapGet(sessionHandlers, action);
+    if (handler !== undefined) {
+      ReflectApply(handler, undefined, [{ action }]);
+    }
+    return false;
+  }
+
+  // ---- Never DRM (M40) ------------------------------------------------------
+  // Encrypted Media Extensions are never here: every key system is
+  // refused as a browser without a content decryption module refuses
+  // it, so that a page falls back; MediaKeys and its kin are absent.
+
+  if (!WORKER) {
+    defineProperty(Navigator.prototype, "requestMediaKeySystemAccess", {
+      value: function requestMediaKeySystemAccess(keySystem, supportedConfigurations) {
+        const words = prefix("requestMediaKeySystemAccess", "Navigator");
+        if (arguments.length < 2) {
+          return rejected(new $TypeError(words + "2 arguments required, but only " + arguments.length + " present."));
+        }
+        if (str(keySystem) === "") {
+          return rejected(new $TypeError(words + "The keySystem parameter is empty."));
+        }
+        if (supportedConfigurations === null || supportedConfigurations === undefined || (supportedConfigurations.length >>> 0) === 0) {
+          return rejected(new $TypeError(words + "The supportedConfigurations parameter is empty."));
+        }
+        return rejected(new $DOMException("Unsupported keySystem or supportedConfigurations.", "NotSupportedError"));
+      },
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+
+  include(
+    {
+      get mediaKeys() {
+        self(this);
+        return null;
+      },
+      setMediaKeys(mediaKeys) {
+        try {
+          self(this);
+          need(arguments.length, 1, "setMediaKeys", "HTMLMediaElement");
+        } catch (e) {
+          return rejected(e);
+        }
+        if (mediaKeys === null) return resolved(undefined);
+        return rejected(new $TypeError(prefix("setMediaKeys", "HTMLMediaElement") + "parameter 1 is not of type 'MediaKeys'."));
+      },
+    },
+    [HTMLMediaElement.prototype],
+  );
 
   // The entry points the realm calls (M26): a timer's task; an event
   // the engine makes, dispatched at the node `handle` names or, for
