@@ -453,6 +453,16 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                     .get::<_, Function<'_>>("devtools")?
                     .call::<_, Value<'_>>((message.as_str(),))
             }),
+            Task::Audio(message, bytes) => self.stepped(&entries, |ctx, entries| {
+                let samples = if bytes.is_empty() {
+                    Value::new_null(ctx.clone())
+                } else {
+                    rquickjs::ArrayBuffer::new(ctx.clone(), bytes.clone())?.into_value()
+                };
+                entries
+                    .get::<_, Function<'_>>("audio")?
+                    .call::<_, Value<'_>>((message.as_str(), samples))
+            }),
             Task::ServiceWorker(message) => self.stepped(&entries, |_, entries| {
                 entries
                     .get::<_, Function<'_>>("serviceWorker")?

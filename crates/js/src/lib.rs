@@ -373,6 +373,10 @@ pub enum Task {
     /// job's promise settled, a registration's or a version's change,
     /// or an event for a service worker's global.
     ServiceWorker(String),
+    /// What a document's Web Audio tells its realm (M40), as JSON, and
+    /// the samples it carries: a source ended, a context's state, a
+    /// buffer decoded or rendered.
+    Audio(String, Vec<u8>),
 }
 
 /// Where a message is delivered (M31).

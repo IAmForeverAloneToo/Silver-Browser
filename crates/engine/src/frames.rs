@@ -119,6 +119,8 @@ pub(crate) struct FrameTree {
     /// documents asked the browser to open; and whether the top-level
     /// document asked to close the tab.
     activation: Option<Duration>,
+    /// Whether there was ever one (M40).
+    activated: bool,
     opened: Vec<OpenTab>,
     close_asked: bool,
 }
@@ -171,6 +173,7 @@ impl FrameTree {
             remote: HashSet::new(),
             forward: None,
             activation: None,
+            activated: false,
             opened: Vec::new(),
             close_asked: false,
         }))
@@ -179,6 +182,14 @@ impl FrameTree {
     /// The user activated one of the tab's documents at `now` (M37).
     pub(crate) fn activate(&mut self, now: Duration) {
         self.activation = Some(now);
+        self.activated = true;
+    }
+
+    /// Whether the user has ever activated a document of the tab (HTML's
+    /// sticky activation, kept for the tab, M40): what lets a page start
+    /// its sound.
+    pub(crate) fn has_been_activated(&self) -> bool {
+        self.activated
     }
 
     /// Whether the user activated a document of the tab within

@@ -1270,6 +1270,11 @@ impl Scripts {
                     self.posted.push_back((now, js::Task::ServiceWorker(text)));
                     continue;
                 }
+                // What the document's Web Audio told it (M40).
+                workers::WorkerMessage::Audio(text, bytes) => {
+                    self.posted.push_back((now, js::Task::Audio(text, bytes)));
+                    continue;
+                }
                 _ => continue,
             };
             match self.host.workers.workers.receive(id, event) {
@@ -1277,6 +1282,14 @@ impl Scripts {
                 workers::Received::Console(entry) => self.push(entry),
                 workers::Received::Nothing => {}
             }
+        }
+    }
+
+    /// The user activated the document (M40): its audio contexts waiting
+    /// for it start.
+    pub(crate) fn audio_activated(&mut self) {
+        if self.host.audio.waiting() {
+            self.host.audio.activated();
         }
     }
 

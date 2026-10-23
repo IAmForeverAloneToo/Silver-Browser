@@ -83,6 +83,8 @@ mod tests;
 #[cfg(test)]
 mod validity_tests;
 #[cfg(test)]
+mod web_audio_tests;
+#[cfg(test)]
 mod worker_tests;
 #[cfg(test)]
 mod xhr_tests;

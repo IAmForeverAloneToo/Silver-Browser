@@ -237,6 +237,8 @@ pub(crate) struct DocumentHost {
     pub(crate) canvases: Canvases,
     /// The document's workers and its inbox (M31).
     pub(crate) workers: DocumentWorkers,
+    /// The document's Web Audio (M40).
+    pub(crate) audio: crate::webaudio::WebAudio,
     /// Whether the document is the DevTools panel's page (M36), and what
     /// it sent the browser since the engine last took it.
     pub(crate) panel: bool,
@@ -1351,6 +1353,19 @@ impl DocumentHost {
                     caches.to_string(),
                 ])
             }),
+            Call::Audio(request, bytes) => {
+                let activated = self
+                    .window
+                    .frames
+                    .as_ref()
+                    .is_some_and(|env| crate::frames::lock(&env.tree).has_been_activated());
+                let env = crate::webaudio::Env {
+                    inbox: self.workers.inbox(),
+                    activated,
+                };
+                let (json, bytes) = self.audio.call(&request, bytes, &env);
+                Ok(Answer::Pair(json, bytes))
+            }
             Call::IdbWake => {
                 let now = self.now();
                 self.outputs.messages.push((now, js::Task::Idb));

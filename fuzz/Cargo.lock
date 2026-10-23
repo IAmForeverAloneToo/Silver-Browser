@@ -279,6 +279,7 @@ version = "0.0.1"
 name = "engine"
 version = "0.0.1"
 dependencies = [
+ "audio",
  "canvas",
  "css",
  "devtools",
@@ -288,6 +289,7 @@ dependencies = [
  "images",
  "js",
  "layout",
+ "media",
  "net",
  "paint",
  "profile",

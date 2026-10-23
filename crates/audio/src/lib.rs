@@ -23,7 +23,7 @@ pub use graph::{Graph, Node, NodeId, Quantum};
 pub use mix::{Bus, Interpretation, Mode, computed_channels, mix_into, silence};
 pub use nodes::Kind;
 pub use param::{Event, Overlap, Param, Rate};
-pub use wave::PeriodicWave;
+pub use wave::{PeriodicWave, Shape};
 
 /// The frames a graph renders at a time: the render quantum.
 pub const QUANTUM: usize = 128;

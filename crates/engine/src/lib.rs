@@ -137,6 +137,7 @@ mod svg_images;
 #[cfg(test)]
 mod testing;
 mod view;
+mod webaudio;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -2098,9 +2099,11 @@ impl Engine {
             return;
         }
         self.keyboard = false;
-        // The user's activation, which lets a script open a tab (M37).
+        // The user's activation, which lets a script open a tab (M37)
+        // and start its sound (M40).
         let now = self.now();
         frames::lock(&self.frame.tree).activate(now);
+        self.shown.scripts.audio_activated();
         // An open list takes the press (M26.8).
         if self.popup_press(x, y) {
             self.buttons |= button.bit();
@@ -2419,6 +2422,7 @@ impl Engine {
         self.keyboard = true;
         let now = self.now();
         frames::lock(&self.frame.tree).activate(now);
+        self.shown.scripts.audio_activated();
         if self.shown.popup.is_some() {
             return self.popup_key(key);
         }

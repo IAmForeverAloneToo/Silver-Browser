@@ -74,6 +74,10 @@ pub(crate) enum WorkerMessage {
         String,
         crate::service_worker::Done<crate::service_worker::Responded>,
     ),
+    /// What the document's Web Audio tells it (M40): a task of
+    /// `js::Task::Audio`, its samples uncounted (a rendered or decoded
+    /// buffer, bounded by `MAX_AUDIO_BUFFER_BYTES`, is never dropped).
+    Audio(String, Vec<u8>),
 }
 
 impl WorkerMessage {
@@ -921,8 +925,8 @@ impl WorkerHost {
         let host = self;
         let task = match message {
             WorkerMessage::Stop => return,
-            // Frames are the document's alone.
-            WorkerMessage::Frame(_) => return,
+            // Frames and Web Audio are the document's alone.
+            WorkerMessage::Frame(_) | WorkerMessage::Audio(..) => return,
             WorkerMessage::Wake => {
                 for task in host.take_fetched() {
                     if host.closing || stop.load(Ordering::SeqCst) {
