@@ -380,7 +380,7 @@ fn what_a_renderer_may_not_ask_for_kills_it() {
     });
     assert_eq!(
         killed_for(&wired),
-        "a stream that is not a navigation's, or the reverse"
+        "a stream that is not a navigation's or a media element's, or the reverse"
     );
     send(ToBrowser::Fetch {
         id: 9,
@@ -390,7 +390,7 @@ fn what_a_renderer_may_not_ask_for_kills_it() {
     });
     assert_eq!(
         killed_for(&wired),
-        "a stream that is not a navigation's, or the reverse"
+        "a stream that is not a navigation's or a media element's, or the reverse"
     );
 
     send(ToBrowser::Cookies {
@@ -553,5 +553,83 @@ fn a_framed_documents_cookies_are_cross_site_whatever_the_renderer_says() {
         !seen.as_deref().unwrap_or_default().starts_with(b"lax"),
         "{seen:?}"
     );
+    assert!(wired.bad.try_recv().is_err());
+}
+
+/// `data` as a server that answers ranges answers `request`: a 206 from
+/// the first byte its `Range` asks, or a 200 without one.
+fn ranged(request: &net::test_server::ServerRequest, kind: &str, data: &[u8]) -> Reply {
+    let first = request
+        .header("Range")
+        .and_then(|range| range.strip_prefix("bytes="))
+        .and_then(|range| range.split('-').next()?.parse::<usize>().ok());
+    match first {
+        Some(first) if first < data.len() => Reply::with_fields(
+            206,
+            &[
+                ("Content-Type", kind),
+                (
+                    "Content-Range",
+                    &format!("bytes {first}-{}/{}", data.len() - 1, data.len()),
+                ),
+            ],
+            &data[first..],
+        ),
+        _ => Reply::ok(kind, data),
+    }
+}
+
+#[test]
+fn a_media_request_of_another_site_is_sniffed_first_and_its_ranges_follow() {
+    let clip = include_bytes!("../../../media/fixtures/clip.webm");
+    let server = TestServer::plain(move |request| match request.target.as_str() {
+        "/clip.webm" => ranged(request, "video/webm", clip),
+        "/page.html" => ranged(
+            request,
+            "video/webm",
+            b"<!doctype html><p>a secret page, long enough",
+        ),
+        _ => Reply::with_fields(404, &[], b""),
+    });
+    let other = Url::parse("http://other.test/").expect("a URL");
+    let wired = wired(
+        Lock::of(&other),
+        FrameGrant {
+            top: other.origin(),
+            cross_site: false,
+        },
+    );
+    let fetcher = RemoteFetcher::new(wired.link.clone(), 7);
+    let stream = |path: &str, destination, range: Option<&str>| {
+        let mut request = Request::get(server.url(path), destination);
+        request.origin = Some(other.origin());
+        if let Some(range) = range {
+            request.headers.append(b"Range", range.as_bytes());
+        }
+        let mut status = 0;
+        let mut body = Vec::new();
+        fetcher
+            .fetch_streaming(&request, &mut |delivery| match delivery {
+                Delivery::Head(head) => status = head.status,
+                Delivery::Body(bytes) => body.extend_from_slice(bytes),
+            })
+            .expect("fetched");
+        (status, body)
+    };
+    // A later range of a URL no initial request admitted: blocked.
+    let (_, body) = stream("/clip.webm", Destination::Video, Some("bytes=100-"));
+    assert!(body.is_empty(), "a range before its initial request");
+    // The initial request: sniffed as video, and admitted.
+    let (status, body) = stream("/clip.webm", Destination::Video, Some("bytes=0-"));
+    assert_eq!((status, body.len()), (206, clip.len()));
+    // Its later ranges then follow.
+    let (status, body) = stream("/clip.webm", Destination::Video, Some("bytes=100-"));
+    assert_eq!((status, &body[..]), (206, &clip[100..]));
+    // A page asked for as video: blocked, whatever its type says.
+    let (_, body) = stream("/page.html", Destination::Video, Some("bytes=0-"));
+    assert!(body.is_empty(), "HTML as video");
+    // Nor does a range of it follow, never admitted.
+    let (_, body) = stream("/page.html", Destination::Video, Some("bytes=5-"));
+    assert!(body.is_empty());
     assert!(wired.bad.try_recv().is_err());
 }

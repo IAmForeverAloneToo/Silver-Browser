@@ -193,6 +193,8 @@ fn destination_name(destination: net::Destination) -> &'static str {
         ServiceWorker => "serviceworker",
         Empty => "fetch",
         Report => "report",
+        Audio => "audio",
+        Video => "video",
     }
 }
 

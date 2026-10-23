@@ -89,7 +89,7 @@ fn priority(destination: Destination) -> Option<&'static str> {
         Destination::Style => Some("u=0"),
         Destination::Script | Destination::Worker | Destination::ServiceWorker => Some("u=1"),
         Destination::Image => Some("u=5, i"),
-        Destination::Empty | Destination::Report => None,
+        Destination::Empty | Destination::Report | Destination::Audio | Destination::Video => None,
     }
 }
 
@@ -159,6 +159,10 @@ pub enum Destination {
     Empty,
     /// A violation's report (M33.1): a policy's `report-uri`'s POST.
     Report,
+    /// A media element's resource (M40): an `audio` element's, or a
+    /// `video` element's.
+    Audio,
+    Video,
 }
 
 impl Destination {
@@ -174,6 +178,8 @@ impl Destination {
             Destination::ServiceWorker => "serviceworker",
             Destination::Empty => "empty",
             Destination::Report => "report",
+            Destination::Audio => "audio",
+            Destination::Video => "video",
         }
     }
 
@@ -189,7 +195,9 @@ impl Destination {
             | Destination::Worker
             | Destination::ServiceWorker
             | Destination::Empty
-            | Destination::Report => b"*/*",
+            | Destination::Report
+            | Destination::Audio
+            | Destination::Video => b"*/*",
         }
     }
 }
@@ -363,7 +371,9 @@ impl Request {
                 Destination::Style
                 | Destination::Image
                 | Destination::Script
-                | Destination::Report => Mode::NoCors,
+                | Destination::Report
+                | Destination::Audio
+                | Destination::Video => Mode::NoCors,
             },
             credentials: match destination {
                 Destination::Empty
@@ -917,7 +927,7 @@ impl Client {
                         hop.cached.set(true);
                         let response =
                             self.cached_response(request, url, stored, initiator, ask)?;
-                        return Ok(self.handed(hop, response, url, deliver));
+                        return Ok(self.handed(request, hop, response, url, deliver));
                     }
                     Decision::NotCached => return Err(NetworkError::NotCached),
                     Decision::Validate { .. } | Decision::Network => {}
@@ -948,6 +958,8 @@ impl Client {
                 let take_cookies =
                     |headers: &HeaderList| self.take_cookies(request, url, hop, headers);
                 let mut stream = deliver.map(|deliver| Streaming {
+                    request,
+                    hop_tainting: (hop.tainting, hop.tainted_origin),
                     url,
                     url_list,
                     deliver,
@@ -985,7 +997,7 @@ impl Client {
                         let response =
                             self.cached_response(request, url, stored, initiator, ask)?;
                         let deliver = stream.map(|stream| stream.deliver);
-                        return Ok(self.handed(hop, response, url, deliver));
+                        return Ok(self.handed(request, hop, response, url, deliver));
                     }
                 }
                 // What the cache keeps of a streamed body: what was read
@@ -1038,13 +1050,20 @@ impl Client {
     /// as they go; a redirect, which the fetch follows, is not handed.
     fn handed(
         &self,
+        request: &Request,
         hop: &Hop,
-        response: Response,
+        mut response: Response,
         url: &Url,
         deliver: Option<&mut (dyn FnMut(Delivery<'_>) + '_)>,
     ) -> Response {
+        // Handed over only as its checks let it be, typed (M40).
+        let checked = streamed_head(request, hop, &response.headers, url);
         match deliver {
-            Some(deliver) if matches!(location(&response, url), Ok(None)) => {
+            Some(deliver) if matches!(location(&response, url), Ok(None)) && checked.is_ok() => {
+                if let Ok((response_type, exposed)) = checked {
+                    response.response_type = response_type;
+                    response.cors_exposed = exposed;
+                }
                 self.tell(
                     hop.fetch,
                     crate::observe::Observed::Response {
@@ -1277,7 +1296,12 @@ impl Client {
                 None => headers.append(b"Accept-Language", ACCEPT_LANGUAGE),
             }
         }
-        headers.append(b"Accept-Encoding", ACCEPT_ENCODING);
+        // A range is of the bytes as they are (Fetch 4.6): no coding.
+        if author.contains(b"Range") {
+            headers.append(b"Accept-Encoding", b"identity");
+        } else {
+            headers.append(b"Accept-Encoding", ACCEPT_ENCODING);
+        }
         for (name, value) in author.iter() {
             headers.append(name, value);
         }
@@ -1675,6 +1699,39 @@ fn resource_policy_check(
     }
 }
 
+/// What a response's head is as its hop's checks find it before it is
+/// handed over (M40: a media element's stream, not a navigation's
+/// alone): its type and the names CORS exposes; Err when the checks the
+/// whole response meets refuse it.
+fn checked_head(
+    request: &Request,
+    tainting: ResponseType,
+    tainted_origin: bool,
+    headers: &HeaderList,
+    url: &Url,
+) -> Result<(ResponseType, Vec<Vec<u8>>), NetworkError> {
+    match tainting {
+        ResponseType::Cors => {
+            cors_check(request, headers, tainted_origin)?;
+            Ok((ResponseType::Cors, cors_exposed(request, headers)))
+        }
+        ResponseType::Opaque => {
+            resource_policy_check(request, headers, url)?;
+            Ok((ResponseType::Opaque, Vec::new()))
+        }
+        other => Ok((other, Vec::new())),
+    }
+}
+
+fn streamed_head(
+    request: &Request,
+    hop: &Hop,
+    headers: &HeaderList,
+    url: &Url,
+) -> Result<(ResponseType, Vec<Vec<u8>>), NetworkError> {
+    checked_head(request, hop.tainting, hop.tainted_origin, headers, url)
+}
+
 /// A response read whole, handed to `deliver` if there is one as a
 /// streamed one would be: its head, then its body.
 fn whole(
@@ -1704,6 +1761,11 @@ pub enum Delivery<'a> {
 /// A hop's response streamed to a fetch's `deliver`, unless it is a
 /// redirect, which is followed instead.
 struct Streaming<'a, 'd> {
+    /// The request, and its hop's tainting and whether its origin is
+    /// tainted: a head is checked as the whole response would be before
+    /// it is handed over (M40).
+    request: &'a Request,
+    hop_tainting: (ResponseType, bool),
     url: &'a Url,
     url_list: &'a [Url],
     deliver: &'a mut (dyn FnMut(Delivery<'_>) + 'd),
@@ -1750,7 +1812,7 @@ impl transport::ResponseStream for Streaming<'_, '_> {
                 protocol: self.protocol,
             },
         );
-        let response = Response {
+        let mut response = Response {
             url_list: self.url_list.to_vec(),
             status,
             status_message: reason.to_vec(),
@@ -1764,6 +1826,15 @@ impl transport::ResponseStream for Streaming<'_, '_> {
         // A redirect, or a broken one, is the fetch's to follow or fail.
         if !matches!(location(&response, self.url), Ok(None)) {
             return false;
+        }
+        // Nor is one its checks refuse handed over: the fetch fails it.
+        let (tainting, tainted_origin) = self.hop_tainting;
+        match checked_head(self.request, tainting, tainted_origin, headers, self.url) {
+            Ok((response_type, exposed)) => {
+                response.response_type = response_type;
+                response.cors_exposed = exposed;
+            }
+            Err(_) => return false,
         }
         (self.deliver)(Delivery::Head(&response));
         self.delivered = true;

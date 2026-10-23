@@ -38,6 +38,9 @@ mod hsts_tests;
 mod lifecycle_tests;
 #[cfg(test)]
 mod lna_tests;
+pub(crate) mod media;
+#[cfg(test)]
+mod media_tests;
 #[cfg(test)]
 mod mixed_tests;
 #[cfg(test)]
@@ -787,6 +790,57 @@ impl Network {
     /// response comes in pieces as it arrives. A preload of its key
     /// (M38) is taken rather than fetched again.
     pub(crate) fn fetch(&mut self, page: PageId, target: Target, mut request: Request) -> FetchId {
+        self.apply_policies(page, &target, &mut request);
+        if let Some(id) = self.take_preload(page, &target, &request) {
+            return id;
+        }
+        let streamed = target == Target::Document;
+        // A navigation reserves its document's client id (M39 step 6).
+        if target == Target::Document && self.intercept.is_some() {
+            let reserved = request
+                .reserved_client
+                .get_or_insert_with(crate::service_worker::new_client_id)
+                .clone();
+            self.reserved.insert(page, reserved);
+        }
+        let client = self.client_for(&request);
+        let id = self.next;
+        self.next += 1;
+        self.flights.insert(
+            id,
+            Flight {
+                page,
+                target,
+                abort: request.abort.clone(),
+            },
+        );
+        self.pool.run(id, move |report| {
+            if !streamed {
+                return Fetched::Done(client.fetch(&request));
+            }
+            Fetched::Done(
+                client.fetch_streaming(&request, &mut |delivery| match delivery {
+                    Delivery::Head(response) => report.send(Fetched::Head(response.clone())),
+                    Delivery::Body(bytes) => report.send(Fetched::Body(bytes.to_vec())),
+                }),
+            )
+        });
+        id
+    }
+
+    /// Starts fetching a media element's resource (M40), `request`, for
+    /// `page`: on threads of its own, by ranges, into its buffer.
+    // The media element (step 6) is its user.
+    #[allow(dead_code)]
+    pub(crate) fn media(&mut self, page: PageId, mut request: Request) -> media::MediaResource {
+        self.apply_policies(page, &Target::Fetch, &mut request);
+        let client = self.client_for(&request);
+        media::MediaResource::start(client, request)
+    }
+
+    /// What `page`'s requests carry that the page decides: its partition,
+    /// policies and service worker client.
+    fn apply_policies(&mut self, page: PageId, target: &Target, request: &mut Request) {
         if request.partition.is_none() && request.mode != net::Mode::Navigate {
             request.partition = self.partitions.get(&page).cloned();
         }
@@ -810,18 +864,11 @@ impl Network {
         {
             request.client = self.service_clients.get(&page).cloned();
         }
-        if let Some(id) = self.take_preload(page, &target, &request) {
-            return id;
-        }
-        let streamed = target == Target::Document;
-        // A navigation reserves its document's client id (M39 step 6).
-        if target == Target::Document && self.intercept.is_some() {
-            let reserved = request
-                .reserved_client
-                .get_or_insert_with(crate::service_worker::new_client_id)
-                .clone();
-            self.reserved.insert(page, reserved);
-        }
+    }
+
+    /// What `request` is fetched with: the engine's client, or its page's
+    /// service worker first.
+    fn client_for(&mut self, request: &Request) -> Arc<dyn Fetcher> {
         let mut client = self.client();
         // A client's request goes to its service worker first (M39).
         if (request.client.is_some() || request.reserved_client.is_some())
@@ -832,28 +879,7 @@ impl Network {
                 workers: workers.clone(),
             });
         }
-        let id = self.next;
-        self.next += 1;
-        self.flights.insert(
-            id,
-            Flight {
-                page,
-                target,
-                abort: request.abort.clone(),
-            },
-        );
-        self.pool.run(id, move |report| {
-            if !streamed {
-                return Fetched::Done(client.fetch(&request));
-            }
-            Fetched::Done(
-                client.fetch_streaming(&request, &mut |delivery| match delivery {
-                    Delivery::Head(response) => report.send(Fetched::Head(response.clone())),
-                    Delivery::Body(bytes) => report.send(Fetched::Body(bytes.to_vec())),
-                }),
-            )
-        });
-        id
+        client
     }
 
     /// Aborts and forgets the fetches of `page`: all of them, or those

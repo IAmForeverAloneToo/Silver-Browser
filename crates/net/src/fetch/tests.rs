@@ -944,3 +944,64 @@ fn a_request_into_a_more_private_space_asks_and_the_cache_does_too() {
         }
     );
 }
+
+/// A media element's stream (M40), not a navigation's: its head is typed
+/// and checked as the whole response is before it is handed over; one
+/// CORS refuses is never handed over.
+#[test]
+fn a_streamed_head_is_typed_and_checked_as_the_whole_response() {
+    let server = TestServer::plain(|request| match request.target.as_str() {
+        "/allowed" => Reply::with_fields(
+            200,
+            &[("Access-Control-Allow-Origin", "http://a.test")],
+            b"media",
+        ),
+        _ => Reply::ok("video/webm", b"media"),
+    });
+    let of = |path: &str| {
+        let mut request = Request::get(server.url(path), Destination::Video);
+        request.origin = Some(url("http://a.test/").origin());
+        request
+    };
+    let types = |request: &Request| {
+        let mut heads = Vec::new();
+        let result = client().fetch_streaming(request, &mut |delivery| {
+            if let Delivery::Head(head) = delivery {
+                heads.push(head.response_type);
+            }
+        });
+        (result.map(|r| r.response_type), heads)
+    };
+    assert_eq!(
+        types(&of("/plain")),
+        (Ok(ResponseType::Opaque), vec![ResponseType::Opaque])
+    );
+    let cors = of("/allowed").with_cors(Credentials::SameOrigin);
+    assert_eq!(
+        types(&cors),
+        (Ok(ResponseType::Cors), vec![ResponseType::Cors])
+    );
+    let refused = of("/plain").with_cors(Credentials::SameOrigin);
+    let (result, heads) = types(&refused);
+    assert!(matches!(result, Err(NetworkError::Cors(_))), "{result:?}");
+    assert!(heads.is_empty(), "no head handed over");
+}
+
+/// A range is of the bytes as they are (Fetch 4.6, M40): asked for with
+/// no content coding.
+#[test]
+fn a_ranged_request_asks_for_no_coding() {
+    let server = TestServer::plain(|_| Reply::ok("video/webm", b"media"));
+    let mut ranged = Request::get(server.url("/a"), Destination::Video);
+    ranged.headers.append(b"Range", b"bytes=0-");
+    client().fetch(&ranged).expect("fetched");
+    client()
+        .fetch(&Request::get(server.url("/b"), Destination::Video))
+        .expect("fetched");
+    let codings: Vec<String> = server
+        .requests()
+        .iter()
+        .map(|r| r.header("Accept-Encoding").unwrap_or("").to_owned())
+        .collect();
+    assert_eq!(codings, ["identity", "gzip, deflate"]);
+}

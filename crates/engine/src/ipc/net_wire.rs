@@ -42,6 +42,8 @@ wire_unit_enum!(Destination {
     6 => Destination::Empty,
     7 => Destination::Report,
     8 => Destination::ServiceWorker,
+    9 => Destination::Audio,
+    10 => Destination::Video,
 });
 
 wire_unit_enum!(Mode {

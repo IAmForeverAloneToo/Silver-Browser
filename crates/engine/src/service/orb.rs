@@ -79,9 +79,38 @@ fn from_the_start(response: &Response) -> bool {
     })
 }
 
+/// Whether the response to the *initial* request of a `no-cors` media
+/// request of another origin (M40: its first, or a range from its
+/// start) may reach the renderer: `head` (its body's first bytes,
+/// [`SNIFFED`] or all) is audio or video, or it is what any request may
+/// have. A later range goes only to a renderer whose initial request of
+/// the URL was admitted (the network service keeps them).
+pub(crate) fn media_allowed(response: &Response, head: &[u8]) -> bool {
+    if response.status == 206 && !from_the_start(response) {
+        return false;
+    }
+    let mime = extract_mime_type(&response.headers);
+    if mime
+        .as_ref()
+        .is_some_and(|mime| NEVER_SNIFFED.contains(&mime.essence()))
+    {
+        return false;
+    }
+    if audio_or_video_type(&head[..head.len().min(SNIFFED)]).is_some() {
+        return true;
+    }
+    let mut sniffed = response.clone();
+    sniffed.body = head.to_vec();
+    allowed(&sniffed)
+}
+
+/// How many bytes of a media response [`media_allowed`] wants before it
+/// decides.
+pub(crate) const MEDIA_SNIFFED: usize = SNIFFED;
+
 /// Whether `response`, to a `no-cors` request of another origin, may
-/// reach the renderer with its body. Its media request state is never
-/// "initial" or "subsequent": this version plays no media.
+/// reach the renderer with its body. Audio and video are a media
+/// request's alone ([`media_allowed`]).
 pub(crate) fn allowed(response: &Response) -> bool {
     let mime = extract_mime_type(&response.headers);
     let nosniff = determine_nosniff(&response.headers);
@@ -103,8 +132,7 @@ pub(crate) fn allowed(response: &Response) -> bool {
         return false;
     }
     let head = &response.body[..response.body.len().min(SNIFFED)];
-    // Audio and video go through only for a media request, which no
-    // element makes yet.
+    // Audio and video go through only for a media request.
     if audio_or_video_type(head).is_some() {
         return false;
     }
@@ -484,5 +512,36 @@ mod tests {
         );
         assert!(!is_json(deep.as_bytes()), "too deep to be taken for JSON");
         assert!(!not_script(deep.as_bytes()), "nor blocked as JSON");
+    }
+
+    #[test]
+    fn a_media_requests_first_response_goes_through_when_it_is_audio_or_video() {
+        let webm = &include_bytes!("../../../media/fixtures/clip.webm")[..64];
+        let ogg = b"OggS\x00\x02rest of a page";
+        let media =
+            |fields: &[(&str, &str)], body: &[u8]| media_allowed(&response(206, fields, b""), body);
+        let from = |start: &'static str| ("Content-Range", start);
+        assert!(media(&[from("bytes 0-99/100")], webm));
+        assert!(media(
+            &[("Content-Type", "text/html"), from("bytes 0-99/100")],
+            ogg
+        ));
+        // Not audio or video, nor what any request may have.
+        assert!(!media(
+            &[("Content-Type", "text/html"), from("bytes 0-99/100")],
+            b"<!doctype html><p>secret"
+        ));
+        assert!(!media(
+            &[("Content-Type", "video/webm"), from("bytes 0-99/100")],
+            b"{\"secret\": 1}"
+        ));
+        // A range not from the start, and a type never sniffed.
+        assert!(!media(&[from("bytes 10-99/100")], webm));
+        assert!(!media(
+            &[("Content-Type", "application/pdf"), from("bytes 0-99/100")],
+            webm
+        ));
+        // An image is any request's to have.
+        assert!(media(&[from("bytes 0-99/100")], b"\x89PNG\r\n\x1a\nrest"));
     }
 }

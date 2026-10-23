@@ -198,6 +198,7 @@ fn fetch_directives(destination: Destination) -> (&'static [&'static str], &'sta
             "the stylesheet",
         ),
         Destination::Image => (&["img-src", "default-src"], "the image"),
+        Destination::Audio | Destination::Video => (&["media-src", "default-src"], "media from"),
         Destination::Iframe => (&["frame-src", "child-src", "default-src"], "the frame"),
         Destination::Worker | Destination::ServiceWorker => (
             &["worker-src", "child-src", "script-src", "default-src"],

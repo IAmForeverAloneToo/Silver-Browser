@@ -9,7 +9,7 @@
 //! the body of an opaque response only when Opaque Response Blocking
 //! lets it through.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::SystemTime;
@@ -27,6 +27,14 @@ use crate::ipc::{Answer, Bytes, MAX_CHUNK, Sender, ToBrowser, ToRenderer};
 /// The most fetches one renderer has in flight; one past it is answered
 /// with an error.
 pub const MAX_RENDERER_FETCHES: usize = 256;
+
+/// The most media URLs a renderer's initial requests had admitted by
+/// Opaque Response Blocking that it keeps for their later ranges (M40);
+/// past it, the oldest go.
+pub const MAX_ADMITTED_MEDIA: usize = 256;
+
+/// The media URLs admitted, by renderer.
+type Admitted = Arc<Mutex<HashMap<u32, VecDeque<Url>>>>;
 
 /// What a renderer is locked to, once it shows a document (M34.1).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -230,6 +238,9 @@ pub struct NetworkService {
     /// The service workers its renderers' clients' requests go to first
     /// (M39).
     service_workers: Mutex<Option<crate::service_worker::WeakServiceWorkers>>,
+    /// The media URLs of other origins each renderer's initial request
+    /// had admitted (M40), whose later ranges it may then have.
+    admitted: Admitted,
 }
 
 /// What fetches a renderer's `request` (M39 steps 5, 6): through its
@@ -288,6 +299,7 @@ impl NetworkService {
             committed: Mutex::new(None),
             downloads: Mutex::new(None),
             service_workers: Mutex::new(None),
+            admitted: Arc::default(),
         })
     }
 
@@ -374,9 +386,17 @@ impl NetworkService {
                 let (lock, grant) = self.grants.frame(renderer, frame)?;
                 let request = checked(*request, &lock, &grant)?;
                 // A navigation's response is streamed, to be handed over
-                // at its head when of another site; nothing else is.
-                if streamed != is_navigation(&request) {
-                    return Err("a stream that is not a navigation's, or the reverse".into());
+                // at its head when of another site, and a media element's
+                // (M40); nothing else is.
+                let media = matches!(
+                    request.destination,
+                    net::Destination::Audio | net::Destination::Video
+                );
+                if streamed != (is_navigation(&request) || media) {
+                    return Err(
+                        "a stream that is not a navigation's or a media element's, or the reverse"
+                            .into(),
+                    );
                 }
                 self.start((renderer, frame), id, streamed, request, &lock, reply)?;
                 Ok(None)
@@ -579,6 +599,13 @@ impl NetworkService {
             .clone();
         let lock = lock.clone();
         let answer = reply.clone();
+        // A media element's stream goes through Opaque Response Blocking
+        // as it comes (M40).
+        let media = matches!(
+            request.destination,
+            net::Destination::Audio | net::Destination::Video
+        );
+        let mut gate = MediaGate::new(media.then(|| (renderer, &request, self.admitted.clone())));
         let service_workers = self
             .service_workers
             .lock()
@@ -657,11 +684,15 @@ impl NetworkService {
                                         committed(renderer, frame, url, top_level);
                                     }
                                 }
+                                if gate.head(head, &reply, id, &abort) {
+                                    return;
+                                }
                                 let _ = reply.send(&ToRenderer::FetchHead {
                                     id,
                                     response: renderer_head(head),
                                 });
                             }
+                            Delivery::Body(bytes) if gate.body(bytes, &reply, id, &abort) => {}
                             Delivery::Body(bytes) => match (moved, &handovers) {
                                 (Some(held), Some(handovers)) => {
                                     if !handovers.body(held, bytes) {
@@ -679,7 +710,10 @@ impl NetworkService {
                                 _ => send_body(&reply, id, bytes),
                             },
                         })
-                        .map(|response| renderer_head(&response)),
+                        .map(|response| gate.end(&response, &reply, id))
+                        // The fetch a blocked response ended, ended as
+                        // what the renderer was told.
+                        .or_else(|error| gate.blocked().ok_or(error)),
                     false => fetcher.fetch(&request).map(|response| {
                         let response = filtered(response);
                         let _ = reply.send(&ToRenderer::FetchHead {
@@ -834,13 +868,164 @@ pub(crate) fn partition(
 /// Response Blocking stops loses its body and every field but its type.
 fn filtered(mut response: Response) -> Response {
     if response.response_type == ResponseType::Opaque && !orb::allowed(&response) {
-        let mut headers = net::HeaderList::new();
-        if let Some(content_type) = response.headers.get(b"Content-Type") {
-            headers.append(b"Content-Type", &content_type);
-        }
-        response.headers = headers;
-        response.body.clear();
+        response = filtered_head(response);
     }
+    response
+}
+
+/// Opaque Response Blocking of a renderer's `no-cors` media request of
+/// another origin, streamed (M40): the *initial* request's (none, or a
+/// range from the first byte) response held until its first bytes show
+/// it is audio or video, which admits its URL for the renderer; a later
+/// range's let through only for an admitted URL. A response blocked
+/// reaches the renderer as `filtered` leaves one: its type alone, no
+/// body.
+struct MediaGate {
+    /// Of a media request: its renderer, its URL, whether it is initial,
+    /// and the URLs admitted.
+    of: Option<(u32, Url, bool, Admitted)>,
+    state: Gate,
+}
+
+enum Gate {
+    /// Not ORB's: a response of the same origin, or under CORS.
+    Through,
+    /// The head and the first bytes, waiting for enough to sniff.
+    Waiting(Box<Response>, Vec<u8>),
+    Open,
+    Blocked(Box<Response>),
+}
+
+impl MediaGate {
+    fn new(of: Option<(u32, &Request, Admitted)>) -> MediaGate {
+        MediaGate {
+            of: of.map(|(renderer, request, admitted)| {
+                let initial = request.headers.get(b"Range").is_none_or(|range| {
+                    let range = String::from_utf8_lossy(&range).replace(' ', "");
+                    range.starts_with("bytes=0-")
+                });
+                (renderer, request.url.clone(), initial, admitted)
+            }),
+            state: Gate::Through,
+        }
+    }
+
+    /// Takes the response's head; whether the gate sent it, or holds it.
+    fn head(
+        &mut self,
+        head: &Response,
+        reply: &Sender<ToRenderer>,
+        id: u64,
+        abort: &AbortHandle,
+    ) -> bool {
+        let Some((renderer, url, initial, admitted)) = &self.of else {
+            return false;
+        };
+        if head.response_type != ResponseType::Opaque {
+            return false;
+        }
+        if *initial {
+            self.state = Gate::Waiting(Box::new(renderer_head(head)), Vec::new());
+            return true;
+        }
+        let known = admitted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(renderer)
+            .is_some_and(|urls| urls.contains(url));
+        if known {
+            self.state = Gate::Open;
+            return false;
+        }
+        self.block(renderer_head(head), reply, id, abort);
+        true
+    }
+
+    /// Takes a piece of the body; whether the gate took it.
+    fn body(
+        &mut self,
+        bytes: &[u8],
+        reply: &Sender<ToRenderer>,
+        id: u64,
+        abort: &AbortHandle,
+    ) -> bool {
+        match &mut self.state {
+            Gate::Through | Gate::Open => false,
+            Gate::Blocked(_) => true,
+            Gate::Waiting(_, held) => {
+                held.extend_from_slice(bytes);
+                if held.len() >= orb::MEDIA_SNIFFED {
+                    self.decide(reply, id, abort);
+                }
+                true
+            }
+        }
+    }
+
+    /// The response's end: what the renderer is told it was.
+    fn end(&mut self, response: &Response, reply: &Sender<ToRenderer>, id: u64) -> Response {
+        if matches!(self.state, Gate::Waiting(..)) {
+            self.decide(reply, id, &AbortHandle::new());
+        }
+        match &self.state {
+            Gate::Blocked(head) => (**head).clone(),
+            _ => renderer_head(response),
+        }
+    }
+
+    /// The head a blocked response was given the renderer as.
+    fn blocked(&self) -> Option<Response> {
+        match &self.state {
+            Gate::Blocked(head) => Some((**head).clone()),
+            _ => None,
+        }
+    }
+
+    fn decide(&mut self, reply: &Sender<ToRenderer>, id: u64, abort: &AbortHandle) {
+        let Gate::Waiting(head, held) = std::mem::replace(&mut self.state, Gate::Open) else {
+            return;
+        };
+        if !orb::media_allowed(&head, &held) {
+            self.block(*head, reply, id, abort);
+            return;
+        }
+        if let Some((renderer, url, _, admitted)) = &self.of {
+            let mut admitted = admitted.lock().unwrap_or_else(PoisonError::into_inner);
+            let urls = admitted.entry(*renderer).or_default();
+            if !urls.contains(url) {
+                if urls.len() >= MAX_ADMITTED_MEDIA {
+                    urls.pop_front();
+                }
+                urls.push_back(url.clone());
+            }
+        }
+        let _ = reply.send(&ToRenderer::FetchHead {
+            id,
+            response: *head,
+        });
+        send_body(reply, id, &held);
+    }
+
+    fn block(&mut self, head: Response, reply: &Sender<ToRenderer>, id: u64, abort: &AbortHandle) {
+        let blocked = filtered_head(head);
+        let _ = reply.send(&ToRenderer::FetchHead {
+            id,
+            response: blocked.clone(),
+        });
+        abort.abort();
+        self.state = Gate::Blocked(Box::new(blocked));
+    }
+}
+
+/// An opaque response's head as Opaque Response Blocking leaves one
+/// blocked: its type alone, no body.
+fn filtered_head(mut response: Response) -> Response {
+    let mut headers = net::HeaderList::new();
+    if let Some(content_type) = response.headers.get(b"Content-Type") {
+        headers.append(b"Content-Type", &content_type);
+    }
+    response.headers = headers;
+    response.body.clear();
     response
 }
 
