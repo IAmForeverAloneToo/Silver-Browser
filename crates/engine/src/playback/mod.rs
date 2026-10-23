@@ -50,6 +50,17 @@ const PAUSED: &str =
 const NEW_LOAD: &str =
     "The play() request was interrupted by a new load request. https://goo.gl/LdLk22";
 
+/// What the user did with a media element's controls.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Control {
+    Play,
+    Mute,
+    /// To that fraction of its duration.
+    Seek(f64),
+    /// By that many seconds, back or on.
+    Skip(f64),
+}
+
 /// What the bootstrap does for an element: fire an event at it (or at a
 /// `<source>` of its), or settle a `play()` promise.
 #[derive(Debug, Clone, PartialEq)]
@@ -143,6 +154,8 @@ struct Player {
     played: Vec<(f64, f64)>,
     played_from: Option<f64>,
     whole: bool,
+    /// The picture last given to paint, by its time, and its number.
+    shown: Option<(u64, u32, Arc<images::Image>)>,
 }
 
 impl Player {
@@ -182,6 +195,7 @@ impl Player {
             played: Vec::new(),
             played_from: None,
             whole: false,
+            shown: None,
         }
     }
 
@@ -312,6 +326,9 @@ fn normalized(mut ranges: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
 #[derive(Default)]
 pub(crate) struct Players {
     players: HashMap<NodeId, Player>,
+    /// Whether what an element shows may have changed since the last
+    /// frame.
+    changed: bool,
 }
 
 impl Players {
@@ -381,10 +398,118 @@ impl Players {
     }
 
     /// The element `node`'s pipeline, for its picture.
-    // Video on screen (step 7) is its user.
-    #[allow(dead_code)]
-    pub(crate) fn picture(&self, node: NodeId) -> Option<media::Picture> {
-        self.players.get(&node)?.pipeline.as_ref()?.picture()
+    /// The picture of the video `node` shown now (M40 step 7), with its
+    /// number, which changes with it; the same image while it does not.
+    pub(crate) fn video_pixels(&mut self, node: NodeId) -> Option<(u32, Arc<images::Image>)> {
+        let player = self.players.get_mut(&node)?;
+        let picture = player.pipeline.as_ref()?.picture()?;
+        let key = picture.time.to_bits();
+        if let Some((shown, number, image)) = &player.shown
+            && *shown == key
+        {
+            return Some((*number, Arc::clone(image)));
+        }
+        let number = player
+            .shown
+            .as_ref()
+            .map_or(1, |(_, n, _)| n.wrapping_add(1));
+        let image = Arc::new(images::Image {
+            width: picture.width,
+            height: picture.height,
+            frames: vec![images::Frame {
+                pixels: picture.rgba.into(),
+                delay: 0,
+            }],
+            plays: images::Plays::Forever,
+        });
+        player.shown = Some((key, number, Arc::clone(&image)));
+        Some((number, image))
+    }
+
+    /// The video `node`'s picture now, for a canvas to draw (M40 step 7),
+    /// and whether its origin is clean.
+    pub(crate) fn picture(&mut self, node: NodeId) -> Option<(Arc<images::Image>, bool)> {
+        let (_, image) = self.video_pixels(node)?;
+        let player = self.players.get(&node)?;
+        let clean = !player.sound.tainted.load(Ordering::Relaxed);
+        Some((image, clean))
+    }
+
+    /// What each element shows (M40 step 7): its picture's size, whether
+    /// it has one, and what its controls say.
+    pub(crate) fn states(&self) -> Vec<(NodeId, layout::MediaState)> {
+        self.players
+            .iter()
+            .map(|(node, player)| {
+                let size = (player.size.0 > 0 && player.size.1 > 0).then_some(player.size);
+                let picture = player.pipeline.as_ref().is_some_and(Pipeline::has_picture)
+                    && player.ready >= HAVE_CURRENT_DATA;
+                (
+                    *node,
+                    layout::MediaState {
+                        size,
+                        picture,
+                        paused: player.paused,
+                        time: player.position(),
+                        duration: player.duration,
+                        muted: player.muted,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// What the user did with the element `node`'s controls (M40 step
+    /// 7): played or paused it, muted it or not, or sought to `fraction`
+    /// of its duration.
+    pub(crate) fn control(&mut self, node: NodeId, action: Control, env: &Env<'_>) {
+        self.changed = true;
+        let mut queued = Vec::new();
+        let Some(player) = self.player(node, env.document) else {
+            return;
+        };
+        match action {
+            Control::Play => {
+                if player.paused {
+                    // No promise waits on the user's own play.
+                    let _ = play(player, 0, env, &mut queued);
+                } else {
+                    pause(player, env, &mut queued);
+                }
+            }
+            Control::Mute => {
+                player.muted = !player.muted;
+                queued.push(Action::Event(node, "volumechange"));
+                set_gain(player);
+            }
+            Control::Seek(fraction) => {
+                if player.duration.is_finite() {
+                    let time = player.duration * fraction.clamp(0.0, 1.0);
+                    seek(player, time, &mut queued);
+                }
+            }
+            Control::Skip(seconds) => {
+                if player.ready >= HAVE_METADATA {
+                    let time = player.position() + seconds;
+                    seek(player, time, &mut queued);
+                }
+            }
+        }
+        queue(env, queued);
+    }
+
+    /// Whether a frame is wanted for what the elements show: one plays,
+    /// or one changed.
+    pub(crate) fn wants_frame(&self) -> bool {
+        self.changed
+            || self
+                .players
+                .values()
+                .any(|p| !p.paused && p.pipeline.is_some())
+    }
+
+    pub(crate) fn take_changed(&mut self) -> bool {
+        std::mem::take(&mut self.changed)
     }
 
     /// The element `node`'s sound, for a `MediaElementAudioSourceNode`.
@@ -412,6 +537,9 @@ impl Players {
             return Ok(Json::from(media::can_play_type(kind).as_str()));
         }
         let node = node.ok_or(("TypeError", "Illegal invocation".to_owned()))?;
+        if what != "state" {
+            self.changed = true;
+        }
         let mut queued = Vec::new();
         let player = self
             .player(node, env.document)
@@ -488,6 +616,7 @@ impl Players {
         env: &Env<'_>,
     ) -> Json {
         let mut out = Vec::new();
+        self.changed = true;
         let Some(player) = self.players.get_mut(&node) else {
             return actions_json(&out);
         };

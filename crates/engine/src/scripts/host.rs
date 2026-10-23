@@ -2171,7 +2171,16 @@ impl DocumentHost {
                     })
                     .or_else(|| transparent((width, height))))
             }
-            (5, Some("video")) => Ok(None),
+            // A video's picture now (M40), none before it has one.
+            (5, Some("video")) => Ok(self.media.picture(node).and_then(|(image, clean)| {
+                let frame = image.frames.first()?;
+                Some(canvas::Source {
+                    pixels: Arc::clone(&frame.pixels),
+                    width: image.width,
+                    height: image.height,
+                    origin_clean: clean,
+                })
+            })),
             _ => Err(DomError::new("TypeError", "Illegal invocation")),
         }
     }
@@ -2235,6 +2244,12 @@ impl DocumentHost {
                     None => transparent(size)?,
                 })
             }
+            // A video's picture now (M40); none before it has one.
+            5 => match self.canvas_source(5.0, which, "createImageBitmap") {
+                Ok(Some(source)) => Some(source),
+                Ok(None) => return Err(state("The provided element has not retrieved data.")),
+                Err(error) => return Err(error),
+            },
             _ => None,
         };
         image_bitmap(&mut self.canvases, call, given, &mut self.work)

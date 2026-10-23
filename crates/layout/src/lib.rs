@@ -47,15 +47,15 @@ pub use block::{
 };
 pub use box_tree::{
     BoxKind, FirstLine, ImageState, Images, LayoutBox, MAX_GENERATED_TEXT, Mark, MarkerShape,
-    Replaced, RowGroupKind, build_box_tree, build_box_tree_kept, build_box_tree_showing,
-    canvas_size, is_outer_svg,
+    MediaState, Replaced, RowGroupKind, VideoBox, build_box_tree, build_box_tree_kept,
+    build_box_tree_showing, canvas_size, is_outer_svg,
 };
 pub use cache::{LayoutCache, shown_by_controls};
 pub use children::Children;
 pub use composite::{Composited, EffectsChange, Patch, StyleChange, repaints_only};
 pub use paginate::{MAX_PAGES, PageSlice, Paginated, paginate};
 pub use parallel::{MAX_WORKER_THREADS, PARALLEL_MIN_ITEMS};
-pub use replaced::ICON_SIZE;
+pub use replaced::{AUDIO_CONTROLS, ICON_SIZE};
 
 #[cfg(test)]
 pub(crate) mod testing {

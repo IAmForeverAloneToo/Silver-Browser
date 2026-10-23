@@ -1355,6 +1355,82 @@ impl Scripts {
             .min()
     }
 
+    /// What the user did with the media element `node`'s controls (M40).
+    pub(crate) fn media_control(
+        &mut self,
+        node: NodeId,
+        action: crate::playback::Control,
+        document: &Document,
+        page: &Page,
+        network: &mut Network,
+    ) {
+        let inbox = self.host.workers.inbox();
+        let env = crate::playback::Env {
+            document,
+            page: Some(page),
+            inbox: Some(inbox.clone()),
+            activated: true,
+        };
+        self.host.media.control(node, action, &env);
+        let id = page.id();
+        self.host
+            .media
+            .start_pending(|request| network.media(id, request), Some(&inbox));
+    }
+
+    /// Hears its media elements' pipelines without a realm (M40): a
+    /// document whose scripts do not run still plays, its events
+    /// heard by none.
+    pub(crate) fn hear_media_unscripted(&mut self, document: &Document, page: &Page) {
+        let inbox = self.host.workers.inbox();
+        let env = crate::playback::Env {
+            document,
+            page: Some(page),
+            inbox: Some(inbox),
+            activated: false,
+        };
+        let mut kept = VecDeque::new();
+        for (at, task) in std::mem::take(&mut self.posted) {
+            let js::Task::Media(text) = task else {
+                kept.push_back((at, task));
+                continue;
+            };
+            let Ok(told) = devtools::Json::parse(&text) else {
+                continue;
+            };
+            let number = |name: &str| told.get(name).and_then(devtools::Json::as_f64);
+            if let (Some(node), Some(generation), Some(report)) =
+                (number("node"), number("generation"), told.get("report"))
+                && let Some(node) = NodeId::from_bits(node as u64)
+            {
+                let _ = self
+                    .host
+                    .media
+                    .report(node, generation as u64, report, &env);
+            }
+        }
+        self.posted = kept;
+    }
+
+    /// What the document's media elements show (M40).
+    pub(crate) fn media_states(&self) -> Vec<(NodeId, layout::MediaState)> {
+        self.host.media.states()
+    }
+
+    /// Whether a frame is wanted for them, and that it was asked for.
+    pub(crate) fn media_wants_frame(&self) -> bool {
+        self.host.media.wants_frame()
+    }
+
+    pub(crate) fn take_media_changed(&mut self) -> bool {
+        self.host.media.take_changed()
+    }
+
+    /// The picture the video `node` shows now, and its number.
+    pub(crate) fn video_pixels(&mut self, node: NodeId) -> Option<(u32, Arc<images::Image>)> {
+        self.host.media.video_pixels(node)
+    }
+
     /// Starts the media fetches the run's loads asked for (M40).
     fn start_media(&mut self, lent: &mut Lent<'_>) {
         let page = lent.page.id();

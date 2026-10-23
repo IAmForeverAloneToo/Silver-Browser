@@ -118,6 +118,220 @@ pub fn svg_node(id: u64) -> Option<NodeId> {
     NodeId::from_bits(id & !SVG_IMAGE)
 }
 
+/// The bit a video's picture's image number has (M40), apart from the
+/// frames', outer `<svg>`s', canvases' and gradients' bits: the rest is
+/// the media element's node.
+pub const VIDEO_IMAGE: u64 = 1 << 59;
+
+/// The image number the picture of the video `node` is shown by.
+pub fn video_image(node: NodeId) -> u64 {
+    VIDEO_IMAGE | node.to_bits()
+}
+
+/// The video an image number names, if it names one.
+pub fn video_node(id: u64) -> Option<NodeId> {
+    if id & (15 << 60) != 0 || id & VIDEO_IMAGE == 0 {
+        return None;
+    }
+    NodeId::from_bits(id & !VIDEO_IMAGE)
+}
+
+/// Where a media element's controls are (M40), in its content box: the
+/// bar, its play and pause button, its timeline and its mute button.
+/// The engine's pointer handling and paint read the one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Controls {
+    pub bar: Rect,
+    pub play: Rect,
+    pub timeline: Rect,
+    pub mute: Rect,
+    /// Where the time is written: its left edge and baseline.
+    pub time: (f32, f32),
+}
+
+/// The height of a video's controls' bar.
+pub const CONTROLS_HEIGHT: f32 = 32.0;
+
+/// The controls of a media element whose content box is `rect`: over a
+/// video's bottom, or filling an `audio`'s box.
+pub fn controls(rect: Rect, audio: bool) -> Controls {
+    let height = if audio {
+        rect.h
+    } else {
+        CONTROLS_HEIGHT.min(rect.h)
+    };
+    let bar = Rect {
+        x: rect.x,
+        y: rect.y + rect.h - height,
+        w: rect.w,
+        h: height,
+    };
+    let middle = bar.y + bar.h / 2.0;
+    let button = |x: f32| Rect {
+        x,
+        y: middle - 16.0,
+        w: 32.0,
+        h: 32.0,
+    };
+    let play = button(bar.x + 4.0);
+    let mute = button(bar.x + bar.w - 36.0);
+    let start = bar.x + 116.0;
+    let end = mute.x - 8.0;
+    Controls {
+        bar,
+        play,
+        timeline: Rect {
+            x: start,
+            y: middle - 8.0,
+            w: (end - start).max(0.0),
+            h: 16.0,
+        },
+        mute,
+        time: (play.x + play.w + 4.0, (middle + 4.0).round()),
+    }
+}
+
+/// A time as the controls write it: minutes and seconds.
+fn clock(seconds: f64) -> String {
+    let whole = if seconds.is_finite() {
+        seconds.max(0.0) as u64
+    } else {
+        0
+    };
+    format!("{}:{:02}", whole / 60, whole % 60)
+}
+
+/// Paints a media element's controls (M40) over its content box `rect`,
+/// as `state` is: the reference's at a glance.
+fn push_controls(
+    items: &mut Vec<DisplayItem>,
+    rect: Rect,
+    audio: bool,
+    state: &layout::MediaState,
+) {
+    let c = controls(rect, audio);
+    if c.bar.w < 40.0 || c.bar.h < 16.0 {
+        return;
+    }
+    let (background, ink, track) = if audio {
+        (
+            Rgba8::rgb(241, 243, 244),
+            Rgba8::rgb(32, 33, 36),
+            Rgba8 {
+                r: 32,
+                g: 33,
+                b: 36,
+                a: 80,
+            },
+        )
+    } else {
+        (
+            Rgba8 {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 128,
+            },
+            Rgba8::rgb(255, 255, 255),
+            Rgba8 {
+                r: 255,
+                g: 255,
+                b: 255,
+                a: 100,
+            },
+        )
+    };
+    items.push(DisplayItem::Rect {
+        x: c.bar.x,
+        y: c.bar.y,
+        w: c.bar.w,
+        h: c.bar.h,
+        color: background,
+    });
+    let p = c.play;
+    if state.paused {
+        items.push(DisplayItem::Polygon {
+            points: vec![
+                (p.x + 11.0, p.y + 8.0),
+                (p.x + 24.0, p.y + 16.0),
+                (p.x + 11.0, p.y + 24.0),
+            ],
+            color: ink,
+        });
+    } else {
+        for x in [p.x + 10.0, p.x + 18.0] {
+            items.push(DisplayItem::Rect {
+                x,
+                y: p.y + 9.0,
+                w: 4.0,
+                h: 14.0,
+                color: ink,
+            });
+        }
+    }
+    items.push(DisplayItem::Text {
+        text: format!("{} / {}", clock(state.time), clock(state.duration)),
+        x: c.time.0,
+        y: c.time.1,
+        size: 12.0,
+        color: ink,
+    });
+    let t = c.timeline;
+    if t.w > 0.0 {
+        let fraction = if state.duration.is_finite() && state.duration > 0.0 {
+            (state.time / state.duration).clamp(0.0, 1.0) as f32
+        } else {
+            0.0
+        };
+        let y = t.y + t.h / 2.0 - 2.0;
+        items.push(DisplayItem::Rect {
+            x: t.x,
+            y,
+            w: t.w,
+            h: 4.0,
+            color: track,
+        });
+        items.push(DisplayItem::Rect {
+            x: t.x,
+            y,
+            w: t.w * fraction,
+            h: 4.0,
+            color: ink,
+        });
+    }
+    let m = c.mute;
+    items.push(DisplayItem::Polygon {
+        points: vec![
+            (m.x + 8.0, m.y + 13.0),
+            (m.x + 12.0, m.y + 13.0),
+            (m.x + 17.0, m.y + 8.0),
+            (m.x + 17.0, m.y + 24.0),
+            (m.x + 12.0, m.y + 19.0),
+            (m.x + 8.0, m.y + 19.0),
+        ],
+        color: ink,
+    });
+    if state.muted {
+        items.push(DisplayItem::Polygon {
+            points: vec![
+                (m.x + 19.0, m.y + 11.0),
+                (m.x + 21.0, m.y + 11.0),
+                (m.x + 27.0, m.y + 21.0),
+                (m.x + 25.0, m.y + 21.0),
+            ],
+            color: ink,
+        });
+    } else {
+        items.push(DisplayItem::Rect {
+            x: m.x + 20.0,
+            y: m.y + 12.0,
+            w: 2.0,
+            h: 8.0,
+            color: ink,
+        });
+    }
+}
+
 /// The bit a frame's image number has (M33.2), apart from the outer
 /// `<svg>`s', canvases' and gradients' bits: the rest is the `iframe`
 /// element's node.
@@ -273,6 +487,12 @@ impl PartialEq for ImageRef {
 /// for. The engine's image store answers; `()` knows none.
 pub trait Pictures {
     fn picture(&self, url: &str) -> Option<(u64, images::Header)>;
+
+    /// What the media element `node` shows now (M40): whether it has a
+    /// picture, and what its controls say.
+    fn media(&self, _node: NodeId) -> layout::MediaState {
+        layout::MediaState::default()
+    }
 
     /// Whether the image at `url` is still coming: neither read nor
     /// broken yet.
@@ -1159,6 +1379,77 @@ fn push_replaced(
 ) {
     match replaced {
         Replaced::Empty => {}
+        // A media element (M40): a video's picture as a canvas's bitmap is
+        // placed, or its poster as an image is, until it has one; and its
+        // controls over it.
+        Replaced::Video { node, video } => {
+            let layout::VideoBox {
+                width,
+                height,
+                audio,
+                controls,
+                poster,
+            } = &**video;
+            let state = pictures.media(*node);
+            let image = fragment.style.image();
+            let shown = if state.picture && *width > 0 && *height > 0 {
+                Some((video_image(*node), (*width as f32, *height as f32)))
+            } else {
+                poster
+                    .as_ref()
+                    .map(|poster| (poster.0, (poster.1.width as f32, poster.1.height as f32)))
+            };
+            if let Some((id, natural)) = shown.filter(|_| !*audio) {
+                let (w, h) = fitted(image.object_fit, natural, (rect.w, rect.h));
+                let x = rect.x + image.object_position.x.resolve(rect.w - w);
+                let y = rect.y + image.object_position.y.resolve(rect.h - h);
+                if w > 0.0 && h > 0.0 && natural.0 > 0.0 && natural.1 > 0.0 {
+                    // A picture changes from frame to frame: a layer of its
+                    // own, as a canvas's, the controls in it over it.
+                    let video = video_node(id).is_some();
+                    if video {
+                        items.push(DisplayItem::PushGroup {
+                            matrix: Matrix::IDENTITY,
+                            opacity: 1.0,
+                            key: GroupKey::Canvas(*node),
+                            layer: Some(LayerReason::Canvas),
+                        });
+                    }
+                    let r = snapped(rect);
+                    items.push(DisplayItem::PushClip {
+                        x: r.x,
+                        y: r.y,
+                        w: r.w,
+                        h: r.h,
+                    });
+                    items.push(DisplayItem::Image {
+                        x,
+                        y,
+                        w,
+                        h,
+                        image: ImageRef {
+                            id,
+                            frame: 0,
+                            orientation: images::Orientation::Normal,
+                            crop: None,
+                            pixels: None,
+                        },
+                        sharp: image.image_rendering.is_sharp(),
+                    });
+                    items.push(DisplayItem::PopClip);
+                    if video {
+                        if *controls {
+                            push_controls(items, rect, *audio, &state);
+                        }
+                        items.push(DisplayItem::PopGroup);
+                        return;
+                    }
+                }
+            }
+            if *controls {
+                push_controls(items, rect, *audio, &state);
+            }
+        }
         Replaced::Mark(mark) => push_mark(items, *mark, rect, to_rgba8(fragment.style.color)),
         // An outer `<svg>` (M32) fills its content box, its `viewBox`
         // fitted in it by its own `preserveAspectRatio`: an image the

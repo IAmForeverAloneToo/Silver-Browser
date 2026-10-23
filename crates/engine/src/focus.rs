@@ -30,6 +30,9 @@ pub(crate) fn natively_focusable(document: &Document, element: NodeId) -> bool {
         Some("button" | "select" | "textarea") => !forms::actually_disabled(document, element),
         // A frame's element, the focus passing into its document (M33.2).
         Some("iframe") => true,
+        // A media element with controls, whose keys play, pause and skip
+        // (M40), as the reference's.
+        Some("video" | "audio") => document.attr(element, "controls").is_some(),
         _ => false,
     }
 }

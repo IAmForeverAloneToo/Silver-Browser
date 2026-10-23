@@ -304,8 +304,12 @@ impl Pipeline {
         self.shared.position(&state)
     }
 
+    /// Whether a picture is decoded to show.
+    pub(crate) fn has_picture(&self) -> bool {
+        !lock(&self.shared).pictures.is_empty()
+    }
+
     /// The picture shown at the current position, if one is decoded.
-    #[allow(dead_code)]
     pub(crate) fn picture(&self) -> Option<Picture> {
         let mut state = lock(&self.shared);
         let now = self.shared.position(&state);

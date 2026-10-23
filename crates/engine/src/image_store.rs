@@ -246,6 +246,8 @@ pub(crate) struct ImageStore {
     frames: u64,
     /// The decoded bytes kept, when not [`MAX_DECODED_BYTES`]: a test's.
     budget: Option<usize>,
+    /// What each media element shows (M40), as of the frame.
+    media: HashMap<NodeId, layout::MediaState>,
 }
 
 /// Rendered gradients, kept under [`GRADIENT_BUDGET`].
@@ -306,11 +308,14 @@ impl ImageStore {
         // holds fetches its image too (HTML section 4.8.4.3), as `new
         // Image()` for a canvas does.
         for node in (0..document.slot_count()).filter_map(|i| document.id_at(i)) {
-            if document.tag(node) != Some("img") {
-                continue;
-            }
+            // An `img`'s source, or a video's poster (M40).
+            let attribute = match document.tag(node) {
+                Some("img") => "src",
+                Some("video") => "poster",
+                _ => continue,
+            };
             let Some(url) = document
-                .attr(node, "src")
+                .attr(node, attribute)
                 .filter(|src| !src.is_empty())
                 .and_then(|src| page.resolve(document, src))
             else {
@@ -742,7 +747,29 @@ impl ImageStore {
 /// not decode; nothing yet while it is fetched or read; broken when it
 /// was not fetched, did not read, or has a URL that does not parse or
 /// was never fetched.
+impl ImageStore {
+    /// What each media element shows as of this frame (M40): the
+    /// elements whose picture's size changed, whose boxes are laid out
+    /// again.
+    pub(crate) fn set_media(&mut self, states: Vec<(NodeId, layout::MediaState)>) -> Vec<NodeId> {
+        let mut resized = Vec::new();
+        let mut media = HashMap::new();
+        for (node, state) in states {
+            if self.media.get(&node).map(|old| old.size) != Some(state.size) {
+                resized.push(node);
+            }
+            media.insert(node, state);
+        }
+        self.media = media;
+        resized
+    }
+}
+
 impl layout::Images for ImageStore {
+    fn media(&self, node: NodeId) -> layout::MediaState {
+        self.media.get(&node).copied().unwrap_or_default()
+    }
+
     fn image(&self, node: NodeId) -> layout::ImageState {
         let entry = self
             .sources
@@ -784,6 +811,10 @@ impl layout::Images for ImageStore {
 /// as the style has it, once its header is read, unless its pixels did
 /// not decode.
 impl paint::Pictures for ImageStore {
+    fn media(&self, node: NodeId) -> layout::MediaState {
+        self.media.get(&node).copied().unwrap_or_default()
+    }
+
     /// A gradient rendered once for its size and kept, the least
     /// recently asked for dropped past the budget.
     fn gradient(&self, gradient: &style::computed::Gradient, w: f32, h: f32) -> Arc<Image> {

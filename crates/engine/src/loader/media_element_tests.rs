@@ -483,3 +483,305 @@ fn a_parsed_element_loads_and_sources_passed_over_say_so() {
         ]
     );
 }
+
+#[test]
+fn media_elements_lay_out_as_the_reference_does() {
+    let page = TestServer::plain(move |request| match request.target.as_str() {
+        "/page.html" => html(
+            "<body style=\"margin:0\">\
+             <video id=v1></video><video id=v2 controls></video><audio id=a1 controls></audio><audio id=a2></audio>\
+             <video id=v3 poster=\"/media/none.png\"></video><video id=v4 src=\"/media/clip.webm\" controls></video>\
+             <script>const log = (s) => console.log(s);\n\
+             log('ready');\n\
+             const v4 = document.getElementById('v4');\n\
+             v4.addEventListener('loadedmetadata', () => { log('a2 ' + getComputedStyle(document.getElementById('a2')).display); log('done'); });\n\
+             </script>",
+        ),
+        "/media/clip.webm" => ranged(request, "video/webm", CLIP),
+        _ => Reply::with_fields(404, &[], b""),
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(page.url("/page.html"));
+    let lines = tab.run_until(|lines| lines.iter().any(|l| l == "done"));
+    assert!(lines.iter().any(|l| l == "a2 none"), "{lines:?}");
+    // The reference's boxes (probe p4).
+    tab.engine.frame(800, 400);
+    let nodes: Vec<_> = ["v1", "v2", "a1", "a2", "v3", "v4"]
+        .iter()
+        .map(|id| (*id, by_id(&tab.engine, id)))
+        .collect();
+    let layout = tab.engine.layout(800.0);
+    let size = |id: &str| {
+        let node = nodes.iter().find(|(n, _)| *n == id).expect("an id").1;
+        layout
+            .placed()
+            .find(|p| p.fragment.node == node)
+            .map(|p| (p.fragment.w, p.fragment.h))
+    };
+    assert_eq!(size("v1"), Some((300.0, 150.0)));
+    assert_eq!(size("v2"), Some((300.0, 150.0)));
+    assert_eq!(size("a1"), Some((300.0, 54.0)));
+    assert_eq!(size("a2"), None);
+    assert_eq!(size("v3"), Some((300.0, 150.0)));
+    assert_eq!(size("v4"), Some((160.0, 120.0)));
+}
+
+#[test]
+fn a_canvas_draws_a_videos_picture_at_its_time() {
+    let page = server(
+        r#"
+const wait = (m, e) => new Promise(r => m.addEventListener(e, r, {once: true}));
+function colour(v) {
+  const c = document.createElement('canvas'); c.width = v.videoWidth; c.height = v.videoHeight;
+  const g = c.getContext('2d'); g.drawImage(v, 0, 0);
+  const d = g.getImageData(v.videoWidth >> 1, v.videoHeight >> 1, 1, 1).data;
+  return [d[0], d[1], d[2]].join(',');
+}
+log('ready');
+(async () => {
+  const v = document.createElement('video'); document.body.appendChild(v);
+  const blank = document.createElement('canvas').getContext('2d');
+  blank.drawImage(v, 0, 0);
+  log('nothing yet ' + blank.getImageData(0, 0, 1, 1).data.join(','));
+  await createImageBitmap(v).then(() => log('?'), e => log(e.name + ': ' + e.message));
+  v.src = '/media/clip.webm';
+  await wait(v, 'canplaythrough');
+  log('frame@0 ' + colour(v));
+  v.currentTime = 1.5; await wait(v, 'seeked');
+  log('frame@1.5 ' + colour(v));
+  v.currentTime = 0.5; await wait(v, 'seeked');
+  log('frame@0.5 ' + colour(v));
+  const bitmap = await createImageBitmap(v);
+  log('bitmap ' + bitmap.width + 'x' + bitmap.height);
+  log('done');
+})().catch(e => log('failed ' + e));
+"#,
+    );
+    let lines = run(&page, false);
+    // The reference's: 255,1,0 at 0 and 0.5; 0,255,1 at 1.5.
+    let near = |line: &str, prefix: &str, want: [i32; 3]| {
+        let rest = line
+            .strip_prefix(prefix)
+            .unwrap_or_else(|| panic!("{line}"));
+        let got: Vec<i32> = rest.split(',').map(|v| v.parse().unwrap()).collect();
+        assert!(
+            got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 3),
+            "{line}"
+        );
+    };
+    assert_eq!(lines.len(), 6, "{lines:#?}");
+    assert_eq!(lines[0], "nothing yet 0,0,0,0");
+    assert_eq!(
+        lines[1],
+        "InvalidStateError: Failed to execute 'createImageBitmap' on 'Window': The provided element has not retrieved data."
+    );
+    near(&lines[2], "frame@0 ", [255, 1, 0]);
+    near(&lines[3], "frame@1.5 ", [0, 255, 1]);
+    near(&lines[4], "frame@0.5 ", [255, 1, 0]);
+    assert_eq!(lines[5], "bitmap 160x120");
+}
+
+#[test]
+fn a_video_shows_its_picture_and_its_controls_answer_the_pointer() {
+    let _turn = audio_turn();
+    let page = server(
+        r#"
+document.body.style.margin = '0';
+const v = document.createElement('video');
+v.style.width = '320px';
+v.controls = true;
+v.src = '/media/clip.webm';
+document.body.appendChild(v);
+log('ready');
+v.addEventListener('canplaythrough', () => log('loaded'), { once: true });
+for (const e of ['play', 'pause', 'volumechange', 'seeked']) v.addEventListener(e, () => log(e + ' paused=' + v.paused + ' muted=' + v.muted + ' t>1=' + (v.currentTime > 1)));
+"#,
+    );
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(page.url("/page.html"));
+    tab.run_until(|lines| lines.iter().any(|l| l == "loaded"));
+    // The picture at 0, red, fitted in its 320 by 240 box (under the
+    // page's 100px `div`); the bar over its bottom darker.
+    let pixels = tab.engine.frame(400, 400);
+    let at = |x: usize, y: usize| {
+        let i = (y * 400 + x) * 4;
+        [pixels[i], pixels[i + 1], pixels[i + 2]]
+    };
+    let red = at(160, 200);
+    assert!(red[0] > 240 && red[1] < 20 && red[2] < 20, "{red:?}");
+    let bar = at(200, 336);
+    assert!(
+        bar[0] < 160 && bar[0] > 60,
+        "the bar over the picture: {bar:?}"
+    );
+    // The play button plays (the press is the user's activation).
+    tab.engine
+        .pointer_down(20.0, 324.0, crate::Button::Primary, 1);
+    tab.engine
+        .pointer_up(20.0, 324.0, crate::Button::Primary, 1);
+    let lines = tab.run_until(|lines| lines.iter().any(|l| l.starts_with("play")));
+    assert_eq!(lines, ["play paused=false muted=false t>1=false"]);
+    // The mute button.
+    tab.engine.frame(400, 400);
+    tab.engine
+        .pointer_down(300.0, 324.0, crate::Button::Primary, 1);
+    tab.engine
+        .pointer_up(300.0, 324.0, crate::Button::Primary, 1);
+    let lines = tab.run_until(|lines| lines.iter().any(|l| l.starts_with("volumechange")));
+    assert_eq!(lines, ["volumechange paused=false muted=true t>1=false"]);
+    // Three quarters along the timeline: a seek past a second.
+    tab.engine.frame(400, 400);
+    tab.engine
+        .pointer_down(236.0, 324.0, crate::Button::Primary, 1);
+    tab.engine
+        .pointer_up(236.0, 324.0, crate::Button::Primary, 1);
+    let lines = tab.run_until(|lines| lines.iter().any(|l| l.starts_with("seeked")));
+    assert_eq!(lines, ["seeked paused=false muted=true t>1=true"]);
+    // The play button again pauses.
+    tab.engine.frame(400, 400);
+    tab.engine
+        .pointer_down(20.0, 324.0, crate::Button::Primary, 1);
+    tab.engine
+        .pointer_up(20.0, 324.0, crate::Button::Primary, 1);
+    let lines = tab.run_until(|lines| lines.iter().any(|l| l.starts_with("pause")));
+    assert_eq!(lines, ["pause paused=true muted=true t>1=true"]);
+}
+
+#[test]
+fn a_video_shows_its_poster_until_it_has_a_picture() {
+    const POSTER: &[u8] = include_bytes!("../../benches/pages/img/icon0.png");
+    let page = TestServer::plain(move |request| match request.target.as_str() {
+        "/page.html" => html(
+            "<body style=margin:0><video id=v poster=/poster.png></video><script>console.log('ready')</script>",
+        ),
+        "/poster.png" => Reply::ok("image/png", POSTER),
+        _ => Reply::with_fields(404, &[], b""),
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(page.url("/page.html"));
+    tab.run_until(|lines| lines.iter().any(|l| l == "ready"));
+    tab.wait_until(|engine| *engine.load_state() == crate::LoadState::Loaded);
+    // Its natural size is the poster's, 24 by 24; it is drawn there.
+    tab.engine.frame(100, 100);
+    let node = by_id(&tab.engine, "v");
+    let layout = tab.engine.layout(100.0);
+    let size = layout
+        .placed()
+        .find(|p| p.fragment.node == node)
+        .map(|p| (p.fragment.w, p.fragment.h));
+    assert_eq!(size, Some((24.0, 24.0)));
+    // Its pixels decoded once it is first drawn.
+    let drawn = (0..200).any(|_| {
+        tab.engine.poll_network();
+        let pixels = tab.engine.frame(100, 100);
+        let any = (0..24 * 24).any(|i| {
+            let (x, y) = (i % 24, i / 24);
+            let at = (y * 100 + x) * 4;
+            pixels[at..at + 3] != [255, 255, 255]
+        });
+        if !any {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        any
+    });
+    assert!(drawn, "the poster is drawn");
+}
+
+#[test]
+fn a_focused_media_elements_keys_play_pause_and_skip() {
+    let _turn = audio_turn();
+    let page = server(
+        r#"
+const v = document.createElement('video');
+v.controls = true;
+v.src = '/media/clip.webm';
+document.body.appendChild(v);
+log('ready');
+v.addEventListener('canplaythrough', () => { v.focus(); log('focused ' + (document.activeElement === v)); }, { once: true });
+for (const e of ['play', 'pause', 'seeked']) v.addEventListener(e, () => log(e + ' t=' + v.currentTime.toFixed(1)));
+"#,
+    );
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(page.url("/page.html"));
+    let lines = tab.run_until(|lines| lines.iter().any(|l| l.starts_with("focused")));
+    assert_eq!(lines.last().unwrap(), "focused true");
+    tab.engine
+        .key_down(&crate::Key::new(" ", "Space").with_text(" "));
+    let lines = tab.run_until(|lines| lines.iter().any(|l| l.starts_with("play")));
+    assert_eq!(lines, ["play t=0.0"]);
+    tab.engine
+        .key_down(&crate::Key::new("ArrowRight", "ArrowRight"));
+    let lines = tab.run_until(|lines| lines.iter().any(|l| l.starts_with("pause")));
+    // Five seconds on: the end of a clip of 2.1, where it stops.
+    assert_eq!(lines, ["seeked t=2.1", "pause t=2.1"]);
+    tab.engine
+        .key_down(&crate::Key::new("ArrowLeft", "ArrowLeft"));
+    let lines = tab.run_until(|lines| lines.iter().any(|l| l.starts_with("seeked")));
+    assert_eq!(lines, ["seeked t=0.0"]);
+    tab.engine
+        .key_down(&crate::Key::new(" ", "Space").with_text(" "));
+    let lines = tab.run_until(|lines| lines.iter().any(|l| l.starts_with("play")));
+    assert_eq!(lines, ["play t=0.0"]);
+}
+
+#[test]
+fn a_canvas_drawing_another_origins_video_is_tainted() {
+    let other = TestServer::plain(|request| ranged(request, "video/webm", CLIP_VIDEO));
+    let page = server(&format!(
+        r#"
+const wait = (m, e) => new Promise(r => m.addEventListener(e, r, {{once: true}}));
+log('ready');
+(async () => {{
+  for (const cors of [false, true]) {{
+    const v = document.createElement('video');
+    if (cors) v.crossOrigin = 'anonymous';
+    v.src = '{}';
+    const loaded = await Promise.race([wait(v, 'canplaythrough').then(() => true), wait(v, 'error').then(() => false)]);
+    if (!loaded) {{ log('cors ' + cors + ': error ' + v.error.code); continue; }}
+    const g = document.createElement('canvas').getContext('2d');
+    g.drawImage(v, 0, 0);
+    try {{ g.getImageData(0, 0, 1, 1); log('cors ' + cors + ': read'); }} catch (e) {{ log('cors ' + cors + ': ' + e.name); }}
+  }}
+  log('done');
+}})().catch(e => log('failed ' + e));
+"#,
+        other.url("/clip-video.webm")
+    ));
+    let lines = run(&page, false);
+    // Without CORS, tainted; with it, refused by a server that allows
+    // none.
+    assert_eq!(lines, ["cors false: SecurityError", "cors true: error 4"]);
+}
+
+#[test]
+fn a_videos_box_takes_its_pictures_size_on_a_page_with_no_script() {
+    let page = TestServer::plain(move |request| match request.target.as_str() {
+        "/page.html" => html("<body style=margin:0><video id=v src=/media/clip.webm></video>"),
+        "/media/clip.webm" => ranged(request, "video/webm", CLIP),
+        _ => Reply::with_fields(404, &[], b""),
+    });
+    let mut tab = Tab::new();
+    tab.engine.navigate(page.url("/page.html"));
+    tab.wait_until(|engine| *engine.load_state() == crate::LoadState::Loaded);
+    let node = by_id(&tab.engine, "v");
+    let mut size = None;
+    for _ in 0..500 {
+        tab.engine.poll_network();
+        tab.engine.run_tasks();
+        tab.engine.frame(400, 300);
+        let layout = tab.engine.layout(400.0);
+        size = layout
+            .placed()
+            .find(|p| p.fragment.node == node)
+            .map(|p| (p.fragment.w, p.fragment.h));
+        if size == Some((160.0, 120.0)) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(size, Some((160.0, 120.0)));
+}

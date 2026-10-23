@@ -1093,7 +1093,7 @@ fn drawn_size(
 fn may_touch_images(change: &Change) -> bool {
     match change {
         Change::Inserted { .. } | Change::Removed { .. } | Change::Everything => true,
-        Change::AttributeChanged { name, .. } => matches!(name.as_str(), "src" | "href"),
+        Change::AttributeChanged { name, .. } => matches!(name.as_str(), "src" | "href" | "poster"),
         Change::TextChanged { .. }
         | Change::StateChanged { .. }
         | Change::ControlChanged { .. } => false,
@@ -2163,6 +2163,10 @@ impl Engine {
             );
             canceled = self.fire(js::Target::Node(scripts::handle(target)), event);
         }
+        // A media element's controls (M40) take a primary press on them.
+        if canceled != Some(true) && button == Button::Primary {
+            self.press_media_controls(target, x, y);
+        }
         // mousedown's default action (HTML section 6.6.4): the nearest
         // focusable area around the target takes the focus, a text
         // control's shown; with none, the viewport takes it.
@@ -2483,6 +2487,33 @@ impl Engine {
         }
         let m = self.modifiers;
         let plain = !m.ctrl && !m.alt && !m.meta;
+        // A focused media element's controls (M40): the space plays or
+        // pauses, the arrows skip five seconds.
+        if plain
+            && let Some(media) = self.shown.document.focused().filter(|&node| {
+                matches!(self.shown.document.tag(node), Some("video" | "audio"))
+                    && self.shown.document.attr(node, "controls").is_some()
+            })
+        {
+            let action = match key.key.as_str() {
+                " " => Some(playback::Control::Play),
+                "ArrowLeft" => Some(playback::Control::Skip(-5.0)),
+                "ArrowRight" => Some(playback::Control::Skip(5.0)),
+                _ => None,
+            };
+            if let Some(action) = action {
+                let shown = &mut self.shown;
+                shown.scripts.media_control(
+                    media,
+                    action,
+                    &shown.document,
+                    &shown.page,
+                    &mut self.network,
+                );
+                self.changed = true;
+                return KeyOutcome::Taken;
+            }
+        }
         let scrolls = self.viewport_takes_user_scrolls();
         let focused = self.shown.document.focused();
         let document = &self.shown.document;
@@ -4548,6 +4579,13 @@ impl Engine {
     fn take_worker_messages(&mut self) {
         let now = self.now();
         self.shown.scripts.take_worker_messages(now);
+        // A document whose scripts do not run hears its media itself.
+        if !self.scripts_run() {
+            let shown = &mut self.shown;
+            shown
+                .scripts
+                .hear_media_unscripted(&shown.document, &shown.page);
+        }
         // A placeholder canvas takes the size its worker gave its
         // offscreen (M31.4).
         let resizes = self.shown.scripts.take_placeholder_resizes();
@@ -4794,6 +4832,72 @@ impl Engine {
         pixels
     }
 
+    /// Presses the controls of the media element `target`, if it has
+    /// them and the press at `(x, y)` in the viewport is on one (M40):
+    /// play and pause, mute, or the timeline, which seeks where pressed.
+    fn press_media_controls(&mut self, target: NodeId, x: f32, y: f32) {
+        let document = &self.shown.document;
+        let audio = match document.tag(target) {
+            Some("video") => false,
+            Some("audio") => true,
+            _ => return,
+        };
+        if document.attr(target, "controls").is_none() {
+            return;
+        }
+        let (width, _) = self.viewport;
+        let scroll_y = self.shown.scroll_y;
+        let layout = self.layout(width as f32);
+        // Its content: the replaced fragment, where paint drew them.
+        let Some(placed) = layout.placed().find(|p| {
+            p.fragment.node == target
+                && matches!(p.fragment.kind, layout::FragmentKind::Replaced(_))
+        }) else {
+            return;
+        };
+        let content = paint::Rect {
+            x: placed.x,
+            y: placed.y,
+            w: placed.fragment.w,
+            h: placed.fragment.h,
+        };
+        let controls = paint::controls(content, audio);
+        let y = y + scroll_y;
+        let inside = |r: paint::Rect| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+        let action = if inside(controls.play) {
+            playback::Control::Play
+        } else if inside(controls.mute) {
+            playback::Control::Mute
+        } else if inside(controls.timeline) && controls.timeline.w > 0.0 {
+            playback::Control::Seek(f64::from((x - controls.timeline.x) / controls.timeline.w))
+        } else {
+            return;
+        };
+        let shown = &mut self.shown;
+        shown.scripts.media_control(
+            target,
+            action,
+            &shown.document,
+            &shown.page,
+            &mut self.network,
+        );
+        self.changed = true;
+    }
+
+    /// What the media elements show as of this frame (M40): a box whose
+    /// picture's size changed is laid out again.
+    fn sync_media(&mut self) {
+        self.shown.scripts.take_media_changed();
+        let states = self.shown.scripts.media_states();
+        let resized = self.shown.images.set_media(states);
+        if !resized.is_empty() {
+            self.shown
+                .layout_cache
+                .invalidate(&self.shown.document, &[], &resized);
+            self.shown.layout = None;
+        }
+    }
+
     /// Gives each image `items` draw its pixels where they are decoded,
     /// and has the others decoded (M23.2); and an animation the frame its
     /// timeline is at (M23.1). Notes when the next frame comes of those
@@ -4860,6 +4964,7 @@ impl Engine {
             if paint::canvas_node(image.id).is_none()
                 && paint::svg_node(image.id).is_none()
                 && paint::frame_node(image.id).is_none()
+                && paint::video_node(image.id).is_none()
             {
                 self.shown.images.drew(image.id, frame, size);
             }
@@ -4893,6 +4998,14 @@ impl Engine {
                 if let Some((frame, pixels)) = self.frame_pixels(node, place, size, time) {
                     image.pixels = Some(pixels);
                     image.frame = frame;
+                }
+                continue;
+            }
+            // A video's picture now (M40), its number as the frame.
+            if let Some(node) = paint::video_node(image.id) {
+                if let Some((number, pixels)) = self.shown.scripts.video_pixels(node) {
+                    image.pixels = Some(pixels);
+                    image.frame = number;
                 }
                 continue;
             }
@@ -6193,6 +6306,7 @@ impl Engine {
     pub fn needs_frame(&self) -> bool {
         self.changed
             || self.shown.scripts.canvases_changed()
+            || self.shown.scripts.media_wants_frame()
             || self.animating()
             || self.shown.animations.borrow().needs_frame()
             || (self.scripts_run()
@@ -6866,6 +6980,7 @@ impl Engine {
         }
         self.changed = false;
         self.shown.scripts.take_canvases_changed();
+        self.sync_media();
         // Drawn in device pixels, laid out in CSS pixels (M32.4).
         let (device_width, device_height) = (width, height);
         let (width, height) = self.css_size(width, height);

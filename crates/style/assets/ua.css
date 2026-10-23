@@ -287,6 +287,11 @@ select[multiple] option:checked, select[size] option:checked {
 /* Frames (M33.2, HTML section 15.4.4): a border, and the frame's
  * document clipped to the box, as the reference browser computes them.
  * A `frameborder` of 0 takes the border off, a presentational hint. */
+/* Media elements (M40): an audio element shows its controls alone, and
+   a video's picture is fitted whole in its box, as the reference's. */
+audio:not([controls]) { display: none; }
+video { object-fit: contain; }
+
 iframe { border: 2px inset; overflow: clip; }
 
 /* SVG's own (M32, `docs/design/svg.md`), as the reference browser's

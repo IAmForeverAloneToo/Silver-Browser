@@ -14443,6 +14443,9 @@
       } else if (isNode(image) && kindOf(image) === 1 &&
         (native.tag(handleOf(image)) === "img" || native.tag(handleOf(image)) === "canvas")) {
         source = [native.tag(handleOf(image)) === "img" ? 1 : 2, handleOf(image)];
+      } else if (isNode(image) && kindOf(image) === 1 && native.tag(handleOf(image)) === "video") {
+        // A video's picture now (M40).
+        source = [5, handleOf(image)];
       } else {
         throw new $TypeError(where + "The provided value is not of type '(Blob or " +
           "HTMLCanvasElement or HTMLImageElement or HTMLVideoElement or ImageBitmap or ImageData " +

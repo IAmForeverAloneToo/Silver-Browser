@@ -246,6 +246,24 @@ pub enum Replaced {
     /// document the engine draws into the content box. It has no natural
     /// size and no ratio: 300 by 150 unless its style sizes it.
     Frame { node: NodeId },
+    /// A media element (M40, HTML section 15.4.1): a `video`, its natural
+    /// size its picture's once known (else its poster's, else none: 300
+    /// by 150), or an `audio` with controls, 300 by 54 as the reference's;
+    /// with `controls`, the engine's controls over its bottom.
+    /// What it shows is boxed: every fragment's kind is as large as this.
+    Video { node: NodeId, video: Box<VideoBox> },
+}
+
+/// What a media element's replaced box shows (M40).
+#[derive(Debug, Clone, PartialEq)]
+pub struct VideoBox {
+    /// Its picture's size, 0 by 0 while none is known.
+    pub width: u32,
+    pub height: u32,
+    pub audio: bool,
+    pub controls: bool,
+    /// Its poster, once its header is read: shown until a picture is.
+    pub poster: Option<(u64, images::Header)>,
 }
 
 /// Whether `node` is an outer `<svg>` (SVG 2 section 5.1.2): an SVG
@@ -319,6 +337,25 @@ pub trait Images {
     fn url_image(&self, _url: &str) -> ImageState {
         ImageState::Coming
     }
+
+    /// The state of the media element `node` (M40): its picture's size,
+    /// once known, and what its controls show.
+    fn media(&self, _node: NodeId) -> MediaState {
+        MediaState::default()
+    }
+}
+
+/// What a media element shows (M40): its picture's size, once one is
+/// decoded, whether it has a picture now, and what its controls say.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct MediaState {
+    pub size: Option<(u32, u32)>,
+    pub picture: bool,
+    pub paused: bool,
+    pub time: f64,
+    /// NaN before its head is read; infinite for a stream.
+    pub duration: f64,
+    pub muted: bool,
 }
 
 /// An `img`'s image, as the engine has it.
@@ -1420,6 +1457,37 @@ impl<'a> Styled<'a> {
             if !(img && broken) {
                 return Some(self.content_box(item, style, image));
             }
+        }
+        // A media element (M40): its picture, or its poster's, sized by
+        // what is known; an `audio` shown (with controls) its bar alone.
+        let tag = self.document.tag(node);
+        if matches!(tag, Some("video" | "audio")) {
+            let audio = tag == Some("audio");
+            let state = self.images.media(node);
+            let size = state.size.or_else(|| match self.images.image(node) {
+                ImageState::Ready { header, .. } if !audio => Some((header.width, header.height)),
+                _ => None,
+            });
+            let (width, height) = if audio {
+                (0, 0)
+            } else {
+                size.unwrap_or((0, 0))
+            };
+            let poster = match self.images.image(node) {
+                ImageState::Ready { id, header } if !audio => Some((id, header)),
+                _ => None,
+            };
+            let video = Replaced::Video {
+                node,
+                video: Box::new(VideoBox {
+                    width,
+                    height,
+                    audio,
+                    controls: self.document.attr(node, "controls").is_some(),
+                    poster,
+                }),
+            };
+            return Some(self.replaced_box(item, style, video));
         }
         // An iframe shows its frame's document (M33.2), never its
         // content, which is no fallback.

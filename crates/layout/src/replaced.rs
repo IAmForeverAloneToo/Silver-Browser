@@ -33,6 +33,9 @@ pub const ICON_SIZE: f32 = 16.0;
 /// The side of a checkbox or a radio button by nature (M26.7).
 pub const MARK_SIZE: f32 = 13.0;
 
+/// An `audio` element's controls' size (M40): the reference's.
+pub const AUDIO_CONTROLS: (f32, f32) = (300.0, 54.0);
+
 /// A replaced box's natural size and ratio, in CSS pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Natural {
@@ -86,6 +89,26 @@ fn natural(style: &ComputedStyle, replaced: &Replaced) -> Natural {
         Replaced::Mark(_) => Natural {
             width: Some(MARK_SIZE),
             height: Some(MARK_SIZE),
+            ratio: None,
+        },
+        // An `audio` with controls is their bar's size; a video its
+        // picture's, or none known (M40).
+        Replaced::Video { video, .. } if video.audio => Natural {
+            width: Some(AUDIO_CONTROLS.0),
+            height: Some(AUDIO_CONTROLS.1),
+            ratio: None,
+        },
+        Replaced::Video { video, .. } if video.width > 0 && video.height > 0 => {
+            let (w, h) = (video.width as f32, video.height as f32);
+            Natural {
+                width: Some(w),
+                height: Some(h),
+                ratio: Some(w / h),
+            }
+        }
+        Replaced::Video { .. } => Natural {
+            width: None,
+            height: None,
             ratio: None,
         },
         // A canvas is its bitmap's size (M30).
