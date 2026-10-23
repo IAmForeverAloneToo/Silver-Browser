@@ -2569,28 +2569,57 @@ MP3, PCM and AV1 in WebM, MP4, Ogg and WAV, through `symphonia`,
 `opus-decoder` and `rav1d`; H.264 and AAC left out, as Chromium's
 open-source build leaves them; VP8 and VP9 on the G list.
 
-- [ ] M40.1 Media decoding: a `media` crate demuxing the containers and
+- [x] M40.1 Media decoding: a `media` crate demuxing the containers and
        decoding sound to samples and AV1 to RGBA pictures, seeking,
        resampling; decoding in the renderer, sound out of the browser
        (D37).
-- [ ] M40.2 Web Audio: an `audio` crate with the graph, the render
+       Done 2026-10-23: `symphonia`'s readers helped where they fall
+       short (MP4's `av1C` and `dOps`, Matroska's backward seeks, Ogg
+       Opus's pre-skip, keyframes read from AV1's frame headers);
+       `rav1d` vendored with an upstream fix and three of ours, one
+       thread, a panic in it aborting the renderer; `media`'s `av1`
+       module the second exception to the workspace's `unsafe` rule,
+       12 blocks. One mixer a process, its sink the browser's output
+       (WASAPI, 48 kHz stereo, the system converting) or the clock.
+- [x] M40.2 Web Audio: an `audio` crate with the graph, the render
        quantum, the mixing rules, `AudioParam` automation and the
        nodes but `AudioWorklet`'s; `AudioContext` heard through the
        browser's audio output, `OfflineAudioContext`,
        `decodeAudioData()`.
-- [ ] M40.3 Media elements: `<video>` and `<audio>` fetched by ranges,
+       Done 2026-10-23: the reference's numbers for every node but the
+       compressor, which follows the standard's outline (probe p5);
+       Chromium's PeriodicWave tables matched; a context `suspended`
+       until a task starts it, waiting for the tab's sticky activation.
+- [x] M40.3 Media elements: `<video>` and `<audio>` fetched by ranges,
        the standard's load, play, pause, seek and end with their
        states, events and promises, the autoplay policy by sticky
        activation, `canPlayType()`, `MediaElementAudioSourceNode`.
-- [ ] M40.4 Video on screen and basic controls: pictures painted at the
+       Done 2026-10-23: ranges of 16 MiB into a 64 MiB buffer, streamed
+       heads checked as whole responses are, ORB's media states in the
+       browser; probe p2's events and states met exactly for the three
+       videos; a script's changes heard after it (G202).
+- [x] M40.4 Video on screen and basic controls: pictures painted at the
        media clock, the poster, `object-fit`, a video drawn into a
        canvas, the controls' bar drawn and answered by the engine.
-- [ ] M40.5 Media Session and the keyboard's media keys; DRM
+       Done 2026-10-23: the picture a layer of its own at the media
+       clock; the controls answer the pointer and, focused, the space
+       and arrows; a page whose scripts do not run plays too.
+- [x] M40.5 Media Session and the keyboard's media keys; DRM
        explicitly never (`requestMediaKeySystemAccess()` refuses).
-- [ ] M40.6 Acceptance: a `<video controls>` clip played with its sound,
+       Done 2026-10-23: the session the document's, the keys reaching
+       its engine as keys (no session in the browser); every key
+       system refused with the reference's error.
+- [x] M40.6 Acceptance: a `<video controls>` clip played with its sound,
        paused, sought and ended as the reference's, by the pointer and
        the media key; Web Audio's graphs giving the reference's
        numbers; WPT's `webaudio` and media elements subsets; benches.
+       Done 2026-10-23: 382 tests taken, the runner allowing autoplay as
+       the reference is run; their failures named (most media element
+       tests play H.264, D36), what they found fixed, among it a
+       `<meta>` policy not reaching a media fetch started while
+       parsing. The `playback` bench: an AV1 picture of 160 by 120
+       0.7 ms, a quantum of a ten-node graph 0.03 ms, a frame of a page
+       playing a video 0.5 ms.
 
 ---
 
@@ -3328,6 +3357,54 @@ Deferred from the milestones above, each with what it waits on:
 - [ ] G191 A service worker's response has no bound of its own: its
        realm's heap holds it, and `ipc::MAX_MESSAGE` from a worker
        renderer. Found at M39.
+- [ ] G192 VP8 and VP9: no decoder of them in Rust is mature enough
+       for untrusted bytes (D36); `canPlayType()` says `""` of them.
+       Most of WPT's media element tests play H.264 or VP9. Found at
+       M40.
+- [ ] G193 Media Source Extensions (`MediaSource`, `SourceBuffer`) and
+       WebCodecs, each a milestone's. Found at M40.
+- [ ] G194 `AudioWorklet` and `ScriptProcessorNode`: script on the
+       rendering thread, a realm of its own there. Found at M40.
+- [ ] G195 Web Audio's devices and space: the HRTF panning model (its
+       impulse responses are the reference's data), `setSinkId()` and
+       choosing a device, and a device of more than two channels
+       (stereo is played to it). Found at M40.
+- [ ] G196 Text tracks: `<track>`, WebVTT, `TextTrack` and its cues,
+       `TrackEvent`, `textTracks` beyond an empty list. Found at M40.
+- [ ] G197 Fullscreen, picture-in-picture, `requestVideoFrameCallback()`,
+       `getVideoPlaybackQuality()`, `audioTracks` and `videoTracks`.
+       Found at M40.
+- [ ] G198 `preservesPitch` is kept and reflected but has no effect:
+       sound at another rate moves its pitch. Found at M40.
+- [ ] G199 The operating system's media controls (Windows's System
+       Media Transport Controls, macOS's Now Playing) and media keys
+       pressed while another window has focus. Found at M40.
+- [ ] G200 Audio output on macOS and Linux (CoreAudio, PulseAudio or
+       ALSA): their mixer's sink keeps time by the system's clock and
+       plays nothing. Found at M40.
+- [ ] G201 A media panel in DevTools: a pipeline's state and the
+       decoders' figures. Found at M40.
+- [ ] G202 The media element's resource selection runs whole when
+       invoked, or when the engine hears a script's change after the
+       script, rather than awaiting a stable state: `networkState` and
+       the events' order differ from the standard's in about twenty of
+       WPT's tests. Found at M40.
+- [ ] G203 Web Audio against WPT: a buffer source's loops with a
+       duration, a negative `playbackRate`, sub-sample starts and
+       stitching, a start with no buffer, its buffer read as it renders
+       rather than acquired when set (and settable twice); `AudioParam`
+       events in the past and a cancelled curve; an oscillator detuned
+       past Nyquist not silenced; `renderSizeHint`, `playbackStats` and
+       incremental `startRendering()`; `decodeAudioData()` of a detached
+       buffer a `TypeError`; the compressor's numbers, which follow the
+       standard's outline, not the reference's kernel. Found at M40.
+- [ ] G204 Media's loose ends: a 5.1 WAV is not decoded; a `<source>`'s
+       media query is not matched again as the environment changes; no
+       FLAC fixture (one written here was refused by the reference's
+       demuxer and by `symphonia`'s alike); seven of WPT's tests fail
+       undiagnosed; a renderer's own process sending its sound,
+       and WASAPI, are covered by no test (CI's runners have no
+       device). Found at M40.
 
 ---
 

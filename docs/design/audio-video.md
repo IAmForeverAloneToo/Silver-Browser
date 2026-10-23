@@ -528,4 +528,99 @@ quantum.
 
 ## 4. Corrected to the code
 
-Filled in at the last step.
+What the work found that this note did not say, or said otherwise, by
+step:
+
+- **The media crate (step 1).** symphonia's readers needed help, each
+  worked round in `media`: its MP4 reader reads `av01` but not `av1C`
+  (the probe's bytes are searched for it), makes `dOps` an OpusHead
+  still big-endian (a version-0 head is read so), seeks backwards in
+  Matroska only by cues it met while opening (a seek that cannot go
+  back reopens the stream), and trims Ogg Opus's end but not its
+  pre-skip (trimmed here). Its packets carry no keyframe flag: an AV1
+  unit's first frame header is read, and a seek backs off a second,
+  then doubling, until it starts at one. opus-decoder overflows a shift
+  in a checked build on a stream the reference encoded: overflow checks
+  are off for it in the dev and fuzz profiles. There is no FLAC
+  fixture: a FLAC written here was refused by the reference's demuxer
+  and by symphonia's alike. The `av1` module has 12 `unsafe` blocks.
+- **rav1d (steps 2, 3 and 10).** rav1d 1.1.0 panics in its error cleanup on
+  a corrupted keyframe when single-threaded, and its threaded path
+  deadlocks now and then on a malformed stream. The upstream fix (one
+  line, not released) is in `vendor/rav1d`, the cached 1.1.0 patched in
+  through `[patch.crates-io]` with its assembly, scripts and project
+  files left out (`vendor/README.md`); two leaks of its C interface
+  that CI's LeakSanitizer found, and a subtraction its fuzzing found to
+  underflow where dav1d's unsigned C wraps (step 10), are mended there
+  too, each marked "Silver:". The decoder runs on one thread with one frame in flight,
+  starts over after a unit it refuses, and takes no unit until one
+  brings a sequence header; a panic located in rav1d aborts the process
+  (`media::abort_on_decoder_panic`), since unwinding from it is unsound.
+- **The audio crate (step 2).** The reference's oscillator is
+  Chromium's PeriodicWave, matched: a 4,096-frame table for each third
+  of an octave, two read and mixed, scaled by the full-band table's
+  peak. The convolver's normalization calibrates to -58 dB. A delay's
+  frames are worked out in single precision. The compressor follows the
+  standard's outline, not the reference's kernel, so its numbers differ
+  from the reference's (its shape is tested). The panner's model is the
+  equal-power one only. The bound on a context's nodes is the crate's
+  `MAX_NODES`; an offline context's length is bounded by
+  `MAX_AUDIO_BUFFER_BYTES`, with no bound of its own.
+- **Web Audio in the engine (steps 3 and 9).** The control thread is
+  the bootstrap, through one native, `native.audio` (JSON and samples);
+  what the threads tell comes as `WorkerMessage::Audio`, then
+  `Task::Audio`. Sticky activation is kept for the tab, on its frame
+  tree, not the document or its site. A realtime context is
+  `"suspended"` when made and turns `"running"` in a task with its
+  `statechange`, as the standard's control message (step 9; step 3 had
+  it running at once). `decodeAudioData()` copies the page's bytes and
+  leaves its buffer whole. Web Audio's messages carry their samples
+  uncounted against the inbox's bound.
+- **The audio output (step 4).** One mixer for each process, whose sink
+  the process sets: a renderer's sends its blocks to the browser, one
+  process plays through the shell's output, and the default is a sink
+  that plays at the system's clock. The output asks WASAPI for 48 kHz
+  stereo floats and lets the system convert (`AUTOCONVERTPCM`), not the
+  device's own mix format, so a device of more channels plays stereo.
+  The messages are `ToBrowser::Audio` (at most `MAX_AUDIO_BLOCK_FRAMES`,
+  8,192 frames; an empty block asks what was played) and
+  `ToRenderer::AudioPlayed`; there is no stream, format, session or key
+  message. The browser's queue for a renderer is a second
+  (`MAX_AUDIO_QUEUE_FRAMES`); a block past the bound kills the renderer.
+  A document with an open `AudioContext`, or a playing element, is not
+  kept by the back-forward cache.
+- **Fetching media (step 5).** The requests are bounded ranges of
+  `MEDIA_RANGE` (16 MiB, within net's body bound), the next asked for as
+  one ends, not `Range: bytes=0-`; a ranged request asks for no coding.
+  A streamed head is checked and typed (CORS, the resource policy, the
+  tainting) before it is handed over, as a whole response's is. ORB's
+  media states admit an origin's URL for its renderer after the initial
+  response's first 1,024 bytes sniff as media (at most 256 URLs a
+  renderer).
+- **The media element (steps 6 and 9).** The module is
+  `engine::playback`. A `src` set during a run is loaded after it, and
+  a script's changes are heard after the script: the resource
+  selection algorithm runs whole then, not awaiting a stable state, so
+  `networkState` and the events' order differ from the standard's in
+  some tests (G-list). The pipeline is ready at its first picture and a
+  quarter second of sound; the clock is the frames the mixer took, the
+  system's without sound or once the sound ran out. `muted` follows its
+  attribute until a script or the controls set it (step 9). A document
+  whose scripts do not run hears its pipelines itself. A `<meta>`
+  policy reaches the media fetches a script starts while the document
+  is parsed (step 9, found by WPT's media-src tests: a video loaded
+  under `media-src 'none'`).
+- **Video on screen (step 7).** The box is `Replaced::Video` (boxed, as
+  an image's header is); `audio:not([controls])` is `display: none` and
+  a video's `object-fit` is `contain` in the user agent's sheet. The
+  controls bar is 32 px; their geometry is one function that paint and
+  the pointer share.
+- **Media Session (step 8).** The session is the document's: no active
+  session in the browser and no key message, since the media keys
+  already reach the focused tab's document as keys, whose engine acts
+  on them.
+- **The acceptance (step 9).** The web-platform tests' runner lets
+  sound start without the user's activation, as the reference is run
+  for them. Most media element tests play H.264 (`common/media.js` asks
+  for VP9 in WebM first, then MP4) and are expected failures by D36.
+  The bench's figures are in `docs/perf-budgets.md`.

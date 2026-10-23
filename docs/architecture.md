@@ -40,6 +40,11 @@ shell          (bin "silver-browser": windowing, event loop, input, clipboard)
     |          WebAssembly over wasmi, since M29)
     | profile (what the browsing keeps on disk, over redb: a leaf
     |          crate, since M28, below engine)
+    | media   (containers demuxed, sound and AV1 pictures decoded,
+    |          pictures to RGBA, the resampler: a leaf crate, since M40,
+    |          below engine; `unsafe` in its `av1` module alone)
+    | audio   (Web Audio's graph, its quantum, mixing, automation and
+    |          nodes: a leaf crate, since M40, below engine)
     ├ net     (URL parsing, resource fetching)
     ├ html    (bytes → DOM)
     ├ css     (stylesheet bytes → CSSOM)
@@ -2315,4 +2320,40 @@ dedicated workers' requests, worker renderers uncounted, a renderer's
 client id, DevTools for workers, WPT's `service-workers` directory, a
 response's own bound. 3,057 tests pass workspace-wide, two ignored.
 Next: the long tail, gated (M40+).
+
+Milestone 40 (audio, video and Web Audio; `docs/design/audio-video.md`,
+D36, D37): media plays. The `media` crate (step 1): `symphonia`'s
+readers and decoders, Opus by `opus-decoder`, AV1 by `rav1d` (vendored,
+`vendor/rav1d`, its C interface in `media::av1`), pictures converted to
+RGBA by their stream's matrix, seeking to keyframes, a windowed-sinc
+resampler. The `audio` crate (step 2): the graph rendered a quantum at
+a time, the mixing rules, `AudioParam` automation and every node but
+`AudioWorklet`'s. Web Audio in the engine (step 3): `engine::webaudio`,
+a document's contexts behind `native.audio`, an `OfflineAudioContext`
+and `decodeAudioData()` on threads of their own. The output (step 4):
+one mixer a process (`engine::webaudio::mixer`), its sink the
+renderer's blocks to the browser (`ToBrowser::Audio`,
+`ToRenderer::AudioPlayed`, `service::audio`) or, in one process, the
+shell's output (WASAPI in its platform module), else a clock. Fetching
+(step 5): `engine::loader::media`, bounded ranges into a buffer the
+pipeline reads, streamed heads checked as whole responses are, and
+ORB's media states in the network service. The element (step 6):
+`engine::playback`, each element's state and the standard's algorithms
+behind `native.media`, a pipeline thread an element feeding the mixer;
+`MediaElementAudioSourceNode`. On screen (step 7): `Replaced::Video` in
+layout, the picture a layer of its own in paint at the media clock, the
+poster, `drawImage()` of a video, the controls drawn and hit by the
+engine. Media Session and the media keys (step 8), the session the
+document's; DRM never. The acceptance (step 9): WPT's `webaudio` and
+media element tests, 382 more, their failures named; the `playback`
+bench. The runs found: `rav1d`'s cleanup panic, two leaks and an
+overflow (vendored fixes), symphonia's gaps (worked round), a meta
+policy not reaching a media fetch, a context running before its task,
+a video box's number in the differential compare: mended. Not in this
+milestone, said rather than hidden and registered (G192 to G204): VP8
+and VP9, MSE and WebCodecs, AudioWorklet, devices and HRTF, text
+tracks, fullscreen and its kin, `preservesPitch`, the system's media
+controls, output on macOS and Linux, a media panel, resource selection's
+stable state, Web Audio's edges, loose ends. 3,129 tests pass
+workspace-wide, two ignored. Next: the long tail, gated (M41+).
 

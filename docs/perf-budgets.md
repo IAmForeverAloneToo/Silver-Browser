@@ -2015,6 +2015,32 @@ does not touch; six rounds more of their six benches, run while the
 machine was loaded by other programs, moved them both ways. No
 exception.
 
+### Audio, video and Web Audio (M40)
+
+The Windows machine, release. The `playback` bench
+(`cargo bench -p engine --bench playback`): a picture of the fixtures'
+AV1 clip (160 by 120) decoded by `rav1d` and converted to RGBA, 0.68
+to 0.74 ms (median, two runs), on the element's pipeline thread; a
+render quantum of eight oscillators through a biquad, a gain and a
+stereo panner, 0.028 to 0.035 ms against the 2.67 ms a quantum is of
+real time at 48 kHz, about 1% of the rendering thread; a frame of a
+page playing the clip at 320 by 240, its picture at the media clock
+given to paint, 0.47 to 0.55 ms (median; the largest 3.5 ms). A large
+AV1 picture is decoded and converted whole on the element's pipeline
+thread, off the frame: half a second for one at `MAX_VIDEO_SIZE`
+(the `media_demux` fuzzer's inputs).
+
+**T4.3.** The benchmarks of the code before M40 (6b18280d0) and of
+M40's step 9, by turns, 25 benches, four rounds. Across the 163 rows
+above 0.05 ms the head's medians are x1.015 the base's; 13 rows past
+x1.10 and 11 under x0.91. Four rounds more of the six benches with
+such rows: x1.034 over 98 rows, none of the first pass's past x1.10
+again but the grid dashboard's count of frames over budget, whose
+frames sit at the 16.7 ms line (15.8 against 16.0 ms, then 16.3
+against 16.8); the images bench's rows past x5 pair two different
+grids by a load time printed in their name, the same grids' medians
+equal on both sides. No exception.
+
 ### Over budget, and why
 
 These are known and recorded rather than hidden. Each has the item that

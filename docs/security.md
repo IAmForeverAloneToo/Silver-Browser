@@ -121,6 +121,10 @@ inline scripts, styles, handlers and `javascript:` URLs by
 came from a header; violations as `securitypolicyviolation` events,
 console lines and `report-uri` reports. Workers and frames have their
 own. Trusted Types (G94) and the Reporting API (G95) are not here.
+`media-src` governs the media elements' requests (M40), each range of
+them; a `<meta>` policy parsed before a script that starts a media
+fetch holds that fetch, and a blocked URL of another scheme than
+HTTP's is reported by its scheme alone.
 
 ### 4.4 Transport
 
@@ -193,6 +197,19 @@ glyph caches, canvas sizes, path points. Image decoding runs inside
 `catch_unwind`, so that a panicking decoder fails one image. Each is
 fuzzed (section 6).
 
+The media decoders (M40, D36, `docs/design/audio-video.md`) run in the
+renderer, a thread an element, every call into `symphonia`,
+`opus-decoder` and `rav1d` inside `catch_unwind` (a failed decode, not
+a panic), within `MAX_VIDEO_SIZE`, `MAX_CHANNELS`, `MAX_PACKET_BYTES`,
+`MAX_TRACKS` and the sample rates' range. `rav1d` is vendored
+(`vendor/rav1d`): its release with an upstream fix it lacks and three
+changes of ours (two leaks, an overflow), all found by the fuzzers; it
+decodes on one thread with one frame in flight. A panic located in
+`rav1d` is not unwound through, since its interface's state is then
+not sound: `media::abort_on_decoder_panic` aborts the process, the
+sandboxed renderer dying as the reference's does when its decoder
+asserts.
+
 ### 4.9 The profile
 
 `redb` files in the directory the shell chooses, written by `profile`
@@ -245,6 +262,18 @@ font folders; a file it cannot read, it scans for.
   them, keeps another site's download's body, and refuses `file:` to a
   renderer not of files. `service::compromised_tests` is a renderer
   speaking the protocol itself, asking for each.
+- **Media** (M40, D37). A renderer opens no audio device: it sends its
+  mixed sound to the browser in blocks (`ToBrowser::Audio`), each
+  checked to be whole stereo frames within `MAX_AUDIO_BLOCK_FRAMES`, or
+  the renderer is killed, clamped to [-1, 1] and queued within
+  `MAX_AUDIO_QUEUE_FRAMES`; the browser's output alone plays it. A
+  media request may stream into the renderer as a navigation does; a
+  `no-cors` one of another origin is held until its first
+  `MEDIA_SNIFFED` bytes sniff as audio or video, which admits its URL
+  for that renderer (`MAX_ADMITTED_MEDIA`), and a later range goes only
+  for an admitted URL; a blocked one reaches the renderer with its type
+  alone. A media element fed by another origin without CORS taints the
+  canvas that draws it and is silence to Web Audio.
 - **The sandbox on Windows** (D2). A renderer starts with a restricted
   token of the browser's: every privilege but traversal removed, every
   group deny-only but `Users`, `Everyone` and the logon session's, and
@@ -362,11 +391,23 @@ is never written again nor freed; never a file, a pipe, another
 process's bytes or a page's. The shell's test
 `unsafe_is_written_in_the_platform_module_alone_each_block_argued`
 holds every source file to this, that module's one block among them,
-and CI greps the same (T3.2).
+and CI greps the same (T3.2). M40 adds the second exception, `media`'s
+`av1` module, with 12 blocks over `rav1d`'s C interface (its settings,
+`dav1d_open`, the data's creation and copy, `dav1d_send_data`,
+`dav1d_get_picture`, the picture's and the data's release, the
+sequence header, the planes read as slices of their strides and
+heights, `dav1d_close`), which `media`'s `#![deny(unsafe_code)]`
+allows there alone and the same test names and counts; and the shell's
+platform module, 72 blocks now, gains WASAPI's 14: the COM apartment
+entered and left, the device enumerator, the default device and its
+client, the stream's initialization, its buffer's size, its render
+client, its start and stop, the padding, and the buffer taken, written
+as a slice of floats and released.
 
-**Under it**: of the 385 packages `Cargo.lock` holds (every platform's
-together), 267 write `unsafe` somewhere and 118 none. Those the
-attack surface runs through:
+**Under it**: of the 414 registry packages `Cargo.lock` holds (every
+platform's together, M40), 273 write `unsafe` somewhere and 141 none;
+`rav1d`, vendored, is counted apart. Those the attack surface runs
+through:
 
 | Crate | Version | What for | Blocks | Fns | Traits, impls | Externs |
 |---|---|---|---:|---:|---:|---:|
@@ -389,9 +430,11 @@ attack surface runs through:
 | `hashbrown` | 0.17.1 | hash tables | 322 | 107 | 26 | 0 |
 | `winit` | 0.30.13 | windows and input | 732 | 65 | 70 | 56 |
 | `softbuffer` | 0.4.8 | presenting pixels | 62 | 11 | 10 | 1 |
+| `rav1d` | 1.1.0 (vendored) | AV1 pictures (M40) | 301 | 29 | 24 | 142 |
 
 `rustls` and `rustls-webpki`, `png` and its inflaters, the font
-parsers and the workspace's own parsers write none. The C is what
+parsers, `symphonia` and `opus-decoder` (M40) and the workspace's own
+parsers write none. The C is what
 weighs: QuickJS-ng meets every script a page sends, and aws-lc every
 byte of TLS. `cargo run -p engine --example
 unsafe_inventory -- Cargo.lock` counts the whole lock file again
@@ -401,7 +444,7 @@ that adds a package writing `unsafe` is read with it.
 
 ## 6. Fuzzing
 
-39 libFuzzer targets in `fuzz/` (M33.6, M34, M36, M37, M38, M39), each holding its subject to
+42 libFuzzer targets in `fuzz/` (M33.6, M34, M36, M37, M38, M39, M40), each holding its subject to
 not panicking, to its bounds, and to what it must keep (a round trip,
 a differential comparison with a fresh engine, a policy never allowing
 what it refused):
@@ -410,7 +453,13 @@ what it refused):
   `selector_parse`, `media_query`, `values`, `url_parse`,
   `mime_sniff`, `encoding_decode`, `http_response`, `script`, `wasm`,
   `svg`;
-- *decoders*: `image_decode`;
+- *decoders*: `image_decode`; and (M40) `media_demux`, any bytes as
+  each container, its packets decoded by its tracks' decoders twice
+  over, every sample finite and every picture within its bounds;
+  `av1_decode`, any AV1 units to `rav1d` through `media`'s module, every
+  picture converted; `audio_graph`, any sequence of nodes,
+  connections, automation and renders, the output finite and the
+  bounds kept;
 - *the engine*: `style_document`, `animations`, `pipeline`, `mutation`,
   `dom_api`, `input`, `canvas`, `clone`, `frames`;
 - *the network's rules*: `csp`, `referrer`, `hsts`, `cookies`,
@@ -587,6 +636,27 @@ earlier milestones say why each is what it is):
 | `engine` | `MAX_RUNNING_SERVICE_WORKERS` | `32` | The most versions a context runs at once: past it, the one given an event longest ago is stopped. |
 | `engine` | `WORKER_RENDERER_IDLE` | `30 s` | How long a worker renderer lives with no version running in it. |
 | `engine` | `MAX_REDIRECTS` | `20` | The most redirects of a version's that are followed: Fetch's. |
+| `engine` | `MAX_MEDIA_BUFFER` | `64 << 20` | The bytes of a media element's resource kept in memory (M40): past it, the ranges farthest behind the reader go, and the fetch waits for the reader. |
+| `engine` | `MEDIA_RANGE` | `16 << 20` | The bytes a media range asks for, within net's body bound. |
+| `engine` | `MAX_MEDIA_PIPELINES` | `75` | The most media elements a process plays or loads at once, the reference's limit of players: past it, a load fails with a format error. |
+| `engine` | `MAX_DECODED_PICTURES` | `8` | The pictures a pipeline decodes ahead. |
+| `engine` | `MAX_DECODED_SOUND` | `48000` | The frames of sound a pipeline decodes ahead: a second. |
+| `engine` | `MAX_AUDIO_CONTEXTS` | `32` | The most live `AudioContext`s and `OfflineAudioContext`s a document has. |
+| `engine` | `MAX_AUDIO_BUFFER_BYTES` | `512 << 20` | The most an `AudioBuffer`, an offline context's rendered buffer, or a buffer given to the engine may hold. |
+| `engine` | `MAX_DECODE_AUDIO_BYTES` | `512 << 20` | `decodeAudioData()`'s input and its output. |
+| `engine` | `MAX_AUDIO_BLOCK_FRAMES` | `8192` | The frames of a renderer's block of sound: past it, the renderer is killed. |
+| `engine` | `MAX_AUDIO_QUEUE_FRAMES` | `48000` | The frames of a renderer's sound the browser's output queues: a second. |
+| `engine` | `MAX_ADMITTED_MEDIA` | `256` | The media URLs of other origins a renderer has been admitted to read by ranges: past it, the oldest go. |
+| `media` | `MAX_VIDEO_SIZE` | `8192` | A picture's width and height, also `rav1d`'s frame size limit: a larger one fails to decode. |
+| `media` | `MAX_PACKET_BYTES` | `32 << 20` | A packet's bytes. |
+| `media` | `MAX_TRACKS` | `64` | A container's tracks. |
+| `media` | `MAX_CHANNELS` | `32` | A track's channels. |
+| `media` | `MAX_SAMPLE_RATE` | `768000` | A track's sample rate, from 3,000. |
+| `audio` | `MAX_NODES` | `100000` | The nodes of a graph. |
+| `audio` | `MAX_PARAM_EVENTS` | `10000` | An `AudioParam`'s automation events: past it, those wholly past go. |
+| `audio` | `MAX_DELAY_SECONDS` | `180` | A `DelayNode`'s longest delay: the standard's. |
+| `audio` | `MAX_CONVOLVER_FRAMES` | `480000` | A `ConvolverNode`'s impulse response: ten seconds at 48 kHz. |
+| `audio` | `MAX_FFT_SIZE` | `32768` | An `AnalyserNode`'s FFT: the standard's. |
 | `silver-browser` | `MAX_CRASH_DUMPS` | `8` | The most dumps kept: past it, the oldest go. |
 | `silver-browser` | `MAX_FORWARDED` | `1024` | The most requests waiting on the page's answers. |
 | `silver-browser` | `MAX_ALL_RENDERERS` | `48` | The most renderers the windows' tabs keep alive together (M37), shared out among the windows: past a window's share, its hidden tab least recently shown is discarded. |
@@ -773,6 +843,11 @@ seconds (`PROMPT_TIMEOUT`).
   `MAX_ALL_RENDERERS`, each site with a running version having one
   (G187); a worker's response has no bound of its own past its realm's
   heap and `MAX_MESSAGE` (G191).
+- **Media's edges** (M40): the output is Windows's alone, macOS and
+  Linux keeping time without sound (G200); `rav1d`'s fixes are ours
+  until a release carries them (`vendor/README.md`); a large AV1 picture
+  is decoded and converted whole, half a second for one at
+  `MAX_VIDEO_SIZE`, a renderer's own time.
 - **The profile encryption's edges** (G109): pages freed when an older
   profile was sealed keep their values in the clear until written
   again.
