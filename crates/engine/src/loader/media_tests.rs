@@ -151,6 +151,12 @@ fn a_failure_or_a_resource_let_go_ends_the_reads() {
         _ => Reply::Hang,
     });
     let missing = start(&server, "/missing.webm");
+    // Read once the response has ended, its failure and its end both
+    // known: the failure is what the read hears.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !missing.idle() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
     let mut buf = [0u8; 10];
     assert!(missing.reader().read(&mut buf).is_err());
     assert_eq!(

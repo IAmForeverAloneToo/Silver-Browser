@@ -287,6 +287,7 @@ fn fetch(shared: &Arc<Shared>, request: &Request, start: u64, generation: u64) {
     state.flight = None;
     state.abort = None;
     match result {
+        Ok(_) if state.failed.is_some() => {}
         Ok(_) if !state.by_ranges => {
             // A whole response's end is the resource's.
             state.whole = true;
@@ -416,9 +417,7 @@ impl Read for MediaReader {
                     return Ok(n);
                 }
             }
-            if state.length.is_some_and(|length| self.at >= length) {
-                return Ok(0);
-            }
+            // A failure first: a failed response's end is no resource's.
             match &state.failed {
                 Some(MediaError::Closed) => {
                     return Err(io::Error::new(
@@ -428,6 +427,9 @@ impl Read for MediaReader {
                 }
                 Some(MediaError::Network(why)) => return Err(io::Error::other(why.clone())),
                 None => {}
+            }
+            if state.length.is_some_and(|length| self.at >= length) {
+                return Ok(0);
             }
             let coming = state
                 .flight
