@@ -200,7 +200,10 @@ fn read_golomb(msac: &mut MsacContext) -> u32 {
         val = (val << 1) + rav1d_msac_decode_bool_equi(msac) as u32;
     }
 
-    val - 1
+    // Silver: dav1d's `val - 1` is unsigned and wraps: after 32 zeros
+    // `val` has shifted out to 0. A build that checks overflow panicked
+    // here (M40's fuzzing); a release build wrapped already.
+    val.wrapping_sub(1)
 }
 
 trait ReadInt {

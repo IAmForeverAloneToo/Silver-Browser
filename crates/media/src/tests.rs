@@ -275,14 +275,17 @@ fn resampling_keeps_a_tone_and_gives_the_frames_the_ratio_says() {
 }
 
 #[test]
-fn units_that_made_rav1d_panic_in_its_error_cleanup_fail_or_decode_but_never_panic() {
+fn units_that_made_rav1d_panic_fail_or_decode_but_never_panic() {
     // M40's fuzzing: with one frame context, rav1d 1.1.0 unwrapped a frame
-    // header its error cleanup had dropped. The fuzz target's format: each
-    // unit a little-endian 16-bit length and its bytes.
+    // header its error cleanup had dropped (the first three); a Golomb
+    // code of 32 zeros took one from nothing, which dav1d's unsigned
+    // arithmetic wraps (the fourth, step 10). The fuzz target's format:
+    // each unit a little-endian 16-bit length and its bytes.
     for input in [
         &include_bytes!("../../../fuzz/seeds/av1_decode/rav1d-cleanup-1")[..],
         &include_bytes!("../../../fuzz/seeds/av1_decode/rav1d-cleanup-2")[..],
         &include_bytes!("../../../fuzz/seeds/av1_decode/rav1d-cleanup-3")[..],
+        &include_bytes!("../../../fuzz/seeds/av1_decode/rav1d-golomb")[..],
     ] {
         let mut decoder = PictureDecoder::av1().unwrap();
         let mut rest = input;

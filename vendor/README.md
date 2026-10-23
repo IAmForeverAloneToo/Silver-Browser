@@ -15,14 +15,17 @@ yet. Without it, a corrupted keyframe makes the decoder's error cleanup
 unwrap a frame header it no longer has: a panic that is not sound to
 unwind through (M40's fuzzing).
 
-And two changes of ours, each marked "Silver:", for leaks CI's
+And three changes of ours, each marked "Silver:". Two for leaks CI's
 LeakSanitizer found (48 bytes a time, an empty ITU-T T.35 list): in
 `include/dav1d/picture.rs`, a picture handed to C carries no reference
 to an empty list (`dav1d_picture_unref` wrote back an emptied picture
 holding one, as did a `dav1d_get_picture` that had no picture, and
 nothing released them); in `src/picture.rs`, the default picture
 allocator reads only the picture's parameters (it converted the whole
-picture, making such a list, and forgot it).
+picture, making such a list, and forgot it). One for an overflow
+the fuzzer found: in `src/recon.rs`, `read_golomb` subtracts with
+wrapping, as dav1d's unsigned C does (a code of 32 zeros left 0, and a
+build that checks overflow panicked).
 
 Left out of the published crate: its assembly (`src/**/*.asm`, `*.S`,
 built only with the `asm` feature, which this build does not turn on),

@@ -2011,6 +2011,8 @@ html/semantics/embedded-content/the-iframe-element/srcdoc_process_attributes.htm
 # for them. These fail by a gap the design note's section 2 names, by a
 # codec D36 leaves out (most of the media elements' tests play H.264), or
 # for a cause registered in M40's notes.
+html/semantics/embedded-content/media-elements/audio_loop_seek_to_eos.html               either: it plays a looping five-second clip and seeks to its end; a slower machine (CI's) outlasts the runner's ten seconds of the test's time
+html/semantics/embedded-content/media-elements/track/track-element/track-active-cues.html either: it waits for an H.264 video (D36) and a text track, neither of which loads here; its harness's own timeout and the runner's ten seconds race on a slower machine (CI's macOS)
 webaudio/the-audio-api/media-playback-while-not-visible-permission-policy/interrupt-when-created-hidden.tentative.sub.html no URL class (G68)
 webaudio/the-audio-api/media-playback-while-not-visible-permission-policy/interrupt-when-hidden.tentative.sub.html no URL class (G68)
 webaudio/the-audio-api/media-playback-while-not-visible-permission-policy/resume-while-hidden.tentative.sub.html no URL class (G68)

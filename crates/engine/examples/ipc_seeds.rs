@@ -6,9 +6,12 @@
 //! asking to close the tab, M37), its storage change heard by another
 //! tab of the same context, then goes to another site and back; it
 //! registers a service worker, which runs in a worker renderer and
-//! answers its requests and its reload's (M39);
+//! answers its requests and its reload's (M39); it has an `<audio>`,
+//! whose resource is fetched by ranges (M40);
 //! its messages each way, as they crossed the pipes, a few of each kind,
-//! one frame to a file.
+//! one frame to a file. The sound's messages, which renderers in threads
+//! do not send (their process's mixer is left alone), are made: a block
+//! of a quantum, an empty block and what was played (M40).
 //!
 //! ```text
 //! cargo run -p engine --example ipc_seeds -- fuzz/seeds/ipc_decode
@@ -23,7 +26,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use engine::ipc::{ToBrowser, ToRenderer, Wire, read_message};
+use engine::ipc::{Bytes, ToBrowser, ToRenderer, Wire, frame, read_message};
 use engine::service::{Launched, Launcher, RemoteTab, ThreadLauncher};
 use engine::{Button, FrameTime, LoadState, Url, View};
 use net::test_server::{Reply, TestServer};
@@ -103,6 +106,9 @@ fn server() -> TestServer {
     TestServer::plain(|request| {
         let host = request.header("Host").unwrap_or_default().to_owned();
         let port = host.rsplit(':').next().unwrap_or_default().to_owned();
+        if request.target == "/tone.wav" {
+            return Reply::ok("audio/wav", &tone());
+        }
         if request.target == "/sw.js" {
             return Reply::ok(
                 "text/javascript",
@@ -111,7 +117,7 @@ fn server() -> TestServer {
         }
         let body = match request.target.as_str() {
             "/" => format!(
-                "<title>seeds</title><input id=i>\
+                "<title>seeds</title><input id=i><audio src=/tone.wav preload=auto></audio>\
                  <iframe src='http://b.localhost:{port}/child'></iframe>\
                  <script>localStorage.setItem('k', 'v'); document.cookie = 'c=1';\
                  fetch('/data').then(r => r.text()).then(t => console.log('data', t));                 navigator.serviceWorker.register('/sw.js').then(r => r.update());\
@@ -126,6 +132,26 @@ fn server() -> TestServer {
         };
         Reply::ok("text/html", body.as_bytes())
     })
+}
+
+/// A tenth of a second of a 16-bit mono WAV at 48 kHz, silent.
+fn tone() -> Vec<u8> {
+    let data = 4_800 * 2;
+    let mut out = Vec::new();
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data as u32).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&48_000u32.to_le_bytes());
+    out.extend_from_slice(&96_000u32.to_le_bytes());
+    out.extend_from_slice(&2u16.to_le_bytes());
+    out.extend_from_slice(&16u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&(data as u32).to_le_bytes());
+    out.resize(out.len() + data, 0);
+    out
 }
 
 /// Takes what the renderers say for a while, drawing as they ask.
@@ -229,5 +255,25 @@ fn main() {
             written += 1;
         }
     }
-    println!("{written} seeds of {} kinds of message", kept.len());
+    // The sound's messages, made (see the module's comment).
+    let block: Vec<u8> = (0..128 * 2)
+        .flat_map(|i| ((i as f32 / 256.0) - 0.5).to_le_bytes())
+        .collect();
+    let made = [
+        frame(&ToBrowser::Audio {
+            samples: Bytes(block),
+        }),
+        frame(&ToBrowser::Audio {
+            samples: Bytes(Vec::new()),
+        }),
+        frame(&ToRenderer::AudioPlayed { frames: 48_000 }),
+    ];
+    for seed in made.into_iter().flatten() {
+        std::fs::write(dir.join(name(&seed)), &seed).expect("written");
+        written += 1;
+    }
+    println!(
+        "{written} seeds of {} kinds of message and the sound's",
+        kept.len()
+    );
 }
