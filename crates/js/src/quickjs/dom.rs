@@ -471,6 +471,7 @@ const NATIVES: &[(&str, Decode)] = &[
         Ok(Call::Caches(a.string(0)?, a.bytes(1)?.unwrap_or_default()))
     }),
     ("idbWake", |_| Ok(Call::IdbWake)),
+    ("media", |a| Ok(Call::Media(a.string(0)?))),
     ("audio", |a| {
         Ok(Call::Audio(a.string(0)?, a.bytes(1)?.unwrap_or_default()))
     }),

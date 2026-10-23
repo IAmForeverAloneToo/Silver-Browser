@@ -8,9 +8,6 @@
 //! keeps at most [`MAX_MEDIA_BUFFER`], the ranges farthest behind the
 //! reader let go first; past it, the fetch waits for the reader.
 
-// The media element (step 6) is its user.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::collections::BTreeMap;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -124,12 +121,20 @@ impl MediaResource {
 
     /// The byte ranges held, as (start, end) pairs: what has come and is
     /// kept.
+    #[cfg(test)]
     pub(crate) fn held(&self) -> Vec<(u64, u64)> {
         lock(&self.shared)
             .ranges
             .iter()
             .map(|(start, bytes)| (*start, start + bytes.len() as u64))
             .collect()
+    }
+
+    /// Whether no fetch is under way: all came, or it failed, or it
+    /// waits for a read to want more.
+    pub(crate) fn idle(&self) -> bool {
+        let state = lock(&self.shared);
+        state.flight.is_none() || state.failed.is_some()
     }
 
     /// The bytes kept in memory.

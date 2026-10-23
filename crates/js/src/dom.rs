@@ -415,6 +415,8 @@ pub enum Call {
     /// Web Audio's operation (M40), as JSON, and the samples it carries:
     /// its answer, as JSON, and the samples it gives ([`Answer::Pair`]).
     Audio(String, Vec<u8>),
+    /// A media element's call (M40), as JSON: its answer, as JSON.
+    Media(String),
     /// A `FetchEvent`'s answer (M39): its head as JSON and its body.
     ServiceWorkerRespond(String, Vec<u8>),
     /// The bytes the document's storage key uses (M36.8).

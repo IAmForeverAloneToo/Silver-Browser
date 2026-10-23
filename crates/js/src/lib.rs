@@ -377,6 +377,9 @@ pub enum Task {
     /// the samples it carries: a source ended, a context's state, a
     /// buffer decoded or rendered.
     Audio(String, Vec<u8>),
+    /// What a document's media elements do (M40), as JSON: actions to
+    /// carry out, or a pipeline's report to hear.
+    Media(String),
 }
 
 /// Where a message is delivered (M31).

@@ -122,6 +122,7 @@ mod navigation;
 pub mod network_log;
 mod pages;
 mod permissions;
+mod playback;
 mod print;
 pub mod renderer;
 mod sandbox;
@@ -5305,6 +5306,17 @@ impl Engine {
                     {
                         page.rescan(document, &mut self.network, Some(&media));
                     }
+                    // A media element parsed, or given its `src` (M40).
+                    if changes.iter().any(may_touch_images) {
+                        let activated = frames::lock(&self.frame.tree).has_been_activated();
+                        parsing.scripts.media_changed(
+                            &changes,
+                            document,
+                            page,
+                            &mut self.network,
+                            activated,
+                        );
+                    }
                     let loader::Parsing { load, scripts, .. } = &mut **parsing;
                     let mut lent = scripts::Lent {
                         document,
@@ -5324,6 +5336,16 @@ impl Engine {
                     .any(|change| loader::may_touch_sheets(document, change))
                 {
                     page.rescan(document, &mut self.network, Some(&media));
+                }
+                if changes.iter().any(may_touch_images) {
+                    let activated = frames::lock(&self.frame.tree).has_been_activated();
+                    parsing.scripts.media_changed(
+                        &changes,
+                        document,
+                        page,
+                        &mut self.network,
+                        activated,
+                    );
                 }
                 if matches!(stop, html::Stop::Slice | html::Stop::Script { .. }) {
                     self.wake();
@@ -6102,6 +6124,19 @@ impl Engine {
         }
         if changes.iter().any(may_touch_images) {
             self.request_images();
+        }
+        // A media element's `src`, its `<source>` children, or the element
+        // in or out (M40).
+        if changes.iter().any(may_touch_images) && !self.shown.made {
+            let activated = frames::lock(&self.frame.tree).has_been_activated();
+            let shown = &mut self.shown;
+            shown.scripts.media_changed(
+                &changes,
+                &shown.document,
+                &shown.page,
+                &mut self.network,
+                activated,
+            );
         }
         // An `iframe` in, out or navigated (M33.2): one taken out loses
         // its frame, put back or not.

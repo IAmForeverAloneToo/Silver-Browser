@@ -78,6 +78,9 @@ pub(crate) enum WorkerMessage {
     /// `js::Task::Audio`, its samples uncounted (a rendered or decoded
     /// buffer, bounded by `MAX_AUDIO_BUFFER_BYTES`, is never dropped).
     Audio(String, Vec<u8>),
+    /// What the document's media elements tell it (M40): a task of
+    /// `js::Task::Media`.
+    Media(String),
 }
 
 impl WorkerMessage {
@@ -926,7 +929,7 @@ impl WorkerHost {
         let task = match message {
             WorkerMessage::Stop => return,
             // Frames and Web Audio are the document's alone.
-            WorkerMessage::Frame(_) | WorkerMessage::Audio(..) => return,
+            WorkerMessage::Frame(_) | WorkerMessage::Audio(..) | WorkerMessage::Media(_) => return,
             WorkerMessage::Wake => {
                 for task in host.take_fetched() {
                     if host.closing || stop.load(Ordering::SeqCst) {

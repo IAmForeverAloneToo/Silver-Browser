@@ -1117,6 +1117,7 @@ impl Scripts {
             self.fetch(lent, wanted);
         }
         self.start_fetches(lent, outputs.fetches, outputs.aborted);
+        self.start_media(lent);
         self.posted.extend(outputs.messages);
         self.drop_tasks_of(&outputs.terminated);
         self.events.extend(outputs.events);
@@ -1185,6 +1186,7 @@ impl Scripts {
             self.fetch(lent, wanted);
         }
         self.start_fetches(lent, outputs.fetches, outputs.aborted);
+        self.start_media(lent);
         self.posted.extend(outputs.messages);
         self.drop_tasks_of(&outputs.terminated);
         self.events.extend(outputs.events);
@@ -1275,6 +1277,11 @@ impl Scripts {
                     self.posted.push_back((now, js::Task::Audio(text, bytes)));
                     continue;
                 }
+                // What its media elements told it (M40).
+                workers::WorkerMessage::Media(text) => {
+                    self.posted.push_back((now, js::Task::Media(text)));
+                    continue;
+                }
                 _ => continue,
             };
             match self.host.workers.workers.receive(id, event) {
@@ -1346,6 +1353,40 @@ impl Scripts {
             .into_iter()
             .flatten()
             .min()
+    }
+
+    /// Starts the media fetches the run's loads asked for (M40).
+    fn start_media(&mut self, lent: &mut Lent<'_>) {
+        let page = lent.page.id();
+        let inbox = self.host.workers.inbox();
+        let network = &mut *lent.network;
+        self.host
+            .media
+            .start_pending(|request| network.media(page, request), Some(&inbox));
+    }
+
+    /// What `changes` to the document mean to its media elements (M40):
+    /// loads, resources selected, pauses; and the fetches they start.
+    pub(crate) fn media_changed(
+        &mut self,
+        changes: &[dom::Change],
+        document: &Document,
+        page: &Page,
+        network: &mut Network,
+        activated: bool,
+    ) {
+        let inbox = self.host.workers.inbox();
+        let env = crate::playback::Env {
+            document,
+            page: Some(page),
+            inbox: Some(inbox.clone()),
+            activated,
+        };
+        self.host.media.changed(changes, &env);
+        let id = page.id();
+        self.host
+            .media
+            .start_pending(|request| network.media(id, request), Some(&inbox));
     }
 
     /// Starts the fetches a run asked for, on the document's page, and
@@ -1437,7 +1478,10 @@ impl Scripts {
     /// its realm died, nor while it has workers (M31), which end with it
     /// as it goes, nor while an `AudioContext` of its is open (M40).
     pub(crate) fn keepable(&self) -> bool {
-        !self.stopped && !self.host.workers.workers.any() && !self.host.audio.sounding()
+        !self.stopped
+            && !self.host.workers.workers.any()
+            && !self.host.audio.sounding()
+            && !self.host.media.playing()
     }
 
     /// Collects the realm's garbage, as when the document is kept.

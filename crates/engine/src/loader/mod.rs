@@ -40,6 +40,8 @@ mod lifecycle_tests;
 mod lna_tests;
 pub(crate) mod media;
 #[cfg(test)]
+mod media_element_tests;
+#[cfg(test)]
 mod media_tests;
 #[cfg(test)]
 mod mixed_tests;
@@ -830,8 +832,6 @@ impl Network {
 
     /// Starts fetching a media element's resource (M40), `request`, for
     /// `page`: on threads of its own, by ranges, into its buffer.
-    // The media element (step 6) is its user.
-    #[allow(dead_code)]
     pub(crate) fn media(&mut self, page: PageId, mut request: Request) -> media::MediaResource {
         self.apply_policies(page, &Target::Fetch, &mut request);
         let client = self.client_for(&request);

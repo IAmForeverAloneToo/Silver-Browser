@@ -1737,7 +1737,6 @@ content-security-policy/inside-worker/dedicatedworker-report-only.html          
 content-security-policy/media-src/media-src-7_1.html                                     no audio or video, media being a later milestone's
 content-security-policy/media-src/media-src-7_1_2.sub.html                               no audio or video, media being a later milestone's
 content-security-policy/media-src/media-src-7_2.html                                     no audio or video, media being a later milestone's
-content-security-policy/media-src/media-src-7_2_2.sub.html                               no audio or video, media being a later milestone's
 content-security-policy/media-src/media-src-7_3.sub.html                                 no audio or video, media being a later milestone's
 content-security-policy/media-src/media-src-7_3_2.sub.html                               no audio or video, media being a later milestone's
 content-security-policy/media-src/media-src-blocked-blob-url.html	Video with blob: URL blocked when blob: not in media-src	no URL class (G68)

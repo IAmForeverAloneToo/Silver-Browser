@@ -239,6 +239,8 @@ pub(crate) struct DocumentHost {
     pub(crate) workers: DocumentWorkers,
     /// The document's Web Audio (M40).
     pub(crate) audio: crate::webaudio::WebAudio,
+    /// The document's media elements (M40).
+    pub(crate) media: crate::playback::Players,
     /// Whether the document is the DevTools panel's page (M36), and what
     /// it sent the browser since the engine last took it.
     pub(crate) panel: bool,
@@ -1359,13 +1361,25 @@ impl DocumentHost {
                     .frames
                     .as_ref()
                     .is_some_and(|env| crate::frames::lock(&env.tree).has_been_activated());
+                // A `MediaElementAudioSourceNode`'s element, by its handle.
+                let element = devtools::Json::parse(&request)
+                    .ok()
+                    .filter(|op| {
+                        op.get("kind").and_then(devtools::Json::as_str)
+                            == Some("mediaElementSource")
+                    })
+                    .and_then(|op| op.get("element").and_then(devtools::Json::as_f64))
+                    .and_then(|handle| self.node(Handle(handle as u64)).ok())
+                    .and_then(|node| self.media.sound(node, &self.document));
                 let env = crate::webaudio::Env {
                     inbox: self.workers.inbox(),
                     activated,
+                    element,
                 };
                 let (json, bytes) = self.audio.call(&request, bytes, &env);
                 Ok(Answer::Pair(json, bytes))
             }
+            Call::Media(request) => Ok(Answer::String(self.media_call(&request))),
             Call::IdbWake => {
                 let now = self.now();
                 self.outputs.messages.push((now, js::Task::Idb));
@@ -1923,6 +1937,54 @@ impl DocumentHost {
     /// A canvas's call (M30): a context's names its `canvas` element,
     /// whose size its attributes give and whose computed `color` is
     /// `currentcolor`, read only when a colour says it.
+    /// A media element's call (M40), JSON in and out: `{"result"}` or
+    /// `{"error": {name, message}}`. A pipeline's report, heard in its
+    /// task, answers the actions to carry out now.
+    fn media_call(&mut self, request: &str) -> String {
+        let answer = devtools::Json::parse(request)
+            .map_err(|_| ("TypeError", "a malformed media call".to_owned()))
+            .and_then(|op| {
+                let node = op
+                    .get("node")
+                    .and_then(devtools::Json::as_f64)
+                    .and_then(|n| self.node(Handle(n as u64)).ok());
+                let activated = self
+                    .window
+                    .frames
+                    .as_ref()
+                    .is_some_and(|env| crate::frames::lock(&env.tree).has_been_activated());
+                let env = crate::playback::Env {
+                    document: &self.document,
+                    page: self.page.as_ref(),
+                    inbox: Some(self.workers.inbox()),
+                    activated,
+                };
+                if op.get("op").and_then(devtools::Json::as_str) == Some("report") {
+                    let generation = op
+                        .get("generation")
+                        .and_then(devtools::Json::as_f64)
+                        .unwrap_or(0.0) as u64;
+                    let report = op.get("report").cloned().unwrap_or(devtools::Json::Null);
+                    return Ok(match node {
+                        Some(node) => self.media.report(node, generation, &report, &env),
+                        None => devtools::Json::Array(Vec::new()),
+                    });
+                }
+                self.media.call(&op, &env, node)
+            });
+        match answer {
+            Ok(result) => devtools::Json::object([("result", result)]).write(),
+            Err((name, message)) => devtools::Json::object([(
+                "error",
+                devtools::Json::object([
+                    ("name", devtools::Json::from(name)),
+                    ("message", devtools::Json::from(message)),
+                ]),
+            )])
+            .write(),
+        }
+    }
+
     fn canvas(&mut self, call: js::CanvasCall) -> Result<Answer, DomError> {
         // An `img`'s state, which `complete` and `naturalWidth` read
         // (M30): the image a canvas would draw.

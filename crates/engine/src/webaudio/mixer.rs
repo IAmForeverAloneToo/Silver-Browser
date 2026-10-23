@@ -42,6 +42,8 @@ struct Live {
 
 struct Mixer {
     live: Mutex<HashMap<u64, Live>>,
+    /// The media elements' sounds (M40 step 6), mixed as they play.
+    elements: Mutex<HashMap<u64, Weak<crate::playback::ElementSound>>>,
     sink: Mutex<Arc<dyn AudioSink>>,
     started: OnceLock<()>,
 }
@@ -50,6 +52,7 @@ fn mixer() -> &'static Mixer {
     static MIXER: OnceLock<Mixer> = OnceLock::new();
     MIXER.get_or_init(|| Mixer {
         live: Mutex::default(),
+        elements: Mutex::default(),
         sink: Mutex::new(Arc::new(ClockSink::new())),
         started: OnceLock::new(),
     })
@@ -72,13 +75,34 @@ pub(crate) struct Running(u64);
 impl Drop for Running {
     fn drop(&mut self) {
         lock(&mixer().live).remove(&self.0);
+        lock(&mixer().elements).remove(&self.0);
     }
+}
+
+/// Mixes a media element's sound from now, while it plays.
+pub(crate) fn add_element(sound: &Arc<crate::playback::ElementSound>) -> Running {
+    let key = next_key();
+    lock(&mixer().elements).insert(key, Arc::downgrade(sound));
+    start();
+    Running(key)
+}
+
+fn next_key() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+fn start() {
+    mixer().started.get_or_init(|| {
+        let _ = std::thread::Builder::new()
+            .name("audio mixer".to_owned())
+            .spawn(run_mixer);
+    });
 }
 
 /// Starts rendering `graph` from now; `ended` hears its sources end.
 pub(crate) fn run(graph: &Arc<Mutex<Graph>>, ended: Ended) -> Running {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    let key = NEXT.fetch_add(1, Ordering::Relaxed);
+    let key = next_key();
     let rate = lock(graph).rate;
     let resampler = (rate != OUTPUT_RATE_F32)
         .then(|| media::Resampler::new(f64::from(rate), f64::from(OUTPUT_RATE), OUTPUT_CHANNELS));
@@ -91,11 +115,7 @@ pub(crate) fn run(graph: &Arc<Mutex<Graph>>, ended: Ended) -> Running {
             made: VecDeque::new(),
         },
     );
-    mixer().started.get_or_init(|| {
-        let _ = std::thread::Builder::new()
-            .name("audio mixer".to_owned())
-            .spawn(run_mixer);
-    });
+    start();
     Running(key)
 }
 
@@ -163,6 +183,11 @@ fn mix_once(written: &mut Written) {
     let sink = lock(&mixer().sink).clone();
     let mut live = lock(&mixer().live);
     live.retain(|_, entry| entry.graph.strong_count() > 0);
+    let elements: Vec<_> = {
+        let mut elements = lock(&mixer().elements);
+        elements.retain(|_, sound| sound.strong_count() > 0);
+        elements.values().filter_map(Weak::upgrade).collect()
+    };
     let played = sink.played();
     // A sink that played past what it was given (it ran dry, or nothing
     // ran) is written to from where it is; so is a new sink.
@@ -171,7 +196,7 @@ fn mix_once(written: &mut Written) {
     }
     written.played = played;
     written.written = written.written.max(played);
-    if live.is_empty() {
+    if live.is_empty() && elements.is_empty() {
         return;
     }
     let ahead = written.written - played;
@@ -197,6 +222,11 @@ fn mix_once(written: &mut Written) {
         drop(graph);
         if !ended.is_empty() {
             (entry.ended)(ended);
+        }
+    }
+    for sound in &elements {
+        if sound.playing.load(Ordering::Relaxed) {
+            sound.take_into(&mut out);
         }
     }
     crate::audio_output::clamp_samples(&mut out);

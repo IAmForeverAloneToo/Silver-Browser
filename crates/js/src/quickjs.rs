@@ -453,6 +453,11 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                     .get::<_, Function<'_>>("devtools")?
                     .call::<_, Value<'_>>((message.as_str(),))
             }),
+            Task::Media(message) => self.stepped(&entries, |_, entries| {
+                entries
+                    .get::<_, Function<'_>>("media")?
+                    .call::<_, Value<'_>>((message.as_str(),))
+            }),
             Task::Audio(message, bytes) => self.stepped(&entries, |ctx, entries| {
                 let samples = if bytes.is_empty() {
                     Value::new_null(ctx.clone())

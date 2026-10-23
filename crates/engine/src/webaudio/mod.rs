@@ -185,6 +185,9 @@ pub(crate) struct WebAudio {
 pub(crate) struct Env {
     pub(crate) inbox: Inbox,
     pub(crate) activated: bool,
+    /// The sound of the media element a `MediaElementAudioSourceNode`
+    /// being made takes.
+    pub(crate) element: Option<Arc<crate::playback::ElementSound>>,
 }
 
 fn number(op: &Json, name: &str) -> Option<f64> {
@@ -276,7 +279,7 @@ impl WebAudio {
         let context = self.context(op)?;
         let empty = || Ok((Json::Null, Vec::new()));
         match name {
-            "newNode" => new_node(context, op),
+            "newNode" => new_node(context, op, env.element.as_ref()),
             "connect" | "connectParam" => {
                 let (from, output, to, input) = (
                     whole(op, "from")?,
@@ -640,7 +643,11 @@ impl WebAudio {
 }
 
 /// Creates a node: its number, its shape and its params' ranges.
-fn new_node(context: &mut Context, op: &Json) -> Result<(Json, Vec<u8>), Failure> {
+fn new_node(
+    context: &mut Context,
+    op: &Json,
+    element: Option<&Arc<crate::playback::ElementSound>>,
+) -> Result<(Json, Vec<u8>), Failure> {
     let rate = context.rate;
     let node = match text(op, "kind") {
         "gain" => nodes::gain(),
@@ -679,6 +686,26 @@ fn new_node(context: &mut Context, op: &Json) -> Result<(Json, Vec<u8>), Failure
         "compressor" => nodes::compressor(rate),
         "convolver" => nodes::convolver(),
         "analyser" => nodes::analyser(),
+        // An element's sound, taken out of the output into the graph, for
+        // good.
+        "mediaElementSource" => {
+            let Some(element) = element else {
+                return fail("TypeError", "no media element");
+            };
+            let mut feed = element
+                .feed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if feed.is_some() {
+                return fail(
+                    "InvalidStateError",
+                    "HTMLMediaElement already connected previously to a different MediaElementSourceNode.",
+                );
+            }
+            let external = nodes::external::External::default();
+            *feed = Some(external.clone());
+            nodes::external(external)
+        }
         "destination" => {
             let graph = lock(&context.graph);
             let n = graph.node(0).map_or(2, |n| n.channel_count);

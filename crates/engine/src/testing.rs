@@ -314,11 +314,22 @@ pub(crate) const RED: (f32, f32, f32) = (1.0, 0.0, 0.0);
 pub(crate) const BLACK: (f32, f32, f32) = (0.0, 0.0, 0.0);
 
 /// A sink that keeps what it is given and plays it at once (M40).
-/// Its samples may be taken; what it played only grows.
+/// Its samples may be taken; what it played only grows. Paced, it plays
+/// at the clock, as a device does; else at once.
 #[derive(Default)]
 pub(crate) struct Capture {
     pub(crate) samples: Mutex<Vec<f32>>,
     played: AtomicU64,
+    paced: Option<crate::audio_output::ClockSink>,
+}
+
+impl Capture {
+    pub(crate) fn paced() -> Capture {
+        Capture {
+            paced: Some(crate::audio_output::ClockSink::new()),
+            ..Capture::default()
+        }
+    }
 }
 
 impl crate::AudioSink for Capture {
@@ -331,10 +342,16 @@ impl crate::AudioSink for Capture {
             (samples.len() / crate::audio_output::OUTPUT_CHANNELS) as u64,
             Ordering::Relaxed,
         );
+        if let Some(clock) = &self.paced {
+            clock.write(samples);
+        }
     }
 
     fn played(&self) -> u64 {
-        self.played.load(Ordering::Relaxed)
+        match &self.paced {
+            Some(clock) => clock.played(),
+            None => self.played.load(Ordering::Relaxed),
+        }
     }
 }
 

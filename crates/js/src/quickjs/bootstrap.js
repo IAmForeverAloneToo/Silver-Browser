@@ -8370,8 +8370,16 @@
       ["autoplay", "autoplay", "boolean"],
       ["loop", "loop", "boolean"],
       ["controls", "controls", "boolean"],
+      ["crossOrigin", "crossorigin", "cors"],
+      ["defaultMuted", "muted", "boolean"],
+    ]],
+    ["HTMLSourceElement", [
+      ["src", "src", "url"],
+      ["type", "type", "string"],
+      ["media", "media", "string"],
     ]],
     ["HTMLVideoElement", [
+      ["playsInline", "playsinline", "boolean"],
       ["poster", "poster", "url"],
       ["width", "width", "unsigned", 0],
       ["height", "height", "unsigned", 0],
@@ -21155,6 +21163,52 @@
   }
   expose(AudioContext, "AudioContext");
 
+  // An element's sound taken into a graph (M40): its sound goes to the
+  // graph, not the output, from then on.
+  class MediaElementAudioSourceNode extends AudioNode {
+    #element;
+
+    constructor(context, options) {
+      needToConstruct(arguments.length, 2, "MediaElementAudioSourceNode");
+      if (!(context instanceof AudioContext)) {
+        throw new $TypeError("Failed to construct 'MediaElementAudioSourceNode': parameter 1 is not of type 'AudioContext'.");
+      }
+      const element = options === null || typeof options !== "object" ? undefined : options.mediaElement;
+      if (element === undefined) {
+        throw new $TypeError("Failed to construct 'MediaElementAudioSourceNode': Failed to read the 'mediaElement' property from 'MediaElementAudioSourceOptions': Required member is undefined.");
+      }
+      if (!(element instanceof HTMLMediaElement)) {
+        throw new $TypeError("Failed to construct 'MediaElementAudioSourceNode': Failed to read the 'mediaElement' property from 'MediaElementAudioSourceOptions': Failed to convert value to 'HTMLMediaElement'.");
+      }
+      const info = audioMake(context, "mediaElementSource", { element: self(element) }, "MediaElementAudioSourceNode");
+      super(KEY, context, info, "mediaElementSource");
+      this.#element = element;
+    }
+
+    get mediaElement() { return this.#element; }
+  }
+  expose(MediaElementAudioSourceNode, "MediaElementAudioSourceNode");
+
+  include(
+    {
+      createMediaElementSource(mediaElement) {
+        need(arguments.length, 1, "createMediaElementSource", "AudioContext");
+        if (!(mediaElement instanceof HTMLMediaElement)) {
+          throw new $TypeError(prefix("createMediaElementSource", "AudioContext") + "parameter 1 is not of type 'HTMLMediaElement'.");
+        }
+        try {
+          return new MediaElementAudioSourceNode(this, { mediaElement });
+        } catch (e) {
+          if (e instanceof $DOMException) {
+            throw new $DOMException(prefix("createMediaElementSource", "AudioContext") + e.message.replace("Failed to construct 'MediaElementAudioSourceNode': ", ""), e.name);
+          }
+          throw e;
+        }
+      },
+    },
+    [AudioContext.prototype],
+  );
+
   let offlineRendered;
   let offlineSuspended;
 
@@ -21322,6 +21376,280 @@
     return false;
   }
 
+  // ---- Media elements (M40, HTML 4.8.11) ------------------------------------
+  // An element's state is the engine's (`native.media`, JSON both ways);
+  // what its algorithms queue comes back as `media` tasks, events and
+  // play() promises settled in order.
+
+  const mediaPromises = new $Map();
+  let mediaPromiseNext = 0;
+  const mediaErrors = new $WeakMap();
+  const mediaPitch = new $WeakMap();
+
+  function mediaCall(op, words) {
+    const answer = JSONParse(native.media(JSONStringify(op)));
+    if (answer.error !== undefined) {
+      const e = answer.error;
+      if (e.name === "TypeError") throw new $TypeError(words + e.message);
+      throw new $DOMException(e.message, e.name);
+    }
+    return answer.result;
+  }
+
+  function mediaState(element) {
+    return mediaCall({ op: "state", node: self(element) }, "");
+  }
+
+  class MediaError {
+    #code; #message;
+
+    constructor(key, code, message) {
+      if (key !== KEY) throw illegalConstructor("MediaError");
+      this.#code = code;
+      this.#message = message;
+    }
+
+    get code() { return this.#code; }
+    get message() { return this.#message; }
+  }
+  expose(MediaError, "MediaError");
+
+  class TimeRanges {
+    #ranges;
+
+    constructor(key, ranges) {
+      if (key !== KEY) throw illegalConstructor("TimeRanges");
+      this.#ranges = ranges;
+    }
+
+    get length() { return this.#ranges.length; }
+
+    #at(index, method) {
+      const i = unsigned(index);
+      if (i >= this.#ranges.length) {
+        throw domError("IndexSizeError", "The index provided (" + i + ") is greater than or equal to the maximum bound (" + this.#ranges.length + ").", method, "TimeRanges");
+      }
+      return this.#ranges[i];
+    }
+
+    start(index) {
+      need(arguments.length, 1, "start", "TimeRanges");
+      return this.#at(index, "start")[0];
+    }
+
+    end(index) {
+      need(arguments.length, 1, "end", "TimeRanges");
+      return this.#at(index, "end")[1];
+    }
+  }
+  expose(TimeRanges, "TimeRanges");
+
+  const MEDIA_CONSTANTS = [
+    ["NETWORK_EMPTY", 0], ["NETWORK_IDLE", 1], ["NETWORK_LOADING", 2], ["NETWORK_NO_SOURCE", 3],
+    ["HAVE_NOTHING", 0], ["HAVE_METADATA", 1], ["HAVE_CURRENT_DATA", 2], ["HAVE_FUTURE_DATA", 3],
+    ["HAVE_ENOUGH_DATA", 4],
+  ];
+  const ERROR_CONSTANTS = [
+    ["MEDIA_ERR_ABORTED", 1], ["MEDIA_ERR_NETWORK", 2], ["MEDIA_ERR_DECODE", 3],
+    ["MEDIA_ERR_SRC_NOT_SUPPORTED", 4],
+  ];
+  function mediaConstants(target, list) {
+    for (let i = 0; i < list.length; i++) {
+      defineProperty(target, list[i][0], { value: list[i][1], enumerable: true });
+      defineProperty(target.prototype, list[i][0], { value: list[i][1], enumerable: true });
+    }
+  }
+  mediaConstants(HTMLMediaElement, MEDIA_CONSTANTS);
+  mediaConstants(MediaError, ERROR_CONSTANTS);
+
+  function timeRanges(list) {
+    const ranges = [];
+    for (let i = 0; i < list.length; i++) {
+      ArrayPush(ranges, [$Number(list[i][0]), $Number(list[i][1])]);
+    }
+    return new TimeRanges(KEY, ranges);
+  }
+
+  const mediaSet = (property) => "Failed to set the '" + property + "' property on 'HTMLMediaElement': ";
+
+  include(
+    {
+      get networkState() { return mediaState(this).networkState; },
+      get readyState() { return mediaState(this).readyState; },
+      get paused() { return mediaState(this).paused; },
+      get seeking() { return mediaState(this).seeking; },
+      get ended() { return mediaState(this).ended; },
+      get currentSrc() { return mediaState(this).currentSrc; },
+      get duration() { return $Number(mediaState(this).duration); },
+      get currentTime() { return $Number(mediaState(this).currentTime); },
+      set currentTime(value) {
+        const time = +value;
+        if (!$NumberIsFinite(time)) {
+          throw new $TypeError(mediaSet("currentTime") + "The provided double value is non-finite.");
+        }
+        mediaCall({ op: "seek", node: self(this), time }, mediaSet("currentTime"));
+      },
+      get volume() { return mediaState(this).volume; },
+      set volume(value) {
+        const volume = +value;
+        if (!$NumberIsFinite(volume)) {
+          throw new $TypeError(mediaSet("volume") + "The provided double value is non-finite.");
+        }
+        if (volume < 0 || volume > 1) {
+          throw new $DOMException(mediaSet("volume") + "The volume provided (" + volume + ") is outside the range [0, 1].", "IndexSizeError");
+        }
+        mediaCall({ op: "volume", node: self(this), value: volume }, mediaSet("volume"));
+      },
+      get muted() { return mediaState(this).muted; },
+      set muted(value) {
+        mediaCall({ op: "muted", node: self(this), value: !!value }, mediaSet("muted"));
+      },
+      get playbackRate() { return mediaState(this).playbackRate; },
+      set playbackRate(value) {
+        const rate = +value;
+        if (!$NumberIsFinite(rate)) {
+          throw new $TypeError(mediaSet("playbackRate") + "The provided double value is non-finite.");
+        }
+        const size = rate < 0 ? -rate : rate;
+        if (rate !== 0 && (size < 0.0625 || size > 16)) {
+          throw new $DOMException(mediaSet("playbackRate") + "The provided playback rate (" + rate + ") is not in the supported playback range.", "NotSupportedError");
+        }
+        mediaCall({ op: "rate", node: self(this), value: rate }, mediaSet("playbackRate"));
+      },
+      get defaultPlaybackRate() { return mediaState(this).defaultPlaybackRate; },
+      set defaultPlaybackRate(value) {
+        const rate = +value;
+        if (!$NumberIsFinite(rate)) {
+          throw new $TypeError(mediaSet("defaultPlaybackRate") + "The provided double value is non-finite.");
+        }
+        mediaCall({ op: "defaultRate", node: self(this), value: rate }, mediaSet("defaultPlaybackRate"));
+      },
+      // Kept and reflected; the sound's pitch moves with its rate yet.
+      get preservesPitch() {
+        self(this);
+        const kept = WeakMapGet(mediaPitch, this);
+        return kept === undefined ? true : kept;
+      },
+      set preservesPitch(value) {
+        self(this);
+        WeakMapSet(mediaPitch, this, !!value);
+      },
+      get preload() {
+        const value = native.attribute(self(this), "preload");
+        if (value === null) return "metadata";
+        const lower = ToLowerCase(value);
+        if (lower === "none" || lower === "metadata" || lower === "auto") return lower;
+        return lower === "" ? "auto" : "metadata";
+      },
+      set preload(value) {
+        setAttribute(self(this), "preload", str(value), "preload");
+      },
+      get error() {
+        const error = mediaState(this).error;
+        if (error === null) return null;
+        const kept = WeakMapGet(mediaErrors, this);
+        if (kept !== undefined && kept.code === error.code && kept.message === error.message) {
+          return kept;
+        }
+        const made = new MediaError(KEY, error.code, error.message);
+        WeakMapSet(mediaErrors, this, made);
+        return made;
+      },
+      get buffered() { return timeRanges(mediaState(this).buffered); },
+      get seekable() { return timeRanges(mediaState(this).seekable); },
+      get played() { return timeRanges(mediaState(this).played); },
+
+      load() {
+        mediaCall({ op: "load", node: self(this) }, prefix("load", "HTMLMediaElement"));
+      },
+
+      canPlayType(type) {
+        self(this);
+        need(arguments.length, 1, "canPlayType", "HTMLMediaElement");
+        return mediaCall({ op: "canPlayType", type: str(type) }, prefix("canPlayType", "HTMLMediaElement"));
+      },
+
+      play() {
+        let handle;
+        try {
+          handle = self(this);
+        } catch (e) {
+          return rejected(e);
+        }
+        const id = ++mediaPromiseNext;
+        let settle;
+        const promise = new $Promise((resolve, reject) => { settle = { resolve, reject }; });
+        MapSet(mediaPromises, id, settle);
+        try {
+          mediaCall({ op: "play", node: handle, promise: id }, prefix("play", "HTMLMediaElement"));
+        } catch (e) {
+          MapDelete(mediaPromises, id);
+          return rejected(e);
+        }
+        return promise;
+      },
+
+      pause() {
+        mediaCall({ op: "pause", node: self(this) }, prefix("pause", "HTMLMediaElement"));
+      },
+    },
+    [HTMLMediaElement.prototype],
+  );
+
+  const HTMLVideoElement = MapGet(interfaces, "video");
+  include(
+    {
+      get videoWidth() { return mediaState(this).videoWidth; },
+      get videoHeight() { return mediaState(this).videoHeight; },
+    },
+    [HTMLVideoElement.prototype],
+  );
+
+  // `new Audio(src)`: an `<audio>` element of the window's document, its
+  // preload `auto`, as the reference makes it.
+  const HTMLAudioElement = MapGet(interfaces, "audio");
+  function Audio(src) {
+    if (new.target === undefined) {
+      throw new $TypeError("Failed to construct 'Audio': Please use the 'new' operator, this DOM object constructor cannot be called as a function.");
+    }
+    const element = theDocument().createElement("audio");
+    element.setAttribute("preload", "auto");
+    if (src !== undefined) element.setAttribute("src", str(src));
+    return element;
+  }
+  defineProperty(Audio, "prototype", { value: HTMLAudioElement.prototype });
+  windowOnly("Audio", { value: Audio, writable: true, configurable: true });
+
+  // What the engine's media elements queue, or a pipeline's report to
+  // hear (its actions then carried out in this task).
+  function* mediaTask(text) {
+    const told = JSONParse(text);
+    let actions = told.actions;
+    if (told.report !== undefined) {
+      actions = mediaCall({ op: "report", node: told.node, generation: told.generation, report: told.report }, "");
+    }
+    for (let i = 0; i < actions.length; i++) {
+      const action = actions[i];
+      if (action.promise !== undefined) {
+        const settle = MapGet(mediaPromises, action.promise);
+        if (settle === undefined) continue;
+        MapDelete(mediaPromises, action.promise);
+        if (action.name === undefined) {
+          settle.resolve(undefined);
+        } else {
+          settle.reject(new $DOMException(action.message, action.name));
+        }
+        continue;
+      }
+      const target = wrap(action.node);
+      if (target === null || target === undefined) continue;
+      const event = new Event(action.event);
+      eventState(event).trusted = true;
+      yield* dispatching(target, event);
+    }
+    return false;
+  }
+
   // The entry points the realm calls (M26): a timer's task; an event
   // the engine makes, dispatched at the node `handle` names or, for
   // null, at the window, as a generator `resume` steps through, which
@@ -21367,6 +21695,7 @@
     idb: idbTask,
     serviceWorker: swTask,
     audio: audioTask,
+    media: mediaTask,
     evaluate: evaluateExpression,
     fetched,
     // A message's arrival (M31): at the global (`kind` 0), at worker
