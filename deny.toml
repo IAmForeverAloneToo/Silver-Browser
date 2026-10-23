@@ -22,6 +22,9 @@ yanked = "deny"
 ignore = [
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained; the font parser behind text, pending roadmap decision D7" },
     { id = "RUSTSEC-2026-0206", reason = "rustybuzz is unmaintained; the shaper behind text, pending roadmap decision D7" },
+    # rav1d (M40, D36) builds its decoder with paste's macros: code that
+    # runs in the compiler, none of it in the browser.
+    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained; a compile-time macro crate of rav1d's, nothing of it runs (M40, D36)" },
 ]
 
 [licenses]
@@ -41,6 +44,8 @@ allow = [
     "CDLA-Permissive-2.0",
     "OFL-1.1",
     "AGPL-3.0-only",
+    # rav1d's to_method (M40): a dedication to the public domain.
+    "CC0-1.0",
 ]
 
 [bans]
@@ -75,6 +80,9 @@ skip = [
     { name = "tiny-skia" },
     { name = "tiny-skia-path" },
     { name = "windows-sys" },
+    # rav1d (M40) pins 0.7; the rest of the tree is on 0.8.
+    { name = "zerocopy" },
+    { name = "zerocopy-derive" },
 ]
 
 [sources]

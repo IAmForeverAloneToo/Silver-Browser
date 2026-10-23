@@ -11,7 +11,8 @@
 # ones made by wasm-smith and any bytes besides; and for the 2D canvas
 # context alone; and for a message's serialized form, made again in a
 # realm; and for the XML parser and SVG, read, drawn, hit and asked (M32);
-# and for the DevTools' JSON, and IndexedDB's keys and store (M36).
+# and for the DevTools' JSON, and IndexedDB's keys and store (M36); and
+# for media's containers and decoders, AV1's among them (M40).
 # Not a workspace member: libfuzzer needs nightly, and the normal build
 # must not.
 # `cargo +nightly fuzz run <target>` from the repository root; CI runs
@@ -49,6 +50,7 @@ profile = { path = "../crates/profile" }
 render = { path = "../crates/render", default-features = false }
 style = { path = "../crates/style" }
 svg = { path = "../crates/svg" }
+media = { path = "../crates/media" }
 text = { path = "../crates/text" }
 
 # The fuzz build checks overflow everywhere; not in tiny-skia, whose
@@ -61,6 +63,12 @@ overflow-checks = false
 # Nor in zune-jpeg, whose DC coefficient wraps on a corrupt stream as a
 # release build's does (the workspace's dev profile says why).
 [profile.release.package.zune-jpeg]
+debug-assertions = true
+overflow-checks = false
+
+# Nor in opus-decoder, whose CELT collapse mask wraps on a stream the
+# reference encodes (the workspace's dev profile says why).
+[profile.release.package.opus-decoder]
 debug-assertions = true
 overflow-checks = false
 
@@ -323,6 +331,20 @@ doc = false
 [[bin]]
 name = "idb_ops"
 path = "fuzz_targets/idb_ops.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "media_demux"
+path = "fuzz_targets/media_demux.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "av1_decode"
+path = "fuzz_targets/av1_decode.rs"
 test = false
 doc = false
 bench = false

@@ -1483,8 +1483,13 @@ mod tests {
         // block outside the platform module, and its crate denies `unsafe`
         // rather than forbidding it so that the module may allow it.
         const BYTECODE: &str = "crates/js/src/quickjs/bytecode.rs";
+        // M40's AV1 decoder, reached through its C interface (D36): the
+        // media crate denies `unsafe` but in that module.
+        const AV1: &str = "crates/media/src/av1.rs";
+        const AV1_BLOCKS: usize = 12;
         let mut blocks = 0;
         let mut bytecode_blocks = 0;
+        let mut av1_blocks = 0;
         for file in &files {
             let name = file
                 .strip_prefix(&root)
@@ -1504,7 +1509,7 @@ mod tests {
                     continue;
                 }
                 assert!(
-                    name == "crates/shell/src/platform.rs" || name == BYTECODE,
+                    name == "crates/shell/src/platform.rs" || name == BYTECODE || name == AV1,
                     "unsafe in {name} at line {}",
                     n + 1
                 );
@@ -1531,6 +1536,8 @@ mod tests {
                 );
                 if name == BYTECODE {
                     bytecode_blocks += 1;
+                } else if name == AV1 {
+                    av1_blocks += 1;
                 } else {
                     blocks += 1;
                 }
@@ -1541,7 +1548,7 @@ mod tests {
                     let parts: Vec<&str> = name.split('/').collect();
                     parts.len() == 4 && parts[2] == *kind
                 });
-            if root_file && name == "crates/js/src/lib.rs" {
+            if root_file && (name == "crates/js/src/lib.rs" || name == "crates/media/src/lib.rs") {
                 assert!(
                     text.contains("\n#![deny(unsafe_code)]\n"),
                     "{name} does not deny unsafe code"
@@ -1555,6 +1562,7 @@ mod tests {
         }
         assert!(blocks >= 4, "the platform module's blocks found: {blocks}");
         assert_eq!(bytecode_blocks, 1, "the bytecode's one reviewed block");
+        assert_eq!(av1_blocks, AV1_BLOCKS, "the AV1 module's reviewed blocks");
         // The shell denies it but where the platform module allows it.
         let shell = std::fs::read_to_string(root.join("crates/shell/src/main.rs")).unwrap();
         assert!(shell.contains("\n#![deny(unsafe_code)]\n"));

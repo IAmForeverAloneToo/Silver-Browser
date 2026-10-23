@@ -1,0 +1,11 @@
+[package]
+name = "media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+symphonia.workspace = true
+opus-decoder.workspace = true
+rav1d.workspace = true
+libc.workspace = true

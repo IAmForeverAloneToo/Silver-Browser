@@ -19,6 +19,7 @@ license = "AGPL-3.0-only"
 #   engine -> canvas -> { style, text, images, css } (the 2D canvas, M30)
 #   engine, layout -> svg -> { canvas, style, text, dom } (SVG, M32)
 #   engine, shell -> devtools (a leaf: the DevTools' protocol, M36)
+#   engine -> media (a leaf: containers and decoders, M40)
 # See docs/architecture.md — the layering contract is binding.
 [workspace.dependencies]
 # Internal crates
@@ -42,6 +43,7 @@ ui = { path = "crates/ui" }
 js = { path = "crates/js" }
 profile = { path = "crates/profile" }
 devtools = { path = "crates/devtools" }
+media = { path = "crates/media" }
 
 # External crates
 winit = "0.30"
@@ -55,6 +57,16 @@ zune-jpeg = { version = "0.5", default-features = false, features = ["std"] }
 zune-core = "0.5"
 gif = { version = "0.14", default-features = false, features = ["std"] }
 image-webp = "0.2"
+# Sound and pictures (M40, D36, docs/design/audio-video.md): the codecs
+# of Chromium's open-source build. symphonia demuxes WebM, MP4, Ogg and
+# WAV and decodes MP3, Vorbis, FLAC and PCM, in safe Rust; opus-decoder
+# decodes Opus, in safe Rust; rav1d, the Rust port of dav1d, decodes
+# AV1 through its C interface (media's av1 module), built without its
+# assembly. libc for that interface's error numbers.
+symphonia = { version = "0.6", default-features = false, features = ["mp3", "flac", "vorbis", "pcm", "mkv", "ogg", "isomp4", "wav"] }
+opus-decoder = "0.1"
+rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8", "bitdepth_16"] }
+libc = "0.2"
 fontdb = "0.23"
 rustybuzz = "0.20"
 # A font's shaping face, which borrows the font's bytes, kept with them
@@ -173,4 +185,12 @@ overflow-checks = false
 # release build wraps there, the corrupt image's pixels, and so does this
 # one rather than panicking (found by the nightly fuzz run at M35).
 [profile.dev.package.zune-jpeg]
+overflow-checks = false
+
+# opus-decoder's CELT keeps a band's collapse mask in a u8 and shifts a
+# bit into it for each of a band's blocks, which can number more than
+# eight: a stream the reference encoded panics there unless the shift
+# wraps, as a release build's does. This one wraps too (M40); media's
+# tests hold what it then decodes to the reference's samples.
+[profile.dev.package.opus-decoder]
 overflow-checks = false
