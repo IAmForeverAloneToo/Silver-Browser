@@ -503,6 +503,7 @@ if (rate) {
   // A mono destination: the mixer up-mixes it.
   if (rate === 44100) c.destination.channelCount = 1;
   log('state ' + c.state + ' ' + c.sampleRate);
+  c.onstatechange = () => log('then ' + c.state);
 } else {
   log('blank');
 }
@@ -513,10 +514,13 @@ if (rate) {
     tab.engine.pointer_down(50.0, 50.0, Button::Primary, 1);
     for rate in [48000, 44100] {
         tab.engine.navigate(page.url(&format!("/tone{rate}.html")));
-        let lines = tab.run_until(|lines| lines.iter().any(|l| l.starts_with("state")));
+        let lines = tab.run_until(|lines| lines.iter().any(|l| l.starts_with("then")));
         // Running once its first task is told (WPT's
-        // constructor-allowed-to-start.html).
-        assert_eq!(lines.last().unwrap(), &format!("state suspended {rate}"));
+        // constructor-allowed-to-start.html), and heard from then.
+        assert_eq!(
+            lines[lines.len() - 2..],
+            [format!("state suspended {rate}"), "then running".to_owned()]
+        );
         capture.samples.lock().unwrap().clear();
         // A fifth of a second of sound, at the output's rate.
         wait_for(|| capture.samples.lock().unwrap().len() >= 9600 * 2);

@@ -2031,7 +2031,7 @@ webaudio/the-audio-api/the-delaynode-interface/delaynode-channel-count-1.html	Te
 webaudio/the-audio-api/the-mediaelementaudiosourcenode-interface/mediaElementAudioSource_volumeChange.html	createMediaElementSource() output reflects HTMLMediaElement effective volume changes (volume/muted)(src-file)	not diagnosed at M40 (registered)
 webaudio/the-audio-api/the-mediaelementaudiosourcenode-interface/mediaElementAudioSource_volumeChange.html	createMediaElementSource() output reflects HTMLMediaElement effective volume changes (volume/muted)(src-stream)	not diagnosed at M40 (registered)
 webaudio/the-audio-api/the-offlineaudiocontext-interface/decodeAudioData-oversized-resample.html not diagnosed at M40 (registered)
-html/semantics/embedded-content/media-elements/audio_loop_base.html                      not diagnosed at M40 (registered)
+html/semantics/embedded-content/media-elements/audio_loop_base.html                      either: it plays a looping five-second clip until it has looped; the runner's ten seconds of the test's time hold it here, not on CI's Ubuntu
 webaudio/the-audio-api/the-audiobuffer-interface/acquire-the-content.html	AudioBufferSourceNode setter set with non-null buffer	a buffer set on a source is read when it renders, not acquired when it is set (registered at M40)
 webaudio/the-audio-api/the-audiobuffer-interface/acquire-the-content.html	AudioBufferSourceNode buffer setter set with null	a buffer set on a source is read when it renders, not acquired when it is set (registered at M40)
 webaudio/the-audio-api/the-audiobuffersourcenode-interface/audiobuffersource-channels.html	validate .buffer: Validation of AudioBuffer in .buffer attribute setter	a buffer source's buffer may be set again after it was set (registered at M40)
