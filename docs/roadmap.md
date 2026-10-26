@@ -2623,13 +2623,44 @@ open-source build leaves them; VP8 and VP9 on the G list.
 
 ---
 
-## M41+ -- The long tail (gated, in rough priority order)
+## M41 -- WebGL and WebGPU  |  `engine`, `glsl`, `js`, `shell`  |  Effort: XL  |  Depends: M19.3, M30, M34, M37
+
+The gate opened at the maintainer's word, 2026-10-26
+(`docs/design/gpu.md`). The GPU is driven by a GPU process of its own
+(D38), which runs `wgpu` and answers the renderers through the browser.
+WebGPU is `wgpu`'s safe API, object by object (D39). WebGL is built in
+the renderer on that WebGPU, its GLSL ES read by a front end of ours
+and translated to WGSL (D40).
+
+- [ ] M41.1 The GPU process: launched by the browser, sandboxed, its
+       restarts bounded; the renderers' requests relayed by the
+       browser, each renderer a client with its own objects; a thread
+       in one process; the adapter and its fallback.
+- [ ] M41.2 WebGPU: `navigator.gpu`, adapters, devices, buffers and
+       their mapping, textures, samplers, shader modules, layouts,
+       bind groups, pipelines, command encoders, passes, render
+       bundles, queries, error scopes and device loss.
+- [ ] M41.3 The canvas: `GPUCanvasContext`, WebGL's drawing buffer,
+       their pixels read back to the page, images into textures,
+       `OffscreenCanvas` in windows.
+- [ ] M41.4 GLSL ES: a `glsl` crate reading the shading language 1.00
+       and 3.00 as WebGL restricts it, its errors in the reference's
+       form, lowered to naga's IR and WGSL.
+- [ ] M41.5 WebGL 1 and 2 over WebGPU: the state, buffers, textures,
+       framebuffers, programs, draws, `readPixels`, the extensions
+       named, WebGL 2's objects but transform feedback, context loss.
+- [ ] M41.6 Acceptance: pages drawing with WebGL and WebGPU as the
+       reference; subsets of the Khronos WebGL conformance suite and
+       of the WebGPU conformance test suite; WPT's `webgl`; benches.
+
+---
+
+## M42+ -- The long tail (gated, in rough priority order)
 
 Each gets a full milestone spec (per §4 template) **only when the
 gate before it opens** — this document deliberately does not
 gold-plate unstarted work.
 
-- [ ] M41 WebGL1/2 (on wgpu), WebGPU (gate: M19.3 maturity).
 - [ ] M42 Full bidi + ICU4X integration (writing modes, vertical text);
        the Encoding Standard's legacy CJK encodings (GBK/gb18030, Big5,
        EUC-JP, ISO-2022-JP, Shift_JIS, EUC-KR), sooner if a T1 page
@@ -3559,6 +3590,9 @@ Deferred from the milestones above, each with what it waits on:
 | D35 | Where a service worker runs | M39 | the browser process / the renderer of the tab that needs it / a renderer of its own for its site | a thread in a worker renderer of its site, started by the context when a worker must run and ended when none has run for 30 seconds, sandboxed as any renderer; the registrations, the jobs and the Cache API's entries are the browser's, in the context; in one process, threads behind the same trait (`docs/design/service-workers.md`) |
 | D36 | What media plays | M40 | every codec the reference plays, H.264 and AAC by the platform's decoders / the codecs of Chromium's open-source build, by crates / codecs written here | the codecs of Chromium's open-source build: Opus, Vorbis, FLAC, MP3 and PCM through `symphonia` and `opus-decoder`, AV1 through `rav1d` (its C interface in one argued module of a `media` crate), in WebM, MP4, Ogg and WAV; H.264 and AAC left out, as patent-encumbered; VP8 and VP9 later, no Rust decoder being mature (`docs/design/audio-video.md`) |
 | D37 | Where media decodes and sounds | M40 | all in the browser process / all in the renderer / decoded in the renderer, sounded by the browser | demuxed and decoded in the renderer, a thread an element, sandboxed; a renderer's sound (its elements' and its `AudioContext`s') mixed there and sent to the browser, whose audio output in the shell's platform module (WASAPI on Windows) alone opens a device; the media clock the sound the output played, else the system's clock |
+| D38 | Where the GPU is driven | M41 | the browser process / each renderer / a GPU process of its own | a GPU process, the same executable, started at the first WebGL or WebGPU context and sandboxed as far as the device allows; the renderers its clients through the browser, each with its own objects; a thread in one process; three restarts in five minutes, then off (`docs/design/gpu.md`) |
+| D39 | How WebGPU is made | M41 | `wgpu-core`'s id API / `wgpu`'s safe API object by object / an implementation of our own | `wgpu`'s safe API in the GPU process, objects in tables by numbers the renderer gives, passes recorded in the renderer and replayed, validation and error scopes `wgpu`'s, its shader runtime checks kept |
+| D40 | How WebGL is made | M41 | on the system's OpenGL / on ANGLE / on WebGPU in the renderer | on WebGPU, in the renderer: its state kept there, its GLSL ES read by a `glsl` crate of ours into naga's IR and WGSL, so that the GPU process meets WebGPU alone |
 
 ---
 
