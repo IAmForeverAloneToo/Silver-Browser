@@ -239,6 +239,8 @@ pub(crate) struct DocumentHost {
     pub(crate) workers: DocumentWorkers,
     /// The document's Web Audio (M40).
     pub(crate) audio: crate::webaudio::WebAudio,
+    /// The document's WebGPU objects (M41).
+    pub(crate) webgpu: crate::webgpu::WebGpu,
     /// The document's media elements (M40).
     pub(crate) media: crate::playback::Players,
     /// Whether the document is the DevTools panel's page (M36), and what
@@ -1379,6 +1381,15 @@ impl DocumentHost {
                 let (json, bytes) = self.audio.call(&request, bytes, &env);
                 Ok(Answer::Pair(json, bytes))
             }
+            Call::Gpu(request, bytes) => {
+                let (json, bytes) = self.webgpu.call(
+                    &request,
+                    bytes,
+                    self.window.gpu.as_ref(),
+                    &self.workers.inbox(),
+                );
+                Ok(Answer::Pair(json, bytes))
+            }
             Call::Media(request) => Ok(Answer::String(self.media_call(&request))),
             Call::IdbWake => {
                 let now = self.now();
@@ -1934,9 +1945,13 @@ impl DocumentHost {
         }
     }
 
-    /// A canvas's call (M30): a context's names its `canvas` element,
-    /// whose size its attributes give and whose computed `color` is
-    /// `currentcolor`, read only when a colour says it.
+    /// Sends what the document's WebGPU calls queued (M41).
+    pub(crate) fn flush_gpu(&self) {
+        if let Some(gpu) = &self.window.gpu {
+            gpu.flush();
+        }
+    }
+
     /// A media element's call (M40), JSON in and out: `{"result"}` or
     /// `{"error": {name, message}}`. A pipeline's report, heard in its
     /// task, answers the actions to carry out now.
@@ -1985,6 +2000,9 @@ impl DocumentHost {
         }
     }
 
+    /// A canvas's call (M30): a context's names its `canvas` element,
+    /// whose size its attributes give and whose computed `color` is
+    /// `currentcolor`, read only when a colour says it.
     fn canvas(&mut self, call: js::CanvasCall) -> Result<Answer, DomError> {
         // An `img`'s state, which `complete` and `naturalWidth` read
         // (M30): the image a canvas would draw.

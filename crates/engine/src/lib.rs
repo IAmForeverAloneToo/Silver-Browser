@@ -141,6 +141,7 @@ mod svg_images;
 mod testing;
 mod view;
 mod webaudio;
+mod webgpu;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -390,7 +391,7 @@ pub struct Engine {
     /// what to preload (M38): on but in benches that compare.
     preload_scanner: bool,
     /// Its way to the GPU (M41, D38): a renderer's client through the
-    /// browser, else one of a service in this process when first asked.
+    /// browser, else one of a service in this process.
     gpu: Option<Arc<gpu::GpuClient>>,
     /// What a document's realm may use, the defaults but in tests.
     script_limits: js::Limits,
@@ -1301,7 +1302,7 @@ impl Engine {
             compat_user_agent: false,
             scripting: false,
             preload_scanner: true,
-            gpu: None,
+            gpu: gpu::local_client(),
             script_limits: js::Limits::default(),
             notice: None,
             next_page: 1,
@@ -2022,6 +2023,7 @@ impl Engine {
                 wake: self.waker.clone(),
             }),
             partition: self.frame_partition(),
+            gpu: self.gpu.clone(),
         }
     }
 
@@ -4256,12 +4258,9 @@ impl Engine {
     }
 
     /// Its client of the GPU service: the one given, else one of a
-    /// service in this process, started now; `None` without the `gpu`
-    /// feature.
-    pub fn gpu(&mut self) -> Option<Arc<gpu::GpuClient>> {
-        if self.gpu.is_none() {
-            self.gpu = gpu::local_client();
-        }
+    /// service in this process, whose thread starts at its first
+    /// request; `None` without the `gpu` feature.
+    pub fn gpu(&self) -> Option<Arc<gpu::GpuClient>> {
         self.gpu.clone()
     }
 

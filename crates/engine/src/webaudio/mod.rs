@@ -473,6 +473,14 @@ impl WebAudio {
                         "cannot call startRendering more than once",
                     );
                 }
+                // Running is told before the rendering starts: a short
+                // render's suspension or end, told from its thread, comes
+                // after it (macOS's CI saw them first, M41).
+                context.state = State::Running;
+                context.teller.state(State::Running);
+                let Some(offline) = context.offline.as_mut() else {
+                    return fail("InvalidStateError", "not an offline context");
+                };
                 let teller = context.teller.clone();
                 let buffers = context.buffers.clone();
                 let rate = context.rate;
@@ -515,8 +523,6 @@ impl WebAudio {
                         }
                     }),
                 );
-                context.state = State::Running;
-                context.teller.state(State::Running);
                 empty()
             }
             "decode" => {

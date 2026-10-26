@@ -295,6 +295,8 @@ pub(crate) struct WindowEnv {
     /// Where the window's frame is in its tab (M33.2), its document
     /// apart: none at the top.
     pub(crate) partition: Option<net::Partition>,
+    /// Its way to the GPU (M41): the engine's client.
+    pub(crate) gpu: Option<Arc<crate::gpu::GpuClient>>,
 }
 
 /// A document's time origin (High Resolution Time): the engine's clock
@@ -1277,6 +1279,11 @@ impl Scripts {
                     self.posted.push_back((now, js::Task::Audio(text, bytes)));
                     continue;
                 }
+                // What the GPU process told its WebGPU (M41).
+                workers::WorkerMessage::Gpu(text, bytes) => {
+                    self.posted.push_back((now, js::Task::Gpu(text, bytes)));
+                    continue;
+                }
                 // What its media elements told it (M40).
                 workers::WorkerMessage::Media(text) => {
                     self.posted.push_back((now, js::Task::Media(text)));
@@ -1455,8 +1462,10 @@ impl Scripts {
         self.host.media.video_pixels(node)
     }
 
-    /// Starts the media fetches the run's loads asked for (M40).
+    /// Starts the media fetches the run's loads asked for (M40), and
+    /// sends what its WebGPU calls queued (M41).
     fn start_media(&mut self, lent: &mut Lent<'_>) {
+        self.host.flush_gpu();
         if !self.host.media.fetch_pending() {
             return;
         }

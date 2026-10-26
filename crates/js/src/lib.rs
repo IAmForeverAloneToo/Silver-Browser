@@ -373,6 +373,9 @@ pub enum Task {
     /// job's promise settled, a registration's or a version's change,
     /// or an event for a service worker's global.
     ServiceWorker(String),
+    /// What the GPU process tells a document's WebGPU (M41), as JSON,
+    /// and the bytes it carries (a mapped range's).
+    Gpu(String, Vec<u8>),
     /// What a document's Web Audio tells its realm (M40), as JSON, and
     /// the samples it carries: a source ended, a context's state, a
     /// buffer decoded or rendered.

@@ -475,6 +475,9 @@ const NATIVES: &[(&str, Decode)] = &[
     ("audio", |a| {
         Ok(Call::Audio(a.string(0)?, a.bytes(1)?.unwrap_or_default()))
     }),
+    ("gpu", |a| {
+        Ok(Call::Gpu(a.string(0)?, a.bytes(1)?.unwrap_or_default()))
+    }),
     ("storageUsage", |_| Ok(Call::StorageUsage)),
     ("navigate", |a| {
         Ok(Call::Navigate {

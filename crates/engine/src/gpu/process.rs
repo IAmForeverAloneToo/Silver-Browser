@@ -50,34 +50,47 @@ pub fn run(
         .map_err(|_| "the browser is gone".to_owned())?;
     let mut service = GpuService::new(fallback_only);
     while let Ok(Some(message)) = inputs.recv() {
+        let mut answers = Vec::new();
         match message {
             ToGpu::Client { client, bytes } => {
                 let handled = catch_unwind(AssertUnwindSafe(|| service.handle(client, &bytes.0)));
-                let answer = match handled {
-                    Ok(Ok(replies)) if replies.is_empty() => continue,
-                    Ok(Ok(replies)) => FromGpu::Client {
-                        client,
-                        bytes: Bytes(wire::replies(&replies)),
-                    },
+                match handled {
+                    Ok(Ok(replies)) => answers.extend(batches(client, replies)),
                     Ok(Err(why)) => {
                         service.gone(client);
-                        FromGpu::Bad { client, why }
+                        answers.push(FromGpu::Bad { client, why });
                     }
                     Err(_) => {
                         service.gone(client);
-                        FromGpu::Bad {
+                        answers.push(FromGpu::Bad {
                             client,
                             why: "its request panicked the GPU service".to_owned(),
-                        }
+                        });
                     }
-                };
-                if sender.send(&answer).is_err() {
-                    return Ok(());
                 }
             }
             ToGpu::Gone { client } => service.gone(client),
             ToGpu::Hello { .. } => return Err("a second hello".to_owned()),
         }
+        // What the devices told meanwhile, each to its client.
+        for (client, event) in service.events() {
+            answers.extend(batches(client, vec![event]));
+        }
+        for answer in answers {
+            if sender.send(&answer).is_err() {
+                return Ok(());
+            }
+        }
     }
     Ok(())
+}
+
+/// `replies` for `client`, in messages of bounded size.
+fn batches(client: u32, replies: Vec<wire::Reply>) -> impl Iterator<Item = FromGpu> {
+    wire::reply_batches(replies)
+        .into_iter()
+        .map(move |bytes| FromGpu::Client {
+            client,
+            bytes: Bytes(bytes),
+        })
 }

@@ -201,3 +201,59 @@ impl Launcher for NoGpu {
         Err(std::io::ErrorKind::Unsupported.into())
     }
 }
+
+#[test]
+fn a_renderers_page_reaches_the_gpu_process_through_the_browser() {
+    // The whole way (M41, D38): a page's WebGPU in a renderer, its
+    // requests relayed by the browser to a GPU process (threads here),
+    // the answers back to the page.
+    use std::time::{Duration, Instant};
+
+    use net::test_server::{Reply as Served, TestServer};
+
+    use crate::view::View;
+
+    let fonts = || {
+        text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
+            .expect("the bundled font parses")
+    };
+    let page = TestServer::plain(|_| {
+        Served::ok(
+            "text/html",
+            br#"<script>(async () => {
+  const adapter = await navigator.gpu.requestAdapter();
+  if (adapter === null) { console.log('no adapter'); return; }
+  const device = await adapter.requestDevice();
+  const buffer = device.createBuffer({size: 8, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST});
+  device.queue.writeBuffer(buffer, 0, new Uint32Array([41, 42]));
+  await buffer.mapAsync(GPUMapMode.READ);
+  console.log('read ' + Array.from(new Uint32Array(buffer.getMappedRange())).join(','));
+})().then(() => console.log('done'), (e) => console.log('failed ' + e));</script>"#,
+        )
+    });
+    let launcher = Arc::new(Counting {
+        threads: ThreadLauncher::with_fonts(fonts()),
+        started: AtomicUsize::new(0),
+    });
+    let mut tab = super::RemoteTab::new(launcher.clone(), fonts());
+    tab.set_scripting(true);
+    tab.navigate(page.url("/"));
+    let began = Instant::now();
+    let mut lines = Vec::new();
+    while !lines
+        .iter()
+        .any(|l: &String| l == "done" || l.starts_with("failed"))
+    {
+        assert!(began.elapsed() < Duration::from_secs(30), "{lines:?}");
+        tab.poll_network();
+        tab.run_tasks();
+        lines.extend(tab.take_console().into_iter().map(|entry| entry.text));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(launcher.started.load(Ordering::Relaxed), 1);
+    if lines[0] == "no adapter" {
+        eprintln!("no adapter here: the page's buffer is not checked");
+        return;
+    }
+    assert_eq!(lines, ["read 41,42", "done"]);
+}

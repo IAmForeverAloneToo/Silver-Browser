@@ -335,8 +335,67 @@ fn check_gpu() -> Result<(), String> {
             "adapter: vendor {:?}, fallback {}",
             info.vendor, info.fallback
         ),
-        Some(Reply::Adapter { adapter: None, .. }) => println!("adapter: none"),
+        Some(Reply::Adapter { adapter: None, .. }) => {
+            println!("adapter: none");
+            return Ok(());
+        }
         other => return Err(format!("not an adapter: {other:?}")),
+    }
+    // A device under the GPU process's sandbox, and a buffer written by
+    // its queue and read back.
+    let batch = wire::requests(&[
+        Request::RequestDevice {
+            call: 2,
+            adapter: 1,
+            id: 2,
+            features: Vec::new(),
+            limits: Vec::new(),
+        },
+        Request::CreateBuffer {
+            device: 2,
+            id: 3,
+            size: 4,
+            usage: 0x1 | 0x8,
+            mapped: false,
+        },
+        Request::WriteBuffer {
+            device: 2,
+            buffer: 3,
+            offset: 0,
+            bytes: Bytes(vec![1, 2, 3, 4]),
+        },
+        Request::MapBuffer {
+            call: 3,
+            buffer: 3,
+            mode: 1,
+            offset: 0,
+            size: 4,
+        },
+    ]);
+    relay
+        .serve(
+            1,
+            ToBrowser::Gpu {
+                bytes: Bytes(batch),
+            },
+            &renderer,
+        )
+        .map_err(|why| format!("refused: {why}"))?;
+    let Ok(Some(ToRenderer::Gpu { bytes })) = engine::ipc::read_message::<ToRenderer>(&mut heard)
+    else {
+        return Err("no reply".to_owned());
+    };
+    let replies = wire::read_replies(&bytes.0).map_err(|error| format!("{error}"))?;
+    for reply in replies {
+        match reply {
+            Reply::Device { result: Ok(_), .. } => println!("device: made"),
+            Reply::Device {
+                result: Err(why), ..
+            } => println!("device: refused ({why})"),
+            Reply::MappedBytes { bytes, .. } => println!("buffer: read {:?}", bytes.0),
+            Reply::Mapped { error, .. } => println!("mapped: {}", error.unwrap_or("ok".to_owned())),
+            other => println!("{other:?}"),
+        }
     }
     Ok(())
 }

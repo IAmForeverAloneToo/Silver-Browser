@@ -285,4 +285,12 @@ fn the_gpu_process_is_started_through_the_relay_and_answers_for_an_adapter() {
         said.starts_with("gpu process: running\nadapter: "),
         "{said}"
     );
+    // With an adapter, a device under the GPU process's sandbox, and a
+    // buffer its queue wrote read back (M41 step 2).
+    if !said.contains("adapter: none") {
+        assert!(
+            said.ends_with("device: made\nbuffer: read [1, 2, 3, 4]\nmapped: ok\n"),
+            "{said}"
+        );
+    }
 }

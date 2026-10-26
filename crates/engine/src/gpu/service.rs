@@ -2,20 +2,57 @@
 //! thread of the browser in one process. It holds `wgpu`'s instance
 //! and, for each client, a table of the objects the client made, by the
 //! numbers it gave them. A batch it cannot read, a number in use or not
-//! there, or more objects than [`MAX_GPU_OBJECTS`] ends the client.
+//! there or of another kind, or more objects than [`MAX_GPU_OBJECTS`]
+//! ends the client. WebGPU's objects (step 2, D39) are `wgpu`'s safe
+//! API's: what a page does wrong with them is `wgpu`'s validation's to
+//! say, through the device's error scopes or as an uncaptured error.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex, PoisonError};
 
-use super::wire::{self, AdapterInfo, Reply, Request};
+use super::names;
+use super::wire::{self, AdapterInfo, DeviceInfo, GPU_CHUNK, GpuError, Reply, Request};
+use crate::ipc::Bytes;
 
 /// The most objects a client may have live at once.
 pub const MAX_GPU_OBJECTS: usize = 1_000_000;
 
+/// The most error scopes a device's stack holds: past it, a push ends
+/// the client (a page has no reason for so many).
+pub const MAX_ERROR_SCOPES: usize = 1024;
+
+struct Device {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    /// The page's error scopes, the innermost last.
+    scopes: Vec<wgpu::ErrorScopeGuard>,
+}
+
+struct Buffer {
+    buffer: wgpu::Buffer,
+    /// Its device, which a map waits on.
+    device: wgpu::Device,
+    /// The range mapped, while it is.
+    mapped: Option<(u64, u64)>,
+}
+
 /// One of a client's objects.
 enum Object {
-    // Its devices come with WebGPU's objects (step 2).
-    #[allow(dead_code)]
-    Adapter(wgpu::Adapter),
+    /// An adapter, and whether a device was asked of it (it is then
+    /// "consumed", as WebGPU says).
+    Adapter(wgpu::Adapter, bool),
+    Device(Device),
+    Buffer(Buffer),
+}
+
+impl Object {
+    fn kind(&self) -> &'static str {
+        match self {
+            Object::Adapter(..) => "an adapter",
+            Object::Device(_) => "a device",
+            Object::Buffer(_) => "a buffer",
+        }
+    }
 }
 
 #[derive(Default)]
@@ -35,7 +72,37 @@ impl Client {
         self.objects.insert(id, object);
         Ok(())
     }
+
+    fn object(&mut self, id: u32) -> Result<&mut Object, String> {
+        self.objects
+            .get_mut(&id)
+            .ok_or_else(|| format!("object {id} named, which it does not have"))
+    }
+
+    fn device(&mut self, id: u32) -> Result<&mut Device, String> {
+        match self.object(id)? {
+            Object::Device(device) => Ok(device),
+            other => Err(format!(
+                "object {id} named as a device, which is {}",
+                other.kind()
+            )),
+        }
+    }
+
+    fn buffer(&mut self, id: u32) -> Result<&mut Buffer, String> {
+        match self.object(id)? {
+            Object::Buffer(buffer) => Ok(buffer),
+            other => Err(format!(
+                "object {id} named as a buffer, which is {}",
+                other.kind()
+            )),
+        }
+    }
 }
+
+/// What the devices' callbacks tell, for the client of each: their
+/// uncaptured errors and losses, sent after the batch they came in.
+type Events = Arc<Mutex<Vec<(u32, Reply)>>>;
 
 /// The GPU service.
 pub struct GpuService {
@@ -44,6 +111,7 @@ pub struct GpuService {
     /// tests').
     fallback_only: bool,
     clients: HashMap<u32, Client>,
+    events: Events,
 }
 
 /// The backends the service tries: Vulkan, Metal and Direct3D 12, or
@@ -56,6 +124,24 @@ fn backends() -> wgpu::Backends {
         .map(|named| named & ours)
         .filter(|named| !named.is_empty())
         .unwrap_or(ours)
+}
+
+/// A `wgpu` error as WebGPU's.
+fn error_of(error: wgpu::Error) -> GpuError {
+    match error {
+        wgpu::Error::Validation { description, .. } => GpuError {
+            kind: 0,
+            message: description,
+        },
+        wgpu::Error::OutOfMemory { .. } => GpuError {
+            kind: 1,
+            message: "Out of memory".to_owned(),
+        },
+        wgpu::Error::Internal { description, .. } => GpuError {
+            kind: 2,
+            message: description,
+        },
+    }
 }
 
 impl GpuService {
@@ -71,11 +157,13 @@ impl GpuService {
             instance,
             fallback_only,
             clients: HashMap::new(),
+            events: Arc::default(),
         }
     }
 
     /// Takes a batch of `client`'s requests: the replies to send it now,
-    /// or why the client is ended.
+    /// or why the client is ended. What devices told meanwhile is in
+    /// [`GpuService::events`].
     pub fn handle(&mut self, client: u32, bytes: &[u8]) -> Result<Vec<Reply>, String> {
         let requests = wire::read_requests(bytes)
             .map_err(|malformed| format!("a malformed batch: {malformed}"))?;
@@ -84,6 +172,11 @@ impl GpuService {
             self.request(client, request, &mut replies)?;
         }
         Ok(replies)
+    }
+
+    /// What the devices told since last asked, by client.
+    pub fn events(&self) -> Vec<(u32, Reply)> {
+        std::mem::take(&mut *self.events.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
     fn request(
@@ -102,10 +195,8 @@ impl GpuService {
                 let adapter = self.adapter(power, fallback);
                 let info = adapter.as_ref().map(info_of);
                 if let Some(adapter) = adapter {
-                    self.clients
-                        .entry(client)
-                        .or_default()
-                        .insert(id, Object::Adapter(adapter))?;
+                    self.client(client)
+                        .insert(id, Object::Adapter(adapter, false))?;
                 }
                 replies.push(Reply::Adapter {
                     call,
@@ -113,13 +204,133 @@ impl GpuService {
                 });
             }
             Request::Drop { id } => {
-                let objects = &mut self.clients.entry(client).or_default().objects;
-                if objects.remove(&id).is_none() {
+                if self.client(client).objects.remove(&id).is_none() {
                     return Err(format!("object {id} dropped, which it does not have"));
                 }
             }
+            Request::RequestDevice {
+                call,
+                adapter,
+                id,
+                features,
+                limits,
+            } => {
+                let events = self.events.clone();
+                let result = self.device(client, adapter, id, &features, &limits, events)?;
+                replies.push(Reply::Device { call, result });
+            }
+            Request::DestroyDevice { id } => {
+                let device = self.client(client).device(id)?;
+                device.device.destroy();
+                let _ = device.device.poll(wgpu::PollType::Poll);
+            }
+            Request::PushErrorScope { device, filter } => {
+                let device = self.client(client).device(device)?;
+                if device.scopes.len() >= MAX_ERROR_SCOPES {
+                    return Err(format!("more than {MAX_ERROR_SCOPES} error scopes"));
+                }
+                let filter = match filter {
+                    0 => wgpu::ErrorFilter::Validation,
+                    1 => wgpu::ErrorFilter::OutOfMemory,
+                    _ => wgpu::ErrorFilter::Internal,
+                };
+                let guard = device.device.push_error_scope(filter);
+                device.scopes.push(guard);
+            }
+            Request::PopErrorScope { call, device } => {
+                let device = self.client(client).device(device)?;
+                let result = match device.scopes.pop() {
+                    Some(guard) => Ok(pollster::block_on(guard.pop()).map(error_of)),
+                    None => Err("No error scopes to pop".to_owned()),
+                };
+                replies.push(Reply::ErrorScope { call, result });
+            }
+            Request::CreateBuffer {
+                device,
+                id,
+                size,
+                usage,
+                mapped,
+            } => {
+                let made = self.client(client).device(device)?;
+                let buffer = made.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: None,
+                    size,
+                    usage: wgpu::BufferUsages::from_bits_retain(usage),
+                    mapped_at_creation: mapped,
+                });
+                let buffer = Buffer {
+                    buffer,
+                    device: made.device.clone(),
+                    mapped: mapped.then_some((0, size)),
+                };
+                self.client(client).insert(id, Object::Buffer(buffer))?;
+            }
+            Request::DestroyBuffer { id } => {
+                let buffer = self.client(client).buffer(id)?;
+                buffer.buffer.destroy();
+                buffer.mapped = None;
+            }
+            Request::WriteBuffer {
+                device,
+                buffer,
+                offset,
+                bytes,
+            } => {
+                let client = self.client(client);
+                let target = client.buffer(buffer)?.buffer.clone();
+                client
+                    .device(device)?
+                    .queue
+                    .write_buffer(&target, offset, &bytes.0);
+            }
+            Request::MapBuffer {
+                call,
+                buffer,
+                mode,
+                offset,
+                size,
+            } => self.map(client, call, buffer, mode, offset, size, replies)?,
+            Request::MappedWrite {
+                buffer,
+                offset,
+                bytes,
+            } => {
+                let buffer = self.client(client).buffer(buffer)?;
+                let Some((start, len)) = buffer.mapped else {
+                    return Err("a write into a buffer not mapped".to_owned());
+                };
+                let end = offset.checked_add(bytes.0.len() as u64);
+                if offset < start || end.is_none_or(|end| end > start + len) {
+                    return Err("a write outside the mapped range".to_owned());
+                }
+                // A range the buffer cannot give (it was destroyed) takes
+                // nothing.
+                if let Ok(mut view) = buffer
+                    .buffer
+                    .get_mapped_range_mut(offset..offset + bytes.0.len() as u64)
+                {
+                    view.copy_from_slice(&bytes.0);
+                }
+            }
+            Request::Unmap { buffer } => {
+                let buffer = self.client(client).buffer(buffer)?;
+                if buffer.mapped.take().is_some() {
+                    buffer.buffer.unmap();
+                }
+            }
+            Request::WorkDone { call, device } => {
+                let device = self.client(client).device(device)?;
+                device.queue.on_submitted_work_done(|| {});
+                let _ = device.device.poll(wgpu::PollType::wait_indefinitely());
+                replies.push(Reply::WorkDone { call });
+            }
         }
         Ok(())
+    }
+
+    fn client(&mut self, client: u32) -> &mut Client {
+        self.clients.entry(client).or_default()
     }
 
     /// An adapter as a page asks: the machine's, of the power asked for,
@@ -149,6 +360,153 @@ impl GpuService {
         ask(false).or_else(|| ask(true))
     }
 
+    /// A device of `adapter` with the features and limits asked for, or
+    /// why it is refused. The standard's defaults stand for limits not
+    /// asked for, and for those asked for worse than the defaults.
+    fn device(
+        &mut self,
+        client: u32,
+        adapter: u32,
+        id: u32,
+        features: &[String],
+        limits: &[(String, u64)],
+        events: Events,
+    ) -> Result<Result<DeviceInfo, String>, String> {
+        let made = self.client(client);
+        let (adapter, consumed) = match made.object(adapter)? {
+            Object::Adapter(adapter, consumed) => (adapter.clone(), consumed),
+            other => {
+                return Err(format!(
+                    "object {adapter} named as an adapter, which is {}",
+                    other.kind()
+                ));
+            }
+        };
+        if *consumed {
+            return Ok(Err(
+                "adapter is \"consumed\": it has already been used to create a device".to_owned(),
+            ));
+        }
+        *consumed = true;
+        let required_features = match names::features_named(features) {
+            Ok(features) => features,
+            Err(name) => return Ok(Err(format!("the feature '{name}' is not supported"))),
+        };
+        let defaults = wgpu::Limits::default();
+        let mut required_limits = defaults.clone();
+        for (name, value) in limits {
+            let mut asked = defaults.clone();
+            if !names::set_limit(&mut asked, name, *value) {
+                return Ok(Err(format!("the limit '{name}' cannot be {value}")));
+            }
+            // Asked for worse than the default, the default stands.
+            if asked.check_limits(&defaults) {
+                continue;
+            }
+            names::set_limit(&mut required_limits, name, *value);
+        }
+        let descriptor = wgpu::DeviceDescriptor {
+            label: None,
+            required_features,
+            required_limits,
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        };
+        let (device, queue) = match pollster::block_on(adapter.request_device(&descriptor)) {
+            Ok(made) => made,
+            Err(error) => return Ok(Err(error.to_string())),
+        };
+        let uncaptured = events.clone();
+        device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
+            uncaptured
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push((
+                    client,
+                    Reply::Uncaptured {
+                        device: id,
+                        error: error_of(error),
+                    },
+                ));
+        }));
+        device.set_device_lost_callback(move |reason, message| {
+            events.lock().unwrap_or_else(PoisonError::into_inner).push((
+                client,
+                Reply::DeviceLost {
+                    device: id,
+                    destroyed: reason == wgpu::DeviceLostReason::Destroyed,
+                    message,
+                },
+            ));
+        });
+        let info = DeviceInfo {
+            features: names::feature_names(device.features()),
+            limits: names::limit_values(&device.limits()),
+        };
+        self.client(client).insert(
+            id,
+            Object::Device(Device {
+                device,
+                queue,
+                scopes: Vec::new(),
+            }),
+        )?;
+        Ok(Ok(info))
+    }
+
+    /// Maps `buffer`'s range, waiting for the GPU, and sends its bytes.
+    #[allow(clippy::too_many_arguments)]
+    fn map(
+        &mut self,
+        client: u32,
+        call: u32,
+        buffer: u32,
+        mode: u8,
+        offset: u64,
+        size: u64,
+        replies: &mut Vec<Reply>,
+    ) -> Result<(), String> {
+        let made = self.client(client).buffer(buffer)?;
+        let end = offset.checked_add(size).ok_or("a range past 2^64")?;
+        let mode = match mode {
+            1 => wgpu::MapMode::Read,
+            2 => wgpu::MapMode::Write,
+            _ => return Err(format!("a map mode of {mode}")),
+        };
+        let done = Arc::new(Mutex::new(None));
+        let told = done.clone();
+        made.buffer.map_async(mode, offset..end, move |result| {
+            *told.lock().unwrap_or_else(PoisonError::into_inner) = Some(result);
+        });
+        let _ = made.device.poll(wgpu::PollType::wait_indefinitely());
+        let result = done.lock().unwrap_or_else(PoisonError::into_inner).take();
+        match result {
+            Some(Ok(())) => {
+                made.mapped = Some((offset, size));
+                if let Ok(view) = made.buffer.get_mapped_range(offset..end) {
+                    for (i, piece) in view.chunks(GPU_CHUNK).enumerate() {
+                        replies.push(Reply::MappedBytes {
+                            call,
+                            offset: (i * GPU_CHUNK) as u64,
+                            bytes: Bytes(piece.to_vec()),
+                        });
+                    }
+                }
+                replies.push(Reply::Mapped { call, error: None });
+            }
+            Some(Err(error)) => replies.push(Reply::Mapped {
+                call,
+                error: Some(error.to_string()),
+            }),
+            None => replies.push(Reply::Mapped {
+                call,
+                error: Some("the buffer could not be mapped".to_owned()),
+            }),
+        }
+        Ok(())
+    }
+
     /// Client `client` is gone: its objects go.
     pub fn gone(&mut self, client: u32) {
         self.clients.remove(&client);
@@ -166,5 +524,7 @@ fn info_of(adapter: &wgpu::Adapter) -> AdapterInfo {
     AdapterInfo {
         vendor: wire::vendor_name(info.vendor).to_owned(),
         fallback: info.device_type == wgpu::DeviceType::Cpu,
+        features: names::feature_names(adapter.features()),
+        limits: names::limit_values(&adapter.limits()),
     }
 }

@@ -81,6 +81,10 @@ pub(crate) enum WorkerMessage {
     /// What the document's media elements tell it (M40): a task of
     /// `js::Task::Media`.
     Media(String),
+    /// What the GPU process tells the document's WebGPU (M41): a task of
+    /// `js::Task::Gpu`, a mapped range's bytes uncounted (bounded by the
+    /// device's buffer size).
+    Gpu(String, Vec<u8>),
 }
 
 impl WorkerMessage {
@@ -929,7 +933,10 @@ impl WorkerHost {
         let task = match message {
             WorkerMessage::Stop => return,
             // Frames and Web Audio are the document's alone.
-            WorkerMessage::Frame(_) | WorkerMessage::Audio(..) | WorkerMessage::Media(_) => return,
+            WorkerMessage::Frame(_)
+            | WorkerMessage::Audio(..)
+            | WorkerMessage::Media(_)
+            | WorkerMessage::Gpu(..) => return,
             WorkerMessage::Wake => {
                 for task in host.take_fetched() {
                     if host.closing || stop.load(Ordering::SeqCst) {

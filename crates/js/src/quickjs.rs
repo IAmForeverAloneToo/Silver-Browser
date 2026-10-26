@@ -458,6 +458,16 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                     .get::<_, Function<'_>>("media")?
                     .call::<_, Value<'_>>((message.as_str(),))
             }),
+            Task::Gpu(message, bytes) => self.stepped(&entries, |ctx, entries| {
+                let bytes = if bytes.is_empty() {
+                    Value::new_null(ctx.clone())
+                } else {
+                    rquickjs::ArrayBuffer::new(ctx.clone(), bytes.clone())?.into_value()
+                };
+                entries
+                    .get::<_, Function<'_>>("gpu")?
+                    .call::<_, Value<'_>>((message.as_str(), bytes))
+            }),
             Task::Audio(message, bytes) => self.stepped(&entries, |ctx, entries| {
                 let samples = if bytes.is_empty() {
                     Value::new_null(ctx.clone())

@@ -21907,6 +21907,720 @@
     [HTMLMediaElement.prototype],
   );
 
+  // ---- WebGPU (M41 step 2, D39, docs/design/gpu.md) ----------------------
+  // The objects are the engine's numbers for the GPU process's; each call
+  // goes through one native, `native.gpu(op, bytes)`, and what the GPU
+  // process answers later comes back as a task (`gpuTask`).
+
+  const GpuSetHas = uncurry(Set.prototype.has);
+  const GpuSetValues = uncurry(Set.prototype.values);
+  const GpuSetEntries = uncurry(Set.prototype.entries);
+  const TypedArraySubarray = uncurry(TypedArrayPrototype.subarray);
+
+  // An ArrayBufferView's bytes, and the size of its elements.
+  function gpuViewBytes(view) {
+    if (view instanceof $DataView) {
+      return [new $Uint8Array(DataViewBuffer(view), DataViewOffset(view), DataViewLength(view)), 1];
+    }
+    const length = viewLength(view);
+    const count = TypedArrayCount(view);
+    return [new $Uint8Array(TypedArrayBuffer(view), TypedArrayOffset(view), length),
+      count === 0 ? 1 : length / count];
+  }
+
+  function gpuCall(op, bytes) {
+    const pair = native.gpu(JSONStringify(op), bytes === null || bytes === undefined ? null : binaryString(bytes));
+    const answer = JSONParse(pair[0]);
+    if (answer.error !== undefined) {
+      throw new $DOMException(answer.error.message, answer.error.name);
+    }
+    return { result: answer.result, bytes: pair[1] };
+  }
+
+  // The promises waiting for the GPU process, by number.
+  const gpuPromises = new $Map();
+  let gpuNextPromise = 1;
+  function gpuPromise(op) {
+    const promise = gpuNextPromise++;
+    op.promise = promise;
+    return new $Promise((resolve, reject) => {
+      MapSet(gpuPromises, promise, { resolve, reject });
+      try {
+        gpuCall(op, null);
+      } catch (e) {
+        MapDelete(gpuPromises, promise);
+        reject(e);
+      }
+    });
+  }
+
+  // `promise` with what `then` makes of its value.
+  function gpuThen(promise, then) {
+    return PromiseThen(promise, then);
+  }
+
+  // Web IDL's [EnforceRange] for an integer of `type`'s range.
+  function gpuEnforced(value, where, type, max) {
+    const n = typeof value === "number" ? value : $Number(value);
+    if (n !== n || n === Infinity || n === -Infinity || MathTrunc(n) < 0 || MathTrunc(n) > max) {
+      throw new $TypeError(where + "Value is outside the '" + type + "' value range.");
+    }
+    return MathTrunc(n);
+  }
+  const GPU_LONG = 4294967295;
+  const GPU_LONG_LONG = 9007199254740991;
+
+  // A dictionary member's words, as the reference's.
+  function memberWords(method, iface, member, dict) {
+    return prefix(method, iface) + "Failed to read the '" + member + "' property from '" + dict + "': ";
+  }
+
+  function gpuDictionary(value, method, iface, dict) {
+    if (value === undefined || value === null) return {};
+    if (typeof value !== "object" && typeof value !== "function") {
+      throw new $TypeError(prefix(method, iface) + "The provided value is not of type '" + dict + "'.");
+    }
+    return value;
+  }
+
+  // ---- The set-likes: features, WGSL's language features ----
+  class GPUSupportedFeatures {
+    #names;
+    constructor(key, names) {
+      if (key !== KEY) throw illegalConstructor("GPUSupportedFeatures");
+      this.#names = new $Set();
+      for (let i = 0; i < names.length; i++) SetAdd(this.#names, names[i]);
+    }
+    get size() { return SetSize(this.#names); }
+    has(name) { return GpuSetHas(this.#names, str(name)); }
+    forEach(callback, thisArg) {
+      need(arguments.length, 1, "forEach", "GPUSupportedFeatures");
+      SetForEach(this.#names, (name) => ReflectApply(callback, thisArg, [name, name, this]));
+    }
+    values() { return GpuSetValues(this.#names); }
+    keys() { return GpuSetValues(this.#names); }
+    entries() { return GpuSetEntries(this.#names); }
+    [iteratorSymbol]() { return GpuSetValues(this.#names); }
+  }
+  expose(GPUSupportedFeatures, "GPUSupportedFeatures");
+
+  class WGSLLanguageFeatures {
+    #names;
+    constructor(key, names) {
+      if (key !== KEY) throw illegalConstructor("WGSLLanguageFeatures");
+      this.#names = new $Set();
+      for (let i = 0; i < names.length; i++) SetAdd(this.#names, names[i]);
+    }
+    get size() { return SetSize(this.#names); }
+    has(name) { return GpuSetHas(this.#names, str(name)); }
+    forEach(callback, thisArg) {
+      need(arguments.length, 1, "forEach", "WGSLLanguageFeatures");
+      SetForEach(this.#names, (name) => ReflectApply(callback, thisArg, [name, name, this]));
+    }
+    values() { return GpuSetValues(this.#names); }
+    keys() { return GpuSetValues(this.#names); }
+    entries() { return GpuSetEntries(this.#names); }
+    [iteratorSymbol]() { return GpuSetValues(this.#names); }
+  }
+  expose(WGSLLanguageFeatures, "WGSLLanguageFeatures");
+
+  // The limits, by WebGPU's names, in the standard's order.
+  const GPU_LIMITS = [
+    "maxTextureDimension1D", "maxTextureDimension2D", "maxTextureDimension3D",
+    "maxTextureArrayLayers", "maxBindGroups", "maxBindGroupsPlusVertexBuffers",
+    "maxBindingsPerBindGroup", "maxDynamicUniformBuffersPerPipelineLayout",
+    "maxDynamicStorageBuffersPerPipelineLayout", "maxSampledTexturesPerShaderStage",
+    "maxSamplersPerShaderStage", "maxStorageBuffersPerShaderStage",
+    "maxStorageTexturesPerShaderStage", "maxUniformBuffersPerShaderStage",
+    "maxUniformBufferBindingSize", "maxStorageBufferBindingSize",
+    "minUniformBufferOffsetAlignment", "minStorageBufferOffsetAlignment",
+    "maxVertexBuffers", "maxBufferSize", "maxVertexAttributes",
+    "maxVertexBufferArrayStride", "maxInterStageShaderVariables", "maxColorAttachments",
+    "maxColorAttachmentBytesPerSample", "maxComputeWorkgroupStorageSize",
+    "maxComputeInvocationsPerWorkgroup", "maxComputeWorkgroupSizeX",
+    "maxComputeWorkgroupSizeY", "maxComputeWorkgroupSizeZ",
+    "maxComputeWorkgroupsPerDimension",
+  ];
+  // The limits whose smaller value is the better (alignments).
+  const GPU_MIN_LIMITS = ["minUniformBufferOffsetAlignment", "minStorageBufferOffsetAlignment"];
+
+  class GPUSupportedLimits {
+    #values;
+    constructor(key, pairs) {
+      if (key !== KEY) throw illegalConstructor("GPUSupportedLimits");
+      this.#values = new $Map();
+      for (let i = 0; i < pairs.length; i++) MapSet(this.#values, pairs[i][0], pairs[i][1]);
+    }
+    static {
+      for (let i = 0; i < GPU_LIMITS.length; i++) {
+        const name = GPU_LIMITS[i];
+        defineProperty(GPUSupportedLimits.prototype, name, {
+          get() {
+            const value = MapGet(this.#values, name);
+            return value === undefined ? 0 : value;
+          },
+          enumerable: true,
+          configurable: true,
+        });
+      }
+    }
+  }
+  expose(GPUSupportedLimits, "GPUSupportedLimits");
+
+  class GPUAdapterInfo {
+    #vendor; #fallback;
+    constructor(key, vendor, fallback) {
+      if (key !== KEY) throw illegalConstructor("GPUAdapterInfo");
+      this.#vendor = vendor;
+      this.#fallback = fallback;
+    }
+    get vendor() { return this.#vendor; }
+    get architecture() { return ""; }
+    get device() { return ""; }
+    get description() { return ""; }
+    get subgroupMinSize() { return 4; }
+    get subgroupMaxSize() { return 128; }
+    get isFallbackAdapter() { return this.#fallback; }
+  }
+  expose(GPUAdapterInfo, "GPUAdapterInfo");
+
+  // ---- The errors ----
+  class GPUError {
+    #message;
+    constructor(message) {
+      if (new.target === GPUError) throw illegalConstructor("GPUError");
+      this.#message = str(message);
+    }
+    get message() { return this.#message; }
+  }
+  expose(GPUError, "GPUError");
+
+  class GPUValidationError extends GPUError {
+    constructor(message) {
+      needToConstruct(arguments.length, 1, "GPUValidationError");
+      super(message);
+    }
+  }
+  expose(GPUValidationError, "GPUValidationError");
+
+  class GPUOutOfMemoryError extends GPUError {
+    constructor(message) {
+      needToConstruct(arguments.length, 1, "GPUOutOfMemoryError");
+      super(message);
+    }
+  }
+  expose(GPUOutOfMemoryError, "GPUOutOfMemoryError");
+
+  class GPUInternalError extends GPUError {
+    constructor(message) {
+      needToConstruct(arguments.length, 1, "GPUInternalError");
+      super(message);
+    }
+  }
+  expose(GPUInternalError, "GPUInternalError");
+
+  // An error the GPU process told of, as the page sees it.
+  function gpuError(told) {
+    const message = told.message + "\n";
+    if (told.kind === 1) return new GPUOutOfMemoryError(message);
+    if (told.kind === 2) return new GPUInternalError(message);
+    return new GPUValidationError(message);
+  }
+
+  class GPUUncapturedErrorEvent extends Event {
+    #error;
+    constructor(type, init) {
+      needToConstruct(arguments.length, 2, "GPUUncapturedErrorEvent");
+      const words = "Failed to construct 'GPUUncapturedErrorEvent': Failed to read the 'error' property from 'GPUUncapturedErrorEventInit': ";
+      if (init === null || typeof init !== "object" || init.error === undefined) {
+        throw new $TypeError(words + "Required member is undefined.");
+      }
+      if (!(init.error instanceof GPUError)) {
+        throw new $TypeError(words + "Failed to convert value to 'GPUError'.");
+      }
+      super(type, init);
+      this.#error = init.error;
+    }
+    get error() { return this.#error; }
+  }
+  expose(GPUUncapturedErrorEvent, "GPUUncapturedErrorEvent");
+
+  class GPUDeviceLostInfo {
+    #reason; #message;
+    constructor(key, reason, message) {
+      if (key !== KEY) throw illegalConstructor("GPUDeviceLostInfo");
+      this.#reason = reason;
+      this.#message = message;
+    }
+    get reason() { return this.#reason; }
+    get message() { return this.#message; }
+  }
+  expose(GPUDeviceLostInfo, "GPUDeviceLostInfo");
+
+  // ---- The flags ----
+  const GPU_NAMESPACES = [
+    ["GPUBufferUsage", {
+      MAP_READ: 0x1, MAP_WRITE: 0x2, COPY_SRC: 0x4, COPY_DST: 0x8, INDEX: 0x10,
+      VERTEX: 0x20, UNIFORM: 0x40, STORAGE: 0x80, INDIRECT: 0x100, QUERY_RESOLVE: 0x200,
+    }],
+    ["GPUMapMode", { READ: 0x1, WRITE: 0x2 }],
+    ["GPUTextureUsage", {
+      COPY_SRC: 0x1, COPY_DST: 0x2, TEXTURE_BINDING: 0x4, STORAGE_BINDING: 0x8,
+      RENDER_ATTACHMENT: 0x10,
+    }],
+    ["GPUShaderStage", { VERTEX: 0x1, FRAGMENT: 0x2, COMPUTE: 0x4 }],
+    ["GPUColorWrite", { RED: 0x1, GREEN: 0x2, BLUE: 0x4, ALPHA: 0x8, ALL: 0xF }],
+  ];
+  if (!WORKER) {
+    for (let i = 0; i < GPU_NAMESPACES.length; i++) {
+      defineProperty(global, GPU_NAMESPACES[i][0], {
+        value: ObjectFreeze(GPU_NAMESPACES[i][1]),
+        writable: true,
+        configurable: true,
+      });
+    }
+  }
+
+  // ---- GPU and GPUAdapter ----
+  // What naga, this build's WGSL front end, implements.
+  const WGSL_FEATURES = [
+    "packed_4x8_integer_dot_product", "pointer_composite_access",
+    "readonly_and_readwrite_storage_textures",
+  ];
+
+  const GPU_FEATURES = [
+    "core-features-and-limits", "depth-clip-control", "depth32float-stencil8",
+    "texture-compression-bc", "texture-compression-bc-sliced-3d", "texture-compression-etc2",
+    "texture-compression-astc", "texture-compression-astc-sliced-3d", "timestamp-query",
+    "indirect-first-instance", "shader-f16", "rg11b10ufloat-renderable", "bgra8unorm-storage",
+    "float32-filterable", "float32-blendable", "dual-source-blending", "clip-distances",
+    "subgroups", "texture-formats-tier1", "texture-formats-tier2", "primitive-index",
+    "texture-component-swizzle",
+  ];
+
+  class GPU {
+    #wgsl;
+    constructor(key) {
+      if (key !== KEY) throw illegalConstructor("GPU");
+      this.#wgsl = new WGSLLanguageFeatures(KEY, WGSL_FEATURES);
+    }
+    requestAdapter(options) {
+      let o;
+      try {
+        o = gpuDictionary(options, "requestAdapter", "GPU", "GPURequestAdapterOptions");
+      } catch (e) {
+        return rejected(e);
+      }
+      const preference = o.powerPreference === undefined ? "" : str(o.powerPreference);
+      if (preference !== "" && preference !== "low-power" && preference !== "high-performance") {
+        return rejected(new $TypeError(memberWords("requestAdapter", "GPU", "powerPreference", "GPURequestAdapterOptions") +
+          "The provided value '" + preference + "' is not a valid enum value of type GPUPowerPreference."));
+      }
+      return gpuPromise({
+        op: "requestAdapter",
+        power: preference === "low-power" ? 1 : preference === "high-performance" ? 2 : 0,
+        fallback: !!o.forceFallbackAdapter,
+      });
+    }
+    getPreferredCanvasFormat() { return "bgra8unorm"; }
+    get wgslLanguageFeatures() { return this.#wgsl; }
+  }
+  expose(GPU, "GPU");
+
+  let gpuObject = null;
+  if (!WORKER) {
+    defineProperty(Navigator.prototype, "gpu", {
+      get() {
+        if (!native.secureContext()) return undefined;
+        if (gpuObject === null) gpuObject = new GPU(KEY);
+        return gpuObject;
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  }
+
+  let gpuDeviceId;
+  let gpuDeviceLost;
+  let gpuBufferId;
+
+  class GPUAdapter {
+    #id; #features; #limits; #info; #consumed = false;
+    constructor(key, told) {
+      if (key !== KEY) throw illegalConstructor("GPUAdapter");
+      this.#id = told.id;
+      this.#features = new GPUSupportedFeatures(KEY, told.features);
+      this.#limits = new GPUSupportedLimits(KEY, told.limits);
+      this.#info = new GPUAdapterInfo(KEY, told.vendor, told.fallback);
+    }
+    get features() { return this.#features; }
+    get limits() { return this.#limits; }
+    get info() { return this.#info; }
+    get isFallbackAdapter() { return this.#info.isFallbackAdapter; }
+
+    requestDevice(descriptor) {
+      try {
+        return this.#requestDevice(descriptor);
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+
+    #requestDevice(descriptor) {
+      const words = prefix("requestDevice", "GPUAdapter");
+      const d = gpuDictionary(descriptor, "requestDevice", "GPUAdapter", "GPUDeviceDescriptor");
+      const features = [];
+      if (d.requiredFeatures !== undefined) {
+        const names = sequence(d.requiredFeatures, "requestDevice", "GPUAdapter", str);
+        for (let i = 0; i < names.length; i++) {
+          if (!listed(GPU_FEATURES, names[i])) {
+            throw new $TypeError(words + "Failed to read the 'requiredFeatures' property from 'GPUDeviceDescriptor': The provided value '" +
+              names[i] + "' is not a valid enum value of type GPUFeatureName.");
+          }
+          if (!this.#features.has(names[i])) {
+            throw new $TypeError(words + "Unsupported feature: " + names[i]);
+          }
+          ArrayPush(features, names[i]);
+        }
+      }
+      const limits = [];
+      if (d.requiredLimits !== undefined && d.requiredLimits !== null) {
+        const pairs = record(d.requiredLimits, str, (value) => value);
+        for (let i = 0; i < pairs.length; i++) {
+          const name = pairs[i][0];
+          if (pairs[i][1] === undefined) continue;
+          if (!listed(GPU_LIMITS, name)) {
+            throw domError("OperationError", "The limit '" + name + "' is not recognized.", "requestDevice", "GPUAdapter");
+          }
+          const n = gpuEnforced(pairs[i][1], words, "unsigned long long", GPU_LONG_LONG);
+          const supported = this.#limits[name];
+          const alignment = listed(GPU_MIN_LIMITS, name);
+          if (alignment ? n < supported : n > supported) {
+            throw domError("OperationError", "Required limit (" + n + ") is " +
+              (alignment ? "lower" : "greater") + " than the supported limit (" + supported +
+              ").\n - While validating " + name + "\n - While validating required limits", "requestDevice", "GPUAdapter");
+          }
+          if (alignment && (n & (n - 1)) !== 0) {
+            throw domError("OperationError", "Required limit (" + n + ") is not a power of two.", "requestDevice", "GPUAdapter");
+          }
+          ArrayPush(limits, [name, n]);
+        }
+      }
+      if (this.#consumed) {
+        throw domError("OperationError", "adapter is \"consumed\": it has already been used to create a device", "requestDevice", "GPUAdapter");
+      }
+      this.#consumed = true;
+      const info = this.#info;
+      return gpuThen(gpuPromise({ op: "requestDevice", adapter: this.#id, features, limits }),
+        (told) => new GPUDevice(KEY, told, info));
+    }
+  }
+  expose(GPUAdapter, "GPUAdapter");
+
+  // ---- GPUDevice and GPUQueue ----
+  const gpuDevices = new $Map();
+
+  class GPUDevice extends EventTarget {
+    #id; #features; #limits; #info; #queue; #lost; #resolveLost; #destroyed = false; #label = "";
+    constructor(key, told, info) {
+      if (key !== KEY) throw illegalConstructor("GPUDevice");
+      super();
+      this.#id = told.id;
+      this.#features = new GPUSupportedFeatures(KEY, told.features);
+      this.#limits = new GPUSupportedLimits(KEY, told.limits);
+      this.#info = info;
+      this.#queue = new GPUQueue(KEY, this.#id);
+      this.#lost = new $Promise((resolve) => { this.#resolveLost = resolve; });
+      MapSet(gpuDevices, this.#id, this);
+    }
+    static {
+      gpuDeviceId = (device) => device.#id;
+      gpuDeviceLost = (device, reason, message) => {
+        if (device.#resolveLost === null) return;
+        const resolve = device.#resolveLost;
+        device.#resolveLost = null;
+        MapDelete(gpuDevices, device.#id);
+        resolve(new GPUDeviceLostInfo(KEY, reason, message));
+      };
+    }
+    get features() { return this.#features; }
+    get limits() { return this.#limits; }
+    get adapterInfo() { return this.#info; }
+    get queue() { return this.#queue; }
+    get lost() { return this.#lost; }
+    get label() { return this.#label; }
+    set label(value) { this.#label = str(value); }
+
+    destroy() {
+      if (this.#destroyed) return;
+      this.#destroyed = true;
+      gpuCall({ op: "destroyDevice", device: this.#id }, null);
+    }
+
+    pushErrorScope(filter) {
+      need(arguments.length, 1, "pushErrorScope", "GPUDevice");
+      const f = str(filter);
+      const n = f === "validation" ? 0 : f === "out-of-memory" ? 1 : f === "internal" ? 2 : -1;
+      if (n < 0) {
+        throw new $TypeError(prefix("pushErrorScope", "GPUDevice") + "The provided value '" + f +
+          "' is not a valid enum value of type GPUErrorFilter.");
+      }
+      gpuCall({ op: "pushErrorScope", device: this.#id, filter: n }, null);
+    }
+
+    popErrorScope() {
+      return gpuThen(gpuPromise({ op: "popErrorScope", device: this.#id }),
+        (told) => told === null ? null : gpuError(told));
+    }
+
+    createBuffer(descriptor) {
+      need(arguments.length, 1, "createBuffer", "GPUDevice");
+      const d = gpuDictionary(descriptor, "createBuffer", "GPUDevice", "GPUBufferDescriptor");
+      const sizeWords = memberWords("createBuffer", "GPUDevice", "size", "GPUBufferDescriptor");
+      const usageWords = memberWords("createBuffer", "GPUDevice", "usage", "GPUBufferDescriptor");
+      if (d.size === undefined) throw new $TypeError(sizeWords + "Required member is undefined.");
+      if (d.usage === undefined) throw new $TypeError(usageWords + "Required member is undefined.");
+      const size = gpuEnforced(d.size, sizeWords, "unsigned long long", GPU_LONG_LONG);
+      const usage = gpuEnforced(d.usage, usageWords, "unsigned long", GPU_LONG);
+      const mapped = !!d.mappedAtCreation;
+      const told = gpuCall({ op: "createBuffer", device: this.#id, size, usage, mapped }, null).result;
+      const buffer = new GPUBuffer(KEY, told.id, size, usage, mapped);
+      if (d.label !== undefined) buffer.label = d.label;
+      return buffer;
+    }
+  }
+  defineHandlers(GPUDevice.prototype, ["uncapturederror"], false);
+  expose(GPUDevice, "GPUDevice");
+
+  // The bytes `data` holds from `offset` (in its elements) for `size`
+  // elements, as `writeBuffer` reads them.
+  function gpuDataBytes(data, offset, size, method, iface) {
+    let bytes;
+    let unit = 1;
+    if (data instanceof $ArrayBuffer) {
+      bytes = new $Uint8Array(data);
+    } else if (ArrayBufferIsView(data)) {
+      const view = gpuViewBytes(data);
+      unit = view[1];
+      bytes = view[0];
+    } else {
+      throw new $TypeError(prefix(method, iface) + "parameter 3 is not of type 'ArrayBuffer' or 'ArrayBufferView'.");
+    }
+    const elements = bytes.length / unit;
+    const start = offset === undefined ? 0 : gpuEnforced(offset, prefix(method, iface), "unsigned long long", GPU_LONG_LONG);
+    if (start > elements) {
+      throw domError("OperationError", "dataOffset (" + start + ") is larger than data's size (" + elements + ").", method, iface);
+    }
+    const count = size === undefined ? elements - start : gpuEnforced(size, prefix(method, iface), "unsigned long long", GPU_LONG_LONG);
+    if (start + count > elements) {
+      throw domError("OperationError", "dataOffset (" + start + ") + size (" + count + ") is larger than data's size (" + elements + ").", method, iface);
+    }
+    if ((count * unit) % 4 !== 0) {
+      throw domError("OperationError", "size (" + count * unit + " bytes) is not a multiple of 4 bytes.", method, iface);
+    }
+    return TypedArraySubarray(bytes, start * unit, (start + count) * unit);
+  }
+
+  class GPUQueue {
+    #device; #label = "";
+    constructor(key, device) {
+      if (key !== KEY) throw illegalConstructor("GPUQueue");
+      this.#device = device;
+    }
+    get label() { return this.#label; }
+    set label(value) { this.#label = str(value); }
+
+    submit(buffers) {
+      need(arguments.length, 1, "submit", "GPUQueue");
+      const list = sequence(buffers, "submit", "GPUQueue");
+      for (let i = 0; i < list.length; i++) {
+        if (!(list[i] instanceof GPUCommandBuffer)) {
+          throw new $TypeError(prefix("submit", "GPUQueue") + "Failed to convert value to 'GPUCommandBuffer'.");
+        }
+      }
+    }
+
+    onSubmittedWorkDone() {
+      return gpuThen(gpuPromise({ op: "workDone", device: this.#device }), () => undefined);
+    }
+
+    writeBuffer(buffer, bufferOffset, data, dataOffset, size) {
+      need(arguments.length, 3, "writeBuffer", "GPUQueue");
+      if (!(buffer instanceof GPUBuffer)) {
+        throw new $TypeError(prefix("writeBuffer", "GPUQueue") + "parameter 1 is not of type 'GPUBuffer'.");
+      }
+      const offset = gpuEnforced(bufferOffset, prefix("writeBuffer", "GPUQueue"), "unsigned long long", GPU_LONG_LONG);
+      const bytes = gpuDataBytes(data, dataOffset, size, "writeBuffer", "GPUQueue");
+      gpuCall({ op: "writeBuffer", device: this.#device, buffer: gpuBufferId(buffer), offset }, bytes);
+    }
+  }
+  expose(GPUQueue, "GPUQueue");
+
+  // Command buffers come at step 3.
+  class GPUCommandBuffer {
+    constructor(key) {
+      if (key !== KEY) throw illegalConstructor("GPUCommandBuffer");
+    }
+  }
+  expose(GPUCommandBuffer, "GPUCommandBuffer");
+
+  // ---- GPUBuffer ----
+  class GPUBuffer {
+    #id; #size; #usage; #state; #label = "";
+    // While mapped: the range's start and bytes, whether it is written
+    // back, and the array buffers handed out of it.
+    #mapped = null;
+    constructor(key, id, size, usage, mapped) {
+      if (key !== KEY) throw illegalConstructor("GPUBuffer");
+      this.#id = id;
+      this.#size = size;
+      this.#usage = usage;
+      this.#state = mapped ? "mapped" : "unmapped";
+      if (mapped) {
+        this.#mapped = { offset: 0, bytes: new $Uint8Array(size), write: true, ranges: [] };
+      }
+    }
+    static {
+      gpuBufferId = (buffer) => buffer.#id;
+    }
+    get size() { return this.#size; }
+    get usage() { return this.#usage; }
+    get mapState() { return this.#state; }
+    get label() { return this.#label; }
+    set label(value) { this.#label = str(value); }
+
+    mapAsync(mode, offset, size) {
+      try {
+        return this.#mapAsync(arguments.length, mode, offset, size);
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+
+    #mapAsync(count, mode, offset, size) {
+      const words = prefix("mapAsync", "GPUBuffer");
+      need(count, 1, "mapAsync", "GPUBuffer");
+      const m = gpuEnforced(mode, words, "unsigned long", GPU_LONG);
+      const start = offset === undefined ? 0 : gpuEnforced(offset, words, "unsigned long long", GPU_LONG_LONG);
+      const length = size === undefined ? MathMax(0, this.#size - start) : gpuEnforced(size, words, "unsigned long long", GPU_LONG_LONG);
+      if (this.#state !== "unmapped") {
+        throw domError("OperationError", "Buffer is already mapped or has a pending map.", "mapAsync", "GPUBuffer");
+      }
+      if ((m !== 1 && m !== 2) || start % 8 !== 0 || length % 4 !== 0 || start + length > this.#size ||
+        (m === 1 && !(this.#usage & 1)) || (m === 2 && !(this.#usage & 2))) {
+        throw domError("OperationError", "Mapping the buffer failed: the mode, offset or size is not valid for it.", "mapAsync", "GPUBuffer");
+      }
+      this.#state = "pending";
+      const buffer = this;
+      const mapping = gpuPromise({ op: "mapAsync", buffer: this.#id, mode: m, offset: start, size: length });
+      return PromiseThen(mapping, (bytes) => {
+        if (buffer.#state !== "pending") {
+          throw domError("AbortError", "Buffer was unmapped before the mapping was resolved.", "mapAsync", "GPUBuffer");
+        }
+        buffer.#state = "mapped";
+        const view = new $Uint8Array(length);
+        if (bytes !== null) TypedArraySet(view, new $Uint8Array(bytes));
+        buffer.#mapped = { offset: start, bytes: view, write: m === 2, ranges: [] };
+        return undefined;
+      }, (error) => {
+        if (buffer.#state === "pending") buffer.#state = "unmapped";
+        throw error;
+      });
+    }
+
+    getMappedRange(offset, size) {
+      const words = prefix("getMappedRange", "GPUBuffer");
+      const start = offset === undefined ? 0 : gpuEnforced(offset, words, "unsigned long long", GPU_LONG_LONG);
+      if (this.#state !== "mapped" || this.#mapped === null) {
+        throw new $DOMException(words + "getMappedRange failed", "OperationError");
+      }
+      const mapped = this.#mapped;
+      const end = mapped.offset + mapped.bytes.length;
+      const length = size === undefined ? MathMax(0, end - start) : gpuEnforced(size, words, "unsigned long long", GPU_LONG_LONG);
+      if (start % 8 !== 0 || length % 4 !== 0 || start < mapped.offset || start + length > end) {
+        throw new $DOMException(words + "getMappedRange failed", "OperationError");
+      }
+      for (let i = 0; i < mapped.ranges.length; i++) {
+        const range = mapped.ranges[i];
+        if (start < range[0] + range[1] && range[0] < start + length) {
+          throw new $DOMException(words + "getMappedRange failed", "OperationError");
+        }
+      }
+      // A buffer of its own, read back at unmap when written.
+      const out = new $ArrayBuffer(length);
+      TypedArraySet(new $Uint8Array(out), TypedArraySubarray(mapped.bytes, start - mapped.offset, start - mapped.offset + length));
+      ArrayPush(mapped.ranges, [start, length, out]);
+      return out;
+    }
+
+    unmap() {
+      if (this.#state === "pending") {
+        this.#state = "unmapped";
+        return;
+      }
+      if (this.#state !== "mapped" || this.#mapped === null) return;
+      const mapped = this.#mapped;
+      this.#mapped = null;
+      this.#state = "unmapped";
+      // What the page wrote goes back; then the ranges handed out are
+      // detached.
+      if (mapped.write) {
+        for (let i = 0; i < mapped.ranges.length; i++) {
+          const range = mapped.ranges[i];
+          const at = range[0] - mapped.offset;
+          TypedArraySet(TypedArraySubarray(mapped.bytes, at, at + range[1]), new $Uint8Array(range[2]));
+        }
+      }
+      gpuCall({ op: "unmap", buffer: this.#id, offset: mapped.offset, write: mapped.write },
+        mapped.write ? mapped.bytes : null);
+      for (let i = 0; i < mapped.ranges.length; i++) native.wasmDetach(mapped.ranges[i][2]);
+    }
+
+    destroy() {
+      if (this.#state !== "unmapped") this.unmap();
+      gpuCall({ op: "destroyBuffer", buffer: this.#id }, null);
+    }
+  }
+  expose(GPUBuffer, "GPUBuffer");
+
+  // What the GPU process told: a promise's answer, or a device's news.
+  function* gpuTask(text, bytes) {
+    const told = JSONParse(text);
+    if (told.promise !== undefined) {
+      const settle = MapGet(gpuPromises, told.promise);
+      if (settle === undefined) return false;
+      MapDelete(gpuPromises, told.promise);
+      if (told.error !== undefined) {
+        settle.reject(told.error.name === "TypeError" ? new $TypeError(told.error.message)
+          : new $DOMException(told.error.message, told.error.name));
+      } else if (told.adapter !== undefined) {
+        settle.resolve(told.adapter === null ? null : new GPUAdapter(KEY, told.adapter));
+      } else if (told.device !== undefined) {
+        settle.resolve(told.device);
+      } else if (told.scope !== undefined) {
+        settle.resolve(told.scope);
+      } else if (told.mapped !== undefined) {
+        settle.resolve(bytes);
+      } else {
+        settle.resolve(undefined);
+      }
+      return false;
+    }
+    const device = MapGet(gpuDevices, told.device);
+    if (device === undefined) return false;
+    if (told.uncaptured !== undefined) {
+      const event = new GPUUncapturedErrorEvent("uncapturederror", {
+        error: gpuError(told.uncaptured),
+        cancelable: true,
+      });
+      eventState(event).trusted = true;
+      yield* dispatching(device, event);
+    } else if (told.lost !== undefined) {
+      gpuDeviceLost(device, told.lost.reason, told.lost.message);
+    }
+    return false;
+  }
+
   // The entry points the realm calls (M26): a timer's task; an event
   // the engine makes, dispatched at the node `handle` names or, for
   // null, at the window, as a generator `resume` steps through, which
@@ -21952,6 +22666,7 @@
     idb: idbTask,
     serviceWorker: swTask,
     audio: audioTask,
+    gpu: gpuTask,
     media: mediaTask,
     evaluate: evaluateExpression,
     fetched,

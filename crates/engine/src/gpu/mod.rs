@@ -5,6 +5,8 @@
 
 pub mod client;
 #[cfg(feature = "gpu")]
+pub mod names;
+#[cfg(feature = "gpu")]
 pub mod process;
 #[cfg(feature = "gpu")]
 pub mod service;
@@ -37,6 +39,7 @@ pub fn local_client() -> Option<Arc<GpuClient>> {
 
 #[cfg(feature = "gpu")]
 mod local {
+    use std::collections::HashMap;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak, mpsc};
 
@@ -60,20 +63,26 @@ mod local {
                 .name("gpu-service".to_owned())
                 .spawn(move || {
                     let mut service = GpuService::new(false);
+                    // Where each client's replies go, for its devices'
+                    // news too.
+                    let mut clients: HashMap<u32, Weak<GpuClient>> = HashMap::new();
                     while let Ok(job) = jobs.recv() {
+                        clients.insert(job.client, job.to.clone());
                         let handled =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 service.handle(job.client, &job.bytes)
                             }));
                         let Some(to) = job.to.upgrade() else {
                             service.gone(job.client);
+                            clients.remove(&job.client);
                             continue;
                         };
                         match handled {
-                            Ok(Ok(replies)) if !replies.is_empty() => {
-                                let _ = to.deliver(&wire::replies(&replies));
+                            Ok(Ok(replies)) => {
+                                for batch in wire::reply_batches(replies) {
+                                    let _ = to.deliver(&batch);
+                                }
                             }
-                            Ok(Ok(_)) => {}
                             Ok(Err(why)) => {
                                 service.gone(job.client);
                                 to.lose(why);
@@ -81,6 +90,11 @@ mod local {
                             Err(_) => {
                                 service.gone(job.client);
                                 to.lose("its request panicked the GPU service".to_owned());
+                            }
+                        }
+                        for (client, event) in service.events() {
+                            if let Some(to) = clients.get(&client).and_then(Weak::upgrade) {
+                                let _ = to.deliver(&wire::replies(&[event]));
                             }
                         }
                     }

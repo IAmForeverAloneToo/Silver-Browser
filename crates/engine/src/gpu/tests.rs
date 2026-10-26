@@ -35,6 +35,8 @@ fn the_client_protocol_reads_back_what_it_wrote() {
             adapter: Some(AdapterInfo {
                 vendor: "intel".to_owned(),
                 fallback: false,
+                features: vec!["core-features-and-limits".to_owned()],
+                limits: vec![("maxBindGroups".to_owned(), 4)],
             }),
         },
         Reply::Adapter {
@@ -52,6 +54,8 @@ fn the_client_protocol_reads_back_what_it_wrote() {
     round_trip(AdapterInfo {
         vendor: String::new(),
         fallback: true,
+        features: Vec::new(),
+        limits: Vec::new(),
     });
     // A batch cut short, or with bytes after it, is no batch.
     let bytes = wire::requests(&requests);
@@ -87,8 +91,11 @@ fn a_client_hears_its_reply_or_that_its_gpu_was_lost() {
             power: 0,
             fallback: false,
         },
-        move |reply| first.send(reply).unwrap(),
+        move |reply, _| first.send(reply).unwrap(),
     );
+    // Queued until flushed.
+    assert!(sent.lock().unwrap().is_empty());
+    client.flush();
     let batch = wire::read_requests(&sent.lock().unwrap()[0]).unwrap();
     let Request::RequestAdapter { call, .. } = batch[0] else {
         panic!("{batch:?}");
@@ -115,8 +122,9 @@ fn a_client_hears_its_reply_or_that_its_gpu_was_lost() {
             power: 0,
             fallback: false,
         },
-        move |reply| second.send(reply).unwrap(),
+        move |reply, _| second.send(reply).unwrap(),
     );
+    client.flush();
     client
         .deliver(&wire::replies(&[Reply::Lost {
             why: "ended".to_owned(),
@@ -133,7 +141,7 @@ fn a_client_hears_its_reply_or_that_its_gpu_was_lost() {
             power: 0,
             fallback: false,
         },
-        move |reply| heard.send(reply).unwrap(),
+        move |reply, _| heard.send(reply).unwrap(),
     );
     assert_eq!(hear.recv_timeout(WAIT).unwrap(), lost);
     assert_eq!(sent.lock().unwrap().len(), 2);
@@ -201,6 +209,62 @@ mod service {
         );
         service.gone(2);
         assert_eq!(service.objects(2), 0);
+    }
+
+    #[test]
+    fn an_adapter_gives_one_device_and_objects_are_named_by_their_kind() {
+        let mut service = GpuService::new(false);
+        let replies = service
+            .handle(1, &wire::requests(&[adapter(1, 10)]))
+            .unwrap();
+        if matches!(replies[..], [Reply::Adapter { adapter: None, .. }]) {
+            eprintln!("no adapter here: devices are not checked");
+            return;
+        }
+        let device = |call, id| Request::RequestDevice {
+            call,
+            adapter: 10,
+            id,
+            features: Vec::new(),
+            limits: Vec::new(),
+        };
+        let replies = service
+            .handle(1, &wire::requests(&[device(2, 11)]))
+            .unwrap();
+        assert!(
+            matches!(replies[..], [Reply::Device { result: Ok(_), .. }]),
+            "{replies:?}"
+        );
+        // A second device of the same adapter, past the page's own check,
+        // is refused too.
+        let replies = service
+            .handle(1, &wire::requests(&[device(3, 12)]))
+            .unwrap();
+        assert_eq!(
+            replies,
+            [Reply::Device {
+                call: 3,
+                result: Err(
+                    "adapter is \"consumed\": it has already been used to create a device"
+                        .to_owned()
+                ),
+            }]
+        );
+        // An object named as of another kind ends the client.
+        let wrong = service.handle(
+            1,
+            &wire::requests(&[Request::CreateBuffer {
+                device: 10,
+                id: 13,
+                size: 4,
+                usage: 8,
+                mapped: false,
+            }]),
+        );
+        assert_eq!(
+            wrong.unwrap_err(),
+            "object 10 named as a device, which is an adapter"
+        );
     }
 
     #[test]
@@ -286,8 +350,9 @@ mod service {
         let id = client.id();
         client.call(
             |call| adapter(call, id),
-            move |reply| heard.send(reply).unwrap(),
+            move |reply, _| heard.send(reply).unwrap(),
         );
+        client.flush();
         assert!(matches!(
             hear.recv_timeout(WAIT).unwrap(),
             Reply::Adapter { .. }

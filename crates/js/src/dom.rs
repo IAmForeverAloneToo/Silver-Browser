@@ -412,6 +412,8 @@ pub enum Call {
     /// A request of the service workers' host (M39), as JSON: its
     /// answer, as JSON.
     ServiceWorker(String),
+    /// WebGPU's operation (M41), as JSON, and the bytes it carries.
+    Gpu(String, Vec<u8>),
     /// Web Audio's operation (M40), as JSON, and the samples it carries:
     /// its answer, as JSON, and the samples it gives ([`Answer::Pair`]).
     Audio(String, Vec<u8>),
