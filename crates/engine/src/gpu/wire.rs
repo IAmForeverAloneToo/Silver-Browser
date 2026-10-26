@@ -94,6 +94,93 @@ wire_enum! {
         /// Answered by [`Reply::WorkDone`] once `device`'s queue has done
         /// the work submitted so far.
         12 => WorkDone { call: u32, device: u32 },
+        /// A shader module of WGSL `code` (step 3). Descriptors cross as
+        /// WebGPU's dictionaries in JSON, objects named by their numbers.
+        13 => CreateShaderModule { device: u32, id: u32, code: String },
+        /// Answered by [`Reply::Compilation`].
+        14 => CompilationInfo { call: u32, module: u32 },
+        15 => CreateTexture { device: u32, id: u32, desc: String },
+        16 => CreateView { texture: u32, id: u32, desc: String },
+        17 => DestroyTexture { id: u32 },
+        18 => CreateSampler { device: u32, id: u32, desc: String },
+        19 => CreateBindGroupLayout { device: u32, id: u32, desc: String },
+        20 => CreatePipelineLayout { device: u32, id: u32, layouts: Vec<u32> },
+        21 => CreateBindGroup { device: u32, id: u32, desc: String },
+        /// A pipeline; with a `call`, the asynchronous kind, answered by
+        /// [`Reply::PipelineMade`] with its error rather than reporting
+        /// it to the device.
+        22 => CreateComputePipeline { device: u32, id: u32, desc: String, call: Option<u32> },
+        23 => CreateRenderPipeline { device: u32, id: u32, desc: String, call: Option<u32> },
+        /// Pipeline `pipeline`'s bind group layout `index`, numbered `id`.
+        24 => GetBindGroupLayout { pipeline: u32, index: u32, id: u32 },
+        /// A command buffer, numbered `id`, of what an encoder recorded.
+        25 => Finish { device: u32, id: u32, commands: Vec<Command> },
+        /// The command buffers submitted to `device`'s queue, in order.
+        26 => Submit { device: u32, buffers: Vec<u32> },
+        /// `bytes` written into a texture by `device`'s queue: `desc` its
+        /// destination, data layout and size.
+        27 => WriteTexture { device: u32, desc: String, bytes: Bytes },
+        /// A query set: `kind` 0 occlusion, 1 timestamp.
+        28 => CreateQuerySet { device: u32, id: u32, kind: u8, count: u32 },
+        29 => DestroyQuerySet { id: u32 },
+        /// A render bundle of what its encoder recorded.
+        30 => CreateRenderBundle { device: u32, id: u32, desc: String, commands: Vec<RenderCommand> },
+        /// A validation error the client found on `device`: what the
+        /// bootstrap checks before `wgpu` would (an encoder's state, a
+        /// descriptor's shape), reported as `wgpu`'s are.
+        31 => Invalid { device: u32, message: String },
+    }
+}
+
+wire_enum! {
+    /// What a command encoder recorded, replayed in the GPU process.
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum Command {
+        0 => CopyBufferToBuffer { source: u32, source_offset: u64, destination: u32, destination_offset: u64, size: Option<u64> },
+        /// The copies with a texture: `desc` the source, destination and
+        /// size in WebGPU's dictionaries.
+        1 => CopyBufferToTexture { desc: String },
+        2 => CopyTextureToBuffer { desc: String },
+        3 => CopyTextureToTexture { desc: String },
+        4 => ClearBuffer { buffer: u32, offset: u64, size: Option<u64> },
+        5 => ResolveQuerySet { set: u32, first: u32, count: u32, destination: u32, offset: u64 },
+        /// A render pass: `desc` its attachments and occlusion query set.
+        6 => RenderPass { desc: String, commands: Vec<RenderCommand> },
+        7 => ComputePass { commands: Vec<ComputeCommand> },
+    }
+}
+
+wire_enum! {
+    /// What a render pass, or a render bundle, recorded.
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum RenderCommand {
+        0 => SetPipeline { pipeline: u32 },
+        1 => SetBindGroup { index: u32, group: Option<u32>, offsets: Vec<u32> },
+        2 => SetVertexBuffer { slot: u32, buffer: Option<u32>, offset: u64, size: Option<u64> },
+        /// `format` 0 for uint16, 1 for uint32.
+        3 => SetIndexBuffer { buffer: u32, format: u8, offset: u64, size: Option<u64> },
+        4 => Draw { vertices: u32, instances: u32, first_vertex: u32, first_instance: u32 },
+        5 => DrawIndexed { indices: u32, instances: u32, first_index: u32, base_vertex: i32, first_instance: u32 },
+        6 => DrawIndirect { buffer: u32, offset: u64 },
+        7 => DrawIndexedIndirect { buffer: u32, offset: u64 },
+        8 => SetViewport { x: f32, y: f32, width: f32, height: f32, min_depth: f32, max_depth: f32 },
+        9 => SetScissorRect { x: u32, y: u32, width: u32, height: u32 },
+        10 => SetBlendConstant { r: f64, g: f64, b: f64, a: f64 },
+        11 => SetStencilReference { reference: u32 },
+        12 => BeginOcclusionQuery { index: u32 },
+        13 => EndOcclusionQuery {},
+        14 => ExecuteBundles { bundles: Vec<u32> },
+    }
+}
+
+wire_enum! {
+    /// What a compute pass recorded.
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum ComputeCommand {
+        0 => SetPipeline { pipeline: u32 },
+        1 => SetBindGroup { index: u32, group: Option<u32>, offsets: Vec<u32> },
+        2 => Dispatch { x: u32, y: u32, z: u32 },
+        3 => DispatchIndirect { buffer: u32, offset: u64 },
     }
 }
 
@@ -122,6 +209,24 @@ wire_enum! {
         7 => Mapped { call: u32, error: Option<String> },
         /// The queue's work submitted before `call` is done.
         8 => WorkDone { call: u32 },
+        /// A shader module's compilation messages.
+        9 => Compilation { call: u32, messages: Vec<CompilationMessage> },
+        /// An asynchronous pipeline's making: its error, if it failed.
+        10 => PipelineMade { call: u32, error: Option<String> },
+    }
+}
+
+wire_struct! {
+    /// A shader's compilation message: `kind` 0 error, 1 warning, 2
+    /// info; where it is (lines and columns from 1, byte offsets).
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct CompilationMessage {
+        pub kind: u8,
+        pub line: u64,
+        pub position: u64,
+        pub offset: u64,
+        pub length: u64,
+        pub message: String,
     }
 }
 

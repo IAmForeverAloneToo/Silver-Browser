@@ -29,6 +29,10 @@ license = "AGPL-3.0-only"
 [package.metadata]
 cargo-fuzz = true
 
+[features]
+# The GPU service, for `webgpu_ops` alone (M41).
+gpu = ["engine/gpu"]
+
 [dependencies]
 libfuzzer-sys = "0.4"
 arbitrary = "1"
@@ -39,7 +43,8 @@ devtools = { path = "../crates/devtools" }
 dom = { path = "../crates/dom" }
 encoding = { path = "../crates/encoding" }
 # Without the GPU backend: the targets draw in software, and wgpu is
-# nothing to fuzz through.
+# nothing to fuzz through; but `webgpu_ops` drives the GPU service, built
+# with the `gpu` feature (M41).
 engine = { path = "../crates/engine", default-features = false }
 html = { path = "../crates/html" }
 images = { path = "../crates/images" }
@@ -291,6 +296,13 @@ name = "gpu_wire"
 path = "fuzz_targets/gpu_wire.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "webgpu_ops"
+path = "fuzz_targets/webgpu_ops.rs"
+test = false
+doc = false
+required-features = ["gpu"]
 
 [[bin]]
 name = "content_disposition"

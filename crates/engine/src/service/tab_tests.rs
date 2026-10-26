@@ -491,7 +491,9 @@ fn the_tabs_network_log_is_the_browsers_and_hides_what_the_page_could_not_read()
                 .cloned()
         })
     };
-    // The document, which the browser fetched for the renderer.
+    // The document, which the browser fetched for the renderer: logged
+    // as the fetch ends, which may be after the page says it loaded.
+    settle(&mut remote, |_| find(&page).is_some());
     assert!(find(&page).is_some(), "{:?}", log.list());
     // The image, another origin's, fetched without CORS: the page could
     // not read it, and neither does the panel.

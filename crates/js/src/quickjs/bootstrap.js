@@ -21983,6 +21983,297 @@
     return value;
   }
 
+  // ---- Step 3's objects and dictionaries --------------------------------
+  // Each object's record: its kind, its number in the GPU process (null
+  // for an encoder, or an invalid command buffer), its label, and what
+  // else its kind keeps.
+  const gpuThings = new $WeakMap();
+  function gpuThing(object, kind, id, record) {
+    const r = record === undefined ? {} : record;
+    r.kind = kind;
+    r.id = id;
+    r.label = "";
+    WeakMapSet(gpuThings, object, r);
+    return object;
+  }
+
+  // `object`'s record, when it is one of `kinds` (a name or a list).
+  function gpuRecordOf(object, kinds) {
+    const r = (typeof object === "object" && object !== null) ? WeakMapGet(gpuThings, object) : undefined;
+    if (r === undefined || (typeof kinds === "string" ? r.kind !== kinds : !listed(kinds, r.kind))) {
+      throw illegalInvocation();
+    }
+    return r;
+  }
+
+  // `value`'s number, when it is an object of interface `kind`.
+  function gpuNumberOf(value, kind, words) {
+    const r = (typeof value === "object" && value !== null) ? WeakMapGet(gpuThings, value) : undefined;
+    if (r === undefined || r.kind !== kind) {
+      throw new $TypeError(words + "Failed to convert value to '" + kind + "'.");
+    }
+    return r.id;
+  }
+
+  // Interface `kind`'s label (GPUObjectBase), and the interface exposed.
+  function gpuLabelled(cls, kind) {
+    defineProperty(cls.prototype, "label", {
+      get() { return gpuRecordOf(this, kind).label; },
+      set(value) { gpuRecordOf(this, kind).label = str(value); },
+      enumerable: true,
+      configurable: true,
+    });
+    expose(cls, kind);
+  }
+
+  // A descriptor's label given to the object made of it.
+  function gpuNamed(object, r) {
+    if (r.d.label !== undefined) WeakMapGet(gpuThings, object).label = str(r.d.label);
+    return object;
+  }
+
+  // A validation error the bootstrap found on `device`, which the GPU
+  // process reports as `wgpu`'s.
+  function gpuInvalid(device, message) {
+    gpuCall({ op: "invalid", device, message }, null);
+  }
+
+  // A dictionary being read, `words` before its members' errors.
+  function gpuReader(value, words, dict) {
+    if (value !== undefined && value !== null && typeof value !== "object" && typeof value !== "function") {
+      throw new $TypeError(words + "The provided value is not of type '" + dict + "'.");
+    }
+    return { d: value === undefined || value === null ? {} : value, words, dict };
+  }
+
+  function gpuWords(r, member) {
+    return r.words + "Failed to read the '" + member + "' property from '" + r.dict + "': ";
+  }
+
+  function gpuNeed(r, member) {
+    const value = r.d[member];
+    if (value === undefined) throw new $TypeError(gpuWords(r, member) + "Required member is undefined.");
+    return value;
+  }
+
+  // A member's value: required when `fallback` is undefined, else
+  // `fallback` when it is absent (null for an optional member).
+  function gpuValue(r, member, fallback) {
+    return fallback === undefined ? gpuNeed(r, member) : r.d[member];
+  }
+
+  function gpuU32(r, member, fallback) {
+    const value = gpuValue(r, member, fallback);
+    return value === undefined ? fallback : gpuEnforced(value, gpuWords(r, member), "unsigned long", GPU_LONG);
+  }
+
+  function gpuU64(r, member, fallback) {
+    const value = gpuValue(r, member, fallback);
+    return value === undefined ? fallback : gpuEnforced(value, gpuWords(r, member), "unsigned long long", GPU_LONG_LONG);
+  }
+
+  // Web IDL's [EnforceRange] long.
+  function gpuSigned(value, words) {
+    const n = typeof value === "number" ? value : $Number(value);
+    if (n !== n || n === Infinity || n === -Infinity || MathTrunc(n) < -2147483648 || MathTrunc(n) > 2147483647) {
+      throw new $TypeError(words + "Value is outside the 'long' value range.");
+    }
+    return MathTrunc(n);
+  }
+
+  function gpuI32(r, member, fallback) {
+    const value = gpuValue(r, member, fallback);
+    return value === undefined ? fallback : gpuSigned(value, gpuWords(r, member));
+  }
+
+  // A restricted float or double.
+  function gpuFinite(value, words, type) {
+    const n = typeof value === "number" ? value : $Number(value);
+    if (!$NumberIsFinite(n)) throw new $TypeError(words + "The provided " + type + " value is non-finite.");
+    return n;
+  }
+
+  function gpuFloat(r, member, fallback, type) {
+    const value = gpuValue(r, member, fallback);
+    return value === undefined ? fallback : gpuFinite(value, gpuWords(r, member), type === undefined ? "double" : type);
+  }
+
+  function gpuBool(r, member, fallback) {
+    const value = r.d[member];
+    return value === undefined ? fallback : !!value;
+  }
+
+  function gpuEnumValue(value, list, words, type) {
+    const s = str(value);
+    if (!listed(list, s)) {
+      throw new $TypeError(words + "The provided value '" + s + "' is not a valid enum value of type " + type + ".");
+    }
+    return s;
+  }
+
+  function gpuEnum(r, member, list, type, fallback) {
+    const value = gpuValue(r, member, fallback);
+    return value === undefined ? fallback : gpuEnumValue(value, list, gpuWords(r, member), type);
+  }
+
+  // A member that is an object of interface `kind`: its number, or null
+  // when optional and absent.
+  function gpuMemberNumber(r, member, kind, optional) {
+    const value = r.d[member];
+    if (value === undefined && optional) return null;
+    return gpuNumberOf(gpuNeed(r, member), kind, gpuWords(r, member));
+  }
+
+  // A member that is a dictionary: its reader, or null when absent.
+  function gpuSub(r, member, dict, required) {
+    const value = required ? gpuNeed(r, member) : r.d[member];
+    return value === undefined ? null : gpuReader(value, gpuWords(r, member), dict);
+  }
+
+  // Web IDL's sequence, with `words` before its errors.
+  function gpuSequence(value, words) {
+    const object = (typeof value === "object" && value !== null) || typeof value === "function";
+    const iterate = object ? value[iteratorSymbol] : undefined;
+    if (typeof iterate !== "function") {
+      throw new $TypeError(words + "The provided value cannot be converted to a sequence.");
+    }
+    const iterator = ReflectApply(iterate, value, []);
+    if ((typeof iterator !== "object" || iterator === null) && typeof iterator !== "function") {
+      throw new $TypeError(words + "The iterator is not an object.");
+    }
+    const next = iterator.next;
+    const items = [];
+    for (;;) {
+      const step = ReflectApply(next, iterator, []);
+      if ((typeof step !== "object" || step === null) && typeof step !== "function") {
+        throw new $TypeError(words + "The iterator's result is not an object.");
+      }
+      if (step.done) return items;
+      ArrayPush(items, step.value);
+    }
+  }
+
+  function gpuList(r, member, required) {
+    const value = required ? gpuNeed(r, member) : r.d[member];
+    return value === undefined ? [] : gpuSequence(value, gpuWords(r, member));
+  }
+
+  // Whether a union's value is its sequence (it has @@iterator).
+  function gpuIsSequence(value) {
+    return ((typeof value === "object" && value !== null) || typeof value === "function") &&
+      value[iteratorSymbol] !== undefined;
+  }
+
+  // A GPUExtent3D, as [width, height, depthOrArrayLayers].
+  function gpuExtent(value, words) {
+    if (gpuIsSequence(value)) {
+      const list = gpuSequence(value, words);
+      for (let i = 0; i < list.length; i++) list[i] = gpuEnforced(list[i], words, "unsigned long", GPU_LONG);
+      if (list.length < 1 || list.length > 3) {
+        throw new $TypeError(words + "A sequence of number used as a GPUExtent3D must have between 1 and 3 elements.");
+      }
+      return [list[0], list.length > 1 ? list[1] : 1, list.length > 2 ? list[2] : 1];
+    }
+    const r = gpuReader(value, words, "GPUExtent3DDict");
+    const depth = gpuU32(r, "depthOrArrayLayers", 1);
+    const height = gpuU32(r, "height", 1);
+    return [gpuU32(r, "width"), height, depth];
+  }
+
+  // A GPUOrigin3D, as [x, y, z].
+  function gpuOrigin(value, words) {
+    if (value === undefined) return [0, 0, 0];
+    if (gpuIsSequence(value)) {
+      const list = gpuSequence(value, words);
+      for (let i = 0; i < list.length; i++) list[i] = gpuEnforced(list[i], words, "unsigned long", GPU_LONG);
+      if (list.length > 3) {
+        throw new $TypeError(words + "A sequence of number used as a GPUOrigin3D must have at most 3 elements.");
+      }
+      return [list.length > 0 ? list[0] : 0, list.length > 1 ? list[1] : 0, list.length > 2 ? list[2] : 0];
+    }
+    const r = gpuReader(value, words, "GPUOrigin3DDict");
+    return [gpuU32(r, "x", 0), gpuU32(r, "y", 0), gpuU32(r, "z", 0)];
+  }
+
+  // A GPUColor, as [r, g, b, a].
+  function gpuColor(value, words) {
+    if (gpuIsSequence(value)) {
+      const list = gpuSequence(value, words);
+      for (let i = 0; i < list.length; i++) list[i] = gpuFinite(list[i], words, "double");
+      if (list.length !== 4) {
+        throw new $TypeError(words + "A sequence of number used as a GPUColor must have exactly 4 elements.");
+      }
+      return list;
+    }
+    const r = gpuReader(value, words, "GPUColorDict");
+    const a = gpuFloat(r, "a");
+    const b = gpuFloat(r, "b");
+    const g = gpuFloat(r, "g");
+    return [gpuFloat(r, "r"), g, b, a];
+  }
+
+  // WebGPU's enums, as `gpu::convert` reads them in the GPU process.
+  const GPU_FORMATS = [
+    "r8unorm", "r8snorm", "r8uint", "r8sint", "r16unorm", "r16snorm", "r16uint", "r16sint",
+    "r16float", "rg8unorm", "rg8snorm", "rg8uint", "rg8sint", "r32uint", "r32sint", "r32float",
+    "rg16unorm", "rg16snorm", "rg16uint", "rg16sint", "rg16float", "rgba8unorm",
+    "rgba8unorm-srgb", "rgba8snorm", "rgba8uint", "rgba8sint", "bgra8unorm", "bgra8unorm-srgb",
+    "rgb9e5ufloat", "rgb10a2uint", "rgb10a2unorm", "rg11b10ufloat", "rg32uint", "rg32sint",
+    "rg32float", "rgba16unorm", "rgba16snorm", "rgba16uint", "rgba16sint", "rgba16float",
+    "rgba32uint", "rgba32sint", "rgba32float", "stencil8", "depth16unorm", "depth24plus",
+    "depth24plus-stencil8", "depth32float", "depth32float-stencil8", "bc1-rgba-unorm",
+    "bc1-rgba-unorm-srgb", "bc2-rgba-unorm", "bc2-rgba-unorm-srgb", "bc3-rgba-unorm",
+    "bc3-rgba-unorm-srgb", "bc4-r-unorm", "bc4-r-snorm", "bc5-rg-unorm", "bc5-rg-snorm",
+    "bc6h-rgb-ufloat", "bc6h-rgb-float", "bc7-rgba-unorm", "bc7-rgba-unorm-srgb",
+    "etc2-rgb8unorm", "etc2-rgb8unorm-srgb", "etc2-rgb8a1unorm", "etc2-rgb8a1unorm-srgb",
+    "etc2-rgba8unorm", "etc2-rgba8unorm-srgb", "eac-r11unorm", "eac-r11snorm", "eac-rg11unorm",
+    "eac-rg11snorm", "astc-4x4-unorm", "astc-4x4-unorm-srgb", "astc-5x4-unorm",
+    "astc-5x4-unorm-srgb", "astc-5x5-unorm", "astc-5x5-unorm-srgb", "astc-6x5-unorm",
+    "astc-6x5-unorm-srgb", "astc-6x6-unorm", "astc-6x6-unorm-srgb", "astc-8x5-unorm",
+    "astc-8x5-unorm-srgb", "astc-8x6-unorm", "astc-8x6-unorm-srgb", "astc-8x8-unorm",
+    "astc-8x8-unorm-srgb", "astc-10x5-unorm", "astc-10x5-unorm-srgb", "astc-10x6-unorm",
+    "astc-10x6-unorm-srgb", "astc-10x8-unorm", "astc-10x8-unorm-srgb", "astc-10x10-unorm",
+    "astc-10x10-unorm-srgb", "astc-12x10-unorm", "astc-12x10-unorm-srgb", "astc-12x12-unorm",
+    "astc-12x12-unorm-srgb",
+  ];
+  const GPU_VERTEX_FORMATS = [
+    "uint8", "uint8x2", "uint8x4", "sint8", "sint8x2", "sint8x4", "unorm8", "unorm8x2",
+    "unorm8x4", "snorm8", "snorm8x2", "snorm8x4", "uint16", "uint16x2", "uint16x4", "sint16",
+    "sint16x2", "sint16x4", "unorm16", "unorm16x2", "unorm16x4", "snorm16", "snorm16x2",
+    "snorm16x4", "float16", "float16x2", "float16x4", "float32", "float32x2", "float32x3",
+    "float32x4", "uint32", "uint32x2", "uint32x3", "uint32x4", "sint32", "sint32x2", "sint32x3",
+    "sint32x4", "unorm10-10-10-2", "unorm8x4-bgra",
+  ];
+  const GPU_DEPTH_FORMATS = ["depth16unorm", "depth24plus", "depth24plus-stencil8", "depth32float",
+    "depth32float-stencil8"];
+  const GPU_STENCIL_FORMATS = ["stencil8", "depth24plus-stencil8", "depth32float-stencil8"];
+  const GPU_TEXTURE_DIMENSIONS = ["1d", "2d", "3d"];
+  const GPU_VIEW_DIMENSIONS = ["1d", "2d", "2d-array", "cube", "cube-array", "3d"];
+  const GPU_ASPECTS = ["all", "stencil-only", "depth-only"];
+  const GPU_ADDRESS_MODES = ["clamp-to-edge", "repeat", "mirror-repeat"];
+  const GPU_FILTERS = ["nearest", "linear"];
+  const GPU_COMPARES = ["never", "less", "equal", "less-equal", "greater", "not-equal",
+    "greater-equal", "always"];
+  const GPU_BUFFER_BINDINGS = ["uniform", "storage", "read-only-storage"];
+  const GPU_SAMPLER_BINDINGS = ["filtering", "non-filtering", "comparison"];
+  const GPU_SAMPLE_TYPES = ["float", "unfilterable-float", "depth", "sint", "uint"];
+  const GPU_STORAGE_ACCESSES = ["write-only", "read-only", "read-write"];
+  const GPU_TOPOLOGIES = ["point-list", "line-list", "line-strip", "triangle-list", "triangle-strip"];
+  const GPU_INDEX_FORMATS = ["uint16", "uint32"];
+  const GPU_FRONT_FACES = ["ccw", "cw"];
+  const GPU_CULL_MODES = ["none", "front", "back"];
+  const GPU_STEP_MODES = ["vertex", "instance"];
+  const GPU_BLEND_FACTORS = ["zero", "one", "src", "one-minus-src", "src-alpha",
+    "one-minus-src-alpha", "dst", "one-minus-dst", "dst-alpha", "one-minus-dst-alpha",
+    "src-alpha-saturated", "constant", "one-minus-constant", "src1", "one-minus-src1",
+    "src1-alpha", "one-minus-src1-alpha"];
+  const GPU_BLEND_OPERATIONS = ["add", "subtract", "reverse-subtract", "min", "max"];
+  const GPU_STENCIL_OPERATIONS = ["keep", "zero", "replace", "invert", "increment-clamp",
+    "decrement-clamp", "increment-wrap", "decrement-wrap"];
+  const GPU_LOAD_OPS = ["load", "clear"];
+  const GPU_STORE_OPS = ["store", "discard"];
+  const GPU_QUERY_TYPES = ["occlusion", "timestamp"];
+
   // ---- The set-likes: features, WGSL's language features ----
   class GPUSupportedFeatures {
     #names;
@@ -22388,6 +22679,77 @@
       if (d.label !== undefined) buffer.label = d.label;
       return buffer;
     }
+
+    createTexture(descriptor) {
+      need(arguments.length, 1, "createTexture", "GPUDevice");
+      return gpuCreateTexture(this.#id, descriptor);
+    }
+
+    createSampler(descriptor) {
+      return gpuCreateSampler(this.#id, descriptor);
+    }
+
+    createShaderModule(descriptor) {
+      need(arguments.length, 1, "createShaderModule", "GPUDevice");
+      return gpuCreateShaderModule(this.#id, descriptor);
+    }
+
+    createBindGroupLayout(descriptor) {
+      need(arguments.length, 1, "createBindGroupLayout", "GPUDevice");
+      return gpuCreateBindGroupLayout(this.#id, descriptor);
+    }
+
+    createPipelineLayout(descriptor) {
+      need(arguments.length, 1, "createPipelineLayout", "GPUDevice");
+      return gpuCreatePipelineLayout(this.#id, descriptor);
+    }
+
+    createBindGroup(descriptor) {
+      need(arguments.length, 1, "createBindGroup", "GPUDevice");
+      return gpuCreateBindGroup(this.#id, descriptor);
+    }
+
+    createComputePipeline(descriptor) {
+      need(arguments.length, 1, "createComputePipeline", "GPUDevice");
+      return gpuCreatePipeline(this.#id, descriptor, true, false);
+    }
+
+    createRenderPipeline(descriptor) {
+      need(arguments.length, 1, "createRenderPipeline", "GPUDevice");
+      return gpuCreatePipeline(this.#id, descriptor, false, false);
+    }
+
+    createComputePipelineAsync(descriptor) {
+      try {
+        need(arguments.length, 1, "createComputePipelineAsync", "GPUDevice");
+        return gpuCreatePipeline(this.#id, descriptor, true, true);
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+
+    createRenderPipelineAsync(descriptor) {
+      try {
+        need(arguments.length, 1, "createRenderPipelineAsync", "GPUDevice");
+        return gpuCreatePipeline(this.#id, descriptor, false, true);
+      } catch (e) {
+        return rejected(e);
+      }
+    }
+
+    createCommandEncoder(descriptor) {
+      return gpuCreateCommandEncoder(this.#id, descriptor);
+    }
+
+    createRenderBundleEncoder(descriptor) {
+      need(arguments.length, 1, "createRenderBundleEncoder", "GPUDevice");
+      return gpuCreateRenderBundleEncoder(this.#id, descriptor);
+    }
+
+    createQuerySet(descriptor) {
+      need(arguments.length, 1, "createQuerySet", "GPUDevice");
+      return gpuCreateQuerySet(this.#id, descriptor);
+    }
   }
   defineHandlers(GPUDevice.prototype, ["uncapturederror"], false);
   expose(GPUDevice, "GPUDevice");
@@ -22421,6 +22783,45 @@
     return TypedArraySubarray(bytes, start * unit, (start + count) * unit);
   }
 
+  // The most bytes one texture write sends: a larger one goes in pieces
+  // of whole rows (the GPU process's GPU_CHUNK).
+  const GPU_PIECE = 4194304;
+
+  // `bytes` written into texture copy `dest` of `size` texels.
+  function gpuWriteTexture(device, dest, bytes, layout, size, blockHeight) {
+    const bytesPerRow = layout.bytesPerRow;
+    const rows = MathTrunc((size[1] + blockHeight - 1) / blockHeight);
+    const write = (destination, piece, rowsPerImage, extent) => gpuCall({
+      op: "writeTexture",
+      device,
+      desc: {
+        dataLayout: { bytesPerRow, rowsPerImage },
+        destination,
+        size: extent,
+      },
+    }, piece);
+    if (bytes.length <= GPU_PIECE || bytesPerRow === null || rows === 0 || size[0] === 0 || size[2] === 0) {
+      write(dest, bytes, layout.rowsPerImage, size);
+      return;
+    }
+    const perImage = layout.rowsPerImage === null ? rows : layout.rowsPerImage;
+    const step = MathMax(1, MathTrunc(GPU_PIECE / bytesPerRow));
+    for (let z = 0; z < size[2]; z++) {
+      for (let row = 0; row < rows; row += step) {
+        const count = MathMin(step, rows - row);
+        const start = MathMin(bytes.length, (z * perImage + row) * bytesPerRow);
+        const piece = TypedArraySubarray(bytes, start, MathMin(bytes.length, start + count * bytesPerRow));
+        const destination = {
+          aspect: dest.aspect,
+          mipLevel: dest.mipLevel,
+          origin: [dest.origin[0], dest.origin[1] + row * blockHeight, dest.origin[2] + z],
+          texture: dest.texture,
+        };
+        write(destination, piece, null, [size[0], MathMin(count * blockHeight, size[1] - row * blockHeight), 1]);
+      }
+    }
+  }
+
   class GPUQueue {
     #device; #label = "";
     constructor(key, device) {
@@ -22433,11 +22834,56 @@
     submit(buffers) {
       need(arguments.length, 1, "submit", "GPUQueue");
       const list = sequence(buffers, "submit", "GPUQueue");
+      const records = [];
       for (let i = 0; i < list.length; i++) {
-        if (!(list[i] instanceof GPUCommandBuffer)) {
+        const r = (typeof list[i] === "object" && list[i] !== null) ? WeakMapGet(gpuThings, list[i]) : undefined;
+        if (r === undefined || r.kind !== "GPUCommandBuffer") {
           throw new $TypeError(prefix("submit", "GPUQueue") + "Failed to convert value to 'GPUCommandBuffer'.");
         }
+        ArrayPush(records, r);
       }
+      // A command buffer is submitted once; one invalid, none is.
+      const ids = [];
+      let invalid = false;
+      for (let i = 0; i < records.length; i++) {
+        if (records[i].id === null || records[i].submitted) invalid = true;
+        records[i].submitted = true;
+        ArrayPush(ids, records[i].id);
+      }
+      if (invalid) {
+        gpuInvalid(this.#device, "A command buffer submitted is invalid, or was submitted before.");
+        return;
+      }
+      if (ids.length !== 0) gpuCall({ op: "submit", device: this.#device, buffers: ids }, null);
+    }
+
+    writeTexture(destination, data, dataLayout, size) {
+      need(arguments.length, 4, "writeTexture", "GPUQueue");
+      const words = prefix("writeTexture", "GPUQueue");
+      const dest = gpuTexelTexture(destination, words);
+      let bytes;
+      if (data instanceof $ArrayBuffer) {
+        bytes = new $Uint8Array(data);
+      } else if (ArrayBufferIsView(data)) {
+        bytes = gpuViewBytes(data)[0];
+      } else {
+        throw new $TypeError(words + "parameter 2 is not of type 'ArrayBuffer' or 'ArrayBufferView'.");
+      }
+      const r = gpuReader(dataLayout, words, "GPUTexelCopyBufferLayout");
+      const layout = {
+        bytesPerRow: gpuU32(r, "bytesPerRow", null),
+        offset: gpuU64(r, "offset", 0),
+        rowsPerImage: gpuU32(r, "rowsPerImage", null),
+      };
+      const extent = gpuExtent(size, words);
+      if (layout.offset > bytes.length) {
+        gpuInvalid(this.#device, "The data layout's offset (" + layout.offset + ") is past the data's size (" +
+          bytes.length + ").");
+        return;
+      }
+      const texture = gpuTexelRecord;
+      gpuWriteTexture(this.#device, dest, TypedArraySubarray(bytes, layout.offset), layout, extent,
+        gpuBlockHeight(texture.desc.format));
     }
 
     onSubmittedWorkDone() {
@@ -22456,13 +22902,1267 @@
   }
   expose(GPUQueue, "GPUQueue");
 
-  // Command buffers come at step 3.
-  class GPUCommandBuffer {
-    constructor(key) {
-      if (key !== KEY) throw illegalConstructor("GPUCommandBuffer");
+  // ---- Shader modules (M41 step 3) ----
+  const GpuCharCodeAt = uncurry(String.prototype.charCodeAt);
+  const GpuLastIndexOf = uncurry(String.prototype.lastIndexOf);
+  const GpuIndexOf = uncurry(String.prototype.indexOf);
+  const GpuUint32Array = Uint32Array;
+
+  // The UTF-16 index of UTF-8 byte `at` of `code`.
+  function gpuUtf16At(code, at) {
+    let bytes = 0;
+    let i = 0;
+    while (i < code.length && bytes < at) {
+      const c = GpuCharCodeAt(code, i);
+      if (c < 0x80) {
+        bytes += 1;
+      } else if (c < 0x800) {
+        bytes += 2;
+      } else if (c >= 0xD800 && c <= 0xDBFF && i + 1 < code.length) {
+        bytes += 4;
+        i++;
+      } else {
+        bytes += 3;
+      }
+      i++;
+    }
+    return i;
+  }
+
+  class GPUCompilationMessage {
+    #told;
+    constructor(key, told) {
+      if (key !== KEY) throw illegalConstructor("GPUCompilationMessage");
+      this.#told = told;
+    }
+    get message() { return this.#told.message; }
+    get type() { return this.#told.type; }
+    get lineNum() { return this.#told.lineNum; }
+    get linePos() { return this.#told.linePos; }
+    get offset() { return this.#told.offset; }
+    get length() { return this.#told.length; }
+  }
+  expose(GPUCompilationMessage, "GPUCompilationMessage");
+
+  class GPUCompilationInfo {
+    #messages;
+    constructor(key, messages) {
+      if (key !== KEY) throw illegalConstructor("GPUCompilationInfo");
+      this.#messages = ObjectFreeze(messages);
+    }
+    get messages() { return this.#messages; }
+  }
+  expose(GPUCompilationInfo, "GPUCompilationInfo");
+
+  // The GPU process's messages of `code`, their places in UTF-16 units
+  // as WebGPU counts them (the GPU process counts bytes).
+  function gpuMessages(code, told) {
+    const messages = [];
+    for (let i = 0; i < told.length; i++) {
+      const m = told[i];
+      let offset = 0;
+      let length = 0;
+      let linePos = 0;
+      if (m.line !== 0) {
+        offset = gpuUtf16At(code, m.offset);
+        length = gpuUtf16At(code, m.offset + m.length) - offset;
+        linePos = offset - (offset === 0 ? 0 : GpuLastIndexOf(code, "\n", offset - 1) + 1) + 1;
+      }
+      ArrayPush(messages, new GPUCompilationMessage(KEY, {
+        message: m.message,
+        type: m.kind === 0 ? "error" : m.kind === 1 ? "warning" : "info",
+        lineNum: m.line,
+        linePos,
+        offset,
+        length,
+      }));
+    }
+    return messages;
+  }
+
+  class GPUShaderModule {
+    constructor(key, id, code) {
+      if (key !== KEY) throw illegalConstructor("GPUShaderModule");
+      gpuThing(this, "GPUShaderModule", id, { code });
+    }
+    getCompilationInfo() {
+      let m;
+      try {
+        m = gpuRecordOf(this, "GPUShaderModule");
+      } catch (e) {
+        return rejected(e);
+      }
+      return gpuThen(gpuPromise({ op: "compilationInfo", module: m.id }),
+        (told) => new GPUCompilationInfo(KEY, gpuMessages(m.code, told)));
     }
   }
-  expose(GPUCommandBuffer, "GPUCommandBuffer");
+  gpuLabelled(GPUShaderModule, "GPUShaderModule");
+
+  function gpuCreateShaderModule(device, descriptor) {
+    const r = gpuReader(descriptor, prefix("createShaderModule", "GPUDevice"), "GPUShaderModuleDescriptor");
+    const code = str(gpuNeed(r, "code"));
+    const id = gpuCall({ op: "createShaderModule", device, code }, null).result.id;
+    return gpuNamed(new GPUShaderModule(KEY, id, code), r);
+  }
+
+  // ---- Textures, views and samplers ----
+  class GPUTexture {
+    constructor(key, id, device, desc) {
+      if (key !== KEY) throw illegalConstructor("GPUTexture");
+      gpuThing(this, "GPUTexture", id, { device, desc });
+    }
+    get width() { return gpuRecordOf(this, "GPUTexture").desc.size[0]; }
+    get height() { return gpuRecordOf(this, "GPUTexture").desc.size[1]; }
+    get depthOrArrayLayers() { return gpuRecordOf(this, "GPUTexture").desc.size[2]; }
+    get mipLevelCount() { return gpuRecordOf(this, "GPUTexture").desc.mipLevelCount; }
+    get sampleCount() { return gpuRecordOf(this, "GPUTexture").desc.sampleCount; }
+    get dimension() { return gpuRecordOf(this, "GPUTexture").desc.dimension; }
+    get format() { return gpuRecordOf(this, "GPUTexture").desc.format; }
+    get usage() { return gpuRecordOf(this, "GPUTexture").desc.usage; }
+    createView(descriptor) {
+      return gpuCreateView(gpuRecordOf(this, "GPUTexture"), descriptor);
+    }
+    destroy() {
+      gpuCall({ op: "destroyTexture", texture: gpuRecordOf(this, "GPUTexture").id }, null);
+    }
+  }
+  gpuLabelled(GPUTexture, "GPUTexture");
+
+  class GPUTextureView {
+    constructor(key, id, device, format, aspect, sampleCount) {
+      if (key !== KEY) throw illegalConstructor("GPUTextureView");
+      gpuThing(this, "GPUTextureView", id, { device, format, aspect, sampleCount });
+    }
+  }
+  gpuLabelled(GPUTextureView, "GPUTextureView");
+
+  function gpuCreateTexture(device, descriptor) {
+    const r = gpuReader(descriptor, prefix("createTexture", "GPUDevice"), "GPUTextureDescriptor");
+    const dimension = gpuEnum(r, "dimension", GPU_TEXTURE_DIMENSIONS, "GPUTextureDimension", "2d");
+    const format = gpuEnum(r, "format", GPU_FORMATS, "GPUTextureFormat");
+    const mipLevelCount = gpuU32(r, "mipLevelCount", 1);
+    const sampleCount = gpuU32(r, "sampleCount", 1);
+    const size = gpuExtent(gpuNeed(r, "size"), gpuWords(r, "size"));
+    const usage = gpuU32(r, "usage");
+    const named = gpuList(r, "viewFormats", false);
+    const viewFormats = [];
+    for (let i = 0; i < named.length; i++) {
+      ArrayPush(viewFormats, gpuEnumValue(named[i], GPU_FORMATS, gpuWords(r, "viewFormats"), "GPUTextureFormat"));
+    }
+    const desc = { dimension, format, mipLevelCount, sampleCount, size, usage, viewFormats };
+    const id = gpuCall({ op: "createTexture", device, desc }, null).result.id;
+    return gpuNamed(new GPUTexture(KEY, id, device, desc), r);
+  }
+
+  function gpuCreateView(t, descriptor) {
+    const r = gpuReader(descriptor, prefix("createView", "GPUTexture"), "GPUTextureViewDescriptor");
+    const desc = {
+      arrayLayerCount: gpuU32(r, "arrayLayerCount", null),
+      aspect: gpuEnum(r, "aspect", GPU_ASPECTS, "GPUTextureAspect", "all"),
+      baseArrayLayer: gpuU32(r, "baseArrayLayer", 0),
+      baseMipLevel: gpuU32(r, "baseMipLevel", 0),
+      dimension: gpuEnum(r, "dimension", GPU_VIEW_DIMENSIONS, "GPUTextureViewDimension", null),
+      format: gpuEnum(r, "format", GPU_FORMATS, "GPUTextureFormat", null),
+      mipLevelCount: gpuU32(r, "mipLevelCount", null),
+      usage: gpuU32(r, "usage", 0),
+    };
+    // A usage of 0 is the texture's.
+    if (desc.usage === 0) desc.usage = null;
+    const id = gpuCall({ op: "createView", texture: t.id, desc }, null).result.id;
+    const format = desc.format === null ? t.desc.format : desc.format;
+    return gpuNamed(new GPUTextureView(KEY, id, t.device, format, desc.aspect, t.desc.sampleCount), r);
+  }
+
+  class GPUSampler {
+    constructor(key, id) {
+      if (key !== KEY) throw illegalConstructor("GPUSampler");
+      gpuThing(this, "GPUSampler", id);
+    }
+  }
+  gpuLabelled(GPUSampler, "GPUSampler");
+
+  function gpuCreateSampler(device, descriptor) {
+    const r = gpuReader(descriptor, prefix("createSampler", "GPUDevice"), "GPUSamplerDescriptor");
+    const mode = (member) => gpuEnum(r, member, GPU_ADDRESS_MODES, "GPUAddressMode", "clamp-to-edge");
+    const filter = (member, type) => gpuEnum(r, member, GPU_FILTERS, type, "nearest");
+    const desc = {
+      addressModeU: mode("addressModeU"),
+      addressModeV: mode("addressModeV"),
+      addressModeW: mode("addressModeW"),
+      compare: gpuEnum(r, "compare", GPU_COMPARES, "GPUCompareFunction", null),
+      lodMaxClamp: gpuFloat(r, "lodMaxClamp", 32, "float"),
+      lodMinClamp: gpuFloat(r, "lodMinClamp", 0, "float"),
+      magFilter: filter("magFilter", "GPUFilterMode"),
+      maxAnisotropy: 1,
+      minFilter: filter("minFilter", "GPUFilterMode"),
+      mipmapFilter: filter("mipmapFilter", "GPUMipmapFilterMode"),
+    };
+    // [Clamp] unsigned short.
+    if (r.d.maxAnisotropy !== undefined) {
+      const n = $Number(r.d.maxAnisotropy);
+      desc.maxAnisotropy = n !== n ? 0 : MathMin(65535, MathMax(0, MathFloor(n + 0.5)));
+    }
+    const id = gpuCall({ op: "createSampler", device, desc }, null).result.id;
+    return gpuNamed(new GPUSampler(KEY, id), r);
+  }
+
+  // ---- Layouts and bind groups ----
+  class GPUBindGroupLayout {
+    constructor(key, id) {
+      if (key !== KEY) throw illegalConstructor("GPUBindGroupLayout");
+      gpuThing(this, "GPUBindGroupLayout", id);
+    }
+  }
+  gpuLabelled(GPUBindGroupLayout, "GPUBindGroupLayout");
+
+  class GPUPipelineLayout {
+    constructor(key, id) {
+      if (key !== KEY) throw illegalConstructor("GPUPipelineLayout");
+      gpuThing(this, "GPUPipelineLayout", id);
+    }
+  }
+  gpuLabelled(GPUPipelineLayout, "GPUPipelineLayout");
+
+  class GPUBindGroup {
+    constructor(key, id) {
+      if (key !== KEY) throw illegalConstructor("GPUBindGroup");
+      gpuThing(this, "GPUBindGroup", id);
+    }
+  }
+  gpuLabelled(GPUBindGroup, "GPUBindGroup");
+
+  function gpuCreateBindGroupLayout(device, descriptor) {
+    const r = gpuReader(descriptor, prefix("createBindGroupLayout", "GPUDevice"), "GPUBindGroupLayoutDescriptor");
+    const list = gpuList(r, "entries", true);
+    const entries = [];
+    let error = null;
+    for (let i = 0; i < list.length; i++) {
+      const e = gpuReader(list[i], gpuWords(r, "entries"), "GPUBindGroupLayoutEntry");
+      const entry = { binding: gpuU32(e, "binding") };
+      let kinds = 0;
+      const buffer = gpuSub(e, "buffer", "GPUBufferBindingLayout");
+      if (buffer !== null) {
+        kinds++;
+        entry.buffer = {
+          hasDynamicOffset: gpuBool(buffer, "hasDynamicOffset", false),
+          minBindingSize: gpuU64(buffer, "minBindingSize", 0),
+          type: gpuEnum(buffer, "type", GPU_BUFFER_BINDINGS, "GPUBufferBindingType", "uniform"),
+        };
+      }
+      if (gpuSub(e, "externalTexture", "GPUExternalTextureBindingLayout") !== null) {
+        kinds++;
+        if (error === null) error = "External textures are not supported.";
+      }
+      const sampler = gpuSub(e, "sampler", "GPUSamplerBindingLayout");
+      if (sampler !== null) {
+        kinds++;
+        entry.sampler = {
+          type: gpuEnum(sampler, "type", GPU_SAMPLER_BINDINGS, "GPUSamplerBindingType", "filtering"),
+        };
+      }
+      const storage = gpuSub(e, "storageTexture", "GPUStorageTextureBindingLayout");
+      if (storage !== null) {
+        kinds++;
+        entry.storageTexture = {
+          access: gpuEnum(storage, "access", GPU_STORAGE_ACCESSES, "GPUStorageTextureAccess", "write-only"),
+          format: gpuEnum(storage, "format", GPU_FORMATS, "GPUTextureFormat"),
+          viewDimension: gpuEnum(storage, "viewDimension", GPU_VIEW_DIMENSIONS, "GPUTextureViewDimension", "2d"),
+        };
+      }
+      const texture = gpuSub(e, "texture", "GPUTextureBindingLayout");
+      if (texture !== null) {
+        kinds++;
+        entry.texture = {
+          multisampled: gpuBool(texture, "multisampled", false),
+          sampleType: gpuEnum(texture, "sampleType", GPU_SAMPLE_TYPES, "GPUTextureSampleType", "float"),
+          viewDimension: gpuEnum(texture, "viewDimension", GPU_VIEW_DIMENSIONS, "GPUTextureViewDimension", "2d"),
+        };
+      }
+      entry.visibility = gpuU32(e, "visibility");
+      if (kinds !== 1) {
+        if (error === null) {
+          error = "The entry of binding " + entry.binding + " has " + (kinds === 0 ? "no" : "more than one") +
+            " binding layout.";
+        }
+        continue;
+      }
+      ArrayPush(entries, entry);
+    }
+    const id = gpuCall({ op: "createBindGroupLayout", device, desc: { entries } }, null).result.id;
+    if (error !== null) gpuInvalid(device, error);
+    return gpuNamed(new GPUBindGroupLayout(KEY, id), r);
+  }
+
+  function gpuCreatePipelineLayout(device, descriptor) {
+    const r = gpuReader(descriptor, prefix("createPipelineLayout", "GPUDevice"), "GPUPipelineLayoutDescriptor");
+    const list = gpuList(r, "bindGroupLayouts", true);
+    const layouts = [];
+    for (let i = 0; i < list.length; i++) {
+      // A null layout is an empty one, numbered 0.
+      ArrayPush(layouts, list[i] === null || list[i] === undefined ? 0
+        : gpuNumberOf(list[i], "GPUBindGroupLayout", gpuWords(r, "bindGroupLayouts")));
+    }
+    const id = gpuCall({ op: "createPipelineLayout", device, layouts }, null).result.id;
+    return gpuNamed(new GPUPipelineLayout(KEY, id), r);
+  }
+
+  // A bind group entry's resource, as the GPU process reads it.
+  function gpuResource(binding, value, words) {
+    const r = (typeof value === "object" && value !== null) ? WeakMapGet(gpuThings, value) : undefined;
+    if (r !== undefined) {
+      if (r.kind === "GPUSampler") return { binding, sampler: r.id };
+      if (r.kind === "GPUTextureView") return { binding, view: r.id };
+      if (r.kind === "GPUBuffer") return { binding, buffer: r.id, offset: 0, size: null };
+      if (r.kind === "GPUTexture") {
+        return { binding, view: gpuNumberOf(gpuCreateView(r, undefined), "GPUTextureView", words) };
+      }
+    }
+    if (r === undefined && typeof value === "object" && value !== null) {
+      const b = gpuReader(value, words, "GPUBufferBinding");
+      const buffer = gpuMemberNumber(b, "buffer", "GPUBuffer");
+      return { binding, buffer, offset: gpuU64(b, "offset", 0), size: gpuU64(b, "size", null) };
+    }
+    throw new $TypeError(words + "The provided value is not of type '(GPUBuffer or GPUBufferBinding or " +
+      "GPUExternalTexture or GPUSampler or GPUTexture or GPUTextureView)'.");
+  }
+
+  function gpuCreateBindGroup(device, descriptor) {
+    const r = gpuReader(descriptor, prefix("createBindGroup", "GPUDevice"), "GPUBindGroupDescriptor");
+    const list = gpuList(r, "entries", true);
+    const entries = [];
+    for (let i = 0; i < list.length; i++) {
+      const e = gpuReader(list[i], gpuWords(r, "entries"), "GPUBindGroupEntry");
+      const binding = gpuU32(e, "binding");
+      ArrayPush(entries, gpuResource(binding, gpuNeed(e, "resource"), gpuWords(e, "resource")));
+    }
+    const layout = gpuMemberNumber(r, "layout", "GPUBindGroupLayout");
+    const id = gpuCall({ op: "createBindGroup", device, desc: { entries, layout } }, null).result.id;
+    return gpuNamed(new GPUBindGroup(KEY, id), r);
+  }
+
+  // ---- Pipelines ----
+  class GPUPipelineError extends $DOMException {
+    #reason;
+    constructor(message, options) {
+      const words = "Failed to construct 'GPUPipelineError': ";
+      needToConstruct(arguments.length, 2, "GPUPipelineError");
+      const r = gpuReader(options, words, "GPUPipelineErrorInit");
+      const reason = gpuEnum(r, "reason", ["validation", "internal"], "GPUPipelineErrorReason");
+      super(message === undefined ? "" : str(message), "GPUPipelineError");
+      this.#reason = reason;
+    }
+    get reason() { return this.#reason; }
+  }
+  expose(GPUPipelineError, "GPUPipelineError");
+
+  // A pipeline's bind group layout `index`, a new object each time.
+  function gpuGetBindGroupLayout(p, count, index, iface) {
+    need(count, 1, "getBindGroupLayout", iface);
+    const n = gpuEnforced(index, prefix("getBindGroupLayout", iface), "unsigned long", GPU_LONG);
+    const id = gpuCall({ op: "getBindGroupLayout", pipeline: p.id, index: n }, null).result.id;
+    return new GPUBindGroupLayout(KEY, id);
+  }
+
+  class GPUComputePipeline {
+    constructor(key, id) {
+      if (key !== KEY) throw illegalConstructor("GPUComputePipeline");
+      gpuThing(this, "GPUComputePipeline", id);
+    }
+    getBindGroupLayout(index) {
+      return gpuGetBindGroupLayout(gpuRecordOf(this, "GPUComputePipeline"), arguments.length, index, "GPUComputePipeline");
+    }
+  }
+  gpuLabelled(GPUComputePipeline, "GPUComputePipeline");
+
+  class GPURenderPipeline {
+    constructor(key, id) {
+      if (key !== KEY) throw illegalConstructor("GPURenderPipeline");
+      gpuThing(this, "GPURenderPipeline", id);
+    }
+    getBindGroupLayout(index) {
+      return gpuGetBindGroupLayout(gpuRecordOf(this, "GPURenderPipeline"), arguments.length, index, "GPURenderPipeline");
+    }
+  }
+  gpuLabelled(GPURenderPipeline, "GPURenderPipeline");
+
+  // A pipeline descriptor's layout: a layout's number, or "auto".
+  function gpuLayoutOf(r) {
+    const value = gpuNeed(r, "layout");
+    const t = (typeof value === "object" && value !== null) ? WeakMapGet(gpuThings, value) : undefined;
+    if (t !== undefined && t.kind === "GPUPipelineLayout") return t.id;
+    return gpuEnumValue(value, ["auto"], gpuWords(r, "layout"), "GPUAutoLayoutMode");
+  }
+
+  // A programmable stage: its module, entry point and constants.
+  function gpuStage(s) {
+    const stage = {};
+    if (s.d.constants !== undefined && s.d.constants !== null) {
+      const words = gpuWords(s, "constants");
+      const pairs = record(gpuReader(s.d.constants, words, "record<USVString, GPUPipelineConstantValue>").d,
+        str, (value) => gpuFinite(value, words, "double"));
+      stage.constants = {};
+      for (let i = 0; i < pairs.length; i++) stage.constants[pairs[i][0]] = pairs[i][1];
+    }
+    if (s.d.entryPoint !== undefined) stage.entryPoint = str(s.d.entryPoint);
+    stage.module = gpuMemberNumber(s, "module", "GPUShaderModule");
+    return stage;
+  }
+
+  function gpuComputeDesc(r) {
+    const compute = gpuStage(gpuSub(r, "compute", "GPUProgrammableStage", true));
+    return { compute, layout: gpuLayoutOf(r) };
+  }
+
+  function gpuBlendComponent(b, member) {
+    const c = gpuSub(b, member, "GPUBlendComponent", true);
+    return {
+      dstFactor: gpuEnum(c, "dstFactor", GPU_BLEND_FACTORS, "GPUBlendFactor", "zero"),
+      operation: gpuEnum(c, "operation", GPU_BLEND_OPERATIONS, "GPUBlendOperation", "add"),
+      srcFactor: gpuEnum(c, "srcFactor", GPU_BLEND_FACTORS, "GPUBlendFactor", "one"),
+    };
+  }
+
+  function gpuStencilFace(ds, member) {
+    const f = gpuSub(ds, member, "GPUStencilFaceState") || gpuReader(undefined, "", "");
+    const op = (name) => gpuEnum(f, name, GPU_STENCIL_OPERATIONS, "GPUStencilOperation", "keep");
+    return {
+      compare: gpuEnum(f, "compare", GPU_COMPARES, "GPUCompareFunction", "always"),
+      depthFailOp: op("depthFailOp"),
+      failOp: op("failOp"),
+      passOp: op("passOp"),
+    };
+  }
+
+  function gpuRenderDesc(r) {
+    const desc = {};
+    const ds = gpuSub(r, "depthStencil", "GPUDepthStencilState");
+    if (ds !== null) {
+      desc.depthStencil = {
+        depthBias: gpuI32(ds, "depthBias", 0),
+        depthBiasClamp: gpuFloat(ds, "depthBiasClamp", 0, "float"),
+        depthBiasSlopeScale: gpuFloat(ds, "depthBiasSlopeScale", 0, "float"),
+        depthCompare: gpuEnum(ds, "depthCompare", GPU_COMPARES, "GPUCompareFunction", null),
+        depthWriteEnabled: ds.d.depthWriteEnabled === undefined ? null : !!ds.d.depthWriteEnabled,
+        format: gpuEnum(ds, "format", GPU_FORMATS, "GPUTextureFormat"),
+        stencilBack: gpuStencilFace(ds, "stencilBack"),
+        stencilFront: gpuStencilFace(ds, "stencilFront"),
+        stencilReadMask: gpuU32(ds, "stencilReadMask", GPU_LONG),
+        stencilWriteMask: gpuU32(ds, "stencilWriteMask", GPU_LONG),
+      };
+    }
+    const fragment = gpuSub(r, "fragment", "GPUFragmentState");
+    if (fragment !== null) {
+      const stage = gpuStage(fragment);
+      const list = gpuList(fragment, "targets", true);
+      stage.targets = [];
+      for (let i = 0; i < list.length; i++) {
+        if (list[i] === null || list[i] === undefined) {
+          ArrayPush(stage.targets, null);
+          continue;
+        }
+        const t = gpuReader(list[i], gpuWords(fragment, "targets"), "GPUColorTargetState");
+        const target = {};
+        const blend = gpuSub(t, "blend", "GPUBlendState");
+        if (blend !== null) {
+          target.blend = { alpha: gpuBlendComponent(blend, "alpha"), color: gpuBlendComponent(blend, "color") };
+        }
+        target.format = gpuEnum(t, "format", GPU_FORMATS, "GPUTextureFormat");
+        target.writeMask = gpuU32(t, "writeMask", 0xF);
+        ArrayPush(stage.targets, target);
+      }
+      desc.fragment = stage;
+    }
+    desc.layout = gpuLayoutOf(r);
+    const ms = gpuSub(r, "multisample", "GPUMultisampleState");
+    if (ms !== null) {
+      desc.multisample = {
+        alphaToCoverageEnabled: gpuBool(ms, "alphaToCoverageEnabled", false),
+        count: gpuU32(ms, "count", 1),
+        mask: gpuU32(ms, "mask", GPU_LONG),
+      };
+    }
+    const p = gpuSub(r, "primitive", "GPUPrimitiveState");
+    if (p !== null) {
+      desc.primitive = {
+        cullMode: gpuEnum(p, "cullMode", GPU_CULL_MODES, "GPUCullMode", "none"),
+        frontFace: gpuEnum(p, "frontFace", GPU_FRONT_FACES, "GPUFrontFace", "ccw"),
+        stripIndexFormat: gpuEnum(p, "stripIndexFormat", GPU_INDEX_FORMATS, "GPUIndexFormat", null),
+        topology: gpuEnum(p, "topology", GPU_TOPOLOGIES, "GPUPrimitiveTopology", "triangle-list"),
+        unclippedDepth: gpuBool(p, "unclippedDepth", false),
+      };
+    }
+    const v = gpuSub(r, "vertex", "GPUVertexState", true);
+    const vertex = gpuStage(v);
+    const list = gpuList(v, "buffers", false);
+    vertex.buffers = [];
+    for (let i = 0; i < list.length; i++) {
+      if (list[i] === null || list[i] === undefined) {
+        ArrayPush(vertex.buffers, null);
+        continue;
+      }
+      const b = gpuReader(list[i], gpuWords(v, "buffers"), "GPUVertexBufferLayout");
+      const buffer = { arrayStride: gpuU64(b, "arrayStride"), attributes: [] };
+      const attributes = gpuList(b, "attributes", true);
+      for (let j = 0; j < attributes.length; j++) {
+        const a = gpuReader(attributes[j], gpuWords(b, "attributes"), "GPUVertexAttribute");
+        ArrayPush(buffer.attributes, {
+          format: gpuEnum(a, "format", GPU_VERTEX_FORMATS, "GPUVertexFormat"),
+          offset: gpuU64(a, "offset"),
+          shaderLocation: gpuU32(a, "shaderLocation"),
+        });
+      }
+      buffer.stepMode = gpuEnum(b, "stepMode", GPU_STEP_MODES, "GPUVertexStepMode", "vertex");
+      ArrayPush(vertex.buffers, buffer);
+    }
+    desc.vertex = vertex;
+    return desc;
+  }
+
+  // A pipeline of `device`; the asynchronous kind's promise settles once
+  // the GPU process has made it.
+  function gpuCreatePipeline(device, descriptor, compute, async) {
+    const method = (compute ? "createComputePipeline" : "createRenderPipeline") + (async ? "Async" : "");
+    const r = gpuReader(descriptor, prefix(method, "GPUDevice"),
+      compute ? "GPUComputePipelineDescriptor" : "GPURenderPipelineDescriptor");
+    const op = {
+      op: compute ? "createComputePipeline" : "createRenderPipeline",
+      device,
+      desc: compute ? gpuComputeDesc(r) : gpuRenderDesc(r),
+    };
+    const make = (id) => gpuNamed(compute ? new GPUComputePipeline(KEY, id) : new GPURenderPipeline(KEY, id), r);
+    if (!async) return make(gpuCall(op, null).result.id);
+    const promise = gpuNextPromise++;
+    op.promise = promise;
+    return new $Promise((resolve, reject) => {
+      let pipeline = null;
+      MapSet(gpuPromises, promise, { resolve: () => resolve(pipeline), reject });
+      try {
+        pipeline = make(gpuCall(op, null).result.id);
+      } catch (e) {
+        MapDelete(gpuPromises, promise);
+        reject(e);
+      }
+    });
+  }
+
+  // ---- Query sets, command buffers, render bundles ----
+  class GPUQuerySet {
+    constructor(key, id, type, count) {
+      if (key !== KEY) throw illegalConstructor("GPUQuerySet");
+      gpuThing(this, "GPUQuerySet", id, { type, count });
+    }
+    get type() { return gpuRecordOf(this, "GPUQuerySet").type; }
+    get count() { return gpuRecordOf(this, "GPUQuerySet").count; }
+    destroy() {
+      gpuCall({ op: "destroyQuerySet", set: gpuRecordOf(this, "GPUQuerySet").id }, null);
+    }
+  }
+  gpuLabelled(GPUQuerySet, "GPUQuerySet");
+
+  function gpuCreateQuerySet(device, descriptor) {
+    const r = gpuReader(descriptor, prefix("createQuerySet", "GPUDevice"), "GPUQuerySetDescriptor");
+    const count = gpuU32(r, "count");
+    const type = gpuEnum(r, "type", GPU_QUERY_TYPES, "GPUQueryType");
+    const id = gpuCall({ op: "createQuerySet", device, kind: type === "occlusion" ? 0 : 1, count }, null).result.id;
+    return gpuNamed(new GPUQuerySet(KEY, id, type, count), r);
+  }
+
+  // A command buffer: `id` null when its encoder was invalid.
+  class GPUCommandBuffer {
+    constructor(key, id) {
+      if (key !== KEY) throw illegalConstructor("GPUCommandBuffer");
+      gpuThing(this, "GPUCommandBuffer", id, { submitted: false });
+    }
+  }
+  gpuLabelled(GPUCommandBuffer, "GPUCommandBuffer");
+
+  class GPURenderBundle {
+    constructor(key, id, layout) {
+      if (key !== KEY) throw illegalConstructor("GPURenderBundle");
+      gpuThing(this, "GPURenderBundle", id, { layout });
+    }
+  }
+  gpuLabelled(GPURenderBundle, "GPURenderBundle");
+
+  // ---- Encoders ----
+  // An encoder's record (a command encoder's, a pass's, a render bundle
+  // encoder's): its device, "open", "locked" while a pass of it is open,
+  // or "ended"; what it recorded; the first error that makes it invalid,
+  // reported at its end; its debug groups' depth.
+  function gpuEncoder(device) {
+    return { device, state: "open", commands: [], error: null, depth: 0 };
+  }
+
+  // Whether encoder `s` may record: a locked encoder's use makes it
+  // invalid, an ended one's is a validation error.
+  function gpuOpen(s) {
+    if (s.state === "open") return true;
+    if (s.state === "locked") {
+      if (s.error === null) s.error = "The " + s.kind + " is locked while a pass of it is open.";
+    } else {
+      gpuInvalid(s.device, "The " + s.kind + " has already ended.");
+    }
+    return false;
+  }
+
+  function gpuRecord(s, command) {
+    if (gpuOpen(s)) ArrayPush(s.commands, command);
+  }
+
+  // A draw: without a pipeline set, it makes its encoder invalid.
+  function gpuDraw(s, command) {
+    if (s.state === "open" && !s.pipeline) gpuInvalidate(s, "A draw was made with no pipeline set.");
+    gpuRecord(s, command);
+  }
+
+  function gpuInvalidate(s, message) {
+    if (s.error === null) s.error = message;
+  }
+
+  // A pass of command encoder `s`, of `kind`, its descriptor `desc`.
+  function gpuBeginPass(s, pass, kind, desc, error, layout) {
+    const p = gpuEncoder(s.device);
+    p.parent = s;
+    p.desc = desc;
+    p.layout = layout;
+    p.pipeline = false;
+    p.error = error;
+    gpuThing(pass, kind, null, p);
+    if (gpuOpen(s)) {
+      s.state = "locked";
+    } else {
+      // A pass of an encoder that could not begin one is invalid.
+      p.parent = null;
+      gpuInvalidate(p, "The pass's encoder could not begin it.");
+    }
+    return pass;
+  }
+
+  // Pass `s` ends: its parent records it.
+  function gpuEndPass(s, command) {
+    if (s.state !== "open") {
+      gpuInvalid(s.device, "The " + s.kind + " has already ended.");
+      return;
+    }
+    s.state = "ended";
+    if (s.depth !== 0) gpuInvalidate(s, "A debug group of the pass was not popped.");
+    if (s.occluding) gpuInvalidate(s, "An occlusion query of the pass was not ended.");
+    const parent = s.parent;
+    if (parent === null) return;
+    parent.state = "open";
+    if (s.error !== null) gpuInvalidate(parent, s.error);
+    ArrayPush(parent.commands, command);
+  }
+
+  const GPU_RENDER_KINDS = ["GPURenderPassEncoder", "GPURenderBundleEncoder"];
+  const GPU_PASS_KINDS = ["GPURenderPassEncoder", "GPURenderBundleEncoder", "GPUComputePassEncoder"];
+  const GPU_ENCODER_KINDS = ["GPURenderPassEncoder", "GPURenderBundleEncoder", "GPUComputePassEncoder",
+    "GPUCommandEncoder"];
+
+  // An argument of `method` on `s`'s interface.
+  function gpuArg(s, method, value, fallback) {
+    return value === undefined ? fallback : gpuEnforced(value, prefix(method, s.kind), "unsigned long", GPU_LONG);
+  }
+
+  function gpuWideArg(s, method, value, fallback) {
+    return value === undefined ? fallback : gpuEnforced(value, prefix(method, s.kind), "unsigned long long", GPU_LONG_LONG);
+  }
+
+  function gpuObjectArg(s, method, value, kind, index) {
+    const r = (typeof value === "object" && value !== null) ? WeakMapGet(gpuThings, value) : undefined;
+    if (r === undefined || r.kind !== kind) {
+      throw new $TypeError(prefix(method, s.kind) + "parameter " + index + " is not of type '" + kind + "'.");
+    }
+    return r.id;
+  }
+
+  // Methods on `prototypes`, as operations are (enumerable).
+  function gpuMethods(prototypes, methods) {
+    for (let i = 0; i < prototypes.length; i++) {
+      for (let j = 0; j < methods.length; j++) {
+        defineProperty(prototypes[i], methods[j][0], {
+          value: methods[j][1],
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      }
+    }
+  }
+
+  class GPUCommandEncoder {
+    constructor(key, device) {
+      if (key !== KEY) throw illegalConstructor("GPUCommandEncoder");
+      gpuThing(this, "GPUCommandEncoder", null, gpuEncoder(device));
+    }
+
+    beginRenderPass(descriptor) {
+      const s = gpuRecordOf(this, "GPUCommandEncoder");
+      need(arguments.length, 1, "beginRenderPass", "GPUCommandEncoder");
+      const checked = gpuRenderPassDesc(descriptor);
+      return gpuBeginPass(s, new GPURenderPassEncoder(KEY), "GPURenderPassEncoder", checked.desc, checked.error,
+        checked.layout);
+    }
+
+    beginComputePass(descriptor) {
+      const s = gpuRecordOf(this, "GPUCommandEncoder");
+      gpuReader(descriptor, prefix("beginComputePass", "GPUCommandEncoder"), "GPUComputePassDescriptor");
+      return gpuBeginPass(s, new GPUComputePassEncoder(KEY), "GPUComputePassEncoder", null, null, null);
+    }
+
+    copyBufferToBuffer(source, a, b, c, d) {
+      const s = gpuRecordOf(this, "GPUCommandEncoder");
+      const method = "copyBufferToBuffer";
+      need(arguments.length, 2, method, "GPUCommandEncoder");
+      // (source, destination, size) or (source, sourceOffset,
+      // destination, destinationOffset, size).
+      const short = arguments.length <= 3;
+      const command = {
+        c: method,
+        source: gpuObjectArg(s, method, source, "GPUBuffer", 1),
+        sourceOffset: short ? 0 : gpuWideArg(s, method, a),
+        destination: gpuObjectArg(s, method, short ? a : b, "GPUBuffer", short ? 2 : 3),
+        destinationOffset: short ? 0 : gpuWideArg(s, method, c),
+        size: gpuWideArg(s, method, short ? b : d, null),
+      };
+      if (!short) need(arguments.length, 4, method, "GPUCommandEncoder");
+      gpuRecord(s, command);
+    }
+
+    copyBufferToTexture(source, destination, copySize) {
+      const s = gpuRecordOf(this, "GPUCommandEncoder");
+      need(arguments.length, 3, "copyBufferToTexture", "GPUCommandEncoder");
+      const words = prefix("copyBufferToTexture", "GPUCommandEncoder");
+      gpuRecord(s, {
+        c: "copyBufferToTexture",
+        desc: {
+          source: gpuTexelBuffer(source, words),
+          destination: gpuTexelTexture(destination, words),
+          size: gpuExtent(copySize, words),
+        },
+      });
+    }
+
+    copyTextureToBuffer(source, destination, copySize) {
+      const s = gpuRecordOf(this, "GPUCommandEncoder");
+      need(arguments.length, 3, "copyTextureToBuffer", "GPUCommandEncoder");
+      const words = prefix("copyTextureToBuffer", "GPUCommandEncoder");
+      gpuRecord(s, {
+        c: "copyTextureToBuffer",
+        desc: {
+          source: gpuTexelTexture(source, words),
+          destination: gpuTexelBuffer(destination, words),
+          size: gpuExtent(copySize, words),
+        },
+      });
+    }
+
+    copyTextureToTexture(source, destination, copySize) {
+      const s = gpuRecordOf(this, "GPUCommandEncoder");
+      need(arguments.length, 3, "copyTextureToTexture", "GPUCommandEncoder");
+      const words = prefix("copyTextureToTexture", "GPUCommandEncoder");
+      gpuRecord(s, {
+        c: "copyTextureToTexture",
+        desc: {
+          source: gpuTexelTexture(source, words),
+          destination: gpuTexelTexture(destination, words),
+          size: gpuExtent(copySize, words),
+        },
+      });
+    }
+
+    clearBuffer(buffer, offset, size) {
+      const s = gpuRecordOf(this, "GPUCommandEncoder");
+      need(arguments.length, 1, "clearBuffer", "GPUCommandEncoder");
+      gpuRecord(s, {
+        c: "clearBuffer",
+        buffer: gpuObjectArg(s, "clearBuffer", buffer, "GPUBuffer", 1),
+        offset: gpuWideArg(s, "clearBuffer", offset, 0),
+        size: gpuWideArg(s, "clearBuffer", size, null),
+      });
+    }
+
+    resolveQuerySet(querySet, firstQuery, queryCount, destination, destinationOffset) {
+      const s = gpuRecordOf(this, "GPUCommandEncoder");
+      const method = "resolveQuerySet";
+      need(arguments.length, 5, method, "GPUCommandEncoder");
+      gpuRecord(s, {
+        c: method,
+        set: gpuObjectArg(s, method, querySet, "GPUQuerySet", 1),
+        first: gpuArg(s, method, firstQuery),
+        count: gpuArg(s, method, queryCount),
+        destination: gpuObjectArg(s, method, destination, "GPUBuffer", 4),
+        offset: gpuWideArg(s, method, destinationOffset),
+      });
+    }
+
+    finish(descriptor) {
+      const s = gpuRecordOf(this, "GPUCommandEncoder");
+      const r = gpuReader(descriptor, prefix("finish", "GPUCommandEncoder"), "GPUCommandBufferDescriptor");
+      let error = s.error;
+      if (s.state === "locked") error = "The GPUCommandEncoder is locked while a pass of it is open.";
+      if (s.state === "ended") error = "The GPUCommandEncoder has already finished.";
+      if (error === null && s.depth !== 0) error = "A debug group of the encoder was not popped.";
+      s.state = "ended";
+      if (error !== null) {
+        gpuInvalid(s.device, error);
+        return gpuNamed(new GPUCommandBuffer(KEY, null), r);
+      }
+      const commands = s.commands;
+      s.commands = [];
+      const id = gpuCall({ op: "finish", device: s.device, commands }, null).result.id;
+      return gpuNamed(new GPUCommandBuffer(KEY, id), r);
+    }
+  }
+  gpuLabelled(GPUCommandEncoder, "GPUCommandEncoder");
+
+  function gpuCreateCommandEncoder(device, descriptor) {
+    const r = gpuReader(descriptor, prefix("createCommandEncoder", "GPUDevice"), "GPUCommandEncoderDescriptor");
+    return gpuNamed(new GPUCommandEncoder(KEY, device), r);
+  }
+
+  // A GPUTexelCopyBufferInfo.
+  function gpuTexelBuffer(value, words) {
+    const r = gpuReader(value, words, "GPUTexelCopyBufferInfo");
+    return {
+      buffer: gpuMemberNumber(r, "buffer", "GPUBuffer"),
+      bytesPerRow: gpuU32(r, "bytesPerRow", null),
+      offset: gpuU64(r, "offset", 0),
+      rowsPerImage: gpuU32(r, "rowsPerImage", null),
+    };
+  }
+
+  // A GPUTexelCopyTextureInfo; its texture's record is left in
+  // `gpuTexelRecord`.
+  let gpuTexelRecord = null;
+  function gpuTexelTexture(value, words) {
+    const r = gpuReader(value, words, "GPUTexelCopyTextureInfo");
+    const aspect = gpuEnum(r, "aspect", GPU_ASPECTS, "GPUTextureAspect", "all");
+    const mipLevel = gpuU32(r, "mipLevel", 0);
+    const origin = gpuOrigin(r.d.origin, gpuWords(r, "origin"));
+    const texture = gpuNeed(r, "texture");
+    const id = gpuNumberOf(texture, "GPUTexture", gpuWords(r, "texture"));
+    gpuTexelRecord = WeakMapGet(gpuThings, texture);
+    return { aspect, mipLevel, origin, texture: id };
+  }
+
+  // A render pass descriptor, and the first error the standard finds in
+  // its attachments that `wgpu` would not (their load and store ops).
+  function gpuRenderPassDesc(descriptor) {
+    const r = gpuReader(descriptor, prefix("beginRenderPass", "GPUCommandEncoder"), "GPURenderPassDescriptor");
+    let error = null;
+    const list = gpuList(r, "colorAttachments", true);
+    const colors = [];
+    const layout = { colors: [], depth: null, samples: null };
+    for (let i = 0; i < list.length; i++) {
+      if (list[i] === null || list[i] === undefined) {
+        ArrayPush(colors, null);
+        ArrayPush(layout.colors, null);
+        continue;
+      }
+      const a = gpuReader(list[i], gpuWords(r, "colorAttachments"), "GPURenderPassColorAttachment");
+      const color = {};
+      if (a.d.clearValue !== undefined) color.clearValue = gpuColor(a.d.clearValue, gpuWords(a, "clearValue"));
+      color.depthSlice = gpuU32(a, "depthSlice", null);
+      color.loadOp = gpuEnum(a, "loadOp", GPU_LOAD_OPS, "GPULoadOp");
+      color.resolveTarget = gpuAttachmentView(a, "resolveTarget", true);
+      color.storeOp = gpuEnum(a, "storeOp", GPU_STORE_OPS, "GPUStoreOp");
+      color.view = gpuAttachmentView(a, "view", false);
+      ArrayPush(colors, color);
+      const shape = gpuShape(a.d.view);
+      ArrayPush(layout.colors, shape[0]);
+      layout.samples = shape[1];
+    }
+    const desc = { colorAttachments: colors };
+    const ds = gpuSub(r, "depthStencilAttachment", "GPURenderPassDepthStencilAttachment");
+    if (ds !== null) {
+      const d = {
+        depthClearValue: gpuFloat(ds, "depthClearValue", null, "float"),
+        depthLoadOp: gpuEnum(ds, "depthLoadOp", GPU_LOAD_OPS, "GPULoadOp", null),
+        depthReadOnly: gpuBool(ds, "depthReadOnly", false),
+        depthStoreOp: gpuEnum(ds, "depthStoreOp", GPU_STORE_OPS, "GPUStoreOp", null),
+        stencilClearValue: gpuU32(ds, "stencilClearValue", 0),
+        stencilLoadOp: gpuEnum(ds, "stencilLoadOp", GPU_LOAD_OPS, "GPULoadOp", null),
+        stencilReadOnly: gpuBool(ds, "stencilReadOnly", false),
+        stencilStoreOp: gpuEnum(ds, "stencilStoreOp", GPU_STORE_OPS, "GPUStoreOp", null),
+      };
+      d.view = gpuAttachmentView(ds, "view", false);
+      const shape = gpuShape(ds.d.view);
+      layout.depth = shape[0];
+      layout.samples = shape[1];
+      const view = WeakMapGet(gpuThings, ds.d.view);
+      const format = view.kind === "GPUTexture" ? view.desc.format : view.format;
+      const aspect = view.kind === "GPUTexture" ? "all" : view.aspect;
+      const depth = listed(GPU_DEPTH_FORMATS, format) && aspect !== "stencil-only";
+      const stencil = listed(GPU_STENCIL_FORMATS, format) && aspect !== "depth-only";
+      const ops = (has, prefixName, readOnly) => {
+        const given = d[prefixName + "LoadOp"] !== null || d[prefixName + "StoreOp"] !== null;
+        if (has && !readOnly && (d[prefixName + "LoadOp"] === null || d[prefixName + "StoreOp"] === null)) {
+          return "The " + prefixName + " load and store operations must be given for the attachment's " + format + ".";
+        }
+        if ((!has || readOnly) && given) {
+          return "The " + prefixName + " load and store operations must not be given for the attachment.";
+        }
+        return null;
+      };
+      error = ops(depth, "depth", d.depthReadOnly) || ops(stencil, "stencil", d.stencilReadOnly);
+      if (error === null && d.depthLoadOp === "clear" &&
+        (d.depthClearValue === null || d.depthClearValue < 0 || d.depthClearValue > 1)) {
+        error = "The depth clear value must be given, between 0 and 1.";
+      }
+      desc.depthStencilAttachment = d;
+    }
+    desc.maxDrawCount = gpuU64(r, "maxDrawCount", 50000000);
+    desc.occlusionQuerySet = gpuMemberNumber(r, "occlusionQuerySet", "GPUQuerySet", true);
+    if (r.d.timestampWrites !== undefined && error === null) {
+      error = "Timestamp writes are not supported.";
+    }
+    return { desc, error, layout };
+  }
+
+  // An attachment's format and sample count, of a view or a texture.
+  function gpuShape(value) {
+    const r = WeakMapGet(gpuThings, value);
+    return r.kind === "GPUTexture" ? [r.desc.format, r.desc.sampleCount] : [r.format, r.sampleCount];
+  }
+
+  // Whether a render bundle's layout is a pass's: the same color formats
+  // (trailing nulls aside), depth-stencil format and sample count.
+  function gpuSameLayout(a, b) {
+    let n = a.colors.length;
+    while (n > 0 && a.colors[n - 1] === null) n--;
+    let m = b.colors.length;
+    while (m > 0 && b.colors[m - 1] === null) m--;
+    if (n !== m || a.depth !== b.depth || a.samples !== b.samples) return false;
+    for (let i = 0; i < n; i++) {
+      if (a.colors[i] !== b.colors[i]) return false;
+    }
+    return true;
+  }
+
+  // An attachment's view: a view's number, or a texture's default view's.
+  function gpuAttachmentView(a, member, optional) {
+    const value = a.d[member];
+    if (value === undefined && optional) return null;
+    const t = (typeof value === "object" && value !== null) ? WeakMapGet(gpuThings, value) : undefined;
+    if (t !== undefined && t.kind === "GPUTexture") {
+      return WeakMapGet(gpuThings, gpuCreateView(t, undefined)).id;
+    }
+    return gpuMemberNumber(a, member, "GPUTextureView");
+  }
+
+  class GPURenderPassEncoder {
+    constructor(key) {
+      if (key !== KEY) throw illegalConstructor("GPURenderPassEncoder");
+    }
+
+    setViewport(x, y, width, height, minDepth, maxDepth) {
+      const s = gpuRecordOf(this, "GPURenderPassEncoder");
+      need(arguments.length, 6, "setViewport", "GPURenderPassEncoder");
+      const words = prefix("setViewport", "GPURenderPassEncoder");
+      gpuRecord(s, {
+        c: "setViewport",
+        x: gpuFinite(x, words, "float"),
+        y: gpuFinite(y, words, "float"),
+        width: gpuFinite(width, words, "float"),
+        height: gpuFinite(height, words, "float"),
+        minDepth: gpuFinite(minDepth, words, "float"),
+        maxDepth: gpuFinite(maxDepth, words, "float"),
+      });
+    }
+
+    setScissorRect(x, y, width, height) {
+      const s = gpuRecordOf(this, "GPURenderPassEncoder");
+      need(arguments.length, 4, "setScissorRect", "GPURenderPassEncoder");
+      const m = "setScissorRect";
+      gpuRecord(s, { c: m, x: gpuArg(s, m, x), y: gpuArg(s, m, y), width: gpuArg(s, m, width), height: gpuArg(s, m, height) });
+    }
+
+    setBlendConstant(color) {
+      const s = gpuRecordOf(this, "GPURenderPassEncoder");
+      need(arguments.length, 1, "setBlendConstant", "GPURenderPassEncoder");
+      const c = gpuColor(color, prefix("setBlendConstant", "GPURenderPassEncoder"));
+      gpuRecord(s, { c: "setBlendConstant", r: c[0], g: c[1], b: c[2], a: c[3] });
+    }
+
+    setStencilReference(reference) {
+      const s = gpuRecordOf(this, "GPURenderPassEncoder");
+      need(arguments.length, 1, "setStencilReference", "GPURenderPassEncoder");
+      gpuRecord(s, { c: "setStencilReference", reference: gpuArg(s, "setStencilReference", reference) });
+    }
+
+    beginOcclusionQuery(queryIndex) {
+      const s = gpuRecordOf(this, "GPURenderPassEncoder");
+      need(arguments.length, 1, "beginOcclusionQuery", "GPURenderPassEncoder");
+      const index = gpuArg(s, "beginOcclusionQuery", queryIndex);
+      if (s.state === "open") s.occluding = true;
+      gpuRecord(s, { c: "beginOcclusionQuery", index });
+    }
+
+    endOcclusionQuery() {
+      const s = gpuRecordOf(this, "GPURenderPassEncoder");
+      if (s.state === "open") s.occluding = false;
+      gpuRecord(s, { c: "endOcclusionQuery" });
+    }
+
+    executeBundles(bundles) {
+      const s = gpuRecordOf(this, "GPURenderPassEncoder");
+      need(arguments.length, 1, "executeBundles", "GPURenderPassEncoder");
+      const words = prefix("executeBundles", "GPURenderPassEncoder");
+      const list = gpuSequence(bundles, words);
+      const ids = [];
+      let invalid = false;
+      let other = false;
+      for (let i = 0; i < list.length; i++) {
+        const id = gpuNumberOf(list[i], "GPURenderBundle", words);
+        if (id === null) invalid = true;
+        else ArrayPush(ids, id);
+        if (!gpuSameLayout(WeakMapGet(gpuThings, list[i]).layout, s.layout)) other = true;
+      }
+      if (s.state === "open") {
+        if (invalid) gpuInvalidate(s, "A render bundle executed is invalid.");
+        if (other) gpuInvalidate(s, "A render bundle's formats or sample count are not the pass's.");
+        s.pipeline = false;
+      }
+      gpuRecord(s, { c: "executeBundles", bundles: ids });
+    }
+
+    end() {
+      const s = gpuRecordOf(this, "GPURenderPassEncoder");
+      gpuEndPass(s, { c: "renderPass", desc: s.desc, commands: s.commands });
+    }
+  }
+  gpuLabelled(GPURenderPassEncoder, "GPURenderPassEncoder");
+
+  class GPUComputePassEncoder {
+    constructor(key) {
+      if (key !== KEY) throw illegalConstructor("GPUComputePassEncoder");
+    }
+
+    setPipeline(pipeline) {
+      const s = gpuRecordOf(this, "GPUComputePassEncoder");
+      need(arguments.length, 1, "setPipeline", "GPUComputePassEncoder");
+      gpuRecord(s, { c: "setPipeline", pipeline: gpuObjectArg(s, "setPipeline", pipeline, "GPUComputePipeline", 1) });
+    }
+
+    dispatchWorkgroups(x, y, z) {
+      const s = gpuRecordOf(this, "GPUComputePassEncoder");
+      const m = "dispatchWorkgroups";
+      need(arguments.length, 1, m, "GPUComputePassEncoder");
+      gpuRecord(s, { c: "dispatch", x: gpuArg(s, m, x), y: gpuArg(s, m, y, 1), z: gpuArg(s, m, z, 1) });
+    }
+
+    dispatchWorkgroupsIndirect(indirectBuffer, indirectOffset) {
+      const s = gpuRecordOf(this, "GPUComputePassEncoder");
+      const m = "dispatchWorkgroupsIndirect";
+      need(arguments.length, 2, m, "GPUComputePassEncoder");
+      gpuRecord(s, {
+        c: "dispatchIndirect",
+        buffer: gpuObjectArg(s, m, indirectBuffer, "GPUBuffer", 1),
+        offset: gpuWideArg(s, m, indirectOffset),
+      });
+    }
+
+    end() {
+      const s = gpuRecordOf(this, "GPUComputePassEncoder");
+      gpuEndPass(s, { c: "computePass", commands: s.commands });
+    }
+  }
+  gpuLabelled(GPUComputePassEncoder, "GPUComputePassEncoder");
+
+  class GPURenderBundleEncoder {
+    constructor(key) {
+      if (key !== KEY) throw illegalConstructor("GPURenderBundleEncoder");
+    }
+
+    finish(descriptor) {
+      const s = gpuRecordOf(this, "GPURenderBundleEncoder");
+      const r = gpuReader(descriptor, prefix("finish", "GPURenderBundleEncoder"), "GPURenderBundleDescriptor");
+      let error = s.error;
+      if (s.state !== "open") error = "The GPURenderBundleEncoder has already finished.";
+      if (error === null && s.depth !== 0) error = "A debug group of the encoder was not popped.";
+      s.state = "ended";
+      if (error !== null) {
+        gpuInvalid(s.device, error);
+        return gpuNamed(new GPURenderBundle(KEY, null, s.layout), r);
+      }
+      const op = { op: "createRenderBundle", device: s.device, desc: s.desc, commands: s.commands };
+      s.commands = [];
+      return gpuNamed(new GPURenderBundle(KEY, gpuCall(op, null).result.id, s.layout), r);
+    }
+  }
+  gpuLabelled(GPURenderBundleEncoder, "GPURenderBundleEncoder");
+
+  function gpuCreateRenderBundleEncoder(device, descriptor) {
+    const r = gpuReader(descriptor, prefix("createRenderBundleEncoder", "GPUDevice"), "GPURenderBundleEncoderDescriptor");
+    const named = gpuList(r, "colorFormats", true);
+    const colorFormats = [];
+    for (let i = 0; i < named.length; i++) {
+      ArrayPush(colorFormats, named[i] === null || named[i] === undefined ? null
+        : gpuEnumValue(named[i], GPU_FORMATS, gpuWords(r, "colorFormats"), "GPUTextureFormat"));
+    }
+    const desc = {
+      colorFormats,
+      depthReadOnly: gpuBool(r, "depthReadOnly", false),
+      depthStencilFormat: gpuEnum(r, "depthStencilFormat", GPU_FORMATS, "GPUTextureFormat", null),
+      sampleCount: gpuU32(r, "sampleCount", 1),
+      stencilReadOnly: gpuBool(r, "stencilReadOnly", false),
+    };
+    const encoder = new GPURenderBundleEncoder(KEY);
+    const s = gpuEncoder(device);
+    s.desc = desc;
+    s.layout = { colors: colorFormats, depth: desc.depthStencilFormat, samples: desc.sampleCount };
+    s.pipeline = false;
+    gpuThing(encoder, "GPURenderBundleEncoder", null, s);
+    return gpuNamed(encoder, r);
+  }
+
+  // GPUDebugCommandsMixin.
+  gpuMethods([GPUCommandEncoder.prototype, GPURenderPassEncoder.prototype, GPUComputePassEncoder.prototype,
+    GPURenderBundleEncoder.prototype], [
+    ["pushDebugGroup", function pushDebugGroup(groupLabel) {
+      const s = gpuRecordOf(this, GPU_ENCODER_KINDS);
+      need(arguments.length, 1, "pushDebugGroup", s.kind);
+      str(groupLabel);
+      if (gpuOpen(s)) s.depth++;
+    }],
+    ["popDebugGroup", function popDebugGroup() {
+      const s = gpuRecordOf(this, GPU_ENCODER_KINDS);
+      if (!gpuOpen(s)) return;
+      if (s.depth === 0) {
+        gpuInvalidate(s, "A debug group was popped that was not pushed.");
+      } else {
+        s.depth--;
+      }
+    }],
+    ["insertDebugMarker", function insertDebugMarker(markerLabel) {
+      const s = gpuRecordOf(this, GPU_ENCODER_KINDS);
+      need(arguments.length, 1, "insertDebugMarker", s.kind);
+      str(markerLabel);
+      gpuOpen(s);
+    }],
+  ]);
+
+  // GPUBindingCommandsMixin.
+  gpuMethods([GPURenderPassEncoder.prototype, GPUComputePassEncoder.prototype, GPURenderBundleEncoder.prototype], [
+    ["setBindGroup", function setBindGroup(index, bindGroup, offsets, start, length) {
+      const s = gpuRecordOf(this, GPU_PASS_KINDS);
+      const m = "setBindGroup";
+      need(arguments.length, 2, m, s.kind);
+      const n = gpuArg(s, m, index);
+      const group = bindGroup === null || bindGroup === undefined ? null : gpuObjectArg(s, m, bindGroup, "GPUBindGroup", 2);
+      const list = [];
+      if (arguments.length >= 5) {
+        // (index, group, Uint32Array data, start, length).
+        if (!(offsets instanceof GpuUint32Array)) {
+          throw new $TypeError(prefix(m, s.kind) + "parameter 3 is not of type 'Uint32Array'.");
+        }
+        const first = gpuWideArg(s, m, start);
+        const count = gpuArg(s, m, length);
+        if (first + count > TypedArrayCount(offsets)) {
+          throw new $RangeError(prefix(m, s.kind) + "dynamicOffsetsDataStart + dynamicOffsetsDataLength (" +
+            (first + count) + ") is larger than dynamicOffsetsData's length (" + TypedArrayCount(offsets) + ").");
+        }
+        for (let i = 0; i < count; i++) ArrayPush(list, offsets[first + i]);
+      } else if (offsets !== undefined) {
+        const given = gpuSequence(offsets, prefix(m, s.kind));
+        for (let i = 0; i < given.length; i++) ArrayPush(list, gpuArg(s, m, given[i]));
+      }
+      gpuRecord(s, { c: m, index: n, group, offsets: list });
+    }],
+  ]);
+
+  // GPURenderCommandsMixin.
+  gpuMethods([GPURenderPassEncoder.prototype, GPURenderBundleEncoder.prototype], [
+    ["setPipeline", function setPipeline(pipeline) {
+      const s = gpuRecordOf(this, GPU_RENDER_KINDS);
+      need(arguments.length, 1, "setPipeline", s.kind);
+      const id = gpuObjectArg(s, "setPipeline", pipeline, "GPURenderPipeline", 1);
+      if (s.state === "open") s.pipeline = true;
+      gpuRecord(s, { c: "setPipeline", pipeline: id });
+    }],
+    ["setIndexBuffer", function setIndexBuffer(buffer, indexFormat, offset, size) {
+      const s = gpuRecordOf(this, GPU_RENDER_KINDS);
+      const m = "setIndexBuffer";
+      need(arguments.length, 2, m, s.kind);
+      const id = gpuObjectArg(s, m, buffer, "GPUBuffer", 1);
+      const format = gpuEnumValue(indexFormat, GPU_INDEX_FORMATS, prefix(m, s.kind), "GPUIndexFormat");
+      gpuRecord(s, {
+        c: m,
+        buffer: id,
+        format: format === "uint16" ? 0 : 1,
+        offset: gpuWideArg(s, m, offset, 0),
+        size: gpuWideArg(s, m, size, null),
+      });
+    }],
+    ["setVertexBuffer", function setVertexBuffer(slot, buffer, offset, size) {
+      const s = gpuRecordOf(this, GPU_RENDER_KINDS);
+      const m = "setVertexBuffer";
+      need(arguments.length, 2, m, s.kind);
+      const n = gpuArg(s, m, slot);
+      gpuRecord(s, {
+        c: m,
+        slot: n,
+        buffer: buffer === null ? null : gpuObjectArg(s, m, buffer, "GPUBuffer", 2),
+        offset: gpuWideArg(s, m, offset, 0),
+        size: gpuWideArg(s, m, size, null),
+      });
+    }],
+    ["draw", function draw(vertexCount, instanceCount, firstVertex, firstInstance) {
+      const s = gpuRecordOf(this, GPU_RENDER_KINDS);
+      need(arguments.length, 1, "draw", s.kind);
+      gpuDraw(s, {
+        c: "draw",
+        vertices: gpuArg(s, "draw", vertexCount),
+        instances: gpuArg(s, "draw", instanceCount, 1),
+        firstVertex: gpuArg(s, "draw", firstVertex, 0),
+        firstInstance: gpuArg(s, "draw", firstInstance, 0),
+      });
+    }],
+    ["drawIndexed", function drawIndexed(indexCount, instanceCount, firstIndex, baseVertex, firstInstance) {
+      const s = gpuRecordOf(this, GPU_RENDER_KINDS);
+      const m = "drawIndexed";
+      need(arguments.length, 1, m, s.kind);
+      gpuDraw(s, {
+        c: m,
+        indices: gpuArg(s, m, indexCount),
+        instances: gpuArg(s, m, instanceCount, 1),
+        firstIndex: gpuArg(s, m, firstIndex, 0),
+        baseVertex: baseVertex === undefined ? 0 : gpuSigned(baseVertex, prefix(m, s.kind)),
+        firstInstance: gpuArg(s, m, firstInstance, 0),
+      });
+    }],
+    ["drawIndirect", function drawIndirect(indirectBuffer, indirectOffset) {
+      const s = gpuRecordOf(this, GPU_RENDER_KINDS);
+      need(arguments.length, 2, "drawIndirect", s.kind);
+      gpuDraw(s, {
+        c: "drawIndirect",
+        buffer: gpuObjectArg(s, "drawIndirect", indirectBuffer, "GPUBuffer", 1),
+        offset: gpuWideArg(s, "drawIndirect", indirectOffset),
+      });
+    }],
+    ["drawIndexedIndirect", function drawIndexedIndirect(indirectBuffer, indirectOffset) {
+      const s = gpuRecordOf(this, GPU_RENDER_KINDS);
+      need(arguments.length, 2, "drawIndexedIndirect", s.kind);
+      gpuDraw(s, {
+        c: "drawIndexedIndirect",
+        buffer: gpuObjectArg(s, "drawIndexedIndirect", indirectBuffer, "GPUBuffer", 1),
+        offset: gpuWideArg(s, "drawIndexedIndirect", indirectOffset),
+      });
+    }],
+  ]);
+
+  // A block's height in texels for a texture format.
+  function gpuBlockHeight(format) {
+    const head = StringSlice(format, 0, 3);
+    if (StringSlice(format, 0, 2) === "bc" || head === "etc" || head === "eac") return 4;
+    if (StringSlice(format, 0, 5) === "astc-") {
+      // "astc-WxH-unorm...".
+      const dims = StringSlice(format, 5, GpuIndexOf(format, "-", 5));
+      return $Number(StringSlice(dims, GpuIndexOf(dims, "x") + 1));
+    }
+    return 1;
+  }
 
   // ---- GPUBuffer ----
   class GPUBuffer {
@@ -22473,6 +24173,7 @@
     constructor(key, id, size, usage, mapped) {
       if (key !== KEY) throw illegalConstructor("GPUBuffer");
       this.#id = id;
+      gpuThing(this, "GPUBuffer", id);
       this.#size = size;
       this.#usage = usage;
       this.#state = mapped ? "mapped" : "unmapped";
@@ -22592,6 +24293,7 @@
       MapDelete(gpuPromises, told.promise);
       if (told.error !== undefined) {
         settle.reject(told.error.name === "TypeError" ? new $TypeError(told.error.message)
+          : told.error.name === "GPUPipelineError" ? new GPUPipelineError(told.error.message, { reason: "validation" })
           : new $DOMException(told.error.message, told.error.name));
       } else if (told.adapter !== undefined) {
         settle.resolve(told.adapter === null ? null : new GPUAdapter(KEY, told.adapter));
@@ -22601,6 +24303,10 @@
         settle.resolve(told.scope);
       } else if (told.mapped !== undefined) {
         settle.resolve(bytes);
+      } else if (told.compilation !== undefined) {
+        settle.resolve(told.compilation);
+      } else if (told.pipeline !== undefined) {
+        settle.resolve(undefined);
       } else {
         settle.resolve(undefined);
       }

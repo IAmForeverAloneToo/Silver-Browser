@@ -92,6 +92,8 @@ mod web_audio_tests;
 #[cfg(test)]
 mod webgpu_tests;
 #[cfg(test)]
+mod webgpu_work_tests;
+#[cfg(test)]
 mod worker_tests;
 #[cfg(test)]
 mod xhr_tests;

@@ -8,7 +8,7 @@ use net::test_server::TestServer;
 
 use crate::testing::*;
 
-fn server(script: &str) -> TestServer {
+pub(super) fn server(script: &str) -> TestServer {
     let body = format!(
         "<script>const log = (s) => console.log(s);\n\
          (async () => {{\n{script}\n}})().then(() => log('done'), (e) => log('failed ' + e + ' ' + e.stack));</script>"
@@ -20,7 +20,7 @@ fn server(script: &str) -> TestServer {
 }
 
 /// The page's lines until "done".
-fn lines(page: &TestServer) -> Vec<String> {
+pub(super) fn lines(page: &TestServer) -> Vec<String> {
     let mut tab = Tab::new();
     tab.engine.set_scripting(true);
     tab.engine.navigate(page.url("/page.html"));
@@ -31,7 +31,7 @@ fn lines(page: &TestServer) -> Vec<String> {
 }
 
 /// The script's first lines: an adapter, or "no adapter" and the end.
-const ADAPTER: &str = r#"
+pub(super) const ADAPTER: &str = r#"
 const adapter = await navigator.gpu.requestAdapter();
 if (adapter === null) { log('no adapter'); return; }
 "#;

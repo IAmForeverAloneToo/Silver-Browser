@@ -14,6 +14,8 @@ use crate::gpu::GpuClient;
 use crate::gpu::wire::{AdapterInfo, Reply, Request};
 use crate::scripts::workers::{Inbox, WorkerMessage};
 
+mod work;
+
 /// A document's WebGPU: the objects it made, and the client they live
 /// in.
 #[derive(Default)]
@@ -358,7 +360,9 @@ impl WebGpu {
                 );
                 done(Json::Null)
             }
-            _ => fail("TypeError", "an unknown WebGPU call"),
+            _ => self
+                .work(what, &op, &bytes, client, inbox)
+                .unwrap_or_else(|| fail("TypeError", "an unknown WebGPU call")),
         }
     }
 }

@@ -152,7 +152,9 @@ impl GpuClient {
                 | Reply::Device { call, .. }
                 | Reply::ErrorScope { call, .. }
                 | Reply::Mapped { call, .. }
-                | Reply::WorkDone { call } => *call,
+                | Reply::WorkDone { call }
+                | Reply::Compilation { call, .. }
+                | Reply::PipelineMade { call, .. } => *call,
                 Reply::MappedBytes {
                     call,
                     offset,

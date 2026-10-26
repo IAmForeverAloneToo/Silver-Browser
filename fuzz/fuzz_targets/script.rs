@@ -37,7 +37,7 @@ impl ScriptingHost for Recorder {
 /// than 64 KiB of it in a build with the address sanitizer, and the
 /// engine's own, `js::MAX_SCRIPT_STACK`, is what a page has.
 const LIMITS: Limits = Limits {
-    heap: 4 << 20,
+    heap: 16 << 20,
     steps: 50,
     stack: js::MAX_SCRIPT_STACK,
     secure: true,

@@ -5,6 +5,8 @@
 
 pub mod client;
 #[cfg(feature = "gpu")]
+pub mod convert;
+#[cfg(feature = "gpu")]
 pub mod names;
 #[cfg(feature = "gpu")]
 pub mod process;

@@ -4,7 +4,10 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use super::client::GpuClient;
-use super::wire::{self, AdapterInfo, FromGpu, GPU_VERSION, Reply, Request, ToGpu};
+use super::wire::{
+    self, AdapterInfo, Command, CompilationMessage, ComputeCommand, FromGpu, GPU_VERSION, GpuError,
+    RenderCommand, Reply, Request, ToGpu,
+};
 use crate::ipc::{self, Bytes, Wire};
 
 const WAIT: Duration = Duration::from_secs(30);
@@ -24,11 +27,67 @@ fn the_client_protocol_reads_back_what_it_wrote() {
             fallback: true,
         },
         Request::Drop { id: 3 },
+        // Step 3's: an encoder's commands, nested.
+        Request::Finish {
+            device: 4,
+            id: 5,
+            commands: vec![
+                Command::RenderPass {
+                    desc: "{}".to_owned(),
+                    commands: vec![
+                        RenderCommand::DrawIndexed {
+                            indices: 3,
+                            instances: 1,
+                            first_index: 0,
+                            base_vertex: -2,
+                            first_instance: 0,
+                        },
+                        RenderCommand::SetViewport {
+                            x: 0.5,
+                            y: 0.0,
+                            width: 4.0,
+                            height: 4.0,
+                            min_depth: 0.0,
+                            max_depth: 1.0,
+                        },
+                        RenderCommand::EndOcclusionQuery {},
+                    ],
+                },
+                Command::ComputePass {
+                    commands: vec![ComputeCommand::Dispatch { x: 1, y: 2, z: 3 }],
+                },
+            ],
+        },
+        Request::CreateRenderPipeline {
+            device: 4,
+            id: 6,
+            desc: "{}".to_owned(),
+            call: Some(9),
+        },
+        Request::Invalid {
+            device: 4,
+            message: "why".to_owned(),
+        },
     ];
     assert_eq!(
         wire::read_requests(&wire::requests(&requests)).unwrap(),
         requests
     );
+    round_trip(Reply::Compilation {
+        call: 1,
+        messages: vec![CompilationMessage {
+            kind: 0,
+            line: 2,
+            position: 3,
+            offset: 4,
+            length: 5,
+            message: "bad".to_owned(),
+        }],
+    });
+    round_trip(Reply::PipelineMade {
+        call: 2,
+        error: Some("bad".to_owned()),
+    });
     let replies = vec![
         Reply::Adapter {
             call: 7,
@@ -367,5 +426,395 @@ mod service {
             client.lost().as_deref(),
             Some(format!("object {} dropped, which it does not have", id + 1000).as_str())
         );
+    }
+
+    /// The names a list of the bootstrap's holds, from its source.
+    fn bootstrap_list(name: &str) -> Vec<String> {
+        let source = include_str!("../../../js/src/quickjs/bootstrap.js");
+        let start = source.find(&format!("const {name} = [")).expect("the list");
+        let list = &source[start..start + source[start..].find("];").expect("its end")];
+        let mut names: Vec<String> = list
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_owned)
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn sorted<T>(list: &[(&str, T)]) -> Vec<String> {
+        let mut names: Vec<String> = list.iter().map(|(name, _)| (*name).to_owned()).collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn the_bootstraps_formats_are_those_the_service_reads() {
+        // A name the page may give and the service does not know would
+        // end the client.
+        assert_eq!(
+            bootstrap_list("GPU_FORMATS"),
+            sorted(crate::gpu::convert::FORMATS)
+        );
+        assert_eq!(
+            bootstrap_list("GPU_VERTEX_FORMATS"),
+            sorted(crate::gpu::convert::VERTEX_FORMATS)
+        );
+    }
+
+    /// A service with a device numbered 11, or `None` where there is no
+    /// adapter.
+    fn device() -> Option<GpuService> {
+        let mut service = GpuService::new(false);
+        let replies = service
+            .handle(1, &wire::requests(&[adapter(1, 10)]))
+            .unwrap();
+        if matches!(replies[..], [Reply::Adapter { adapter: None, .. }]) {
+            eprintln!("no adapter here: the work is not checked");
+            return None;
+        }
+        let replies = service
+            .handle(
+                1,
+                &wire::requests(&[Request::RequestDevice {
+                    call: 2,
+                    adapter: 10,
+                    id: 11,
+                    features: Vec::new(),
+                    limits: Vec::new(),
+                }]),
+            )
+            .unwrap();
+        assert!(matches!(replies[..], [Reply::Device { result: Ok(_), .. }]));
+        Some(service)
+    }
+
+    #[test]
+    fn a_clients_validation_error_goes_to_a_validation_scope_or_is_uncaptured() {
+        let Some(mut service) = device() else {
+            return;
+        };
+        let invalid = Request::Invalid {
+            device: 11,
+            message: "the client's".to_owned(),
+        };
+        let replies = service
+            .handle(
+                1,
+                &wire::requests(&[
+                    Request::PushErrorScope {
+                        device: 11,
+                        filter: 0,
+                    },
+                    Request::PushErrorScope {
+                        device: 11,
+                        filter: 1,
+                    },
+                    invalid.clone(),
+                    Request::PopErrorScope {
+                        call: 3,
+                        device: 11,
+                    },
+                    Request::PopErrorScope {
+                        call: 4,
+                        device: 11,
+                    },
+                ]),
+            )
+            .unwrap();
+        let error = GpuError {
+            kind: 0,
+            message: "the client's".to_owned(),
+        };
+        assert_eq!(
+            replies,
+            [
+                Reply::ErrorScope {
+                    call: 3,
+                    result: Ok(None),
+                },
+                Reply::ErrorScope {
+                    call: 4,
+                    result: Ok(Some(error.clone())),
+                },
+            ]
+        );
+        service.handle(1, &wire::requests(&[invalid])).unwrap();
+        assert_eq!(
+            service.events(),
+            [(1, Reply::Uncaptured { device: 11, error })]
+        );
+    }
+
+    #[test]
+    fn ranges_past_a_buffer_are_refused_without_a_panic() {
+        let Some(mut service) = device() else {
+            return;
+        };
+        let buffer = |id, usage| Request::CreateBuffer {
+            device: 11,
+            id,
+            size: 16,
+            usage,
+            mapped: false,
+        };
+        // MAP_READ | COPY_DST; VERTEX | INDEX.
+        service
+            .handle(1, &wire::requests(&[buffer(12, 9), buffer(13, 0x30)]))
+            .unwrap();
+        let replies = service
+            .handle(
+                1,
+                &wire::requests(&[Request::MapBuffer {
+                    call: 5,
+                    buffer: 12,
+                    mode: 1,
+                    offset: 8,
+                    size: 16,
+                }]),
+            )
+            .unwrap();
+        assert_eq!(
+            replies,
+            [Reply::Mapped {
+                call: 5,
+                error: Some("the range is past the buffer's end".to_owned()),
+            }]
+        );
+        // Past 2^64 too (webgpu_ops found it ending the client).
+        let replies = service
+            .handle(
+                1,
+                &wire::requests(&[Request::MapBuffer {
+                    call: 6,
+                    buffer: 12,
+                    mode: 1,
+                    offset: u64::MAX,
+                    size: 8,
+                }]),
+            )
+            .unwrap();
+        assert!(matches!(
+            replies[..],
+            [Reply::Mapped { error: Some(_), .. }]
+        ));
+        let texture = Request::CreateTexture {
+            device: 11,
+            id: 14,
+            desc: r#"{"size":[4,4],"format":"rgba8unorm","usage":16}"#.to_owned(),
+        };
+        let view = Request::CreateView {
+            texture: 14,
+            id: 15,
+            desc: "{}".to_owned(),
+        };
+        let past = vec![
+            RenderCommand::SetVertexBuffer {
+                slot: 0,
+                buffer: Some(13),
+                offset: 64,
+                size: None,
+            },
+            RenderCommand::SetVertexBuffer {
+                slot: 0,
+                buffer: Some(13),
+                offset: 8,
+                size: Some(u64::MAX),
+            },
+            RenderCommand::SetIndexBuffer {
+                buffer: 13,
+                format: 0,
+                offset: 0,
+                size: Some(32),
+            },
+        ];
+        let pass = Command::RenderPass {
+            desc: r#"{"colorAttachments":[{"view":15,"loadOp":"clear","storeOp":"store"}]}"#
+                .to_owned(),
+            commands: past.clone(),
+        };
+        service
+            .handle(
+                1,
+                &wire::requests(&[
+                    texture,
+                    view,
+                    Request::Finish {
+                        device: 11,
+                        id: 16,
+                        commands: vec![pass],
+                    },
+                    Request::CreateRenderBundle {
+                        device: 11,
+                        id: 17,
+                        desc: r#"{"colorFormats":["rgba8unorm"]}"#.to_owned(),
+                        commands: past,
+                    },
+                    Request::Submit {
+                        device: 11,
+                        buffers: vec![16],
+                    },
+                ]),
+            )
+            .unwrap();
+    }
+
+    /// A render pass's descriptor on a 4x4 texture numbered 12 (its view
+    /// 13), made on the service's device 11.
+    fn target(service: &mut GpuService) -> String {
+        service
+            .handle(
+                1,
+                &wire::requests(&[
+                    Request::CreateTexture {
+                        device: 11,
+                        id: 12,
+                        desc: r#"{"size":[4,4],"format":"rgba8unorm","usage":16}"#.to_owned(),
+                    },
+                    Request::CreateView {
+                        texture: 12,
+                        id: 13,
+                        desc: "{}".to_owned(),
+                    },
+                ]),
+            )
+            .unwrap();
+        r#"{"colorAttachments":[{"view":13,"loadOp":"clear","storeOp":"store"}]}"#.to_owned()
+    }
+
+    #[test]
+    fn a_render_bundles_commands_are_replayed_and_their_errors_are_the_passes() {
+        // wgpu's own bundles panic where they fail (webgpu_ops found it):
+        // a bundle is its commands, replayed by the pass executing it.
+        let Some(mut service) = device() else {
+            return;
+        };
+        let desc = target(&mut service);
+        let replies = service
+            .handle(
+                1,
+                &wire::requests(&[
+                    Request::PushErrorScope {
+                        device: 11,
+                        filter: 0,
+                    },
+                    Request::CreateRenderBundle {
+                        device: 11,
+                        id: 14,
+                        desc: r#"{"colorFormats":["depth24plus"]}"#.to_owned(),
+                        commands: vec![RenderCommand::Draw {
+                            vertices: 3,
+                            instances: 1,
+                            first_vertex: 0,
+                            first_instance: 0,
+                        }],
+                    },
+                    Request::PopErrorScope {
+                        call: 3,
+                        device: 11,
+                    },
+                    Request::PushErrorScope {
+                        device: 11,
+                        filter: 0,
+                    },
+                    Request::Finish {
+                        device: 11,
+                        id: 15,
+                        commands: vec![Command::RenderPass {
+                            desc,
+                            commands: vec![RenderCommand::ExecuteBundles {
+                                bundles: vec![14, 14],
+                            }],
+                        }],
+                    },
+                    Request::PopErrorScope {
+                        call: 4,
+                        device: 11,
+                    },
+                ]),
+            )
+            .unwrap();
+        let [
+            Reply::ErrorScope {
+                call: 3,
+                result: Ok(None),
+            },
+            Reply::ErrorScope {
+                call: 4,
+                result: Ok(Some(executed)),
+            },
+        ] = &replies[..]
+        else {
+            panic!("{replies:?}");
+        };
+        assert!(!executed.message.is_empty(), "{executed:?}");
+    }
+
+    #[test]
+    fn a_pass_replays_at_most_its_cap_of_commands() {
+        let Some(mut service) = device() else {
+            return;
+        };
+        let desc = target(&mut service);
+        let bundle = vec![RenderCommand::SetStencilReference { reference: 1 }; 1000];
+        let replies = service
+            .handle(
+                1,
+                &wire::requests(&[
+                    Request::CreateRenderBundle {
+                        device: 11,
+                        id: 14,
+                        desc: "{}".to_owned(),
+                        commands: bundle,
+                    },
+                    Request::PushErrorScope {
+                        device: 11,
+                        filter: 0,
+                    },
+                    Request::Finish {
+                        device: 11,
+                        id: 15,
+                        commands: vec![Command::RenderPass {
+                            desc,
+                            commands: vec![RenderCommand::ExecuteBundles {
+                                bundles: vec![14; 5000],
+                            }],
+                        }],
+                    },
+                    Request::PopErrorScope {
+                        call: 3,
+                        device: 11,
+                    },
+                ]),
+            )
+            .unwrap();
+        assert_eq!(
+            replies,
+            [Reply::ErrorScope {
+                call: 3,
+                result: Ok(Some(GpuError {
+                    kind: 0,
+                    message: format!(
+                        "A render pass replays more than {} commands.",
+                        crate::gpu::service::MAX_PASS_COMMANDS
+                    ),
+                })),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_device_with_scopes_left_open_goes_without_a_panic() {
+        // webgpu_ops found it: wgpu's scopes must go innermost first.
+        let Some(mut service) = device() else {
+            return;
+        };
+        let push = |filter| Request::PushErrorScope { device: 11, filter };
+        service
+            .handle(1, &wire::requests(&[push(0), push(1), push(0)]))
+            .unwrap();
+        service.gone(1);
+        assert_eq!(service.objects(1), 0);
     }
 }

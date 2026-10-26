@@ -10,8 +10,14 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
+mod work;
+
+pub use work::MAX_PASS_COMMANDS;
+
 use super::names;
-use super::wire::{self, AdapterInfo, DeviceInfo, GPU_CHUNK, GpuError, Reply, Request};
+use super::wire::{
+    self, AdapterInfo, DeviceInfo, GPU_CHUNK, GpuError, RenderCommand, Reply, Request,
+};
 use crate::ipc::Bytes;
 
 /// The most objects a client may have live at once.
@@ -25,7 +31,25 @@ struct Device {
     device: wgpu::Device,
     queue: wgpu::Queue,
     /// The page's error scopes, the innermost last.
-    scopes: Vec<wgpu::ErrorScopeGuard>,
+    scopes: Vec<Scope>,
+}
+
+impl Drop for Device {
+    /// The page's scopes left open go innermost first: `wgpu` panics at
+    /// any other order (webgpu_ops found it).
+    fn drop(&mut self) {
+        while let Some(scope) = self.scopes.pop() {
+            drop(scope);
+        }
+    }
+}
+
+/// An error scope: `wgpu`'s, and the first error the client found while
+/// it was the innermost of its filter's.
+struct Scope {
+    filter: u8,
+    guard: wgpu::ErrorScopeGuard,
+    found: Option<GpuError>,
 }
 
 struct Buffer {
@@ -43,6 +67,20 @@ enum Object {
     Adapter(wgpu::Adapter, bool),
     Device(Device),
     Buffer(Buffer),
+    ShaderModule(wgpu::ShaderModule),
+    Texture(wgpu::Texture),
+    View(wgpu::TextureView),
+    Sampler(wgpu::Sampler),
+    BindGroupLayout(wgpu::BindGroupLayout),
+    PipelineLayout(wgpu::PipelineLayout),
+    BindGroup(wgpu::BindGroup),
+    ComputePipeline(wgpu::ComputePipeline),
+    RenderPipeline(wgpu::RenderPipeline),
+    /// A command buffer, until it is submitted.
+    CommandBuffer(Option<wgpu::CommandBuffer>),
+    QuerySet(wgpu::QuerySet),
+    /// A render bundle: its commands (step 3, `work`).
+    RenderBundle(std::sync::Arc<[RenderCommand]>),
 }
 
 impl Object {
@@ -51,6 +89,18 @@ impl Object {
             Object::Adapter(..) => "an adapter",
             Object::Device(_) => "a device",
             Object::Buffer(_) => "a buffer",
+            Object::ShaderModule(_) => "a shader module",
+            Object::Texture(_) => "a texture",
+            Object::View(_) => "a texture view",
+            Object::Sampler(_) => "a sampler",
+            Object::BindGroupLayout(_) => "a bind group layout",
+            Object::PipelineLayout(_) => "a pipeline layout",
+            Object::BindGroup(_) => "a bind group",
+            Object::ComputePipeline(_) => "a compute pipeline",
+            Object::RenderPipeline(_) => "a render pipeline",
+            Object::CommandBuffer(_) => "a command buffer",
+            Object::QuerySet(_) => "a query set",
+            Object::RenderBundle(_) => "a render bundle",
         }
     }
 }
@@ -235,12 +285,20 @@ impl GpuService {
                     _ => wgpu::ErrorFilter::Internal,
                 };
                 let guard = device.device.push_error_scope(filter);
-                device.scopes.push(guard);
+                device.scopes.push(Scope {
+                    filter: u8::from(!matches!(filter, wgpu::ErrorFilter::Validation)),
+                    guard,
+                    found: None,
+                });
             }
             Request::PopErrorScope { call, device } => {
                 let device = self.client(client).device(device)?;
+                // `wgpu`'s error before the client's: which came first is
+                // not known.
                 let result = match device.scopes.pop() {
-                    Some(guard) => Ok(pollster::block_on(guard.pop()).map(error_of)),
+                    Some(scope) => Ok(pollster::block_on(scope.guard.pop())
+                        .map(error_of)
+                        .or(scope.found)),
                     None => Err("No error scopes to pop".to_owned()),
                 };
                 replies.push(Reply::ErrorScope { call, result });
@@ -325,12 +383,107 @@ impl GpuService {
                 let _ = device.device.poll(wgpu::PollType::wait_indefinitely());
                 replies.push(Reply::WorkDone { call });
             }
+            Request::CreateShaderModule { device, id, code } => {
+                self.create_shader_module(client, device, id, &code)?;
+            }
+            Request::CompilationInfo { call, module } => {
+                self.compilation_info(client, call, module, replies)?;
+            }
+            Request::CreateTexture { device, id, desc } => {
+                self.create_texture(client, device, id, &desc)?;
+            }
+            Request::CreateView { texture, id, desc } => {
+                self.create_view(client, texture, id, &desc)?;
+            }
+            Request::DestroyTexture { id } => self.client(client).texture(id)?.destroy(),
+            Request::CreateSampler { device, id, desc } => {
+                self.create_sampler(client, device, id, &desc)?;
+            }
+            Request::CreateBindGroupLayout { device, id, desc } => {
+                self.create_bind_group_layout(client, device, id, &desc)?;
+            }
+            Request::CreatePipelineLayout {
+                device,
+                id,
+                layouts,
+            } => self.create_pipeline_layout(client, device, id, &layouts)?,
+            Request::CreateBindGroup { device, id, desc } => {
+                self.create_bind_group(client, device, id, &desc)?;
+            }
+            Request::CreateComputePipeline {
+                device,
+                id,
+                desc,
+                call,
+            } => self.create_compute_pipeline(client, device, id, &desc, call, replies)?,
+            Request::CreateRenderPipeline {
+                device,
+                id,
+                desc,
+                call,
+            } => self.create_render_pipeline(client, device, id, &desc, call, replies)?,
+            Request::GetBindGroupLayout {
+                pipeline,
+                index,
+                id,
+            } => self.get_bind_group_layout(client, pipeline, index, id)?,
+            Request::Finish {
+                device,
+                id,
+                commands,
+            } => self.finish(client, device, id, &commands)?,
+            Request::Submit { device, buffers } => self.submit(client, device, &buffers)?,
+            Request::WriteTexture {
+                device,
+                desc,
+                bytes,
+            } => self.write_texture(client, device, &desc, &bytes.0)?,
+            Request::CreateQuerySet {
+                device,
+                id,
+                kind,
+                count,
+            } => self.create_query_set(client, device, id, kind, count)?,
+            Request::DestroyQuerySet { id } => self.client(client).query_set(id)?.destroy(),
+            Request::CreateRenderBundle {
+                device,
+                id,
+                commands,
+                ..
+            } => {
+                self.client(client).device(device)?;
+                self.create_render_bundle(client, id, &commands)?;
+            }
+            Request::Invalid { device, message } => self.invalid(client, device, message)?,
         }
         Ok(())
     }
 
     fn client(&mut self, client: u32) -> &mut Client {
         self.clients.entry(client).or_default()
+    }
+
+    /// A validation error on `device`: caught by its innermost validation
+    /// scope, else told as uncaptured.
+    pub(super) fn invalid(
+        &mut self,
+        client: u32,
+        device: u32,
+        message: String,
+    ) -> Result<(), String> {
+        let error = GpuError { kind: 0, message };
+        let made = self.client(client).device(device)?;
+        match made.scopes.iter_mut().rev().find(|scope| scope.filter == 0) {
+            Some(scope) => {
+                scope.found.get_or_insert(error);
+            }
+            None => self
+                .events
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push((client, Reply::Uncaptured { device, error })),
+        }
+        Ok(())
     }
 
     /// An adapter as a page asks: the machine's, of the power asked for,
@@ -468,7 +621,18 @@ impl GpuService {
         replies: &mut Vec<Reply>,
     ) -> Result<(), String> {
         let made = self.client(client).buffer(buffer)?;
-        let end = offset.checked_add(size).ok_or("a range past 2^64")?;
+        // `wgpu` panics at a range past the buffer: answered as WebGPU
+        // rejects it.
+        let Some(end) = offset
+            .checked_add(size)
+            .filter(|end| *end <= made.buffer.size())
+        else {
+            replies.push(Reply::Mapped {
+                call,
+                error: Some("the range is past the buffer's end".to_owned()),
+            });
+            return Ok(());
+        };
         let mode = match mode {
             1 => wgpu::MapMode::Read,
             2 => wgpu::MapMode::Write,
