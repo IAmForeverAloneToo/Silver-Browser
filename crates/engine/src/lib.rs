@@ -107,6 +107,7 @@ mod downloads_tests;
 mod editing;
 mod focus;
 mod frames;
+pub mod gpu;
 pub mod idb;
 mod image_store;
 mod inspect;
@@ -388,6 +389,9 @@ pub struct Engine {
     /// Whether a document's text is scanned ahead of its parser for
     /// what to preload (M38): on but in benches that compare.
     preload_scanner: bool,
+    /// Its way to the GPU (M41, D38): a renderer's client through the
+    /// browser, else one of a service in this process when first asked.
+    gpu: Option<Arc<gpu::GpuClient>>,
     /// What a document's realm may use, the defaults but in tests.
     script_limits: js::Limits,
     /// What the user should be told of a navigation that showed no page:
@@ -1297,6 +1301,7 @@ impl Engine {
             compat_user_agent: false,
             scripting: false,
             preload_scanner: true,
+            gpu: None,
             script_limits: js::Limits::default(),
             notice: None,
             next_page: 1,
@@ -4242,6 +4247,22 @@ impl Engine {
     /// is run for them (`--autoplay-policy=no-user-gesture-required`).
     pub fn set_autoplay(&mut self, on: bool) {
         frames::lock(&self.frame.tree).set_autoplay(on);
+    }
+
+    /// Its documents reach the GPU through `client` (M41): a renderer's,
+    /// whose requests the browser relays to the GPU process.
+    pub fn set_gpu(&mut self, client: Arc<gpu::GpuClient>) {
+        self.gpu = Some(client);
+    }
+
+    /// Its client of the GPU service: the one given, else one of a
+    /// service in this process, started now; `None` without the `gpu`
+    /// feature.
+    pub fn gpu(&mut self) -> Option<Arc<gpu::GpuClient>> {
+        if self.gpu.is_none() {
+            self.gpu = gpu::local_client();
+        }
+        self.gpu.clone()
     }
 
     pub fn set_scripting(&mut self, on: bool) {

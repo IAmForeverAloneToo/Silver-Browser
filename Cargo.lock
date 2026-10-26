@@ -712,11 +712,13 @@ dependencies = [
  "net",
  "paint",
  "png",
+ "pollster",
  "profile",
  "render",
  "style",
  "svg",
  "text",
+ "wgpu",
 ]
 
 [[package]]

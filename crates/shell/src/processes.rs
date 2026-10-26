@@ -72,6 +72,47 @@ pub(crate) fn renderer() -> i32 {
     }
 }
 
+/// Runs this process as the GPU process (M41, D38), its channel the
+/// process's standard input and output; after `--gpu`, `--crash` and
+/// three handles' values set it up to report its crash as a renderer's
+/// do. A panic that ends it is reported, its exit code 101's.
+pub(crate) fn gpu() -> i32 {
+    let arguments: Vec<OsString> = std::env::args_os().skip(2).collect();
+    if arguments.first().is_some_and(|first| first == "--crash") {
+        let handles: Vec<usize> = arguments
+            .iter()
+            .skip(1)
+            .take(3)
+            .filter_map(|value| value.to_str()?.parse().ok())
+            .collect();
+        if let Ok(handles) = <[usize; 3]>::try_from(handles) {
+            crate::platform::report_crashes(handles);
+        }
+    }
+    #[cfg(feature = "gpu")]
+    {
+        let ran = std::panic::catch_unwind(|| {
+            engine::gpu::process::run(std::io::stdin(), std::io::stdout())
+        });
+        match ran {
+            Ok(Ok(())) => 0,
+            Ok(Err(why)) => {
+                eprintln!("{why}");
+                1
+            }
+            Err(_) => {
+                crate::platform::crashed_by_panic();
+                101
+            }
+        }
+    }
+    #[cfg(not(feature = "gpu"))]
+    {
+        eprintln!("this build has no GPU service");
+        1
+    }
+}
+
 /// How long the check waits for what it waits for.
 const WAIT: Duration = Duration::from_secs(20);
 
@@ -232,6 +273,7 @@ pub(crate) fn check(what: Option<&str>) -> i32 {
         Some("kill") => check_kill(),
         Some("cap") => check_cap(std::env::args().nth(3)),
         Some("memory") => check_memory(std::env::args().nth(3), std::env::args().skip(4).collect()),
+        Some("gpu") => check_gpu(),
         _ => check_all(),
     };
     match checked {
@@ -241,6 +283,62 @@ pub(crate) fn check(what: Option<&str>) -> i32 {
             1
         }
     }
+}
+
+/// Starts the GPU process as the browser does (M41, D38), through the
+/// browser's relay, asks it for an adapter as a renderer would, and says
+/// what it answered: the adapter's vendor and whether it is the
+/// fallback, or that there is none.
+fn check_gpu() -> Result<(), String> {
+    use engine::gpu::wire::{self, Reply, Request};
+    use engine::ipc::{Bytes, Sender, ToBrowser, ToRenderer};
+    use engine::service::{GpuRelay, Serve};
+
+    let launcher = ProcessLauncher::new().map_err(|error| format!("no executable: {error}"))?;
+    let relay = GpuRelay::new(Arc::new(launcher), false);
+    let (writer, reader) = engine::ipc::pipe();
+    let renderer: Sender<ToRenderer> = Sender::new(writer);
+    let batch = wire::requests(&[Request::RequestAdapter {
+        call: 1,
+        id: 1,
+        power: 0,
+        fallback: false,
+    }]);
+    relay
+        .serve(
+            1,
+            ToBrowser::Gpu {
+                bytes: Bytes(batch),
+            },
+            &renderer,
+        )
+        .map_err(|why| format!("refused: {why}"))?;
+    println!(
+        "gpu process: {}",
+        if relay.running() {
+            "running"
+        } else {
+            "not running"
+        }
+    );
+    let mut heard = std::io::BufReader::new(reader);
+    let Ok(Some(ToRenderer::Gpu { bytes })) = engine::ipc::read_message::<ToRenderer>(&mut heard)
+    else {
+        return Err("no reply".to_owned());
+    };
+    let replies = wire::read_replies(&bytes.0).map_err(|error| format!("{error}"))?;
+    match replies.first() {
+        Some(Reply::Adapter {
+            adapter: Some(info),
+            ..
+        }) => println!(
+            "adapter: vendor {:?}, fallback {}",
+            info.vendor, info.fallback
+        ),
+        Some(Reply::Adapter { adapter: None, .. }) => println!("adapter: none"),
+        other => return Err(format!("not an adapter: {other:?}")),
+    }
+    Ok(())
 }
 
 fn check_all() -> Result<(), String> {

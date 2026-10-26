@@ -14,6 +14,9 @@ mod compromised_tests;
 #[cfg(test)]
 mod context_tests;
 mod frames;
+mod gpu;
+#[cfg(test)]
+mod gpu_tests;
 mod handover;
 mod network;
 #[cfg(test)]
@@ -39,6 +42,7 @@ mod workers;
 mod workers_tests;
 
 pub use audio::AudioService;
+pub use gpu::{GpuRelay, MAX_GPU_RESTARTS, RESTART_WINDOW};
 pub use handover::{HANDOVER_TIMEOUT, HandoverNotice, Handovers, MAX_HANDOVER_BUFFER};
 pub use network::{FrameGrant, Grant, Grants, Lock, MAX_RENDERER_FETCHES, NetworkService};
 pub use process::{

@@ -24,10 +24,16 @@ pub const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 /// limit it (M34.3, D2): past it, its allocations fail.
 pub const MAX_RENDERER_MEMORY: u64 = 4 << 30;
 
-/// What starts renderers.
+/// What starts renderers, and the GPU process (M41, D38).
 pub trait Launcher: Send + Sync {
     /// Starts renderer number `number`.
     fn launch(&self, number: u32) -> io::Result<Launched>;
+
+    /// Starts the GPU process; its channel is the browser's as a
+    /// renderer's is. Unsupported where the launcher has none.
+    fn launch_gpu(&self) -> io::Result<Launched> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
 }
 
 /// A renderer started: its streams and its process.
@@ -461,6 +467,26 @@ impl Launcher for ThreadLauncher {
             .name(format!("renderer-{number}"))
             .stack_size(32 << 20)
             .spawn(move || crate::renderer::run_with(renderer_in, renderer_out, fonts))?;
+        Ok(Launched {
+            from_renderer: Box::new(browser_in),
+            to_renderer: Box::new(browser_out),
+            log: None,
+            process: Box::new(ThreadRenderer {
+                thread: Some(thread),
+                code: None,
+                breakers,
+            }),
+        })
+    }
+
+    /// The GPU process as a thread, over pipes in memory (M41).
+    #[cfg(feature = "gpu")]
+    fn launch_gpu(&self) -> io::Result<Launched> {
+        let ((browser_in, browser_out), (gpu_in, gpu_out)) = ipc::duplex();
+        let breakers = [browser_out.breaker(), gpu_out.breaker()];
+        let thread = thread::Builder::new()
+            .name("gpu-process".to_owned())
+            .spawn(move || crate::gpu::process::run(gpu_in, gpu_out))?;
         Ok(Launched {
             from_renderer: Box::new(browser_in),
             to_renderer: Box::new(browser_out),

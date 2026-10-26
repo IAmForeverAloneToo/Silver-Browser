@@ -6,9 +6,10 @@ license.workspace = true
 
 [features]
 # The GPU backend (M19.3): `Engine::new_on(Backend::Gpu)` draws on it
-# where the machine has an adapter. Off, nothing of wgpu is built.
+# where the machine has an adapter; and the GPU service (M41, D38),
+# which WebGL and WebGPU reach. Off, nothing of wgpu is built.
 default = ["gpu"]
-gpu = ["render/gpu"]
+gpu = ["render/gpu", "dep:wgpu", "dep:pollster"]
 
 [dependencies]
 js.workspace = true
@@ -29,6 +30,9 @@ render.workspace = true
 style.workspace = true
 svg.workspace = true
 text.workspace = true
+# The GPU service (M41, D38).
+wgpu = { workspace = true, optional = true }
+pollster = { workspace = true, optional = true }
 
 [[example]]
 # The web-platform-tests pull (M17); its rule's tests run with the

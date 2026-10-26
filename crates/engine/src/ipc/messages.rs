@@ -149,6 +149,9 @@ wire_enum! {
         /// The frames of the renderer's sound the output played so far
         /// (M40).
         36 => AudioPlayed { frames: u64 },
+        /// A batch of the GPU service's replies to the renderer, its
+        /// client (M41, D38), as the GPU process sent them.
+        37 => Gpu { bytes: Bytes },
     }
 }
 
@@ -324,6 +327,10 @@ wire_enum! {
         /// `MAX_AUDIO_BLOCK_FRAMES` frames; an empty one asks what was
         /// played.
         31 => Audio { samples: Bytes },
+        /// A batch of the renderer's requests of the GPU service (M41,
+        /// D38), which the browser relays, stamped with the renderer's
+        /// number, without reading them.
+        32 => Gpu { bytes: Bytes },
     }
 }
 

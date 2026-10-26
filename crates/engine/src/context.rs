@@ -47,6 +47,9 @@ struct Shared {
     /// The browser's audio output (M40): the renderers' sound goes to
     /// it.
     audio_output: Mutex<Arc<dyn crate::AudioOutput>>,
+    /// The relay to the GPU process (M41, D38), made with the first
+    /// tab's launcher: every tab's renderers share one GPU process.
+    gpu: std::sync::OnceLock<Arc<crate::service::GpuRelay>>,
 }
 
 impl Default for Context {
@@ -101,6 +104,7 @@ impl Context {
                 renderers: Arc::new(AtomicU32::new(1)),
                 worker_renderers: crate::service::Claimed::default(),
                 audio_output: Mutex::new(Arc::new(crate::audio_output::ClockOutput)),
+                gpu: std::sync::OnceLock::new(),
             }),
         }
     }
@@ -246,6 +250,18 @@ impl Context {
     /// A new tab's number.
     pub(crate) fn new_tab(&self) -> u64 {
         self.shared.tabs.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// The relay to the GPU process, made with `launcher` if it is the
+    /// first asked for (M41).
+    pub(crate) fn gpu_relay(
+        &self,
+        launcher: &Arc<dyn crate::service::Launcher>,
+    ) -> Arc<crate::service::GpuRelay> {
+        self.shared
+            .gpu
+            .get_or_init(|| crate::service::GpuRelay::new(launcher.clone(), false))
+            .clone()
     }
 
     /// A new renderer's number, never one another tab's renderer had.

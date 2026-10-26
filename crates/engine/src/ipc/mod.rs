@@ -18,8 +18,10 @@ mod view_wire;
 
 pub use channel::{Calls, Closed, ReadError, Sender, frame, read_message, spawn_reader};
 pub use codec::{Bytes, Decoder, Encoder, Malformed, Wire, decode_all, encode};
+// The GPU process's protocols are made the same way (M41).
 #[cfg(test)]
-pub(crate) use codec::{wire_enum, wire_struct, wire_unit_enum};
+pub(crate) use codec::wire_unit_enum;
+pub(crate) use codec::{wire_enum, wire_struct};
 pub use messages::{Ancestor, Answer, Hole, StorageOp, ToBrowser, ToRenderer, WireTask};
 pub use pipe::{PipeBreaker, PipeReader, PipeWriter, duplex, pipe};
 pub use view_wire::{Input, Settings, ViewState};

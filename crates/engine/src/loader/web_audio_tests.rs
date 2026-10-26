@@ -522,9 +522,12 @@ if (rate) {
             [format!("state suspended {rate}"), "then running".to_owned()]
         );
         capture.samples.lock().unwrap().clear();
-        // A fifth of a second of sound, at the output's rate.
-        wait_for(|| capture.samples.lock().unwrap().len() >= 9600 * 2);
-        let samples = capture.samples.lock().unwrap()[..9600 * 2].to_vec();
+        // A fifth of a second of sound, at the output's rate, with no gap
+        // in it: a busy machine's mixer may run dry a moment (the gate's
+        // run counted 189 crossings for a gap's).
+        wait_for(|| capture.samples.lock().unwrap().len() >= 48000 * 2);
+        let captured = capture.samples.lock().unwrap().clone();
+        let samples = unbroken(&captured, 0.1).to_vec();
         // 440 Hz: 176 crossings in a fifth of a second.
         let n = crossings(&samples);
         assert!((173..=179).contains(&n), "{rate}: {n} crossings");

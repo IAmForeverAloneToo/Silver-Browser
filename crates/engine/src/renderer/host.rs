@@ -157,6 +157,7 @@ impl Host {
     fn create(&mut self, view: u32, frame: u32, settings: &Settings) -> Result<(), String> {
         let mut engine = Engine::with_fonts(self.fonts()?);
         engine.set_link(self.link.clone(), frame);
+        engine.set_gpu(self.link.gpu().clone());
         self.add(view, engine, settings)
     }
 
@@ -173,13 +174,14 @@ impl Host {
             .into_iter()
             .map(|ancestor| (ancestor.key, ancestor.origin, ancestor.url))
             .collect();
-        let engine = Engine::frame_root(
+        let mut engine = Engine::frame_root(
             self.fonts()?,
             self.link.clone(),
             key,
             &ancestors,
             crate::sandbox::Sandbox::from_bits(sandbox),
         );
+        engine.set_gpu(self.link.gpu().clone());
         self.add(view, engine, settings)
     }
 

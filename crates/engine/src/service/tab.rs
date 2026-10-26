@@ -382,6 +382,7 @@ impl RemoteTab {
             StorageService::new(storage.clone(), grants.clone(), tab),
             FramesService::new(registry.clone(), grants.clone(), frame_sender, wake),
             AudioService::new(context.audio_output()),
+            context.gpu_relay(&launcher),
         ]));
         RemoteTab {
             fonts,
@@ -633,6 +634,8 @@ impl RemoteTab {
     /// handed over to a new view.
     fn left(&mut self, number: u32) {
         self.grants.forget(number);
+        // Its objects in the GPU process go (M41).
+        self.context.gpu_relay(&self.launcher).renderer_gone(number);
         for segment in &mut self.segments {
             if segment.renderer == Some(number) {
                 segment.renderer = None;
@@ -1807,8 +1810,10 @@ impl RemoteTab {
 
 impl Drop for RemoteTab {
     fn drop(&mut self) {
-        for slot in self.renderers.values() {
+        let gpu = self.context.gpu_relay(&self.launcher);
+        for (number, slot) in &self.renderers {
             slot.renderer.shutdown();
+            gpu.renderer_gone(*number);
         }
         let mut storage = self.storage.lock().unwrap_or_else(PoisonError::into_inner);
         storage.forget(self.listener);

@@ -14,6 +14,7 @@ use net::cookies::Context;
 use net::csp::Violation;
 use net::{Delivery, NetworkError, Request, Response, Url};
 
+use crate::gpu::GpuClient;
 use crate::ipc::{Answer, Bytes, Calls, Closed, Sender, StorageOp, ToBrowser, ToRenderer};
 use crate::loader::{Cookies, Fetcher};
 use crate::storage::{AreaKey, Areas, OverQuota};
@@ -38,17 +39,31 @@ pub(crate) struct Link {
     /// What the browser last said the output played of the renderer's
     /// sound (M40).
     played: AtomicU64,
+    /// The renderer's client of the GPU service, through the browser
+    /// (M41, D38).
+    gpu: Arc<GpuClient>,
 }
 
 impl Link {
     pub(crate) fn new(sender: Sender<ToBrowser>) -> Arc<Link> {
+        let to_gpu = sender.clone();
         Arc::new(Link {
             sender,
             calls: Calls::new(),
             fetches: Mutex::new(Some(HashMap::new())),
             next_fetch: AtomicU64::new(1),
             played: AtomicU64::new(0),
+            gpu: Arc::new(GpuClient::new(Box::new(move |bytes| {
+                let _ = to_gpu.send(&ToBrowser::Gpu {
+                    bytes: Bytes(bytes),
+                });
+            }))),
         })
+    }
+
+    /// The renderer's client of the GPU service.
+    pub(crate) fn gpu(&self) -> &Arc<GpuClient> {
+        &self.gpu
     }
 
     fn fetches(&self) -> MutexGuard<'_, Option<HashMap<u64, mpsc::Sender<Part>>>> {
@@ -123,6 +138,10 @@ impl Link {
             }
             ToRenderer::AudioPlayed { frames } => {
                 self.played.fetch_max(frames, Ordering::Relaxed);
+                return Ok(None);
+            }
+            ToRenderer::Gpu { bytes } => {
+                self.gpu.deliver(&bytes.0)?;
                 return Ok(None);
             }
             ToRenderer::FetchHead { id, response } => (id, Part::Head(response)),

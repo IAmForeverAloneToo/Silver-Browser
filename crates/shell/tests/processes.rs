@@ -268,3 +268,21 @@ fn the_devtools_panel_is_shown_by_a_renderer_process_of_its_own() {
     assert!(said.contains(r#""method":"page.info""#), "{said}");
     assert!(said.contains(r#""title":"Silver Browser""#), "{said}");
 }
+
+#[test]
+fn the_gpu_process_is_started_through_the_relay_and_answers_for_an_adapter() {
+    // M41, D38: the same executable with `--gpu`, sandboxed as a renderer
+    // is on Windows; an adapter or none, as the machine has (CI's Windows
+    // runners have none the GPU service takes).
+    let out = Command::new(BROWSER)
+        .args(["--check-processes", "gpu"])
+        .output()
+        .expect("the check ran");
+    let said = String::from_utf8_lossy(&out.stdout);
+    let complained = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{said}{complained}");
+    assert!(
+        said.starts_with("gpu process: running\nadapter: "),
+        "{said}"
+    );
+}

@@ -361,3 +361,28 @@ pub(crate) fn audio_turn() -> std::sync::MutexGuard<'static, ()> {
     static TURN: Mutex<()> = Mutex::new(());
     TURN.lock().unwrap_or_else(PoisonError::into_inner)
 }
+
+/// A fifth of a second of `samples`' sound (interleaved stereo at 48 kHz)
+/// with no gap in it, from where its left channel is louder than `loud`
+/// (a busy machine's mixer may run dry a moment): where its left channel
+/// never stays at silence a millisecond (M40).
+pub(crate) fn unbroken(samples: &[f32], loud: f32) -> &[f32] {
+    let frames = samples.len() / 2;
+    let window = 9600;
+    let mut at = (0..frames)
+        .find(|&i| samples[i * 2].abs() > loud)
+        .expect("sound");
+    while at + window <= frames {
+        let left: Vec<f32> = samples[at * 2..(at + window) * 2]
+            .iter()
+            .step_by(2)
+            .copied()
+            .collect();
+        let gap = left.windows(48).position(|w| w.iter().all(|s| *s == 0.0));
+        match gap {
+            None => return &samples[at * 2..(at + window) * 2],
+            Some(g) => at += g + 48,
+        }
+    }
+    panic!("no fifth of a second without a gap");
+}

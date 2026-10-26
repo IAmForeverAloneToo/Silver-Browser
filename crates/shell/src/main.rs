@@ -33,8 +33,8 @@
 //!
 //! The same executable is each renderer (M34, docs/design/processes.md):
 //! `--renderer <number>` runs it as one, for the browser that started it,
-//! and `--check-processes` starts renderers as the browser does and says
-//! what became of them.
+//! `--gpu` as the GPU process (M41, D38), and `--check-processes` starts
+//! renderers as the browser does and says what became of them.
 
 // `unsafe` in the platform module alone (M33.5), which allows it.
 #![deny(unsafe_code)]
@@ -1111,6 +1111,7 @@ fn main() {
     // A renderer (M34) or the check of renderers: no window, no page.
     match std::env::args_os().nth(1) {
         Some(first) if first == "--renderer" => std::process::exit(processes::renderer()),
+        Some(first) if first == "--gpu" => std::process::exit(processes::gpu()),
         Some(first) if first == "--check-processes" => {
             let what = std::env::args_os().nth(2);
             std::process::exit(processes::check(what.as_deref().and_then(|w| w.to_str())))

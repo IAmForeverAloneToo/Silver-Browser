@@ -158,8 +158,36 @@ pub(crate) fn reduced_motion() -> Option<bool> {
     }
 }
 
+/// What a process of this executable is started as: a renderer, by its
+/// number, or the GPU process (M41, D38).
+#[derive(Clone, Copy)]
+pub(crate) enum Role {
+    Renderer(u32),
+    Gpu,
+}
+
+impl Role {
+    /// Its command line's arguments after the executable.
+    fn arguments(self) -> Vec<String> {
+        match self {
+            Role::Renderer(number) => vec!["--renderer".to_owned(), number.to_string()],
+            Role::Gpu => vec!["--gpu".to_owned()],
+        }
+    }
+
+    /// The memory its job lets it commit.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn memory(self) -> u64 {
+        match self {
+            Role::Renderer(_) => engine::service::MAX_RENDERER_MEMORY,
+            Role::Gpu => engine::gpu::MAX_GPU_MEMORY,
+        }
+    }
+}
+
 /// Starts renderers as processes of this executable, run with
-/// `--renderer <number>` (M34.2, docs/design/processes.md): their
+/// `--renderer <number>` (M34.2, docs/design/processes.md), and the GPU
+/// process, run with `--gpu` (M41, D38), sandboxed the same way: their
 /// standard input and output are the channel, their standard error the
 /// browser's log. On Windows each starts suspended, is put in a job
 /// object that kills it when the browser's hold on the job closes, and is
@@ -324,21 +352,30 @@ pub(crate) fn desktop_closed() -> bool {
     }
 }
 
-impl engine::service::Launcher for ProcessLauncher {
-    fn launch(&self, number: u32) -> std::io::Result<engine::service::Launched> {
+impl ProcessLauncher {
+    fn start(
+        &self,
+        role: Role,
+        arguments: &[OsString],
+    ) -> std::io::Result<engine::service::Launched> {
         #[cfg(windows)]
         {
-            launch::launch(
-                &self.executable,
-                number,
-                &self.arguments,
-                self.crashes.as_deref(),
-            )
+            launch::launch(&self.executable, role, arguments, self.crashes.as_deref())
         }
         #[cfg(not(windows))]
         {
-            portable::launch(&self.executable, number, &self.arguments)
+            portable::launch(&self.executable, role, arguments)
         }
+    }
+}
+
+impl engine::service::Launcher for ProcessLauncher {
+    fn launch(&self, number: u32) -> std::io::Result<engine::service::Launched> {
+        self.start(Role::Renderer(number), &self.arguments)
+    }
+
+    fn launch_gpu(&self) -> std::io::Result<engine::service::Launched> {
+        self.start(Role::Gpu, &[])
     }
 }
 
@@ -376,12 +413,11 @@ mod portable {
 
     pub(super) fn launch(
         executable: &Path,
-        number: u32,
+        role: super::Role,
         arguments: &[OsString],
     ) -> std::io::Result<Launched> {
         let mut child = Command::new(executable)
-            .arg("--renderer")
-            .arg(number.to_string())
+            .args(role.arguments())
             .args(arguments)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -768,7 +804,7 @@ mod launch {
     /// forbids the desktop's global state: the system's parameters, the
     /// display settings, exiting Windows, the global atoms, user objects'
     /// handles from outside the job, the clipboard and other desktops.
-    fn job() -> std::io::Result<OwnedHandle> {
+    fn job(memory: u64) -> std::io::Result<OwnedHandle> {
         // SAFETY: no attributes and no name: a new unnamed job with the
         // default security, its handle returned.
         let job = owned(unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) })
@@ -778,8 +814,7 @@ mod launch {
             | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
             | JOB_OBJECT_LIMIT_PROCESS_MEMORY;
         limits.BasicLimitInformation.ActiveProcessLimit = 1;
-        limits.ProcessMemoryLimit =
-            usize::try_from(engine::service::MAX_RENDERER_MEMORY).unwrap_or(usize::MAX);
+        limits.ProcessMemoryLimit = usize::try_from(memory).unwrap_or(usize::MAX);
         // SAFETY: `limits` is the whole extended limit structure the class
         // names, of the size given, alive for the call, which reads it.
         let set = unsafe {
@@ -1166,7 +1201,7 @@ mod launch {
 
     pub(super) fn launch(
         executable: &Path,
-        number: u32,
+        role: super::Role,
         arguments: &[OsString],
         crashes: Option<&Path>,
     ) -> std::io::Result<Launched> {
@@ -1182,9 +1217,13 @@ mod launch {
             Some(_) => Some(channel()?),
             None => None,
         };
-        let job = job()?;
+        let job = job(role.memory())?;
         let application = wide(executable.as_os_str());
-        let mut line = format!("\"{}\" --renderer {number}", executable.display());
+        let mut line = format!(
+            "\"{}\" {}",
+            executable.display(),
+            role.arguments().join(" ")
+        );
         if let Some(channel) = &channel {
             for end in [&channel.block, &channel.crashed, &channel.written] {
                 inheritable(end)?;
@@ -1270,7 +1309,10 @@ mod launch {
             let (process, dump) = (renderer.process.clone(), renderer.dump.clone());
             let (dir, id) = (dir.to_path_buf(), renderer.id);
             let watching = std::thread::Builder::new()
-                .name(format!("renderer {number}'s crash"))
+                .name(match role {
+                    super::Role::Renderer(number) => format!("renderer {number}'s crash"),
+                    super::Role::Gpu => "the GPU process's crash".to_owned(),
+                })
                 .spawn(move || watch(channel, &process, id, &dir, &dump));
             if let Err(error) = watching {
                 renderer.kill();
