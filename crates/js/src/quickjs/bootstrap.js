@@ -14310,11 +14310,18 @@
         throw new $TypeError(prefix("getContext", "OffscreenCanvas") + "The provided value '" +
           id + "' is not a valid enum value of type OffscreenRenderingContextId.");
       }
+      if (id === "webgpu") {
+        if (t.context !== null) {
+          return t.context instanceof GPUCanvasContext ? t.context : null;
+        }
+        t.context = gpuCanvasContext(this, -t.id);
+        return t.context;
+      }
       if (id !== "2d") {
         return null;
       }
       if (t.context !== null) {
-        return t.context;
+        return t.context instanceof GPUCanvasContext ? null : t.context;
       }
       const { alpha, willReadFrequently } = contextSettings(arguments[1], "OffscreenCanvas");
       native.canvas("context", 0, -t.id, alpha);
@@ -14554,11 +14561,20 @@
         need(arguments.length, 1, "getContext", "HTMLCanvasElement");
         const id = str(contextId);
         const existing = WeakMapGet(canvasContexts, this);
+        // A canvas has one context mode: a "2d" or a "webgpu" (M41).
+        if (id === "webgpu") {
+          if (existing !== undefined) {
+            return existing instanceof GPUCanvasContext ? existing : null;
+          }
+          const made = gpuCanvasContext(this, handle);
+          if (made !== null) WeakMapSet(canvasContexts, this, made);
+          return made;
+        }
         if (id !== "2d") {
           return null;
         }
         if (existing !== undefined) {
-          return existing;
+          return existing instanceof GPUCanvasContext ? null : existing;
         }
         const { alpha, willReadFrequently } = contextSettings(arguments[1], "HTMLCanvasElement");
         native.canvas("context", 0, handle, alpha);
@@ -18747,6 +18763,8 @@
       }
       yield;
     }
+    // WebGPU's canvases drawn into are presented (M41).
+    gpuPresent();
     return false;
   }
 
@@ -22857,6 +22875,54 @@
       if (ids.length !== 0) gpuCall({ op: "submit", device: this.#device, buffers: ids }, null);
     }
 
+    copyExternalImageToTexture(source, destination, copySize) {
+      need(arguments.length, 3, "copyExternalImageToTexture", "GPUQueue");
+      const words = prefix("copyExternalImageToTexture", "GPUQueue");
+      const src = gpuReader(source, words, "GPUCopyExternalImageSourceInfo");
+      const flipY = gpuBool(src, "flipY", false);
+      let origin = [0, 0];
+      if (src.d.origin !== undefined) {
+        const o = gpuOrigin(src.d.origin, gpuWords(src, "origin"));
+        origin = [o[0], o[1]];
+      }
+      const image = gpuImageSource(gpuNeed(src, "source"), words);
+      const dest = gpuTexelTexture(destination, words);
+      const texture = gpuTexelRecord;
+      const premultiplied = !!destination.premultipliedAlpha;
+      const extent = gpuExtent(copySize, words);
+      if (extent[2] !== 1) {
+        gpuInvalid(this.#device, "copySize.depthOrArrayLayers must be 1.");
+        return;
+      }
+      const format = texture.desc.format;
+      const bgra = format === "bgra8unorm" || format === "bgra8unorm-srgb";
+      if (!bgra && format !== "rgba8unorm" && format !== "rgba8unorm-srgb") {
+        gpuInvalid(this.#device, "Copies of external images into " + format + " are not supported.");
+        return;
+      }
+      if (extent[0] === 0 || extent[1] === 0) return;
+      // The source's pixels: its size checked against the copy, then the
+      // rectangle copied, flipped as asked.
+      const whole = gpuBitmapOf(image, null, false);
+      let made = null;
+      try {
+        if (!native.canvas("bitmapClean", 4, whole[0])) {
+          throw new $DOMException(words + "The external image is cross-origin.", "SecurityError");
+        }
+        if (origin[0] + extent[0] > whole[1] || origin[1] + extent[1] > whole[2]) {
+          throw new $DOMException(words + "The copy rectangle is outside the source image.",
+            "OperationError");
+        }
+        made = gpuBitmapOf([4, whole[0], null, 0], [origin[0], origin[1], extent[0], extent[1]], flipY);
+        const bytes = new $Uint8Array(native.canvas("bitmapPixels", 4, made[0], bgra, premultiplied));
+        gpuWriteTexture(this.#device, dest, bytes, { bytesPerRow: extent[0] * 4, rowsPerImage: extent[1] },
+          extent, 1);
+      } finally {
+        native.canvas("closeBitmap", 4, whole[0]);
+        if (made !== null) native.canvas("closeBitmap", 4, made[0]);
+      }
+    }
+
     writeTexture(destination, data, dataLayout, size) {
       need(arguments.length, 4, "writeTexture", "GPUQueue");
       const words = prefix("writeTexture", "GPUQueue");
@@ -24283,6 +24349,200 @@
     }
   }
   expose(GPUBuffer, "GPUBuffer");
+
+  const GpuArrayIndexOf = uncurry(Array.prototype.indexOf);
+  // ---- The canvas (M41 step 4) ----
+  // A configured context has a texture of its canvas's size, the same
+  // until its frame presents it: after the frame's callbacks, it is read
+  // back to the canvas's bitmap (the GPU process sends its rows) and
+  // destroyed.
+  const GPU_CANVAS_FORMATS = ["rgba8unorm", "bgra8unorm", "rgba16float"];
+  let gpuDrawn = [];
+  let gpuPresentContext;
+
+  // A canvas's size, an element's or an OffscreenCanvas's.
+  let gpuCanvasGetters = null;
+  function gpuCanvasSize(canvas) {
+    const t = WeakMapGet(canvasTargets, canvas);
+    if (t !== undefined) return [t.width, t.height];
+    if (gpuCanvasGetters === null) {
+      const proto = MapGet(interfaces, "canvas").prototype;
+      gpuCanvasGetters = [getOwnPropertyDescriptor(proto, "width").get, getOwnPropertyDescriptor(proto, "height").get];
+    }
+    return [ReflectApply(gpuCanvasGetters[0], canvas, []), ReflectApply(gpuCanvasGetters[1], canvas, [])];
+  }
+
+  class GPUCanvasContext {
+    #canvas; #handle; #config = null; #texture = null;
+    constructor(key, canvas, handle) {
+      if (key !== KEY) throw illegalConstructor("GPUCanvasContext");
+      this.#canvas = canvas;
+      this.#handle = handle;
+    }
+    static {
+      gpuPresentContext = (context) => {
+        const texture = context.#texture;
+        if (texture === null) return;
+        context.#texture = null;
+        const t = WeakMapGet(gpuThings, texture);
+        const c = context.#config;
+        const code = c === null ? -1 : GpuArrayIndexOf(GPU_CANVAS_FORMATS, c.format);
+        if (code >= 0 && t.desc.size[0] > 0 && t.desc.size[1] > 0) {
+          gpuCall({
+            op: "present",
+            device: t.device,
+            texture: t.id,
+            canvas: context.#handle,
+            width: t.desc.size[0],
+            height: t.desc.size[1],
+            format: code,
+            premultiplied: c.alphaMode === "premultiplied",
+            opaque: c.alphaMode === "opaque",
+          }, null);
+        }
+        gpuCall({ op: "destroyTexture", texture: t.id }, null);
+      };
+    }
+    get canvas() { return this.#canvas; }
+
+    configure(configuration) {
+      need(arguments.length, 1, "configure", "GPUCanvasContext");
+      const r = gpuReader(configuration, prefix("configure", "GPUCanvasContext"), "GPUCanvasConfiguration");
+      const alphaMode = gpuEnum(r, "alphaMode", ["opaque", "premultiplied"], "GPUCanvasAlphaMode", "opaque");
+      const colorSpace = gpuEnum(r, "colorSpace", ["srgb", "display-p3"], "PredefinedColorSpace", "srgb");
+      const device = gpuNeed(r, "device");
+      if (!(device instanceof GPUDevice)) {
+        throw new $TypeError(gpuWords(r, "device") + "Failed to convert value to 'GPUDevice'.");
+      }
+      const format = gpuEnum(r, "format", GPU_FORMATS, "GPUTextureFormat");
+      const tone = gpuSub(r, "toneMapping", "GPUCanvasToneMapping");
+      const mode = tone === null ? "standard"
+        : gpuEnum(tone, "mode", ["standard", "extended"], "GPUCanvasToneMappingMode", "standard");
+      const usage = gpuU32(r, "usage", 16);
+      const named = gpuList(r, "viewFormats", false);
+      const viewFormats = [];
+      for (let i = 0; i < named.length; i++) {
+        ArrayPush(viewFormats, gpuEnumValue(named[i], GPU_FORMATS, gpuWords(r, "viewFormats"), "GPUTextureFormat"));
+      }
+      this.#texture = null;
+      if (!listed(GPU_CANVAS_FORMATS, format)) {
+        gpuInvalid(gpuDeviceId(device), "The canvas's format " + format + " is not one of " +
+          "rgba8unorm, bgra8unorm and rgba16float.");
+      }
+      this.#config = { device, format, usage, viewFormats, colorSpace, toneMapping: { mode }, alphaMode };
+    }
+
+    unconfigure() {
+      this.#config = null;
+      this.#texture = null;
+    }
+
+    getConfiguration() {
+      const c = this.#config;
+      if (c === null) return null;
+      return {
+        device: c.device,
+        format: c.format,
+        usage: c.usage,
+        viewFormats: ArraySlice(c.viewFormats, 0),
+        colorSpace: c.colorSpace,
+        toneMapping: { mode: c.toneMapping.mode },
+        alphaMode: c.alphaMode,
+      };
+    }
+
+    getCurrentTexture() {
+      const c = this.#config;
+      if (c === null) {
+        throw domError("InvalidStateError", "context is not configured.", "getCurrentTexture",
+          "GPUCanvasContext");
+      }
+      if (this.#texture === null) {
+        const size = gpuCanvasSize(this.#canvas);
+        const device = gpuDeviceId(c.device);
+        const desc = {
+          dimension: "2d",
+          format: c.format,
+          mipLevelCount: 1,
+          sampleCount: 1,
+          size: [size[0], size[1], 1],
+          usage: c.usage,
+          viewFormats: c.viewFormats,
+        };
+        // Copied from to present it: COPY_SRC besides the page's usage.
+        const made = {
+          dimension: "2d",
+          format: c.format,
+          mipLevelCount: 1,
+          sampleCount: 1,
+          size: desc.size,
+          usage: c.usage | 1,
+          viewFormats: c.viewFormats,
+        };
+        const id = gpuCall({ op: "createTexture", device, desc: made }, null).result.id;
+        this.#texture = new GPUTexture(KEY, id, device, desc);
+        ArrayPush(gpuDrawn, this);
+        native.wantFrame();
+      }
+      return this.#texture;
+    }
+  }
+  expose(GPUCanvasContext, "GPUCanvasContext");
+
+  // The contexts drawn since the last frame, presented (its callbacks
+  // have run).
+  function gpuPresent() {
+    if (gpuDrawn.length === 0) return;
+    const drawn = gpuDrawn;
+    gpuDrawn = [];
+    for (let i = 0; i < drawn.length; i++) gpuPresentContext(drawn[i]);
+  }
+
+  // A canvas's WebGPU context, made at its first asking; null on a
+  // context that is not secure, as `navigator.gpu` is not there.
+  function gpuCanvasContext(canvas, handle) {
+    if (WORKER || !native.secureContext()) return null;
+    return new GPUCanvasContext(KEY, canvas, handle);
+  }
+
+  // An image source of copyExternalImageToTexture, as the host's
+  // `imageBitmap` names it: [kind, which, base64 bytes or null, an
+  // ImageData's height].
+  function gpuImageSource(image, words) {
+    const t = image !== null && typeof image === "object" ? WeakMapGet(canvasTargets, image) : undefined;
+    const data = image !== null && typeof image === "object" ? WeakMapGet(imageDatas, image) : undefined;
+    if (t !== undefined && t.kind === 1) return [3, t.id, null, 0];
+    if (t !== undefined && t.kind === 5) {
+      if (t.closed) {
+        throw new $DOMException(words + "The image source is not usable.", "InvalidStateError");
+      }
+      return [4, t.id, null, 0];
+    }
+    if (data !== undefined) {
+      return [6, data.width, ToBase64(new $Uint8Array(TypedArrayBuffer(data.data),
+        TypedArrayOffset(data.data), TypedArrayLength(data.data))), data.height];
+    }
+    if (isNode(image) && kindOf(image) === 1) {
+      const tag = native.tag(handleOf(image));
+      if (tag === "img") return [1, handleOf(image), null, 0];
+      if (tag === "canvas") return [2, handleOf(image), null, 0];
+      if (tag === "video") return [5, handleOf(image), null, 0];
+    }
+    throw new $TypeError(words + "Failed to read the 'source' property from 'GPUCopyExternalImageSourceInfo': " +
+      "The provided value is not of type '(HTMLCanvasElement or HTMLImageElement or HTMLVideoElement or " +
+      "ImageBitmap or ImageData or OffscreenCanvas or VideoFrame)'.");
+  }
+
+  // A bitmap of `source`, cropped to `crop` ([x, y, w, h]) or whole:
+  // the host's [number, width, height].
+  function gpuBitmapOf(source, crop, flipY) {
+    const numbers = [source[0], source[1], crop === null ? 0 : 1, crop === null ? 0 : crop[0],
+      crop === null ? 0 : crop[1], crop === null ? 0 : crop[2], crop === null ? 0 : crop[3], -1, -1, 0,
+      flipY ? 1 : 0, source[3]];
+    const args = source[2] === null ? ["imageBitmap"] : ["imageBitmap", source[2]];
+    for (let i = 0; i < numbers.length; i++) ArrayPush(args, numbers[i]);
+    return ReflectApply(source[2] === null ? native.canvas : native.canvasData, undefined, args);
+  }
 
   // What the GPU process told: a promise's answer, or a device's news.
   function* gpuTask(text, bytes) {

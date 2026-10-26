@@ -85,6 +85,9 @@ pub(crate) enum WorkerMessage {
     /// `js::Task::Gpu`, a mapped range's bytes uncounted (bounded by the
     /// device's buffer size).
     Gpu(String, Vec<u8>),
+    /// A WebGPU canvas's frame (M41 step 4), for the canvas the handle
+    /// names (an `OffscreenCanvas`'s by the negative of its number).
+    GpuFrame(f64, super::canvas::GpuFrame),
 }
 
 impl WorkerMessage {
@@ -936,7 +939,8 @@ impl WorkerHost {
             WorkerMessage::Frame(_)
             | WorkerMessage::Audio(..)
             | WorkerMessage::Media(_)
-            | WorkerMessage::Gpu(..) => return,
+            | WorkerMessage::Gpu(..)
+            | WorkerMessage::GpuFrame(..) => return,
             WorkerMessage::Wake => {
                 for task in host.take_fetched() {
                     if host.closing || stop.load(Ordering::SeqCst) {

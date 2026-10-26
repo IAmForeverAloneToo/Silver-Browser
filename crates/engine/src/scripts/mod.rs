@@ -1284,6 +1284,19 @@ impl Scripts {
                     self.posted.push_back((now, js::Task::Gpu(text, bytes)));
                     continue;
                 }
+                // A WebGPU canvas's frame, its bitmap now (M41).
+                workers::WorkerMessage::GpuFrame(handle, frame) => {
+                    let owner = if handle < 0.0 {
+                        canvas::Owner::Offscreen((-handle) as u32)
+                    } else {
+                        match dom::NodeId::from_bits(handle as u64) {
+                            Some(node) => canvas::Owner::Element(node),
+                            None => continue,
+                        }
+                    };
+                    self.host.canvases.gpu_frame(owner, &frame);
+                    continue;
+                }
                 // What its media elements told it (M40).
                 workers::WorkerMessage::Media(text) => {
                     self.posted.push_back((now, js::Task::Media(text)));

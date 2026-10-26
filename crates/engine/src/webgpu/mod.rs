@@ -25,6 +25,9 @@ pub(crate) struct WebGpu {
     made: BTreeSet<u32>,
     /// Its devices, whose news it listens to.
     devices: BTreeSet<u32>,
+    /// Each canvas's buffer its frames are read back through (step 4),
+    /// by the canvas's handle, with its size.
+    readback: std::collections::BTreeMap<i64, (u32, u64)>,
 }
 
 /// An answer the bootstrap throws: a `DOMException` of `name`.

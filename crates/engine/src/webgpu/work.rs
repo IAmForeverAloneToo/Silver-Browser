@@ -11,7 +11,8 @@ use super::{WebGpu, done, number, rejection, settle, whole};
 use crate::gpu::GpuClient;
 use crate::gpu::wire::{Command, ComputeCommand, RenderCommand, Reply, Request};
 use crate::ipc::Bytes;
-use crate::scripts::workers::Inbox;
+use crate::scripts::canvas::GpuFrame;
+use crate::scripts::workers::{Inbox, WorkerMessage};
 
 fn optional(op: &Json, name: &str) -> Option<u64> {
     op.get(name).and_then(Json::as_f64).map(|n| n as u64)
@@ -385,6 +386,105 @@ impl WebGpu {
                     desc,
                     commands,
                 })
+            }
+            // A canvas's frame (step 4): its texture copied to the
+            // canvas's readback buffer, mapped, and the rows sent to the
+            // document's canvas as its bitmap.
+            "present" => {
+                let handle = op.get("canvas").and_then(Json::as_f64).unwrap_or(0.0);
+                let (texture, width, height) = (
+                    whole(op, "texture"),
+                    whole(op, "width"),
+                    whole(op, "height"),
+                );
+                let format = number(op, "format") as u8;
+                let texel = if format == 2 { 8 } else { 4 };
+                let stride = (u64::from(width) * texel).div_ceil(256) * 256;
+                let size = stride * u64::from(height);
+                if size == 0 {
+                    return Some(done(Json::Null));
+                }
+                let key = handle as i64;
+                let buffer = match self.readback.get(&key).copied() {
+                    Some((id, had)) if had == size => id,
+                    old => {
+                        if let Some((id, _)) = old {
+                            self.made.remove(&id);
+                            client.queue([Request::Drop { id }]);
+                        }
+                        let id = client.id();
+                        self.made.insert(id);
+                        // MAP_READ | COPY_DST.
+                        client.queue([Request::CreateBuffer {
+                            device,
+                            id,
+                            size,
+                            usage: 9,
+                            mapped: false,
+                        }]);
+                        self.readback.insert(key, (id, size));
+                        id
+                    }
+                };
+                let copy = Json::object([
+                    ("source", Json::object([("texture", Json::from(texture))])),
+                    (
+                        "destination",
+                        Json::object([
+                            ("buffer", Json::from(buffer)),
+                            ("bytesPerRow", Json::from(stride)),
+                        ]),
+                    ),
+                    (
+                        "size",
+                        Json::Array(vec![
+                            Json::from(width),
+                            Json::from(height),
+                            Json::from(1u32),
+                        ]),
+                    ),
+                ]);
+                let commands = client.id();
+                client.queue([
+                    Request::Finish {
+                        device,
+                        id: commands,
+                        commands: vec![Command::CopyTextureToBuffer { desc: copy.write() }],
+                    },
+                    Request::Submit {
+                        device,
+                        buffers: vec![commands],
+                    },
+                    Request::Drop { id: commands },
+                ]);
+                let inbox = inbox.clone();
+                let premultiplied = op.get("premultiplied").and_then(Json::as_bool) == Some(true);
+                let opaque = op.get("opaque").and_then(Json::as_bool) == Some(true);
+                client.call(
+                    |call| Request::MapBuffer {
+                        call,
+                        buffer,
+                        mode: 1,
+                        offset: 0,
+                        size,
+                    },
+                    move |reply, bytes| {
+                        if let Reply::Mapped { error: None, .. } = reply {
+                            let frame = GpuFrame {
+                                width,
+                                height,
+                                stride: stride as u32,
+                                format,
+                                premultiplied,
+                                opaque,
+                                bytes,
+                            };
+                            let _ = inbox.send(WorkerMessage::GpuFrame(handle, frame));
+                        }
+                    },
+                );
+                client.queue([Request::Unmap { buffer }]);
+                done(Json::Null)
             }
             "invalid" => {
                 client.queue([Request::Invalid {

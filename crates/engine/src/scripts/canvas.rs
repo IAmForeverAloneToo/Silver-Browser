@@ -267,6 +267,88 @@ pub(crate) struct Canvases {
     committed: HashMap<u32, (u64, (u32, u32))>,
 }
 
+/// A frame of a WebGPU canvas (M41 step 4): its texture read back,
+/// `width` by `height` texels in rows of `stride` bytes, of `format` (0
+/// rgba8unorm, 1 bgra8unorm, 2 rgba16float), premultiplied or opaque as
+/// its alpha mode says.
+pub(crate) struct GpuFrame {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) stride: u32,
+    pub(crate) format: u8,
+    pub(crate) premultiplied: bool,
+    pub(crate) opaque: bool,
+    pub(crate) bytes: Vec<u8>,
+}
+
+/// A half float's value.
+fn half(bits: u16) -> f32 {
+    let sign = if bits & 0x8000 == 0 { 1.0 } else { -1.0 };
+    let exponent = i32::from((bits >> 10) & 0x1f);
+    let fraction = f32::from(bits & 0x3ff);
+    sign * match exponent {
+        0 => fraction * 2f32.powi(-24),
+        31 if fraction == 0.0 => f32::INFINITY,
+        31 => f32::NAN,
+        e => (1.0 + fraction / 1024.0) * 2f32.powi(e - 15),
+    }
+}
+
+/// A premultiplied pixel made straight.
+fn straight(pixel: [u8; 4]) -> [u8; 4] {
+    let a = u32::from(pixel[3]);
+    if a == 0 {
+        return [0, 0, 0, 0];
+    }
+    let channel = |c: u8| ((u32::from(c) * 255 + a / 2) / a).min(255) as u8;
+    [
+        channel(pixel[0]),
+        channel(pixel[1]),
+        channel(pixel[2]),
+        pixel[3],
+    ]
+}
+
+impl GpuFrame {
+    /// Its pixels as `putImageData` takes them, straight RGBA; `None`
+    /// when its bytes are short of its rows.
+    pub(crate) fn rgba(&self) -> Option<Vec<u8>> {
+        let texel = if self.format == 2 { 8 } else { 4 };
+        let (width, height, stride) = (
+            self.width as usize,
+            self.height as usize,
+            self.stride as usize,
+        );
+        let row = width * texel;
+        if height == 0 || stride < row || self.bytes.len() < stride * (height - 1) + row {
+            return None;
+        }
+        let mut out = Vec::with_capacity(width * height * 4);
+        for y in 0..height {
+            for texel in self.bytes[y * stride..y * stride + row].chunks_exact(texel) {
+                let mut pixel = match self.format {
+                    0 => [texel[0], texel[1], texel[2], texel[3]],
+                    1 => [texel[2], texel[1], texel[0], texel[3]],
+                    _ => {
+                        let at = |i: usize| {
+                            let value = half(u16::from_le_bytes([texel[i], texel[i + 1]]));
+                            (value.clamp(0.0, 1.0) * 255.0).round() as u8
+                        };
+                        [at(0), at(2), at(4), at(6)]
+                    }
+                };
+                if self.opaque {
+                    pixel[3] = 255;
+                } else if self.premultiplied {
+                    pixel = straight(pixel);
+                }
+                out.extend_from_slice(&pixel);
+            }
+        }
+        Some(out)
+    }
+}
+
 /// The most colours [`Canvases`] keeps parsed; past it they are let go.
 pub(crate) const MAX_KEPT_COLOURS: usize = 512;
 
@@ -293,6 +375,7 @@ pub(crate) fn names_context(op: &str) -> bool {
             | "bitmapClean"
             | "bitmapFrom"
             | "closeBitmap"
+            | "bitmapPixels"
     )
 }
 
@@ -539,6 +622,28 @@ impl Canvases {
                 size,
             },
         );
+        self.changed = true;
+    }
+
+    /// A WebGPU canvas's frame made `owner`'s bitmap, one of the frame's
+    /// size made for it when it has none of that size.
+    pub(crate) fn gpu_frame(&mut self, owner: Owner, frame: &GpuFrame) {
+        let Some(rgba) = frame.rgba() else {
+            return;
+        };
+        let size = (frame.width, frame.height);
+        let fits = self
+            .contexts
+            .get(&owner)
+            .is_some_and(|canvas| (canvas.width(), canvas.height()) == size);
+        if !fits {
+            let canvas = Canvases::made(size, frame.opaque, self.others(owner));
+            self.contexts.insert(owner, canvas);
+        }
+        if let Some(canvas) = self.contexts.get_mut(&owner) {
+            canvas.put_image_data(&rgba, frame.width, frame.height, 0, 0, None);
+            self.work += rgba.len() as u64 / 64;
+        }
         self.changed = true;
     }
 
@@ -854,6 +959,26 @@ impl Canvases {
                     .frames
                     .first()
                     .map_or_else(Vec::new, |frame| frame.pixels.to_vec());
+                return Ok(Answer::Bytes(bytes));
+            }
+            // A bitmap's pixels for a texture (M41 step 4): its RGBA, or
+            // BGRA, straight or premultiplied as the copy asks.
+            "bitmapPixels" => {
+                let (image, _) = self.bitmap(at(n, 1) as u32)?;
+                let (bgra, premultiplied) = (at(n, 2) == 1.0, at(n, 3) == 1.0);
+                let mut bytes = image
+                    .frames
+                    .first()
+                    .map_or_else(Vec::new, |frame| frame.pixels.to_vec());
+                self.work += bytes.len() as u64 / 64;
+                for pixel in bytes.as_chunks_mut::<4>().0 {
+                    if !premultiplied {
+                        *pixel = straight(*pixel);
+                    }
+                    if bgra {
+                        pixel.swap(0, 2);
+                    }
+                }
                 return Ok(Answer::Bytes(bytes));
             }
             "bitmapClean" => {
@@ -1562,4 +1687,56 @@ fn build(path: &mut Path, op: &str, n: &[f64], m: &Matrix) -> Option<Result<(), 
         "ellipse" => path.ellipse(a(0), a(1), a(2), a(3), a(4), a(5), a(6), a(7) != 0.0, m),
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod gpu_frame_tests {
+    use super::GpuFrame;
+
+    fn frame(format: u8, premultiplied: bool, opaque: bool, bytes: Vec<u8>) -> GpuFrame {
+        GpuFrame {
+            width: 1,
+            height: 2,
+            stride: 256,
+            format,
+            premultiplied,
+            opaque,
+            bytes,
+        }
+    }
+
+    /// Two rows of one texel, `first` and `second`, 256 bytes apart.
+    fn rows(first: &[u8], second: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0; 256];
+        bytes[..first.len()].copy_from_slice(first);
+        bytes.extend_from_slice(second);
+        bytes
+    }
+
+    #[test]
+    fn a_frames_texels_become_straight_rgba_rows() {
+        let texels = rows(&[10, 20, 30, 255], &[0, 0, 128, 128]);
+        assert_eq!(
+            frame(0, false, false, texels.clone()).rgba(),
+            Some(vec![10, 20, 30, 255, 0, 0, 128, 128])
+        );
+        // BGRA's red and blue change places; premultiplied is made
+        // straight; opaque is made opaque.
+        assert_eq!(
+            frame(1, true, false, texels.clone()).rgba(),
+            Some(vec![30, 20, 10, 255, 255, 0, 0, 128])
+        );
+        assert_eq!(
+            frame(0, false, true, texels).rgba(),
+            Some(vec![10, 20, 30, 255, 0, 0, 128, 255])
+        );
+        // Half floats: 1.0 (0x3c00), 0.5 (0x3800), 0, and 2.0 clamped.
+        let half = [0x00, 0x3c, 0x00, 0x38, 0x00, 0x00, 0x00, 0x40];
+        assert_eq!(
+            frame(2, false, false, rows(&half, &half)).rgba(),
+            Some(vec![255, 128, 0, 255, 255, 128, 0, 255])
+        );
+        // Bytes short of the last row are no frame.
+        assert_eq!(frame(0, false, false, vec![0; 259]).rgba(), None);
+    }
 }

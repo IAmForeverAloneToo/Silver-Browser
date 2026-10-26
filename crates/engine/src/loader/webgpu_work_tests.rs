@@ -3,13 +3,64 @@
 //! GPU service in this process and read back. Where there is no adapter,
 //! a test says so.
 
+use std::time::{Duration, Instant};
+
 use super::webgpu_tests::{ADAPTER, lines, server};
+use crate::FrameTime;
+use crate::testing::Tab;
 
 /// The page's lines, or `None` (said) where there is no adapter.
 fn run(script: &str) -> Option<Vec<String>> {
     let lines = lines(&server(&format!("{ADAPTER}\n{script}")));
     if lines == ["no adapter"] {
         eprintln!("no adapter here: the work is not checked");
+        return None;
+    }
+    Some(lines)
+}
+
+/// As [`run`], with the engine's frames run as the shell runs them, a
+/// frame's time 16 ms after the last's.
+fn run_framed(script: &str) -> Option<Vec<String>> {
+    let page = server(&format!(
+        "{ADAPTER}
+{script}"
+    ));
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(page.url("/page.html"));
+    let began = Instant::now();
+    let mut lines: Vec<String> = Vec::new();
+    let mut at = Duration::from_secs(1);
+    loop {
+        tab.engine.poll_network();
+        tab.engine.run_tasks();
+        lines.extend(
+            tab.engine
+                .take_console()
+                .into_iter()
+                .map(|entry| entry.text),
+        );
+        if lines.iter().any(|l| l == "done" || l.starts_with("failed")) {
+            break;
+        }
+        if tab.engine.needs_frame() {
+            at += Duration::from_millis(16);
+            tab.engine.frame_at(
+                64,
+                64,
+                FrameTime {
+                    now: at,
+                    deadline: at + Duration::from_millis(16),
+                },
+            );
+        }
+        assert!(began.elapsed() < Duration::from_secs(30), "{lines:#?}");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    lines.retain(|l| l != "done");
+    if lines == ["no adapter"] {
+        eprintln!("no adapter here: the canvas is not checked");
         return None;
     }
     Some(lines)
@@ -235,4 +286,107 @@ log('rows ' + same);
         return;
     };
     assert_eq!(lines, ["errors null", "rows true"]);
+}
+
+#[test]
+fn a_canvas_context_presents_its_texture_as_the_canvas_after_the_frame() {
+    let Some(lines) = run_framed(
+        r#"
+const canvas = document.createElement('canvas');
+canvas.width = 4;
+canvas.height = 2;
+document.body.appendChild(canvas);
+const context = canvas.getContext('webgpu');
+log('context ' + context.constructor.name + ' ' + (context.canvas === canvas) + ' ' + (canvas.getContext('webgpu') === context) + ' ' + canvas.getContext('2d'));
+try { context.getCurrentTexture(); } catch (e) { log('unconfigured ' + e.name); }
+log('configuration ' + context.getConfiguration());
+const device = await adapter.requestDevice();
+const format = navigator.gpu.getPreferredCanvasFormat();
+context.configure({device, format});
+const c = context.getConfiguration();
+log('configured ' + [c.format, c.alphaMode, c.colorSpace, c.toneMapping.mode, c.usage, c.device === device].join(' '));
+const texture = context.getCurrentTexture();
+log('texture ' + texture.width + 'x' + texture.height + ' ' + texture.format + ' ' + texture.usage + ' ' + (context.getCurrentTexture() === texture));
+const encoder = device.createCommandEncoder();
+encoder.beginRenderPass({colorAttachments: [{view: texture.createView(), loadOp: 'clear', clearValue: [1, 0, 0, 1], storeOp: 'store'}]}).end();
+device.queue.submit([encoder.finish()]);
+const frame = () => new Promise(r => requestAnimationFrame(r));
+await frame();
+// Within the frame's callbacks it is still the same: presented after them.
+log('same in the frame ' + (context.getCurrentTexture() === texture));
+// The rows come back a task or two later.
+const read = document.createElement('canvas').getContext('2d');
+let pixel = [0, 0, 0, 0];
+for (let i = 0; i < 300 && pixel[3] === 0; i++) {
+  await new Promise(r => setTimeout(r, 10));
+  read.clearRect(0, 0, 1, 1);
+  read.drawImage(canvas, 0, 0);
+  pixel = Array.from(read.getImageData(3, 1, 1, 1).data);
+}
+log('pixel ' + pixel.join(','));
+log('next frame ' + (context.getCurrentTexture() !== texture));
+log('exported ' + (canvas.toDataURL().length > 50));
+const other = new OffscreenCanvas(2, 2);
+log('offscreen ' + other.getContext('webgpu').constructor.name + ' ' + other.getContext('2d'));
+"#,
+    ) else {
+        return;
+    };
+    assert_eq!(
+        lines,
+        [
+            "context GPUCanvasContext true true null",
+            "unconfigured InvalidStateError",
+            "configuration null",
+            "configured bgra8unorm opaque srgb standard 16 true",
+            "texture 4x2 bgra8unorm 16 true",
+            "same in the frame true",
+            "pixel 255,0,0,255",
+            "next frame true",
+            "exported true",
+            "offscreen GPUCanvasContext null",
+        ]
+    );
+}
+
+#[test]
+fn an_image_is_copied_into_a_texture_flipped_as_asked() {
+    let Some(lines) = run(r#"
+const device = await adapter.requestDevice();
+const source = document.createElement('canvas');
+source.width = 2;
+source.height = 2;
+const g = source.getContext('2d');
+g.fillStyle = 'blue';
+g.fillRect(0, 0, 2, 2);
+g.fillStyle = 'red';
+g.fillRect(0, 0, 1, 1);
+const texture = device.createTexture({size: [2, 2], format: 'rgba8unorm', usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC | GPUTextureUsage.RENDER_ATTACHMENT});
+async function texels(flipY) {
+  device.queue.copyExternalImageToTexture({source, flipY}, {texture}, [2, 2]);
+  const read = device.createBuffer({size: 512, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST});
+  const encoder = device.createCommandEncoder();
+  encoder.copyTextureToBuffer({texture}, {buffer: read, bytesPerRow: 256}, [2, 2]);
+  device.queue.submit([encoder.finish()]);
+  await read.mapAsync(GPUMapMode.READ);
+  const px = new Uint8Array(read.getMappedRange());
+  return [0, 4, 256, 260].map(i => px[i] ? 'r' : px[i + 2] ? 'b' : '?').join('');
+}
+log('copied ' + await texels(false));
+log('flipped ' + await texels(true));
+try { device.queue.copyExternalImageToTexture({source, origin: [1, 1]}, {texture}, [2, 2]); } catch (e) { log('outside ' + e.name); }
+try { device.queue.copyExternalImageToTexture({source: 5}, {texture}, [1, 1]); } catch (e) { log('not an image ' + e.name); }
+"#)
+    else {
+        return;
+    };
+    assert_eq!(
+        lines,
+        [
+            "copied rbbb",
+            "flipped bbrb",
+            "outside OperationError",
+            "not an image TypeError",
+        ]
+    );
 }
