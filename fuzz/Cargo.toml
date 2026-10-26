@@ -46,6 +46,7 @@ encoding = { path = "../crates/encoding" }
 # nothing to fuzz through; but `webgpu_ops` drives the GPU service, built
 # with the `gpu` feature (M41).
 engine = { path = "../crates/engine", default-features = false }
+glsl = { path = "../crates/glsl" }
 html = { path = "../crates/html" }
 images = { path = "../crates/images" }
 js = { path = "../crates/js" }
@@ -294,6 +295,12 @@ doc = false
 [[bin]]
 name = "gpu_wire"
 path = "fuzz_targets/gpu_wire.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "glsl_parse"
+path = "fuzz_targets/glsl_parse.rs"
 test = false
 doc = false
 

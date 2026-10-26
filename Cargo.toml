@@ -22,6 +22,7 @@ license = "AGPL-3.0-only"
 #   engine, shell -> devtools (a leaf: the DevTools' protocol, M36)
 #   engine -> media (a leaf: containers and decoders, M40)
 #   engine -> audio (a leaf: Web Audio's rendering, M40)
+#   engine -> glsl (a leaf: WebGL's shaders to WGSL, M41)
 # See docs/architecture.md — the layering contract is binding.
 [workspace.dependencies]
 # Internal crates
@@ -47,6 +48,7 @@ profile = { path = "crates/profile" }
 devtools = { path = "crates/devtools" }
 media = { path = "crates/media" }
 audio = { path = "crates/audio" }
+glsl = { path = "crates/glsl" }
 
 # External crates
 winit = "0.30"
@@ -125,6 +127,9 @@ rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs"] }
 wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "dx12", "wgsl"] }
 # Blocking on wgpu's futures: the adapter, the device and a readback.
 pollster = "0.4"
+# WGSL read and validated: WebGL's translated shaders (M41, D40), the
+# version wgpu's own is.
+naga = { version = "30", default-features = false, features = ["wgsl-in"] }
 # The PDF a page prints to (M20.4, docs/design/media.md): written
 # step by step, its page rasters Flate-compressed by `flate2` above.
 pdf-writer = "0.15"

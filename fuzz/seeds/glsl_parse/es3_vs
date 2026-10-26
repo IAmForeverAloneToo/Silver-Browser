@@ -1,0 +1,7 @@
+#version 300 es
+layout(location = 2) in vec4 a_position;
+in uvec2 a_ids;
+flat out uint v_id;
+out vec2 v_uv[2];
+uniform Material { vec4 tint; bool lit; };
+void main() { v_id = a_ids.x ^ (a_ids.y << 2u); v_uv[0] = a_position.xy; v_uv[1] = vec2(float(gl_VertexID)); gl_Position = a_position + tint * (lit ? 1.0 : 0.0); gl_PointSize = 2.0; }

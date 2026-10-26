@@ -544,6 +544,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "glsl"
+version = "0.0.1"
+dependencies = [
+ "naga",
+]
+
+[[package]]
 name = "gpu-allocator"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1604,6 +1611,7 @@ dependencies = [
  "dom",
  "encoding",
  "engine",
+ "glsl",
  "html",
  "images",
  "js",

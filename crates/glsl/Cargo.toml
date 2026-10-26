@@ -1,0 +1,14 @@
+[package]
+name = "glsl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# naga's WGSL front end and validator check every translation (D40).
+naga = { workspace = true }
+
+[dev-dependencies]
+# The translation run on a GPU, its values read back (tests/execution.rs).
+wgpu.workspace = true
+pollster.workspace = true

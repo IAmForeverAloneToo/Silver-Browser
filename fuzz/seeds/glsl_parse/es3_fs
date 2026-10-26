@@ -1,0 +1,10 @@
+#version 300 es
+precision highp float;
+precision highp isampler2D;
+flat in uint v_id;
+in vec2 v_uv[2];
+uniform isampler2D u_ints;
+layout(std140) uniform Data { vec3 v; float f; mat2 m; float list[2]; layout(row_major) mat2 r; } data;
+layout(location = 0) out vec4 color;
+int pick(int s) { int n = 0; switch (s) { case 5: n = 1; case 6: n += 2; break; default: n = 7; } return n; }
+void main() { ivec2 size = textureSize(u_ints, 0); int i = 0; do { i++; } while (i < 3); float a[2] = float[2](1.0, 2.0); color = vec4(float(pick(int(v_id))), data.m[1][0], float(a == a), float(texelFetch(u_ints, ivec2(v_uv[0]) % size, 0).x)); }
