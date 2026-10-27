@@ -24915,6 +24915,15 @@
     ["useProgram", "P?", 1, "v"], ["validateProgram", "P", 1, "v"], ["viewport", "iiii", 4, "v"],
     ["vertexAttribPointer", "uiebil", 6, "v"], ["createBuffer", "", 0, "B"], ["createProgram", "", 0, "P"],
     ["createShader", "e", 1, "S"], ["getUniformLocation", "Ps", 2, "L"],
+    ["createTexture", "", 0, "T"], ["createRenderbuffer", "", 0, "R"], ["createFramebuffer", "", 0, "F"],
+    ["bindTexture", "eT?", 2, "v"], ["bindRenderbuffer", "eR?", 2, "v"], ["bindFramebuffer", "eF?", 2, "v"],
+    ["deleteTexture", "T?", 1, "v"], ["deleteRenderbuffer", "R?", 1, "v"], ["deleteFramebuffer", "F?", 1, "v"],
+    ["isTexture", "T?", 1, "b"], ["isRenderbuffer", "R?", 1, "b"], ["isFramebuffer", "F?", 1, "b"],
+    ["texParameteri", "eei", 3, "v"], ["texParameterf", "eef", 3, "v"], ["getTexParameter", "ee", 2, "n"],
+    ["generateMipmap", "e", 1, "v"], ["checkFramebufferStatus", "e", 1, "n"],
+    ["framebufferTexture2D", "eeeT?i", 5, "v"], ["framebufferRenderbuffer", "eeeR?", 4, "v"],
+    ["renderbufferStorage", "eeii", 4, "v"], ["getRenderbufferParameter", "ee", 2, "n"],
+    ["copyTexImage2D", "eieiiiii", 8, "v"], ["copyTexSubImage2D", "eiiiiiii", 8, "v"],
   ];
 
   // Drawing calls, whose canvas is presented after the frame.
@@ -24993,8 +25002,61 @@
       attributes.antialias, attributes.premultipliedAlpha, attributes.preserveDrawingBuffer);
     if (typeof id !== "number" || id < 0) return null;
     const context = new (version === 2 ? WebGL2RenderingContext : WebGLRenderingContext)(KEY);
-    WeakMapSet(webglRecords, context, { id, canvas, version, attributes, objects: new $Map(), drawn: false });
+    WeakMapSet(webglRecords, context, { id, canvas, version, attributes, objects: new $Map(),
+      extensions: new $Map(), drawn: false });
     return context;
+  }
+
+  // The extensions' constants, and the calls ANGLE_instanced_arrays adds.
+  const WEBGL_EXTENSIONS = {
+    ANGLE_instanced_arrays: ["VERTEX_ATTRIB_ARRAY_DIVISOR_ANGLE", 0x88FE],
+    EXT_blend_minmax: ["MIN_EXT", 0x8007, "MAX_EXT", 0x8008],
+    EXT_color_buffer_half_float: ["RGBA16F_EXT", 0x881A, "RGB16F_EXT", 0x881B,
+      "FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE_EXT", 0x8211, "UNSIGNED_NORMALIZED_EXT", 0x8C17],
+    EXT_sRGB: ["SRGB_EXT", 0x8C40, "SRGB_ALPHA_EXT", 0x8C42, "SRGB8_ALPHA8_EXT", 0x8C43,
+      "FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING_EXT", 0x8210],
+    EXT_texture_filter_anisotropic: ["TEXTURE_MAX_ANISOTROPY_EXT", 0x84FE, "MAX_TEXTURE_MAX_ANISOTROPY_EXT", 0x84FF],
+    OES_standard_derivatives: ["FRAGMENT_SHADER_DERIVATIVE_HINT_OES", 0x8B8B],
+    OES_texture_half_float: ["HALF_FLOAT_OES", 0x8D61],
+    WEBGL_color_buffer_float: ["RGBA32F_EXT", 0x8814, "FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE_EXT", 0x8211,
+      "UNSIGNED_NORMALIZED_EXT", 0x8C17],
+    WEBGL_compressed_texture_s3tc: ["COMPRESSED_RGB_S3TC_DXT1_EXT", 0x83F0, "COMPRESSED_RGBA_S3TC_DXT1_EXT", 0x83F1,
+      "COMPRESSED_RGBA_S3TC_DXT3_EXT", 0x83F2, "COMPRESSED_RGBA_S3TC_DXT5_EXT", 0x83F3],
+    WEBGL_depth_texture: ["UNSIGNED_INT_24_8_WEBGL", 0x84FA],
+  };
+
+  // An extension's object for a context: its interface's name its
+  // tag, as the reference's (no global interface object).
+  function webglExtension(name, r) {
+    const cls = class {
+      constructor(key) {
+        if (key !== KEY) throw illegalConstructor(name);
+      }
+    };
+    const proto = cls.prototype;
+    defineProperty(proto, toStringTag, { value: name, configurable: true });
+    const constants = WEBGL_EXTENSIONS[name] || [];
+    for (let i = 0; i < constants.length; i += 2) {
+      defineProperty(proto, constants[i], { value: constants[i + 1], enumerable: true });
+    }
+    const method = (n, f) => defineProperty(proto, n, { value: f, writable: true, enumerable: true, configurable: true });
+    if (name === "ANGLE_instanced_arrays") {
+      method("drawArraysInstancedANGLE", function (mode, first, count, primcount) {
+        need(arguments.length, 4, "drawArraysInstancedANGLE", name);
+        native.webgl("drawArraysInstanced", r.id, glu(mode), gli(first), gli(count), gli(primcount));
+        webglDrew(r);
+      });
+      method("drawElementsInstancedANGLE", function (mode, count, type, offset, primcount) {
+        need(arguments.length, 5, "drawElementsInstancedANGLE", name);
+        native.webgl("drawElementsInstanced", r.id, glu(mode), gli(count), glu(type), glll(offset), gli(primcount));
+        webglDrew(r);
+      });
+      method("vertexAttribDivisorANGLE", function (index, divisor) {
+        need(arguments.length, 2, "vertexAttribDivisorANGLE", name);
+        native.webgl("vertexAttribDivisor", r.id, glu(index), glu(divisor));
+      });
+    }
+    return new cls(KEY);
   }
 
   class WebGLRenderingContext {
@@ -25056,13 +25118,20 @@
     method("getError", function () { return native.webgl("getError", webglRecord(this).id); });
     method("getSupportedExtensions", function () {
       const r = webglRecord(this);
-      return native.webgl("isContextLost", r.id) ? null : [];
+      if (native.webgl("isContextLost", r.id)) return null;
+      return ArraySlice(native.webgl("getSupportedExtensions", r.id), 0);
     });
     method("getExtension", function (name) {
-      webglRecord(this);
+      const r = webglRecord(this);
       need(arguments.length, 1, "getExtension", iface);
-      str(name);
-      return null;
+      const found = native.webgl("getExtension", r.id, str(name));
+      if (typeof found !== "string") return null;
+      let extension = MapGet(r.extensions, found);
+      if (extension === undefined) {
+        extension = webglExtension(found, r);
+        MapSet(r.extensions, found, extension);
+      }
+      return extension;
     });
     method("makeXRCompatible", function () { webglRecord(this); return resolved(undefined); });
     method("getParameter", function (pname) {
@@ -25073,7 +25142,8 @@
       // The bindings: their objects.
       if (p === 0x8894 || p === 0x8895) return MapGet(r.objects, answer) || null;
       if (p === 0x8B8D) return MapGet(r.objects, answer) || null;
-      if (p === 0x8CA6 || p === 0x8CA7 || p === 0x8069 || p === 0x8514 || p === 0x85B5) return null;
+      if (p === 0x8CA6 || p === 0x8CA7 || p === 0x8069 || p === 0x8514) return MapGet(r.objects, answer) || null;
+      if (p === 0x85B5) return null;
       if (ArrayIsArray(answer)) {
         const kind = answer[0];
         const values = ArraySlice(answer, 1);
@@ -25224,29 +25294,123 @@
       method("vertexAttrib" + c + "f", attrib("vertexAttrib" + c + "f", c, false));
       method("vertexAttrib" + c + "fv", attrib("vertexAttrib" + c + "fv", c, true));
     }
-    // Textures, renderbuffers, framebuffers and readPixels come at
-    // step 7: their objects, and calls that do nothing yet.
-    const stub = (name, k) => method(name, function () {
+    // Textures, renderbuffers and framebuffers (step 7).
+    // An image source's pixels for a texture: [RGBA bytes, width,
+    // height], turned over and multiplied by alpha as the unpack state
+    // says; a source not ready is an empty image.
+    const sourcePixels = (r, source, method) => {
+      const words = prefix(method, iface);
+      const image = gpuImageSource(source, words);
+      const flipY = native.webgl("getParameter", r.id, 0x9240) === true;
+      const premultiply = native.webgl("getParameter", r.id, 0x9241) === true;
+      let whole;
+      try {
+        whole = gpuBitmapOf(image, null, flipY);
+      } catch (e) {
+        if (e instanceof $DOMException && e.name === "InvalidStateError") return [new $Uint8Array(0), 0, 0];
+        throw e;
+      }
+      try {
+        if (!native.canvas("bitmapClean", 4, whole[0])) {
+          throw new $DOMException(words + "The image element contains cross-origin data, and may not be loaded.",
+            "SecurityError");
+        }
+        return [new $Uint8Array(native.canvas("bitmapPixels", 4, whole[0], false, premultiply)), whole[1], whole[2]];
+      } finally {
+        native.canvas("closeBitmap", 4, whole[0]);
+      }
+    };
+    // An array's kind by the engine's code: 1 Uint8Array, 2 Uint16Array,
+    // 3 Float32Array, 4 Uint32Array, 6 Uint8ClampedArray, else 0.
+    const viewKind = (v) => {
+      const tag = ArrayBufferIsView(v) && !(v instanceof $DataView) ? TypedArrayTag(v) : "";
+      return tag === "Uint8Array" ? 1 : tag === "Uint16Array" ? 2 : tag === "Float32Array" ? 3
+        : tag === "Uint32Array" ? 4 : tag === "Uint8ClampedArray" ? 6 : 0;
+    };
+    const viewOf = (v, method, index) => {
+      if (!ArrayBufferIsView(v)) {
+        throw new $TypeError(prefix(method, iface) + "parameter " + index + " is not of type 'ArrayBufferView'.");
+      }
+      return gpuViewBytes(v)[0];
+    };
+    method("texImage2D", function (...args) {
       const r = webglRecord(this);
-      if (k === undefined) return undefined;
-      r.next = (r.next || 1000000) + 1;
-      return webglMake(r, k, r.next);
+      need(args.length, 6, "texImage2D", iface);
+      const [target, level, internal] = [glu(args[0]), gli(args[1]), gli(args[2])];
+      if (args.length >= 9) {
+        const [w, h, border, format, type] = [gli(args[3]), gli(args[4]), gli(args[5]), glu(args[6]), glu(args[7])];
+        const pixels = args[8];
+        if (pixels === null || pixels === undefined) {
+          native.webgl("texImage2D", r.id, target, level, internal, w, h, border, format, type, 1, 0);
+          return;
+        }
+        const bytes = viewOf(pixels, "texImage2D", 9);
+        native.webglData("texImage2D", binaryString(bytes), r.id, target, level, internal, w, h, border, format,
+          type, 0, viewKind(pixels));
+        return;
+      }
+      const [format, type] = [glu(args[3]), glu(args[4])];
+      const [bytes, w, h] = sourcePixels(r, args[5], "texImage2D");
+      native.webglData("texImage2D", binaryString(bytes), r.id, target, level, internal, w, h, 0, format, type,
+        w === 0 ? 1 : 2, 0);
     });
-    stub("createTexture", "T");
-    stub("createRenderbuffer", "R");
-    stub("createFramebuffer", "F");
-    const STUBS = ["bindTexture", "bindRenderbuffer", "bindFramebuffer", "deleteTexture", "deleteRenderbuffer",
-      "deleteFramebuffer", "texImage2D", "texSubImage2D", "texParameteri", "texParameterf", "generateMipmap",
-      "compressedTexImage2D", "compressedTexSubImage2D", "copyTexImage2D", "copyTexSubImage2D",
-      "framebufferTexture2D", "framebufferRenderbuffer", "renderbufferStorage", "readPixels"];
-    for (let i = 0; i < STUBS.length; i++) stub(STUBS[i]);
-    method("checkFramebufferStatus", function () { webglRecord(this); return 0x8CD5; });
-    method("isTexture", function () { webglRecord(this); return false; });
-    method("isFramebuffer", function () { webglRecord(this); return false; });
-    method("isRenderbuffer", function () { webglRecord(this); return false; });
-    method("getTexParameter", function () { webglRecord(this); return null; });
-    method("getRenderbufferParameter", function () { webglRecord(this); return null; });
-    method("getFramebufferAttachmentParameter", function () { webglRecord(this); return null; });
+    method("texSubImage2D", function (...args) {
+      const r = webglRecord(this);
+      need(args.length, 7, "texSubImage2D", iface);
+      const [target, level, x, y] = [glu(args[0]), gli(args[1]), gli(args[2]), gli(args[3])];
+      if (args.length >= 9) {
+        const [w, h, format, type] = [gli(args[4]), gli(args[5]), glu(args[6]), glu(args[7])];
+        const pixels = args[8];
+        if (pixels === null || pixels === undefined) {
+          native.webgl("texSubImage2D", r.id, target, level, x, y, w, h, format, type, 1, 0);
+          return;
+        }
+        const bytes = viewOf(pixels, "texSubImage2D", 9);
+        native.webglData("texSubImage2D", binaryString(bytes), r.id, target, level, x, y, w, h, format, type, 0,
+          viewKind(pixels));
+        return;
+      }
+      const [format, type] = [glu(args[4]), glu(args[5])];
+      const [bytes, w, h] = sourcePixels(r, args[6], "texSubImage2D");
+      native.webglData("texSubImage2D", binaryString(bytes), r.id, target, level, x, y, w, h, format, type, 2, 0);
+    });
+    method("compressedTexImage2D", function (target, level, internal, width, height, border, data) {
+      const r = webglRecord(this);
+      need(arguments.length, 7, "compressedTexImage2D", iface);
+      const bytes = viewOf(data, "compressedTexImage2D", 7);
+      native.webglData("compressedTexImage2D", binaryString(bytes), r.id, glu(target), gli(level), glu(internal),
+        gli(width), gli(height), gli(border));
+    });
+    method("compressedTexSubImage2D", function (target, level, x, y, width, height, format, data) {
+      const r = webglRecord(this);
+      need(arguments.length, 8, "compressedTexSubImage2D", iface);
+      const bytes = viewOf(data, "compressedTexSubImage2D", 8);
+      native.webglData("compressedTexSubImage2D", binaryString(bytes), r.id, glu(target), gli(level), gli(x),
+        gli(y), gli(width), gli(height), glu(format));
+    });
+    method("readPixels", function (x, y, width, height, format, type, pixels) {
+      const r = webglRecord(this);
+      need(arguments.length, 7, "readPixels", iface);
+      const numbers = [gli(x), gli(y), gli(width), gli(height), glu(format), glu(type)];
+      if (pixels === null) {
+        native.webgl("error", r.id, 0x0501);
+        return;
+      }
+      const bytes = viewOf(pixels, "readPixels", 7);
+      const out = ReflectApply(native.webglData, undefined,
+        ["readPixels", binaryString(bytes), r.id, ...numbers, viewKind(pixels)]);
+      if (out === undefined) return;
+      const written = new $Uint8Array(out);
+      for (let i = 0; i < written.length && i < bytes.length; i++) bytes[i] = written[i];
+    });
+    method("getFramebufferAttachmentParameter", function (target, attachment, pname) {
+      const r = webglRecord(this);
+      need(arguments.length, 3, "getFramebufferAttachmentParameter", iface);
+      const p = glu(pname);
+      const v = native.webgl("getFramebufferAttachmentParameter", r.id, glu(target), glu(attachment), p);
+      if (p === 0x8CD1) return MapGet(r.objects, v) || null;
+      return v === undefined ? null : v;
+    });
     expose(cls, iface);
   }
 

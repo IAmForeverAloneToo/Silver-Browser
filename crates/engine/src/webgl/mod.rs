@@ -8,7 +8,9 @@
 //! read or written in order.
 
 mod draw;
+mod ext;
 pub(crate) mod gl;
+mod texture;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, mpsc};
@@ -305,6 +307,9 @@ pub(crate) struct Context {
     pub program: Option<u32>,
     pub state: State,
     pub gpu: draw::Gpu,
+    pub surfaces: texture::Surfaces,
+    pub features: ext::Features,
+    pub ext: ext::Enabled,
 }
 
 impl Context {
@@ -438,7 +443,7 @@ impl WebGl {
             premultiplied_alpha: b(call, 6),
             preserve_drawing_buffer: b(call, 7),
         };
-        let Some(device) = draw::device(client) else {
+        let Some((device, features)) = draw::device(client) else {
             return Answer::Number(-1.0);
         };
         // Past the most contexts, the oldest is lost.
@@ -474,6 +479,9 @@ impl WebGl {
             program: None,
             state: State::new(size),
             gpu,
+            surfaces: texture::Surfaces::default(),
+            features,
+            ext: ext::Enabled::default(),
         };
         self.contexts.insert(id, context);
         self.made.push(id);
@@ -812,10 +820,16 @@ impl Context {
                 Answer::Nothing
             }
             "hint" => {
+                let derivatives = self.version == 2 || self.ext.on("OES_standard_derivatives");
                 if u(call, 1) == GENERATE_MIPMAP_HINT
                     && matches!(u(call, 2), DONT_CARE | FASTEST | NICEST)
                 {
                     self.state.generate_mipmap_hint = u(call, 2);
+                } else if u(call, 1) == FRAGMENT_SHADER_DERIVATIVE_HINT_OES
+                    && derivatives
+                    && matches!(u(call, 2), DONT_CARE | FASTEST | NICEST)
+                {
+                    self.surfaces.derivative_hint = u(call, 2);
                 } else {
                     self.error(INVALID_ENUM);
                 }
@@ -1454,14 +1468,24 @@ impl Context {
                 }
                 Answer::Nothing
             }
-            _ => return Err(DomError::new("TypeError", "an unknown WebGL call")),
+            other => match self.texture_op(other, call, size) {
+                Some(answer) => answer,
+                None => return Err(DomError::new("TypeError", "an unknown WebGL call")),
+            },
         };
         Ok(answer)
     }
 
     fn glsl_options(&self) -> glsl::Options {
+        let on = |name: &str| self.version == 1 && self.ext.on(name);
         glsl::Options {
             webgl2: self.version == 2,
+            extensions: glsl::Extensions {
+                standard_derivatives: on("OES_standard_derivatives"),
+                frag_depth: on("EXT_frag_depth"),
+                draw_buffers: false,
+                shader_texture_lod: on("EXT_shader_texture_lod"),
+            },
             ..glsl::Options::default()
         }
     }
@@ -1488,7 +1512,9 @@ impl Context {
             VERTEX_ATTRIB_ARRAY_TYPE => Answer::Number(f64::from(a.kind)),
             VERTEX_ATTRIB_ARRAY_NORMALIZED => Answer::Bool(a.normalized),
             VERTEX_ATTRIB_ARRAY_INTEGER if self.version == 2 => Answer::Bool(a.integer),
-            VERTEX_ATTRIB_ARRAY_DIVISOR if self.version == 2 => {
+            VERTEX_ATTRIB_ARRAY_DIVISOR
+                if self.version == 2 || self.ext.on("ANGLE_instanced_arrays") =>
+            {
                 Answer::Number(f64::from(a.divisor))
             }
             CURRENT_VERTEX_ATTRIB => Answer::Numbers(
@@ -1961,18 +1987,40 @@ impl Context {
             STENCIL_BITS => num(if self.attributes.stencil { 8 } else { 0 }),
             SAMPLE_BUFFERS => num(u32::from(self.attributes.antialias)),
             SAMPLES => num(if self.attributes.antialias { 4 } else { 0 }),
-            IMPLEMENTATION_COLOR_READ_FORMAT => num(RGBA),
-            IMPLEMENTATION_COLOR_READ_TYPE => num(UNSIGNED_BYTE),
+            IMPLEMENTATION_COLOR_READ_FORMAT => num(self.read_format().0),
+            IMPLEMENTATION_COLOR_READ_TYPE => num(self.read_format().1),
             ARRAY_BUFFER_BINDING => Answer::Number(self.array_buffer.map_or(0.0, f64::from)),
             ELEMENT_ARRAY_BUFFER_BINDING => {
                 Answer::Number(self.element_buffer.map_or(0.0, f64::from))
             }
             CURRENT_PROGRAM => Answer::Number(self.program.map_or(0.0, f64::from)),
-            COMPRESSED_TEXTURE_FORMATS => typed(1, Vec::new()),
-            FRAMEBUFFER_BINDING
-            | RENDERBUFFER_BINDING
-            | TEXTURE_BINDING_2D
-            | TEXTURE_BINDING_CUBE_MAP => Answer::Number(0.0),
+            COMPRESSED_TEXTURE_FORMATS => typed(
+                1,
+                if self.ext.on("WEBGL_compressed_texture_s3tc") {
+                    (COMPRESSED_RGB_S3TC_DXT1_EXT..=COMPRESSED_RGBA_S3TC_DXT5_EXT)
+                        .map(f64::from)
+                        .collect()
+                } else {
+                    Vec::new()
+                },
+            ),
+            FRAMEBUFFER_BINDING => Answer::Number(self.surfaces.framebuffer.map_or(0.0, f64::from)),
+            RENDERBUFFER_BINDING => {
+                Answer::Number(self.surfaces.renderbuffer.map_or(0.0, f64::from))
+            }
+            TEXTURE_BINDING_2D | TEXTURE_BINDING_CUBE_MAP => {
+                let slot = usize::from(name == TEXTURE_BINDING_CUBE_MAP);
+                let unit = (self.state.active_texture - TEXTURE0) as usize;
+                Answer::Number(self.surfaces.units[unit][slot].map_or(0.0, f64::from))
+            }
+            MAX_TEXTURE_MAX_ANISOTROPY_EXT if self.ext.on("EXT_texture_filter_anisotropic") => {
+                Answer::Number(16.0)
+            }
+            FRAGMENT_SHADER_DERIVATIVE_HINT_OES
+                if self.version == 2 || self.ext.on("OES_standard_derivatives") =>
+            {
+                num(self.surfaces.derivative_hint)
+            }
             MAX_ELEMENT_INDEX if self.version == 2 => Answer::Number(4294967294.0),
             MAX_3D_TEXTURE_SIZE | MAX_ARRAY_TEXTURE_LAYERS if self.version == 2 => num(2048),
             MAX_DRAW_BUFFERS | MAX_COLOR_ATTACHMENTS if self.version == 2 => num(8),
