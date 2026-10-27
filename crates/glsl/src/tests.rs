@@ -84,6 +84,16 @@ fn errors_are_said_as_the_reference_says_them() {
         error(fs, Stage::Fragment, &webgl1()),
         "ERROR: 0:2: 'undefinedThing' : undeclared identifier\n"
     );
+    // A block's member of type void, as a struct's (glsl_parse found it
+    // made WGSL of no type).
+    assert_eq!(
+        error(
+            "#version 300 es\nuniform Material { void tint; bool lit; };\nvoid main() {}\n",
+            Stage::Vertex,
+            &webgl2()
+        ),
+        "ERROR: 0:2: 'void' : illegal use of type 'void'\n"
+    );
     // No default precision: a float of the shader's own is refused, the
     // built-ins' are not.
     compile(

@@ -1,0 +1,6 @@
+#version 300 es
+layout(location = 2) in vec4 vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvs;
+flat out uint v_id;
+out vec2 v_uv[2];
+uniform Material { void tint; bool lhit; };
+void main() {; }

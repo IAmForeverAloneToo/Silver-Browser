@@ -1579,7 +1579,11 @@ impl<'a> Parser<'a> {
             });
         while !self.eat("}") {
             let mq = self.qualifiers()?;
+            let base_line = self.line();
             let base = self.type_specifier(&mq)?;
+            if base == Type::Void {
+                return Err(Error::new(base_line, "void", "illegal use of type 'void'"));
+            }
             let row_major = mq
                 .block_layout
                 .iter()
