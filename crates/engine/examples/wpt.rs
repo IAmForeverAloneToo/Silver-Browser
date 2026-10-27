@@ -175,6 +175,8 @@ const TESTHARNESS_DIRECTORIES: &[(&str, &str)] = &[
     // Audio, video and Web Audio (M40).
     ("webaudio", ""),
     ("html/semantics/embedded-content/media-elements", ""),
+    // WebGL (M41).
+    ("webgl", ""),
 ];
 
 /// Tests the rule would take that are left out by name, and why: what the

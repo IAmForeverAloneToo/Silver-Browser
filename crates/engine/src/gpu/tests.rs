@@ -548,6 +548,49 @@ mod service {
     }
 
     #[test]
+    fn a_device_holds_more_error_scopes_than_a_page_needs() {
+        // The WebGPU CTS pushes 100,000; past MAX_ERROR_SCOPES the client
+        // ends.
+        let Some(mut service) = device() else {
+            return;
+        };
+        let push = Request::PushErrorScope {
+            device: 11,
+            filter: 0,
+        };
+        service
+            .handle(1, &wire::requests(&vec![push; 5000]))
+            .unwrap();
+    }
+
+    #[test]
+    fn an_invalid_buffer_mapped_at_creation_is_unmapped_without_an_error() {
+        let Some(mut service) = device() else {
+            return;
+        };
+        // Usage 0: its creation's error, and no other at its unmap.
+        service
+            .handle(
+                1,
+                &wire::requests(&[
+                    Request::CreateBuffer {
+                        device: 11,
+                        id: 12,
+                        size: 8,
+                        usage: 0,
+                        mapped: true,
+                    },
+                    Request::Unmap { buffer: 12 },
+                ]),
+            )
+            .unwrap();
+        assert!(matches!(
+            service.events()[..],
+            [(1, Reply::Uncaptured { device: 11, .. })]
+        ));
+    }
+
+    #[test]
     fn ranges_past_a_buffer_are_refused_without_a_panic() {
         let Some(mut service) = device() else {
             return;
@@ -582,6 +625,11 @@ mod service {
                 error: Some("the range is past the buffer's end".to_owned()),
             }]
         );
+        // And a validation error, as WebGPU's mapAsync.
+        assert!(matches!(
+            service.events()[..],
+            [(1, Reply::Uncaptured { device: 11, ref error })] if error.kind == 0
+        ));
         // Past 2^64 too (webgpu_ops found it ending the client).
         let replies = service
             .handle(

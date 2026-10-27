@@ -240,6 +240,9 @@ impl Gpu {
         let made = std::mem::take(&mut self.made);
         client.queue(made.into_iter().rev().map(|id| Request::Drop { id }));
         client.queue([Request::Drop { id: self.device }]);
+        // Sent now: a context lost as its document goes queues nothing
+        // after this, and its device would stay in the GPU process.
+        client.flush();
     }
 
     /// A linked program's modules (vertex, fragment, points), bind group
@@ -295,6 +298,12 @@ impl Gpu {
             let dimension = match s.sampler.dim {
                 glsl::tir::Dim::D2 => "2d",
                 glsl::tir::Dim::D3 => "3d",
+                // An integer cube is read as its faces' array (glsl).
+                glsl::tir::Dim::Cube
+                    if s.sampler.sample != glsl::tir::Scalar::Float && !s.sampler.shadow =>
+                {
+                    "2d-array"
+                }
                 glsl::tir::Dim::Cube => "cube",
                 glsl::tir::Dim::D2Array => "2d-array",
             };
@@ -1098,6 +1107,13 @@ impl Context {
                 self.error(INVALID_OPERATION);
                 return;
             }
+            // An active draw buffer the shader writes nothing to, its
+            // colour not all masked: INVALID_OPERATION (WebGL's rule
+            // of draw buffers without outputs).
+            if output.is_none() && write != 0 {
+                self.error(INVALID_OPERATION);
+                return;
+            }
             let mask = match output {
                 None => 0,
                 Some(_) if c.rgb => write & 7,
@@ -1723,6 +1739,7 @@ impl Context {
         let storage = ["rgba8unorm", "rgba32sint", "rgba32uint", "depth32float"][usize::from(kind)];
         let layers = if want.slot == SLOT_CUBE { 6 } else { 1 };
         let (dimension, view_dimension) = match want.slot {
+            SLOT_CUBE if kind == 1 || kind == 2 => ("2d", "2d-array"),
             SLOT_CUBE => ("2d", "cube"),
             SLOT_3D => ("3d", "3d"),
             SLOT_ARRAY => ("2d", "2d-array"),
@@ -1864,5 +1881,35 @@ impl Context {
         if !self.attributes.preserve_drawing_buffer {
             self.needs_clear = true;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gpu::wire;
+
+    #[test]
+    fn a_released_context_sends_its_drops_at_once() {
+        // A context lost as its document goes queues nothing after its
+        // release: were its drops left queued, its device would stay in
+        // the GPU process (the Khronos suite ran out of devices).
+        let sent: Arc<std::sync::Mutex<Vec<Vec<u8>>>> = Arc::default();
+        let record = sent.clone();
+        let client = Arc::new(GpuClient::new(Box::new(move |bytes| {
+            record
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(bytes);
+        })));
+        let mut gpu = Gpu::new(&client, 7);
+        gpu.release(&client);
+        let requests: Vec<Request> = sent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .flat_map(|batch| wire::read_requests(batch).expect("a batch"))
+            .collect();
+        assert!(requests.contains(&Request::Drop { id: 7 }), "{requests:?}");
     }
 }

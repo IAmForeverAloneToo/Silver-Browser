@@ -23,9 +23,27 @@ use crate::ipc::Bytes;
 /// The most objects a client may have live at once.
 pub const MAX_GPU_OBJECTS: usize = 1_000_000;
 
+/// Whether `wgpu` makes a buffer of `usage` and `size`, as WebGPU's
+/// createBuffer validates it: a usage of WebGPU's bits, MAP_READ only
+/// with COPY_DST, MAP_WRITE only with COPY_SRC, a size in the device's
+/// limit and, mapped at creation, a multiple of 4.
+fn buffer_valid(usage: u32, size: u64, mapped: bool, max: u64) -> bool {
+    const MAP_READ: u32 = 0x1;
+    const MAP_WRITE: u32 = 0x2;
+    const COPY_SRC: u32 = 0x4;
+    const COPY_DST: u32 = 0x8;
+    usage != 0
+        && usage & !0x3ff == 0
+        && (usage & MAP_READ == 0 || usage & !(MAP_READ | COPY_DST) == 0)
+        && (usage & MAP_WRITE == 0 || usage & !(MAP_WRITE | COPY_SRC) == 0)
+        && size <= max
+        && (!mapped || size.is_multiple_of(4))
+}
+
 /// The most error scopes a device's stack holds: past it, a push ends
-/// the client (a page has no reason for so many).
-pub const MAX_ERROR_SCOPES: usize = 1024;
+/// the client. The standard has no bound and the WebGPU CTS pushes
+/// 100,000; this one bounds a page's memory (tens of bytes a scope).
+pub const MAX_ERROR_SCOPES: usize = 1 << 20;
 
 struct Device {
     device: wgpu::Device,
@@ -54,10 +72,14 @@ struct Scope {
 
 struct Buffer {
     buffer: wgpu::Buffer,
-    /// Its device, which a map waits on.
+    /// Its device, which a map waits on, and the device's number.
     device: wgpu::Device,
+    device_id: u32,
     /// The range mapped, while it is.
     mapped: Option<(u64, u64)>,
+    /// Whether `wgpu` made it: an invalid buffer's mapping at creation is
+    /// the page's alone, its writes and unmap no error (WebGPU 5.1.6).
+    valid: bool,
 }
 
 /// One of a client's objects.
@@ -320,7 +342,9 @@ impl GpuService {
                 let buffer = Buffer {
                     buffer,
                     device: made.device.clone(),
+                    device_id: device,
                     mapped: mapped.then_some((0, size)),
+                    valid: buffer_valid(usage, size, mapped, made.device.limits().max_buffer_size),
                 };
                 self.client(client).insert(id, Object::Buffer(buffer))?;
             }
@@ -364,6 +388,9 @@ impl GpuService {
                 }
                 // A range the buffer cannot give (it was destroyed) takes
                 // nothing.
+                if !buffer.valid {
+                    return Ok(());
+                }
                 if let Ok(mut view) = buffer
                     .buffer
                     .get_mapped_range_mut(offset..offset + bytes.0.len() as u64)
@@ -373,7 +400,7 @@ impl GpuService {
             }
             Request::Unmap { buffer } => {
                 let buffer = self.client(client).buffer(buffer)?;
-                if buffer.mapped.take().is_some() {
+                if buffer.mapped.take().is_some() && buffer.valid {
                     buffer.buffer.unmap();
                 }
             }
@@ -621,22 +648,33 @@ impl GpuService {
         replies: &mut Vec<Reply>,
     ) -> Result<(), String> {
         let made = self.client(client).buffer(buffer)?;
-        // `wgpu` panics at a range past the buffer: answered as WebGPU
-        // rejects it.
-        let Some(end) = offset
+        // A buffer mapped (`wgpu` rejects it with no error), a range past
+        // the buffer (`wgpu` panics at it) and a mode not one of read and
+        // write: a validation error and a rejection, as WebGPU's
+        // mapAsync; `wgpu` says the rest.
+        let end = offset
             .checked_add(size)
-            .filter(|end| *end <= made.buffer.size())
-        else {
+            .filter(|end| *end <= made.buffer.size());
+        let mode = match mode {
+            1 => Some(wgpu::MapMode::Read),
+            2 => Some(wgpu::MapMode::Write),
+            _ => None,
+        };
+        let (Some(end), Some(mode), None) = (end, mode, made.mapped) else {
+            let why = if made.mapped.is_some() {
+                "the buffer is mapped"
+            } else if end.is_none() {
+                "the range is past the buffer's end"
+            } else {
+                "the mode is not one of read and write"
+            };
+            let device = made.device_id;
+            self.invalid(client, device, format!("mapAsync: {why}"))?;
             replies.push(Reply::Mapped {
                 call,
-                error: Some("the range is past the buffer's end".to_owned()),
+                error: Some(why.to_owned()),
             });
             return Ok(());
-        };
-        let mode = match mode {
-            1 => wgpu::MapMode::Read,
-            2 => wgpu::MapMode::Write,
-            _ => return Err(format!("a map mode of {mode}")),
         };
         let done = Arc::new(Mutex::new(None));
         let told = done.clone();

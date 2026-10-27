@@ -294,3 +294,22 @@ fn the_gpu_process_is_started_through_the_relay_and_answers_for_an_adapter() {
         );
     }
 }
+
+#[test]
+fn the_webgl_acceptance_pages_draw_through_a_renderer_and_the_gpu_process() {
+    // M41.6: the pages of engine::webgl::acceptance in a renderer, drawn
+    // by the GPU process, give the reference browser's lines; where the
+    // machine has no adapter, the pages say "no gl".
+    let out = Command::new(BROWSER)
+        .args(["--check-processes", "webgl"])
+        .output()
+        .expect("the check ran");
+    let said = String::from_utf8_lossy(&out.stdout);
+    let complained = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{said}{complained}");
+    assert!(said.starts_with("webgl: renderer process Some("), "{said}");
+    assert!(
+        said.ends_with("acceptance: the reference's\n") || said.ends_with("\nno gl\n"),
+        "{said}"
+    );
+}

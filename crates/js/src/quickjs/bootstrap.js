@@ -12926,6 +12926,25 @@
     [MapGet(interfaces, "img").prototype],
   );
 
+  // `width` and `height` (HTML 4.8.4.4): the attribute's value, else the
+  // image's natural size (an image not rendered, as `new Image()`'s;
+  // a rendered one's box: G-list).
+  {
+    const proto = MapGet(interfaces, "img").prototype;
+    const sides = [["width", 1], ["height", 2]];
+    for (let i = 0; i < sides.length; i++) {
+      const [name, index] = sides[i];
+      const desc = getOwnPropertyDescriptor(proto, name);
+      const reflected = desc.get;
+      desc.get = function () {
+        const handle = self(this);
+        if (native.attribute(handle, name) !== null) return ReflectApply(reflected, this, []);
+        return imageState(this)[index];
+      };
+      defineProperty(proto, name, desc);
+    }
+  }
+
   // The legacy factory function `Image(width, height)` (HTML 4.8.4.1):
   // a new `img`, its size attributes set when given.
   const ImageFactory = function Image(width, height) {
@@ -22639,8 +22658,13 @@
       }
       this.#consumed = true;
       const info = this.#info;
+      const label = d.label === undefined ? "" : str(d.label);
       return gpuThen(gpuPromise({ op: "requestDevice", adapter: this.#id, features, limits }),
-        (told) => new GPUDevice(KEY, told, info));
+        (told) => {
+          const device = new GPUDevice(KEY, told, info);
+          device.label = label;
+          return device;
+        });
     }
   }
   expose(GPUAdapter, "GPUAdapter");
@@ -22711,6 +22735,10 @@
       const size = gpuEnforced(d.size, sizeWords, "unsigned long long", GPU_LONG_LONG);
       const usage = gpuEnforced(d.usage, usageWords, "unsigned long", GPU_LONG);
       const mapped = !!d.mappedAtCreation;
+      if (mapped && size % 4 !== 0) {
+        throw new $RangeError(prefix("createBuffer", "GPUDevice") + "createBuffer failed, size (" + size +
+          ") is not aligned to 4 when mappedAtCreation is true.");
+      }
       const told = gpuCall({ op: "createBuffer", device: this.#id, size, usage, mapped }, null).result;
       const buffer = new GPUBuffer(KEY, told.id, size, usage, mapped);
       if (d.label !== undefined) buffer.label = d.label;
@@ -23685,14 +23713,14 @@
       const s = gpuRecordOf(this, "GPUCommandEncoder");
       need(arguments.length, 1, "beginRenderPass", "GPUCommandEncoder");
       const checked = gpuRenderPassDesc(descriptor);
-      return gpuBeginPass(s, new GPURenderPassEncoder(KEY), "GPURenderPassEncoder", checked.desc, checked.error,
-        checked.layout);
+      return gpuNamed(gpuBeginPass(s, new GPURenderPassEncoder(KEY), "GPURenderPassEncoder", checked.desc,
+        checked.error, checked.layout), checked.reader);
     }
 
     beginComputePass(descriptor) {
       const s = gpuRecordOf(this, "GPUCommandEncoder");
-      gpuReader(descriptor, prefix("beginComputePass", "GPUCommandEncoder"), "GPUComputePassDescriptor");
-      return gpuBeginPass(s, new GPUComputePassEncoder(KEY), "GPUComputePassEncoder", null, null, null);
+      const r = gpuReader(descriptor, prefix("beginComputePass", "GPUCommandEncoder"), "GPUComputePassDescriptor");
+      return gpuNamed(gpuBeginPass(s, new GPUComputePassEncoder(KEY), "GPUComputePassEncoder", null, null, null), r);
     }
 
     copyBufferToBuffer(source, a, b, c, d) {
@@ -23902,7 +23930,7 @@
     if (r.d.timestampWrites !== undefined && error === null) {
       error = "Timestamp writes are not supported.";
     }
-    return { desc, error, layout };
+    return { desc, error, layout, reader: r };
   }
 
   // An attachment's format and sample count, of a view or a texture.
@@ -24289,17 +24317,21 @@
       const m = gpuEnforced(mode, words, "unsigned long", GPU_LONG);
       const start = offset === undefined ? 0 : gpuEnforced(offset, words, "unsigned long long", GPU_LONG_LONG);
       const length = size === undefined ? MathMax(0, this.#size - start) : gpuEnforced(size, words, "unsigned long long", GPU_LONG_LONG);
-      if (this.#state !== "unmapped") {
-        throw domError("OperationError", "Buffer is already mapped or has a pending map.", "mapAsync", "GPUBuffer");
+      if (this.#state === "pending") {
+        throw domError("OperationError", "Buffer already has a pending map.", "mapAsync", "GPUBuffer");
       }
-      if ((m !== 1 && m !== 2) || start % 8 !== 0 || length % 4 !== 0 || start + length > this.#size ||
-        (m === 1 && !(this.#usage & 1)) || (m === 2 && !(this.#usage & 2))) {
-        throw domError("OperationError", "Mapping the buffer failed: the mode, offset or size is not valid for it.", "mapAsync", "GPUBuffer");
-      }
-      this.#state = "pending";
+      // The rest is the device's to validate (WebGPU 5.2.2): a buffer
+      // already mapped, destroyed or invalid, a mode, offset or size not
+      // its own, is a validation error and a rejection; a mapped buffer
+      // stays mapped.
+      const mappedBefore = this.#state === "mapped";
+      if (!mappedBefore) this.#state = "pending";
       const buffer = this;
       const mapping = gpuPromise({ op: "mapAsync", buffer: this.#id, mode: m, offset: start, size: length });
       return PromiseThen(mapping, (bytes) => {
+        if (mappedBefore) {
+          throw domError("OperationError", "Buffer is already mapped.", "mapAsync", "GPUBuffer");
+        }
         if (buffer.#state !== "pending") {
           throw domError("AbortError", "Buffer was unmapped before the mapping was resolved.", "mapAsync", "GPUBuffer");
         }
@@ -24443,12 +24475,36 @@
       for (let i = 0; i < named.length; i++) {
         ArrayPush(viewFormats, gpuEnumValue(named[i], GPU_FORMATS, gpuWords(r, "viewFormats"), "GPUTextureFormat"));
       }
-      this.#texture = null;
+      // A format not the canvas's throws; the texture's descriptor is
+      // validated on the device's timeline (WebGPU 21.2.5): the canvas is
+      // configured even so, its textures invalid.
       if (!listed(GPU_CANVAS_FORMATS, format)) {
-        gpuInvalid(gpuDeviceId(device), "The canvas's format " + format + " is not one of " +
-          "rgba8unorm, bgra8unorm and rgba16float.");
+        throw new $TypeError(prefix("configure", "GPUCanvasContext") + "Unsupported canvas context format '" +
+          format + "'.");
       }
-      this.#config = { device, format, usage, viewFormats, colorSpace, toneMapping: { mode }, alphaMode };
+      this.#texture = null;
+      const size = gpuCanvasSize(this.#canvas);
+      let invalid = null;
+      if (usage === 0 || (usage & ~0x1f) !== 0) {
+        invalid = "The canvas's usage " + usage + " is not a valid texture usage.";
+      } else if (format === "bgra8unorm" && (usage & 0x8) !== 0 && !device.features.has("bgra8unorm-storage")) {
+        invalid = "The canvas's format bgra8unorm with STORAGE_BINDING needs the bgra8unorm-storage feature.";
+      } else {
+        for (let i = 0; i < viewFormats.length; i++) {
+          const view = viewFormats[i];
+          if (view !== format && !(format !== "rgba16float" && view === format + "-srgb")) {
+            invalid = "The canvas's view format " + view + " is not compatible with " + format + ".";
+            break;
+          }
+        }
+      }
+      if (invalid !== null) {
+        gpuInvalid(gpuDeviceId(device), invalid);
+      } else if (size[0] === 0 || size[1] === 0) {
+        // The size is the canvas's now, not the configuration's.
+        gpuInvalid(gpuDeviceId(device), "The canvas's size is zero.");
+      }
+      this.#config = { device, format, usage, viewFormats, colorSpace, toneMapping: { mode }, alphaMode, invalid };
     }
 
     unconfigure() {
@@ -24488,6 +24544,14 @@
           usage: c.usage,
           viewFormats: c.viewFormats,
         };
+        // A configuration that was invalid makes an invalid texture,
+        // never presented: its error again, and the page's descriptor.
+        if (c.invalid !== null) {
+          gpuInvalid(device, c.invalid);
+          const id = gpuCall({ op: "createTexture", device, desc }, null).result.id;
+          this.#texture = new GPUTexture(KEY, id, device, desc);
+          return this.#texture;
+        }
         // Copied from to present it: COPY_SRC besides the page's usage.
         const made = {
           dimension: "2d",
@@ -24901,9 +24965,10 @@
           if (o === undefined || o.kind !== c) {
             throw new $TypeError(prefix(method, iface) + "parameter " + a + " is not of type '" + WEBGL_KINDS[c][1] + "'.");
           }
-          // Another context's, or one from before a restoration.
+          // Another context's, or one from before a restoration (an is*
+          // call's is false, with no error).
           if (o.context !== r || o.generation !== r.generation) {
-            native.webgl("error", r.id, 0x0502);
+            if (StringSlice(method, 0, 2) !== "is") native.webgl("error", r.id, 0x0502);
             return null;
           }
           ArrayPush(out, o.id);
@@ -25443,6 +25508,27 @@
     const image = gpuImageSource(source, words);
     const flipY = native.webgl("getParameter", r.id, 0x9240) === true;
     const premultiply = native.webgl("getParameter", r.id, 0x9241) === true;
+    // An ImageData's pixels as they are, its colour under alpha 0 kept
+    // (a bitmap's are premultiplied, and lose it).
+    const data = WeakMapGet(imageDatas, source);
+    if (data !== undefined) {
+      const { width, height } = data;
+      const from = data.data;
+      const bytes = new $Uint8Array(width * height * 4);
+      for (let y = 0; y < height; y++) {
+        const row = (flipY ? height - 1 - y : y) * width * 4;
+        for (let i = 0; i < width * 4; i += 4) {
+          const at = y * width * 4 + i;
+          const a = from[row + i + 3];
+          for (let k = 0; k < 3; k++) {
+            const c = from[row + i + k];
+            bytes[at + k] = premultiply ? MathFloor(c * a / 255 + 0.5) : c;
+          }
+          bytes[at + 3] = a;
+        }
+      }
+      return [bytes, width, height];
+    }
     let whole;
     try {
       whole = gpuBitmapOf(image, w > 0 && h > 0 ? [0, 0, w, h] : null, flipY);
@@ -25487,14 +25573,15 @@
     webglSimple(method, WEBGL2_SIMPLE_B, iface);
     const isSource = (v) => v !== null && typeof v === "object" && !ArrayBufferIsView(v);
     // An upload's last argument: a pixel unpack buffer's offset, an
-    // array (from an offset of its elements), none, or an image source
-    // cropped to the size asked.
+    // array (from an offset of its elements), none, or an image source,
+    // whole, with its size (the engine takes the rectangle of the unpack
+    // state's skips).
     const pixels = (r, name, data, srcOffset, w, h, d) => {
       if (typeof data === "number" || typeof data === "bigint") return [3, 0, glll(data), null];
       if (data === null || data === undefined) return [1, 0, 0, null];
       if (isSource(data)) {
-        const [bytes, sw, sh] = webglSourcePixels(r, data, name, iface, w, h * d);
-        return [sw === 0 ? 1 : 2, 0, 0, bytes];
+        const [bytes, sw, sh] = webglSourcePixels(r, data, name, iface, 0, 0);
+        return [sw === 0 ? 1 : 2, sw, sh, bytes];
       }
       const part = srcOffset === undefined ? gpuViewBytes(data)[0] : webglViewPart(r, data, srcOffset, 0);
       if (part === null) return null;
@@ -25515,7 +25602,7 @@
       if (a.length < 9) {
         const [bytes, w, h] = webglSourcePixels(r, a[5], "texImage2D", iface, 0, 0);
         send("texImage2D", r, [glu(a[0]), gli(a[1]), gli(a[2]), w, h, 0, glu(a[3]), glu(a[4])],
-          [w === 0 ? 1 : 2, 0, 0, bytes]);
+          [w === 0 ? 1 : 2, w, h, bytes]);
         return;
       }
       const got = pixels(r, "texImage2D", a[8], a[9], gli(a[3]), gli(a[4]), 1);
@@ -25527,7 +25614,7 @@
       need(a.length, 7, "texSubImage2D", iface);
       if (a.length < 9) {
         const [bytes, w, h] = webglSourcePixels(r, a[6], "texSubImage2D", iface, 0, 0);
-        send("texSubImage2D", r, [glu(a[0]), gli(a[1]), gli(a[2]), gli(a[3]), w, h, glu(a[4]), glu(a[5])], [2, 0, 0, bytes]);
+        send("texSubImage2D", r, [glu(a[0]), gli(a[1]), gli(a[2]), gli(a[3]), w, h, glu(a[4]), glu(a[5])], [2, w, h, bytes]);
         return;
       }
       const got = pixels(r, "texSubImage2D", a[8], a[9], gli(a[4]), gli(a[5]), 1);
@@ -25728,6 +25815,27 @@
       return extension;
     });
     method("makeXRCompatible", function () { webglRecord(this); return resolved(undefined); });
+    // The drawing buffer's tone mapping (ColorWeb-CG's): its mode kept;
+    // an 8-bit drawing buffer shows "extended" as "standard".
+    method("drawingBufferToneMapping", function (toneMapping) {
+      const r = webglRecord(this);
+      if (toneMapping !== undefined) {
+        let mode = "standard";
+        if (toneMapping !== null && (typeof toneMapping === "object" || typeof toneMapping === "function")) {
+          const given = toneMapping.mode;
+          if (given !== undefined) {
+            mode = str(given);
+            if (mode !== "standard" && mode !== "extended") {
+              throw new $TypeError(prefix("drawingBufferToneMapping", iface) + "Failed to read the 'mode' property from 'GPUCanvasToneMapping': The provided value '" + mode + "' is not a valid enum value of type GPUCanvasToneMappingMode.");
+            }
+          }
+        } else if (toneMapping !== null) {
+          throw new $TypeError(prefix("drawingBufferToneMapping", iface) + "The provided value is not of type 'GPUCanvasToneMapping'.");
+        }
+        r.toneMapping = mode;
+      }
+      return { mode: r.toneMapping || "standard" };
+    });
     method("getParameter", function (pname) {
       const r = webglRecord(this);
       need(arguments.length, 1, "getParameter", iface);

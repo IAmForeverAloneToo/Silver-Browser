@@ -159,6 +159,11 @@ harness = false
 name = "playback"
 harness = false
 
+[[bench]]
+# WebGL's frames and draw calls and a WebGPU compute round trip (M41).
+name = "gpu"
+harness = false
+
 [dev-dependencies]
 # The scripted server the loader's tests fetch from.
 net = { workspace = true, features = ["test-server"] }

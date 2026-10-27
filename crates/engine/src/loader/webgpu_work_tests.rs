@@ -81,7 +81,7 @@ device.queue.writeBuffer(storage, 0, new Uint32Array([1, 2, 3, 4]));
 const read = device.createBuffer({size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST});
 const group = device.createBindGroup({layout: pipeline.getBindGroupLayout(0), entries: [{binding: 0, resource: {buffer: storage}}]});
 const encoder = device.createCommandEncoder({label: 'mine'});
-const pass = encoder.beginComputePass();
+const pass = encoder.beginComputePass({label: 'pass'});
 pass.setPipeline(pipeline);
 pass.setBindGroup(0, group);
 pass.dispatchWorkgroups(1);
@@ -92,7 +92,9 @@ device.queue.submit([commands]);
 await read.mapAsync(GPUMapMode.READ);
 log('changed ' + Array.from(new Uint32Array(read.getMappedRange())).join(','));
 log('kinds ' + [module, pipeline, group, encoder, pass, commands].map(o => o.constructor.name).join(' '));
-log('label ' + encoder.label);
+const labelled = await (await navigator.gpu.requestAdapter()).requestDevice({label: 'named'});
+const render = labelled.createCommandEncoder().beginRenderPass({label: 'drawn', colorAttachments: []});
+log('label ' + encoder.label + ' ' + pass.label + ' ' + labelled.label + ' ' + render.label);
 "#)
     else {
         return;
@@ -102,7 +104,7 @@ log('label ' + encoder.label);
         [
             "changed 3,5,7,9",
             "kinds GPUShaderModule GPUComputePipeline GPUBindGroup GPUCommandEncoder GPUComputePassEncoder GPUCommandBuffer",
-            "label mine",
+            "label mine pass named drawn",
         ]
     );
 }
@@ -328,6 +330,21 @@ log('next frame ' + (context.getCurrentTexture() !== texture));
 log('exported ' + (canvas.toDataURL().length > 50));
 const other = new OffscreenCanvas(2, 2);
 log('offscreen ' + other.getContext('webgpu').constructor.name + ' ' + other.getContext('2d'));
+// A format not the canvas's throws; a usage, view format or size the
+// texture cannot have is a validation error, the canvas configured.
+const ctx = other.getContext('webgpu');
+try { ctx.configure({device, format: 'rgba8uint'}); } catch (e) { log('rgba8uint ' + e.name + ' ' + ctx.getConfiguration()); }
+const invalid = async (configuration) => {
+  device.pushErrorScope('validation');
+  ctx.configure(Object.assign({device, format: 'rgba8unorm'}, configuration));
+  const error = await device.popErrorScope();
+  return error === null ? 'none' : error.constructor.name;
+};
+log('usage 0 ' + await invalid({usage: 0}) + ', storage ' + await invalid({usage: GPUTextureUsage.STORAGE_BINDING}) +
+  ', srgb view ' + await invalid({viewFormats: ['rgba8unorm-srgb']}) + ', r8 view ' + await invalid({viewFormats: ['r8unorm']}) +
+  ' ' + ctx.getConfiguration().viewFormats);
+other.width = 0;
+log('zero ' + await invalid({}));
 "#,
     ) else {
         return;
@@ -345,6 +362,9 @@ log('offscreen ' + other.getContext('webgpu').constructor.name + ' ' + other.get
             "next frame true",
             "exported true",
             "offscreen GPUCanvasContext null",
+            "rgba8uint TypeError null",
+            "usage 0 GPUValidationError, storage none, srgb view none, r8 view GPUValidationError r8unorm",
+            "zero GPUValidationError",
         ]
     );
 }

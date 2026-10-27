@@ -175,6 +175,23 @@ new Uint32Array(made.getMappedRange()).set([7, 9]);
 made.unmap();
 await made.mapAsync(GPUMapMode.READ);
 log('created ' + Array.from(new Uint32Array(made.getMappedRange())).join(','));
+// Mapped again while mapped: a validation error and a rejection, the
+// buffer still mapped.
+device.pushErrorScope('validation');
+const again = await made.mapAsync(GPUMapMode.READ).catch(e => e.name);
+log('mapped again ' + again + ' ' + made.mapState + ' ' + (await device.popErrorScope()).constructor.name);
+// An invalid buffer mapped at creation: its range is the page's, its
+// unmap no second error; a size not of 4 throws.
+let uncaptured = 0;
+device.onuncapturederror = () => uncaptured++;
+device.pushErrorScope('validation');
+const invalid = device.createBuffer({{size: 8, usage: 0, mappedAtCreation: true}});
+new Uint32Array(invalid.getMappedRange()).set([1, 2]);
+const scoped = await device.popErrorScope();
+invalid.unmap();
+try {{ device.createBuffer({{size: 6, usage: GPUBufferUsage.COPY_DST, mappedAtCreation: true}}); }} catch (e) {{ log('size 6 ' + e.name); }}
+await device.queue.onSubmittedWorkDone();
+log('invalid ' + scoped.constructor.name + ' ' + uncaptured);
 await device.queue.onSubmittedWorkDone();
 log('work done');
 "#
@@ -196,6 +213,9 @@ log('work done');
             "after unmap OperationError: Failed to execute 'getMappedRange' on 'GPUBuffer': getMappedRange failed",
             "twice OperationError",
             "created 7,9",
+            "mapped again OperationError mapped GPUValidationError",
+            "size 6 RangeError",
+            "invalid GPUValidationError 0",
             "work done",
         ]
     );

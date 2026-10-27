@@ -262,7 +262,8 @@ fn ended(
 /// another and says how many renderers live and what each holds. With
 /// `memory`, a port and pages' paths, shows each page of the server at
 /// that port in a renderer of its own and says what the renderer holds
-/// once it is shown (M35.1, a page class's memory).
+/// once it is shown (M35.1, a page class's memory). With `webgl`, M41's
+/// acceptance pages through a renderer and the GPU process.
 pub(crate) fn check(what: Option<&str>) -> i32 {
     let checked = match what {
         Some("orphan") => check_orphan(),
@@ -274,6 +275,7 @@ pub(crate) fn check(what: Option<&str>) -> i32 {
         Some("cap") => check_cap(std::env::args().nth(3)),
         Some("memory") => check_memory(std::env::args().nth(3), std::env::args().skip(4).collect()),
         Some("gpu") => check_gpu(),
+        Some("webgl") => check_webgl(),
         _ => check_all(),
     };
     match checked {
@@ -919,5 +921,56 @@ fn check_page() -> Result<(), String> {
     if drawn == 0 {
         return Err("the renderer drew nothing".into());
     }
+    Ok(())
+}
+
+/// M41's acceptance pages (engine::webgl::acceptance) in a tab of a
+/// renderer, drawing through the GPU process: their lines, and whether
+/// they are the reference browser's to its tolerance.
+fn check_webgl() -> Result<(), String> {
+    use engine::webgl::acceptance;
+    const SIZE: (u32, u32) = (200, 100);
+    let page = format!(
+        "<!DOCTYPE html><script>const log = (s) => console.log(s);\n{}\n\
+         accept(log).then(() => log('done'), (e) => log('failed ' + e));</script>",
+        acceptance::SCRIPT
+    );
+    let file = std::env::temp_dir().join(format!("silver-webgl-{}.html", std::process::id()));
+    std::fs::write(&file, page).map_err(|error| format!("no page: {error}"))?;
+    let url = Url::from_file_path(&file).ok_or_else(|| "no URL for the page".to_owned());
+    let lines = url.and_then(|url| {
+        let mut tab = process_tab(SIZE)?;
+        tab.set_scripting(true);
+        tab.navigate(url);
+        let mut lines: Vec<String> = Vec::new();
+        let ended = wait_for(&mut tab, |tab| {
+            lines.extend(tab.take_console().into_iter().map(|entry| entry.text));
+            if tab.needs_frame() {
+                tab.frame_at(SIZE.0, SIZE.1, FrameTime::at(Duration::ZERO));
+            }
+            lines
+                .iter()
+                .any(|l| l == "done" || l.starts_with("failed") || l == "no gl")
+        });
+        println!("webgl: renderer process {:?}", tab.renderer_process());
+        if !ended {
+            return Err(format!("the pages did not end: {lines:?}"));
+        }
+        Ok(lines)
+    });
+    let _ = std::fs::remove_file(&file);
+    let mut lines = lines?;
+    lines.retain(|l| l != "done");
+    for line in &lines {
+        println!("{line}");
+    }
+    if lines == ["no gl"] {
+        return Ok(());
+    }
+    let differences = acceptance::differences(&lines);
+    if !differences.is_empty() {
+        return Err(differences.join("\n"));
+    }
+    println!("acceptance: the reference's");
     Ok(())
 }

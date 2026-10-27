@@ -94,6 +94,20 @@ fn errors_are_said_as_the_reference_says_them() {
         ),
         "ERROR: 0:2: 'void' : illegal use of type 'void'\n"
     );
+    // An expression of more binary operators than MAX_GLSL_OPERATORS is
+    // refused (the Khronos suite's long expressions overflowed the
+    // stack); as many in statements of their own are not.
+    let sum = |n: usize| vec!["x"; n + 1].join(" + ");
+    let long = format!(
+        "void main() {{ float x = 1.0; x = {}; gl_Position = vec4(x); }}",
+        sum(crate::MAX_GLSL_OPERATORS + 1)
+    );
+    assert!(error(&long, Stage::Vertex, &webgl1()).contains("Expression too complex"));
+    let statements = format!(
+        "void main() {{ float x = 1.0; x = {0}; x = {0}; gl_Position = vec4(x); }}",
+        sum(crate::MAX_GLSL_OPERATORS / 2 + 10)
+    );
+    compile(&statements, Stage::Vertex, &webgl1()).unwrap();
     // No default precision: a float of the shader's own is refused, the
     // built-ins' are not.
     compile(

@@ -318,6 +318,10 @@ pub struct Parser<'a> {
     func: Option<FnCtx>,
     pub ctx: Ctx,
     depth: usize,
+    /// The binary expressions being read, and the operators of the
+    /// outermost one so far.
+    pub chains: usize,
+    pub operators: usize,
     /// The default precisions in force, a scope each: float's, and
     /// samplers' by type name.
     precisions: Vec<HashMap<String, &'static str>>,
@@ -369,6 +373,8 @@ impl<'a> Parser<'a> {
             func: None,
             ctx,
             depth: 0,
+            chains: 0,
+            operators: 0,
             precisions: vec![HashMap::new()],
             max_identifier: if options.webgl2 { 1024 } else { 256 },
             declared: false,

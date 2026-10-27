@@ -383,6 +383,11 @@ fn glsl_es_1_00_means_what_it_says() {
             "struct P { vec2 a; float b; };\nconst float k = 2.0 * 3.0 + 1.0;\nvoid main() { P x = P(vec2(1.0), k); P y = x; y.b += 1.0; gl_FragColor = vec4(float(x == x), float(x == y), k, float(vec2(1.0) == vec2(1.0, 2.0))); }",
             [1.0, 0.0, 7.0, 0.0],
         ),
+        // The geometric functions of scalars (WGSL's are of vectors).
+        (
+            "void main() { float a = -2.0; float b = 2.0; float n = 1.0; gl_FragColor = vec4(normalize(a), dot(b, 3.0), reflect(n, n), faceforward(n, n, -n) + refract(n, -n, n)); }",
+            [-1.0, 6.0, -1.0, 2.0],
+        ),
     ];
     for (body, want) in cases {
         let got = run(&gpu, VS1, &fs1(body), false, &[]);

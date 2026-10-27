@@ -20,7 +20,7 @@ cargo run -p engine --example wpt -- pull <checkout>
 which rewrites them, `MANIFEST` and this file. `tests/wpt.rs` runs
 them; `expectations.txt` names those expected to fail, and why.
 
-With them are the testharness.js tests of `fetch/api/headers`, `fetch/api/request`, `fetch/api/response`, `fetch/api/basic`, `xhr`, `url` (the `urlsearchparams-*` tests), `FileAPI/blob`, `webstorage`, `wasm/jsapi` (the `interface.*` tests), `wasm/jsapi` (the `prototypes.*` tests), `wasm/jsapi/constructor`, `wasm/jsapi/global`, `wasm/jsapi/instance`, `wasm/jsapi/memory`, `wasm/jsapi/module`, `wasm/jsapi/table`, `html/canvas/element`, `html/canvas/offscreen`, `workers`, `webmessaging`, `html/infrastructure/safe-passing-of-structured-data`, `html/webappapis/structured-clone`, `content-security-policy`, `html/browsers/sandboxing`, `referrer-policy`, `html/semantics/embedded-content/the-iframe-element`, `webaudio`, `html/semantics/embedded-content/media-elements` (M27, M29, M31, M40)
+With them are the testharness.js tests of `fetch/api/headers`, `fetch/api/request`, `fetch/api/response`, `fetch/api/basic`, `xhr`, `url` (the `urlsearchparams-*` tests), `FileAPI/blob`, `webstorage`, `wasm/jsapi` (the `interface.*` tests), `wasm/jsapi` (the `prototypes.*` tests), `wasm/jsapi/constructor`, `wasm/jsapi/global`, `wasm/jsapi/instance`, `wasm/jsapi/memory`, `wasm/jsapi/module`, `wasm/jsapi/table`, `html/canvas/element`, `html/canvas/offscreen`, `workers`, `webmessaging`, `html/infrastructure/safe-passing-of-structured-data`, `html/webappapis/structured-clone`, `content-security-policy`, `html/browsers/sandboxing`, `referrer-policy`, `html/semantics/embedded-content/the-iframe-element`, `webaudio`, `html/semantics/embedded-content/media-elements`, `webgl` (M27, M29, M31, M40, M41)
 that the runner's one server can serve: no Python handler, no `.sub`
 template, no other host, nothing over `https:`, no shared or
 service worker and no module worker. `resources/testharness.js` is
@@ -37,8 +37,8 @@ subtest they fail is named in `expectations.txt`, and why.
 | checklayout | 70 |
 | crashtest | 101 |
 | reftest | 2909 |
-| testharness | 4660 |
-| all | 7740 |
+| testharness | 4673 |
+| all | 7753 |
 
 ## Left out
 

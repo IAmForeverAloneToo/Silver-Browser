@@ -132,8 +132,12 @@ try { gl.clearColor(1); } catch (e) { log('too few ' + e.name); }
 // Numbered alike in both contexts, but another's.
 gl.createBuffer();
 const other = document.createElement('canvas').getContext('webgl');
-gl.bindBuffer(gl.ARRAY_BUFFER, other.createBuffer());
-log('other context ' + gl.getError());
+const theirs = other.createBuffer();
+other.bindBuffer(other.ARRAY_BUFFER, theirs);
+gl.bindBuffer(gl.ARRAY_BUFFER, theirs);
+const bound = gl.getError();
+// isBuffer of another's is false, with no error.
+log('other context ' + bound + ' ' + gl.isBuffer(theirs) + ' ' + gl.getError());
 log('extensions ' + (gl.getSupportedExtensions().length >= 15) + ' ' + gl.getExtension('OES_nothing'));
 const two = document.createElement('canvas').getContext('webgl2');
 log('webgl2 ' + two.constructor.name + ' ' + (two instanceof WebGLRenderingContext) + ' ' + two.getParameter(two.VERSION));
@@ -159,7 +163,7 @@ log('webgl2 ' + two.constructor.name + ' ' + (two instanceof WebGLRenderingConte
             "precision WebGLShaderPrecisionFormat 127 127 23",
             "not a buffer TypeError",
             "too few TypeError",
-            "other context 1282",
+            "other context 1282 false 0",
             "extensions true null",
             "webgl2 WebGL2RenderingContext false WebGL 2.0 (OpenGL ES 3.0 Chromium)",
         ]
@@ -654,6 +658,17 @@ gl.bindBufferRange(gl.UNIFORM_BUFFER, 2, ubo, 100, 16);
 log('unaligned ' + gl.getError());
 gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ubo);
 log('element ' + gl.getError());
+// An element array buffer may be bound to a copy target; one first bound
+// there is still either.
+const elementBuffer = gl.createBuffer();
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, elementBuffer);
+gl.bindBuffer(gl.COPY_READ_BUFFER, elementBuffer);
+const copyFirst = gl.createBuffer();
+gl.bindBuffer(gl.COPY_WRITE_BUFFER, copyFirst);
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, copyFirst);
+const copies = gl.getError();
+gl.bindBuffer(gl.ARRAY_BUFFER, copyFirst);
+log('copy targets ' + copies + ' ' + gl.isBuffer(copyFirst) + ' then an element array ' + gl.getError());
 gl.deleteVertexArray(vao);
 log('deleted ' + gl.isVertexArray(vao) + ' ' + gl.getParameter(gl.VERTEX_ARRAY_BINDING));
 // WebGL 1's OES_vertex_array_object.
@@ -681,6 +696,7 @@ log('oes ' + String(v1) + ' ' + (g1.getParameter(oes.VERTEX_ARRAY_BINDING_OES) =
             "unbound 1282",
             "unaligned 1281",
             "element 1282",
+            "copy targets 0 true then an element array 1282",
             "deleted false null",
             "oes [object WebGLVertexArrayObjectOES] true true",
         ]
@@ -880,6 +896,29 @@ const back = new Uint8Array(8);
 gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, back);
 log('pixel buffers ' + Array.from(back).join(',') + ' ' + gl.getError());
 gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+// An integer cube: each face read by its direction (WebGPU samples no
+// integer cube; its faces are a 2D array's layers, the face chosen in
+// the shader).
+const cubeInts = fs('uniform highp isamplerCube t; out vec4 o; void main() { o = vec4(texture(t, vec3(1.0, 0.0, 0.0)).r, texture(t, vec3(0.0, 0.0, -1.0)).r, texture(t, vec3(0.0, 1.0, 0.0)).r, 255) / 255.0; }');
+gl.useProgram(cubeInts);
+const ic = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_CUBE_MAP, ic);
+for (let face = 0; face < 6; face++) {
+  gl.texImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, gl.RGBA8I, 1, 1, 0, gl.RGBA_INTEGER, gl.BYTE, new Int8Array([10 * (face + 1), 0, 0, 1]));
+}
+nearest(gl.TEXTURE_CUBE_MAP);
+draw();
+log('int cube ' + read(0, 0, 1, 1) + ' ' + gl.getError());
+// An image source's sub-rectangle: UNPACK_SKIP_PIXELS of an ImageData.
+gl.useProgram(plain);
+const part = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, part);
+nearest(gl.TEXTURE_2D);
+gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 1);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new ImageData(new Uint8ClampedArray([255, 0, 0, 255, 0, 255, 0, 255]), 2, 1));
+gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+draw();
+log('skipped ' + read(0, 0, 1, 1) + ' ' + gl.getError());
 "#
         ),
     ) else {
@@ -900,6 +939,8 @@ gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
             "shadow 255,255,255,255 / 0,0,0,0 0",
             "array with a buffer bound 1282",
             "pixel buffers 0,0,0,0,0,0,255,255 0",
+            "int cube 10,60,30,255 0",
+            "skipped 0,255,0,255 0",
         ]
     );
 }
@@ -948,11 +989,25 @@ const wrong = fs('layout(location = 0) out vec4 o; layout(location = 1) out vec4
 gl.useProgram(wrong);
 draw();
 log('wrong output ' + gl.getError());
+// An active draw buffer the program writes nothing to: INVALID_OPERATION,
+// unless its writes are masked.
+gl.useProgram(fs('layout(location = 0) out vec4 o; void main() { o = vec4(1.0); }'));
+gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+draw();
+const missing = gl.getError();
+gl.colorMask(false, false, false, false);
+draw();
+log('missing output ' + missing + ' ' + gl.getError());
+gl.colorMask(true, true, true, true);
 // Blitted onto the canvas, turned over left to right.
 gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
 gl.blitFramebuffer(0, 0, 4, 2, 4, 0, 0, 2, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+// Sides past an int32's range: INVALID_VALUE.
+const blitted = gl.getError();
+gl.blitFramebuffer(0, 0, 4, 2, -2147483648, 0, 2147483647, 2, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+log('too wide ' + gl.getError());
 gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
-log('blit ' + gl.getError() + ' ' + read(0, 0, 1, 1));
+log('blit ' + blitted + ' ' + read(0, 0, 1, 1));
 // A multisampled renderbuffer drawn into, resolved by a blit.
 const ms = gl.createRenderbuffer();
 gl.bindRenderbuffer(gl.RENDERBUFFER, ms);
@@ -996,6 +1051,8 @@ log('webgl1 ' + String(ext) + ' ' + g1.getParameter(ext.MAX_DRAW_BUFFERS_WEBGL) 
             "ints 9 3 8d94",
             "floats 0,0,255,255",
             "wrong output 1282",
+            "missing output 1282 0",
+            "too wide 1281",
             "blit 0 0,0,255,255",
             "samples 4 4 0",
             "read multisampled 1282",
@@ -1005,4 +1062,15 @@ log('webgl1 ' + String(ext) + ' ' + g1.getParameter(ext.MAX_DRAW_BUFFERS_WEBGL) 
             "webgl1 [object WEBGL_draw_buffers] 8 true 0",
         ]
     );
+}
+
+#[test]
+fn the_acceptance_pages_draw_what_the_reference_browser_draws() {
+    use crate::webgl::acceptance;
+    let script = format!("{}\nawait accept(log);", acceptance::SCRIPT);
+    let Some(lines) = run_page("", &script) else {
+        return;
+    };
+    let differences = acceptance::differences(&lines);
+    assert!(differences.is_empty(), "{differences:#?}");
 }

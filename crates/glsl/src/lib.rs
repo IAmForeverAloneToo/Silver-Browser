@@ -34,6 +34,11 @@ pub const MAX_SHADER_SOURCE: usize = 1 << 20;
 /// The most nesting of blocks, expressions and macros.
 pub const MAX_GLSL_DEPTH: usize = 64;
 
+/// The most binary operators one expression may have, as the reference's
+/// translator limits an expression's complexity: past it a shader is
+/// refused rather than translated into a tree too deep to walk.
+pub const MAX_GLSL_OPERATORS: usize = 512;
+
 /// The most tokens a shader may have after preprocessing.
 pub const MAX_GLSL_TOKENS: usize = 1 << 20;
 

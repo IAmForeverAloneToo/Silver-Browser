@@ -1,0 +1,157 @@
+# The subset's failing subtests, as path<TAB>message: the message as the
+# runner reports it, its numbers made # (they are the machine's), or
+# `timeout`, `error ...`, or `either` (the test may also pass). They are
+# this machine's (Windows, its D3D12 adapter); tests/khronos.rs holds them
+# on Windows only.
+#
+# Chiefly: transform feedback (not in M41, docs/design/gpu.md section 2);
+# framebuffer attachment queries and completeness the engine does not yet
+# check; the glsl crate's preprocessor (out-of-charset characters in
+# skipped lines, comments before #version, line continuations) and its
+# forbidden sequence operators; a vertex array's buffers kept after their
+# deletion; a WebGL canvas drawn into a 2D canvas with and without
+# preserveDrawingBuffer; the URL class (G68) that js-test-pre.js uses for
+# some pages; and named elements as window's properties.
+conformance/attribs/gl-vertex-attrib.html	exception Uncaught ReferenceError: URL is not defined at http://#:#/js/js-test-pre.js:#:#
+conformance/attribs/gl-vertex-attrib.html	successfullyParsed should be true (of type boolean). Was undefined (of type undefined).
+conformance/buffers/buffer-data-and-buffer-sub-data.html	getError expected: INVALID_VALUE. Was NO_ERROR : calling bufferData when BufferDataSource is undefined should generate INVALID_VALUE
+conformance/buffers/buffer-data-and-buffer-sub-data.html	gl.bufferSubData(gl.ARRAY_BUFFER, #, null) should throw an exception. Was undefined.
+conformance/buffers/index-validation.html	getError expected: INVALID_OPERATION. Was NO_ERROR : 
+conformance/canvas/draw-static-webgl-to-multiple-canvas-test.html	drawImage: Should be (#,#,#,#). / at (#, #) expected: #,#,#,# was #,#,#,#
+conformance/canvas/draw-static-webgl-to-multiple-canvas-test.html	drawImage: Should be (#,#,#,#).?at (#, #) expected: #,#,#,# was #,#,#,#
+conformance/canvas/draw-webgl-to-canvas-test.html	drawImage: Should be [#, #, #, #] / at (#, #) expected: #,#,#,# was #,#,#,#
+conformance/canvas/draw-webgl-to-canvas-test.html	drawImage: Should be [#, #, #, #]?at (#, #) expected: #,#,#,# was #,#,#,#
+conformance/canvas/to-data-url-after-composite.html	toDataURL loaded into image, drawn into #D context, should be green / at (#, #) expected: #,#,# was #,#,#
+conformance/context/context-attribute-preserve-drawing-buffer.html	Did not render ok with preserveDrawingBuffer false.
+conformance/context/context-attribute-preserve-drawing-buffer.html	Did not render ok with preserveDrawingBuffer true.
+conformance/extensions/oes-texture-float-with-video.html	exception Uncaught NotFoundError: The node is no longer there.
+conformance/glsl/bugs/character-set.html	[unexpected fragment shader compile status] (expected: true) Out-of-charset string '"' in ifdef-out #preproc MUST compile.
+conformance/glsl/bugs/character-set.html	[unexpected fragment shader compile status] (expected: true) Out-of-charset string '"' in ifdef-out MUST compile.
+conformance/glsl/bugs/character-set.html	[unexpected fragment shader compile status] (expected: true) Out-of-charset string '#line # "foo.glsl"' in ifdef-out #preproc MUST compile.
+conformance/glsl/bugs/character-set.html	[unexpected fragment shader compile status] (expected: true) Out-of-charset string '#line # "foo.glsl"' in ifdef-out MUST compile.
+conformance/glsl/bugs/character-set.html	[unexpected fragment shader compile status] (expected: true) Out-of-charset string '$' in ifdef-out #preproc MUST compile.
+conformance/glsl/bugs/character-set.html	[unexpected fragment shader compile status] (expected: true) Out-of-charset string '$' in ifdef-out MUST compile.
+conformance/glsl/bugs/character-set.html	[unexpected fragment shader compile status] (expected: true) Out-of-charset string '????' in ifdef-out #preproc MUST compile.
+conformance/glsl/bugs/character-set.html	[unexpected fragment shader compile status] (expected: true) Out-of-charset string '????' in ifdef-out MUST compile.
+conformance/glsl/constructors/glsl-construct-vec-mat-index.html	[unexpected fragment shader compile status] (expected: true) A matrix constructor with two writes and reads to the same variable inside it in different parameters must succeed "mat#(index++, vec#(index++))"
+conformance/glsl/literals/float_literal.vert.html	[link failed] parsing floating point literals should succeed
+conformance/glsl/literals/float_literal.vert.html	[unexpected vertex shader compile status] (expected: true) parsing floating point literals should succeed
+conformance/glsl/literals/overflow_leak.vert.html	Fail to setup program
+conformance/glsl/literals/overflow_leak.vert.html	should be green / at (#, #) expected: #,#,#,# was #,#,#,#
+conformance/glsl/literals/overflow_leak.vert.html	should be green?at (#, #) expected: #,#,#,# was #,#,#,#
+conformance/glsl/preprocessor/comments.html	[link failed] Line-comment with backslash-line-continuation
+conformance/glsl/preprocessor/comments.html	[link failed] Line-comment with backslash-line-continuation with newline before EOF
+conformance/glsl/preprocessor/comments.html	[unexpected vertex shader compile status] (expected: true) Line-comment with backslash-line-continuation
+conformance/glsl/preprocessor/comments.html	[unexpected vertex shader compile status] (expected: true) Line-comment with backslash-line-continuation with newline before EOF
+conformance/glsl/preprocessor/macro-expansion-tricky.html	[unexpected fragment shader compile status] (expected: true) Recursive macro name inside incomplete macro invocation in macro expansion should not crash
+conformance/misc/invalid-passed-params.html	context.getError() should be # Was #
+conformance/misc/webgl-specific.html	getError expected: INVALID_OPERATION. Was NO_ERROR : after evaluating: gl.depthRange(#, #)
+conformance/renderbuffers/depth-renderbuffer-initialization.html	should be #,#,#,# / at (#, #) expected: #,#,#,# was #,#,#,#
+conformance/renderbuffers/depth-renderbuffer-initialization.html	should be #,#,#,#?at (#, #) expected: #,#,#,# was #,#,#,#
+conformance/renderbuffers/framebuffer-object-attachment.html	getError expected: INVALID_ENUM. Was NO_ERROR : Only OBJECT_TYPE can be queried when no image is attached
+conformance/renderbuffers/framebuffer-object-attachment.html	getError expected: INVALID_FRAMEBUFFER_OPERATION. Was NO_ERROR : 
+conformance/renderbuffers/framebuffer-object-attachment.html	getError expected: INVALID_OPERATION. Was NO_ERROR : bindRenderbuffer must be called before attachment to COLOR_ATTACHMENT#
+conformance/renderbuffers/framebuffer-object-attachment.html	getError expected: INVALID_OPERATION. Was NO_ERROR : bindRenderbuffer must be called before attachment to DEPTH_ATTACHMENT
+conformance/renderbuffers/framebuffer-object-attachment.html	getError expected: INVALID_OPERATION. Was NO_ERROR : bindRenderbuffer must be called before attachment to DEPTH_STENCIL_ATTACHMENT
+conformance/renderbuffers/framebuffer-object-attachment.html	getError expected: INVALID_OPERATION. Was NO_ERROR : bindRenderbuffer must be called before attachment to STENCIL_ATTACHMENT
+conformance/renderbuffers/framebuffer-object-attachment.html	gl.checkFramebufferStatus(gl.FRAMEBUFFER) returned #
+conformance/renderbuffers/framebuffer-object-attachment.html	gl.getFramebufferAttachmentParameter(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT#, gl.FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE) should be # Was #
+conformance/renderbuffers/framebuffer-object-attachment.html	gl.getFramebufferAttachmentParameter(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE) should be # Was #
+conformance/renderbuffers/framebuffer-object-attachment.html	gl.getFramebufferAttachmentParameter(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE) should be # Was #
+conformance/renderbuffers/framebuffer-object-attachment.html	gl.getFramebufferAttachmentParameter(gl.FRAMEBUFFER, gl.STENCIL_ATTACHMENT, gl.FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE) should be # Was #
+conformance/renderbuffers/framebuffer-object-attachment.html	gl.getParameter(gl.DEPTH_BITS) == # should be true. Was false.
+conformance/renderbuffers/framebuffer-object-attachment.html	gl.getParameter(gl.STENCIL_BITS) >= # should be true. Was false.
+conformance/renderbuffers/framebuffer-object-attachment.html	should be green / at (#, #) expected: #,#,#,# was #,#,#,#
+conformance/renderbuffers/framebuffer-object-attachment.html	should be green?at (#, #) expected: #,#,#,# was #,#,#,#
+conformance/rendering/canvas-alpha-bug.html	exception Uncaught ReferenceError: canvas is not defined at http://#:#/conformance/rendering/canvas-alpha-bug.html:#:#
+conformance/rendering/canvas-alpha-bug.html	successfullyParsed should be true (of type boolean). Was undefined (of type undefined).
+conformance/rendering/draw-arrays-out-of-bounds.html	getError expected: NO_ERROR. Was INVALID_OPERATION : after evaluating: gl.drawArrays(gl.TRIANGLES, #, #)
+conformance/state/fb-attach-implicit-target-assignment.html	getError expected: INVALID_OPERATION. Was NO_ERROR : framebufferRenderbuffer must be preceeded by some bindRenderbuffer
+conformance/state/gl-get-calls.html	context.getParameter(context.COMPRESSED_TEXTURE_FORMATS) is not an instance of Uint#Array
+conformance/textures/misc/origin-clean-conformance-offscreencanvas.html	Image setup failed (TypeError: not a function).
+conformance/textures/misc/origin-clean-conformance.html	Image setup failed (TypeError: not a function).
+conformance2/attribs/gl-bindAttribLocation-aliasing-inactive.html	Link should fail when both attributes are aliased to location #
+conformance2/attribs/gl-vertex-attrib-normalized-int.html	should be opaque white / at (#, #) expected: #,#,#,# was #,#,#,#
+conformance2/attribs/gl-vertex-attrib.html	exception Uncaught ReferenceError: URL is not defined at http://#:#/js/js-test-pre.js:#:#
+conformance2/attribs/gl-vertex-attrib.html	successfullyParsed should be true (of type boolean). Was undefined (of type undefined).
+conformance2/buffers/buffer-type-restrictions.html	getError expected: INVALID_OPERATION. Was NO_ERROR : Binding buffer first with bindBuffer to gl.COPY_READ_BUFFER/COPY_READ_BUFFER_BINDING and then binding buffer with bindBuffer to gl.ELEMENT_ARRAY_BUFFER should FAIL
+conformance2/buffers/buffer-type-restrictions.html	getError expected: INVALID_OPERATION. Was NO_ERROR : Binding buffer first with bindBuffer to gl.COPY_WRITE_BUFFER/COPY_WRITE_BUFFER_BINDING and then binding buffer with bindBuffer to gl.ELEMENT_ARRAY_BUFFER should FAIL
+conformance2/context/constants-and-properties-2.html	Property does not exist: FLOAT_MAT#x#
+conformance2/context/constants-and-properties-2.html	Property does not exist: TIMEOUT_IGNORED
+conformance2/context/incorrect-context-object-behaviour.html	contextA.getFragDataLocation(tfProgramB, 'nonexistent_variable') threw exception TypeError: not a function
+conformance2/context/methods-2.html	Property either does not exist or is not a function: getFragDataLocation
+conformance2/glsl3/forbidden-operators.html	[unexpected link status] (expected: false) Using sequence operators with arrays is not allowed
+conformance2/glsl3/forbidden-operators.html	[unexpected link status] (expected: false) Using sequence operators with structs containing arrays is not allowed
+conformance2/glsl3/forbidden-operators.html	[unexpected link status] (expected: false) Using sequence operators with void is not allowed
+conformance2/glsl3/forbidden-operators.html	[unexpected link status] (expected: false) Using ternary operators with arrays is not allowed
+conformance2/glsl3/forbidden-operators.html	[unexpected link status] (expected: false) Using ternary operators with structs containing arrays is not allowed
+conformance2/glsl3/misplaced-version-directive.html	[unexpected link status] (expected: false) Fragment shader with a comment before the version directive should fail.
+conformance2/glsl3/misplaced-version-directive.html	[unexpected link status] (expected: false) Fragment shader with a newline before the version directive should fail.
+conformance2/glsl3/misplaced-version-directive.html	[unexpected link status] (expected: false) Vertex shader with a comment before the version directive should fail.
+conformance2/glsl3/misplaced-version-directive.html	[unexpected link status] (expected: false) Vertex shader with a newline before the version directive should fail.
+conformance2/misc/views-with-offsets.html	getError expected: INVALID_OPERATION. Was INVALID_VALUE : 
+conformance2/reading/read-pixels-into-pixel-pack-buffer.html	getError expected: INVALID_ENUM. Was INVALID_OPERATION : Format should not be able to read as LUMINANCE
+conformance2/reading/read-pixels-into-pixel-pack-buffer.html	getError expected: INVALID_ENUM. Was INVALID_OPERATION : Format should not be able to read as LUMINANCE_ALPHA
+conformance2/reading/read-pixels-into-pixel-pack-buffer.html	getError expected: INVALID_VALUE. Was INVALID_OPERATION : offset < #
+conformance2/renderbuffers/framebuffer-object-attachment.html	gl.getParameter(gl.DEPTH_BITS) == # should be true. Was false.
+conformance2/renderbuffers/framebuffer-object-attachment.html	gl.getParameter(gl.STENCIL_BITS) >= # should be true. Was false.
+conformance2/renderbuffers/framebuffer-texture-layer.html	getError expected: INVALID_VALUE. Was NO_ERROR : calling framebufferTextureLayer with a mipmap level out of range should generate INVALID_VALUE.
+conformance2/renderbuffers/framebuffer-texture-layer.html	gl.getFramebufferAttachmentParameter(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.FRAMEBUFFER_ATTACHMENT_OBJECT_NAME) == '[object WebGLTexture]' should be true. Was false.
+conformance2/renderbuffers/invalidate-framebuffer.html	getError expected: INVALID_VALUE. Was NO_ERROR : calling invalidateSubFramebuffer should generate INVALID_VALUE if width < # or height < #
+conformance2/renderbuffers/readbuffer.html	getError expected: INVALID_OPERATION. Was INVALID_ENUM : calling readBuffer with GL_COLOR_ATTACHMENTi that exceeds MAX_COLOR_ATTACHMENT on fbo should generate INVALID_OPERATION.
+conformance2/rendering/framebuffer-unsupported.html	checkFramebufferStatus expects [FRAMEBUFFER_UNSUPPORTED], was FRAMEBUFFER_COMPLETE
+conformance2/state/gl-enum-tests.html	getError expected: INVALID_ENUM. Was NO_ERROR : gl.enable(getDesktopGL('PRIMITIVE_RESTART_FIXED_INDEX')) should return INVALID_ENUM.
+conformance2/state/gl-get-calls.html	context.getError() should be # Was #
+conformance2/state/gl-get-calls.html	context.getParameter(context.MAX_CLIENT_WAIT_TIMEOUT_WEBGL) is not an instance of Number
+conformance2/state/gl-get-calls.html	context.getParameter(context.MAX_VERTEX_OUTPUT_COMPONENTS) should be >= # Was # (of type number).
+conformance2/state/gl-get-calls.html	context.getParameter(context.RASTERIZER_DISCARD) should be false (of type boolean). Was null (of type object).
+conformance2/textures/misc/compressed-tex-from-pbo-crash.html	exception Uncaught TypeError: Failed to execute 'compressedTexImage#D' on 'WebGL#RenderingContext': parameter # is not of type 'ArrayBufferView'. at bootstrap:#:#
+conformance2/textures/misc/compressed-tex-from-pbo-crash.html	successfullyParsed should be true (of type boolean). Was undefined (of type undefined).
+conformance2/textures/misc/copy-texture-cube-map-AMD-bug.html	getError expected: NO_ERROR. Was INVALID_OPERATION : CopyTexImage#D should succeed.
+conformance2/textures/misc/copy-texture-cube-map-AMD-bug.html	getError expected: NO_ERROR. Was INVALID_OPERATION : CopyTexSubImage#D should succeed.
+conformance2/textures/misc/origin-clean-conformance-offscreencanvas.html	Image setup failed (TypeError: not a function).
+conformance2/textures/misc/tex-image-10bpc.html	uniquePixels.size should be >= # Was # (of type number).
+conformance2/transform_feedback/non-existent-varying.html	Program should fail to link when a nonexistent varying 'bogus' is specified for transform feedback.
+conformance2/transform_feedback/non-existent-varying.html	Program should fail to link when a nonexistent varying 'gl_Bogus' is specified for transform feedback.
+conformance2/transform_feedback/switching-objects.html	TRANSFORM_FEEDBACK_BINDING was [object WebGLTransformFeedback], but expected [object WebGLTransformFeedback]
+conformance2/transform_feedback/switching-objects.html	TRANSFORM_FEEDBACK_BUFFER_BINDING[#] was [object WebGLBuffer], but expected [object WebGLBuffer]
+conformance2/transform_feedback/switching-objects.html	buffer should match expected values
+conformance2/transform_feedback/switching-objects.html	getError expected: INVALID_OPERATION. Was NO_ERROR : bind while unpaused
+conformance2/transform_feedback/switching-objects.html	getError expected: INVALID_OPERATION. Was NO_ERROR : bindBufferBase(TRANSFORM_FEEDBACK_BUFFER) when active
+conformance2/transform_feedback/switching-objects.html	getError expected: INVALID_OPERATION. Was NO_ERROR : bindTransformFeedback when active
+conformance2/transform_feedback/switching-objects.html	getError expected: INVALID_OPERATION. Was NO_ERROR : bufferData on a buffer currently bound to an active (but unbound and paused) transform feedback object must fail with INVALID_OPERATION
+conformance2/transform_feedback/switching-objects.html	getError expected: INVALID_OPERATION. Was NO_ERROR : switch program while active
+conformance2/transform_feedback/switching-objects.html	getError expected: INVALID_OPERATION. Was NO_ERROR : wrong primitive mode
+conformance2/transform_feedback/switching-objects.html	getError expected: NO_ERROR. Was INVALID_OPERATION : begin
+conformance2/transform_feedback/switching-objects.html	getError expected: NO_ERROR. Was INVALID_OPERATION : begin TF
+conformance2/transform_feedback/switching-objects.html	getError expected: NO_ERROR. Was INVALID_OPERATION : begin on tf#
+conformance2/transform_feedback/switching-objects.html	getError expected: NO_ERROR. Was INVALID_OPERATION : bind while paused
+conformance2/transform_feedback/switching-objects.html	getError expected: NO_ERROR. Was INVALID_OPERATION : end TF
+conformance2/transform_feedback/switching-objects.html	getError expected: NO_ERROR. Was INVALID_OPERATION : end on tf#
+conformance2/transform_feedback/switching-objects.html	getError expected: NO_ERROR. Was INVALID_OPERATION : end transform feedback on local_tf#
+conformance2/transform_feedback/switching-objects.html	getError expected: NO_ERROR. Was INVALID_OPERATION : end while paused
+conformance2/transform_feedback/switching-objects.html	getError expected: NO_ERROR. Was INVALID_OPERATION : local_tf# is now active+paused
+conformance2/transform_feedback/switching-objects.html	getError expected: NO_ERROR. Was INVALID_OPERATION : pause
+conformance2/transform_feedback/switching-objects.html	getError expected: NO_ERROR. Was INVALID_OPERATION : transform feedback should begin successfully
+conformance2/transform_feedback/switching-objects.html	getError expected: NO_ERROR. Was INVALID_OPERATION : transform feedback should complete successfully
+conformance2/transform_feedback/switching-programs.html	getError expected: INVALID_OPERATION. Was NO_ERROR : linkProgram(P#) while active in transform feedback must return INVALID_OPERATION
+conformance2/transform_feedback/switching-programs.html	getError expected: NO_ERROR. Was INVALID_OPERATION : beginTransformFeedback with P# should succeed
+conformance2/transform_feedback/switching-programs.html	getError expected: NO_ERROR. Was INVALID_OPERATION : endTransformFeedback should succeed
+conformance2/transform_feedback/switching-programs.html	getError expected: NO_ERROR. Was INVALID_OPERATION : final endTransformFeedback should succeed
+conformance2/transform_feedback/switching-programs.html	getError expected: NO_ERROR. Was INVALID_OPERATION : useProgram(P#) while paused should succeed
+conformance2/transform_feedback/too-small-buffers.html	buffer should match expected values
+conformance2/transform_feedback/too-small-buffers.html	getError expected: INVALID_OPERATION. Was NO_ERROR : draw
+conformance2/transform_feedback/too-small-buffers.html	getError expected: INVALID_OPERATION. Was NO_ERROR : integer overflow and/or buffer too small
+conformance2/transform_feedback/too-small-buffers.html	getError expected: NO_ERROR. Was INVALID_OPERATION : before draw
+conformance2/transform_feedback/two-unreferenced-varyings.html	buffer should match expected values
+conformance2/transform_feedback/two-unreferenced-varyings.html	getError expected: NO_ERROR. Was INVALID_OPERATION : Draw with transform feedback should succeed
+conformance2/transform_feedback/unwritten-output-defaults-to-zero.html	buffer should match expected values
+conformance2/transform_feedback/unwritten-output-defaults-to-zero.html	getError expected: NO_ERROR. Was INVALID_OPERATION : Set up program should succeed
+conformance2/uniforms/uniform-block-idents-as-expr.html	Expected linked: false, was true
+conformance2/vertex_arrays/vertex-array-object.html	Color attrib stored buffer should be retained.
+conformance2/vertex_arrays/vertex-array-object.html	Position attrib stored buffer should be retained.
+conformance2/vertex_arrays/vertex-array-object.html	Vertex attrib value bound to buffer
+conformance2/vertex_arrays/vertex-array-object.html	Vertex attrib value reset across bindings
+conformance2/vertex_arrays/vertex-array-object.html	getError expected: NO_ERROR. Was INVALID_OPERATION : Draw call should not fail.
+conformance2/vertex_arrays/vertex-array-object.html	should be green / at (#, #) expected: #,#,#,# was #,#,#,#
+conformance2/vertex_arrays/vertex-array-object.html	should be green?at (#, #) expected: #,#,#,# was #,#,#,#

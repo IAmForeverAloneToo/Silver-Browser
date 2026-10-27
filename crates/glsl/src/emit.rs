@@ -206,6 +206,9 @@ fn texture_type(s: &Sampler) -> String {
     let dim = match s.dim {
         Dim::D2 => "2d",
         Dim::D3 => "3d",
+        // An integer cube is read by texel from its six faces as layers:
+        // WGSL loads no texel of a cube.
+        Dim::Cube if s.sample != Scalar::Float => "2d_array",
         Dim::Cube => "cube",
         Dim::D2Array => "2d_array",
     };
@@ -2757,6 +2760,32 @@ impl<'a> Emitter<'a> {
                 t.to_owned()
             }
         };
+        // GLSL's geometric functions take floats too; WGSL's vectors
+        // alone: their scalar forms written out.
+        if args.first().is_some_and(|e| e.ty.is_scalar()) {
+            match name {
+                "normalize" => return Ok(format!("sign({})", a(0))),
+                "dot" => return Ok(format!("({} * {})", a(0), a(1))),
+                "reflect" => {
+                    let (i, n) = (self.let_of(&a(0)), self.let_of(&a(1)));
+                    return Ok(format!("({i} - 2.0f * {n} * {i} * {n})"));
+                }
+                "faceforward" => {
+                    let n = self.let_of(&a(0));
+                    return Ok(format!("select(-{n}, {n}, ({} * {}) < 0.0f)", a(2), a(1)));
+                }
+                "refract" => {
+                    let (i, n, eta) = (self.let_of(&a(0)), self.let_of(&a(1)), self.let_of(&a(2)));
+                    let k = self.let_of(&format!(
+                        "(1.0f - {eta} * {eta} * (1.0f - {n} * {i} * {n} * {i}))"
+                    ));
+                    return Ok(format!(
+                        "select({eta} * {i} - ({eta} * {n} * {i} + sqrt({k})) * {n}, 0.0f, {k} < 0.0f)"
+                    ));
+                }
+                _ => {}
+            }
+        }
         Ok(match name {
             "radians" | "degrees" | "sin" | "cos" | "tan" | "asin" | "acos" | "exp" | "log"
             | "exp2" | "log2" | "sqrt" | "abs" | "sign" | "floor" | "ceil" | "fract"
@@ -3085,7 +3114,31 @@ impl<'a> Emitter<'a> {
                 Dim::D3 => format!(
                     "clamp(vec3<i32>(floor({uv} * vec3<f32>({dims}))), vec3<i32>(0), vec3<i32>({dims}) - vec3<i32>(1))"
                 ),
-                Dim::Cube => return Err(internal("an integer cube map is read by the G-list")),
+                Dim::Cube => {
+                    // The face and its coordinates of a direction (GL ES
+                    // 3.0 table 3.21), then the face's texel.
+                    let face = self.helper("webgl_cube_face", || {
+                        "fn webgl_cube_face(d: vec3<f32>) -> vec3<f32> {
+    let a = abs(d);
+    if (a.x >= a.y && a.x >= a.z) {
+        if (d.x >= 0.0f) { return vec3<f32>((-d.z / a.x + 1.0f) * 0.5f, (-d.y / a.x + 1.0f) * 0.5f, 0.0f); }
+        return vec3<f32>((d.z / a.x + 1.0f) * 0.5f, (-d.y / a.x + 1.0f) * 0.5f, 1.0f);
+    }
+    if (a.y >= a.z) {
+        if (d.y >= 0.0f) { return vec3<f32>((d.x / a.y + 1.0f) * 0.5f, (d.z / a.y + 1.0f) * 0.5f, 2.0f); }
+        return vec3<f32>((d.x / a.y + 1.0f) * 0.5f, (-d.z / a.y + 1.0f) * 0.5f, 3.0f);
+    }
+    if (d.z >= 0.0f) { return vec3<f32>((d.x / a.z + 1.0f) * 0.5f, (-d.y / a.z + 1.0f) * 0.5f, 4.0f); }
+    return vec3<f32>((-d.x / a.z + 1.0f) * 0.5f, (-d.y / a.z + 1.0f) * 0.5f, 5.0f);
+}
+".to_owned()
+                    });
+                    let f = self.let_of(&format!("{face}({uv})"));
+                    let texel = format!(
+                        "clamp(vec2<i32>(floor({f}.xy * vec2<f32>({dims}))), vec2<i32>(0), vec2<i32>({dims}) - vec2<i32>(1))"
+                    );
+                    return Ok(format!("textureLoad({tex}, {texel}, i32({f}.z), {lod})"));
+                }
             };
             return Ok(match s.dim {
                 Dim::D2Array => format!(

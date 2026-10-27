@@ -4,6 +4,7 @@
 //! they are read.
 
 use crate::Error;
+use crate::MAX_GLSL_OPERATORS;
 use crate::builtins;
 use crate::lex::Tok;
 use crate::parse::{Parser, Var, int_literal};
@@ -325,6 +326,20 @@ impl Parser<'_> {
     }
 
     fn binary(&mut self, level: usize) -> R<Expr> {
+        if level > 0 {
+            return self.binary_level(level);
+        }
+        // The outermost binary expression counts its operators.
+        if self.chains == 0 {
+            self.operators = 0;
+        }
+        self.chains += 1;
+        let e = self.binary_level(0);
+        self.chains -= 1;
+        e
+    }
+
+    fn binary_level(&mut self, level: usize) -> R<Expr> {
         if level == LEVELS.len() {
             return self.unary();
         }
@@ -341,6 +356,10 @@ impl Parser<'_> {
             }
             let line = token.line;
             self.next()?;
+            self.operators += 1;
+            if self.operators > MAX_GLSL_OPERATORS {
+                return Err(Error::new(line, p, "Expression too complex"));
+            }
             let right = self.binary(level + 1)?;
             left = self.binary_expr(p, left, right, line)?;
         }

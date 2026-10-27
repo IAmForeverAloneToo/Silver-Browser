@@ -1197,7 +1197,7 @@ step("argCounts", () => { const x = fresh().getContext("2d"); const r = []; for 
 step("drawImageErrors", () => { const x = fresh().getContext("2d"); try { x.drawImage({}, 0, 0); } catch (e) { return err(e); } });
 const fresh_image = new Image(); const none = fresh_image.complete; fresh_image.src = "/img.png?complete";
 const coming = fresh_image.complete; await new Promise((ok) => { fresh_image.onload = ok; });
-step("complete", () => [none, coming, fresh_image.complete, fresh_image.naturalWidth, fresh_image.naturalHeight]);
+step("complete", () => [none, coming, fresh_image.complete, fresh_image.naturalWidth, fresh_image.naturalHeight, fresh_image.width, fresh_image.height]);
 step("crossOrigin", () => { const i = new Image(5, 6); const r = [i.crossOrigin, i.width, i.height]; for (const v of ["", "USE-CREDENTIALS", "bogus"]) { i.crossOrigin = v; r.push(i.crossOrigin, i.getAttribute("crossorigin")); }
   i.crossOrigin = null; r.push(i.crossOrigin, i.hasAttribute("crossorigin")); return r; });
 step("detached", () => { const x = fresh(4, 4).getContext("2d"); x.drawImage(img, 0, 0, 4, 4); return [img.isConnected, px(x, 0, 0)[3]]; });
@@ -1243,7 +1243,7 @@ step("detached", () => { const x = fresh(4, 4).getContext("2d"); x.drawImage(img
          'CanvasRenderingContext2D': The provided value is not of type '(CSSImageValue or \
          HTMLCanvasElement or HTMLImageElement or HTMLVideoElement or ImageBitmap or \
          OffscreenCanvas or SVGImageElement or VideoFrame)'.\"",
-        "complete=[true,false,true,2,2]",
+        "complete=[true,false,true,2,2,2,2]",
         "crossOrigin=[null,5,6,\"anonymous\",\"\",\"use-credentials\",\"USE-CREDENTIALS\",\
          \"anonymous\",\"bogus\",null,false]",
         // `new Image()`, never in the document, loads and draws.

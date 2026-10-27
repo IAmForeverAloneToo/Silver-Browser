@@ -7,6 +7,7 @@
 //! render pass, sent at the end of the task, or when something must be
 //! read or written in order.
 
+pub mod acceptance;
 mod draw;
 mod ext;
 mod formats;
@@ -1082,13 +1083,21 @@ impl Context {
                         }
                         Some(buffer) => {
                             // An element array buffer is one for good, and
-                            // no other is one (WebGL 6.1).
+                            // no other is one (WebGL 6.1); the copy targets
+                            // take either and make neither (WebGL 2 5.1).
                             let element = |t: u32| t == ELEMENT_ARRAY_BUFFER;
-                            if let Some(first) = buffer.target
-                                && element(first) != element(target)
-                            {
-                                self.error(INVALID_OPERATION);
-                                return Ok(Answer::Nothing);
+                            let neutral = |t: u32| t == COPY_READ_BUFFER || t == COPY_WRITE_BUFFER;
+                            if !neutral(target) {
+                                if let Some(first) = buffer.target
+                                    && !neutral(first)
+                                    && element(first) != element(target)
+                                {
+                                    self.error(INVALID_OPERATION);
+                                    return Ok(Answer::Nothing);
+                                }
+                                if buffer.target.is_none_or(neutral) {
+                                    buffer.target = Some(target);
+                                }
                             }
                             buffer.target.get_or_insert(target);
                         }

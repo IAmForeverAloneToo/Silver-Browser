@@ -1,0 +1,11 @@
+# The cases of QUERIES the engine fails, as query<TAB>case (the case's
+# name after the query's), or query<TAB>timeout; each with why.
+
+# The standard's per-stage storage limits (maxStorageBuffersInVertexStage
+# and the like) are not the engine's: wgpu has none.
+webgpu:api,operation,adapter,requestDevice:default:*	:
+# A dispatch of the most workgroups wgpu allows runs out of memory here.
+webgpu:api,operation,compute,basic:*	:large_dispatch:dispatchSize="maximum"
+# The uncaptured error of an out-of-memory error with no scope for it can
+# come after the test's end under load.
+webgpu:api,validation,error_scope:simple:*	:errorType="out-of-memory";errorFilter="internal"	flaky

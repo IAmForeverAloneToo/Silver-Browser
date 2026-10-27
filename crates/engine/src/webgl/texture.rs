@@ -981,10 +981,7 @@ impl Context {
             self.error(INVALID_VALUE);
             return;
         }
-        if up.source == 2
-            && (fmt.depth()
-                || (up.three && (self.state.unpack_flip_y || self.state.unpack_premultiply_alpha)))
-        {
+        if up.source == 2 && fmt.depth() {
             self.error(INVALID_OPERATION);
             return;
         }
@@ -999,11 +996,38 @@ impl Context {
         let pixel = formats::client_pixel(fmt.format, fmt.kind);
         let texels = match (up.source, bytes) {
             (2, Some(rgba)) => {
-                if (rgba.len() as u64) < u64::from(w) * u64::from(h) * u64::from(d) * 4 {
+                // The source whole (its size given, or the upload's), its
+                // rectangle at the skips, a 3D slice an image's rows on.
+                let (sw, sh) = if up.view > 0 {
+                    (up.view, up.offset as u32)
+                } else {
+                    (w, h * d)
+                };
+                let image_rows = if up.three && layout.image_height > 0 {
+                    layout.image_height
+                } else {
+                    h
+                };
+                let (x0, y0) = (layout.skip_pixels, layout.skip_rows);
+                let last_row = u64::from(y0)
+                    + u64::from(d.saturating_sub(1)) * u64::from(image_rows)
+                    + u64::from(h);
+                if u64::from(x0) + u64::from(w) > u64::from(sw)
+                    || (d > 0 && last_row > u64::from(sh))
+                    || (rgba.len() as u64) < u64::from(sw) * u64::from(sh) * 4
+                {
                     self.error(INVALID_OPERATION);
                     return;
                 }
-                Some(formats::from_rgba8(&fmt, w, h * d, &rgba))
+                let mut part = Vec::with_capacity((w * h * d * 4) as usize);
+                for z in 0..d {
+                    for y in 0..h {
+                        let row = (y0 + z * image_rows + y) as usize;
+                        let start = (row * sw as usize + x0 as usize) * 4;
+                        part.extend_from_slice(&rgba[start..start + w as usize * 4]);
+                    }
+                }
+                Some(formats::from_rgba8(&fmt, w, h * d, &part))
             }
             (_, Some(bytes)) => {
                 if up.source == 0 && !formats::view_ok(fmt.kind, up.view) {
@@ -1840,7 +1864,10 @@ impl Context {
             (w, h)
         };
         let dimension = if slot == SLOT_3D { "3d" } else { "2d" };
+        let integer = matches!(formats::info(storage).2, Sample::Sint | Sample::Uint);
         let view_dimension = match slot {
+            // An integer cube is read as its faces' array (glsl).
+            SLOT_CUBE if integer => "2d-array",
             SLOT_CUBE => "cube",
             SLOT_3D => "3d",
             SLOT_ARRAY => "2d-array",

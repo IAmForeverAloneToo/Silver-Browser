@@ -2031,6 +2031,18 @@ impl Context {
             self.error(INVALID_OPERATION);
             return;
         }
+        // A rectangle's width or height past an int: INVALID_VALUE (WebGL
+        // 2 5.38).
+        let sides = [
+            src[2] as i64 - src[0] as i64,
+            src[3] as i64 - src[1] as i64,
+            dst[2] as i64 - dst[0] as i64,
+            dst[3] as i64 - dst[1] as i64,
+        ];
+        if sides.iter().any(|v| v.abs() > i64::from(i32::MAX)) {
+            self.error(INVALID_VALUE);
+            return;
+        }
         for fb in [self.surfaces.read_framebuffer, self.surfaces.framebuffer]
             .into_iter()
             .flatten()
@@ -2053,7 +2065,9 @@ impl Context {
             None
         };
         let read_samples = source.as_ref().map_or(0, |s| s.samples);
-        let same_size = (src[2] - src[0], src[3] - src[1]) == (dst[2] - dst[0], dst[3] - dst[1]);
+        let wide = |a: i32, b: i32| i64::from(b) - i64::from(a);
+        let same_size = (wide(src[0], src[2]), wide(src[1], src[3]))
+            == (wide(dst[0], dst[2]), wide(dst[1], dst[3]));
         if read_samples > 1 && (!same_size || target.samples > 1) {
             self.error(INVALID_OPERATION);
             return;
@@ -2373,8 +2387,8 @@ impl Context {
         let (y0, y1) = (dst[1].min(dst[3]), dst[1].max(dst[3]));
         let s = self.scissor_rect(target.size);
         let clip = |lo: i32, hi: i32, at: u32, len: u32| {
-            let a = lo.max(at as i32).max(0);
-            let b = hi.min((at + len) as i32);
+            let a = i64::from(lo).max(i64::from(at)).max(0);
+            let b = i64::from(hi).min(i64::from(at) + i64::from(len));
             (a as u32, (b - a).max(0) as u32)
         };
         let (sx, sw) = clip(x0, x1, s.0, s.2);

@@ -7741,3 +7741,16 @@ testharness	html/semantics/embedded-content/media-elements/video_loop_base.html
 testharness	html/semantics/embedded-content/media-elements/video_volume_check.html
 testharness	html/semantics/embedded-content/media-elements/volume_nonfinite.html
 testharness	html/semantics/embedded-content/media-elements/volumechange-ratechange-queue-task.html
+testharness	webgl/bufferSubData.html
+testharness	webgl/compressed-tex-sub-image-2d-without-base-image.html
+testharness	webgl/compressedTexImage2D.html
+testharness	webgl/compressedTexSubImage2D.html
+testharness	webgl/drawingBufferToneMapping.html
+testharness	webgl/framebuffer-initial-state.html
+testharness	webgl/getParameter-stencil-masks.html
+testharness	webgl/stencilMaskSeparate-front-and-back.html
+testharness	webgl/texImage-half-float-type.html
+testharness	webgl/texImage2D-source-ignores-unpack-alignment.html
+testharness	webgl/texImage2D.html
+testharness	webgl/texSubImage2D.html
+testharness	webgl/uniformMatrixNfv.html
