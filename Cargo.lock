@@ -704,6 +704,7 @@ dependencies = [
  "dom",
  "encoding",
  "flate2",
+ "glsl",
  "html",
  "images",
  "js",

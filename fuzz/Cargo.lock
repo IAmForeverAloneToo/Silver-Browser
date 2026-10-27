@@ -387,6 +387,7 @@ dependencies = [
  "devtools",
  "dom",
  "encoding",
+ "glsl",
  "html",
  "images",
  "js",

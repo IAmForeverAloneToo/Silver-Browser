@@ -14317,11 +14317,20 @@
         t.context = gpuCanvasContext(this, -t.id);
         return t.context;
       }
+      if (id === "webgl" || id === "webgl2") {
+        const version = id === "webgl2" ? 2 : 1;
+        if (t.context !== null) {
+          return webglVersionOf(t.context) === version ? t.context : null;
+        }
+        if (WORKER) return null;
+        t.context = webglContext(this, -t.id, version, arguments[1]);
+        return t.context;
+      }
       if (id !== "2d") {
         return null;
       }
       if (t.context !== null) {
-        return t.context instanceof GPUCanvasContext ? null : t.context;
+        return t.context instanceof GPUCanvasContext || webglVersionOf(t.context) !== 0 ? null : t.context;
       }
       const { alpha, willReadFrequently } = contextSettings(arguments[1], "OffscreenCanvas");
       native.canvas("context", 0, -t.id, alpha);
@@ -14570,11 +14579,20 @@
           if (made !== null) WeakMapSet(canvasContexts, this, made);
           return made;
         }
+        if (id === "webgl" || id === "experimental-webgl" || id === "webgl2") {
+          const version = id === "webgl2" ? 2 : 1;
+          if (existing !== undefined) {
+            return webglVersionOf(existing) === version ? existing : null;
+          }
+          const made = webglContext(this, handle, version, arguments[1]);
+          if (made !== null) WeakMapSet(canvasContexts, this, made);
+          return made;
+        }
         if (id !== "2d") {
           return null;
         }
         if (existing !== undefined) {
-          return existing instanceof GPUCanvasContext ? null : existing;
+          return existing instanceof GPUCanvasContext || webglVersionOf(existing) !== 0 ? null : existing;
         }
         const { alpha, willReadFrequently } = contextSettings(arguments[1], "HTMLCanvasElement");
         native.canvas("context", 0, handle, alpha);
@@ -18765,6 +18783,7 @@
     }
     // WebGPU's canvases drawn into are presented (M41).
     gpuPresent();
+    webglPresent();
     return false;
   }
 
@@ -24542,6 +24561,710 @@
     const args = source[2] === null ? ["imageBitmap"] : ["imageBitmap", source[2]];
     for (let i = 0; i < numbers.length; i++) ArrayPush(args, numbers[i]);
     return ReflectApply(source[2] === null ? native.canvas : native.canvasData, undefined, args);
+  }
+
+  // ---- WebGL (M41 step 6, D40) -------------------------------------------
+  // The contexts and their objects are the engine's numbers; every call
+  // goes through `native.webgl(op, context, ...)`, GL's state there.
+  // Web IDL's conversions and TypeErrors are here; GL's errors are the
+  // engine's, read by getError.
+  const WEBGL1_CONSTANTS = [
+    "DEPTH_BUFFER_BIT",256, "STENCIL_BUFFER_BIT",1024, "COLOR_BUFFER_BIT",16384, "POINTS",0,
+    "LINES",1, "LINE_LOOP",2, "LINE_STRIP",3, "TRIANGLES",4, "TRIANGLE_STRIP",5, "TRIANGLE_FAN",6,
+    "ZERO",0, "ONE",1, "SRC_COLOR",768, "ONE_MINUS_SRC_COLOR",769, "SRC_ALPHA",770,
+    "ONE_MINUS_SRC_ALPHA",771, "DST_ALPHA",772, "ONE_MINUS_DST_ALPHA",773, "DST_COLOR",774,
+    "ONE_MINUS_DST_COLOR",775, "SRC_ALPHA_SATURATE",776, "FUNC_ADD",32774, "BLEND_EQUATION",32777,
+    "BLEND_EQUATION_RGB",32777, "BLEND_EQUATION_ALPHA",34877, "FUNC_SUBTRACT",32778,
+    "FUNC_REVERSE_SUBTRACT",32779, "BLEND_DST_RGB",32968, "BLEND_SRC_RGB",32969,
+    "BLEND_DST_ALPHA",32970, "BLEND_SRC_ALPHA",32971, "CONSTANT_COLOR",32769,
+    "ONE_MINUS_CONSTANT_COLOR",32770, "CONSTANT_ALPHA",32771, "ONE_MINUS_CONSTANT_ALPHA",32772,
+    "BLEND_COLOR",32773, "ARRAY_BUFFER",34962, "ELEMENT_ARRAY_BUFFER",34963,
+    "ARRAY_BUFFER_BINDING",34964, "ELEMENT_ARRAY_BUFFER_BINDING",34965, "STREAM_DRAW",35040,
+    "STATIC_DRAW",35044, "DYNAMIC_DRAW",35048, "BUFFER_SIZE",34660, "BUFFER_USAGE",34661,
+    "CURRENT_VERTEX_ATTRIB",34342, "FRONT",1028, "BACK",1029, "FRONT_AND_BACK",1032,
+    "CULL_FACE",2884, "BLEND",3042, "DITHER",3024, "STENCIL_TEST",2960, "DEPTH_TEST",2929,
+    "SCISSOR_TEST",3089, "POLYGON_OFFSET_FILL",32823, "SAMPLE_ALPHA_TO_COVERAGE",32926,
+    "SAMPLE_COVERAGE",32928, "NO_ERROR",0, "INVALID_ENUM",1280, "INVALID_VALUE",1281,
+    "INVALID_OPERATION",1282, "OUT_OF_MEMORY",1285, "CW",2304, "CCW",2305, "LINE_WIDTH",2849,
+    "ALIASED_POINT_SIZE_RANGE",33901, "ALIASED_LINE_WIDTH_RANGE",33902, "CULL_FACE_MODE",2885,
+    "FRONT_FACE",2886, "DEPTH_RANGE",2928, "DEPTH_WRITEMASK",2930, "DEPTH_CLEAR_VALUE",2931,
+    "DEPTH_FUNC",2932, "STENCIL_CLEAR_VALUE",2961, "STENCIL_FUNC",2962, "STENCIL_FAIL",2964,
+    "STENCIL_PASS_DEPTH_FAIL",2965, "STENCIL_PASS_DEPTH_PASS",2966, "STENCIL_REF",2967,
+    "STENCIL_VALUE_MASK",2963, "STENCIL_WRITEMASK",2968, "STENCIL_BACK_FUNC",34816,
+    "STENCIL_BACK_FAIL",34817, "STENCIL_BACK_PASS_DEPTH_FAIL",34818,
+    "STENCIL_BACK_PASS_DEPTH_PASS",34819, "STENCIL_BACK_REF",36003,
+    "STENCIL_BACK_VALUE_MASK",36004, "STENCIL_BACK_WRITEMASK",36005, "VIEWPORT",2978,
+    "SCISSOR_BOX",3088, "COLOR_CLEAR_VALUE",3106, "COLOR_WRITEMASK",3107, "UNPACK_ALIGNMENT",3317,
+    "PACK_ALIGNMENT",3333, "MAX_TEXTURE_SIZE",3379, "MAX_VIEWPORT_DIMS",3386, "SUBPIXEL_BITS",3408,
+    "RED_BITS",3410, "GREEN_BITS",3411, "BLUE_BITS",3412, "ALPHA_BITS",3413, "DEPTH_BITS",3414,
+    "STENCIL_BITS",3415, "POLYGON_OFFSET_UNITS",10752, "POLYGON_OFFSET_FACTOR",32824,
+    "TEXTURE_BINDING_2D",32873, "SAMPLE_BUFFERS",32936, "SAMPLES",32937,
+    "SAMPLE_COVERAGE_VALUE",32938, "SAMPLE_COVERAGE_INVERT",32939,
+    "COMPRESSED_TEXTURE_FORMATS",34467, "DONT_CARE",4352, "FASTEST",4353, "NICEST",4354,
+    "GENERATE_MIPMAP_HINT",33170, "BYTE",5120, "UNSIGNED_BYTE",5121, "SHORT",5122,
+    "UNSIGNED_SHORT",5123, "INT",5124, "UNSIGNED_INT",5125, "FLOAT",5126, "DEPTH_COMPONENT",6402,
+    "ALPHA",6406, "RGB",6407, "RGBA",6408, "LUMINANCE",6409, "LUMINANCE_ALPHA",6410,
+    "UNSIGNED_SHORT_4_4_4_4",32819, "UNSIGNED_SHORT_5_5_5_1",32820, "UNSIGNED_SHORT_5_6_5",33635,
+    "FRAGMENT_SHADER",35632, "VERTEX_SHADER",35633, "MAX_VERTEX_ATTRIBS",34921,
+    "MAX_VERTEX_UNIFORM_VECTORS",36347, "MAX_VARYING_VECTORS",36348,
+    "MAX_COMBINED_TEXTURE_IMAGE_UNITS",35661, "MAX_VERTEX_TEXTURE_IMAGE_UNITS",35660,
+    "MAX_TEXTURE_IMAGE_UNITS",34930, "MAX_FRAGMENT_UNIFORM_VECTORS",36349, "SHADER_TYPE",35663,
+    "DELETE_STATUS",35712, "LINK_STATUS",35714, "VALIDATE_STATUS",35715, "ATTACHED_SHADERS",35717,
+    "ACTIVE_UNIFORMS",35718, "ACTIVE_ATTRIBUTES",35721, "SHADING_LANGUAGE_VERSION",35724,
+    "CURRENT_PROGRAM",35725, "NEVER",512, "LESS",513, "EQUAL",514, "LEQUAL",515, "GREATER",516,
+    "NOTEQUAL",517, "GEQUAL",518, "ALWAYS",519, "KEEP",7680, "REPLACE",7681, "INCR",7682,
+    "DECR",7683, "INVERT",5386, "INCR_WRAP",34055, "DECR_WRAP",34056, "VENDOR",7936,
+    "RENDERER",7937, "VERSION",7938, "NEAREST",9728, "LINEAR",9729, "NEAREST_MIPMAP_NEAREST",9984,
+    "LINEAR_MIPMAP_NEAREST",9985, "NEAREST_MIPMAP_LINEAR",9986, "LINEAR_MIPMAP_LINEAR",9987,
+    "TEXTURE_MAG_FILTER",10240, "TEXTURE_MIN_FILTER",10241, "TEXTURE_WRAP_S",10242,
+    "TEXTURE_WRAP_T",10243, "TEXTURE_2D",3553, "TEXTURE",5890, "TEXTURE_CUBE_MAP",34067,
+    "TEXTURE_BINDING_CUBE_MAP",34068, "TEXTURE_CUBE_MAP_POSITIVE_X",34069,
+    "TEXTURE_CUBE_MAP_NEGATIVE_X",34070, "TEXTURE_CUBE_MAP_POSITIVE_Y",34071,
+    "TEXTURE_CUBE_MAP_NEGATIVE_Y",34072, "TEXTURE_CUBE_MAP_POSITIVE_Z",34073,
+    "TEXTURE_CUBE_MAP_NEGATIVE_Z",34074, "MAX_CUBE_MAP_TEXTURE_SIZE",34076, "TEXTURE0",33984,
+    "TEXTURE1",33985, "TEXTURE2",33986, "TEXTURE3",33987, "TEXTURE4",33988, "TEXTURE5",33989,
+    "TEXTURE6",33990, "TEXTURE7",33991, "TEXTURE8",33992, "TEXTURE9",33993, "TEXTURE10",33994,
+    "TEXTURE11",33995, "TEXTURE12",33996, "TEXTURE13",33997, "TEXTURE14",33998, "TEXTURE15",33999,
+    "TEXTURE16",34000, "TEXTURE17",34001, "TEXTURE18",34002, "TEXTURE19",34003, "TEXTURE20",34004,
+    "TEXTURE21",34005, "TEXTURE22",34006, "TEXTURE23",34007, "TEXTURE24",34008, "TEXTURE25",34009,
+    "TEXTURE26",34010, "TEXTURE27",34011, "TEXTURE28",34012, "TEXTURE29",34013, "TEXTURE30",34014,
+    "TEXTURE31",34015, "ACTIVE_TEXTURE",34016, "REPEAT",10497, "CLAMP_TO_EDGE",33071,
+    "MIRRORED_REPEAT",33648, "FLOAT_VEC2",35664, "FLOAT_VEC3",35665, "FLOAT_VEC4",35666,
+    "INT_VEC2",35667, "INT_VEC3",35668, "INT_VEC4",35669, "BOOL",35670, "BOOL_VEC2",35671,
+    "BOOL_VEC3",35672, "BOOL_VEC4",35673, "FLOAT_MAT2",35674, "FLOAT_MAT3",35675,
+    "FLOAT_MAT4",35676, "SAMPLER_2D",35678, "SAMPLER_CUBE",35680,
+    "VERTEX_ATTRIB_ARRAY_ENABLED",34338, "VERTEX_ATTRIB_ARRAY_SIZE",34339,
+    "VERTEX_ATTRIB_ARRAY_STRIDE",34340, "VERTEX_ATTRIB_ARRAY_TYPE",34341,
+    "VERTEX_ATTRIB_ARRAY_NORMALIZED",34922, "VERTEX_ATTRIB_ARRAY_POINTER",34373,
+    "VERTEX_ATTRIB_ARRAY_BUFFER_BINDING",34975, "IMPLEMENTATION_COLOR_READ_TYPE",35738,
+    "IMPLEMENTATION_COLOR_READ_FORMAT",35739, "COMPILE_STATUS",35713, "LOW_FLOAT",36336,
+    "MEDIUM_FLOAT",36337, "HIGH_FLOAT",36338, "LOW_INT",36339, "MEDIUM_INT",36340,
+    "HIGH_INT",36341, "FRAMEBUFFER",36160, "RENDERBUFFER",36161, "RGBA4",32854, "RGB5_A1",32855,
+    "RGB565",36194, "DEPTH_COMPONENT16",33189, "STENCIL_INDEX8",36168, "DEPTH_STENCIL",34041,
+    "RENDERBUFFER_WIDTH",36162, "RENDERBUFFER_HEIGHT",36163, "RENDERBUFFER_INTERNAL_FORMAT",36164,
+    "RENDERBUFFER_RED_SIZE",36176, "RENDERBUFFER_GREEN_SIZE",36177, "RENDERBUFFER_BLUE_SIZE",36178,
+    "RENDERBUFFER_ALPHA_SIZE",36179, "RENDERBUFFER_DEPTH_SIZE",36180,
+    "RENDERBUFFER_STENCIL_SIZE",36181, "FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE",36048,
+    "FRAMEBUFFER_ATTACHMENT_OBJECT_NAME",36049, "FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL",36050,
+    "FRAMEBUFFER_ATTACHMENT_TEXTURE_CUBE_MAP_FACE",36051, "COLOR_ATTACHMENT0",36064,
+    "DEPTH_ATTACHMENT",36096, "STENCIL_ATTACHMENT",36128, "DEPTH_STENCIL_ATTACHMENT",33306,
+    "NONE",0, "FRAMEBUFFER_COMPLETE",36053, "FRAMEBUFFER_INCOMPLETE_ATTACHMENT",36054,
+    "FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT",36055, "FRAMEBUFFER_INCOMPLETE_DIMENSIONS",36057,
+    "FRAMEBUFFER_UNSUPPORTED",36061, "FRAMEBUFFER_BINDING",36006, "RENDERBUFFER_BINDING",36007,
+    "MAX_RENDERBUFFER_SIZE",34024, "INVALID_FRAMEBUFFER_OPERATION",1286,
+    "UNPACK_FLIP_Y_WEBGL",37440, "UNPACK_PREMULTIPLY_ALPHA_WEBGL",37441,
+    "CONTEXT_LOST_WEBGL",37442, "UNPACK_COLORSPACE_CONVERSION_WEBGL",37443,
+    "BROWSER_DEFAULT_WEBGL",37444,
+  ];
+  const WEBGL2_CONSTANTS = [
+    "READ_BUFFER",3074, "UNPACK_ROW_LENGTH",3314, "UNPACK_SKIP_ROWS",3315,
+    "UNPACK_SKIP_PIXELS",3316, "PACK_ROW_LENGTH",3330, "PACK_SKIP_ROWS",3331,
+    "PACK_SKIP_PIXELS",3332, "COLOR",6144, "DEPTH",6145, "STENCIL",6146, "RED",6403, "RGB8",32849,
+    "RGBA8",32856, "RGB10_A2",32857, "TEXTURE_BINDING_3D",32874, "UNPACK_SKIP_IMAGES",32877,
+    "UNPACK_IMAGE_HEIGHT",32878, "TEXTURE_3D",32879, "TEXTURE_WRAP_R",32882,
+    "MAX_3D_TEXTURE_SIZE",32883, "UNSIGNED_INT_2_10_10_10_REV",33640,
+    "MAX_ELEMENTS_VERTICES",33000, "MAX_ELEMENTS_INDICES",33001, "TEXTURE_MIN_LOD",33082,
+    "TEXTURE_MAX_LOD",33083, "TEXTURE_BASE_LEVEL",33084, "TEXTURE_MAX_LEVEL",33085, "MIN",32775,
+    "MAX",32776, "DEPTH_COMPONENT24",33190, "MAX_TEXTURE_LOD_BIAS",34045,
+    "TEXTURE_COMPARE_MODE",34892, "TEXTURE_COMPARE_FUNC",34893, "CURRENT_QUERY",34917,
+    "QUERY_RESULT",34918, "QUERY_RESULT_AVAILABLE",34919, "STREAM_READ",35041, "STREAM_COPY",35042,
+    "STATIC_READ",35045, "STATIC_COPY",35046, "DYNAMIC_READ",35049, "DYNAMIC_COPY",35050,
+    "MAX_DRAW_BUFFERS",34852, "DRAW_BUFFER0",34853, "DRAW_BUFFER1",34854, "DRAW_BUFFER2",34855,
+    "DRAW_BUFFER3",34856, "DRAW_BUFFER4",34857, "DRAW_BUFFER5",34858, "DRAW_BUFFER6",34859,
+    "DRAW_BUFFER7",34860, "DRAW_BUFFER8",34861, "DRAW_BUFFER9",34862, "DRAW_BUFFER10",34863,
+    "DRAW_BUFFER11",34864, "DRAW_BUFFER12",34865, "DRAW_BUFFER13",34866, "DRAW_BUFFER14",34867,
+    "DRAW_BUFFER15",34868, "MAX_FRAGMENT_UNIFORM_COMPONENTS",35657,
+    "MAX_VERTEX_UNIFORM_COMPONENTS",35658, "SAMPLER_3D",35679, "SAMPLER_2D_SHADOW",35682,
+    "FRAGMENT_SHADER_DERIVATIVE_HINT",35723, "PIXEL_PACK_BUFFER",35051,
+    "PIXEL_UNPACK_BUFFER",35052, "PIXEL_PACK_BUFFER_BINDING",35053,
+    "PIXEL_UNPACK_BUFFER_BINDING",35055, "SRGB",35904, "SRGB8",35905, "SRGB8_ALPHA8",35907,
+    "COMPARE_REF_TO_TEXTURE",34894, "RGBA32F",34836, "RGB32F",34837, "RGBA16F",34842,
+    "RGB16F",34843, "VERTEX_ATTRIB_ARRAY_INTEGER",35069, "MAX_ARRAY_TEXTURE_LAYERS",35071,
+    "MIN_PROGRAM_TEXEL_OFFSET",35076, "MAX_PROGRAM_TEXEL_OFFSET",35077,
+    "MAX_VARYING_COMPONENTS",35659, "TEXTURE_2D_ARRAY",35866, "TEXTURE_BINDING_2D_ARRAY",35869,
+    "R11F_G11F_B10F",35898, "UNSIGNED_INT_10F_11F_11F_REV",35899, "RGB9_E5",35901,
+    "UNSIGNED_INT_5_9_9_9_REV",35902, "TRANSFORM_FEEDBACK_BUFFER_MODE",35967,
+    "MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS",35968, "TRANSFORM_FEEDBACK_VARYINGS",35971,
+    "TRANSFORM_FEEDBACK_BUFFER_START",35972, "TRANSFORM_FEEDBACK_BUFFER_SIZE",35973,
+    "TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN",35976, "RASTERIZER_DISCARD",35977,
+    "MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS",35978,
+    "MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS",35979, "INTERLEAVED_ATTRIBS",35980,
+    "SEPARATE_ATTRIBS",35981, "TRANSFORM_FEEDBACK_BUFFER",35982,
+    "TRANSFORM_FEEDBACK_BUFFER_BINDING",35983, "RGBA32UI",36208, "RGB32UI",36209, "RGBA16UI",36214,
+    "RGB16UI",36215, "RGBA8UI",36220, "RGB8UI",36221, "RGBA32I",36226, "RGB32I",36227,
+    "RGBA16I",36232, "RGB16I",36233, "RGBA8I",36238, "RGB8I",36239, "RED_INTEGER",36244,
+    "RGB_INTEGER",36248, "RGBA_INTEGER",36249, "SAMPLER_2D_ARRAY",36289,
+    "SAMPLER_2D_ARRAY_SHADOW",36292, "SAMPLER_CUBE_SHADOW",36293, "UNSIGNED_INT_VEC2",36294,
+    "UNSIGNED_INT_VEC3",36295, "UNSIGNED_INT_VEC4",36296, "INT_SAMPLER_2D",36298,
+    "INT_SAMPLER_3D",36299, "INT_SAMPLER_CUBE",36300, "INT_SAMPLER_2D_ARRAY",36303,
+    "UNSIGNED_INT_SAMPLER_2D",36306, "UNSIGNED_INT_SAMPLER_3D",36307,
+    "UNSIGNED_INT_SAMPLER_CUBE",36308, "UNSIGNED_INT_SAMPLER_2D_ARRAY",36311,
+    "DEPTH_COMPONENT32F",36012, "DEPTH32F_STENCIL8",36013, "FLOAT_32_UNSIGNED_INT_24_8_REV",36269,
+    "FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING",33296, "FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE",33297,
+    "FRAMEBUFFER_ATTACHMENT_RED_SIZE",33298, "FRAMEBUFFER_ATTACHMENT_GREEN_SIZE",33299,
+    "FRAMEBUFFER_ATTACHMENT_BLUE_SIZE",33300, "FRAMEBUFFER_ATTACHMENT_ALPHA_SIZE",33301,
+    "FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE",33302, "FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE",33303,
+    "FRAMEBUFFER_DEFAULT",33304, "UNSIGNED_INT_24_8",34042, "DEPTH24_STENCIL8",35056,
+    "UNSIGNED_NORMALIZED",35863, "DRAW_FRAMEBUFFER_BINDING",36006, "READ_FRAMEBUFFER",36008,
+    "DRAW_FRAMEBUFFER",36009, "READ_FRAMEBUFFER_BINDING",36010, "RENDERBUFFER_SAMPLES",36011,
+    "FRAMEBUFFER_ATTACHMENT_TEXTURE_LAYER",36052, "MAX_COLOR_ATTACHMENTS",36063,
+    "COLOR_ATTACHMENT1",36065, "COLOR_ATTACHMENT2",36066, "COLOR_ATTACHMENT3",36067,
+    "COLOR_ATTACHMENT4",36068, "COLOR_ATTACHMENT5",36069, "COLOR_ATTACHMENT6",36070,
+    "COLOR_ATTACHMENT7",36071, "COLOR_ATTACHMENT8",36072, "COLOR_ATTACHMENT9",36073,
+    "COLOR_ATTACHMENT10",36074, "COLOR_ATTACHMENT11",36075, "COLOR_ATTACHMENT12",36076,
+    "COLOR_ATTACHMENT13",36077, "COLOR_ATTACHMENT14",36078, "COLOR_ATTACHMENT15",36079,
+    "FRAMEBUFFER_INCOMPLETE_MULTISAMPLE",36182, "MAX_SAMPLES",36183, "HALF_FLOAT",5131, "RG",33319,
+    "RG_INTEGER",33320, "R8",33321, "RG8",33323, "R16F",33325, "R32F",33326, "RG16F",33327,
+    "RG32F",33328, "R8I",33329, "R8UI",33330, "R16I",33331, "R16UI",33332, "R32I",33333,
+    "R32UI",33334, "RG8I",33335, "RG8UI",33336, "RG16I",33337, "RG16UI",33338, "RG32I",33339,
+    "RG32UI",33340, "VERTEX_ARRAY_BINDING",34229, "R8_SNORM",36756, "RG8_SNORM",36757,
+    "RGB8_SNORM",36758, "RGBA8_SNORM",36759, "SIGNED_NORMALIZED",36764, "COPY_READ_BUFFER",36662,
+    "COPY_WRITE_BUFFER",36663, "COPY_READ_BUFFER_BINDING",36662, "COPY_WRITE_BUFFER_BINDING",36663,
+    "UNIFORM_BUFFER",35345, "UNIFORM_BUFFER_BINDING",35368, "UNIFORM_BUFFER_START",35369,
+    "UNIFORM_BUFFER_SIZE",35370, "MAX_VERTEX_UNIFORM_BLOCKS",35371,
+    "MAX_FRAGMENT_UNIFORM_BLOCKS",35373, "MAX_COMBINED_UNIFORM_BLOCKS",35374,
+    "MAX_UNIFORM_BUFFER_BINDINGS",35375, "MAX_UNIFORM_BLOCK_SIZE",35376,
+    "MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS",35377,
+    "MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS",35379, "UNIFORM_BUFFER_OFFSET_ALIGNMENT",35380,
+    "ACTIVE_UNIFORM_BLOCKS",35382, "UNIFORM_TYPE",35383, "UNIFORM_SIZE",35384,
+    "UNIFORM_BLOCK_INDEX",35386, "UNIFORM_OFFSET",35387, "UNIFORM_ARRAY_STRIDE",35388,
+    "UNIFORM_MATRIX_STRIDE",35389, "UNIFORM_IS_ROW_MAJOR",35390, "UNIFORM_BLOCK_BINDING",35391,
+    "UNIFORM_BLOCK_DATA_SIZE",35392, "UNIFORM_BLOCK_ACTIVE_UNIFORMS",35394,
+    "UNIFORM_BLOCK_ACTIVE_UNIFORM_INDICES",35395,
+    "UNIFORM_BLOCK_REFERENCED_BY_VERTEX_SHADER",35396,
+    "UNIFORM_BLOCK_REFERENCED_BY_FRAGMENT_SHADER",35398, "INVALID_INDEX",4294967295,
+    "MAX_VERTEX_OUTPUT_COMPONENTS",37154, "MAX_FRAGMENT_INPUT_COMPONENTS",37157,
+    "MAX_SERVER_WAIT_TIMEOUT",37137, "OBJECT_TYPE",37138, "SYNC_CONDITION",37139,
+    "SYNC_STATUS",37140, "SYNC_FLAGS",37141, "SYNC_FENCE",37142,
+    "SYNC_GPU_COMMANDS_COMPLETE",37143, "UNSIGNALED",37144, "SIGNALED",37145,
+    "ALREADY_SIGNALED",37146, "TIMEOUT_EXPIRED",37147, "CONDITION_SATISFIED",37148,
+    "WAIT_FAILED",37149, "SYNC_FLUSH_COMMANDS_BIT",1, "VERTEX_ATTRIB_ARRAY_DIVISOR",35070,
+    "ANY_SAMPLES_PASSED",35887, "ANY_SAMPLES_PASSED_CONSERVATIVE",36202, "SAMPLER_BINDING",35097,
+    "RGB10_A2UI",36975, "INT_2_10_10_10_REV",36255, "TRANSFORM_FEEDBACK",36386,
+    "TRANSFORM_FEEDBACK_PAUSED",36387, "TRANSFORM_FEEDBACK_ACTIVE",36388,
+    "TRANSFORM_FEEDBACK_BINDING",36389, "TEXTURE_IMMUTABLE_FORMAT",37167,
+    "MAX_ELEMENT_INDEX",36203, "TEXTURE_IMMUTABLE_LEVELS",33503,
+    "MAX_CLIENT_WAIT_TIMEOUT_WEBGL",37447,
+  ];
+  const webglRecords = new $WeakMap();
+  const webglObjects = new $WeakMap();
+  let webglDrawn = [];
+
+  function webglRecord(context) {
+    const r = (typeof context === "object" && context !== null) ? WeakMapGet(webglRecords, context) : undefined;
+    if (r === undefined) throw illegalInvocation();
+    return r;
+  }
+
+  // A WebGL context's version, 0 for anything else.
+  function webglVersionOf(context) {
+    const r = (typeof context === "object" && context !== null) ? WeakMapGet(webglRecords, context) : undefined;
+    return r === undefined ? 0 : r.version;
+  }
+
+  // GL's integer types, as Web IDL converts them (no [EnforceRange]).
+  const glu = (v) => $Number(v) >>> 0;
+  const gli = (v) => $Number(v) | 0;
+  const glf = (v) => $Number(v);
+  const glll = (v) => {
+    const n = $Number(v);
+    return n !== n || n === Infinity || n === -Infinity ? 0 : MathTrunc(n);
+  };
+
+  // The WebGL objects, each a number of its context's.
+  function webglObjectClass(name) {
+    const cls = class {
+      constructor(key) {
+        if (key !== KEY) throw illegalConstructor(name);
+      }
+    };
+    defineProperty(cls, "name", { value: name });
+    expose(cls, name);
+    return cls;
+  }
+  const WebGLBuffer = webglObjectClass("WebGLBuffer");
+  const WebGLShader = webglObjectClass("WebGLShader");
+  const WebGLProgram = webglObjectClass("WebGLProgram");
+  const WebGLTexture = webglObjectClass("WebGLTexture");
+  const WebGLRenderbuffer = webglObjectClass("WebGLRenderbuffer");
+  const WebGLFramebuffer = webglObjectClass("WebGLFramebuffer");
+  const WebGLUniformLocation = webglObjectClass("WebGLUniformLocation");
+  const WEBGL_KINDS = {
+    B: [WebGLBuffer, "WebGLBuffer"],
+    S: [WebGLShader, "WebGLShader"],
+    P: [WebGLProgram, "WebGLProgram"],
+    T: [WebGLTexture, "WebGLTexture"],
+    R: [WebGLRenderbuffer, "WebGLRenderbuffer"],
+    F: [WebGLFramebuffer, "WebGLFramebuffer"],
+    L: [WebGLUniformLocation, "WebGLUniformLocation"],
+  };
+
+  // A new object of kind `k` numbered `id` (none for 0 or nothing).
+  function webglMake(r, k, id) {
+    if (typeof id !== "number" || id <= 0) return null;
+    const object = new WEBGL_KINDS[k][0](KEY);
+    WeakMapSet(webglObjects, object, { id, context: r, kind: k });
+    MapSet(r.objects, id, object);
+    return object;
+  }
+
+  class WebGLActiveInfo {
+    #name; #size; #type;
+    constructor(key, name, size, type) {
+      if (key !== KEY) throw illegalConstructor("WebGLActiveInfo");
+      this.#name = name;
+      this.#size = size;
+      this.#type = type;
+    }
+    get name() { return this.#name; }
+    get size() { return this.#size; }
+    get type() { return this.#type; }
+  }
+  expose(WebGLActiveInfo, "WebGLActiveInfo");
+
+  class WebGLShaderPrecisionFormat {
+    #min; #max; #precision;
+    constructor(key, min, max, precision) {
+      if (key !== KEY) throw illegalConstructor("WebGLShaderPrecisionFormat");
+      this.#min = min;
+      this.#max = max;
+      this.#precision = precision;
+    }
+    get rangeMin() { return this.#min; }
+    get rangeMax() { return this.#max; }
+    get precision() { return this.#precision; }
+  }
+  expose(WebGLShaderPrecisionFormat, "WebGLShaderPrecisionFormat");
+
+  class WebGLContextEvent extends Event {
+    #message;
+    constructor(type, init) {
+      needToConstruct(arguments.length, 1, "WebGLContextEvent");
+      super(type, init);
+      const m = init !== undefined && init !== null ? init.statusMessage : undefined;
+      this.#message = m === undefined ? "" : str(m);
+    }
+    get statusMessage() { return this.#message; }
+  }
+  expose(WebGLContextEvent, "WebGLContextEvent");
+
+  // An argument's conversion by its letter: e/u GLenum or GLuint, i
+  // GLint, f GLfloat, b GLboolean, l GLintptr, s DOMString; B S P T R F
+  // L an object of that kind, nullable when followed by "?".
+  // An object of another context makes GL's INVALID_OPERATION and the
+  // call does nothing (`undefined` here).
+  function webglArgs(r, spec, args, method, iface) {
+    const out = [];
+    let a = 0;
+    for (let k = 0; k < spec.length; k++) {
+      const c = spec[k];
+      if (c === "?") continue;
+      const v = args[a++];
+      switch (c) {
+        case "e": case "u": ArrayPush(out, glu(v)); break;
+        case "i": ArrayPush(out, gli(v)); break;
+        case "f": ArrayPush(out, glf(v)); break;
+        case "b": ArrayPush(out, !!v); break;
+        case "l": ArrayPush(out, glll(v)); break;
+        case "s": ArrayPush(out, str(v)); break;
+        default: {
+          const nullable = spec[k + 1] === "?";
+          if (v === null || v === undefined) {
+            if (!nullable) {
+              throw new $TypeError(prefix(method, iface) + "parameter " + a + " is not of type '" + WEBGL_KINDS[c][1] + "'.");
+            }
+            ArrayPush(out, 0);
+            break;
+          }
+          const o = typeof v === "object" ? WeakMapGet(webglObjects, v) : undefined;
+          if (o === undefined || o.kind !== c) {
+            throw new $TypeError(prefix(method, iface) + "parameter " + a + " is not of type '" + WEBGL_KINDS[c][1] + "'.");
+          }
+          if (o.context !== r) {
+            native.webgl("error", r.id, 0x0502);
+            return null;
+          }
+          ArrayPush(out, o.id);
+        }
+      }
+    }
+    return out;
+  }
+
+  // The calls that convert their arguments and pass them on: name,
+  // arguments, the least count, and what they give (v nothing, n a
+  // number, b a boolean, s a string or null, or an object's letter).
+  const WEBGL_SIMPLE = [
+    ["activeTexture", "e", 1, "v"], ["attachShader", "PS", 2, "v"], ["bindAttribLocation", "Pus", 3, "v"],
+    ["bindBuffer", "eB?", 2, "v"], ["blendColor", "ffff", 4, "v"], ["blendEquation", "e", 1, "v"],
+    ["blendEquationSeparate", "ee", 2, "v"], ["blendFunc", "ee", 2, "v"], ["blendFuncSeparate", "eeee", 4, "v"],
+    ["clearColor", "ffff", 4, "v"], ["clearDepth", "f", 1, "v"], ["clearStencil", "i", 1, "v"],
+    ["colorMask", "bbbb", 4, "v"], ["compileShader", "S", 1, "v"], ["cullFace", "e", 1, "v"],
+    ["deleteBuffer", "B?", 1, "v"], ["deleteProgram", "P?", 1, "v"], ["deleteShader", "S?", 1, "v"],
+    ["depthFunc", "e", 1, "v"], ["depthMask", "b", 1, "v"], ["depthRange", "ff", 2, "v"],
+    ["detachShader", "PS", 2, "v"], ["disable", "e", 1, "v"], ["disableVertexAttribArray", "u", 1, "v"],
+    ["enable", "e", 1, "v"], ["enableVertexAttribArray", "u", 1, "v"], ["finish", "", 0, "v"], ["flush", "", 0, "v"],
+    ["frontFace", "e", 1, "v"], ["getAttribLocation", "Ps", 2, "n"], ["getBufferParameter", "ee", 2, "n"],
+    ["getProgramInfoLog", "P", 1, "s"], ["getShaderInfoLog", "S", 1, "s"], ["getShaderSource", "S", 1, "s"],
+    ["getVertexAttribOffset", "ue", 2, "n"], ["hint", "ee", 2, "v"], ["isBuffer", "B?", 1, "b"],
+    ["isEnabled", "e", 1, "b"], ["isProgram", "P?", 1, "b"], ["isShader", "S?", 1, "b"], ["lineWidth", "f", 1, "v"],
+    ["linkProgram", "P", 1, "v"], ["pixelStorei", "ei", 2, "v"], ["polygonOffset", "ff", 2, "v"],
+    ["sampleCoverage", "fb", 2, "v"], ["scissor", "iiii", 4, "v"], ["shaderSource", "Ss", 2, "v"],
+    ["stencilFunc", "eiu", 3, "v"], ["stencilFuncSeparate", "eeiu", 4, "v"], ["stencilMask", "u", 1, "v"],
+    ["stencilMaskSeparate", "eu", 2, "v"], ["stencilOp", "eee", 3, "v"], ["stencilOpSeparate", "eeee", 4, "v"],
+    ["useProgram", "P?", 1, "v"], ["validateProgram", "P", 1, "v"], ["viewport", "iiii", 4, "v"],
+    ["vertexAttribPointer", "uiebil", 6, "v"], ["createBuffer", "", 0, "B"], ["createProgram", "", 0, "P"],
+    ["createShader", "e", 1, "S"], ["getUniformLocation", "Ps", 2, "L"],
+  ];
+
+  // Drawing calls, whose canvas is presented after the frame.
+  const WEBGL_DRAWS = [["clear", "u", 1], ["drawArrays", "eii", 3], ["drawElements", "eiel", 4]];
+
+  function webglDrew(r) {
+    if (!r.drawn) {
+      r.drawn = true;
+      ArrayPush(webglDrawn, r);
+      native.wantFrame();
+    }
+  }
+
+  // The WebGL contexts drawn since the last frame, presented.
+  function webglPresent() {
+    if (webglDrawn.length === 0) return;
+    const drawn = webglDrawn;
+    webglDrawn = [];
+    for (let i = 0; i < drawn.length; i++) {
+      drawn[i].drawn = false;
+      native.webgl("present", drawn[i].id);
+    }
+  }
+
+  // A typed array's or a sequence's numbers.
+  function webglNumbers(v, method, iface) {
+    if (ArrayBufferIsView(v) && !(v instanceof $DataView)) {
+      const out = [];
+      for (let i = 0; i < v.length; i++) ArrayPush(out, v[i]);
+      return out;
+    }
+    return sequence(v, method, iface, (x) => $Number(x));
+  }
+
+  // The bytes of a BufferSource, or null for none.
+  function webglBytes(v, method, iface, index) {
+    if (v instanceof $ArrayBuffer) return new $Uint8Array(v);
+    if (ArrayBufferIsView(v)) return gpuViewBytes(v)[0];
+    throw new $TypeError(prefix(method, iface) + "parameter " + index + " is not of type 'ArrayBuffer' or 'ArrayBufferView'.");
+  }
+
+  const WEBGL_ATTRIBUTES = ["alpha", "antialias", "depth", "desynchronized", "failIfMajorPerformanceCaveat",
+    "powerPreference", "premultipliedAlpha", "preserveDrawingBuffer", "stencil", "xrCompatible"];
+
+  // The context attributes a getContext asks for, read as Web IDL reads
+  // the dictionary.
+  function webglAttributes(options) {
+    const a = { alpha: true, antialias: true, depth: true, desynchronized: false,
+      failIfMajorPerformanceCaveat: false, powerPreference: "default", premultipliedAlpha: true,
+      preserveDrawingBuffer: false, stencil: false, xrCompatible: false };
+    if (options === undefined || options === null || (typeof options !== "object" && typeof options !== "function")) {
+      return a;
+    }
+    for (let i = 0; i < WEBGL_ATTRIBUTES.length; i++) {
+      const name = WEBGL_ATTRIBUTES[i];
+      const v = options[name];
+      if (v === undefined) continue;
+      if (name === "powerPreference") {
+        const s = str(v);
+        if (s !== "default" && s !== "low-power" && s !== "high-performance") {
+          throw new $TypeError("Failed to execute 'getContext' on 'HTMLCanvasElement': Failed to read the 'powerPreference' property from 'WebGLContextAttributes': The provided value '" + s + "' is not a valid enum value of type WebGLPowerPreference.");
+        }
+        a.powerPreference = s;
+      } else {
+        a[name] = !!v;
+      }
+    }
+    return a;
+  }
+
+  // A context of `version` for `canvas` (its handle), or null without a
+  // GPU.
+  function webglContext(canvas, handle, version, options) {
+    const attributes = webglAttributes(options);
+    const id = native.webgl("create", handle, version, attributes.alpha, attributes.depth, attributes.stencil,
+      attributes.antialias, attributes.premultipliedAlpha, attributes.preserveDrawingBuffer);
+    if (typeof id !== "number" || id < 0) return null;
+    const context = new (version === 2 ? WebGL2RenderingContext : WebGLRenderingContext)(KEY);
+    WeakMapSet(webglRecords, context, { id, canvas, version, attributes, objects: new $Map(), drawn: false });
+    return context;
+  }
+
+  class WebGLRenderingContext {
+    constructor(key) {
+      if (key !== KEY) throw illegalConstructor("WebGLRenderingContext");
+    }
+  }
+
+  class WebGL2RenderingContext {
+    constructor(key) {
+      if (key !== KEY) throw illegalConstructor("WebGL2RenderingContext");
+    }
+  }
+
+  // The methods and constants both versions share.
+  function webglBase(cls, iface) {
+    const proto = cls.prototype;
+    const method = (name, f) => defineProperty(proto, name, { value: f, writable: true, enumerable: true, configurable: true });
+    const getter = (name, f) => defineProperty(proto, name, { get: f, enumerable: true, configurable: true });
+    for (let i = 0; i < WEBGL_SIMPLE.length; i++) {
+      const [name, spec, least, gives] = WEBGL_SIMPLE[i];
+      method(name, function (...args) {
+        const r = webglRecord(this);
+        need(args.length, least, name, iface);
+        const converted = webglArgs(r, spec, args, name, iface);
+        if (converted === null) return gives === "b" ? false : gives === "n" ? (name === "getAttribLocation" ? -1 : null) : gives === "v" ? undefined : null;
+        const answer = ReflectApply(native.webgl, undefined, [name, r.id, ...converted]);
+        if (gives === "v") return undefined;
+        if (gives === "n" || gives === "b") return answer === undefined ? (gives === "b" ? false : null) : answer;
+        if (gives === "s") return answer === undefined ? null : answer;
+        return webglMake(r, gives, answer);
+      });
+    }
+    for (let i = 0; i < WEBGL_DRAWS.length; i++) {
+      const [name, spec, least] = WEBGL_DRAWS[i];
+      method(name, function (...args) {
+        const r = webglRecord(this);
+        need(args.length, least, name, iface);
+        const converted = webglArgs(r, spec, args, name, iface);
+        ReflectApply(native.webgl, undefined, [name, r.id, ...converted]);
+        webglDrew(r);
+      });
+    }
+    getter("canvas", function () { return webglRecord(this).canvas; });
+    getter("drawingBufferWidth", function () { return native.webgl("drawingBufferSize", webglRecord(this).id)[0]; });
+    getter("drawingBufferHeight", function () { return native.webgl("drawingBufferSize", webglRecord(this).id)[1]; });
+    getter("drawingBufferColorSpace", function () { webglRecord(this); return "srgb"; });
+    getter("unpackColorSpace", function () { webglRecord(this); return "srgb"; });
+    method("getContextAttributes", function () {
+      const r = webglRecord(this);
+      if (native.webgl("isContextLost", r.id)) return null;
+      const a = r.attributes;
+      return { alpha: a.alpha, antialias: a.antialias, depth: a.depth, desynchronized: false,
+        failIfMajorPerformanceCaveat: a.failIfMajorPerformanceCaveat, powerPreference: a.powerPreference,
+        premultipliedAlpha: a.premultipliedAlpha, preserveDrawingBuffer: a.preserveDrawingBuffer,
+        stencil: a.stencil, xrCompatible: false };
+    });
+    method("isContextLost", function () { return native.webgl("isContextLost", webglRecord(this).id); });
+    method("getError", function () { return native.webgl("getError", webglRecord(this).id); });
+    method("getSupportedExtensions", function () {
+      const r = webglRecord(this);
+      return native.webgl("isContextLost", r.id) ? null : [];
+    });
+    method("getExtension", function (name) {
+      webglRecord(this);
+      need(arguments.length, 1, "getExtension", iface);
+      str(name);
+      return null;
+    });
+    method("makeXRCompatible", function () { webglRecord(this); return resolved(undefined); });
+    method("getParameter", function (pname) {
+      const r = webglRecord(this);
+      need(arguments.length, 1, "getParameter", iface);
+      const p = glu(pname);
+      const answer = native.webgl("getParameter", r.id, p);
+      // The bindings: their objects.
+      if (p === 0x8894 || p === 0x8895) return MapGet(r.objects, answer) || null;
+      if (p === 0x8B8D) return MapGet(r.objects, answer) || null;
+      if (p === 0x8CA6 || p === 0x8CA7 || p === 0x8069 || p === 0x8514 || p === 0x85B5) return null;
+      if (ArrayIsArray(answer)) {
+        const kind = answer[0];
+        const values = ArraySlice(answer, 1);
+        if (kind === 1) return new Int32Array(values);
+        if (kind === 2) return new Float32Array(values);
+        const bools = [];
+        for (let i = 0; i < values.length; i++) ArrayPush(bools, values[i] !== 0);
+        return bools;
+      }
+      return answer === undefined ? null : answer;
+    });
+    method("getShaderParameter", function (shader, pname) {
+      const r = webglRecord(this);
+      need(arguments.length, 2, "getShaderParameter", iface);
+      const args = webglArgs(r, "Se", [shader, pname], "getShaderParameter", iface);
+      if (args === null) return null;
+      const answer = native.webgl("getShaderParameter", r.id, args[0], args[1]);
+      return answer === undefined ? null : answer;
+    });
+    method("getProgramParameter", function (program, pname) {
+      const r = webglRecord(this);
+      need(arguments.length, 2, "getProgramParameter", iface);
+      const args = webglArgs(r, "Pe", [program, pname], "getProgramParameter", iface);
+      if (args === null) return null;
+      const answer = native.webgl("getProgramParameter", r.id, args[0], args[1]);
+      return answer === undefined ? null : answer;
+    });
+    method("getAttachedShaders", function (program) {
+      const r = webglRecord(this);
+      need(arguments.length, 1, "getAttachedShaders", iface);
+      const args = webglArgs(r, "P", [program], "getAttachedShaders", iface);
+      if (args === null) return null;
+      const ids = native.webgl("getAttachedShaders", r.id, args[0]);
+      if (ids === undefined) return null;
+      const out = [];
+      for (let i = 0; i < ids.length; i++) ArrayPush(out, MapGet(r.objects, ids[i]));
+      return out;
+    });
+    const activeInfo = (name) => function (program, index) {
+      const r = webglRecord(this);
+      need(arguments.length, 2, name, iface);
+      const args = webglArgs(r, "Pu", [program, index], name, iface);
+      if (args === null) return null;
+      const pair = native.webgl(name, r.id, args[0], args[1]);
+      if (pair === undefined) return null;
+      const info = JSONParse(pair[0]);
+      const bytes = new $Uint8Array(pair[1]);
+      let text = "";
+      for (let i = 0; i < bytes.length; i++) text += FromCharCode(bytes[i]);
+      return new WebGLActiveInfo(KEY, text, info[0], info[1]);
+    };
+    method("getActiveAttrib", activeInfo("getActiveAttrib"));
+    method("getActiveUniform", activeInfo("getActiveUniform"));
+    method("getUniform", function (program, location) {
+      const r = webglRecord(this);
+      need(arguments.length, 2, "getUniform", iface);
+      const args = webglArgs(r, "PL", [program, location], "getUniform", iface);
+      if (args === null) return null;
+      const pair = native.webgl("getUniform", r.id, args[0], args[1]);
+      if (pair === undefined) return null;
+      const told = JSONParse(pair[0]);
+      const kind = told[0];
+      const values = ArraySlice(told, 2);
+      if (told[1] === 1) return kind === 3 ? values[0] !== 0 : values[0];
+      if (kind === 0) return new Float32Array(values);
+      if (kind === 1) return new Int32Array(values);
+      if (kind === 2) return new Uint32Array(values);
+      const bools = [];
+      for (let i = 0; i < values.length; i++) ArrayPush(bools, values[i] !== 0);
+      return bools;
+    });
+    method("getShaderPrecisionFormat", function (shadertype, precisiontype) {
+      const r = webglRecord(this);
+      need(arguments.length, 2, "getShaderPrecisionFormat", iface);
+      const v = native.webgl("getShaderPrecisionFormat", r.id, glu(shadertype), glu(precisiontype));
+      return ArrayIsArray(v) ? new WebGLShaderPrecisionFormat(KEY, v[0], v[1], v[2]) : null;
+    });
+    method("getVertexAttrib", function (index, pname) {
+      const r = webglRecord(this);
+      need(arguments.length, 2, "getVertexAttrib", iface);
+      const p = glu(pname);
+      const v = native.webgl("getVertexAttrib", r.id, glu(index), p);
+      if (p === 0x889F) return MapGet(r.objects, v) || null;
+      if (p === 0x8626 && ArrayIsArray(v)) return new Float32Array(v);
+      return v === undefined ? null : v;
+    });
+    method("bufferData", function (target, data, usage) {
+      const r = webglRecord(this);
+      need(arguments.length, 3, "bufferData", iface);
+      const t = glu(target);
+      if (data === null) {
+        native.webgl("error", r.id, 0x0501);
+        return;
+      }
+      if (typeof data === "number" || typeof data === "bigint" ||
+        !(data instanceof $ArrayBuffer || ArrayBufferIsView(data))) {
+        native.webgl("bufferData", r.id, t, glll(data), glu(usage));
+        return;
+      }
+      native.webglData("bufferData", binaryString(webglBytes(data, "bufferData", iface, 2)), r.id, t, 0, glu(usage));
+    });
+    method("bufferSubData", function (target, offset, data) {
+      const r = webglRecord(this);
+      need(arguments.length, 3, "bufferSubData", iface);
+      if (data === null) return;
+      const bytes = webglBytes(data, "bufferSubData", iface, 3);
+      native.webglData("bufferSubData", binaryString(bytes), r.id, glu(target), glll(offset));
+    });
+    // The uniforms: [kind, components, columns, transpose, values...].
+    const uniform = (name, kind, components, vector) => function (location, ...values) {
+      const r = webglRecord(this);
+      need(arguments.length, vector ? 2 : components + 1, name, iface);
+      const args = webglArgs(r, "L?", [location], name, iface);
+      if (args === null || args[0] === 0) return;
+      const list = vector ? webglNumbers(values[0], name, iface) : ArraySlice(values, 0, components);
+      ReflectApply(native.webgl, undefined, ["uniform", r.id, args[0], kind, components, 0, 0, ...list]);
+    };
+    for (let c = 1; c <= 4; c++) {
+      method("uniform" + c + "f", uniform("uniform" + c + "f", 0, c, false));
+      method("uniform" + c + "i", uniform("uniform" + c + "i", 1, c, false));
+      method("uniform" + c + "fv", uniform("uniform" + c + "fv", 0, c, true));
+      method("uniform" + c + "iv", uniform("uniform" + c + "iv", 1, c, true));
+    }
+    const matrix = (name, cols, rows) => function (location, transpose, value) {
+      const r = webglRecord(this);
+      need(arguments.length, 3, name, iface);
+      const args = webglArgs(r, "L?", [location], name, iface);
+      if (args === null || args[0] === 0) return;
+      const list = webglNumbers(value, name, iface);
+      ReflectApply(native.webgl, undefined, ["uniform", r.id, args[0], 0, rows, cols, !!transpose, ...list]);
+    };
+    for (let c = 2; c <= 4; c++) {
+      method("uniformMatrix" + c + "fv", matrix("uniformMatrix" + c + "fv", c, c));
+    }
+    const attrib = (name, count, vector) => function (index, ...values) {
+      const r = webglRecord(this);
+      need(arguments.length, vector ? 2 : count + 1, name, iface);
+      const list = vector ? webglNumbers(values[0], name, iface) : values;
+      if (vector && list.length < count) {
+        native.webgl("error", r.id, 0x0501);
+        return;
+      }
+      const v = [0, 0, 0, 1];
+      for (let i = 0; i < count; i++) v[i] = $Number(list[i]);
+      native.webgl("vertexAttrib", r.id, glu(index), 0x1406, v[0], v[1], v[2], v[3]);
+    };
+    for (let c = 1; c <= 4; c++) {
+      method("vertexAttrib" + c + "f", attrib("vertexAttrib" + c + "f", c, false));
+      method("vertexAttrib" + c + "fv", attrib("vertexAttrib" + c + "fv", c, true));
+    }
+    // Textures, renderbuffers, framebuffers and readPixels come at
+    // step 7: their objects, and calls that do nothing yet.
+    const stub = (name, k) => method(name, function () {
+      const r = webglRecord(this);
+      if (k === undefined) return undefined;
+      r.next = (r.next || 1000000) + 1;
+      return webglMake(r, k, r.next);
+    });
+    stub("createTexture", "T");
+    stub("createRenderbuffer", "R");
+    stub("createFramebuffer", "F");
+    const STUBS = ["bindTexture", "bindRenderbuffer", "bindFramebuffer", "deleteTexture", "deleteRenderbuffer",
+      "deleteFramebuffer", "texImage2D", "texSubImage2D", "texParameteri", "texParameterf", "generateMipmap",
+      "compressedTexImage2D", "compressedTexSubImage2D", "copyTexImage2D", "copyTexSubImage2D",
+      "framebufferTexture2D", "framebufferRenderbuffer", "renderbufferStorage", "readPixels"];
+    for (let i = 0; i < STUBS.length; i++) stub(STUBS[i]);
+    method("checkFramebufferStatus", function () { webglRecord(this); return 0x8CD5; });
+    method("isTexture", function () { webglRecord(this); return false; });
+    method("isFramebuffer", function () { webglRecord(this); return false; });
+    method("isRenderbuffer", function () { webglRecord(this); return false; });
+    method("getTexParameter", function () { webglRecord(this); return null; });
+    method("getRenderbufferParameter", function () { webglRecord(this); return null; });
+    method("getFramebufferAttachmentParameter", function () { webglRecord(this); return null; });
+    expose(cls, iface);
+  }
+
+  // The constants, on the interface and its prototype alike.
+  function webglConstants(cls, list) {
+    for (let i = 0; i < list.length; i += 2) {
+      const desc = { value: list[i + 1], enumerable: true };
+      defineProperty(cls, list[i], desc);
+      defineProperty(cls.prototype, list[i], desc);
+    }
+  }
+
+  if (!WORKER) {
+    webglBase(WebGLRenderingContext, "WebGLRenderingContext");
+    webglConstants(WebGLRenderingContext, WEBGL1_CONSTANTS);
+    webglBase(WebGL2RenderingContext, "WebGL2RenderingContext");
+    webglConstants(WebGL2RenderingContext, WEBGL1_CONSTANTS);
+    webglConstants(WebGL2RenderingContext, WEBGL2_CONSTANTS);
   }
 
   // What the GPU process told: a promise's answer, or a device's news.

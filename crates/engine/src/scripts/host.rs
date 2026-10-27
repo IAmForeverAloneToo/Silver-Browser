@@ -241,6 +241,7 @@ pub(crate) struct DocumentHost {
     pub(crate) audio: crate::webaudio::WebAudio,
     /// The document's WebGPU objects (M41).
     pub(crate) webgpu: crate::webgpu::WebGpu,
+    pub(crate) webgl: crate::webgl::WebGl,
     /// The document's media elements (M40).
     pub(crate) media: crate::playback::Players,
     /// Whether the document is the DevTools panel's page (M36), and what
@@ -1389,6 +1390,28 @@ impl DocumentHost {
                     &self.workers.inbox(),
                 );
                 Ok(Answer::Pair(json, bytes))
+            }
+            Call::WebGl(call) => {
+                let document = &self.document;
+                let canvases = &self.canvases;
+                let size = |handle: f64| -> (u32, u32) {
+                    if handle < 0.0 {
+                        canvases
+                            .offscreen_size((-handle) as u32)
+                            .unwrap_or((300, 150))
+                    } else {
+                        dom::NodeId::from_bits(handle as u64)
+                            .filter(|&node| document.contains(node))
+                            .map_or((300, 150), |node| layout::canvas_size(document, node))
+                    }
+                };
+                let inbox = self.workers.inbox();
+                let env = crate::webgl::Env {
+                    client: self.window.gpu.as_ref(),
+                    inbox: &inbox,
+                    canvas_size: &size,
+                };
+                self.webgl.call(*call, &env)
             }
             Call::Media(request) => Ok(Answer::String(self.media_call(&request))),
             Call::IdbWake => {

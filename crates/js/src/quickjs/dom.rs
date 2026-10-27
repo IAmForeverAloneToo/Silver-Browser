@@ -478,6 +478,19 @@ const NATIVES: &[(&str, Decode)] = &[
     ("gpu", |a| {
         Ok(Call::Gpu(a.string(0)?, a.bytes(1)?.unwrap_or_default()))
     }),
+    // WebGL's calls: the operation, then numbers and strings; the data
+    // variant's bytes, a binary string, second.
+    ("webgl", |a| match a.canvas(None)? {
+        Call::Canvas(call) => Ok(Call::WebGl(call)),
+        other => Ok(other),
+    }),
+    ("webglData", |a| {
+        let bytes = a.bytes(1)?.unwrap_or_default();
+        match a.canvas(Some(bytes))? {
+            Call::Canvas(call) => Ok(Call::WebGl(call)),
+            other => Ok(other),
+        }
+    }),
     ("storageUsage", |_| Ok(Call::StorageUsage)),
     ("navigate", |a| {
         Ok(Call::Navigate {

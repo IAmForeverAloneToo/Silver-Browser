@@ -123,7 +123,7 @@ step("point", () => own(DOMPoint.prototype));
 step("canvasProto", () => own(HTMLCanvasElement.prototype));
 step("attrs", () => JSON.stringify(fresh().getContext("2d").getContextAttributes()));
 step("attrsOpaque", () => JSON.stringify(fresh().getContext("2d", { alpha: false, willReadFrequently: true }).getContextAttributes()));
-step("getContextOther", () => { const c = fresh(); return [c.getContext("webgl"), c.getContext("2d") === c.getContext("2d"), c.getContext("bitmaprenderer"), c.getContext("bogus")]; });
+step("getContextOther", () => { const c = fresh(); const gl = c.getContext("webgl"); return [gl === null || gl instanceof WebGLRenderingContext, c.getContext("2d") === c.getContext("2d"), c.getContext("bitmaprenderer"), c.getContext("bogus")]; });
 step("getContextArgs", () => { try { fresh().getContext(); } catch (e) { return err(e); } });
 step("ctxCtor", () => { try { new CanvasRenderingContext2D(); } catch (e) { return err(e); } });
 step("ctxCanvas", () => { const c = fresh(); return c.getContext("2d").canvas === c; });
@@ -203,8 +203,9 @@ step("matrixLengths", () => ["translate", "scale", "rotate", "multiply", "fromMa
                  \\\"desynchronized\\\":false,\\\"toneMapping\\\":{\\\"mode\\\":\\\"standard\\\"},\
                  \\\"willReadFrequently\\\":true}\"",
             ),
-            // WebGL is null here, a context in Chrome (section 2).
-            ("getContextOther", "[null,true,null,null]"),
+            // WebGL is a context (M41), or null without a GPU; the
+            // canvas then has no 2D one.
+            ("getContextOther", "[true,true,null,null]"),
             (
                 "getContextArgs",
                 "\"threw TypeError: Failed to execute 'getContext' on 'HTMLCanvasElement': \
@@ -994,7 +995,7 @@ const options = { get alpha() { read.push("alpha"); return true; },
 fresh().getContext("2d", options);
 step("order", () => read);
 step("offscreen2D", () => new OffscreenCanvas(1, 1).getContext("2D"));
-step("offscreenWebgl", () => new OffscreenCanvas(1, 1).getContext("webgl"));
+step("offscreenWebgl", () => { const gl = new OffscreenCanvas(1, 1).getContext("webgl"); return gl === null || gl instanceof WebGLRenderingContext; });
 step("element2D", () => fresh().getContext("2D"));
 step("number", () => fresh().getContext("2d", 5) !== null);
 step("u8", () => new ImageData(new Uint8Array(8), 1, 2));
@@ -1017,7 +1018,7 @@ step("zeroSettings", () => new ImageData(0, 4, 4));
                  provided value '2D' is not a valid enum value of type \
                  OffscreenRenderingContextId.",
             ),
-            ("offscreenWebgl", "null"),
+            ("offscreenWebgl", "true"),
             ("element2D", "null"),
             ("number", "true"),
             ("u8", settings),

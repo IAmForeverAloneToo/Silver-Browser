@@ -477,6 +477,7 @@ impl WebGpu {
                                 format,
                                 premultiplied,
                                 opaque,
+                                flip: false,
                                 bytes,
                             };
                             let _ = inbox.send(WorkerMessage::GpuFrame(handle, frame));

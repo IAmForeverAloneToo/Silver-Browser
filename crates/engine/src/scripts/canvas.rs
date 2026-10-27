@@ -278,6 +278,9 @@ pub(crate) struct GpuFrame {
     pub(crate) format: u8,
     pub(crate) premultiplied: bool,
     pub(crate) opaque: bool,
+    /// Whether its rows are bottom first (WebGL's drawing buffer, drawn
+    /// upside down).
+    pub(crate) flip: bool,
     pub(crate) bytes: Vec<u8>,
 }
 
@@ -325,6 +328,7 @@ impl GpuFrame {
         }
         let mut out = Vec::with_capacity(width * height * 4);
         for y in 0..height {
+            let y = if self.flip { height - 1 - y } else { y };
             for texel in self.bytes[y * stride..y * stride + row].chunks_exact(texel) {
                 let mut pixel = match self.format {
                     0 => [texel[0], texel[1], texel[2], texel[3]],
@@ -1701,6 +1705,7 @@ mod gpu_frame_tests {
             format,
             premultiplied,
             opaque,
+            flip: false,
             bytes,
         }
     }

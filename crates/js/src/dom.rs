@@ -414,6 +414,9 @@ pub enum Call {
     ServiceWorker(String),
     /// WebGPU's operation (M41), as JSON, and the bytes it carries.
     Gpu(String, Vec<u8>),
+    /// WebGL's call (M41): the operation, its numbers and strings, and the
+    /// bytes it carries, as a canvas's are.
+    WebGl(Box<CanvasCall>),
     /// Web Audio's operation (M40), as JSON, and the samples it carries:
     /// its answer, as JSON, and the samples it gives ([`Answer::Pair`]).
     Audio(String, Vec<u8>),
