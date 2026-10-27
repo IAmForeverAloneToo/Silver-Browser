@@ -19,6 +19,11 @@ use crate::{
 pub(super) const BOOTSTRAP: &str = include_str!("bootstrap.js");
 /// The name the bootstrap's frames carry in a stack, as its URL.
 pub(super) const BOOTSTRAP_NAME: &str = "bootstrap";
+/// WebGPU and WebGL's bindings (M41), read into a realm at their first
+/// use: a function of the bootstrap's names they use.
+pub(super) const GPU_BINDINGS: &str = include_str!("bootstrap_gpu.js");
+/// The name their frames carry in a stack.
+pub(super) const GPU_BINDINGS_NAME: &str = "bootstrap-gpu";
 
 /// What the natives charge the work they report to: the run's steps,
 /// the work not yet a whole step, and the budget's end.
@@ -739,6 +744,16 @@ pub(super) fn install<'js, H: ScriptingHost>(
     )?;
     install_errors(ctx, host, &natives)?;
     super::wasm::install(ctx, &natives, budget)?;
+    // WebGPU and WebGL's bindings' function, read when first asked for.
+    natives.set(
+        "gpuBindings",
+        Function::new(
+            ctx.clone(),
+            |ctx: Ctx<'js>| -> rquickjs::Result<Function<'js>> {
+                super::bytecode::gpu_bindings(&ctx)
+            },
+        )?,
+    )?;
     let bootstrap: Function<'js> = super::bytecode::bootstrap(ctx)?;
     bootstrap.call::<_, Object<'js>>((natives, ctx.globals()))
 }

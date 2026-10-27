@@ -430,7 +430,7 @@ mod service {
 
     /// The names a list of the bootstrap's holds, from its source.
     fn bootstrap_list(name: &str) -> Vec<String> {
-        let source = include_str!("../../../js/src/quickjs/bootstrap.js");
+        let source = include_str!("../../../js/src/quickjs/bootstrap_gpu.js");
         let start = source.find(&format!("const {name} = [")).expect("the list");
         let list = &source[start..start + source[start..].find("];").expect("its end")];
         let mut names: Vec<String> = list

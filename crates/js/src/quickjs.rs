@@ -818,7 +818,7 @@ pub(crate) fn parse_stack(stack: &str) -> Vec<StackFrame> {
         let (Ok(line), Ok(column)) = (line.parse(), column.parse()) else {
             continue;
         };
-        if url == dom::BOOTSTRAP_NAME {
+        if url == dom::BOOTSTRAP_NAME || url == dom::GPU_BINDINGS_NAME {
             continue;
         }
         frames.push(StackFrame {

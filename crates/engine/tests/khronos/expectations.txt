@@ -105,7 +105,7 @@ conformance2/state/gl-get-calls.html	context.getError() should be # Was #
 conformance2/state/gl-get-calls.html	context.getParameter(context.MAX_CLIENT_WAIT_TIMEOUT_WEBGL) is not an instance of Number
 conformance2/state/gl-get-calls.html	context.getParameter(context.MAX_VERTEX_OUTPUT_COMPONENTS) should be >= # Was # (of type number).
 conformance2/state/gl-get-calls.html	context.getParameter(context.RASTERIZER_DISCARD) should be false (of type boolean). Was null (of type object).
-conformance2/textures/misc/compressed-tex-from-pbo-crash.html	exception Uncaught TypeError: Failed to execute 'compressedTexImage#D' on 'WebGL#RenderingContext': parameter # is not of type 'ArrayBufferView'. at bootstrap:#:#
+conformance2/textures/misc/compressed-tex-from-pbo-crash.html	exception Uncaught TypeError: Failed to execute 'compressedTexImage#D' on 'WebGL#RenderingContext': parameter # is not of type 'ArrayBufferView'. at bootstrap-gpu:#:#
 conformance2/textures/misc/compressed-tex-from-pbo-crash.html	successfullyParsed should be true (of type boolean). Was undefined (of type undefined).
 conformance2/textures/misc/copy-texture-cube-map-AMD-bug.html	getError expected: NO_ERROR. Was INVALID_OPERATION : CopyTexImage#D should succeed.
 conformance2/textures/misc/copy-texture-cube-map-AMD-bug.html	getError expected: NO_ERROR. Was INVALID_OPERATION : CopyTexSubImage#D should succeed.
