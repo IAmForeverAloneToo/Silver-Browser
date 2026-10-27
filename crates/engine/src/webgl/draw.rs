@@ -11,8 +11,10 @@ use std::sync::Arc;
 use devtools::Json;
 
 use super::ext::Features;
+use super::formats::{Sample, has_depth, has_stencil};
+use super::framebuffer::{Kit, Target, kind_of};
 use super::gl::*;
-use super::texture::{Blit, Target, has_depth, has_stencil};
+use super::texture::{Blit, SLOT_2D, SLOT_3D, SLOT_ARRAY, SLOT_CUBE, Want};
 use super::{Context, MAX_PIPELINES, StencilFace, clamp_size, type_size, wait};
 use crate::gpu::GpuClient;
 use crate::gpu::wire::{Command, RenderCommand, Reply, Request};
@@ -23,9 +25,6 @@ use crate::scripts::workers::{Inbox, WorkerMessage};
 /// The arena's bytes: a draw's data past them sends what was recorded
 /// first.
 const ARENA: u64 = 4 << 20;
-
-/// WebGPU's alignment of a uniform buffer's dynamic offset.
-const ALIGN: u64 = 256;
 
 /// What a pipeline is made for: the program, its vertex buffers'
 /// layouts, the topology, and GL's state that WebGPU keeps in one.
@@ -42,7 +41,6 @@ pub(crate) struct PipelineKey {
     strip_index: Option<&'static str>,
     buffers: Vec<BufferLayout>,
     blend: Option<[u32; 6]>,
-    write_mask: u32,
     cull: u32,
     front_ccw: bool,
     depth: Option<(u32, bool, i32, u32)>,
@@ -50,16 +48,17 @@ pub(crate) struct PipelineKey {
     samples: u32,
     alpha_to_coverage: bool,
     mask: u32,
-    /// What it draws into: the colour's and the depth's storage.
-    color: Option<&'static str>,
+    /// What it draws into: each colour's storage, write mask and whether
+    /// it blends; the depth's storage.
+    colors: Vec<Option<(&'static str, u32, bool)>>,
     depth_format: Option<&'static str>,
     /// The samplers WebGPU cannot filter, a bit each.
     unfilterable: u64,
 }
 
 struct Pass {
-    /// The views it draws into.
-    key: (u32, u32),
+    /// The views it draws into (none: a pass of its own).
+    key: Vec<u32>,
     desc: String,
     commands: Vec<RenderCommand>,
 }
@@ -85,29 +84,12 @@ pub(crate) struct Gpu {
     /// and a sampler.
     defaults: (u32, u32, u32),
     readback: Option<(u32, u64)>,
-    clear: Option<ClearGpu>,
+    pub(crate) kit: Kit,
+    /// The default textures of other dimensions and kinds: view and
+    /// sampler, by slot and kind.
+    extra: HashMap<(usize, u8), (u32, u32)>,
     pub ext_blend_minmax: bool,
 }
-
-/// What a clear drawn as a quad needs: its module, layouts and
-/// pipelines.
-struct ClearGpu {
-    module: u32,
-    pipeline_layout: u32,
-    group: u32,
-    pipelines: HashMap<ClearKey, u32>,
-}
-
-/// A clear quad's pipeline: its writes, the colour's and depth's storage
-/// and the samples.
-type ClearKey = (
-    u32,
-    bool,
-    u32,
-    Option<&'static str>,
-    Option<&'static str>,
-    u32,
-);
 
 /// A device for a context, with the features WebGL's extensions take
 /// where the adapter has them: its number, or none without an adapter.
@@ -220,7 +202,8 @@ impl Gpu {
             blit: None,
             defaults: (view, cube_view, sampler),
             readback: None,
-            clear: None,
+            kit: Kit::default(),
+            extra: HashMap::new(),
             ext_blend_minmax: false,
         }
     }
@@ -487,7 +470,7 @@ fn blend_operation(e: u32) -> &'static str {
     }
 }
 
-fn compare(f: u32) -> &'static str {
+pub(crate) fn compare(f: u32) -> &'static str {
     match f {
         NEVER => "never",
         LESS => "less",
@@ -722,7 +705,7 @@ impl Context {
         };
         // A fresh buffer's parts not asked for are cleared to GL's
         // defaults, not the page's values.
-        let (mut color, depth, stencil) = match clear {
+        let (color, depth, stencil) = match clear {
             Some(c) if fresh => (
                 if c.0 & COLOR_BUFFER_BIT != 0 {
                     color
@@ -742,22 +725,26 @@ impl Context {
             ),
             _ => (color, depth, stencil),
         };
-        if target.rgb {
-            color[3] = 1.0;
-        }
         let load = |bit: u32| if mask & bit != 0 { "clear" } else { "load" };
-        let colors = match target.color {
-            Some((view, resolve, _)) => format!(
-                r#"[{{"view":{view}{},"loadOp":"{}","storeOp":"store","clearValue":[{},{},{},{}]}}]"#,
-                resolve.map_or(String::new(), |r| format!(r#","resolveTarget":{r}"#)),
-                load(COLOR_BUFFER_BIT),
-                color[0],
-                color[1],
-                color[2],
-                color[3]
-            ),
-            None => "[]".to_owned(),
-        };
+        let colors: Vec<String> = target
+            .colors
+            .iter()
+            .map(|c| match c {
+                Some(c) => format!(
+                    r#"{{"view":{}{}{},"loadOp":"{}","storeOp":"store","clearValue":[{},{},{},{}]}}"#,
+                    c.view,
+                    c.resolve.map_or(String::new(), |r| format!(r#","resolveTarget":{r}"#)),
+                    c.slice.map_or(String::new(), |s| format!(r#","depthSlice":{s}"#)),
+                    load(COLOR_BUFFER_BIT),
+                    color[0],
+                    color[1],
+                    color[2],
+                    if c.rgb { 1.0 } else { color[3] }
+                ),
+                None => "null".to_owned(),
+            })
+            .collect();
+        let colors = format!("[{}]", colors.join(","));
         let depth_desc = match target.depth {
             Some((v, format)) => {
                 let depth_ops = if has_depth(format) {
@@ -786,7 +773,7 @@ impl Context {
         });
         let desc = format!(r#"{{"colorAttachments":{colors}{depth_desc}{occlusion}}}"#);
         self.gpu.pass = Some(Pass {
-            key: target.key,
+            key: target.key.clone(),
             desc,
             commands: Vec::new(),
         });
@@ -828,48 +815,9 @@ impl Context {
         self.gpu.groups.retain(|_, _| true);
     }
 
-    // ---- Clears ----
-
-    pub(crate) fn clear(&mut self, mask: u32, size: (u32, u32)) {
-        if mask & !(COLOR_BUFFER_BIT | DEPTH_BUFFER_BIT | STENCIL_BUFFER_BIT) != 0 {
-            self.error(INVALID_VALUE);
-            return;
-        }
-        if mask == 0 {
-            return;
-        }
-        let Some(target) = self.target(size) else {
-            return;
-        };
-        self.drew(&target);
-        let s = self.state.clone();
-        let whole_color = s.color_mask.iter().all(|&m| m);
-        let whole_stencil = s.stencil[0].write_mask & 0xFF == 0xFF;
-        let simple = !s.scissor_test
-            && (mask & COLOR_BUFFER_BIT == 0 || whole_color)
-            && (mask & DEPTH_BUFFER_BIT == 0 || s.depth_mask)
-            && (mask & STENCIL_BUFFER_BIT == 0 || whole_stencil);
-        // A clear of all a pass would: the pass's load (and any recorded
-        // before it stays).
-        let color = if target.rgb {
-            [s.clear_color[0], s.clear_color[1], s.clear_color[2], 1.0]
-        } else {
-            s.clear_color
-        };
-        if simple {
-            self.pass(size, Some((mask, color, s.clear_depth, s.clear_stencil)));
-            return;
-        }
-        // Else a quad, scissored and masked.
-        if self.pass(size, None).is_none() {
-            return;
-        }
-        self.clear_quad(mask, color, size, &target);
-    }
-
     /// Something drawn into `target`: the drawing buffer to be presented,
     /// or textures whose images changed.
-    fn drew(&mut self, target: &Target) {
+    pub(crate) fn drew(&mut self, target: &Target) {
         if target.default {
             self.drawn = true;
         }
@@ -880,167 +828,29 @@ impl Context {
         }
     }
 
-    fn clear_quad(&mut self, mask: u32, color: [f32; 4], size: (u32, u32), target: &Target) {
-        let device = self.device;
-        let samples = target.samples;
-        let color_format = target.color.map(|c| c.2);
-        let depth_format = target.depth.map(|d| d.1);
-        if self.gpu.clear.is_none() {
-            let (module, layout, pipeline_layout, group) = (
-                self.gpu.id(&self.client),
-                self.gpu.id(&self.client),
-                self.gpu.id(&self.client),
-                self.gpu.id(&self.client),
-            );
-            let code = "struct C { color: vec4<f32>, depth: vec4<f32> }\n@group(0) @binding(0) var<uniform> c: C;\n@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {\n    var p = array(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));\n    return vec4<f32>(p[i], c.depth.x, 1.0);\n}\n@fragment fn fs() -> @location(0) vec4<f32> { return c.color; }\n";
-            self.client.queue([
-                Request::CreateShaderModule { device, id: module, code: code.to_owned() },
-                Request::CreateBindGroupLayout {
-                    device,
-                    id: layout,
-                    desc: r#"{"entries":[{"binding":0,"visibility":3,"buffer":{"type":"uniform","hasDynamicOffset":true,"minBindingSize":32}}]}"#.to_owned(),
-                },
-                Request::CreatePipelineLayout { device, id: pipeline_layout, layouts: vec![layout] },
-                Request::CreateBindGroup {
-                    device,
-                    id: group,
-                    desc: format!(r#"{{"layout":{layout},"entries":[{{"binding":0,"buffer":{},"offset":0,"size":32}}]}}"#, self.gpu.arena),
-                },
-            ]);
-            self.gpu.clear = Some(ClearGpu {
-                module,
-                pipeline_layout,
-                group,
-                pipelines: HashMap::new(),
-            });
+    /// A pass of its own (a clear of one buffer, a blit) begun: what was
+    /// recorded before it ended, the next draw's pass begun anew.
+    pub(crate) fn own_pass(&mut self, desc: String) {
+        self.end_pass();
+        if self.gpu.arena_used > ARENA / 2 {
+            self.gpu_flush();
         }
-        let s = self.state.clone();
-        let write = if mask & COLOR_BUFFER_BIT != 0 {
-            s.color_mask
-                .iter()
-                .enumerate()
-                .fold(0, |m, (k, &on)| if on { m | (1 << k) } else { m })
-        } else {
-            0
-        };
-        let write = if target.rgb { write & 7 } else { write };
-        let depth_write = mask & DEPTH_BUFFER_BIT != 0 && s.depth_mask && target.depth_on;
-        let stencil_write = if mask & STENCIL_BUFFER_BIT != 0 && target.stencil_on {
-            s.stencil[0].write_mask & 0xFF
-        } else {
-            0
-        };
-        let key = (
-            write,
-            depth_write,
-            stencil_write,
-            color_format,
-            depth_format,
-            samples,
-        );
-        let clear = self.gpu.clear.as_ref().expect("made");
-        let pipeline = match clear.pipelines.get(&key) {
-            Some(&p) => p,
-            None => {
-                let (module, pipeline_layout) = (clear.module, clear.pipeline_layout);
-                let id = self.gpu.id(&self.client);
-                let depth_stencil = match depth_format {
-                    Some(format) => {
-                        let face = r#"{"compare":"always","passOp":"replace","failOp":"keep","depthFailOp":"keep"}"#;
-                        let stencil = if has_stencil(format) {
-                            format!(
-                                r#","stencilFront":{face},"stencilBack":{face},"stencilWriteMask":{stencil_write}"#
-                            )
-                        } else {
-                            String::new()
-                        };
-                        format!(
-                            r#","depthStencil":{{"format":"{format}","depthWriteEnabled":{depth_write},"depthCompare":"always"{stencil}}}"#
-                        )
-                    }
-                    None => String::new(),
-                };
-                let targets = color_format.map_or(String::new(), |f| {
-                    format!(r#"{{"format":"{f}","writeMask":{write}}}"#)
-                });
-                let desc = format!(
-                    r#"{{"layout":{pipeline_layout},"vertex":{{"module":{module},"entryPoint":"vs","buffers":[]}},"fragment":{{"module":{module},"entryPoint":"fs","targets":[{targets}]}},"multisample":{{"count":{samples}}}{depth_stencil}}}"#
-                );
-                self.client.queue([Request::CreateRenderPipeline {
-                    device,
-                    id,
-                    desc,
-                    call: None,
-                }]);
-                self.gpu
-                    .clear
-                    .as_mut()
-                    .expect("made")
-                    .pipelines
-                    .insert(key, id);
-                id
-            }
-        };
-        let mut data = Vec::with_capacity(32);
-        for v in color {
-            data.extend_from_slice(&v.to_le_bytes());
-        }
-        // The depth, from GL's window value to the quad's NDC (the
-        // translation's range), and the rest.
-        for v in [s.clear_depth, 0.0, 0.0, 0.0] {
-            data.extend_from_slice(&v.to_le_bytes());
-        }
-        let offset = match self.gpu.arena(&self.client, &data, ALIGN) {
-            Some(o) => o,
-            None => {
-                self.gpu_flush();
-                self.pass(size, None);
-                match self.gpu.arena(&self.client, &data, ALIGN) {
-                    Some(o) => o,
-                    None => return,
-                }
-            }
-        };
-        let group = self.gpu.clear.as_ref().expect("made").group;
-        let d_size = target.size;
-        let scissor = self.scissor_rect(d_size);
-        let reference = s.clear_stencil as u32 & 0xFF;
-        let pass = self.gpu.pass.as_mut().expect("begun");
-        pass.commands.extend([
-            RenderCommand::SetPipeline { pipeline },
-            RenderCommand::SetBindGroup {
-                index: 0,
-                group: Some(group),
-                offsets: vec![offset as u32],
-            },
-            RenderCommand::SetViewport {
-                x: 0.0,
-                y: 0.0,
-                width: d_size.0 as f32,
-                height: d_size.1 as f32,
-                min_depth: 0.0,
-                max_depth: 1.0,
-            },
-            RenderCommand::SetScissorRect {
-                x: scissor.0,
-                y: scissor.1,
-                width: scissor.2,
-                height: scissor.3,
-            },
-            RenderCommand::SetStencilReference { reference },
-            RenderCommand::Draw {
-                vertices: 3,
-                instances: 1,
-                first_vertex: 0,
-                first_instance: 0,
-            },
-        ]);
+        self.gpu.pass = Some(Pass {
+            key: vec![u32::MAX],
+            desc,
+            commands: Vec::new(),
+        });
+    }
+
+    /// The commands of the pass begun.
+    pub(crate) fn gpu_pass(&mut self) -> Option<&mut Vec<RenderCommand>> {
+        self.gpu.pass.as_mut().map(|p| &mut p.commands)
     }
 
     /// The scissor rectangle within the drawing buffer: GL's box when the
     /// test is on (its y from the bottom is the row from the top here:
     /// the frame is drawn upside down), else the whole buffer.
-    fn scissor_rect(&self, size: (u32, u32)) -> (u32, u32, u32, u32) {
+    pub(crate) fn scissor_rect(&self, size: (u32, u32)) -> (u32, u32, u32, u32) {
         if !self.state.scissor_test {
             return (0, 0, size.0, size.1);
         }
@@ -1253,10 +1063,47 @@ impl Context {
         let Some((group, unfilterable)) = self.bind_group(&linked, &target) else {
             return;
         };
-        let color_format = target.color.map(|c| c.2);
-        if s.blend && color_format == Some("rgba32float") && !self.ext.on("EXT_float_blend") {
-            self.error(INVALID_OPERATION);
-            return;
+        // Each draw buffer's output: of its kind (WebGL 2 5.? and GL ES
+        // 3.0 4.2.1), blending a 32-bit float only with EXT_float_blend.
+        let write = s
+            .color_mask
+            .iter()
+            .enumerate()
+            .fold(0, |m, (k, &on)| if on { m | (1 << k) } else { m });
+        let mut colors = Vec::new();
+        for (k, c) in target.colors.iter().enumerate() {
+            let Some(c) = c else {
+                colors.push(None);
+                continue;
+            };
+            let output = linked
+                .program
+                .outputs
+                .iter()
+                .find(|o| o.location == k as u32);
+            let kind = kind_of(c.storage);
+            if let Some(o) = output {
+                let wanted = match o.scalar {
+                    glsl::tir::Scalar::Int => 1,
+                    glsl::tir::Scalar::Uint => 2,
+                    _ => 0,
+                };
+                if wanted != kind {
+                    self.error(INVALID_OPERATION);
+                    return;
+                }
+            }
+            let blends = s.blend && kind == 0;
+            if blends && c.storage.ends_with("32float") && !self.ext.on("EXT_float_blend") {
+                self.error(INVALID_OPERATION);
+                return;
+            }
+            let mask = match output {
+                None => 0,
+                Some(_) if c.rgb => write & 7,
+                Some(_) => write,
+            };
+            colors.push(Some((c.storage, mask, blends)));
         }
         if s.cull && s.cull_mode == FRONT_AND_BACK && mode >= TRIANGLES {
             return;
@@ -1369,16 +1216,6 @@ impl Context {
                 s.blend_equation[1],
             ]
         });
-        let write_mask = s
-            .color_mask
-            .iter()
-            .enumerate()
-            .fold(0, |m, (k, &on)| if on { m | (1 << k) } else { m });
-        let write_mask = if target.rgb {
-            write_mask & 7
-        } else {
-            write_mask
-        };
         let triangles = mode >= TRIANGLES || points;
         let depth_format = target.depth.map(|d| d.1);
         let depth = depth_format.map(|_| {
@@ -1417,7 +1254,6 @@ impl Context {
             strip_index,
             buffers: buffers.clone(),
             blend,
-            write_mask,
             cull: if s.cull && triangles {
                 if s.cull_mode == FRONT { 1 } else { 2 }
             } else {
@@ -1428,7 +1264,7 @@ impl Context {
             stencil,
             samples: target.samples,
             alpha_to_coverage: s.sample_alpha_to_coverage && target.samples > 1,
-            color: color_format,
+            colors,
             depth_format,
             unfilterable,
             mask: if s.sample_coverage && target.samples > 1 {
@@ -1612,7 +1448,12 @@ impl Context {
 
     /// `bytes` in the arena; when it is full, what was recorded is sent
     /// and the pass begun again.
-    fn arena_or_flush(&mut self, bytes: &[u8], align: u64, size: (u32, u32)) -> Option<u64> {
+    pub(crate) fn arena_or_flush(
+        &mut self,
+        bytes: &[u8],
+        align: u64,
+        size: (u32, u32),
+    ) -> Option<u64> {
         if let Some(o) = self.gpu.arena(&self.client, bytes, align) {
             return Some(o);
         }
@@ -1696,16 +1537,18 @@ impl Context {
         } else {
             linked.vertex
         };
-        let targets = key.color.map_or("[]".to_owned(), |format| {
-            format!(
-                r#"[{{"format":"{format}","writeMask":{}{blend}}}]"#,
-                if linked.program.outputs.is_empty() {
-                    0
-                } else {
-                    key.write_mask
-                }
-            )
-        });
+        let targets: Vec<String> = key
+            .colors
+            .iter()
+            .map(|c| match c {
+                Some((format, mask, blends)) => format!(
+                    r#"{{"format":"{format}","writeMask":{mask}{}}}"#,
+                    if *blends { blend.as_str() } else { "" }
+                ),
+                None => "null".to_owned(),
+            })
+            .collect();
+        let targets = format!("[{}]", targets.join(","));
         let layout = self
             .gpu
             .program_layout(&self.client, linked, key.unfilterable)
@@ -1741,38 +1584,43 @@ impl Context {
         let mut element = 0;
         let mut bit = 0;
         for s in &linked.program.samplers {
-            let dim = s.sampler.dim;
+            let want = Want {
+                slot: match s.sampler.dim {
+                    glsl::tir::Dim::D2 => SLOT_2D,
+                    glsl::tir::Dim::Cube => SLOT_CUBE,
+                    glsl::tir::Dim::D3 => SLOT_3D,
+                    glsl::tir::Dim::D2Array => SLOT_ARRAY,
+                },
+                sample: match s.sampler.sample {
+                    glsl::tir::Scalar::Int => Sample::Sint,
+                    glsl::tir::Scalar::Uint => Sample::Uint,
+                    _ => Sample::Float,
+                },
+                shadow: s.sampler.shadow,
+            };
             for _ in &s.bindings {
                 let unit = linked.units.get(element).copied().unwrap_or(0);
                 element += 1;
-                let found = match dim {
-                    glsl::tir::Dim::D2 | glsl::tir::Dim::Cube
-                        if !s.sampler.shadow && s.sampler.sample == glsl::tir::Scalar::Float =>
-                    {
-                        self.sampled(unit, dim == glsl::tir::Dim::Cube)
+                match self.sampled(unit, want) {
+                    Err(()) => {
+                        self.error(INVALID_OPERATION);
+                        return None;
                     }
-                    _ => None,
-                };
-                match found {
-                    Some((view, sampler, flat, texture)) => {
-                        if target.textures.contains(&texture) {
+                    Ok(Some(found)) => {
+                        if target.textures.contains(&found.id) {
                             self.error(INVALID_OPERATION);
                             return None;
                         }
-                        if flat {
+                        if found.unfilterable {
                             unfilterable |= 1 << bit;
                         }
+                        resources.push(found.view);
+                        resources.push(found.sampler);
+                    }
+                    Ok(None) => {
+                        let (view, sampler) = self.default_texture(want);
                         resources.push(view);
                         resources.push(sampler);
-                    }
-                    None => {
-                        let view = if dim == glsl::tir::Dim::Cube {
-                            self.gpu.defaults.1
-                        } else {
-                            self.gpu.defaults.0
-                        };
-                        resources.push(view);
-                        resources.push(self.gpu.defaults.2);
                     }
                 }
                 bit += 1;
@@ -1848,6 +1696,79 @@ impl Context {
         }]);
         self.gpu.groups.insert(key, id);
         Some((id, unfilterable))
+    }
+
+    /// The texture a sampler with no complete texture reads: GL's
+    /// incomplete texture (0, 0, 0, 1), of the sampler's dimension and
+    /// kind; for a shadow sampler a depth texture of 0. View and
+    /// sampler.
+    fn default_texture(&mut self, want: Want) -> (u32, u32) {
+        let kind = if want.shadow {
+            3
+        } else {
+            match want.sample {
+                Sample::Sint => 1,
+                Sample::Uint => 2,
+                _ => 0,
+            }
+        };
+        match (want.slot, kind) {
+            (SLOT_2D, 0) => return (self.gpu.defaults.0, self.gpu.defaults.2),
+            (SLOT_CUBE, 0) => return (self.gpu.defaults.1, self.gpu.defaults.2),
+            _ => {}
+        }
+        if let Some(&made) = self.gpu.extra.get(&(want.slot, kind)) {
+            return made;
+        }
+        let storage = ["rgba8unorm", "rgba32sint", "rgba32uint", "depth32float"][usize::from(kind)];
+        let layers = if want.slot == SLOT_CUBE { 6 } else { 1 };
+        let (dimension, view_dimension) = match want.slot {
+            SLOT_CUBE => ("2d", "cube"),
+            SLOT_3D => ("3d", "3d"),
+            SLOT_ARRAY => ("2d", "2d-array"),
+            _ => ("2d", "2d"),
+        };
+        let (texture, view) = (self.gpu.id(&self.client), self.gpu.id(&self.client));
+        // TEXTURE_BINDING | COPY_DST, a depth one TEXTURE_BINDING alone.
+        let usage = if kind == 3 { 4 } else { 6 };
+        self.client.queue([
+            Request::CreateTexture {
+                device: self.device,
+                id: texture,
+                desc: format!(
+                    r#"{{"size":[1,1,{layers}],"format":"{storage}","usage":{usage},"dimension":"{dimension}"}}"#
+                ),
+            },
+            Request::CreateView {
+                texture,
+                id: view,
+                desc: format!(r#"{{"dimension":"{view_dimension}"}}"#),
+            },
+        ]);
+        if kind != 3 {
+            let one: Vec<u8> = match kind {
+                0 => vec![0, 0, 0, 255],
+                _ => [0u32, 0, 0, 1]
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect(),
+            };
+            let row = one.len();
+            self.client.queue([Request::WriteTexture {
+                device: self.device,
+                desc: format!(
+                    r#"{{"destination":{{"texture":{texture}}},"dataLayout":{{"bytesPerRow":{row},"rowsPerImage":1}},"size":[1,1,{layers}]}}"#
+                ),
+                bytes: Bytes(one.repeat(layers)),
+            }]);
+        }
+        let sampler = if kind == 3 {
+            self.sampler_of(r#"{"compare":"never"}"#.to_owned())
+        } else {
+            self.gpu.defaults.2
+        };
+        self.gpu.extra.insert((want.slot, kind), (view, sampler));
+        (view, sampler)
     }
 
     // ---- Presentation ----

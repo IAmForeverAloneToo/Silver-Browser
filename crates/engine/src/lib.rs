@@ -141,7 +141,7 @@ mod svg_images;
 mod testing;
 mod view;
 mod webaudio;
-mod webgl;
+pub mod webgl;
 mod webgpu;
 
 use std::cell::RefCell;

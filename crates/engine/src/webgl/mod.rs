@@ -9,6 +9,8 @@
 
 mod draw;
 mod ext;
+mod formats;
+mod framebuffer;
 pub(crate) mod gl;
 mod texture;
 mod webgl2;
@@ -218,6 +220,15 @@ pub(crate) struct State {
     pub unpack_colorspace_conversion: u32,
     pub generate_mipmap_hint: u32,
     pub active_texture: u32,
+    /// WebGL 2's pixel store state.
+    pub unpack_row_length: u32,
+    pub unpack_image_height: u32,
+    pub unpack_skip_pixels: u32,
+    pub unpack_skip_rows: u32,
+    pub unpack_skip_images: u32,
+    pub pack_row_length: u32,
+    pub pack_skip_pixels: u32,
+    pub pack_skip_rows: u32,
 }
 
 impl State {
@@ -270,6 +281,14 @@ impl State {
             unpack_colorspace_conversion: BROWSER_DEFAULT_WEBGL,
             generate_mipmap_hint: DONT_CARE,
             active_texture: TEXTURE0,
+            unpack_row_length: 0,
+            unpack_image_height: 0,
+            unpack_skip_pixels: 0,
+            unpack_skip_rows: 0,
+            unpack_skip_images: 0,
+            pack_row_length: 0,
+            pack_skip_pixels: 0,
+            pack_skip_rows: 0,
         }
     }
 }
@@ -310,7 +329,7 @@ pub(crate) struct Context {
     pub program: Option<u32>,
     pub state: State,
     pub gpu: draw::Gpu,
-    pub surfaces: texture::Surfaces,
+    pub surfaces: framebuffer::Surfaces,
     pub features: ext::Features,
     pub ext: ext::Enabled,
     pub v2: webgl2::State2,
@@ -364,6 +383,88 @@ impl Context {
             TRANSFORM_FEEDBACK_BUFFER if v2 => Ok(self.v2.feedback_buffer),
             _ => Err(INVALID_ENUM),
         }
+    }
+}
+
+/// One WebGL context as the fuzz targets drive it (M41, `webgl_ops`):
+/// its calls made as the bootstrap makes them, of a canvas of 64 by 32.
+pub struct Harness {
+    webgl: WebGl,
+    client: Arc<GpuClient>,
+    inbox: Inbox,
+    _mailbox: crate::scripts::workers::Mailbox,
+    context: Option<u32>,
+}
+
+impl Harness {
+    /// A harness of the GPU service `client` reaches.
+    pub fn new(client: Arc<GpuClient>) -> Harness {
+        let (inbox, mailbox) = crate::scripts::workers::inbox(None);
+        Harness {
+            webgl: WebGl::default(),
+            client,
+            inbox,
+            _mailbox: mailbox,
+            context: None,
+        }
+    }
+
+    /// A new context of `version` (1 or 2), the one called from now on:
+    /// false when none could be made.
+    pub fn create(&mut self, version: u8) -> bool {
+        let call = CanvasCall {
+            op: "create".to_owned(),
+            numbers: vec![1.0, f64::from(version), 1.0, 1.0, 1.0, 0.0, 1.0, 0.0],
+            strings: Vec::new(),
+            bytes: None,
+        };
+        let client = Arc::clone(&self.client);
+        let env = Env {
+            client: Some(&client),
+            inbox: &self.inbox,
+            canvas_size: &|_| (64, 32),
+        };
+        self.context = match self.webgl.call(call, &env) {
+            Ok(Answer::Number(id)) if id > 0.0 => Some(id as u32),
+            _ => None,
+        };
+        self.context.is_some()
+    }
+
+    /// Whether a context was made and is not lost.
+    pub fn made(&self) -> bool {
+        self.context
+            .and_then(|id| self.webgl.contexts.get(&id))
+            .is_some_and(|c| !c.lost)
+    }
+
+    /// A call of the context: its operation, the numbers after the
+    /// context's, its strings and bytes.
+    pub fn call(
+        &mut self,
+        op: &str,
+        numbers: &[f64],
+        strings: Vec<String>,
+        bytes: Option<Vec<u8>>,
+    ) {
+        let Some(id) = self.context else {
+            return;
+        };
+        let mut all = vec![f64::from(id)];
+        all.extend_from_slice(numbers);
+        let call = CanvasCall {
+            op: op.to_owned(),
+            numbers: all,
+            strings,
+            bytes,
+        };
+        let client = Arc::clone(&self.client);
+        let env = Env {
+            client: Some(&client),
+            inbox: &self.inbox,
+            canvas_size: &|_| (64, 32),
+        };
+        let _ = self.webgl.call(call, &env);
     }
 }
 
@@ -455,6 +556,11 @@ impl WebGl {
         if call.op == "restoreContext" {
             return Ok(Answer::Bool(false));
         }
+        // Its GPU process gone: lost.
+        if context.client.is_lost() {
+            context.lose();
+            return Ok(lost_answer(&call.op, context));
+        }
         let size = (env.canvas_size)(context.canvas);
         context.op(&call, size, env)
     }
@@ -528,7 +634,7 @@ impl Context {
             program: None,
             state: State::new(size),
             gpu,
-            surfaces: texture::Surfaces::default(),
+            surfaces: framebuffer::Surfaces::default(),
             features,
             ext: ext::Enabled::default(),
             v2: webgl2::State2::default(),
@@ -893,6 +999,27 @@ impl Context {
                         }
                     }
                     PACK_ALIGNMENT | UNPACK_ALIGNMENT => self.error(INVALID_VALUE),
+                    UNPACK_ROW_LENGTH | UNPACK_IMAGE_HEIGHT | UNPACK_SKIP_PIXELS
+                    | UNPACK_SKIP_ROWS | UNPACK_SKIP_IMAGES | PACK_ROW_LENGTH
+                    | PACK_SKIP_PIXELS | PACK_SKIP_ROWS
+                        if self.version == 2 =>
+                    {
+                        if value < 0 {
+                            self.error(INVALID_VALUE);
+                        } else {
+                            let s = &mut self.state;
+                            *match name {
+                                UNPACK_ROW_LENGTH => &mut s.unpack_row_length,
+                                UNPACK_IMAGE_HEIGHT => &mut s.unpack_image_height,
+                                UNPACK_SKIP_PIXELS => &mut s.unpack_skip_pixels,
+                                UNPACK_SKIP_ROWS => &mut s.unpack_skip_rows,
+                                UNPACK_SKIP_IMAGES => &mut s.unpack_skip_images,
+                                PACK_ROW_LENGTH => &mut s.pack_row_length,
+                                PACK_SKIP_PIXELS => &mut s.pack_skip_pixels,
+                                _ => &mut s.pack_skip_rows,
+                            } = value as u32;
+                        }
+                    }
                     UNPACK_FLIP_Y_WEBGL => self.state.unpack_flip_y = value != 0,
                     UNPACK_PREMULTIPLY_ALPHA_WEBGL => {
                         self.state.unpack_premultiply_alpha = value != 0
@@ -1545,9 +1672,14 @@ impl Context {
             }
             other => match self.texture_op(other, call, size) {
                 Some(answer) => answer,
-                None => match self.webgl2_op(other, call, size) {
+                None => match self.framebuffer_op(other, call, size) {
                     Some(answer) => answer,
-                    None => return Err(DomError::new("TypeError", "an unknown WebGL call")),
+                    None => match self.webgl2_op(other, call, size) {
+                        Some(answer) => answer,
+                        None => {
+                            return Err(DomError::new("TypeError", "an unknown WebGL call"));
+                        }
+                    },
                 },
             },
         };
@@ -1558,10 +1690,15 @@ impl Context {
         let on = |name: &str| self.version == 1 && self.ext.on(name);
         glsl::Options {
             webgl2: self.version == 2,
+            max_draw_buffers: if self.version == 2 || on("WEBGL_draw_buffers") {
+                8
+            } else {
+                1
+            },
             extensions: glsl::Extensions {
                 standard_derivatives: on("OES_standard_derivatives"),
                 frag_depth: on("EXT_frag_depth"),
-                draw_buffers: false,
+                draw_buffers: on("WEBGL_draw_buffers"),
                 shader_texture_lod: on("EXT_shader_texture_lod"),
             },
             ..glsl::Options::default()
@@ -2090,10 +2227,29 @@ impl Context {
                 Answer::Number(self.surfaces.renderbuffer.map_or(0.0, f64::from))
             }
             TEXTURE_BINDING_2D | TEXTURE_BINDING_CUBE_MAP => {
-                let slot = usize::from(name == TEXTURE_BINDING_CUBE_MAP);
-                let unit = (self.state.active_texture - TEXTURE0) as usize;
-                Answer::Number(self.surfaces.units[unit][slot].map_or(0.0, f64::from))
+                let slot = texture::binding_slot(name).expect("a binding");
+                Answer::Number(self.bound_texture(slot).map_or(0.0, f64::from))
             }
+            TEXTURE_BINDING_3D | TEXTURE_BINDING_2D_ARRAY if self.version == 2 => {
+                let slot = texture::binding_slot(name).expect("a binding");
+                Answer::Number(self.bound_texture(slot).map_or(0.0, f64::from))
+            }
+            SAMPLER_BINDING if self.version == 2 => {
+                let unit = self.unit();
+                Answer::Number(self.surfaces.sampler_units[unit].map_or(0.0, f64::from))
+            }
+            READ_FRAMEBUFFER_BINDING if self.version == 2 => {
+                Answer::Number(self.surfaces.read_framebuffer.map_or(0.0, f64::from))
+            }
+            UNPACK_ROW_LENGTH if self.version == 2 => num(self.state.unpack_row_length),
+            UNPACK_IMAGE_HEIGHT if self.version == 2 => num(self.state.unpack_image_height),
+            UNPACK_SKIP_PIXELS if self.version == 2 => num(self.state.unpack_skip_pixels),
+            UNPACK_SKIP_ROWS if self.version == 2 => num(self.state.unpack_skip_rows),
+            UNPACK_SKIP_IMAGES if self.version == 2 => num(self.state.unpack_skip_images),
+            PACK_ROW_LENGTH if self.version == 2 => num(self.state.pack_row_length),
+            PACK_SKIP_PIXELS if self.version == 2 => num(self.state.pack_skip_pixels),
+            PACK_SKIP_ROWS if self.version == 2 => num(self.state.pack_skip_rows),
+            MAX_COLOR_ATTACHMENTS | MAX_DRAW_BUFFERS if self.ext.on("WEBGL_draw_buffers") => num(8),
             MAX_TEXTURE_MAX_ANISOTROPY_EXT if self.ext.on("EXT_texture_filter_anisotropic") => {
                 Answer::Number(16.0)
             }
@@ -2165,9 +2321,11 @@ impl Context {
             TRANSFORM_FEEDBACK_ACTIVE | TRANSFORM_FEEDBACK_PAUSED if self.version == 2 => {
                 Answer::Bool(false)
             }
-            READ_BUFFER if self.version == 2 => num(BACK),
-            n if self.version == 2 && (DRAW_BUFFER0..DRAW_BUFFER0 + 8).contains(&n) => {
-                num(if n == DRAW_BUFFER0 { BACK } else { NONE })
+            READ_BUFFER if self.version == 2 => num(self.read_buffer()),
+            n if (self.version == 2 || self.ext.on("WEBGL_draw_buffers"))
+                && (DRAW_BUFFER0..DRAW_BUFFER0 + 8).contains(&n) =>
+            {
+                num(self.draw_buffer(n - DRAW_BUFFER0))
             }
             _ => {
                 self.error(INVALID_ENUM);

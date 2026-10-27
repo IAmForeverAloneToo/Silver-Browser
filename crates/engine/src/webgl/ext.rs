@@ -11,6 +11,8 @@ pub(crate) struct Features {
     pub bc: bool,
     pub float32_filterable: bool,
     pub float32_blendable: bool,
+    pub depth32_stencil: bool,
+    pub rg11b10_renderable: bool,
 }
 
 impl Features {
@@ -21,6 +23,8 @@ impl Features {
             bc: has("texture-compression-bc"),
             float32_filterable: has("float32-filterable"),
             float32_blendable: has("float32-blendable"),
+            depth32_stencil: has("depth32float-stencil8"),
+            rg11b10_renderable: has("rg11b10ufloat-renderable"),
         }
     }
 
@@ -31,6 +35,8 @@ impl Features {
             (self.bc, "texture-compression-bc"),
             (self.float32_filterable, "float32-filterable"),
             (self.float32_blendable, "float32-blendable"),
+            (self.depth32_stencil, "depth32float-stencil8"),
+            (self.rg11b10_renderable, "rg11b10ufloat-renderable"),
         ] {
             if on {
                 names.push(name.to_owned());
@@ -68,8 +74,12 @@ pub(crate) fn offered(version: u8, features: &Features) -> Vec<&'static str> {
         add(true, "WEBGL_color_buffer_float");
         add(features.bc, "WEBGL_compressed_texture_s3tc");
         add(true, "WEBGL_depth_texture");
+        add(true, "WEBGL_draw_buffers");
         add(true, "WEBGL_lose_context");
     } else {
+        add(true, "EXT_color_buffer_float");
+        add(true, "EXT_color_buffer_half_float");
+        add(features.float32_blendable, "EXT_float_blend");
         add(true, "EXT_texture_filter_anisotropic");
         add(features.float32_filterable, "OES_texture_float_linear");
         add(features.bc, "WEBGL_compressed_texture_s3tc");

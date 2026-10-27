@@ -755,3 +755,254 @@ log('restored ' + gl.isContextLost() + ' ' + gl.getError() + ' ' + (gl.getParame
         ]
     );
 }
+
+/// WebGL 2's helpers: a full-canvas quad at attribute 0, a program of
+/// GLSL ES 3.00 sources, and a read of RGBA bytes.
+const GL2: &str = r#"
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+const VS = '#version 300 es\nlayout(location = 0) in vec2 position; out vec2 uv; void main() { uv = position * 0.5 + 0.5; gl_Position = vec4(position, 0.0, 1.0); }';
+const fs = (body) => program(VS, '#version 300 es\nprecision highp float; precision highp int; precision highp sampler3D; precision highp sampler2DArray; precision highp usampler2D; precision highp sampler2DShadow; in vec2 uv; ' + body);
+const draw = () => gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+const read = (x, y, w, h) => {
+  const out = new Uint8Array(w * h * 4);
+  gl.readPixels(x, y, w, h, gl.RGBA, gl.UNSIGNED_BYTE, out);
+  const px = [];
+  for (let i = 0; i < out.length; i += 4) px.push(Array.from(out.slice(i, i + 4)).join(','));
+  return px.join(' ');
+};
+const nearest = (target) => {
+  gl.texParameteri(target, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(target, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+};
+"#;
+
+#[test]
+fn webgl2_sized_integer_3d_and_array_textures_samplers_and_pixel_buffers() {
+    let Some(lines) = run_with(
+        "webgl2",
+        &format!(
+            "{GL2}{}",
+            r#"
+// An R8 of fixed storage, its rows given in part.
+const plain = fs('uniform sampler2D t; out vec4 o; void main() { o = texture(t, uv); }');
+gl.useProgram(plain);
+const r8 = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, r8);
+gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R8, 2, 1);
+nearest(gl.TEXTURE_2D);
+gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 2, 1, gl.RED, gl.UNSIGNED_BYTE, new Uint8Array([255, 128]));
+draw();
+log('r8 ' + read(0, 0, 1, 1) + ' / ' + read(3, 0, 1, 1) + ' ' + gl.getTexParameter(gl.TEXTURE_2D, gl.TEXTURE_IMMUTABLE_FORMAT));
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, 1, 1, 0, gl.RED, gl.UNSIGNED_BYTE, null);
+log('immutable ' + gl.getError());
+gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4));
+log('wrong format ' + gl.getError());
+// An unsigned integer texture through a usampler2D.
+const ints = fs('uniform usampler2D t; out vec4 o; void main() { o = vec4(texelFetch(t, ivec2(0, 0), 0)) / 255.0; }');
+gl.useProgram(ints);
+const ui = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, ui);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8UI, 1, 1, 0, gl.RGBA_INTEGER, gl.UNSIGNED_BYTE, new Uint8Array([10, 20, 30, 255]));
+nearest(gl.TEXTURE_2D);
+draw();
+log('uint ' + read(0, 0, 1, 1) + ' ' + gl.getError());
+// Linear filtering makes it incomplete: (0, 0, 0, 1).
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+draw();
+log('linear ints ' + read(0, 0, 1, 1));
+// A float sampler of an integer texture: INVALID_OPERATION.
+gl.useProgram(plain);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+draw();
+log('wrong sampler ' + gl.getError());
+// A 3D texture's second slice, and a 2D array's third layer.
+const d3 = fs('uniform sampler3D t; out vec4 o; void main() { o = texture(t, vec3(uv, 0.75)); }');
+gl.useProgram(d3);
+const t3 = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_3D, t3);
+gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA8, 1, 1, 2, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 0, 0, 255, 0, 0, 255, 255]));
+nearest(gl.TEXTURE_3D);
+draw();
+log('3d ' + read(0, 0, 1, 1));
+// A sampler object overrides the texture's own: mipmapped filtering of
+// one level, incomplete.
+const sampler = gl.createSampler();
+gl.samplerParameteri(sampler, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+gl.bindSampler(0, sampler);
+draw();
+log('sampler ' + read(0, 0, 1, 1) + ' ' + gl.getSamplerParameter(sampler, gl.TEXTURE_MIN_FILTER) + ' ' + (gl.getParameter(gl.SAMPLER_BINDING) === sampler) + ' ' + gl.isSampler(sampler));
+gl.bindSampler(0, null);
+const arrays = fs('uniform sampler2DArray t; out vec4 o; void main() { o = texture(t, vec3(uv, 2.0)); }');
+gl.useProgram(arrays);
+const ta = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D_ARRAY, ta);
+gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA8, 1, 1, 3);
+gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 2, 1, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 255, 0, 255]));
+nearest(gl.TEXTURE_2D_ARRAY);
+draw();
+log('array ' + read(0, 0, 1, 1));
+// A depth texture compared: 0.4 <= 0.5 passes, 0.6 does not.
+const shadow = fs('uniform sampler2DShadow t; uniform float ref; out vec4 o; void main() { o = vec4(texture(t, vec3(uv, ref))); }');
+gl.useProgram(shadow);
+const depth = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, depth);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT16, 1, 1, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_SHORT, new Uint16Array([32768]));
+nearest(gl.TEXTURE_2D);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_MODE, gl.COMPARE_REF_TO_TEXTURE);
+gl.uniform1f(gl.getUniformLocation(shadow, 'ref'), 0.4);
+draw();
+const pass = read(0, 0, 1, 1);
+gl.uniform1f(gl.getUniformLocation(shadow, 'ref'), 0.6);
+draw();
+log('shadow ' + pass + ' / ' + read(0, 0, 1, 1) + ' ' + gl.getError());
+// Uploads from a pixel unpack buffer; reads into a pixel pack buffer.
+gl.useProgram(plain);
+const unpack = gl.createBuffer();
+gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, unpack);
+gl.bufferData(gl.PIXEL_UNPACK_BUFFER, new Uint8Array([9, 9, 9, 9, 0, 0, 255, 255]), gl.STATIC_DRAW);
+const fromBuffer = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, fromBuffer);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, 4);
+nearest(gl.TEXTURE_2D);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4));
+log('array with a buffer bound ' + gl.getError());
+gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null);
+draw();
+const packed = gl.createBuffer();
+gl.bindBuffer(gl.PIXEL_PACK_BUFFER, packed);
+gl.bufferData(gl.PIXEL_PACK_BUFFER, 8, gl.STREAM_READ);
+gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, 4);
+const back = new Uint8Array(8);
+gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, back);
+log('pixel buffers ' + Array.from(back).join(',') + ' ' + gl.getError());
+gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+"#
+        ),
+    ) else {
+        return;
+    };
+    assert_eq!(
+        lines,
+        [
+            "r8 255,0,0,255 / 128,0,0,255 true",
+            "immutable 1282",
+            "wrong format 1282",
+            "uint 10,20,30,255 0",
+            "linear ints 0,0,0,1",
+            "wrong sampler 1282",
+            "3d 0,0,255,255",
+            "sampler 0,0,0,255 9987 true true",
+            "array 0,255,0,255",
+            "shadow 255,255,255,255 / 0,0,0,0 0",
+            "array with a buffer bound 1282",
+            "pixel buffers 0,0,0,0,0,0,255,255 0",
+        ]
+    );
+}
+
+#[test]
+fn webgl2_draw_buffers_clears_blits_and_multisampled_renderbuffers() {
+    let Some(lines) = run_with(
+        "webgl2",
+        &format!(
+            "{GL2}{}",
+            r#"
+// Two colour attachments, a float and an unsigned integer one.
+const color = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, color);
+gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, 4, 2);
+const counts = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, counts);
+gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R32UI, 4, 2);
+const fb = gl.createFramebuffer();
+gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, color, 0);
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, counts, 0);
+gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+log('buffers ' + gl.checkFramebufferStatus(gl.FRAMEBUFFER).toString(16) + ' ' + (gl.getParameter(gl.DRAW_BUFFER1) === gl.COLOR_ATTACHMENT1));
+gl.clear(gl.COLOR_BUFFER_BIT);
+log('clear of ints ' + gl.getError());
+const both = fs('layout(location = 0) out vec4 o; layout(location = 1) out uint n; void main() { o = vec4(1.0, 0.5, 0.0, 1.0); n = 7u; }');
+gl.useProgram(both);
+draw();
+gl.clearBufferuiv(gl.COLOR, 1, new Uint32Array([3, 0, 0, 0]));
+gl.clearBufferfv(gl.COLOR, 0, [0, 0, 1, 1]);
+gl.enable(gl.SCISSOR_TEST);
+gl.scissor(0, 0, 1, 1);
+gl.clearBufferuiv(gl.COLOR, 1, new Uint32Array([9, 0, 0, 0]));
+gl.disable(gl.SCISSOR_TEST);
+gl.clearBufferiv(gl.COLOR, 1, new Int32Array(4));
+log('wrong kind ' + gl.getError());
+gl.readBuffer(gl.COLOR_ATTACHMENT1);
+const n = new Uint32Array(4 * 2);
+gl.readPixels(0, 0, 2, 1, gl.RGBA_INTEGER, gl.UNSIGNED_INT, n);
+log('ints ' + n[0] + ' ' + n[4] + ' ' + gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_FORMAT).toString(16));
+gl.readBuffer(gl.COLOR_ATTACHMENT0);
+log('floats ' + read(0, 0, 1, 1));
+// An output of the wrong kind: INVALID_OPERATION.
+const wrong = fs('layout(location = 0) out vec4 o; layout(location = 1) out vec4 m; void main() { o = vec4(1.0); m = vec4(1.0); }');
+gl.useProgram(wrong);
+draw();
+log('wrong output ' + gl.getError());
+// Blitted onto the canvas, turned over left to right.
+gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+gl.blitFramebuffer(0, 0, 4, 2, 4, 0, 0, 2, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+log('blit ' + gl.getError() + ' ' + read(0, 0, 1, 1));
+// A multisampled renderbuffer drawn into, resolved by a blit.
+const ms = gl.createRenderbuffer();
+gl.bindRenderbuffer(gl.RENDERBUFFER, ms);
+gl.renderbufferStorageMultisample(gl.RENDERBUFFER, 4, gl.RGBA8, 4, 2);
+log('samples ' + gl.getRenderbufferParameter(gl.RENDERBUFFER, gl.RENDERBUFFER_SAMPLES) + ' ' + Array.from(gl.getInternalformatParameter(gl.RENDERBUFFER, gl.RGBA8, gl.SAMPLES)).join(',') + ' ' + gl.getInternalformatParameter(gl.RENDERBUFFER, gl.R32UI, gl.SAMPLES).length);
+const msfb = gl.createFramebuffer();
+gl.bindFramebuffer(gl.FRAMEBUFFER, msfb);
+gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, ms);
+gl.clearColor(1, 0, 1, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4));
+log('read multisampled ' + gl.getError());
+gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, fb);
+gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+gl.blitFramebuffer(0, 0, 4, 2, 0, 0, 4, 2, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+gl.bindFramebuffer(gl.READ_FRAMEBUFFER, fb);
+log('resolved ' + gl.getError() + ' ' + read(3, 1, 1, 1));
+gl.blitFramebuffer(0, 0, 4, 2, 0, 0, 2, 1, gl.COLOR_BUFFER_BIT, gl.LINEAR);
+log('scaled from itself ' + gl.getError());
+gl.invalidateFramebuffer(gl.FRAMEBUFFER, [gl.COLOR_ATTACHMENT0]);
+gl.invalidateFramebuffer(gl.FRAMEBUFFER, [gl.BACK]);
+log('invalidate ' + gl.getError());
+// WebGL 1's WEBGL_draw_buffers.
+const g1 = document.createElement('canvas').getContext('webgl');
+const ext = g1.getExtension('WEBGL_draw_buffers');
+const f1 = g1.createFramebuffer();
+g1.bindFramebuffer(g1.FRAMEBUFFER, f1);
+ext.drawBuffersWEBGL([ext.COLOR_ATTACHMENT0_WEBGL, ext.COLOR_ATTACHMENT1_WEBGL]);
+log('webgl1 ' + String(ext) + ' ' + g1.getParameter(ext.MAX_DRAW_BUFFERS_WEBGL) + ' ' + (g1.getParameter(ext.DRAW_BUFFER1_WEBGL) === ext.COLOR_ATTACHMENT1_WEBGL) + ' ' + g1.getError());
+"#
+        ),
+    ) else {
+        return;
+    };
+    assert_eq!(
+        lines,
+        [
+            "buffers 8cd5 true",
+            "clear of ints 1282",
+            "wrong kind 1282",
+            "ints 9 3 8d94",
+            "floats 0,0,255,255",
+            "wrong output 1282",
+            "blit 0 0,0,255,255",
+            "samples 4 4 0",
+            "read multisampled 1282",
+            "resolved 0 255,0,255,255",
+            "scaled from itself 1282",
+            "invalidate 1280",
+            "webgl1 [object WEBGL_draw_buffers] 8 true 0",
+        ]
+    );
+}

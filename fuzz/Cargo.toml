@@ -30,7 +30,7 @@ license = "AGPL-3.0-only"
 cargo-fuzz = true
 
 [features]
-# The GPU service, for `webgpu_ops` alone (M41).
+# The GPU service, for `webgpu_ops` and `webgl_ops` alone (M41).
 gpu = ["engine/gpu"]
 
 [dependencies]
@@ -307,6 +307,13 @@ doc = false
 [[bin]]
 name = "webgpu_ops"
 path = "fuzz_targets/webgpu_ops.rs"
+test = false
+doc = false
+required-features = ["gpu"]
+
+[[bin]]
+name = "webgl_ops"
+path = "fuzz_targets/webgl_ops.rs"
 test = false
 doc = false
 required-features = ["gpu"]

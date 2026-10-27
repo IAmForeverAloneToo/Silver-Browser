@@ -1,107 +1,88 @@
-//! WebGL's textures, renderbuffers and framebuffers (M41 step 7, D40):
-//! GL's images, each defined on its own, on WebGPU's textures of a fixed
-//! shape. Each image (a face's level) is a texture of its own in the GPU
-//! process, which a framebuffer draws into; a texture sampled past its
-//! first level, or a cube, is put together from its images into one,
-//! again when they change. Formats WebGPU lacks are widened on upload
-//! (LUMINANCE, ALPHA and RGB as RGBA, packed shorts unpacked); copies
-//! and mipmaps are drawn by a blit of this module's.
+//! WebGL's textures and samplers (M41 steps 7 and 8, D40): GL's images,
+//! each defined on its own, on WebGPU's textures of a fixed shape. Each
+//! image (a face's or a level's, a 3D or array level's layers
+//! together) is a texture of its own in the GPU process, which a
+//! framebuffer draws into; a texture sampled past one level, or a cube,
+//! is put together from its images into one, again when they change.
+//! Copies and mipmaps are drawn by a blit of this module's.
 
 use std::collections::{BTreeMap, HashMap};
 
 use js::{Answer, CanvasCall};
 
+use super::formats::{self, Format, Layout, Sample, has_depth, has_stencil, texel_bytes};
 use super::gl::*;
-use super::{Context, MAX_SIZE, i, n, u, wait};
-use crate::gpu::wire::{Command, GPU_CHUNK, RenderCommand, Reply, Request};
+use super::{Context, MAX_SIZE, i, n, u};
+use crate::gpu::wire::{Command, GPU_CHUNK, RenderCommand, Request};
 use crate::ipc::Bytes;
 
 /// The levels a texture may have: a side of [`MAX_SIZE`] halved to 1.
-const MAX_LEVEL: i32 = 13;
+pub(crate) const MAX_LEVEL: i32 = 13;
 
-/// A texture image's format: GL's format and type (a compressed or a
-/// renderbuffer's internal format, its type 0), and WebGPU's storage.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Format {
-    pub format: u32,
-    pub kind: u32,
-    pub storage: &'static str,
-}
+/// The largest 3D texture's side and array texture's layers.
+pub(crate) const MAX_3D: u32 = 2048;
 
-impl Format {
-    fn depth(&self) -> bool {
-        has_depth(self.storage) || has_stencil(self.storage)
-    }
+/// The binding slots of a texture unit.
+pub(crate) const SLOT_2D: usize = 0;
+pub(crate) const SLOT_CUBE: usize = 1;
+pub(crate) const SLOT_3D: usize = 2;
+pub(crate) const SLOT_ARRAY: usize = 3;
 
-    fn compressed(&self) -> bool {
-        self.storage.starts_with("bc")
-    }
-
-    /// Whether GL's format has no alpha (read as 1).
-    fn opaque(&self) -> bool {
-        matches!(
-            self.format,
-            RGB | SRGB_EXT | LUMINANCE | RGB565 | RGB16F_EXT | COMPRESSED_RGB_S3TC_DXT1_EXT
-        )
-    }
-}
-
-pub(crate) fn has_depth(storage: &str) -> bool {
-    storage.starts_with("depth")
-}
-
-pub(crate) fn has_stencil(storage: &str) -> bool {
-    storage.contains("stencil")
-}
-
-/// A storage's bytes a texel.
-fn texel_bytes(storage: &str) -> u32 {
-    match storage {
-        "rgba16float" => 8,
-        "rgba32float" => 16,
-        "depth16unorm" => 2,
-        "stencil8" => 1,
-        _ => 4,
-    }
-}
-
-/// A compressed format's bytes a block of 4 by 4.
-fn block_bytes(format: u32) -> u32 {
-    if matches!(
-        format,
-        COMPRESSED_RGB_S3TC_DXT1_EXT | COMPRESSED_RGBA_S3TC_DXT1_EXT
-    ) {
-        8
-    } else {
-        16
-    }
-}
-
-fn round4(v: u32) -> u32 {
-    v.div_ceil(4) * 4
-}
-
-/// A texture image: its size and format, and its texture and views in
-/// the GPU process (none when empty): the one drawn into, and the one
-/// sampled (a depth-and-stencil's depth).
+/// A texture image: its size (layers or depth its third side), format,
+/// its texture and views in the GPU process (none when empty: the
+/// texture, the view drawn into, the one sampled), and views of single
+/// layers made for framebuffers and copies.
 #[derive(Clone, Debug)]
 pub(crate) struct Image {
     pub width: u32,
     pub height: u32,
+    pub depth: u32,
     pub format: Format,
     pub gpu: Option<(u32, u32, u32)>,
+    pub layers: BTreeMap<u32, u32>,
+}
+
+/// What a sampler (a texture's own, or a sampler object) says.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SamplerState {
+    pub min: u32,
+    pub mag: u32,
+    pub wrap_s: u32,
+    pub wrap_t: u32,
+    pub wrap_r: u32,
+    pub min_lod: f32,
+    pub max_lod: f32,
+    pub compare_mode: u32,
+    pub compare_func: u32,
+}
+
+impl Default for SamplerState {
+    fn default() -> SamplerState {
+        SamplerState {
+            min: NEAREST_MIPMAP_LINEAR,
+            mag: LINEAR,
+            wrap_s: REPEAT,
+            wrap_t: REPEAT,
+            wrap_r: REPEAT,
+            min_lod: -1000.0,
+            max_lod: 1000.0,
+            compare_mode: NONE,
+            compare_func: LEQUAL,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct Texture {
     pub target: Option<u32>,
     pub deleted: bool,
-    pub min: u32,
-    pub mag: u32,
-    pub wrap_s: u32,
-    pub wrap_t: u32,
+    pub sampler: SamplerState,
     pub anisotropy: f32,
-    /// Its images by face (0 for a 2D texture) and level.
+    pub base_level: u32,
+    pub max_level: u32,
+    /// texStorage's levels: its images fixed.
+    pub immutable: Option<u32>,
+    /// Its images by face (0 but for a cube's) and level.
     pub images: BTreeMap<(u8, u8), Image>,
     /// Counted up at every change to its images.
     pub generation: u64,
@@ -110,18 +91,18 @@ pub(crate) struct Texture {
     pub assembled: Option<(u32, u32, Assembly)>,
 }
 
-pub(crate) type Assembly = (u64, u8, u32, u32, &'static str);
+pub(crate) type Assembly = (u64, u32, u8, (u32, u32, u32), &'static str);
 
 impl Texture {
     fn new() -> Texture {
         Texture {
             target: None,
             deleted: false,
-            min: NEAREST_MIPMAP_LINEAR,
-            mag: LINEAR,
-            wrap_s: REPEAT,
-            wrap_t: REPEAT,
+            sampler: SamplerState::default(),
             anisotropy: 1.0,
+            base_level: 0,
+            max_level: 1000,
+            immutable: None,
             images: BTreeMap::new(),
             generation: 0,
             assembled: None,
@@ -130,149 +111,93 @@ impl Texture {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct Renderbuffer {
+pub(crate) struct SamplerObject {
     pub deleted: bool,
-    pub bound: bool,
-    pub format: u32,
-    pub width: u32,
-    pub height: u32,
-    pub storage: Option<&'static str>,
-    pub gpu: Option<(u32, u32)>,
+    pub state: SamplerState,
 }
 
+/// What a program's sampler reads: its binding slot (by dimension), what
+/// it samples, and whether it compares.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Attached {
-    Texture { id: u32, face: u8, level: u8 },
-    Renderbuffer(u32),
+pub(crate) struct Want {
+    pub slot: usize,
+    pub sample: Sample,
+    pub shadow: bool,
 }
 
-#[derive(Clone, Debug, Default)]
-pub(crate) struct Framebuffer {
-    pub deleted: bool,
-    pub bound: bool,
-    pub attachments: BTreeMap<u32, Attached>,
+/// A texture as a draw samples it: its view and sampler, whether WebGPU
+/// cannot filter it, and its id.
+pub(crate) struct Sampled {
+    pub view: u32,
+    pub sampler: u32,
+    pub unfilterable: bool,
+    pub id: u32,
 }
 
-/// A context's textures, renderbuffers and framebuffers, and their
-/// bindings.
-#[derive(Debug)]
-pub(crate) struct Surfaces {
-    pub textures: HashMap<u32, Texture>,
-    pub renderbuffers: HashMap<u32, Renderbuffer>,
-    pub framebuffers: HashMap<u32, Framebuffer>,
-    /// Each texture unit's 2D and cube texture.
-    pub units: Vec<[Option<u32>; 2]>,
-    pub renderbuffer: Option<u32>,
-    pub framebuffer: Option<u32>,
-    pub derivative_hint: u32,
-}
-
-impl Default for Surfaces {
-    fn default() -> Surfaces {
-        Surfaces {
-            textures: HashMap::new(),
-            renderbuffers: HashMap::new(),
-            framebuffers: HashMap::new(),
-            units: vec![[None; 2]; 32],
-            renderbuffer: None,
-            framebuffer: None,
-            derivative_hint: DONT_CARE,
-        }
-    }
-}
-
-/// What a draw or a clear draws into: the drawing buffer or a
-/// framebuffer's attachments.
-#[derive(Clone, Debug)]
-pub(crate) struct Target {
-    /// Its views, which say whether a pass is still of it.
-    pub key: (u32, u32),
-    pub size: (u32, u32),
-    /// The colour view, the one it resolves to, and the storage.
-    pub color: Option<(u32, Option<u32>, &'static str)>,
-    /// Whether the colour has no alpha: its writes masked, read as 1.
-    pub rgb: bool,
-    pub depth: Option<(u32, &'static str)>,
-    pub depth_on: bool,
-    pub stencil_on: bool,
-    pub samples: u32,
-    pub default: bool,
-    /// The textures drawn into.
-    pub textures: Vec<u32>,
-}
-
-/// An attachment's view, storage, size and whether it may be a colour
-/// attachment; a texture's id when it is one.
-struct Info {
-    view: Option<u32>,
-    texture: Option<u32>,
-    gpu_texture: Option<u32>,
-    sample_view: Option<u32>,
-    storage: &'static str,
-    size: (u32, u32),
-    color_ok: bool,
-    opaque: bool,
-}
-
-/// What `readPixels` and the copies read: a texture, its view for a
-/// blit, size, storage, whether alpha is read as 1, and the texture
-/// image it is when it is one.
-struct Source {
-    texture: u32,
-    view: u32,
-    size: (u32, u32),
-    storage: &'static str,
-    opaque: bool,
-    image: Option<(u32, u8, u8)>,
-}
-
-/// The blit's module, layouts and pipelines (by the storage drawn into).
+/// The blit's modules, layouts and pipelines (by the storage drawn into
+/// and whether the source is 3D).
 #[derive(Debug)]
 pub(crate) struct Blit {
-    module: u32,
-    layout: u32,
-    pipeline_layout: u32,
-    pipelines: HashMap<&'static str, u32>,
+    modules: [u32; 2],
+    layouts: [u32; 2],
+    pipeline_layouts: [u32; 2],
+    pipelines: HashMap<(&'static str, bool), u32>,
 }
 
-const BLIT: &str = "struct B { src: vec2<i32>, dst: vec2<i32>, size: vec2<i32>, mode: i32, pad: i32 }
+const BLIT: &str = "struct B { src: vec2<i32>, dst: vec2<i32>, size: vec2<i32>, mode: i32, z: i32 }
 @group(0) @binding(0) var<uniform> b: B;
-@group(0) @binding(1) var t: texture_2d<f32>;
+@group(0) @binding(1) var t: TEX;
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
     var p = array(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
     return vec4<f32>(p[i], 0.0, 1.0);
 }
+fn load(s: vec2<i32>) -> vec4<f32> { return LOAD; }
 @fragment fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
     let d = vec2<i32>(floor(p.xy)) - b.dst;
     if (b.mode == 5) {
         let s = d * 2;
         let m = b.size - vec2<i32>(1, 1);
-        let c = textureLoad(t, min(s, m), 0) + textureLoad(t, min(s + vec2<i32>(1, 0), m), 0)
-            + textureLoad(t, min(s + vec2<i32>(0, 1), m), 0) + textureLoad(t, min(s + vec2<i32>(1, 1), m), 0);
+        let c = load(min(s, m)) + load(min(s + vec2<i32>(1, 0), m))
+            + load(min(s + vec2<i32>(0, 1), m)) + load(min(s + vec2<i32>(1, 1), m));
         return c * 0.25;
     }
     let s = d + b.src;
     if (any(s < vec2<i32>(0, 0)) || any(s >= b.size)) {
         return vec4<f32>(0.0, 0.0, 0.0, 0.0);
     }
-    let c = textureLoad(t, s, 0);
+    let c = load(s);
     switch b.mode {
         case 1: { return vec4<f32>(c.rgb, 1.0); }
         case 2: { return vec4<f32>(c.rrr, 1.0); }
         case 3: { return vec4<f32>(0.0, 0.0, 0.0, c.a); }
         case 4: { return vec4<f32>(c.rrr, c.a); }
+        case 6: { return vec4<f32>(c.r, 0.0, 0.0, 1.0); }
+        case 7: { return vec4<f32>(c.rg, 0.0, 1.0); }
         default: { return c; }
     }
 }
 ";
 
-/// GL's target of a texture image: the binding (0 2D, 1 cube) and face.
-fn image_target(target: u32) -> Option<(usize, u8)> {
+/// GL's target of a texture image: the binding slot and face.
+pub(crate) fn image_target(target: u32, version: u8) -> Option<(usize, u8)> {
     match target {
-        TEXTURE_2D => Some((0, 0)),
+        TEXTURE_2D => Some((SLOT_2D, 0)),
         TEXTURE_CUBE_MAP_POSITIVE_X..=TEXTURE_CUBE_MAP_NEGATIVE_Z => {
-            Some((1, (target - TEXTURE_CUBE_MAP_POSITIVE_X) as u8))
+            Some((SLOT_CUBE, (target - TEXTURE_CUBE_MAP_POSITIVE_X) as u8))
         }
+        TEXTURE_3D if version == 2 => Some((SLOT_3D, 0)),
+        TEXTURE_2D_ARRAY if version == 2 => Some((SLOT_ARRAY, 0)),
+        _ => None,
+    }
+}
+
+/// A texture binding target's slot.
+pub(crate) fn slot_of(target: u32, version: u8) -> Option<usize> {
+    match target {
+        TEXTURE_2D => Some(SLOT_2D),
+        TEXTURE_CUBE_MAP => Some(SLOT_CUBE),
+        TEXTURE_3D if version == 2 => Some(SLOT_3D),
+        TEXTURE_2D_ARRAY if version == 2 => Some(SLOT_ARRAY),
         _ => None,
     }
 }
@@ -281,260 +206,107 @@ fn pot(v: u32) -> bool {
     v.is_power_of_two()
 }
 
-/// A format's channels as the client gives them.
-fn channels(format: u32) -> u32 {
-    match format {
-        ALPHA | LUMINANCE | DEPTH_COMPONENT | DEPTH_STENCIL => 1,
-        LUMINANCE_ALPHA => 2,
-        RGB | SRGB_EXT => 3,
-        _ => 4,
-    }
+fn round4(v: u32) -> u32 {
+    v.div_ceil(4) * 4
 }
 
-/// The client's bytes a pixel of `format` and `kind`.
-fn client_pixel(format: u32, kind: u32) -> u32 {
-    match kind {
-        UNSIGNED_SHORT_5_6_5 | UNSIGNED_SHORT_4_4_4_4 | UNSIGNED_SHORT_5_5_5_1 => 2,
-        UNSIGNED_BYTE => channels(format),
-        HALF_FLOAT | HALF_FLOAT_OES | UNSIGNED_SHORT => 2 * channels(format),
-        _ => 4 * channels(format),
-    }
+/// Whether WebGPU draws into a storage.
+pub(crate) fn renderable_storage(storage: &str, rg11b10: bool) -> bool {
+    !(storage.contains("snorm")
+        || storage == "rgb9e5ufloat"
+        || storage.starts_with("bc")
+        || (storage == "rg11b10ufloat" && !rg11b10))
 }
 
-/// The JavaScript array a type's data comes in, by the bootstrap's code:
-/// 1 Uint8Array, 2 Uint16Array, 3 Float32Array, 4 Uint32Array, 6
-/// Uint8ClampedArray.
-fn view_ok(kind: u32, view: u32, clamped_too: bool) -> bool {
-    match kind {
-        UNSIGNED_BYTE => view == 1 || (clamped_too && view == 6),
-        FLOAT => view == 3,
-        UNSIGNED_INT | UNSIGNED_INT_24_8_WEBGL => view == 4,
-        _ => view == 2,
-    }
+/// A level's side from the base's.
+fn mip(side: u32, level: u32) -> u32 {
+    (side >> level).max(1)
 }
 
-/// The bytes rows of `w` pixels of `pixel` bytes take, `h` of them, at
-/// an alignment: the row's stride and the whole.
-fn rows(w: u32, h: u32, pixel: u32, align: u32) -> (u64, u64) {
-    let row = u64::from(w) * u64::from(pixel);
-    let stride = row.div_ceil(u64::from(align)) * u64::from(align);
-    let whole = if h == 0 || w == 0 {
-        0
+/// A level's third side: a 3D texture's halves, an array's layers stay.
+fn mip_depth(slot: usize, depth: u32, level: u32) -> u32 {
+    if slot == SLOT_3D {
+        mip(depth, level)
     } else {
-        stride * u64::from(h - 1) + row
-    };
-    (stride, whole)
-}
-
-pub(crate) fn f16_to_f32(h: u16) -> f32 {
-    let sign = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
-    let exponent = i32::from((h >> 10) & 0x1F);
-    let mantissa = f32::from(h & 0x3FF);
-    match exponent {
-        0 => sign * mantissa * 2f32.powi(-24),
-        31 if mantissa == 0.0 => sign * f32::INFINITY,
-        31 => f32::NAN,
-        e => sign * (1.0 + mantissa / 1024.0) * 2f32.powi(e - 15),
+        depth
     }
 }
 
-pub(crate) fn f32_to_f16(v: f32) -> u16 {
-    let bits = v.to_bits();
-    let sign = ((bits >> 16) & 0x8000) as u16;
-    if v.is_nan() {
-        return 0x7E00;
-    }
-    let a = v.abs();
-    if a >= 65520.0 {
-        return sign | 0x7C00;
-    }
-    if a < 6.103_515_6e-5 {
-        // Subnormal: a multiple of 2^-24.
-        return sign | (a / 2f32.powi(-24)).round() as u16;
-    }
-    let exponent = ((bits >> 23) & 0xFF) as i32 - 127 + 15;
-    let mantissa = bits & 0x7F_FFFF;
-    let mut h = ((exponent as u32) << 10) | (mantissa >> 13);
-    // Round to nearest, ties to even.
-    let rest = mantissa & 0x1FFF;
-    if rest > 0x1000 || (rest == 0x1000 && h & 1 == 1) {
-        h += 1;
-    }
-    sign | h as u16
+/// What an upload says, from its call.
+#[derive(Clone, Copy, Debug)]
+struct Upload {
+    target: u32,
+    level: i32,
+    internal: u32,
+    at: (i32, i32, i32),
+    size: (i32, i32, i32),
+    border: i32,
+    format: u32,
+    kind: u32,
+    /// 0 an array's bytes, 1 none, 2 an image source's RGBA, 3 the pixel
+    /// unpack buffer's at `offset`.
+    source: u32,
+    view: u32,
+    offset: f64,
+    sub: bool,
+    three: bool,
 }
 
-/// A format's channels put in RGBA's places: the missing colours 0, or
-/// the luminance's; a missing alpha `one`.
-fn expand<T: Copy>(format: u32, c: &[T], zero: T, one: T) -> [T; 4] {
-    match format {
-        ALPHA => [zero, zero, zero, c[0]],
-        LUMINANCE => [c[0], c[0], c[0], one],
-        LUMINANCE_ALPHA => [c[0], c[0], c[0], c[1]],
-        RGB | SRGB_EXT => [c[0], c[1], c[2], one],
-        _ => [c[0], c[1], c[2], c[3]],
-    }
-}
-
-fn unpack565(v: u16) -> [u8; 4] {
-    let r = ((v >> 11) & 31) as u8;
-    let g = ((v >> 5) & 63) as u8;
-    let b = (v & 31) as u8;
-    [
-        (r << 3) | (r >> 2),
-        (g << 2) | (g >> 4),
-        (b << 3) | (b >> 2),
-        255,
-    ]
-}
-
-fn unpack4444(v: u16) -> [u8; 4] {
-    let c = |s: u16| ((v >> s) & 15) as u8 * 17;
-    [c(12), c(8), c(4), c(0)]
-}
-
-fn unpack5551(v: u16) -> [u8; 4] {
-    let c = |s: u16| {
-        let x = ((v >> s) & 31) as u8;
-        (x << 3) | (x >> 2)
-    };
-    [c(11), c(6), c(1), if v & 1 == 1 { 255 } else { 0 }]
-}
-
-/// Client rows of `fmt` (at `align`) as the storage's texels, the rows
-/// turned over and the colours multiplied by alpha as asked.
-fn texels(
-    fmt: Format,
-    w: u32,
-    h: u32,
-    data: &[u8],
-    align: u32,
-    flip: bool,
-    premultiply: bool,
-) -> Vec<u8> {
-    let pixel = client_pixel(fmt.format, fmt.kind) as usize;
-    let (stride, _) = rows(w, h, pixel as u32, align);
-    let texel = texel_bytes(fmt.storage) as usize;
-    let mut out = vec![0u8; w as usize * h as usize * texel];
-    let alpha = !fmt.opaque() && fmt.format != LUMINANCE;
-    let n = channels(fmt.format) as usize;
-    for y in 0..h as usize {
-        let source_row = if flip { h as usize - 1 - y } else { y };
-        let row = &data[source_row * stride as usize..];
-        for x in 0..w as usize {
-            let p = &row[x * pixel..x * pixel + pixel];
-            let at = (y * w as usize + x) * texel;
-            match fmt.kind {
-                UNSIGNED_BYTE
-                | UNSIGNED_SHORT_5_6_5
-                | UNSIGNED_SHORT_4_4_4_4
-                | UNSIGNED_SHORT_5_5_5_1 => {
-                    let mut c = match fmt.kind {
-                        UNSIGNED_BYTE => expand(fmt.format, &p[..n], 0, 255),
-                        UNSIGNED_SHORT_5_6_5 => unpack565(u16::from_le_bytes([p[0], p[1]])),
-                        UNSIGNED_SHORT_4_4_4_4 => unpack4444(u16::from_le_bytes([p[0], p[1]])),
-                        _ => unpack5551(u16::from_le_bytes([p[0], p[1]])),
-                    };
-                    if premultiply && alpha {
-                        let a = u32::from(c[3]);
-                        for v in &mut c[..3] {
-                            *v = ((u32::from(*v) * a + 127) / 255) as u8;
-                        }
-                    }
-                    out[at..at + 4].copy_from_slice(&c);
-                }
-                FLOAT => {
-                    let v: Vec<f32> = p
-                        .as_chunks::<4>()
-                        .0
-                        .iter()
-                        .map(|q| f32::from_le_bytes(*q))
-                        .collect();
-                    let mut c = expand(fmt.format, &v, 0.0, 1.0);
-                    if premultiply && alpha {
-                        for k in 0..3 {
-                            c[k] *= c[3];
-                        }
-                    }
-                    for (k, v) in c.iter().enumerate() {
-                        out[at + 4 * k..at + 4 * k + 4].copy_from_slice(&v.to_le_bytes());
-                    }
-                }
-                _ => {
-                    // Half floats.
-                    let v: Vec<u16> = p
-                        .as_chunks::<2>()
-                        .0
-                        .iter()
-                        .map(|q| u16::from_le_bytes(*q))
-                        .collect();
-                    let mut c = expand(fmt.format, &v, 0, 0x3C00);
-                    if premultiply && alpha {
-                        let a = f16_to_f32(c[3]);
-                        for v in &mut c[..3] {
-                            *v = f32_to_f16(f16_to_f32(*v) * a);
-                        }
-                    }
-                    for (k, v) in c.iter().enumerate() {
-                        out[at + 2 * k..at + 2 * k + 2].copy_from_slice(&v.to_le_bytes());
-                    }
-                }
-            }
-        }
-    }
-    out
-}
-
-/// An image source's pixels (RGBA, already turned over and multiplied by
-/// alpha as asked) as client data of `fmt`, then its texels.
-fn from_rgba8(fmt: Format, w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
-    let quantize = |c: u8, bits: u32| u16::from(c) >> (8 - bits);
-    let mut client = Vec::new();
-    for p in rgba.as_chunks::<4>().0.iter().take(w as usize * h as usize) {
-        let picked: Vec<u8> = match fmt.format {
-            ALPHA => vec![p[3]],
-            LUMINANCE => vec![p[0]],
-            LUMINANCE_ALPHA => vec![p[0], p[3]],
-            RGB | SRGB_EXT => vec![p[0], p[1], p[2]],
-            _ => p.to_vec(),
+impl Upload {
+    /// texImage2D: [context, target, level, internal, width, height,
+    /// border, format, type, source, array kind, offset]; texImage3D a
+    /// depth after the height; the sub images an x, y (and z) for the
+    /// internal format and no border.
+    fn of(call: &CanvasCall, sub: bool, three: bool) -> Upload {
+        let mut k = 0;
+        let mut next = || {
+            k += 1;
+            k
         };
-        match fmt.kind {
-            UNSIGNED_BYTE => client.extend(picked),
-            UNSIGNED_SHORT_5_6_5 => {
-                let v = (quantize(p[0], 5) << 11) | (quantize(p[1], 6) << 5) | quantize(p[2], 5);
-                client.extend(v.to_le_bytes());
-            }
-            UNSIGNED_SHORT_4_4_4_4 => {
-                let v = (quantize(p[0], 4) << 12)
-                    | (quantize(p[1], 4) << 8)
-                    | (quantize(p[2], 4) << 4)
-                    | quantize(p[3], 4);
-                client.extend(v.to_le_bytes());
-            }
-            UNSIGNED_SHORT_5_5_5_1 => {
-                let v = (quantize(p[0], 5) << 11)
-                    | (quantize(p[1], 5) << 6)
-                    | (quantize(p[2], 5) << 1)
-                    | quantize(p[3], 1);
-                client.extend(v.to_le_bytes());
-            }
-            FLOAT => {
-                for c in picked {
-                    client.extend((f32::from(c) / 255.0).to_le_bytes());
-                }
-            }
-            _ => {
-                for c in picked {
-                    client.extend(f32_to_f16(f32::from(c) / 255.0).to_le_bytes());
-                }
-            }
+        let target = u(call, next());
+        let level = i(call, next());
+        let internal = if sub { 0 } else { u(call, next()) };
+        let at = if sub {
+            (
+                i(call, next()),
+                i(call, next()),
+                if three { i(call, next()) } else { 0 },
+            )
+        } else {
+            (0, 0, 0)
+        };
+        let size = (
+            i(call, next()),
+            i(call, next()),
+            if three { i(call, next()) } else { 1 },
+        );
+        let border = if sub { 0 } else { i(call, next()) };
+        let format = u(call, next());
+        let kind = u(call, next());
+        let source = u(call, next());
+        let view = u(call, next());
+        let offset = n(call, next());
+        Upload {
+            target,
+            level,
+            internal,
+            at,
+            size,
+            border,
+            format,
+            kind,
+            source,
+            view,
+            offset,
+            sub,
+            three,
         }
     }
-    texels(fmt, w, h, &client, 1, false, false)
 }
 
 impl Context {
-    /// The calls of textures, renderbuffers, framebuffers, `readPixels`
-    /// and the extensions; none for another call.
+    /// The calls of textures and samplers, and the extensions; none for
+    /// another.
     pub(super) fn texture_op(
         &mut self,
         op: &str,
@@ -566,157 +338,118 @@ impl Context {
                 Answer::Nothing
             }
             "getTexParameter" => self.get_tex_parameter(u(call, 1), u(call, 2)),
-            "texImage2D" => {
-                self.tex_image(call);
+            "texImage2D" | "texImage3D" | "texSubImage2D" | "texSubImage3D" => {
+                let upload = Upload::of(call, op.starts_with("texSub"), op.ends_with("3D"));
+                self.tex_image(&upload, call.bytes.as_deref().unwrap_or_default());
                 Answer::Nothing
             }
-            "texSubImage2D" => {
-                self.tex_sub_image(call);
+            "texStorage2D" | "texStorage3D" => {
+                let three = op == "texStorage3D";
+                let depth = if three { i(call, 6) } else { 1 };
+                self.tex_storage(
+                    u(call, 1),
+                    i(call, 2),
+                    u(call, 3),
+                    (i(call, 4), i(call, 5), depth),
+                    three,
+                );
                 Answer::Nothing
             }
-            "compressedTexImage2D" => {
-                self.compressed_tex_image(call);
+            "compressedTexImage2D"
+            | "compressedTexSubImage2D"
+            | "compressedTexImage3D"
+            | "compressedTexSubImage3D" => {
+                self.compressed_tex_image(call, op.contains("Sub"), op.ends_with("3D"));
                 Answer::Nothing
             }
-            "compressedTexSubImage2D" => {
-                self.compressed_tex_sub_image(call);
-                Answer::Nothing
-            }
-            "copyTexImage2D" | "copyTexSubImage2D" => {
-                self.copy_tex_image(call, op == "copyTexSubImage2D", size);
+            "copyTexImage2D" | "copyTexSubImage2D" | "copyTexSubImage3D" => {
+                self.copy_tex_image(call, op, size);
                 Answer::Nothing
             }
             "generateMipmap" => {
                 self.generate_mipmap(u(call, 1));
                 Answer::Nothing
             }
-            "createRenderbuffer" => {
+            // ---- Sampler objects ----
+            "createSampler" => {
                 let id = self.id();
-                self.surfaces.renderbuffers.insert(
+                self.surfaces.samplers.insert(
                     id,
-                    Renderbuffer {
+                    SamplerObject {
                         deleted: false,
-                        bound: false,
-                        format: RGBA4,
-                        width: 0,
-                        height: 0,
-                        storage: None,
-                        gpu: None,
+                        state: SamplerState::default(),
                     },
                 );
                 Answer::Number(f64::from(id))
             }
-            "bindRenderbuffer" => {
-                let (target, id) = (u(call, 1), u(call, 2));
-                if target != RENDERBUFFER {
-                    self.error(INVALID_ENUM);
-                } else if id == 0 {
-                    self.surfaces.renderbuffer = None;
-                } else {
-                    match self.surfaces.renderbuffers.get_mut(&id) {
-                        Some(r) if !r.deleted => {
-                            r.bound = true;
-                            self.surfaces.renderbuffer = Some(id);
-                        }
-                        _ => self.error(INVALID_OPERATION),
-                    }
-                }
-                Answer::Nothing
-            }
-            "deleteRenderbuffer" => {
+            "deleteSampler" => {
                 let id = u(call, 1);
-                if let Some(r) = self.surfaces.renderbuffers.get_mut(&id) {
-                    r.deleted = true;
-                    if self.surfaces.renderbuffer == Some(id) {
-                        self.surfaces.renderbuffer = None;
-                    }
-                    self.detach(Attached::Renderbuffer(id));
-                    self.sweep();
-                }
-                Answer::Nothing
-            }
-            "isRenderbuffer" => Answer::Bool(
-                self.surfaces
-                    .renderbuffers
-                    .get(&u(call, 1))
-                    .is_some_and(|r| !r.deleted && r.bound),
-            ),
-            "renderbufferStorage" => {
-                self.renderbuffer_storage(u(call, 1), u(call, 2), i(call, 3), i(call, 4));
-                Answer::Nothing
-            }
-            "getRenderbufferParameter" => self.renderbuffer_parameter(u(call, 1), u(call, 2)),
-            "createFramebuffer" => {
-                let id = self.id();
-                self.surfaces
-                    .framebuffers
-                    .insert(id, Framebuffer::default());
-                Answer::Number(f64::from(id))
-            }
-            "bindFramebuffer" => {
-                let (target, id) = (u(call, 1), u(call, 2));
-                if target != FRAMEBUFFER {
-                    self.error(INVALID_ENUM);
-                } else if id == 0 {
-                    self.surfaces.framebuffer = None;
-                } else {
-                    match self.surfaces.framebuffers.get_mut(&id) {
-                        Some(fb) if !fb.deleted => {
-                            fb.bound = true;
-                            self.surfaces.framebuffer = Some(id);
+                if let Some(s) = self.surfaces.samplers.get_mut(&id) {
+                    s.deleted = true;
+                    for unit in &mut self.surfaces.sampler_units {
+                        if *unit == Some(id) {
+                            *unit = None;
                         }
-                        _ => self.error(INVALID_OPERATION),
                     }
                 }
                 Answer::Nothing
             }
-            "deleteFramebuffer" => {
-                let id = u(call, 1);
-                if self.surfaces.framebuffers.contains_key(&id) {
-                    if self.surfaces.framebuffer == Some(id) {
-                        self.surfaces.framebuffer = None;
-                    }
-                    self.surfaces.framebuffers.remove(&id);
-                    self.sweep();
-                }
-                Answer::Nothing
-            }
-            "isFramebuffer" => Answer::Bool(
+            "isSampler" => Answer::Bool(
                 self.surfaces
-                    .framebuffers
+                    .samplers
                     .get(&u(call, 1))
-                    .is_some_and(|fb| !fb.deleted && fb.bound),
+                    .is_some_and(|s| !s.deleted),
             ),
-            "framebufferTexture2D" => {
-                self.framebuffer_texture(
-                    u(call, 1),
-                    u(call, 2),
-                    u(call, 3),
-                    u(call, 4),
-                    i(call, 5),
-                );
-                Answer::Nothing
-            }
-            "framebufferRenderbuffer" => {
-                self.framebuffer_renderbuffer(u(call, 1), u(call, 2), u(call, 3), u(call, 4));
-                Answer::Nothing
-            }
-            "checkFramebufferStatus" => {
-                if u(call, 1) != FRAMEBUFFER {
-                    self.error(INVALID_ENUM);
-                    Answer::Number(0.0)
+            "bindSampler" => {
+                let (unit, id) = (u(call, 1) as usize, u(call, 2));
+                if unit >= self.surfaces.sampler_units.len() {
+                    self.error(INVALID_VALUE);
+                } else if id != 0 && !self.surfaces.samplers.get(&id).is_some_and(|s| !s.deleted) {
+                    self.error(INVALID_OPERATION);
                 } else {
-                    let status = match self.surfaces.framebuffer {
-                        Some(fb) => self.status(fb),
-                        None => FRAMEBUFFER_COMPLETE,
-                    };
-                    Answer::Number(f64::from(status))
+                    self.surfaces.sampler_units[unit] = (id != 0).then_some(id);
+                }
+                Answer::Nothing
+            }
+            "samplerParameteri" | "samplerParameterf" => {
+                let (id, name, value) = (u(call, 1), u(call, 2), n(call, 3));
+                match self
+                    .surfaces
+                    .samplers
+                    .get(&id)
+                    .filter(|s| !s.deleted)
+                    .map(|s| s.state)
+                {
+                    None => self.error(INVALID_OPERATION),
+                    Some(mut state) => match set_sampler(&mut state, name, value) {
+                        Err(e) => self.error(e),
+                        Ok(()) => self.surfaces.samplers.get_mut(&id).expect("there").state = state,
+                    },
+                }
+                Answer::Nothing
+            }
+            "getSamplerParameter" => {
+                let (id, name) = (u(call, 1), u(call, 2));
+                match self
+                    .surfaces
+                    .samplers
+                    .get(&id)
+                    .filter(|s| !s.deleted)
+                    .map(|s| s.state)
+                {
+                    None => {
+                        self.error(INVALID_OPERATION);
+                        Answer::Nothing
+                    }
+                    Some(state) => match get_sampler(&state, name) {
+                        Some(v) => Answer::Number(v),
+                        None => {
+                            self.error(INVALID_ENUM);
+                            Answer::Nothing
+                        }
+                    },
                 }
             }
-            "getFramebufferAttachmentParameter" => {
-                self.attachment_parameter(u(call, 1), u(call, 2), u(call, 3))
-            }
-            "readPixels" => self.read_pixels(call, size),
             "getSupportedExtensions" => Answer::Strings(
                 super::ext::offered(self.version, &self.features)
                     .into_iter()
@@ -747,23 +480,19 @@ impl Context {
 
     // ---- Textures ----
 
-    fn unit(&self) -> usize {
+    pub(crate) fn unit(&self) -> usize {
         (self.state.active_texture - TEXTURE0) as usize
     }
 
-    /// The texture bound to `slot` (0 2D, 1 cube) of the active unit.
-    fn bound_texture(&self, slot: usize) -> Option<u32> {
+    /// The texture bound to `slot` of the active unit.
+    pub(crate) fn bound_texture(&self, slot: usize) -> Option<u32> {
         self.surfaces.units[self.unit()][slot]
     }
 
     fn bind_texture(&mut self, target: u32, id: u32) {
-        let slot = match target {
-            TEXTURE_2D => 0,
-            TEXTURE_CUBE_MAP => 1,
-            _ => {
-                self.error(INVALID_ENUM);
-                return;
-            }
+        let Some(slot) = slot_of(target, self.version) else {
+            self.error(INVALID_ENUM);
+            return;
         };
         if id != 0 {
             match self.surfaces.textures.get_mut(&id) {
@@ -799,80 +528,12 @@ impl Context {
                 }
             }
         }
-        if let Some(fb) = self.surfaces.framebuffer
-            && let Some(fb) = self.surfaces.framebuffers.get_mut(&fb)
-        {
-            fb.attachments
-                .retain(|_, a| !matches!(a, Attached::Texture { id: t, .. } if *t == id));
-        }
+        self.detach_texture(id);
         self.sweep();
     }
 
-    /// Detaches `what` from the bound framebuffer (GL deletes do).
-    fn detach(&mut self, what: Attached) {
-        if let Some(fb) = self.surfaces.framebuffer
-            && let Some(fb) = self.surfaces.framebuffers.get_mut(&fb)
-        {
-            fb.attachments.retain(|_, a| *a != what);
-        }
-    }
-
-    /// Deleted textures and renderbuffers no framebuffer holds: gone, in
-    /// the GPU process too.
-    fn sweep(&mut self) {
-        let held: Vec<Attached> = self
-            .surfaces
-            .framebuffers
-            .values()
-            .flat_map(|fb| fb.attachments.values().copied())
-            .collect();
-        let textures: Vec<u32> = self
-            .surfaces
-            .textures
-            .iter()
-            .filter(|(id, t)| {
-                t.deleted
-                    && !held
-                        .iter()
-                        .any(|a| matches!(a, Attached::Texture { id: h, .. } if h == *id))
-            })
-            .map(|(id, _)| *id)
-            .collect();
-        let renderbuffers: Vec<u32> = self
-            .surfaces
-            .renderbuffers
-            .iter()
-            .filter(|(id, r)| r.deleted && !held.contains(&Attached::Renderbuffer(**id)))
-            .map(|(id, _)| *id)
-            .collect();
-        if textures.is_empty() && renderbuffers.is_empty() {
-            return;
-        }
-        let mut gone = Vec::new();
-        for id in textures {
-            if let Some(t) = self.surfaces.textures.remove(&id) {
-                for image in t.images.values() {
-                    if let Some((a, b, c)) = image.gpu {
-                        gone.extend([a, b, c]);
-                    }
-                }
-                if let Some((a, b, _)) = t.assembled {
-                    gone.extend([a, b]);
-                }
-            }
-        }
-        for id in renderbuffers {
-            if let Some(r) = self.surfaces.renderbuffers.remove(&id)
-                && let Some((a, b)) = r.gpu
-            {
-                gone.extend([a, b]);
-            }
-        }
-        self.free(gone);
-    }
-
     /// GPU objects gone: what was recorded with them sent first.
-    fn free(&mut self, mut ids: Vec<u32>) {
+    pub(crate) fn free(&mut self, mut ids: Vec<u32>) {
         ids.sort_unstable();
         ids.dedup();
         if ids.is_empty() {
@@ -882,187 +543,166 @@ impl Context {
         self.gpu.forget(&self.client, &ids);
     }
 
-    fn tex_parameter(&mut self, target: u32, name: u32, value: f64) {
-        let slot = match target {
-            TEXTURE_2D => 0,
-            TEXTURE_CUBE_MAP => 1,
-            _ => {
-                self.error(INVALID_ENUM);
-                return;
-            }
+    /// An image's GPU objects, its layers' views among them.
+    pub(crate) fn image_objects(image: &Image) -> Vec<u32> {
+        let mut out: Vec<u32> = image.layers.values().copied().collect();
+        if let Some((a, b, c)) = image.gpu {
+            out.extend([a, b, c]);
+        }
+        out
+    }
+
+    /// The texture bound for a parameter call's target.
+    fn parameter_texture(&mut self, target: u32) -> Option<u32> {
+        let Some(slot) = slot_of(target, self.version) else {
+            self.error(INVALID_ENUM);
+            return None;
         };
-        let Some(id) = self.bound_texture(slot) else {
+        let id = self.bound_texture(slot);
+        if id.is_none() {
             self.error(INVALID_OPERATION);
+        }
+        id
+    }
+
+    fn tex_parameter(&mut self, target: u32, name: u32, value: f64) {
+        let Some(id) = self.parameter_texture(target) else {
             return;
         };
+        let v2 = self.version == 2;
         let anisotropic = self.ext.on("EXT_texture_filter_anisotropic");
-        let v = value as u32;
         let t = self.surfaces.textures.get_mut(&id).expect("bound");
-        let ok = match name {
-            TEXTURE_MIN_FILTER => {
-                let ok = matches!(
-                    v,
-                    NEAREST
-                        | LINEAR
-                        | NEAREST_MIPMAP_NEAREST
-                        | LINEAR_MIPMAP_NEAREST
-                        | NEAREST_MIPMAP_LINEAR
-                        | LINEAR_MIPMAP_LINEAR
-                );
-                if ok {
-                    t.min = v;
-                }
-                ok
-            }
-            TEXTURE_MAG_FILTER => {
-                let ok = matches!(v, NEAREST | LINEAR);
-                if ok {
-                    t.mag = v;
-                }
-                ok
-            }
-            TEXTURE_WRAP_S | TEXTURE_WRAP_T => {
-                let ok = matches!(v, REPEAT | CLAMP_TO_EDGE | MIRRORED_REPEAT);
-                if ok {
-                    if name == TEXTURE_WRAP_S {
-                        t.wrap_s = v;
-                    } else {
-                        t.wrap_t = v;
-                    }
-                }
-                ok
-            }
+        let result = match name {
             TEXTURE_MAX_ANISOTROPY_EXT if anisotropic => {
                 if value < 1.0 || value.is_nan() {
-                    self.error(INVALID_VALUE);
-                    return;
+                    Err(INVALID_VALUE)
+                } else {
+                    t.anisotropy = value as f32;
+                    Ok(())
                 }
-                t.anisotropy = value as f32;
-                true
             }
-            _ => false,
+            TEXTURE_BASE_LEVEL | TEXTURE_MAX_LEVEL if v2 => {
+                if value < 0.0 {
+                    Err(INVALID_VALUE)
+                } else {
+                    if name == TEXTURE_BASE_LEVEL {
+                        t.base_level = value as u32;
+                    } else {
+                        t.max_level = value as u32;
+                    }
+                    Ok(())
+                }
+            }
+            TEXTURE_WRAP_R | TEXTURE_MIN_LOD | TEXTURE_MAX_LOD | TEXTURE_COMPARE_MODE
+            | TEXTURE_COMPARE_FUNC
+                if !v2 =>
+            {
+                Err(INVALID_ENUM)
+            }
+            _ => set_sampler(&mut t.sampler, name, value),
         };
-        if !ok {
-            self.error(INVALID_ENUM);
+        if let Err(e) = result {
+            self.error(e);
         }
     }
 
     fn get_tex_parameter(&mut self, target: u32, name: u32) -> Answer {
-        let slot = match target {
-            TEXTURE_2D => 0,
-            TEXTURE_CUBE_MAP => 1,
-            _ => {
-                self.error(INVALID_ENUM);
-                return Answer::Nothing;
-            }
-        };
-        let Some(id) = self.bound_texture(slot) else {
-            self.error(INVALID_OPERATION);
+        let Some(id) = self.parameter_texture(target) else {
             return Answer::Nothing;
         };
+        let v2 = self.version == 2;
         let anisotropic = self.ext.on("EXT_texture_filter_anisotropic");
         let t = &self.surfaces.textures[&id];
         let v = match name {
-            TEXTURE_MIN_FILTER => t.min,
-            TEXTURE_MAG_FILTER => t.mag,
-            TEXTURE_WRAP_S => t.wrap_s,
-            TEXTURE_WRAP_T => t.wrap_t,
-            TEXTURE_MAX_ANISOTROPY_EXT if anisotropic => {
-                return Answer::Number(f64::from(t.anisotropy));
+            TEXTURE_MAX_ANISOTROPY_EXT if anisotropic => Some(f64::from(t.anisotropy)),
+            TEXTURE_BASE_LEVEL if v2 => Some(f64::from(t.base_level)),
+            TEXTURE_MAX_LEVEL if v2 => Some(f64::from(t.max_level)),
+            TEXTURE_IMMUTABLE_FORMAT if v2 => return Answer::Bool(t.immutable.is_some()),
+            TEXTURE_IMMUTABLE_LEVELS if v2 => Some(f64::from(t.immutable.unwrap_or(0))),
+            TEXTURE_WRAP_R | TEXTURE_MIN_LOD | TEXTURE_MAX_LOD | TEXTURE_COMPARE_MODE
+            | TEXTURE_COMPARE_FUNC
+                if !v2 =>
+            {
+                None
             }
-            _ => {
-                self.error(INVALID_ENUM);
-                return Answer::Nothing;
-            }
+            _ => get_sampler(&t.sampler, name),
         };
-        Answer::Number(f64::from(v))
+        match v {
+            Some(v) => Answer::Number(v),
+            None => {
+                self.error(INVALID_ENUM);
+                Answer::Nothing
+            }
+        }
     }
 
     /// GL's format and type as a texture's: the format or GL's error.
-    fn texture_format(&self, internal: u32, format: u32, kind: u32) -> Result<Format, u32> {
-        let v1 = self.version == 1;
-        let ext = |name: &str| !v1 || self.ext.on(name);
-        let format_ok = match format {
-            ALPHA | RGB | RGBA | LUMINANCE | LUMINANCE_ALPHA => true,
-            SRGB_EXT | SRGB_ALPHA_EXT => v1 && self.ext.on("EXT_sRGB"),
-            DEPTH_COMPONENT | DEPTH_STENCIL => v1 && self.ext.on("WEBGL_depth_texture"),
-            _ => false,
-        };
-        let kind_ok = match kind {
-            UNSIGNED_BYTE
-            | UNSIGNED_SHORT_5_6_5
-            | UNSIGNED_SHORT_4_4_4_4
-            | UNSIGNED_SHORT_5_5_5_1 => true,
-            FLOAT => ext("OES_texture_float"),
-            HALF_FLOAT_OES => v1 && self.ext.on("OES_texture_half_float"),
-            HALF_FLOAT => !v1,
-            UNSIGNED_SHORT | UNSIGNED_INT | UNSIGNED_INT_24_8_WEBGL => {
-                v1 && self.ext.on("WEBGL_depth_texture")
-            }
-            _ => false,
-        };
-        if !format_ok || !kind_ok {
-            return Err(INVALID_ENUM);
-        }
-        if internal != format {
-            return Err(INVALID_OPERATION);
-        }
-        let storage = match (kind, format) {
-            (UNSIGNED_BYTE, SRGB_EXT | SRGB_ALPHA_EXT) => "rgba8unorm-srgb",
-            (UNSIGNED_BYTE, ALPHA | RGB | RGBA | LUMINANCE | LUMINANCE_ALPHA) => "rgba8unorm",
-            (UNSIGNED_SHORT_5_6_5, RGB)
-            | (UNSIGNED_SHORT_4_4_4_4 | UNSIGNED_SHORT_5_5_5_1, RGBA) => "rgba8unorm",
-            (FLOAT, ALPHA | RGB | RGBA | LUMINANCE | LUMINANCE_ALPHA) => "rgba32float",
-            (HALF_FLOAT | HALF_FLOAT_OES, ALPHA | RGB | RGBA | LUMINANCE | LUMINANCE_ALPHA) => {
-                "rgba16float"
-            }
-            (UNSIGNED_SHORT, DEPTH_COMPONENT) => "depth16unorm",
-            (UNSIGNED_INT, DEPTH_COMPONENT) => "depth32float",
-            (UNSIGNED_INT_24_8_WEBGL, DEPTH_STENCIL) => "depth24plus-stencil8",
-            _ => return Err(INVALID_OPERATION),
-        };
-        Ok(Format {
+    pub(crate) fn texture_format(
+        &self,
+        internal: u32,
+        format: u32,
+        kind: u32,
+    ) -> Result<Format, u32> {
+        formats::texture_format(
+            self.version,
+            &|name| self.ext.on(name),
+            self.features.depth32_stencil,
+            internal,
             format,
             kind,
-            storage,
-        })
+        )
     }
 
-    /// A new texture in the GPU process: texture, view drawn into, view
-    /// sampled.
-    fn make_texture(&mut self, size: (u32, u32), storage: &str) -> (u32, u32, u32) {
+    /// A new texture in the GPU process of `size` (a 3D one's third side
+    /// its depth, else layers): texture, view drawn into, view sampled.
+    pub(crate) fn make_texture(
+        &mut self,
+        size: (u32, u32, u32),
+        storage: &str,
+        slot: usize,
+    ) -> (u32, u32, u32) {
         let (texture, view) = (self.gpu.id(&self.client), self.gpu.id(&self.client));
-        // COPY_SRC | COPY_DST | TEXTURE_BINDING | RENDER_ATTACHMENT; a
-        // depth one is drawn into and sampled alone, a compressed one
-        // copied and sampled.
+        // COPY_SRC | COPY_DST | TEXTURE_BINDING | RENDER_ATTACHMENT, but
+        // what WebGPU will not do with the storage.
         let usage = if has_depth(storage) || has_stencil(storage) {
-            20
-        } else if storage.starts_with("bc") {
+            if storage == "depth16unorm" { 22 } else { 20 }
+        } else if !renderable_storage(storage, self.features.rg11b10_renderable) {
             7
         } else {
             23
         };
+        let dimension = if slot == SLOT_3D { "3d" } else { "2d" };
         self.client.queue([
             Request::CreateTexture {
                 device: self.device,
                 id: texture,
                 desc: format!(
-                    r#"{{"size":[{},{},1],"format":"{storage}","usage":{usage}}}"#,
-                    size.0, size.1
+                    r#"{{"size":[{},{},{}],"format":"{storage}","usage":{usage},"dimension":"{dimension}"}}"#,
+                    size.0, size.1, size.2
                 ),
             },
             Request::CreateView {
                 texture,
                 id: view,
-                desc: "{}".to_owned(),
+                desc: if slot == SLOT_ARRAY {
+                    r#"{"dimension":"2d-array"}"#.to_owned()
+                } else {
+                    "{}".to_owned()
+                },
             },
         ]);
-        let sample = if storage == "depth24plus-stencil8" {
+        // Sampled: a depth-and-stencil's depth.
+        let sample = if has_stencil(storage) && has_depth(storage) {
             let id = self.gpu.id(&self.client);
+            let dimension = if slot == SLOT_ARRAY {
+                r#","dimension":"2d-array""#
+            } else {
+                ""
+            };
             self.client.queue([Request::CreateView {
                 texture,
                 id,
-                desc: r#"{"aspect":"depth-only"}"#.to_owned(),
+                desc: format!(r#"{{"aspect":"depth-only"{dimension}}}"#),
             }]);
             id
         } else {
@@ -1071,13 +711,50 @@ impl Context {
         (texture, view, sample)
     }
 
-    /// `bytes` of rows `row` bytes long written into `texture` at
+    /// A view of one layer of an image to draw into (an array's layer as
+    /// a 2D view; a 3D image's view and the slice), made once.
+    pub(crate) fn layer_view(
+        &mut self,
+        id: u32,
+        key: (u8, u8),
+        layer: u32,
+    ) -> Option<(u32, Option<u32>)> {
+        let t = self.surfaces.textures.get(&id)?;
+        let slot = t.target.and_then(|target| slot_of(target, self.version))?;
+        let image = t.images.get(&key)?;
+        let (texture, view, _) = image.gpu?;
+        if slot == SLOT_3D {
+            return Some((view, Some(layer)));
+        }
+        if slot != SLOT_ARRAY {
+            return Some((view, None));
+        }
+        if let Some(&v) = image.layers.get(&layer) {
+            return Some((v, None));
+        }
+        let v = self.gpu.id(&self.client);
+        self.client.queue([Request::CreateView {
+            texture,
+            id: v,
+            desc: format!(r#"{{"dimension":"2d","baseArrayLayer":{layer},"arrayLayerCount":1}}"#),
+        }]);
+        self.surfaces
+            .textures
+            .get_mut(&id)
+            .and_then(|t| t.images.get_mut(&key))
+            .expect("there")
+            .layers
+            .insert(layer, v);
+        Some((v, None))
+    }
+
+    /// `bytes`, rows `row` bytes long, written into `texture` at
     /// `origin`, `size` texels (`block` rows of texels a row of bytes).
     fn upload(
         &mut self,
         texture: u32,
-        origin: (u32, u32),
-        size: (u32, u32),
+        origin: (u32, u32, u32),
+        size: (u32, u32, u32),
         bytes: &[u8],
         row: u32,
         block: u32,
@@ -1085,24 +762,32 @@ impl Context {
         if bytes.is_empty() || row == 0 {
             return;
         }
-        let total_rows = bytes.len() as u32 / row;
+        let rows = size.1.div_ceil(block);
         let per = (GPU_CHUNK as u32 / row).max(1);
-        let mut first = 0;
-        while first < total_rows {
-            let count = per.min(total_rows - first);
-            let piece = bytes[(first * row) as usize..((first + count) * row) as usize].to_vec();
-            let height = count * block;
-            self.client.queue([Request::WriteTexture {
-                device: self.device,
-                desc: format!(
-                    r#"{{"destination":{{"texture":{texture},"origin":[{},{},0]}},"dataLayout":{{"bytesPerRow":{row},"rowsPerImage":{count}}},"size":[{},{height},1]}}"#,
-                    origin.0,
-                    origin.1 + first * block,
-                    size.0
-                ),
-                bytes: Bytes(piece),
-            }]);
-            first += count;
+        for z in 0..size.2 {
+            let start = (z * rows * row) as usize;
+            let Some(image) = bytes.get(start..start + (rows * row) as usize) else {
+                return;
+            };
+            let mut first = 0;
+            while first < rows {
+                let count = per.min(rows - first);
+                let piece =
+                    image[(first * row) as usize..((first + count) * row) as usize].to_vec();
+                self.client.queue([Request::WriteTexture {
+                    device: self.device,
+                    desc: format!(
+                        r#"{{"destination":{{"texture":{texture},"origin":[{},{},{}]}},"dataLayout":{{"bytesPerRow":{row},"rowsPerImage":{count}}},"size":[{},{},1]}}"#,
+                        origin.0,
+                        origin.1 + first * block,
+                        origin.2 + z,
+                        size.0,
+                        count * block
+                    ),
+                    bytes: Bytes(piece),
+                }]);
+                first += count;
+            }
         }
     }
 
@@ -1122,19 +807,23 @@ impl Context {
             .textures
             .get(&id)
             .and_then(|t| t.images.get(&key))
-            .and_then(|i| i.gpu);
-        if let Some((a, b, c)) = old {
-            self.free(vec![a, b, c]);
+            .map(Self::image_objects);
+        if let Some(old) = old {
+            self.free(old);
         }
-        if image.width > 0 && image.height > 0 {
+        let slot = self.surfaces.textures[&id]
+            .target
+            .and_then(|t| slot_of(t, self.version))
+            .unwrap_or(SLOT_2D);
+        if image.width > 0 && image.height > 0 && image.depth > 0 {
             let physical = if image.format.compressed() {
-                (round4(image.width), round4(image.height))
+                (round4(image.width), round4(image.height), image.depth)
             } else {
-                (image.width, image.height)
+                (image.width, image.height, image.depth)
             };
-            let made = self.make_texture(physical, image.format.storage);
+            let made = self.make_texture(physical, image.format.storage, slot);
             if let Some((bytes, row, block)) = texels {
-                self.upload(made.0, (0, 0), physical, &bytes, row, block);
+                self.upload(made.0, (0, 0, 0), physical, &bytes, row, block);
             }
             image.gpu = Some(made);
         }
@@ -1143,197 +832,341 @@ impl Context {
         t.generation += 1;
     }
 
-    fn check_level(&mut self, slot: usize, level: i32, w: i32, h: i32) -> bool {
-        if !(0..=MAX_LEVEL).contains(&level) || w < 0 || h < 0 {
+    /// GL's checks of a level and size: false, and GL's error, when wrong.
+    fn check_level(&mut self, slot: usize, level: i32, w: i32, h: i32, d: i32) -> bool {
+        if !(0..=MAX_LEVEL).contains(&level) || w < 0 || h < 0 || d < 0 {
             self.error(INVALID_VALUE);
             return false;
         }
         let most = (MAX_SIZE >> level) as i32;
-        if w > most || h > most || (slot == 1 && w != h) {
+        let third = match slot {
+            SLOT_3D => (MAX_3D >> level) as i32,
+            SLOT_ARRAY => MAX_3D as i32,
+            _ => 1,
+        };
+        let side = if slot == SLOT_3D {
+            (MAX_3D >> level) as i32
+        } else {
+            most
+        };
+        if w > side || h > side || d > third || (slot == SLOT_CUBE && w != h) {
             self.error(INVALID_VALUE);
             return false;
         }
         true
     }
 
-    /// `texImage2D`: [context, target, level, internal format, width,
-    /// height, border, format, type, source, array kind]: source 0 an
-    /// array's bytes, 1 none, 2 an image source's RGBA.
-    fn tex_image(&mut self, call: &CanvasCall) {
-        let (target, level, internal) = (u(call, 1), i(call, 2), u(call, 3));
-        let (w, h, border) = (i(call, 4), i(call, 5), i(call, 6));
-        let (format, kind, source, view) = (u(call, 7), u(call, 8), u(call, 9), u(call, 10));
-        let Some((slot, face)) = image_target(target) else {
+    /// The unpack state as a layout of client rows.
+    pub(crate) fn unpack_layout(&self, three: bool) -> Layout {
+        let s = &self.state;
+        Layout {
+            alignment: s.unpack_alignment,
+            row_length: s.unpack_row_length,
+            image_height: if three { s.unpack_image_height } else { 0 },
+            skip_pixels: s.unpack_skip_pixels,
+            skip_rows: s.unpack_skip_rows,
+            skip_images: if three { s.unpack_skip_images } else { 0 },
+        }
+    }
+
+    /// The data of an upload: an array's (`data`), the pixel unpack
+    /// buffer's, or none; GL's error when it cannot be.
+    fn upload_data(&self, up: &Upload, data: &[u8]) -> Result<Option<Vec<u8>>, u32> {
+        match (up.source, self.v2.pixel_unpack) {
+            (3, None) | (0 | 2, Some(_)) => Err(INVALID_OPERATION),
+            (3, Some(buffer)) => {
+                let bytes = &self.buffers[&buffer].data;
+                if up.offset < 0.0 || up.offset > bytes.len() as f64 {
+                    return Err(INVALID_OPERATION);
+                }
+                Ok(Some(bytes[up.offset as usize..].to_vec()))
+            }
+            (1, _) => Ok(None),
+            _ => Ok(Some(data.to_vec())),
+        }
+    }
+
+    /// texImage2D, texImage3D, texSubImage2D and texSubImage3D.
+    fn tex_image(&mut self, up: &Upload, data: &[u8]) {
+        let Some((slot, face)) = image_target(up.target, self.version) else {
             self.error(INVALID_ENUM);
             return;
         };
-        if !self.check_level(slot, level, w, h) {
+        // The 2D calls take 2D and cube targets; the 3D ones 3D and array.
+        if up.three != (slot == SLOT_3D || slot == SLOT_ARRAY) {
+            self.error(INVALID_ENUM);
             return;
         }
-        if border != 0 {
+        let (w, h, d) = up.size;
+        if !self.check_level(slot, up.level, w, h, d) {
+            return;
+        }
+        if up.border != 0 {
             self.error(INVALID_VALUE);
             return;
         }
-        let fmt = match self.texture_format(internal, format, kind) {
-            Ok(fmt) => fmt,
+        let Some(id) = self.bound_texture(slot) else {
+            self.error(INVALID_OPERATION);
+            return;
+        };
+        let key = (face, up.level as u8);
+        let existing = self.surfaces.textures[&id].images.get(&key).cloned();
+        // The format: the call's, or for a sub image the image's with the
+        // call's format and type, which must be ones it takes.
+        let fmt = if up.sub {
+            let Some(image) = &existing else {
+                self.error(INVALID_OPERATION);
+                return;
+            };
+            if let Err(e) = self.texture_format(image.format.internal, up.format, up.kind) {
+                self.error(if e == INVALID_ENUM {
+                    e
+                } else {
+                    INVALID_OPERATION
+                });
+                return;
+            }
+            let (x, y, z) = up.at;
+            if x < 0
+                || y < 0
+                || z < 0
+                || (x + w) as u32 > image.width
+                || (y + h) as u32 > image.height
+                || (z + d) as u32 > image.depth
+            {
+                self.error(INVALID_VALUE);
+                return;
+            }
+            if image.format.compressed()
+                || (self.version == 1
+                    && (image.format.format != up.format || image.format.kind != up.kind))
+            {
+                self.error(INVALID_OPERATION);
+                return;
+            }
+            Format {
+                format: up.format,
+                kind: up.kind,
+                ..image.format
+            }
+        } else {
+            if self.surfaces.textures[&id].immutable.is_some() {
+                self.error(INVALID_OPERATION);
+                return;
+            }
+            match self.texture_format(up.internal, up.format, up.kind) {
+                Ok(fmt) => fmt,
+                Err(e) => {
+                    self.error(e);
+                    return;
+                }
+            }
+        };
+        let (w, h, d) = (w as u32, h as u32, d as u32);
+        if !up.sub && self.version == 1 && up.level > 0 && (!pot(w) || !pot(h)) {
+            self.error(INVALID_VALUE);
+            return;
+        }
+        // Depth textures: 2D (cubes and arrays too in WebGL 2), WebGL 1's
+        // of level 0 and given no data.
+        if fmt.depth() && (slot == SLOT_3D || (slot == SLOT_CUBE && self.version == 1)) {
+            self.error(INVALID_OPERATION);
+            return;
+        }
+        if fmt.depth() && self.version == 1 && (up.level != 0 || up.source != 1) {
+            self.error(INVALID_OPERATION);
+            return;
+        }
+        if up.sub && up.source == 1 {
+            self.error(INVALID_VALUE);
+            return;
+        }
+        if up.source == 2
+            && (fmt.depth()
+                || (up.three && (self.state.unpack_flip_y || self.state.unpack_premultiply_alpha)))
+        {
+            self.error(INVALID_OPERATION);
+            return;
+        }
+        let bytes = match self.upload_data(up, data) {
+            Ok(b) => b,
             Err(e) => {
                 self.error(e);
                 return;
             }
         };
-        let (w, h) = (w as u32, h as u32);
-        if self.version == 1 && level > 0 && (!pot(w) || !pot(h)) {
-            self.error(INVALID_VALUE);
-            return;
-        }
-        let Some(id) = self.bound_texture(slot) else {
-            self.error(INVALID_OPERATION);
-            return;
-        };
-        if fmt.depth() && (target != TEXTURE_2D || level != 0 || source != 1) {
-            self.error(INVALID_OPERATION);
-            return;
-        }
-        let data = call.bytes.clone().unwrap_or_default();
-        let bytes = match source {
-            0 => {
-                if !view_ok(kind, view, true) {
+        let layout = self.unpack_layout(up.three);
+        let pixel = formats::client_pixel(fmt.format, fmt.kind);
+        let texels = match (up.source, bytes) {
+            (2, Some(rgba)) => {
+                if (rgba.len() as u64) < u64::from(w) * u64::from(h) * u64::from(d) * 4 {
                     self.error(INVALID_OPERATION);
                     return;
                 }
-                let (_, whole) = rows(
-                    w,
-                    h,
-                    client_pixel(format, kind),
-                    self.state.unpack_alignment,
-                );
-                if (data.len() as u64) < whole {
+                Some(formats::from_rgba8(&fmt, w, h * d, &rgba))
+            }
+            (_, Some(bytes)) => {
+                if up.source == 0 && !formats::view_ok(fmt.kind, up.view) {
                     self.error(INVALID_OPERATION);
                     return;
                 }
-                Some(texels(
-                    fmt,
+                let (_, _, _, whole) = layout.measure(w, h, d, pixel);
+                if (bytes.len() as u64) < whole {
+                    self.error(INVALID_OPERATION);
+                    return;
+                }
+                let flip = self.state.unpack_flip_y;
+                let premultiply = self.state.unpack_premultiply_alpha;
+                // Depth data WebGPU takes for 16-bit depth alone (G-list).
+                (!fmt.depth() || fmt.storage == "depth16unorm")
+                    .then(|| formats::texels(&fmt, w, h, d, &bytes, &layout, flip, premultiply))
+            }
+            // No data: zeros, but a format without alpha keeps alpha 1.
+            (_, None) if fmt.opaque() && !fmt.depth() && !up.sub => {
+                let zeros = vec![0; (w * h * d * pixel) as usize];
+                Some(formats::texels(
+                    &fmt,
                     w,
                     h,
-                    &data,
-                    self.state.unpack_alignment,
-                    self.state.unpack_flip_y,
-                    self.state.unpack_premultiply_alpha,
+                    d,
+                    &zeros,
+                    &Layout::packed(1),
+                    false,
+                    false,
                 ))
             }
-            2 => Some(from_rgba8(fmt, w, h, &data)),
-            // No data: zeros, but a format without alpha keeps alpha 1.
-            _ if fmt.opaque() && !fmt.depth() => {
-                let zeros = vec![0; (w * h * client_pixel(format, kind)) as usize];
-                Some(texels(fmt, w, h, &zeros, 1, false, false))
-            }
-            _ => None,
+            (_, None) => None,
         };
         let row = w * texel_bytes(fmt.storage);
-        let image = Image {
-            width: w,
-            height: h,
-            format: fmt,
-            gpu: None,
-        };
-        self.set_image(id, (face, level as u8), image, bytes.map(|b| (b, row, 1)));
-    }
-
-    /// `texSubImage2D`: [context, target, level, x, y, width, height,
-    /// format, type, source, array kind].
-    fn tex_sub_image(&mut self, call: &CanvasCall) {
-        let (target, level, x, y) = (u(call, 1), i(call, 2), i(call, 3), i(call, 4));
-        let (w, h, format, kind) = (i(call, 5), i(call, 6), u(call, 7), u(call, 8));
-        let (source, view) = (u(call, 9), u(call, 10));
-        let Some((slot, face)) = image_target(target) else {
-            self.error(INVALID_ENUM);
+        if !up.sub {
+            let image = Image {
+                width: w,
+                height: h,
+                depth: d,
+                format: fmt,
+                gpu: None,
+                layers: BTreeMap::new(),
+            };
+            self.set_image(id, key, image, texels.map(|t| (t, row, 1)));
+            return;
+        }
+        let Some(texels) = texels else {
             return;
         };
-        if !(0..=MAX_LEVEL).contains(&level) {
-            self.error(INVALID_VALUE);
+        if w == 0 || h == 0 || d == 0 {
             return;
         }
-        if let Err(e) = self.texture_format(format, format, kind) {
-            self.error(e);
-            return;
-        }
-        let Some(id) = self.bound_texture(slot) else {
-            self.error(INVALID_OPERATION);
-            return;
-        };
-        let Some(image) = self.surfaces.textures[&id]
-            .images
-            .get(&(face, level as u8))
-            .cloned()
-        else {
-            self.error(INVALID_OPERATION);
-            return;
-        };
-        if x < 0
-            || y < 0
-            || w < 0
-            || h < 0
-            || (x + w) as u32 > image.width
-            || (y + h) as u32 > image.height
-        {
-            self.error(INVALID_VALUE);
-            return;
-        }
-        if image.format.format != format
-            || image.format.kind != kind
-            || image.format.depth()
-            || image.format.compressed()
-        {
-            self.error(INVALID_OPERATION);
-            return;
-        }
-        if source == 1 {
-            self.error(INVALID_VALUE);
-            return;
-        }
-        let (w, h) = (w as u32, h as u32);
-        let data = call.bytes.clone().unwrap_or_default();
-        let bytes = if source == 0 {
-            if !view_ok(kind, view, true) {
-                self.error(INVALID_OPERATION);
-                return;
-            }
-            let (_, whole) = rows(
-                w,
-                h,
-                client_pixel(format, kind),
-                self.state.unpack_alignment,
-            );
-            if (data.len() as u64) < whole {
-                self.error(INVALID_OPERATION);
-                return;
-            }
-            texels(
-                image.format,
-                w,
-                h,
-                &data,
-                self.state.unpack_alignment,
-                self.state.unpack_flip_y,
-                self.state.unpack_premultiply_alpha,
-            )
-        } else {
-            from_rgba8(image.format, w, h, &data)
-        };
-        if w == 0 || h == 0 {
-            return;
-        }
-        let Some((texture, _, _)) = image.gpu else {
+        let Some((texture, _, _)) = existing.and_then(|e| e.gpu) else {
             return;
         };
         self.gpu_flush();
-        let row = w * texel_bytes(image.format.storage);
-        self.upload(texture, (x as u32, y as u32), (w, h), &bytes, row, 1);
+        let (x, y, z) = up.at;
+        self.upload(
+            texture,
+            (x as u32, y as u32, z as u32),
+            (w, h, d),
+            &texels,
+            row,
+            1,
+        );
         self.surfaces
             .textures
             .get_mut(&id)
             .expect("bound")
             .generation += 1;
+    }
+
+    /// texStorage2D and texStorage3D: every level made at once, fixed.
+    fn tex_storage(
+        &mut self,
+        target: u32,
+        levels: i32,
+        internal: u32,
+        size: (i32, i32, i32),
+        three: bool,
+    ) {
+        let slot = match (target, three) {
+            (TEXTURE_2D, false) => SLOT_2D,
+            (TEXTURE_CUBE_MAP, false) => SLOT_CUBE,
+            (TEXTURE_3D, true) => SLOT_3D,
+            (TEXTURE_2D_ARRAY, true) => SLOT_ARRAY,
+            _ => {
+                self.error(INVALID_ENUM);
+                return;
+            }
+        };
+        let (w, h, d) = size;
+        if levels < 1 || w < 1 || h < 1 || d < 1 {
+            self.error(INVALID_VALUE);
+            return;
+        }
+        let compressed = self.compressed_storage(internal).map(|storage| Format {
+            internal,
+            format: internal,
+            kind: 0,
+            storage,
+        });
+        let Some(fmt) = formats::sized(internal, self.features.depth32_stencil).or(compressed)
+        else {
+            self.error(INVALID_ENUM);
+            return;
+        };
+        if !self.check_level(slot, 0, w, h, d) {
+            return;
+        }
+        let (w, h, d) = (w as u32, h as u32, d as u32);
+        let most = if slot == SLOT_3D {
+            w.max(h).max(d)
+        } else {
+            w.max(h)
+        };
+        if levels as u32 > 32 - most.leading_zeros() || (fmt.depth() && slot == SLOT_3D) {
+            self.error(INVALID_OPERATION);
+            return;
+        }
+        let Some(id) = self.bound_texture(slot) else {
+            self.error(INVALID_OPERATION);
+            return;
+        };
+        if self.surfaces.textures[&id].immutable.is_some() {
+            self.error(INVALID_OPERATION);
+            return;
+        }
+        let faces: u8 = if slot == SLOT_CUBE { 6 } else { 1 };
+        for level in 0..levels as u32 {
+            let size = (mip(w, level), mip(h, level), mip_depth(slot, d, level));
+            for face in 0..faces {
+                let pixel = formats::client_pixel(fmt.format, fmt.kind);
+                let texels = (fmt.opaque() && !fmt.depth() && !fmt.compressed()).then(|| {
+                    let zeros = vec![0; (size.0 * size.1 * size.2 * pixel) as usize];
+                    formats::texels(
+                        &fmt,
+                        size.0,
+                        size.1,
+                        size.2,
+                        &zeros,
+                        &Layout::packed(1),
+                        false,
+                        false,
+                    )
+                });
+                let row = size.0 * texel_bytes(fmt.storage);
+                let image = Image {
+                    width: size.0,
+                    height: size.1,
+                    depth: size.2,
+                    format: fmt,
+                    gpu: None,
+                    layers: BTreeMap::new(),
+                };
+                self.set_image(id, (face, level as u8), image, texels.map(|t| (t, row, 1)));
+            }
+        }
+        self.surfaces
+            .textures
+            .get_mut(&id)
+            .expect("bound")
+            .immutable = Some(levels as u32);
     }
 
     /// An S3TC format enabled: its storage.
@@ -1349,86 +1182,111 @@ impl Context {
         })
     }
 
-    fn compressed_tex_image(&mut self, call: &CanvasCall) {
-        let (target, level, internal) = (u(call, 1), i(call, 2), u(call, 3));
-        let (w, h, border) = (i(call, 4), i(call, 5), i(call, 6));
-        let Some((slot, face)) = image_target(target) else {
+    /// compressedTexImage2D/3D [context, target, level, internal, width,
+    /// height, (depth,) border] and the sub images [context, target,
+    /// level, x, y, (z,) width, height, (depth,) format], the data's
+    /// bytes after.
+    fn compressed_tex_image(&mut self, call: &CanvasCall, sub: bool, three: bool) {
+        let mut k = 0;
+        let mut next = || {
+            k += 1;
+            k
+        };
+        let target = u(call, next());
+        let level = i(call, next());
+        let internal = if sub { 0 } else { u(call, next()) };
+        let at = if sub {
+            (
+                i(call, next()),
+                i(call, next()),
+                if three { i(call, next()) } else { 0 },
+            )
+        } else {
+            (0, 0, 0)
+        };
+        let (w, h, d) = (
+            i(call, next()),
+            i(call, next()),
+            if three { i(call, next()) } else { 1 },
+        );
+        let last = i(call, next());
+        let format = if sub { last as u32 } else { internal };
+        let border = if sub { 0 } else { last };
+        let Some((slot, face)) = image_target(target, self.version) else {
             self.error(INVALID_ENUM);
             return;
         };
-        let Some(storage) = self.compressed_storage(internal) else {
+        if three != (slot == SLOT_3D || slot == SLOT_ARRAY) {
             self.error(INVALID_ENUM);
-            return;
-        };
-        if !self.check_level(slot, level, w, h) {
             return;
         }
-        if border != 0 {
+        let Some(storage) = self.compressed_storage(format) else {
+            self.error(INVALID_ENUM);
+            return;
+        };
+        if slot == SLOT_3D {
+            self.error(INVALID_OPERATION);
+            return;
+        }
+        if !self.check_level(slot, level, w, h, d) {
+            return;
+        }
+        if border != 0 || at.0 < 0 || at.1 < 0 || at.2 < 0 {
             self.error(INVALID_VALUE);
             return;
         }
-        let (w, h) = (w as u32, h as u32);
+        let Some(id) = self.bound_texture(slot) else {
+            self.error(INVALID_OPERATION);
+            return;
+        };
+        let (w, h, d) = (w as u32, h as u32, d as u32);
         let data = call.bytes.clone().unwrap_or_default();
-        let row = w.div_ceil(4) * block_bytes(internal);
-        if data.len() as u64 != u64::from(row) * u64::from(h.div_ceil(4)) {
+        let block = if matches!(
+            format,
+            COMPRESSED_RGB_S3TC_DXT1_EXT | COMPRESSED_RGBA_S3TC_DXT1_EXT
+        ) {
+            8
+        } else {
+            16
+        };
+        let row = w.div_ceil(4) * block;
+        if data.len() as u64 != u64::from(row) * u64::from(h.div_ceil(4)) * u64::from(d) {
             self.error(INVALID_VALUE);
             return;
         }
-        let side_ok = |v: u32| v.is_multiple_of(4) || (level > 0 && v <= 2);
-        if !side_ok(w) || !side_ok(h) {
+        let key = (face, level as u8);
+        if !sub {
+            let side_ok = |v: u32| v.is_multiple_of(4) || (level > 0 && v <= 2);
+            if !side_ok(w) || !side_ok(h) || self.surfaces.textures[&id].immutable.is_some() {
+                self.error(INVALID_OPERATION);
+                return;
+            }
+            let image = Image {
+                width: w,
+                height: h,
+                depth: d,
+                format: Format {
+                    internal: format,
+                    format,
+                    kind: 0,
+                    storage,
+                },
+                gpu: None,
+                layers: BTreeMap::new(),
+            };
+            self.set_image(id, key, image, Some((data, row, 4)));
+            return;
+        }
+        let Some(image) = self.surfaces.textures[&id].images.get(&key).cloned() else {
+            self.error(INVALID_OPERATION);
+            return;
+        };
+        if image.format.internal != format {
             self.error(INVALID_OPERATION);
             return;
         }
-        let Some(id) = self.bound_texture(slot) else {
-            self.error(INVALID_OPERATION);
-            return;
-        };
-        let image = Image {
-            width: w,
-            height: h,
-            format: Format {
-                format: internal,
-                kind: 0,
-                storage,
-            },
-            gpu: None,
-        };
-        self.set_image(id, (face, level as u8), image, Some((data, row, 4)));
-    }
-
-    fn compressed_tex_sub_image(&mut self, call: &CanvasCall) {
-        let (target, level, x, y) = (u(call, 1), i(call, 2), i(call, 3), i(call, 4));
-        let (w, h, format) = (i(call, 5), i(call, 6), u(call, 7));
-        let Some((slot, face)) = image_target(target) else {
-            self.error(INVALID_ENUM);
-            return;
-        };
-        if self.compressed_storage(format).is_none() {
-            self.error(INVALID_ENUM);
-            return;
-        }
-        if level < 0 || x < 0 || y < 0 || w < 0 || h < 0 {
-            self.error(INVALID_VALUE);
-            return;
-        }
-        let Some(id) = self.bound_texture(slot) else {
-            self.error(INVALID_OPERATION);
-            return;
-        };
-        let Some(image) = self.surfaces.textures[&id]
-            .images
-            .get(&(face, level as u8))
-            .cloned()
-        else {
-            self.error(INVALID_OPERATION);
-            return;
-        };
-        if image.format.format != format {
-            self.error(INVALID_OPERATION);
-            return;
-        }
-        let (x, y, w, h) = (x as u32, y as u32, w as u32, h as u32);
-        if x + w > image.width || y + h > image.height {
+        let (x, y, z) = (at.0 as u32, at.1 as u32, at.2 as u32);
+        if x + w > image.width || y + h > image.height || z + d > image.depth {
             self.error(INVALID_VALUE);
             return;
         }
@@ -1439,17 +1297,11 @@ impl Context {
             self.error(INVALID_OPERATION);
             return;
         }
-        let data = call.bytes.clone().unwrap_or_default();
-        let row = w.div_ceil(4) * block_bytes(format);
-        if data.len() as u64 != u64::from(row) * u64::from(h.div_ceil(4)) {
-            self.error(INVALID_VALUE);
-            return;
-        }
         let Some((texture, _, _)) = image.gpu else {
             return;
         };
         self.gpu_flush();
-        self.upload(texture, (x, y), (round4(w), round4(h)), &data, row, 4);
+        self.upload(texture, (x, y, z), (round4(w), round4(h), d), &data, row, 4);
         self.surfaces
             .textures
             .get_mut(&id)
@@ -1457,20 +1309,36 @@ impl Context {
             .generation += 1;
     }
 
-    /// `copyTexImage2D` [context, target, level, internal, x, y, width,
-    /// height, border] and `copyTexSubImage2D` [context, target, level,
-    /// x offset, y offset, x, y, width, height]: drawn by the blit from
-    /// what the framebuffer reads.
-    fn copy_tex_image(&mut self, call: &CanvasCall, sub: bool, size: (u32, u32)) {
+    /// copyTexImage2D [context, target, level, internal, x, y, width,
+    /// height, border], copyTexSubImage2D [context, target, level, x
+    /// offset, y offset, x, y, width, height] and copyTexSubImage3D (a z
+    /// offset after the y offset): drawn by the blit from what the read
+    /// framebuffer reads.
+    fn copy_tex_image(&mut self, call: &CanvasCall, op: &str, size: (u32, u32)) {
+        let sub = op != "copyTexImage2D";
+        let three = op == "copyTexSubImage3D";
         let (target, level) = (u(call, 1), i(call, 2));
-        let Some((slot, face)) = image_target(target) else {
+        let Some((slot, face)) = image_target(target, self.version) else {
             self.error(INVALID_ENUM);
             return;
         };
-        let (internal, at, x, y, w, h) = if sub {
+        if three != (slot == SLOT_3D || slot == SLOT_ARRAY) {
+            self.error(INVALID_ENUM);
+            return;
+        }
+        let (internal, at, x, y, w, h) = if three {
             (
                 0,
-                (i(call, 3), i(call, 4)),
+                (i(call, 3), i(call, 4), i(call, 5)),
+                i(call, 6),
+                i(call, 7),
+                i(call, 8),
+                i(call, 9),
+            )
+        } else if sub {
+            (
+                0,
+                (i(call, 3), i(call, 4), 0),
                 i(call, 5),
                 i(call, 6),
                 i(call, 7),
@@ -1479,7 +1347,7 @@ impl Context {
         } else {
             (
                 u(call, 3),
-                (0, 0),
+                (0, 0, 0),
                 i(call, 4),
                 i(call, 5),
                 i(call, 6),
@@ -1487,11 +1355,7 @@ impl Context {
             )
         };
         if !sub {
-            if !matches!(internal, ALPHA | LUMINANCE | LUMINANCE_ALPHA | RGB | RGBA) {
-                self.error(INVALID_ENUM);
-                return;
-            }
-            if !self.check_level(slot, level, w, h) {
+            if !self.check_level(slot, level, w, h, 1) {
                 return;
             }
             if i(call, 8) != 0
@@ -1500,7 +1364,13 @@ impl Context {
                 self.error(INVALID_VALUE);
                 return;
             }
-        } else if level < 0 || at.0 < 0 || at.1 < 0 || w < 0 || h < 0 {
+        } else if !(0..=MAX_LEVEL).contains(&level)
+            || at.0 < 0
+            || at.1 < 0
+            || at.2 < 0
+            || w < 0
+            || h < 0
+        {
             self.error(INVALID_VALUE);
             return;
         }
@@ -1508,25 +1378,48 @@ impl Context {
             self.error(INVALID_OPERATION);
             return;
         };
-        let existing = self.surfaces.textures[&id]
-            .images
-            .get(&(face, level as u8))
-            .cloned();
+        let key = (face, level as u8);
+        let existing = self.surfaces.textures[&id].images.get(&key).cloned();
         let format = if sub {
             let Some(image) = &existing else {
                 self.error(INVALID_OPERATION);
                 return;
             };
-            if (at.0 + w) as u32 > image.width || (at.1 + h) as u32 > image.height {
+            if (at.0 + w) as u32 > image.width
+                || (at.1 + h) as u32 > image.height
+                || at.2 as u32 >= image.depth
+            {
                 self.error(INVALID_VALUE);
                 return;
             }
             image.format
         } else {
-            Format {
-                format: internal,
-                kind: UNSIGNED_BYTE,
-                storage: "rgba8unorm",
+            if self.surfaces.textures[&id].immutable.is_some() {
+                self.error(INVALID_OPERATION);
+                return;
+            }
+            match internal {
+                ALPHA | LUMINANCE | LUMINANCE_ALPHA | RGB | RGBA => Format {
+                    internal,
+                    format: internal,
+                    kind: UNSIGNED_BYTE,
+                    storage: "rgba8unorm",
+                },
+                _ if self.version == 2 => match formats::sized(internal, false) {
+                    Some(f) if f.sample() == Sample::Float && !f.depth() => f,
+                    Some(_) => {
+                        self.error(INVALID_OPERATION);
+                        return;
+                    }
+                    None => {
+                        self.error(INVALID_ENUM);
+                        return;
+                    }
+                },
+                _ => {
+                    self.error(INVALID_ENUM);
+                    return;
+                }
             }
         };
         let Some(source) = self.read_source(size) else {
@@ -1536,8 +1429,10 @@ impl Context {
             format.format,
             ALPHA | LUMINANCE_ALPHA | RGBA | SRGB_ALPHA_EXT
         );
-        if !source.storage.starts_with("rgba8unorm")
-            || !format.storage.starts_with("rgba8unorm")
+        let float_storage = |s: &str| formats::info(s).2 == Sample::Float;
+        if !float_storage(source.storage)
+            || !float_storage(format.storage)
+            || !renderable_storage(format.storage, self.features.rg11b10_renderable)
             || (wants_alpha && source.opaque)
             || source.image == Some((id, face, level as u8))
         {
@@ -1548,16 +1443,17 @@ impl Context {
             let image = Image {
                 width: w as u32,
                 height: h as u32,
+                depth: 1,
                 format,
                 gpu: None,
+                layers: BTreeMap::new(),
             };
-            self.set_image(id, (face, level as u8), image, None);
+            self.set_image(id, key, image, None);
         }
         if w == 0 || h == 0 {
             return;
         }
-        let dest = self.surfaces.textures[&id].images[&(face, level as u8)].clone();
-        let Some((_, view, _)) = dest.gpu else {
+        let Some(dest) = self.layer_view(id, key, at.2 as u32) else {
             return;
         };
         let mode = match format.format {
@@ -1565,13 +1461,15 @@ impl Context {
             LUMINANCE => 2,
             ALPHA => 3,
             LUMINANCE_ALPHA => 4,
+            RED => 6,
+            RG => 7,
             _ => 0,
         };
         self.blit(
-            source.view,
+            (source.view, false, 0),
             source.size,
             (x, y),
-            view,
+            dest,
             format.storage,
             (at.0 as u32, at.1 as u32),
             (w as u32, h as u32),
@@ -1585,95 +1483,178 @@ impl Context {
     }
 
     fn generate_mipmap(&mut self, target: u32) {
-        let slot = match target {
-            TEXTURE_2D => 0,
-            TEXTURE_CUBE_MAP => 1,
-            _ => {
-                self.error(INVALID_ENUM);
-                return;
-            }
+        let Some(slot) = slot_of(target, self.version) else {
+            self.error(INVALID_ENUM);
+            return;
         };
         let Some(id) = self.bound_texture(slot) else {
             self.error(INVALID_OPERATION);
             return;
         };
-        let faces: Vec<u8> = if slot == 1 { (0..6).collect() } else { vec![0] };
+        let faces: Vec<u8> = if slot == SLOT_CUBE {
+            (0..6).collect()
+        } else {
+            vec![0]
+        };
         let t = self.surfaces.textures[&id].clone();
-        let Some(base) = t.images.get(&(0, 0)).cloned() else {
+        let base_level = t.base_level.min(MAX_LEVEL as u32) as u8;
+        let Some(base) = t.images.get(&(0, base_level)).cloned() else {
             self.error(INVALID_OPERATION);
             return;
         };
         let same = faces.iter().all(|&f| {
-            t.images.get(&(f, 0)).is_some_and(|i| {
+            t.images.get(&(f, base_level)).is_some_and(|i| {
                 i.width == base.width && i.height == base.height && i.format == base.format
             })
         });
+        let storage = base.format.storage;
+        let filterable = formats::info(storage).2 == Sample::Float
+            && !storage.contains("snorm")
+            && storage != "rgb9e5ufloat"
+            && (!storage.ends_with("32float")
+                || self.version == 1
+                || self.ext.on("OES_texture_float_linear"));
+        let ext = |name: &str| self.ext.on(name);
+        let renderable = renderable_storage(storage, self.features.rg11b10_renderable)
+            && (self.version == 1
+                || base.format.is_unsized()
+                || formats::color_renderable(
+                    2,
+                    &ext,
+                    self.features.rg11b10_renderable,
+                    &base.format,
+                ));
         if !same
             || base.format.compressed()
             || base.format.depth()
+            || !filterable
+            || !renderable
             || (self.version == 1 && (!pot(base.width) || !pot(base.height)))
-            || (base.format.storage == "rgba8unorm-srgb" && self.version == 1)
+            || (storage == "rgba8unorm-srgb" && self.version == 1)
         {
             self.error(INVALID_OPERATION);
             return;
         }
-        let levels = 32 - base.width.max(base.height).max(1).leading_zeros();
+        let most = if slot == SLOT_3D {
+            base.width.max(base.height).max(base.depth)
+        } else {
+            base.width.max(base.height)
+        };
+        let count = 32 - most.max(1).leading_zeros();
+        let last = match t.immutable {
+            Some(levels) => levels,
+            None => (u32::from(base_level) + count).min(t.max_level.saturating_add(1)),
+        };
         for &face in &faces {
-            for level in 1..levels as u8 {
+            for level in u32::from(base_level) + 1..last.min(MAX_LEVEL as u32 + 1) {
+                let level = level as u8;
+                let step = u32::from(level - base_level);
                 let above = self.surfaces.textures[&id].images[&(face, level - 1)].clone();
-                let (w, h) = ((base.width >> level).max(1), (base.height >> level).max(1));
-                let image = Image {
-                    width: w,
-                    height: h,
-                    format: base.format,
-                    gpu: None,
-                };
-                self.set_image(id, (face, level), image, None);
-                let made = self.surfaces.textures[&id].images[&(face, level)].gpu;
-                if let (Some((_, _, from)), Some((_, to, _))) = (above.gpu, made) {
-                    self.blit(
-                        from,
-                        (above.width, above.height),
-                        (0, 0),
-                        to,
-                        base.format.storage,
-                        (0, 0),
-                        (w, h),
-                        5,
-                    );
+                let (w, h, d) = (
+                    mip(base.width, step),
+                    mip(base.height, step),
+                    mip_depth(slot, base.depth, step),
+                );
+                if t.immutable.is_none() {
+                    let image = Image {
+                        width: w,
+                        height: h,
+                        depth: d,
+                        format: base.format,
+                        gpu: None,
+                        layers: BTreeMap::new(),
+                    };
+                    self.set_image(id, (face, level), image, None);
+                }
+                // Each layer from the level above (a 3D level's slices from
+                // every other slice above: G-list).
+                for layer in 0..d {
+                    let from_layer = if slot == SLOT_3D {
+                        (layer * 2).min(above.depth - 1)
+                    } else {
+                        layer
+                    };
+                    let source = match slot {
+                        SLOT_ARRAY => self
+                            .layer_view(id, (face, level - 1), from_layer)
+                            .map(|v| (v.0, false, 0)),
+                        SLOT_3D => above.gpu.map(|g| (g.2, true, from_layer as i32)),
+                        _ => above.gpu.map(|g| (g.2, false, 0)),
+                    };
+                    let dest = self.layer_view(id, (face, level), layer);
+                    if let (Some(source), Some(dest)) = (source, dest) {
+                        self.blit(
+                            source,
+                            (above.width, above.height),
+                            (0, 0),
+                            dest,
+                            storage,
+                            (0, 0),
+                            (w, h),
+                            5,
+                        );
+                    }
                 }
             }
         }
+        self.surfaces
+            .textures
+            .get_mut(&id)
+            .expect("bound")
+            .generation += 1;
     }
 
     // ---- Sampling ----
 
-    /// The levels a texture is sampled with, or none when it is not
-    /// complete (GL ES 2.0 3.8.2, WebGL 1's NPOT rule).
-    fn complete(&self, t: &Texture, cube: bool) -> Option<u8> {
-        let base = t.images.get(&(0, 0))?;
-        if base.width == 0 || base.height == 0 || base.gpu.is_none() {
+    /// The levels a texture is sampled with, from its base level, or none
+    /// when it is not complete (GL ES 3.0 3.8.14, WebGL 1's NPOT rule).
+    fn complete(&self, t: &Texture, slot: usize, state: &SamplerState) -> Option<u8> {
+        let base_level = t.base_level.min(MAX_LEVEL as u32) as u8;
+        let base = t.images.get(&(0, base_level))?;
+        if base.width == 0 || base.height == 0 || base.depth == 0 || base.gpu.is_none() {
             return None;
         }
-        let faces: &[u8] = if cube { &[0, 1, 2, 3, 4, 5] } else { &[0] };
-        let mipmapped = !matches!(t.min, NEAREST | LINEAR);
+        let faces: &[u8] = if slot == SLOT_CUBE {
+            &[0, 1, 2, 3, 4, 5]
+        } else {
+            &[0]
+        };
+        let mipmapped = !matches!(state.min, NEAREST | LINEAR);
         let npot = !pot(base.width) || !pot(base.height);
         if self.version == 1
             && npot
-            && (mipmapped || t.wrap_s != CLAMP_TO_EDGE || t.wrap_t != CLAMP_TO_EDGE)
+            && (mipmapped || state.wrap_s != CLAMP_TO_EDGE || state.wrap_t != CLAMP_TO_EDGE)
         {
             return None;
         }
-        let levels = if mipmapped {
-            (32 - base.width.max(base.height).leading_zeros()) as u8
+        let most = if slot == SLOT_3D {
+            base.width.max(base.height).max(base.depth)
+        } else {
+            base.width.max(base.height)
+        };
+        let mut levels = if mipmapped {
+            32 - most.leading_zeros()
         } else {
             1
         };
+        if let Some(immutable) = t.immutable {
+            levels = levels.min(immutable.saturating_sub(u32::from(base_level)));
+        }
+        if mipmapped {
+            levels = levels.min(t.max_level.saturating_sub(u32::from(base_level)) + 1);
+        }
+        if levels == 0 {
+            return None;
+        }
         for &face in faces {
-            for level in 0..levels {
-                let image = t.images.get(&(face, level))?;
-                let want = ((base.width >> level).max(1), (base.height >> level).max(1));
-                if (image.width, image.height) != want
+            for step in 0..levels {
+                let image = t.images.get(&(face, base_level + step as u8))?;
+                let want = (
+                    mip(base.width, step),
+                    mip(base.height, step),
+                    mip_depth(slot, base.depth, step),
+                );
+                if (image.width, image.height, image.depth) != want
                     || image.format != base.format
                     || image.gpu.is_none()
                 {
@@ -1682,38 +1663,77 @@ impl Context {
             }
         }
         // Filtering a format that cannot be filtered: incomplete.
-        let nearest = t.mag == NEAREST && matches!(t.min, NEAREST | NEAREST_MIPMAP_NEAREST);
-        let filterable = match base.format.storage {
-            "rgba32float" => {
-                self.ext.on("OES_texture_float_linear") && self.features.float32_filterable
-            }
-            "rgba16float" => self.version == 2 || self.ext.on("OES_texture_half_float_linear"),
-            s => !has_depth(s) && !has_stencil(s),
+        let nearest = state.mag == NEAREST && matches!(state.min, NEAREST | NEAREST_MIPMAP_NEAREST);
+        let storage = base.format.storage;
+        let filterable = match formats::info(storage).2 {
+            Sample::Sint | Sample::Uint => false,
+            Sample::Depth => state.compare_mode == COMPARE_REF_TO_TEXTURE,
+            Sample::Float => match storage {
+                "rgba32float" | "rg32float" | "r32float" => {
+                    self.ext.on("OES_texture_float_linear") && self.features.float32_filterable
+                }
+                "rgba16float" => self.version == 2 || self.ext.on("OES_texture_half_float_linear"),
+                _ => true,
+            },
         };
         if !filterable && !nearest {
             return None;
         }
-        Some(levels)
+        Some(levels as u8)
     }
 
-    /// A texture unit's texture of `cube` or not, as a draw samples it:
-    /// view, sampler, whether WebGPU cannot filter it, and its id; none
-    /// when there is none or it is not complete.
-    pub(crate) fn sampled(&mut self, unit: u32, cube: bool) -> Option<(u32, u32, bool, u32)> {
-        let id = self.surfaces.units.get(unit as usize)?[usize::from(cube)]?;
-        let t = self.surfaces.textures.get(&id)?;
-        let levels = self.complete(t, cube)?;
-        let base = t.images[&(0, 0)].clone();
+    /// A texture unit's texture as a sampler of `want` reads it; none
+    /// when there is none or it is not complete (the default texture is
+    /// read), Err when it is of the wrong kind (INVALID_OPERATION).
+    pub(crate) fn sampled(&mut self, unit: u32, want: Want) -> Result<Option<Sampled>, ()> {
+        let Some(id) = self
+            .surfaces
+            .units
+            .get(unit as usize)
+            .and_then(|u| u[want.slot])
+        else {
+            return Ok(None);
+        };
+        let Some(t) = self.surfaces.textures.get(&id) else {
+            return Ok(None);
+        };
+        let state = match self
+            .surfaces
+            .sampler_units
+            .get(unit as usize)
+            .copied()
+            .flatten()
+        {
+            Some(s) => self
+                .surfaces
+                .samplers
+                .get(&s)
+                .map_or(t.sampler, |s| s.state),
+            None => t.sampler,
+        };
+        let Some(levels) = self.complete(t, want.slot, &state) else {
+            return Ok(None);
+        };
+        let base_level = t.base_level.min(MAX_LEVEL as u32) as u8;
+        let base = t.images[&(0, base_level)].clone();
+        let anisotropy = t.anisotropy;
         let storage = base.format.storage;
-        let unfilterable = has_depth(storage)
-            || has_stencil(storage)
-            || (storage == "rgba32float" && !self.features.float32_filterable);
-        let (min, mag, wrap_s, wrap_t, anisotropy) =
-            (t.min, t.mag, t.wrap_s, t.wrap_t, t.anisotropy);
-        let view = if !cube && levels == 1 {
+        let sample = formats::info(storage).2;
+        let fits = match (want.shadow, want.sample) {
+            (true, _) => sample == Sample::Depth && state.compare_mode == COMPARE_REF_TO_TEXTURE,
+            (false, Sample::Float) => matches!(sample, Sample::Float | Sample::Depth),
+            (false, s) => s == sample,
+        };
+        if !fits {
+            return Err(());
+        }
+        let unfilterable = !want.shadow
+            && (sample == Sample::Depth
+                || (storage.ends_with("32float") && !self.features.float32_filterable));
+        let view = if want.slot != SLOT_CUBE && levels == 1 {
             base.gpu.expect("complete").2
         } else {
-            self.assemble(id, cube, levels)
+            self.assemble(id, want.slot, levels)
         };
         let address = |w: u32| match w {
             CLAMP_TO_EDGE => "clamp-to-edge",
@@ -1721,24 +1741,56 @@ impl Context {
             _ => "repeat",
         };
         let filter = |linear: bool| if linear { "linear" } else { "nearest" };
-        let mag_linear = mag == LINEAR;
-        let min_linear = matches!(min, LINEAR | LINEAR_MIPMAP_NEAREST | LINEAR_MIPMAP_LINEAR);
-        let mip_linear = matches!(min, NEAREST_MIPMAP_LINEAR | LINEAR_MIPMAP_LINEAR) && levels > 1;
-        let anisotropy = if mag_linear && min_linear && (mip_linear || levels == 1) && levels > 1 {
+        let flat = unfilterable || matches!(sample, Sample::Sint | Sample::Uint);
+        let mag_linear = state.mag == LINEAR && !flat;
+        let min_linear = matches!(
+            state.min,
+            LINEAR | LINEAR_MIPMAP_NEAREST | LINEAR_MIPMAP_LINEAR
+        ) && !flat;
+        let mip_linear = matches!(state.min, NEAREST_MIPMAP_LINEAR | LINEAR_MIPMAP_LINEAR)
+            && levels > 1
+            && !flat;
+        let anisotropy = if mag_linear && min_linear && (mip_linear || levels == 1) {
             anisotropy.clamp(1.0, 16.0) as u32
         } else {
             1
         };
+        let top = f32::from(levels - 1);
+        let (lod_min, lod_max) = if levels > 1 {
+            let low = state.min_lod.clamp(0.0, top);
+            (low, state.max_lod.clamp(0.0, top).max(low))
+        } else {
+            (0.0, 0.0)
+        };
+        let compare = if want.shadow {
+            format!(
+                r#","compare":"{}""#,
+                super::draw::compare(state.compare_func)
+            )
+        } else {
+            String::new()
+        };
         let desc = format!(
-            r#"{{"addressModeU":"{}","addressModeV":"{}","magFilter":"{}","minFilter":"{}","mipmapFilter":"{}","lodMinClamp":0,"lodMaxClamp":{},"maxAnisotropy":{anisotropy}}}"#,
-            address(wrap_s),
-            address(wrap_t),
+            r#"{{"addressModeU":"{}","addressModeV":"{}","addressModeW":"{}","magFilter":"{}","minFilter":"{}","mipmapFilter":"{}","lodMinClamp":{lod_min},"lodMaxClamp":{lod_max},"maxAnisotropy":{anisotropy}{compare}}}"#,
+            address(state.wrap_s),
+            address(state.wrap_t),
+            address(state.wrap_r),
             filter(mag_linear),
             filter(min_linear),
             filter(mip_linear),
-            if levels > 1 { 32 } else { 0 }
         );
-        let sampler = match self.gpu.samplers.get(&desc) {
+        let sampler = self.sampler_of(desc);
+        Ok(Some(Sampled {
+            view,
+            sampler,
+            unfilterable,
+            id,
+        }))
+    }
+
+    /// A sampler of `desc`, made once.
+    pub(crate) fn sampler_of(&mut self, desc: String) -> u32 {
+        match self.gpu.samplers.get(&desc) {
             Some(&s) => s,
             None => {
                 let s = self.gpu.id(&self.client);
@@ -1750,20 +1802,21 @@ impl Context {
                 self.gpu.samplers.insert(desc, s);
                 s
             }
-        };
-        Some((view, sampler, unfilterable, id))
+        }
     }
 
     /// A texture's images put together in one (a cube's faces, a
-    /// texture's levels), again when they changed: its view.
-    fn assemble(&mut self, id: u32, cube: bool, levels: u8) -> u32 {
+    /// texture's levels from its base), again when they changed: its
+    /// view.
+    fn assemble(&mut self, id: u32, slot: usize, levels: u8) -> u32 {
         let t = &self.surfaces.textures[&id];
-        let base = &t.images[&(0, 0)];
+        let base_level = t.base_level.min(MAX_LEVEL as u32) as u8;
+        let base = &t.images[&(0, base_level)];
         let key: Assembly = (
             t.generation,
+            u32::from(base_level),
             levels,
-            base.width,
-            base.height,
+            (base.width, base.height, base.depth),
             base.format.storage,
         );
         if let Some((_, view, had)) = t.assembled
@@ -1772,7 +1825,7 @@ impl Context {
             return view;
         }
         let compressed = base.format.compressed();
-        let (w, h, storage) = (base.width, base.height, base.format.storage);
+        let (w, h, d, storage) = (base.width, base.height, base.depth, base.format.storage);
         let old = t.assembled.map(|(a, b, _)| vec![a, b]);
         // What was recorded is sent before the copies go after it.
         self.gpu_flush();
@@ -1780,34 +1833,43 @@ impl Context {
             self.free(old);
         }
         let (texture, view) = (self.gpu.id(&self.client), self.gpu.id(&self.client));
-        let layers = if cube { 6 } else { 1 };
+        let third = if slot == SLOT_CUBE { 6 } else { d };
         let (pw, ph) = if compressed {
             (round4(w), round4(h))
         } else {
             (w, h)
+        };
+        let dimension = if slot == SLOT_3D { "3d" } else { "2d" };
+        let view_dimension = match slot {
+            SLOT_CUBE => "cube",
+            SLOT_3D => "3d",
+            SLOT_ARRAY => "2d-array",
+            _ => "2d",
+        };
+        let aspect = if has_stencil(storage) {
+            r#","aspect":"depth-only""#
+        } else {
+            ""
         };
         self.client.queue([
             Request::CreateTexture {
                 device: self.device,
                 id: texture,
                 desc: format!(
-                    r#"{{"size":[{pw},{ph},{layers}],"format":"{storage}","usage":6,"mipLevelCount":{levels}}}"#
+                    r#"{{"size":[{pw},{ph},{third}],"format":"{storage}","usage":6,"mipLevelCount":{levels},"dimension":"{dimension}"}}"#
                 ),
             },
             Request::CreateView {
                 texture,
                 id: view,
-                desc: if cube {
-                    r#"{"dimension":"cube"}"#.to_owned()
-                } else {
-                    "{}".to_owned()
-                },
+                desc: format!(r#"{{"dimension":"{view_dimension}"{aspect}}}"#),
             },
         ]);
         let t = &self.surfaces.textures[&id];
-        for face in 0..layers as u8 {
-            for level in 0..levels {
-                let image = &t.images[&(face, level)];
+        let faces = if slot == SLOT_CUBE { 6 } else { 1 };
+        for face in 0..faces as u8 {
+            for step in 0..levels {
+                let image = &t.images[&(face, base_level + step)];
                 let Some((from, _, _)) = image.gpu else {
                     continue;
                 };
@@ -1816,9 +1878,10 @@ impl Context {
                 } else {
                     (image.width, image.height)
                 };
+                let layers = if slot == SLOT_CUBE { 1 } else { image.depth };
                 self.gpu.pending.push(Command::CopyTextureToTexture {
                     desc: format!(
-                        r#"{{"source":{{"texture":{from}}},"destination":{{"texture":{texture},"mipLevel":{level},"origin":[0,0,{face}]}},"size":[{cw},{ch},1]}}"#
+                        r#"{{"source":{{"texture":{from}}},"destination":{{"texture":{texture},"mipLevel":{step},"origin":[0,0,{face}]}},"size":[{cw},{ch},{layers}]}}"#
                     ),
                 });
             }
@@ -1831,662 +1894,20 @@ impl Context {
         view
     }
 
-    // ---- Renderbuffers ----
-
-    fn renderbuffer_storage(&mut self, target: u32, internal: u32, w: i32, h: i32) {
-        if target != RENDERBUFFER {
-            self.error(INVALID_ENUM);
-            return;
-        }
-        let storage = match internal {
-            RGBA4 | RGB5_A1 | RGB565 => "rgba8unorm",
-            DEPTH_COMPONENT16 => "depth16unorm",
-            STENCIL_INDEX8 => "stencil8",
-            DEPTH_STENCIL => "depth24plus-stencil8",
-            SRGB8_ALPHA8_EXT if self.ext.on("EXT_sRGB") => "rgba8unorm-srgb",
-            RGBA32F_EXT if self.ext.on("WEBGL_color_buffer_float") => "rgba32float",
-            RGBA16F_EXT | RGB16F_EXT if self.ext.on("EXT_color_buffer_half_float") => "rgba16float",
-            _ => {
-                self.error(INVALID_ENUM);
-                return;
-            }
-        };
-        if w < 0 || h < 0 || w as u32 > MAX_SIZE || h as u32 > MAX_SIZE {
-            self.error(INVALID_VALUE);
-            return;
-        }
-        let Some(id) = self.surfaces.renderbuffer else {
-            self.error(INVALID_OPERATION);
-            return;
-        };
-        if let Some((a, b)) = self.surfaces.renderbuffers[&id].gpu {
-            self.free(vec![a, b]);
-        }
-        let gpu = (w > 0 && h > 0).then(|| {
-            let (texture, view) = (self.gpu.id(&self.client), self.gpu.id(&self.client));
-            // RENDER_ATTACHMENT, and COPY_SRC and TEXTURE_BINDING for a
-            // colour one's copies and reads.
-            let usage = if storage.starts_with("rgba") { 21 } else { 16 };
-            self.client.queue([
-                Request::CreateTexture {
-                    device: self.device,
-                    id: texture,
-                    desc: format!(r#"{{"size":[{w},{h},1],"format":"{storage}","usage":{usage}}}"#),
-                },
-                Request::CreateView {
-                    texture,
-                    id: view,
-                    desc: "{}".to_owned(),
-                },
-            ]);
-            (texture, view)
-        });
-        let r = self.surfaces.renderbuffers.get_mut(&id).expect("bound");
-        r.format = internal;
-        r.width = w as u32;
-        r.height = h as u32;
-        r.storage = Some(storage);
-        r.gpu = gpu;
-    }
-
-    fn renderbuffer_parameter(&mut self, target: u32, name: u32) -> Answer {
-        if target != RENDERBUFFER {
-            self.error(INVALID_ENUM);
-            return Answer::Nothing;
-        }
-        let Some(id) = self.surfaces.renderbuffer else {
-            self.error(INVALID_OPERATION);
-            return Answer::Nothing;
-        };
-        let r = &self.surfaces.renderbuffers[&id];
-        let stored = r.storage.is_some();
-        // Red, green, blue, alpha, depth and stencil bits.
-        let bits: [u32; 6] = match (stored, r.format) {
-            (false, _) => [0; 6],
-            (_, RGBA4) => [4, 4, 4, 4, 0, 0],
-            (_, RGB5_A1) => [5, 5, 5, 1, 0, 0],
-            (_, RGB565) => [5, 6, 5, 0, 0, 0],
-            (_, DEPTH_COMPONENT16) => [0, 0, 0, 0, 16, 0],
-            (_, STENCIL_INDEX8) => [0, 0, 0, 0, 0, 8],
-            (_, DEPTH_STENCIL) => [0, 0, 0, 0, 24, 8],
-            (_, RGBA32F_EXT) => [32, 32, 32, 32, 0, 0],
-            (_, RGBA16F_EXT) => [16, 16, 16, 16, 0, 0],
-            (_, RGB16F_EXT) => [16, 16, 16, 0, 0, 0],
-            _ => [8, 8, 8, 8, 0, 0],
-        };
-        let v = match name {
-            RENDERBUFFER_WIDTH => r.width,
-            RENDERBUFFER_HEIGHT => r.height,
-            RENDERBUFFER_INTERNAL_FORMAT => r.format,
-            RENDERBUFFER_RED_SIZE..=RENDERBUFFER_STENCIL_SIZE => {
-                bits[(name - RENDERBUFFER_RED_SIZE) as usize]
-            }
-            _ => {
-                self.error(INVALID_ENUM);
-                return Answer::Nothing;
-            }
-        };
-        Answer::Number(f64::from(v))
-    }
-
-    // ---- Framebuffers ----
-
-    fn attachment_point(&self, attachment: u32) -> bool {
-        matches!(
-            attachment,
-            COLOR_ATTACHMENT0 | DEPTH_ATTACHMENT | STENCIL_ATTACHMENT | DEPTH_STENCIL_ATTACHMENT
-        )
-    }
-
-    fn framebuffer_texture(
-        &mut self,
-        target: u32,
-        attachment: u32,
-        textarget: u32,
-        texture: u32,
-        level: i32,
-    ) {
-        if target != FRAMEBUFFER || !self.attachment_point(attachment) {
-            self.error(INVALID_ENUM);
-            return;
-        }
-        let Some(fb) = self.surfaces.framebuffer else {
-            self.error(INVALID_OPERATION);
-            return;
-        };
-        let attached = if texture == 0 {
-            None
-        } else {
-            let Some((slot, face)) = image_target(textarget) else {
-                self.error(INVALID_ENUM);
-                return;
-            };
-            let Some(t) = self.surfaces.textures.get(&texture).filter(|t| !t.deleted) else {
-                self.error(INVALID_OPERATION);
-                return;
-            };
-            let wanted = if slot == 0 {
-                TEXTURE_2D
-            } else {
-                TEXTURE_CUBE_MAP
-            };
-            if t.target != Some(wanted) {
-                self.error(INVALID_OPERATION);
-                return;
-            }
-            let mipmaps = self.version == 2 || self.ext.on("OES_fbo_render_mipmap");
-            if !(0..=MAX_LEVEL).contains(&level) || (level != 0 && !mipmaps) {
-                self.error(INVALID_VALUE);
-                return;
-            }
-            Some(Attached::Texture {
-                id: texture,
-                face,
-                level: level as u8,
-            })
-        };
-        let attachments = &mut self
-            .surfaces
-            .framebuffers
-            .get_mut(&fb)
-            .expect("bound")
-            .attachments;
-        match attached {
-            Some(a) => attachments.insert(attachment, a),
-            None => attachments.remove(&attachment),
-        };
-        self.sweep();
-    }
-
-    fn framebuffer_renderbuffer(
-        &mut self,
-        target: u32,
-        attachment: u32,
-        rb_target: u32,
-        renderbuffer: u32,
-    ) {
-        if target != FRAMEBUFFER || !self.attachment_point(attachment) || rb_target != RENDERBUFFER
-        {
-            self.error(INVALID_ENUM);
-            return;
-        }
-        let Some(fb) = self.surfaces.framebuffer else {
-            self.error(INVALID_OPERATION);
-            return;
-        };
-        if renderbuffer != 0
-            && !self
-                .surfaces
-                .renderbuffers
-                .get(&renderbuffer)
-                .is_some_and(|r| !r.deleted)
-        {
-            self.error(INVALID_OPERATION);
-            return;
-        }
-        let attachments = &mut self
-            .surfaces
-            .framebuffers
-            .get_mut(&fb)
-            .expect("bound")
-            .attachments;
-        if renderbuffer == 0 {
-            attachments.remove(&attachment);
-        } else {
-            attachments.insert(attachment, Attached::Renderbuffer(renderbuffer));
-        }
-        self.sweep();
-    }
-
-    /// What an attachment is: none when its object is gone.
-    fn info(&self, a: &Attached) -> Option<Info> {
-        match *a {
-            Attached::Texture { id, face, level } => {
-                let image = self
-                    .surfaces
-                    .textures
-                    .get(&id)?
-                    .images
-                    .get(&(face, level))?;
-                let f = image.format;
-                let color_ok = match f.storage {
-                    "rgba8unorm" => {
-                        matches!(f.format, RGB | RGBA)
-                    }
-                    "rgba8unorm-srgb" => f.format == SRGB_ALPHA_EXT,
-                    "rgba32float" => {
-                        matches!(f.format, RGB | RGBA)
-                            && (self.version == 2 || self.ext.on("WEBGL_color_buffer_float"))
-                    }
-                    "rgba16float" => {
-                        matches!(f.format, RGB | RGBA)
-                            && (self.version == 2 || self.ext.on("EXT_color_buffer_half_float"))
-                    }
-                    _ => false,
-                };
-                Some(Info {
-                    view: image.gpu.map(|g| g.1),
-                    texture: Some(id),
-                    gpu_texture: image.gpu.map(|g| g.0),
-                    sample_view: image.gpu.map(|g| g.2),
-                    storage: f.storage,
-                    size: (image.width, image.height),
-                    color_ok,
-                    opaque: f.opaque(),
-                })
-            }
-            Attached::Renderbuffer(id) => {
-                let r = self.surfaces.renderbuffers.get(&id)?;
-                let storage = r.storage.unwrap_or("rgba8unorm");
-                Some(Info {
-                    view: r.gpu.map(|g| g.1),
-                    texture: None,
-                    gpu_texture: r.gpu.map(|g| g.0),
-                    sample_view: r.gpu.map(|g| g.1),
-                    storage,
-                    size: (r.width, r.height),
-                    color_ok: storage.starts_with("rgba"),
-                    opaque: matches!(r.format, RGB565 | RGB16F_EXT),
-                })
-            }
-        }
-    }
-
-    /// A framebuffer's completeness (GL ES 2.0 4.4.5, WebGL 1 6.6).
-    pub(crate) fn status(&self, fb: u32) -> u32 {
-        let Some(fb) = self.surfaces.framebuffers.get(&fb) else {
-            return FRAMEBUFFER_COMPLETE;
-        };
-        let mut sizes = Vec::new();
-        for (&point, a) in &fb.attachments {
-            let Some(info) = self.info(a) else {
-                return FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
-            };
-            if info.size.0 == 0 || info.size.1 == 0 {
-                return FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
-            }
-            let ok = match point {
-                COLOR_ATTACHMENT0 => info.color_ok,
-                DEPTH_ATTACHMENT => matches!(info.storage, "depth16unorm" | "depth32float"),
-                STENCIL_ATTACHMENT => info.storage == "stencil8",
-                _ => info.storage == "depth24plus-stencil8",
-            };
-            if !ok {
-                return FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
-            }
-            sizes.push(info.size);
-        }
-        if sizes.is_empty() {
-            return FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT;
-        }
-        if sizes.iter().any(|&s| s != sizes[0]) {
-            return FRAMEBUFFER_INCOMPLETE_DIMENSIONS;
-        }
-        let depths = [
-            DEPTH_ATTACHMENT,
-            STENCIL_ATTACHMENT,
-            DEPTH_STENCIL_ATTACHMENT,
-        ]
-        .iter()
-        .filter(|p| fb.attachments.contains_key(p))
-        .count();
-        if depths > 1 {
-            return FRAMEBUFFER_UNSUPPORTED;
-        }
-        FRAMEBUFFER_COMPLETE
-    }
-
-    fn attachment_parameter(&mut self, target: u32, attachment: u32, name: u32) -> Answer {
-        if target != FRAMEBUFFER || !self.attachment_point(attachment) {
-            self.error(INVALID_ENUM);
-            return Answer::Nothing;
-        }
-        let Some(fb) = self.surfaces.framebuffer else {
-            self.error(INVALID_OPERATION);
-            return Answer::Nothing;
-        };
-        let a = self.surfaces.framebuffers[&fb]
-            .attachments
-            .get(&attachment)
-            .copied();
-        let srgb = self.ext.on("EXT_sRGB");
-        let float =
-            self.ext.on("WEBGL_color_buffer_float") || self.ext.on("EXT_color_buffer_half_float");
-        match (a, name) {
-            (None, FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE) => Answer::Number(f64::from(NONE)),
-            (None, _) => {
-                self.error(INVALID_ENUM);
-                Answer::Nothing
-            }
-            (Some(a), FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE) => Answer::Number(f64::from(match a {
-                Attached::Texture { .. } => TEXTURE,
-                Attached::Renderbuffer(_) => RENDERBUFFER,
-            })),
-            (Some(a), FRAMEBUFFER_ATTACHMENT_OBJECT_NAME) => Answer::Number(f64::from(match a {
-                Attached::Texture { id, .. } | Attached::Renderbuffer(id) => id,
-            })),
-            (Some(Attached::Texture { level, .. }), FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL) => {
-                Answer::Number(f64::from(level))
-            }
-            (
-                Some(Attached::Texture { id, face, .. }),
-                FRAMEBUFFER_ATTACHMENT_TEXTURE_CUBE_MAP_FACE,
-            ) => {
-                let cube = self.surfaces.textures.get(&id).and_then(|t| t.target)
-                    == Some(TEXTURE_CUBE_MAP);
-                Answer::Number(if cube {
-                    f64::from(TEXTURE_CUBE_MAP_POSITIVE_X + u32::from(face))
-                } else {
-                    0.0
-                })
-            }
-            (Some(a), FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING_EXT) if srgb => {
-                let storage = self.info(&a).map_or("", |i| i.storage);
-                Answer::Number(f64::from(if storage.ends_with("srgb") {
-                    SRGB_COLOR_ENCODING
-                } else {
-                    LINEAR_COLOR_ENCODING
-                }))
-            }
-            (Some(a), FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE_EXT) if float => {
-                let storage = self.info(&a).map_or("", |i| i.storage);
-                Answer::Number(f64::from(if storage.ends_with("float") {
-                    FLOAT
-                } else {
-                    UNSIGNED_NORMALIZED_EXT
-                }))
-            }
-            _ => {
-                self.error(INVALID_ENUM);
-                Answer::Nothing
-            }
-        }
-    }
-
-    /// What draws and clears draw into: the bound framebuffer's
-    /// attachments, or the drawing buffer; none, and GL's error, for an
-    /// incomplete framebuffer.
-    pub(crate) fn target(&mut self, size: (u32, u32)) -> Option<Target> {
-        let Some(fb) = self.surfaces.framebuffer else {
-            self.drawing_buffer(size);
-            let d = self.drawing.clone().expect("made");
-            let (color, resolve) = match d.msaa {
-                Some((_, v)) => (v, Some(d.color.1)),
-                None => (d.color.1, None),
-            };
-            let stencil = self.attributes.stencil;
-            let depth = d.depth.map(|(_, v)| {
-                (
-                    v,
-                    if stencil {
-                        "depth24plus-stencil8"
-                    } else {
-                        "depth24plus"
-                    },
-                )
-            });
-            return Some(Target {
-                key: (color, depth.map_or(0, |d| d.0)),
-                size: d.size,
-                color: Some((color, resolve, "rgba8unorm")),
-                rgb: !self.attributes.alpha,
-                depth,
-                depth_on: self.attributes.depth,
-                stencil_on: self.attributes.stencil,
-                samples: if self.attributes.antialias { 4 } else { 1 },
-                default: true,
-                textures: Vec::new(),
-            });
-        };
-        if self.status(fb) != FRAMEBUFFER_COMPLETE {
-            self.error(INVALID_FRAMEBUFFER_OPERATION);
-            return None;
-        }
-        let attachments = self.surfaces.framebuffers[&fb].attachments.clone();
-        let mut target = Target {
-            key: (0, 0),
-            size: (0, 0),
-            color: None,
-            rgb: false,
-            depth: None,
-            depth_on: false,
-            stencil_on: false,
-            samples: 1,
-            default: false,
-            textures: Vec::new(),
-        };
-        for (point, a) in &attachments {
-            let info = self.info(a).expect("complete");
-            let view = info.view.expect("complete");
-            target.size = info.size;
-            if let Some(t) = info.texture {
-                target.textures.push(t);
-            }
-            if *point == COLOR_ATTACHMENT0 {
-                target.color = Some((view, None, info.storage));
-                target.rgb = info.opaque;
-                target.key.0 = view;
-            } else {
-                target.depth = Some((view, info.storage));
-                target.depth_on = has_depth(info.storage);
-                target.stencil_on = has_stencil(info.storage);
-                target.key.1 = view;
-            }
-        }
-        Some(target)
-    }
-
-    /// What `readPixels` and the copies read: the bound framebuffer's
-    /// colour, or the drawing buffer's (its clear made first); none, and
-    /// GL's error, when there is none to read.
-    fn read_source(&mut self, size: (u32, u32)) -> Option<Source> {
-        let Some(fb) = self.surfaces.framebuffer else {
-            if self.needs_clear {
-                // The drawing buffer cleared, as presented ones are.
-                self.pass(size, None);
-            }
-            self.gpu_flush();
-            self.drawing_buffer(size);
-            let d = self.drawing.clone().expect("made");
-            return Some(Source {
-                texture: d.color.0,
-                view: d.color.1,
-                size: d.size,
-                storage: "rgba8unorm",
-                opaque: !self.attributes.alpha,
-                image: None,
-            });
-        };
-        if self.status(fb) != FRAMEBUFFER_COMPLETE {
-            self.error(INVALID_FRAMEBUFFER_OPERATION);
-            return None;
-        }
-        let Some(a) = self.surfaces.framebuffers[&fb]
-            .attachments
-            .get(&COLOR_ATTACHMENT0)
-            .copied()
-        else {
-            self.error(INVALID_OPERATION);
-            return None;
-        };
-        self.gpu_flush();
-        let info = self.info(&a).expect("complete");
-        let image = match a {
-            Attached::Texture { id, face, level } => Some((id, face, level)),
-            Attached::Renderbuffer(_) => None,
-        };
-        Some(Source {
-            texture: info.gpu_texture.expect("complete"),
-            view: info.sample_view.expect("complete"),
-            size: info.size,
-            storage: info.storage,
-            opaque: info.opaque,
-            image,
-        })
-    }
-
-    /// The format and type `readPixels` takes besides RGBA and
-    /// UNSIGNED_BYTE: the colour buffer's own.
-    pub(crate) fn read_format(&self) -> (u32, u32) {
-        let storage = self
-            .surfaces
-            .framebuffer
-            .and_then(|fb| self.surfaces.framebuffers.get(&fb))
-            .and_then(|fb| fb.attachments.get(&COLOR_ATTACHMENT0))
-            .and_then(|a| self.info(a))
-            .map_or("rgba8unorm", |i| i.storage);
-        if storage.ends_with("float") {
-            (RGBA, FLOAT)
-        } else {
-            (RGBA, UNSIGNED_BYTE)
-        }
-    }
-
-    /// `readPixels` [context, x, y, width, height, format, type, array
-    /// kind] with the array's bytes: those bytes with the rectangle's
-    /// pixels in the framebuffer written, rows from the bottom; nothing
-    /// on an error.
-    fn read_pixels(&mut self, call: &CanvasCall, size: (u32, u32)) -> Answer {
-        let (x, y, w, h) = (i(call, 1), i(call, 2), i(call, 3), i(call, 4));
-        let (format, kind, view) = (u(call, 5), u(call, 6), u(call, 7));
-        if !matches!(format, ALPHA | RGB | RGBA)
-            || !matches!(
-                kind,
-                UNSIGNED_BYTE
-                    | UNSIGNED_SHORT_5_6_5
-                    | UNSIGNED_SHORT_4_4_4_4
-                    | UNSIGNED_SHORT_5_5_5_1
-                    | FLOAT
-                    | HALF_FLOAT_OES
-            )
-        {
-            self.error(INVALID_ENUM);
-            return Answer::Nothing;
-        }
-        if w < 0 || h < 0 {
-            self.error(INVALID_VALUE);
-            return Answer::Nothing;
-        }
-        if let Some(fb) = self.surfaces.framebuffer
-            && self.status(fb) != FRAMEBUFFER_COMPLETE
-        {
-            self.error(INVALID_FRAMEBUFFER_OPERATION);
-            return Answer::Nothing;
-        }
-        let float = self.read_format().1 == FLOAT;
-        let allowed = if float {
-            (format, kind) == (RGBA, FLOAT)
-        } else {
-            (format, kind) == (RGBA, UNSIGNED_BYTE)
-        };
-        if !allowed {
-            self.error(INVALID_OPERATION);
-            return Answer::Nothing;
-        }
-        if (kind == UNSIGNED_BYTE && view != 1) || (kind == FLOAT && view != 3) {
-            self.error(INVALID_OPERATION);
-            return Answer::Nothing;
-        }
-        let pixel = if float { 16 } else { 4 };
-        let (stride, whole) = rows(w as u32, h as u32, pixel, self.state.pack_alignment);
-        let mut out = call.bytes.clone().unwrap_or_default();
-        if (out.len() as u64) < whole {
-            self.error(INVALID_OPERATION);
-            return Answer::Nothing;
-        }
-        let Some(source) = self.read_source(size) else {
-            return Answer::Nothing;
-        };
-        // The rectangle within the framebuffer; pixels outside it stay.
-        let x0 = x.clamp(0, source.size.0 as i32);
-        let y0 = y.clamp(0, source.size.1 as i32);
-        let x1 = x.saturating_add(w).clamp(0, source.size.0 as i32);
-        let y1 = y.saturating_add(h).clamp(0, source.size.1 as i32);
-        if x1 <= x0 || y1 <= y0 {
-            return Answer::Bytes(out);
-        }
-        let (cw, ch) = ((x1 - x0) as u32, (y1 - y0) as u32);
-        let texel = texel_bytes(source.storage);
-        let row = (cw * texel).div_ceil(256) * 256;
-        let buffer_size = u64::from(row) * u64::from(ch);
-        let buffer = self.client.id();
-        let commands = self.client.id();
-        self.client.queue([
-            Request::CreateBuffer {
-                device: self.device,
-                id: buffer,
-                size: buffer_size,
-                usage: 9,
-                mapped: false,
-            },
-            Request::Finish {
-                device: self.device,
-                id: commands,
-                commands: vec![Command::CopyTextureToBuffer {
-                    desc: format!(
-                        r#"{{"source":{{"texture":{},"origin":[{x0},{y0},0]}},"destination":{{"buffer":{buffer},"bytesPerRow":{row}}},"size":[{cw},{ch},1]}}"#,
-                        source.texture
-                    ),
-                }],
-            },
-            Request::Submit {
-                device: self.device,
-                buffers: vec![commands],
-            },
-            Request::Drop { id: commands },
-        ]);
-        let read = wait(&self.client, |call| Request::MapBuffer {
-            call,
-            buffer,
-            mode: 1,
-            offset: 0,
-            size: buffer_size,
-        });
-        self.client
-            .queue([Request::Unmap { buffer }, Request::Drop { id: buffer }]);
-        let Some((Reply::Mapped { error: None, .. }, bytes)) = read else {
-            return Answer::Bytes(out);
-        };
-        for r in 0..ch as usize {
-            let from = &bytes[r * row as usize..];
-            let at = (r + (y0 - y) as usize) * stride as usize + (x0 - x) as usize * pixel as usize;
-            for c in 0..cw as usize {
-                let p = &from[c * texel as usize..(c + 1) * texel as usize];
-                let o = at + c * pixel as usize;
-                match source.storage {
-                    "rgba16float" => {
-                        for k in 0..4 {
-                            let v = f16_to_f32(u16::from_le_bytes([p[2 * k], p[2 * k + 1]]));
-                            out[o + 4 * k..o + 4 * k + 4].copy_from_slice(&v.to_le_bytes());
-                        }
-                    }
-                    _ => out[o..o + pixel as usize].copy_from_slice(&p[..pixel as usize]),
-                }
-                if source.opaque {
-                    if float {
-                        out[o + 12..o + 16].copy_from_slice(&1.0f32.to_le_bytes());
-                    } else {
-                        out[o + 3] = 255;
-                    }
-                }
-            }
-        }
-        Answer::Bytes(out)
-    }
-
     // ---- The blit ----
 
-    /// Draws `extent` texels of `dest` at `at` from `source` (of `size`)
+    /// Draws `extent` texels of `dest` (a view, and a 3D one's slice) at
+    /// `at` from `source` (a view, whether 3D, and its slice; of `size`)
     /// at `origin` (texels outside it 0) by `mode`: 0 as they are, 1 RGB
     /// with alpha 1, 2 luminance, 3 alpha, 4 luminance and alpha, 5 the
-    /// mean of a 2 by 2 for the next level.
+    /// mean of a 2 by 2 for the next level, 6 red, 7 red and green.
     #[allow(clippy::too_many_arguments)]
-    fn blit(
+    pub(crate) fn blit(
         &mut self,
-        source: u32,
+        source: (u32, bool, i32),
         size: (u32, u32),
         origin: (i32, i32),
-        dest: u32,
+        dest: (u32, Option<u32>),
         storage: &'static str,
         at: (u32, u32),
         extent: (u32, u32),
@@ -2494,38 +1915,58 @@ impl Context {
     ) {
         let device = self.device;
         if self.gpu.blit.is_none() {
-            let (module, layout, pipeline_layout) = (
-                self.gpu.id(&self.client),
-                self.gpu.id(&self.client),
-                self.gpu.id(&self.client),
-            );
-            self.client.queue([
-                Request::CreateShaderModule {
-                    device,
-                    id: module,
-                    code: BLIT.to_owned(),
-                },
-                Request::CreateBindGroupLayout {
-                    device,
-                    id: layout,
-                    desc: r#"{"entries":[{"binding":0,"visibility":2,"buffer":{"type":"uniform","hasDynamicOffset":true,"minBindingSize":32}},{"binding":1,"visibility":2,"texture":{"sampleType":"unfilterable-float"}}]}"#.to_owned(),
-                },
-                Request::CreatePipelineLayout {
-                    device,
-                    id: pipeline_layout,
-                    layouts: vec![layout],
-                },
-            ]);
-            self.gpu.blit = Some(Blit {
-                module,
-                layout,
-                pipeline_layout,
+            let mut blit = Blit {
+                modules: [0; 2],
+                layouts: [0; 2],
+                pipeline_layouts: [0; 2],
                 pipelines: HashMap::new(),
-            });
+            };
+            for (k, (tex, load, dimension)) in [
+                ("texture_2d<f32>", "textureLoad(t, s, 0)", "2d"),
+                (
+                    "texture_3d<f32>",
+                    "textureLoad(t, vec3<i32>(s, b.z), 0)",
+                    "3d",
+                ),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let (module, layout, pipeline_layout) = (
+                    self.gpu.id(&self.client),
+                    self.gpu.id(&self.client),
+                    self.gpu.id(&self.client),
+                );
+                self.client.queue([
+                    Request::CreateShaderModule {
+                        device,
+                        id: module,
+                        code: BLIT.replace("TEX", tex).replace("LOAD", load),
+                    },
+                    Request::CreateBindGroupLayout {
+                        device,
+                        id: layout,
+                        desc: format!(
+                            r#"{{"entries":[{{"binding":0,"visibility":2,"buffer":{{"type":"uniform","hasDynamicOffset":true,"minBindingSize":32}}}},{{"binding":1,"visibility":2,"texture":{{"sampleType":"unfilterable-float","viewDimension":"{dimension}"}}}}]}}"#
+                        ),
+                    },
+                    Request::CreatePipelineLayout {
+                        device,
+                        id: pipeline_layout,
+                        layouts: vec![layout],
+                    },
+                ]);
+                blit.modules[k] = module;
+                blit.layouts[k] = layout;
+                blit.pipeline_layouts[k] = pipeline_layout;
+            }
+            self.gpu.blit = Some(blit);
         }
+        let k = usize::from(source.1);
         let blit = self.gpu.blit.as_ref().expect("made");
-        let (module, layout, pipeline_layout) = (blit.module, blit.layout, blit.pipeline_layout);
-        let pipeline = match blit.pipelines.get(storage) {
+        let (module, layout, pipeline_layout) =
+            (blit.modules[k], blit.layouts[k], blit.pipeline_layouts[k]);
+        let pipeline = match blit.pipelines.get(&(storage, source.1)) {
             Some(&p) => p,
             None => {
                 let id = self.gpu.id(&self.client);
@@ -2542,7 +1983,7 @@ impl Context {
                     .as_mut()
                     .expect("made")
                     .pipelines
-                    .insert(storage, id);
+                    .insert((storage, source.1), id);
                 id
             }
         };
@@ -2555,7 +1996,7 @@ impl Context {
             size.0 as i32,
             size.1 as i32,
             mode,
-            0,
+            source.2,
         ] {
             data.extend_from_slice(&v.to_le_bytes());
         }
@@ -2571,7 +2012,7 @@ impl Context {
                 }
             }
         };
-        let key = (layout, vec![source]);
+        let key = (layout, vec![source.0]);
         let group = match self.gpu.groups.get(&key) {
             Some(&g) => g,
             None => {
@@ -2580,17 +2021,22 @@ impl Context {
                     device,
                     id: g,
                     desc: format!(
-                        r#"{{"layout":{layout},"entries":[{{"binding":0,"buffer":{},"offset":0,"size":32}},{{"binding":1,"view":{source}}}]}}"#,
-                        self.gpu.arena_id()
+                        r#"{{"layout":{layout},"entries":[{{"binding":0,"buffer":{},"offset":0,"size":32}},{{"binding":1,"view":{}}}]}}"#,
+                        self.gpu.arena_id(),
+                        source.0
                     ),
                 }]);
                 self.gpu.groups.insert(key, g);
                 g
             }
         };
+        let slice = dest
+            .1
+            .map_or(String::new(), |s| format!(r#","depthSlice":{s}"#));
         self.gpu.pending.push(Command::RenderPass {
             desc: format!(
-                r#"{{"colorAttachments":[{{"view":{dest},"loadOp":"load","storeOp":"store"}}]}}"#
+                r#"{{"colorAttachments":[{{"view":{}{slice},"loadOp":"load","storeOp":"store"}}]}}"#,
+                dest.0
             ),
             commands: vec![
                 RenderCommand::SetPipeline { pipeline },
@@ -2624,69 +2070,59 @@ impl Context {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn halves_convert_both_ways() {
-        for v in [0.0f32, 1.0, -2.5, 0.5, 65504.0, 6.0e-8, 0.333_333] {
-            let back = f16_to_f32(f32_to_f16(v));
-            assert!((back - v).abs() <= v.abs() / 1000.0 + 6.0e-8, "{v} {back}");
-        }
-        assert_eq!(f32_to_f16(1.0), 0x3C00);
-        assert_eq!(f32_to_f16(1.0e9), 0x7C00);
+/// A sampler parameter set: GL's error for a name or value it does not
+/// take.
+fn set_sampler(s: &mut SamplerState, name: u32, value: f64) -> Result<(), u32> {
+    let v = value as u32;
+    let filter = |v: u32| {
+        matches!(
+            v,
+            NEAREST
+                | LINEAR
+                | NEAREST_MIPMAP_NEAREST
+                | LINEAR_MIPMAP_NEAREST
+                | NEAREST_MIPMAP_LINEAR
+                | LINEAR_MIPMAP_LINEAR
+        )
+    };
+    let wrap = |v: u32| matches!(v, REPEAT | CLAMP_TO_EDGE | MIRRORED_REPEAT);
+    match name {
+        TEXTURE_MIN_FILTER if filter(v) => s.min = v,
+        TEXTURE_MAG_FILTER if matches!(v, NEAREST | LINEAR) => s.mag = v,
+        TEXTURE_WRAP_S if wrap(v) => s.wrap_s = v,
+        TEXTURE_WRAP_T if wrap(v) => s.wrap_t = v,
+        TEXTURE_WRAP_R if wrap(v) => s.wrap_r = v,
+        TEXTURE_MIN_LOD => s.min_lod = value as f32,
+        TEXTURE_MAX_LOD => s.max_lod = value as f32,
+        TEXTURE_COMPARE_MODE if matches!(v, NONE | COMPARE_REF_TO_TEXTURE) => s.compare_mode = v,
+        TEXTURE_COMPARE_FUNC if (NEVER..=ALWAYS).contains(&v) => s.compare_func = v,
+        _ => return Err(INVALID_ENUM),
     }
+    Ok(())
+}
 
-    #[test]
-    fn client_rows_become_rgba_texels() {
-        let fmt = |format, kind, storage| Format {
-            format,
-            kind,
-            storage,
-        };
-        // Two rows of a 1-wide LUMINANCE_ALPHA at alignment 4: padded.
-        let la = texels(
-            fmt(LUMINANCE_ALPHA, UNSIGNED_BYTE, "rgba8unorm"),
-            1,
-            2,
-            &[10, 20, 0, 0, 30, 40],
-            4,
-            false,
-            false,
-        );
-        assert_eq!(la, [10, 10, 10, 20, 30, 30, 30, 40]);
-        // Turned over and premultiplied.
-        let rgba = texels(
-            fmt(RGBA, UNSIGNED_BYTE, "rgba8unorm"),
-            1,
-            2,
-            &[255, 0, 0, 128, 0, 255, 0, 255],
-            1,
-            true,
-            true,
-        );
-        assert_eq!(rgba, [0, 255, 0, 255, 128, 0, 0, 128]);
-        assert_eq!(unpack565(0xF800), [255, 0, 0, 255]);
-        assert_eq!(unpack4444(0x000F), [0, 0, 0, 255]);
-        assert_eq!(unpack5551(0x07C1), [0, 255, 0, 255]);
-        // ALPHA floats: colours 0.
-        let a = texels(
-            fmt(ALPHA, FLOAT, "rgba32float"),
-            1,
-            1,
-            &0.5f32.to_le_bytes(),
-            4,
-            false,
-            false,
-        );
-        let back: Vec<f32> = a
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|c| f32::from_le_bytes(*c))
-            .collect();
-        assert_eq!(back, [0.0, 0.0, 0.0, 0.5]);
-        assert_eq!(rows(3, 2, 3, 4), (12, 21));
+fn get_sampler(s: &SamplerState, name: u32) -> Option<f64> {
+    Some(match name {
+        TEXTURE_MIN_FILTER => f64::from(s.min),
+        TEXTURE_MAG_FILTER => f64::from(s.mag),
+        TEXTURE_WRAP_S => f64::from(s.wrap_s),
+        TEXTURE_WRAP_T => f64::from(s.wrap_t),
+        TEXTURE_WRAP_R => f64::from(s.wrap_r),
+        TEXTURE_MIN_LOD => f64::from(s.min_lod),
+        TEXTURE_MAX_LOD => f64::from(s.max_lod),
+        TEXTURE_COMPARE_MODE => f64::from(s.compare_mode),
+        TEXTURE_COMPARE_FUNC => f64::from(s.compare_func),
+        _ => return None,
+    })
+}
+
+/// The slot getParameter's binding names.
+pub(crate) fn binding_slot(name: u32) -> Option<usize> {
+    match name {
+        TEXTURE_BINDING_2D => Some(SLOT_2D),
+        TEXTURE_BINDING_CUBE_MAP => Some(SLOT_CUBE),
+        TEXTURE_BINDING_3D => Some(SLOT_3D),
+        TEXTURE_BINDING_2D_ARRAY => Some(SLOT_ARRAY),
+        _ => None,
     }
 }

@@ -25048,6 +25048,13 @@
     EXT_texture_filter_anisotropic: ["TEXTURE_MAX_ANISOTROPY_EXT", 0x84FE, "MAX_TEXTURE_MAX_ANISOTROPY_EXT", 0x84FF],
     OES_standard_derivatives: ["FRAGMENT_SHADER_DERIVATIVE_HINT_OES", 0x8B8B],
     OES_vertex_array_object: ["VERTEX_ARRAY_BINDING_OES", 0x85B5],
+    WEBGL_draw_buffers: (() => {
+      const list = ["MAX_COLOR_ATTACHMENTS_WEBGL", 0x8CDF, "MAX_DRAW_BUFFERS_WEBGL", 0x8824];
+      for (let i = 0; i < 16; i++) {
+        ArrayPush(list, "COLOR_ATTACHMENT" + i + "_WEBGL", 0x8CE0 + i, "DRAW_BUFFER" + i + "_WEBGL", 0x8825 + i);
+      }
+      return list;
+    })(),
     OES_texture_half_float: ["HALF_FLOAT_OES", 0x8D61],
     WEBGL_color_buffer_float: ["RGBA32F_EXT", 0x8814, "FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE_EXT", 0x8211,
       "UNSIGNED_NORMALIZED_EXT", 0x8C17],
@@ -25102,6 +25109,13 @@
           return gives === "b" ? v === true : undefined;
         });
       }
+    }
+    if (name === "WEBGL_draw_buffers") {
+      method("drawBuffersWEBGL", function (buffers) {
+        need(arguments.length, 1, "drawBuffersWEBGL", name);
+        const list = sequence(buffers, "drawBuffersWEBGL", name, glu);
+        ReflectApply(native.webgl, undefined, ["drawBuffers", r.id, ...list]);
+      });
     }
     if (name === "WEBGL_lose_context") {
       method("loseContext", function () {
@@ -25420,6 +25434,220 @@
     return ArraySlice(list, first, first + count);
   }
 
+  // An image source's pixels for a texture: [RGBA bytes, width,
+  // height], turned over and multiplied by alpha as the unpack state
+  // says, cropped to `w` by `h` when given; a source not ready is an
+  // empty image.
+  function webglSourcePixels(r, source, method, iface, w, h) {
+    const words = prefix(method, iface);
+    const image = gpuImageSource(source, words);
+    const flipY = native.webgl("getParameter", r.id, 0x9240) === true;
+    const premultiply = native.webgl("getParameter", r.id, 0x9241) === true;
+    let whole;
+    try {
+      whole = gpuBitmapOf(image, w > 0 && h > 0 ? [0, 0, w, h] : null, flipY);
+    } catch (e) {
+      if (e instanceof $DOMException && e.name === "InvalidStateError") return [new $Uint8Array(0), 0, 0];
+      throw e;
+    }
+    try {
+      if (!native.canvas("bitmapClean", 4, whole[0])) {
+        throw new $DOMException(words + "The image element contains cross-origin data, and may not be loaded.",
+          "SecurityError");
+      }
+      return [new $Uint8Array(native.canvas("bitmapPixels", 4, whole[0], false, premultiply)), whole[1], whole[2]];
+    } finally {
+      native.canvas("closeBitmap", 4, whole[0]);
+    }
+  }
+
+  // An array's kind by the engine's code: 1 Uint8Array, 2 Uint16Array,
+  // 3 Float32Array, 4 Uint32Array, 5 Int8Array, 6 Uint8ClampedArray, 7
+  // Int16Array, 8 Int32Array, else 0.
+  function webglViewKind(v) {
+    const tag = ArrayBufferIsView(v) && !(v instanceof $DataView) ? TypedArrayTag(v) : "";
+    const kinds = { Uint8Array: 1, Uint16Array: 2, Float32Array: 3, Uint32Array: 4, Int8Array: 5,
+      Uint8ClampedArray: 6, Int16Array: 7, Int32Array: 8 };
+    return kinds[tag] || 0;
+  }
+
+  // WebGL 2's textures, framebuffers and samplers (step 8).
+  const WEBGL2_SIMPLE_B = [
+    ["readBuffer", "e", 1, "v"], ["renderbufferStorageMultisample", "eieii", 5, "v"],
+    ["framebufferTextureLayer", "eeT?ii", 5, "v"], ["texStorage2D", "eieii", 5, "v"],
+    ["texStorage3D", "eieiii", 6, "v"], ["copyTexSubImage3D", "eiiiiiiii", 9, "v"],
+    ["createSampler", "", 0, "M"], ["deleteSampler", "M?", 1, "v"], ["isSampler", "M?", 1, "b"],
+    ["bindSampler", "uM?", 2, "v"], ["samplerParameteri", "Mei", 3, "v"], ["samplerParameterf", "Mef", 3, "v"],
+    ["getSamplerParameter", "Me", 2, "n"],
+  ];
+
+  function webgl2Textures(cls, iface) {
+    const proto = cls.prototype;
+    const method = (name, f) => defineProperty(proto, name, { value: f, writable: true, enumerable: true, configurable: true });
+    webglSimple(method, WEBGL2_SIMPLE_B, iface);
+    const isSource = (v) => v !== null && typeof v === "object" && !ArrayBufferIsView(v);
+    // An upload's last argument: a pixel unpack buffer's offset, an
+    // array (from an offset of its elements), none, or an image source
+    // cropped to the size asked.
+    const pixels = (r, name, data, srcOffset, w, h, d) => {
+      if (typeof data === "number" || typeof data === "bigint") return [3, 0, glll(data), null];
+      if (data === null || data === undefined) return [1, 0, 0, null];
+      if (isSource(data)) {
+        const [bytes, sw, sh] = webglSourcePixels(r, data, name, iface, w, h * d);
+        return [sw === 0 ? 1 : 2, 0, 0, bytes];
+      }
+      const part = srcOffset === undefined ? gpuViewBytes(data)[0] : webglViewPart(r, data, srcOffset, 0);
+      if (part === null) return null;
+      return [0, webglViewKind(data), 0, part];
+    };
+    const send = (op, r, numbers, got) => {
+      const [source, view, offset, bytes] = got;
+      const args = [...numbers, source, view, offset];
+      if (bytes === null) {
+        ReflectApply(native.webgl, undefined, [op, r.id, ...args]);
+      } else {
+        ReflectApply(native.webglData, undefined, [op, binaryString(bytes), r.id, ...args]);
+      }
+    };
+    method("texImage2D", function (...a) {
+      const r = webglRecord(this);
+      need(a.length, 6, "texImage2D", iface);
+      if (a.length < 9) {
+        const [bytes, w, h] = webglSourcePixels(r, a[5], "texImage2D", iface, 0, 0);
+        send("texImage2D", r, [glu(a[0]), gli(a[1]), gli(a[2]), w, h, 0, glu(a[3]), glu(a[4])],
+          [w === 0 ? 1 : 2, 0, 0, bytes]);
+        return;
+      }
+      const got = pixels(r, "texImage2D", a[8], a[9], gli(a[3]), gli(a[4]), 1);
+      if (got === null) return;
+      send("texImage2D", r, [glu(a[0]), gli(a[1]), gli(a[2]), gli(a[3]), gli(a[4]), gli(a[5]), glu(a[6]), glu(a[7])], got);
+    });
+    method("texSubImage2D", function (...a) {
+      const r = webglRecord(this);
+      need(a.length, 7, "texSubImage2D", iface);
+      if (a.length < 9) {
+        const [bytes, w, h] = webglSourcePixels(r, a[6], "texSubImage2D", iface, 0, 0);
+        send("texSubImage2D", r, [glu(a[0]), gli(a[1]), gli(a[2]), gli(a[3]), w, h, glu(a[4]), glu(a[5])], [2, 0, 0, bytes]);
+        return;
+      }
+      const got = pixels(r, "texSubImage2D", a[8], a[9], gli(a[4]), gli(a[5]), 1);
+      if (got === null) return;
+      send("texSubImage2D", r, [glu(a[0]), gli(a[1]), gli(a[2]), gli(a[3]), gli(a[4]), gli(a[5]), glu(a[6]), glu(a[7])], got);
+    });
+    method("texImage3D", function (...a) {
+      const r = webglRecord(this);
+      need(a.length, 10, "texImage3D", iface);
+      const got = pixels(r, "texImage3D", a[9], a[10], gli(a[3]), gli(a[4]), gli(a[5]));
+      if (got === null) return;
+      send("texImage3D", r, [glu(a[0]), gli(a[1]), gli(a[2]), gli(a[3]), gli(a[4]), gli(a[5]), gli(a[6]), glu(a[7]), glu(a[8])], got);
+    });
+    method("texSubImage3D", function (...a) {
+      const r = webglRecord(this);
+      need(a.length, 11, "texSubImage3D", iface);
+      const got = pixels(r, "texSubImage3D", a[10], a[11], gli(a[5]), gli(a[6]), gli(a[7]));
+      if (got === null) return;
+      send("texSubImage3D", r, [glu(a[0]), gli(a[1]), gli(a[2]), gli(a[3]), gli(a[4]), gli(a[5]), gli(a[6]), gli(a[7]), glu(a[8]), glu(a[9])], got);
+    });
+    const compressed = (name, count, dataAt) => method(name, function (...a) {
+      const r = webglRecord(this);
+      need(a.length, count, name, iface);
+      const data = a[dataAt];
+      if (!ArrayBufferIsView(data)) {
+        throw new $TypeError(prefix(name, iface) + "parameter " + (dataAt + 1) + " is not of type 'ArrayBufferView'.");
+      }
+      const part = a.length > dataAt + 1 ? webglViewPart(r, data, a[dataAt + 1], a[dataAt + 2]) : gpuViewBytes(data)[0];
+      if (part === null) return;
+      const numbers = [];
+      for (let i = 0; i < dataAt; i++) ArrayPush(numbers, i === 0 ? glu(a[i]) : gli(a[i]));
+      ReflectApply(native.webglData, undefined, [name, binaryString(part), r.id, ...numbers]);
+    });
+    compressed("compressedTexImage2D", 7, 6);
+    compressed("compressedTexSubImage2D", 8, 7);
+    compressed("compressedTexImage3D", 8, 7);
+    compressed("compressedTexSubImage3D", 10, 9);
+    method("readPixels", function (x, y, width, height, format, type, dst, dstOffset) {
+      const r = webglRecord(this);
+      need(arguments.length, 7, "readPixels", iface);
+      const numbers = [gli(x), gli(y), gli(width), gli(height), glu(format), glu(type)];
+      if (typeof dst === "number" || typeof dst === "bigint") {
+        ReflectApply(native.webgl, undefined, ["readPixels", r.id, ...numbers, 0, glll(dst)]);
+        return;
+      }
+      if (dst === null) {
+        native.webgl("error", r.id, 0x0501);
+        return;
+      }
+      if (!ArrayBufferIsView(dst)) {
+        throw new $TypeError(prefix("readPixels", iface) + "parameter 7 is not of type 'ArrayBufferView'.");
+      }
+      const bytes = dstOffset === undefined ? gpuViewBytes(dst)[0] : webglViewPart(r, dst, dstOffset, 0);
+      if (bytes === null) return;
+      const out = ReflectApply(native.webglData, undefined,
+        ["readPixels", binaryString(bytes), r.id, ...numbers, webglViewKind(dst), 0]);
+      if (out === undefined) return;
+      const written = new $Uint8Array(out);
+      for (let i = 0; i < written.length && i < bytes.length; i++) bytes[i] = written[i];
+    });
+    method("blitFramebuffer", function (...a) {
+      const r = webglRecord(this);
+      need(a.length, 10, "blitFramebuffer", iface);
+      const c = webglArgs(r, "iiiiiiiiue", a, "blitFramebuffer", iface);
+      ReflectApply(native.webgl, undefined, ["blitFramebuffer", r.id, ...c]);
+      webglDrew(r);
+    });
+    method("drawBuffers", function (buffers) {
+      const r = webglRecord(this);
+      need(arguments.length, 1, "drawBuffers", iface);
+      const list = sequence(buffers, "drawBuffers", iface, glu);
+      ReflectApply(native.webgl, undefined, ["drawBuffers", r.id, ...list]);
+    });
+    const clearBuffer = (name, kind) => method(name, function (buffer, drawbuffer, values, srcOffset = 0) {
+      const r = webglRecord(this);
+      need(arguments.length, 3, name, iface);
+      const list = webglNumbers(values, name, iface);
+      const first = glu(srcOffset);
+      if (first > list.length) {
+        native.webgl("error", r.id, 0x0501);
+        return;
+      }
+      ReflectApply(native.webgl, undefined, ["clearBuffer", r.id, glu(buffer), gli(drawbuffer), kind, ...ArraySlice(list, first)]);
+      webglDrew(r);
+    });
+    clearBuffer("clearBufferfv", 0);
+    clearBuffer("clearBufferiv", 1);
+    clearBuffer("clearBufferuiv", 2);
+    method("clearBufferfi", function (buffer, drawbuffer, depth, stencil) {
+      const r = webglRecord(this);
+      need(arguments.length, 4, "clearBufferfi", iface);
+      native.webgl("clearBuffer", r.id, glu(buffer), gli(drawbuffer), 3, glf(depth), gli(stencil));
+      webglDrew(r);
+    });
+    method("invalidateFramebuffer", function (target, attachments) {
+      const r = webglRecord(this);
+      need(arguments.length, 2, "invalidateFramebuffer", iface);
+      const list = sequence(attachments, "invalidateFramebuffer", iface, glu);
+      ReflectApply(native.webgl, undefined, ["invalidateFramebuffer", r.id, glu(target), ...list]);
+    });
+    method("invalidateSubFramebuffer", function (target, attachments, x, y, width, height) {
+      const r = webglRecord(this);
+      need(arguments.length, 6, "invalidateSubFramebuffer", iface);
+      const list = sequence(attachments, "invalidateSubFramebuffer", iface, glu);
+      ReflectApply(native.webgl, undefined,
+        ["invalidateSubFramebuffer", r.id, glu(target), ...list, gli(x), gli(y), gli(width), gli(height)]);
+    });
+    method("getInternalformatParameter", function (target, internalformat, pname) {
+      const r = webglRecord(this);
+      need(arguments.length, 3, "getInternalformatParameter", iface);
+      const v = native.webgl("getInternalformatParameter", r.id, glu(target), glu(internalformat), glu(pname));
+      if (!ArrayIsArray(v)) return null;
+      // The samples a renderbuffer of the format takes, most first (1, a
+      // single sample, is not one of them).
+      const out = [];
+      for (let i = v.length - 1; i >= 0; i--) if (v[i] > 1) ArrayPush(out, v[i]);
+      return new Int32Array(out);
+    });
+  }
+
   class WebGLRenderingContext {
     constructor(key) {
       if (key !== KEY) throw illegalConstructor("WebGLRenderingContext");
@@ -25509,7 +25737,8 @@
       if (p === 0x8894 || p === 0x8895) return MapGet(r.objects, answer) || null;
       if (p === 0x8B8D) return MapGet(r.objects, answer) || null;
       if (p === 0x8CA6 || p === 0x8CA7 || p === 0x8069 || p === 0x8514 || p === 0x85B5 || p === 0x8F36 ||
-        p === 0x8F37 || p === 0x88ED || p === 0x88EF || p === 0x8A28 || p === 0x8C8F || p === 0x8E25) {
+        p === 0x8F37 || p === 0x88ED || p === 0x88EF || p === 0x8A28 || p === 0x8C8F || p === 0x8E25 ||
+        p === 0x806A || p === 0x8C1D || p === 0x8919 || p === 0x8CAA) {
         return MapGet(r.objects, answer) || null;
       }
       if (ArrayIsArray(answer)) {
@@ -25663,38 +25892,8 @@
       method("vertexAttrib" + c + "fv", attrib("vertexAttrib" + c + "fv", c, true));
     }
     // Textures, renderbuffers and framebuffers (step 7).
-    // An image source's pixels for a texture: [RGBA bytes, width,
-    // height], turned over and multiplied by alpha as the unpack state
-    // says; a source not ready is an empty image.
-    const sourcePixels = (r, source, method) => {
-      const words = prefix(method, iface);
-      const image = gpuImageSource(source, words);
-      const flipY = native.webgl("getParameter", r.id, 0x9240) === true;
-      const premultiply = native.webgl("getParameter", r.id, 0x9241) === true;
-      let whole;
-      try {
-        whole = gpuBitmapOf(image, null, flipY);
-      } catch (e) {
-        if (e instanceof $DOMException && e.name === "InvalidStateError") return [new $Uint8Array(0), 0, 0];
-        throw e;
-      }
-      try {
-        if (!native.canvas("bitmapClean", 4, whole[0])) {
-          throw new $DOMException(words + "The image element contains cross-origin data, and may not be loaded.",
-            "SecurityError");
-        }
-        return [new $Uint8Array(native.canvas("bitmapPixels", 4, whole[0], false, premultiply)), whole[1], whole[2]];
-      } finally {
-        native.canvas("closeBitmap", 4, whole[0]);
-      }
-    };
-    // An array's kind by the engine's code: 1 Uint8Array, 2 Uint16Array,
-    // 3 Float32Array, 4 Uint32Array, 6 Uint8ClampedArray, else 0.
-    const viewKind = (v) => {
-      const tag = ArrayBufferIsView(v) && !(v instanceof $DataView) ? TypedArrayTag(v) : "";
-      return tag === "Uint8Array" ? 1 : tag === "Uint16Array" ? 2 : tag === "Float32Array" ? 3
-        : tag === "Uint32Array" ? 4 : tag === "Uint8ClampedArray" ? 6 : 0;
-    };
+    const sourcePixels = (r, source, method) => webglSourcePixels(r, source, method, iface, 0, 0);
+    const viewKind = webglViewKind;
     const viewOf = (v, method, index) => {
       if (!ArrayBufferIsView(v)) {
         throw new $TypeError(prefix(method, iface) + "parameter " + index + " is not of type 'ArrayBufferView'.");
@@ -25796,6 +25995,7 @@
     webglConstants(WebGLRenderingContext, WEBGL1_CONSTANTS);
     webglBase(WebGL2RenderingContext, "WebGL2RenderingContext");
     webgl2Methods(WebGL2RenderingContext, "WebGL2RenderingContext");
+    webgl2Textures(WebGL2RenderingContext, "WebGL2RenderingContext");
     webglConstants(WebGL2RenderingContext, WEBGL1_CONSTANTS);
     webglConstants(WebGL2RenderingContext, WEBGL2_CONSTANTS);
   }
