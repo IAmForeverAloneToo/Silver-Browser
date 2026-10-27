@@ -11,6 +11,7 @@ mod draw;
 mod ext;
 pub(crate) mod gl;
 mod texture;
+mod webgl2;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, mpsc};
@@ -99,6 +100,8 @@ pub(crate) struct Linked {
     pub pipeline_layout: u32,
     /// Which link this was, its uniform locations' generation.
     pub generation: u32,
+    /// Each active uniform block's binding point.
+    pub block_bindings: Vec<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -310,6 +313,7 @@ pub(crate) struct Context {
     pub surfaces: texture::Surfaces,
     pub features: ext::Features,
     pub ext: ext::Enabled,
+    pub v2: webgl2::State2,
 }
 
 impl Context {
@@ -348,9 +352,16 @@ impl Context {
 
     /// A buffer object's target binding, by `target`.
     fn bound_buffer(&self, target: u32) -> Result<Option<u32>, u32> {
+        let v2 = self.version == 2;
         match target {
             ARRAY_BUFFER => Ok(self.array_buffer),
             ELEMENT_ARRAY_BUFFER => Ok(self.element_buffer),
+            COPY_READ_BUFFER if v2 => Ok(self.v2.copy_read),
+            COPY_WRITE_BUFFER if v2 => Ok(self.v2.copy_write),
+            PIXEL_PACK_BUFFER if v2 => Ok(self.v2.pixel_pack),
+            PIXEL_UNPACK_BUFFER if v2 => Ok(self.v2.pixel_unpack),
+            UNIFORM_BUFFER if v2 => Ok(self.v2.uniform),
+            TRANSFORM_FEEDBACK_BUFFER if v2 => Ok(self.v2.feedback_buffer),
             _ => Err(INVALID_ENUM),
         }
     }
@@ -421,7 +432,28 @@ impl WebGl {
         // A lost context answers its queries as lost ones do, and does
         // nothing (WebGL 5.15.2).
         if context.lost {
+            // Restored (WEBGL_lose_context, or after its lost event's
+            // default was prevented): a new context of the same kind.
+            if call.op == "restoreContext" {
+                let Some(client) = env.client else {
+                    return Ok(Answer::Bool(false));
+                };
+                let (canvas, version, attributes) =
+                    (context.canvas, context.version, context.attributes.clone());
+                let size = (env.canvas_size)(canvas);
+                let Some(fresh) = Context::fresh(client, canvas, version, attributes, size) else {
+                    return Ok(Answer::Bool(false));
+                };
+                self.contexts.insert(id, fresh);
+                if !self.made.contains(&id) {
+                    self.made.push(id);
+                }
+                return Ok(Answer::Bool(true));
+            }
             return Ok(lost_answer(&call.op, context));
+        }
+        if call.op == "restoreContext" {
+            return Ok(Answer::Bool(false));
         }
         let size = (env.canvas_size)(context.canvas);
         context.op(&call, size, env)
@@ -443,7 +475,8 @@ impl WebGl {
             premultiplied_alpha: b(call, 6),
             preserve_drawing_buffer: b(call, 7),
         };
-        let Some((device, features)) = draw::device(client) else {
+        let size = (env.canvas_size)(canvas);
+        let Some(context) = Context::fresh(client, canvas, version, attributes, size) else {
             return Answer::Number(-1.0);
         };
         // Past the most contexts, the oldest is lost.
@@ -455,9 +488,25 @@ impl WebGl {
         }
         self.next += 1;
         let id = self.next;
-        let size = (env.canvas_size)(canvas);
+        self.contexts.insert(id, context);
+        self.made.push(id);
+        Answer::Number(f64::from(id))
+    }
+}
+
+impl Context {
+    /// A context of a new device, in GL's first state; none without a
+    /// GPU.
+    fn fresh(
+        client: &Arc<GpuClient>,
+        canvas: f64,
+        version: u8,
+        attributes: Attributes,
+        size: (u32, u32),
+    ) -> Option<Context> {
+        let (device, features) = draw::device(client)?;
         let gpu = draw::Gpu::new(client, device);
-        let context = Context {
+        Some(Context {
             version,
             canvas,
             attributes,
@@ -482,10 +531,8 @@ impl WebGl {
             surfaces: texture::Surfaces::default(),
             features,
             ext: ext::Enabled::default(),
-        };
-        self.contexts.insert(id, context);
-        self.made.push(id);
-        Answer::Number(f64::from(id))
+            v2: webgl2::State2::default(),
+        })
     }
 }
 
@@ -892,6 +939,10 @@ impl Context {
             }
             "bindBuffer" => {
                 let (target, id) = (u(call, 1), u(call, 2));
+                if let Err(code) = self.bound_buffer(target) {
+                    self.error(code);
+                    return Ok(Answer::Nothing);
+                }
                 if id != 0 {
                     match self.buffers.get_mut(&id) {
                         None => {
@@ -908,14 +959,11 @@ impl Context {
                             let element = |t: u32| t == ELEMENT_ARRAY_BUFFER;
                             if let Some(first) = buffer.target
                                 && element(first) != element(target)
-                                && matches!(target, ARRAY_BUFFER | ELEMENT_ARRAY_BUFFER)
                             {
                                 self.error(INVALID_OPERATION);
                                 return Ok(Answer::Nothing);
                             }
-                            if matches!(target, ARRAY_BUFFER | ELEMENT_ARRAY_BUFFER) {
-                                buffer.target.get_or_insert(target);
-                            }
+                            buffer.target.get_or_insert(target);
                         }
                     }
                 }
@@ -923,7 +971,12 @@ impl Context {
                 match target {
                     ARRAY_BUFFER => self.array_buffer = value,
                     ELEMENT_ARRAY_BUFFER => self.element_buffer = value,
-                    _ => self.error(INVALID_ENUM),
+                    COPY_READ_BUFFER => self.v2.copy_read = value,
+                    COPY_WRITE_BUFFER => self.v2.copy_write = value,
+                    PIXEL_PACK_BUFFER => self.v2.pixel_pack = value,
+                    PIXEL_UNPACK_BUFFER => self.v2.pixel_unpack = value,
+                    UNIFORM_BUFFER => self.v2.uniform = value,
+                    _ => self.v2.feedback_buffer = value,
                 }
                 Answer::Nothing
             }
@@ -1004,6 +1057,28 @@ impl Context {
                     for attrib in &mut self.attribs {
                         if attrib.buffer == Some(id) {
                             attrib.buffer = None;
+                        }
+                    }
+                    let v2 = &mut self.v2;
+                    for slot in [
+                        &mut v2.copy_read,
+                        &mut v2.copy_write,
+                        &mut v2.pixel_pack,
+                        &mut v2.pixel_unpack,
+                        &mut v2.uniform,
+                        &mut v2.feedback_buffer,
+                    ] {
+                        if *slot == Some(id) {
+                            *slot = None;
+                        }
+                    }
+                    for slot in v2
+                        .uniform_bindings
+                        .iter_mut()
+                        .chain(v2.feedback_bindings.iter_mut())
+                    {
+                        if slot.is_some_and(|(b, _, _)| b == id) {
+                            *slot = None;
                         }
                     }
                 }
@@ -1470,7 +1545,10 @@ impl Context {
             }
             other => match self.texture_op(other, call, size) {
                 Some(answer) => answer,
-                None => return Err(DomError::new("TypeError", "an unknown WebGL call")),
+                None => match self.webgl2_op(other, call, size) {
+                    Some(answer) => answer,
+                    None => return Err(DomError::new("TypeError", "an unknown WebGL call")),
+                },
             },
         };
         Ok(answer)
@@ -1554,9 +1632,11 @@ impl Context {
                     .as_ref()
                     .map_or(0, |l| active_uniforms(&l.program).len()) as f64,
             ),
-            ACTIVE_UNIFORM_BLOCKS if self.version == 2 => {
-                Answer::Number(p.linked.as_ref().map_or(0, |l| l.program.blocks.len()) as f64)
-            }
+            ACTIVE_UNIFORM_BLOCKS if self.version == 2 => Answer::Number(
+                p.linked
+                    .as_ref()
+                    .map_or(0, |l| webgl2::active_blocks(&l.program).len()) as f64,
+            ),
             TRANSFORM_FEEDBACK_BUFFER_MODE if self.version == 2 => {
                 Answer::Number(f64::from(INTERLEAVED_ATTRIBS))
             }
@@ -1598,6 +1678,7 @@ impl Context {
             Ok(program) => {
                 let made = self.gpu.program(&self.client, &program);
                 Some(Linked {
+                    block_bindings: vec![0; webgl2::active_blocks(&program).len()],
                     uniforms: vec![0; program.uniform_size as usize],
                     units: vec![0; program.samplers.iter().map(|s| s.size as usize).sum()],
                     vertex: made.0,
@@ -2056,7 +2137,34 @@ impl Context {
                 num(64)
             }
             MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS if self.version == 2 => num(4),
-            VERTEX_ARRAY_BINDING if self.version == 2 => Answer::Number(0.0),
+            VERTEX_ARRAY_BINDING if self.version == 2 || self.ext.on("OES_vertex_array_object") => {
+                Answer::Number(self.v2.vao.map_or(0.0, f64::from))
+            }
+            COPY_READ_BUFFER_BINDING
+            | COPY_WRITE_BUFFER_BINDING
+            | PIXEL_PACK_BUFFER_BINDING
+            | PIXEL_UNPACK_BUFFER_BINDING
+            | UNIFORM_BUFFER_BINDING
+            | TRANSFORM_FEEDBACK_BUFFER_BINDING
+                if self.version == 2 =>
+            {
+                let v2 = &self.v2;
+                let bound = match name {
+                    COPY_READ_BUFFER_BINDING => v2.copy_read,
+                    COPY_WRITE_BUFFER_BINDING => v2.copy_write,
+                    PIXEL_PACK_BUFFER_BINDING => v2.pixel_pack,
+                    PIXEL_UNPACK_BUFFER_BINDING => v2.pixel_unpack,
+                    UNIFORM_BUFFER_BINDING => v2.uniform,
+                    _ => v2.feedback_buffer,
+                };
+                Answer::Number(bound.map_or(0.0, f64::from))
+            }
+            TRANSFORM_FEEDBACK_BINDING if self.version == 2 => {
+                Answer::Number(self.v2.feedback.map_or(0.0, f64::from))
+            }
+            TRANSFORM_FEEDBACK_ACTIVE | TRANSFORM_FEEDBACK_PAUSED if self.version == 2 => {
+                Answer::Bool(false)
+            }
             READ_BUFFER if self.version == 2 => num(BACK),
             n if self.version == 2 && (DRAW_BUFFER0..DRAW_BUFFER0 + 8).contains(&n) => {
                 num(if n == DRAW_BUFFER0 { BACK } else { NONE })

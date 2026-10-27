@@ -24749,6 +24749,8 @@
   const webglRecords = new $WeakMap();
   const webglObjects = new $WeakMap();
   let webglDrawn = [];
+  // The documents' contexts, for those lost to make room.
+  const webglLive = [];
 
   function webglRecord(context) {
     const r = (typeof context === "object" && context !== null) ? WeakMapGet(webglRecords, context) : undefined;
@@ -24789,7 +24791,26 @@
   const WebGLRenderbuffer = webglObjectClass("WebGLRenderbuffer");
   const WebGLFramebuffer = webglObjectClass("WebGLFramebuffer");
   const WebGLUniformLocation = webglObjectClass("WebGLUniformLocation");
+  const WebGLVertexArrayObject = webglObjectClass("WebGLVertexArrayObject");
+  const WebGLQuery = webglObjectClass("WebGLQuery");
+  const WebGLSync = webglObjectClass("WebGLSync");
+  const WebGLTransformFeedback = webglObjectClass("WebGLTransformFeedback");
+  const WebGLSampler = webglObjectClass("WebGLSampler");
+  // OES_vertex_array_object's, with no interface object of its own.
+  const WebGLVertexArrayObjectOES = class {
+    constructor(key) {
+      if (key !== KEY) throw illegalConstructor("WebGLVertexArrayObjectOES");
+    }
+  };
+  defineProperty(WebGLVertexArrayObjectOES.prototype, toStringTag,
+    { value: "WebGLVertexArrayObjectOES", configurable: true });
   const WEBGL_KINDS = {
+    V: [WebGLVertexArrayObject, "WebGLVertexArrayObject"],
+    Q: [WebGLQuery, "WebGLQuery"],
+    Y: [WebGLSync, "WebGLSync"],
+    X: [WebGLTransformFeedback, "WebGLTransformFeedback"],
+    M: [WebGLSampler, "WebGLSampler"],
+    O: [WebGLVertexArrayObjectOES, "WebGLVertexArrayObjectOES"],
     B: [WebGLBuffer, "WebGLBuffer"],
     S: [WebGLShader, "WebGLShader"],
     P: [WebGLProgram, "WebGLProgram"],
@@ -24803,7 +24824,7 @@
   function webglMake(r, k, id) {
     if (typeof id !== "number" || id <= 0) return null;
     const object = new WEBGL_KINDS[k][0](KEY);
-    WeakMapSet(webglObjects, object, { id, context: r, kind: k });
+    WeakMapSet(webglObjects, object, { id, context: r, kind: k, generation: r.generation, fresh: false });
     MapSet(r.objects, id, object);
     return object;
   }
@@ -24880,7 +24901,8 @@
           if (o === undefined || o.kind !== c) {
             throw new $TypeError(prefix(method, iface) + "parameter " + a + " is not of type '" + WEBGL_KINDS[c][1] + "'.");
           }
-          if (o.context !== r) {
+          // Another context's, or one from before a restoration.
+          if (o.context !== r || o.generation !== r.generation) {
             native.webgl("error", r.id, 0x0502);
             return null;
           }
@@ -25000,10 +25022,18 @@
     const attributes = webglAttributes(options);
     const id = native.webgl("create", handle, version, attributes.alpha, attributes.depth, attributes.stencil,
       attributes.antialias, attributes.premultipliedAlpha, attributes.preserveDrawingBuffer);
-    if (typeof id !== "number" || id < 0) return null;
+    if (typeof id !== "number" || id < 0) {
+      if (canvas !== null && typeof canvas === "object" && isNode(canvas)) {
+        fireAt(canvas, new WebGLContextEvent("webglcontextcreationerror", { statusMessage: "" }));
+      }
+      return null;
+    }
     const context = new (version === 2 ? WebGL2RenderingContext : WebGLRenderingContext)(KEY);
-    WeakMapSet(webglRecords, context, { id, canvas, version, attributes, objects: new $Map(),
-      extensions: new $Map(), drawn: false });
+    const r = { id, canvas, version, attributes, objects: new $Map(), extensions: new $Map(), drawn: false,
+      generation: 0, lostFired: false, restorable: false };
+    WeakMapSet(webglRecords, context, r);
+    webglSweepLost();
+    ArrayPush(webglLive, r);
     return context;
   }
 
@@ -25017,6 +25047,7 @@
       "FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING_EXT", 0x8210],
     EXT_texture_filter_anisotropic: ["TEXTURE_MAX_ANISOTROPY_EXT", 0x84FE, "MAX_TEXTURE_MAX_ANISOTROPY_EXT", 0x84FF],
     OES_standard_derivatives: ["FRAGMENT_SHADER_DERIVATIVE_HINT_OES", 0x8B8B],
+    OES_vertex_array_object: ["VERTEX_ARRAY_BINDING_OES", 0x85B5],
     OES_texture_half_float: ["HALF_FLOAT_OES", 0x8D61],
     WEBGL_color_buffer_float: ["RGBA32F_EXT", 0x8814, "FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE_EXT", 0x8211,
       "UNSIGNED_NORMALIZED_EXT", 0x8C17],
@@ -25056,7 +25087,337 @@
         native.webgl("vertexAttribDivisor", r.id, glu(index), glu(divisor));
       });
     }
+    if (name === "OES_vertex_array_object") {
+      const iface = name;
+      method("createVertexArrayOES", function () {
+        return webglMake(r, "O", native.webgl("createVertexArray", r.id));
+      });
+      for (const [n, call, gives] of [["deleteVertexArrayOES", "deleteVertexArray", "v"],
+        ["isVertexArrayOES", "isVertexArray", "b"], ["bindVertexArrayOES", "bindVertexArray", "v"]]) {
+        method(n, function (arrayObject) {
+          need(arguments.length, n === "deleteVertexArrayOES" || n === "isVertexArrayOES" ? 0 : 1, n, iface);
+          const args = webglArgs(r, "O?", [arrayObject], n, iface);
+          if (args === null) return gives === "b" ? false : undefined;
+          const v = native.webgl(call, r.id, args[0]);
+          return gives === "b" ? v === true : undefined;
+        });
+      }
+    }
+    if (name === "WEBGL_lose_context") {
+      method("loseContext", function () {
+        if (native.webgl("isContextLost", r.id)) return;
+        native.webgl("loseContext", r.id);
+        webglLose(r);
+      });
+      method("restoreContext", function () {
+        if (!native.webgl("isContextLost", r.id)) {
+          native.webgl("error", r.id, 0x0502);
+          return;
+        }
+        webglRestore(r);
+      });
+    }
     return new cls(KEY);
+  }
+
+  // An internal task (a timer of no delay): what WebGL says happens
+  // once control returns to the event loop.
+  function webglTask(work) {
+    startTimer(work, 0, [], false);
+  }
+
+  // A context lost: its lost event fired in a task; when the page
+  // prevents its default, the context may be restored.
+  function webglLose(r) {
+    if (r.lostFired) return;
+    r.lostFired = true;
+    webglTask(() => {
+      const event = new WebGLContextEvent("webglcontextlost", { cancelable: true, statusMessage: "" });
+      if (r.canvas !== null && typeof r.canvas === "object") fireAt(r.canvas, event);
+      r.restorable = event.defaultPrevented;
+    });
+  }
+
+  // A lost context made again: its old objects stale, its extensions
+  // enabled again, the restored event fired.
+  function webglRestore(r) {
+    webglTask(() => {
+      if (!native.webgl("restoreContext", r.id)) return;
+      r.generation++;
+      r.objects = new $Map();
+      r.lostFired = false;
+      r.restorable = false;
+      $MapForEach(r.extensions, (_, name) => native.webgl("getExtension", r.id, name));
+      const event = new WebGLContextEvent("webglcontextrestored", { statusMessage: "" });
+      if (r.canvas !== null && typeof r.canvas === "object") fireAt(r.canvas, event);
+    });
+  }
+
+  // Contexts lost to make room for a new one, their events fired.
+  function webglSweepLost() {
+    for (let i = 0; i < webglLive.length; i++) {
+      const r = webglLive[i];
+      if (!r.lostFired && native.webgl("isContextLost", r.id)) webglLose(r);
+    }
+  }
+
+  // WebGL 2's methods (step 8): the calls that convert and pass on,
+  // then the rest.
+  const WEBGL2_SIMPLE = [
+    ["bindBufferBase", "euB?", 3, "v"], ["bindBufferRange", "euB?ll", 5, "v"],
+    ["copyBufferSubData", "eelll", 5, "v"],
+    ["createVertexArray", "", 0, "V"], ["deleteVertexArray", "V?", 1, "v"], ["isVertexArray", "V?", 1, "b"],
+    ["bindVertexArray", "V?", 1, "v"],
+    ["getUniformBlockIndex", "Ps", 2, "n"], ["uniformBlockBinding", "Puu", 3, "v"],
+    ["getActiveUniformBlockName", "Pu", 2, "s"],
+    ["createQuery", "", 0, "Q"], ["deleteQuery", "Q?", 1, "v"], ["isQuery", "Q?", 1, "b"],
+    ["beginQuery", "eQ", 2, "v"],
+    ["deleteSync", "Y?", 1, "v"], ["isSync", "Y?", 1, "b"], ["waitSync", "Yul", 3, "v"],
+    ["createTransformFeedback", "", 0, "X"], ["deleteTransformFeedback", "X?", 1, "v"],
+    ["isTransformFeedback", "X?", 1, "b"], ["bindTransformFeedback", "eX?", 2, "v"],
+    ["beginTransformFeedback", "e", 1, "v"], ["endTransformFeedback", "", 0, "v"],
+    ["pauseTransformFeedback", "", 0, "v"], ["resumeTransformFeedback", "", 0, "v"],
+    ["vertexAttribIPointer", "uieil", 5, "v"], ["vertexAttribDivisor", "uu", 2, "v"],
+  ];
+  const WEBGL2_DRAWS = [["drawArraysInstanced", "eiii", 4], ["drawElementsInstanced", "eieli", 5],
+    ["drawRangeElements", "euuiel", 6]];
+
+  function webgl2Methods(cls, iface) {
+    const proto = cls.prototype;
+    const method = (name, f) => defineProperty(proto, name, { value: f, writable: true, enumerable: true, configurable: true });
+    webglSimple(method, WEBGL2_SIMPLE, iface);
+    for (let i = 0; i < WEBGL2_DRAWS.length; i++) {
+      const [name, spec, least] = WEBGL2_DRAWS[i];
+      method(name, function (...args) {
+        const r = webglRecord(this);
+        need(args.length, least, name, iface);
+        const converted = webglArgs(r, spec, args, name, iface);
+        ReflectApply(native.webgl, undefined, [name, r.id, ...converted]);
+        webglDrew(r);
+      });
+    }
+    // The bindings' objects.
+    method("getIndexedParameter", function (target, index) {
+      const r = webglRecord(this);
+      need(arguments.length, 2, "getIndexedParameter", iface);
+      const t = glu(target);
+      const v = native.webgl("getIndexedParameter", r.id, t, glu(index));
+      if (t === 0x8A28 || t === 0x8C8F) return MapGet(r.objects, v) || null;
+      return v === undefined ? null : v;
+    });
+    method("getBufferSubData", function (target, srcByteOffset, dstBuffer, dstOffset = 0, length = 0) {
+      const r = webglRecord(this);
+      need(arguments.length, 3, "getBufferSubData", iface);
+      if (!ArrayBufferIsView(dstBuffer)) {
+        throw new $TypeError(prefix("getBufferSubData", iface) + "parameter 3 is not of type 'ArrayBufferView'.");
+      }
+      const [bytes, size] = gpuViewBytes(dstBuffer);
+      const first = glu(dstOffset) * size;
+      const count = glu(length) === 0 ? bytes.length - first : glu(length) * size;
+      if (first > bytes.length || first + count > bytes.length) {
+        native.webgl("error", r.id, 0x0501);
+        return;
+      }
+      const got = native.webgl("getBufferSubData", r.id, glu(target), glll(srcByteOffset), count);
+      if (got === undefined) return;
+      const from = new $Uint8Array(got);
+      for (let i = 0; i < from.length; i++) bytes[first + i] = from[i];
+    });
+    method("getActiveUniformBlockParameter", function (program, index, pname) {
+      const r = webglRecord(this);
+      need(arguments.length, 3, "getActiveUniformBlockParameter", iface);
+      const args = webglArgs(r, "Puu", [program, index, pname], "getActiveUniformBlockParameter", iface);
+      if (args === null) return null;
+      const v = ReflectApply(native.webgl, undefined, ["getActiveUniformBlockParameter", r.id, ...args]);
+      if (ArrayIsArray(v)) return new Uint32Array(v);
+      return v === undefined ? null : v;
+    });
+    method("getUniformIndices", function (program, names) {
+      const r = webglRecord(this);
+      need(arguments.length, 2, "getUniformIndices", iface);
+      const args = webglArgs(r, "P", [program], "getUniformIndices", iface);
+      const list = sequence(names, "getUniformIndices", iface, str);
+      if (args === null) return null;
+      const v = ReflectApply(native.webgl, undefined, ["getUniformIndices", r.id, args[0], ...list]);
+      return ArrayIsArray(v) ? ArraySlice(v, 0) : null;
+    });
+    method("getActiveUniforms", function (program, indices, pname) {
+      const r = webglRecord(this);
+      need(arguments.length, 3, "getActiveUniforms", iface);
+      const args = webglArgs(r, "P", [program], "getActiveUniforms", iface);
+      const list = sequence(indices, "getActiveUniforms", iface, glu);
+      const p = glu(pname);
+      if (args === null) return null;
+      const v = ReflectApply(native.webgl, undefined, ["getActiveUniforms", r.id, args[0], p, ...list]);
+      if (!ArrayIsArray(v)) return null;
+      if (p === 0x8A3E) {
+        const out = [];
+        for (let i = 0; i < v.length; i++) ArrayPush(out, v[i] !== 0);
+        return out;
+      }
+      return ArraySlice(v, 0);
+    });
+    // Queries and fences: their results seen once control returned to
+    // the event loop.
+    const fresh = (object) => {
+      const o = WeakMapGet(webglObjects, object);
+      o.fresh = true;
+      webglTask(() => { o.fresh = false; });
+    };
+    method("endQuery", function (target) {
+      const r = webglRecord(this);
+      need(arguments.length, 1, "endQuery", iface);
+      const t = glu(target);
+      const q = MapGet(r.objects, native.webgl("getQuery", r.id, t, 0x8865));
+      native.webgl("endQuery", r.id, t);
+      if (q !== undefined) fresh(q);
+    });
+    method("getQuery", function (target, pname) {
+      const r = webglRecord(this);
+      need(arguments.length, 2, "getQuery", iface);
+      const v = native.webgl("getQuery", r.id, glu(target), glu(pname));
+      return MapGet(r.objects, v) || null;
+    });
+    method("getQueryParameter", function (query, pname) {
+      const r = webglRecord(this);
+      need(arguments.length, 2, "getQueryParameter", iface);
+      const args = webglArgs(r, "Qe", [query, pname], "getQueryParameter", iface);
+      if (args === null) return null;
+      const v = native.webgl("getQueryParameter", r.id, args[0], args[1]);
+      if (v === undefined) return null;
+      if (WeakMapGet(webglObjects, query).fresh) return args[1] === 0x8867 ? false : 0;
+      return v;
+    });
+    method("fenceSync", function (condition, flags) {
+      const r = webglRecord(this);
+      need(arguments.length, 2, "fenceSync", iface);
+      const sync = webglMake(r, "Y", native.webgl("fenceSync", r.id, glu(condition), glu(flags)));
+      if (sync !== null) fresh(sync);
+      return sync;
+    });
+    method("getSyncParameter", function (sync, pname) {
+      const r = webglRecord(this);
+      need(arguments.length, 2, "getSyncParameter", iface);
+      const args = webglArgs(r, "Ye", [sync, pname], "getSyncParameter", iface);
+      if (args === null) return null;
+      const v = native.webgl("getSyncParameter", r.id, args[0], args[1]);
+      if (v === undefined) return null;
+      if (args[1] === 0x9114 && WeakMapGet(webglObjects, sync).fresh) return 0x9118;
+      return v;
+    });
+    method("clientWaitSync", function (sync, flags, timeout) {
+      const r = webglRecord(this);
+      need(arguments.length, 3, "clientWaitSync", iface);
+      const args = webglArgs(r, "Yul", [sync, flags, timeout], "clientWaitSync", iface);
+      if (args === null) return 0x911D;
+      const v = native.webgl("clientWaitSync", r.id, args[0], args[1], args[2]);
+      if (v === 0x911A && WeakMapGet(webglObjects, sync).fresh) return 0x911B;
+      return v;
+    });
+    method("transformFeedbackVaryings", function (program, varyings, bufferMode) {
+      const r = webglRecord(this);
+      need(arguments.length, 3, "transformFeedbackVaryings", iface);
+      const args = webglArgs(r, "P", [program], "transformFeedbackVaryings", iface);
+      const list = sequence(varyings, "transformFeedbackVaryings", iface, str);
+      if (args === null) return;
+      ReflectApply(native.webgl, undefined, ["transformFeedbackVaryings", r.id, args[0], glu(bufferMode), ...list]);
+    });
+    method("getTransformFeedbackVarying", function (program, index) {
+      const r = webglRecord(this);
+      need(arguments.length, 2, "getTransformFeedbackVarying", iface);
+      const args = webglArgs(r, "Pu", [program, index], "getTransformFeedbackVarying", iface);
+      if (args === null) return null;
+      native.webgl("getTransformFeedbackVarying", r.id, args[0], args[1]);
+      return null;
+    });
+    // The unsigned uniforms and the matrices of two sizes.
+    const uniform = (name, kind, components, vector) => function (location, ...values) {
+      const r = webglRecord(this);
+      need(arguments.length, vector ? 2 : components + 1, name, iface);
+      const args = webglArgs(r, "L?", [location], name, iface);
+      if (args === null || args[0] === 0) return;
+      let list = vector ? webglNumbers(values[0], name, iface) : ArraySlice(values, 0, components);
+      if (vector) list = webglRange(r, list, values[1], values[2]);
+      if (list === null) return;
+      ReflectApply(native.webgl, undefined, ["uniform", r.id, args[0], kind, components, 0, 0, ...list]);
+    };
+    for (let c = 1; c <= 4; c++) {
+      method("uniform" + c + "ui", uniform("uniform" + c + "ui", 2, c, false));
+      method("uniform" + c + "uiv", uniform("uniform" + c + "uiv", 2, c, true));
+      method("uniform" + c + "fv", uniform("uniform" + c + "fv", 0, c, true));
+      method("uniform" + c + "iv", uniform("uniform" + c + "iv", 1, c, true));
+    }
+    const matrix = (name, cols, rows) => function (location, transpose, value, srcOffset, srcLength) {
+      const r = webglRecord(this);
+      need(arguments.length, 3, name, iface);
+      const args = webglArgs(r, "L?", [location], name, iface);
+      if (args === null || args[0] === 0) return;
+      const list = webglRange(r, webglNumbers(value, name, iface), srcOffset, srcLength);
+      if (list === null) return;
+      ReflectApply(native.webgl, undefined, ["uniform", r.id, args[0], 0, rows, cols, !!transpose, ...list]);
+    };
+    for (const [c, rr] of [[2, 2], [3, 3], [4, 4], [2, 3], [3, 2], [2, 4], [4, 2], [3, 4], [4, 3]]) {
+      const name = c === rr ? "uniformMatrix" + c + "fv" : "uniformMatrix" + c + "x" + rr + "fv";
+      method(name, matrix(name, c, rr));
+    }
+    const attribI = (name, kind, vector) => function (index, ...values) {
+      const r = webglRecord(this);
+      need(arguments.length, vector ? 2 : 5, name, iface);
+      const list = vector ? webglNumbers(values[0], name, iface) : values;
+      if (vector && list.length < 4) {
+        native.webgl("error", r.id, 0x0501);
+        return;
+      }
+      const v = [0, 0, 0, 0];
+      for (let i = 0; i < 4; i++) v[i] = kind === 0x1404 ? $Number(list[i]) | 0 : $Number(list[i]) >>> 0;
+      native.webgl("vertexAttrib", r.id, glu(index), kind, v[0], v[1], v[2], v[3]);
+    };
+    method("vertexAttribI4i", attribI("vertexAttribI4i", 0x1404, false));
+    method("vertexAttribI4ui", attribI("vertexAttribI4ui", 0x1405, false));
+    method("vertexAttribI4iv", attribI("vertexAttribI4iv", 0x1404, true));
+    method("vertexAttribI4uiv", attribI("vertexAttribI4uiv", 0x1405, true));
+    // bufferData and bufferSubData of part of a view.
+    const base = { bufferData: proto.bufferData, bufferSubData: proto.bufferSubData };
+    method("bufferData", function (target, data, usage, srcOffset, length) {
+      if (arguments.length < 4 || !ArrayBufferIsView(data)) return ReflectApply(base.bufferData, this, arguments);
+      const r = webglRecord(this);
+      const part = webglViewPart(r, data, srcOffset, length);
+      if (part === null) return;
+      native.webglData("bufferData", binaryString(part), r.id, glu(target), 0, glu(usage));
+    });
+    method("bufferSubData", function (target, offset, data, srcOffset, length) {
+      if (arguments.length < 4 || !ArrayBufferIsView(data)) return ReflectApply(base.bufferSubData, this, arguments);
+      const r = webglRecord(this);
+      const part = webglViewPart(r, data, srcOffset, length);
+      if (part === null) return;
+      native.webglData("bufferSubData", binaryString(part), r.id, glu(target), glll(offset));
+    });
+  }
+
+  // A view's elements from `srcOffset`, `length` of them (0: the rest),
+  // as bytes; none (INVALID_VALUE) when past its end.
+  function webglViewPart(r, view, srcOffset, length) {
+    const [bytes, size] = gpuViewBytes(view);
+    const first = glu(srcOffset) * size;
+    const count = length === undefined || glu(length) === 0 ? bytes.length - first : glu(length) * size;
+    if (first > bytes.length || first + count > bytes.length) {
+      native.webgl("error", r.id, 0x0501);
+      return null;
+    }
+    return new $Uint8Array(TypedArrayBuffer(bytes), TypedArrayOffset(bytes) + first, count);
+  }
+
+  // A uniform's values from `srcOffset`, `srcLength` of them (0: the
+  // rest); none (INVALID_VALUE) when past the end.
+  function webglRange(r, list, srcOffset, srcLength) {
+    if (srcOffset === undefined && srcLength === undefined) return list;
+    const first = glu(srcOffset === undefined ? 0 : srcOffset);
+    const count = srcLength === undefined || glu(srcLength) === 0 ? list.length - first : glu(srcLength);
+    if (first > list.length || first + count > list.length) {
+      native.webgl("error", r.id, 0x0501);
+      return null;
+    }
+    return ArraySlice(list, first, first + count);
   }
 
   class WebGLRenderingContext {
@@ -25072,12 +25433,10 @@
   }
 
   // The methods and constants both versions share.
-  function webglBase(cls, iface) {
-    const proto = cls.prototype;
-    const method = (name, f) => defineProperty(proto, name, { value: f, writable: true, enumerable: true, configurable: true });
-    const getter = (name, f) => defineProperty(proto, name, { get: f, enumerable: true, configurable: true });
-    for (let i = 0; i < WEBGL_SIMPLE.length; i++) {
-      const [name, spec, least, gives] = WEBGL_SIMPLE[i];
+  // The calls of `list` defined by `method`.
+  function webglSimple(method, list, iface) {
+    for (let i = 0; i < list.length; i++) {
+      const [name, spec, least, gives] = list[i];
       method(name, function (...args) {
         const r = webglRecord(this);
         need(args.length, least, name, iface);
@@ -25090,6 +25449,13 @@
         return webglMake(r, gives, answer);
       });
     }
+  }
+
+  function webglBase(cls, iface) {
+    const proto = cls.prototype;
+    const method = (name, f) => defineProperty(proto, name, { value: f, writable: true, enumerable: true, configurable: true });
+    const getter = (name, f) => defineProperty(proto, name, { get: f, enumerable: true, configurable: true });
+    webglSimple(method, WEBGL_SIMPLE, iface);
     for (let i = 0; i < WEBGL_DRAWS.length; i++) {
       const [name, spec, least] = WEBGL_DRAWS[i];
       method(name, function (...args) {
@@ -25142,8 +25508,10 @@
       // The bindings: their objects.
       if (p === 0x8894 || p === 0x8895) return MapGet(r.objects, answer) || null;
       if (p === 0x8B8D) return MapGet(r.objects, answer) || null;
-      if (p === 0x8CA6 || p === 0x8CA7 || p === 0x8069 || p === 0x8514) return MapGet(r.objects, answer) || null;
-      if (p === 0x85B5) return null;
+      if (p === 0x8CA6 || p === 0x8CA7 || p === 0x8069 || p === 0x8514 || p === 0x85B5 || p === 0x8F36 ||
+        p === 0x8F37 || p === 0x88ED || p === 0x88EF || p === 0x8A28 || p === 0x8C8F || p === 0x8E25) {
+        return MapGet(r.objects, answer) || null;
+      }
       if (ArrayIsArray(answer)) {
         const kind = answer[0];
         const values = ArraySlice(answer, 1);
@@ -25427,6 +25795,7 @@
     webglBase(WebGLRenderingContext, "WebGLRenderingContext");
     webglConstants(WebGLRenderingContext, WEBGL1_CONSTANTS);
     webglBase(WebGL2RenderingContext, "WebGL2RenderingContext");
+    webgl2Methods(WebGL2RenderingContext, "WebGL2RenderingContext");
     webglConstants(WebGL2RenderingContext, WEBGL1_CONSTANTS);
     webglConstants(WebGL2RenderingContext, WEBGL2_CONSTANTS);
   }

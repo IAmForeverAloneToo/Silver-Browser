@@ -40,9 +40,7 @@ impl Features {
     }
 }
 
-/// The extensions a context offers, in the reference's order. WebGL 2's
-/// own (EXT_color_buffer_float and its kin), OES_vertex_array_object,
-/// WEBGL_draw_buffers and WEBGL_lose_context come with step 8.
+/// The extensions a context offers, in the reference's order.
 pub(crate) fn offered(version: u8, features: &Features) -> Vec<&'static str> {
     let mut list = Vec::new();
     let mut add = |on: bool, name: &'static str| {
@@ -66,13 +64,16 @@ pub(crate) fn offered(version: u8, features: &Features) -> Vec<&'static str> {
         add(features.float32_filterable, "OES_texture_float_linear");
         add(true, "OES_texture_half_float");
         add(true, "OES_texture_half_float_linear");
+        add(true, "OES_vertex_array_object");
         add(true, "WEBGL_color_buffer_float");
         add(features.bc, "WEBGL_compressed_texture_s3tc");
         add(true, "WEBGL_depth_texture");
+        add(true, "WEBGL_lose_context");
     } else {
         add(true, "EXT_texture_filter_anisotropic");
         add(features.float32_filterable, "OES_texture_float_linear");
         add(features.bc, "WEBGL_compressed_texture_s3tc");
+        add(true, "WEBGL_lose_context");
     }
     list
 }

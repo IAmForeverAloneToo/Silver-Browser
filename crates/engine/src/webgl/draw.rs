@@ -331,6 +331,15 @@ impl Gpu {
                 ));
             }
         }
+        // The uniform blocks' buffers.
+        for block in &program.blocks {
+            for &binding in &block.bindings {
+                entries.push(format!(
+                    r#"{{"binding":{binding},"visibility":3,"buffer":{{"type":"uniform","minBindingSize":{}}}}}"#,
+                    block.size
+                ));
+            }
+        }
         let (layout, pipeline_layout) = (self.id(client), self.id(client));
         client.queue([
             Request::CreateBindGroupLayout {
@@ -552,12 +561,12 @@ impl Context {
             Some((gpu, had)) if had == size => gpu,
             _ => {
                 let gpu = self.gpu.id(&self.client);
-                // VERTEX | INDEX | COPY_DST | COPY_SRC.
+                // VERTEX | INDEX | COPY_DST | COPY_SRC | UNIFORM.
                 self.client.queue([Request::CreateBuffer {
                     device: self.device,
                     id: gpu,
                     size,
-                    usage: 0x3C,
+                    usage: 0x7C,
                     mapped: false,
                 }]);
                 gpu
@@ -772,7 +781,10 @@ impl Context {
             }
             None => String::new(),
         };
-        let desc = format!(r#"{{"colorAttachments":{colors}{depth_desc}}}"#);
+        let occlusion = self.v2.occlusion.as_ref().map_or(String::new(), |o| {
+            format!(r#","occlusionQuerySet":{}"#, o.set)
+        });
+        let desc = format!(r#"{{"colorAttachments":{colors}{depth_desc}{occlusion}}}"#);
         self.gpu.pass = Some(Pass {
             key: target.key,
             desc,
@@ -1553,6 +1565,13 @@ impl Context {
         if vw <= 0.0 || vh <= 0.0 || scissor.2 == 0 || scissor.3 == 0 {
             return;
         }
+        // Counted by an active occlusion query.
+        let slot = self.v2.occlusion_slot();
+        let pass = self.gpu.pass.as_mut().expect("begun");
+        if let Some(index) = slot {
+            pass.commands
+                .push(RenderCommand::BeginOcclusionQuery { index });
+        }
         match index {
             Some((buffer, format, offset, n)) => {
                 pass.commands.push(RenderCommand::SetIndexBuffer {
@@ -1585,6 +1604,9 @@ impl Context {
                     first_instance: 0,
                 });
             }
+        }
+        if slot.is_some() {
+            pass.commands.push(RenderCommand::EndOcclusionQuery {});
         }
     }
 
@@ -1756,6 +1778,39 @@ impl Context {
                 bit += 1;
             }
         }
+        // Each uniform block's buffer, at its binding point: bound, and
+        // as large as the block (GL ES 3.0 2.12.6).
+        let blocks = super::webgl2::active_blocks(&linked.program);
+        let mut block_entries = Vec::new();
+        for (k, (_, b, element)) in blocks.iter().enumerate() {
+            let block = &linked.program.blocks[*b];
+            let point = linked.block_bindings.get(k).copied().unwrap_or(0) as usize;
+            let bound = self.v2.uniform_bindings.get(point).copied().flatten();
+            let Some((buffer, offset, size)) = bound else {
+                self.error(INVALID_OPERATION);
+                return None;
+            };
+            let length = self.buffers.get(&buffer).map_or(0, |b| b.data.len() as u64);
+            let size = if size == 0 {
+                length.saturating_sub(offset)
+            } else {
+                size.min(length.saturating_sub(offset))
+            };
+            let Some((gpu, _)) = self.buffers.get(&buffer).and_then(|b| b.gpu) else {
+                self.error(INVALID_OPERATION);
+                return None;
+            };
+            if size < u64::from(block.size) {
+                self.error(INVALID_OPERATION);
+                return None;
+            }
+            resources.push(gpu);
+            resources.push(offset as u32);
+            block_entries.push(format!(
+                r#"{{"binding":{},"buffer":{gpu},"offset":{offset},"size":{}}}"#,
+                block.bindings[*element], block.size
+            ));
+        }
         let layout = self
             .gpu
             .program_layout(&self.client, linked, unfilterable)
@@ -1785,6 +1840,7 @@ impl Context {
                 k += 2;
             }
         }
+        entries.extend(block_entries);
         self.client.queue([Request::CreateBindGroup {
             device: self.device,
             id,

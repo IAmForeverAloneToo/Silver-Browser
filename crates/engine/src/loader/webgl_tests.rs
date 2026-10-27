@@ -55,7 +55,12 @@ const pixels = async (last) => {
 /// The page's lines, with the engine's frames run as the shell runs
 /// them; `None` (said) where there is no adapter.
 fn run(script: &str) -> Option<Vec<String>> {
-    let page = server(&format!("{CONTEXT}\n{script}"));
+    run_page(CONTEXT, script)
+}
+
+/// The page of `context`'s lines and `script`'s, run as [`run`] says.
+fn run_page(context: &str, script: &str) -> Option<Vec<String>> {
+    let page = server(&format!("{context}\n{script}"));
     let mut tab = Tab::new();
     tab.engine.set_scripting(true);
     tab.engine.navigate(page.url("/page.html"));
@@ -578,6 +583,175 @@ log('divisor ' + gl.getVertexAttrib(1, instanced.VERTEX_ATTRIB_ARRAY_DIVISOR_ANG
             "half [object OES_texture_half_float] 36193 true",
             "float 8cd5 0.25,2.5,-1,1 5126",
             "divisor 3 0",
+        ]
+    );
+}
+
+/// As [`run`], `gl` a context of `kind`.
+fn run_with(kind: &str, script: &str) -> Option<Vec<String>> {
+    let context = CONTEXT.replace("getContext('webgl', ", &format!("getContext('{kind}', "));
+    run_page(&context, script)
+}
+
+#[test]
+fn webgl2_buffers_vertex_arrays_and_uniform_blocks() {
+    let Some(lines) = run_with(
+        "webgl2",
+        r#"
+const p = program(
+  '#version 300 es\nin vec2 position; in uint index; flat out uint v; uniform Colors { vec4 c[2]; float scale; }; void main() { v = index; gl_Position = vec4(position * scale, 0.0, 1.0); }',
+  '#version 300 es\nprecision mediump float; flat in uint v; uniform Colors { vec4 c[2]; float scale; }; uniform uint pick; out vec4 o; void main() { o = c[(v + pick) % 2u]; }');
+gl.useProgram(p);
+const block = gl.getUniformBlockIndex(p, 'Colors');
+log('block ' + block + ' ' + gl.getActiveUniformBlockName(p, block) + ' ' + gl.getActiveUniformBlockParameter(p, block, gl.UNIFORM_BLOCK_DATA_SIZE) + ' ' + gl.getProgramParameter(p, gl.ACTIVE_UNIFORM_BLOCKS) + ' ' + gl.getUniformBlockIndex(p, 'Nothing'));
+const indices = gl.getUniformIndices(p, ['c', 'scale']);
+log('members ' + gl.getActiveUniforms(p, indices, gl.UNIFORM_OFFSET).join(',') + ' ' + gl.getActiveUniforms(p, indices, gl.UNIFORM_ARRAY_STRIDE).join(',') + ' ' + gl.getActiveUniformBlockParameter(p, block, gl.UNIFORM_BLOCK_ACTIVE_UNIFORM_INDICES).constructor.name);
+const ubo = gl.createBuffer();
+gl.bindBuffer(gl.UNIFORM_BUFFER, ubo);
+gl.bufferData(gl.UNIFORM_BUFFER, new Float32Array([1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 0]), gl.DYNAMIC_DRAW);
+gl.bindBufferBase(gl.UNIFORM_BUFFER, 2, ubo);
+gl.uniformBlockBinding(p, block, 2);
+log('bound ' + (gl.getIndexedParameter(gl.UNIFORM_BUFFER_BINDING, 2) === ubo) + ' ' + gl.getActiveUniformBlockParameter(p, block, gl.UNIFORM_BLOCK_BINDING));
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 0, -1, -1, 1, 0, 1, 0, -1, 1, -1, 0, 1, 1, 1]), gl.STATIC_DRAW);
+const position = gl.getAttribLocation(p, 'position');
+gl.enableVertexAttribArray(position);
+gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Uint32Array([0, 0, 0, 0, 1, 1, 1, 1]), gl.STATIC_DRAW);
+const index = gl.getAttribLocation(p, 'index');
+gl.enableVertexAttribArray(index);
+gl.vertexAttribIPointer(index, 1, gl.UNSIGNED_INT, 0, 0);
+gl.bindVertexArray(null);
+log('default ' + gl.getVertexAttrib(position, gl.VERTEX_ATTRIB_ARRAY_ENABLED) + ' ' + gl.getParameter(gl.VERTEX_ARRAY_BINDING));
+gl.bindVertexArray(vao);
+log('vao ' + gl.getVertexAttrib(position, gl.VERTEX_ATTRIB_ARRAY_ENABLED) + ' ' + (gl.getParameter(gl.VERTEX_ARRAY_BINDING) === vao) + ' ' + gl.isVertexArray(vao));
+gl.uniform1ui(gl.getUniformLocation(p, 'pick'), 1);
+gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+gl.drawArrays(gl.TRIANGLE_STRIP, 4, 4);
+const px = new Uint8Array(4 * 4);
+gl.readPixels(0, 0, 4, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+log('drawn ' + gl.getError() + ' ' + Array.from(px).join(','));
+// The block's buffer read back and copied; too small, and unbound.
+const back = new Float32Array(3);
+gl.getBufferSubData(gl.UNIFORM_BUFFER, 32, back);
+log('read back ' + Array.from(back).join(','));
+gl.bindBuffer(gl.COPY_WRITE_BUFFER, gl.createBuffer());
+gl.bufferData(gl.COPY_WRITE_BUFFER, 8, gl.STATIC_COPY);
+gl.copyBufferSubData(gl.UNIFORM_BUFFER, gl.COPY_WRITE_BUFFER, 16, 0, 8);
+const copied = new Float32Array(2);
+gl.getBufferSubData(gl.COPY_WRITE_BUFFER, 0, copied);
+log('copied ' + Array.from(copied).join(',') + ' ' + gl.getError());
+gl.bufferData(gl.UNIFORM_BUFFER, 16, gl.DYNAMIC_DRAW);
+gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+log('too small ' + gl.getError());
+gl.bindBufferBase(gl.UNIFORM_BUFFER, 2, null);
+gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+log('unbound ' + gl.getError());
+gl.bindBufferRange(gl.UNIFORM_BUFFER, 2, ubo, 100, 16);
+log('unaligned ' + gl.getError());
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ubo);
+log('element ' + gl.getError());
+gl.deleteVertexArray(vao);
+log('deleted ' + gl.isVertexArray(vao) + ' ' + gl.getParameter(gl.VERTEX_ARRAY_BINDING));
+// WebGL 1's OES_vertex_array_object.
+const g1 = document.createElement('canvas').getContext('webgl');
+const oes = g1.getExtension('OES_vertex_array_object');
+const v1 = oes.createVertexArrayOES();
+oes.bindVertexArrayOES(v1);
+log('oes ' + String(v1) + ' ' + (g1.getParameter(oes.VERTEX_ARRAY_BINDING_OES) === v1) + ' ' + oes.isVertexArrayOES(v1));
+"#,
+    ) else {
+        return;
+    };
+    assert_eq!(
+        lines,
+        [
+            "block 0 Colors 48 1 4294967295",
+            "members 0,32 16,0 Uint32Array",
+            "bound true 2",
+            "default false null",
+            "vao true true true",
+            "drawn 0 0,255,0,255,0,255,0,255,255,0,0,255,255,0,0,255",
+            "read back 1,0,0",
+            "copied 0,1 0",
+            "too small 1282",
+            "unbound 1282",
+            "unaligned 1281",
+            "element 1282",
+            "deleted false null",
+            "oes [object WebGLVertexArrayObjectOES] true true",
+        ]
+    );
+}
+
+#[test]
+fn webgl2_queries_fences_feedback_and_a_lost_context() {
+    let Some(lines) = run_with(
+        "webgl2",
+        r#"
+const tick = () => new Promise(r => setTimeout(r, 10));
+const p = program(
+  '#version 300 es\nin vec2 position; void main() { gl_Position = vec4(position, 0.0, 1.0); }',
+  '#version 300 es\nprecision mediump float; out vec4 o; void main() { o = vec4(1.0); }');
+gl.useProgram(p);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+const drawn = gl.createQuery();
+gl.beginQuery(gl.ANY_SAMPLES_PASSED, drawn);
+log('current ' + (gl.getQuery(gl.ANY_SAMPLES_PASSED, gl.CURRENT_QUERY) === drawn) + ' ' + gl.isQuery(drawn));
+gl.beginQuery(gl.ANY_SAMPLES_PASSED_CONSERVATIVE, gl.createQuery());
+log('two at once ' + gl.getError());
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+gl.endQuery(gl.ANY_SAMPLES_PASSED);
+log('at once ' + gl.getQueryParameter(drawn, gl.QUERY_RESULT_AVAILABLE));
+const none = gl.createQuery();
+gl.beginQuery(gl.ANY_SAMPLES_PASSED, none);
+gl.endQuery(gl.ANY_SAMPLES_PASSED);
+const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+log('fence ' + String(sync) + ' ' + gl.getSyncParameter(sync, gl.SYNC_STATUS).toString(16) + ' ' + gl.clientWaitSync(sync, 0, 0).toString(16));
+gl.clientWaitSync(sync, 0, 1);
+log('waiting ' + gl.getError());
+for (let i = 0; i < 300 && !(gl.getQueryParameter(drawn, gl.QUERY_RESULT_AVAILABLE) && gl.getSyncParameter(sync, gl.SYNC_STATUS) === gl.SIGNALED); i++) await tick();
+log('results ' + gl.getQueryParameter(drawn, gl.QUERY_RESULT) + ' ' + gl.getQueryParameter(none, gl.QUERY_RESULT) + ' ' + gl.clientWaitSync(sync, 0, 0).toString(16));
+const feedback = gl.createTransformFeedback();
+gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, feedback);
+gl.beginTransformFeedback(gl.TRIANGLES);
+log('feedback ' + gl.isTransformFeedback(feedback) + ' ' + gl.getError() + ' ' + (gl.getParameter(gl.TRANSFORM_FEEDBACK_BINDING) === feedback));
+// Lost, its event prevented, restored.
+const old = gl.createBuffer();
+const lose = gl.getExtension('WEBGL_lose_context');
+canvas.addEventListener('webglcontextlost', (e) => { log('lost event ' + e.constructor.name + ' ' + e.cancelable); e.preventDefault(); });
+let restored = false;
+canvas.addEventListener('webglcontextrestored', () => { restored = true; });
+lose.loseContext();
+log('lost ' + gl.isContextLost() + ' ' + gl.getError() + ' ' + gl.getError() + ' ' + gl.getContextAttributes() + ' ' + gl.getSupportedExtensions());
+await tick();
+lose.restoreContext();
+for (let i = 0; i < 300 && !restored; i++) await tick();
+gl.bindBuffer(gl.ARRAY_BUFFER, old);
+log('restored ' + gl.isContextLost() + ' ' + gl.getError() + ' ' + (gl.getParameter(gl.ARRAY_BUFFER_BINDING) === null));
+"#,
+    ) else {
+        return;
+    };
+    assert_eq!(
+        lines,
+        [
+            "current true true",
+            "two at once 1282",
+            "at once false",
+            "fence [object WebGLSync] 9118 911b",
+            "waiting 1282",
+            "results 1 0 911a",
+            "feedback true 1282 true",
+            "lost true 37442 0 null null",
+            "lost event WebGLContextEvent true",
+            "restored false 1282 true",
         ]
     );
 }
