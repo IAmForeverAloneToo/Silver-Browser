@@ -45,6 +45,9 @@ shell          (bin "silver-browser": windowing, event loop, input, clipboard)
     |          below engine; `unsafe` in its `av1` module alone)
     | audio   (Web Audio's graph, its quantum, mixing, automation and
     |          nodes: a leaf crate, since M40, below engine)
+    | glsl    (GLSL ES 1.00 and 3.00 as WebGL reads them, written as
+    |          WGSL that naga validates: a leaf crate, since M41, below
+    |          engine)
     ├ net     (URL parsing, resource fetching)
     ├ html    (bytes → DOM)
     ├ css     (stylesheet bytes → CSSOM)
@@ -58,7 +61,10 @@ across processes (`docs/design/processes.md`): the browser process runs
 the shell and the `service` side (the network, the storage, the frames'
 tree, the tab of renderers), and each renderer process, the same
 executable, the `renderer` side, each site's engines in a process of its
-own; the crates below are the same in either.
+own; the crates below are the same in either. Since M41 a GPU process,
+the same executable again (`engine::gpu`, `docs/design/gpu.md`), runs
+`wgpu` for every renderer's WebGL and WebGPU, their requests relayed by
+the browser.
 
 ### Rules
 
@@ -2356,4 +2362,40 @@ tracks, fullscreen and its kin, `preservesPitch`, the system's media
 controls, output on macOS and Linux, a media panel, resource selection's
 stable state, Web Audio's edges, loose ends. 3,129 tests pass
 workspace-wide, two ignored. Next: the long tail, gated (M41+).
+
+Milestone 41 (WebGL and WebGPU; `docs/design/gpu.md`, D38, D39, D40):
+pages draw on the GPU. The GPU process (step 1): `engine::gpu`, its
+protocol (`wire`), the service over `wgpu` with each client's objects
+by the numbers it gives, the process's loop and the client; the
+browser's relay (`service::GpuRelay`) starting it at the first request,
+restarting it three times in five minutes at most, a renderer's
+messages `ToBrowser::Gpu` and `ToRenderer::Gpu`; in one process a
+thread. WebGPU (steps 2 and 3): `engine::webgpu`, a document's objects
+behind `native.gpu`, its encoders' commands recorded in the renderer
+and replayed in the GPU process, render bundles the service's own,
+the standard's validation that `wgpu` cannot see the bootstrap's. The
+canvas (step 4): `GPUCanvasContext`, its texture copied back to the
+document as the canvas's bitmap after the frame, images into
+textures. The `glsl` crate (step 5): GLSL ES 1.00 and 3.00 as WebGL
+reads them, its errors in the reference's form, written as WGSL that
+naga validates. WebGL (steps 6 to 8): `engine::webgl`, GL's state in
+the renderer over a WebGPU device of its own a context, each GL image a
+texture, copies, mipmaps and blits drawn, WebGL 1's extensions and
+WebGL 2's objects, context loss. The acceptance (step 9): pages drawing
+as the reference does, through a renderer and in one process; subsets
+of the Khronos WebGL suite (241 tests) and the WebGPU CTS (36
+queries); WPT's `webgl`; the `gpu` bench. T4.3 (step 10): a realm cost
+a third more, so WebGPU's and WebGL's bindings became a script of
+their own (`js/src/quickjs/bootstrap_gpu.js`), read into a realm at its
+page's first use. The runs found: a released context's device kept, an
+expression too long for the stack, scalar geometric functions, integer
+cube samplers, a blit's overflow, an empty uniform block, a vertex
+attribute's offset overflowing `wgpu-core`, canvas configuration and
+buffer mapping validated where the standard does: mended. Not in this
+milestone, said rather than hidden and registered (G205 to G214): a
+direct channel to the GPU process, workers, transform feedback and
+timestamps, WebGL's other extensions, WebXR and a GPU panel, WebGPU's
+and WebGL's loose ends, context loss's edges, GLSL's, the suites past
+their subsets. 3,195 tests pass workspace-wide, two ignored. Next:
+the long tail, gated (M42+).
 

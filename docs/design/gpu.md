@@ -500,4 +500,119 @@ compute dispatch's round trip, a WebGL draw call's cost.
 
 ## 4. Corrected to the code
 
-Filled in at the last step.
+What the work found that this note did not say, or said otherwise, by
+step:
+
+- **Before the work.** naga 30's GLSL front end reads Vulkan GLSL 4.40
+  and later only, and needs pp-rs: the glsl crate is the engine's own
+  (step 5).
+- **The GPU process (step 1).** There is no `MAX_GPU_PENDING`: the relay
+  writes to the GPU process's pipe on the renderer's reader thread, so a
+  full pipe holds that renderer, as wanted. The GPU process runs under
+  the renderers' own restricted, low-integrity token on Windows, and a
+  device opens under it (step 2): no weaker token is needed. wgpu's
+  `apply_limit_buckets` is on for every adapter, never the page's
+  choice.
+- **WebGPU's objects (step 2).** The adapter's limits are wgpu's
+  buckets, not Dawn's (`maxBindGroups` 8 and
+  `minUniformBufferOffsetAlignment` 64 here where the reference says 4
+  and 256): tests hold them to the standard's bounds. A
+  `GPUValidationError`'s message is wgpu's words. Objects a page lets go
+  are dropped when their document goes, not when collected.
+- **WebGPU's work (step 3).** Validation wgpu cannot see is the
+  bootstrap's, sent as `Request::Invalid` and reported as wgpu's are; a
+  scope's error from wgpu is answered before the client's when both
+  came. Where the standard makes an object invalid that the bootstrap
+  found wrong, the object is made of what is valid and the error
+  reported. Render bundles are not wgpu's (its bundle encoder panics at
+  a bundle's invalid commands, which a page can cause): a bundle is its
+  commands, kept by the service and replayed into the pass that executes
+  it, at most `MAX_PASS_COMMANDS` (4M) a pass; a pass keeps a bundle's
+  pipeline and bindings after it, where the standard resets them.
+  wgpu panics at a buffer range past the buffer: the service checks
+  every slice first. A device dropped with scopes open pops them
+  innermost first (wgpu panics at the other order; `webgpu_ops` found
+  it). A texture write past 4 MiB goes in pieces of whole rows.
+- **The canvas (step 4).** The frame shows a task or so after the frame
+  that presented it (its rows come back from the GPU process).
+  `copyExternalImageToTexture` writes rgba8unorm and bgra8unorm (and
+  their srgb) only.
+- **The glsl crate (step 5).** The crate writes WGSL itself and naga
+  reads and validates it at the link, rather than building naga's IR.
+  Uniforms of both stages are laid out as std140 lays a block out, so
+  one scheme serves the default block and the page's blocks.
+  `gl_MaxVaryingVectors` is 15 (WebGPU's 16 inter-stage locations less
+  one for `gl_PointCoord`; the reference: 30). An expression of more
+  than `MAX_GLSL_OPERATORS` (512) binary operators is refused
+  "Expression too complex", as the reference's translator (step 9:
+  longer ones overflowed the stack). GLSL's geometric functions of
+  scalars are written out (WGSL has them of vectors); an integer cube
+  sampler reads a 2D array of its faces, the face and texel chosen in
+  the shader (GL ES 3.0 table 3.21), as WebGPU loads no texel of a cube
+  (step 9).
+- **WebGL's core (step 6).** The clear and blend colours are clamped to
+  [0, 1] in both versions. `VENDOR` and `RENDERER` are the masked
+  "WebKit" and "WebKit WebGL"; past `MAX_WEBGL_CONTEXTS` (16) the
+  oldest context is lost. Another context's object is INVALID_OPERATION
+  and the call is not made, but an `is*()` of it is false with no error
+  (step 9).
+- **Textures and framebuffers (steps 7, 8).** Each GL image is a WebGPU
+  texture of its own, a mipmapped texture or a cube put together into
+  one texture by copies when sampled. Textures WebGPU cannot filter are
+  bound as "unfilterable-float", a layout variant a pipeline's key.
+  `copyTexImage2D`, `copyTexSubImage2D`, `generateMipmap` and
+  `blitFramebuffer` are draws, as WebGPU has no converting copy, mipmap
+  generation or blit; a multisampled renderbuffer always resolves into a
+  texture beside it, which a blit reads. `renderbufferStorageMultisample`
+  gives 4 samples for any of 1 to 4. A blit's rectangle past an int32 is
+  INVALID_VALUE (step 9). An image source's sub-rectangle is taken at
+  `UNPACK_SKIP_PIXELS`, `UNPACK_SKIP_ROWS` and `UNPACK_IMAGE_HEIGHT`
+  (step 9; step 8 took the whole source).
+- **WebGL 2's objects (step 8).** Step 8 was two commits. A buffer bound
+  first as an element array buffer is one for good, any other never one;
+  the copy targets take either and make neither (step 9). Occlusion
+  queries count each draw in a slot of a 4096-slot set; results and
+  fences are seen once control returns to the event loop.
+  `clientWaitSync` never waits. Transform feedback's objects exist and
+  beginning it is INVALID_OPERATION. A draw with an active draw buffer
+  the program writes nothing to, and a write mask not all false, is
+  INVALID_OPERATION (step 9).
+- **The acceptance (step 9).** The pages' lines are Chrome's to 3 a
+  number (its clear of 0.1 is 26, the engine's 25), in one process and
+  through a renderer and the GPU process (`--check-processes webgl`). A
+  context's release sends its drops at once: a context lost as its
+  document went left its device in the GPU process, and the Khronos
+  suite ran out of devices. The Khronos subset is 241 tests of 41
+  directories (`tests/khronos`, 143 expected failures); the WebGPU CTS
+  subset is 36 queries, its modules one classic script with a `URL` of
+  its own, as the engine has neither module scripts (G41) nor `URL`
+  (G68); both subsets' expectations hold on Windows, where they were
+  made, and elsewhere every test must end. The CTS found: `configure()`
+  throws TypeError for a format not the canvas's, and a zero size, an
+  invalid usage, bgra8unorm storage without its feature and incompatible
+  view formats are validation errors, the canvas configured, its texture
+  invalid and never presented; `createBuffer` mapped at creation of a
+  size not of 4 throws RangeError; an invalid buffer's unmap is no
+  error; `mapAsync` is validated on the device's timeline (a mapped,
+  destroyed or invalid buffer, a mode, offset or size not its own: a
+  validation error and a rejection), a pending map alone rejecting at
+  once; `MAX_ERROR_SCOPES` is 2^20 (1024 ended the client; the CTS
+  pushes 100,000); a device's and a pass's labels come from their
+  descriptors. The standard's per-stage storage limits
+  (`maxStorageBuffersInVertexStage` and the like) are not given: wgpu
+  has none. The gate's test step limit is 900 s, the two subsets adding
+  about three minutes.
+- **T4.3 and fuzzing (step 10).** A realm made cost a third more than
+  before M41: WebGPU's and WebGL's bindings, 4,200 lines of the
+  bootstrap, made and read by every realm. They are a script of their
+  own (`js/src/quickjs/bootstrap_gpu.js`), compiled to bytecode apart
+  and read into a realm when its page first reaches them (a name of
+  theirs, `navigator.gpu`, a canvas's context, a GPU task), a function
+  of the bootstrap's names they use; their interface objects are
+  accessors until then. A realm is back within 3% of M40's. CI's
+  Windows runners have no adapter, so WPT's `webgl` is left out there;
+  off Windows the Khronos subset fails only on a panic or a page that
+  does not load. The fuzzers found an empty uniform block (refused, as
+  GLSL's grammar has it) and `wgpu-core` adding a vertex attribute's
+  offset unchecked (the service holds the offset where it cannot
+  overflow).

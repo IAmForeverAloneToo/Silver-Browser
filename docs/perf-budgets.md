@@ -2041,6 +2041,36 @@ against 16.8); the images bench's rows past x5 pair two different
 grids by a load time printed in their name, the same grids' medians
 equal on both sides. No exception.
 
+### WebGL and WebGPU (M41)
+
+The Windows machine (its Intel UHD Graphics), release. The `gpu` bench
+(`cargo bench -p engine --bench gpu`): a frame of a page drawing a
+lit, textured WebGL cube at 512 by 512, each animation frame, on a page
+of 800 by 600, 0.47 ms (median; 0.27 to 1.9 ms; the frame's script,
+the context's pass sent and the canvas presented, its pixels back a
+task or so later); a WebGL draw call of a uniform and a triangle, 0.027
+ms as the page's clock says (a thousand calls, then a pixel read that
+waits for them); a WebGPU compute round trip of sixteen numbers written,
+dispatched, copied and mapped, 2.4 ms (1.8 to 15.1 ms).
+
+A realm makes neither WebGPU's nor WebGL's bindings until its page
+first uses them: they are a script of their own, read from their
+bytecode then (M41 step 10), as a realm that made them at once cost a
+third more, 9.5 against 6.8 ms. A page's first use pays that once,
+about 2.5 ms.
+
+**T4.3.** The benchmarks of the code before M41 (d1848b134) and of
+M41's step 9 (acc31648f), by turns, 28 benches, four rounds: a realm
+made x1.40, and so every page loaded alone x1.3 (the fetch, storage and
+wasm benches' first rows) and the canvas demo's load x1.14; the rest
+within 10%, but rows of 0.025 against 0.030 ms. With the bindings made
+at first use (1d1fdcdab), the ten benches with such rows again: a
+realm x0.96, each page loaded alone x0.99 to x1.02. The GPU backend's
+frames of the composite and animation benches came out x1.01, then
+x1.17 and x1.20 in two later runs; alternated six times each, base
+2.93 to 4.05 ms and head 3.09 to 3.68: the Intel GPU's frames vary so
+between runs, the base's as the head's. No exception.
+
 ### Over budget, and why
 
 These are known and recorded rather than hidden. Each has the item that

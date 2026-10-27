@@ -2632,26 +2632,48 @@ WebGPU is `wgpu`'s safe API, object by object (D39). WebGL is built in
 the renderer on that WebGPU, its GLSL ES read by a front end of ours
 and translated to WGSL (D40).
 
-- [ ] M41.1 The GPU process: launched by the browser, sandboxed, its
+- [x] M41.1 The GPU process: launched by the browser, sandboxed, its
        restarts bounded; the renderers' requests relayed by the
        browser, each renderer a client with its own objects; a thread
        in one process; the adapter and its fallback.
-- [ ] M41.2 WebGPU: `navigator.gpu`, adapters, devices, buffers and
+       Done 2026-10-26: the same executable with `--gpu`, under the
+       renderers' own restricted, low-integrity token on Windows, where
+       a device opens; three starts in five minutes, then off; a full
+       pipe holds its renderer rather than a bound of its own.
+- [x] M41.2 WebGPU: `navigator.gpu`, adapters, devices, buffers and
        their mapping, textures, samplers, shader modules, layouts,
        bind groups, pipelines, command encoders, passes, render
        bundles, queries, error scopes and device loss.
-- [ ] M41.3 The canvas: `GPUCanvasContext`, WebGL's drawing buffer,
+       Done 2026-10-27: limits in `wgpu`'s buckets, validation in its
+       words; render bundles replayed by the service, as `wgpu`'s panic
+       at an invalid bundle; mapping and a canvas's configuration
+       validated on the device's timeline (the CTS's findings).
+- [x] M41.3 The canvas: `GPUCanvasContext`, WebGL's drawing buffer,
        their pixels read back to the page, images into textures,
        `OffscreenCanvas` in windows.
-- [ ] M41.4 GLSL ES: a `glsl` crate reading the shading language 1.00
+       Done 2026-10-26: presented after the frame's callbacks and shown
+       a task or so later, as the rows come back from the GPU process;
+       workers' contexts on the G list (G206).
+- [x] M41.4 GLSL ES: a `glsl` crate reading the shading language 1.00
        and 3.00 as WebGL restricts it, its errors in the reference's
        form, lowered to naga's IR and WGSL.
-- [ ] M41.5 WebGL 1 and 2 over WebGPU: the state, buffers, textures,
+       Done 2026-10-26: written as WGSL that naga reads and validates,
+       not naga's IR by hand; uniforms laid out as std140 in one
+       scheme; integer cube samplers as their faces' array (step 9).
+- [x] M41.5 WebGL 1 and 2 over WebGPU: the state, buffers, textures,
        framebuffers, programs, draws, `readPixels`, the extensions
        named, WebGL 2's objects but transform feedback, context loss.
-- [ ] M41.6 Acceptance: pages drawing with WebGL and WebGPU as the
+       Done 2026-10-27: each GL image a texture of its own, put
+       together to be sampled; copies, mipmaps and blits drawn;
+       multisampled renderbuffers resolved beside them.
+- [x] M41.6 Acceptance: pages drawing with WebGL and WebGPU as the
        reference; subsets of the Khronos WebGL conformance suite and
        of the WebGPU conformance test suite; WPT's `webgl`; benches.
+       Done 2026-10-28: Chrome's pixels to 3 a number, in one process
+       and through a renderer and the GPU process; 241 Khronos tests
+       and 36 CTS queries with their expectations, held on Windows;
+       WPT's 13 `webgl` tests; the `gpu` bench. T4.3 held once
+       WebGPU's and WebGL's bindings were read at their first use.
 
 ---
 
@@ -3436,6 +3458,52 @@ Deferred from the milestones above, each with what it waits on:
        undiagnosed; a renderer's own process sending its sound,
        and WASAPI, are covered by no test (CI's runners have no
        device). Found at M40.
+- [ ] G205 A direct channel and shared memory between renderers and
+       the GPU process: requests are relayed by the browser and their
+       bytes copied. Found at M41.
+- [ ] G206 WebGL and WebGPU in workers: `navigator.gpu` there, and
+       their contexts on an `OffscreenCanvas` in a worker (null now).
+       Found at M41.
+- [ ] G207 WebGL 2's transform feedback (its objects exist; beginning
+       it is `INVALID_OPERATION`) and WebGPU's timestamp queries.
+       Found at M41.
+- [ ] G208 WebGL's extensions past those named: compressed formats other
+       than S3TC, `EXT_disjoint_timer_query`, `WEBGL_multi_draw`,
+       `OVR_multiview2`, `KHR_parallel_shader_compile`,
+       `WEBGL_debug_renderer_info`, `WEBGL_debug_shaders`. Found at M41.
+- [ ] G209 WebXR (`xrCompatible` is always false), and a GPU panel in
+       DevTools. Found at M41.
+- [ ] G210 WebGPU's loose ends: optional features past those `wgpu`
+       gives on the adapter; HDR canvases (`toneMapping` `"extended"`);
+       the standard's per-stage storage limits
+       (`maxStorageBuffersInVertexStage` and the like), which `wgpu`
+       has not; external textures; `copyExternalImageToTexture` into
+       formats other than rgba8unorm and bgra8unorm; objects a page lets
+       go dropped only when their document goes; an uncaptured error
+       not said in the console. Found at M41.
+- [ ] G211 WebGL's textures' loose ends: `UNPACK_COLORSPACE_CONVERSION`
+       (images are not converted), RGB DXT1's transparent texels, a
+       depth texture sampled in WebGL 1 as (d, 0, 0, 1), depth uploads
+       with data in 16 bits only, 3D mipmaps from every other slice,
+       stencil blits, multisampled depth blits, compressed uploads from
+       a pixel unpack buffer. Found at M41.
+- [ ] G212 WebGL's context loss: a context lost with the GPU process
+       fails its draws quietly until its next call; `restoreContext()`
+       restores a context whose lost event's default was not prevented.
+       Found at M41.
+- [ ] G213 GLSL ES's loose ends: gradients of shadow samplers (level 0),
+       `row_major` inside structs of blocks, integer textures' wrap
+       modes (clamped), samplers in structs; the preprocessor's
+       character set in skipped lines, a comment before `#version`, a
+       line continuation in a comment; sequence operators on arrays.
+       Found at M41.
+- [ ] G214 The Khronos WebGL suite past the subset: framebuffer
+       attachment queries and completeness rules the engine does not
+       check, a vertex array's buffers kept after their deletion, a WebGL
+       canvas drawn into a 2D canvas with and without
+       `preserveDrawingBuffer`, an `<img>`'s rendered width (its box's),
+       and the suite's other 727 tests and the WebGPU CTS's other
+       queries, run in CI on a GPU. Found at M41.
 
 ---
 

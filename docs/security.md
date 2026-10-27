@@ -210,6 +210,13 @@ not sound: `media::abort_on_decoder_panic` aborts the process, the
 sandboxed renderer dying as the reference's does when its decoder
 asserts.
 
+A page's shaders are input as any text (M41, `docs/design/gpu.md`):
+GLSL ES by the `glsl` crate in the renderer, within `MAX_SHADER_SOURCE`,
+`MAX_GLSL_TOKENS`, `MAX_GLSL_DEPTH` and `MAX_GLSL_OPERATORS`, its WGSL
+validated by naga before it leaves; WGSL by naga in the GPU process,
+which validates every module and pipeline (`wgpu`'s shader runtime
+checks kept: bounds on every array and buffer access).
+
 ### 4.9 The profile
 
 `redb` files in the directory the shell chooses, written by `profile`
@@ -353,6 +360,30 @@ font folders; a file it cannot read, it scans for.
   its own checks after. `navigator.serviceWorker` and `caches` exist
   in secure contexts alone, and a sandbox without
   `allow-same-origin` is refused them.
+- **The GPU process** (M41, D38, `docs/design/gpu.md`). The same
+  executable with `--gpu`, started by the browser at a page's first
+  WebGL or WebGPU request, runs `wgpu` over Direct3D 12, Vulkan or
+  Metal; on Windows under the renderers' own restricted, low-integrity
+  token and a job whose committed memory is `MAX_GPU_MEMORY` (4 GiB),
+  where a device opens. Renderers never reach it: the browser relays
+  their requests (`ToBrowser::Gpu`, `ToRenderer::Gpu`), stamped with the
+  renderer's number, and each renderer is a client with its own table
+  of objects by the numbers it gives (`MAX_GPU_OBJECTS`); a request
+  naming another kind of object, a malformed batch or one that panics
+  the service ends that client alone, and the renderer is refused its
+  next message, which kills it. The service checks what `wgpu` would
+  panic at (a buffer range past its end, a vertex attribute's offset
+  past any stride, a render bundle's invalid commands, which it replays
+  itself) before `wgpu` sees it; a pass replays at most
+  `MAX_PASS_COMMANDS`, a device's error scopes at most
+  `MAX_ERROR_SCOPES`. A GPU process that ends loses every renderer's
+  contexts (their pages told, as by a lost device); it restarts at
+  most `MAX_GPU_RESTARTS` (3) times in five minutes, then WebGL and
+  WebGPU are off for the session. WebGL's state is the renderer's: the
+  GPU process meets WebGPU alone. `navigator.gpu` exists in secure
+  contexts' windows alone; a cross-origin image, video or canvas not
+  origin-clean is refused as a texture's source (`SecurityError`), and
+  WebGL's `RENDERER` and `VENDOR` are masked.
 - **Crashes** (D34). A renderer that dies leaves the browser's own page
   saying so, in the tab or in a frame's hole, until a reload brings it
   back in a new renderer; the browser goes on. On Windows the browser
@@ -386,9 +417,10 @@ exception the roadmap asked for (M35.12): `js` says
 whose one block reads the DOM's bindings as QuickJS bytecode
 (`Module::load`, unsafe because QuickJS's reader trusts its input). What
 it reads is only what the same process wrote with QuickJS's own writer
-from the bootstrap compiled into the executable, kept in a static that
-is never written again nor freed; never a file, a pipe, another
-process's bytes or a page's. The shell's test
+from the bootstrap compiled into the executable (and, since M41,
+WebGPU's and WebGL's bindings, compiled so apart and read at a page's
+first use), kept in a static that is never written again nor freed;
+never a file, a pipe, another process's bytes or a page's. The shell's test
 `unsafe_is_written_in_the_platform_module_alone_each_block_argued`
 holds every source file to this, that module's one block among them,
 and CI greps the same (T3.2). M40 adds the second exception, `media`'s
@@ -405,7 +437,7 @@ client, its start and stop, the padding, and the buffer taken, written
 as a slice of floats and released.
 
 **Under it**: of the 414 registry packages `Cargo.lock` holds (every
-platform's together, M40), 273 write `unsafe` somewhere and 141 none;
+platform's together, M41), 273 write `unsafe` somewhere and 141 none;
 `rav1d`, vendored, is counted apart. Those the attack surface runs
 through:
 
@@ -431,12 +463,18 @@ through:
 | `winit` | 0.30.13 | windows and input | 732 | 65 | 70 | 56 |
 | `softbuffer` | 0.4.8 | presenting pixels | 62 | 11 | 10 | 1 |
 | `rav1d` | 1.1.0 (vendored) | AV1 pictures (M40) | 301 | 29 | 24 | 142 |
+| `wgpu` | 30.0.1 | WebGPU's interface, in the GPU process (M41) | 66 | 68 | 6 | 0 |
+| `wgpu-core` | 30.0.1 | its validation and resources | 450 | 87 | 13 | 0 |
+| `wgpu-hal` | 30.0.1 | its Direct3D 12, Vulkan and Metal backends | 1,497 | 1,030 | 102 | 11 |
+| `ash` | 0.38.0 | Vulkan's interface | 2,786 | 627 | 4,026 | 1,349 |
+| `gpu-allocator` | 0.28.0 | Direct3D 12's memory | 70 | 3 | 4 | 0 |
 
 `rustls` and `rustls-webpki`, `png` and its inflaters, the font
-parsers, `symphonia` and `opus-decoder` (M40) and the workspace's own
-parsers write none. The C is what
-weighs: QuickJS-ng meets every script a page sends, and aws-lc every
-byte of TLS. `cargo run -p engine --example
+parsers, `symphonia` and `opus-decoder` (M40), `naga` (M41, every
+page's shader) and the workspace's own parsers write none. The C is
+what weighs: QuickJS-ng meets every script a page sends, and aws-lc
+every byte of TLS; and since M41 the GPU's drivers, under `wgpu-hal`,
+every draw and shader a page makes, in the sandboxed GPU process. `cargo run -p engine --example
 unsafe_inventory -- Cargo.lock` counts the whole lock file again
 (after `cargo fetch`), for each package its `unsafe` blocks,
 functions, traits and impls, and extern blocks; a lock-file change
@@ -444,7 +482,7 @@ that adds a package writing `unsafe` is read with it.
 
 ## 6. Fuzzing
 
-42 libFuzzer targets in `fuzz/` (M33.6, M34, M36, M37, M38, M39, M40), each holding its subject to
+46 libFuzzer targets in `fuzz/` (M33.6, M34, M36, M37, M38, M39, M40, M41), each holding its subject to
 not panicking, to its bounds, and to what it must keep (a round trip,
 a differential comparison with a fresh engine, a policy never allowing
 what it refused):
@@ -488,7 +526,15 @@ what it refused):
 - *the process boundary*: `ipc_decode`, any bytes read as the
   messages of either side, frame by frame and whole, each decoded one
   encoded again the same; its seeds include messages recorded from a
-  session through renderers (`examples/ipc_seeds.rs`).
+  session through renderers (`examples/ipc_seeds.rs`); and (M41)
+  `gpu_wire`, the GPU protocol's batches and frames the same;
+- *the GPU* (M41): `webgpu_ops`, any sequence of the requests the
+  bootstrap sends, with any values, into one service, none panicking
+  or ending the client; `webgl_ops`, any sequence of the bindings'
+  calls on a WebGL 1 or 2 context; `glsl_parse`, any text as either
+  stage of either version, a shader that compiles linked with a
+  partner and its WGSL valid to naga. The first two need an adapter
+  (CI's Linux job has Mesa's software Vulkan for them).
 
 Each target's corpus, minimized, is committed under `fuzz/seeds/`;
 CI runs every target nightly from its cache and the seeds; each
@@ -647,6 +693,18 @@ earlier milestones say why each is what it is):
 | `engine` | `MAX_AUDIO_BLOCK_FRAMES` | `8192` | The frames of a renderer's block of sound: past it, the renderer is killed. |
 | `engine` | `MAX_AUDIO_QUEUE_FRAMES` | `48000` | The frames of a renderer's sound the browser's output queues: a second. |
 | `engine` | `MAX_ADMITTED_MEDIA` | `256` | The media URLs of other origins a renderer has been admitted to read by ranges: past it, the oldest go. |
+| `engine` | `MAX_GPU_MEMORY` | `4 << 30` | The memory the GPU process may commit, where its sandbox can limit it: past it, its allocations fail (M41). |
+| `engine` | `MAX_GPU_OBJECTS` | `1_000_000` | The most objects a client may have live at once. |
+| `engine` | `MAX_ERROR_SCOPES` | `1 << 20` | The most error scopes a device's stack holds: past it, a push ends the client. |
+| `engine` | `MAX_PASS_COMMANDS` | `1 << 22` | The most commands a pass replays, its bundles' counted each time they are executed: a bundle executed many times over cannot hold the GPU process for long. |
+| `engine` | `MAX_GPU_RESTARTS` | `3` | How many times the GPU process may start in five minutes: past it, WebGL and WebGPU are off for the session. |
+| `engine` | `MAX_WEBGL_CONTEXTS` | `16` | The most WebGL contexts a document keeps live; a new one past them loses the oldest, as the reference does. |
+| `engine` | `MAX_PIPELINES` | `1024` | The most pipelines a WebGL context keeps; past them the oldest go. |
+| `engine` | `MAX_SIZE` | `8192` | The largest texture side, renderbuffer and viewport WebGL's contexts give. |
+| `glsl` | `MAX_SHADER_SOURCE` | `1 << 20` | The most bytes a shader's source may have (M41). |
+| `glsl` | `MAX_GLSL_TOKENS` | `1 << 20` | The most tokens a shader may have after preprocessing. |
+| `glsl` | `MAX_GLSL_DEPTH` | `64` | The most nesting of blocks, expressions and macros. |
+| `glsl` | `MAX_GLSL_OPERATORS` | `512` | The most binary operators one expression may have, as the reference's translator limits an expression's complexity: past it a shader is refused rather than translated into a tree too deep to walk. |
 | `media` | `MAX_VIDEO_SIZE` | `8192` | A picture's width and height, also `rav1d`'s frame size limit: a larger one fails to decode. |
 | `media` | `MAX_PACKET_BYTES` | `32 << 20` | A packet's bytes. |
 | `media` | `MAX_TRACKS` | `64` | A container's tracks. |
@@ -848,6 +906,13 @@ seconds (`PROMPT_TIMEOUT`).
   until a release carries them (`vendor/README.md`); a large AV1 picture
   is decoded and converted whole, half a second for one at
   `MAX_VIDEO_SIZE`, a renderer's own time.
+- **The GPU's edges** (M41): the GPU process is sandboxed on Windows
+  alone, as the renderers are (G113), and meets the GPU's drivers,
+  whose bugs a page's draws and shaders can reach; its requests come
+  through the browser, their bytes copied (G205); a WebGPU object a
+  page lets go lives until its document goes (G210); a context lost
+  with the GPU process fails its draws quietly until its next call
+  (G212).
 - **The profile encryption's edges** (G109): pages freed when an older
   profile was sealed keep their values in the clear until written
   again.
