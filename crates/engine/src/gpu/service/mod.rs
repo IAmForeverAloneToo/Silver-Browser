@@ -513,6 +513,11 @@ impl GpuService {
         Ok(())
     }
 
+    /// Whether it has an adapter for a page that asks for any.
+    pub fn has_adapter(&self) -> bool {
+        self.adapter(0, false).is_some()
+    }
+
     /// An adapter as a page asks: the machine's, of the power asked for,
     /// else the platform's fallback; the fallback alone when it asks for
     /// it or the service takes no other.

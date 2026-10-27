@@ -1857,7 +1857,16 @@ fn report(results: &[(Test, Outcome)], expected: &BTreeMap<String, String>) {
 
 #[test]
 fn the_web_platform_tests_subset_runs_as_expected() {
-    let tests = manifest();
+    // WebGL's tests want an adapter: where there is none (CI's Windows
+    // runners) they are left out, as the engine's GPU tests say so.
+    let gpu = engine::gpu::adapter_here();
+    if !gpu {
+        eprintln!("no adapter here: webgl/ is not run");
+    }
+    let tests: Vec<Test> = manifest()
+        .into_iter()
+        .filter(|t| gpu || !t.path().starts_with("webgl/"))
+        .collect();
     let expected = expectations();
     for key in expected.keys() {
         let path = key.split('\t').next().unwrap_or(key);

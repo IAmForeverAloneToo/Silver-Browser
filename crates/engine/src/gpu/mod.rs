@@ -21,6 +21,20 @@ use std::sync::Arc;
 
 pub use client::GpuClient;
 
+/// Whether a GPU service here has an adapter, as a page's would: the
+/// tests needing one say so and pass where there is none (CI's Windows
+/// runners). False without the `gpu` feature.
+pub fn adapter_here() -> bool {
+    #[cfg(feature = "gpu")]
+    {
+        service::GpuService::new(false).has_adapter()
+    }
+    #[cfg(not(feature = "gpu"))]
+    {
+        false
+    }
+}
+
 /// The memory the GPU process may commit, where its sandbox can limit
 /// it: past it, its allocations fail.
 pub const MAX_GPU_MEMORY: u64 = 4 << 30;

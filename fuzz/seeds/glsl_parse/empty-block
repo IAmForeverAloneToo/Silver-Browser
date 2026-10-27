@@ -1,0 +1,7 @@
+#version 300 es
+layout(location = 2) in vec4 a_position;
+in uvec2 a_ids;
+flat out uint v_id;
+out vec2 v_uv[2];
+uniform Material { };
+void main() {; }

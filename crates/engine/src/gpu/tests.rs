@@ -548,6 +548,43 @@ mod service {
     }
 
     #[test]
+    fn a_vertex_attribute_past_any_stride_is_refused_without_a_panic() {
+        // wgpu-core adds an attribute's offset and size unchecked; an
+        // offset near 2^64 overflowed it (webgpu_ops, CI).
+        let Some(mut service) = device() else {
+            return;
+        };
+        let code =
+            "@vertex fn main(@location(0) p: vec4f) -> @builtin(position) vec4f { return p; }";
+        let desc = format!(
+            r#"{{"layout":"auto","vertex":{{"module":12,"entryPoint":"main","buffers":[{{"arrayStride":16,"attributes":[{{"format":"float32x4","offset":{},"shaderLocation":0}}]}}]}}}}"#,
+            u64::MAX - 4
+        );
+        service
+            .handle(
+                1,
+                &wire::requests(&[
+                    Request::CreateShaderModule {
+                        device: 11,
+                        id: 12,
+                        code: code.to_owned(),
+                    },
+                    Request::CreateRenderPipeline {
+                        device: 11,
+                        id: 13,
+                        desc,
+                        call: None,
+                    },
+                ]),
+            )
+            .unwrap();
+        assert!(matches!(
+            service.events()[..],
+            [(1, Reply::Uncaptured { device: 11, .. })]
+        ));
+    }
+
+    #[test]
     fn a_device_holds_more_error_scopes_than_a_page_needs() {
         // The WebGPU CTS pushes 100,000; past MAX_ERROR_SCOPES the client
         // ends.

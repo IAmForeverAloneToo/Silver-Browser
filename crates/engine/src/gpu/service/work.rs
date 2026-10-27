@@ -562,7 +562,11 @@ impl GpuService {
             for attribute in convert::list(buffer, "attributes") {
                 list.push(wgpu::VertexAttribute {
                     format: convert::vertex_format(convert::text(attribute, "format")?)?,
-                    offset: convert::wide(attribute, "offset", 0),
+                    // wgpu-core adds the offset and the format's size
+                    // unchecked: one past any stride is held there, which
+                    // it refuses as past the stride (the bootstrap sends
+                    // none past 2^53; webgpu_ops did).
+                    offset: convert::wide(attribute, "offset", 0).min(u64::from(u32::MAX)),
                     shader_location: convert::whole(attribute, "shaderLocation", 0),
                 });
             }

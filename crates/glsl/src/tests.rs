@@ -94,6 +94,16 @@ fn errors_are_said_as_the_reference_says_them() {
         ),
         "ERROR: 0:2: 'void' : illegal use of type 'void'\n"
     );
+    // A block with no member, as a struct with no field (glsl_parse found
+    // it made WGSL of an empty struct).
+    assert_eq!(
+        error(
+            "#version 300 es\nuniform Material { };\nvoid main() {}\n",
+            Stage::Vertex,
+            &webgl2()
+        ),
+        "ERROR: 0:2: '}' : syntax error\n"
+    );
     // An expression of more binary operators than MAX_GLSL_OPERATORS is
     // refused (the Khronos suite's long expressions overflowed the
     // stack); as many in statements of their own are not.

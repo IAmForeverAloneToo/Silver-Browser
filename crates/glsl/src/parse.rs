@@ -1621,6 +1621,12 @@ impl<'a> Parser<'a> {
                 self.expect(",")?;
             }
         }
+        // A block has a member at least, as a struct a field (GLSL ES
+        // 3.00's grammar): an empty one made WGSL's empty struct
+        // (glsl_parse found it).
+        if members.is_empty() {
+            return Err(Error::new(line, "}", "syntax error"));
+        }
         let instance = if self.is(";") {
             None
         } else {
