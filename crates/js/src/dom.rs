@@ -300,6 +300,12 @@ pub enum Call {
     /// The mutation observer microtask's start: the observers to
     /// notify, in the order they were made.
     MutationNotify,
+    /// The window's named property `name` (gap batch A, D44): the
+    /// document's elements of that id, or of that name among `embed`,
+    /// `form`, `img` and `object`, in tree order.
+    NamedItems(String),
+    /// The document's base URL (`Node.baseURI`), or `null` for none.
+    BaseUrl,
     /// A number for a new `BroadcastChannel` (gap batch A, D46), no
     /// other channel's in the process.
     BroadcastId,

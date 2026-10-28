@@ -279,6 +279,13 @@ pub trait ScriptingHost: Default + 'static {
     fn take_mutation_wake(&mut self) -> bool {
         false
     }
+    /// The window's named properties that came (`true`) or went since
+    /// this was last asked (gap batch A, D44), and whether those the
+    /// realm has are to be dropped first (its first time, or more came
+    /// and went than were kept); `None` for no change.
+    fn take_named_changes(&mut self) -> Option<(bool, Vec<(String, bool)>)> {
+        None
+    }
     /// The next script to run now, inside the call that made it ready
     /// (M25): one a script inserted, or one in what `document.write`
     /// wrote; `None` once there is none. The realm runs it, nested in the

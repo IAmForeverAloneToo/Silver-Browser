@@ -260,6 +260,9 @@ pub(crate) struct DocumentHost {
     pub(crate) media_lists: super::media_lists::MediaLists,
     /// Its resize and intersection observers (gap batch A, D45).
     pub(crate) layout_observers: super::layout_observers::LayoutObservers,
+    /// Whether the realm has the window's named properties as the
+    /// document's names were when last taken (gap batch A).
+    named_synced: bool,
     /// Its mutation observers (gap batch A, D42), and how deep the
     /// operations of several calls the bindings began are nested.
     mutations: super::mutations::MutationObservers,
@@ -319,6 +322,23 @@ impl ScriptingHost for DocumentHost {
 
     fn take_mutation_wake(&mut self) -> bool {
         self.mutations.take_wake()
+    }
+
+    fn take_named_changes(&mut self) -> Option<(bool, Vec<(String, bool)>)> {
+        // The realm's first time, or more than were kept: all of them.
+        let changes = match std::mem::take(&mut self.named_synced) {
+            true => self.document.take_named_changes(),
+            false => None,
+        };
+        self.named_synced = true;
+        match changes {
+            Some(changes) if changes.is_empty() => None,
+            Some(changes) => Some((false, changes)),
+            None => {
+                let names = self.document.named();
+                Some((true, names.into_iter().map(|name| (name, true)).collect()))
+            }
+        }
     }
 
     fn take_script(&mut self) -> Option<NestedScript> {
@@ -1170,6 +1190,34 @@ impl DocumentHost {
                 self.watch();
                 Ok(Answer::Nothing)
             }
+            Call::NamedItems(name) => {
+                if name.is_empty() {
+                    return Ok(Answer::Nodes(Vec::new()));
+                }
+                let root = self.document.root();
+                let found = self
+                    .elements_under(root)
+                    .into_iter()
+                    .filter(|&e| {
+                        let document = &self.document;
+                        document.attr(e, "id") == Some(name.as_str())
+                            || (document.is_html(e)
+                                && matches!(
+                                    document.local_name(e),
+                                    Some("embed" | "form" | "img" | "object")
+                                )
+                                && document.attr(e, "name") == Some(name.as_str()))
+                    })
+                    .map(super::handle)
+                    .collect();
+                Ok(Answer::Nodes(found))
+            }
+            Call::BaseUrl => Ok(Answer::MaybeString(
+                self.page
+                    .as_ref()
+                    .and_then(|page| page.base_url(&self.document))
+                    .map(|url| url.to_string()),
+            )),
             Call::BroadcastId => Ok(Answer::Number(super::broadcast_id() as f64)),
             Call::BroadcastPost { name, data, sender } => {
                 // Of no storage key, an opaque origin's channel reaches no
@@ -1746,8 +1794,20 @@ impl DocumentHost {
                     None => styles.and_then(|styles| styles.get(node)),
                     Some(pseudo) => styles.and_then(|styles| styles.pseudo(node, pseudo)),
                 };
-                let value =
-                    style.and_then(|style| style::serialize::computed_value(style, &property));
+                let value = match property.as_str() {
+                    // Its URLs resolved against the document's base, which
+                    // the style crate has not (gap batch A, G105).
+                    "background-image" => {
+                        let layers = style.map(|style| {
+                            style
+                                .background
+                                .as_ref()
+                                .map_or_else(|| vec![None], |b| b.image.clone())
+                        });
+                        layers.and_then(|layers| self.background_image(layers))
+                    }
+                    _ => style.and_then(|style| style::serialize::computed_value(style, &property)),
+                };
                 Ok(Answer::MaybeString(value))
             }
             Call::SvgQuery { node, query, args } => {
@@ -2821,6 +2881,26 @@ impl DocumentHost {
         }
     }
 
+    /// `background-image`'s computed value, of its `layers`, as the
+    /// reference writes it: each layer's absolute `url("...")`, or `none`;
+    /// `None` for a gradient, which this does not write yet.
+    fn background_image(&self, layers: Vec<Option<style::computed::Image>>) -> Option<String> {
+        let mut out = Vec::new();
+        for layer in layers {
+            out.push(match layer {
+                None => "none".to_owned(),
+                Some(style::computed::Image::Url { url, .. }) => {
+                    let page = self.page.as_ref()?;
+                    let resolved = page.resolve(&self.document, &url)?;
+                    let text = resolved.as_str().replace('\\', "\\\\").replace('"', "\\\"");
+                    format!("url(\"{text}\")")
+                }
+                Some(_) => return None,
+            });
+        }
+        Some(out.join(", "))
+    }
+
     /// The document's changes since they were last taken, as records for
     /// its mutation observers: one operation's, grouped, when
     /// `operation`.
@@ -3570,6 +3650,8 @@ impl DocumentHost {
     /// The realm is gone, and with it every object a script held.
     pub(crate) fn forget_objects(&mut self) {
         self.exposed.clear();
+        // A new realm is given the window's names afresh.
+        self.named_synced = false;
     }
 }
 

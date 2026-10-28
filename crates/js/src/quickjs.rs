@@ -207,6 +207,12 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
                 let _ = reset.catch(&ctx);
             });
         }
+        // The window's names as the document now is (gap batch A).
+        let entries = self.entries.clone();
+        let host = self.host.clone();
+        self.context.with(|ctx| {
+            let _ = dom::sync_named(&ctx, &host, &entries);
+        });
     }
 
     /// Moves the host back out.

@@ -60,8 +60,6 @@ conformance/renderbuffers/framebuffer-object-attachment.html	gl.getParameter(gl.
 conformance/renderbuffers/framebuffer-object-attachment.html	gl.getParameter(gl.STENCIL_BITS) >= # should be true. Was false.
 conformance/renderbuffers/framebuffer-object-attachment.html	should be green / at (#, #) expected: #,#,#,# was #,#,#,#
 conformance/renderbuffers/framebuffer-object-attachment.html	should be green?at (#, #) expected: #,#,#,# was #,#,#,#
-conformance/rendering/canvas-alpha-bug.html	exception Uncaught ReferenceError: canvas is not defined at http://#:#/conformance/rendering/canvas-alpha-bug.html:#:#
-conformance/rendering/canvas-alpha-bug.html	successfullyParsed should be true (of type boolean). Was undefined (of type undefined).
 conformance/rendering/draw-arrays-out-of-bounds.html	getError expected: NO_ERROR. Was INVALID_OPERATION : after evaluating: gl.drawArrays(gl.TRIANGLES, #, #)
 conformance/state/fb-attach-implicit-target-assignment.html	getError expected: INVALID_OPERATION. Was NO_ERROR : framebufferRenderbuffer must be preceeded by some bindRenderbuffer
 conformance/state/gl-get-calls.html	context.getParameter(context.COMPRESSED_TEXTURE_FORMATS) is not an instance of Uint#Array

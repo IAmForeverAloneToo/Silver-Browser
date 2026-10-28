@@ -2058,6 +2058,9 @@ impl<'a> Emitter<'a> {
                 let t = self.expr(a)?;
                 match op {
                     UnOp::Neg if a.ty.is_matrix() => format!("(({t}) * -1.0f)"),
+                    // WGSL negates no unsigned integer: GLSL's wraps, as
+                    // a subtraction from zero does.
+                    UnOp::Neg if a.ty.scalar() == Some(Scalar::Uint) => format!("(0u - ({t}))"),
                     UnOp::Neg => format!("(-({t}))"),
                     UnOp::Not => format!("(!({t}))"),
                     UnOp::BitNot => format!("(~({t}))"),

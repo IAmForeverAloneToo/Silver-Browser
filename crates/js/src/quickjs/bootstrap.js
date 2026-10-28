@@ -6874,6 +6874,12 @@
       return native.connected(self(this));
     }
 
+    // The document's base URL (gap batch A, G105).
+    get baseURI() {
+      self(this);
+      return native.baseUrl();
+    }
+
     get nodeValue() {
       const handle = self(this);
       return kindOf(this) === 3 ? native.data(handle) : null;
@@ -8245,9 +8251,25 @@
 
   // `getElementsByName` (HTML section 3.1.5, M26.11): a live NodeList
   // of the document's elements whose `name` is `elementName`; `forms`
-  // (M26.13), a live HTMLCollection of its forms.
+  // (M26.13), a live HTMLCollection of its forms; `scripts` and `links`
+  // (gap batch A, G105), its scripts and its `a` and `area` elements
+  // with an `href`.
   include(
     {
+      get scripts() {
+        const handle = self(this);
+        return controlList(this, "scripts", () =>
+          collection(HTMLCollection, this, () => native.byTag(handle, "script"), true),
+        );
+      },
+
+      get links() {
+        const handle = self(this);
+        return controlList(this, "links", () =>
+          collection(HTMLCollection, this, () => native.query(handle, "a[href], area[href]", true), true),
+        );
+      },
+
       get forms() {
         const handle = self(this);
         return controlList(this, "forms", () =>
@@ -11022,10 +11044,87 @@
   // object, between Window.prototype and EventTarget.prototype): its
   // properties the engine's list of the window's child frames makes
   // after each change (`frameList`), each answering as the tab now is.
+  // With them (gap batch A, D44) the document's named elements: an
+  // element of that id, or of that name among `embed`, `form`, `img` and
+  // `object`, or a collection of several, an accessor of each name the
+  // engine says the document has (`namedSync`), a frame's name first.
+  // Real properties, not a proxy: QuickJS would take a proxy's answer of
+  // nothing for a global that is there, and throw no ReferenceError.
+  const ArrayIncludesOf = uncurry(Array.prototype.includes);
   const windowProperties = ObjectCreate(EventTarget.prototype);
   let frameKeys = [];
   if (!WORKER) {
     setPrototypeOf(Window.prototype, windowProperties);
+  }
+
+  // The names the document has, and the last answers, while the document
+  // is as it was.
+  const namedWanted = new $Map();
+  const namedFound = new $Map();
+  let namedVersion = -1;
+  function namedElement(name) {
+    const version = native.version();
+    if (version !== namedVersion) {
+      MapClear(namedFound);
+      namedVersion = version;
+    }
+    let found = MapGet(namedFound, name);
+    if (found === undefined) {
+      found = native.namedItems(name);
+      MapSet(namedFound, name, found);
+    }
+    if (found.length === 0) {
+      return undefined;
+    }
+    return found.length === 1 ? wrap(found[0]) : snapshot(HTMLCollection, found);
+  }
+
+  // The accessor of named property `name`, unless a frame has the name
+  // or what the window inherits (Web IDL's named property visibility:
+  // `addEventListener` is not hidden by an element of that id).
+  function defineNamed(name) {
+    if (ArrayIncludesOf(frameKeys, name) || ReflectHas(EventTarget.prototype, name)) {
+      return;
+    }
+    defineProperty(windowProperties, name, {
+      get: function () {
+        return namedElement(name);
+      },
+      // A script's own value of the name, on the window.
+      set: function (value) {
+        defineProperty(this, name, { value, writable: true, enumerable: true, configurable: true });
+      },
+      enumerable: false,
+      configurable: true,
+    });
+  }
+
+  // The engine's word of the names that came (true) or went, in pairs;
+  // all of them first dropped when `reset`.
+  function namedSync(reset, changes) {
+    if (WORKER) {
+      return;
+    }
+    if (reset) {
+      MapForEach(namedWanted, (_, name) => {
+        if (!ArrayIncludesOf(frameKeys, name)) {
+          ReflectDeleteProperty(windowProperties, name);
+        }
+      });
+      MapClear(namedWanted);
+    }
+    for (let i = 0; i + 1 < changes.length; i += 2) {
+      const name = changes[i];
+      if (changes[i + 1]) {
+        MapSet(namedWanted, name, true);
+        defineNamed(name);
+      } else {
+        MapDelete(namedWanted, name);
+        if (!ArrayIncludesOf(frameKeys, name)) {
+          ReflectDeleteProperty(windowProperties, name);
+        }
+      }
+    }
   }
 
   // The window's child frames are now as many as `names`, those names
@@ -11036,7 +11135,8 @@
     }
     frameKeys = [];
     const property = (key, ask) => {
-      if (ReflectGetOwnPropertyDescriptor(windowProperties, key) !== undefined) {
+      if (ReflectGetOwnPropertyDescriptor(windowProperties, key) !== undefined &&
+        !MapHas(namedWanted, key)) {
         return;
       }
       defineProperty(windowProperties, key, {
@@ -11058,6 +11158,12 @@
         property(name, () => native.frameNamed(selfFrame(), name));
       }
     }
+    // The named elements a frame no longer hides.
+    MapForEach(namedWanted, (_, name) => {
+      if (ReflectGetOwnPropertyDescriptor(windowProperties, name) === undefined) {
+        defineNamed(name);
+      }
+    });
     return nothing();
   }
 
@@ -23595,6 +23701,7 @@
     mutations: mutationsTask,
     observations: observationsTask,
     broadcast: broadcastTask,
+    namedSync,
     mutationsQueued: queueMutationObserverMicrotask,
     evaluate: evaluateExpression,
     fetched,

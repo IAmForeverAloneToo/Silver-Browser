@@ -2926,9 +2926,10 @@ Deferred from the milestones above, each with what it waits on:
        `Selection`, `compareDocumentPosition`, `isEqualNode`,
        `normalize`. Found at M25.
 - [ ] G53 Custom elements and shadow trees. Found at M25.
-- [ ] G54 The window's named properties (HTML 7.2.2.3): an element by
+- [x] G54 The window's named properties (HTML 7.2.2.3): an element by
        its id as a global (`toggler.className`), which most of the
-       selector invalidation reftests use. Found at M25.
+       selector invalidation reftests use. Found at M25. Done in gap
+       batch A (D44).
 - [ ] G55 A viewport for `--print-to-pdf`'s load: the page's scripts
        read a 0 by 0 window, the shell's window giving the engine its
        size only when one is shown. Found at M25.
@@ -3134,7 +3135,12 @@ Deferred from the milestones above, each with what it waits on:
        and `cssRules`, `baseURI`; named access to an element by its id
        on `window` (G54's); `getComputedStyle` by a hyphenated name for
        `background-image`; an image `new Image()` makes, which fetches
-       nothing (one `createElement` makes does). Found at M33.
+       nothing (one `createElement` makes does). Found at M33. In gap
+       batch A: `scripts`, `links`, `baseURI`, named access, and
+       `background-image`'s computed value (`url()`s and `none`; a
+       gradient's not yet), which was what the hyphenated name lacked;
+       `new Image()` was found to fetch as `createElement`'s does.
+       `styleSheets` and `cssRules` remain (G50).
 - [ ] G106 Frames' edges: a `javascript:` URL as a frame's `src` is not
        run; a target naming a frame of a document still parsing finds
        none, and the navigation goes to the top; popups (`window.open`,

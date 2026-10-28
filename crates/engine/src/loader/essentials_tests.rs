@@ -372,18 +372,17 @@ fn a_media_query_list_answers_now_and_hears_each_change_in_a_frame() {
 #[test]
 fn an_idle_callback_runs_when_the_page_is_idle_or_at_its_timeout() {
     let lines = waited(
-        r#"const order = [];
-        // What remains is 50 ms at most; on a slow machine, it may be
-        // none by the time it is read.
-        requestIdleCallback(d => order.push('idle ' + d.didTimeout + ' ' + (d.timeRemaining() >= 0 && d.timeRemaining() <= 50)));
-        const gone = requestIdleCallback(() => order.push('cancelled'));
+        r#"// What remains is 50 ms at most; on a slow machine, it may be
+        // none by the time it is read. A busy machine runs it later, but
+        // never before a timer due when it was asked for.
+        requestIdleCallback(d => console.log('idle ' + d.didTimeout + ' ' + (d.timeRemaining() >= 0 && d.timeRemaining() <= 50)));
+        const gone = requestIdleCallback(() => console.log('cancelled'));
         cancelIdleCallback(gone);
-        setTimeout(() => order.push('timer'), 0);
-        setTimeout(() => console.log(order.join(', ')), 100);
+        setTimeout(() => console.log('timer'), 0);
         console.log(typeof requestIdleCallback(() => {}), IdleDeadline.name);
         try { requestIdleCallback() } catch (e) { console.log(e.name + ': ' + e.message) }
         try { requestIdleCallback(1) } catch (e) { console.log(e.name + ': ' + e.message) }"#,
-        4,
+        5,
     );
     assert_eq!(
         lines,
@@ -391,8 +390,8 @@ fn an_idle_callback_runs_when_the_page_is_idle_or_at_its_timeout() {
             "number IdleDeadline",
             "TypeError: Failed to execute 'requestIdleCallback' on 'Window': 1 argument required, but only 0 present.",
             "TypeError: Failed to execute 'requestIdleCallback' on 'Window': The callback provided as parameter 1 is not a function.",
-            // After the timer due when it was asked for.
-            "timer, idle false true",
+            "timer",
+            "idle false true",
         ]
     );
     // A page busy past the timeout: the timeout's task, due before the
@@ -718,6 +717,46 @@ fn a_broadcast_reaches_the_documents_other_channels_of_its_name() {
             "TypeError: Failed to construct 'BroadcastChannel': 1 argument required, but only 0 present.",
             "TypeError: Failed to execute 'postMessage' on 'BroadcastChannel': 1 argument required, but only 0 present.",
             "b {\"x\":[1,\"two\"]} true true true",
+        ]
+    );
+}
+
+#[test]
+fn the_windows_named_properties_are_the_documents_ids_and_names() {
+    let page: &'static str = r#"<base href="http://example.test/dir/">
+        <div id=named></div><form name=f1></form><img name=pic><span name=notnamed></span><span name=pic></span>
+        <p id=twice></p><p id=twice></p><a href=x></a><a></a><a></a><area href=y>
+        <div id=d style="background-image: url(i.png), none"></div><div id=addEventListener></div>
+        <script>
+        console.log(typeof named, named.tagName, f1.tagName, pic.tagName, typeof notnamed, window.nonexistent);
+        console.log('named' in window, Object.getOwnPropertyNames(window).includes('named'),
+          Object.keys(window).includes('named'), twice.length, twice instanceof HTMLCollection,
+          Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Window.prototype), 'pic').enumerable);
+        // A global of the page's comes first; a name gone goes.
+        var shadowed = 1; document.getElementById('named').id = 'shadowed';
+        // What the window inherits comes first too.
+        console.log(shadowed, typeof named, typeof addEventListener, 'named' in window);
+        try { missing } catch (e) { console.log(e.name) }
+        // One of two gone: the other answers, not what was found before.
+        twice[1].remove();
+        console.log(twice.tagName);
+        console.log(document.scripts.length, document.scripts[0] === document.currentScript, document.links.length,
+          document.links instanceof HTMLCollection, document.body.baseURI, document.baseURI);
+        const cs = getComputedStyle(document.getElementById('d'));
+        console.log(cs['background-image'], cs.backgroundImage === cs.getPropertyValue('background-image'));
+        </script>"#;
+    let (_tab, lines) = scripted(page, true);
+    // The script's lines (the image fails to load after them).
+    assert_eq!(
+        lines[..7],
+        [
+            "object DIV FORM IMG undefined undefined",
+            "true false false 2 true false",
+            "1 undefined function false",
+            "ReferenceError",
+            "P",
+            "1 true 2 true http://example.test/dir/ http://example.test/dir/",
+            "url(\"http://example.test/dir/i.png\"), none true",
         ]
     );
 }

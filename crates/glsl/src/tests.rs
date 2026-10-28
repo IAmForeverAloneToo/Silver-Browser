@@ -365,7 +365,7 @@ fn glsl_es_3_00_translates_its_own() {
         layout(std140) uniform Scene { mat4 view; vec3 sun; float time; mat2 small; float list[3]; } scene;\n\
         uniform Material { vec4 tint; bool lit; };\n\
         void main() {\n\
-          v_id = a_ids.x ^ (a_ids.y << 2u);\n\
+          v_id = -a_ids.x ^ ((-a_ids).y << 2u);\n\
           v_uv[0] = a_position.xy;\n\
           v_uv[1] = vec2(float(gl_VertexID), float(gl_InstanceID)) * scene.list[1];\n\
           gl_Position = scene.view * a_position + vec4(scene.sun * scene.time, 0.0) + tint * (lit ? 1.0 : 0.0);\n\

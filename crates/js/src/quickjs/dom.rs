@@ -401,6 +401,8 @@ const NATIVES: &[(&str, Decode)] = &[
     }),
     ("mutationScope", |a| Ok(Call::MutationScope(a.bool(0)))),
     ("mutationNotify", |_| Ok(Call::MutationNotify)),
+    ("namedItems", |a| Ok(Call::NamedItems(a.string(0)?))),
+    ("baseUrl", |_| Ok(Call::BaseUrl)),
     ("broadcastId", |_| Ok(Call::BroadcastId)),
     ("broadcastPost", |a| {
         Ok(Call::BroadcastPost {
@@ -826,6 +828,7 @@ pub(super) fn install<'js, H: ScriptingHost>(
                     (answer, host.take_work(), host.take_mutation_wake())
                 })?;
                 budget.charge(work);
+                sync_named(&ctx, &host, &entries)?;
                 // Records were queued for mutation observers: the realm
                 // queues its microtask to tell them (gap batch A).
                 if mutated && let Some(entries) = entries.borrow().clone() {
@@ -978,6 +981,31 @@ fn rethrow<'js>(ctx: &Ctx<'js>, caught: CaughtError<'js>) -> rquickjs::Error {
 /// running script (HTML: before the call that made it ready returns),
 /// its errors the page's, reported as a script's are (M26). A run past
 /// its budget is stopped whole.
+/// Gives the bootstrap the window's named properties that came or went
+/// (gap batch A, D44), if any did: `namedSync(reset, [name, came, ...])`.
+pub(super) fn sync_named<'js, H: ScriptingHost>(
+    ctx: &Ctx<'js>,
+    host: &Slot<H>,
+    entries: &Entries,
+) -> rquickjs::Result<()> {
+    // Not before the bootstrap has made its entry points.
+    let Some(entries) = entries.borrow().clone() else {
+        return Ok(());
+    };
+    let Some((reset, changes)) = with_host(ctx, host, |host| host.take_named_changes())? else {
+        return Ok(());
+    };
+    let list = Array::new(ctx.clone())?;
+    for (i, (name, came)) in changes.iter().enumerate() {
+        list.set(2 * i, rquickjs::String::from_str(ctx.clone(), name)?)?;
+        list.set(2 * i + 1, *came)?;
+    }
+    entries
+        .restore(ctx)?
+        .get::<_, Function<'_>>("namedSync")?
+        .call::<_, ()>((reset, list))
+}
+
 fn run_nested<'js, H: ScriptingHost>(
     ctx: &Ctx<'js>,
     host: &Slot<H>,

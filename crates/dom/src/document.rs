@@ -346,7 +346,25 @@ pub struct Document {
     /// What mutation observers are to be told of, while some observer
     /// is registered (gap batch A); boxed, as most documents have none.
     observing: Option<Box<Observing>>,
+    /// The window's named properties (gap batch A, D44): the ids of the
+    /// elements in the tree, and the names of its HTML `embed`, `form`,
+    /// `img` and `object` elements, each with how many elements have it;
+    /// and the names that came or went since they were last taken;
+    /// boxed, to keep the document small.
+    named: Box<Named>,
 }
+
+#[derive(Debug, Clone, Default)]
+struct Named {
+    counts: std::collections::HashMap<String, u32>,
+    changes: Vec<(String, bool)>,
+    /// More came or went than [`MAX_NAMED_CHANGES`]: they were dropped.
+    overflow: bool,
+}
+
+/// The most named property changes kept between two takes; past it the
+/// taker is told to read the names afresh.
+pub const MAX_NAMED_CHANGES: usize = 1 << 16;
 
 /// A document's changes kept for mutation observers, and the nodes they
 /// are registered on, each with whether one watches its subtree.
@@ -381,6 +399,7 @@ impl Document {
             focused: None,
             within: None,
             observing: None,
+            named: Box::default(),
         };
         document.root = document.allocate(NodeData::Document);
         document
@@ -419,6 +438,9 @@ impl Document {
             document.link_last(parent, id.index);
             pending.extend(node.children().iter().rev().map(|c| (c, id.index)));
         }
+        let root = document.root;
+        document.index_names(root, true);
+        document.named.changes.clear();
         document
     }
 
@@ -971,6 +993,9 @@ impl Document {
         }
         self.record_change(Change::Inserted { parent, child });
         self.observe_insertion(parent, child);
+        if self.has_names(child) && self.connected(parent) {
+            self.index_names(child, true);
+        }
         Ok(())
     }
 
@@ -999,6 +1024,9 @@ impl Document {
         self.link_last(parent.index, child.index);
         self.record_change(Change::Inserted { parent, child });
         self.observe_insertion(parent, child);
+        if self.has_names(child) && self.connected(parent) {
+            self.index_names(child, true);
+        }
         Ok(())
     }
 
@@ -1025,6 +1053,24 @@ impl Document {
         value: &str,
     ) -> Result<(), MutationError> {
         let name = self.attribute_name(element, name);
+        let renames = self.names_by(element, &name) && self.connected(element);
+        if renames {
+            self.index_names(element, false);
+        }
+        let set = self.set_attribute_named(element, name, value);
+        if renames {
+            self.index_names(element, true);
+        }
+        set
+    }
+
+    /// [`Document::set_attribute`] of a name as the element keeps it.
+    fn set_attribute_named(
+        &mut self,
+        element: NodeId,
+        name: String,
+        value: &str,
+    ) -> Result<(), MutationError> {
         let had = match self.attrs_mut(element)?.iter().find(|(k, _)| *k == name) {
             Some((_, v)) if v == value => return Ok(()),
             Some((_, v)) => Some(v.len()),
@@ -1071,6 +1117,23 @@ impl Document {
     /// `element`; removing one it does not have changes nothing.
     pub fn remove_attribute(&mut self, element: NodeId, name: &str) -> Result<(), MutationError> {
         let name = self.attribute_name(element, name);
+        let renames = self.names_by(element, &name) && self.connected(element);
+        if renames {
+            self.index_names(element, false);
+        }
+        let removed = self.remove_attribute_named(element, name);
+        if renames {
+            self.index_names(element, true);
+        }
+        removed
+    }
+
+    /// [`Document::remove_attribute`] of a name as the element keeps it.
+    fn remove_attribute_named(
+        &mut self,
+        element: NodeId,
+        name: String,
+    ) -> Result<(), MutationError> {
         let attrs = self.attrs_mut(element)?;
         let Some(at) = attrs.iter().position(|(k, _)| *k == name) else {
             return Ok(());
@@ -1169,6 +1232,98 @@ impl Document {
             }
         }
         Ok(())
+    }
+
+    /// Whether `node` is in the tree: the root is among its inclusive
+    /// ancestors.
+    fn connected(&self, node: NodeId) -> bool {
+        node == self.root || self.ancestors(node).last() == Some(self.root)
+    }
+
+    /// Whether attribute `name` of `element` names it as a window's
+    /// named property: its `id`, or the `name` of an HTML `embed`,
+    /// `form`, `img` or `object`.
+    fn names_by(&self, element: NodeId, name: &str) -> bool {
+        name == "id"
+            || (name == "name"
+                && self.is_html(element)
+                && matches!(
+                    self.local_name(element),
+                    Some("embed" | "form" | "img" | "object")
+                ))
+    }
+
+    /// Whether an element of the subtree at `top` has a name the window
+    /// is to have: what is looked at before the walk up to the root,
+    /// which the parser's deepest pages would make costly.
+    fn has_names(&self, top: NodeId) -> bool {
+        self.subtree(top).any(|n| {
+            ["id", "name"].iter().any(|attribute| {
+                self.names_by(n, attribute)
+                    && self.attr(n, attribute).is_some_and(|v| !v.is_empty())
+            })
+        })
+    }
+
+    /// Counts the names of the elements of the subtree at `top` in
+    /// (`add`) or out, keeping each name that comes or goes.
+    fn index_names(&mut self, top: NodeId, add: bool) {
+        let elements: Vec<NodeId> = self.subtree(top).filter(|&n| self.is_element(n)).collect();
+        for element in elements {
+            for attribute in ["id", "name"] {
+                if !self.names_by(element, attribute) {
+                    continue;
+                }
+                let Some(value) = self.attr(element, attribute).filter(|v| !v.is_empty()) else {
+                    continue;
+                };
+                let value = value.to_owned();
+                let count = self.named.counts.entry(value.clone()).or_insert(0);
+                let changed = match add {
+                    true => {
+                        *count += 1;
+                        *count == 1
+                    }
+                    false => {
+                        *count = count.saturating_sub(1);
+                        *count == 0
+                    }
+                };
+                if !add && *count == 0 {
+                    self.named.counts.remove(&value);
+                }
+                if changed {
+                    if self.named.changes.len() >= MAX_NAMED_CHANGES {
+                        self.named.changes.clear();
+                        self.named.overflow = true;
+                    }
+                    if !self.named.overflow {
+                        self.named.changes.push((value, add));
+                    }
+                }
+            }
+        }
+    }
+
+    /// The names that came (`true`) or went since this was last asked,
+    /// in order; `None` when more did than were kept, the names then to
+    /// be read afresh ([`Document::named`]).
+    pub fn take_named_changes(&mut self) -> Option<Vec<(String, bool)>> {
+        if std::mem::take(&mut self.named.overflow) {
+            self.named.changes.clear();
+            return None;
+        }
+        Some(std::mem::take(&mut self.named.changes))
+    }
+
+    /// The window's named properties' names as the tree now is, those
+    /// taken since forgotten.
+    pub fn named(&mut self) -> Vec<String> {
+        self.named.changes.clear();
+        self.named.overflow = false;
+        let mut names: Vec<String> = self.named.counts.keys().cloned().collect();
+        names.sort_unstable();
+        names
     }
 
     /// Keeps the changes mutation observers are told of from now on,
@@ -1504,6 +1659,12 @@ impl Document {
             return;
         };
         let Some(parent) = record.parent else {
+            return;
+        };
+        if self.has_names(child) && self.connected(child) {
+            self.index_names(child, false);
+        }
+        let Some(record) = self.record(child) else {
             return;
         };
         let (prev, next) = (record.prev_sibling, record.next_sibling);
@@ -2282,6 +2443,54 @@ mod tests {
                 vec![]
             ]
         );
+    }
+
+    #[test]
+    fn the_windows_names_come_and_go_with_the_elements_in_the_tree() {
+        let page = Node::document(vec![
+            Element::new("div")
+                .attr("id", "a")
+                .push(Element::new("img").attr("name", "pic"))
+                .push(Element::new("span").attr("name", "not"))
+                .into(),
+        ]);
+        let mut doc = Document::from_node(&page);
+        assert_eq!(doc.take_named_changes(), Some(vec![]));
+        assert_eq!(doc.named(), ["a", "pic"]);
+        let root = doc.root();
+        let div = doc.first_child(root).unwrap();
+        // A detached element's id is no name until it is in the tree.
+        let b = doc.create_element("p").unwrap();
+        doc.set_attribute(b, "id", "b").unwrap();
+        doc.append_child(div, b).unwrap();
+        doc.set_attribute(b, "id", "c").unwrap();
+        // Another element of the same id: no change; one of two gone, none.
+        let a2 = doc.create_element("p").unwrap();
+        doc.set_attribute(a2, "id", "a").unwrap();
+        doc.append_child(root, a2).unwrap();
+        doc.remove_child(root, a2).unwrap();
+        // A subtree taken out takes its names.
+        doc.remove_child(root, div).unwrap();
+        let changes = |pairs: &[(&str, bool)]| {
+            Some(
+                pairs
+                    .iter()
+                    .map(|&(n, a)| (n.to_owned(), a))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(
+            doc.take_named_changes(),
+            changes(&[
+                ("b", true),
+                ("b", false),
+                ("c", true),
+                ("a", false),
+                ("pic", false),
+                ("c", false)
+            ])
+        );
+        assert!(doc.named().is_empty());
     }
 
     #[test]
