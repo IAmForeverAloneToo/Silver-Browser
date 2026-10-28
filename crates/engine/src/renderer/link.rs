@@ -115,6 +115,19 @@ impl Link {
         });
     }
 
+    /// Tells the browser of a `BroadcastChannel` message of frame
+    /// `frame`'s (gap batch A), for the other renderers.
+    pub(crate) fn broadcast(&self, frame: u32, message: &crate::storage::Broadcast) {
+        let _ = self.send(&ToBrowser::Broadcast {
+            frame,
+            origin: message.key.origin.clone(),
+            partition: message.key.partition.clone(),
+            name: message.name.clone(),
+            data: message.data.clone(),
+            sender: message.sender,
+        });
+    }
+
     /// The browser's number for a new frame under its frame `parent`
     /// (M34); none when it refuses one.
     pub(crate) fn new_frame(&self, parent: u32) -> Option<u32> {

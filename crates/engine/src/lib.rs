@@ -478,8 +478,9 @@ pub struct Engine {
     /// The Web Storage areas the browser keeps, in a renderer (M34.1); the
     /// storage's own otherwise.
     areas: Option<Arc<dyn storage::Areas>>,
-    /// The `storage` events queued (M28), each at the page it goes to.
-    storage_events: VecDeque<(PageId, js::EventInit)>,
+    /// The `storage` events queued (M28), and the `BroadcastChannel`
+    /// messages (gap batch A), each at the page it goes to.
+    storage_events: VecDeque<(PageId, js::Task)>,
     /// Whether the window is hidden (M26): minimized or covered.
     hidden: bool,
     /// When a hidden document's timer last ran.
@@ -3462,8 +3463,8 @@ impl Engine {
                 break;
             }
             self.queue_storage_events();
-            if let Some((page, event)) = self.storage_events.pop_front() {
-                self.fire_storage_event(page, event);
+            if let Some((page, task)) = self.storage_events.pop_front() {
+                self.fire_storage_event(page, task);
                 continue;
             }
             let shown = self.shown_task_at().filter(|due| *due <= now);
@@ -3566,6 +3567,7 @@ impl Engine {
     /// a change this engine's document made goes to the browser too, for
     /// the other renderers.
     fn queue_storage_events(&mut self) {
+        self.queue_broadcasts();
         let changes = self.storage().take_changes(self.listener);
         if changes.is_empty() {
             return;
@@ -3602,17 +3604,93 @@ impl Engine {
                     && !origin.is_opaque()
                     && origin.serialization() == change.origin
                 {
-                    self.storage_events.push_back((*page, event.clone()));
+                    self.storage_events.push_back((
+                        *page,
+                        js::Task::Dispatch {
+                            target: js::Target::Window,
+                            event: event.clone(),
+                        },
+                    ));
                 }
             }
         }
     }
 
-    /// Fires a `storage` event at the window of the document of `page`,
-    /// the one shown or the one on its way, if it is still alive.
-    fn fire_storage_event(&mut self, page: PageId, event: js::EventInit) {
+    /// Queues the `BroadcastChannel` messages that came for this engine
+    /// (gap batch A, D46) at each of its documents of their storage key,
+    /// the one shown and the one on its way; tells the browser of its own
+    /// documents' in a renderer.
+    fn queue_broadcasts(&mut self) {
+        let messages = self.storage().take_broadcasts(self.listener);
+        if messages.is_empty() {
+            return;
+        }
+        let mut pages = vec![(self.shown.page.id(), self.area_key(&self.shown.page))];
+        if let Some(Navigation {
+            incoming: Incoming::Parsing { page, .. },
+            ..
+        }) = &self.navigation
+        {
+            pages.push((page.id(), self.area_key(page)));
+        }
+        for message in messages {
+            if message.source == storage::Source::Engine(self.listener)
+                && let Some(link) = &self.link
+            {
+                link.broadcast(self.frame.key, &message);
+            }
+            for (page, key) in &pages {
+                if key.as_ref() == Some(&message.key) {
+                    let task = js::Task::Broadcast {
+                        name: message.name.clone(),
+                        data: message.data.clone(),
+                        sender: message.sender,
+                        origin: message.key.origin.serialization(),
+                    };
+                    self.storage_events.push_back((*page, task));
+                }
+            }
+        }
+    }
+
+    /// The storage key of the document of `page` (M33.2): its origin and,
+    /// in a frame of a cross-site context, the top-level site; none for
+    /// an opaque origin.
+    fn area_key(&self, page: &Page) -> Option<storage::AreaKey> {
+        if page.origin().is_opaque() || page.sandbox().has(sandbox::Sandbox::ORIGIN) {
+            return None;
+        }
+        let partition = self.frame_partition().map(|frame| net::Partition {
+            cross_site: frame.cross_site || !frame.top.same_site(page.origin()),
+            top: frame.top,
+        });
+        Some(storage::AreaKey {
+            origin: page.origin().clone(),
+            partition,
+        })
+    }
+
+    /// Runs `task`, a `storage` event's dispatch or a `BroadcastChannel`
+    /// message, in the document of `page`, the one shown or the one on
+    /// its way, if it is still alive.
+    fn fire_storage_event(&mut self, page: PageId, task: js::Task) {
         if self.shown.page.id() == page {
-            self.fire(js::Target::Window, event);
+            if !self.scripts_run() || self.shown.made {
+                return;
+            }
+            let ready = self.ready_state();
+            let window = self.window_env();
+            let shown = &mut self.shown;
+            let mut lent = scripts::Lent {
+                document: &mut shown.document,
+                page: &mut shown.page,
+                parser: shown.parsing.as_mut().map(|parsing| &mut parsing.load),
+                network: &mut self.network,
+                ready,
+                window,
+            };
+            shown.scripts.run_task(&mut lent, task);
+            self.scripts_ran();
             return;
         }
         let media = self.media(self.viewport);
@@ -3644,7 +3722,7 @@ impl Engine {
             ready: scripts::ReadyState::Loading,
             window,
         };
-        scripts.dispatch(&mut lent, js::Target::Window, event);
+        scripts.run_task(&mut lent, task);
         let asked = scripts.take_navigation();
         let changes = document.take_changes();
         if changes
@@ -4597,14 +4675,7 @@ impl Engine {
         {
             return None;
         }
-        let partition = self.frame_partition().map(|frame| net::Partition {
-            cross_site: frame.cross_site || !frame.top.same_site(page.origin()),
-            top: frame.top,
-        });
-        let key = storage::AreaKey {
-            origin: page.origin().clone(),
-            partition,
-        };
+        let key = self.area_key(page)?;
         let client = scripts.service_client(&key, page.id(), url, self.frame.is_frame());
         let answer = self.areas().service_worker(&client, r#"{"op":"commit"}"#);
         // Its id as the registry knows it: the browser's, in a renderer.

@@ -136,6 +136,47 @@ fn a_change_is_told_to_the_other_tabs_renderer_not_to_its_maker() {
 }
 
 #[test]
+fn a_broadcast_crosses_to_the_other_tabs_renderer_not_back() {
+    let server = TestServer::plain(|request| {
+        match request.target.as_str() {
+        "/listen.html" => Reply::ok(
+            "text/html",
+            b"<script>new BroadcastChannel('n').onmessage = e => console.log('heard ' + e.data);</script>",
+        ),
+        "/post.html" => Reply::ok(
+            "text/html",
+            b"<script>const c = new BroadcastChannel('n'); c.onmessage = () => console.log('echo');               new BroadcastChannel('n').onmessage = e => console.log('own ' + e.data);               c.postMessage('hi');</script>",
+        ),
+        _ => Reply::with_fields(404, &[], b""),
+    }
+    });
+    let context = Context::new();
+    let mut first = tab_of(&context);
+    let mut second = tab_of(&context);
+    load(&mut second, server.url("/listen.html"));
+    load(&mut first, server.url("/post.html"));
+    let (mut heard, mut made) = (Vec::new(), Vec::new());
+    settle(&mut [&mut first, &mut second], |tabs| {
+        made.extend(console(tabs[0]));
+        heard.extend(console(tabs[1]));
+        !heard.is_empty() && !made.is_empty()
+    });
+    // Time for an echo to come, were one sent.
+    let began = Instant::now();
+    settle(&mut [&mut first, &mut second], |tabs| {
+        made.extend(console(tabs[0]));
+        heard.extend(console(tabs[1]));
+        began.elapsed() > Duration::from_millis(500)
+    });
+    assert_eq!(heard, ["heard hi"]);
+    assert_eq!(
+        made,
+        ["own hi"],
+        "the sender's other channel hears it, the sender not"
+    );
+}
+
+#[test]
 fn a_renderer_of_another_site_is_told_nothing() {
     let server = server();
     let other = TestServer::plain(|_| Reply::ok("text/html", HEARING.as_bytes()));

@@ -393,7 +393,8 @@ a frame's budget after the last.)*
 - *`SharedArrayBuffer`* and `Atomics.wait` between threads, with
   `crossOriginIsolated` and the headers that make it (COOP and COEP):
   G83. The shared memories of M29's WebAssembly with it.
-- *`BroadcastChannel`*: G84.
+- *`BroadcastChannel`*: G84. *(Later: documents' in gap batch A; a
+  worker's remain.)*
 - *Frames' `postMessage`* (`window.postMessage` to another window):
   M33.2's frames.
 - *Transferable streams*: with streams, G67.

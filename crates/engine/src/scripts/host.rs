@@ -1170,6 +1170,31 @@ impl DocumentHost {
                 self.watch();
                 Ok(Answer::Nothing)
             }
+            Call::BroadcastId => Ok(Answer::Number(super::broadcast_id() as f64)),
+            Call::BroadcastPost { name, data, sender } => {
+                // Of no storage key, an opaque origin's channel reaches no
+                // other.
+                let Some(page) = &self.page else {
+                    return Ok(Answer::Nothing);
+                };
+                if page.origin().is_opaque() {
+                    return Ok(Answer::Nothing);
+                }
+                let key = self.storage_key(page);
+                if let Some(storage) = &self.window.storage {
+                    storage
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .post(storage::Broadcast {
+                            key,
+                            name,
+                            data,
+                            sender,
+                            source: storage::Source::Engine(self.window.listener.0),
+                        });
+                }
+                Ok(Answer::Nothing)
+            }
             Call::ResizeObserve {
                 observer,
                 node,

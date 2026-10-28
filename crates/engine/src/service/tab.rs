@@ -1643,11 +1643,35 @@ impl RemoteTab {
     /// origin, but the one that made it; a `sessionStorage` area's only
     /// in its own tab. Whether there were any.
     fn relay_storage_changes(&mut self) -> bool {
-        let changes = self
-            .storage
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take_changes(self.listener);
+        let (changes, broadcasts) = {
+            let mut storage = self.storage.lock().unwrap_or_else(PoisonError::into_inner);
+            (
+                storage.take_changes(self.listener),
+                storage.take_broadcasts(self.listener),
+            )
+        };
+        // `BroadcastChannel` messages (gap batch A, D46): to each renderer
+        // whose lock admits their origin, but the one that sent them.
+        for message in &broadcasts {
+            for (number, slot) in &self.renderers {
+                if message.source == crate::storage::Source::Renderer(*number)
+                    || message.key.origin.is_opaque()
+                    || !slot
+                        .lock
+                        .as_ref()
+                        .is_some_and(|lock| lock.admits(&message.key.origin))
+                {
+                    continue;
+                }
+                let _ = slot.renderer.send(&ToRenderer::Broadcast {
+                    origin: message.key.origin.clone(),
+                    partition: message.key.partition.clone(),
+                    name: message.name.clone(),
+                    data: message.data.clone(),
+                    sender: message.sender,
+                });
+            }
+        }
         for change in &changes {
             if let crate::storage::Scope::Session(tab) = change.scope
                 && tab != self.tab
@@ -1679,7 +1703,7 @@ impl RemoteTab {
                 });
             }
         }
-        !changes.is_empty()
+        !changes.is_empty() || !broadcasts.is_empty()
     }
 
     /// The numbers of the tab's renderers alive.

@@ -244,6 +244,29 @@ impl StorageService {
         message: ToBrowser,
         reply: &Sender<ToRenderer>,
     ) -> Result<Option<ToBrowser>, String> {
+        if let ToBrowser::Broadcast {
+            frame,
+            origin,
+            partition,
+            name,
+            data,
+            sender,
+        } = message
+        {
+            // Held to the storage key the frame may use (gap batch A).
+            let key = self.key(renderer, frame, origin, partition)?;
+            self.storage
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .post(crate::storage::Broadcast {
+                    key,
+                    name,
+                    data,
+                    sender,
+                    source: Source::Renderer(renderer),
+                });
+            return Ok(None);
+        }
         if let ToBrowser::StorageChanged {
             frame,
             local,

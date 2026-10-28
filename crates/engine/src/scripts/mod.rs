@@ -1004,6 +1004,19 @@ impl Scripts {
     /// having no realm: one makes a realm only if its markup holds an
     /// event handler, there being no other listener. The caller does the
     /// event's default actions then, as a click's activation.
+    /// Runs `task`: an event's dispatch as [`Scripts::dispatch`] does, any
+    /// other in the realm the document has, if any (a `BroadcastChannel`
+    /// message has no channel to go to in a document that has none).
+    pub(crate) fn run_task(&mut self, lent: &mut Lent<'_>, task: js::Task) -> Option<bool> {
+        match task {
+            js::Task::Dispatch { target, event } => self.dispatch(lent, target, event),
+            task => {
+                self.realm.as_ref()?;
+                Some(self.enter(lent, &task, 0))
+            }
+        }
+    }
+
     pub(crate) fn dispatch(
         &mut self,
         lent: &mut Lent<'_>,
@@ -1829,6 +1842,22 @@ impl Scripts {
 }
 
 /// The handle a script holds `node` by (M25).
+/// A number for a new `BroadcastChannel` (gap batch A): from a start of
+/// the process's own, so that a renderer's do not meet another's, and
+/// below 2^53, so that a script's number holds it.
+pub(crate) fn broadcast_id() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    use std::sync::LazyLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static START: LazyLock<u64> = LazyLock::new(|| {
+        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+        hasher.write_u64(u64::from(std::process::id()));
+        (hasher.finish() >> 12) << 20
+    });
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    (*START + NEXT.fetch_add(1, Ordering::Relaxed)) & ((1 << 53) - 1)
+}
+
 pub(crate) fn handle(node: NodeId) -> js::Handle {
     js::Handle(node.to_bits())
 }

@@ -401,6 +401,14 @@ const NATIVES: &[(&str, Decode)] = &[
     }),
     ("mutationScope", |a| Ok(Call::MutationScope(a.bool(0)))),
     ("mutationNotify", |_| Ok(Call::MutationNotify)),
+    ("broadcastId", |_| Ok(Call::BroadcastId)),
+    ("broadcastPost", |a| {
+        Ok(Call::BroadcastPost {
+            name: a.string(0)?,
+            data: a.string(1)?,
+            sender: a.number(2) as u64,
+        })
+    }),
     ("resizeObserve", |a| {
         Ok(Call::ResizeObserve {
             observer: a.integer(0) as u32,

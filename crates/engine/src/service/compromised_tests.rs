@@ -160,7 +160,8 @@ fn fetch(frame: u32, request: Request) -> Said {
 fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
     let other = victim(server);
     let origin = other.origin();
-    let (o1, o2, o3, o4, o5, o6) = (
+    let (o1, o2, o3, o4, o5, o6, o7) = (
+        origin.clone(),
         origin.clone(),
         origin.clone(),
         origin.clone(),
@@ -318,6 +319,20 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
                     old: None,
                     new: Some("forged".into()),
                     url: String::new(),
+                })]
+            }),
+            "the storage of",
+        ),
+        (
+            "another site's broadcast",
+            Box::new(move |frame| {
+                vec![said(ToBrowser::Broadcast {
+                    frame,
+                    origin: o7,
+                    partition: None,
+                    name: "n".into(),
+                    data: String::new(),
+                    sender: 1,
                 })]
             }),
             "the storage of",

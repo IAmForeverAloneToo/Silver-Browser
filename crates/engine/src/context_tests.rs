@@ -101,6 +101,42 @@ fn a_change_in_one_tab_is_heard_in_the_other_not_by_its_maker() {
 }
 
 #[test]
+fn a_broadcast_reaches_the_other_tabs_channels_of_its_origin() {
+    let pages = serve(|path| match path {
+        "/listen.html" => Some(html(
+            "<script>new BroadcastChannel('n').onmessage = e => console.log('heard ' + e.data);</script>",
+        )),
+        "/post.html" => Some(html(
+            "<script>new BroadcastChannel('n').postMessage('hi'); console.log('posted');</script>",
+        )),
+        _ => None,
+    });
+    let context = Context::new();
+    let mut first = tab_of(&context);
+    let mut second = tab_of(&context);
+    let mut third = tab_of(&context);
+    load(&mut second, pages.url("/listen.html"));
+    // Another origin's tab: localhost against 127.0.0.1.
+    let other = net::Url::parse(
+        &pages
+            .url("/listen.html")
+            .as_str()
+            .replace("127.0.0.1", "localhost"),
+    )
+    .unwrap();
+    load(&mut third, other);
+    load(&mut first, pages.url("/post.html"));
+    assert_eq!(console(&mut first), ["posted"]);
+    let heard = second.run_until(|lines| !lines.is_empty());
+    assert_eq!(heard, ["heard hi"]);
+    third.engine.run_tasks();
+    assert!(
+        console(&mut third).is_empty(),
+        "another origin hears nothing"
+    );
+}
+
+#[test]
 fn a_tab_closed_forgets_its_session_storage() {
     let server = server();
     let context = Context::new();

@@ -300,6 +300,16 @@ pub enum Call {
     /// The mutation observer microtask's start: the observers to
     /// notify, in the order they were made.
     MutationNotify,
+    /// A number for a new `BroadcastChannel` (gap batch A, D46), no
+    /// other channel's in the process.
+    BroadcastId,
+    /// `BroadcastChannel.postMessage()`: to the channels of `name` but
+    /// `sender`, the message as serialized.
+    BroadcastPost {
+        name: String,
+        data: String,
+        sender: u64,
+    },
     /// `ResizeObserver.observe()` (gap batch A, D45): observer's watch of
     /// `node`'s box, 0 its content box, 1 its border box, 2 its content
     /// box in device pixels.

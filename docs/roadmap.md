@@ -3023,7 +3023,9 @@ Deferred from the milestones above, each with what it waits on:
 - [ ] G83 `SharedArrayBuffer` and `Atomics.wait` between threads, with
        `crossOriginIsolated` and the headers that give it (COOP and
        COEP), and WebAssembly's shared memories with them. Named at M31.
-- [ ] G84 `BroadcastChannel`. Named at M31.
+- [ ] G84 `BroadcastChannel`. Named at M31. Documents' done in gap
+       batch A (D46), across renderers too; a dedicated worker's
+       channels remain.
 - [ ] G85 Workers past M31: an `ImageBitmap` in a transfer list; a
        placeholder canvas's `toDataURL` and `toBlob` of the frame its
        worker sent; a cross-origin `importScripts` script's errors

@@ -388,6 +388,15 @@ pub enum Task {
     /// What a document's media elements do (M40), as JSON: actions to
     /// carry out, or a pipeline's report to hear.
     Media(String),
+    /// A `BroadcastChannel` message (gap batch A, D46): for the channels
+    /// of `name` but the one numbered `sender`, its data as serialized,
+    /// and the origin it came from.
+    Broadcast {
+        name: String,
+        data: String,
+        sender: u64,
+        origin: String,
+    },
     /// The entries a frame's layout made for resize and intersection
     /// observers (gap batch A), as JSON: their callbacks called.
     Observations(String),

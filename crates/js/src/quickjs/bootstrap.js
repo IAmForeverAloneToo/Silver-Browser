@@ -4318,6 +4318,68 @@
     return false;
   }
 
+  // ---- BroadcastChannel (HTML 9.6, gap batch A, D46) ----
+
+  // A message goes to every other channel of the name and storage key in
+  // the browser: through the engine's context in one process, and the
+  // browser between renderers. A channel is kept while it is open, as
+  // the standard keeps one that can still hear.
+  const openChannels = new $Map();
+  let channelOf;
+
+  class BroadcastChannel extends EventTarget {
+    #name;
+    #id;
+    #closed = false;
+
+    constructor(name) {
+      needToConstruct(arguments.length, 1, "BroadcastChannel");
+      super();
+      this.#name = str(name);
+      this.#id = native.broadcastId();
+      MapSet(openChannels, this, true);
+    }
+
+    static {
+      channelOf = (channel) => [channel.#name, channel.#id, channel.#closed];
+    }
+
+    get name() {
+      return this.#name;
+    }
+
+    postMessage(message) {
+      need(arguments.length, 1, "postMessage", "BroadcastChannel");
+      if (this.#closed) {
+        throw new $DOMException(prefix("postMessage", "BroadcastChannel") + "Channel is closed",
+          "InvalidStateError");
+      }
+      const record = serialize(message, [], prefix("postMessage", "BroadcastChannel"), null);
+      native.broadcastPost(this.#name, wire(record), this.#id);
+    }
+
+    close() {
+      this.#closed = true;
+      MapDelete(openChannels, this);
+    }
+  }
+  defineHandlers(BroadcastChannel.prototype, ["message", "messageerror"], false);
+  expose(BroadcastChannel, "BroadcastChannel");
+
+  // The engine's `broadcast` task: a `message` event at each open channel
+  // of `name` but the one that sent it, in the order they were made.
+  function* broadcastTask(name, text, sender, origin) {
+    const channels = [];
+    MapForEach(openChannels, (_, channel) => ArrayPush(channels, channel));
+    for (let i = 0; i < channels.length; i++) {
+      const [own, id, closed] = channelOf(channels[i]);
+      if (own === name && id !== sender && !closed) {
+        yield* messageEvent(channels[i], text, origin);
+      }
+    }
+    return false;
+  }
+
   // ---- matchMedia() and MediaQueryList (CSSOM View 4.2, gap batch A) ----
 
   // A list is the engine's by a number: parsed once, answered against the
@@ -23532,6 +23594,7 @@
     mediaChanged,
     mutations: mutationsTask,
     observations: observationsTask,
+    broadcast: broadcastTask,
     mutationsQueued: queueMutationObserverMicrotask,
     evaluate: evaluateExpression,
     fetched,

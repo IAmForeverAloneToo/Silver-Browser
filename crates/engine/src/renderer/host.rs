@@ -255,6 +255,24 @@ impl Host {
             ToRenderer::Inspect { view, message } => {
                 self.view(view)?.engine.inspect(&message);
             }
+            ToRenderer::Broadcast {
+                origin,
+                partition,
+                name,
+                data,
+                sender,
+            } => {
+                self.storage
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .post(crate::storage::Broadcast {
+                        key: crate::storage::AreaKey { origin, partition },
+                        name,
+                        data,
+                        sender,
+                        source: crate::storage::Source::Elsewhere,
+                    });
+            }
             ToRenderer::StorageChanged {
                 local,
                 origin,

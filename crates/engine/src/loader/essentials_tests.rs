@@ -694,3 +694,30 @@ fn an_intersection_follows_transforms_and_only_its_roots_clips() {
     );
     assert!(tab.engine.needs_frame());
 }
+
+#[test]
+fn a_broadcast_reaches_the_documents_other_channels_of_its_name() {
+    let lines = waited(
+        r#"const a = new BroadcastChannel('n'), b = new BroadcastChannel('n'), c = new BroadcastChannel('other');
+        const closed = new BroadcastChannel('n'); closed.close();
+        b.onmessage = e => console.log('b', JSON.stringify(e.data), e.origin === location.origin, e.isTrusted, e instanceof MessageEvent);
+        a.onmessage = () => console.log('a heard its own');
+        c.onmessage = () => console.log('c heard another name');
+        closed.onmessage = () => console.log('closed heard');
+        a.postMessage({x: [1, 'two']});
+        console.log(a.name);
+        for (const f of [() => closed.postMessage(1), () => new BroadcastChannel(), () => a.postMessage()]) {
+          try { f() } catch (e) { console.log(e.name + ': ' + e.message) } }"#,
+        5,
+    );
+    assert_eq!(
+        lines,
+        [
+            "n",
+            "InvalidStateError: Failed to execute 'postMessage' on 'BroadcastChannel': Channel is closed",
+            "TypeError: Failed to construct 'BroadcastChannel': 1 argument required, but only 0 present.",
+            "TypeError: Failed to execute 'postMessage' on 'BroadcastChannel': 1 argument required, but only 0 present.",
+            "b {\"x\":[1,\"two\"]} true true true",
+        ]
+    );
+}

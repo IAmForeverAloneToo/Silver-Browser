@@ -162,7 +162,21 @@ struct Unwritten {
 #[derive(Default)]
 struct Listener {
     changes: Vec<Change>,
+    /// The `BroadcastChannel` messages it has not taken (gap batch A).
+    broadcasts: Vec<Broadcast>,
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+/// A `BroadcastChannel` message (gap batch A, D46): for the channels of
+/// its name and storage key, as the sender serialized it, which channel
+/// sent it (that one hears nothing of it), and whose it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Broadcast {
+    pub(crate) key: AreaKey,
+    pub(crate) name: String,
+    pub(crate) data: String,
+    pub(crate) sender: u64,
+    pub(crate) source: Source,
 }
 
 /// Which area of an origin: its `localStorage`, or a tab's
@@ -920,11 +934,34 @@ impl Storage {
         }
     }
 
-    /// Whether changes wait for listener `id`.
+    /// Queues `message` for every listener, waking each, as
+    /// [`Storage::broadcast`] queues a change; its own sender's too, whose
+    /// other channels hear it.
+    pub(crate) fn post(&mut self, message: Broadcast) {
+        for listener in self.listeners.values_mut() {
+            if listener.broadcasts.len() == MAX_WAITING_CHANGES {
+                listener.broadcasts.remove(0);
+            }
+            listener.broadcasts.push(message.clone());
+            if let Some(wake) = &listener.wake {
+                wake();
+            }
+        }
+    }
+
+    /// The messages waiting for listener `id`, taken.
+    pub(crate) fn take_broadcasts(&mut self, id: u64) -> Vec<Broadcast> {
+        self.listeners
+            .get_mut(&id)
+            .map(|listener| std::mem::take(&mut listener.broadcasts))
+            .unwrap_or_default()
+    }
+
+    /// Whether changes or messages wait for listener `id`.
     pub(crate) fn has_changes(&self, id: u64) -> bool {
         self.listeners
             .get(&id)
-            .is_some_and(|listener| !listener.changes.is_empty())
+            .is_some_and(|listener| !listener.changes.is_empty() || !listener.broadcasts.is_empty())
     }
 
     /// The changes waiting for listener `id`, taken.

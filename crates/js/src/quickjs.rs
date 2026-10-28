@@ -458,6 +458,21 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                     .get::<_, Function<'_>>("media")?
                     .call::<_, Value<'_>>((message.as_str(),))
             }),
+            Task::Broadcast {
+                name,
+                data,
+                sender,
+                origin,
+            } => self.stepped(&entries, |_, entries| {
+                entries
+                    .get::<_, Function<'_>>("broadcast")?
+                    .call::<_, Value<'_>>((
+                        name.as_str(),
+                        data.as_str(),
+                        *sender as f64,
+                        origin.as_str(),
+                    ))
+            }),
             Task::Observations(text) => self.stepped(&entries, |_, entries| {
                 entries
                     .get::<_, Function<'_>>("observations")?

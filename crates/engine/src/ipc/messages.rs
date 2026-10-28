@@ -152,6 +152,16 @@ wire_enum! {
         /// A batch of the GPU service's replies to the renderer, its
         /// client (M41, D38), as the GPU process sent them.
         37 => Gpu { bytes: Bytes },
+        /// A `BroadcastChannel` message of another renderer's (gap batch
+        /// A, D46), for the channels of `name` of the storage key
+        /// `origin` and `partition`.
+        38 => Broadcast {
+            origin: Origin,
+            partition: Option<Partition>,
+            name: String,
+            data: String,
+            sender: u64,
+        },
     }
 }
 
@@ -331,6 +341,17 @@ wire_enum! {
         /// D38), which the browser relays, stamped with the renderer's
         /// number, without reading them.
         32 => Gpu { bytes: Bytes },
+        /// A `BroadcastChannel` message of a document of frame `frame`
+        /// (gap batch A, D46), its storage key `origin` and `partition`,
+        /// which the browser holds it to, for the other renderers.
+        33 => Broadcast {
+            frame: u32,
+            origin: Origin,
+            partition: Option<Partition>,
+            name: String,
+            data: String,
+            sender: u64,
+        },
     }
 }
 
