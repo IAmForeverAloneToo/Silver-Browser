@@ -2069,7 +2069,7 @@ html/semantics/embedded-content/media-elements/user-interface/muted-playbackrate
 url/javascript-urls.window.html	javascript: URL without an opaque path	a javascript: URL as a frame's src is not run (G106)
 url/javascript-urls.window.html	javascript: URL containing a JavaScript string split over path and query	a javascript: URL as a frame's src is not run (G106)
 url/javascript-urls.window.html	javascript: URL containing a JavaScript string split over path and query and has a U+000A in scheme	a javascript: URL as a frame's src is not run (G106)
-workers/dedicated-worker-from-blob-url.window.html	Creating a dedicated worker from a blob URL works immediately before revoking.	a blob: URL resolved when the worker's script is fetched, not when it is parsed: revoked at once, it is gone (G223)
+workers/dedicated-worker-from-blob-url.window.html	Creating a dedicated worker from a blob URL works immediately before revoking.	either: a blob: URL resolved when the worker's script is fetched, not when it is parsed (G223): the fetch may start before the revocation or after it
 workers/interfaces/WorkerUtils/importScripts/blob-url.worker.html	Revoking a blob URL in an earlier script will not fail	a blob: URL resolved when the worker's script is fetched, not when it is parsed: revoked at once, it is gone (G223)
 workers/semantics/interface-objects/001.worker.html	The PromiseRejectionEvent interface object should be exposed.	a worker's global lacks FileList, FileReaderSync and PromiseRejectionEvent (G85)
 workers/semantics/interface-objects/001.worker.html	The EventSource interface object should be exposed.	no WebSocket or EventSource (G74)
