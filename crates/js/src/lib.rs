@@ -388,6 +388,9 @@ pub enum Task {
     /// What a document's media elements do (M40), as JSON: actions to
     /// carry out, or a pipeline's report to hear.
     Media(String),
+    /// The entries a frame's layout made for resize and intersection
+    /// observers (gap batch A), as JSON: their callbacks called.
+    Observations(String),
     /// Records wait for mutation observers that no call of a script's
     /// queued (the parser's insertions): the realm tells them.
     Mutations,

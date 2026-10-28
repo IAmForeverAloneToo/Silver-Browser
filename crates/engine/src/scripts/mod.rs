@@ -17,6 +17,7 @@ mod cssom;
 mod decoding;
 mod fetch;
 mod host;
+mod layout_observers;
 mod media_lists;
 mod mutations;
 pub(crate) mod ports;
@@ -171,6 +172,7 @@ pub enum ScriptState {
 }
 
 pub(crate) use host::DocumentHost;
+pub(crate) use layout_observers::Measured;
 
 /// `text`, cut to [`MAX_CONSOLE_MESSAGE`] bytes at a character boundary.
 fn cut(mut text: String) -> String {
@@ -1055,6 +1057,40 @@ impl Scripts {
     /// took (gap batch A).
     pub(crate) fn mutations_waiting(&self, document: &Document) -> bool {
         !self.stopped && self.host.mutations_waiting(document)
+    }
+
+    /// Whether the document has resize or intersection observers that
+    /// watch an element, so that frames measure (gap batch A).
+    pub(crate) fn layout_observing(&self) -> bool {
+        !self.stopped && self.host.layout_observers.observing()
+    }
+
+    /// The elements those observers watch, and their roots.
+    pub(crate) fn layout_targets(&self) -> std::collections::HashSet<NodeId> {
+        self.host.layout_observers.targets()
+    }
+
+    /// The observers' turn in a frame, after layout (D45): the entries
+    /// `measured` makes, given to the realm as a task.
+    pub(crate) fn observe_layout(
+        &mut self,
+        lent: &mut Lent<'_>,
+        measured: &std::collections::HashMap<NodeId, Measured>,
+        viewport: (f32, f32),
+        scale: f32,
+        time: f64,
+    ) {
+        let document = &*lent.document;
+        let told = self.host.layout_observers.observed(
+            measured,
+            viewport,
+            scale,
+            time,
+            |ancestor, node| document.is_inclusive_ancestor(ancestor, node),
+        );
+        if let Some(told) = told {
+            self.enter(lent, &js::Task::Observations(told), 0);
+        }
     }
 
     /// Whether the document has `matchMedia()` lists, which each frame's

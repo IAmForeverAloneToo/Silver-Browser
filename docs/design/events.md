@@ -751,7 +751,8 @@ documents step; the number follows each.
   M37.
 - *`fetch`, `XMLHttpRequest`, `FormData` and `URLSearchParams`*. M27.
 - *Observers*: `MutationObserver` (G49), `IntersectionObserver`,
-  `ResizeObserver`, `requestIdleCallback`. G65.
+  `ResizeObserver`, `requestIdleCallback`. G65. *(Later: done in gap
+  batch A.)*
 - *Messaging*: `postMessage`, `MessageChannel`, `BroadcastChannel`;
   workers. M31.
 - *`:visited`*, by design (above).

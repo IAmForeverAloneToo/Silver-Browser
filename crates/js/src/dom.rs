@@ -300,6 +300,34 @@ pub enum Call {
     /// The mutation observer microtask's start: the observers to
     /// notify, in the order they were made.
     MutationNotify,
+    /// `ResizeObserver.observe()` (gap batch A, D45): observer's watch of
+    /// `node`'s box, 0 its content box, 1 its border box, 2 its content
+    /// box in device pixels.
+    ResizeObserve {
+        observer: u32,
+        node: Handle,
+        observed: u32,
+    },
+    /// `unobserve()`, or with no node `disconnect()`.
+    ResizeUnobserve {
+        observer: u32,
+        node: Option<Handle>,
+    },
+    /// `IntersectionObserver.observe()`: observer's watch of `node`, with
+    /// its root, its margin (each side a value and whether it is a
+    /// percentage) and its thresholds.
+    IntersectionObserve {
+        observer: u32,
+        node: Handle,
+        root: Option<Handle>,
+        margin: Vec<f64>,
+        thresholds: Vec<f64>,
+    },
+    /// `unobserve()`, or with no node `disconnect()`.
+    IntersectionUnobserve {
+        observer: u32,
+        node: Option<Handle>,
+    },
     /// `matchMedia()` (gap batch A): the list's serialization and its
     /// number, as strings.
     MatchMedia(String),

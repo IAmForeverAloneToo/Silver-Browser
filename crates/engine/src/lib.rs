@@ -6975,6 +6975,9 @@ impl Engine {
         self.drawing_at = Some(time);
         let budget = time.deadline.saturating_sub(time.now);
         let empty = self.draw(width, height, budget).is_empty();
+        // Laid out: the resize and intersection observers' turn (gap
+        // batch A, D45), their callbacks' changes the next frame's.
+        self.observe_layout(time.now);
         self.drawing_at = None;
         if empty {
             return &[];
@@ -7436,6 +7439,145 @@ impl Engine {
                     .is_some_and(|f| matches!(f.style.overflow, Overflow::Auto | Overflow::Scroll))
             })
             .collect()
+    }
+
+    // ---- Resize and intersection observers (gap batch A, D45) --------------
+
+    /// Measures what the shown document's resize and intersection
+    /// observers watch, from the frame just laid out, and gives their
+    /// realm the entries that makes.
+    fn observe_layout(&mut self, now: Duration) {
+        if !self.scripts_run() || self.shown.made || !self.shown.scripts.layout_observing() {
+            return;
+        }
+        let targets = self.shown.scripts.layout_targets();
+        let measured = self.measure(&targets);
+        let origin = self
+            .shown
+            .scripts
+            .origin()
+            .map_or(Duration::ZERO, |origin| origin.at);
+        let time = now.saturating_sub(origin).as_secs_f64() * 1000.0;
+        let viewport = (self.viewport.0 as f32, self.viewport.1 as f32);
+        let scale = self.scale;
+        let ready = self.ready_state();
+        let window = self.window_env();
+        let shown = &mut self.shown;
+        let mut lent = scripts::Lent {
+            document: &mut shown.document,
+            page: &mut shown.page,
+            parser: shown.parsing.as_mut().map(|parsing| &mut parsing.load),
+            network: &mut self.network,
+            ready,
+            window,
+        };
+        shown
+            .scripts
+            .observe_layout(&mut lent, &measured, viewport, scale, time);
+        self.scripts_ran();
+    }
+
+    /// Each of `targets` as the frame laid it out (D45): its border box's
+    /// size, border and padding, its bounds in viewport coordinates
+    /// through the transforms around it, and the clips around it; from
+    /// one walk of the whole paint order, not only what is in view. An
+    /// element with no box is not there.
+    fn measure(&mut self, targets: &HashSet<NodeId>) -> HashMap<NodeId, scripts::Measured> {
+        let mut out: HashMap<NodeId, scripts::Measured> = HashMap::new();
+        let (width, height) = self.viewport;
+        if targets.is_empty() || width == 0 {
+            return out;
+        }
+        let (scroll_y, offsets) = self.drawn_offsets();
+        let viewport = Viewport {
+            width: width as f32,
+            height: height as f32,
+            scroll_y,
+        };
+        let layout = self.layout(width as f32);
+        // The matrices to viewport coordinates of the groups walked
+        // into, and the clips in force, each in viewport coordinates.
+        let mut matrices = vec![style::transform::Matrix::IDENTITY];
+        let mut clips: Vec<(Option<NodeId>, [f32; 4])> = Vec::new();
+        let map = |m: &style::transform::Matrix, r: Rect| -> [f32; 4] {
+            let corners = [
+                (r.x, r.y),
+                (r.x + r.w, r.y),
+                (r.x, r.y + r.h),
+                (r.x + r.w, r.y + r.h),
+            ];
+            let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+            for (x, y) in corners {
+                let [px, py, _, w] = m.apply(x, y, 0.0);
+                let w = if w.abs() > f32::EPSILON { w } else { 1.0 };
+                let (px, py) = (px / w, py / w);
+                x0 = x0.min(px);
+                y0 = y0.min(py);
+                x1 = x1.max(px);
+                y1 = y1.max(py);
+            }
+            [x0, y0, x1 - x0, y1 - y0]
+        };
+        // Content this far above and below the viewport is listed too:
+        // all of any page.
+        for step in paint::paint_order_in(&layout.roots, viewport, &offsets, 1.0e7) {
+            let matrix = *matrices.last().expect("the viewport's");
+            match step {
+                Step::PushGroup { matrix: inner, .. } => matrices.push(matrix.then(&inner)),
+                Step::PopGroup => {
+                    if matrices.len() > 1 {
+                        matrices.pop();
+                    }
+                }
+                Step::PushClip { node, rect } => {
+                    let mut clip = map(&matrix, rect);
+                    if let Some((_, outer)) = clips.last() {
+                        let left = clip[0].max(outer[0]);
+                        let top = clip[1].max(outer[1]);
+                        let right = (clip[0] + clip[2]).min(outer[0] + outer[2]);
+                        let bottom = (clip[1] + clip[3]).min(outer[1] + outer[3]);
+                        clip = [left, top, (right - left).max(0.0), (bottom - top).max(0.0)];
+                    }
+                    clips.push((node, clip));
+                }
+                Step::PopClip => {
+                    clips.pop();
+                }
+                Step::Box {
+                    fragment,
+                    rect,
+                    cb_width,
+                } if fragment.generated.is_none() && targets.contains(&fragment.node) => {
+                    let bounds = map(&matrix, rect);
+                    match out.entry(fragment.node) {
+                        // An inline element's boxes on its lines: their
+                        // union.
+                        std::collections::hash_map::Entry::Occupied(mut kept) => {
+                            let b = &mut kept.get_mut().bounds;
+                            let right = (b[0] + b[2]).max(bounds[0] + bounds[2]);
+                            let bottom = (b[1] + b[3]).max(bounds[1] + bounds[3]);
+                            b[0] = b[0].min(bounds[0]);
+                            b[1] = b[1].min(bounds[1]);
+                            b[2] = right - b[0];
+                            b[3] = bottom - b[1];
+                        }
+                        std::collections::hash_map::Entry::Vacant(slot) => {
+                            let style = &fragment.style;
+                            let padding = style.padding.clone().map(|p| p.resolve(cb_width));
+                            slot.insert(scripts::Measured {
+                                size: (rect.w, rect.h),
+                                border: style.used_border_width(),
+                                padding,
+                                bounds,
+                                clips: clips.clone(),
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
     }
 
     // ---- Hit testing (M9.4) -------------------------------------------------

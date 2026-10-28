@@ -258,6 +258,8 @@ pub(crate) struct DocumentHost {
     text_decoders: super::decoding::TextDecoders,
     /// Its `matchMedia()` lists (gap batch A).
     pub(crate) media_lists: super::media_lists::MediaLists,
+    /// Its resize and intersection observers (gap batch A, D45).
+    pub(crate) layout_observers: super::layout_observers::LayoutObservers,
     /// Its mutation observers (gap batch A, D42), and how deep the
     /// operations of several calls the bindings began are nested.
     mutations: super::mutations::MutationObservers,
@@ -1166,6 +1168,62 @@ impl DocumentHost {
                 };
                 self.mutations.observe(observer, node, options);
                 self.watch();
+                Ok(Answer::Nothing)
+            }
+            Call::ResizeObserve {
+                observer,
+                node,
+                observed,
+            } => {
+                let node = self.node(node)?;
+                let observed = match observed {
+                    1 => super::layout_observers::ObservedBox::Border,
+                    2 => super::layout_observers::ObservedBox::DevicePixelContent,
+                    _ => super::layout_observers::ObservedBox::Content,
+                };
+                self.layout_observers
+                    .resize_observe(observer, node, observed);
+                // A frame measures it.
+                self.frame_wanted = true;
+                Ok(Answer::Nothing)
+            }
+            Call::ResizeUnobserve { observer, node } => {
+                match node {
+                    Some(node) => {
+                        let node = self.node(node)?;
+                        self.layout_observers.resize_unobserve(observer, node);
+                    }
+                    None => self.layout_observers.resize_disconnect(observer),
+                }
+                Ok(Answer::Nothing)
+            }
+            Call::IntersectionObserve {
+                observer,
+                node,
+                root,
+                margin,
+                thresholds,
+            } => {
+                let node = self.node(node)?;
+                let root = root.map(|root| self.node(root)).transpose()?;
+                let side = |i: usize| {
+                    let value = margin.get(2 * i).copied().unwrap_or(0.0) as f32;
+                    (value, margin.get(2 * i + 1).is_some_and(|&p| p != 0.0))
+                };
+                let margin = [side(0), side(1), side(2), side(3)];
+                self.layout_observers
+                    .intersection_observe(observer, node, root, margin, thresholds);
+                self.frame_wanted = true;
+                Ok(Answer::Nothing)
+            }
+            Call::IntersectionUnobserve { observer, node } => {
+                match node {
+                    Some(node) => {
+                        let node = self.node(node)?;
+                        self.layout_observers.intersection_unobserve(observer, node);
+                    }
+                    None => self.layout_observers.intersection_disconnect(observer),
+                }
                 Ok(Answer::Nothing)
             }
             Call::MutationScope(begin) => {

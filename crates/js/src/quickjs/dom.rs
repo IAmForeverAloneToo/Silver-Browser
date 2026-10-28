@@ -102,6 +102,17 @@ impl<'js> Args<'_, 'js> {
         self.value(i).as_number().unwrap_or(0.0)
     }
 
+    /// A list of numbers, as an array of them; anything else in it 0.
+    fn numbers(&self, i: usize) -> rquickjs::Result<Vec<f64>> {
+        let Some(array) = self.value(i).into_array() else {
+            return Err(Exception::throw_type(self.ctx, "not an array"));
+        };
+        array
+            .iter::<Value<'_>>()
+            .map(|value| value.map(|value| value.as_number().unwrap_or(0.0)))
+            .collect()
+    }
+
     /// A list of strings, as an array of them.
     fn strings(&self, i: usize) -> rquickjs::Result<Vec<String>> {
         let Some(array) = self.value(i).into_array() else {
@@ -390,6 +401,34 @@ const NATIVES: &[(&str, Decode)] = &[
     }),
     ("mutationScope", |a| Ok(Call::MutationScope(a.bool(0)))),
     ("mutationNotify", |_| Ok(Call::MutationNotify)),
+    ("resizeObserve", |a| {
+        Ok(Call::ResizeObserve {
+            observer: a.integer(0) as u32,
+            node: a.handle(1)?,
+            observed: a.integer(2) as u32,
+        })
+    }),
+    ("resizeUnobserve", |a| {
+        Ok(Call::ResizeUnobserve {
+            observer: a.integer(0) as u32,
+            node: a.maybe_handle(1)?,
+        })
+    }),
+    ("intersectionObserve", |a| {
+        Ok(Call::IntersectionObserve {
+            observer: a.integer(0) as u32,
+            node: a.handle(1)?,
+            root: a.maybe_handle(2)?,
+            margin: a.numbers(3)?,
+            thresholds: a.numbers(4)?,
+        })
+    }),
+    ("intersectionUnobserve", |a| {
+        Ok(Call::IntersectionUnobserve {
+            observer: a.integer(0) as u32,
+            node: a.maybe_handle(1)?,
+        })
+    }),
     ("matchMedia", |a| Ok(Call::MatchMedia(a.string(0)?))),
     ("mediaMatches", |a| {
         Ok(Call::MediaMatches(a.integer(0) as u32))

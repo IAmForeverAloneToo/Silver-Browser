@@ -543,3 +543,154 @@ fn the_parsers_insertions_are_heard_after_its_script() {
     );
     assert_eq!(lines, ["parsed a,b"]);
 }
+
+#[test]
+fn resize_and_intersection_observers_hear_each_frames_layout() {
+    let page: &'static str = r#"<body style="margin: 0">
+        <div id=a style="width: 50px; height: 20px; padding: 5px; border: 1px solid"></div>
+        <div id=b style="margin-top: 300px; width: 10px; height: 10px"></div>
+        <script>
+        const a = document.getElementById('a'), b = document.getElementById('b');
+        new ResizeObserver((entries, o) => {
+          for (const e of entries) {
+            const r = e.contentRect;
+            console.log('resize', e.target.id, r.x, r.y, r.width, r.height, e.borderBoxSize[0].inlineSize, e.borderBoxSize[0].blockSize,
+              e.contentBoxSize[0].inlineSize, e.devicePixelContentBoxSize[0].blockSize, o instanceof ResizeObserver);
+          }
+        }).observe(a);
+        const io = new IntersectionObserver(entries => {
+          for (const e of entries) {
+            console.log('intersect', e.target.id, e.isIntersecting, e.intersectionRatio, e.boundingClientRect.top, e.rootBounds.height,
+              e.intersectionRect.height, typeof e.time);
+          }
+        }, {threshold: [0, 1]});
+        io.observe(b);
+        console.log(io.rootMargin, JSON.stringify(io.thresholds), io.root, new IntersectionObserver(() => {}, {rootMargin: '1px 2%'}).rootMargin);
+        for (const f of [() => new ResizeObserver(), () => new ResizeObserver(() => {}).observe({}),
+          () => new IntersectionObserver(), () => new IntersectionObserver(() => {}, {rootMargin: 'x'}),
+          () => new IntersectionObserver(() => {}, {threshold: 2})]) {
+          try { f() } catch (e) { console.log(e.name + ': ' + e.message) } }
+        </script>"#;
+    let (mut tab, mut lines) = scripted(page, true);
+    let frame = |tab: &mut Tab| {
+        let now = tab.engine.now();
+        tab.engine.frame_at(200, 100, crate::FrameTime::at(now));
+        tab.engine
+            .take_console()
+            .into_iter()
+            .map(|entry| entry.text)
+            .collect::<Vec<_>>()
+    };
+    lines.extend(frame(&mut tab));
+    lines.extend(frame(&mut tab));
+    // Grown, and moved into view.
+    crate::differential::run_script(
+        &mut tab.engine,
+        "a.style.width = '70px'; b.style.marginTop = '0px'",
+    );
+    lines.extend(frame(&mut tab));
+    lines.extend(frame(&mut tab));
+    assert_eq!(
+        lines,
+        [
+            "0px 0px 0px 0px [0,1] null 1px 2% 1px 2%",
+            "TypeError: Failed to construct 'ResizeObserver': 1 argument required, but only 0 present.",
+            "TypeError: Failed to execute 'observe' on 'ResizeObserver': parameter 1 is not of type 'Element'.",
+            "TypeError: Failed to construct 'IntersectionObserver': 1 argument required, but only 0 present.",
+            "SyntaxError: Failed to construct 'IntersectionObserver': rootMargin must be specified in absolute length units or percent.",
+            "RangeError: Failed to construct 'IntersectionObserver': Threshold values must be numbers between 0 and 1",
+            "resize a 5 5 50 20 62 32 50 20 true",
+            "intersect b false 0 332 100 0 number",
+            "resize a 5 5 70 20 82 32 70 20 true",
+            "intersect b true 1 32 100 10 number",
+        ]
+    );
+}
+
+#[test]
+fn an_intersection_is_clipped_by_the_boxes_around_it_and_its_root() {
+    let page: &'static str = r#"<body style="margin: 0">
+        <div id=c style="height: 50px; overflow: hidden; border: 2px solid">
+          <div id=t style="margin-top: 60px; height: 10px; width: 10px"></div>
+        </div>
+        <div id=u style="height: 10px; width: 10px"></div>
+        <script>
+        const c = document.getElementById('c'), t = document.getElementById('t'), u = document.getElementById('u');
+        const log = name => entries => { for (const e of entries) console.log(name, e.target.id, e.isIntersecting, e.rootBounds && e.rootBounds.height); };
+        new IntersectionObserver(log('viewport')).observe(t);
+        new IntersectionObserver(log('in c'), {root: c}).observe(t);
+        // Not under its root: never intersecting.
+        new IntersectionObserver(log('outside'), {root: c}).observe(u);
+        const gone = new IntersectionObserver(log('gone'));
+        gone.observe(u); gone.disconnect();
+        </script>"#;
+    let (mut tab, mut lines) = scripted(page, true);
+    let frame = |tab: &mut Tab| {
+        let now = tab.engine.now();
+        tab.engine.frame_at(200, 100, crate::FrameTime::at(now));
+        tab.engine
+            .take_console()
+            .into_iter()
+            .map(|entry| entry.text)
+            .collect::<Vec<_>>()
+    };
+    lines.extend(frame(&mut tab));
+    crate::differential::run_script(&mut tab.engine, "t.style.marginTop = '20px'");
+    lines.extend(frame(&mut tab));
+    assert_eq!(
+        lines,
+        [
+            "viewport t false 100",
+            "in c t false 50",
+            "outside u false 50",
+            "viewport t true 100",
+            "in c t true 50",
+        ]
+    );
+}
+
+#[test]
+fn an_intersection_follows_transforms_and_only_its_roots_clips() {
+    let page: &'static str = r#"<body style="margin: 0">
+        <div style="height: 50px; overflow: hidden">
+          <div id=r style="height: 200px"><div id=t style="margin-top: 100px; height: 10px"></div></div>
+        </div>
+        <div id=moved style="height: 10px; transform: translateY(300px)"></div>
+        <div id=over style="position: absolute; top: 150px; left: 0; width: 10px; height: 10px"></div>
+        <script>
+        const r = document.getElementById('r');
+        const log = name => entries => { for (const e of entries) console.log(name, e.target.id, e.isIntersecting); };
+        // The clip around the root is not the root's: t is in view of it.
+        new IntersectionObserver(log('in r'), {root: r}).observe(document.getElementById('t'));
+        // Moved out of view by its transform.
+        new IntersectionObserver(log('viewport')).observe(document.getElementById('moved'));
+        // Over the root's box (at 100px, t's margin collapsing through
+        // it), but not under it.
+        new IntersectionObserver(log('not under'), {root: r}).observe(document.getElementById('over'));
+        console.log(JSON.stringify(new IntersectionObserver(() => {}, {threshold: [1, 0, 0.5]}).thresholds));
+        </script>"#;
+    let (mut tab, mut lines) = scripted(page, true);
+    let now = tab.engine.now();
+    tab.engine.frame_at(200, 100, crate::FrameTime::at(now));
+    lines.extend(
+        tab.engine
+            .take_console()
+            .into_iter()
+            .map(|entry| entry.text),
+    );
+    assert_eq!(
+        lines,
+        [
+            "[0,0.5,1]",
+            "in r t true",
+            "viewport moved false",
+            "not under over false",
+        ]
+    );
+    // Observing asks for a frame, which measures.
+    crate::differential::run_script(
+        &mut tab.engine,
+        "new ResizeObserver(() => {}).observe(document.body)",
+    );
+    assert!(tab.engine.needs_frame());
+}

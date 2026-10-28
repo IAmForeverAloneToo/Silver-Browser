@@ -2957,7 +2957,9 @@ Deferred from the milestones above, each with what it waits on:
 - [ ] G65 Observers and idle callbacks: `IntersectionObserver`,
        `ResizeObserver`, `requestIdleCallback` (`MutationObserver` is
        G49's); a `dialog` form's method. Found at M26.
-       `requestIdleCallback` done in gap batch A.
+       `requestIdleCallback`, `ResizeObserver` and
+       `IntersectionObserver` done in gap batch A (D45); the `dialog`
+       form's method remains.
 - [ ] G66 DOM's `moveBefore`, a move that keeps a node's state. Found at
        M26, by a crashtest that threw on it.
 - [ ] G67 Streams: `ReadableStream` and the rest of the Streams Standard,
