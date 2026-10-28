@@ -14,6 +14,7 @@ pub(crate) mod canvas;
 #[cfg(test)]
 mod canvas_tests;
 mod cssom;
+mod decoding;
 mod fetch;
 mod host;
 pub(crate) mod ports;

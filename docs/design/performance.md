@@ -539,7 +539,8 @@ to do, and the "one shaping call" is dropped (step 2).
 
 *Scripts.* *(corrected)* The bytecode keeps its source and debug lines,
 so that nothing a page sees changes; a binding's `toString` therefore
-shows its JavaScript, not `[native code]`, as it did (G135). `js`
+shows its JavaScript, not `[native code]`, as it did (G135; later,
+gap batch A writes it without its source, D47). `js`
 denies rather than forbids `unsafe`, since a forbid cannot be allowed
 under it (step 3).
 

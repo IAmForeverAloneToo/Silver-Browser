@@ -254,6 +254,8 @@ pub(crate) struct DocumentHost {
     pub(crate) evaluated: Option<String>,
     /// The `blob:` URLs the document's scripts made (gap batch A).
     blob_urls: crate::blob_urls::BlobOwner,
+    /// The text its scripts' `TextDecoder`s are decoding (gap batch A).
+    text_decoders: super::decoding::TextDecoders,
 }
 
 impl ScriptingHost for DocumentHost {
@@ -1126,6 +1128,21 @@ impl DocumentHost {
                 self.outputs.aborted.push(id);
                 Ok(Answer::Nothing)
             }
+            Call::TextDecoderName(label) => Ok(super::decoding::name(&label)),
+            Call::TextDecode {
+                id,
+                encoding,
+                bytes,
+                fatal,
+                stream,
+            } => Ok(self
+                .text_decoders
+                .decode(id, &encoding, &bytes, fatal, stream)),
+            Call::MimeCharset(kind) => Ok(super::decoding::mime_charset(&kind)),
+            Call::CssSupports(name, value) => Ok(Answer::Bool(super::cssom::supports(
+                &name,
+                value.as_deref(),
+            ))),
             Call::BlobUrlCreate(bytes, kind) => Ok(Answer::String(self.blob_urls.create(
                 bytes,
                 kind,

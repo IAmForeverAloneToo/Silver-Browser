@@ -262,6 +262,24 @@ pub enum Call {
     Decode(Vec<u8>, String),
     /// Fetch `id` aborted by its signal: the engine stops it.
     AbortFetch(u32),
+    /// The name, lower case, of the encoding a label names for
+    /// `TextDecoder` (gap batch A), or `null`.
+    TextDecoderName(String),
+    /// `TextDecoder.decode()`: bytes in the encoding named, as stream
+    /// `id`'s next piece unless not `stream`; `null` for bytes a `fatal`
+    /// decoder fails on.
+    TextDecode {
+        id: u32,
+        encoding: String,
+        bytes: Vec<u8>,
+        fatal: bool,
+        stream: bool,
+    },
+    /// The encoding a MIME type's `charset` names, as `TextDecoderName`
+    /// answers (`FileReader.readAsText()`).
+    MimeCharset(String),
+    /// `CSS.supports()`: a property and a value, or a condition alone.
+    CssSupports(String, Option<String>),
     /// `URL.createObjectURL()` (gap batch A): a `blob:` URL for a blob
     /// of these bytes and type.
     BlobUrlCreate(Vec<u8>, String),

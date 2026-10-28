@@ -48,9 +48,9 @@ static GPU: Bindings = Bindings {
 
 /// `bindings`' bytecode: compiled the first time it is asked for, in a
 /// runtime of its own, as a module whose default export is their
-/// function, keeping its source and its lines as the source run as a
-/// script keeps them (what a binding's `toString` and an error's place
-/// say).
+/// function, keeping its lines as the source run as a script keeps them
+/// (what an error's place says) but not its source, so that a binding's
+/// `toString` says it is native code (D47, gap batch A).
 fn compiled(bindings: &'static Bindings) -> Option<&'static [u8]> {
     bindings
         .bytecode
@@ -65,7 +65,7 @@ fn compiled(bindings: &'static Bindings) -> Option<&'static [u8]> {
                         endianness: WriteOptionsEndianness::Native,
                         allow_shared_array_buffer: false,
                         object_reference: false,
-                        strip_source: false,
+                        strip_source: true,
                         strip_debug: false,
                     })
                     .ok()

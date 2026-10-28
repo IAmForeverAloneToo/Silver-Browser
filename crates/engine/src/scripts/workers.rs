@@ -1094,6 +1094,8 @@ pub(crate) struct WorkerHost {
     pub(super) service: Option<super::service_workers::Service>,
     /// The `blob:` URLs its scripts made (gap batch A).
     blob_urls: crate::blob_urls::BlobOwner,
+    /// The text its scripts' `TextDecoder`s are decoding (gap batch A).
+    text_decoders: super::decoding::TextDecoders,
 }
 
 impl Default for WorkerHost {
@@ -1131,6 +1133,7 @@ impl Default for WorkerHost {
             work: 0,
             service: None,
             blob_urls: crate::blob_urls::BlobOwner::default(),
+            text_decoders: super::decoding::TextDecoders::default(),
         }
     }
 }
@@ -1196,6 +1199,17 @@ impl ScriptingHost for WorkerHost {
                     mode.to_owned(),
                 ]))
             }
+            Call::TextDecoderName(label) => Ok(super::decoding::name(&label)),
+            Call::TextDecode {
+                id,
+                encoding,
+                bytes,
+                fatal,
+                stream,
+            } => Ok(self
+                .text_decoders
+                .decode(id, &encoding, &bytes, fatal, stream)),
+            Call::MimeCharset(kind) => Ok(super::decoding::mime_charset(&kind)),
             Call::BlobUrlCreate(bytes, kind) => Ok(Answer::String(self.blob_urls.create(
                 bytes,
                 kind,

@@ -206,7 +206,8 @@ step("receiver", () => Object.getOwnPropertyDescriptor(WebAssembly.Instance.prot
         [
             "calls=[5,6,-2147483647,0,10]",
             r#"shape=["0",2,"function",true,false,"length,name"]"#,
-            r#"string="function 0() {\n    [native code]\n}""#,
+            // One line, as the reference writes a native function (D47).
+            r#"string="function 0() { [native code] }""#,
             "noNew=threw TypeError: not a constructor",
             r#"same=[true,true,null,["add"],"[object WebAssembly.Instance]"]"#,
             "frozen=threw TypeError: 'add' is read-only",

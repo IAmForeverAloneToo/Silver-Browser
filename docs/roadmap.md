@@ -2967,7 +2967,8 @@ Deferred from the milestones above, each with what it waits on:
        `blob:` URLs. Named at M27, 134 web-platform subtests. Done in
        gap batch A (`docs/design/scripting-essentials.md`, D41); a
        navigation to a `blob:` URL is G171's.
-- [ ] G69 `TextEncoder` and `TextDecoder`. Named at M27.
+- [x] G69 `TextEncoder` and `TextDecoder`. Named at M27. Done in gap
+       batch A, the streaming forms left with Streams (G67).
 - [ ] G70 XHR's `document` response type and `responseXML`, a `Document`
        sent as a body, `DOMParser`: an XML parser and a second
        document. Named at M27.
@@ -2979,8 +2980,8 @@ Deferred from the milestones above, each with what it waits on:
        `navigator.sendBeacon`, `fetchLater`. Named at M27.
 - [ ] G74 WebSockets and server-sent events (`EventSource`). Named at
        M27.
-- [ ] G75 `FileReader`. Found at M27, by the web-platform tests of
-       `FileAPI/blob` (39 subtests).
+- [x] G75 `FileReader`. Found at M27, by the web-platform tests of
+       `FileAPI/blob` (39 subtests). Done in gap batch A.
 - [ ] G76 HTML's `formdata` event, and the constructing entry list's
        `InvalidStateError`. Found at M27.
 - [ ] G77 A response whose header section ends at the connection's
@@ -3056,6 +3057,8 @@ Deferred from the milestones above, each with what it waits on:
        the rendering up to the error, its encoding told. Named at M32.
 - [ ] G88 The `CSS` namespace object: `CSS.supports()`, `CSS.escape()`
        and the rest. Found at M32 by the probes of SVG's properties.
+       `supports()` and `escape()` done in gap batch A; the rest
+       (`registerProperty()`, the typed OM's factories) remains.
 - [ ] G89 What M32's web-platform tests found outside SVG: a border
        image and a list marker of an image of no natural size (an SVG
        of a ratio alone) sized by the border image area and the
@@ -3246,7 +3249,7 @@ Deferred from the milestones above, each with what it waits on:
        says "function createElement() { [native code] }": libraries
        that test for native functions take ours for polyfills. Bytecode
        written without its source would give QuickJS's form. Found at
-       M35.
+       M35. Done in gap batch A (D47): so written, and on one line.
 - [ ] G136 On Windows a name under `localhost` resolves to `[::1]`
        first, and a refused `[::1]` connection takes 2 s there: every
        connection to a server listening on 127.0.0.1 alone waits 250 ms

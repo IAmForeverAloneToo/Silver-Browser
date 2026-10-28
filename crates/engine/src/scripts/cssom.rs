@@ -75,6 +75,18 @@ pub(crate) fn valid(name: &str, value: &str) -> bool {
     style::supports(name, &tokens)
 }
 
+/// `CSS.supports()` (CSSOM 9, gap batch A): `value` valid for the
+/// property `name`; or with none, `name` a supports condition that holds,
+/// as it is or in parentheses.
+pub(crate) fn supports(name: &str, value: Option<&str>) -> bool {
+    match value {
+        Some(value) => valid(&canonical(name), value),
+        None => [name.to_owned(), format!("({name})")]
+            .iter()
+            .any(|text| style::supports_condition(&css::tokenize(text)) == Some(true)),
+    }
+}
+
 fn is_space(c: char) -> bool {
     matches!(c, '\t' | '\n' | '\u{c}' | '\r' | ' ')
 }

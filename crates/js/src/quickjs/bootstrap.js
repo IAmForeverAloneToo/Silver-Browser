@@ -78,6 +78,9 @@
   const StringIncludes = uncurry(String.prototype.includes);
   const StringSlice = uncurry(String.prototype.slice);
   const CharCodeAt = uncurry(String.prototype.charCodeAt);
+  const CodePointAt = uncurry(String.prototype.codePointAt);
+  const StringEndsWith = uncurry(String.prototype.endsWith);
+  const NumberToString = uncurry(Number.prototype.toString);
   const iteratorSymbol = Symbol.iterator;
   const toStringTag = Symbol.toStringTag;
 
@@ -104,6 +107,26 @@
   function strOrEmpty(value) {
     return value === null ? "" : str(value);
   }
+
+  // A binding's toString() (D47, gap batch A): the bindings are read
+  // without their source, so QuickJS writes each as it writes its own
+  // functions, as native code; here on one line, as the reference
+  // writes a native function. Any other function as QuickJS writes it.
+  const QuickToString = uncurry(Function.prototype.toString);
+  const NATIVE_TAIL = "() {\n    [native code]\n}";
+  defineProperty(Function.prototype, "toString", {
+    value: {
+      toString() {
+        const text = QuickToString(this);
+        if (!StringEndsWith(text, NATIVE_TAIL)) {
+          return text;
+        }
+        return StringSlice(text, 0, text.length - NATIVE_TAIL.length) + "() { [native code] }";
+      },
+    }.toString,
+    writable: true,
+    configurable: true,
+  });
 
   // An `unsigned long`: ToUint32.
   function unsigned(value) {
@@ -206,7 +229,8 @@
     Headers: true, ImageBitmap: true, ImageData: true, MessageEvent: true,
     OffscreenCanvas: true, OffscreenCanvasRenderingContext2D: true, Path2D: true,
     Performance: true, ProgressEvent: "notservice", QuotaExceededError: true, Request: true,
-    Response: true, TextMetrics: true, URL: true, URLSearchParams: true, Worker: "notservice",
+    Response: true, TextDecoder: true, TextEncoder: true, TextMetrics: true, URL: true,
+    URLSearchParams: true, Worker: "notservice", FileReader: true,
     MessageChannel: true, MessagePort: true, Cache: true, CacheStorage: true,
     WorkerGlobalScope: "worker", WorkerLocation: "worker", WorkerNavigator: "worker",
     XMLHttpRequest: "notservice", XMLHttpRequestEventTarget: "notservice",
@@ -3500,6 +3524,196 @@
     });
   }
 
+  // ---- TextEncoder and TextDecoder (Encoding 7, gap batch A) ----
+
+  // UTF-8 written here, from the string's code points; any other
+  // encoding read by the engine's decoders, a stream's decoder kept
+  // there between its calls by a number of the realm's.
+  class TextEncoder {
+    #utf8 = true;
+
+    get encoding() {
+      return this.#utf8 ? "utf-8" : "";
+    }
+
+    encode(input = "") {
+      this.#utf8;
+      return utf8Encode(str(input));
+    }
+
+    encodeInto(source, destination) {
+      this.#utf8;
+      need(arguments.length, 2, "encodeInto", "TextEncoder");
+      const text = str(source);
+      if (destination === null || typeof destination !== "object" || !isTypedArray(destination) ||
+        TypedArrayTag(destination) !== "Uint8Array") {
+        throw new $TypeError(prefix("encodeInto", "TextEncoder") +
+          "parameter 2 is not of type 'Uint8Array'.");
+      }
+      const room = viewLength(destination);
+      let read = 0;
+      let written = 0;
+      while (read < text.length) {
+        const c = CodePointAt(text, read);
+        const size = c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4;
+        if (written + size > room) {
+          break;
+        }
+        if (size === 1) {
+          destination[written] = c;
+        } else if (size === 2) {
+          destination[written] = 0xc0 | (c >> 6);
+          destination[written + 1] = 0x80 | (c & 0x3f);
+        } else if (size === 3) {
+          destination[written] = 0xe0 | (c >> 12);
+          destination[written + 1] = 0x80 | ((c >> 6) & 0x3f);
+          destination[written + 2] = 0x80 | (c & 0x3f);
+        } else {
+          destination[written] = 0xf0 | (c >> 18);
+          destination[written + 1] = 0x80 | ((c >> 12) & 0x3f);
+          destination[written + 2] = 0x80 | ((c >> 6) & 0x3f);
+          destination[written + 3] = 0x80 | (c & 0x3f);
+        }
+        read += c > 0xffff ? 2 : 1;
+        written += size;
+      }
+      return { read, written };
+    }
+  }
+  expose(TextEncoder, "TextEncoder");
+
+  let nextTextStream = 1;
+  class TextDecoder {
+    #encoding;
+    #fatal;
+    #ignoreBOM;
+    // The stream being decoded, 0 for none; whether its first code point
+    // has been seen.
+    #stream = 0;
+    #bomSeen = false;
+
+    constructor(label = "utf-8", options = undefined) {
+      const given = str(label);
+      const name = native.textDecoderName(given);
+      if (name === null) {
+        throw new $RangeError("Failed to construct 'TextDecoder': The encoding label provided ('" +
+          given + "') is invalid.");
+      }
+      const read = dictionary(options, TEXT_DECODER_OPTIONS, "TextDecoder");
+      this.#encoding = name;
+      this.#fatal = read.fatal;
+      this.#ignoreBOM = read.ignoreBOM;
+    }
+
+    get encoding() {
+      return this.#encoding;
+    }
+
+    get fatal() {
+      return this.#fatal;
+    }
+
+    get ignoreBOM() {
+      return this.#ignoreBOM;
+    }
+
+    decode(input = undefined, options = undefined) {
+      this.#encoding;
+      let bytes = new $Uint8Array(0);
+      if (input !== undefined) {
+        bytes = bufferBytes(input);
+        if (bytes === undefined) {
+          throw new $TypeError(prefix("decode", "TextDecoder") +
+            "parameter 1 is not of type 'ArrayBuffer'.");
+        }
+      }
+      if (options !== undefined && options !== null && typeof options !== "object" &&
+        typeof options !== "function") {
+        throw new $TypeError(prefix("decode", "TextDecoder") +
+          "The provided value is not of type 'TextDecodeOptions'.");
+      }
+      const stream = options === undefined || options === null ? false : !!options.stream;
+      if (this.#stream === 0) {
+        this.#stream = nextTextStream++;
+        this.#bomSeen = false;
+      }
+      const id = this.#stream;
+      if (!stream) {
+        this.#stream = 0;
+      }
+      let text = native.textDecode(id, this.#encoding, binaryString(bytes), this.#fatal, stream);
+      if (text === null) {
+        this.#stream = 0;
+        throw new $TypeError(prefix("decode", "TextDecoder") + "The encoded data was not valid.");
+      }
+      // A byte order mark the stream begins with is dropped, unless asked
+      // for.
+      if (!this.#bomSeen && text.length > 0) {
+        this.#bomSeen = true;
+        const unicode = this.#encoding === "utf-8" || this.#encoding === "utf-16le" ||
+          this.#encoding === "utf-16be";
+        if (unicode && !this.#ignoreBOM && CharCodeAt(text, 0) === 0xfeff) {
+          text = StringSlice(text, 1);
+        }
+      }
+      return text;
+    }
+  }
+  const TEXT_DECODER_OPTIONS = [
+    ["fatal", "boolean", false, "TextDecoderOptions"],
+    ["ignoreBOM", "boolean", false, "TextDecoderOptions"],
+  ];
+  expose(TextDecoder, "TextDecoder");
+
+  // ---- The CSS namespace (CSSOM 9, gap batch A) ----
+
+  // `supports()` asks the style crate as `@supports` does; `escape()`
+  // serializes an identifier. A window's alone.
+  const CSSNamespace = ObjectCreate(Object.prototype);
+  defineProperty(CSSNamespace, toStringTag, { value: "CSS", configurable: true });
+  defineProperty(CSSNamespace, "supports", {
+    value: function supports(conditionText, value = undefined) {
+      need(arguments.length, 1, "supports", "CSS");
+      if (arguments.length > 1) {
+        return native.cssSupports(str(conditionText), str(value));
+      }
+      return native.cssSupports(str(conditionText), null);
+    },
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+  defineProperty(CSSNamespace, "escape", {
+    value: function escape(ident) {
+      need(arguments.length, 1, "escape", "CSS");
+      const text = str(ident);
+      let out = "";
+      for (let i = 0; i < text.length; i++) {
+        const c = CharCodeAt(text, i);
+        const first = CharCodeAt(text, 0);
+        if (c === 0) {
+          out += "\ufffd";
+        } else if ((c >= 0x1 && c <= 0x1f) || c === 0x7f ||
+          (i === 0 && c >= 0x30 && c <= 0x39) ||
+          (i === 1 && c >= 0x30 && c <= 0x39 && first === 0x2d)) {
+          out += "\\" + NumberToString(c, 16) + " ";
+        } else if (i === 0 && c === 0x2d && text.length === 1) {
+          out += "\\-";
+        } else if (c >= 0x80 || c === 0x2d || c === 0x5f || (c >= 0x30 && c <= 0x39) ||
+          (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a)) {
+          out += text[i];
+        } else {
+          out += "\\" + text[i];
+        }
+      }
+      return out;
+    },
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+  windowOnly("CSS", { value: CSSNamespace, writable: true, configurable: true });
+
   // ---- Fetch: Headers, Request, Response, fetch() (M27.1) ----
 
   const JSONParse = JSON.parse;
@@ -5491,6 +5705,131 @@
     false,
   );
   defineHandlers(XMLHttpRequest.prototype, ["readystatechange"], false);
+
+  // ---- FileReader (File API 6, gap batch A) ----
+
+  // A blob's bytes are in the realm already: a read takes them at once,
+  // and its events come as the standard queues them, each a task.
+  const FILE_READER_STATES = { EMPTY: 0, LOADING: 1, DONE: 2 };
+  class FileReader extends EventTarget {
+    #state = 0;
+    #result = null;
+    #error = null;
+    // The read under way, which `abort()` ends: its tasks check it.
+    #read = null;
+
+    constructor() {
+      super();
+    }
+
+    get readyState() {
+      return this.#state;
+    }
+
+    get result() {
+      return this.#result;
+    }
+
+    get error() {
+      return this.#error;
+    }
+
+    readAsArrayBuffer(blob) {
+      need(arguments.length, 1, "readAsArrayBuffer", "FileReader");
+      this.#start(blob, "readAsArrayBuffer", (bytes) => TypedArraySlice(bytes).buffer);
+    }
+
+    readAsBinaryString(blob) {
+      need(arguments.length, 1, "readAsBinaryString", "FileReader");
+      this.#start(blob, "readAsBinaryString", (bytes) => binaryString(bytes));
+    }
+
+    readAsText(blob, encoding = undefined) {
+      need(arguments.length, 1, "readAsText", "FileReader");
+      const label = encoding === undefined ? undefined : str(encoding);
+      this.#start(blob, "readAsText", (bytes, type) => {
+        // The label given, else the type's charset, else UTF-8; a byte
+        // order mark overrides them.
+        let fallback = label === undefined ? null : native.textDecoderName(label);
+        if (fallback === null) {
+          fallback = native.mimeCharset(type);
+        }
+        return native.decode(binaryString(bytes), fallback === null ? "utf-8" : fallback);
+      });
+    }
+
+    readAsDataURL(blob) {
+      need(arguments.length, 1, "readAsDataURL", "FileReader");
+      this.#start(blob, "readAsDataURL", (bytes, type) =>
+        "data:" + (type === "" ? "application/octet-stream" : type) + ";base64," + ToBase64(bytes));
+    }
+
+    abort() {
+      if (this.#state !== 1) {
+        this.#result = null;
+        return;
+      }
+      this.#state = 2;
+      this.#result = null;
+      this.#read = null;
+      fireAt(this, progressEvent("abort", 0, 0, false));
+      if (this.#state !== 1) {
+        fireAt(this, progressEvent("loadend", 0, 0, false));
+      }
+    }
+
+    // The standard's read operation, `pack` the result's package.
+    #start(blob, method, pack) {
+      if (!isBlob(blob)) {
+        throw new $TypeError(prefix(method, "FileReader") + "parameter 1 is not of type 'Blob'.");
+      }
+      if (this.#state === 1) {
+        throw new $DOMException(prefix(method, "FileReader") +
+          "The object is already busy reading Blobs.", "InvalidStateError");
+      }
+      this.#state = 1;
+      this.#result = null;
+      this.#error = null;
+      const read = {};
+      this.#read = read;
+      const bytes = blobBytes(blob);
+      const type = BlobType(blob);
+      const total = viewLength(bytes);
+      const current = () => this.#read === read;
+      queueTask(() => {
+        if (current()) {
+          fireAt(this, progressEvent("loadstart", 0, total, true));
+        }
+      });
+      if (total > 0) {
+        queueTask(() => {
+          if (current()) {
+            fireAt(this, progressEvent("progress", total, total, true));
+          }
+        });
+      }
+      queueTask(() => {
+        if (!current()) {
+          return;
+        }
+        this.#read = null;
+        this.#state = 2;
+        this.#result = pack(bytes, type);
+        fireAt(this, progressEvent("load", total, total, true));
+        if (this.#state !== 1) {
+          fireAt(this, progressEvent("loadend", total, total, true));
+        }
+      });
+    }
+  }
+  for (const name in FILE_READER_STATES) {
+    const desc = { value: FILE_READER_STATES[name], enumerable: true };
+    defineProperty(FileReader, name, desc);
+    defineProperty(FileReader.prototype, name, desc);
+  }
+  defineHandlers(FileReader.prototype, ["loadstart", "progress", "load", "abort", "error", "loadend"],
+    false);
+  expose(FileReader, "FileReader");
   expose(XMLHttpRequestEventTarget, "XMLHttpRequestEventTarget");
   expose(XMLHttpRequestUpload, "XMLHttpRequestUpload");
   expose(XMLHttpRequest, "XMLHttpRequest");
@@ -18868,6 +19207,15 @@
     return id;
   }
 
+  // A task of the bindings' own (as File API's reads queue theirs): a
+  // timer of no delay, its id past those of scripts' timers.
+  let lastTask = 2147483647;
+  function queueTask(work) {
+    lastTask = lastTask >= 4294967295 ? 2147483648 : lastTask + 1;
+    MapSet(timers, lastTask, { callback: work, args: [], repeat: false, delay: 0 });
+    native.setTimer(lastTask, 0);
+  }
+
   function stopTimer(handle) {
     const id = long(handle);
     if (MapHas(timers, id)) {
@@ -18879,8 +19227,10 @@
   // Runs timer `id` (the task the host queued when it was due): its
   // callback with `this` the window and its arguments, or its string as
   // a classic script; an interval is set again once its callback has
-  // run, unless the callback cleared it.
-  function runTimer(id) {
+  // run, unless the callback cleared it. The id comes as a 32-bit
+  // integer, which a task's (past 2^31) is not until made unsigned.
+  function runTimer(given) {
+    const id = given >>> 0;
     const timer = MapGet(timers, id);
     if (timer === undefined) {
       return;

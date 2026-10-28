@@ -357,6 +357,27 @@ const NATIVES: &[(&str, Decode)] = &[
         Ok(Call::Decode(a.bytes(0)?.unwrap_or_default(), a.string(1)?))
     }),
     ("abortFetch", |a| Ok(Call::AbortFetch(a.integer(0) as u32))),
+    ("textDecoderName", |a| {
+        Ok(Call::TextDecoderName(a.string(0)?))
+    }),
+    ("textDecode", |a| {
+        Ok(Call::TextDecode {
+            id: a.integer(0) as u32,
+            encoding: a.string(1)?,
+            bytes: a.bytes(2)?.unwrap_or_default(),
+            fatal: a.bool(3),
+            stream: a.bool(4),
+        })
+    }),
+    ("mimeCharset", |a| Ok(Call::MimeCharset(a.string(0)?))),
+    ("cssSupports", |a| {
+        // A value only when one is given, as a string.
+        let value = match a.value(1).is_string() {
+            true => Some(a.string(1)?),
+            false => None,
+        };
+        Ok(Call::CssSupports(a.string(0)?, value))
+    }),
     ("blobUrlCreate", |a| {
         Ok(Call::BlobUrlCreate(
             a.bytes(0)?.unwrap_or_default(),

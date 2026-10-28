@@ -194,3 +194,133 @@ fn a_client_given_to_the_engine_answers_blob_urls_too() {
     }
     assert_eq!(lines, ["from a blob"]);
 }
+
+#[test]
+fn text_is_encoded_and_decoded_as_the_encoding_standard_says() {
+    assert_eq!(
+        logged(
+            r#"const e = new TextEncoder();
+            console.log(e.encoding, e.encode('h\u00e9\u{1F600}\ud800').join(), e.encode().length,
+              JSON.stringify(e.encodeInto('h\u00e9', new Uint8Array(2))),
+              JSON.stringify(e.encodeInto('\u{1F600}a', new Uint8Array(5))));
+            const d = new TextDecoder();
+            console.log(d.encoding, d.fatal, d.ignoreBOM, d.decode(new Uint8Array([0xef, 0xbb, 0xbf, 0x68, 0xc3, 0xa9])) === 'h\u00e9',
+              new TextDecoder('utf-8', {ignoreBOM: true}).decode(new Uint8Array([0xef, 0xbb, 0xbf])) === '\ufeff',
+              new TextDecoder('latin1').encoding, new TextDecoder('latin1').decode(new Uint8Array([0xe9])) === '\u00e9',
+              new TextDecoder('utf-16le').decode(new Uint16Array([0xfeff, 0x68]).buffer), JSON.stringify(d.decode()));
+            // A stream keeps a sequence cut between its pieces.
+            const s = new TextDecoder();
+            const parts = [s.decode(new Uint8Array([0xe2, 0x82]), {stream: true}), s.decode(new Uint8Array([0xac]), {stream: true}), s.decode()];
+            console.log(JSON.stringify(parts) === JSON.stringify(['', '\u20ac', '']), s.decode(new Uint8Array([0xe2])) === '\ufffd');
+            for (const f of [() => new TextDecoder('nope'), () => new TextDecoder('replacement'),
+              () => new TextDecoder('utf-8', {fatal: true}).decode(new Uint8Array([0xff])),
+              () => new TextDecoder().decode('x'), () => e.encodeInto('x', [])]) {
+              try { f() } catch (x) { console.log(x.name + ': ' + x.message) } }"#
+        ),
+        [
+            "utf-8 104,195,169,240,159,152,128,239,191,189 0 {\"read\":1,\"written\":1} {\"read\":3,\"written\":5}",
+            "utf-8 false false true true windows-1252 true h \"\"",
+            "true true",
+            "RangeError: Failed to construct 'TextDecoder': The encoding label provided ('nope') is invalid.",
+            "RangeError: Failed to construct 'TextDecoder': The encoding label provided ('replacement') is invalid.",
+            "TypeError: Failed to execute 'decode' on 'TextDecoder': The encoded data was not valid.",
+            "TypeError: Failed to execute 'decode' on 'TextDecoder': parameter 1 is not of type 'ArrayBuffer'.",
+            "TypeError: Failed to execute 'encodeInto' on 'TextEncoder': parameter 2 is not of type 'Uint8Array'.",
+        ]
+    );
+}
+
+#[test]
+fn a_file_reader_reads_a_blob_with_its_events_each_a_task() {
+    let lines = waited(
+        r#"const blob = new Blob(['h\u00e9'], {type: 'text/plain;charset=latin1'});
+        const r = new FileReader();
+        console.log(r.readyState, r.result, r.error, FileReader.LOADING, r.DONE);
+        for (const type of ['loadstart', 'progress', 'load', 'loadend']) {
+          r.addEventListener(type, e => console.log(type, r.readyState, e.loaded, e.total));
+        }
+        r.readAsText(blob);
+        console.log('reading', r.readyState);
+        try { r.readAsText(blob) } catch (e) { console.log(e.name + ': ' + e.message) }
+        r.onloadend = () => {
+          console.log(r.result === 'h\u00c3\u00a9');
+          const all = [];
+          const read = (how, then) => { const f = new FileReader(); f.onload = () => { all.push(f.result); then() }; f[how](blob) };
+          read('readAsArrayBuffer', () => read('readAsDataURL', () => read('readAsBinaryString', () => {
+            const t = new FileReader(); t.onload = () => { all.push(t.result);
+              console.log(all[0].byteLength, all[1], all[2] === 'h\u00c3\u00a9', all[3]);
+              const a = new FileReader(); a.onabort = () => console.log('abort', a.readyState, a.result);
+              a.onload = () => console.log('loaded after abort'); a.readAsText(blob); a.abort();
+              setTimeout(() => console.log('done'), 10);
+            }; t.readAsText(new Blob([new Uint8Array([0xff, 0xfe, 0x68, 0])]), 'utf-8');
+          })));
+        };"#,
+        11,
+    );
+    assert_eq!(
+        lines,
+        [
+            "0 null null 1 2",
+            "reading 1",
+            "InvalidStateError: Failed to execute 'readAsText' on 'FileReader': The object is already busy reading Blobs.",
+            "loadstart 1 0 3",
+            "progress 1 3 3",
+            "load 2 3 3",
+            "loadend 2 3 3",
+            "true",
+            "3 data:text/plain;charset=latin1;base64,aMOp true h",
+            "abort 2 null",
+            "done",
+        ]
+    );
+}
+
+#[test]
+fn the_css_namespace_answers_supports_and_escapes() {
+    assert_eq!(
+        logged(
+            r#"console.log(CSS.supports('display', 'flex'), CSS.supports('display: grid'), CSS.supports('(color: red) and (nope)'),
+              CSS.supports('selector(a > b)'), CSS.supports('DISPLAY', 'block'), CSS.supports('display', 'flex !important'),
+              CSS.supports('--x', 'anything'), CSS.supports('nope', '1'), Object.prototype.toString.call(CSS));
+            console.log(CSS.escape('1a b\0-') === '\\31 a\\ b\ufffd-', CSS.escape('-'), CSS.escape('-1'), CSS.escape('\x7f_a'));
+            try { CSS.escape() } catch (e) { console.log(e.name + ': ' + e.message) }"#
+        ),
+        [
+            "true true false true true false true false [object CSS]",
+            "true \\- -\\31  \\7f _a",
+            "TypeError: Failed to execute 'escape' on 'CSS': 1 argument required, but only 0 present.",
+        ]
+    );
+}
+
+#[test]
+fn a_bindings_functions_say_they_are_native_code() {
+    assert_eq!(
+        logged(
+            r#"console.log(document.createElement.toString());
+            console.log(Object.getOwnPropertyDescriptor(Document.prototype, 'title').get.toString());
+            console.log(String(URL), Function.prototype.toString.toString(), String(Math.max));
+            console.log(String(function f(a) { return a }), String(() => 1), String(class A {}));"#
+        ),
+        [
+            "function createElement() { [native code] }",
+            "function get title() { [native code] }",
+            "function URL() { [native code] } function toString() { [native code] } function max() { [native code] }",
+            "function f(a) { return a } () => 1 class A {}",
+        ]
+    );
+}
+
+#[test]
+fn a_worker_has_the_text_and_file_interfaces_and_no_css() {
+    let lines = waited(
+        r#"const source = `const r = new FileReader();
+          r.onload = () => postMessage([new TextDecoder().decode(new TextEncoder().encode('ok')), r.result,
+            typeof CSS, new URL('b', 'http://a/').href].join(' '));
+          r.readAsText(new Blob(['read']));`;
+        const w = new Worker(URL.createObjectURL(new Blob([source])));
+        w.onmessage = e => console.log(e.data);"#,
+        1,
+    );
+    assert_eq!(lines, ["ok read undefined http://a/b"]);
+}
