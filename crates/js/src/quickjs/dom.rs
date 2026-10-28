@@ -370,6 +370,14 @@ const NATIVES: &[(&str, Decode)] = &[
         })
     }),
     ("mimeCharset", |a| Ok(Call::MimeCharset(a.string(0)?))),
+    ("matchMedia", |a| Ok(Call::MatchMedia(a.string(0)?))),
+    ("mediaMatches", |a| {
+        Ok(Call::MediaMatches(a.integer(0) as u32))
+    }),
+    ("mediaForget", |a| {
+        Ok(Call::MediaForget(a.integer(0) as u32))
+    }),
+    ("idleDeadline", |_| Ok(Call::IdleDeadline)),
     ("cssSupports", |a| {
         // A value only when one is given, as a string.
         let value = match a.value(1).is_string() {

@@ -1,0 +1,4 @@
+#version 300 es
+layout(location = 2) in vec4 a_position;
+void m[2];
+void main() { gl_Position = a_position; }

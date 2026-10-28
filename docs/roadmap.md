@@ -2957,6 +2957,7 @@ Deferred from the milestones above, each with what it waits on:
 - [ ] G65 Observers and idle callbacks: `IntersectionObserver`,
        `ResizeObserver`, `requestIdleCallback` (`MutationObserver` is
        G49's); a `dialog` form's method. Found at M26.
+       `requestIdleCallback` done in gap batch A.
 - [ ] G66 DOM's `moveBefore`, a move that keeps a node's state. Found at
        M26, by a crashtest that threw on it.
 - [ ] G67 Streams: `ReadableStream` and the rest of the Streams Standard,
@@ -3031,12 +3032,12 @@ Deferred from the milestones above, each with what it waits on:
        view's clone tracking its buffer (QuickJS-ng keeps whether a
        view tracks from script); `MessageEvent`'s `userActivation`.
        Named at M31.
-- [ ] G86 `matchMedia()` and `MediaQueryList`: `matches`, `media` and
+- [x] G86 `matchMedia()` and `MediaQueryList`: `matches`, `media` and
        its `change` events as the viewport and the preferences change.
        M20's note left them to M24 and M25, which did not take them
        up. Found 2026-10-12 in Google's account bar, which calls
        `matchMedia` as it starts and fails without it (with `URL`,
-       G68).
+       G68). Done in gap batch A.
 - [ ] G87 SVG past v1 (M32): filters, masks, markers, patterns, `<image>`
        and `foreignObject`'s HTML; `textPath`, `rotate`, `textLength`,
        vertical and bidirectional text, `lang`'s localized forms, text

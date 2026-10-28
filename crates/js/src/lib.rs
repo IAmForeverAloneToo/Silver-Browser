@@ -383,6 +383,9 @@ pub enum Task {
     /// What a document's media elements do (M40), as JSON: actions to
     /// carry out, or a pipeline's report to hear.
     Media(String),
+    /// The `matchMedia()` lists whose answer changed in a frame's update
+    /// (gap batch A), by their numbers: a `change` at each.
+    MediaChanged(Vec<u32>),
 }
 
 /// Where a message is delivered (M31).

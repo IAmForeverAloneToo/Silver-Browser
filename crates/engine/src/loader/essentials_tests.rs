@@ -324,3 +324,82 @@ fn a_worker_has_the_text_and_file_interfaces_and_no_css() {
     );
     assert_eq!(lines, ["ok read undefined http://a/b"]);
 }
+
+#[test]
+fn a_media_query_list_answers_now_and_hears_each_change_in_a_frame() {
+    let page: &'static str = r#"<script>
+        const wide = matchMedia('(MIN-WIDTH:700px)');
+        const kept = matchMedia('print');
+        wide.addEventListener('change', e => console.log('change', e.media, e.matches, wide.matches, e instanceof MediaQueryListEvent));
+        wide.onchange = () => console.log('onchange');
+        wide.addListener(() => console.log('listener'));
+        kept.addListener(() => console.log('print changed'));
+        console.log(Object.prototype.toString.call(wide), wide.media, matchMedia('(nope').media, matchMedia('screen and').media);
+        try { matchMedia() } catch (e) { console.log(e.name + ': ' + e.message) }
+        const made = new MediaQueryListEvent('change', {media: 'x', matches: true});
+        console.log(made.media, made.matches, made.isTrusted);
+    </script>"#;
+    let (mut tab, mut lines) = scripted(page, true);
+    let frame = |tab: &mut Tab, width| {
+        let now = tab.engine.now();
+        tab.engine.frame_at(width, 300, crate::FrameTime::at(now));
+        tab.engine
+            .take_console()
+            .into_iter()
+            .map(|entry| entry.text)
+            .collect::<Vec<_>>()
+    };
+    lines.extend(frame(&mut tab, 500));
+    lines.extend(frame(&mut tab, 900));
+    lines.extend(frame(&mut tab, 900));
+    lines.extend(frame(&mut tab, 600));
+    assert_eq!(
+        lines,
+        [
+            "[object MediaQueryList] (min-width: 700px) (nope not all",
+            "TypeError: Failed to execute 'matchMedia' on 'Window': 1 argument required, but only 0 present.",
+            "x true false",
+            "change (min-width: 700px) true true true",
+            "onchange",
+            "listener",
+            "change (min-width: 700px) false false true",
+            "onchange",
+            "listener",
+        ]
+    );
+}
+
+#[test]
+fn an_idle_callback_runs_when_the_page_is_idle_or_at_its_timeout() {
+    let lines = waited(
+        r#"const order = [];
+        requestIdleCallback(d => order.push('idle ' + d.didTimeout + ' ' + (d.timeRemaining() > 0 && d.timeRemaining() <= 50)));
+        const gone = requestIdleCallback(() => order.push('cancelled'));
+        cancelIdleCallback(gone);
+        setTimeout(() => order.push('timer'), 0);
+        setTimeout(() => console.log(order.join(', ')), 100);
+        console.log(typeof requestIdleCallback(() => {}), IdleDeadline.name);
+        try { requestIdleCallback() } catch (e) { console.log(e.name + ': ' + e.message) }
+        try { requestIdleCallback(1) } catch (e) { console.log(e.name + ': ' + e.message) }"#,
+        4,
+    );
+    assert_eq!(
+        lines,
+        [
+            "number IdleDeadline",
+            "TypeError: Failed to execute 'requestIdleCallback' on 'Window': 1 argument required, but only 0 present.",
+            "TypeError: Failed to execute 'requestIdleCallback' on 'Window': The callback provided as parameter 1 is not a function.",
+            // After the timer due when it was asked for.
+            "timer, idle false true",
+        ]
+    );
+    // A page busy past the timeout: the timeout's task, due before the
+    // idle period could start, runs it.
+    let lines = waited(
+        r#"requestIdleCallback(d => console.log('ran', d.didTimeout, d.timeRemaining()), {timeout: 1});
+        const until = performance.now() + 20;
+        while (performance.now() < until) {}"#,
+        1,
+    );
+    assert_eq!(lines, ["ran true 0"]);
+}

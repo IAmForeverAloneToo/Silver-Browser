@@ -124,6 +124,7 @@ pub use custom::CustomProperties;
 pub use invalidation::SelectorFeatures;
 pub use media::{
     ColorScheme, Media, MediaQueryList, MediaType, Preferences, parse_media_query_list,
+    serialize_media_query_list,
 };
 pub use page::{Orientation, PageBox, PagePosition, PageSize, PageStyle};
 pub use rule_set::is_layer_name;

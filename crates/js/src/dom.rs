@@ -278,6 +278,16 @@ pub enum Call {
     /// The encoding a MIME type's `charset` names, as `TextDecoderName`
     /// answers (`FileReader.readAsText()`).
     MimeCharset(String),
+    /// `matchMedia()` (gap batch A): the list's serialization and its
+    /// number, as strings.
+    MatchMedia(String),
+    /// Whether list `id` holds now.
+    MediaMatches(u32),
+    /// List `id`'s object is gone.
+    MediaForget(u32),
+    /// When an idle period that starts now ends, on the document's clock
+    /// (`requestIdleCallback()`).
+    IdleDeadline,
     /// `CSS.supports()`: a property and a value, or a condition alone.
     CssSupports(String, Option<String>),
     /// `URL.createObjectURL()` (gap batch A): a `blob:` URL for a blob

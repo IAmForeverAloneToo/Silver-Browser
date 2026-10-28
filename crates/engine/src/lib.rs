@@ -3389,7 +3389,8 @@ impl Engine {
                 );
             }
         }
-        if !self.hidden && self.shown.scripts.wants_frame() {
+        let media = self.shown.scripts.has_media_lists();
+        if !self.hidden && (media || self.shown.scripts.wants_frame()) {
             let origin = self
                 .shown
                 .scripts
@@ -3407,6 +3408,8 @@ impl Engine {
                 ready,
                 window,
             };
+            // The lists of `matchMedia()` first (gap batch A).
+            shown.scripts.report_media(&mut lent);
             shown.scripts.run_frames(&mut lent, time);
             self.scripts_ran();
         }

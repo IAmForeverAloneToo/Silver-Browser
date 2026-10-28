@@ -1192,9 +1192,239 @@ fn px(amount: f64, unit: LengthUnit, media: &Media) -> f64 {
         }
 }
 
+/// A `<media-query-list>` serialized (CSSOM 4.1, gap batch A): each
+/// query as written, its names and units lower case and its white space
+/// made single spaces, `: ` after a feature's name; a query that does
+/// not match the grammar `not all`; the queries joined by `, `.
+pub fn serialize_media_query_list(tokens: &[Token]) -> String {
+    if trim(tokens).is_empty() {
+        return String::new();
+    }
+    let queries: Vec<String> = split_commas(tokens)
+        .into_iter()
+        .map(|query| {
+            let query = trim(query);
+            match parse_query(query) {
+                Some(_) => serialize_tokens(query),
+                None => "not all".to_owned(),
+            }
+        })
+        .collect();
+    queries.join(", ")
+}
+
+/// A query's tokens written out, normalized as
+/// [`serialize_media_query_list`] says, so that they read back as the
+/// same tokens: names escaped as CSSOM escapes an identifier, and a space
+/// between two tokens that would read as one.
+fn serialize_tokens(tokens: &[Token]) -> String {
+    let mut out = String::new();
+    let mut space = false;
+    let mut last: Option<&Token> = None;
+    for token in tokens {
+        let text = match token {
+            Token::Whitespace => {
+                space = true;
+                continue;
+            }
+            Token::Ident(name) => ident(&name.to_ascii_lowercase()),
+            Token::Function(name) => format!("{}(", ident(&name.to_ascii_lowercase())),
+            Token::AtKeyword(name) => format!("@{}", ident(name)),
+            Token::Hash { value, .. } => format!("#{}", name(value)),
+            Token::Number { value, .. } => number(*value),
+            Token::Percentage { value } => format!("{}%", number(*value)),
+            Token::Dimension { value, unit, .. } => {
+                format!(
+                    "{}{}",
+                    number(*value),
+                    unit_name(&unit.to_ascii_lowercase())
+                )
+            }
+            Token::String { value, .. } => string(value),
+            Token::Url { value, .. } => format!("url({})", string(value)),
+            // A backslash and a newline stay a delimiter and white space.
+            Token::Delim('\\') => "\\\n".to_owned(),
+            Token::Delim(c) => c.to_string(),
+            Token::Colon => ":".to_owned(),
+            Token::Semicolon => ";".to_owned(),
+            Token::Comma => ",".to_owned(),
+            Token::OpenParen => "(".to_owned(),
+            Token::CloseParen => ")".to_owned(),
+            Token::OpenSquare => "[".to_owned(),
+            Token::CloseSquare => "]".to_owned(),
+            Token::OpenCurly => "{".to_owned(),
+            Token::CloseCurly => "}".to_owned(),
+            _ => continue,
+        };
+        // No space after `(` or before `)` and `:`; one after `:`, and
+        // one between two tokens that would otherwise run together.
+        let after_open = out.ends_with('(');
+        let wanted = (space || out.ends_with(':')) && !after_open && text != ")" && text != ":";
+        if !out.is_empty() && (wanted || last.is_some_and(|last| joins(last, token))) {
+            out.push(' ');
+        }
+        space = false;
+        last = Some(token);
+        out.push_str(&text);
+    }
+    out
+}
+
+/// Whether `a` followed at once by `b` could read back as other tokens:
+/// two names or numbers, a name or number and a sign, a point or a
+/// percent sign after it, a sign, point, `@`, `#` or backslash before
+/// anything wordy, `/` and `*`, `<` and `!`.
+fn joins(a: &Token, b: &Token) -> bool {
+    let wordy = |t: &Token| {
+        matches!(
+            t,
+            Token::Ident(_)
+                | Token::Function(_)
+                | Token::AtKeyword(_)
+                | Token::Hash { .. }
+                | Token::Number { .. }
+                | Token::Percentage { .. }
+                | Token::Dimension { .. }
+                | Token::Url { .. }
+        )
+    };
+    match (a, b) {
+        (Token::Function(_), _) => false,
+        (Token::Delim('/'), Token::Delim('*')) | (Token::Delim('<'), Token::Delim('!')) => true,
+        (Token::Delim(c), b) => {
+            matches!(c, '-' | '+' | '.' | '@' | '#' | '\\')
+                && (wordy(b) || matches!(b, Token::Delim('-' | '.' | '\\')))
+        }
+        (a, Token::Delim(c)) => wordy(a) && matches!(c, '-' | '+' | '.' | '%' | '\\'),
+        (a, b) => wordy(a) && wordy(b),
+    }
+}
+
+/// A number as CSS writes one, a value too large for a double the
+/// largest one.
+fn number(value: f64) -> String {
+    format!("{}", value.clamp(f64::MIN, f64::MAX))
+}
+
+/// An identifier serialized (CSSOM 2.1, as `CSS.escape()` does it).
+fn ident(name: &str) -> String {
+    let chars: Vec<char> = name.chars().collect();
+    let mut out = String::new();
+    for (i, &c) in chars.iter().enumerate() {
+        let digit = c.is_ascii_digit();
+        if c == '\0' {
+            out.push('\u{fffd}');
+        } else if ('\u{1}'..='\u{1f}').contains(&c)
+            || c == '\u{7f}'
+            || (i == 0 && digit)
+            || (i == 1 && digit && chars[0] == '-')
+        {
+            out.push_str(&format!("\\{:x} ", c as u32));
+        } else if i == 0 && c == '-' && chars.len() == 1 {
+            out.push_str("\\-");
+        } else if c as u32 >= 0x80 || c == '-' || c == '_' || c.is_ascii_alphanumeric() {
+            out.push(c);
+        } else {
+            out.push('\\');
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// A unit serialized: an identifier, and one that begins `e` and a
+/// digit or a sign with its `e` escaped, which would read as an exponent.
+fn unit_name(unit: &str) -> String {
+    let mut chars = unit.chars();
+    if chars.next() == Some('e')
+        && chars
+            .next()
+            .is_some_and(|c| c.is_ascii_digit() || c == '+' || c == '-')
+    {
+        return format!("\\65 {}", name(&unit[1..]));
+    }
+    ident(unit)
+}
+
+/// A name, as a hash's or a unit's rest: its characters that are not a
+/// name's escaped.
+fn name(value: &str) -> String {
+    let mut out = String::new();
+    for c in value.chars() {
+        if c as u32 >= 0x80 || c == '-' || c == '_' || c.is_ascii_alphanumeric() {
+            out.push(c);
+        } else {
+            out.push_str(&format!("\\{:x} ", c as u32));
+        }
+    }
+    out
+}
+
+/// A string serialized (CSSOM 2.1): quoted, its quotes, backslashes and
+/// control characters escaped.
+fn string(value: &str) -> String {
+    let mut out = String::from("\"");
+    for c in value.chars() {
+        match c {
+            '\0' => out.push('\u{fffd}'),
+            '"' | '\\' => {
+                out.push('\\');
+                out.push(c);
+            }
+            '\u{1}'..='\u{1f}' | '\u{7f}' => out.push_str(&format!("\\{:x} ", c as u32)),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_list_is_serialized_as_the_reference_writes_it() {
+        let serialized = |source: &str| serialize_media_query_list(&css::tokenize(source));
+        assert_eq!(serialized("(min-width: 1px)"), "(min-width: 1px)");
+        assert_eq!(
+            serialized("  SCREEN  and ( MIN-WIDTH :1PX ) "),
+            "screen and (min-width: 1px)"
+        );
+        assert_eq!(
+            serialized("print,(color),,"),
+            "print, (color), not all, not all"
+        );
+        assert_eq!(serialized("(nope"), "(nope");
+        assert_eq!(
+            serialized("(400px <= width < 50em)"),
+            "(400px <= width < 50em)"
+        );
+        assert_eq!(serialized("screen and"), "not all");
+        assert_eq!(serialized(""), "");
+        // What reads back as the same tokens.
+        for source in [
+            r"(a \ b)",
+            "(1/**/px)",
+            r"(x: 1\65 1x)",
+            r#"(a "q\"" b)"#,
+            "(#a#b)",
+            "(1e999px)",
+            r"(-\31 a)",
+            r"\31 a",
+            "(a/**/-b)",
+            "(1/**/.5)",
+            "(1/**/%)",
+            r"(/**/\)",
+            "(</**/!--)",
+            "(@a/**/b)",
+            "(url(a b))",
+            "(a[b]{c};)",
+        ] {
+            let once = serialized(source);
+            assert_eq!(serialized(&once), once, "{source}");
+        }
+    }
 
     fn list(source: &str) -> MediaQueryList {
         parse_media_query_list(&css::tokenize(source))

@@ -3714,6 +3714,230 @@
   });
   windowOnly("CSS", { value: CSSNamespace, writable: true, configurable: true });
 
+  // ---- matchMedia() and MediaQueryList (CSSOM View 4.2, gap batch A) ----
+
+  // A list is the engine's by a number: parsed once, answered against the
+  // window's medium when `matches` is read, and evaluated again in each
+  // frame's update, which fires `change` at those whose answer changed.
+  // An object let go, the engine forgets its list.
+  const mediaLists = new $Map();
+  const mediaGone = new $FinalizationRegistry((id) => {
+    MapDelete(mediaLists, id);
+    native.mediaForget(id);
+  });
+  const EventTargetAdd = uncurry(EventTarget.prototype.addEventListener);
+  const EventTargetRemove = uncurry(EventTarget.prototype.removeEventListener);
+
+  class MediaQueryList extends EventTarget {
+    #id;
+    #media;
+
+    constructor(key, id, media) {
+      if (key !== KEY) {
+        throw illegalConstructor("MediaQueryList");
+      }
+      super();
+      this.#id = id;
+      this.#media = media;
+    }
+
+    get media() {
+      return this.#media;
+    }
+
+    get matches() {
+      return native.mediaMatches(this.#id);
+    }
+
+    addListener(callback) {
+      this.#id;
+      need(arguments.length, 1, "addListener", "MediaQueryList");
+      if (callback !== null) {
+        EventTargetAdd(this, "change", callback);
+      }
+    }
+
+    removeListener(callback) {
+      this.#id;
+      need(arguments.length, 1, "removeListener", "MediaQueryList");
+      if (callback !== null) {
+        EventTargetRemove(this, "change", callback);
+      }
+    }
+  }
+  defineHandlers(MediaQueryList.prototype, ["change"], false);
+  expose(MediaQueryList, "MediaQueryList");
+
+  const MEDIA_QUERY = 524288;
+  const MEDIA_QUERY_INIT = members(EVENT_INIT, [
+    ["matches", "boolean", false],
+    ["media", "DOMString", ""],
+  ], "MediaQueryListEventInit");
+
+  class MediaQueryListEvent extends Event {
+    constructor(type, eventInitDict = undefined) {
+      const args = eventArgs(arguments.length, type, eventInitDict, MEDIA_QUERY_INIT,
+        "MediaQueryListEvent");
+      super(args[0], args[1]);
+      eventState(this).kinds |= MEDIA_QUERY;
+    }
+
+    get media() {
+      return fieldsOf(this, MEDIA_QUERY).media;
+    }
+
+    get matches() {
+      return fieldsOf(this, MEDIA_QUERY).matches;
+    }
+  }
+  expose(MediaQueryListEvent, "MediaQueryListEvent");
+
+  windowOnly("matchMedia", {
+    value: function matchMedia(query) {
+      need(arguments.length, 1, "matchMedia", "Window");
+      // Its serialization and its number.
+      const made = native.matchMedia(str(query));
+      const id = $Number(made[1]);
+      const list = new MediaQueryList(KEY, id, made[0]);
+      MapSet(mediaLists, id, new $WeakRef(list));
+      Register(mediaGone, list, id);
+      return list;
+    },
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+
+  // The frame's report (the engine's `mediaChanged` task): a `change`
+  // at each list whose answer changed, in the order they were made.
+  function* mediaChanged(ids) {
+    for (let i = 0; i < ids.length; i++) {
+      const ref = MapGet(mediaLists, ids[i]);
+      const list = ref === undefined ? undefined : WeakRefDeref(ref);
+      if (list === undefined) {
+        continue;
+      }
+      const event = new MediaQueryListEvent("change", { media: list.media, matches: list.matches });
+      eventState(event).trusted = true;
+      yield* dispatching(list, event);
+    }
+    return false;
+  }
+
+  // ---- requestIdleCallback() (Cooperative Scheduling, gap batch A) ----
+
+  // The callbacks wait for an idle period: a task of the bindings' own,
+  // queued when the first is asked for, that runs those asked for while
+  // its deadline lasts (the engine's next timer, the next frame, or 50
+  // ms on). A callback whose timeout passes first runs as a task of its
+  // own, `didTimeout` true.
+  const idleCallbacks = new $Map();
+  let lastIdle = 0;
+  let idleQueued = false;
+
+  class IdleDeadline {
+    #end;
+    #timedOut;
+
+    constructor(key, end, timedOut) {
+      if (key !== KEY) {
+        throw illegalConstructor("IdleDeadline");
+      }
+      this.#end = end;
+      this.#timedOut = timedOut;
+    }
+
+    timeRemaining() {
+      const left = this.#end - native.now();
+      return left > 0 ? left : 0;
+    }
+
+    get didTimeout() {
+      return this.#timedOut;
+    }
+  }
+  expose(IdleDeadline, "IdleDeadline");
+
+  function queueIdle() {
+    if (!idleQueued) {
+      idleQueued = true;
+      queueTask(runIdle, 0);
+    }
+  }
+
+  function runIdle() {
+    idleQueued = false;
+    const end = native.idleDeadline();
+    const ids = [];
+    MapForEach(idleCallbacks, (_, id) => ArrayPush(ids, id));
+    for (let i = 0; i < ids.length; i++) {
+      if (native.now() >= end) {
+        break;
+      }
+      const entry = MapGet(idleCallbacks, ids[i]);
+      if (entry === undefined) {
+        continue;
+      }
+      MapDelete(idleCallbacks, ids[i]);
+      if (entry.timer !== 0) {
+        cancelTask(entry.timer);
+      }
+      try {
+        ReflectApply(entry.callback, global, [new IdleDeadline(KEY, end, false)]);
+      } catch (error) {
+        reportException(error);
+      }
+    }
+    if (MapSize(idleCallbacks) > 0) {
+      queueIdle();
+    }
+  }
+
+  const IDLE_OPTIONS = [["timeout", "unsigned long", 0, "IdleRequestOptions"]];
+  windowOnly("requestIdleCallback", {
+    value: function requestIdleCallback(callback, options = undefined) {
+      need(arguments.length, 1, "requestIdleCallback", "Window");
+      if (typeof callback !== "function") {
+        throw new $TypeError(prefix("requestIdleCallback", "Window") +
+          "The callback provided as parameter 1 is not a function.");
+      }
+      const read = dictionary(options, IDLE_OPTIONS, "IdleRequestOptions");
+      const id = ++lastIdle;
+      const entry = { callback, timer: 0 };
+      if (read.timeout > 0) {
+        entry.timer = queueTask(() => {
+          if (MapGet(idleCallbacks, id) !== entry) {
+            return;
+          }
+          MapDelete(idleCallbacks, id);
+          ReflectApply(callback, global, [new IdleDeadline(KEY, -Infinity, true)]);
+        }, read.timeout);
+      }
+      MapSet(idleCallbacks, id, entry);
+      queueIdle();
+      return id;
+    },
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+  windowOnly("cancelIdleCallback", {
+    value: function cancelIdleCallback(handle) {
+      need(arguments.length, 1, "cancelIdleCallback", "Window");
+      const id = handle >>> 0;
+      const entry = MapGet(idleCallbacks, id);
+      if (entry !== undefined) {
+        MapDelete(idleCallbacks, id);
+        if (entry.timer !== 0) {
+          cancelTask(entry.timer);
+        }
+      }
+    },
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+
   // ---- Fetch: Headers, Request, Response, fetch() (M27.1) ----
 
   const JSONParse = JSON.parse;
@@ -19208,12 +19432,21 @@
   }
 
   // A task of the bindings' own (as File API's reads queue theirs): a
-  // timer of no delay, its id past those of scripts' timers.
+  // timer, of no delay unless `delay` milliseconds are given, its id past
+  // those of scripts' timers, which `cancelTask` takes.
   let lastTask = 2147483647;
-  function queueTask(work) {
+  function queueTask(work, delay = 0) {
     lastTask = lastTask >= 4294967295 ? 2147483648 : lastTask + 1;
-    MapSet(timers, lastTask, { callback: work, args: [], repeat: false, delay: 0 });
-    native.setTimer(lastTask, 0);
+    MapSet(timers, lastTask, { callback: work, args: [], repeat: false, delay });
+    native.setTimer(lastTask, delay);
+    return lastTask;
+  }
+
+  function cancelTask(id) {
+    if (MapHas(timers, id)) {
+      MapDelete(timers, id);
+      native.clearTimer(id);
+    }
   }
 
   function stopTimer(handle) {
@@ -22681,6 +22914,7 @@
     audio: audioTask,
     gpu: (text, bytes) => gpuInstall().gpuTask(text, bytes),
     media: mediaTask,
+    mediaChanged,
     evaluate: evaluateExpression,
     fetched,
     // A message's arrival (M31): at the global (`kind` 0), at worker

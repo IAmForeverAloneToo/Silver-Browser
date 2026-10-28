@@ -94,6 +94,38 @@ fn errors_are_said_as_the_reference_says_them() {
         ),
         "ERROR: 0:2: 'void' : illegal use of type 'void'\n"
     );
+    // An array of void, at the top level and in a function (glsl_parse
+    // found it made WGSL of no type).
+    for (source, line) in [
+        (
+            "void m[2];
+void main() {}
+",
+            2,
+        ),
+        (
+            "void main() {
+void m[2];
+}
+",
+            3,
+        ),
+    ] {
+        assert_eq!(
+            error(
+                &format!(
+                    "#version 300 es
+{source}"
+                ),
+                Stage::Vertex,
+                &webgl2()
+            ),
+            format!(
+                "ERROR: 0:{line}: 'm' : illegal use of type 'void'
+"
+            )
+        );
+    }
     // A block with no member, as a struct with no field (glsl_parse found
     // it made WGSL of an empty struct).
     assert_eq!(

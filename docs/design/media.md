@@ -641,7 +641,7 @@ the deferred items, the G list, at step 12.
   inside a style rule*, which needs CSS nesting; *custom media queries*
   (`@custom-media`, Media Queries 5 §10).
 - *`matchMedia` and `CSS.supports()`* from script, and the script tests
-  of the subset that use them (M24, M25).
+  of the subset that use them (M24, M25). *(Later: gap batch A.)*
 - *The print reftests* of the web-platform-tests, which compare
   paginated renderings: the harness renders the screen alone.
 - *The dark interface*: the toolbar has one light theme (M37.3).

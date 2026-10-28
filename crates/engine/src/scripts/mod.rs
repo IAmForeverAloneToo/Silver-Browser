@@ -17,6 +17,7 @@ mod cssom;
 mod decoding;
 mod fetch;
 mod host;
+mod media_lists;
 pub(crate) mod ports;
 pub(crate) mod service_workers;
 #[cfg(test)]
@@ -1042,6 +1043,22 @@ impl Scripts {
 
     pub(crate) fn take_canvases_changed(&mut self) -> bool {
         self.host.canvases.take_changed()
+    }
+
+    /// Whether the document has `matchMedia()` lists, which each frame's
+    /// update evaluates again (gap batch A).
+    pub(crate) fn has_media_lists(&self) -> bool {
+        !self.host.media_lists.is_empty() && !self.stopped
+    }
+
+    /// HTML's "evaluate media queries and report changes", in a frame's
+    /// update before its animation frame callbacks: a `change` at each
+    /// list whose answer for the window's medium changed.
+    pub(crate) fn report_media(&mut self, lent: &mut Lent<'_>) {
+        let changed = self.host.media_lists.changed(&lent.window.media);
+        if !changed.is_empty() {
+            self.enter(lent, &js::Task::MediaChanged(changed), 0);
+        }
     }
 
     /// Runs the animation frame callbacks (M26) for a frame at `now`, in

@@ -458,6 +458,11 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                     .get::<_, Function<'_>>("media")?
                     .call::<_, Value<'_>>((message.as_str(),))
             }),
+            Task::MediaChanged(ids) => self.stepped(&entries, |_, entries| {
+                entries
+                    .get::<_, Function<'_>>("mediaChanged")?
+                    .call::<_, Value<'_>>((ids.clone(),))
+            }),
             Task::Gpu(message, bytes) => self.stepped(&entries, |ctx, entries| {
                 let bytes = if bytes.is_empty() {
                     Value::new_null(ctx.clone())

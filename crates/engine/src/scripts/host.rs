@@ -256,6 +256,8 @@ pub(crate) struct DocumentHost {
     blob_urls: crate::blob_urls::BlobOwner,
     /// The text its scripts' `TextDecoder`s are decoding (gap batch A).
     text_decoders: super::decoding::TextDecoders,
+    /// Its `matchMedia()` lists (gap batch A).
+    pub(crate) media_lists: super::media_lists::MediaLists,
 }
 
 impl ScriptingHost for DocumentHost {
@@ -1127,6 +1129,33 @@ impl DocumentHost {
             Call::AbortFetch(id) => {
                 self.outputs.aborted.push(id);
                 Ok(Answer::Nothing)
+            }
+            Call::MatchMedia(query) => {
+                let (media, _, id) = self.media_lists.make(&query, &self.window.media);
+                Ok(Answer::Strings(vec![media, id.to_string()]))
+            }
+            Call::MediaMatches(id) => Ok(Answer::Bool(
+                self.media_lists.matches(id, &self.window.media),
+            )),
+            Call::MediaForget(id) => {
+                self.media_lists.forget(id);
+                Ok(Answer::Nothing)
+            }
+            Call::IdleDeadline => {
+                // An idle period ends 50 ms on, at the next timer, or at
+                // the next frame when one is wanted.
+                let now = self.now();
+                let mut end = now + std::time::Duration::from_millis(50);
+                if let Some(due) = self.timers.next_due() {
+                    end = end.min(due.max(now));
+                }
+                if self.frame_wanted {
+                    end = end.min(now + std::time::Duration::from_micros(16_667));
+                }
+                // In tenths of a millisecond, as `performance.now()` is.
+                let origin = self.origin.map(|origin| origin.at).unwrap_or_default();
+                let tenths = end.saturating_sub(origin).as_micros() / 100;
+                Ok(Answer::Number(tenths as f64 / 10.0))
             }
             Call::TextDecoderName(label) => Ok(super::decoding::name(&label)),
             Call::TextDecode {

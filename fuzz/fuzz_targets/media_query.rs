@@ -7,7 +7,8 @@
 //! document cascaded under each medium, and its `@page` rules resolved
 //! for each page position. Nothing may panic, a list must answer the same
 //! each time it is asked, and styles cascaded under a medium must not
-//! count as changed under the same one.
+//! count as changed under the same one; a list's serialization must
+//! serialize to itself.
 
 #![no_main]
 #![forbid(unsafe_code)]
@@ -60,6 +61,14 @@ fuzz_target!(|data: &[u8]| {
     let tokens = css::tokenize(s);
     let list = style::parse_media_query_list(&tokens);
     let _ = style::supports_condition(&tokens);
+    // Its serialization (`matchMedia()`'s `media`, gap batch A) reads
+    // back as a list that serializes the same.
+    let serialized = style::serialize_media_query_list(&tokens);
+    assert_eq!(
+        style::serialize_media_query_list(&css::tokenize(&serialized)),
+        serialized,
+        "a serialization serializes to itself"
+    );
     let media = media();
     for m in &media {
         let answer = list.evaluate(m);

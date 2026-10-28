@@ -1355,7 +1355,12 @@ impl<'a> Parser<'a> {
         global: bool,
     ) -> R<()> {
         let v3 = self.ctx.version == 300;
-        if ty == Type::Void {
+        // A variable of type void, or of an array of it.
+        let mut element = &ty;
+        while let Type::Array(inner, _) = element {
+            element = inner;
+        }
+        if *element == Type::Void {
             return Err(Error::new(line, name, "illegal use of type 'void'"));
         }
         self.check_precision(&ty, quals, line)?;
