@@ -2309,11 +2309,18 @@ impl<'a> Emitter<'a> {
                 let (a, b) = self.splat(a, at, b, bt);
                 format!("({a} {} {b})", crate::expr::op_text(op))
             }
+            // A shift by the width or more is undefined in GLSL but, by a
+            // constant, an error in WGSL: the amount is taken modulo 32,
+            // as WGSL takes a variable one.
             BinOp::Shl | BinOp::Shr => {
                 let amount = match (at, bt) {
-                    (Type::Vector(_, n), Type::Scalar(_)) => format!("vec{n}<u32>(u32({b}))"),
-                    (Type::Vector(_, n), Type::Vector(..)) => format!("vec{n}<u32>({b})"),
-                    _ => format!("u32({b})"),
+                    (Type::Vector(_, n), Type::Scalar(_)) => {
+                        format!("vec{n}<u32>(u32({b}) & 31u)")
+                    }
+                    (Type::Vector(_, n), Type::Vector(..)) => {
+                        format!("(vec{n}<u32>({b}) & vec{n}<u32>(31u))")
+                    }
+                    _ => format!("(u32({b}) & 31u)"),
                 };
                 format!("({a} {} {amount})", crate::expr::op_text(op))
             }

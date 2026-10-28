@@ -136,6 +136,16 @@ void m[2];
         ),
         "ERROR: 0:2: '}' : syntax error\n"
     );
+    // A `#line` past any line's number is held to u32's, not overflowed
+    // (glsl_parse found it).
+    assert_eq!(
+        error(
+            "#line 9223372036854775807\n#line 9223372036854775807\nvoid main() { x }\n",
+            Stage::Vertex,
+            &webgl1()
+        ),
+        "ERROR: 0:4294967295: 'x' : undeclared identifier\n"
+    );
     // An expression of more binary operators than MAX_GLSL_OPERATORS is
     // refused (the Khronos suite's long expressions overflowed the
     // stack); as many in statements of their own are not.
@@ -365,7 +375,7 @@ fn glsl_es_3_00_translates_its_own() {
         layout(std140) uniform Scene { mat4 view; vec3 sun; float time; mat2 small; float list[3]; } scene;\n\
         uniform Material { vec4 tint; bool lit; };\n\
         void main() {\n\
-          v_id = -a_ids.x ^ ((-a_ids).y << 2u);\n\
+          v_id = -a_ids.x ^ ((-a_ids).y << 2u) ^ (a_ids.y << 50u) ^ (a_ids >> uvec2(33u, 1u)).x;\n\
           v_uv[0] = a_position.xy;\n\
           v_uv[1] = vec2(float(gl_VertexID), float(gl_InstanceID)) * scene.list[1];\n\
           gl_Position = scene.view * a_position + vec4(scene.sun * scene.time, 0.0) + tint * (lit ? 1.0 : 0.0);\n\

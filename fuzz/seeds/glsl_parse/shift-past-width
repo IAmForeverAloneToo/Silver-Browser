@@ -1,0 +1,4 @@
+#version 300 es
+in uvec2 a_ids;
+flat out uint v_id;
+void main() { v_id = (a_ids.y << 50u) ^ (a_ids >> uvec2(33u, 1u)).x; gl_Position = vec4(0.0); }

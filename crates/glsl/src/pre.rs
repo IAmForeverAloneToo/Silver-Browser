@@ -298,7 +298,7 @@ struct Pre<'a> {
 impl Pre<'_> {
     /// The line `physical` is numbered.
     fn at(&self, physical: u32) -> u32 {
-        (i64::from(physical) + self.line_offset).clamp(0, i64::from(u32::MAX)) as u32
+        (i64::from(physical).saturating_add(self.line_offset)).clamp(0, i64::from(u32::MAX)) as u32
     }
 
     /// A predefined macro's being defined: `Some` for those there are.
@@ -498,8 +498,10 @@ impl Pre<'_> {
                 _ => None,
             })
             .ok_or_else(|| Error::new(line, "line", "invalid line directive"))?;
-        // The next line is `number`.
-        self.line_offset += number - i64::from(line) - 1;
+        // The next line is `number`; a line past u32's is clamped when
+        // it is said, and the offset saturates on the way.
+        let step = number.saturating_sub(i64::from(line)).saturating_sub(1);
+        self.line_offset = self.line_offset.saturating_add(step);
         Ok(())
     }
 
