@@ -6,7 +6,7 @@
 
 mod support;
 
-use net::url::{Host, Url};
+use net::url::{Host, Part, Url};
 use serde_json::Value;
 
 use support::objects as load;
@@ -119,6 +119,98 @@ fn urltestdata() {
         "{} of {}:\n{}",
         failures.len(),
         cases.len(),
+        failures.join("\n")
+    );
+}
+
+const PARTS: [Part; 9] = [
+    Part::Protocol,
+    Part::Username,
+    Part::Password,
+    Part::Host,
+    Part::Hostname,
+    Part::Port,
+    Part::Pathname,
+    Part::Search,
+    Part::Hash,
+];
+
+#[test]
+fn setters_tests() {
+    let data = support::read("setters_tests.json");
+    let mut count = 0;
+    let mut failures = Vec::new();
+    for (setter, cases) in data.as_object().expect("an object") {
+        let part = match setter.as_str() {
+            "comment" => continue,
+            "href" => None,
+            "protocol" => Some(Part::Protocol),
+            "username" => Some(Part::Username),
+            "password" => Some(Part::Password),
+            "host" => Some(Part::Host),
+            "hostname" => Some(Part::Hostname),
+            "port" => Some(Part::Port),
+            "pathname" => Some(Part::Pathname),
+            "search" => Some(Part::Search),
+            "hash" => Some(Part::Hash),
+            _ => panic!("no setter {setter}"),
+        };
+        for case in cases.as_array().expect("an array") {
+            count += 1;
+            let href = case["href"].as_str().expect("an href");
+            let value = case["new_value"].as_str().expect("a value");
+            let url = Url::parse(href).expect("a URL to start from");
+            // `href`'s setter is the parser itself.
+            let url = match part {
+                Some(part) => url.with_part(part, value),
+                None => Url::parse(value).expect("an href to set"),
+            };
+            let got = Getters::of(&url);
+            let expected = case["expected"].as_object().expect("the expected getters");
+            for (field, expected) in expected {
+                let expected = expected.as_str().expect("a getter's value");
+                if got.get(field) != expected {
+                    failures.push(format!(
+                        "{href:?} {setter} = {value:?}: {field} is {:?}, expected {expected:?}",
+                        got.get(field)
+                    ));
+                }
+            }
+        }
+    }
+    assert_eq!(count, 278, "every case is run");
+    // Every setter given every value the cases have, of every URL they
+    // start from, makes a URL that parses back to itself.
+    let mut values: Vec<&str> = Vec::new();
+    let mut hrefs: Vec<&str> = Vec::new();
+    for cases in data.as_object().expect("an object").values() {
+        for case in cases.as_array().into_iter().flatten() {
+            values.extend(case["new_value"].as_str());
+            hrefs.extend(case["href"].as_str());
+        }
+    }
+    for list in [&mut values, &mut hrefs] {
+        list.sort_unstable();
+        list.dedup();
+    }
+    for href in &hrefs {
+        let url = Url::parse(href).expect("a URL to start from");
+        for value in &values {
+            for part in PARTS {
+                let set = url.with_part(part, value);
+                let again = Url::parse(set.as_str()).map(|again| again.to_string());
+                if again.as_deref() != Ok(set.as_str()) {
+                    failures.push(format!(
+                        "{href:?} {part:?} = {value:?}: {set} parses as {again:?}"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {count}:\n{}",
+        failures.len(),
         failures.join("\n")
     );
 }

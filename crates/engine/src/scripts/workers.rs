@@ -1092,6 +1092,8 @@ pub(crate) struct WorkerHost {
     work: u64,
     /// A service worker's own (M39); none for a dedicated worker.
     pub(super) service: Option<super::service_workers::Service>,
+    /// The `blob:` URLs its scripts made (gap batch A).
+    blob_urls: crate::blob_urls::BlobOwner,
 }
 
 impl Default for WorkerHost {
@@ -1128,6 +1130,7 @@ impl Default for WorkerHost {
             local_network: None,
             work: 0,
             service: None,
+            blob_urls: crate::blob_urls::BlobOwner::default(),
         }
     }
 }
@@ -1193,6 +1196,17 @@ impl ScriptingHost for WorkerHost {
                     mode.to_owned(),
                 ]))
             }
+            Call::BlobUrlCreate(bytes, kind) => Ok(Answer::String(self.blob_urls.create(
+                bytes,
+                kind,
+                &self.origin,
+            ))),
+            Call::BlobUrlRevoke(url) => {
+                self.blob_urls.revoke(&url, &self.origin);
+                Ok(Answer::Nothing)
+            }
+            Call::UrlParse(input, base) => Ok(super::url::parse(&input, base.as_deref())),
+            Call::UrlSet { href, part, value } => Ok(super::url::set(&href, &part, &value)),
             Call::UrlHasCredentials(url) => Ok(Answer::Bool(
                 Url::parse(&url).is_ok_and(|url| url.includes_credentials()),
             )),

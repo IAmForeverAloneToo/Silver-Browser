@@ -1,6 +1,8 @@
 //! The basic URL parser (URL Standard §4.4), as the state machine the
-//! standard writes, without the state override the URL API's setters
-//! use (those come with scripts, M25).
+//! standard writes, with the state override the URL API's setters use
+//! (gap batch A): a setter's run starts in its state on the URL as it
+//! is, and its "return" and "return failure" both leave the URL as far
+//! as the run changed it.
 //!
 //! The input is held as code points with a signed pointer, so that the
 //! standard's "decrease pointer by 1" and "start over" read as written.
@@ -13,8 +15,9 @@ use super::percent::{
 };
 use super::{ParseError, Path, Record, default_port, is_special_scheme};
 
+/// A state of the parser; a setter's run starts in one of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum State {
+pub(crate) enum State {
     SchemeStart,
     Scheme,
     NoScheme,
@@ -26,6 +29,7 @@ enum State {
     SpecialAuthorityIgnoreSlashes,
     Authority,
     Host,
+    Hostname,
     Port,
     File,
     FileSlash,
@@ -95,6 +99,22 @@ impl Record {
     fn special(&self) -> bool {
         is_special_scheme(&self.scheme)
     }
+
+    fn includes_credentials(&self) -> bool {
+        !self.username.is_empty() || !self.password.is_empty()
+    }
+}
+
+/// How a run ended early: a failure, or a setter's run done.
+enum Stop {
+    Failure(ParseError),
+    Done,
+}
+
+impl From<ParseError> for Stop {
+    fn from(error: ParseError) -> Stop {
+        Stop::Failure(error)
+    }
 }
 
 /// Runs the basic URL parser over `input` with an optional `base` and
@@ -104,14 +124,41 @@ pub(crate) fn parse(
     base: Option<&Record>,
     encoding: Encoding,
 ) -> Result<Record, ParseError> {
-    let trimmed = input.trim_matches(|c: char| c <= ' ');
+    let mut url = Record::default();
+    match run(input, base, encoding, &mut url, None) {
+        Ok(()) | Err(Stop::Done) => Ok(url),
+        Err(Stop::Failure(error)) => Err(error),
+    }
+}
+
+/// Runs the basic URL parser over `input` with `url` and `state` as its
+/// state override, as a setter of the URL API does: `url` as far as the
+/// run changed it, whether it ended in failure or not.
+pub(crate) fn parse_override(input: &str, url: &mut Record, state: State) {
+    let _ = run(input, None, UTF_8, url, Some(state));
+}
+
+/// The basic URL parser's run, the state override `over` given or not.
+fn run(
+    input: &str,
+    base: Option<&Record>,
+    encoding: Encoding,
+    url: &mut Record,
+    over: Option<State>,
+) -> Result<(), Stop> {
+    let overridden = over.is_some();
+    // Leading and trailing C0 controls and spaces go, unless a setter
+    // runs it.
+    let trimmed = match overridden {
+        true => input,
+        false => input.trim_matches(|c: char| c <= ' '),
+    };
     let input: Vec<char> = trimmed
         .chars()
         .filter(|&c| !matches!(c, '\t' | '\n' | '\r'))
         .collect();
     let mut encoding = encoding.output_encoding();
-    let mut url = Record::default();
-    let mut state = State::SchemeStart;
+    let mut state = over.unwrap_or(State::SchemeStart);
     let mut buffer = String::new();
     let mut at_sign_seen = false;
     let mut inside_brackets = false;
@@ -138,9 +185,11 @@ pub(crate) fn parse(
                 if let Some(c) = c.filter(char::is_ascii_alphabetic) {
                     buffer.push(c.to_ascii_lowercase());
                     state = State::Scheme;
-                } else {
+                } else if !overridden {
                     state = State::NoScheme;
                     pointer -= 1;
+                } else {
+                    return Err(Stop::Failure(ParseError::RelativeWithoutBase));
                 }
             }
             State::Scheme => match c {
@@ -148,7 +197,24 @@ pub(crate) fn parse(
                     buffer.push(c.to_ascii_lowercase());
                 }
                 Some(':') => {
+                    // A setter changes a scheme only to one of its kind,
+                    // and none of a URL with credentials, a port or an
+                    // empty host to `file`.
+                    if overridden
+                        && (url.special() != is_special_scheme(&buffer)
+                            || ((url.includes_credentials() || url.port.is_some())
+                                && buffer == "file")
+                            || (url.scheme == "file" && url.host == Some(Host::Empty)))
+                    {
+                        return Err(Stop::Done);
+                    }
                     url.scheme = std::mem::take(&mut buffer);
+                    if overridden {
+                        if url.port.is_some() && url.port == default_port(&url.scheme) {
+                            url.port = None;
+                        }
+                        return Err(Stop::Done);
+                    }
                     if url.scheme == "file" {
                         state = State::File;
                     } else if url.special() && base.is_some_and(|base| base.scheme == url.scheme) {
@@ -163,20 +229,21 @@ pub(crate) fn parse(
                         state = State::OpaquePath;
                     }
                 }
-                _ => {
+                _ if !overridden => {
                     buffer.clear();
                     state = State::NoScheme;
                     // Start over, from the first code point.
                     pointer = -1;
                 }
+                _ => return Err(Stop::Failure(ParseError::RelativeWithoutBase)),
             },
             State::NoScheme => {
                 let Some(base) = base else {
-                    return Err(ParseError::RelativeWithoutBase);
+                    return Err(Stop::Failure(ParseError::RelativeWithoutBase));
                 };
                 let opaque = matches!(base.path, Path::Opaque(_));
                 if opaque && c != Some('#') {
-                    return Err(ParseError::RelativeWithoutBase);
+                    return Err(Stop::Failure(ParseError::RelativeWithoutBase));
                 } else if opaque {
                     url.scheme = base.scheme.clone();
                     url.path = base.path.clone();
@@ -291,7 +358,7 @@ pub(crate) fn parse(
                     || (url.special() && c == Some('\\'))
                 {
                     if at_sign_seen && buffer.is_empty() {
-                        return Err(ParseError::EmptyHost);
+                        return Err(Stop::Failure(ParseError::EmptyHost));
                     }
                     pointer -= buffer.chars().count() as isize + 1;
                     buffer.clear();
@@ -300,10 +367,17 @@ pub(crate) fn parse(
                     buffer.push(c);
                 }
             }
-            State::Host => {
-                if c == Some(':') && !inside_brackets {
+            State::Host | State::Hostname => {
+                if overridden && url.scheme == "file" {
+                    pointer -= 1;
+                    state = State::FileHost;
+                } else if c == Some(':') && !inside_brackets {
                     if buffer.is_empty() {
-                        return Err(ParseError::EmptyHost);
+                        return Err(Stop::Failure(ParseError::EmptyHost));
+                    }
+                    // `hostname`'s setter takes no port.
+                    if over == Some(State::Hostname) {
+                        return Err(Stop::Done);
                     }
                     url.host = Some(parse_host(&buffer, !url.special())?);
                     buffer.clear();
@@ -313,11 +387,21 @@ pub(crate) fn parse(
                 {
                     pointer -= 1;
                     if url.special() && buffer.is_empty() {
-                        return Err(ParseError::EmptyHost);
+                        return Err(Stop::Failure(ParseError::EmptyHost));
+                    }
+                    // No empty host for a URL with credentials or a port.
+                    if overridden
+                        && buffer.is_empty()
+                        && (url.includes_credentials() || url.port.is_some())
+                    {
+                        return Err(Stop::Done);
                     }
                     url.host = Some(parse_host(&buffer, !url.special())?);
                     buffer.clear();
                     state = State::PathStart;
+                    if overridden {
+                        return Err(Stop::Done);
+                    }
                 } else if let Some(c) = c {
                     if c == '[' {
                         inside_brackets = true;
@@ -333,6 +417,7 @@ pub(crate) fn parse(
                     buffer.push(digit);
                 } else if matches!(c, None | Some('/' | '?' | '#'))
                     || (url.special() && c == Some('\\'))
+                    || overridden
                 {
                     if !buffer.is_empty() {
                         // Leading zeros aside, more than five digits
@@ -341,16 +426,22 @@ pub(crate) fn parse(
                         let port: u32 = match digits.len() {
                             0 => 0,
                             1..=5 => digits.parse().expect("one to five ASCII digits"),
-                            _ => return Err(ParseError::InvalidPort),
+                            _ => return Err(Stop::Failure(ParseError::InvalidPort)),
                         };
                         let port = u16::try_from(port).map_err(|_| ParseError::InvalidPort)?;
                         url.port = (default_port(&url.scheme) != Some(port)).then_some(port);
                         buffer.clear();
+                        if overridden {
+                            return Err(Stop::Done);
+                        }
+                    }
+                    if overridden {
+                        return Err(Stop::Failure(ParseError::InvalidPort));
                     }
                     state = State::PathStart;
                     pointer -= 1;
                 } else {
-                    return Err(ParseError::InvalidPort);
+                    return Err(Stop::Failure(ParseError::InvalidPort));
                 }
             }
             State::File => {
@@ -410,11 +501,14 @@ pub(crate) fn parse(
                 if matches!(c, None | Some('/' | '\\' | '?' | '#')) {
                     pointer -= 1;
                     let buffer_chars: Vec<char> = buffer.chars().collect();
-                    if is_windows_drive_letter(&buffer_chars) {
+                    if !overridden && is_windows_drive_letter(&buffer_chars) {
                         // The buffer is kept: the path state takes it.
                         state = State::Path;
                     } else if buffer.is_empty() {
                         url.host = Some(Host::Empty);
+                        if overridden {
+                            return Err(Stop::Done);
+                        }
                         state = State::PathStart;
                     } else {
                         let mut host = parse_host(&buffer, !url.special())?;
@@ -422,6 +516,9 @@ pub(crate) fn parse(
                             host = Host::Empty;
                         }
                         url.host = Some(host);
+                        if overridden {
+                            return Err(Stop::Done);
+                        }
                         buffer.clear();
                         state = State::PathStart;
                     }
@@ -435,10 +532,10 @@ pub(crate) fn parse(
                     if !matches!(c, Some('/' | '\\')) {
                         pointer -= 1;
                     }
-                } else if c == Some('?') {
+                } else if !overridden && c == Some('?') {
                     url.query = Some(String::new());
                     state = State::Query;
-                } else if c == Some('#') {
+                } else if !overridden && c == Some('#') {
                     url.fragment = Some(String::new());
                     state = State::Fragment;
                 } else if let Some(c) = c {
@@ -446,11 +543,13 @@ pub(crate) fn parse(
                     if c != '/' {
                         pointer -= 1;
                     }
+                } else if overridden && url.host.is_none() {
+                    url.segments().push(String::new());
                 }
             }
             State::Path => {
                 let slash = c == Some('/') || (url.special() && c == Some('\\'));
-                if c.is_none() || slash || matches!(c, Some('?' | '#')) {
+                if c.is_none() || slash || (!overridden && matches!(c, Some('?' | '#'))) {
                     if is_double_dot(&buffer) {
                         url.shorten_path();
                         if !slash {
@@ -512,7 +611,7 @@ pub(crate) fn parse(
                 {
                     encoding = UTF_8;
                 }
-                if matches!(c, None | Some('#')) {
+                if c.is_none() || (!overridden && c == Some('#')) {
                     let set = if url.special() {
                         EncodeSet::SpecialQuery
                     } else {
@@ -542,7 +641,7 @@ pub(crate) fn parse(
         }
         pointer += 1;
     }
-    Ok(url)
+    Ok(())
 }
 
 /// The fragment percent-encode set applied to a whole string, for a

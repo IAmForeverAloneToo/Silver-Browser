@@ -400,30 +400,49 @@ pub fn is_cors_safelisted_request_header(name: &[u8], value: &[u8]) -> bool {
                     )
                 })
         }
-        b"range" => parse_single_range(value).is_some_and(|(start, _)| start.is_some()),
+        b"range" => parse_single_range(value, false).is_some_and(|(start, _)| start.is_some()),
         _ => false,
     }
 }
 
 /// A single range header value (Fetch 2.2.2's "parse a single range
-/// header value", whitespace not allowed): `bytes=` and a start, an
-/// end, or both; `None` when it is none, or the start is past the end.
-fn parse_single_range(value: &[u8]) -> Option<(Option<u64>, Option<u64>)> {
-    let rest = value
-        .get(..6)
-        .filter(|unit| unit.eq_ignore_ascii_case(b"bytes="))
-        .map(|_| &value[6..])?;
-    let dash = rest.iter().position(|&b| b == b'-')?;
-    let number = |digits: &[u8]| -> Option<Option<u64>> {
+/// header value"), tabs and spaces between its tokens allowed when
+/// `whitespace`: `bytes=` and a start, an end, or both; `None` when it
+/// is none, or the start is past the end.
+pub(crate) fn parse_single_range(
+    value: &[u8],
+    whitespace: bool,
+) -> Option<(Option<u64>, Option<u64>)> {
+    let skip = |rest: &mut &[u8]| {
+        while whitespace && let [b' ' | b'\t', tail @ ..] = *rest {
+            *rest = tail;
+        }
+    };
+    let number = |rest: &mut &[u8]| -> Option<Option<u64>> {
+        let count = rest.iter().take_while(|b| b.is_ascii_digit()).count();
+        let (digits, tail) = rest.split_at(count);
+        *rest = tail;
         if digits.is_empty() {
             return Some(None);
         }
-        if !digits.iter().all(u8::is_ascii_digit) {
-            return None;
-        }
         std::str::from_utf8(digits).ok()?.parse().ok().map(Some)
     };
-    let (start, end) = (number(&rest[..dash])?, number(&rest[dash + 1..])?);
+    let mut rest = value
+        .get(..5)
+        .filter(|unit| unit.eq_ignore_ascii_case(b"bytes"))
+        .map(|_| &value[5..])?;
+    skip(&mut rest);
+    rest = rest.strip_prefix(b"=")?;
+    skip(&mut rest);
+    let start = number(&mut rest)?;
+    skip(&mut rest);
+    rest = rest.strip_prefix(b"-")?;
+    skip(&mut rest);
+    let end = number(&mut rest)?;
+    skip(&mut rest);
+    if !rest.is_empty() {
+        return None;
+    }
     match (start, end) {
         (None, None) => None,
         (Some(start), Some(end)) if start > end => None,
@@ -622,6 +641,14 @@ mod tests {
         assert!(!safe("Range", "bytes=-5"));
         assert!(!safe("Range", "bytes=10-5"));
         assert!(!safe("Range", "bytes = 0-"));
+        // A blob's fetch allows tabs and spaces between the tokens.
+        assert_eq!(
+            parse_single_range(b"bytes 	= 1 - 2 ", true),
+            Some((Some(1), Some(2)))
+        );
+        assert_eq!(parse_single_range(b"Bytes=-3", true), Some((None, Some(3))));
+        assert_eq!(parse_single_range(b"bytes=1-2,3-4", true), None);
+        assert_eq!(parse_single_range(b"bytes=-", true), None);
         assert!(!safe("X-A", "1"));
         assert!(!safe("Accept", &"a".repeat(129)));
         assert!(safe("Accept", &"a".repeat(128)));

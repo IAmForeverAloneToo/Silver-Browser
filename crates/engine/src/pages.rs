@@ -407,6 +407,10 @@ fn network_error(url: &Url, place: &str, error: &NetworkError) -> (String, Strin
             "Can't open this data: address".to_owned(),
             "It is not a data: address that can be read.".to_owned(),
         ),
+        NetworkError::BlobUrl => (
+            "Can't open this blob: address".to_owned(),
+            "The page that made it has let it go, or it is not this page's to open.".to_owned(),
+        ),
         NetworkError::File(_) => (
             "Can't open this file".to_owned(),
             "There is no file there that can be read.".to_owned(),

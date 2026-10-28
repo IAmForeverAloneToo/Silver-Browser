@@ -3993,7 +3993,13 @@
       const p = glu(pname);
       const v = native.webgl("getVertexAttrib", r.id, glu(index), p);
       if (p === 0x889F) return MapGet(r.objects, v) || null;
-      if (p === 0x8626 && ArrayIsArray(v)) return new Float32Array(v);
+      // The current value: four numbers and their type.
+      if (p === 0x8626 && ArrayIsArray(v)) {
+        const values = ArraySlice(v, 0, 4);
+        if (v[4] === 0x1404) return new Int32Array(values);
+        if (v[4] === 0x1405) return new Uint32Array(values);
+        return new Float32Array(values);
+      }
       return v === undefined ? null : v;
     });
     method("bufferData", function (target, data, usage) {

@@ -1891,6 +1891,12 @@ fn check(request: &Request, url: &Url, redirects: usize) -> Result<(), NetworkEr
             return Err(NetworkError::MixedContent);
         }
     }
+    csp_check(request, url, redirects)
+}
+
+/// A hop's check against a script's Content Security Policy, the
+/// `redirects`th.
+fn csp_check(request: &Request, url: &Url, redirects: usize) -> Result<(), NetworkError> {
     if let Some(csp) = &request.csp {
         // A report names the first URL after a redirect to another
         // origin (M33.1).
@@ -2021,6 +2027,59 @@ fn data(url: &Url, limit: usize) -> Result<Response, NetworkError> {
         return Err(NetworkError::BodyTooLarge);
     }
     Ok(basic(url, data_url.mime_type, data_url.body))
+}
+
+/// Fetch's scheme fetch of a `blob:` URL (Fetch 4.3, gap batch A), for
+/// the process that holds its blob, `bytes` and `kind` its contents and
+/// type, none for a URL of no blob the request may read: a `GET` alone,
+/// the request checked against its policy first; a `Range` answered
+/// with `206 Partial Content`.
+pub fn blob(request: &Request, blob: Option<(&[u8], &str)>) -> Result<Response, NetworkError> {
+    csp_check(request, &request.url, 0)?;
+    let Some((bytes, kind)) = blob.filter(|_| request.method.as_str() == "GET") else {
+        return Err(NetworkError::BlobUrl);
+    };
+    let full = bytes.len() as u64;
+    let mut response = Response {
+        url_list: vec![request.url.clone()],
+        status: 200,
+        status_message: b"OK".to_vec(),
+        headers: HeaderList::new(),
+        body: Vec::new(),
+        mime_type: MimeType::parse(kind),
+        address_space: None,
+        response_type: ResponseType::Basic,
+        cors_exposed: Vec::new(),
+    };
+    let Some(range) = request.headers.get(b"Range") else {
+        response
+            .headers
+            .append(b"Content-Length", full.to_string().as_bytes());
+        response.headers.append(b"Content-Type", kind.as_bytes());
+        response.body = bytes.to_vec();
+        return Ok(response);
+    };
+    let (start, end) = match headers::parse_single_range(&range, true) {
+        // The last `end` bytes, of a blob that has some.
+        Some((None, Some(end))) if full > 0 && end > 0 => (full.saturating_sub(end), full - 1),
+        Some((Some(start), end)) if start < full => {
+            (start, end.filter(|&end| end < full).unwrap_or(full - 1))
+        }
+        _ => return Err(NetworkError::BlobUrl),
+    };
+    let body = bytes[start as usize..=end as usize].to_vec();
+    response.status = 206;
+    response.status_message = b"Partial Content".to_vec();
+    response
+        .headers
+        .append(b"Content-Length", body.len().to_string().as_bytes());
+    response.headers.append(b"Content-Type", kind.as_bytes());
+    let content_range = format!("bytes {start}-{end}/{full}");
+    response
+        .headers
+        .append(b"Content-Range", content_range.as_bytes());
+    response.body = body;
+    Ok(response)
 }
 
 /// A `200 OK` with `Content-Type` alone among its fields, which no

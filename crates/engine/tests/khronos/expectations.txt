@@ -10,10 +10,7 @@
 # skipped lines, comments before #version, line continuations) and its
 # forbidden sequence operators; a vertex array's buffers kept after their
 # deletion; a WebGL canvas drawn into a 2D canvas with and without
-# preserveDrawingBuffer; the URL class (G68) that js-test-pre.js uses for
-# some pages; and named elements as window's properties.
-conformance/attribs/gl-vertex-attrib.html	exception Uncaught ReferenceError: URL is not defined at http://#:#/js/js-test-pre.js:#:#
-conformance/attribs/gl-vertex-attrib.html	successfullyParsed should be true (of type boolean). Was undefined (of type undefined).
+# preserveDrawingBuffer; and named elements as window's properties.
 conformance/buffers/buffer-data-and-buffer-sub-data.html	getError expected: INVALID_VALUE. Was NO_ERROR : calling bufferData when BufferDataSource is undefined should generate INVALID_VALUE
 conformance/buffers/buffer-data-and-buffer-sub-data.html	gl.bufferSubData(gl.ARRAY_BUFFER, #, null) should throw an exception. Was undefined.
 conformance/buffers/index-validation.html	getError expected: INVALID_OPERATION. Was NO_ERROR : 
@@ -72,8 +69,6 @@ conformance/textures/misc/origin-clean-conformance-offscreencanvas.html	Image se
 conformance/textures/misc/origin-clean-conformance.html	Image setup failed (TypeError: not a function).
 conformance2/attribs/gl-bindAttribLocation-aliasing-inactive.html	Link should fail when both attributes are aliased to location #
 conformance2/attribs/gl-vertex-attrib-normalized-int.html	should be opaque white / at (#, #) expected: #,#,#,# was #,#,#,#
-conformance2/attribs/gl-vertex-attrib.html	exception Uncaught ReferenceError: URL is not defined at http://#:#/js/js-test-pre.js:#:#
-conformance2/attribs/gl-vertex-attrib.html	successfullyParsed should be true (of type boolean). Was undefined (of type undefined).
 conformance2/buffers/buffer-type-restrictions.html	getError expected: INVALID_OPERATION. Was NO_ERROR : Binding buffer first with bindBuffer to gl.COPY_READ_BUFFER/COPY_READ_BUFFER_BINDING and then binding buffer with bindBuffer to gl.ELEMENT_ARRAY_BUFFER should FAIL
 conformance2/buffers/buffer-type-restrictions.html	getError expected: INVALID_OPERATION. Was NO_ERROR : Binding buffer first with bindBuffer to gl.COPY_WRITE_BUFFER/COPY_WRITE_BUFFER_BINDING and then binding buffer with bindBuffer to gl.ELEMENT_ARRAY_BUFFER should FAIL
 conformance2/context/constants-and-properties-2.html	Property does not exist: FLOAT_MAT#x#

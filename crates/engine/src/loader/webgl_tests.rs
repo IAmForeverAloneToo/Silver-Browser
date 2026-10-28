@@ -632,6 +632,13 @@ gl.bindVertexArray(null);
 log('default ' + gl.getVertexAttrib(position, gl.VERTEX_ATTRIB_ARRAY_ENABLED) + ' ' + gl.getParameter(gl.VERTEX_ARRAY_BINDING));
 gl.bindVertexArray(vao);
 log('vao ' + gl.getVertexAttrib(position, gl.VERTEX_ATTRIB_ARRAY_ENABLED) + ' ' + (gl.getParameter(gl.VERTEX_ARRAY_BINDING) === vao) + ' ' + gl.isVertexArray(vao));
+gl.vertexAttribI4i(7, -2147483648, 2147483647, -1, 16777217);
+const ints = gl.getVertexAttrib(7, gl.CURRENT_VERTEX_ATTRIB);
+gl.vertexAttribI4ui(7, 4294967295, 0, 1, 16777217);
+const uints = gl.getVertexAttrib(7, gl.CURRENT_VERTEX_ATTRIB);
+gl.vertexAttrib4f(7, 0.5, 0, 0, 1);
+const floats = gl.getVertexAttrib(7, gl.CURRENT_VERTEX_ATTRIB);
+log('current ' + [ints, uints, floats].map(a => a.constructor.name + ' ' + Array.from(a).join(',')).join(' '));
 gl.uniform1ui(gl.getUniformLocation(p, 'pick'), 1);
 gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 gl.drawArrays(gl.TRIANGLE_STRIP, 4, 4);
@@ -689,6 +696,7 @@ log('oes ' + String(v1) + ' ' + (g1.getParameter(oes.VERTEX_ARRAY_BINDING_OES) =
             "bound true 2",
             "default false null",
             "vao true true true",
+            "current Int32Array -2147483648,2147483647,-1,16777217 Uint32Array 4294967295,0,1,16777217 Float32Array 0.5,0,0,1",
             "drawn 0 0,255,0,255,0,255,0,255,255,0,0,255,255,0,0,255",
             "read back 1,0,0",
             "copied 0,1 0",

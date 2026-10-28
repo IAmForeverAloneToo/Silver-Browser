@@ -262,6 +262,21 @@ pub enum Call {
     Decode(Vec<u8>, String),
     /// Fetch `id` aborted by its signal: the engine stops it.
     AbortFetch(u32),
+    /// `URL.createObjectURL()` (gap batch A): a `blob:` URL for a blob
+    /// of these bytes and type.
+    BlobUrlCreate(Vec<u8>, String),
+    /// `URL.revokeObjectURL()`.
+    BlobUrlRevoke(String),
+    /// The URL parser for the URL API (gap batch A): the input against
+    /// a base, if any, answered with the URL's getters' values or `null`.
+    UrlParse(String, Option<String>),
+    /// A URL API setter: the URL `href` after the setter `part` is given
+    /// `value`, answered as `UrlParse` is.
+    UrlSet {
+        href: String,
+        part: String,
+        value: String,
+    },
     /// Whether a URL includes credentials, which a Request refuses.
     UrlHasCredentials(String),
     /// Whether a URL is of the document's origin (a Request's referrer).

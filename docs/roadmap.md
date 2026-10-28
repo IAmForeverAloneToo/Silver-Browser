@@ -2963,8 +2963,10 @@ Deferred from the milestones above, each with what it waits on:
        `Response.body` and `Request.body`, a request body streamed,
        `Blob.stream()`, progress events as bytes arrive. Named at M27
        (`docs/design/fetch.md`), 111 web-platform subtests.
-- [ ] G68 The `URL` class and its setters, `URL.createObjectURL` and
-       `blob:` URLs. Named at M27, 134 web-platform subtests.
+- [x] G68 The `URL` class and its setters, `URL.createObjectURL` and
+       `blob:` URLs. Named at M27, 134 web-platform subtests. Done in
+       gap batch A (`docs/design/scripting-essentials.md`, D41); a
+       navigation to a `blob:` URL is G171's.
 - [ ] G69 `TextEncoder` and `TextDecoder`. Named at M27.
 - [ ] G70 XHR's `document` response type and `responseXML`, a `Document`
        sent as a body, `DOMParser`: an XML parser and a second
@@ -3369,8 +3371,8 @@ Deferred from the milestones above, each with what it waits on:
 - [ ] G170 Downloads go to `%USERPROFILE%\Downloads` (or `~/Downloads`),
        not the known folder where the user moved it. Found at M37.
 - [ ] G171 `blob:` URLs (`URL.createObjectURL`) and so downloads made by
-       a page's script. Found at M37. The URLs are G68's; the downloads
-       remain here.
+       a page's script. Found at M37. The URLs are G68's, done in gap
+       batch A; a navigation to one and the downloads remain here.
 - [ ] G172 The downloads list is not kept in the profile. Found at M37.
 - [ ] G173 Workers' `navigator.languages` stays `en-US`. Found at M37.
 - [ ] G174 The status bubble and the permission bar stay light in the

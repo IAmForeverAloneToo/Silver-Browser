@@ -11,9 +11,7 @@ From `url/resources/`, for `tests/url.rs`:
 | `toascii.json` | Parses `https://<input>/x` and compares the host. |
 | `IdnaTestV2.json` | The same, for the UTS #46 cases generated for URLs. |
 | `percent-encoding.json` | Parses a query in each document encoding the `encoding` crate has. The CJK encodings are skipped, each by name. |
-
-`setters_tests.json` is not here: the URL API's setters come with
-scripts (M25).
+| `setters_tests.json` | Runs every setter case from its `href` with `Url::with_part`, comparing every getter the case expects. Copied on 28 October 2026. |
 
 From `mimesniff/mime-types/resources/`, for `tests/mime.rs`:
 

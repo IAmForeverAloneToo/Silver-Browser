@@ -389,6 +389,7 @@ a frame's budget after the last.)*
 - *Module workers* (`type: "module"`): module scripts are G41; such a
   worker fails to load here, where the reference browser runs it.
 - *`blob:` URLs* for a worker's script: `URL.createObjectURL` is G68.
+  *(Later: done in gap batch A; a worker starts from one.)*
 - *`SharedArrayBuffer`* and `Atomics.wait` between threads, with
   `crossOriginIsolated` and the headers that make it (COOP and COEP):
   G83. The shared memories of M29's WebAssembly with it.

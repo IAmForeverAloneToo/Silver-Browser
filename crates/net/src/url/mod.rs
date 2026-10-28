@@ -4,8 +4,8 @@
 //!
 //! Validation errors are not reported: parsing gives a URL or a
 //! [`ParseError`], which is all a browser acts on. The URL API's setters
-//! and `application/x-www-form-urlencoded` come with their users,
-//! scripts and form submission (M25, M27).
+//! run the parser with its state override ([`Url::with_part`], gap
+//! batch A); `application/x-www-form-urlencoded` is in [`form`].
 
 pub mod form;
 mod host;
@@ -17,6 +17,8 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use encoding::{Encoding, UTF_8};
+use parser::State;
+use percent::EncodeSet;
 
 pub use host::Host;
 pub use percent::percent_decode;
@@ -275,6 +277,65 @@ impl Url {
         Url::from_record(record)
     }
 
+    /// This URL after the URL API's setter of `part` is given `value`
+    /// (URL Standard 6.1), as the standard's state override runs it: a
+    /// value it cannot take leaves the URL as far as the run had changed
+    /// it, often not at all.
+    pub fn with_part(&self, part: Part, value: &str) -> Url {
+        let mut record = self.record.clone();
+        let opaque = matches!(record.path, Path::Opaque(_));
+        // A URL without a host, or with an empty one, or a `file:` URL,
+        // takes no credentials or port.
+        let no_credentials =
+            matches!(record.host, None | Some(Host::Empty)) || record.scheme == "file";
+        match part {
+            Part::Protocol => {
+                parser::parse_override(&format!("{value}:"), &mut record, State::SchemeStart)
+            }
+            Part::Username | Part::Password if no_credentials => {}
+            Part::Username => {
+                record.username.clear();
+                percent::utf8_percent_encode(value, EncodeSet::Userinfo, &mut record.username);
+            }
+            Part::Password => {
+                record.password.clear();
+                percent::utf8_percent_encode(value, EncodeSet::Userinfo, &mut record.password);
+            }
+            Part::Host | Part::Hostname | Part::Pathname if opaque => {}
+            Part::Host => parser::parse_override(value, &mut record, State::Host),
+            Part::Hostname => parser::parse_override(value, &mut record, State::Hostname),
+            Part::Port if no_credentials => {}
+            Part::Port if value.is_empty() => record.port = None,
+            Part::Port => parser::parse_override(value, &mut record, State::Port),
+            Part::Pathname => {
+                record.path = Path::Segments(Vec::new());
+                parser::parse_override(value, &mut record, State::PathStart);
+            }
+            Part::Search if value.is_empty() => record.query = None,
+            Part::Search => {
+                record.query = Some(String::new());
+                let value = value.strip_prefix('?').unwrap_or(value);
+                parser::parse_override(value, &mut record, State::Query);
+            }
+            Part::Hash if value.is_empty() => record.fragment = None,
+            Part::Hash => {
+                record.fragment = Some(String::new());
+                let value = value.strip_prefix('#').unwrap_or(value);
+                parser::parse_override(value, &mut record, State::Fragment);
+            }
+        }
+        Url::from_record(record)
+    }
+
+    /// This URL with its query replaced by `query`, already encoded, as
+    /// a `URLSearchParams` object updates its URL (URL Standard 6.2):
+    /// `None` for an empty list.
+    pub fn with_query(&self, query: Option<&str>) -> Url {
+        let mut record = self.record.clone();
+        record.query = query.map(str::to_owned);
+        Url::from_record(record)
+    }
+
     /// Whether the URL is potentially trustworthy (Secure Contexts 3.2):
     /// `about:blank`, `about:srcdoc` and `data:`; `https:`, `wss:` and
     /// `file:`; a loopback address; `localhost` and the names under it.
@@ -316,6 +377,29 @@ impl Url {
             _ => Origin::new_opaque(),
         }
     }
+}
+
+/// The part of a URL a setter of the URL API changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Part {
+    /// `protocol`: the scheme.
+    Protocol,
+    /// `username`.
+    Username,
+    /// `password`.
+    Password,
+    /// `host`: the host and the port.
+    Host,
+    /// `hostname`: the host alone.
+    Hostname,
+    /// `port`.
+    Port,
+    /// `pathname`: the path.
+    Pathname,
+    /// `search`: the query.
+    Search,
+    /// `hash`: the fragment.
+    Hash,
 }
 
 /// The URL serializer (URL Standard §4.5).
@@ -839,5 +923,17 @@ mod tests {
         );
         assert_eq!(url.with_fragment(None).as_str(), "https://x/p");
         assert_eq!(url.with_fragment(Some("%20")).fragment(), Some("%20"));
+    }
+
+    #[test]
+    fn a_file_urls_host_setter_takes_no_drive_letter_as_a_path() {
+        // The parser's own run reads `C:` as a drive letter; a setter's
+        // reads it as a host, which a colon cannot be in.
+        let url = Url::parse("file://h/a").unwrap();
+        for value in ["C:", "C|"] {
+            assert_eq!(url.with_part(Part::Host, value).as_str(), "file://h/a");
+            assert_eq!(url.with_part(Part::Hostname, value).as_str(), "file://h/a");
+        }
+        assert_eq!(url.with_part(Part::Host, "k").as_str(), "file://k/a");
     }
 }

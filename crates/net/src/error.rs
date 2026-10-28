@@ -54,6 +54,9 @@ pub enum NetworkError {
     ContentCoding,
     /// A `data:` URL that is not one.
     DataUrl,
+    /// A `blob:` URL its process's store has no blob of the request's
+    /// storage key for, or a request it cannot answer (gap batch A).
+    BlobUrl,
     /// A `file:` URL that names no readable file.
     File(String),
     /// Too long without a byte, or without a connection.
@@ -134,6 +137,7 @@ impl fmt::Display for NetworkError {
             NetworkError::BodyTooLarge => f.write_str("the response's body is too large"),
             NetworkError::ContentCoding => f.write_str("the body's content coding did not decode"),
             NetworkError::DataUrl => f.write_str("not a data: URL"),
+            NetworkError::BlobUrl => f.write_str("no blob for this blob: URL"),
             NetworkError::File(why) => write!(f, "the file could not be read: {why}"),
             NetworkError::Timeout => f.write_str("timed out"),
             NetworkError::RedirectLimit => f.write_str("too many redirects"),

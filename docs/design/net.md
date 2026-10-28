@@ -58,7 +58,8 @@ gives a different answer in 65 of the 896 cases. Among them are
 the standard's newer handling of `file:` paths and of `^` in paths.
 The URL API's setters and the `application/x-www-form-urlencoded`
 parser and serializer are not built now; their users, scripts and
-form submission, come later (M25, M27).
+form submission, come later (M25, M27). *(Later: the form encoding came
+at M27, the setters in gap batch A, as the parser's state override.)*
 
 **Domains through the `idna` crate.** The URL Standard maps a domain
 through Unicode IDNA Compatibility Processing (UTS #46): ToASCII with
@@ -661,7 +662,8 @@ the network:
   `percent-encoding.json` (7, run nine times in the encodings this
   milestone has, the five CJK ones skipped by name). That is 3,660
   cases.
-  `setters_tests.json` waits for the setters.
+  `setters_tests.json` waits for the setters. *(Later: run since gap
+  batch A, 278 cases.)*
 - *Encodings:* every label in `encodings.json`. Every byte of every
   single-byte encoding, decoded and encoded again against its index.
   The UTF-8 decoder on the standard's error cases. Decoding in random
@@ -749,7 +751,8 @@ CI runs them with the others.
 - The *legacy CJK encodings* come when a T1 page needs them, and at
   the latest with M42.
 - The URL API's *setters* and *`application/x-www-form-urlencoded`*
-  come with their users, scripts and forms (M25, M27).
+  come with their users, scripts and forms (M25, M27). *(Later: M27
+  and gap batch A.)*
 - *Streamed bodies and downloads* are M27.1 and M37.2. *`br` and
   `zstd`* go to M35 to measure.
 - From M15: *navigation, error pages, `about:silver`, and documents

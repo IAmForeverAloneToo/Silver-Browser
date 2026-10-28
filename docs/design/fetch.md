@@ -470,13 +470,14 @@ gains). As bodies: a string is `text/plain;charset=UTF-8`,
 `URLSearchParams` `application/x-www-form-urlencoded;charset=UTF-8`,
 `FormData` `multipart/form-data` with M26's encoder and a boundary of
 ours, a `Blob` its type when it has one, a buffer or view nothing.
-`URL` itself, with its setters, is G68; `TextEncoder` and
-`TextDecoder` are G69. *(corrected)* Web IDL's conversions are taken
-in its order (found by the web-platform tests, step 11): a sequence's
-values converted as the iteration reaches them, its iterator read
-once; a record's keys by their own property keys, a `Symbol` failing,
-a repeated key's later value kept; `Blob`'s arguments in order, its
-`slice` bounds rounded as `[Clamp]` has them. HTML's `formdata` event
+`URL` itself, with its setters, is G68 (done in gap batch A);
+`TextEncoder` and `TextDecoder` are G69. *(corrected)* Web IDL's
+conversions are taken in its order (found by the web-platform tests,
+step 11): a sequence's values converted as the iteration reaches
+them, its iterator read once; a record's keys by their own property
+keys, a `Symbol` failing, a repeated key's later value kept; `Blob`'s
+arguments in order, its `slice` bounds rounded as `[Clamp]` has them.
+HTML's `formdata` event
 is not fired, as M26 did not, and with it the constructing entry list's
 `InvalidStateError` (G76). `FileReader` is not given (G75).
 
@@ -637,7 +638,8 @@ and the jar's retrieval with 3,000 cookies kept.
   `Response.body`, a request body streamed (`duplex`), progress
   events as bytes arrive. G67.
 - *The `URL` class*, its setters (the URL parser's state overrides),
-  `URL.createObjectURL` and `blob:` URLs. G68.
+  `URL.createObjectURL` and `blob:` URLs. G68, done in gap batch A
+  (`docs/design/scripting-essentials.md`).
 - *`TextEncoder` and `TextDecoder`*. G69.
 - *XHR's `document` response type*, `responseXML`, a `Document` sent as
   a body, and `DOMParser`, which need a second document. G70.

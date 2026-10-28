@@ -1,17 +1,31 @@
 //! The URL parser on arbitrary text, alone and against four bases (a
 //! special URL, a `file:` URL, a non-special one and one with an opaque
-//! path), with UTF-8 and with a legacy document encoding. Whatever
-//! parses must serialize to ASCII, and the serialization must parse back
-//! to the same URL: the round trip the URL Standard promises.
+//! path), with UTF-8 and with a legacy document encoding; and the text
+//! given to each of the URL API's setters of each base (gap batch A).
+//! Whatever parses, or a setter makes, must serialize to ASCII, and the
+//! serialization must parse back to the same URL: the round trip the URL
+//! Standard promises.
 
 #![no_main]
 #![forbid(unsafe_code)]
 
 use libfuzzer_sys::fuzz_target;
-use net::url::Url;
+use net::url::{Part, Url};
 use std::sync::OnceLock;
 
 static BASES: OnceLock<Vec<Url>> = OnceLock::new();
+
+const PARTS: [Part; 9] = [
+    Part::Protocol,
+    Part::Username,
+    Part::Password,
+    Part::Host,
+    Part::Hostname,
+    Part::Port,
+    Part::Pathname,
+    Part::Search,
+    Part::Hash,
+];
 
 fn check(url: &Url) {
     let serialized = url.as_str();
@@ -45,6 +59,9 @@ fuzz_target!(|data: &[u8]| {
             if let Ok(url) = Url::parse_with(input, Some(base), encoding) {
                 check(&url);
             }
+        }
+        for part in PARTS {
+            check(&base.with_part(part, input));
         }
     }
 });

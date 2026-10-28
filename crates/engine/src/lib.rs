@@ -96,6 +96,7 @@
 
 pub mod address;
 pub mod audio_output;
+mod blob_urls;
 pub mod caches;
 mod context;
 #[cfg(test)]

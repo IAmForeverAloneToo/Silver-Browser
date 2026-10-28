@@ -546,6 +546,7 @@ impl Wire for NetworkError {
                 out.u8(28);
                 out.str(why);
             }
+            NetworkError::BlobUrl => out.u8(29),
         }
     }
     fn decode(input: &mut Decoder<'_>) -> Result<Self, Malformed> {
@@ -587,6 +588,7 @@ impl Wire for NetworkError {
             26 => NetworkError::NotCached,
             27 => NetworkError::Moved,
             28 => NetworkError::Http2(input.str()?.to_owned()),
+            29 => NetworkError::BlobUrl,
             tag => return Err(Malformed::Tag("NetworkError", u32::from(tag))),
         })
     }

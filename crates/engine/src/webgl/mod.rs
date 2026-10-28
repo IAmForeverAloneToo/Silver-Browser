@@ -1741,6 +1741,8 @@ impl Context {
             {
                 Answer::Number(f64::from(a.divisor))
             }
+            // The four values, then their type, which the bindings make
+            // the array of.
             CURRENT_VERTEX_ATTRIB => Answer::Numbers(
                 a.value
                     .iter()
@@ -1749,6 +1751,7 @@ impl Context {
                         UNSIGNED_INT => f64::from(bits),
                         _ => f64::from(f32::from_bits(bits)),
                     })
+                    .chain([f64::from(a.value_kind)])
                     .collect(),
             ),
             _ => {

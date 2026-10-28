@@ -20,6 +20,7 @@ pub(crate) mod ports;
 pub(crate) mod service_workers;
 #[cfg(test)]
 mod service_workers_tests;
+mod url;
 #[cfg(test)]
 mod wasm_tests;
 pub(crate) mod workers;

@@ -23,6 +23,8 @@ mod dom_tests;
 #[cfg(test)]
 mod editing_tests;
 #[cfg(test)]
+mod essentials_tests;
+#[cfg(test)]
 mod event_tests;
 #[cfg(test)]
 mod fetch_tests;
@@ -544,7 +546,8 @@ impl Network {
         if self.remote_cookies.is_some() {
             return;
         }
-        self.client = Some(Arc::new(self.shared(client)));
+        let inner = Arc::new(self.shared(client));
+        self.client = Some(Arc::new(crate::blob_urls::Resolving { inner }));
     }
 
     /// Fetches from now on through `fetcher`, and reaches the cookies of
@@ -552,7 +555,8 @@ impl Network {
     /// (M34.1).
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_remote(&mut self, fetcher: Arc<dyn Fetcher>, cookies: Arc<dyn Cookies>) {
-        self.client = Some(fetcher);
+        // `blob:` URLs are the renderer's own.
+        self.client = Some(Arc::new(crate::blob_urls::Resolving { inner: fetcher }));
         self.remote_cookies = Some(cookies);
         self.intercept = None;
     }
@@ -610,10 +614,12 @@ impl Network {
         &self.log
     }
 
-    /// The client fetches are made with, made now if none is yet.
+    /// The client fetches are made with, made now if none is yet: the
+    /// process's `blob:` URLs answered first (gap batch A).
     pub(crate) fn client(&mut self) -> Arc<dyn Fetcher> {
         if self.client.is_none() {
-            self.client = Some(Arc::new(self.shared(Client::default())));
+            let inner = Arc::new(self.shared(Client::default()));
+            self.client = Some(Arc::new(crate::blob_urls::Resolving { inner }));
         }
         self.client.clone().expect("made")
     }

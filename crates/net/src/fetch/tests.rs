@@ -174,6 +174,73 @@ fn data_urls_are_their_own_body() {
 }
 
 #[test]
+fn a_blob_is_its_urls_body_whole_or_by_range() {
+    let blob_url = url("blob:http://a.test/0f0e");
+    let request = |range: Option<&str>| {
+        let mut request = Request::get(blob_url.clone(), Destination::Empty);
+        if let Some(range) = range {
+            request.headers.append(b"Range", range.as_bytes());
+        }
+        request
+    };
+    let fetched = |range, bytes: &[u8]| blob(&request(range), Some((bytes, "Text/Plain")));
+    let whole = fetched(None, b"0123456789").unwrap();
+    assert_eq!((whole.status, &whole.body[..]), (200, &b"0123456789"[..]));
+    assert_eq!(whole.headers.get(b"Content-Length").unwrap(), b"10");
+    assert_eq!(whole.headers.get(b"Content-Type").unwrap(), b"Text/Plain");
+    assert_eq!(whole.mime_type.unwrap().essence(), "text/plain");
+    let range = |range, bytes| {
+        fetched(Some(range), bytes).map(|r| {
+            let content_range = r.headers.get(b"Content-Range").unwrap();
+            (r.status, r.body, String::from_utf8(content_range).unwrap())
+        })
+    };
+    assert_eq!(
+        range("bytes=2-4", b"0123456789"),
+        Ok((206, b"234".to_vec(), "bytes 2-4/10".to_owned()))
+    );
+    assert_eq!(
+        range("bytes=8-20", b"0123456789"),
+        Ok((206, b"89".to_vec(), "bytes 8-9/10".to_owned()))
+    );
+    assert_eq!(
+        range("bytes=-3", b"0123456789"),
+        Ok((206, b"789".to_vec(), "bytes 7-9/10".to_owned()))
+    );
+    assert_eq!(
+        range("bytes=-30", b"0123"),
+        Ok((206, b"0123".to_vec(), "bytes 0-3/4".to_owned()))
+    );
+    for refused in ["bytes=10-", "bytes=-0", "bytes=a-", "items=0-1"] {
+        assert_eq!(
+            range(refused, b"0123456789"),
+            Err(NetworkError::BlobUrl),
+            "{refused}"
+        );
+    }
+    assert_eq!(range("bytes=-1", b""), Err(NetworkError::BlobUrl));
+    // A GET alone, of a blob there is, its policy allowing it.
+    let mut post = request(None);
+    post.method = Method::POST;
+    assert_eq!(
+        blob(&post, Some((b"x", ""))).unwrap_err(),
+        NetworkError::BlobUrl
+    );
+    assert_eq!(
+        blob(&request(None), None).unwrap_err(),
+        NetworkError::BlobUrl
+    );
+    let page = url("http://a.test/");
+    let mut headers = HeaderList::new();
+    headers.append(b"Content-Security-Policy", b"connect-src 'self'");
+    let limited = request(None).with_csp(Csp::from_headers(&headers, &page));
+    assert!(matches!(
+        blob(&limited, Some((b"x", ""))),
+        Err(NetworkError::Csp(_))
+    ));
+}
+
+#[test]
 fn a_request_sends_its_fields() {
     let server = TestServer::plain(|_| hello());
     let response = client().fetch(&document(server.url("/a?b=c"))).unwrap();

@@ -252,6 +252,8 @@ pub(crate) struct DocumentHost {
     /// answer once it has one.
     pub(crate) evaluating: bool,
     pub(crate) evaluated: Option<String>,
+    /// The `blob:` URLs the document's scripts made (gap batch A).
+    blob_urls: crate::blob_urls::BlobOwner,
 }
 
 impl ScriptingHost for DocumentHost {
@@ -1124,6 +1126,17 @@ impl DocumentHost {
                 self.outputs.aborted.push(id);
                 Ok(Answer::Nothing)
             }
+            Call::BlobUrlCreate(bytes, kind) => Ok(Answer::String(self.blob_urls.create(
+                bytes,
+                kind,
+                &self.blob_origin(),
+            ))),
+            Call::BlobUrlRevoke(url) => {
+                self.blob_urls.revoke(&url, &self.blob_origin());
+                Ok(Answer::Nothing)
+            }
+            Call::UrlParse(input, base) => Ok(super::url::parse(&input, base.as_deref())),
+            Call::UrlSet { href, part, value } => Ok(super::url::set(&href, &part, &value)),
             Call::UrlHasCredentials(url) => Ok(Answer::Bool(
                 net::Url::parse(&url).is_ok_and(|url| url.includes_credentials()),
             )),
@@ -2616,6 +2629,13 @@ impl DocumentHost {
             }
             _ => Err(DomError::not_supported()),
         }
+    }
+
+    /// The origin the document's `blob:` URLs are of.
+    fn blob_origin(&self) -> net::Origin {
+        self.page
+            .as_ref()
+            .map_or_else(net::Origin::new_opaque, |page| page.origin().clone())
     }
 
     fn origin_text(&self) -> String {

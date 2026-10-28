@@ -357,6 +357,28 @@ const NATIVES: &[(&str, Decode)] = &[
         Ok(Call::Decode(a.bytes(0)?.unwrap_or_default(), a.string(1)?))
     }),
     ("abortFetch", |a| Ok(Call::AbortFetch(a.integer(0) as u32))),
+    ("blobUrlCreate", |a| {
+        Ok(Call::BlobUrlCreate(
+            a.bytes(0)?.unwrap_or_default(),
+            a.string(1)?,
+        ))
+    }),
+    ("blobUrlRevoke", |a| Ok(Call::BlobUrlRevoke(a.string(0)?))),
+    ("urlParse", |a| {
+        // A base only when one is given, as a string.
+        let base = match a.value(1).is_string() {
+            true => Some(a.string(1)?),
+            false => None,
+        };
+        Ok(Call::UrlParse(a.string(0)?, base))
+    }),
+    ("urlSet", |a| {
+        Ok(Call::UrlSet {
+            href: a.string(0)?,
+            part: a.string(1)?,
+            value: a.string(2)?,
+        })
+    }),
     ("urlHasCredentials", |a| {
         Ok(Call::UrlHasCredentials(a.string(0)?))
     }),

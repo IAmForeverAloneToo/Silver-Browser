@@ -206,7 +206,7 @@
     Headers: true, ImageBitmap: true, ImageData: true, MessageEvent: true,
     OffscreenCanvas: true, OffscreenCanvasRenderingContext2D: true, Path2D: true,
     Performance: true, ProgressEvent: "notservice", QuotaExceededError: true, Request: true,
-    Response: true, TextMetrics: true, URLSearchParams: true, Worker: "notservice",
+    Response: true, TextMetrics: true, URL: true, URLSearchParams: true, Worker: "notservice",
     MessageChannel: true, MessagePort: true, Cache: true, CacheStorage: true,
     WorkerGlobalScope: "worker", WorkerLocation: "worker", WorkerNavigator: "worker",
     XMLHttpRequest: "notservice", XMLHttpRequestEventTarget: "notservice",
@@ -3161,11 +3161,16 @@
     return out;
   }
 
-  // URLSearchParams (URL Standard 6, M27): a list of names and values.
+  // URLSearchParams (URL Standard 6, M27): a list of names and values,
+  // and the URL whose `searchParams` it is, if any (gap batch A).
   let paramsOf;
   let isParams;
+  let paramsLink;
+  let paramsReset;
+  let urlQueryChanged;
   class URLSearchParams {
     #list = [];
+    #url = null;
 
     constructor(init) {
       if (init === undefined || init === null) {
@@ -3199,6 +3204,20 @@
     static {
       paramsOf = (params) => params.#list;
       isParams = (value) => typeof value === "object" && value !== null && #list in value;
+      paramsLink = (params, url) => {
+        params.#url = url;
+      };
+      paramsReset = (params, query) => {
+        params.#list = formParse(query);
+      };
+    }
+
+    // A URL's object gives its URL the list as the query (URL Standard
+    // 6.2's update steps).
+    #update() {
+      if (this.#url !== null) {
+        urlQueryChanged(this.#url, formSerialize(this.#list));
+      }
     }
 
     get size() {
@@ -3208,6 +3227,7 @@
     append(name, value) {
       need(arguments.length, 2, "append", "URLSearchParams");
       ArrayPush(this.#list, [str(name), str(value)]);
+      this.#update();
     }
 
     delete(name, value) {
@@ -3222,6 +3242,7 @@
         }
       }
       this.#list = kept;
+      this.#update();
     }
 
     get(name) {
@@ -3269,11 +3290,13 @@
       }
       if (!placed) ArrayPush(kept, pair);
       this.#list = kept;
+      this.#update();
     }
 
     sort() {
       // Stable, by the names' code units.
       ArraySort(this.#list, (a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+      this.#update();
     }
 
     toString() {
@@ -3284,6 +3307,198 @@
     if (!isParams(value)) throw illegalInvocation();
   });
   expose(URLSearchParams, "URLSearchParams");
+
+  // URL (URL Standard 6.1, gap batch A): the values of its getters, which
+  // the engine's parser hands back as `href`, `origin`, `protocol`,
+  // `username`, `password`, `host`, `hostname`, `port`, `pathname`,
+  // `search` and `hash`, and the URLSearchParams object of its query.
+  const SEARCH = 9;
+
+  // The parts of `url` against `base`, or null, as URL.parse() gives.
+  function urlParse(url, base, constructing) {
+    const input = str(url);
+    if (base === undefined) {
+      return native.urlParse(input, null);
+    }
+    const against = str(base);
+    if (native.urlParse(against, null) === null) {
+      if (constructing) {
+        throw new $TypeError("Failed to construct 'URL': Invalid base URL");
+      }
+      return null;
+    }
+    return native.urlParse(input, against);
+  }
+
+  class URL {
+    #parts;
+    #query = new URLSearchParams();
+
+    constructor(url, base = undefined) {
+      needToConstruct(arguments.length, 1, "URL");
+      const parts = urlParse(url, base, true);
+      if (parts === null) {
+        throw new $TypeError("Failed to construct 'URL': Invalid URL");
+      }
+      this.#parts = parts;
+      paramsReset(this.#query, StringSlice(parts[SEARCH], 1));
+      paramsLink(this.#query, this);
+    }
+
+    static {
+      urlQueryChanged = (url, query) => {
+        url.#parts = native.urlSet(url.#parts[0], "searchParams", query);
+      };
+    }
+
+    static parse(url, base = undefined) {
+      need(arguments.length, 1, "parse", "URL");
+      const parts = urlParse(url, base, false);
+      return parts === null ? null : new URL(parts[0]);
+    }
+
+    static canParse(url, base = undefined) {
+      need(arguments.length, 1, "canParse", "URL");
+      return urlParse(url, base, false) !== null;
+    }
+
+    // A setter's run, which leaves the URL as it was for a value the
+    // part cannot take; `search`'s and `href`'s give the query's object
+    // its list again.
+    #set(part, value) {
+      const parts = native.urlSet(this.#parts[0], part, str(value));
+      if (parts === null) {
+        throw new $TypeError("Failed to set the '" + part + "' property on 'URL': Invalid URL");
+      }
+      this.#parts = parts;
+      if (part === "href" || part === "search") {
+        paramsReset(this.#query, StringSlice(parts[SEARCH], 1));
+      }
+    }
+
+    get searchParams() {
+      return this.#query;
+    }
+
+    toJSON() {
+      return this.#parts[0];
+    }
+
+    toString() {
+      return this.#parts[0];
+    }
+
+    get href() {
+      return this.#parts[0];
+    }
+
+    set href(value) {
+      this.#set("href", value);
+    }
+
+    get origin() {
+      return this.#parts[1];
+    }
+
+    get protocol() {
+      return this.#parts[2];
+    }
+
+    set protocol(value) {
+      this.#set("protocol", value);
+    }
+
+    get username() {
+      return this.#parts[3];
+    }
+
+    set username(value) {
+      this.#set("username", value);
+    }
+
+    get password() {
+      return this.#parts[4];
+    }
+
+    set password(value) {
+      this.#set("password", value);
+    }
+
+    get host() {
+      return this.#parts[5];
+    }
+
+    set host(value) {
+      this.#set("host", value);
+    }
+
+    get hostname() {
+      return this.#parts[6];
+    }
+
+    set hostname(value) {
+      this.#set("hostname", value);
+    }
+
+    get port() {
+      return this.#parts[7];
+    }
+
+    set port(value) {
+      this.#set("port", value);
+    }
+
+    get pathname() {
+      return this.#parts[8];
+    }
+
+    set pathname(value) {
+      this.#set("pathname", value);
+    }
+
+    get search() {
+      return this.#parts[9];
+    }
+
+    set search(value) {
+      this.#set("search", value);
+    }
+
+    get hash() {
+      return this.#parts[10];
+    }
+
+    set hash(value) {
+      this.#set("hash", value);
+    }
+  }
+  expose(URL, "URL");
+
+  // URL.createObjectURL() and revokeObjectURL() (File API 8, gap batch
+  // A): a `blob:` URL the process's store answers with the blob's bytes
+  // for the realm's origin, until revoked or the realm ends. No service
+  // worker has them.
+  if (!SERVICE) {
+    defineProperty(URL, "createObjectURL", {
+      value: function createObjectURL(obj) {
+        need(arguments.length, 1, "createObjectURL", "URL");
+        if (!isBlob(obj)) {
+          throw new $TypeError(prefix("createObjectURL", "URL") + "Overload resolution failed.");
+        }
+        return native.blobUrlCreate(binaryString(blobBytes(obj)), BlobType(obj));
+      },
+      writable: true,
+      configurable: true,
+    });
+    defineProperty(URL, "revokeObjectURL", {
+      value: function revokeObjectURL(url) {
+        need(arguments.length, 1, "revokeObjectURL", "URL");
+        native.blobUrlRevoke(str(url));
+      },
+      writable: true,
+      configurable: true,
+    });
+  }
 
   // ---- Fetch: Headers, Request, Response, fetch() (M27.1) ----
 
