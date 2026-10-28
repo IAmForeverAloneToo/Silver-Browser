@@ -167,17 +167,22 @@ pub(super) fn serve(
         for item in items {
             match item {
                 Out::Tls(bytes) => {
+                    // rustls takes about 4 KiB a call and refuses more
+                    // once 16 KiB of plaintext is unread: the plaintext is
+                    // taken after each call, or a read holding a whole
+                    // record and more of the next ended the connection
+                    // (a large upload on CI's loaded runners).
                     let mut rest = &bytes[..];
                     while !rest.is_empty() {
                         tls.conn.read_tls(&mut rest)?;
                         tls.conn.process_new_packets().map_err(io::Error::other)?;
-                    }
-                    loop {
-                        match tls.conn.reader().read(&mut chunk) {
-                            Ok(0) => return Ok(()),
-                            Ok(n) => input.extend_from_slice(&chunk[..n]),
-                            Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                            Err(e) => return Err(e),
+                        loop {
+                            match tls.conn.reader().read(&mut chunk) {
+                                Ok(0) => return Ok(()),
+                                Ok(n) => input.extend_from_slice(&chunk[..n]),
+                                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                                Err(e) => return Err(e),
+                            }
                         }
                     }
                 }

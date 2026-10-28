@@ -50,11 +50,12 @@ struct Placed {
     key: String,
 }
 
-/// An event sent and not yet done: its version, its type and data,
-/// whether it was sent again after its version started again, and who
-/// hears its end.
+/// An event sent and not yet done: its version, the worker renderer it
+/// went to, its type and data, whether it was sent again after its
+/// version started again, and who hears its end.
 struct Pending {
     version: u64,
+    renderer: u32,
     kind: String,
     data: Option<String>,
     again: bool,
@@ -297,6 +298,7 @@ impl Inner {
             event,
             Pending {
                 version,
+                renderer: placed.renderer,
                 kind: kind.to_owned(),
                 data: data.clone(),
                 again,
@@ -372,20 +374,17 @@ impl Inner {
                 ran,
             } => {
                 let mut state = lock_state(&self.state);
-                if !owns(&state, version) {
-                    return;
-                }
-                let Some(pending) = state
-                    .events
-                    .remove(&event)
-                    .filter(|pending| pending.version == version)
-                else {
+                // An answer of the renderer the event went to, though
+                // its version stopped there since.
+                let Some(pending) = take_pending(&mut state, event, version, number) else {
                     return;
                 };
                 if !ran {
                     // It stopped as the event came: started again, it is
                     // sent again, once.
-                    if let Some(placed) = state.versions.remove(&version) {
+                    if owns(&state, version)
+                        && let Some(placed) = state.versions.remove(&version)
+                    {
                         self.grants.revoke_frame(placed.renderer, placed.frame);
                     }
                     drop(state);
@@ -408,18 +407,15 @@ impl Inner {
                 ran,
             } => {
                 let mut state = lock_state(&self.state);
-                if !owns(&state, version) {
-                    return;
-                }
-                let Some(pending) = state
-                    .events
-                    .remove(&event)
-                    .filter(|pending| pending.version == version)
-                else {
+                // An answer of the renderer the event went to, though
+                // its version stopped there since.
+                let Some(pending) = take_pending(&mut state, event, version, number) else {
                     return;
                 };
                 if !ran {
-                    if let Some(placed) = state.versions.remove(&version) {
+                    if owns(&state, version)
+                        && let Some(placed) = state.versions.remove(&version)
+                    {
                         self.grants.revoke_frame(placed.renderer, placed.frame);
                     }
                     drop(state);
@@ -449,7 +445,7 @@ impl Inner {
             ToBrowser::ServiceWorkerStopped { version } => {
                 let mut state = lock_state(&self.state);
                 if owns(&state, version) {
-                    self.stopped(&mut state, version);
+                    self.stopped(&mut state, version, true);
                 }
             }
             // A worker renderer shows nothing: what else it says is
@@ -458,9 +454,12 @@ impl Inner {
         }
     }
 
-    /// Version `version` runs no more: its evaluation and its events
-    /// fail, its frame goes.
-    fn stopped(&self, state: &mut State, version: u64) {
+    /// Version `version` runs no more: its evaluation fails, its frame
+    /// goes, and its events fail, unless `answered`: its renderer said it
+    /// stopped, and answers each itself, failed if it ran and not ran if
+    /// it came after, to be sent again (an event crossing an idle stop
+    /// failed here first, M39's install of a registration with it).
+    fn stopped(&self, state: &mut State, version: u64, answered: bool) {
         let Some(placed) = state.versions.remove(&version) else {
             return;
         };
@@ -470,7 +469,7 @@ impl Inner {
         let events: Vec<u64> = state
             .events
             .iter()
-            .filter(|(_, pending)| pending.version == version)
+            .filter(|(_, pending)| pending.version == version && !answered)
             .map(|(event, _)| *event)
             .collect();
         let failed: Vec<Pending> = events
@@ -506,7 +505,7 @@ impl Inner {
             .map(|(version, _)| *version)
             .collect();
         for version in versions {
-            self.stopped(&mut state, version);
+            self.stopped(&mut state, version, false);
         }
         state.sites.retain(|_, site| site.number != number);
         self.grants.forget(number);
@@ -537,6 +536,19 @@ impl Inner {
                 self.grants.forget(site.number);
             }
         }
+    }
+}
+
+/// Event `event` of `version`'s, if it went to worker renderer `number`.
+fn take_pending(state: &mut State, event: u64, version: u64, number: u32) -> Option<Pending> {
+    let theirs = state
+        .events
+        .get(&event)
+        .is_some_and(|pending| pending.version == version && pending.renderer == number);
+    if theirs {
+        state.events.remove(&event)
+    } else {
+        None
     }
 }
 
@@ -608,7 +620,7 @@ impl ServiceWorkerHost for WorkerRenderers {
                 .renderer
                 .send(&ToRenderer::StopServiceWorker { version });
         }
-        self.inner.stopped(&mut state, version);
+        self.inner.stopped(&mut state, version, false);
     }
 
     fn notice(&self, key: &str, notice: &Notice, view: &View) {

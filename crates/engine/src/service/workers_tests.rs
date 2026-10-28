@@ -178,6 +178,133 @@ impl super::Launcher for Liar {
     }
 }
 
+/// A worker renderer whose version stops, idle, as its install event
+/// comes: it says it stopped, then that the event did not run, as a
+/// real one does; started again, it runs the event.
+struct Crossing {
+    starts: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl super::Launcher for Crossing {
+    fn launch(&self, _number: u32) -> std::io::Result<super::Launched> {
+        use std::io::Write;
+
+        use crate::ipc::{self, ToBrowser, ToRenderer};
+        let ((browser_in, browser_out), (mut renderer_in, mut renderer_out)) = ipc::duplex();
+        let breakers = [browser_out.breaker(), renderer_out.breaker()];
+        let starts = self.starts.clone();
+        thread::spawn(move || {
+            let Ok(Some(ToRenderer::Hello { .. })) =
+                ipc::read_message::<ToRenderer>(&mut renderer_in)
+            else {
+                return;
+            };
+            let mut say = |message: &ToBrowser| {
+                let framed = ipc::frame(message).expect("framed");
+                let _ = renderer_out.write_all(&framed);
+            };
+            say(&ToBrowser::Hello {
+                version: ipc::IPC_VERSION,
+            });
+            let mut crossed = false;
+            loop {
+                match ipc::read_message::<ToRenderer>(&mut renderer_in) {
+                    Ok(Some(ToRenderer::StartServiceWorker { version, .. })) => {
+                        let first = starts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+                        if first {
+                            say(&ToBrowser::ServiceWorkerEvaluated {
+                                version,
+                                listened: Some(vec!["install".to_owned()]),
+                                imports: Vec::new(),
+                            });
+                        }
+                    }
+                    Ok(Some(ToRenderer::ServiceWorkerEvent { version, event, .. })) => {
+                        if crossed {
+                            say(&ToBrowser::ServiceWorkerEventDone {
+                                version,
+                                event,
+                                ok: true,
+                                ran: true,
+                            });
+                        } else {
+                            crossed = true;
+                            say(&ToBrowser::ServiceWorkerStopped { version });
+                            say(&ToBrowser::ServiceWorkerEventDone {
+                                version,
+                                event,
+                                ok: false,
+                                ran: false,
+                            });
+                        }
+                    }
+                    Ok(Some(_)) => {}
+                    _ => return,
+                }
+            }
+        });
+        Ok(super::Launched {
+            from_renderer: Box::new(browser_in),
+            to_renderer: Box::new(browser_out),
+            log: None,
+            process: Box::new(Pipes(breakers)),
+        })
+    }
+}
+
+#[test]
+fn an_install_event_crossing_its_versions_idle_stop_is_sent_again() {
+    // A version stopped idle as its install event came: the browser heard
+    // the stop first and failed the event, its "did not run" dropped, so
+    // the registration never activated (CI's macOS run of
+    // tab_tests::a_renderers_page_registers_a_service_worker_through_the_browser,
+    // whose page waited for it).
+    let server = TestServer::plain(|_| {
+        Reply::with_fields(200, &[("Content-Type", "text/javascript")], b"1")
+    });
+    let context = crate::Context::new();
+    let starts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let _host = super::workers::install(
+        &context,
+        Arc::new(Crossing {
+            starts: starts.clone(),
+        }),
+    )
+    .expect("the first");
+    let (sender, receiver) = channel();
+    context.service_workers().schedule(
+        crate::service_worker::Job {
+            kind: crate::service_worker::JobKind::Register,
+            key: server.url("/").origin().serialization(),
+            scope: server.url("/"),
+            script: server.url("/sw.js"),
+            update_via_cache: crate::service_worker::UpdateViaCache::Imports,
+            force_bypass: false,
+            partition: None,
+        },
+        Box::new(move |settled: crate::service_worker::Settled| {
+            let _ = sender.send(settled.outcome);
+        }),
+    );
+    let outcome = receiver.recv_timeout(WAIT).expect("settled");
+    assert!(
+        matches!(outcome, crate::service_worker::Outcome::Registration(_)),
+        "{outcome:?}"
+    );
+    let key = server.url("/").origin().serialization();
+    let state = || {
+        context.service_workers().query(&key, |registry| {
+            let reg = registry.registration(registry.get(&key, server.url("/").as_str())?)?;
+            let version = reg.active.or(reg.waiting).or(reg.installing)?;
+            Some(registry.version(version)?.state)
+        })
+    };
+    wait(|| matches!(state(), Some(State::Activated | State::Redundant) | None));
+    assert_eq!(state(), Some(State::Activated));
+    // Started again for the event sent again.
+    assert_eq!(starts.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
 #[test]
 fn a_worker_renderer_that_answers_for_another_version_is_cut_off() {
     let server = TestServer::plain(|_| {

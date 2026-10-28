@@ -204,6 +204,95 @@ fn a_request_body_larger_than_the_servers_window_is_sent_whole() {
 }
 
 #[test]
+fn the_test_server_takes_a_whole_record_and_more_in_one_read() {
+    // A TLS record of the whole 16 KiB of plaintext, then small ones, in
+    // one write: the server reads the big record's end and the small ones
+    // together. rustls refuses to read on with more than 16 KiB of
+    // plaintext untaken; the server took it only after the whole read,
+    // and ended the connection (CI's run of the upload test above).
+    let authority = TestAuthority::new();
+    let server = TestServer::tls(authority.server_h2(&["127.0.0.1"], VALID), |request| {
+        Reply::ok("text/plain", request.body.len().to_string().as_bytes())
+    });
+    let mut config = (*super::tls::client_config(std::slice::from_ref(&authority.root))).clone();
+    config.alpn_protocols = vec![b"h2".to_vec()];
+    let name = rustls::pki_types::ServerName::try_from("127.0.0.1").expect("a name");
+    let mut conn = rustls::ClientConnection::new(Arc::new(config), name).expect("a connection");
+    let mut socket = std::net::TcpStream::connect(("127.0.0.1", server.port())).expect("connected");
+    while conn.is_handshaking() {
+        conn.complete_io(&mut socket).expect("the handshake");
+    }
+    let body = vec![5u8; 40_000];
+    let mut plain = frame::PREFACE.to_vec();
+    Frame::Settings {
+        ack: false,
+        values: Vec::new(),
+    }
+    .write(&mut plain);
+    plain.extend(frames(
+        &[
+            (":method", "POST"),
+            (":scheme", "https"),
+            (":authority", "127.0.0.1"),
+            (":path", "/up"),
+        ],
+        &[],
+        false,
+    ));
+    for (i, piece) in body.chunks(10_000).enumerate() {
+        Frame::Data {
+            stream: 1,
+            end_stream: i == 3,
+            data: piece.to_vec(),
+            flow: piece.len(),
+        }
+        .write(&mut plain);
+    }
+    // A record of 16 KiB, then records of nine bytes, then the rest.
+    let (big, rest) = plain.split_at(16_384);
+    let (small, rest) = rest.split_at(9 * 40);
+    conn.writer().write_all(big).expect("written");
+    for record in small.chunks(9) {
+        conn.writer().write_all(record).expect("written");
+    }
+    conn.writer().write_all(rest).expect("written");
+    let mut wire = Vec::new();
+    while conn.wants_write() {
+        conn.write_tls(&mut wire).expect("encrypted");
+    }
+    socket.write_all(&wire).expect("sent");
+    // The server's answer: the body's length, not the connection's end.
+    socket
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .expect("a timeout");
+    let mut stream = rustls::StreamOwned::new(conn, socket);
+    let mut input = Vec::new();
+    let mut chunk = [0u8; 16_384];
+    let answered = loop {
+        let n = std::io::Read::read(&mut stream, &mut chunk).unwrap_or(0);
+        if n == 0 {
+            break false;
+        }
+        input.extend_from_slice(&chunk[..n]);
+        let mut at = 0;
+        let mut data = Vec::new();
+        while let Ok(Some((frame, length))) = frame::read(&input[at..], frame::MAX_FRAME_SIZE) {
+            at += length;
+            if let Frame::Data {
+                stream: 1, data: d, ..
+            } = frame
+            {
+                data.extend_from_slice(&d);
+            }
+        }
+        if data == b"40000" {
+            break true;
+        }
+    };
+    assert!(answered, "the server ended the connection");
+}
+
+#[test]
 fn a_streamed_response_and_a_coded_one() {
     let mut gzip = GzEncoder::new(Vec::new(), Compression::default());
     gzip.write_all(b"unzipped").unwrap();
