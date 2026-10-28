@@ -274,6 +274,11 @@ pub trait ScriptingHost: Default + 'static {
     fn take_work(&mut self) -> u64 {
         0
     }
+    /// Whether records were queued for mutation observers since this was
+    /// last asked (gap batch A): the realm queues its microtask.
+    fn take_mutation_wake(&mut self) -> bool {
+        false
+    }
     /// The next script to run now, inside the call that made it ready
     /// (M25): one a script inserted, or one in what `document.write`
     /// wrote; `None` once there is none. The realm runs it, nested in the
@@ -383,6 +388,9 @@ pub enum Task {
     /// What a document's media elements do (M40), as JSON: actions to
     /// carry out, or a pipeline's report to hear.
     Media(String),
+    /// Records wait for mutation observers that no call of a script's
+    /// queued (the parser's insertions): the realm tells them.
+    Mutations,
     /// The `matchMedia()` lists whose answer changed in a frame's update
     /// (gap batch A), by their numbers: a `change` at each.
     MediaChanged(Vec<u32>),

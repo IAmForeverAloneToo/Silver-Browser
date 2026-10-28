@@ -3714,6 +3714,205 @@
   });
   windowOnly("CSS", { value: CSSNamespace, writable: true, configurable: true });
 
+  // ---- Mutation observers (DOM 4.3, gap batch A, D42) ----
+
+  // An observer is the engine's by a number: it keeps the registrations,
+  // matches the document's changes against them and queues the records,
+  // and wakes the realm when one is queued, which then queues its
+  // mutation observer microtask. An observer registered is kept, as its
+  // nodes keep it.
+  const mutationObservers = new $Map();
+  let lastObserver = 0;
+  let mutationsQueued = false;
+  let observerCallback;
+
+  class MutationRecord {
+    #fields;
+
+    constructor(key, fields) {
+      if (key !== KEY) {
+        throw illegalConstructor("MutationRecord");
+      }
+      this.#fields = fields;
+    }
+
+    get type() {
+      return this.#fields.type;
+    }
+
+    get target() {
+      return this.#fields.target;
+    }
+
+    get addedNodes() {
+      return this.#fields.added;
+    }
+
+    get removedNodes() {
+      return this.#fields.removed;
+    }
+
+    get previousSibling() {
+      return this.#fields.previous;
+    }
+
+    get nextSibling() {
+      return this.#fields.next;
+    }
+
+    get attributeName() {
+      return this.#fields.attribute;
+    }
+
+    get attributeNamespace() {
+      return null;
+    }
+
+    get oldValue() {
+      return this.#fields.old;
+    }
+  }
+  expose(MutationRecord, "MutationRecord");
+
+  // The records the engine queued for observer `id`, made objects.
+  function mutationRecords(id) {
+    const given = JSONParse(native.mutationTake(id));
+    const records = [];
+    for (let i = 0; i < given.length; i++) {
+      const r = given[i];
+      ArrayPush(records, new MutationRecord(KEY, {
+        type: r.type,
+        target: wrap(r.target),
+        added: snapshot(NodeList, r.added),
+        removed: snapshot(NodeList, r.removed),
+        previous: r.previous === null ? null : wrap(r.previous),
+        next: r.next === null ? null : wrap(r.next),
+        attribute: r.attribute,
+        old: r.old,
+      }));
+    }
+    return records;
+  }
+
+  const OBSERVE_WORDS = "Failed to execute 'observe' on 'MutationObserver': The options object ";
+
+  class MutationObserver {
+    #id;
+    #callback;
+
+    constructor(callback) {
+      needToConstruct(arguments.length, 1, "MutationObserver");
+      if (typeof callback !== "function") {
+        throw new $TypeError("Failed to construct 'MutationObserver': The callback provided " +
+          "as parameter 1 is not a function.");
+      }
+      this.#id = ++lastObserver;
+      this.#callback = callback;
+    }
+
+    static {
+      observerCallback = (observer) => observer.#callback;
+    }
+
+    observe(target, options = undefined) {
+      this.#id;
+      need(arguments.length, 1, "observe", "MutationObserver");
+      if (!isNode(target)) {
+        throw new $TypeError(prefix("observe", "MutationObserver") +
+          "parameter 1 is not of type 'Node'.");
+      }
+      if (options !== undefined && options !== null && typeof options !== "object" &&
+        typeof options !== "function") {
+        throw new $TypeError(prefix("observe", "MutationObserver") +
+          "The provided value is not of type 'MutationObserverInit'.");
+      }
+      // The members in Web IDL's order, those not given undefined.
+      const given = options === undefined || options === null ? {} : options;
+      let filter = given.attributeFilter;
+      if (filter !== undefined) {
+        filter = sequence(filter, "observe", "MutationObserver", str);
+      }
+      const read = (value) => value === undefined ? undefined : !!value;
+      const attributeOldValue = read(given.attributeOldValue);
+      let attributes = read(given.attributes);
+      let characterData = read(given.characterData);
+      const characterDataOldValue = read(given.characterDataOldValue);
+      const childList = !!given.childList;
+      const subtree = !!given.subtree;
+      if ((attributeOldValue !== undefined || filter !== undefined) && attributes === undefined) {
+        attributes = true;
+      }
+      if (characterDataOldValue !== undefined && characterData === undefined) {
+        characterData = true;
+      }
+      // The reference checks these first, then that something is asked.
+      if (attributeOldValue && !attributes) {
+        throw new $TypeError(OBSERVE_WORDS + "may only set 'attributeOldValue' to true when " +
+          "'attributes' is true or not present.");
+      }
+      if (filter !== undefined && !attributes) {
+        throw new $TypeError(OBSERVE_WORDS + "may only set 'attributeFilter' when " +
+          "'attributes' is true or not present.");
+      }
+      if (characterDataOldValue && !characterData) {
+        throw new $TypeError(OBSERVE_WORDS + "may only set 'characterDataOldValue' to true when " +
+          "'characterData' is true or not present.");
+      }
+      if (!childList && !attributes && !characterData) {
+        throw new $TypeError(OBSERVE_WORDS + "must set at least one of 'attributes', " +
+          "'characterData', or 'childList' to true.");
+      }
+      const flags = (childList ? 1 : 0) | (attributes ? 2 : 0) | (characterData ? 4 : 0) |
+        (subtree ? 8 : 0) | (attributeOldValue ? 16 : 0) | (characterDataOldValue ? 32 : 0);
+      MapSet(mutationObservers, this.#id, this);
+      native.mutationObserve(this.#id, handleOf(target), flags, filter === undefined ? null : filter);
+    }
+
+    disconnect() {
+      native.mutationDisconnect(this.#id);
+      MapDelete(mutationObservers, this.#id);
+    }
+
+    takeRecords() {
+      return mutationRecords(this.#id);
+    }
+  }
+  expose(MutationObserver, "MutationObserver");
+
+  // DOM's "notify mutation observers": each observer with records, in
+  // the order they were made, its callback given them.
+  function notifyMutationObservers() {
+    mutationsQueued = false;
+    const ids = native.mutationNotify();
+    for (let i = 0; i < ids.length; i++) {
+      const observer = MapGet(mutationObservers, ids[i]);
+      const records = mutationRecords(ids[i]);
+      if (observer === undefined || records.length === 0) {
+        continue;
+      }
+      try {
+        ReflectApply(observerCallback(observer), observer, [records, observer]);
+      } catch (error) {
+        reportException(error);
+      }
+    }
+  }
+
+  // The engine queued a record: the microtask that tells the observers,
+  // unless one is queued already.
+  function queueMutationObserverMicrotask() {
+    if (!mutationsQueued) {
+      mutationsQueued = true;
+      PromiseThen(resolved(undefined), notifyMutationObservers);
+    }
+  }
+
+  // The engine's `mutations` task: records of the parser's insertions.
+  function* mutationsTask() {
+    notifyMutationObservers();
+    return false;
+  }
+
   // ---- matchMedia() and MediaQueryList (CSSOM View 4.2, gap batch A) ----
 
   // A list is the engine's by a number: parsed once, answered against the
@@ -3848,8 +4047,9 @@
     }
 
     timeRemaining() {
+      // At most the 50 ms an idle period lasts, whatever the rounding.
       const left = this.#end - native.now();
-      return left > 0 ? left : 0;
+      return left > 0 ? MathMin(left, 50) : 0;
     }
 
     get didTimeout() {
@@ -6403,14 +6603,18 @@
     return handles;
   }
 
-  // Inserts each of `handles` under `parent` before `before`.
+  // Inserts each of `handles` under `parent` before `before`, one
+  // operation for mutation observers.
   function insertAll(parent, handles, before, method, iface) {
+    native.mutationScope(true);
     try {
       for (let i = 0; i < handles.length; i++) {
         native.insert(parent, handles[i], before);
       }
     } catch (error) {
       throw failed(error, method, iface);
+    } finally {
+      native.mutationScope(false);
     }
   }
 
@@ -6487,12 +6691,18 @@
       const parent = self(this);
       const iface = kindOf(this) === 9 ? "Document" : "Element";
       const handles = convert(nodes, "replaceChildren", iface);
-      let child = native.firstChild(parent);
-      while (child !== null) {
-        native.remove(parent, child);
-        child = native.firstChild(parent);
+      // One operation for mutation observers.
+      native.mutationScope(true);
+      try {
+        let child = native.firstChild(parent);
+        while (child !== null) {
+          native.remove(parent, child);
+          child = native.firstChild(parent);
+        }
+        insertAll(parent, handles, null, "replaceChildren", iface);
+      } finally {
+        native.mutationScope(false);
       }
-      insertAll(parent, handles, null, "replaceChildren", iface);
     },
   };
 
@@ -22915,6 +23125,8 @@
     gpu: (text, bytes) => gpuInstall().gpuTask(text, bytes),
     media: mediaTask,
     mediaChanged,
+    mutations: mutationsTask,
+    mutationsQueued: queueMutationObserverMicrotask,
     evaluate: evaluateExpression,
     fetched,
     // A message's arrival (M31): at the global (`kind` 0), at worker

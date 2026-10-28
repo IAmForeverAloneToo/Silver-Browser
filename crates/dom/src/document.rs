@@ -170,6 +170,55 @@ pub enum Change {
     Everything,
 }
 
+/// The most changes the observed queue keeps ([`Document::observe`]);
+/// past it the oldest go, as a mutation observer's records past its
+/// bound do.
+pub const MAX_OBSERVED: usize = 1 << 16;
+
+/// A change as the DOM's mutation observers are told of it (gap batch
+/// A, D42): what "queue a mutation record" needs, one node at a time,
+/// kept only while [`Document::observe`] is on, with the watched nodes
+/// that were then the target's inclusive ancestors, nearest first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mutation {
+    pub change: Mutated,
+    pub watched: Vec<NodeId>,
+}
+
+/// What a [`Mutation`] changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Mutated {
+    /// `added` was inserted under `parent`, or `removed` taken from it,
+    /// between `prev` and `next`.
+    ChildList {
+        parent: NodeId,
+        added: Option<NodeId>,
+        removed: Option<NodeId>,
+        prev: Option<NodeId>,
+        next: Option<NodeId>,
+    },
+    /// Attribute `name` of `element` was set or removed; `old` is its
+    /// value before, `None` when it had none.
+    Attribute {
+        element: NodeId,
+        name: String,
+        old: Option<String>,
+    },
+    /// A text node's data changed from `old`.
+    Text { node: NodeId, old: String },
+}
+
+impl Mutated {
+    /// The node the change is to: the parent, the element or the text.
+    pub fn target(&self) -> NodeId {
+        match self {
+            Mutated::ChildList { parent, .. } => *parent,
+            Mutated::Attribute { element, .. } => *element,
+            Mutated::Text { node, .. } => *node,
+        }
+    }
+}
+
 /// Why a mutation was refused; the document is as it was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MutationError {
@@ -294,6 +343,17 @@ pub struct Document {
     /// focused one, or while the focus moves, the ancestor it shares
     /// with where it goes (M26.11).
     within: Option<NodeId>,
+    /// What mutation observers are to be told of, while some observer
+    /// is registered (gap batch A); boxed, as most documents have none.
+    observing: Option<Box<Observing>>,
+}
+
+/// A document's changes kept for mutation observers, and the nodes they
+/// are registered on, each with whether one watches its subtree.
+#[derive(Debug, Clone, Default)]
+struct Observing {
+    changes: std::collections::VecDeque<Mutation>,
+    watched: std::collections::HashMap<NodeId, bool>,
 }
 
 impl Default for Document {
@@ -320,6 +380,7 @@ impl Document {
             max_data: MAX_DATA_BYTES,
             focused: None,
             within: None,
+            observing: None,
         };
         document.root = document.allocate(NodeData::Document);
         document
@@ -909,6 +970,7 @@ impl Document {
             None => self.link_last(parent.index, child.index),
         }
         self.record_change(Change::Inserted { parent, child });
+        self.observe_insertion(parent, child);
         Ok(())
     }
 
@@ -936,6 +998,7 @@ impl Document {
         }
         self.link_last(parent.index, child.index);
         self.record_change(Change::Inserted { parent, child });
+        self.observe_insertion(parent, child);
         Ok(())
     }
 
@@ -982,6 +1045,11 @@ impl Document {
             }
         };
         let default = matches!(name.as_str(), "checked" | "selected").then(|| name.clone());
+        self.observed(|| Mutated::Attribute {
+            element,
+            name: name.clone(),
+            old: old.clone(),
+        });
         self.record_change(Change::AttributeChanged { element, name, old });
         if let Some(name) = default {
             crate::forms::default_changed(self, element, &name);
@@ -1010,6 +1078,11 @@ impl Document {
         let (_, old) = attrs.remove(at);
         self.data_bytes -= name.len() + old.len();
         let default = matches!(name.as_str(), "checked" | "selected").then(|| name.clone());
+        self.observed(|| Mutated::Attribute {
+            element,
+            name: name.clone(),
+            old: Some(old.clone()),
+        });
         self.record_change(Change::AttributeChanged {
             element,
             name,
@@ -1033,8 +1106,12 @@ impl Document {
         let old = text.len();
         self.check_data(data.len().saturating_sub(old))?;
         self.data_bytes = self.data_bytes + data.len() - old;
+        let mut old = None;
         if let Some(NodeData::Text(text)) = self.record_mut(node).map(|r| &mut r.data) {
-            data.clone_into(text);
+            old = Some(std::mem::replace(text, data.to_owned()));
+        }
+        if let Some(old) = old {
+            self.observed(|| Mutated::Text { node, old });
         }
         self.record_change(Change::TextChanged { node });
         Ok(())
@@ -1053,8 +1130,14 @@ impl Document {
         }
         self.check_data(data.len())?;
         self.data_bytes += data.len();
+        let observing = self.observing.is_some();
+        let mut old = None;
         if let Some(NodeData::Text(text)) = self.record_mut(node).map(|r| &mut r.data) {
+            old = observing.then(|| text.clone());
             text.push_str(data);
+        }
+        if let Some(old) = old {
+            self.observed(|| Mutated::Text { node, old });
         }
         self.record_change(Change::TextChanged { node });
         Ok(())
@@ -1086,6 +1169,76 @@ impl Document {
             }
         }
         Ok(())
+    }
+
+    /// Keeps the changes mutation observers are told of from now on,
+    /// or stops keeping them and drops those kept (gap batch A).
+    pub fn observe(&mut self, on: bool) {
+        match on {
+            true => {
+                self.observing.get_or_insert_with(Default::default);
+            }
+            false => self.observing = None,
+        }
+    }
+
+    /// The changes kept for mutation observers since this was last
+    /// asked, oldest first.
+    pub fn take_observed(&mut self) -> Vec<Mutation> {
+        self.observing
+            .as_mut()
+            .map(|observing| observing.changes.drain(..).collect())
+            .unwrap_or_default()
+    }
+
+    /// Whether changes are kept for mutation observers and not taken.
+    pub fn has_observed(&self) -> bool {
+        self.observing
+            .as_ref()
+            .is_some_and(|observing| !observing.changes.is_empty())
+    }
+
+    /// The nodes observers are registered on from now on, each with
+    /// whether one watches its subtree.
+    pub fn set_watched(&mut self, watched: std::collections::HashMap<NodeId, bool>) {
+        if let Some(observing) = &mut self.observing {
+            observing.watched = watched;
+        }
+    }
+
+    /// Keeps the change `made` makes, while observers are told of
+    /// changes, with the watched nodes among its target's inclusive
+    /// ancestors; the oldest goes past [`MAX_OBSERVED`].
+    fn observed(&mut self, made: impl FnOnce() -> Mutated) {
+        let Some(observing) = &self.observing else {
+            return;
+        };
+        let change = made();
+        let target = change.target();
+        let watched = std::iter::once(target)
+            .chain(self.ancestors(target))
+            .filter(|node| observing.watched.contains_key(node))
+            .collect();
+        if let Some(observing) = &mut self.observing {
+            if observing.changes.len() >= MAX_OBSERVED {
+                observing.changes.pop_front();
+            }
+            observing.changes.push_back(Mutation { change, watched });
+        }
+    }
+
+    /// Keeps `child`'s insertion under `parent`, with its siblings now.
+    fn observe_insertion(&mut self, parent: NodeId, child: NodeId) {
+        if self.observing.is_some() {
+            let (prev, next) = (self.prev_sibling(child), self.next_sibling(child));
+            self.observed(|| Mutated::ChildList {
+                parent,
+                added: Some(child),
+                removed: None,
+                prev,
+                next,
+            });
+        }
     }
 
     /// The changes since the journal was last drained, oldest first.
@@ -1372,6 +1525,27 @@ impl Document {
             prev: self.link(prev),
             next: self.link(next),
         };
+        if let Change::Removed {
+            parent, prev, next, ..
+        } = change
+            && let Some(observing) = &self.observing
+        {
+            // Taken out of a watched subtree, the node is watched until
+            // its observers are next told (DOM's transient registrations).
+            let subtree = std::iter::once(parent)
+                .chain(self.ancestors(parent))
+                .any(|node| observing.watched.get(&node) == Some(&true));
+            if subtree && let Some(observing) = &mut self.observing {
+                observing.watched.entry(child).or_insert(true);
+            }
+            self.observed(|| Mutated::ChildList {
+                parent,
+                added: None,
+                removed: Some(child),
+                prev,
+                next,
+            });
+        }
         self.record_change(change);
     }
 
@@ -2009,6 +2183,126 @@ mod tests {
             Err(MutationError::TooManyNodes)
         );
         assert_eq!(document.create_text("c"), Err(MutationError::TooManyNodes));
+    }
+
+    #[test]
+    fn observed_changes_are_kept_only_while_observing() {
+        let mut doc = Document::new();
+        let root = doc.root();
+        let a = doc.create_element("a").unwrap();
+        doc.append_child(root, a).unwrap();
+        assert!(doc.take_observed().is_empty(), "not observing");
+        doc.observe(true);
+        let b = doc.create_element("b").unwrap();
+        let c = doc.create_text("x").unwrap();
+        doc.append_child(root, b).unwrap();
+        doc.append_new(b, c).unwrap();
+        doc.set_attribute(a, "ID", "1").unwrap();
+        doc.set_attribute(a, "id", "2").unwrap();
+        doc.remove_attribute(a, "id").unwrap();
+        doc.set_text(c, "y").unwrap();
+        doc.append_data(c, "z").unwrap();
+        doc.insert_before(root, b, Some(a)).unwrap();
+        let attribute = |old: Option<&str>| Mutated::Attribute {
+            element: a,
+            name: "id".to_owned(),
+            old: old.map(str::to_owned),
+        };
+        let child = |added, removed, prev, next| Mutated::ChildList {
+            parent: root,
+            added,
+            removed,
+            prev,
+            next,
+        };
+        let changes = |doc: &mut Document| {
+            doc.take_observed()
+                .into_iter()
+                .map(|m| m.change)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            changes(&mut doc),
+            [
+                child(Some(b), None, Some(a), None),
+                Mutated::ChildList {
+                    parent: b,
+                    added: Some(c),
+                    removed: None,
+                    prev: None,
+                    next: None
+                },
+                attribute(None),
+                attribute(Some("1")),
+                attribute(Some("2")),
+                Mutated::Text {
+                    node: c,
+                    old: "x".to_owned()
+                },
+                Mutated::Text {
+                    node: c,
+                    old: "y".to_owned()
+                },
+                // A move is a removal and an insertion.
+                child(None, Some(b), Some(a), None),
+                child(Some(b), None, None, Some(a)),
+            ]
+        );
+        assert!(doc.take_observed().is_empty());
+        doc.observe(false);
+        doc.remove_child(root, b).unwrap();
+        doc.observe(true);
+        assert!(
+            doc.take_observed().is_empty(),
+            "what changed unobserved is not kept"
+        );
+        // The watched among a change's inclusive ancestors, nearest
+        // first; a node taken out of a subtree watched as a subtree is
+        // watched itself, and of one watched without, not.
+        doc.append_child(root, a).unwrap();
+        doc.take_observed();
+        doc.set_watched([(root, true)].into_iter().collect());
+        doc.set_attribute(a, "x", "1").unwrap();
+        doc.remove_child(root, a).unwrap();
+        doc.set_attribute(a, "x", "2").unwrap();
+        doc.set_watched([(root, false)].into_iter().collect());
+        doc.append_child(root, a).unwrap();
+        doc.remove_child(root, a).unwrap();
+        doc.set_attribute(a, "x", "3").unwrap();
+        let watched: Vec<Vec<NodeId>> =
+            doc.take_observed().into_iter().map(|m| m.watched).collect();
+        assert_eq!(
+            watched,
+            [
+                vec![root],
+                vec![root],
+                vec![a],
+                vec![root],
+                vec![root],
+                vec![]
+            ]
+        );
+    }
+
+    #[test]
+    fn the_observed_queue_keeps_its_newest_past_its_bound() {
+        let mut doc = Document::new();
+        let a = doc.create_element("a").unwrap();
+        doc.append_child(doc.root(), a).unwrap();
+        doc.observe(true);
+        for i in 0..=MAX_OBSERVED {
+            doc.set_attribute(a, "n", &i.to_string()).unwrap();
+        }
+        let kept = doc.take_observed();
+        assert_eq!(kept.len(), MAX_OBSERVED);
+        assert_eq!(
+            kept[0].change,
+            Mutated::Attribute {
+                element: a,
+                name: "n".to_owned(),
+                old: Some("0".to_owned())
+            }
+        );
     }
 
     #[test]

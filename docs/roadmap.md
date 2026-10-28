@@ -2912,8 +2912,8 @@ Deferred from the milestones above, each with what it waits on:
 - [ ] G48 `document.open` and `document.close`, and a `document.write`
        with no insertion point replacing the document (a `javascript:`
        URL's string result is M26.6's). Found at M25.
-- [ ] G49 `MutationObserver`, which M13 expected of M24 or M25. Found
-       at M25.
+- [x] G49 `MutationObserver`, which M13 expected of M24 or M25. Found
+       at M25. Done in gap batch A (D42).
 - [ ] G50 CSSOM's serialization of specified values and of shorthands
        in `style` and `cssText`, which keep the text they were given;
        `document.styleSheets` and the CSSOM's rule objects. Found at M25.

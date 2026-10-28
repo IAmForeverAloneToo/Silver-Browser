@@ -53,6 +53,9 @@
 //!
 //! M33's: frames, `iframe`s made and given a `srcdoc`, sandboxed or not,
 //! and messages posted to their windows.
+//!
+//! Gap batch A's: mutation observers on the nodes, with any options,
+//! their callbacks changing the document a few times and disconnecting.
 
 #![no_main]
 #![forbid(unsafe_code)]
@@ -495,7 +498,7 @@ fn body(input: &mut Input, nested: bool) -> String {
 /// One call, read from `input`, as a statement; `nested` in a
 /// listener's or a callback's body.
 fn call(input: &mut Input, nested: bool) -> String {
-    let op = input.byte() % 76;
+    let op = input.byte() % 77;
     let a = input.node();
     match op {
         0 => format!("p(document.createElement({}))", input.pick(TAGS)),
@@ -900,6 +903,17 @@ fn call(input: &mut Input, nested: bool) -> String {
              [b.x, b.width, {a}.getCTM() && {a}.getCTM().e].join()); }} \
              if ({a}.getTotalLength) {{ {a}.isPointInFill({{x: 1, y: 1}}); \
              {a}.isPointInStroke(new DOMPoint(2, 2)); {a}.getPointAtLength({a}.getTotalLength() / 2); }}"
+        ),
+        76 => format!(
+            "var mn = 0; var mo = new MutationObserver((rs, o) => {{ if (mn++ < 4) {a}.title =              rs.length + rs.map((r) => r.type + r.addedNodes.length + r.removedNodes.length + r.oldValue).join();              if ({}) o.disconnect(); }});              mo.observe({a}, {{childList: {}, attributes: {}, characterData: {}, subtree: {},              attributeOldValue: {}, characterDataOldValue: {}}}); if ({}) p(mo.takeRecords()[0])",
+            input.byte() % 2 == 0,
+            input.byte() % 2 == 0,
+            input.byte() % 2 == 0,
+            input.byte() % 2 == 0,
+            input.byte() % 2 == 0,
+            input.byte() % 2 == 0,
+            input.byte() % 2 == 0,
+            input.byte() % 4 == 0
         ),
         _ => {
             let property = ["disabled", "required", "readOnly", "multiple", "noValidate"]

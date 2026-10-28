@@ -20,7 +20,8 @@ pub mod validity;
 
 pub use document::{
     Change, Children, Document, ElementState, MAX_DATA_BYTES, MAX_DEPTH, MAX_GENERATION,
-    MAX_JOURNAL, MAX_NODES, MutationError, NodeData, NodeId, Subtree,
+    MAX_JOURNAL, MAX_NODES, MAX_OBSERVED, Mutated, Mutation, MutationError, NodeData, NodeId,
+    Subtree,
 };
 pub use microsyntax::{Dimension, parse_dimension, parse_integer, parse_non_negative_integer};
 

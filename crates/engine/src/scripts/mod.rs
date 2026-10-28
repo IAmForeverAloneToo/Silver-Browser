@@ -18,6 +18,7 @@ mod decoding;
 mod fetch;
 mod host;
 mod media_lists;
+mod mutations;
 pub(crate) mod ports;
 pub(crate) mod service_workers;
 #[cfg(test)]
@@ -733,6 +734,11 @@ impl Scripts {
     /// once it is ready and no style sheet blocks scripts. Whether the
     /// parser may go on.
     pub(crate) fn run_ready(&mut self, lent: &mut Lent<'_>, parsed: bool) -> bool {
+        // What the parser inserted since, for mutation observers (gap
+        // batch A).
+        if self.mutations_waiting(lent.document) {
+            self.enter(lent, &js::Task::Mutations, 0);
+        }
         while let Some((element, kind)) = self.events.pop_front() {
             self.dispatch(
                 lent,
@@ -1043,6 +1049,12 @@ impl Scripts {
 
     pub(crate) fn take_canvases_changed(&mut self) -> bool {
         self.host.canvases.take_changed()
+    }
+
+    /// Whether changes wait for mutation observers that no script's call
+    /// took (gap batch A).
+    pub(crate) fn mutations_waiting(&self, document: &Document) -> bool {
+        !self.stopped && self.host.mutations_waiting(document)
     }
 
     /// Whether the document has `matchMedia()` lists, which each frame's

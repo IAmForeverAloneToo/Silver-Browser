@@ -607,7 +607,8 @@ documents step; the number follows each.
 - *`document.open` and `document.close`*, and a write with no insertion
   point replacing the document; a `javascript:` URL's string result
   replacing it is M26.6's. G48.
-- *`MutationObserver`*, which M13 expected of M24 or M25. G49.
+- *`MutationObserver`*, which M13 expected of M24 or M25. G49. *(Later:
+  done in gap batch A.)*
 - *CSSOM's serialization of specified values and shorthands* in
   `style` and `cssText`; `document.styleSheets` and the CSSOM rule
   objects. G50.

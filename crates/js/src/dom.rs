@@ -278,6 +278,28 @@ pub enum Call {
     /// The encoding a MIME type's `charset` names, as `TextDecoderName`
     /// answers (`FileReader.readAsText()`).
     MimeCharset(String),
+    /// `MutationObserver.observe()` (gap batch A, D42): observer
+    /// `observer`'s registration on `node`, its options as flags
+    /// (childList 1, attributes 2, characterData 4, subtree 8,
+    /// attributeOldValue 16, characterDataOldValue 32) and its attribute
+    /// filter, if any.
+    MutationObserve {
+        observer: u32,
+        node: Handle,
+        flags: u32,
+        filter: Option<Vec<String>>,
+    },
+    /// `disconnect()`.
+    MutationDisconnect(u32),
+    /// The bindings begin (`true`) or end an operation of several calls
+    /// (`replaceChildren()`, an insertion of several nodes), whose changes
+    /// are grouped as one call's are.
+    MutationScope(bool),
+    /// `takeRecords()`: the observer's records, as JSON.
+    MutationTake(u32),
+    /// The mutation observer microtask's start: the observers to
+    /// notify, in the order they were made.
+    MutationNotify,
     /// `matchMedia()` (gap batch A): the list's serialization and its
     /// number, as strings.
     MatchMedia(String),

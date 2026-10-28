@@ -370,6 +370,26 @@ const NATIVES: &[(&str, Decode)] = &[
         })
     }),
     ("mimeCharset", |a| Ok(Call::MimeCharset(a.string(0)?))),
+    ("mutationObserve", |a| {
+        let filter = match a.value(3).is_array() {
+            true => Some(a.strings(3)?),
+            false => None,
+        };
+        Ok(Call::MutationObserve {
+            observer: a.integer(0) as u32,
+            node: a.handle(1)?,
+            flags: a.integer(2) as u32,
+            filter,
+        })
+    }),
+    ("mutationDisconnect", |a| {
+        Ok(Call::MutationDisconnect(a.integer(0) as u32))
+    }),
+    ("mutationTake", |a| {
+        Ok(Call::MutationTake(a.integer(0) as u32))
+    }),
+    ("mutationScope", |a| Ok(Call::MutationScope(a.bool(0)))),
+    ("mutationNotify", |_| Ok(Call::MutationNotify)),
     ("matchMedia", |a| Ok(Call::MatchMedia(a.string(0)?))),
     ("mediaMatches", |a| {
         Ok(Call::MediaMatches(a.integer(0) as u32))
@@ -754,11 +774,19 @@ pub(super) fn install<'js, H: ScriptingHost>(
                     ctx: &ctx,
                     values: &args.0,
                 })?;
-                let (answer, work) = with_host(&ctx, &host, |host| {
+                let (answer, work, mutated) = with_host(&ctx, &host, |host| {
                     let answer = host.dom(call);
-                    (answer, host.take_work())
+                    (answer, host.take_work(), host.take_mutation_wake())
                 })?;
                 budget.charge(work);
+                // Records were queued for mutation observers: the realm
+                // queues its microtask to tell them (gap batch A).
+                if mutated && let Some(entries) = entries.borrow().clone() {
+                    entries
+                        .restore(&ctx)?
+                        .get::<_, Function<'_>>("mutationsQueued")?
+                        .call::<_, ()>(())?;
+                }
                 let answer = match answer {
                     Ok(answer) => answer,
                     Err(error) => return Err(throw(&ctx, &error)),

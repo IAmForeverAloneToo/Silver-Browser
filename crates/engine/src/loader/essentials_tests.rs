@@ -373,7 +373,9 @@ fn a_media_query_list_answers_now_and_hears_each_change_in_a_frame() {
 fn an_idle_callback_runs_when_the_page_is_idle_or_at_its_timeout() {
     let lines = waited(
         r#"const order = [];
-        requestIdleCallback(d => order.push('idle ' + d.didTimeout + ' ' + (d.timeRemaining() > 0 && d.timeRemaining() <= 50)));
+        // What remains is 50 ms at most; on a slow machine, it may be
+        // none by the time it is read.
+        requestIdleCallback(d => order.push('idle ' + d.didTimeout + ' ' + (d.timeRemaining() >= 0 && d.timeRemaining() <= 50)));
         const gone = requestIdleCallback(() => order.push('cancelled'));
         cancelIdleCallback(gone);
         setTimeout(() => order.push('timer'), 0);
@@ -402,4 +404,142 @@ fn an_idle_callback_runs_when_the_page_is_idle_or_at_its_timeout() {
         1,
     );
     assert_eq!(lines, ["ran true 0"]);
+}
+
+#[test]
+fn a_mutation_observer_hears_each_operation_as_one_record_after_the_script() {
+    assert_eq!(
+        logged(
+            r#"const div = document.createElement('div'); div.id = 'd'; document.documentElement.append(div);
+            const show = n => n === null ? 'null' : n.nodeName === '#text' ? '#' + n.data : n.nodeName;
+            const seen = [];
+            const o = new MutationObserver((records, observer) => {
+              console.log('callback', observer === o, records.length);
+              for (const r of records) {
+                console.log(r.type, show(r.target), [...r.addedNodes].map(show).join(), [...r.removedNodes].map(show).join(),
+                  show(r.previousSibling), show(r.nextSibling), r.attributeName, r.attributeNamespace, r.oldValue);
+              }
+            });
+            o.observe(div, {childList: true, attributes: true, attributeOldValue: true, characterData: true, subtree: true, characterDataOldValue: true});
+            div.innerHTML = '<p>a</p><p>b</p>';
+            div.appendChild(div.firstChild);
+            div.setAttribute('title', 'x');
+            div.title = 'y';
+            div.lastChild.firstChild.data = 'c';
+            div.replaceChildren();
+            console.log('script ends');"#
+        ),
+        [
+            "script ends",
+            "callback true 7",
+            "childList DIV P,P  null null null null null",
+            "childList DIV  P null P null null null",
+            "childList DIV P  P null null null null",
+            "attributes DIV   null null title null null",
+            "attributes DIV   null null title null x",
+            "characterData #c   null null null null a",
+            "childList DIV  P,P null null null null null",
+        ]
+    );
+}
+
+#[test]
+fn a_mutation_observers_options_records_and_end_are_the_doms() {
+    assert_eq!(
+        logged(
+            r#"const root = document.documentElement;
+            for (const f of [() => new MutationObserver(), () => new MutationObserver(1),
+              () => new MutationObserver(() => {}).observe(root),
+              () => new MutationObserver(() => {}).observe(root, {attributeOldValue: true, attributes: false}),
+              () => new MutationObserver(() => {}).observe(root, {characterDataOldValue: true, characterData: false}),
+              () => new MutationObserver(() => {}).observe(root, {attributeFilter: ['a'], attributes: false}),
+              () => new MutationObserver(() => {}).observe({}, {childList: true})]) {
+              try { f() } catch (e) { console.log(e.name + ': ' + e.message) } }
+            const outer = document.createElement('div'); root.append(outer);
+            const inner = document.createElement('p'); outer.append(inner);
+            // A filter, its old values implied; taken records are not
+            // given to the callback; a removed subtree is still heard
+            // until the callback.
+            const o = new MutationObserver(records => console.log('called', records.map(r => r.type + ' ' + r.attributeName + ' ' + r.oldValue).join('; ')));
+            o.observe(outer, {attributeFilter: ['title'], attributeOldValue: true, subtree: true});
+            inner.title = 'a'; inner.id = 'x';
+            console.log('taken', o.takeRecords().length, o.takeRecords().length);
+            const p = new MutationObserver(records => console.log('subtree', records.map(r => r.type + ' ' + (r.target === inner) + ' ' + r.attributeName).join('; ')));
+            p.observe(outer, {childList: true, attributes: true, subtree: true});
+            outer.removeChild(inner);
+            inner.title = 'b';
+            const q = new MutationObserver(() => console.log('not called'));
+            q.observe(outer, {childList: true}); q.disconnect(); outer.append('t');
+            Promise.resolve().then(() => { inner.title = 'c'; console.log('after'); });"#
+        ),
+        [
+            "TypeError: Failed to construct 'MutationObserver': 1 argument required, but only 0 present.",
+            "TypeError: Failed to construct 'MutationObserver': The callback provided as parameter 1 is not a function.",
+            "TypeError: Failed to execute 'observe' on 'MutationObserver': The options object must set at least one of 'attributes', 'characterData', or 'childList' to true.",
+            "TypeError: Failed to execute 'observe' on 'MutationObserver': The options object may only set 'attributeOldValue' to true when 'attributes' is true or not present.",
+            "TypeError: Failed to execute 'observe' on 'MutationObserver': The options object may only set 'characterDataOldValue' to true when 'characterData' is true or not present.",
+            "TypeError: Failed to execute 'observe' on 'MutationObserver': The options object may only set 'attributeFilter' when 'attributes' is true or not present.",
+            "TypeError: Failed to execute 'observe' on 'MutationObserver': parameter 1 is not of type 'Node'.",
+            "taken 1 0",
+            "called attributes title a",
+            "subtree childList false null; attributes true title; childList false null",
+            "after",
+        ]
+    );
+}
+
+#[test]
+fn the_parsers_insertions_are_heard_while_the_page_still_loads() {
+    // The rest of the page comes later, and the page does not end: no
+    // event is fired that would make a call of the realm's. The start is
+    // long enough that the document is shown while it parses.
+    let head = "<script>new MutationObserver(records => console.log('parsed', records.length, \
+                records[0].addedNodes[0].id)).observe(document.body, {childList: true});</script><p id=a>";
+    let first = format!("<body>{head}<!--{}-->", "x".repeat(4096));
+    let (more, last) = ("</p><p id=b></p>", "</body>");
+    let length = first.len() + more.len() + last.len();
+    let server = net::test_server::TestServer::plain(move |_| {
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {length}\r\n\r\n{first}"
+        );
+        Reply::Pieces(vec![
+            (Duration::ZERO, head.into_bytes()),
+            (Duration::from_millis(300), more.as_bytes().to_vec()),
+            (Duration::from_secs(30), last.as_bytes().to_vec()),
+        ])
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(server.url("/page.html"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut lines = Vec::new();
+    while lines.is_empty() {
+        assert!(Instant::now() < deadline, "nothing logged");
+        std::thread::sleep(Duration::from_millis(2));
+        tab.engine.poll_network();
+        tab.engine.run_tasks();
+        let now = tab.engine.now();
+        tab.engine.frame_at(64, 48, crate::FrameTime::at(now));
+        lines.extend(
+            tab.engine
+                .take_console()
+                .into_iter()
+                .map(|entry| entry.text),
+        );
+    }
+    assert_eq!(lines[0], "parsed 1 a");
+}
+
+#[test]
+fn the_parsers_insertions_are_heard_after_its_script() {
+    let lines = waited(
+        r#"const added = [];
+        new MutationObserver(records => {
+          for (const r of records) for (const n of r.addedNodes) if (n.nodeName === 'P') added.push(n.id);
+          if (added.length === 2) console.log('parsed', added.join());
+        }).observe(document, {childList: true, subtree: true});
+        </script><p id=a>a</p><p id=b>b</p><script>"#,
+        1,
+    );
+    assert_eq!(lines, ["parsed a,b"]);
 }

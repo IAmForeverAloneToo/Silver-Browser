@@ -258,6 +258,10 @@ pub(crate) struct DocumentHost {
     text_decoders: super::decoding::TextDecoders,
     /// Its `matchMedia()` lists (gap batch A).
     pub(crate) media_lists: super::media_lists::MediaLists,
+    /// Its mutation observers (gap batch A, D42), and how deep the
+    /// operations of several calls the bindings began are nested.
+    mutations: super::mutations::MutationObservers,
+    scopes: u32,
 }
 
 impl ScriptingHost for DocumentHost {
@@ -280,6 +284,12 @@ impl ScriptingHost for DocumentHost {
 
     fn dom(&mut self, call: Call) -> Result<Answer, DomError> {
         self.work += 1;
+        // What changed before the call (the parser's) is a record a
+        // change; the call's own changes are one operation, unless the
+        // bindings began one of several calls.
+        if self.scopes == 0 {
+            self.observe_changes(false);
+        }
         let inserts = matches!(
             call,
             Call::Insert { .. }
@@ -290,7 +300,11 @@ impl ScriptingHost for DocumentHost {
                 | Call::SetOuterHtml(..)
                 | Call::InsertAdjacentHtml { .. }
         );
-        let answer = self.answer(call)?;
+        let answer = self.answer(call);
+        if self.scopes == 0 {
+            self.observe_changes(true);
+        }
+        let answer = answer?;
         if inserts && !self.pending.is_empty() {
             self.prepare_made();
         }
@@ -299,6 +313,10 @@ impl ScriptingHost for DocumentHost {
 
     fn take_work(&mut self) -> u64 {
         std::mem::take(&mut self.work)
+    }
+
+    fn take_mutation_wake(&mut self) -> bool {
+        self.mutations.take_wake()
     }
 
     fn take_script(&mut self) -> Option<NestedScript> {
@@ -1129,6 +1147,49 @@ impl DocumentHost {
             Call::AbortFetch(id) => {
                 self.outputs.aborted.push(id);
                 Ok(Answer::Nothing)
+            }
+            Call::MutationObserve {
+                observer,
+                node,
+                flags,
+                filter,
+            } => {
+                let node = self.node(node)?;
+                let options = super::mutations::Options {
+                    child_list: flags & 1 != 0,
+                    attributes: flags & 2 != 0,
+                    character_data: flags & 4 != 0,
+                    subtree: flags & 8 != 0,
+                    attribute_old_value: flags & 16 != 0,
+                    character_data_old_value: flags & 32 != 0,
+                    attribute_filter: filter,
+                };
+                self.mutations.observe(observer, node, options);
+                self.watch();
+                Ok(Answer::Nothing)
+            }
+            Call::MutationScope(begin) => {
+                self.scopes = match begin {
+                    true => self.scopes.saturating_add(1),
+                    false => self.scopes.saturating_sub(1),
+                };
+                Ok(Answer::Nothing)
+            }
+            Call::MutationDisconnect(observer) => {
+                self.mutations.disconnect(observer);
+                self.watch();
+                Ok(Answer::Nothing)
+            }
+            Call::MutationTake(observer) => {
+                let records = self.mutations.take(observer);
+                Ok(Answer::String(super::mutations::json(&records)))
+            }
+            Call::MutationNotify => {
+                let observers = self.mutations.notifying();
+                self.watch();
+                Ok(Answer::Numbers(
+                    observers.into_iter().map(f64::from).collect(),
+                ))
             }
             Call::MatchMedia(query) => {
                 let (media, _, id) = self.media_lists.make(&query, &self.window.media);
@@ -2677,6 +2738,31 @@ impl DocumentHost {
         }
     }
 
+    /// The document's changes since they were last taken, as records for
+    /// its mutation observers: one operation's, grouped, when
+    /// `operation`.
+    fn observe_changes(&mut self, operation: bool) {
+        if self.mutations.observing() {
+            let changes = self.document.take_observed();
+            if !changes.is_empty() {
+                self.mutations.record(changes, operation);
+            }
+        }
+    }
+
+    /// Tells the document which nodes are observed, and whether to keep
+    /// its changes at all.
+    fn watch(&mut self) {
+        self.document.observe(self.mutations.observing());
+        self.document.set_watched(self.mutations.watched());
+    }
+
+    /// Whether changes wait for mutation observers that no script's call
+    /// took (the parser's).
+    pub(crate) fn mutations_waiting(&self, document: &dom::Document) -> bool {
+        self.mutations.observing() && document.has_observed()
+    }
+
     /// The origin the document's `blob:` URLs are of.
     fn blob_origin(&self) -> net::Origin {
         self.page
@@ -3376,6 +3462,8 @@ impl DocumentHost {
     pub(crate) fn sweep(&mut self) {
         let document = &mut self.document;
         let exposed = &self.exposed;
+        // The nodes mutation records name are kept too.
+        let held = self.mutations.held();
         self.detached.retain(|&root| {
             if !document.contains(root)
                 || root == document.root()
@@ -3383,7 +3471,10 @@ impl DocumentHost {
             {
                 return false;
             }
-            if document.subtree(root).any(|node| exposed.contains(&node)) {
+            if document
+                .subtree(root)
+                .any(|node| exposed.contains(&node) || held.contains(&node))
+            {
                 return true;
             }
             let _ = document.free(root);
