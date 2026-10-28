@@ -2765,8 +2765,9 @@ Deferred from the milestones above, each with what it waits on:
        hexadecimal and named colours alone. Found again at M21, and at
        M22, whose reference pages write theirs in hexadecimal. `rgb()`
        and `rgba()` landed at M25, which `getComputedStyle` gives a
-       script to write back; `hsl()`, `hwb()`, `lab()`, `color()` and the
-       rest remain.
+       script to write back; `hsl()`, `hsla()` and `hwb()` since. `lab()`,
+       `lch()`, `oklab()`, `oklch()`, `color()` and `color-mix()` remain,
+       and `currentcolor` in the properties that do not yet take it.
 - [ ] G17 `@counter-style` and `symbols()`, the complex predefined
        counter styles of Counter Styles 3 §7 (the longhand Chinese,
        Japanese and Korean styles, `ethiopic-numeric`) and `speak-as`.
@@ -2840,7 +2841,9 @@ Deferred from the milestones above, each with what it waits on:
 - [ ] G34 AVIF, once an AV1 decoder meets `deny.toml` and builds on
        Windows without NASM: `ravif`, which M23.1 named, only encodes.
        Until then an AVIF image is broken, and an `image-set()` option
-       of its type is skipped. Found at M23.
+       of its type is skipped. Found at M23. The decoder is there since
+       M40 (`rav1d`, vendored, through `media::av1`): what is left is
+       AVIF's container (HEIF's boxes) and the image's planes.
 - [ ] G35 `srcset`, `sizes` and `<picture>`, and EXIF density correction
        (HTML 4.8.4.3.6): an `img`'s `src` is its fallback. Found at M23.
 - [ ] G36 `aspect-ratio` on boxes that are not replaced: it computes but
@@ -3058,7 +3061,8 @@ Deferred from the milestones above, each with what it waits on:
        runtime (D24). Found at M33.
 - [ ] G91 A frame's layers composited on the GPU: its pixels are drawn
        in software and uploaded. With M34's out-of-process frames.
-       Found at M33.
+       Found at M33. With G110's rest: the renderers' pages drawn on the
+       GPU through M41's GPU process.
 - [ ] G92 The joint session history: a frame's navigations as entries
        of the tab's history. Found at M33.
 - [x] G93 Blocking third-party cookies as a setting (D25). With M37.3's
@@ -3104,7 +3108,7 @@ Deferred from the milestones above, each with what it waits on:
 - [ ] G105 Interfaces the M33 pages and tests found missing:
        `document.scripts`, `document.links`, `document.styleSheets`
        and `cssRules`, `baseURI`; named access to an element by its id
-       on `window`; `getComputedStyle` by a hyphenated name for
+       on `window` (G54's); `getComputedStyle` by a hyphenated name for
        `background-image`; an image `new Image()` makes, which fetches
        nothing (one `createElement` makes does). Found at M33.
 - [ ] G106 Frames' edges: a `javascript:` URL as a frame's `src` is not
@@ -3127,9 +3131,11 @@ Deferred from the milestones above, each with what it waits on:
        until written again; a profile opened with a wrap that cannot
        unwrap its key starts over with a new one, its values lost.
        Found at M33.
-- [ ] G110 A GPU process: renderers draw in software, the GPU's driver
+- [x] G110 A GPU process: renderers draw in software, the GPU's driver
        being a large surface to give a sandboxed process; the one
-       process keeps the GPU backend. Found at M34.
+       process keeps the GPU backend. Found at M34. Done at M41 for
+       WebGL and WebGPU (`docs/design/gpu.md`); the pages' own drawing
+       on the GPU through it is G91's.
 - [ ] G111 The network denied to a renderer: a low-box (AppContainer)
        token without `internetClient`; a renderer taken over can open a
        socket of its own, though it holds no cookie to send. Found at
@@ -3349,7 +3355,8 @@ Deferred from the milestones above, each with what it waits on:
 - [ ] G170 Downloads go to `%USERPROFILE%\Downloads` (or `~/Downloads`),
        not the known folder where the user moved it. Found at M37.
 - [ ] G171 `blob:` URLs (`URL.createObjectURL`) and so downloads made by
-       a page's script. Found at M37.
+       a page's script. Found at M37. The URLs are G68's; the downloads
+       remain here.
 - [ ] G172 The downloads list is not kept in the profile. Found at M37.
 - [ ] G173 Workers' `navigator.languages` stays `en-US`. Found at M37.
 - [ ] G174 The status bubble and the permission bar stay light in the
@@ -3504,6 +3511,11 @@ Deferred from the milestones above, each with what it waits on:
        `preserveDrawingBuffer`, an `<img>`'s rendered width (its box's),
        and the suite's other 727 tests and the WebGPU CTS's other
        queries, run in CI on a GPU. Found at M41.
+- [ ] G215 The engine's GPU tests share one GPU service thread in the
+       test process, as pages share the GPU process: under load (runs of
+       70-105 s against 45) a page's `readPixels` waits behind other
+       tests' work past its test's 30 s (M41's acceptance pages, 3 of 15
+       loaded runs). Found after M41.
 
 ---
 
