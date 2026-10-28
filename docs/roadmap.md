@@ -2695,6 +2695,20 @@ gold-plate unstarted work.
 - [ ] M47+ WPT-driven everything: the forever list (T1 track becomes the
        primary driver — see track below).
 
+The G-list below is worked through in batches, by the order of
+`silver-work/notes/gap-priorities.md` (28 October 2026), each with a
+design note first and the milestones' method:
+
+- [ ] GA Scripting essentials (`docs/design/scripting-essentials.md`,
+       D41-D47): `URL` and `blob:` URLs (G68, G171's URLs),
+       `TextEncoder` and `TextDecoder` (G69), `FileReader` (G75), the
+       `CSS` namespace (G88), the bindings' `toString()` (G135),
+       `matchMedia()` (G86), `requestIdleCallback()` and the resize and
+       intersection observers (G65), mutation observers (G49),
+       `BroadcastChannel` (G84), the window's named properties and
+       G105's members (G54, G105), user prompts (G56). Opened at the
+       maintainer's word, 28 October 2026.
+
 Deferred from the milestones above, each with what it waits on:
 
 - [ ] G1 `subgrid` (css-grid-2 §9): a grid item's tracks taken from its
@@ -3673,6 +3687,13 @@ Deferred from the milestones above, each with what it waits on:
 | D38 | Where the GPU is driven | M41 | the browser process / each renderer / a GPU process of its own | a GPU process, the same executable, started at the first WebGL or WebGPU context and sandboxed as far as the device allows; the renderers its clients through the browser, each with its own objects; a thread in one process; three restarts in five minutes, then off (`docs/design/gpu.md`) |
 | D39 | How WebGPU is made | M41 | `wgpu-core`'s id API / `wgpu`'s safe API object by object / an implementation of our own | `wgpu`'s safe API in the GPU process, objects in tables by numbers the renderer gives, passes recorded in the renderer and replayed, validation and error scopes `wgpu`'s, its shader runtime checks kept |
 | D40 | How WebGL is made | M41 | on the system's OpenGL / on ANGLE / on WebGPU in the renderer | on WebGPU, in the renderer: its state kept there, its GLSL ES read by a `glsl` crate of ours into naga's IR and WGSL, so that the GPU process meets WebGPU alone |
+| D41 | Where `blob:` URLs resolve | GA | the browser's network service / the renderer that made them / a store shared by every process | a store a process (the engine's in one, each renderer's), keyed by URL with its creator's storage key, answered by a wrapper of the engine's fetcher before a request leaves the renderer; a navigation to one left with G171 (`docs/design/scripting-essentials.md`) |
+| D42 | Where mutation records come from | GA | the journal the style and layout read / the bindings' calls / the DOM's own changes | the DOM's changes, queued by the `dom` crate while an observer is registered and grouped by the engine's operations (a binding's call one record, the parser's insertions one each); registrations kept by the engine for the document |
+| D43 | How user prompts are asked | GA | suppressed / a native dialog of the platform / the browser's own UI | the browser's UI over the tab's content, the page's script waiting: in one process the shell's dialog loop, with renderers a synchronous request to the browser; sandboxed frames without `allow-modals`, unloading documents and hidden tabs answered at once |
+| D44 | How the window's named properties are made | GA | own properties kept in step with the DOM / a proxy for the global / a proxy in the window's prototype chain | Web IDL's named properties object: a `Proxy` between `Window.prototype` and `EventTarget.prototype`, answered from the document's id and name indexes |
+| D45 | When resize and intersection observations run | GA | after each change / on a timer / in the frame's update | in the frame's update after layout, as HTML orders it, their geometry from one walk of the frame's paint order |
+| D46 | How a `BroadcastChannel` message crosses | GA | the network service / a renderer's own / the browser relaying by storage key | the engine's context in one process; the browser between renderers, holding each to its storage key, as it relays storage areas' changes |
+| D47 | What a binding's `toString()` says | GA | its script / bytecode without source / `[native code]` by a set of the bindings' functions | `function NAME() { [native code] }` for the functions the bindings make, from a `WeakSet` they fill; other functions as QuickJS writes them |
 
 ---
 
