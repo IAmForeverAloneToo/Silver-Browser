@@ -1,0 +1,60 @@
+<!doctype html>
+<div id=named></div><form name=f1></form><img name=pic>
+<script>const log = (s) => console.log(String(s)); const report = () => {};</script>
+<script>
+const t = (label, f) => { try { const v = f(); log(label + ' = ' + (typeof v === 'string' ? JSON.stringify(v) : String(v))); } catch (e) { log(label + ' ! ' + e.name + ': ' + e.message); } };
+const e9 = String.fromCharCode(233);
+t('url bad', () => new URL('nope'));
+t('url bad base', () => new URL('a', 'nope'));
+t('url noarg', () => new URL());
+t('url canParse', () => URL.canParse('nope'));
+t('url parse null', () => URL.parse('nope'));
+t('url href set bad', () => { const u = new URL('http://a/'); u.href = 'nope'; });
+t('url call', () => URL('http://a'));
+t('url createObjectURL bad', () => URL.createObjectURL('x'));
+t('url createObjectURL', () => URL.createObjectURL(new Blob(['x'])).replace(/[0-9a-f-]{36}/, 'UUID').replace(/:\d+/, ':PORT'));
+t('url toString', () => String(new URL('HTTP://EXAMPLE.com/a/../b?c#d')));
+t('url json', () => JSON.stringify(new URL('http://a/')));
+t('url searchParams same', () => { const u = new URL('http://a/?x=1'); return u.searchParams === u.searchParams; });
+t('te encodeInto', () => JSON.stringify(new TextEncoder().encodeInto('h' + e9, new Uint8Array(2))));
+t('td bad label', () => new TextDecoder('nope'));
+t('td fatal', () => new TextDecoder('utf-8', {fatal: true}).decode(new Uint8Array([0xff])));
+t('td replacement', () => new TextDecoder('replacement'));
+t('td encoding', () => new TextDecoder('latin1').encoding);
+t('td decode bad', () => new TextDecoder().decode('x'));
+t('mm', () => { const m = matchMedia('(min-width: 1px)'); return m.constructor.name + ' ' + m.media + ' ' + m.matches; });
+t('mm bad', () => matchMedia('(nope').media);
+t('mm noarg', () => matchMedia());
+t('mo bad', () => new MutationObserver(() => {}).observe(document.body));
+t('mo bad2', () => new MutationObserver(() => {}).observe(document.body, {attributeOldValue: true, attributes: false}));
+t('mo bad3', () => new MutationObserver(() => {}).observe(document.body, {characterDataOldValue: true, characterData: false}));
+t('mo noarg', () => new MutationObserver());
+t('mo target', () => new MutationObserver(() => {}).observe({}, {childList: true}));
+t('io noarg', () => new IntersectionObserver());
+t('io bad margin', () => new IntersectionObserver(() => {}, {rootMargin: 'x'}));
+t('io bad threshold', () => new IntersectionObserver(() => {}, {threshold: 2}));
+t('io defaults', () => { const o = new IntersectionObserver(() => {}); return [o.root, o.rootMargin, JSON.stringify(o.thresholds), o.scrollMargin, o.delay, o.trackVisibility].join(' '); });
+t('ro noarg', () => new ResizeObserver());
+t('ro observe bad', () => new ResizeObserver(() => {}).observe({}));
+t('ric', () => typeof requestIdleCallback(() => {}));
+t('ric bad', () => requestIdleCallback());
+t('css supports', () => [CSS.supports('display', 'flex'), CSS.supports('display: grid'), CSS.supports('(color: red) and (nope)'), CSS.supports('selector(:has(a))')].join(' '));
+t('css escape', () => CSS.escape('1a b' + String.fromCharCode(0) + '-'));
+t('css escape noarg', () => CSS.escape());
+t('fr', () => { const r = new FileReader(); return [r.readyState, r.result, r.error, FileReader.LOADING].join(' '); });
+t('fr bad', () => new FileReader().readAsText('x'));
+t('fr twice', () => { const r = new FileReader(); r.readAsText(new Blob(['x'])); r.readAsText(new Blob(['y'])); });
+t('bc', () => { const c = new BroadcastChannel('n'); const s = c.name; c.close(); return s; });
+t('bc closed post', () => { const c = new BroadcastChannel('n'); c.close(); c.postMessage(1); });
+t('bc noarg', () => new BroadcastChannel());
+t('named', () => [typeof named, named && named.tagName, typeof f1, typeof pic, window.nonexistent].join(' '));
+t('named in', () => ['named' in window, Object.getOwnPropertyNames(window).includes('named')].join(' '));
+t('scripts', () => [document.scripts.length, document.scripts.constructor.name, document.links.length].join(' '));
+t('baseURI', () => document.baseURI.replace(/:\d+/, ':PORT'));
+t('toString', () => document.createElement.toString());
+t('toString getter', () => Object.getOwnPropertyDescriptor(Document.prototype, 'title').get.toString());
+t('toString ctor', () => URL.toString());
+t('toString fn', () => Function.prototype.toString.toString());
+t('alert type', () => typeof alert + ' ' + alert.length + ' ' + confirm.length + ' ' + prompt.length);
+report();
+</script>

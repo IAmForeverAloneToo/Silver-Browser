@@ -627,6 +627,11 @@ impl Scripts {
         if self.aborted || self.stopped {
             return;
         }
+        // The tree builder's microtask checkpoint at a script's end tag:
+        // what the parser inserted, for mutation observers (gap batch A).
+        if self.mutations_waiting(lent.document) {
+            self.enter(lent, &js::Task::Mutations, 0);
+        }
         let prepared = prepare_element(lent.page, lent.document, element, line, true);
         let violations = lent.page.take_violations();
         self.report_violations(lent.page, lent.document, violations, (Some(element), line));

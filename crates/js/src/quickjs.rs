@@ -367,16 +367,10 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
         };
         self.begin(host, false);
         let result = match task {
-            Task::Timer(id) => self.context.with(|ctx| {
-                let called = entries.clone().restore(&ctx).and_then(|entries| {
-                    entries
-                        .get::<_, Function<'_>>("timer")?
-                        .call::<_, Value<'_>>((*id,))
-                });
-                called
-                    .catch(&ctx)
-                    .map(|_| false)
-                    .map_err(|caught| caught_error(&ctx, caught, "", false))
+            Task::Timer(id) => self.stepped(&entries, |_, entries| {
+                entries
+                    .get::<_, Function<'_>>("timer")?
+                    .call::<_, Value<'_>>((*id,))
             }),
             Task::Dispatch { target, event } => self.stepped(&entries, |ctx, entries| {
                 let at = match target {

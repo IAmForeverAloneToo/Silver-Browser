@@ -48,6 +48,7 @@
   const ReflectGetOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
   const ReflectGetPrototypeOf = Reflect.getPrototypeOf;
   const ArraySplice = uncurry(Array.prototype.splice);
+  const ArrayShift = uncurry(Array.prototype.shift);
   const StringIndexOf = uncurry(String.prototype.indexOf);
   const FromCharCode = String.fromCharCode;
   const MapGet = uncurry(Map.prototype.get);
@@ -3633,6 +3634,11 @@
           "The provided value is not of type 'TextDecodeOptions'.");
       }
       const stream = options === undefined || options === null ? false : !!options.stream;
+      // The bytes as they are once the options are read: a getter of
+      // theirs may have detached the buffer.
+      if (input !== undefined) {
+        bytes = bufferBytes(input) ?? new $Uint8Array(0);
+      }
       if (this.#stream === 0) {
         this.#stream = nextTextStream++;
         this.#bomSeen = false;
@@ -3686,7 +3692,8 @@
   defineProperty(CSSNamespace, "escape", {
     value: function escape(ident) {
       need(arguments.length, 1, "escape", "CSS");
-      const text = str(ident);
+      // A DOMString: lone surrogates kept, as they are not escaped.
+      const text = toString(ident);
       let out = "";
       for (let i = 0; i < text.length; i++) {
         const c = CharCodeAt(text, i);
@@ -4081,9 +4088,15 @@
   }
   expose(IntersectionObserverEntry, "IntersectionObserverEntry");
 
-  // `rootMargin` or `scrollMargin`: one to four lengths in pixels or
-  // percentages, each side as a value and whether it is a percentage;
-  // null for anything else.
+  // CSS's absolute lengths, by their units, in pixels.
+  const ABSOLUTE_UNITS = [
+    ["px", 1], ["cm", 96 / 2.54], ["mm", 96 / 25.4], ["in", 96], ["pt", 4 / 3], ["pc", 16],
+    ["q", 96 / 101.6],
+  ];
+
+  // `rootMargin` or `scrollMargin`: one to four absolute lengths or
+  // percentages, each side as a value in pixels or percent and whether
+  // it is a percentage; null for anything else.
   function parseMargin(text) {
     const parts = [];
     let word = "";
@@ -4108,13 +4121,22 @@
     for (let i = 0; i < parts.length; i++) {
       const lower = ToLowerCase(parts[i]);
       const percent = StringEndsWith(lower, "%");
-      const unit = percent ? 1 : StringEndsWith(lower, "px") ? 2 : 0;
+      // A percentage, or an absolute length in pixels.
+      let unit = percent ? 1 : 0;
+      let scale = 1;
+      for (let j = 0; j < ABSOLUTE_UNITS.length && unit === 0; j++) {
+        if (StringEndsWith(lower, ABSOLUTE_UNITS[j][0])) {
+          unit = ABSOLUTE_UNITS[j][0].length;
+          scale = ABSOLUTE_UNITS[j][1];
+        }
+      }
       const digits = StringSlice(lower, 0, lower.length - unit);
       const value = $Number(digits);
       if (digits === "" || value !== value || (unit === 0 && value !== 0)) {
         return null;
       }
-      ArrayPush(sides, [value, percent]);
+      // Another unit's pixels whole, as the reference browser keeps them.
+      ArrayPush(sides, [scale === 1 ? value : MathTrunc(value * scale), percent]);
     }
     // CSS's margin shorthand: top, right, bottom, left.
     const top = sides[0];
@@ -4326,10 +4348,16 @@
   // the standard keeps one that can still hear.
   const openChannels = new $Map();
   let channelOf;
+  // The realm's channels in the order they were made, and the clock of
+  // that order at each post of its own still to come back by sender: a
+  // message goes to the channels there were when it was posted.
+  let channelClock = 0;
+  const postClocks = new $Map();
 
   class BroadcastChannel extends EventTarget {
     #name;
     #id;
+    #made = ++channelClock;
     #closed = false;
 
     constructor(name) {
@@ -4341,7 +4369,7 @@
     }
 
     static {
-      channelOf = (channel) => [channel.#name, channel.#id, channel.#closed];
+      channelOf = (channel) => [channel.#name, channel.#id, channel.#closed, channel.#made];
     }
 
     get name() {
@@ -4356,6 +4384,12 @@
       }
       const record = serialize(message, [], prefix("postMessage", "BroadcastChannel"), null);
       native.broadcastPost(this.#name, wire(record), this.#id);
+      let clocks = MapGet(postClocks, this.#id);
+      if (clocks === undefined) {
+        clocks = [];
+        MapSet(postClocks, this.#id, clocks);
+      }
+      ArrayPush(clocks, channelClock);
     }
 
     close() {
@@ -4369,11 +4403,20 @@
   // The engine's `broadcast` task: a `message` event at each open channel
   // of `name` but the one that sent it, in the order they were made.
   function* broadcastTask(name, text, sender, origin) {
+    // Posted here: to the channels made by then (another realm's, to all).
+    let posted = Infinity;
+    const clocks = MapGet(postClocks, sender);
+    if (clocks !== undefined) {
+      posted = ArrayShift(clocks);
+      if (clocks.length === 0) {
+        MapDelete(postClocks, sender);
+      }
+    }
     const channels = [];
     MapForEach(openChannels, (_, channel) => ArrayPush(channels, channel));
     for (let i = 0; i < channels.length; i++) {
-      const [own, id, closed] = channelOf(channels[i]);
-      if (own === name && id !== sender && !closed) {
+      const [own, id, closed, made] = channelOf(channels[i]);
+      if (own === name && id !== sender && !closed && made <= posted) {
         yield* messageEvent(channels[i], text, origin);
       }
     }
@@ -6125,6 +6168,13 @@
     drain(dispatching(target, event));
   }
 
+  // `fireAt` as a stepped task's step: the microtask checkpoint runs
+  // between the listeners, as for the engine's own events.
+  function* firingAt(target, event) {
+    eventState(event).trusted = true;
+    return yield* dispatching(target, event);
+  }
+
   function progressEvent(type, loaded, total, computable) {
     return new ProgressEvent(type, { lengthComputable: computable, loaded, total });
   }
@@ -6537,6 +6587,11 @@
         const decoded = native.decode(binaryString(bytes), charset);
         if (decoded !== null) return decoded;
       }
+      // UTF-8, a UTF-16 byte order mark overriding it.
+      if (bytes.length >= 2 && ((bytes[0] === 0xff && bytes[1] === 0xfe) ||
+        (bytes[0] === 0xfe && bytes[1] === 0xff))) {
+        return native.decode(binaryString(bytes), "utf-8");
+      }
       return utf8Decode(bytes, true);
     }
 
@@ -6699,18 +6754,20 @@
           }
         });
       }
-      queueTask(() => {
+      // Its load and loadend in one task, a microtask checkpoint between.
+      const reader = this;
+      queueTask(function* () {
         if (!current()) {
           return;
         }
-        this.#read = null;
-        this.#state = 2;
-        this.#result = pack(bytes, type);
-        fireAt(this, progressEvent("load", total, total, true));
-        if (this.#state !== 1) {
-          fireAt(this, progressEvent("loadend", total, total, true));
+        reader.#read = null;
+        reader.#state = 2;
+        reader.#result = pack(bytes, type);
+        yield* firingAt(reader, progressEvent("load", total, total, true));
+        if (reader.#state !== 1) {
+          yield* firingAt(reader, progressEvent("loadend", total, total, true));
         }
-      });
+      }, 0, true);
     }
   }
   for (const name in FILE_READER_STATES) {
@@ -9043,6 +9100,9 @@
     const trimmed = trimSpace(value);
     if (at < 0) {
       ArrayPush(flat, name, trimmed, wanted);
+    } else if (flat[at + 1] === trimmed && flat[at + 2] === wanted) {
+      // Unchanged: the style attribute is left as it is.
+      return;
     } else {
       flat[at + 1] = trimmed;
       flat[at + 2] = wanted;
@@ -9972,6 +10032,54 @@
     for (let j = 0; j < members.length; j++) {
       const m = members[j];
       reflect(iface.prototype, m[0], m[1], m[2], m[3]);
+    }
+  }
+
+  // HTML's HTMLHyperlinkElementUtils (section 4.6.6, gap batch A): an
+  // `a`'s and an `area`'s URL by its parts, parsed from its `href`
+  // against the base URL, a part set written back to the attribute.
+  const LINK_PARTS = [
+    "origin", "protocol", "username", "password", "host", "hostname", "port", "pathname",
+    "search", "hash",
+  ];
+  function linkUrl(handle) {
+    const value = native.attribute(handle, "href");
+    if (value === null) {
+      return null;
+    }
+    const resolved = native.resolveUrl(value);
+    return resolved === null ? null : native.urlParse(resolved, null);
+  }
+  function linkPart(prototype, part, at) {
+    const descriptor = {
+      get() {
+        const parts = linkUrl(self(this));
+        if (parts === null) {
+          return part === "protocol" ? ":" : "";
+        }
+        return parts[at];
+      },
+      enumerable: true,
+      configurable: true,
+    };
+    if (part !== "origin") {
+      descriptor.set = function (value) {
+        const handle = self(this);
+        const parts = linkUrl(handle);
+        if (parts === null) {
+          return;
+        }
+        const changed = native.urlSet(parts[0], part, str(value));
+        if (changed !== null) {
+          setAttribute(handle, "href", changed[0], part);
+        }
+      };
+    }
+    defineProperty(prototype, part, descriptor);
+  }
+  for (const name of ["HTMLAnchorElement", "HTMLAreaElement"]) {
+    for (let i = 0; i < LINK_PARTS.length; i++) {
+      linkPart(madeInterfaces[name].prototype, LINK_PARTS[i], i + 1);
     }
   }
 
@@ -20218,9 +20326,9 @@
   // timer, of no delay unless `delay` milliseconds are given, its id past
   // those of scripts' timers, which `cancelTask` takes.
   let lastTask = 2147483647;
-  function queueTask(work, delay = 0) {
+  function queueTask(work, delay = 0, stepped = false) {
     lastTask = lastTask >= 4294967295 ? 2147483648 : lastTask + 1;
-    MapSet(timers, lastTask, { callback: work, args: [], repeat: false, delay });
+    MapSet(timers, lastTask, { callback: work, args: [], repeat: false, delay, stepped });
     native.setTimer(lastTask, delay);
     return lastTask;
   }
@@ -20245,17 +20353,23 @@
   // a classic script; an interval is set again once its callback has
   // run, unless the callback cleared it. The id comes as a 32-bit
   // integer, which a task's (past 2^31) is not until made unsigned.
-  function runTimer(given) {
+  // A timer's task, a stepped entry (M26): a script's callback or string,
+  // or the bindings' own task, which as a generator may dispatch events
+  // the way the engine does, the microtask checkpoint run between their
+  // listeners (gap batch A).
+  function* runTimer(given) {
     const id = given >>> 0;
     const timer = MapGet(timers, id);
     if (timer === undefined) {
-      return;
+      return false;
     }
     if (!timer.repeat) {
       MapDelete(timers, id);
     }
     try {
-      if (typeof timer.callback === "function") {
+      if (timer.stepped) {
+        yield* timer.callback();
+      } else if (typeof timer.callback === "function") {
         ReflectApply(timer.callback, global, timer.args);
       } else {
         const url = native.documentUrl();
@@ -20268,6 +20382,7 @@
         native.setTimer(id, timer.delay);
       }
     }
+    return false;
   }
 
   const timerFunctions = {

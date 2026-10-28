@@ -68,8 +68,9 @@
 //! test, or a page that loads `testharness.js`, with the scripts it
 //! loads, and no Python handler, no `.sub` template, no other host,
 //! nothing over `https:`, no shared or service worker, no module worker
-//! (G41), no `blob:` URL (G68), no `SharedArrayBuffer` (G83) and no
-//! `BroadcastChannel` (G84). The real `testharness.js` is copied
+//! (G41) and no `SharedArrayBuffer` (G83); `blob:` URLs and
+//! `BroadcastChannel`, left out until gap batch A, are taken since. The
+//! real `testharness.js` is copied
 //! with them, and the files of the directories of
 //! [`SUPPORT_DIRECTORIES`] they read, but for their Python handlers and
 //! templates.
@@ -140,7 +141,7 @@ const TESTHARNESS_DIRECTORIES: &[(&str, &str)] = &[
     ("fetch/api/response", ""),
     ("fetch/api/basic", ""),
     ("xhr", ""),
-    ("url", "urlsearchparams-"),
+    ("url", ""),
     ("FileAPI/blob", ""),
     ("webstorage", ""),
     // The WebAssembly JavaScript interface (M29): the namespace, its
@@ -177,6 +178,21 @@ const TESTHARNESS_DIRECTORIES: &[(&str, &str)] = &[
     ("html/semantics/embedded-content/media-elements", ""),
     // WebGL (M41).
     ("webgl", ""),
+    // Scripting essentials (gap batch A): encoding, file reading, the
+    // observers, idle callbacks, the CSSOM, prompts and named access.
+    ("encoding", ""),
+    ("FileAPI/reading-data-section", ""),
+    ("FileAPI/FileReader", ""),
+    ("dom/nodes", "MutationObserver-"),
+    ("intersection-observer", ""),
+    ("resize-observer", ""),
+    ("requestidlecallback", ""),
+    ("css/cssom", ""),
+    ("html/webappapis/user-prompts", ""),
+    (
+        "html/browsers/the-window-object/named-access-on-the-window-object",
+        "",
+    ),
 ];
 
 /// Tests the rule would take that are left out by name, and why: what the
@@ -219,6 +235,14 @@ const CANVAS_LEFT_OUT: &[(&str, &str)] = &[
     ("/video/", "video (with media)"),
     ("/layers/", "layers (beginLayer, not in the standard)"),
     ("/manual/", "the manual reftests (by the reftest rule)"),
+];
+
+/// The testharness tests left out by where they are, and why: what a
+/// later milestone brings (gap batch A).
+const PATHS_LEFT_OUT: &[(&str, &str)] = &[
+    ("encoding/legacy-mb-", "the legacy CJK encodings (M42)"),
+    ("encoding/big5-", "the legacy CJK encodings (M42)"),
+    ("encoding/iso-2022-jp-", "the legacy CJK encodings (M42)"),
 ];
 
 /// Helpers that define, among others, functions using another host or
@@ -264,6 +288,8 @@ const SUPPORT_DIRECTORIES: &[&str] = &[
     "media",
     "webaudio/resources",
     "webaudio/js",
+    // Gap batch A's: the URL tests' data, which they fetch.
+    "url/resources",
 ];
 
 /// How deep `@import`s may go; the engine fetches no deeper.
@@ -446,6 +472,13 @@ fn pull(checkout: &Path) -> Result<(), String> {
             if let Some((_, why)) = CANVAS_LEFT_OUT
                 .iter()
                 .find(|(part, _)| rel.starts_with("html/canvas/") && rel.contains(part))
+            {
+                *left_out.entry((*why).to_string()).or_default() += 1;
+                continue;
+            }
+            if let Some((_, why)) = PATHS_LEFT_OUT
+                .iter()
+                .find(|(start, _)| rel.starts_with(start))
             {
                 *left_out.entry((*why).to_string()).or_default() += 1;
                 continue;
@@ -650,9 +683,9 @@ const WORKER_DIRECTORIES: &[&str] = &[
 ];
 
 /// Fails on what M31 leaves to others (docs/design/workers.md, section
-/// 2): a module worker, a `blob:` URL, a `SharedArrayBuffer` and a
-/// `BroadcastChannel`; a `helper` script's `SharedArrayBuffer` taken, as
-/// `/common/sab.js` makes one only when a test asks.
+/// 2): a module worker and a `SharedArrayBuffer`; a `helper` script's
+/// `SharedArrayBuffer` taken, as `/common/sab.js` makes one only when a
+/// test asks. (`blob:` URLs and `BroadcastChannel` came in gap batch A.)
 fn workers_rule(text: &str, helper: bool) -> Result<(), String> {
     let module = [
         "type: 'module'",
@@ -663,14 +696,8 @@ fn workers_rule(text: &str, helper: bool) -> Result<(), String> {
     if module.iter().any(|m| text.contains(m)) {
         return Err("a module worker (G41)".to_string());
     }
-    if text.contains("createObjectURL") {
-        return Err("a blob: URL (G68)".to_string());
-    }
     if !helper && (text.contains("SharedArrayBuffer") || text.contains("Atomics.")) {
         return Err("SharedArrayBuffer (G83)".to_string());
-    }
-    if text.contains("BroadcastChannel") {
-        return Err("BroadcastChannel (G84)".to_string());
     }
     Ok(())
 }
@@ -759,9 +786,6 @@ fn take_testharness(
     served_here(&text)?;
     let workers = WORKER_DIRECTORIES.iter().any(|d| rel.starts_with(d));
     if workers {
-        if rel.contains("/broadcastchannel/") {
-            return Err("BroadcastChannel (G84)".to_string());
-        }
         // A module worker made through a helper, its type a variable:
         // the test's path names it.
         if rel.contains("module") {
@@ -2216,7 +2240,7 @@ fn readme(
          ```\n\n\
          which rewrites them, `MANIFEST` and this file. `tests/wpt.rs` runs\n\
          them; `expectations.txt` names those expected to fail, and why.\n\n\
-         With them are the testharness.js tests of {testharness} (M27, M29, M31, M40)\n\
+         With them are the testharness.js tests of {testharness} (M27, M29, M31, M40, M41, gap batch A)\n\
          that the runner's one server can serve: no Python handler, no `.sub`\n\
          template, no other host, nothing over `https:`, no shared or\n\
          service worker and no module worker. `resources/testharness.js` is\n\
@@ -2235,7 +2259,9 @@ fn readme(
     text.push_str(&format!("| all | {total} |\n\n"));
     text.push_str(
         "## Left out\n\n\
-         The first reason the rule found for each test it left out:\n\n\
+         The first reason the rule found for each test it left out, of\n\
+         those on the checkout pulled from (a sparse one may hold only\n\
+         the tests taken, of some directories):\n\n\
          | Reason | Tests |\n\
          | --- | ---: |\n",
     );
@@ -2561,10 +2587,8 @@ mod tests {
                 "not for a window or a dedicated worker",
             ),
             ("fetch/a/x.sharedworker.html", "a shared or service worker"),
-            ("workers/a/blob.any.js", "a blob: URL (G68)"),
             ("workers/a/module.html", "a module worker (G41)"),
             ("workers/a/sab.any.js", "SharedArrayBuffer (G83)"),
-            ("workers/a/bc.any.js", "BroadcastChannel (G84)"),
             ("fetch/a/open.any.js", "a window"),
             ("fetch/a/fs.html", "a frame of another kind than iframe"),
             ("fetch/a/s.https.any.js", "https:"),
@@ -2572,8 +2596,11 @@ mod tests {
         ] {
             assert_eq!(take(rel), Err(why.to_string()), "{rel}");
         }
-        // Since M33: frames, other hosts and templates.
+        // Since M33: frames, other hosts and templates; since gap batch
+        // A, blob: URLs and BroadcastChannel.
         for rel in [
+            "workers/a/blob.any.js",
+            "workers/a/bc.any.js",
             "fetch/a/host.any.js",
             "fetch/a/frame.any.js",
             "fetch/a/upper.any.js",

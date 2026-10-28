@@ -282,12 +282,13 @@ fn the_css_namespace_answers_supports_and_escapes() {
             r#"console.log(CSS.supports('display', 'flex'), CSS.supports('display: grid'), CSS.supports('(color: red) and (nope)'),
               CSS.supports('selector(a > b)'), CSS.supports('DISPLAY', 'block'), CSS.supports('display', 'flex !important'),
               CSS.supports('--x', 'anything'), CSS.supports('nope', '1'), Object.prototype.toString.call(CSS));
-            console.log(CSS.escape('1a b\0-') === '\\31 a\\ b\ufffd-', CSS.escape('-'), CSS.escape('-1'), CSS.escape('\x7f_a'));
+            console.log(CSS.escape('1a b\0-') === '\\31 a\\ b\ufffd-', CSS.escape('-'), CSS.escape('-1'), CSS.escape('\x7f_a'),
+              CSS.escape('\uDF06') === '\uDF06');
             try { CSS.escape() } catch (e) { console.log(e.name + ': ' + e.message) }"#
         ),
         [
             "true true false true true false true false [object CSS]",
-            "true \\- -\\31  \\7f _a",
+            "true \\- -\\31  \\7f _a true",
             "TypeError: Failed to execute 'escape' on 'CSS': 1 argument required, but only 0 present.",
         ]
     );
@@ -719,6 +720,21 @@ fn a_broadcast_reaches_the_documents_other_channels_of_its_name() {
             "b {\"x\":[1,\"two\"]} true true true",
         ]
     );
+    // A channel made after a post hears none of it; one closed hears no
+    // more (WPT's basics, "closing and creating channels").
+    let lines = waited(
+        r#"const a = new BroadcastChannel('m'), b = new BroadcastChannel('m');
+        b.onmessage = e => {
+          console.log('b ' + e.data);
+          b.close();
+          new BroadcastChannel('m').onmessage = e => console.log('late ' + e.data);
+          a.postMessage('done');
+        };
+        a.postMessage('first');
+        b.postMessage('second');"#,
+        2,
+    );
+    assert_eq!(lines, ["b first", "late done"]);
 }
 
 #[test]
@@ -848,4 +864,154 @@ fn dialogs_ask_the_engines_asker_but_not_from_where_they_may_not() {
         .collect();
     assert!(lines.contains(&"false null null".to_owned()), "{lines:?}");
     assert!(asked.0.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_links_url_comes_by_its_parts_and_a_part_set_writes_its_href() {
+    assert_eq!(
+        one(r#"const a = document.createElement('a');
+            const none = [a.protocol, a.host, a.origin, a.pathname].join('|');
+            a.href = 'q?x=1#f';
+            const parts = [a.protocol, a.hostname, a.pathname, a.search, a.hash].join('|');
+            a.hash = 'g'; a.pathname = 'p q'; a.port = '81';
+            const area = document.createElement('area');
+            area.href = 'https://u:p@b.test/'; area.host = 'c.test:8443';
+            a.protocol = '';
+            console.log([none, parts, a.getAttribute('href'), area.href, area.origin,
+              area.username, typeof Object.getOwnPropertyDescriptor(
+                HTMLAnchorElement.prototype, 'origin').set].join(' '))"#),
+        ":||| http:|127.0.0.1|/q|?x=1|#f http://127.0.0.1:81/p%20q?x=1#g \
+         https://u:p@c.test:8443/ https://c.test:8443 u undefined"
+    );
+}
+
+#[test]
+fn acceptance_fixes_margins_in_absolute_units_a_detaching_option_and_a_bom() {
+    let lines = waited(
+        r#"console.log(new IntersectionObserver(() => {}, {rootMargin: '1in 10cm 10mm 10pt'}).rootMargin);
+        const buffer = new ArrayBuffer(2); new Uint8Array(buffer).set([104, 105]);
+        const options = { get stream() { structuredClone(buffer, { transfer: [buffer] }); return false; } };
+        console.log(JSON.stringify(new TextDecoder().decode(buffer, options)));
+        const x = new XMLHttpRequest();
+        x.open('GET', 'data:text/plain,%FF%FE%41%00');
+        x.overrideMimeType('text/plain; charset="utf-32"');
+        x.onload = () => console.log(JSON.stringify(x.responseText));
+        x.send();"#,
+        3,
+    );
+    assert_eq!(lines, ["96px 377px 37px 13px", "\"\"", "\"A\""]);
+}
+
+#[test]
+fn what_the_parser_inserts_is_observed_before_its_next_script_runs() {
+    let page: &'static str = "<body><script>let seen = [];
+        new MutationObserver(records => {
+          for (const r of records) for (const n of r.addedNodes) seen.push(n.nodeName);
+        }).observe(document, {subtree: true, childList: true});
+        </script><p id=x></p><script>console.log(seen.join(' '))</script>";
+    let (_, lines) = scripted(page, true);
+    assert_eq!(lines, ["P SCRIPT #text"]);
+}
+
+/// The page put to the reference browser for the design note (Chrome
+/// 156, docs/design/scripting-essentials.md), in a window of its size:
+/// the engine says its lines, but for two. A binding's constructor
+/// called without `new` throws QuickJS's TypeError, worded as it words
+/// it, and `:has()` is not a selector here (G12).
+#[test]
+fn the_reference_browsers_lines_are_the_engines() {
+    let server = serve(|path| match path {
+        "/msgs.html" => Some(Reply::ok(
+            "text/html",
+            include_str!("essentials_reference.html").as_bytes(),
+        )),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.set_viewport(800, 600);
+    load_all(&mut tab, server.url("/msgs.html"));
+    let lines: Vec<String> = tab
+        .engine
+        .take_console()
+        .into_iter()
+        .map(|e| e.text)
+        .collect();
+    let mut expected = REFERENCE.map(str::to_owned).to_vec();
+    expected[6] = "url call ! TypeError: class constructors must be invoked with 'new'".to_owned();
+    expected[34] = "css supports = \"true true false false\"".to_owned();
+    assert_eq!(lines, expected);
+}
+
+/// The reference browser's lines.
+const REFERENCE: [&str; 52] = [
+    "url bad ! TypeError: Failed to construct 'URL': Invalid URL",
+    "url bad base ! TypeError: Failed to construct 'URL': Invalid base URL",
+    "url noarg ! TypeError: Failed to construct 'URL': 1 argument required, but only 0 present.",
+    "url canParse = false",
+    "url parse null = null",
+    "url href set bad ! TypeError: Failed to set the 'href' property on 'URL': Invalid URL",
+    "url call ! TypeError: Failed to construct 'URL': Please use the 'new' operator, this DOM object constructor cannot be called as a function.",
+    "url createObjectURL bad ! TypeError: Failed to execute 'createObjectURL' on 'URL': Overload resolution failed.",
+    "url createObjectURL = \"blob:http://127.0.0.1:PORT/UUID\"",
+    "url toString = \"http://example.com/b?c#d\"",
+    "url json = \"\\\"http://a/\\\"\"",
+    "url searchParams same = true",
+    "te encodeInto = \"{\\\"read\\\":1,\\\"written\\\":1}\"",
+    "td bad label ! RangeError: Failed to construct 'TextDecoder': The encoding label provided ('nope') is invalid.",
+    "td fatal ! TypeError: Failed to execute 'decode' on 'TextDecoder': The encoded data was not valid.",
+    "td replacement ! RangeError: Failed to construct 'TextDecoder': The encoding label provided ('replacement') is invalid.",
+    "td encoding = \"windows-1252\"",
+    "td decode bad ! TypeError: Failed to execute 'decode' on 'TextDecoder': parameter 1 is not of type 'ArrayBuffer'.",
+    "mm = \"MediaQueryList (min-width: 1px) true\"",
+    "mm bad = \"(nope\"",
+    "mm noarg ! TypeError: Failed to execute 'matchMedia' on 'Window': 1 argument required, but only 0 present.",
+    "mo bad ! TypeError: Failed to execute 'observe' on 'MutationObserver': The options object must set at least one of 'attributes', 'characterData', or 'childList' to true.",
+    "mo bad2 ! TypeError: Failed to execute 'observe' on 'MutationObserver': The options object may only set 'attributeOldValue' to true when 'attributes' is true or not present.",
+    "mo bad3 ! TypeError: Failed to execute 'observe' on 'MutationObserver': The options object may only set 'characterDataOldValue' to true when 'characterData' is true or not present.",
+    "mo noarg ! TypeError: Failed to construct 'MutationObserver': 1 argument required, but only 0 present.",
+    "mo target ! TypeError: Failed to execute 'observe' on 'MutationObserver': parameter 1 is not of type 'Node'.",
+    "io noarg ! TypeError: Failed to construct 'IntersectionObserver': 1 argument required, but only 0 present.",
+    "io bad margin ! SyntaxError: Failed to construct 'IntersectionObserver': rootMargin must be specified in absolute length units or percent.",
+    "io bad threshold ! RangeError: Failed to construct 'IntersectionObserver': Threshold values must be numbers between 0 and 1",
+    "io defaults = \" 0px 0px 0px 0px [0] 0px 0px 0px 0px 0 false\"",
+    "ro noarg ! TypeError: Failed to construct 'ResizeObserver': 1 argument required, but only 0 present.",
+    "ro observe bad ! TypeError: Failed to execute 'observe' on 'ResizeObserver': parameter 1 is not of type 'Element'.",
+    "ric = \"number\"",
+    "ric bad ! TypeError: Failed to execute 'requestIdleCallback' on 'Window': 1 argument required, but only 0 present.",
+    "css supports = \"true true false true\"",
+    "css escape = \"\\\\31 a\\\\ b\u{fffd}-\"",
+    "css escape noarg ! TypeError: Failed to execute 'escape' on 'CSS': 1 argument required, but only 0 present.",
+    "fr = \"0   1\"",
+    "fr bad ! TypeError: Failed to execute 'readAsText' on 'FileReader': parameter 1 is not of type 'Blob'.",
+    "fr twice ! InvalidStateError: Failed to execute 'readAsText' on 'FileReader': The object is already busy reading Blobs.",
+    "bc = \"n\"",
+    "bc closed post ! InvalidStateError: Failed to execute 'postMessage' on 'BroadcastChannel': Channel is closed",
+    "bc noarg ! TypeError: Failed to construct 'BroadcastChannel': 1 argument required, but only 0 present.",
+    "named = \"object DIV object object \"",
+    "named in = \"true false\"",
+    "scripts = \"2 HTMLCollection 0\"",
+    "baseURI = \"http://127.0.0.1:PORT/msgs.html\"",
+    "toString = \"function createElement() { [native code] }\"",
+    "toString getter = \"function get title() { [native code] }\"",
+    "toString ctor = \"function URL() { [native code] }\"",
+    "toString fn = \"function toString() { [native code] }\"",
+    "alert type = \"function 0 0 0\"",
+];
+
+#[test]
+fn a_reads_load_and_loadend_have_a_microtask_checkpoint_between_and_a_style_left_alone_records_nothing()
+ {
+    let lines = waited(
+        r#"const r = new FileReader();
+        r.onload = () => { console.log('load'); Promise.resolve().then(() => console.log('microtask')); };
+        r.onloadend = () => console.log('loadend');
+        r.readAsText(new Blob(['x']));
+        const d = document.createElement('div'); d.style.color = 'red';
+        const o = new MutationObserver(() => {}); o.observe(d, {attributes: true});
+        d.style.color = 'red'; d.setAttribute('title', 't'); d.setAttribute('title', 't');
+        console.log('records ' + o.takeRecords().length);"#,
+        4,
+    );
+    assert_eq!(lines, ["records 2", "load", "microtask", "loadend"]);
 }

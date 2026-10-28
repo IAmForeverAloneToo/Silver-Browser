@@ -325,4 +325,117 @@ would, the pieces' text the whole's.
 
 ## 4. Corrected to the code
 
-Filled in at the last step.
+What the work found that this note did not say, or said otherwise, by
+step:
+
+- **URL and `blob:` URLs (step 1, D41).** Two natives, `urlParse` and
+  `urlSet`, answer for documents and workers with the getters' eleven
+  values. The parser gained its state override (`parse_override`, a
+  `Hostname` state); `Url::with_part` and `Url::with_query` serve the
+  setters and `searchParams`. WPT's 278 setter cases passed at the first
+  run; a test also runs every setter with every value of every starting
+  URL for a round trip, as the `url_parse` fuzz target does. The
+  standard's "strip trailing spaces from an opaque path" is not needed:
+  the parser follows the version that writes such a space as `%20`. The
+  store is a process-wide static (`engine::blob_urls`); a document's or
+  worker's host owns its URLs and revokes them when dropped; a URL
+  resolves for a request of its creator's origin, the partition not yet
+  compared. The resolving wrapper is around the network's client in one
+  process and the browser's in a renderer; the blob scheme fetch itself
+  is `net::blob()`, the request's policy checked there, its error
+  `NetworkError::BlobUrl` (wire tag 29). A worker's `blob:` script URL
+  is resolved when it is fetched, not parsed (G223). Khronos found
+  `getVertexAttrib(CURRENT_VERTEX_ATTRIB)` always a `Float32Array`: the
+  engine now says the value's type.
+- **Text, files and `toString()` (step 2, D47).** No `WeakSet`: the
+  bindings' bytecode is written without its source (`strip_source`), so
+  QuickJS shows each binding as native code, and
+  `Function.prototype.toString` puts its three-line form on one line as
+  the reference writes it. A handler attribute's accessor is named
+  `get`, not `get onload`. `TextDecoder` keeps a stream's decoder in the
+  engine (`MAX_TEXT_STREAMS`, 1,000 a realm); the legacy CJK encodings'
+  labels are refused (M42). `FileReader`'s tasks are timers of the
+  bindings' own, their ids past 2^31 (QuickJS hands those to the timer
+  entry as negative: it makes them unsigned). `CSS.supports` goes
+  through the cascade's own checks; `selector(:has())` is false (G12).
+  `TextEncoder`, `TextDecoder` and `FileReader` are exposed to workers.
+- **`matchMedia()` and idle callbacks (step 3).** The style crate had no
+  media query serializer: `serialize_media_query_list` writes one that
+  reads back as itself, which the `media_query` fuzz target asserts. A
+  document's lists are the engine's by number (`MAX_MEDIA_LISTS`, 1,000),
+  each forgotten when its object is; the frame's update evaluates them
+  before the animation frame callbacks. There is no idle period in the
+  engine: an idle callback runs in a task of the bindings' own whose
+  deadline the engine answers (50 ms, the next timer, or 16.7 ms with a
+  frame wanted). The deadlines' edges are G222.
+- **Mutation observers (step 4, D42).** Each change records the watched
+  nodes among its target's ancestors when it happened, since matching
+  later missed changes made before a node moved; a node taken out of a
+  watched subtree is watched itself (the DOM's transient registrations).
+  One native call is one operation, but changes no observer watches are
+  skipped and `replaceChildren()` and the like are bracketed
+  (`mutationScope`). The realm is woken after a native call that left
+  records; the parser's records are delivered at each parse slice and,
+  since the acceptance, at a script's end tag, the tree builder's
+  microtask checkpoint. A set to the same value is a record, as the DOM
+  has it, and CSSOM's `setProperty` that changes nothing writes nothing.
+  Comment and processing-instruction nodes, ranges and `Attr` nodes are
+  not in the engine (G47, G52).
+- **Resize and intersection observers (step 5, D45).** Not in the
+  frame's update after layout: the engine's update runs before layout,
+  so the observations are made right after the frame is drawn, their
+  callbacks' changes the next frame's, and one pass a frame, with no
+  depth loop or loop error. The geometry is one walk of the whole paint
+  order (`paint_order_in` with a margin of 1e7, since the default culls
+  what is out of view), the groups' matrices composed and the clips
+  mapped. An element root's padding box and only the clips inside it
+  count; `scrollMargin` is kept but not applied, `takeRecords()` gives
+  nothing (entries are delivered as made), `isVisible` is false, and
+  writing modes are taken as horizontal. Margins take any absolute unit,
+  in whole pixels as the reference keeps them. The edges are G219 and
+  G221.
+- **`BroadcastChannel` (step 6, D46).** Carried as storage events are:
+  a context's Storage keeps a queue of broadcasts, the browser holds a
+  renderer's to the frame's key (another site's kills it) and relays
+  them to the renderers whose lock admits the origin
+  (`ToBrowser::Broadcast` 33, `ToRenderer::Broadcast` 38). A channel's
+  number is unique to its process from a start of the process's own. A
+  message reaches the channels there were when it was posted, by a clock
+  of the realm's; another realm's message reaches all of its channels.
+  Workers have none (G216); opaque origins have no storage key to carry
+  one.
+- **Named properties (step 7, D44).** No `Proxy`: one in the global's
+  prototype chain swallows QuickJS's `ReferenceError`s (its property
+  lookup calls an exotic `get_property` without the error flag), and
+  `rquickjs`'s exotic classes do the same. The `dom` crate keeps an
+  index of the tree's ids and the names of its `embed`, `form`, `img`
+  and `object` elements, telling the names that come and go; the realm
+  defines an accessor on the window for each (`namedSync`, after native
+  calls and at each entry). Frames come first, and an inherited name is
+  not defined. So `in`, own-property checks and `Window.prototype` see
+  them, and several matches are a snapshot (G220). `getComputedStyle`'s
+  `background-image` now gives its URLs, a gradient `none` (G217).
+- **User prompts (step 8, D43).** The one-process build still answers
+  at once: its scripts run on the shell's winit thread inside its event
+  loop, which has no nested loop to run a dialog in. A renderer's view
+  asks the browser (`ToBrowser::Prompt` 34, `Answer::Prompt` 10) and
+  waits; the origin shown is the one the renderer names, held to its
+  site lock, since the browser has no URL for a page still on its first
+  load. The message and default are cleaned on both sides. A navigation,
+  reload, history step or stop cancels a tab's dialogs; switching tabs
+  does not. The sheet sits under the toolbar, Cancel at the right.
+- **The acceptance (step 9).** WPT's batch: 5,315 testharness tests
+  (from 4,673), the legacy CJK encodings' tests left out by path (M42),
+  the runner's rule no longer leaving out `blob:` URLs and
+  `BroadcastChannel`. The run found `<a>`'s and `<area>`'s URL parts
+  missing (HTML's `HTMLHyperlinkElementUtils`, now there),
+  `FileReader`'s `load` and `loadend` without a microtask checkpoint
+  between (timers are now stepped entries, so the bindings' tasks
+  dispatch as the engine's own do), `CSS.escape` dropping lone
+  surrogates, `TextDecoder.decode` reading its bytes before its options,
+  and XHR's UTF-8 fallback ignoring a UTF-16 byte order mark; each is
+  fixed. 1,714 subtests are expected to fail, each with its reason. The
+  note's probe page gives the reference's 52 lines but for two: QuickJS
+  words a constructor called without `new` its own way, and `:has()`
+  is not a selector here. A renderer's console lines of a document left
+  while still loading are lost (G218).

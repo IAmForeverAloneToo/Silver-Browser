@@ -1072,7 +1072,13 @@ impl Document {
         value: &str,
     ) -> Result<(), MutationError> {
         let had = match self.attrs_mut(element)?.iter().find(|(k, _)| *k == name) {
-            Some((_, v)) if v == value => return Ok(()),
+            // The same value changes nothing but is still a change to
+            // mutation observers, as the DOM's "change an attribute" is.
+            Some((_, v)) if v == value => {
+                let old = Some(value.to_owned());
+                self.observed(|| Mutated::Attribute { element, name, old });
+                return Ok(());
+            }
             Some((_, v)) => Some(v.len()),
             None => None,
         };
@@ -1157,13 +1163,16 @@ impl Document {
         Ok(())
     }
 
-    /// Replaces a text node's data; the same data changes nothing.
+    /// Replaces a text node's data; the same data changes nothing but is
+    /// still a change to mutation observers ("replace data").
     pub fn set_text(&mut self, node: NodeId, data: &str) -> Result<(), MutationError> {
         let record = self.record(node).ok_or(MutationError::NoSuchNode)?;
         let NodeData::Text(text) = &record.data else {
             return Err(MutationError::WrongKind);
         };
         if text == data {
+            let old = data.to_owned();
+            self.observed(|| Mutated::Text { node, old });
             return Ok(());
         }
         let old = text.len();
@@ -2360,7 +2369,10 @@ mod tests {
         doc.append_new(b, c).unwrap();
         doc.set_attribute(a, "ID", "1").unwrap();
         doc.set_attribute(a, "id", "2").unwrap();
+        // The same value again is a change to observers.
+        doc.set_attribute(a, "id", "2").unwrap();
         doc.remove_attribute(a, "id").unwrap();
+        doc.set_text(c, "y").unwrap();
         doc.set_text(c, "y").unwrap();
         doc.append_data(c, "z").unwrap();
         doc.insert_before(root, b, Some(a)).unwrap();
@@ -2396,9 +2408,14 @@ mod tests {
                 attribute(None),
                 attribute(Some("1")),
                 attribute(Some("2")),
+                attribute(Some("2")),
                 Mutated::Text {
                     node: c,
                     old: "x".to_owned()
+                },
+                Mutated::Text {
+                    node: c,
+                    old: "y".to_owned()
                 },
                 Mutated::Text {
                     node: c,
