@@ -274,8 +274,10 @@ frame waited for some other (both found at M26.11).
   event only when its markup has an `on...` attribute.
 - `window.alert`, `confirm` and `prompt` exist and block nothing: the
   message goes to the console, `confirm` answers `false` and `prompt`
-  `null`, as a browser does when it suppresses dialogs. A dialog the
-  user answers is G56.
+  `null`, as a browser does when it suppresses dialogs. *(corrected)*
+  Since gap batch A (G56, D43, scripting-essentials.md) a renderer's
+  page asks the browser and waits, the shell showing the dialog; the
+  one-process build and the engine's own tests still answer so.
 
 **The document's lifecycle (M26.1).** As HTML's "the end" and the
 reference browser above: when the parse ends, `readyState` becomes
@@ -729,7 +731,8 @@ it on the reference browser's virtual time as long.
 Each item that no milestone holds is registered on the G list at the
 documents step; the number follows each.
 
-- *Dialogs*: `alert`, `confirm` and `prompt` answered by the user. G56.
+- *Dialogs*: `alert`, `confirm` and `prompt` answered by the user. G56,
+  done in gap batch A.
 - *Leaving a page*: `beforeunload`'s prompt, and the prompt before a
   form is sent again. G57.
 - *Pointer capture*, `setPointerCapture` and its events; touch and pen

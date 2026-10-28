@@ -2979,3 +2979,96 @@ fn a_day_of_browsing_on_local_servers() {
     next.wait_until(|session| session.engine().title() == "none");
     let _ = std::fs::remove_dir_all(&folder);
 }
+
+/// A session of tabs in renderers (on threads), the page `start`.
+fn remote_session(start: Url) -> Session<engine::service::RemoteTab> {
+    use engine::service::{RemoteTab, ThreadLauncher};
+    let fonts = text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
+        .expect("the bundled font parses");
+    let context = engine::Context::new();
+    let make = {
+        let context = context.clone();
+        move || {
+            let launcher = Arc::new(ThreadLauncher::with_fonts(fonts.clone()));
+            RemoteTab::in_context(launcher, fonts.clone(), &context)
+        }
+    };
+    let mut make: Box<dyn FnMut() -> RemoteTab> = Box::new(make);
+    let mut session = Session::new(
+        make(),
+        make,
+        context,
+        Box::new(Board::default()),
+        Platform::Other,
+        Some(start),
+    );
+    session.set_forced(Forced {
+        scripts: Some(true),
+        color_scheme: false,
+    });
+    session.resized(WIDTH, HEIGHT);
+    session
+}
+
+/// Runs `session` as the shell does, a frame drawn each turn, until
+/// `done` holds; the last frame.
+fn run_until<V: View>(session: &mut Session<V>, done: impl Fn(&Session<V>) -> bool) -> Vec<u32> {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        session.network();
+        session.tick();
+        let mut out = vec![0; (WIDTH * HEIGHT) as usize];
+        session.draw(
+            WIDTH,
+            HEIGHT,
+            FrameTime::at(Duration::from_secs(1)),
+            &mut out,
+        );
+        if done(session) {
+            return out;
+        }
+        assert!(Instant::now() < deadline, "the session gets there in time");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn a_pages_dialog_shows_over_it_takes_the_keys_and_gives_the_answer() {
+    let page = serve(|path| match path {
+        "/" => html(
+            "<body style='margin:0;background-color:#00ff00'><script>onload = () => \
+             setTimeout(() => { document.title = 'got ' + prompt('name?', 'x') + ' ' + \
+             confirm('sure?') + ' ' + confirm('really?'); }, 300);</script>",
+        ),
+        _ => None,
+    });
+    let mut session = remote_session(page.url("/"));
+    let frame = run_until(&mut session, |session| session.dialog.is_some());
+    let at = |frame: &[u32], x: u32, y: u32| frame[(y * WIDTH + x) as usize];
+    let sheet = session.dialog_sheet.height();
+    assert_eq!(at(&frame, 3, TOP_H + 3), 0xFFFFFF, "the dialog's sheet");
+    assert_eq!(
+        at(&frame, 3, TOP_H + sheet + 5),
+        0x00FF00,
+        "the page under it"
+    );
+    // The keys go to its field, its default selected; Enter is OK.
+    for c in ["y", "o"] {
+        session.key(Key::Char(c.to_owned()), Some(c));
+    }
+    session.key(Key::Left, None);
+    session.key(Key::Char("!".to_owned()), Some("!"));
+    session.key(Key::Enter, None);
+    // A click on OK answers the first confirm, on Cancel the second.
+    for (n, x) in [(2, WIDTH as f32 - 110.0), (3, WIDTH as f32 - 30.0)] {
+        run_until(&mut session, |session| session.dialog.is_some());
+        let sheet = session.dialog_sheet.height() as f32;
+        session.pointer_moved(x, TOP_H as f32 + sheet - 20.0);
+        session.press(Button::Left, Duration::from_secs(n));
+        session.release(Button::Left);
+    }
+    run_until(&mut session, |session| {
+        session.title().starts_with("got y!o true false")
+    });
+    assert!(session.dialog.is_none());
+}

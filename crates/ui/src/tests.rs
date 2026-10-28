@@ -420,6 +420,48 @@ fn the_prompt_bar_draws_its_text_and_its_buttons() {
     assert_eq!(doubled, (WIDTH * 2 * prompt::HEIGHT * 2 * 4) as usize);
 }
 
+#[test]
+fn a_dialog_sheet_shows_its_message_and_takes_its_answer() {
+    let mut sheet = DialogSheet::new(fonts());
+    assert_eq!((sheet.height(), sheet.frame(WIDTH, 1.0).len()), (0, 0));
+    let w = WIDTH as f32;
+    sheet.open(1, DialogKind::Alert, "https://a.test", "one\ntwo", "");
+    let alert = sheet.height();
+    assert_eq!(sheet.frame(WIDTH, 1.0).len(), (WIDTH * alert * 4) as usize);
+    let foot = alert as f32 - 20.0;
+    // An alert has OK alone, at the right.
+    assert_eq!(sheet.part_at(w, w - 30.0, foot), Some(DialogPart::Ok));
+    assert_eq!(sheet.part_at(w, w - 110.0, foot), None);
+    assert_eq!(sheet.value(), None);
+    // A prompt: its field, its default all selected, and Cancel.
+    let many = "line\n".repeat(20);
+    sheet.open(2, DialogKind::Prompt, "", &many, "abc");
+    assert_eq!(sheet.id(), Some(2));
+    let height = sheet.height();
+    assert!(height > alert, "more lines and the field");
+    assert!(height < 300, "at most {} lines", dialog::MAX_LINES);
+    let foot = height as f32 - 20.0;
+    // Cancel at the right, OK before it.
+    assert_eq!(sheet.part_at(w, w - 30.0, foot), Some(DialogPart::Cancel));
+    assert_eq!(sheet.part_at(w, w - 110.0, foot), Some(DialogPart::Ok));
+    assert_eq!(sheet.part_at(w, 40.0, foot - 30.0), Some(DialogPart::Field));
+    sheet.insert("x");
+    sheet.command(Command::Backspace);
+    sheet.insert("yz");
+    assert_eq!(sheet.value(), Some("yz"));
+    // The one open again keeps what was typed; another starts afresh.
+    sheet.open(2, DialogKind::Prompt, "", "", "abc");
+    assert_eq!(sheet.value(), Some("yz"));
+    let pixels = sheet.frame(WIDTH, 1.0).to_vec();
+    let dark = |x0: u32, x1: u32| {
+        (0..height).any(|y| (x0..x1).any(|x| pixels[((y * WIDTH + x) * 4) as usize] < 0x80))
+    };
+    assert!(dark(12, 60), "the title and the lines");
+    assert!(!dark(WIDTH - 11, WIDTH), "the margin");
+    sheet.close();
+    assert_eq!((sheet.id(), sheet.height()), (None, 0));
+}
+
 /// A strip `width` pixels wide of `count` tabs, `shown` the one shown.
 fn strip(width: u32, count: usize, shown: usize) -> TabStrip {
     let mut strip = TabStrip::new(fonts());

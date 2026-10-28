@@ -2933,8 +2933,10 @@ Deferred from the milestones above, each with what it waits on:
 - [ ] G55 A viewport for `--print-to-pdf`'s load: the page's scripts
        read a 0 by 0 window, the shell's window giving the engine its
        size only when one is shown. Found at M25.
-- [ ] G56 Dialogs the user answers: `alert`, `confirm` and `prompt`,
+- [x] G56 Dialogs the user answers: `alert`, `confirm` and `prompt`,
        which log and answer as suppressed dialogs do. Found at M26.
+       Done in gap batch A (D43): the browser's sheet over the tab, the
+       renderer waiting; the one-process build still answers at once.
 - [ ] G57 Leaving a page: `beforeunload`'s prompt, and asking before a
        form is sent again (the resubmission page stands in). Found at
        M26.

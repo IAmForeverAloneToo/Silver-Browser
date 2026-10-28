@@ -741,12 +741,14 @@ pub enum Call {
     /// Whether the document is hidden (HTML section 6.2): its window is
     /// minimized or covered.
     Hidden,
-    /// `alert`, `confirm` or `prompt` (`kind`) was called with `message`:
-    /// the host shows it; the dialog blocks nothing and is answered as a
-    /// browser that suppresses dialogs answers it.
+    /// `alert`, `confirm` or `prompt` (`kind`) was called with `message`
+    /// and, for `prompt`, `default` (gap batch A, D43): the host asks the
+    /// user, the script waiting. The answer is a string for OK, what
+    /// `prompt`'s field held, and null for Cancel or no dialog shown.
     Dialog {
         kind: String,
         message: String,
+        default: String,
     },
     /// Whether code from a string may be compiled (M33.1): `kind` is
     /// `eval` (`eval`, the function constructors, a timer's string),

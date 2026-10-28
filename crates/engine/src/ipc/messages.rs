@@ -352,6 +352,17 @@ wire_enum! {
             data: String,
             sender: u64,
         },
+        /// A document of view `view`, of `origin`, called `alert()`,
+        /// `confirm()` or `prompt()` (`kind`, `DialogKind`'s number; gap
+        /// batch A, D43): the renderer waits for `Answer::Prompt`.
+        34 => Prompt {
+            view: u32,
+            call: u64,
+            origin: Origin,
+            kind: u32,
+            message: String,
+            default: String,
+        },
     }
 }
 
@@ -407,6 +418,9 @@ wire_enum! {
         8 => Caches { answer: String, bytes: Bytes },
         /// The service workers' answer (M39).
         9 => ServiceWorker { answer: String },
+        /// A dialog's answer: what `prompt()`'s field held for OK, none
+        /// for Cancel (gap batch A, D43).
+        10 => Prompt { answer: Option<String> },
     }
 }
 

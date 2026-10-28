@@ -23,7 +23,7 @@
 //! frame's pixels into the hole, gives the frame the pointer's events
 //! that fall in it, and its keys once it is clicked.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
@@ -44,7 +44,7 @@ use crate::storage::Storage;
 use crate::view::View;
 use crate::{
     Button, Clock, ConsoleEntry, Cursor, Engine, FrameTime, Key, KeyOutcome, Link, LoadError,
-    LoadState, Modifiers, PermissionPrompt, Preferences, Profile, Scrollbar,
+    LoadState, Modifiers, PermissionPrompt, Preferences, Profile, Scrollbar, UserDialog,
 };
 
 /// The most renderers a tab has alive at once, the spare among them
@@ -84,6 +84,14 @@ struct FrameView {
     told: Option<Url>,
     /// The raster size it was last given.
     raster: (u32, u32),
+}
+
+/// A dialog a document of the tab's has open, its renderer waiting on
+/// call `call` for the answer (gap batch A, D43).
+struct OpenDialog {
+    dialog: UserDialog,
+    renderer: u32,
+    call: u64,
 }
 
 impl FrameView {
@@ -189,6 +197,10 @@ pub struct RemoteTab {
     segments: Vec<Segment>,
     current: usize,
     frame_views: HashMap<ViewId, FrameView>,
+    /// The dialogs open, the first shown; at most one a renderer, which
+    /// waits on it.
+    dialogs: VecDeque<OpenDialog>,
+    next_dialog: u64,
     buffers: HashMap<ViewId, Buffer>,
     events: mpsc::Receiver<(u32, Event)>,
     sender: mpsc::Sender<(u32, Event)>,
@@ -407,6 +419,8 @@ impl RemoteTab {
             segments: Vec::new(),
             current: 0,
             frame_views: HashMap::new(),
+            dialogs: VecDeque::new(),
+            next_dialog: 0,
             buffers: HashMap::new(),
             events,
             sender,
@@ -510,6 +524,21 @@ impl RemoteTab {
     fn send_to(&self, (renderer, view): ViewId, message: impl FnOnce(u32) -> ToRenderer) {
         if let Some(slot) = self.renderers.get(&renderer) {
             let _ = slot.renderer.send(&message(view));
+        }
+    }
+
+    /// Answers renderer `number`'s call `call`, which waits on a dialog.
+    fn answer_call(&self, number: u32, call: u64, answer: Option<String>) {
+        if let Some(slot) = self.renderers.get(&number) {
+            let answer = crate::ipc::Answer::Prompt { answer };
+            let _ = slot.renderer.send(&ToRenderer::Answer { call, answer });
+        }
+    }
+
+    /// Cancels the dialogs open: the tab goes elsewhere.
+    fn dismiss_dialogs(&mut self) {
+        for open in std::mem::take(&mut self.dialogs) {
+            self.answer_call(open.renderer, open.call, None);
         }
     }
 
@@ -1112,6 +1141,7 @@ impl RemoteTab {
             .map(|slot| (slot.renderer.exit_code(), slot.renderer.dump()))
             .unwrap_or_default();
         self.renderers.remove(&number);
+        self.dialogs.retain(|open| open.renderer != number);
         let orphans: Vec<u32> = super::frames::lock(&self.registry)
             .frames
             .iter()
@@ -1202,7 +1232,8 @@ impl RemoteTab {
             | ToBrowser::FocusLeft { view }
             | ToBrowser::Copied { view, .. }
             | ToBrowser::OpenTab { view, .. }
-            | ToBrowser::CloseTab { view } => Some(*view),
+            | ToBrowser::CloseTab { view }
+            | ToBrowser::Prompt { view, .. } => Some(*view),
             // The panel's messages from the panel's tab, the answers to it
             // from a page's (M36).
             ToBrowser::DevTools { view, .. } => Some(*view),
@@ -1305,6 +1336,49 @@ impl RemoteTab {
                 self.send_to(id, |view| ToRenderer::FrameTaken { view, frame });
             }
             ToBrowser::Console { entries, .. } => self.console.extend(entries),
+            ToBrowser::Prompt {
+                call,
+                origin,
+                kind,
+                message,
+                default,
+                ..
+            } => {
+                let kind = crate::DialogKind::from_number(kind)
+                    .ok_or_else(|| format!("a dialog of kind {kind}"))?;
+                if self.dialogs.iter().any(|open| open.renderer == number) {
+                    return Err("a dialog while one is open".to_owned());
+                }
+                // The origin shown is one the renderer may speak for.
+                let lock = self
+                    .renderers
+                    .get(&number)
+                    .and_then(|slot| slot.lock.as_ref());
+                if lock.is_some_and(|lock| !lock.admits(&origin)) {
+                    return Err(format!("a dialog of {}", origin.serialization()));
+                }
+                // A page not shown asks nothing: Cancel answers it.
+                if !shown && !framed {
+                    self.answer_call(number, call, None);
+                    return Ok(());
+                }
+                let origin = match origin.is_opaque() {
+                    true => String::new(),
+                    false => origin.serialization(),
+                };
+                self.next_dialog += 1;
+                self.dialogs.push_back(OpenDialog {
+                    dialog: UserDialog {
+                        id: self.next_dialog,
+                        kind,
+                        origin,
+                        message: crate::prompts::clean(&message),
+                        default: crate::prompts::clean(&default),
+                    },
+                    renderer: number,
+                    call,
+                });
+            }
             ToBrowser::Notice { text, .. } => {
                 if shown {
                     self.notice = Some(text);
@@ -1908,6 +1982,7 @@ impl View for RemoteTab {
     }
 
     fn navigate(&mut self, url: Url) {
+        self.dismiss_dialogs();
         let lock = Lock::of(&url);
         let same = self.segment().is_some_and(|segment| {
             segment.lock == lock
@@ -1925,6 +2000,7 @@ impl View for RemoteTab {
     }
 
     fn go_back(&mut self) {
+        self.dismiss_dialogs();
         let Some(segment) = self.segment() else {
             return;
         };
@@ -1936,6 +2012,7 @@ impl View for RemoteTab {
     }
 
     fn go_forward(&mut self) {
+        self.dismiss_dialogs();
         let Some(segment) = self.segment() else {
             return;
         };
@@ -1947,6 +2024,7 @@ impl View for RemoteTab {
     }
 
     fn reload_bypassing_cache(&mut self) {
+        self.dismiss_dialogs();
         if self.shown_view().is_some() {
             self.send(|view| ToRenderer::ReloadBypassingCache { view });
             return;
@@ -1956,6 +2034,7 @@ impl View for RemoteTab {
     }
 
     fn reload(&mut self) {
+        self.dismiss_dialogs();
         if self.shown_view().is_some() {
             self.send(|view| ToRenderer::Reload { view });
             return;
@@ -1970,6 +2049,7 @@ impl View for RemoteTab {
     }
 
     fn stop(&mut self) {
+        self.dismiss_dialogs();
         self.send(|view| ToRenderer::Stop { view });
     }
 
@@ -2014,6 +2094,17 @@ impl View for RemoteTab {
 
     fn answer_prompt(&mut self, id: u64, answer: Option<bool>) {
         self.permissions.answer(id, answer);
+    }
+
+    fn dialog(&self) -> Option<UserDialog> {
+        self.dialogs.front().map(|open| open.dialog.clone())
+    }
+
+    fn answer_dialog(&mut self, id: u64, answer: Option<String>) {
+        if let Some(at) = self.dialogs.iter().position(|open| open.dialog.id == id) {
+            let open = self.dialogs.remove(at).expect("there");
+            self.answer_call(open.renderer, open.call, answer);
+        }
     }
 
     fn set_preferences(&mut self, preferences: Preferences) {

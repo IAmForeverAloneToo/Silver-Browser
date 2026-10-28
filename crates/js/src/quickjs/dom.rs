@@ -764,6 +764,7 @@ const NATIVES: &[(&str, Decode)] = &[
         Ok(Call::Dialog {
             kind: a.string(0)?,
             message: a.string(1)?,
+            default: a.string(2)?,
         })
     }),
     ("codeAllowed", |a| {

@@ -489,24 +489,31 @@ fn click_dispatches_a_synthetic_click_that_activates_the_nearest_link() {
 }
 
 #[test]
-fn dialogs_block_nothing_and_answer_as_when_suppressed() {
+fn dialogs_ask_the_host_and_answer_what_it_says() {
     let (text, host, _) = run(
-        "alert('hi'); alert(); [confirm('sure?'), prompt('name', 'x'), alert.length, \
-         confirm.length, prompt.length].join()",
+        "alert('hi'); alert(); alert(undefined); [alert('x'), confirm('sure?'), \
+         confirm('no'), prompt('name', 'x'), prompt(), prompt(1, null), typeof confirm(), \
+         alert.length, confirm.length, prompt.length].join()",
     );
-    assert_eq!(text, "false,,0,0,0");
-    let dialogs: Vec<(&str, &str)> = host
+    assert_eq!(text, ",true,false,x!,!,null!,boolean,0,0,0");
+    let dialogs: Vec<(&str, &str, &str)> = host
         .dialogs
         .iter()
-        .map(|(kind, message)| (kind.as_str(), message.as_str()))
+        .map(|(kind, message, default)| (kind.as_str(), message.as_str(), default.as_str()))
         .collect();
     assert_eq!(
         dialogs,
         [
-            ("alert", "hi"),
-            ("alert", ""),
-            ("confirm", "sure?"),
-            ("prompt", "name")
+            ("alert", "hi", ""),
+            ("alert", "", ""),
+            ("alert", "undefined", ""),
+            ("alert", "x", ""),
+            ("confirm", "sure?", ""),
+            ("confirm", "no", ""),
+            ("prompt", "name", "x"),
+            ("prompt", "", ""),
+            ("prompt", "1", "null"),
+            ("confirm", "", ""),
         ]
     );
 }

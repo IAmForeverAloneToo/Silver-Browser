@@ -760,3 +760,92 @@ fn the_windows_named_properties_are_the_documents_ids_and_names() {
         ]
     );
 }
+
+/// Answers dialogs as a user would, noting what it was asked: OK to a
+/// confirm, a prompt's default and a "!".
+#[derive(Default)]
+struct Answering(std::sync::Mutex<Vec<String>>);
+
+impl crate::prompts::Asker for Answering {
+    fn ask(
+        &self,
+        origin: &net::Origin,
+        kind: crate::DialogKind,
+        message: &str,
+        default: &str,
+    ) -> Option<String> {
+        let mut asked = self.0.lock().unwrap();
+        let origin = origin.serialization();
+        asked.push(format!("{origin} {kind:?} {message:?} {default:?}"));
+        match kind {
+            crate::DialogKind::Prompt => Some(format!("{default}!")),
+            crate::DialogKind::Confirm => Some(String::new()),
+            crate::DialogKind::Alert => None,
+        }
+    }
+}
+
+const DIALOGS: &str = "<script>alert('a\\u0007b\\r\\nc'); \
+    console.log(confirm('sure?'), prompt('name', 'x'), prompt('n')); \
+    addEventListener('pagehide', () => console.log('hide ' + confirm('leaving')));</script>\
+    <iframe sandbox='allow-scripts' srcdoc=\"<script>console.log('sandboxed ' + confirm('s'))</script>\"></iframe>";
+
+#[test]
+fn dialogs_ask_the_engines_asker_but_not_from_where_they_may_not() {
+    let server = serve(|path| match path {
+        "/page.html" => Some(Reply::ok("text/html", DIALOGS.as_bytes())),
+        "/next.html" => Some(Reply::ok("text/html", b"next")),
+        _ => None,
+    });
+    let asked = std::sync::Arc::new(Answering::default());
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.set_asker(asked.clone());
+    load_all(&mut tab, server.url("/page.html"));
+    let mut lines: Vec<String> = tab
+        .engine
+        .take_console()
+        .into_iter()
+        .map(|e| e.text)
+        .collect();
+    // Leaving: the document being unloaded asks nothing.
+    load_all(&mut tab, server.url("/next.html"));
+    lines.extend(tab.engine.take_console().into_iter().map(|e| e.text));
+    lines.sort();
+    assert_eq!(
+        lines,
+        [
+            "[frame about:srcdoc] Ignored call to 'confirm()'. The document is sandboxed, and \
+             the 'allow-modals' keyword is not set.",
+            "[frame about:srcdoc] sandboxed false",
+            "confirm: leaving",
+            "hide false",
+            "true x! !"
+        ]
+    );
+    let at = server.url("/").origin().serialization();
+    assert_eq!(
+        *asked.0.lock().unwrap(),
+        [
+            format!(r#"{at} Alert "ab\nc" """#),
+            format!(r#"{at} Confirm "sure?" """#),
+            format!(r#"{at} Prompt "name" "x""#),
+            format!(r#"{at} Prompt "n" """#)
+        ]
+    );
+    // A hidden tab's documents ask nothing.
+    let asked = std::sync::Arc::new(Answering::default());
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.set_asker(asked.clone());
+    tab.engine.set_hidden(true);
+    load_all(&mut tab, server.url("/page.html"));
+    let lines: Vec<String> = tab
+        .engine
+        .take_console()
+        .into_iter()
+        .map(|e| e.text)
+        .collect();
+    assert!(lines.contains(&"false null null".to_owned()), "{lines:?}");
+    assert!(asked.0.lock().unwrap().is_empty());
+}

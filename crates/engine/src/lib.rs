@@ -126,6 +126,7 @@ mod pages;
 mod permissions;
 mod playback;
 mod print;
+mod prompts;
 pub mod renderer;
 mod sandbox;
 mod scripts;
@@ -165,6 +166,7 @@ pub use net::{Client, NetworkError, Url};
 pub use permissions::{PROMPT_TIMEOUT, Permission, PermissionPrompt};
 pub use print::{PrintError, PrintOptions, PrintedPage};
 pub use profile::{KeyWrap, Profile};
+pub use prompts::{DialogKind, MAX_PROMPT_CHARS, UserDialog};
 pub use scripts::{
     ConsoleEntry, ConsoleSource, MAX_CONSOLE_ENTRIES, MAX_CONSOLE_MESSAGE, MAX_SCRIPT_BYTES,
     ScriptState,
@@ -478,6 +480,9 @@ pub struct Engine {
     /// The Web Storage areas the browser keeps, in a renderer (M34.1); the
     /// storage's own otherwise.
     areas: Option<Arc<dyn storage::Areas>>,
+    /// Who its documents' dialogs are asked of (gap batch A, D43): the
+    /// browser, in a renderer; no one otherwise.
+    asker: Option<Arc<dyn prompts::Asker>>,
     /// The `storage` events queued (M28), and the `BroadcastChannel`
     /// messages (gap batch A), each at the page it goes to.
     storage_events: VecDeque<(PageId, js::Task)>,
@@ -1339,6 +1344,7 @@ impl Engine {
             context: None,
             own_service_workers,
             areas: None,
+            asker: None,
             storage_events: VecDeque::new(),
             hidden: false,
             hidden_ran: None,
@@ -1507,7 +1513,9 @@ impl Engine {
             self.departed.extend(lines);
             return;
         }
-        let window = self.window_env();
+        // A document being unloaded asks nothing (D43).
+        let mut window = self.window_env();
+        window.asker = None;
         let ready = if left.lifecycle.loaded {
             scripts::ReadyState::Complete
         } else {
@@ -2027,6 +2035,7 @@ impl Engine {
             }),
             partition: self.frame_partition(),
             gpu: self.gpu.clone(),
+            asker: self.asker.clone().filter(|_| !self.hidden),
         }
     }
 
@@ -6242,6 +6251,12 @@ impl Engine {
     pub(crate) fn set_remote_storage(&mut self, areas: Arc<dyn storage::Areas>) {
         self.areas = Some(areas.clone());
         self.for_each_frame(&mut |frame| frame.areas = Some(areas.clone()));
+    }
+
+    /// Asks its documents' dialogs of `asker` (gap batch A, D43).
+    pub(crate) fn set_asker(&mut self, asker: Arc<dyn prompts::Asker>) {
+        self.asker = Some(asker.clone());
+        self.for_each_frame(&mut |frame| frame.asker = Some(asker.clone()));
     }
 
     /// Fetches, and reaches `document.cookie`, through the browser (M34.1):

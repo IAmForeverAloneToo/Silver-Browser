@@ -156,7 +156,7 @@ fn a_disabled_control_is_not_clicked() {
 }
 
 #[test]
-fn dialogs_say_their_message_in_the_console_and_block_nothing() {
+fn dialogs_with_no_one_to_ask_say_their_message_in_the_console() {
     let (_, console) = scripted(
         "<script>alert('hi'); console.log(confirm('sure?'), prompt('name', 'x'));</script>",
         true,

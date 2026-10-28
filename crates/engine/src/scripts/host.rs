@@ -2221,11 +2221,28 @@ impl DocumentHost {
                          'allow-modals' keyword is not set."
                     ),
                 );
-                Ok(Answer::Nothing)
+                Ok(Answer::MaybeString(None))
             }
-            Call::Dialog { kind, message } => {
-                self.say(ConsoleLevel::Info, format!("{kind}: {message}"));
-                Ok(Answer::Nothing)
+            Call::Dialog {
+                kind,
+                message,
+                default,
+            } => {
+                let asked = crate::prompts::DialogKind::from_name(&kind)
+                    .zip(self.window.asker.clone())
+                    .zip(self.page.as_ref().map(|page| page.origin().clone()));
+                let Some(((kind, asker), origin)) = asked else {
+                    // No one to ask: answered at once, as a browser that
+                    // shows no dialogs answers.
+                    self.say(ConsoleLevel::Info, format!("{kind}: {message}"));
+                    return Ok(Answer::MaybeString(None));
+                };
+                let (message, default) = (
+                    crate::prompts::clean(&message),
+                    crate::prompts::clean(&default),
+                );
+                let answer = asker.ask(&origin, kind, &message, &default);
+                Ok(Answer::MaybeString(answer))
             }
             Call::Canvas(call) => self.canvas(*call),
         }

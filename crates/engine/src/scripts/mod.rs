@@ -303,6 +303,9 @@ pub(crate) struct WindowEnv {
     pub(crate) partition: Option<net::Partition>,
     /// Its way to the GPU (M41): the engine's client.
     pub(crate) gpu: Option<Arc<crate::gpu::GpuClient>>,
+    /// Who its dialogs are asked of (gap batch A, D43); no one while the
+    /// window is hidden, or its document being unloaded.
+    pub(crate) asker: Option<Arc<dyn crate::prompts::Asker>>,
 }
 
 /// A document's time origin (High Resolution Time): the engine's clock

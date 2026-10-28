@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use crate::{
     Button, Clock, ConsoleEntry, Cursor, Engine, FrameTime, Key, KeyOutcome, Link, LoadState,
-    Modifiers, PermissionPrompt, Preferences, Profile, Scrollbar, Url,
+    Modifiers, PermissionPrompt, Preferences, Profile, Scrollbar, Url, UserDialog,
 };
 
 /// What the session drives: a tab's page.
@@ -37,6 +37,14 @@ pub trait View {
     fn take_console(&mut self) -> Vec<ConsoleEntry>;
     fn permission_prompt(&self) -> Option<PermissionPrompt>;
     fn answer_prompt(&mut self, id: u64, answer: Option<bool>);
+    /// The page's dialog to show over it, if one is open (gap batch A,
+    /// D43): `alert()`, `confirm()` or `prompt()` waiting.
+    fn dialog(&self) -> Option<UserDialog> {
+        None
+    }
+    /// Answers dialog `id`: what `prompt()`'s field held for OK (empty
+    /// for the others), none for Cancel.
+    fn answer_dialog(&mut self, _id: u64, _answer: Option<String>) {}
 
     fn set_preferences(&mut self, preferences: Preferences);
     fn set_scripting(&mut self, on: bool);

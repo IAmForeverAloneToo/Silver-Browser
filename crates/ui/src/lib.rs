@@ -6,10 +6,11 @@
 //! pixels, and gives it what it shows of the page.
 //!
 //! The permission prompt (M33.4) is drawn and given input the same way,
-//! and so is the tab strip (M37).
+//! and so is the tab strip (M37), and a page's dialog (gap batch A).
 
 #![forbid(unsafe_code)]
 
+pub mod dialog;
 pub mod field;
 pub mod prompt;
 pub mod status;
@@ -17,6 +18,7 @@ pub mod tabs;
 mod title;
 pub mod toolbar;
 
+pub use dialog::{DialogKind, DialogPart, DialogSheet};
 pub use field::{Command, TextField, TooLong};
 pub use prompt::{Choice, PromptBar};
 pub use status::StatusBubble;

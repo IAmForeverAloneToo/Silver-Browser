@@ -960,6 +960,7 @@ impl Engine {
         child.clock = self.clock.clone();
         child.share_storage(self.storage.clone(), self.tab);
         child.areas = self.areas.clone();
+        child.asker = self.asker.clone();
         child.scripting = self.scripting;
         child.preload_scanner = self.preload_scanner;
         child.script_limits = js::Limits {

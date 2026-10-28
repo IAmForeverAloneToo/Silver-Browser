@@ -197,3 +197,56 @@ fn a_renderer_of_another_site_is_told_nothing() {
     assert!(console(&mut second).is_empty());
     assert_eq!(second.storage_changes_sent(), 0);
 }
+
+#[test]
+fn a_dialog_waits_for_the_tabs_answer_and_going_elsewhere_cancels_it() {
+    let server = TestServer::plain(|request| match request.target.as_str() {
+        "/ask.html" => Reply::ok(
+            "text/html",
+            b"<script>onload = () => { \
+              console.log('got ' + prompt('name?\\u0000\\u202e', 'x')); \
+              console.log('then ' + confirm('again?')); };</script>",
+        ),
+        "/next.html" => Reply::ok("text/html", b"next"),
+        _ => Reply::with_fields(404, &[], b""),
+    });
+    let context = Context::new();
+    let mut tab = tab_of(&context);
+    tab.navigate(server.url("/ask.html"));
+    let mut asked = None;
+    settle(&mut [&mut tab], |tabs| {
+        asked = tabs[0].dialog();
+        asked.is_some()
+    });
+    let asked = asked.expect("a dialog");
+    assert_eq!(
+        (asked.kind, asked.origin.as_str(), asked.message.as_str()),
+        (
+            crate::DialogKind::Prompt,
+            server.url("/").origin().serialization().as_str(),
+            "name?"
+        )
+    );
+    assert_eq!(asked.default, "x");
+    // The renderer waits for the answer: nothing logged till then.
+    thread::sleep(Duration::from_millis(200));
+    settle(&mut [&mut tab], |_| true);
+    assert!(console(&mut tab).is_empty());
+    tab.answer_dialog(asked.id + 1, Some("no".to_owned()));
+    tab.answer_dialog(asked.id, Some("yo".to_owned()));
+    let mut again = None;
+    settle(&mut [&mut tab], |tabs| {
+        again = tabs[0].dialog();
+        again.is_some()
+    });
+    assert_eq!(again.expect("a dialog").kind, crate::DialogKind::Confirm);
+    // Going elsewhere answers it Cancel.
+    let mut lines = Vec::new();
+    load(&mut tab, server.url("/next.html"));
+    settle(&mut [&mut tab], |tabs| {
+        lines.extend(console(tabs[0]));
+        lines.len() >= 2
+    });
+    assert_eq!(lines, ["got yo", "then false"]);
+    assert_eq!(tab.dialog(), None);
+}

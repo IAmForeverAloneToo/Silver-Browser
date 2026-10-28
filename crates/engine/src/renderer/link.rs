@@ -355,6 +355,42 @@ impl Cookies for RemoteCookies {
     }
 }
 
+/// Who a renderer's view's documents ask their dialogs of: the browser,
+/// the view waiting for the answer (gap batch A, D43).
+pub(crate) struct RemoteAsker {
+    link: Arc<Link>,
+    view: u32,
+}
+
+impl RemoteAsker {
+    pub(crate) fn new(link: Arc<Link>, view: u32) -> RemoteAsker {
+        RemoteAsker { link, view }
+    }
+}
+
+impl crate::prompts::Asker for RemoteAsker {
+    fn ask(
+        &self,
+        origin: &net::Origin,
+        kind: crate::prompts::DialogKind,
+        message: &str,
+        default: &str,
+    ) -> Option<String> {
+        let answer = self.link.call(|call| ToBrowser::Prompt {
+            view: self.view,
+            call,
+            origin: origin.clone(),
+            kind: kind.number(),
+            message: message.to_owned(),
+            default: default.to_owned(),
+        });
+        match answer {
+            Ok(Answer::Prompt { answer }) => answer,
+            _ => None,
+        }
+    }
+}
+
 /// A renderer's frame's Web Storage areas, kept by the browser.
 pub(crate) struct RemoteAreas {
     link: Arc<Link>,

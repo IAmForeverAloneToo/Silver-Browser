@@ -185,6 +185,11 @@ pub(crate) struct Session<V: View = Engine> {
     prompt: Option<PermissionPrompt>,
     prompt_bar: PromptBar,
     drawn_prompt: Option<u64>,
+    /// The page's dialog the tab has open (gap batch A, D43), its sheet,
+    /// and whether the last frame showed it as it is.
+    dialog: Option<engine::UserDialog>,
+    dialog_sheet: ui::DialogSheet,
+    dialog_drawn: bool,
     clipboard: Box<dyn Clipboard>,
     platform: Platform,
     mods: Modifiers,
@@ -273,6 +278,9 @@ impl<V: View> Session<V> {
             prompt: None,
             prompt_bar: PromptBar::new(fonts.clone()),
             drawn_prompt: None,
+            dialog: None,
+            dialog_sheet: ui::DialogSheet::new(fonts.clone()),
+            dialog_drawn: true,
             bubble: StatusBubble::new(fonts),
             clipboard,
             platform,
@@ -950,6 +958,7 @@ impl<V: View> Session<V> {
             || self.strip.needs_frame()
             || self.drawn_bubble.as_deref() != self.bubble_text()
             || self.drawn_prompt != self.prompt.as_ref().map(|prompt| prompt.id)
+            || !self.dialog_drawn
     }
 
     /// The permission prompt shown, if any (M33.4).
@@ -1136,6 +1145,12 @@ impl<V: View> Session<V> {
         }
         self.notice = None;
         let in_field = self.focus() == Focus::Field;
+        // A page's dialog takes the keys the field has not got (D43).
+        if self.dialog.is_some() && !in_field {
+            self.dialog_key(key, page);
+            self.sync();
+            return;
+        }
         // An open list takes every key (M26.8).
         let popup = match (self.focus(), &self.panel) {
             (Focus::Panel, Some(panel)) => panel.popup_open(),
@@ -1163,6 +1178,53 @@ impl<V: View> Session<V> {
         self.sync();
     }
 
+    /// A key while the page's dialog is open (D43): Enter is OK, Escape
+    /// Cancel, and `prompt()`'s field takes the editing keys and the text;
+    /// the browser's other shortcuts are as ever.
+    fn dialog_key(&mut self, key: Option<Key>, page: engine::Key) {
+        let shortcut = key
+            .as_ref()
+            .and_then(|key| keys::shortcut(key, self.mods, self.platform, true));
+        match shortcut {
+            Some(Shortcut::Enter) => self.answer_dialog(true),
+            Some(Shortcut::Escape) => self.answer_dialog(false),
+            Some(Shortcut::Edit(edit)) => {
+                self.dialog_sheet.command(edit);
+                self.dialog_drawn = false;
+            }
+            Some(Shortcut::Paste) => match self.clipboard.get() {
+                Ok(text) => {
+                    self.dialog_sheet.insert(&text);
+                    self.dialog_drawn = false;
+                }
+                Err(error) => self.notice = Some(clipboard_notice(&error)),
+            },
+            Some(Shortcut::Copy | Shortcut::Cut | Shortcut::ToPage) => {}
+            Some(shortcut) => self.shortcut(shortcut),
+            None => {
+                if keys::types_text(self.mods, self.platform)
+                    && let Some(text) = page.text.as_deref()
+                {
+                    self.dialog_sheet.insert(text);
+                    self.dialog_drawn = false;
+                }
+            }
+        }
+    }
+
+    /// Answers the page's dialog: OK, with what `prompt()`'s field holds,
+    /// or Cancel.
+    fn answer_dialog(&mut self, ok: bool) {
+        let Some(id) = self.dialog_sheet.id() else {
+            return;
+        };
+        let answer = ok.then(|| self.dialog_sheet.value().unwrap_or_default().to_owned());
+        self.engine.answer_dialog(id, answer);
+        self.dialog_sheet.close();
+        self.dialog = None;
+        self.dialog_drawn = false;
+    }
+
     /// The view the keys go to when the field has not got them: the
     /// DevTools panel when it has the keyboard, else the page.
     fn keyed(&mut self) -> &mut V {
@@ -1174,7 +1236,7 @@ impl<V: View> Session<V> {
 
     /// A key released: the page's, while it has the keyboard (M26.6).
     pub(crate) fn key_up(&mut self, page: engine::Key) {
-        if self.composing || self.focus() == Focus::Field {
+        if self.composing || self.focus() == Focus::Field || self.dialog.is_some() {
             return;
         }
         self.keyed().key_up(&page);
@@ -1199,6 +1261,9 @@ impl<V: View> Session<V> {
         self.notice = None;
         if self.focus() == Focus::Field {
             self.insert(text);
+        } else if self.dialog.is_some() {
+            self.dialog_sheet.insert(text);
+            self.dialog_drawn = false;
         } else {
             // Into the page's text control focused, if any (M26.8), or
             // the panel's.
@@ -1315,6 +1380,9 @@ impl<V: View> Session<V> {
     /// A button other than the left pressed over the page: the page's.
     fn press_page(&mut self, button: engine::Button, count: u32) {
         let (x, y) = self.pointer;
+        if self.dialog.is_some() && !self.in_panel(y) {
+            return;
+        }
         if self.inside && self.in_panel(y) {
             let top = self.panel_top();
             if let Some(panel) = &mut self.panel {
@@ -1454,6 +1522,20 @@ impl<V: View> Session<V> {
             let pixels = self.prompt_bar.frame(&prompt.text(), width, self.scale);
             let rows = bar_rows * w..(bar_rows + prompt_rows) * w;
             put(&pixels[..prompt_rows * w * 4], &mut out[rows]);
+        }
+        // The page's dialog over the top of the page, under the prompt
+        // (D43).
+        self.dialog_drawn = true;
+        let dialog_rows = ui::rows(self.dialog_sheet.height(), self.scale) as usize;
+        let above = match self.prompt {
+            Some(_) => prompt_rows,
+            None => 0,
+        };
+        if dialog_rows > 0 && page_height as usize >= above + dialog_rows {
+            let pixels = self.dialog_sheet.frame(width, self.scale);
+            let top = bar_rows + above;
+            let rows = top * w..(top + dialog_rows) * w;
+            put(&pixels[..dialog_rows * w * 4], &mut out[rows]);
         }
         self.drawn_bubble = self.bubble_text().map(str::to_owned);
         let bubble_rows = ui::rows(ui::status::HEIGHT, self.scale);
@@ -1681,6 +1763,24 @@ impl<V: View> Session<V> {
             self.held = Some(Held::Panel);
             return;
         }
+        // The page's dialog, under the prompt's bar: its buttons answer
+        // it, and the page under it takes no press (D43).
+        if self.dialog.is_some() {
+            self.toolbar.blur();
+            let above = match self.prompt {
+                Some(_) => ui::prompt::HEIGHT as f32,
+                None => 0.0,
+            };
+            let width = self.size.0 as f32;
+            match self.dialog_sheet.part_at(width, x, y - TOP - above) {
+                Some(ui::DialogPart::Ok) => self.answer_dialog(true),
+                Some(ui::DialogPart::Cancel) => self.answer_dialog(false),
+                _ => {}
+            }
+            if self.prompt.is_none() || y >= TOP + above {
+                return;
+            }
+        }
         // The prompt's bar, over the page (M33.4): its buttons answer it.
         if let Some(prompt) = &self.prompt
             && y < TOP + ui::prompt::HEIGHT as f32
@@ -1813,6 +1913,30 @@ impl<V: View> Session<V> {
             self.notice = Some(notice);
         }
         self.prompt = self.engine.permission_prompt();
+        self.dialog = self.engine.dialog();
+        let shown = self.dialog_sheet.id();
+        match &self.dialog {
+            Some(dialog) if shown != Some(dialog.id) => {
+                let kind = match dialog.kind {
+                    engine::DialogKind::Alert => ui::DialogKind::Alert,
+                    engine::DialogKind::Confirm => ui::DialogKind::Confirm,
+                    engine::DialogKind::Prompt => ui::DialogKind::Prompt,
+                };
+                let origin = match dialog.origin.as_str() {
+                    "" => "This page",
+                    origin => origin,
+                };
+                let (message, default) = (&dialog.message, &dialog.default);
+                self.dialog_sheet
+                    .open(dialog.id, kind, origin, message, default);
+                self.dialog_drawn = false;
+            }
+            None if shown.is_some() => {
+                self.dialog_sheet.close();
+                self.dialog_drawn = false;
+            }
+            _ => {}
+        }
         let url = self.engine.url().map(|url| url.as_str().to_owned());
         self.toolbar.update(PageState {
             url: url.as_deref(),

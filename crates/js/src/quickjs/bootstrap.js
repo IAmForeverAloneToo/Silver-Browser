@@ -10740,21 +10740,21 @@
       return performance;
     }
 
-    // HTML's simple dialogs (section 8.8.1), which block nothing (M26):
-    // the message goes to the host, and the answer is a browser's that
-    // does not show dialogs.
+    // HTML's simple dialogs (section 8.8.1): the host asks the user, the
+    // script waiting (gap batch A, D43); null is Cancel, or no dialog.
     alert() {
-      native.dialog("alert", arguments.length === 0 ? "" : str(arguments[0]));
+      native.dialog("alert", arguments.length === 0 ? "" : str(arguments[0]), "");
     }
 
     confirm() {
-      native.dialog("confirm", arguments[0] === undefined ? "" : str(arguments[0]));
-      return false;
+      const message = arguments[0] === undefined ? "" : str(arguments[0]);
+      return native.dialog("confirm", message, "") !== null;
     }
 
     prompt() {
-      native.dialog("prompt", arguments[0] === undefined ? "" : str(arguments[0]));
-      return null;
+      const message = arguments[0] === undefined ? "" : str(arguments[0]);
+      const given = arguments[1] === undefined ? "" : str(arguments[1]);
+      return native.dialog("prompt", message, given);
     }
 
     getComputedStyle(element, pseudoElement) {

@@ -190,6 +190,10 @@ impl Host {
             return Err(format!("view {view} again"));
         }
         engine.share_storage(self.storage.clone(), 0);
+        engine.set_asker(Arc::new(super::link::RemoteAsker::new(
+            self.link.clone(),
+            view,
+        )));
         let wake = self.wake.clone();
         engine.set_waker(move || wake());
         let began = self.began;

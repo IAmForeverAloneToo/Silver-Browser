@@ -39,8 +39,9 @@ fn said(message: ToBrowser) -> Said {
     Said::Raw(ipc::frame(&message).expect("framed"))
 }
 
-/// What a compromised renderer says, given its view's frame number.
-type Attack = Box<dyn FnOnce(u32) -> Vec<Said> + Send>;
+/// What a compromised renderer says, given its view's frame number and
+/// the view's.
+type Attack = Box<dyn FnOnce(u32, u32) -> Vec<Said> + Send>;
 
 /// A launcher whose next renderers each make one attack of `attacks`;
 /// past them, renderers are honest engines on threads. What the browser
@@ -87,14 +88,14 @@ impl Launcher for Compromised {
                 })
                 .expect("a hello"),
             );
-            let frame = loop {
+            let (frame, view) = loop {
                 match ipc::read_message::<ToRenderer>(&mut renderer_in) {
-                    Ok(Some(ToRenderer::CreateView { frame, .. })) => break frame,
+                    Ok(Some(ToRenderer::CreateView { frame, view, .. })) => break (frame, view),
                     Ok(Some(_)) => {}
                     _ => return,
                 }
             };
-            for said in attack(frame) {
+            for said in attack(frame, view) {
                 match said {
                     Said::Raw(bytes) => write(&mut out, &bytes),
                     Said::End => out = None,
@@ -169,6 +170,7 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
         origin.clone(),
         origin.clone(),
     );
+    let o8 = origin.clone();
     let (u1, u2, u3) = (other.clone(), other.clone(), other.clone());
     let named = origin.serialization();
     let navigation = other.clone();
@@ -177,7 +179,7 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
     vec![
         (
             "a forged cookie to another site",
-            Box::new(move |frame| {
+            Box::new(move |frame, _| {
                 let mut request = Request::get(u7, Destination::Image);
                 request.origin = Some(Origin::new_opaque());
                 request.headers.append(b"Cookie", b"session=forged");
@@ -187,7 +189,7 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
         ),
         (
             "fetch metadata forged",
-            Box::new(move |frame| {
+            Box::new(move |frame, _| {
                 let mut request = Request::get(u8, Destination::Image);
                 request.origin = Some(Origin::new_opaque());
                 request.headers.append(b"Sec-Fetch-Site", b"same-origin");
@@ -197,7 +199,7 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
         ),
         (
             "a forbidden method",
-            Box::new(move |frame| {
+            Box::new(move |frame, _| {
                 let mut request = Request::get(
                     Url::parse("http://a.test/").expect("a URL"),
                     Destination::Empty,
@@ -210,7 +212,7 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
         ),
         (
             "another site's HTML by a request of no origin",
-            Box::new(move |frame| {
+            Box::new(move |frame, _| {
                 let mut request = Request::get(u4, Destination::Script);
                 request.mode = Mode::NoCors;
                 vec![fetch(frame, request)]
@@ -219,7 +221,7 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
         ),
         (
             "another site's HTML in a navigation's mode",
-            Box::new(move |frame| {
+            Box::new(move |frame, _| {
                 let mut request = Request::get(u5, Destination::Script);
                 request.mode = Mode::Navigate;
                 vec![fetch(frame, request)]
@@ -228,12 +230,12 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
         ),
         (
             "another site's document, not streamed to be handed over",
-            Box::new(move |frame| vec![fetch(frame, Request::get(u6, Destination::Document))]),
+            Box::new(move |frame, _| vec![fetch(frame, Request::get(u6, Destination::Document))]),
             "not a navigation's",
         ),
         (
             "another site's cookies by document.cookie",
-            Box::new(move |frame| {
+            Box::new(move |frame, _| {
                 vec![said(ToBrowser::Cookies {
                     call: 1,
                     frame,
@@ -245,7 +247,7 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
         ),
         (
             "another site's cookies written",
-            Box::new(move |frame| {
+            Box::new(move |frame, _| {
                 vec![said(ToBrowser::SetCookie {
                     frame,
                     url: u2,
@@ -257,7 +259,7 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
         ),
         (
             "a request claiming another site's origin",
-            Box::new(move |frame| {
+            Box::new(move |frame, _| {
                 let mut request = Request::get(u3, Destination::Empty);
                 request.origin = Some(o1);
                 vec![fetch(frame, request)]
@@ -266,7 +268,7 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
         ),
         (
             "a request in another site's partition",
-            Box::new(move |frame| {
+            Box::new(move |frame, _| {
                 let mut request = Request::get(
                     Url::parse("http://a.test/").expect("a URL"),
                     Destination::Empty,
@@ -282,7 +284,7 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
         ),
         (
             "another site's storage",
-            Box::new(move |frame| {
+            Box::new(move |frame, _| {
                 vec![said(ToBrowser::Storage {
                     call: 1,
                     frame,
@@ -298,7 +300,7 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
         ),
         (
             "another site's download",
-            Box::new(move |frame| {
+            Box::new(move |frame, _| {
                 vec![said(ToBrowser::Download {
                     frame,
                     url: u9,
@@ -309,7 +311,7 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
         ),
         (
             "another site's storage changed",
-            Box::new(move |frame| {
+            Box::new(move |frame, _| {
                 vec![said(ToBrowser::StorageChanged {
                     frame,
                     local: true,
@@ -325,7 +327,7 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
         ),
         (
             "another site's broadcast",
-            Box::new(move |frame| {
+            Box::new(move |frame, _| {
                 vec![said(ToBrowser::Broadcast {
                     frame,
                     origin: o7,
@@ -339,7 +341,7 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
         ),
         (
             "a frame it does not host, posted from",
-            Box::new(move |frame| {
+            Box::new(move |frame, _| {
                 vec![said(ToBrowser::PostFrame {
                     from: Some(frame + 1000),
                     to: frame,
@@ -354,12 +356,12 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
         ),
         (
             "a frame it does not host, dropped",
-            Box::new(move |frame| vec![said(ToBrowser::FrameDropped { key: frame + 1000 })]),
+            Box::new(move |frame, _| vec![said(ToBrowser::FrameDropped { key: frame + 1000 })]),
             "not of the renderer's pages",
         ),
         (
             "a new frame under one it does not host",
-            Box::new(move |frame| {
+            Box::new(move |frame, _| {
                 vec![said(ToBrowser::NewFrame {
                     call: 1,
                     parent: frame + 1000,
@@ -369,7 +371,7 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
         ),
         (
             "a message stamped with another origin",
-            Box::new(move |frame| {
+            Box::new(move |frame, _| {
                 vec![said(ToBrowser::PostFrame {
                     from: Some(frame),
                     to: frame,
@@ -384,7 +386,7 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
         ),
         (
             "a navigation in another site's name",
-            Box::new(move |frame| {
+            Box::new(move |frame, _| {
                 vec![said(ToBrowser::PostFrame {
                     from: Some(frame),
                     to: frame,
@@ -399,8 +401,40 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
             "a navigation by",
         ),
         (
+            "another site's dialog",
+            Box::new(move |_, view| {
+                vec![said(ToBrowser::Prompt {
+                    view,
+                    call: 1,
+                    origin: o8,
+                    kind: 0,
+                    message: "Your bank says".into(),
+                    default: String::new(),
+                })]
+            }),
+            "a dialog of",
+        ),
+        (
+            "a second dialog while one is open",
+            Box::new(move |_, view| {
+                let opaque = Url::parse("data:,x").expect("parses").origin();
+                let ask = |call| {
+                    said(ToBrowser::Prompt {
+                        view,
+                        call,
+                        origin: opaque.clone(),
+                        kind: 0,
+                        message: String::new(),
+                        default: String::new(),
+                    })
+                };
+                vec![ask(1), ask(2)]
+            }),
+            "while one is open",
+        ),
+        (
             "a page's renderer speaking as the DevTools panel",
-            Box::new(move |_| {
+            Box::new(move |_, _| {
                 vec![said(ToBrowser::DevTools {
                     view: 1,
                     message: r#"{"id":1,"method":"browser.version"}"#.to_owned(),
@@ -410,7 +444,7 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
         ),
         (
             "a surface it was not given",
-            Box::new(move |_| {
+            Box::new(move |_, _| {
                 vec![said(ToBrowser::Frame {
                     view: 999,
                     frame: 1,
@@ -422,7 +456,7 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
         ),
         (
             "a local network request in another site's name",
-            Box::new(move |frame| {
+            Box::new(move |frame, _| {
                 let mut request = Request::get(
                     Url::parse("http://a.test/").expect("a URL"),
                     Destination::Empty,
@@ -439,7 +473,7 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
         ),
         (
             "a message past the size limit",
-            Box::new(|_| {
+            Box::new(|_, _| {
                 let mut bytes = ((ipc::MAX_MESSAGE + 1) as u32).to_le_bytes().to_vec();
                 bytes.extend_from_slice(&[0; 64]);
                 vec![Said::Raw(bytes)]
@@ -448,7 +482,7 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
         ),
         (
             "an unknown tag",
-            Box::new(|_| {
+            Box::new(|_, _| {
                 let mut bytes = 2u32.to_le_bytes().to_vec();
                 bytes.extend_from_slice(&250u16.to_le_bytes());
                 vec![Said::Raw(bytes)]
@@ -457,7 +491,7 @@ fn killing(server: &TestServer) -> Vec<(&'static str, Attack, &'static str)> {
         ),
         (
             "a truncated message",
-            Box::new(|_| {
+            Box::new(|_, _| {
                 let mut bytes = 100u32.to_le_bytes().to_vec();
                 bytes.extend_from_slice(&[1; 10]);
                 vec![Said::Raw(bytes), Said::End]
@@ -534,7 +568,7 @@ fn fetched(
     streamed: bool,
     request: impl FnOnce(u32) -> Request + Send + 'static,
 ) -> ToRenderer {
-    let attack: Attack = Box::new(move |frame| {
+    let attack: Attack = Box::new(move |frame, _| {
         vec![said(ToBrowser::Fetch {
             id: 1,
             frame,
@@ -661,7 +695,7 @@ fn a_compromised_renderer_opens_no_tab_of_another_scheme() {
     let server = server();
     let web = url(&server, "elsewhere.localhost", "/page");
     let asked = web.clone();
-    let attack: Attack = Box::new(move |_| {
+    let attack: Attack = Box::new(move |_, _| {
         [
             "file:///c:/windows/win.ini",
             "javascript:alert(1)",

@@ -22,9 +22,10 @@ pub(crate) struct Recorder {
     /// handlers and timers, which the bootstrap reports.
     pub(crate) reported: Vec<ScriptError>,
     /// The elements whose activation behaviour ran, and the dialogs
-    /// shown, by kind and message.
+    /// shown, by kind, message and default: a confirm is answered OK
+    /// unless it says "no", a prompt its default and a "!".
     pub(crate) activated: Vec<u64>,
-    pub(crate) dialogs: Vec<(String, String)>,
+    pub(crate) dialogs: Vec<(String, String, String)>,
     /// How often a frame was wanted, and whether the document is hidden.
     pub(crate) frames_wanted: usize,
     pub(crate) hidden: bool,
@@ -65,9 +66,19 @@ impl ScriptingHost for Recorder {
                 self.activated.push(handle.0);
                 Ok(Answer::Nothing)
             }
-            Call::Dialog { kind, message } => {
-                self.dialogs.push((kind, message));
-                Ok(Answer::Nothing)
+            Call::Dialog {
+                kind,
+                message,
+                default,
+            } => {
+                let answer = match kind.as_str() {
+                    "confirm" if message == "no" => None,
+                    "confirm" => Some("any string is OK".to_owned()),
+                    "prompt" => Some(format!("{default}!")),
+                    _ => None,
+                };
+                self.dialogs.push((kind, message, default));
+                Ok(Answer::MaybeString(answer))
             }
             // A document with no policy compiles any code (M33.1).
             Call::CodeAllowed { .. } => Ok(Answer::String(String::new())),
