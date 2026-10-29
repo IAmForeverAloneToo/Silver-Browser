@@ -28,7 +28,10 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "align-content",
     "align-items",
     "align-self",
+    "aspect-ratio",
     "background-color",
+    "background-position-x",
+    "background-position-y",
     "border-bottom-color",
     "border-bottom-left-radius",
     "border-bottom-right-radius",
@@ -103,9 +106,11 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "position",
     "r",
     "right",
+    "rotate",
     "row-gap",
     "rx",
     "ry",
+    "scale",
     "shape-rendering",
     "stop-color",
     "stop-opacity",
@@ -186,6 +191,27 @@ pub fn computed_value(style: &ComputedStyle, name: &str) -> Option<String> {
             .as_ref()
             .map_or_else(|| "normal".to_owned(), |s| s.to_string()),
         "background-color" => color(style.background_color),
+        // Gap batch E: each layer's position along one axis (G40).
+        "background-position-x" | "background-position-y" => {
+            let axis = usize::from(name.ends_with('y'));
+            let parts: Option<Vec<String>> = style
+                .background()
+                .position
+                .iter()
+                .map(|p| length_percentage(&p[axis]))
+                .collect();
+            parts?.join(", ")
+        }
+        // `auto`, a ratio, or both (G36).
+        "aspect-ratio" => {
+            let ratio =
+                |r: &crate::computed::Ratio| format!("{} / {}", number(r.width), number(r.height));
+            match &style.image().aspect_ratio {
+                crate::computed::AspectRatio::Auto => "auto".to_owned(),
+                crate::computed::AspectRatio::Ratio(r) => ratio(r),
+                crate::computed::AspectRatio::AutoOr(r) => format!("auto {}", ratio(r)),
+            }
+        }
         "font-size" => px(style.font_size_px),
         "font-family" => style.font_family.to_string(),
         "display" => match (style.display, style.flow_root) {
@@ -323,6 +349,26 @@ pub fn computed_value(style: &ComputedStyle, name: &str) -> Option<String> {
         "row-gap" => gap(&style.row_gap)?,
         "column-gap" => gap(&style.column_gap)?,
         "opacity" => number(style.effects().opacity),
+        // The individual transforms' (gap batch E: what the math
+        // functions' tests read).
+        "scale" => match style.effects().scale {
+            None => "none".to_owned(),
+            Some([x, y, z]) if z == 1.0 && x == y => number(x),
+            Some([x, y, 1.0]) => format!("{} {}", number(x), number(y)),
+            Some([x, y, z]) => format!("{} {} {}", number(x), number(y), number(z)),
+        },
+        "rotate" => match style.effects().rotate {
+            None => "none".to_owned(),
+            Some(r) => {
+                let angle = format!("{}deg", number(r.angle));
+                match (r.x, r.y, r.z) {
+                    (x, y, z) if x == 0.0 && y == 0.0 && z > 0.0 => angle,
+                    (x, y, z) if y == 0.0 && z == 0.0 && x > 0.0 => format!("x {angle}"),
+                    (x, y, z) if x == 0.0 && z == 0.0 && y > 0.0 => format!("y {angle}"),
+                    (x, y, z) => format!("{} {} {} {angle}", number(x), number(y), number(z)),
+                }
+            }
+        },
         "filter" => {
             use crate::computed::Filter as F;
             let filters = &style.effects().filter;
@@ -561,7 +607,16 @@ fn color(c: Color) -> String {
     if c.a >= 1.0 {
         format!("rgb({r}, {g}, {b})")
     } else {
-        let alpha = (c.a.clamp(0.0, 1.0) * 1000.0).round() / 1000.0;
+        // Two places where they read back as the same byte, else three
+        // (CSSOM section 6.7.2).
+        let a = c.a.clamp(0.0, 1.0);
+        let byte = (a * 255.0).round();
+        let two = (a * 100.0).round() / 100.0;
+        let alpha = if (two * 255.0).round() == byte {
+            two
+        } else {
+            (a * 1000.0).round() / 1000.0
+        };
         format!("rgba({r}, {g}, {b}, {})", number(alpha))
     }
 }
@@ -818,6 +873,15 @@ mod tests {
         // A channel between two bytes goes to the nearer.
         let half = Color::rgba(0.5, 0.1, 1.0, 1.0);
         assert_eq!(color(half), "rgb(128, 26, 255)");
+        // An alpha of a byte: two places where they read back as it.
+        assert_eq!(
+            color(Color::rgba(0.0, 0.5, 0.0, 128.0 / 255.0)),
+            "rgba(0, 128, 0, 0.5)"
+        );
+        assert_eq!(
+            color(Color::rgba(0.0, 0.0, 0.0, 0.125)),
+            "rgba(0, 0, 0, 0.125)"
+        );
         assert_eq!(value("--x"), None);
         assert_eq!(value("fill").as_deref(), Some("rgb(0, 0, 0)"));
         assert_eq!(value("stroke").as_deref(), Some("none"));

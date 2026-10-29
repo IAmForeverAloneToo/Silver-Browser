@@ -11,7 +11,7 @@
 
 use std::f32::consts::{FRAC_PI_2, PI};
 
-use style::computed::{BOTTOM, ComputedStyle, LEFT, RIGHT, TOP};
+use style::computed::{BOTTOM, BorderCollapse, ComputedStyle, Display, LEFT, RIGHT, TOP};
 
 use crate::Rect;
 
@@ -39,9 +39,26 @@ impl RoundedRect {
     /// radii, percentages of the box's width and height, reduced by
     /// section 5.5's factor where adjacent radii add up past their side;
     /// `None` when every radius is zero, so that a square box keeps the
-    /// items it has.
+    /// items it has, and for a table or a part of one whose borders
+    /// collapse, which section 5 has ignore its radii.
     pub fn of(style: &ComputedStyle, rect: Rect) -> Option<RoundedRect> {
         let radii = style.radii.as_deref()?;
+        if style.border_collapse == BorderCollapse::Collapse
+            && matches!(
+                style.display,
+                Display::Table
+                    | Display::InlineTable
+                    | Display::TableRowGroup
+                    | Display::TableHeaderGroup
+                    | Display::TableFooterGroup
+                    | Display::TableRow
+                    | Display::TableColumnGroup
+                    | Display::TableColumn
+                    | Display::TableCell
+            )
+        {
+            return None;
+        }
         let resolved = radii
             .0
             .each_ref()

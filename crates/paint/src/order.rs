@@ -113,6 +113,16 @@ impl Rect {
         px >= self.x && px < self.x + self.w && py >= self.y && py < self.y + self.h
     }
 
+    /// The rectangle grown by `by` all round.
+    fn grown(self, by: f32) -> Rect {
+        Rect {
+            x: self.x - by,
+            y: self.y - by,
+            w: self.w + 2.0 * by,
+            h: self.h + 2.0 * by,
+        }
+    }
+
     /// Whether the two rectangles share any area.
     pub fn meets(&self, other: &Rect) -> bool {
         self.x < other.x + other.w
@@ -281,6 +291,7 @@ pub fn paint_order_in<'a>(
         adopted: HashMap::new(),
         taken: HashSet::new(),
         offsets,
+        ink: 0.0,
     };
     // The roots' containing block is the initial one: as wide as the
     // viewport, from the document's top down without end.
@@ -384,6 +395,36 @@ fn tidy_segments(steps: Vec<Step<'_>>) -> Vec<Step<'_>> {
     out
 }
 
+/// How far past its border box a box's outer shadows reach, in its
+/// own pixels (gap batch E, D52): the offset, the spread and three
+/// standard deviations of the blur.
+fn shadow_reach(f: &Fragment) -> f32 {
+    let shadows = &f.style.effects().box_shadow;
+    if shadows.is_empty() {
+        return 0.0;
+    }
+    shadows
+        .iter()
+        .filter(|s| !s.inset)
+        .map(|s| s.x.abs().max(s.y.abs()) + s.spread.max(0.0) + 1.5 * s.blur)
+        .fold(0.0, f32::max)
+}
+
+/// How far a box's filter reaches past its content, in its own pixels;
+/// `None` for a box with no filter.
+fn filter_ink(f: &Fragment) -> Option<f32> {
+    let filters = &f.style.effects().filter;
+    if filters.is_empty() {
+        return None;
+    }
+    let ops = crate::filter::filter_ops(filters, |_| crate::Rgba8::rgb(0, 0, 0));
+    Some(
+        crate::filter::filter_reach(&ops)
+            .into_iter()
+            .fold(0.0, f32::max),
+    )
+}
+
 /// A group being walked into (M19): its matrix composed with those
 /// around it, from its coordinates to the viewport's; and, when that
 /// only translates and scales, as the document's groups do, its scales
@@ -474,6 +515,10 @@ struct Walk<'a, 'o> {
     viewport: Rect,
     /// The viewport itself, which a fixed box is listed for.
     window: Rect,
+    /// How far past what is listed content still shows, in the
+    /// viewport's pixels: the reach of the filters of the groups being
+    /// walked into (gap batch E, D52).
+    ink: f32,
     /// The viewport's scroll offset: the document's groups' matrix.
     scroll: f32,
     /// Where the fragments walked over have their offsets from (M35.9):
@@ -816,7 +861,7 @@ impl<'a> Walk<'a, '_> {
                 } else {
                     self.viewport
                 };
-                meets_through(group, rect, listed, which)
+                meets_through(group, rect, listed.grown(self.ink), which)
             }
         }
     }
@@ -854,7 +899,7 @@ impl<'a> Walk<'a, '_> {
     #[inline(always)]
     fn own(&mut self, f: &'a Fragment, cb_width: f32) {
         let rect = self.rect_of(f);
-        if !self.visible(rect) {
+        if !self.visible(rect.grown(shadow_reach(f))) {
             return;
         }
         self.steps.push(match f.kind {
@@ -1030,8 +1075,11 @@ impl<'a> Walk<'a, '_> {
                     .groups
                     .last()
                     .map_or(matrix, |outer| outer.matrix.then(&matrix));
-                self.groups
-                    .push(Entered::new(composed, self.viewport, self.window));
+                self.groups.push(Entered::new(
+                    composed,
+                    self.viewport.grown(self.ink),
+                    self.window.grown(self.ink),
+                ));
                 2
             }
             None => {
@@ -1149,13 +1197,20 @@ impl<'a> Walk<'a, '_> {
                 || opacity < 1.0
                 || layer.is_some()
                 || !f.style.effects().filter.is_empty();
-            let composed = Entered::new(
-                w.groups
-                    .last()
-                    .map_or(matrix, |outer| outer.matrix.then(&matrix)),
-                w.viewport,
-                w.window,
-            );
+            let full = w
+                .groups
+                .last()
+                .map_or(matrix, |outer| outer.matrix.then(&matrix));
+            // A filter shows its content past where it lies: what is
+            // listed grows by its reach inside the group.
+            let ink = w.ink;
+            if let Some(reach) = filter_ink(f) {
+                let scale = full
+                    .scale_and_translation()
+                    .map_or(1.0, |(sx, sy, _, _)| sx.abs().max(sy.abs()));
+                w.ink += reach * scale;
+            }
+            let composed = Entered::new(full, w.viewport.grown(w.ink), w.window.grown(w.ink));
             if grouped {
                 w.groups.push(composed);
             }
@@ -1257,6 +1312,7 @@ impl<'a> Walk<'a, '_> {
                     }
                 }
             }
+            w.ink = ink;
             for p in after {
                 w.positioned(p);
             }

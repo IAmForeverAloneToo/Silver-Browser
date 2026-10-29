@@ -1597,10 +1597,18 @@ fn part_fragment(part: &LayoutBox, rect: Rect) -> Fragment {
 
 /// A table part's background under one cell: a fragment of the part's
 /// style with no border, over the cell's border box, naming the part.
+/// Its shadows and filter are the part's own fragment's, drawn once
+/// round the part (gap batch E).
 fn background_fragment(part: &LayoutBox, rect: Rect) -> Fragment {
     let mut fragment = box_fragment(rect.w, rect.h, part);
     fragment.x = rect.x;
     fragment.y = rect.y;
+    let style = Arc::make_mut(&mut fragment.style);
+    if !style.effects().box_shadow.is_empty() || !style.effects().filter.is_empty() {
+        let effects = style.effects_mut();
+        effects.box_shadow.clear();
+        effects.filter.clear();
+    }
     Arc::make_mut(&mut fragment.style).border_style = [BorderStyle::None; 4];
     Arc::make_mut(&mut fragment.style).position = Position::Static;
     Arc::make_mut(&mut fragment.style).float = Float::None;
@@ -2291,6 +2299,25 @@ mod tests {
         assert!(last(5) < first(7), "column backgrounds before the group");
         assert!(last(7) < first(8), "group backgrounds before the first row");
         assert!(last(8) < first(9), "row backgrounds before the cells");
+    }
+
+    #[test]
+    fn a_rows_shadow_and_filter_are_its_own_not_each_cells() {
+        // Gap batch E: the row's fragment keeps them, to be drawn once
+        // round the row; its backgrounds under the cells have none.
+        // Nodes: table 4, tr 5, td 6, td 7.
+        let layout = document_of(
+            "<table><tr><td></td><td></td></tr></table>",
+            "td { height: 10px; } tr { background: red; box-shadow: 0 0 9px black;              filter: invert(1) }",
+        );
+        let row = fragments_of(&layout, 5);
+        assert_eq!(row.len(), 3);
+        assert_eq!(row[0].style.effects().box_shadow.len(), 1);
+        assert_eq!(row[0].style.effects().filter.len(), 1);
+        for under in &row[1..] {
+            assert!(under.style.effects().box_shadow.is_empty());
+            assert!(under.style.effects().filter.is_empty());
+        }
     }
 
     #[test]

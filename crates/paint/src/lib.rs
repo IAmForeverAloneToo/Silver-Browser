@@ -1988,7 +1988,9 @@ fn push_box(
         (outer.y + outer.h - (inner.y + inner.h)).max(0.0),
         (inner.x - outer.x).max(0.0),
     ];
+    // The canvas takes the body's background, not its shadows.
     let canvas_took = f.generated.is_none() && canvas_node == Some(f.node);
+    push_shadows(items, f, outer, false);
     if !canvas_took {
         let placed = Placed {
             by: f,
@@ -1998,10 +2000,9 @@ fn push_box(
         };
         // The colour under every layer, in the bottom one's clip box
         // (CSS Backgrounds 3 section 2.7).
-        push_shadows(items, f, outer, false);
         if f.style.background_color.a > 0.0 {
             let clip = f.style.background().color_clip();
-            let r = placed.box_of(clip);
+            let r = placed.clip_of(clip);
             let color = to_rgba8(f.style.background_color);
             // A rounded box's colour fills its clip box's curve (gap
             // batch E, D50).
@@ -2028,8 +2029,8 @@ fn push_box(
             }
         }
         push_layers(items, f, placed, backdrop);
-        push_shadows(items, f, outer, true);
     }
+    push_shadows(items, f, outer, true);
     if !push_border_image(items, f, outer, widths, backdrop.pictures)
         && f.style.border_style.iter().any(|s| s.paints())
     {
@@ -2350,6 +2351,25 @@ struct Placed<'f> {
 }
 
 impl Placed<'_> {
+    /// The box a background clipped to `which` is drawn in: the padding
+    /// box for the border box of a rounded box whose border is solid and
+    /// opaque all round, which hides what it covers, so that the
+    /// background does not show at the border's anti-aliased outer edge,
+    /// as the reference browser keeps it from showing (gap batch E).
+    fn clip_of(&self, which: BackgroundBox) -> Rect {
+        let style = &self.by.style;
+        let hidden = style.radii.is_some()
+            && (0..4).all(|side| {
+                style.border_style[side] == BorderStyle::Solid
+                    && style.border_width[side] > 0.0
+                    && style.border_color[side].a >= 1.0
+            });
+        if which == BackgroundBox::BorderBox && hidden {
+            return self.box_of(BackgroundBox::PaddingBox);
+        }
+        self.box_of(which)
+    }
+
     /// The box `which` names, on whole pixels: the border box, the
     /// padding box, or the content box, whose padding may be a
     /// percentage of the containing block's width.
@@ -2425,7 +2445,7 @@ fn push_layers(
             Some(Image::Gradient(_)) => (images::Vector::default(), None),
             None => continue,
         };
-        let area = placed.area.unwrap_or_else(|| placed.box_of(layer.clip));
+        let area = placed.area.unwrap_or_else(|| placed.clip_of(layer.clip));
         let mut positioning = placed.box_of(layer.origin);
         match layer.attachment {
             // Inside a transformed box it is `scroll` (CSS Transforms 1
@@ -4727,6 +4747,96 @@ mod fragment_tests {
                 "border"
             ]
         );
+    }
+
+    #[test]
+    fn a_box_off_the_viewport_is_listed_where_its_shadow_or_filter_reaches_it() {
+        // Gap batch E, D52: what a box casts into view is drawn from the
+        // box, wherever it lies.
+        let listed = |effect: &str| {
+            display_list_of(
+                Element::new("div"),
+                &format!(
+                    "div {{ width: 300px; height: 300px; position: relative; top: -1000px;                      left: -1000px; background-color: red; {effect} }}"
+                ),
+            )
+            .items
+            .iter()
+            .any(|i| matches!(i, DisplayItem::Rect { x, .. } if *x == -1000.0))
+        };
+        assert!(listed("filter: drop-shadow(1000px 1000px 0 green)"));
+        assert!(listed("box-shadow: 1000px 1000px green"));
+        assert!(!listed("box-shadow: 10px 10px green"));
+        assert!(!listed("filter: drop-shadow(10px 10px 0 green)"));
+    }
+
+    #[test]
+    fn the_canvas_takes_the_bodys_background_and_not_its_shadow() {
+        // Gap batch E, D52: the body's colour is the canvas's; its shadow
+        // is still drawn round it.
+        let list = display_list_of(
+            Element::new("html").push(Element::new("body").text("x")),
+            "body { margin: 20px; background: white; box-shadow: 0 0 0 4px red }",
+        );
+        let shadows: Vec<Rgba8> = list
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                DisplayItem::Shadow { color, .. } => Some(*color),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(shadows, [Rgba8::rgb(255, 0, 0)]);
+    }
+
+    #[test]
+    fn a_table_whose_borders_collapse_is_square_with_its_cells() {
+        // Gap batch E: Backgrounds 3 section 5 has the radii of a table
+        // and its parts ignored in the collapsing border model.
+        let paths = |collapse: &str| {
+            let table = Element::new("table").push(
+                Element::new("tr")
+                    .push(Element::new("td").text("a"))
+                    .push(Element::new("td").text("b")),
+            );
+            let css = format!(
+                "table {{ border-collapse: {collapse}; border: 4px solid green;                  border-radius: 10px }}                  td {{ border: 4px solid green; border-radius: 10px; background: blue }}"
+            );
+            display_list_of(table, &css)
+                .items
+                .iter()
+                .filter(|i| matches!(i, DisplayItem::Path { .. }))
+                .count()
+        };
+        assert_eq!(paths("collapse"), 0);
+        assert!(paths("separate") > 0);
+    }
+
+    #[test]
+    fn an_opaque_rounded_border_keeps_the_background_to_its_padding_box() {
+        // Gap batch E: what the border hides is not drawn, so that it
+        // shows at none of its anti-aliased edge.
+        let reach = |border: &str| {
+            let list = display_list_of(
+                Element::new("div"),
+                &format!(
+                    "div {{ width: 50px; height: 50px; border: 5px solid {border};                      border-radius: 6px; background: red }}"
+                ),
+            );
+            list.items
+                .iter()
+                .find_map(|i| match i {
+                    DisplayItem::Path { contours, color } if *color == Rgba8::rgb(255, 0, 0) => {
+                        let xs = contours[0].iter().map(|p| p.0);
+                        Some(xs.fold(f32::INFINITY, f32::min))
+                    }
+                    _ => None,
+                })
+                .expect("the background")
+        };
+        assert_eq!(reach("green"), 5.0);
+        assert_eq!(reach("rgba(0, 128, 0, 0.5)"), 0.0);
+        assert_eq!(reach("green; border-left-style: dashed"), 0.0);
     }
 
     #[test]

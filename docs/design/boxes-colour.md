@@ -307,6 +307,11 @@ finding no panics on extreme radii, blurs and spreads.
 - *`display: flow-root list-item`* and `inline list-item` (G19), and
   `display: contents`.
 - *The canvas element's `filter`* attribute of 2D contexts (G81).
+- Found at the acceptance and registered: `currentcolor` kept as a
+  keyword in computed values (G226), infinite calculations kept as
+  written (G228), outlines and hit testing by the curve (G231), a flex
+  or grid item's `aspect-ratio` in its container's sizing (G36), and
+  gradients in `getComputedStyle` (G232).
 
 ## 3. Order of work
 
@@ -332,3 +337,78 @@ finding no panics on extreme radii, blurs and spreads.
 
 What the work found that this note did not say, or said otherwise, by
 step:
+
+- **Colours (step 1, D48).** `Color` grew from 16 to 32 bytes and
+  `ComputedStyle` from 704 to 800. The conversions follow the spec's
+  sample code; the reference browser's own matrices differ in the
+  fifth figure, which the tests allow. A component is kept within
+  1e6 (`MAX_COMPONENT`) so that the conversions stay finite, and a
+  `color-mix()` nests 32 deep at most. `currentcolor` is resolved by a
+  pre-pass of `color` in the cascade; SVG's `fill`, `stroke` and
+  `stop-color` keep it as a keyword. A colour component with a
+  relative length is refused (G228). At the acceptance the reference
+  browser was the oracle for WPT's 1,503 computed colours: `hsl()` and
+  `hwb()` keep their own components and `none`s (`Space::Hsl` and
+  `Space::Hwb` are legacy too), a colour of the mix's own space is
+  taken as it is, a converted one carries `none` by category, all
+  three together and the last two as a pair, and its hue is powerless
+  at a chroma of 0.02 or less, a saturation of 0, or whiteness and
+  blackness filling it; `calc()` is taken in the legacy functions;
+  percentages that sum to 0 mix evenly to a transparent colour. 38 of
+  the 1,503 differ from the reference, all near-greys whose hue its
+  own arithmetic picks.
+- **The colour scheme (step 2, D49).** `color-scheme` is a thin pointer
+  and the used scheme a flag. The page's scheme is read when a
+  cascader is made; the user's preference is one more media answer,
+  and a change of it restyles only where an element's scheme came from
+  it. A frame whose root is dark gets the dark canvas. The UA sheet's
+  controls take system colours and `light-dark()`.
+- **Math functions (step 3).** `Expr::Call` with an `Op`; an argument's
+  type chooses degrees or radians at parse. At the acceptance: a
+  function left open at the end of a value closes, `pow()` of a unit
+  base to an infinite power and `log()` to base 1 are NaN, and
+  percentages compared with no basis fold to one.
+- **Boxes (step 4).** `flow-root` is a flag beside `Display::Block`. The
+  root's box establishes a block formatting context (G11); layout's unit
+  fixtures clear the flag. `aspect-ratio` sizes blocks, inline-blocks
+  and absolutely positioned boxes; a flex or grid item's ratio in its
+  container's sizing is not done (G36). `background-position-x` and `-y`
+  write one axis of the pairs, an axis's list the longer of the two.
+- **Rounded boxes (step 5, D50).** Corners divide between sides on the
+  line from the border box's corner to the padding box's, found by
+  bisection, as the reference browser divides them. A collapsed
+  table and its parts ignore their radii (section 5). An opaque solid
+  border clips the background to the padding box, as the reference
+  browser keeps its colour from the border's anti-aliased edge.
+  Outlines and hit testing take the rectangles (G231).
+- **Rounded clips (step 6, D51).** Not a `PushRoundedClip` item but a
+  mask on `PushGroup`: a rounded clip is a group with its scratch,
+  damage and layers; the GPU erases outside the mask.
+- **Shadows (step 7, D52).** In `Effects`, at most 64; render's
+  `shadow` module blurs by three box blurs, sigma at most 256. The
+  spread follows section 7.1.1's formula for small radii. At the
+  acceptance: the canvas took the body's shadow with its background;
+  a table part's background fragments carried its shadow; paint's
+  viewport cull did not count a shadow's reach.
+- **Filters (step 8, D52).** Each colour function is its own matrix,
+  applied and clamped alone, not composed as this note said. A filtered
+  box is a group, never a layer. At the acceptance: the scratch read
+  what shows grown the wrong way (a drop shadow lost its strip at a
+  band's edge) and only on the raster (a box off screen cast nothing);
+  `scratch_region` takes the items' reach anywhere, `extent` lets a
+  filtered item's damage past the clip, and paint's walk grows what it
+  lists by a filtered group's reach. A calculation below an amount's
+  range is clamped to it.
+- **Conic gradients (step 9).** A span between stops is mixed in 64
+  pieces by `style::color::interpolate`, its ends too, so that a stop's
+  `none` takes each neighbour's component on its side; a colour with a
+  `none` mixes in Oklab by default. A hard conic stop is not
+  anti-aliased as the reference's is (G37).
+- **The acceptance (step 10).** The WPT runner gave testharness pages
+  no viewport while their scripts ran: their `vw` and `vh` were 0.
+  Random filtered groups in render's partial-redraw tests found a bug
+  of M19's: `update_layers` asked whether a layer was held after the
+  groups inside it of the same key had dropped it, so the change from
+  layer to direct drawing was no damage; both backends are mended.
+  The legacy colours' alpha is written to two places where they read
+  back as the same byte. Found and registered: G224 to G232.

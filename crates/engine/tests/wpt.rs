@@ -751,6 +751,9 @@ fn load_waking(server: &TestServer, path: &str) -> Result<Loaded, String> {
     engine.set_waker(move || {
         let _ = wake.send(());
     });
+    // The window's size while the page loads and its scripts run, as the
+    // reference browser is run: 800 by 600.
+    engine.set_viewport(WIDTH, HEIGHT);
     engine.navigate(test_url(server, path));
     let deadline = Instant::now() + LOAD;
     loop {

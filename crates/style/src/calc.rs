@@ -429,10 +429,17 @@ impl Op {
             Op::Acos => a.acos().to_degrees(),
             Op::Atan => a.atan().to_degrees(),
             Op::Atan2 => a.atan2(b.unwrap_or(f64::NAN)).to_degrees(),
-            Op::Pow => a.powf(b.unwrap_or(f64::NAN)),
+            // A unit base to an infinite power is NaN, as in JavaScript.
+            Op::Pow => match b {
+                Some(b) if b.is_infinite() && a.abs() == 1.0 => f64::NAN,
+                Some(b) => a.powf(b),
+                None => f64::NAN,
+            },
             Op::Sqrt => a.sqrt(),
             Op::Hypot => args.iter().map(|v| v * v).sum::<f64>().sqrt(),
             Op::Log => match b {
+                // A base of 1 has no logarithms.
+                Some(1.0) => f64::NAN,
                 Some(base) => a.ln() / base.ln(),
                 None => a.ln(),
             },
@@ -491,6 +498,19 @@ pub struct Parsed {
     /// Whether the calculation's type is a percentage, in a place that
     /// takes a number or a percentage.
     percentage: bool,
+    /// Whether percentages are compared without their basis, which is
+    /// never negative but where [`Parsed::of_a_signed_basis`] says.
+    fold: bool,
+}
+
+impl Parsed {
+    /// The calculation where its percentages' basis may be negative, a
+    /// `<position>`'s: percentages are not compared before it is known
+    /// (the reference browser's, gap batch E).
+    pub fn of_a_signed_basis(mut self) -> Self {
+        self.fold = false;
+        self
+    }
 }
 
 /// Whether `tokens`, white space aside, are one math function this
@@ -525,7 +545,11 @@ pub fn parse(tokens: &[Token], want: Want) -> Option<Parsed> {
     }
     let percentage = matches!(want, Want::NumberOrPercentage | Want::Percentage)
         && ty.powers[Base::Percent as usize] == 1;
-    Some(Parsed { expr, percentage })
+    Some(Parsed {
+        expr,
+        percentage,
+        fold: true,
+    })
 }
 
 fn trim(tokens: &[Token]) -> &[Token] {
@@ -773,14 +797,17 @@ impl Parser<'_> {
         }
     }
 
-    /// Takes the `)` that ends a function or a parenthesized sum.
+    /// Takes the `)` that ends a function or a parenthesized sum; the
+    /// end of the value closes any still open (Syntax 3 section 5.4.8).
     fn close(&mut self) -> Option<()> {
         self.skip_whitespace();
-        if matches!(self.peek(), Some(Token::CloseParen)) {
-            self.pos += 1;
-            Some(())
-        } else {
-            None
+        match self.peek() {
+            Some(Token::CloseParen) => {
+                self.pos += 1;
+                Some(())
+            }
+            None => Some(()),
+            _ => None,
         }
     }
 
@@ -1027,7 +1054,7 @@ impl Parsed {
     /// Computes the calculation for an element: its lengths resolved by
     /// `lengths`, and its percentages by `basis` where it is known.
     pub fn compute(&self, lengths: &dyn Lengths, basis: Option<f64>) -> Computed {
-        let simplified = simplify(&self.expr, lengths, basis);
+        let simplified = simplify(&self.expr, lengths, basis, self.fold);
         match simplified {
             Folded::Value(v) => {
                 let v = if v.is_nan() { 0.0 } else { v };
@@ -1049,7 +1076,7 @@ impl Parsed {
     /// a number, as `steps()`'s count does (M22). `None` when a
     /// percentage is left in it.
     pub fn uncensored(&self, lengths: &dyn Lengths) -> Option<f64> {
-        match simplify(&self.expr, lengths, None) {
+        match simplify(&self.expr, lengths, None, self.fold) {
             Folded::Value(v) => Some(v),
             Folded::Tree(_) => None,
         }
@@ -1076,7 +1103,7 @@ impl Folded {
 /// computed. A percentage with no basis is the only leaf left unknown;
 /// every subtree without one folds to its value, and a percentage's
 /// products with numbers fold into it.
-fn simplify(expr: &Expr, lengths: &dyn Lengths, basis: Option<f64>) -> Folded {
+fn simplify(expr: &Expr, lengths: &dyn Lengths, basis: Option<f64>, fold: bool) -> Folded {
     match expr {
         Expr::Number(v) => Folded::Value(*v),
         Expr::Percent(p) => match basis {
@@ -1090,13 +1117,13 @@ fn simplify(expr: &Expr, lengths: &dyn Lengths, basis: Option<f64>) -> Folded {
             },
             Unit::Angle(f) | Unit::Time(f) | Unit::Frequency(f) | Unit::Resolution(f) => v * f,
         }),
-        Expr::Negate(child) => match simplify(child, lengths, basis) {
+        Expr::Negate(child) => match simplify(child, lengths, basis, fold) {
             Folded::Value(v) => Folded::Value(-v),
             Folded::Tree(Expression::Percent(p)) => Folded::Tree(Expression::Percent(-p)),
             Folded::Tree(Expression::Negate(inner)) => Folded::Tree(*inner),
             Folded::Tree(tree) => Folded::Tree(Expression::Negate(Box::new(tree))),
         },
-        Expr::Invert(child) => match simplify(child, lengths, basis) {
+        Expr::Invert(child) => match simplify(child, lengths, basis, fold) {
             Folded::Value(v) => Folded::Value(1.0 / v),
             Folded::Tree(Expression::Invert(inner)) => Folded::Tree(*inner),
             Folded::Tree(tree) => Folded::Tree(Expression::Invert(Box::new(tree))),
@@ -1106,7 +1133,7 @@ fn simplify(expr: &Expr, lengths: &dyn Lengths, basis: Option<f64>) -> Folded {
             let mut percent = None::<f64>;
             let mut rest = Vec::new();
             for child in children {
-                match simplify(child, lengths, basis) {
+                match simplify(child, lengths, basis, fold) {
                     Folded::Value(v) => *value.get_or_insert(0.0) += v,
                     Folded::Tree(Expression::Percent(p)) => {
                         *percent.get_or_insert(0.0) += f64::from(p)
@@ -1132,7 +1159,7 @@ fn simplify(expr: &Expr, lengths: &dyn Lengths, basis: Option<f64>) -> Folded {
             let mut factor = 1.0;
             let mut rest = Vec::new();
             for child in children {
-                match simplify(child, lengths, basis) {
+                match simplify(child, lengths, basis, fold) {
                     Folded::Value(v) => factor *= v,
                     Folded::Tree(Expression::Product(inner)) => rest.extend(inner.into_vec()),
                     Folded::Tree(tree) => rest.push(tree),
@@ -1167,13 +1194,27 @@ fn simplify(expr: &Expr, lengths: &dyn Lengths, basis: Option<f64>) -> Folded {
             let mut value = None::<f64>;
             let mut rest = Vec::new();
             for child in children {
-                match simplify(child, lengths, basis) {
+                match simplify(child, lengths, basis, fold) {
                     Folded::Value(v) => value = Some(value.map_or(v, |w| pick(w, v))),
                     Folded::Tree(tree) => rest.push(tree),
                 }
             }
             if rest.is_empty() {
                 return Folded::Value(value.unwrap_or(f64::NAN));
+            }
+            // Percentages alone, their basis not negative, are one
+            // percentage: `min(50%, 0%)` is `0%`.
+            if fold && value.is_none() {
+                let percents: Option<Vec<f64>> = rest
+                    .iter()
+                    .map(|t| match t {
+                        Expression::Percent(p) => Some(f64::from(*p)),
+                        _ => None,
+                    })
+                    .collect();
+                if let Some(p) = percents.and_then(|p| p.into_iter().reduce(pick)) {
+                    return Folded::Tree(Expression::Percent(p as f32));
+                }
             }
             rest.extend(value.map(|v| Expression::Value(v as f32)));
             if rest.len() == 1 {
@@ -1188,15 +1229,24 @@ fn simplify(expr: &Expr, lengths: &dyn Lengths, basis: Option<f64>) -> Folded {
         }
         Expr::Clamp(low, value, high) => {
             let bound = |b: &Option<Box<Expr>>, none: f64| match b {
-                Some(b) => simplify(b, lengths, basis),
+                Some(b) => simplify(b, lengths, basis, fold),
                 None => Folded::Value(none),
             };
             let low = bound(low, f64::NEG_INFINITY);
-            let value = simplify(value, lengths, basis);
+            let value = simplify(value, lengths, basis, fold);
             let high = bound(high, f64::INFINITY);
             match (low, value, high) {
                 (Folded::Value(l), Folded::Value(v), Folded::Value(h)) => {
                     Folded::Value(clamp(l, v, h))
+                }
+                (
+                    Folded::Tree(Expression::Percent(l)),
+                    Folded::Tree(Expression::Percent(v)),
+                    Folded::Tree(Expression::Percent(h)),
+                ) if fold => {
+                    Folded::Tree(Expression::Percent(
+                        clamp(f64::from(l), f64::from(v), f64::from(h)) as f32,
+                    ))
                 }
                 (low, value, high) => Folded::Tree(Expression::Clamp(Box::new([
                     low.into_expression(),
@@ -1206,7 +1256,10 @@ fn simplify(expr: &Expr, lengths: &dyn Lengths, basis: Option<f64>) -> Folded {
             }
         }
         Expr::Call(op, args) => {
-            let folded: Vec<Folded> = args.iter().map(|a| simplify(a, lengths, basis)).collect();
+            let folded: Vec<Folded> = args
+                .iter()
+                .map(|a| simplify(a, lengths, basis, fold))
+                .collect();
             if folded.iter().all(|f| matches!(f, Folded::Value(_))) {
                 let values: Vec<f64> = folded
                     .iter()
@@ -1332,11 +1385,19 @@ mod tests {
         near("hypot(3px, 4px)", Want::Length, 5.0);
         near("calc(log(8, 2) * 1px)", Want::Length, 3.0);
         near("calc(exp(0) * 1px)", Want::Length, 1.0);
+        // NaN, which computes to 0.
+        near("calc(pow(-1, infinity) * 1px)", Want::Length, 0.0);
+        near("calc(log(2, 1) * 1px)", Want::Length, 0.0);
         near("calc(1px * atan2(1, 1) / 1deg)", Want::Length, 45.0);
         near("calc(asin(1))", Want::Angle, 90.0);
         near("acos(0)", Want::Angle, 90.0);
         near("atan(1)", Want::Angle, 45.0);
         near("atan2(1, 0)", Want::Angle, 90.0);
+        near("hypot(1vw)", Want::Length, 8.0);
+        near("calc(1px * pow(2, sqrt(100))", Want::Length, 1024.0);
+        near("calc(1px * (2 + 3", Want::Length, 5.0);
+        assert!(parse(&css::tokenizer::tokenize("calc(1px * (2 + 3"), Want::Length).is_some());
+        assert!(parse(&css::tokenizer::tokenize("calc(1px 2px"), Want::Length).is_none());
         near("calc(tan(45deg) * 1px)", Want::Length, 1.0);
         // A percentage of a length is kept for layout.
         let Some(Computed::Expression(e)) = compute("round(55%, 10px)", Want::LengthPercentage)
@@ -1441,6 +1502,26 @@ mod tests {
             compute("calc(50%)", Want::LengthPercentage),
             Some(Computed::Percent(50.0))
         );
+        // Percentages compared, their basis not negative, are one; of a
+        // basis that may be, they wait for it.
+        for (source, want) in [
+            ("min(50%, 0%)", 0.0),
+            ("max(-40%, 50%)", 50.0),
+            ("clamp(50%, 80%, 70%)", 70.0),
+        ] {
+            assert_eq!(
+                compute(source, Want::NumberOrPercentage),
+                Some(Computed::Percent(want)),
+                "{source}"
+            );
+        }
+        let signed = parse(&css::tokenize("min(0%, 100%)"), Want::LengthPercentage)
+            .unwrap()
+            .of_a_signed_basis();
+        let Computed::Expression(e) = signed.compute(&Bases, None) else {
+            panic!("an expression");
+        };
+        assert_eq!(e.evaluate(-50.0), -50.0);
         let Some(Computed::Percent(third)) = compute("calc(100% / 3)", Want::NumberOrPercentage)
         else {
             panic!("a percentage");
@@ -1591,7 +1672,8 @@ mod tests {
         assert!(is_math_function(&css::tokenize("Min(1px, 2px)")));
         assert!(!is_math_function(&css::tokenize("rgb(1, 2, 3)")));
         assert_eq!(compute("calc(1px) calc(2px)", Want::Length), None);
-        assert_eq!(compute("calc(1px", Want::Length), None);
+        // The end of the value closes it, as the reference browser does.
+        assert!(compute("calc(1px", Want::Length).is_some());
         assert_eq!(compute("calc()", Want::Length), None);
         assert_eq!(compute("calc(1px 2px)", Want::Length), None);
         assert_eq!(compute("calc(var(--x))", Want::Length), None);

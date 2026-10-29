@@ -2712,7 +2712,7 @@ design note first and the milestones' method:
        subtests expected to fail with reasons), the note's probe page
        the reference's lines but for two, and the gaps found G216-G223
        (the note's section 4).
-- [ ] GE Boxes and colour (`docs/design/boxes-colour.md`, D48-D52):
+- [x] GE Boxes and colour (`docs/design/boxes-colour.md`, D48-D52):
        `border-radius`, `box-shadow` and `filter` (G32), the colour
        functions past Color 3 and `color-mix()` (G16), `color-scheme`,
        `light-dark()` and the system colours (G6), Values 4's math
@@ -2720,7 +2720,13 @@ design note first and the milestones' method:
        margins (G11), `aspect-ratio` on boxes not replaced (G36),
        `background-position-x` and `-y` (G40), conic gradients and
        gradients' interpolation methods (G37, part). Opened at the
-       maintainer's word, 29 October 2026.
+       maintainer's word, 29 October 2026. Done 29 October 2026: WPT's
+       css-color, css-color-adjust, css-display, aspect-ratio and
+       filter-effects directories pulled, and the testharness.js tests
+       of css-backgrounds, css-values and css-images (9,431 tests),
+       every failure with its reason; colours held to the reference
+       browser's on WPT's 1,503 computed cases, five reference pages
+       (143-147); the gaps found G224-G232 (the note's section 4).
 
 Deferred from the milestones above, each with what it waits on:
 
@@ -2748,9 +2754,10 @@ Deferred from the milestones above, each with what it waits on:
        would make a page a few kilobytes rather than 420 KiB; the
        page-margin boxes, running headers and `counter(page)`; and
        `print-color-adjust: economy`. Deferred from M20.4.
-- [ ] G6 The `color-scheme` property, the dark canvas and form controls
+- [x] G6 The `color-scheme` property, the dark canvas and form controls
        a page asking for the dark scheme gets, `light-dark()` and the
        system colours (CSS Color Adjustment 1). Deferred from M20.3.
+       Done in gap batch E (D49).
 - [ ] G7 `revert` and `revert-layer`, which roll a property back to an
        origin or a layer. Deferred from M20.2.
 - [ ] G8 `@container`, `@scope`, CSS nesting (with `@media` inside a
@@ -2768,7 +2775,7 @@ Deferred from the milestones above, each with what it waits on:
 - [ ] G11 The root element's margins (CSS2 §8.3.1): a child's top margin
        collapses through the root's box here, which the root's box should
        not let it, so that the root's box starts below the margin. Found
-       at M20.
+       at M20. Done in gap batch E.
 - [ ] G12 What M20's web-platform-tests ask of the rest of the engine:
        the `visibility` property; `@font-face` and the page's fonts,
        which `font-format()` and `font-tech()` would answer; `:has()`;
@@ -2786,8 +2793,11 @@ Deferred from the milestones above, each with what it waits on:
        `abs()`, `sign()`, the trigonometric functions, `pow()`,
        `sqrt()`, `hypot()`, `log()` and `exp()`; Values 5's
        `progress()`, `random()`, `calc-size()`, `if()`, `inherit()`,
-       `@function` and the spread syntax. Deferred from M21.2.
-- [ ] G16 Colour functions, `rgb()`, `hsl()` and the rest, and
+       `@function` and the spread syntax. Deferred from M21.2. Values 4's
+       functions done in gap batch E; Values 5's remain, with
+       `calc-mix()`, `ident()`, `sibling-index()`, `sibling-count()` and
+       `attr()`'s types.
+- [x] G16 Colour functions, `rgb()`, `hsl()` and the rest, and
        `currentcolor` outside `text-decoration-color`; the engine takes
        hexadecimal and named colours alone. Found again at M21, and at
        M22, whose reference pages write theirs in hexadecimal. `rgb()`
@@ -2795,6 +2805,7 @@ Deferred from the milestones above, each with what it waits on:
        script to write back; `hsl()`, `hsla()` and `hwb()` since. `lab()`,
        `lch()`, `oklab()`, `oklch()`, `color()` and `color-mix()` remain,
        and `currentcolor` in the properties that do not yet take it.
+       Done in gap batch E (D48); relative colours are G224.
 - [ ] G17 `@counter-style` and `symbols()`, the complex predefined
        counter styles of Counter Styles 3 §7 (the longhand Chinese,
        Japanese and Korean styles, `ethiopic-numeric`) and `speak-as`.
@@ -2819,8 +2830,8 @@ Deferred from the milestones above, each with what it waits on:
        `font-feature-settings`, `line-height` and the `font` shorthand,
        which M5.6, M8.2 and M20's note pointed at M21 and none of its
        items holds. Registered at M21.
-- [ ] G23 `display: flow-root`, which the cascade does not take. Found
-       at M21.
+- [x] G23 `display: flow-root`, which the cascade does not take. Found
+       at M21. Done in gap batch E.
 - [ ] G24 Logical properties (`padding-inline-start` and the rest) and
        `:dir()`, which HTML's rules give lists, so that a right-to-left
        list is padded on its right. Found at M21.6.
@@ -2857,9 +2868,10 @@ Deferred from the milestones above, each with what it waits on:
        have asked for. Found at M22. *(M33: the viewport takes it for
        its scrollbar and the user's scrolling; the element still clips
        as its own box.)*
-- [ ] G32 `border-radius`, `box-shadow` and `filter`, which no
+- [x] G32 `border-radius`, `box-shadow` and `filter`, which no
        milestone holds: M22's spinner is a square ring for want of the
-       first. Found at M22.
+       first. Found at M22. Done in gap batch E (D50-D52); what remains
+       of rounded corners is G231, `backdrop-filter` G227.
 - [ ] G33 A CSS transition's side effect (Web Animations 1 §5.6): the
        box acting as if `will-change` named the property it transitions,
        so that a transition of a transform from `none`, or of an
@@ -2874,17 +2886,25 @@ Deferred from the milestones above, each with what it waits on:
 - [ ] G35 `srcset`, `sizes` and `<picture>`, and EXIF density correction
        (HTML 4.8.4.3.6): an `img`'s `src` is its fallback. Found at M23.
 - [ ] G36 `aspect-ratio` on boxes that are not replaced: it computes but
-       sizes only replaced boxes. Found at M23.
+       sizes only replaced boxes. Found at M23. Blocks, inline-blocks
+       and absolutely positioned boxes done in gap batch E; a flex or
+       grid item's ratio in its container's own sizing remains.
 - [ ] G37 Images 4: conic gradients, `<color-interpolation-method>`,
        `image()`, `cross-fade()`, `element()` and `image-resolution`.
-       Found at M23.
+       Found at M23. Conic gradients and interpolation methods done in
+       gap batch E; a conic stop at a calculation of an angle and a
+       percentage, and a hard conic stop's anti-aliasing, remain with
+       the rest.
 - [ ] G38 Colour management: embedded ICC profiles, `gAMA`, `cHRM` and
        `cICP` are not applied; decoded pixels are taken as sRGB. Found
        at M23.
 - [ ] G39 Progressive display of an image not yet completely loaded,
        which HTML allows; an image is shown whole or not at all. Found
        at M23.
-- [ ] G40 Backgrounds 4's `background-position-x` and `-y`. Found at M23.
+- [x] G40 Backgrounds 4's `background-position-x` and `-y`. Found at M23.
+       Done in gap batch E; the two kept as one list of pairs, an
+       axis's list the longer of the two, and the logical keywords
+       (`x-start` and the rest) remain.
 - [ ] G41 Module scripts, import maps and speculation rules: a `script`
        of those types is recognized and not run. Found at M24.
 - [ ] G42 `Intl` and `Temporal`, which QuickJS-ng does not implement.
@@ -3596,6 +3616,43 @@ Deferred from the milestones above, each with what it waits on:
        not when `new Worker()` or `importScripts()` parses it: revoked
        at once after, it is gone (the URL Standard binds the entry at
        parse time). Found in gap batch A.
+- [ ] G224 Relative colour syntax (`rgb(from red r g b)` and the
+       other functions' `from`) and Color 5's `contrast-color()`, and
+       `color()`'s custom profiles (`@color-profile`). Found in gap
+       batch E (its note's section 2).
+- [ ] G225 Gamut mapping: a colour past sRGB is clipped channel by
+       channel when drawn, as the reference browser draws it, not
+       mapped by OKLCH chroma reduction as css-color-4 section 13 asks
+       (`lch(100% 110 60)` should be white). Found in gap batch E.
+- [ ] G226 `currentcolor` kept as a keyword in computed values: it is
+       resolved when a colour computes (D48), so a property that
+       inherits a value holding it explicitly (`background-color:
+       inherit` under a `color-mix()` with `currentcolor`) takes the
+       parent's colour, not its own. Found in gap batch E.
+- [ ] G227 `backdrop-filter`. Found in gap batch E (its note's section
+       2).
+- [ ] G228 Infinite and NaN calculations kept as such where the value
+       is serialized (`calc(infinity)`, `oklch(0.5 calc(infinity) 0)`),
+       and a relative length in a colour's component (`sign(1em -
+       10px)`), which needs the element's lengths when the colour
+       computes; the engine clamps the first and refuses the second.
+       Found in gap batch E.
+- [ ] G229 A box out of flow inside an opacity group is clipped by an
+       overflow clip between it and the group that its containing
+       block is outside of (CSS2 11.1.1): the clip chain of a group's
+       members. Found in gap batch E (css-color's
+       `clip-opacity-out-of-flow`).
+- [ ] G230 `display: contents`, `ruby`, `run-in` and `math`. Found in
+       gap batch E (its note's section 2).
+- [ ] G231 Rounded corners past what gap batch E draws: dashes and dots
+       along a corner, outlines following `border-radius`, hit testing
+       by the curve, and a corner's inner radius larger than the box
+       inside it (the reference browsers clip there differently).
+       Found in gap batch E (its note's section 2).
+- [ ] G232 `getComputedStyle`'s gradients: `background-image` and
+       `border-image-source` with a gradient serialize as nothing
+       (G159's largest part, some 1,100 WPT subtests). Found in gap
+       batch E.
 
 ---
 
@@ -3764,7 +3821,7 @@ Deferred from the milestones above, each with what it waits on:
 | D49 | Where the colour scheme takes effect | GE | the page's paint / the cascade's computed values / the user agent stylesheet alone | the computed values: system colours, `light-dark()` and `color`'s initial `CanvasText` resolved by each element's used scheme; the canvas by the root's; controls by system colours in the user agent stylesheet |
 | D50 | How a rounded box is drawn | GE | a rounded-rectangle item each backend draws / curves in the display list / flattened paths | flattened paths, a new `Path` item filled by the nonzero rule with the exact-area coverage both backends share; boxes without radii keep their items |
 | D51 | How a rounded clip is made | GE | a mask applied to every item / a clip path in the backends / a group composited through a mask | a group drawn into a scratch and composited through the rounded rectangle's coverage, the axis-aligned clip around it in force |
-| D52 | How blurs, shadows and filters are drawn | GE | tiny-skia and wgpu's own / shared code on the CPU for all / shared masks for shadows, each backend filtering groups | shadows as masks shared by the backends (a Gaussian of three box blurs, cached); filters on a group's scratch, colour matrices in sRGB, the GPU blurring in render passes |
+| D52 | How blurs, shadows and filters are drawn | GE | tiny-skia and wgpu's own / shared code on the CPU for all / shared masks for shadows, each backend filtering groups | shadows as masks shared by the backends (a Gaussian of three box blurs, cached); filters on a group's scratch, colour matrices in sRGB each applied and clamped alone, the GPU blurring in render passes |
 
 ---
 

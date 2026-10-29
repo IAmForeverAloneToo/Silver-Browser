@@ -8,8 +8,10 @@
 //! A [`Color`] keeps the space it was written in and its components
 //! there, with which of them are `none`, beside the sRGB channels drawing
 //! reads, worked out once when the colour is made. The legacy forms
-//! (hexadecimal, named, `rgb()`, `hsl()`, `hwb()`) are [`Space::Legacy`],
-//! whose components are those sRGB channels.
+//! (hexadecimal, named, `rgb()`) are [`Space::Legacy`], whose components
+//! are those sRGB channels; `hsl()` and `hwb()` are [`Space::Hsl`] and
+//! [`Space::Hwb`], legacy too, which keep theirs for a mix as the
+//! reference browser does.
 
 use css::Token;
 
@@ -28,6 +30,7 @@ pub enum Space {
     Srgb,
     SrgbLinear,
     DisplayP3,
+    DisplayP3Linear,
     A98Rgb,
     ProphotoRgb,
     Rec2020,
@@ -37,9 +40,10 @@ pub enum Space {
     Lch,
     Oklab,
     Oklch,
-    /// Interpolation only: a colour mixed in it is [`Space::Srgb`].
+    /// `hsl()`, a legacy colour, and an interpolation space: a colour
+    /// mixed in it is [`Space::Srgb`].
     Hsl,
-    /// Interpolation only, likewise.
+    /// `hwb()`, likewise.
     Hwb,
 }
 
@@ -50,6 +54,7 @@ impl Space {
             Space::Srgb => "srgb",
             Space::SrgbLinear => "srgb-linear",
             Space::DisplayP3 => "display-p3",
+            Space::DisplayP3Linear => "display-p3-linear",
             Space::A98Rgb => "a98-rgb",
             Space::ProphotoRgb => "prophoto-rgb",
             Space::Rec2020 => "rec2020",
@@ -64,6 +69,7 @@ impl Space {
             "srgb" => Space::Srgb,
             "srgb-linear" => Space::SrgbLinear,
             "display-p3" => Space::DisplayP3,
+            "display-p3-linear" => Space::DisplayP3Linear,
             "a98-rgb" => Space::A98Rgb,
             "prophoto-rgb" => Space::ProphotoRgb,
             "rec2020" => Space::Rec2020,
@@ -212,6 +218,31 @@ impl Color {
         }
     }
 
+    /// A legacy colour of `space` ([`Space::Legacy`]'s sRGB channels,
+    /// [`Space::Hsl`] or [`Space::Hwb`]), its components there, `missing`
+    /// the bits of those that are `none`, which count as zero.
+    pub fn legacy(space: Space, c: [f64; 3], alpha: f64, missing: u8) -> Color {
+        let given = [0, 1, 2].map(|i| if missing & (1 << i) != 0 { 0.0 } else { c[i] });
+        let [r, g, b] = match space {
+            Space::Hsl => hsl_to_srgb(given),
+            Space::Hwb => hwb_to_srgb(given),
+            _ => given,
+        };
+        Color {
+            r: r as f32,
+            g: g as f32,
+            b: b as f32,
+            a: if missing & ALPHA != 0 {
+                0.0
+            } else {
+                alpha as f32
+            },
+            space,
+            c: c.map(|v| v as f32),
+            missing,
+        }
+    }
+
     /// The space the colour was written in.
     pub fn space(&self) -> Space {
         self.space
@@ -229,7 +260,7 @@ impl Color {
 
     /// Whether the colour is one of the legacy forms.
     pub fn is_legacy(&self) -> bool {
-        self.space == Space::Legacy
+        matches!(self.space, Space::Legacy | Space::Hsl | Space::Hwb)
     }
 }
 
@@ -662,7 +693,17 @@ fn from_polar([l, c, h]: [f64; 3]) -> [f64; 3] {
 }
 
 /// HSL from gamma-encoded sRGB: hue in degrees, the others 0 to 100.
-fn srgb_to_hsl([r, g, b]: [f64; 3]) -> [f64; 3] {
+fn srgb_to_hsl(rgb: [f64; 3]) -> [f64; 3] {
+    let [mut hue, mut sat, light] = srgb_hue(rgb);
+    if sat < 0.0 {
+        hue += 180.0;
+        sat = sat.abs();
+    }
+    [hue.rem_euclid(360.0), sat, light]
+}
+
+/// HSL from gamma-encoded sRGB, a saturation left negative.
+fn srgb_hue([r, g, b]: [f64; 3]) -> [f64; 3] {
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
     let light = (min + max) / 2.0;
@@ -684,10 +725,6 @@ fn srgb_to_hsl([r, g, b]: [f64; 3]) -> [f64; 3] {
         };
         hue *= 60.0;
     }
-    if sat < 0.0 {
-        hue += 180.0;
-        sat = sat.abs();
-    }
     [hue.rem_euclid(360.0), sat * 100.0, light * 100.0]
 }
 
@@ -703,7 +740,9 @@ fn hsl_to_srgb([h, s, l]: [f64; 3]) -> [f64; 3] {
 }
 
 fn srgb_to_hwb(rgb: [f64; 3]) -> [f64; 3] {
-    let [hue, ..] = srgb_to_hsl(rgb);
+    // The hue unturned by a negative saturation, as the reference
+    // browser has it for a colour out of the sRGB gamut.
+    let [hue, ..] = srgb_hue(rgb);
     let white = rgb[0].min(rgb[1]).min(rgb[2]);
     let black = 1.0 - rgb[0].max(rgb[1]).max(rgb[2]);
     [hue, white * 100.0, black * 100.0]
@@ -724,6 +763,7 @@ fn to_xyz65(space: Space, c: [f64; 3]) -> [f64; 3] {
         Space::Legacy | Space::Srgb => multiply(&LIN_SRGB_TO_XYZ, c.map(srgb_linear)),
         Space::SrgbLinear => multiply(&LIN_SRGB_TO_XYZ, c),
         Space::DisplayP3 => multiply(&LIN_P3_TO_XYZ, c.map(srgb_linear)),
+        Space::DisplayP3Linear => multiply(&LIN_P3_TO_XYZ, c),
         Space::A98Rgb => multiply(&LIN_A98_TO_XYZ, c.map(a98_linear)),
         Space::ProphotoRgb => multiply(
             &D50_TO_D65,
@@ -747,6 +787,7 @@ fn from_xyz65(space: Space, xyz: [f64; 3]) -> [f64; 3] {
         Space::Legacy | Space::Srgb => multiply(&XYZ_TO_LIN_SRGB, xyz).map(srgb_gamma),
         Space::SrgbLinear => multiply(&XYZ_TO_LIN_SRGB, xyz),
         Space::DisplayP3 => multiply(&XYZ_TO_LIN_P3, xyz).map(srgb_gamma),
+        Space::DisplayP3Linear => multiply(&XYZ_TO_LIN_P3, xyz),
         Space::A98Rgb => multiply(&XYZ_TO_LIN_A98, xyz).map(a98_gamma),
         Space::ProphotoRgb => {
             multiply(&XYZ50_TO_LIN_PROPHOTO, multiply(&D65_TO_D50, xyz)).map(prophoto_gamma)
@@ -763,8 +804,10 @@ fn from_xyz65(space: Space, xyz: [f64; 3]) -> [f64; 3] {
     }
 }
 
-/// `c`'s components in `space`, `none` carried over by section 12.2's
-/// analogous components, a hue made `none` where it is powerless.
+/// `c`'s components in `space` and which are `none`, as the reference
+/// browser has them: a colour of that space as it is; another converted,
+/// its `none` carried over by section 12.2's analogous components, and a
+/// hue made `none` where it is powerless there (section 4.4).
 fn converted(color: &Color, space: Space) -> ([f64; 3], u8) {
     let own = color.c.map(f64::from);
     let given = [0, 1, 2].map(|i| {
@@ -774,48 +817,71 @@ fn converted(color: &Color, space: Space) -> ([f64; 3], u8) {
             own[i]
         }
     });
-    let same = color.space == space || (color.is_legacy() && space == Space::Srgb);
-    let values = if same {
-        given
-    } else if color.is_legacy() || color.space == Space::Srgb {
-        match space {
-            Space::Hsl => srgb_to_hsl(given),
-            Space::Hwb => srgb_to_hwb(given),
-            _ => from_xyz65(space, to_xyz65(color.space, given)),
-        }
-    } else {
-        from_xyz65(space, to_xyz65(color.space, given))
+    if color.space == space || (color.space == Space::Legacy && space == Space::Srgb) {
+        return (given, color.missing);
+    }
+    let rgb = match color.space {
+        Space::Legacy | Space::Srgb => Some(given),
+        Space::Hsl => Some(hsl_to_srgb(given)),
+        Space::Hwb => Some(hwb_to_srgb(given)),
+        _ => None,
+    };
+    let values = match (rgb, space) {
+        (Some(rgb), Space::Hsl) => srgb_to_hsl(rgb),
+        (Some(rgb), Space::Hwb) => srgb_to_hwb(rgb),
+        (Some(rgb), _) => from_xyz65(space, to_xyz65(Space::Srgb, rgb)),
+        (None, _) => from_xyz65(space, to_xyz65(color.space, given)),
     };
     let mut missing = color.missing & ALPHA;
-    if same {
-        missing = color.missing;
+    let none = color.missing & 7;
+    if none == 7 {
+        // All three `none` stay so in any space.
+        missing |= 7;
     } else {
-        let from = color.space.categories();
+        // The categories `none`, a pair of the second and third taken as
+        // the polar form's: Lab's a and b as LCH's chroma and hue, HWB's
+        // whiteness and blackness as HSL's saturation and lightness.
+        let from = match color.space {
+            Space::Lab | Space::Oklab if none == 6 => Space::Lch.categories(),
+            Space::Hwb if none == 6 => Space::Hsl.categories(),
+            other => other.categories(),
+        };
+        let carried: Vec<Category> = (0..3)
+            .filter(|i| none & (1 << i) != 0 && from[*i] != Category::Other)
+            .map(|i| from[i])
+            .collect();
         let to = space.categories();
-        for (i, category) in from.iter().enumerate() {
-            if color.missing & (1 << i) != 0
-                && *category != Category::Other
-                && let Some(j) = to.iter().position(|c| c == category)
-            {
+        for (j, category) in to.iter().enumerate() {
+            if carried.contains(category) {
                 missing |= 1 << j;
             }
         }
+        let pair = match space {
+            Space::Lab | Space::Oklab => [Category::Colorfulness, Category::Hue],
+            Space::Hwb => [Category::Colorfulness, Category::Lightness],
+            _ => [Category::Other; 2],
+        };
+        if pair
+            .iter()
+            .all(|c| *c != Category::Other && carried.contains(c))
+        {
+            missing |= 6;
+        }
     }
-    // A hue is powerless where the colour has no chroma (section 4.4).
+    // The reference browser's powerless hues: a chroma of 0.02 or less,
+    // no saturation, or whiteness and blackness filling the colour.
     let powerless = match space {
-        Space::Lch => values[1].abs() < 0.0015,
-        Space::Oklch => values[1].abs() < 0.000_004,
-        Space::Hsl => values[1].abs() < 1e-6 || values[2] <= 0.0 || values[2] >= 100.0,
-        Space::Hwb => values[1] + values[2] >= 100.0 - 1e-6,
+        Space::Lch | Space::Oklch => values[1].abs() <= 0.02,
+        Space::Hsl => values[1] == 0.0,
+        Space::Hwb => values[1] + values[2] >= 100.0,
         _ => false,
     };
-    if powerless && space.is_polar() {
-        let hue = if matches!(space, Space::Hsl | Space::Hwb) {
-            0
+    if powerless {
+        missing |= if space == Space::Lch || space == Space::Oklch {
+            1 << 2
         } else {
-            2
+            1
         };
-        missing |= 1 << hue;
     }
     (values, missing)
 }
@@ -862,7 +928,9 @@ pub fn interpolate(a: &Color, b: &Color, p: f64, method: Method, alpha_scale: f6
         x[h] = from;
         y[h] = to;
     }
-    let alpha = xa + (ya - xa) * p;
+    // Past the ends the alpha is clamped before the colour is
+    // unpremultiplied by it, as the web-platform tests ask.
+    let alpha = (xa + (ya - xa) * p).clamp(0.0, 1.0);
     let mut out = [0.0; 3];
     for i in 0..3 {
         if Some(i) == hue {
@@ -881,6 +949,16 @@ pub fn interpolate(a: &Color, b: &Color, p: f64, method: Method, alpha_scale: f6
     } else {
         (alpha * alpha_scale).clamp(0.0, 1.0)
     };
+    // A lightness kept within its space, a chroma never negative, as an
+    // extrapolation past the ends would leave them.
+    match space {
+        Space::Lab | Space::Lch => out[0] = out[0].clamp(0.0, 100.0),
+        Space::Oklab | Space::Oklch => out[0] = out[0].clamp(0.0, 1.0),
+        _ => {}
+    }
+    if matches!(space, Space::Lch | Space::Oklch) {
+        out[1] = out[1].max(0.0);
+    }
     match space {
         // A colour mixed in HSL or HWB is an sRGB one (the reference
         // browser's `color(srgb ...)`).
@@ -902,8 +980,9 @@ fn arc(from: f64, to: f64, method: Hue) -> (f64, f64) {
     match method {
         Hue::Shorter if d > 180.0 => (from + 360.0, to),
         Hue::Shorter if d < -180.0 => (from, to + 360.0),
-        Hue::Longer if (0.0..180.0).contains(&d) && d != 0.0 => (from + 360.0, to),
-        Hue::Longer if d > -180.0 && d <= 0.0 && d != 0.0 => (from, to + 360.0),
+        // Equal hues go the whole way round (section 12.4.2).
+        Hue::Longer if d > 0.0 && d < 180.0 => (from + 360.0, to),
+        Hue::Longer if d > -180.0 && d <= 0.0 => (from, to + 360.0),
         Hue::Increasing if to < from => (from, to + 360.0),
         Hue::Decreasing if from < to => (from + 360.0, to),
         _ => (from, to),
@@ -1036,6 +1115,72 @@ enum Component {
     None,
 }
 
+/// `arguments` of a legacy colour function, `rgb()`, `hsl()` or `hwb()`,
+/// with each math function in them computed to the number, percentage
+/// or angle it is (gap batch E): `None` where one is invalid in a colour,
+/// and `arguments` as they are where there is none. An infinite hue, the
+/// first component where `hue_first`, is 0, as the reference browser has
+/// it; another infinity is clamped to the component's range.
+pub(crate) fn computed_math(
+    arguments: &[Token],
+    hue_first: bool,
+) -> Option<std::borrow::Cow<'_, [Token]>> {
+    let math = |t: &Token| calc::is_math_function(std::slice::from_ref(t));
+    if !arguments.iter().any(math) {
+        return Some(std::borrow::Cow::Borrowed(arguments));
+    }
+    let mut out = Vec::with_capacity(arguments.len());
+    let mut i = 0;
+    while i < arguments.len() {
+        if !math(&arguments[i]) {
+            out.push(arguments[i].clone());
+            i += 1;
+            continue;
+        }
+        let mut depth = 0usize;
+        let mut end = i;
+        for (j, token) in arguments.iter().enumerate().skip(i) {
+            match token {
+                Token::Function(_) | Token::OpenParen => depth += 1,
+                Token::CloseParen => depth -= 1,
+                _ => {}
+            }
+            end = j;
+            if depth == 0 {
+                break;
+            }
+        }
+        let first = out
+            .iter()
+            .all(|t| matches!(t, Token::Whitespace | Token::Comma));
+        let finite = |v: f64| {
+            if v.is_finite() {
+                v
+            } else if hue_first && first {
+                0.0
+            } else {
+                v.clamp(-MAX_COMPONENT, MAX_COMPONENT)
+            }
+        };
+        out.push(match component(&arguments[i..=end])? {
+            Component::Number(value) => Token::Number {
+                value: finite(value),
+                is_integer: false,
+            },
+            Component::Percent(value) => Token::Percentage {
+                value: finite(value),
+            },
+            Component::Degrees(value) => Token::Dimension {
+                value: if value.is_finite() { value } else { 0.0 },
+                unit: "deg".into(),
+            },
+            Component::None => return None,
+        });
+        i = end + 1;
+    }
+    Some(std::borrow::Cow::Owned(out))
+}
+
 fn component(tokens: &[Token]) -> Option<Component> {
     if let [Token::Function(_), ..] = tokens {
         for want in [Want::Number, Want::Percentage, Want::Angle] {
@@ -1050,9 +1195,9 @@ fn component(tokens: &[Token]) -> Option<Component> {
                     calc::Computed::Percent(p) => return Some(Component::Percent(p)),
                     calc::Computed::Expression(_) => return None,
                 };
-                if !value.is_finite() {
-                    return None;
-                }
+                // NaN is 0; an infinity is left for the component's
+                // place, a hue's 0 and another's clamped.
+                let value = if value.is_nan() { 0.0 } else { value };
                 return Some(match want {
                     Want::Percentage => Component::Percent(value),
                     Want::Angle => Component::Degrees(value),
@@ -1118,7 +1263,10 @@ fn scaled(c: Component, hundred: f64) -> Option<Option<f64>> {
 
 fn hue(c: Component) -> Option<Option<f64>> {
     match c {
-        Component::Number(v) | Component::Degrees(v) => Some(Some(v.rem_euclid(360.0))),
+        Component::Number(v) | Component::Degrees(v) if v.is_finite() => {
+            Some(Some(v.rem_euclid(360.0)))
+        }
+        Component::Number(_) | Component::Degrees(_) => Some(Some(0.0)),
         Component::None => Some(None),
         Component::Percent(_) => None,
     }
@@ -1258,12 +1406,24 @@ pub fn parse_mix(
     let mut mixed = Vec::with_capacity(2);
     for group in colors {
         let parts = components(group)?;
+        // A percentage, or a calculation of one.
+        let percentage = |part: &[Token]| match part {
+            [Token::Percentage { value }] => Some(*value),
+            _ if calc::is_math_function(part) => {
+                match calc::parse(part, Want::Percentage)?
+                    .compute(&NoLengths(Default::default()), None)
+                {
+                    calc::Computed::Percent(p) if !p.is_nan() => Some(p),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
         let (value, percent) = match parts.as_slice() {
             [one] => (*one, None),
-            [a, b] => match (a, b) {
-                ([Token::Percentage { value }], c) | (c, [Token::Percentage { value }]) => {
-                    (*c, Some(*value))
-                }
+            [a, b] => match (percentage(a), percentage(b)) {
+                (Some(p), None) => (*b, Some(p)),
+                (None, Some(p)) => (*a, Some(p)),
                 _ => return None,
             },
             _ => return None,
@@ -1279,18 +1439,15 @@ pub fn parse_mix(
         (None, Some(p)) => (100.0 - p, p),
         (Some(a), Some(b)) => (a, b),
     };
+    // Percentages summing to 0 mix evenly to a transparent colour, as
+    // the reference browser mixes them.
     let sum = p1 + p2;
-    if sum <= 0.0 {
-        return None;
-    }
-    let scale = if sum < 100.0 { sum / 100.0 } else { 1.0 };
-    Some(interpolate(
-        &mixed[0].0,
-        &mixed[1].0,
-        p2 / sum,
-        method,
-        scale,
-    ))
+    let (p, scale) = if sum <= 0.0 {
+        (0.5, 0.0)
+    } else {
+        (p2 / sum, if sum < 100.0 { sum / 100.0 } else { 1.0 })
+    };
+    Some(interpolate(&mixed[0].0, &mixed[1].0, p, method, scale))
 }
 
 /// `arguments` split at their top-level commas.
@@ -1453,6 +1610,11 @@ mod tests {
             "oklch(0.539974 0.285457 326.643)"
         );
         assert_eq!(s("color-mix(in hwb, red 25%, blue)"), "color(srgb 0.5 0 1)");
+        // White's hue is powerless: red's twice, the longer way round.
+        assert_eq!(
+            s("color-mix(in hsl longer hue, red, white)"),
+            "color(srgb 0.625 0.875 0.875)"
+        );
         // The longer arc of hues 60 degrees apart: 210 degrees.
         assert_eq!(
             s("color-mix(in hsl longer hue, red, yellow)"),
@@ -1474,8 +1636,16 @@ mod tests {
             s("color(srgb 0.5 0.5 0.5 / none)"),
             "color(srgb 0.5 0.5 0.5 / none)"
         );
-        assert!(parse("color-mix(in srgb, red 0%, blue 0%)").is_none());
+        assert_eq!(
+            s("color-mix(in srgb, red 0%, blue 0%)"),
+            "color(srgb 0.5 0 0.5 / 0)"
+        );
         assert!(parse("color-mix(in srgb, red 120%, blue)").is_none());
+        assert_eq!(
+            s("color-mix(in srgb, red calc(10%), blue calc(80%))"),
+            "color(srgb 0.111111 0 0.888889 / 0.9)"
+        );
+        assert!(parse("color-mix(in srgb, red calc(1px), blue)").is_none());
         assert!(parse("color-mix(in srgb longer hue, red, blue)").is_none());
         assert!(parse("color-mix(in srgb, red, blue, green)").is_none());
     }
@@ -1498,11 +1668,110 @@ mod tests {
     }
 
     #[test]
+    fn mixes_take_their_colours_as_the_reference_browser_takes_them() {
+        // Gap batch E: the reference browser's results, to 0.002 as the
+        // web-platform tests compare them.
+        let near = |text: &str, want: &str| {
+            let got = serialize(&parse(text).unwrap());
+            let numbers = |s: &str| -> Vec<f64> {
+                s.split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-'))
+                    .filter_map(|w| w.parse().ok())
+                    .collect()
+            };
+            let (g, w) = (numbers(&got), numbers(want));
+            assert!(
+                got.split('(').next() == want.split('(').next()
+                    && g.len() == w.len()
+                    && g.iter()
+                        .zip(&w)
+                        .all(|(a, b)| (a - b).abs() <= 0.002 * b.abs().max(1.0)),
+                "{text}: {got}, not {want}"
+            );
+        };
+        // A colour of the mix's own space is taken as it is: a hue
+        // with no saturation is no `none`.
+        near(
+            "color-mix(in hsl, hsl(0 0 50%), hsl(11 33 44))",
+            "color(srgb 0.54755 0.406668 0.39245)",
+        );
+        near(
+            "color-mix(in lch, lch(100 0 40deg), lch(100 0 60deg))",
+            "lch(100 0 50)",
+        );
+        // A legacy colour keeps its nones.
+        near(
+            "color-mix(in hsl, hsl(none none none), hsl(30deg 40% 80%))",
+            "color(srgb 0.88 0.8 0.72)",
+        );
+        near(
+            "color-mix(in hsl, hsl(120deg 40% 40% / none), hsl(0deg 40% 40%))",
+            "color(srgb 0.56 0.56 0.24)",
+        );
+        // All three none stay so; a pair of the last two is the polar
+        // form's.
+        near(
+            "color-mix(in lab, rgb(none none none), lab(11 33 44))",
+            "lab(11 33 44)",
+        );
+        near(
+            "color-mix(in lch, lab(50 none none), lch(11 33 44))",
+            "lch(30.5 33 44)",
+        );
+        near(
+            "color-mix(in oklab, oklch(0.1 none none), oklab(0.3 0.2 0.4))",
+            "oklab(0.2 0.2 0.4)",
+        );
+        // A hue is powerless at a chroma of 0.02 or less.
+        near(
+            "color-mix(in lch, lab(50 0.02 0), lch(11 33 44))",
+            "lch(30.5 16.51 44)",
+        );
+        near(
+            "color-mix(in lch, lab(50 0.0201 0), lch(11 33 44))",
+            "lch(30.5 16.51 22)",
+        );
+        // HWB from a colour past sRGB keeps its hue unturned.
+        near(
+            "color-mix(in hwb, lab(none none 10), hwb(11 33 44))",
+            "color(srgb 0.296792 0.199423 0.124028)",
+        );
+        near(
+            "color(display-p3-linear 1 0.5 0.2)",
+            "color(display-p3-linear 1 0.5 0.2)",
+        );
+        // Calculations in the legacy forms; an infinite hue is 0.
+        let c = parse("hsl(calc(infinity) 50% 50%)").unwrap();
+        assert!(
+            (c.r - 0.75).abs() < 1e-3 && (c.g - 0.25).abs() < 1e-3,
+            "{c:?}"
+        );
+        let c = parse("rgb(calc(infinity), calc(-infinity), calc(0 / 0))").unwrap();
+        assert_eq!((c.r, c.g, c.b), (1.0, 0.0, 0.0));
+        assert_eq!(parse("rgba(0, 0, 0, calc(0 / 0))").unwrap().a, 0.0);
+        assert!(parse("rgb(calc(1px), 0, 0)").is_none());
+    }
+
+    #[test]
     fn a_powerless_hue_takes_the_other_colours() {
         // White has no hue in OKLCH: the mix keeps blue's.
         let c = parse("color-mix(in oklch, white, blue)").unwrap();
         let blue = converted(&parse("blue").unwrap(), Space::Oklch).0;
         assert!((f64::from(c.components()[2].unwrap()) - blue[2]).abs() < 0.01);
+    }
+
+    #[test]
+    fn an_animation_past_its_ends_stays_in_the_space() {
+        let (black, white) = (
+            parse("rgb(0 0 0)").unwrap(),
+            parse("color(srgb 1 1 1)").unwrap(),
+        );
+        assert_eq!(serialize(&animate(&black, &white, -0.3)), "oklab(0 0 0)");
+        assert_eq!(serialize(&animate(&black, &white, 1.5)), "oklab(1 0 0)");
+        // A legacy colour from none: the alpha clamped before the colour
+        // is unpremultiplied by it.
+        let (none, green) = (Color::TRANSPARENT, parse("green").unwrap());
+        let c = animate(&none, &green, 1.5);
+        assert_eq!((c.g * 255.0).round(), 192.0);
     }
 
     #[test]

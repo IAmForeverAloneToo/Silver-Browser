@@ -192,18 +192,6 @@ impl PixelRect {
         (self.x1 - self.x0) as u64 * (self.y1 - self.y0) as u64
     }
 
-    /// The rectangle grown by `[left, top, right, bottom]` pixels, kept
-    /// within a `width` by `height` raster.
-    fn grown_by(self, by: [f32; 4], width: u32, height: u32) -> PixelRect {
-        let grow = |v: f32| v.max(0.0).ceil() as i64;
-        PixelRect {
-            x0: (i64::from(self.x0) - grow(by[0])).max(0) as u32,
-            y0: (i64::from(self.y0) - grow(by[1])).max(0) as u32,
-            x1: (i64::from(self.x1) + grow(by[2])).min(i64::from(width)) as u32,
-            y1: (i64::from(self.y1) + grow(by[3])).min(i64::from(height)) as u32,
-        }
-    }
-
     fn intersect(self, other: PixelRect) -> Option<PixelRect> {
         PixelRect::new(
             self.x0.max(other.x0) as i64,
@@ -315,7 +303,12 @@ impl State {
     /// coordinates are the list's mapped by `base`, which only
     /// translates and scales.
     fn based(width: u32, height: u32, base: Matrix) -> Self {
-        let mut state = State::new(width, height);
+        State::new(width, height).with_base(base)
+    }
+
+    /// The state with the coordinates `base` maps to begun.
+    fn with_base(self, base: Matrix) -> Self {
+        let mut state = self;
         state.groups.push(GroupState {
             matrix: base,
             resampled: false,
@@ -1763,17 +1756,6 @@ impl SoftwareBackend {
             return;
         }
         if matrix.translates_and_scales_only() {
-            // The items' reach in the pixmap, drawn through.
-            let mut state = State::based(width, height, matrix);
-            let mut reach: Option<PixelRect> = None;
-            for item in items {
-                if let Some(bounds) = bounds(&mut self.text, item, &state, width, height) {
-                    reach = Some(reach.map_or(bounds, |r| r.union(bounds)));
-                }
-                state.apply(item);
-            }
-            // A filter reaches past the items, and reads them past what
-            // shows (gap batch E, D52): the scratch takes both.
             let (sx, sy, _, _) = matrix
                 .scale_and_translation()
                 .unwrap_or((1.0, 1.0, 0.0, 0.0));
@@ -1783,33 +1765,21 @@ impl SoftwareBackend {
                 spread[2] * sx.abs(),
                 spread[3] * sy.abs(),
             ];
-            let reach = reach.map(|r| r.grown_by(grow, width, height));
-            let Some(shown) = reach.and_then(|r| r.intersect(within)) else {
-                return;
-            };
-            let Some(region) =
-                reach.and_then(|r| r.intersect(within.grown_by(grow, width, height)))
+            let Some((shown, (x0, y0, w, h))) =
+                scratch_region(&mut self.text, items, matrix, grow, within, (width, height))
             else {
                 return;
             };
-            let (w, h) = (region.x1 - region.x0, region.y1 - region.y0);
             let Some(mut scratch) = tiny_skia::Pixmap::new(w, h) else {
                 return;
             };
-            let base =
-                Matrix::translate(-(region.x0 as f32), -(region.y0 as f32), 0.0).then(&matrix);
+            let base = Matrix::translate(-(x0 as f32), -(y0 as f32), 0.0).then(&matrix);
             self.draw_items(&mut scratch, items, State::masked(w, h, base, mask));
             if let Some(filters) = filters {
                 apply_filters(&mut scratch, filters, (sx, sy));
             }
             apply_mask(&mut scratch, mask, &base);
-            blit(
-                pixmap,
-                &scratch,
-                (region.x0 as i64, region.y0 as i64),
-                opacity,
-                shown,
-            );
+            blit(pixmap, &scratch, (x0, y0), opacity, shown);
             return;
         }
         // The group's own coordinates: its items' reach there, within
@@ -2002,6 +1972,9 @@ impl SoftwareBackend {
                 let composed = frame.matrix().map_or(*matrix, |m| m.then(matrix));
                 let outward = local.matrix().map_or(*matrix, |m| m.then(matrix));
                 let clip = frame.clip();
+                // Whether it was held, asked before a group inside it of
+                // the same key drops the layer.
+                let was = self.layers.contains(key);
                 let mut inner_frame = frame.clone();
                 inner_frame.apply(item);
                 let mut inner_extra = Vec::new();
@@ -2015,7 +1988,6 @@ impl SoftwareBackend {
                 // A key two groups share is known before (`doubled_keys`):
                 // the first group of it is drawn another way too, and its
                 // reach is damage like the others'.
-                let was = self.layers.contains(key);
                 let kept = if !self.doubled.contains(key) && seen.insert(*key) {
                     self.update_layer(*key, *reason, inner, &composed, clip, &inner_extra)
                 } else {
@@ -3172,10 +3144,72 @@ fn extent(text: &mut GlyphCache, item: &DisplayItem, state: &State) -> Option<Cl
     let reach = grown(reach, texels);
     let mapped = state.map(reach.x0, reach.y0, reach.x1 - reach.x0, reach.y1 - reach.y0)?;
     // A clip inside a scratch group cuts the group's pixels before they
-    // are resampled, which reaches a pixel past it.
+    // are resampled, which reaches a pixel past it; a filter around the
+    // item reads it as far past the clip as it reaches.
     let clip = if in_scratch { grown(clip, 1.0) } else { clip };
+    let clip = grown(clip, state.spread());
     let extent = grown(mapped, pixels).intersect(clip);
     (!extent.is_empty()).then_some(extent)
+}
+
+/// Where a group drawn through `matrix`, which only translates and
+/// scales, goes in a `size` raster: the pixels of `within` it changes,
+/// and its scratch's place and size, the raster's region whose pixels
+/// hold what those read, past the raster's edges too. That is its items'
+/// reach grown by its filter's `grow` (left, top, right and bottom, in
+/// pixels), where it meets `within` grown as far the other way: a drop
+/// shadow's pixel is what lies its offset back (gap batch E, D52).
+/// `None` when nothing shows, or the scratch would have more pixels
+/// than a frame may.
+pub(crate) fn scratch_region(
+    text: &mut GlyphCache,
+    items: &[DisplayItem],
+    matrix: Matrix,
+    grow: [f32; 4],
+    within: PixelRect,
+    (width, height): (u32, u32),
+) -> Option<(PixelRect, (i64, i64, u32, u32))> {
+    let mut state = State::unbounded().with_base(matrix);
+    let mut reach: Option<Clip> = None;
+    for item in items {
+        if let Some(e) = extent(text, item, &state) {
+            let s = state.spread();
+            let e = Clip {
+                x0: e.x0 - s,
+                y0: e.y0 - s,
+                x1: e.x1 + s,
+                y1: e.y1 + s,
+            };
+            reach = Some(reach.map_or(e, |r| Clip {
+                x0: r.x0.min(e.x0),
+                y0: r.y0.min(e.y0),
+                x1: r.x1.max(e.x1),
+                y1: r.y1.max(e.y1),
+            }));
+        }
+        state.apply(item);
+    }
+    let reach = reach?;
+    let reach = Clip {
+        x0: reach.x0 - grow[0],
+        y0: reach.y0 - grow[1],
+        x1: reach.x1 + grow[2],
+        y1: reach.y1 + grow[3],
+    };
+    let shown = PixelRect::around(reach.x0, reach.y0, reach.x1, reach.y1, width, height)?
+        .intersect(within)?;
+    let back = |v: f32| v.max(0.0).ceil() as i64;
+    let x0 = (reach.x0.floor() as i64).max(i64::from(within.x0) - back(grow[2]));
+    let y0 = (reach.y0.floor() as i64).max(i64::from(within.y0) - back(grow[3]));
+    let x1 = (reach.x1.ceil() as i64).min(i64::from(within.x1) + back(grow[0]));
+    let y1 = (reach.y1.ceil() as i64).min(i64::from(within.y1) + back(grow[1]));
+    if x1 <= x0
+        || y1 <= y0
+        || ((x1 - x0) as u64).saturating_mul((y1 - y0) as u64) > MAX_FRAME_PIXELS
+    {
+        return None;
+    }
+    Some((shown, (x0, y0, (x1 - x0) as u32, (y1 - y0) as u32)))
 }
 
 /// The pixels `item`, drawn from `state`, can change in a `width` by
@@ -5417,6 +5451,35 @@ mod tests {
         let incremental = backend.rasterize(&moved(30.0), 60, 60).to_vec();
         let whole = test_backend().rasterize(&moved(30.0), 60, 60).to_vec();
         assert_eq!(incremental, whole);
+        // A box wholly off the frame casts its shadow onto it, and a
+        // box moved off it takes its shadow along.
+        let off = |at: f32| DisplayList {
+            items: vec![
+                white_frame(60.0, 60.0),
+                DisplayItem::PushGroup {
+                    matrix: Matrix::IDENTITY,
+                    opacity: 1.0,
+                    key: group_key(),
+                    layer: None,
+                    mask: None,
+                    filters: Some(ops(&[shadow]).into()),
+                },
+                DisplayItem::Rect {
+                    x: at,
+                    y: at,
+                    w: 20.0,
+                    h: 20.0,
+                    color: Rgba8::rgb(255, 0, 0),
+                },
+                DisplayItem::PopGroup,
+            ],
+        };
+        let mut backend = test_backend();
+        let buf = backend.rasterize(&off(-25.0), 60, 60).to_vec();
+        assert_eq!(px(&buf, 60, 0, 0), [0, 0, 255, 255], "the shadow");
+        assert_eq!(px(&buf, 60, 6, 6), WHITE);
+        let buf = backend.rasterize(&off(-31.0), 60, 60).to_vec();
+        assert_eq!(px(&buf, 60, 0, 0), WHITE, "gone with the box");
     }
 
     #[test]
@@ -5935,6 +5998,39 @@ mod tests {
         };
         let mut items = vec![background];
         items.extend((0..n).map(|_| random_item(rng, w as f32, h as f32)));
+        // Now and then the last items filtered (gap batch E, D52): a
+        // drop shadow moved either way, past the frame's edge too, or a
+        // colour matrix; blurs are another test's, a blur's sums being
+        // exact only to a level wherever its scratch starts.
+        if rng.below(3) == 0 {
+            use paint::filter::FilterOp;
+            let from = 1 + rng.below(items.len());
+            let op = if rng.below(3) == 0 {
+                paint::filter::filter_ops(&[style::computed::Filter::Invert(1.0)], |_| {
+                    Rgba8::rgb(0, 0, 0)
+                })[0]
+                    .clone()
+            } else {
+                FilterOp::DropShadow {
+                    x: rng.coord(-(w as f32), w as f32).round(),
+                    y: rng.coord(-(h as f32), h as f32).round(),
+                    sigma: 0.0,
+                    color: rng.color(),
+                }
+            };
+            items.insert(
+                from,
+                DisplayItem::PushGroup {
+                    matrix: Matrix::IDENTITY,
+                    opacity: 1.0,
+                    key: fresh_key(),
+                    layer: None,
+                    mask: None,
+                    filters: Some(vec![op].into()),
+                },
+            );
+            items.push(DisplayItem::PopGroup);
+        }
         DisplayList { items }
     }
 

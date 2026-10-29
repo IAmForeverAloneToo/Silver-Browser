@@ -2399,3 +2399,21 @@ and WebGL's loose ends, context loss's edges, GLSL's, the suites past
 their subsets. 3,195 tests pass workspace-wide, two ignored. Next:
 the long tail, gated (M42+).
 
+Gap batch E (boxes and colour; `docs/design/boxes-colour.md`, D48 to
+D52): `style::color` keeps a colour's space, components and `none`s
+beside its sRGB channels, converts and mixes as the reference browser
+does, and serializes each form; `color-scheme`, `light-dark()` and the
+system colours by scheme; Values 4's math functions in `style::calc`;
+`flow-root`, the root's own formatting context, `aspect-ratio` on
+boxes not replaced, `background-position-x` and `-y`. Rounded boxes
+are paths (`DisplayItem::Path`, `paint::rounded`), rounded clips
+masked groups, shadows `DisplayItem::Shadow` blurred by
+`render::shadow`, filters a group's operations
+(`paint::filter::FilterOp`) on both backends, conic gradients and
+interpolation methods in `paint::gradient`. The acceptance pulled WPT's
+colour, display, sizing and filter directories (9,431 tests) and found:
+paint's viewport cull and the backends' scratch regions blind to a
+filter's or a shadow's reach, a damage bug of layers sharing a key,
+the runner's missing viewport for testharness pages: mended. Not in
+the batch, registered: G224 to G232. 3,297 tests pass workspace-wide, two ignored.
+

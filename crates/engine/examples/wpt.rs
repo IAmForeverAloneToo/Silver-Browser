@@ -114,6 +114,12 @@ const DIRECTORIES: &[&str] = &[
     "css/css-easing",
     "css/css-images",
     "css/css-backgrounds",
+    // Boxes and colour (gap batch E).
+    "css/css-color",
+    "css/css-color-adjust",
+    "css/css-display",
+    "css/css-sizing/aspect-ratio",
+    "css/filter-effects",
     "html/semantics/embedded-content/the-img-element",
     "css/selectors/invalidation",
     "dom/nodes",
@@ -193,6 +199,17 @@ const TESTHARNESS_DIRECTORIES: &[(&str, &str)] = &[
         "html/browsers/the-window-object/named-access-on-the-window-object",
         "",
     ),
+    // Boxes and colour (gap batch E): the colours, the scheme, the
+    // backgrounds' radii and shadows, filters, the math functions,
+    // display and aspect ratios, by their scripts.
+    ("css/css-color", ""),
+    ("css/css-color-adjust", ""),
+    ("css/css-backgrounds", ""),
+    ("css/filter-effects", ""),
+    ("css/css-values", ""),
+    ("css/css-images", ""),
+    ("css/css-display", ""),
+    ("css/css-sizing/aspect-ratio", ""),
 ];
 
 /// Tests the rule would take that are left out by name, and why: what the
@@ -2240,7 +2257,7 @@ fn readme(
          ```\n\n\
          which rewrites them, `MANIFEST` and this file. `tests/wpt.rs` runs\n\
          them; `expectations.txt` names those expected to fail, and why.\n\n\
-         With them are the testharness.js tests of {testharness} (M27, M29, M31, M40, M41, gap batch A)\n\
+         With them are the testharness.js tests of {testharness} (M27, M29, M31, M40, M41, gap batches A and E)\n\
          that the runner's one server can serve: no Python handler, no `.sub`\n\
          template, no other host, nothing over `https:`, no shared or\n\
          service worker and no module worker. `resources/testharness.js` is\n\

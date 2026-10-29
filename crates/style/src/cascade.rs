@@ -5107,7 +5107,23 @@ fn length_percentage(
     bases: &LengthBases<'_>,
     range: Range,
 ) -> Option<LengthPercentage> {
-    match math(tokens, Want::LengthPercentage, bases, None) {
+    length_percentage_of(tokens, bases, range, false)
+}
+
+/// [`length_percentage`] of a basis that may be negative, a
+/// `<position>`'s where `signed` (gap batch E).
+fn length_percentage_of(
+    tokens: &[Token],
+    bases: &LengthBases<'_>,
+    range: Range,
+    signed: bool,
+) -> Option<LengthPercentage> {
+    let computed = calc::is_math_function(tokens)
+        .then(|| calc::parse(tokens, Want::LengthPercentage))
+        .flatten()
+        .map(|p| if signed { p.of_a_signed_basis() } else { p })
+        .map(|p| p.compute(bases, None));
+    match computed {
         Some(calc::Computed::Value(v)) => return Some(LengthPercentage::Px(range.clamp(v))),
         // A percentage below zero is of a basis never below it, so it
         // is fitted to a non-negative range as a length is.
@@ -6111,23 +6127,38 @@ fn color_scheme_of(tokens: &[Token], parent: &ComputedStyle) -> Option<Option<Ar
     }
     let mut words: Vec<&str> = Vec::new();
     let mut only = false;
-    for token in tokens {
-        match token {
-            Token::Whitespace => {}
-            Token::Ident(word) if word.eq_ignore_ascii_case("only") && !only => only = true,
-            Token::Ident(word) => {
-                let lower = word.to_ascii_lowercase();
-                if matches!(lower.as_str(), "normal" | "only" | "default" | "revert")
-                    || words.len() >= MAX_SCHEME_WORDS
-                {
-                    return single_ident(tokens)
-                        .filter(|w| w.eq_ignore_ascii_case("normal"))
-                        .map(|_| None);
-                }
-                words.push(word);
-            }
-            _ => return None,
+    let idents: Vec<&Token> = tokens
+        .iter()
+        .filter(|t| !matches!(t, Token::Whitespace))
+        .collect();
+    let last = idents.len().saturating_sub(1);
+    for (i, token) in idents.into_iter().enumerate() {
+        let Token::Ident(word) = token else {
+            return None;
+        };
+        // `only` first or last, once.
+        if word.eq_ignore_ascii_case("only") && !only && (i == 0 || i == last) {
+            only = true;
+            continue;
         }
+        let lower = word.to_ascii_lowercase();
+        if matches!(
+            lower.as_str(),
+            "normal"
+                | "only"
+                | "default"
+                | "inherit"
+                | "initial"
+                | "unset"
+                | "revert"
+                | "revert-layer"
+        ) || words.len() >= MAX_SCHEME_WORDS
+        {
+            return single_ident(tokens)
+                .filter(|w| w.eq_ignore_ascii_case("normal"))
+                .map(|_| None);
+        }
+        words.push(word);
     }
     if words.is_empty() {
         return None;
@@ -6230,6 +6261,7 @@ fn parse_box_shadow(
     for item in split_top_level_commas(tokens) {
         let parts = split_components(item);
         let mut lengths: Vec<f32> = Vec::new();
+        let mut calculated: Vec<bool> = Vec::new();
         let mut color = None;
         let mut inset = false;
         // Where the lengths stand: one run, nothing between them.
@@ -6246,6 +6278,7 @@ fn parse_box_shadow(
                     return None;
                 }
                 lengths.push(px);
+                calculated.push(crate::calc::is_math_function(part));
             } else if color.is_none()
                 && let Some(c) = color_value(part, bases.colors())
             {
@@ -6261,9 +6294,12 @@ fn parse_box_shadow(
             [x, y, b, s] => [*x, *y, *b, *s],
             _ => return None,
         };
-        if blur < 0.0 {
-            return None;
-        }
+        // A negative blur is invalid, a calculation's clamped to 0.
+        let blur = match (blur < 0.0, calculated.get(2)) {
+            (true, Some(true)) => 0.0,
+            (true, _) => return None,
+            (false, _) => blur,
+        };
         shadows.push(crate::computed::Shadow {
             color: color.unwrap_or(bases.color),
             x,
@@ -6291,8 +6327,9 @@ fn parse_filter(tokens: &[Token], bases: &LengthBases<'_>) -> Option<Vec<Filter>
         };
         let name = name.to_ascii_lowercase();
         let args = trim(arguments);
-        // An amount: a number or a percentage, never negative, its
-        // default when left out; at most 1 where `capped`.
+        // An amount: a number or a percentage, never negative (a
+        // calculation's clamped to 0), its default when left out; at
+        // most 1 where `capped`.
         let amount = |default: f32, capped: bool| -> Option<f32> {
             let v = if args.is_empty() {
                 default
@@ -6301,8 +6338,8 @@ fn parse_filter(tokens: &[Token], bases: &LengthBases<'_>) -> Option<Vec<Filter>
                     Some(Token::Number { value, .. }) => *value as f32,
                     Some(Token::Percentage { value }) => *value as f32 / 100.0,
                     _ => match math(args, Want::NumberOrPercentage, bases, None)? {
-                        calc::Computed::Value(v) => v as f32,
-                        calc::Computed::Percent(p) => p as f32 / 100.0,
+                        calc::Computed::Value(v) => v.max(0.0) as f32,
+                        calc::Computed::Percent(p) => p.max(0.0) as f32 / 100.0,
                         calc::Computed::Expression(_) => return None,
                     },
                 }
@@ -6436,9 +6473,9 @@ fn color_with(tokens: &[Token], current: Option<Color>, dark: bool) -> Option<Co
     let tokens = trim(tokens);
     if let [Token::Function(name), arguments @ .., Token::CloseParen] = tokens {
         return match name.to_ascii_lowercase().as_str() {
-            "rgb" | "rgba" => parse_rgb(arguments),
-            "hsl" | "hsla" => parse_hsl(arguments, false),
-            "hwb" => parse_hsl(arguments, true),
+            "rgb" | "rgba" => parse_rgb(&crate::color::computed_math(arguments, false)?),
+            "hsl" | "hsla" => parse_hsl(&crate::color::computed_math(arguments, true)?, false),
+            "hwb" => parse_hsl(&crate::color::computed_math(arguments, true)?, true),
             "color-mix" => {
                 crate::color::parse_mix(arguments, &mut |part| color_with(part, current, dark))
             }
@@ -6547,17 +6584,38 @@ fn parse_rgb(arguments: &[Token]) -> Option<Color> {
     };
     let a = match alpha {
         None => 1.0,
-        Some(Token::Number { value, .. }) => value.clamp(0.0, 1.0) as f32,
-        Some(Token::Percentage { value }) => (value / 100.0).clamp(0.0, 1.0) as f32,
+        Some(Token::Number { value, .. }) => value.clamp(0.0, 1.0),
+        Some(Token::Percentage { value }) => (value / 100.0).clamp(0.0, 1.0),
         Some(Token::Ident(none)) if none.eq_ignore_ascii_case("none") => 0.0,
         Some(_) => return None,
     };
-    Some(Color::rgba(
+    let rgb = [
         channel(channels[0])?,
         channel(channels[1])?,
         channel(channels[2])?,
+    ];
+    Some(Color::legacy(
+        crate::color::Space::Legacy,
+        rgb.map(f64::from),
         a,
+        nones(&channels, alpha),
     ))
+}
+
+/// The bits of [`Color`]'s `missing` for the components and the alpha
+/// that are `none`.
+fn nones(components: &[&Token], alpha: Option<&Token>) -> u8 {
+    let none = |token: &Token| matches!(token, Token::Ident(n) if n.eq_ignore_ascii_case("none"));
+    let mut bits = 0;
+    for (i, token) in components.iter().enumerate() {
+        if none(token) {
+            bits |= 1 << i;
+        }
+    }
+    if alpha.is_some_and(none) {
+        bits |= 1 << 3;
+    }
+    bits
 }
 
 /// The arguments of `hsl()` or `hsla()`, the same function, or of `hwb()`
@@ -6638,28 +6696,19 @@ fn parse_hsl(arguments: &[Token], whiteness: bool) -> Option<Color> {
         Some(Token::Ident(none)) if none.eq_ignore_ascii_case("none") => 0.0,
         Some(_) => return None,
     };
-    let hue = degrees.rem_euclid(360.0) / 30.0;
-    // css-color-4's hslToRgb: each channel from its offset on the wheel.
-    let hsl = |saturation: f64, lightness: f64| {
-        let channel = |n: f64| {
-            let k = (n + hue) % 12.0;
-            let a = saturation * lightness.min(1.0 - lightness);
-            lightness - a * (k - 3.0).min(9.0 - k).clamp(-1.0, 1.0)
-        };
-        [channel(0.0), channel(8.0), channel(4.0)]
-    };
-    let [r, g, b] = if whiteness {
-        let (white, black) = (first, second);
-        if white + black >= 1.0 {
-            let gray = white / (white + black);
-            [gray; 3]
-        } else {
-            hsl(1.0, 0.5).map(|c| c * (1.0 - white - black) + white)
-        }
+    // The colour keeps its own components, and which are `none`, for a
+    // mix (gap batch E).
+    let space = if whiteness {
+        crate::color::Space::Hwb
     } else {
-        hsl(first, second)
+        crate::color::Space::Hsl
     };
-    Some(Color::rgba(r as f32, g as f32, b as f32, a as f32))
+    Some(Color::legacy(
+        space,
+        [degrees.rem_euclid(360.0), first * 100.0, second * 100.0],
+        a,
+        nones(&parts, alpha),
+    ))
 }
 
 /// A colour written as CSS writes one, with the functions and names the
@@ -8262,6 +8311,38 @@ mod tests {
     }
 
     #[test]
+    fn aspect_ratio_and_one_axis_of_a_background_position_are_computed_values() {
+        // Gap batch E (G36, G40): the reference browser's computed values.
+        let sheets = [sheet(
+            "p { aspect-ratio: 16 / 9; background-position: 10px 20%, right }              i { aspect-ratio: auto 2 / 1 }",
+        )];
+        let html = "<p>x<i>y</i><b>z</b></p>";
+        let value = |selector: &str, name: &str| {
+            crate::serialize::computed_value(&style_of(html, &sheets, selector), name)
+        };
+        assert_eq!(value("p", "aspect-ratio").as_deref(), Some("16 / 9"));
+        assert_eq!(value("i", "aspect-ratio").as_deref(), Some("auto 2 / 1"));
+        assert_eq!(value("b", "aspect-ratio").as_deref(), Some("auto"));
+        assert_eq!(
+            value("p", "background-position-x").as_deref(),
+            Some("10px, 100%")
+        );
+        assert_eq!(
+            value("p", "background-position-y").as_deref(),
+            Some("20%, 50%")
+        );
+        assert_eq!(value("b", "background-position-x").as_deref(), Some("0%"));
+        // A position's percentages wait for their basis, which may be
+        // negative, before they are compared.
+        let sheets = [sheet("p { background-position: min(0%, 100%) 0 }")];
+        let p = style_of(html, &sheets, "p");
+        assert!(matches!(
+            p.background().position[0][0],
+            LengthPercentage::Calc(_)
+        ));
+    }
+
+    #[test]
     fn currentcolor_is_the_elements_colour_in_every_colour_property() {
         // Gap batch E: the reference browser's computed values.
         let sheets = [sheet(
@@ -8356,6 +8437,11 @@ mod tests {
             ("normal dark", "normal"),
             ("only", "normal"),
             ("dark only only", "normal"),
+            // A CSS-wide keyword is no scheme, and `only` is at an end.
+            ("light inherit", "normal"),
+            ("light revert-layer", "normal"),
+            ("light only dark", "normal"),
+            ("only light", "light only"),
         ] {
             let (document, styles) = schemed(
                 "<div>x</div>",
@@ -8498,6 +8584,11 @@ mod tests {
             "grayscale(1) blur(0px)"
         );
         assert_eq!(value("filter: hue-rotate(0.5turn)"), "hue-rotate(180deg)");
+        // A calculation below the range is clamped to it.
+        assert_eq!(
+            value("filter: brightness(calc(-10)) contrast(calc(-10%))"),
+            "brightness(0) contrast(0)"
+        );
         for bad in [
             "blur(-1px)",
             "url(#f)",
@@ -8545,6 +8636,11 @@ mod tests {
             "rgb(0, 128, 0) 1px 2px 0px 0px"
         );
         assert_eq!(value("box-shadow: none"), "none");
+        // A calculated blur below zero is clamped to it.
+        assert_eq!(
+            value("box-shadow: 1px 1px calc(-1px)"),
+            "rgb(0, 128, 0) 1px 1px 0px 0px"
+        );
         for bad in [
             "1px 2px -3px red",
             "1px",
@@ -10736,6 +10832,10 @@ mod tests {
         assert_eq!(of("order: calc(infinity)").order, i32::MAX);
         assert_eq!(of("opacity: calc(100% / 4)").effects().opacity, 0.25);
         assert_eq!(of("opacity: calc(2)").effects().opacity, 1.0);
+        // Percentages compared, as fractions of 1 (gap batch E).
+        assert_eq!(of("opacity: min(50%, 0%)").effects().opacity, 0.0);
+        assert_eq!(of("opacity: clamp(50%, 80%, 70%)").effects().opacity, 0.7);
+        assert_eq!(of("opacity: calc(10% / 20%)").effects().opacity, 0.5);
         assert_eq!(of("border: calc(-1px) solid").border_width[TOP], 0.0);
         assert_eq!(of("letter-spacing: calc(1px - 3px)").letter_spacing, -2.0);
         assert_eq!(of("flex: calc(2) calc(-1) 5px").flex_shrink, 0.0);

@@ -275,34 +275,44 @@ fn stops(items: &[GradientItem], length: f32, method: Option<Method>) -> Vec<(f3
     }
     // Colours mixed in another space than sRGB (Images 4 section 3.5.2,
     // gap batch E): the method's, or Oklab where a colour is not a
-    // legacy one; each span cut into pieces by colours mixed there, the
-    // pieces blended evenly between them.
+    // legacy one or has a `none`; each span cut into pieces by colours
+    // mixed there, its ends too, so that a stop's `none` takes each
+    // neighbour's component on its side, the pieces blended evenly
+    // between them.
     let method = method.or_else(|| {
         placed
             .iter()
-            .any(|(_, c, _)| !c.is_legacy())
+            .any(|(_, c, _)| {
+                !c.is_legacy() || c.components().iter().any(Option::is_none) || c.alpha().is_none()
+            })
             .then_some(Method::OKLAB)
     });
     let mut out = Vec::with_capacity(placed.len());
+    // Whether the span before ended on this stop, mixed.
+    let mut ended = false;
     for (i, &(at, color, hint)) in placed.iter().enumerate() {
-        out.push((at, premultiplied(color)));
-        let Some(&(right, next, _)) = placed.get(i + 1) else {
+        let next = placed.get(i + 1);
+        if let (Some(method), Some(&(right, next, _)), None) = (method, next, hint)
+            && right > at
+        {
+            for k in 0..=METHOD_PIECES {
+                let t = k as f32 / METHOD_PIECES as f32;
+                let mixed = style::color::interpolate(&color, &next, f64::from(t), method, 1.0);
+                out.push((at + (right - at) * t, premultiplied(mixed)));
+            }
+            ended = true;
             continue;
-        };
-        if let Some(hint) = hint {
+        }
+        if !ended {
+            out.push((at, premultiplied(color)));
+        }
+        ended = false;
+        if let (Some(&(right, next, _)), Some(hint)) = (next, hint) {
             out.extend(hint_stops(
                 (at, premultiplied(color)),
                 hint,
                 (right, premultiplied(next)),
             ));
-        } else if let Some(method) = method
-            && right > at
-        {
-            for k in 1..METHOD_PIECES {
-                let t = k as f32 / METHOD_PIECES as f32;
-                let mixed = style::color::interpolate(&color, &next, f64::from(t), method, 1.0);
-                out.push((at + (right - at) * t, premultiplied(mixed)));
-            }
         }
     }
     out
@@ -639,6 +649,35 @@ mod tests {
             20,
             &[(10, [255, 0, 0]), (19, [255, 0, 0]), (20, [0, 0, 255])],
         );
+    }
+
+    #[test]
+    fn a_stops_none_takes_each_neighbours_component_on_its_side() {
+        // Gap batch E: the middle stop's red is the first stop's to its
+        // left and the last's to its right, a hard edge between.
+        holds(
+            "linear-gradient(to right in srgb, color(srgb 1 0 0), color(srgb none 1 0),              color(srgb 0 0 1))",
+            20,
+            &[(49, [255, 252, 0]), (50, [0, 252, 3])],
+        );
+        // Past the last stop, its `none` is the mixed end's.
+        holds(
+            "linear-gradient(to right in srgb, color(srgb 1 0 0), color(srgb none 1 0) 50%)",
+            20,
+            &[(75, [255, 255, 0])],
+        );
+        // A legacy colour with a `none` mixes in Oklab, as one not legacy.
+        let a = render(
+            &gradient("linear-gradient(to right, rgb(none 255 0), rgb(255 none 0))"),
+            100.0,
+            40.0,
+        );
+        let b = render(
+            &gradient("linear-gradient(to right in oklab, lime, red)"),
+            100.0,
+            40.0,
+        );
+        assert!(a == b);
     }
 
     #[test]

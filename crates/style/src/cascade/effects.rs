@@ -338,7 +338,8 @@ fn place(component: &[Token], bases: &LengthBases<'_>) -> Option<Place> {
             "center" => Some(Place::Center),
             _ => None,
         },
-        None => length_percentage(component, bases).map(Place::Offset),
+        // Its percentages of a basis that may be negative.
+        None => super::length_percentage_of(component, bases, Range::All, true).map(Place::Offset),
     }
 }
 
@@ -605,7 +606,9 @@ pub(super) fn parse_opacity(tokens: &[Token], bases: &LengthBases<'_>) -> Option
     let v = match math(tokens, Want::NumberOrPercentage, bases, None) {
         Some(Computed::Value(v)) => v.clamp(0.0, 1.0) as f32,
         Some(Computed::Percent(p)) => (p / 100.0).clamp(0.0, 1.0) as f32,
-        Some(Computed::Expression(_)) => return None,
+        // A percentage over a percentage, `calc(10% / 20%)`: whatever
+        // their basis.
+        Some(Computed::Expression(e)) => e.evaluate(1.0).clamp(0.0, 1.0) as f32,
         None => match single_token(tokens)? {
             Token::Number { value, .. } => *value as f32,
             Token::Percentage { value } => *value as f32 / 100.0,

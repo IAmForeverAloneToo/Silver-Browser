@@ -50,8 +50,8 @@ use paint::rounded::RoundedRect;
 use crate::{
     Backend, Clip, GlyphCache, Layer, LayerInfo, Layered, Layers, MAX_FRAME_PIXELS,
     MAX_PARTIAL_SIDE, PixelRect, Pixels, Redrawn, RenderBackend, State, Store, Tile, Turned,
-    bounds, clip_polygon, contours_coverage, damaged, fits_a_frame, group_end, landing_of,
-    mapped_mask, outward_clip, raster_scale, reach, reach_at, shadow_item_coverage, tile_rows,
+    clip_polygon, contours_coverage, damaged, fits_a_frame, group_end, landing_of, mapped_mask,
+    outward_clip, raster_scale, reach, reach_at, scratch_region, shadow_item_coverage, tile_rows,
     unscaled, visible_in, whole_reach,
 };
 
@@ -1042,14 +1042,6 @@ impl GpuBackend {
             return;
         }
         if matrix.translates_and_scales_only() {
-            let mut state = State::based(width, height, matrix);
-            let mut reach: Option<PixelRect> = None;
-            for item in items {
-                if let Some(b) = bounds(&mut self.text, item, &state, width, height) {
-                    reach = Some(reach.map_or(b, |r| r.union(b)));
-                }
-                state.apply(item);
-            }
             // As the software backend takes a filter's reach.
             let (sx, sy, _, _) = matrix
                 .scale_and_translation()
@@ -1060,24 +1052,18 @@ impl GpuBackend {
                 spread[2] * sx.abs(),
                 spread[3] * sy.abs(),
             ];
-            let reach = reach.map(|r| r.grown_by(grow, width, height));
-            let Some(shown) = reach.and_then(|r| r.intersect(within)) else {
-                return;
-            };
-            let Some(region) =
-                reach.and_then(|r| r.intersect(within.grown_by(grow, width, height)))
+            let Some((shown, (x0, y0, w, h))) =
+                scratch_region(&mut self.text, items, matrix, grow, within, size)
             else {
                 return;
             };
-            let (w, h) = (region.x1 - region.x0, region.y1 - region.y0);
-            let base =
-                Matrix::translate(-(region.x0 as f32), -(region.y0 as f32), 0.0).then(&matrix);
+            let base = Matrix::translate(-(x0 as f32), -(y0 as f32), 0.0).then(&matrix);
             let Some(bind) =
                 self.render_scratch(items, w, h, base, mask, filters.map(|f| (f, (sx, sy))))
             else {
                 return;
             };
-            let at = Matrix::translate(region.x0 as f32, region.y0 as f32, 0.0);
+            let at = Matrix::translate(x0 as f32, y0 as f32, 0.0);
             Self::push_composite(
                 &mut self.records,
                 draws,
@@ -2034,6 +2020,9 @@ impl GpuBackend {
                 let composed = frame.matrix().map_or(*matrix, |m| m.then(matrix));
                 let outward = local.matrix().map_or(*matrix, |m| m.then(matrix));
                 let clip = frame.clip();
+                // Whether it was held, asked before a group inside it of
+                // the same key drops the layer.
+                let was = self.layers.contains(key);
                 let mut inner_frame = frame.clone();
                 inner_frame.apply(item);
                 let mut inner_extra = Vec::new();
@@ -2046,7 +2035,6 @@ impl GpuBackend {
                 );
                 // A key two groups share is known before
                 // (`crate::doubled_keys`), the first group's too.
-                let was = self.layers.contains(key);
                 let held = if !self.doubled.contains(key) && seen.insert(*key) {
                     self.update_layer(*key, *reason, inner, &composed, clip, &inner_extra)
                 } else {

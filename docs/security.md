@@ -790,6 +790,7 @@ earlier milestones say why each is what it is):
 | `paint` | `MAX_GRADIENT_PIXELS` | `1 << 22` | The most pixels a gradient is rendered with: a larger tile is rendered smaller and stretched over it. |
 | `paint` | `MIN_PERIOD` | `0.5` | The period below which a repeating gradient is drawn as its average colour, the pixels being too coarse to show it (section 3.3). |
 | `paint` | `MAX_THREADS` | `8` | The most threads a gradient is rendered on, a band of rows each. |
+| `paint` | `MAX_ARC_SEGMENTS` | `64` | The most chords a rounded corner's quarter is flattened into (gap batch E). |
 | `render` | `MAX_FRAME_PIXELS` | `8192 * 8192` | The most pixels one frame may have: an 8192-by-8192 frame is 256 MiB of pixels. |
 | `render` | `MAX_PARTIAL_SIDE` | `8191` | Past this many pixels across or down, tiny-skia fills without anti-aliasing what it would otherwise anti-alias (its supersampling works in 16-bit coordinates), so that a fill clipped to part of the frame could differ from the same fill whole: a frame that large is always rasterized whole. |
 | `render` | `MAX_DAMAGE_RECTS` | `32` | At most this many damaged rectangles are redrawn one by one; more are redrawn as the one rectangle around them all. |
@@ -797,6 +798,7 @@ earlier milestones say why each is what it is):
 | `render` | `MAX_TURNED` | `64` | The most images turned for `image-orientation: none` or cut to a slice kept at once, and the most bytes they may hold: past either they are all turned and cut again as they are drawn. |
 | `render` | `MAX_TURNED_BYTES` | `64 << 20` | The most bytes the images turned or cut for drawing may hold before they are all made again as drawn. |
 | `render` | `MAX_SPACED_TILES` | `4096` | The most tiles a pattern with gaps between them is drawn as one by one: past it, the gaps are left out and the tiles drawn as one fill. |
+| `render` | `shadow::MAX_SIGMA` | `256.0` | The largest standard deviation, in device pixels, a shadow or a filter's blur is drawn with (gap batch E). |
 | `style` | `MAX_MIX_DEPTH` | `8` | How deep interpolated transforms may nest inside one another: a transition interrupted during one starts from it. |
 | `style` | `MAX_ANIMATIONS` | `65_536` | The most animations and transitions a document runs together: past it a new one does not start. |
 | `style` | `MAX_DEPTH` | `32` | The deepest a calculation may nest, parentheses and math functions together: section 10.8's least that a user agent must support, as selectors' and media queries' parentheses are bounded. |
@@ -814,6 +816,11 @@ earlier milestones say why each is what it is):
 | `style` | `MAX_ANCESTOR_FILTERS` | `1 << 14` | The most ancestor filters a matcher keeps, 512 bytes each: past it an element's selectors are matched without one. |
 | `style` | `MAX_FAILED` | `1 << 20` | The most places a matcher keeps a selector failed at; past it they are forgotten and found again. |
 | `style` | `MAX_KEPT_STYLES` | `4096` | The most base styles a cascade keeps for the elements made of the same (M35.2); past it they are forgotten and computed again. |
+| `style` | `MAX_SHADOWS` | `64` | The most shadows a `box-shadow` may list (gap batch E): a longer list is invalid. |
+| `style` | `MAX_FILTERS` | `32` | The most functions a `filter` may list (gap batch E): a longer list is invalid. |
+| `style` | `MAX_SCHEME_WORDS` | `16` | The most scheme names a `color-scheme` may list (gap batch E). |
+| `style` | `color::MAX_DEPTH` | `32` | The deepest a `color-mix()` may nest in another (gap batch E): a deeper one is invalid. |
+| `style` | `color::MAX_COMPONENT` | `1e6` | The largest magnitude a colour's component is kept at, so that its conversions stay finite (gap batch E). |
 | `svg` | `MAX_SVG_ELEMENTS` | `1 << 18` | The most elements a render tree is built from, `<use>`s' instances counted; past it, what was built is drawn. |
 | `svg` | `MAX_USE_DEPTH` | `32` | The most `<use>`s within one another, and the longest chain of gradients' templates; a `<use>` past it draws nothing. |
 | `svg` | `MAX_GRADIENT_STOPS` | `1_024` | The most stops a gradient takes; the rest are left out. |
