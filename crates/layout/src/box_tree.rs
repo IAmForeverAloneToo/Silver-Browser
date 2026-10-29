@@ -3429,9 +3429,10 @@ mod tests {
     #[test]
     fn the_header_group_is_first_and_the_footer_group_last_whatever_their_place() {
         // tfoot, tbody, thead, a second thead and a row in source order:
-        // laid out as header, body, thead-as-body, row, footer (CSS2
+        // laid out as header, body, thead-as-body, row's tbody, footer (CSS2
         // §17.2: only the first header and the first footer are such).
-        // Nodes: table 4, tfoot 5, tbody 8, thead 11, thead 14, tr 17.
+        // The parser implies the tbody round the row. Nodes: table 4,
+        // tfoot 5, tbody 8, thead 11, thead 14, tbody 17.
         let tree = tree_of(
             "<table><tfoot><tr><td>f</td></tr></tfoot><tbody><tr><td>b</td></tr></tbody>\
              <thead><tr><td>h</td></tr></thead><thead><tr><td>h2</td></tr></thead>\
@@ -3455,7 +3456,7 @@ mod tests {
                 ("header", 11),
                 ("body", 8),
                 ("body", 14),
-                ("row", 17),
+                ("body", 17),
                 ("footer", 5)
             ])
         );
@@ -3493,7 +3494,7 @@ mod tests {
         // and the second at the top by the table's inherited one, with
         // a column group after the rows: the order is top caption,
         // columns, rows, bottom caption. Nodes: table 4, caption 5,
-        // caption 6, tr 7, td 8, colgroup 9.
+        // caption 6, tbody 7, tr 8, td 9, colgroup 10.
         let tree = tree_of(
             "<table><caption class=b>b</caption><caption>t</caption>\
              <tr><td>x</td></tr><colgroup></colgroup></table>",
@@ -3514,8 +3515,8 @@ mod tests {
             parts,
             pairs(&[
                 ("caption", 6),
-                ("colgroup 1", 9),
-                ("row", 7),
+                ("colgroup 1", 10),
+                ("body", 7),
                 ("caption", 5)
             ])
         );
@@ -3526,31 +3527,37 @@ mod tests {
         // Cells directly in the table share one anonymous row until a
         // row interrupts them; the same in a row group. The anonymous
         // row names the table (or the group) and inherits its style.
-        // Nodes: table 4, td 5, td 6, tr 7, td 8, td 9, tbody 10, td 11.
-        let tree = tree_of(
-            "<table><td>a</td><td>b</td><tr><td>c</td></tr><td>d</td>\
-             <tbody><td>e</td></tbody></table>",
-            "table { color: #ff0000; }",
+        // Built by hand: the parser implies a tbody and a tr round such
+        // cells, as the HTML standard's table modes do. Nodes: div 1,
+        // table 2, td 3, td 4, tr 5, td 6, td 7, tbody 8, td 9.
+        let root = Element::new("div").push(
+            Element::new("table")
+                .push(Element::new("td").text("a"))
+                .push(Element::new("td").text("b"))
+                .push(Element::new("tr").push(Element::new("td").text("c")))
+                .push(Element::new("td").text("d"))
+                .push(Element::new("tbody").push(Element::new("td").text("e"))),
         );
-        let table = &tree.body().children[0];
+        let tree = built(root, "table { color: #ff0000; }");
+        let table = &tree[0].children[0];
         assert_eq!(
             tree.boxes_of(&table.children),
             pairs(&[
-                ("row", 4),
-                ("cell 1x1", 5),
-                ("anon", 5),
+                ("row", 2),
+                ("cell 1x1", 3),
+                ("anon", 3),
+                ("cell 1x1", 4),
+                ("anon", 4),
+                ("row", 5),
                 ("cell 1x1", 6),
                 ("anon", 6),
-                ("row", 7),
-                ("cell 1x1", 8),
-                ("anon", 8),
-                ("row", 4),
+                ("row", 2),
+                ("cell 1x1", 7),
+                ("anon", 7),
+                ("body", 8),
+                ("row", 8),
                 ("cell 1x1", 9),
                 ("anon", 9),
-                ("body", 10),
-                ("row", 10),
-                ("cell 1x1", 11),
-                ("anon", 11),
             ])
         );
         let anonymous_row = &table.children[0];
@@ -3573,39 +3580,48 @@ mod tests {
         // the anonymous cell names the row, spans one column and one
         // row, and sits on the baseline (vertical-align is not
         // inherited). In a table: an anonymous row around an anonymous
-        // cell. Nodes: table 4, tr 5, td 6, span 7, b 8, table 9, p 10.
-        let tree = tree_of(
-            "<table><tr>x<td>a</td><span>y</span><b>z</b></tr></table>\
-             <table><p>para</p></table>",
-            "",
-        );
-        let body = tree.body();
+        // cell. Built by hand: the parser moves such content out before
+        // the table (the HTML standard's foster parenting). Nodes: div 1,
+        // table 2, tr 3, td 4, span 5, b 6, table 7, p 8.
+        let root = Element::new("div")
+            .push(
+                Element::new("table").push(
+                    Element::new("tr")
+                        .text("x")
+                        .push(Element::new("td").text("a"))
+                        .push(Element::new("span").text("y"))
+                        .push(Element::new("b").text("z")),
+                ),
+            )
+            .push(Element::new("table").push(Element::new("p").text("para")));
+        let tree = built(root, "");
+        let div = &tree[0];
         assert_eq!(
-            tree.shape_of(&body.children),
+            tree.shape_of(&div.children),
             pairs(&[
-                ("table", 4),
-                ("row", 5),
-                ("cell 1x1", 5),
-                ("anon", 5),
-                ("text x", 5),
-                ("cell 1x1", 6),
-                ("anon", 6),
-                ("text a", 6),
-                ("cell 1x1", 5),
-                ("anon", 5),
-                ("inline", 7),
-                ("text y", 7),
-                ("inline", 8),
-                ("text z", 8),
-                ("table", 9),
-                ("row", 9),
-                ("cell 1x1", 9),
-                ("block", 10),
-                ("anon", 10),
-                ("text para", 10),
+                ("table", 2),
+                ("row", 3),
+                ("cell 1x1", 3),
+                ("anon", 3),
+                ("text x", 3),
+                ("cell 1x1", 4),
+                ("anon", 4),
+                ("text a", 4),
+                ("cell 1x1", 3),
+                ("anon", 3),
+                ("inline", 5),
+                ("text y", 5),
+                ("inline", 6),
+                ("text z", 6),
+                ("table", 7),
+                ("row", 7),
+                ("cell 1x1", 7),
+                ("block", 8),
+                ("anon", 8),
+                ("text para", 8),
             ])
         );
-        let anonymous_cell = &body.children[0].children[0].children[0];
+        let anonymous_cell = &div.children[0].children[0].children[0];
         assert_eq!(anonymous_cell.style.display, Display::TableCell);
         assert_eq!(
             anonymous_cell.style.vertical_align,
@@ -3621,33 +3637,57 @@ mod tests {
     fn white_space_between_table_parts_is_no_content() {
         // Spaces and newlines between rows, cells and groups make
         // neither cells nor rows; inside an anonymous cell's content
-        // they are the gaps they are, dropped at its ends. Nodes: table
-        // 4, tbody 5, tr 6, td 7, td 8, tr 9, span 10, span 11.
+        // they are the gaps they are, dropped at its ends. The parser
+        // moves the spans out before the table (the HTML standard's
+        // foster parenting), leaving the second row, in the tbody it
+        // implies, only white space. Nodes: span 4, span 5, table 6,
+        // tbody 7, tr 8, td 9, td 10, tbody 11, tr 12.
         let tree = tree_of(
             "<table>\n  <tbody>\n    <tr>\n      <td>a</td> <td>b</td>\n    </tr>\n  </tbody>\n\
              <tr> <span>x</span> <span>y</span> </tr> </table>",
             "",
         );
-        let table = &tree.body().children[0];
+        let table = &tree.body().children[1];
         assert_eq!(
             tree.shape_of(&table.children),
             pairs(&[
-                ("body", 5),
-                ("row", 6),
-                ("cell 1x1", 7),
-                ("anon", 7),
-                ("text a", 7),
-                ("cell 1x1", 8),
-                ("anon", 8),
-                ("text b", 8),
-                ("row", 9),
+                ("body", 7),
+                ("row", 8),
                 ("cell 1x1", 9),
                 ("anon", 9),
-                ("inline", 10),
-                ("text x", 10),
-                ("text  ", 9),
-                ("inline", 11),
-                ("text y", 11),
+                ("text a", 9),
+                ("cell 1x1", 10),
+                ("anon", 10),
+                ("text b", 10),
+                ("body", 11),
+                ("row", 12),
+            ])
+        );
+        // The anonymous cell's gaps, built by hand. Nodes: div 1, table
+        // 2, tr 3, span 4, span 5.
+        let root = Element::new("div").push(
+            Element::new("table").push(
+                Element::new("tr")
+                    .text(" ")
+                    .push(Element::new("span").text("x"))
+                    .text(" ")
+                    .push(Element::new("span").text("y"))
+                    .text(" "),
+            ),
+        );
+        let tree = built(root, "");
+        let table = &tree[0].children[0];
+        assert_eq!(
+            tree.shape_of(&table.children),
+            pairs(&[
+                ("row", 3),
+                ("cell 1x1", 3),
+                ("anon", 3),
+                ("inline", 4),
+                ("text x", 4),
+                ("text  ", 3),
+                ("inline", 5),
+                ("text y", 5),
             ])
         );
     }
@@ -3755,7 +3795,7 @@ mod tests {
 
     #[test]
     fn an_inline_table_is_inline_level_content() {
-        // Nodes: div 4, table 5, tr 6, td 7.
+        // Nodes: div 4, table 5, tbody 6, tr 7, td 8.
         let tree = tree_of(
             "<div>a<table class=i><tr><td>x</td></tr></table>b</div>",
             ".i { display: inline-table; }",
@@ -3767,10 +3807,11 @@ mod tests {
                 ("anon", 4),
                 ("text a", 4),
                 ("inline-table", 5),
-                ("row", 6),
-                ("cell 1x1", 7),
-                ("anon", 7),
-                ("text x", 7),
+                ("body", 6),
+                ("row", 7),
+                ("cell 1x1", 8),
+                ("anon", 8),
+                ("text x", 8),
                 ("text b", 4),
             ])
         );
@@ -3781,8 +3822,8 @@ mod tests {
         // The float is the box, with `display: table` and the table's
         // parts inside it; so for an absolutely positioned table and a
         // floated inline table, which CSS2 §9.7 makes a table. Nodes:
-        // div 4, table 5, tr 6, td 7, table 8, tr 9, td 10, table 11,
-        // tr 12, td 13.
+        // div 4, table 5, tbody 6, tr 7, td 8, table 9, tbody 10, tr 11,
+        // td 12, table 13, tbody 14, tr 15, td 16.
         let tree = tree_of(
             "<div><table class=f><tr><td>x</td></tr></table>\
              <table class=a><tr><td>y</td></tr></table>\
@@ -3795,17 +3836,20 @@ mod tests {
             tree.boxes_of(&div.children),
             pairs(&[
                 ("float", 5),
-                ("row", 6),
-                ("cell 1x1", 7),
-                ("anon", 7),
-                ("absolute", 8),
-                ("row", 9),
-                ("cell 1x1", 10),
-                ("anon", 10),
-                ("float", 11),
-                ("row", 12),
-                ("cell 1x1", 13),
-                ("anon", 13),
+                ("body", 6),
+                ("row", 7),
+                ("cell 1x1", 8),
+                ("anon", 8),
+                ("absolute", 9),
+                ("body", 10),
+                ("row", 11),
+                ("cell 1x1", 12),
+                ("anon", 12),
+                ("float", 13),
+                ("body", 14),
+                ("row", 15),
+                ("cell 1x1", 16),
+                ("anon", 16),
             ])
         );
         assert!(
@@ -3814,21 +3858,27 @@ mod tests {
                 .all(|c| c.style.display == Display::Table)
         );
         // A float inside a row is content for an anonymous cell, a
-        // float inside it. Nodes: table 5, tr 6, div.f 7, td 8.
-        let tree = tree_of(
-            "<div><table><tr><div class=f>f</div><td>x</td></tr></table></div>",
-            ".f { float: left; }",
+        // float inside it. Built by hand: the parser moves a div in a
+        // row out before the table (the HTML standard's foster
+        // parenting). Nodes: div 1, table 2, tr 3, div.f 4, td 5.
+        let root = Element::new("div").push(
+            Element::new("table").push(
+                Element::new("tr")
+                    .push(Element::new("div").attr("class", "f").text("f"))
+                    .push(Element::new("td").text("x")),
+            ),
         );
-        let table = &tree.body().children[0].children[0];
+        let tree = built(root, ".f { float: left; }");
+        let table = &tree[0].children[0];
         assert_eq!(
             tree.boxes_of(&table.children),
             pairs(&[
-                ("row", 6),
-                ("cell 1x1", 6),
-                ("float", 7),
-                ("anon", 7),
-                ("cell 1x1", 8),
-                ("anon", 8),
+                ("row", 3),
+                ("cell 1x1", 3),
+                ("float", 4),
+                ("anon", 4),
+                ("cell 1x1", 5),
+                ("anon", 5),
             ])
         );
     }
@@ -3837,25 +3887,42 @@ mod tests {
     fn column_boxes_hold_no_content_and_a_column_group_only_columns() {
         // A col's children generate nothing; a colgroup's children that
         // are not columns are dropped; a colgroup's span counts when it
-        // has no columns. Nodes: table 4, colgroup 5, col 6, span 8,
-        // colgroup 9, col 10, col 11, tr 12.
-        let tree = tree_of(
-            "<table><colgroup span=4><col>text<span>s</span></col><span>x</span></colgroup>\
-             <colgroup><col><col span=3></colgroup><tr><td>c</td></tr></table>",
-            "",
+        // has no columns. Built by hand: the parser moves the col's and
+        // the colgroup's other content out before the table (the HTML
+        // standard's foster parenting). Nodes: div 1, table 2, colgroup
+        // 3, col 4, span 5, span 6, colgroup 7, col 8, col 9, tr 10, td 11.
+        let root = Element::new("div").push(
+            Element::new("table")
+                .push(
+                    Element::new("colgroup")
+                        .attr("span", "4")
+                        .push(
+                            Element::new("col")
+                                .text("text")
+                                .push(Element::new("span").text("s")),
+                        )
+                        .push(Element::new("span").text("x")),
+                )
+                .push(
+                    Element::new("colgroup")
+                        .push(Element::new("col"))
+                        .push(Element::new("col").attr("span", "3")),
+                )
+                .push(Element::new("tr").push(Element::new("td").text("c"))),
         );
-        let table = &tree.body().children[0];
+        let tree = built(root, "");
+        let table = &tree[0].children[0];
         assert_eq!(
             tree.boxes_of(&table.children),
             pairs(&[
-                ("colgroup 4", 5),
-                ("col 1", 6),
-                ("colgroup 1", 9),
-                ("col 1", 10),
-                ("col 3", 11),
-                ("row", 12),
-                ("cell 1x1", 13),
-                ("anon", 13),
+                ("colgroup 4", 3),
+                ("col 1", 4),
+                ("colgroup 1", 7),
+                ("col 1", 8),
+                ("col 3", 9),
+                ("row", 10),
+                ("cell 1x1", 11),
+                ("anon", 11),
             ])
         );
         assert!(table.children[0].children[0].children.is_empty());
@@ -3873,8 +3940,9 @@ mod tests {
             ("colspan=2.5 rowspan=99999999999999999999999", (2, 65534)),
             ("colspan=-0", (1, 1)),
         ] {
+            // The table's first child is the tbody the parser implies.
             let tree = tree_of(&format!("<table><tr><td {attrs}>x</td></tr></table>"), "");
-            let cell = &tree.body().children[0].children[0].children[0];
+            let cell = &tree.body().children[0].children[0].children[0].children[0];
             assert_eq!(
                 cell.kind,
                 BoxKind::Cell {
@@ -3885,11 +3953,12 @@ mod tests {
             );
         }
         for (attr, expected) in [("", 1), ("span=2", 2), ("span=0", 1), ("span=1001", 1000)] {
+            // The col is in the colgroup the parser implies.
             let tree = tree_of(
                 &format!("<table><col {attr}><tr><td>x</td></tr></table>"),
                 "",
             );
-            let col = &tree.body().children[0].children[0];
+            let col = &tree.body().children[0].children[0].children[0];
             assert_eq!(col.kind, BoxKind::Column { span: expected }, "{attr}");
         }
     }
@@ -4632,7 +4701,7 @@ mod tests {
 
     #[test]
     fn generated_table_parts_take_no_spans_and_go_where_their_display_puts_them() {
-        // Nodes: table 4, tr 5, td 6.
+        // Nodes: table 4, tbody 5, tr 6, td 7.
         let tree = tree_of(
             "<table><tr><td colspan=3>x</td></tr></table>",
             "tr::before { display: table-cell; content: 'a' }
@@ -4642,15 +4711,16 @@ mod tests {
         assert_eq!(
             tree.boxes_of(&table.children),
             pairs(&[
-                ("row", 5),
-                ("+cell 1x1", 5),
-                ("+anon", 5),
-                ("cell 3x1", 6),
-                ("table", 6),
+                ("body", 5),
                 ("row", 6),
                 ("+cell 1x1", 6),
                 ("+anon", 6),
-                ("anon", 6),
+                ("cell 3x1", 7),
+                ("table", 7),
+                ("row", 7),
+                ("+cell 1x1", 7),
+                ("+anon", 7),
+                ("anon", 7),
             ])
         );
         // A generated column is a column of one, in its group.

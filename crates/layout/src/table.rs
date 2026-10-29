@@ -2091,7 +2091,9 @@ mod tests {
 
     /// The document `html` parses to, styled under `css` and laid out
     /// against an 800px viewport. The parser implies html, head and
-    /// body: nodes html 1, head 2, body 3, the markup's from 4.
+    /// body: nodes html 1, head 2, body 3, the markup's from 4. It also
+    /// implies a tbody round rows put straight in a table and a colgroup
+    /// round cols, as the HTML standard's tree builder does.
     fn document_of(html: &str, css: &str) -> Laid {
         let fonts = test_fonts();
         let doc = html::parse_document(html).expect("html parsing never fails");
@@ -2127,8 +2129,8 @@ mod tests {
     fn the_fixed_algorithm_shares_the_width_among_the_columns() {
         // Two columns in a 200px table with 10px spacing: each column is
         // (200 - 3 * 10) / 2 = 85px; the cells sit after the spacing and
-        // the rows after it too. Nodes: table 4, tr 5, td 6, td 7, tr 8,
-        // td 9, td 10.
+        // the rows after it too. Nodes: table 4, tbody 5, tr 6, td 7, td
+        // 8, tr 9, td 10, td 11.
         let layout = document_of(
             "<table><tr><td></td><td></td></tr><tr><td></td><td></td></tr></table>",
             "body { margin: 0; } td { padding: 0; height: 20px; }
@@ -2138,14 +2140,14 @@ mod tests {
         assert_eq!(table.len(), 2, "the wrapper and the table box");
         assert_eq!(rect(table[0]), (0.0, 0.0, 200.0, 70.0), "the wrapper");
         assert_eq!(rect(table[1]), (0.0, 0.0, 200.0, 70.0), "the table box");
-        assert_eq!(rect(fragment_of(&layout, 6)), (10.0, 10.0, 85.0, 20.0));
-        assert_eq!(rect(fragment_of(&layout, 7)), (105.0, 10.0, 85.0, 20.0));
-        assert_eq!(rect(fragment_of(&layout, 9)), (10.0, 40.0, 85.0, 20.0));
-        assert_eq!(rect(fragment_of(&layout, 10)), (105.0, 40.0, 85.0, 20.0));
+        assert_eq!(rect(fragment_of(&layout, 7)), (10.0, 10.0, 85.0, 20.0));
+        assert_eq!(rect(fragment_of(&layout, 8)), (105.0, 10.0, 85.0, 20.0));
+        assert_eq!(rect(fragment_of(&layout, 10)), (10.0, 40.0, 85.0, 20.0));
+        assert_eq!(rect(fragment_of(&layout, 11)), (105.0, 40.0, 85.0, 20.0));
         // The rows cover their cells' area, spacing between the cells
         // included, the spacing around the grid excluded.
-        assert_eq!(rect(fragment_of(&layout, 5)), (10.0, 10.0, 180.0, 20.0));
-        assert_eq!(rect(fragment_of(&layout, 8)), (10.0, 40.0, 180.0, 20.0));
+        assert_eq!(rect(fragment_of(&layout, 6)), (10.0, 10.0, 180.0, 20.0));
+        assert_eq!(rect(fragment_of(&layout, 9)), (10.0, 40.0, 180.0, 20.0));
         // The wrapper paints nothing; the table box keeps the style.
         assert_eq!(table[0].style.background_color, Color::TRANSPARENT);
         assert_eq!(table[1].style.display, Display::Table);
@@ -2158,7 +2160,8 @@ mod tests {
         // border box), a percentage cell of 10% (30px, 50 with its
         // padding), and one column left to take the rest: 300 - 50 - 120
         // - 50 = 80. The second row's widths change nothing. Nodes:
-        // table 4, col 5, tr 6, td 7, td 8, td 9, td 10, tr 11, td 12.
+        // table 4, colgroup 5, col 6, tbody 7, tr 8, td 9, td 10, td 11,
+        // td 12, tr 13, td 14.
         let layout = document_of(
             "<table><col><tr><td></td><td class=w></td><td class=p></td><td></td></tr>\
              <tr><td class=wide></td></tr></table>",
@@ -2167,11 +2170,11 @@ mod tests {
              col { width: 50px; } .w { width: 100px; } .p { width: 10%; }
              .wide { width: 500px; }",
         );
-        assert_eq!(rect(fragment_of(&layout, 7)), (0.0, 0.0, 50.0, 10.0));
-        assert_eq!(rect(fragment_of(&layout, 8)), (50.0, 0.0, 120.0, 10.0));
-        assert_eq!(rect(fragment_of(&layout, 9)), (170.0, 0.0, 50.0, 10.0));
-        assert_eq!(rect(fragment_of(&layout, 10)), (220.0, 0.0, 80.0, 10.0));
-        assert_eq!(rect(fragment_of(&layout, 12)), (0.0, 10.0, 50.0, 10.0));
+        assert_eq!(rect(fragment_of(&layout, 9)), (0.0, 0.0, 50.0, 10.0));
+        assert_eq!(rect(fragment_of(&layout, 10)), (50.0, 0.0, 120.0, 10.0));
+        assert_eq!(rect(fragment_of(&layout, 11)), (170.0, 0.0, 50.0, 10.0));
+        assert_eq!(rect(fragment_of(&layout, 12)), (220.0, 0.0, 80.0, 10.0));
+        assert_eq!(rect(fragment_of(&layout, 14)), (0.0, 10.0, 50.0, 10.0));
         assert_eq!(fragment_of(&layout, 4).w, 300.0);
     }
 
@@ -2180,8 +2183,9 @@ mod tests {
         // Two cols of 200px in a 100px table: the table is 400px wide.
         // A cell spanning both with a width of 300px splits it 150/150,
         // which the cols already set; a `span=2` col gives each of its
-        // columns the width. Nodes: table 4, col 5, tr 6, td 7, table 8,
-        // col 9, tr 10, td 11, td 12.
+        // columns the width. Nodes: table 4, colgroup 5, col 6, tbody 7,
+        // tr 8, td 9, table 10, colgroup 11, col 12, tbody 13, tr 14, td
+        // 15, td 16.
         let layout = document_of(
             "<table><col span=2><tr><td colspan=2></td></tr></table>\
              <table class=b><col span=2><tr><td></td><td></td></tr></table>",
@@ -2190,9 +2194,9 @@ mod tests {
              col { width: 200px; }",
         );
         assert_eq!(fragment_of(&layout, 4).w, 400.0);
-        assert_eq!(rect(fragment_of(&layout, 7)), (0.0, 0.0, 400.0, 10.0));
-        assert_eq!(rect(fragment_of(&layout, 11)), (0.0, 10.0, 200.0, 10.0));
-        assert_eq!(rect(fragment_of(&layout, 12)), (200.0, 10.0, 200.0, 10.0));
+        assert_eq!(rect(fragment_of(&layout, 9)), (0.0, 0.0, 400.0, 10.0));
+        assert_eq!(rect(fragment_of(&layout, 15)), (0.0, 10.0, 200.0, 10.0));
+        assert_eq!(rect(fragment_of(&layout, 16)), (200.0, 10.0, 200.0, 10.0));
     }
 
     #[test]
@@ -2231,8 +2235,8 @@ mod tests {
         // needs 100px: the 60px beyond the two rows' 40px go to them in
         // proportion, 45 and 15. A row's own height is a minimum, and a
         // cell's height is one too, under taller content. Nodes: table
-        // 4, tr 5, td 6, td 7, tr 8, td 9, table 10, tr 11, td 12, tr 13,
-        // td 14, div 15.
+        // 4, tbody 5, tr 6, td 7, td 8, tr 9, td 10, table 11, tbody 12,
+        // tr 13, td 14, tr 15, td 16, div 17.
         let layout = document_of(
             "<table><tr><td class=h30></td><td rowspan=2 class=h100></td></tr>\
              <tr><td class=h10></td></tr></table>\
@@ -2242,12 +2246,12 @@ mod tests {
              .h10 { height: 10px; } .h30 { height: 30px; } .h50 { height: 50px; }
              .h100 { height: 100px; } .r40 { height: 40px; }",
         );
-        assert_eq!(rect(fragment_of(&layout, 6)), (0.0, 0.0, 100.0, 75.0));
-        assert_eq!(rect(fragment_of(&layout, 7)), (100.0, 0.0, 100.0, 100.0));
-        assert_eq!(rect(fragment_of(&layout, 9)), (0.0, 75.0, 100.0, 25.0));
+        assert_eq!(rect(fragment_of(&layout, 7)), (0.0, 0.0, 100.0, 75.0));
+        assert_eq!(rect(fragment_of(&layout, 8)), (100.0, 0.0, 100.0, 100.0));
+        assert_eq!(rect(fragment_of(&layout, 10)), (0.0, 75.0, 100.0, 25.0));
         assert_eq!(fragment_of(&layout, 4).h, 100.0);
-        assert_eq!(rect(fragment_of(&layout, 12)), (0.0, 100.0, 200.0, 40.0));
-        assert_eq!(rect(fragment_of(&layout, 14)), (0.0, 140.0, 200.0, 50.0));
+        assert_eq!(rect(fragment_of(&layout, 14)), (0.0, 100.0, 200.0, 40.0));
+        assert_eq!(rect(fragment_of(&layout, 16)), (0.0, 140.0, 200.0, 50.0));
     }
 
     #[test]
@@ -2255,8 +2259,8 @@ mod tests {
         // Two 10px rows with 5px spacing in a table 100px tall (border-
         // box, the UA sheet's sizing, with a 2px border): the content is
         // 96px, the rows and spacing 35px, and the 61px extra goes to the
-        // rows equally since their heights are equal. Nodes: table 4, tr
-        // 5, td 6, tr 7, td 8.
+        // rows equally since their heights are equal. Nodes: table 4,
+        // tbody 5, tr 6, td 7, tr 8, td 9.
         let layout = document_of(
             "<table><tr><td></td></tr><tr><td></td></tr></table>",
             "body { margin: 0; } td { padding: 0; height: 10px; }
@@ -2265,8 +2269,8 @@ mod tests {
         );
         let table = fragments_of(&layout, 4);
         assert_eq!(rect(table[1]), (0.0, 0.0, 100.0, 100.0));
-        assert_eq!(rect(fragment_of(&layout, 6)), (7.0, 7.0, 86.0, 40.5));
-        assert_eq!(rect(fragment_of(&layout, 8)), (7.0, 52.5, 86.0, 40.5));
+        assert_eq!(rect(fragment_of(&layout, 7)), (7.0, 7.0, 86.0, 40.5));
+        assert_eq!(rect(fragment_of(&layout, 9)), (7.0, 52.5, 86.0, 40.5));
     }
 
     #[test]
@@ -2274,7 +2278,8 @@ mod tests {
         // A row, a row group and a column with backgrounds: each gets a
         // background fragment per cell of its area, painting nothing of
         // its own; a row without one has only its cells. Nodes: table 4,
-        // col 5, col 6, tbody 7, tr 8, td 9, td 10, tr 11, td 12, td 13.
+        // colgroup 5, col 6, col 7, tbody 8, tr 9, td 10, td 11, tr 12,
+        // td 13, td 14.
         let layout = document_of(
             "<table><col class=bg><col><tbody class=bg><tr class=bg><td></td><td></td></tr>\
              <tr><td></td><td></td></tr></tbody></table>",
@@ -2284,7 +2289,7 @@ mod tests {
         );
         let red = Color::rgb8(255, 0, 0);
         // The column: a fragment of no size, then its cells' backgrounds.
-        let col = fragments_of(&layout, 5);
+        let col = fragments_of(&layout, 6);
         assert_eq!(col.len(), 3);
         assert_eq!((col[0].w, col[0].h), (0.0, 0.0));
         assert_eq!(col[0].style.background_color, Color::TRANSPARENT);
@@ -2293,20 +2298,20 @@ mod tests {
         assert_eq!(col[1].style.background_color, red);
         assert_eq!(col[1].style.used_border_width(), [0.0; 4]);
         assert_eq!(
-            fragments_of(&layout, 6).len(),
+            fragments_of(&layout, 7).len(),
             1,
             "no background, no extra fragment"
         );
         // The group: its area, then four backgrounds, then its rows.
-        let group = fragments_of(&layout, 7);
+        let group = fragments_of(&layout, 8);
         assert_eq!(group.len(), 5);
         assert_eq!(rect(group[0]), (10.0, 10.0, 80.0, 30.0));
         assert_eq!(group[0].style.background_color, Color::TRANSPARENT);
         assert_eq!(rect(group[1]), (10.0, 10.0, 35.0, 10.0));
         assert_eq!(rect(group[4]), (55.0, 30.0, 35.0, 10.0));
         // The row with a background: two; the other: none.
-        assert_eq!(fragments_of(&layout, 8).len(), 3);
-        assert_eq!(fragments_of(&layout, 11).len(), 1);
+        assert_eq!(fragments_of(&layout, 9).len(), 3);
+        assert_eq!(fragments_of(&layout, 12).len(), 1);
         // In tree order the column's backgrounds come before the group's,
         // the group's before the row's, and the row's before its cells.
         let order: Vec<usize> = layout
@@ -2316,21 +2321,21 @@ mod tests {
             .collect();
         let first = |node: usize| order.iter().position(|n| *n == node).unwrap();
         let last = |node: usize| order.iter().rposition(|n| *n == node).unwrap();
-        assert!(last(5) < first(7), "column backgrounds before the group");
-        assert!(last(7) < first(8), "group backgrounds before the first row");
-        assert!(last(8) < first(9), "row backgrounds before the cells");
+        assert!(last(6) < first(8), "column backgrounds before the group");
+        assert!(last(8) < first(9), "group backgrounds before the first row");
+        assert!(last(9) < first(10), "row backgrounds before the cells");
     }
 
     #[test]
     fn a_rows_shadow_and_filter_are_its_own_not_each_cells() {
         // Gap batch E: the row's fragment keeps them, to be drawn once
         // round the row; its backgrounds under the cells have none.
-        // Nodes: table 4, tr 5, td 6, td 7.
+        // Nodes: table 4, tbody 5, tr 6, td 7, td 8.
         let layout = document_of(
             "<table><tr><td></td><td></td></tr></table>",
             "td { height: 10px; } tr { background: red; box-shadow: 0 0 9px black;              filter: invert(1) }",
         );
-        let row = fragments_of(&layout, 5);
+        let row = fragments_of(&layout, 6);
         assert_eq!(row.len(), 3);
         assert_eq!(row[0].style.effects().box_shadow.len(), 1);
         assert_eq!(row[0].style.effects().filter.len(), 1);
@@ -2345,7 +2350,7 @@ mod tests {
         // A top caption of 20px with a 5px margin and a bottom one of
         // 10px: the wrapper is 25 + 30 + 10 tall, the table box at y =
         // 25 in it, the captions as wide as the table. Nodes: table 4,
-        // caption 5, caption 6, tr 7, td 8, p 9.
+        // caption 5, caption 6, tbody 7, tr 8, td 9, p 10.
         let layout = document_of(
             "<table><caption class=t></caption><caption class=b></caption>\
              <tr><td></td></tr></table><p>after</p>",
@@ -2359,9 +2364,9 @@ mod tests {
         assert_eq!(rect(table[1]), (0.0, 25.0, 100.0, 30.0), "the table box");
         assert_eq!(rect(fragment_of(&layout, 5)), (0.0, 5.0, 100.0, 20.0));
         assert_eq!(rect(fragment_of(&layout, 6)), (0.0, 55.0, 100.0, 10.0));
-        assert_eq!(rect(fragment_of(&layout, 8)), (0.0, 25.0, 100.0, 30.0));
+        assert_eq!(rect(fragment_of(&layout, 9)), (0.0, 25.0, 100.0, 30.0));
         assert_eq!(
-            fragment_of(&layout, 9).y,
+            fragment_of(&layout, 10).y,
             65.0,
             "the flow goes on below the wrapper"
         );
@@ -2371,7 +2376,7 @@ mod tests {
     fn a_table_is_a_formatting_context_root_in_its_flow() {
         // Its margins do not collapse with its cells' content; it dodges
         // a float like any root, shrinking to its content in the room
-        // beside it. Nodes: div.f 4, table 5, tr 6, td 7, p 8.
+        // beside it. Nodes: div.f 4, table 5, tbody 6, tr 7, td 8, p 9.
         let layout = document_of(
             "<div class=f></div><table><tr><td><p></p></td></tr></table>",
             "body { margin: 0; } td { padding: 0; } .f { float: left; width: 100px; height: 50px; }
@@ -2381,12 +2386,12 @@ mod tests {
         let table = fragments_of(&layout, 5);
         assert_eq!(rect(table[0]), (100.0, 10.0, 50.0, 50.0));
         // The cell is a root too: the p's margins are inside it.
-        assert_eq!(rect(fragment_of(&layout, 8)), (100.0, 30.0, 50.0, 10.0));
+        assert_eq!(rect(fragment_of(&layout, 9)), (100.0, 30.0, 50.0, 10.0));
     }
 
     #[test]
     fn an_empty_table_and_one_without_rows_have_their_edges_alone() {
-        // Nodes: table 4, table 5, col 6.
+        // Nodes: table 4, table 5, colgroup 6, col 7.
         let layout = document_of(
             "<table></table><table><col></table>",
             "body { margin: 0; } table { width: 50px; border: 3px solid #000; padding: 2px;
@@ -2400,20 +2405,20 @@ mod tests {
     fn the_ua_sheet_gives_a_plain_table_its_spacing_and_padding() {
         // 2px spacing and 1px cell padding from the UA sheet; the body's
         // 8px margin; a cell 20px tall inside: the cell's border box is
-        // 22px. Nodes: table 4, tr 5, td 6, div 7.
+        // 22px. Nodes: table 4, tbody 5, tr 6, td 7, div 8.
         let layout = document_of(
             "<table><tr><td><div class=c></div></td></tr></table>",
             "table { table-layout: fixed; width: 100px; } .c { height: 20px; width: 30px; }",
         );
         assert_eq!(rect(fragment_of(&layout, 4)), (8.0, 8.0, 100.0, 26.0));
-        assert_eq!(rect(fragment_of(&layout, 6)), (10.0, 10.0, 96.0, 22.0));
-        assert_eq!(rect(fragment_of(&layout, 7)), (11.0, 11.0, 30.0, 20.0));
+        assert_eq!(rect(fragment_of(&layout, 7)), (10.0, 10.0, 96.0, 22.0));
+        assert_eq!(rect(fragment_of(&layout, 8)), (11.0, 11.0, 30.0, 20.0));
         assert_eq!(
-            fragment_of(&layout, 6).style.vertical_align,
+            fragment_of(&layout, 7).style.vertical_align,
             VerticalAlign::Middle
         );
         assert_eq!(
-            fragment_of(&layout, 6).style.padding,
+            fragment_of(&layout, 7).style.padding,
             [const { LengthPercentage::Px(1.0) }; 4]
         );
     }
@@ -2441,9 +2446,9 @@ mod tests {
 
     #[test]
     fn the_automatic_algorithm_fits_the_columns_to_the_width_the_table_gets() {
-        // Nodes: table 4, tr 5, td 6, div 7, div 8, td 9, div 10. An
-        // `auto` table is as wide as its maximum, 120, each column at
-        // its maximum. Given 100px, between the minimums (90) and the
+        // Nodes: table 4, tbody 5, tr 6, td 7, div 8, div 9, td 10, div
+        // 11. An `auto` table is as wide as its maximum, 120, each column
+        // at its maximum. Given 100px, between the minimums (90) and the
         // maximums (120): every column a third of the way from its
         // minimum to its maximum. Given 60px, below MIN: the table is
         // MIN, each column at its minimum. Given 300px, past MAX: the
@@ -2464,7 +2469,7 @@ mod tests {
         ] {
             let layout = document_of(TWO_CELLS, &format!("{MEASURED} {css}"));
             assert_eq!(fragment_of(&layout, 4).w, table, "{css}");
-            assert_eq!(columns_of(&layout, &[6, 9]), cells, "{css}");
+            assert_eq!(columns_of(&layout, &[7, 10]), cells, "{css}");
         }
     }
 
@@ -2473,28 +2478,31 @@ mod tests {
         // The first cell asks for 25%. In a 400px table: 100px, the rest
         // going to the other column. With an `auto` width the table is
         // as wide as makes the first column's maximum, 80, its 25%: 320.
-        // Nodes: table 4, tr 5, td 6, td 9.
+        // Nodes: table 4, tbody 5, tr 6, td 7, td 10.
         let css = format!("{MEASURED} td:first-child {{ width: 25%; }}");
         let layout = document_of(TWO_CELLS, &format!("{css} table {{ width: 400px; }}"));
-        assert_eq!(columns_of(&layout, &[6, 9]), [(0.0, 100.0), (100.0, 300.0)]);
+        assert_eq!(
+            columns_of(&layout, &[7, 10]),
+            [(0.0, 100.0), (100.0, 300.0)]
+        );
         let layout = document_of(TWO_CELLS, &css);
         assert_eq!(fragment_of(&layout, 4).w, 320.0);
-        assert_eq!(columns_of(&layout, &[6, 9]), [(0.0, 80.0), (80.0, 240.0)]);
+        assert_eq!(columns_of(&layout, &[7, 10]), [(0.0, 80.0), (80.0, 240.0)]);
         // A column asking for the whole while another wants room: the
         // table is as wide as it can be, the room it is given; the other
         // column keeps its minimum.
         let css = format!("{MEASURED} td:first-child {{ width: 100%; }}");
         let layout = document_of(TWO_CELLS, &css);
         assert_eq!(fragment_of(&layout, 4).w, VIEWPORT);
-        assert_eq!(columns_of(&layout, &[6, 9]), [(0.0, 760.0), (760.0, 40.0)]);
+        assert_eq!(columns_of(&layout, &[7, 10]), [(0.0, 760.0), (760.0, 40.0)]);
         // Percentages past the whole are cut in column order: 70% and
-        // 60% are 70% and 30%. Nodes: table 4, tr 5, td 6, td 7.
+        // 60% are 70% and 30%. Nodes: table 4, tbody 5, tr 6, td 7, td 8.
         let layout = document_of(
             "<table><tr><td class=a></td><td class=b></td></tr></table>",
             "body { margin: 0; } table { border-spacing: 0; width: 100px; } td { padding: 0; }
              .a { width: 70%; } .b { width: 60%; }",
         );
-        assert_eq!(columns_of(&layout, &[6, 7]), [(0.0, 70.0), (70.0, 30.0)]);
+        assert_eq!(columns_of(&layout, &[7, 8]), [(0.0, 70.0), (70.0, 30.0)]);
     }
 
     #[test]
@@ -2502,7 +2510,7 @@ mod tests {
         // An empty cell 100px wide and the 40px block's cell: the table
         // is 140 when it can be, and given 120px the constrained column
         // gives way first, down to its minimum, 0, given 30px.
-        // Nodes: table 4, tr 5, td 6, td 7.
+        // Nodes: table 4, tbody 5, tr 6, td 7, td 8.
         let html = "<table><tr><td class=w></td><td><div class=b40></div></td></tr></table>";
         let css = format!("{MEASURED} .w {{ width: 100px; }}");
         for (extra, table, cells) in [
@@ -2516,7 +2524,7 @@ mod tests {
         ] {
             let layout = document_of(html, &format!("{css} {extra}"));
             assert_eq!(fragment_of(&layout, 4).w, table, "{extra}");
-            assert_eq!(columns_of(&layout, &[6, 7]), cells, "{extra}");
+            assert_eq!(columns_of(&layout, &[7, 8]), cells, "{extra}");
         }
     }
 
@@ -2524,7 +2532,8 @@ mod tests {
     fn a_spanning_cell_gives_its_excess_to_its_columns_by_their_maximums() {
         // A 200px block spanning two columns over cells of 30 and 10: the
         // 160 beyond them goes 120 and 40, so the columns are 150 and 50.
-        // Nodes: table 4, tr 5, td 6, div 7, tr 8, td 9, div 10, td 11.
+        // Nodes: table 4, tbody 5, tr 6, td 7, div 8, tr 9, td 10, div 11,
+        // td 12.
         let layout = document_of(
             "<table><tr><td colspan=2><div class=b200></div></td></tr>\
              <tr><td><div class=b30></div></td><td><div class=b10></div></td></tr></table>",
@@ -2533,7 +2542,7 @@ mod tests {
         );
         assert_eq!(fragment_of(&layout, 4).w, 200.0);
         assert_eq!(
-            columns_of(&layout, &[6, 9, 11]),
+            columns_of(&layout, &[7, 10, 12]),
             [(0.0, 200.0), (0.0, 150.0), (150.0, 50.0)]
         );
     }
@@ -2541,21 +2550,22 @@ mod tests {
     #[test]
     fn column_boxes_constrain_their_columns_and_a_group_its_columns_without_a_width() {
         // A 60px col over an empty cell; a 70px colgroup over two cols
-        // without a width. Nodes: table 4, col 5, tr 6, td 7, td 8, div
-        // 9; table 10, colgroup 11, col 12, col 13, tr 14, td 15, td 16.
+        // without a width. Nodes: table 4, colgroup 5, col 6, tbody 7, tr
+        // 8, td 9, td 10, div 11; table 12, colgroup 13, col 14, col 15,
+        // tbody 16, tr 17, td 18, td 19.
         let layout = document_of(
             "<table><col class=c60><tr><td></td><td><div class=b40></div></td></tr></table>\
              <table><colgroup class=c70><col><col></colgroup><tr><td></td><td></td></tr></table>",
             &format!("{MEASURED} .c60 {{ width: 60px; }} .c70 {{ width: 70px; }}"),
         );
-        assert_eq!(columns_of(&layout, &[7, 8]), [(0.0, 60.0), (60.0, 40.0)]);
-        assert_eq!(fragment_of(&layout, 10).w, 140.0);
-        assert_eq!(columns_of(&layout, &[15, 16]), [(0.0, 70.0), (70.0, 70.0)]);
+        assert_eq!(columns_of(&layout, &[9, 10]), [(0.0, 60.0), (60.0, 40.0)]);
+        assert_eq!(fragment_of(&layout, 12).w, 140.0);
+        assert_eq!(columns_of(&layout, &[18, 19]), [(0.0, 70.0), (70.0, 70.0)]);
     }
 
     #[test]
     fn auto_margins_centre_a_table_and_a_caption_widens_it() {
-        // Nodes: table 4, tr 5, td 6, td 9.
+        // Nodes: table 4, tbody 5, tr 6, td 7, td 10.
         let layout = document_of(
             TWO_CELLS,
             &format!("{MEASURED} table {{ margin: 0 auto; }}"),
@@ -2563,7 +2573,7 @@ mod tests {
         assert_eq!(rect(fragment_of(&layout, 4)), (340.0, 0.0, 120.0, 10.0));
         // A caption with a 300px block: the table is 300 wide, the 180
         // past its maximum going as 120 to 60. Nodes: table 4, caption
-        // 5, div 6, tr 7, td 8, td 11.
+        // 5, div 6, tbody 7, tr 8, td 9, td 12.
         let layout = document_of(
             "<table><caption><div class=b300></div></caption><tr>\
              <td><div class=f50></div><div class=f30></div></td>\
@@ -2572,7 +2582,7 @@ mod tests {
         );
         assert_eq!(fragment_of(&layout, 4).w, 300.0);
         assert_eq!(
-            columns_of(&layout, &[8, 11]),
+            columns_of(&layout, &[9, 12]),
             [(0.0, 200.0), (200.0, 100.0)]
         );
     }
@@ -2581,8 +2591,8 @@ mod tests {
     fn floated_positioned_and_contained_tables_are_grids_at_their_shrink_to_fit_width() {
         // A floated table and an absolutely positioned one are laid out
         // as grids, as wide as their maximum; a float holding a table
-        // shrinks to the table's maximum. Nodes: table 4, tr 5, td 6,
-        // td 9.
+        // shrinks to the table's maximum. Nodes: table 4, tbody 5, tr 6,
+        // td 7, td 10.
         for css in [
             "table { float: left; }",
             "table { position: absolute; top: 0; }",
@@ -2590,31 +2600,31 @@ mod tests {
             let layout = document_of(TWO_CELLS, &format!("{MEASURED} {css}"));
             assert_eq!(fragment_of(&layout, 4).w, 120.0, "{css}");
             assert_eq!(
-                columns_of(&layout, &[6, 9]),
+                columns_of(&layout, &[7, 10]),
                 [(0.0, 80.0), (80.0, 40.0)],
                 "{css}"
             );
         }
-        // Nodes: div 4, table 5, tr 6, td 7, td 10.
+        // Nodes: div 4, table 5, tbody 6, tr 7, td 8, td 11.
         let layout = document_of(
             &format!("<div class=fl>{TWO_CELLS}</div>"),
             &format!("{MEASURED} .fl {{ float: left; }}"),
         );
         assert_eq!(fragment_of(&layout, 4).w, 120.0);
-        assert_eq!(columns_of(&layout, &[7, 10]), [(0.0, 80.0), (80.0, 40.0)]);
+        assert_eq!(columns_of(&layout, &[8, 11]), [(0.0, 80.0), (80.0, 40.0)]);
     }
 
     #[test]
     fn the_fixed_algorithm_takes_percentages_of_the_width_less_the_spacing() {
         // 210px with 10px spacing leaves 180 for the columns: 50% is 90.
-        // Nodes: table 4, tr 5, td 6, td 7.
+        // Nodes: table 4, tbody 5, tr 6, td 7, td 8.
         let layout = document_of(
             "<table><tr><td class=h></td><td></td></tr></table>",
             "body { margin: 0; } td { padding: 0; }
              table { table-layout: fixed; width: 210px; border-spacing: 10px; }
              .h { width: 50%; }",
         );
-        assert_eq!(columns_of(&layout, &[6, 7]), [(10.0, 90.0), (110.0, 90.0)]);
+        assert_eq!(columns_of(&layout, &[7, 8]), [(10.0, 90.0), (110.0, 90.0)]);
         // A `calc()` with a percentage is `auto` here, as in the automatic
         // algorithm and the reference browser (calc-width-table-fixed-1):
         // the free column takes the 180 less the other's 60.
@@ -2624,7 +2634,7 @@ mod tests {
              table { table-layout: fixed; width: 210px; border-spacing: 10px; }
              .h { width: calc(50% + 1px); } .w { width: 60px; }",
         );
-        assert_eq!(columns_of(&layout, &[6, 7]), [(10.0, 120.0), (140.0, 60.0)]);
+        assert_eq!(columns_of(&layout, &[7, 8]), [(10.0, 120.0), (140.0, 60.0)]);
     }
 
     #[test]
@@ -2681,9 +2691,9 @@ mod tests {
     fn cells_place_their_content_at_the_top_middle_bottom_or_on_the_rows_baseline() {
         // A 60px row: two cells on its baseline (30 and 10 from their
         // tops, so the second's content moves down 20), and cells at
-        // the top, the middle and the bottom. Nodes: table 4, tr 5, td 6,
-        // span 7, td 8, span 9, td 10, div 11, td 12, div 13, td 14, div
-        // 15, td 16, div 17.
+        // the top, the middle and the bottom. Nodes: table 4, tbody 5, tr
+        // 6, td 7, span 8, td 9, span 10, td 11, div 12, td 13, div 14, td
+        // 15, div 16, td 17, div 18.
         let layout = document_of(
             "<table><tr><td class=base><span class='ib i30'></span></td>\
              <td class=base><span class='ib i10'></span></td>\
@@ -2694,17 +2704,17 @@ mod tests {
         );
         assert_eq!(fragment_of(&layout, 4).h, 60.0);
         for (node, y) in [
-            (7, 0.0),
-            (9, 20.0),
-            (11, 0.0),
-            (13, 25.0),
-            (15, 0.0),
-            (17, 50.0),
+            (8, 0.0),
+            (10, 20.0),
+            (12, 0.0),
+            (14, 25.0),
+            (16, 0.0),
+            (18, 50.0),
         ] {
             assert_eq!(fragment_of(&layout, node).y, y, "node {node}");
         }
         // Every cell is stretched to the row whatever its alignment.
-        for cell in [6, 8, 10, 12, 14, 16] {
+        for cell in [7, 9, 11, 13, 15, 17] {
             assert_eq!(fragment_of(&layout, cell).h, 60.0, "cell {cell}");
         }
     }
@@ -2712,16 +2722,16 @@ mod tests {
     #[test]
     fn a_cell_moved_down_to_the_baseline_makes_its_row_taller() {
         // The second cell's baseline is 10 and its content 35 tall: on a
-        // baseline of 30 it needs 55. Nodes: table 4, tr 5, td 6, span 7,
-        // td 8, span 9, div 10.
+        // baseline of 30 it needs 55. Nodes: table 4, tbody 5, tr 6, td 7,
+        // span 8, td 9, span 10, div 11.
         let layout = document_of(
             "<table><tr><td class=base><span class='ib i30'></span></td>\
              <td class=base><span class='ib i10'></span><div class=b25></div></td></tr></table>",
             BASELINES,
         );
         assert_eq!(fragment_of(&layout, 4).h, 55.0);
-        assert_eq!(fragment_of(&layout, 9).y, 20.0);
-        assert_eq!(fragment_of(&layout, 10).y, 30.0);
+        assert_eq!(fragment_of(&layout, 10).y, 20.0);
+        assert_eq!(fragment_of(&layout, 11).y, 30.0);
     }
 
     #[test]
@@ -2729,12 +2739,12 @@ mod tests {
         // The UA sheet: 2px spacing, 1px padding, a row group's middle
         // inherited. The short cell's 12px is centred in 42: its content
         // is 15 below the cell's top, at 8 + 2 + 15 + 1. Nodes: table 4,
-        // tr 5, td 6, div 7, td 8, div 9.
+        // tbody 5, tr 6, td 7, div 8, td 9, div 10.
         let layout = document_of(
             "<table><tr><td><div class=h40></div></td><td><div class=h10></div></td></tr></table>",
             ".h40 { height: 40px; width: 5px; } .h10 { height: 10px; width: 5px; }",
         );
-        assert_eq!(fragment_of(&layout, 9).y, 26.0);
+        assert_eq!(fragment_of(&layout, 10).y, 26.0);
         // `display: table-cell` on plain elements: on the baseline, the
         // initial value. Nodes: div 4, div 5, span 6, div 7, span 8.
         let layout = document_of(
@@ -2751,7 +2761,8 @@ mod tests {
         // A 50px inline-block and an inline table whose first row's
         // baseline is 20 below its top: the table's top is 30 down the
         // line. One with no row sits by its bottom. Nodes: div 4, span 5,
-        // table 6, tr 7, td 8, span 9, tr 10, td 11, span 12; table 13.
+        // table 6, tbody 7, tr 8, td 9, span 10, tr 11, td 12, span 13;
+        // table 14.
         let layout = document_of(
             "<div class=c><span class='ib i50'></span><table class=it>\
              <tr><td><span class='ib i20'></span></td></tr>\
@@ -2764,20 +2775,21 @@ mod tests {
         );
         let table = fragment_of(&layout, 6);
         assert_eq!((table.y, table.h), (30.0, 50.0));
-        assert_eq!(fragment_of(&layout, 13).y, 30.0);
+        assert_eq!(fragment_of(&layout, 14).y, 30.0);
     }
 
     #[test]
     fn a_table_first_in_a_cell_gives_the_cell_its_first_rows_baseline() {
         // The first cell's baseline is the nested table's first row's,
         // 30; the second cell's content moves down 20 to it. Nodes: table
-        // 4, tr 5, td 6, table 7, tr 8, td 9, span 10, td 11, span 12.
+        // 4, tbody 5, tr 6, td 7, table 8, tbody 9, tr 10, td 11, span 12,
+        // td 13, span 14.
         let layout = document_of(
             "<table><tr><td class=base><table><tr><td><span class='ib i30'></span></td></tr></table></td>\
              <td class=base><span class='ib i10'></span></td></tr></table>",
             BASELINES,
         );
-        assert_eq!(fragment_of(&layout, 12).y, 20.0);
+        assert_eq!(fragment_of(&layout, 14).y, 20.0);
     }
 
     fn candidate(width: f32, style: BorderStyle, owner: u8, order: u8) -> Candidate {
@@ -2861,7 +2873,7 @@ mod tests {
         // tall. The table's border is half its outer lines, 2 a side, so
         // its border box, 100 wide as given, holds them whole: its
         // columns are 48 wide, and it is 2 + 23 + 23 + 2 tall.
-        // Nodes: table 4, tr 5, td 6, td 7, tr 8, td 9, td 10.
+        // Nodes: table 4, tbody 5, tr 6, td 7, td 8, tr 9, td 10, td 11.
         let layout = document_of(COLLAPSED, COLLAPSED_CSS);
         let table = fragments_of(&layout, 4);
         assert_eq!(rect(table[0]), (0.0, 0.0, 100.0, 50.0));
@@ -2871,10 +2883,10 @@ mod tests {
             [0.0; 4],
             "the lines paint it"
         );
-        assert_eq!(rect(fragment_of(&layout, 6)), (2.0, 2.0, 48.0, 23.0));
-        assert_eq!(rect(fragment_of(&layout, 7)), (50.0, 2.0, 48.0, 23.0));
-        assert_eq!(rect(fragment_of(&layout, 9)), (2.0, 25.0, 48.0, 23.0));
-        assert_eq!(fragment_of(&layout, 6).style.used_border_width(), [0.0; 4]);
+        assert_eq!(rect(fragment_of(&layout, 7)), (2.0, 2.0, 48.0, 23.0));
+        assert_eq!(rect(fragment_of(&layout, 8)), (50.0, 2.0, 48.0, 23.0));
+        assert_eq!(rect(fragment_of(&layout, 10)), (2.0, 25.0, 48.0, 23.0));
+        assert_eq!(fragment_of(&layout, 7).style.used_border_width(), [0.0; 4]);
         // Twelve segments: three lines of two each way, the red ones
         // first so the blue ones win at the joints.
         let segments = &table[2..];
@@ -2944,25 +2956,26 @@ mod tests {
         // `hidden` on the first cell's top: no segment over its column on
         // the top line. The cell holds none of that line, though the row,
         // and so the cell, stays as tall as its neighbour's 2 + 20 + 1.
-        // Nodes: td 6.
+        // Nodes: td 7.
         let layout = document_of(
             COLLAPSED,
             &format!("{COLLAPSED_CSS} tr:first-child td:first-child {{ border-top: hidden; }}"),
         );
         assert_eq!(fragments_of(&layout, 4).len(), 2 + 11);
-        assert_eq!(rect(fragment_of(&layout, 6)), (2.0, 2.0, 48.0, 23.0));
+        assert_eq!(rect(fragment_of(&layout, 7)), (2.0, 2.0, 48.0, 23.0));
         // An automatic table measures its cells with the halves of the
         // lines they hold, 2 + 10 + 1 and 1 + 10 + 2, and is as wide as
-        // they are with its own border's halves. Nodes: td 6, td 8.
+        // they are with its own border's halves. Nodes: td 7, div 8,
+        // td 9.
         let layout = document_of(
             "<table><tr><td><div class=b></div></td><td><div class=b></div></td></tr></table>",
             "body { margin: 0; } table { border-collapse: collapse; border: 4px solid #0000ff; }
              td { padding: 0; border: 2px solid #ff0000; } .b { width: 10px; height: 10px; }",
         );
         assert_eq!(fragment_of(&layout, 4).w, 30.0);
-        assert_eq!(columns_of(&layout, &[6, 8]), [(2.0, 13.0), (15.0, 13.0)]);
+        assert_eq!(columns_of(&layout, &[7, 9]), [(2.0, 13.0), (15.0, 13.0)]);
         assert_eq!(
-            fragment_of(&layout, 7).x,
+            fragment_of(&layout, 8).x,
             4.0,
             "inside the first cell's 2px"
         );
@@ -2970,8 +2983,8 @@ mod tests {
 
     #[test]
     fn a_collapsed_row_takes_no_room() {
-        // D56, CSS 2 section 17.5.5. Nodes: table 4, tr 5, td 6, tr 7,
-        // td 8, tr 9, td 10.
+        // D56, CSS 2 section 17.5.5. Nodes: table 4, tbody 5, tr 6, td 7,
+        // tr 8, td 9, tr 10, td 11.
         let html = "<table><tr><td>a</td></tr><tr><td>b</td></tr><tr><td>c</td></tr></table>";
         let css = "table { border-spacing: 2px } td { height: 20px; padding: 0 }";
         let shown = document_of(html, css);
@@ -2980,29 +2993,29 @@ mod tests {
             &format!("{css} tr:nth-child(2) {{ visibility: collapse }}"),
         );
         assert_eq!(
-            fragment_of(&hidden, 10).y,
-            fragment_of(&shown, 8).y,
+            fragment_of(&hidden, 11).y,
+            fragment_of(&shown, 9).y,
             "the third row where the second was"
         );
-        assert_eq!(fragment_of(&hidden, 7).h, 0.0);
+        assert_eq!(fragment_of(&hidden, 8).h, 0.0);
         assert_eq!(fragment_of(&hidden, 4).h, fragment_of(&shown, 4).h - 22.0);
         // `hidden` keeps its room.
         let kept = document_of(
             html,
             &format!("{css} tr:nth-child(2) {{ visibility: hidden }}"),
         );
-        assert_eq!(fragment_of(&kept, 10).y, fragment_of(&shown, 10).y);
+        assert_eq!(fragment_of(&kept, 11).y, fragment_of(&shown, 11).y);
     }
 
     #[test]
     fn a_collapsed_table_without_rows_or_columns_has_no_segments() {
         // Columns and no row; a row and no cell; nothing at all. Nodes:
-        // table 4, col 5; table 6, tr 7; table 8.
+        // table 4, colgroup 5, col 6; table 7, tbody 8, tr 9; table 10.
         let layout = document_of(
             "<table><col></table><table><tr></tr></table><table></table>",
             "table { border-collapse: collapse; border: 3px solid #000000; width: 20px; }",
         );
-        for node in [4, 6, 8] {
+        for node in [4, 7, 10] {
             let table = fragments_of(&layout, node);
             assert_eq!(table.len(), 2, "node {node}");
             // No lines, so no border: the width given, and no height.
@@ -3012,11 +3025,11 @@ mod tests {
 
     #[test]
     fn empty_cells_hide_paints_nothing_for_an_empty_cell_in_the_separated_model() {
-        // Nodes: table 4, tr 5, td 6, td 7, td 8.
+        // Nodes: table 4, tbody 5, tr 6, td 7, td 8, td 9.
         let html = "<table><tr><td></td><td> </td><td>x</td></tr></table>";
         let css = "table { empty-cells: hide; } td { background-color: #ff0000; border: 1px solid #000000; }";
         let layout = document_of(html, css);
-        for node in [6, 7] {
+        for node in [7, 8] {
             let cell = fragment_of(&layout, node);
             assert_eq!(
                 cell.style.background_color,
@@ -3025,11 +3038,11 @@ mod tests {
             );
             assert_eq!(cell.style.used_border_width(), [0.0; 4], "node {node}");
         }
-        let full = fragment_of(&layout, 8);
+        let full = fragment_of(&layout, 9);
         assert_eq!(full.style.background_color, Color::rgb8(255, 0, 0));
         assert_eq!(full.style.used_border_width(), [1.0; 4]);
         // Its border and padding keep their room: 1 + 1 + 1 + 1.
-        assert_eq!(fragment_of(&layout, 6).w, 4.0);
+        assert_eq!(fragment_of(&layout, 7).w, 4.0);
         // In the collapsed model `empty-cells` does nothing to the
         // background.
         let layout = document_of(
@@ -3037,7 +3050,7 @@ mod tests {
             &format!("{css} table {{ border-collapse: collapse; }}"),
         );
         assert_eq!(
-            fragment_of(&layout, 6).style.background_color,
+            fragment_of(&layout, 7).style.background_color,
             Color::rgb8(255, 0, 0)
         );
     }
@@ -3058,38 +3071,38 @@ mod tests {
     fn a_rowspans_excess_goes_first_to_the_rows_where_another_rowspan_starts() {
         // A cell spanning rows 1 and 2 needs 74px of their 31: the 43
         // go to row 2, where another spanning cell starts, not 21.5 to
-        // each. Nodes: tr 5, tr 10, tr 15.
+        // each. Nodes: tr 6, tr 11, tr 16.
         let layout = document_of(
             "<table><tr><td rowspan=2><div class=t70></div></td><td><div class=t10></div></td></tr>\
              <tr><td><div class=t10></div></td><td rowspan=2><div class=t10></div></td></tr>\
              <tr><td><div class=t10></div></td><td><div class=t10></div></td></tr></table>",
             ROWS_CSS,
         );
-        assert_eq!(heights_of(&layout, &[5, 10, 15]), [14.0, 57.0, 14.0]);
+        assert_eq!(heights_of(&layout, &[6, 11, 16]), [14.0, 57.0, 14.0]);
         // Two cells ending in row 3: the one spanning fewer rows first,
         // its 77 to row 3 (row 2 has no height), which leaves the longer
         // one nothing to give; the other way round row 2 would take 74
-        // and then 3. Nodes: tr 5, tr 10, tr 13.
+        // and then 3. Nodes: tr 6, tr 11, tr 14.
         let layout = document_of(
             "<table><tr><td rowspan=3><div class=t90></div></td><td><div class=t10></div></td></tr>\
              <tr><td rowspan=2><div class=t76></div></td></tr><tr></tr></table>",
             ROWS_CSS,
         );
-        assert_eq!(heights_of(&layout, &[5, 10, 13]), [14.0, 0.0, 77.0]);
+        assert_eq!(heights_of(&layout, &[6, 11, 14]), [14.0, 0.0, 77.0]);
     }
 
     #[test]
     fn a_rowspans_excess_spares_constrained_rows_and_falls_to_the_last_of_no_height() {
         // A row with a length height keeps it while another can grow.
-        // Nodes: tr 5, tr 10.
+        // Nodes: tr 6, tr 11.
         let layout = document_of(
             "<table><tr class=h20><td rowspan=2><div class=t70></div></td><td><div class=t10></div></td></tr>\
              <tr><td><div class=t10></div></td></tr></table>",
             ROWS_CSS,
         );
-        assert_eq!(heights_of(&layout, &[5, 10]), [20.0, 51.0]);
+        assert_eq!(heights_of(&layout, &[6, 11]), [20.0, 51.0]);
         // Rows of no height: the last takes it all; a constrained row
-        // with a height takes it before them. Nodes: tr 5, tr 9, tr 11.
+        // with a height takes it before them. Nodes: tr 6, tr 10, tr 12.
         let rows = "<tr><td class=e></td></tr><tr><td class=e></td></tr></table>";
         let layout = document_of(
             &format!(
@@ -3097,14 +3110,14 @@ mod tests {
             ),
             ROWS_CSS,
         );
-        assert_eq!(heights_of(&layout, &[5, 9, 11]), [0.0, 0.0, 68.0]);
+        assert_eq!(heights_of(&layout, &[6, 10, 12]), [0.0, 0.0, 68.0]);
         let layout = document_of(
             &format!(
                 "<table><tr class=h20><td rowspan=3><div class=t70></div></td><td class=e></td></tr>{rows}"
             ),
             ROWS_CSS,
         );
-        assert_eq!(heights_of(&layout, &[5, 9, 11]), [68.0, 0.0, 0.0]);
+        assert_eq!(heights_of(&layout, &[6, 10, 12]), [68.0, 0.0, 0.0]);
     }
 
     #[test]
@@ -3142,13 +3155,13 @@ mod tests {
         );
         assert_eq!(heights_of(&layout, &[6, 10, 14]), [14.0, 160.0, 14.0]);
         // A constrained row keeps its height and the unconstrained ones,
-        // of no height, share equally. Nodes: tr 5, tr 8, tr 10.
+        // of no height, share equally. Nodes: tr 6, tr 9, tr 11.
         let layout = document_of(
             "<table class=h200><tr class=h20><td><div class=t10></div></td></tr>\
              <tr><td class=e></td></tr><tr><td class=e></td></tr></table>",
             ROWS_CSS,
         );
-        assert_eq!(heights_of(&layout, &[5, 8, 10]), [20.0, 84.0, 84.0]);
+        assert_eq!(heights_of(&layout, &[6, 9, 11]), [20.0, 84.0, 84.0]);
         // A row group's own height is a minimum for its rows, shared the
         // same way. Nodes: tr 6, tr 9.
         let layout = document_of(
@@ -3201,7 +3214,7 @@ mod tests {
         // A 10px left border in the second row only: the table's left
         // border is its half, 5, for the whole side, and the first column
         // 5 + 40 + 1 wide; the float around the table counts it too.
-        // Nodes: div 4, table 5, td 7, td 8, td 10.
+        // Nodes: div 4, table 5, td 8, td 9, td 11.
         let css = "body { margin: 0; } .f { float: left; } table { border-collapse: collapse; }
              td { padding: 0; width: 40px; height: 20px; border: 2px solid #ff0000; }
              .w { border-left: 10px solid #0000ff; } .c { border: 3px solid #000000; }
@@ -3212,19 +3225,19 @@ mod tests {
         );
         assert_eq!(fragment_of(&layout, 4).w, 94.0);
         assert_eq!(rect(fragments_of(&layout, 5)[1]), (0.0, 0.0, 94.0, 46.0));
-        assert_eq!(rect(fragment_of(&layout, 7)), (5.0, 1.0, 46.0, 22.0));
-        assert_eq!(rect(fragment_of(&layout, 8)), (51.0, 1.0, 42.0, 22.0));
-        assert_eq!(rect(fragment_of(&layout, 10)), (5.0, 23.0, 46.0, 22.0));
+        assert_eq!(rect(fragment_of(&layout, 8)), (5.0, 1.0, 46.0, 22.0));
+        assert_eq!(rect(fragment_of(&layout, 9)), (51.0, 1.0, 42.0, 22.0));
+        assert_eq!(rect(fragment_of(&layout, 11)), (5.0, 23.0, 46.0, 22.0));
         // Odd widths are halved exactly: the table's 3px gives 1.5 a side,
         // the first cell's 7px top the table 3.5 at the top. Nodes: table
-        // 4, td 6, td 7.
+        // 4, td 7, td 8.
         let layout = document_of(
             "<table class=c><tr><td class=t></td><td></td></tr></table>",
             css,
         );
         assert_eq!(rect(fragments_of(&layout, 4)[1]), (0.0, 0.0, 88.0, 30.0));
-        assert_eq!(rect(fragment_of(&layout, 6)), (1.5, 3.5, 42.5, 25.0));
-        assert_eq!(rect(fragment_of(&layout, 7)), (44.0, 3.5, 42.5, 25.0));
+        assert_eq!(rect(fragment_of(&layout, 7)), (1.5, 3.5, 42.5, 25.0));
+        assert_eq!(rect(fragment_of(&layout, 8)), (44.0, 3.5, 42.5, 25.0));
     }
 
     #[test]
