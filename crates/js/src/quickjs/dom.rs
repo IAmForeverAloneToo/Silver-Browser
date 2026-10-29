@@ -1218,7 +1218,7 @@ fn value<'js>(ctx: &Ctx<'js>, answer: Answer) -> rquickjs::Result<Value<'js>> {
 /// Throws the exception a failed call is: one of ECMAScript's errors,
 /// or a `DOMException` of the realm's own class, whatever a page did to
 /// the global one.
-fn throw(ctx: &Ctx<'_>, error: &DomError) -> rquickjs::Error {
+pub(super) fn throw(ctx: &Ctx<'_>, error: &DomError) -> rquickjs::Error {
     match error.name {
         "TypeError" => Exception::throw_type(ctx, &error.message),
         "RangeError" => Exception::throw_range(ctx, &error.message),

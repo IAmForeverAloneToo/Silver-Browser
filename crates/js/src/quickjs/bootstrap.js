@@ -28631,6 +28631,15 @@
       return step.done ? step.value : null;
     },
     report: fireError,
+    // Module scripts (D61): a module script's evaluation, whose
+    // rejection is reported as an uncaught exception; and an `import()`'s
+    // promise, settled as its graph's `promise` is.
+    moduleEvaluated(promise) {
+      PromiseThen(promise, undefined, reportException);
+    },
+    moduleSettle(promise, resolve, reject) {
+      PromiseThen(promise, resolve, reject);
+    },
     reset() {
       native.wasmReset();
       wasmCalls = 0;

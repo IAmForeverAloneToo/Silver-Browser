@@ -7,6 +7,7 @@ mod bytecode;
 pub(crate) mod console;
 mod dom;
 mod intl;
+mod modules;
 mod wasm;
 
 pub use bytecode::warm as warm_bindings;
@@ -22,14 +23,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use rquickjs::context::EvalOptions;
 use rquickjs::function::Rest;
 use rquickjs::{
-    CatchResultExt, CaughtError, Coerced, Context, Ctx, Exception, Function, Object, Persistent,
-    Runtime, Value,
+    CatchResultExt, CaughtError, Coerced, Context, Ctx, Exception, Function, Module, Object,
+    Persistent, Promise, Runtime, Value,
 };
 
 use crate::{
     Completion, ConsoleKind, ConsoleLevel, ConsoleRecord, Death, ErrorKind, FetchAnswer, Field,
-    Limits, MAX_PREVIEW_BYTES, MAX_STACK_FRAMES, Realm, RealmKind, Script, ScriptEngine,
-    ScriptError, ScriptingHost, StackFrame, Target, Task,
+    Limits, MAX_PREVIEW_BYTES, MAX_STACK_FRAMES, ModuleScript, Realm, RealmKind, Script,
+    ScriptEngine, ScriptError, ScriptingHost, StackFrame, Target, Task,
 };
 
 /// QuickJS-ng 0.16, which `rquickjs` builds from its source.
@@ -87,6 +88,10 @@ struct QuickJsRealm<H: ScriptingHost> {
     work: Rc<Cell<u64>>,
     /// Whether the run under way reports muted errors.
     muted: Rc<Cell<bool>>,
+    /// What its module loader shares with it (D61), and the budget the
+    /// loader's calls of the host charge.
+    modules: Rc<modules::State>,
+    budget: dom::Budget,
     limits: Limits,
     dead: Option<Death>,
     context: Context,
@@ -155,6 +160,21 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
         };
         let work = budget.work.clone();
         let entries: Entries = Rc::default();
+        // Module scripts (D61): the realm's resolver and loader.
+        let module_state: Rc<modules::State> = Rc::default();
+        runtime.set_loader(
+            modules::ModuleResolver {
+                state: module_state.clone(),
+                host: host.clone(),
+                budget: budget.clone(),
+            },
+            modules::ModuleLoader {
+                state: module_state.clone(),
+                host: host.clone(),
+                budget: budget.clone(),
+                entries: entries.clone(),
+            },
+        );
         let saved = context
             .with(|ctx| {
                 install(&ctx, kind, limits.secure, &host, &budget, &entries)
@@ -181,6 +201,8 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
             exhausted,
             work,
             muted,
+            modules: module_state,
+            budget,
             limits,
             dead: None,
             context,
@@ -317,6 +339,7 @@ impl<H: ScriptingHost> Drop for QuickJsRealm<H> {
     fn drop(&mut self) {
         self.runtime.set_host_promise_rejection_tracker(None);
         self.rejections.borrow_mut().clear();
+        self.modules.clear();
         *self.entries.borrow_mut() = None;
     }
 }
@@ -350,6 +373,109 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                 kind: ErrorKind::Budget,
                 message: String::new(),
                 url: script.url.to_owned(),
+                line: 0,
+                column: 0,
+                stack: Vec::new(),
+            }),
+            other => other,
+        };
+        result.map_err(|error| self.failure(error))
+    }
+
+    fn module_requests(&mut self, url: &str, source: &str) -> Result<Vec<String>, ScriptError> {
+        if let Some(death) = self.dead {
+            return Err(dead(death));
+        }
+        // A context of the realm's runtime with only the base objects and
+        // the compiler, which runs nothing, and goes with what it declared.
+        let scratch = Context::custom::<rquickjs::context::intrinsic::Eval>(&self.runtime);
+        let scratch = scratch.map_err(|e| ScriptError {
+            kind: ErrorKind::Heap,
+            message: format!("InternalError: {e}"),
+            url: String::new(),
+            line: 0,
+            column: 0,
+            stack: Vec::new(),
+        })?;
+        self.modules.start_scan();
+        let declared = scratch.with(|ctx| {
+            Module::declare(ctx.clone(), url, source)
+                .map(drop)
+                .catch(&ctx)
+                .map_err(|caught| caught_error(&ctx, caught, url, false))
+        });
+        let found = self.modules.end_scan();
+        drop(scratch);
+        declared.map(|()| found)
+    }
+
+    fn run_module(&mut self, script: &ModuleScript<'_>, host: &mut H) -> Result<(), ScriptError> {
+        if let Some(death) = self.dead {
+            return Err(dead(death));
+        }
+        self.begin(host, false);
+        self.modules.give(script.modules);
+        let (entries, exhausted) = (self.entries.clone(), self.exhausted.clone());
+        let (state, slot, budget) = (self.modules.clone(), self.host.clone(), self.budget.clone());
+        let url = script.url;
+        let result = self.context.with(|ctx| {
+            let given = script.modules.iter().filter(|module| module.url != url);
+            modules::declare_given(&ctx, &state, &slot, &budget, given);
+            let evaluation = match script.inline {
+                Some((text, line)) => {
+                    let name = state.inline_name(url);
+                    let skip = line.saturating_sub(1) as usize;
+                    let mut padded = String::with_capacity(skip + text.len());
+                    padded.extend(std::iter::repeat_n('\n', skip));
+                    padded.push_str(text);
+                    state.set_fixed(true);
+                    let declared = modules::declare(&ctx, &slot, &budget, &name, url, &padded);
+                    state.set_fixed(false);
+                    declared.and_then(|module| module.eval()).map(|(_, p)| p)
+                }
+                None if !state.declared(url) => match state.take(url) {
+                    Some((base, text)) => {
+                        state.set_fixed(true);
+                        let declared = modules::declare(&ctx, &slot, &budget, url, &base, &text);
+                        state.set_fixed(false);
+                        match declared {
+                            Ok(module) => {
+                                state.mark_declared(url);
+                                module.eval().map(|(_, p)| p)
+                            }
+                            Err(error) => {
+                                state.put_back(url, (base, text));
+                                Err(error)
+                            }
+                        }
+                    }
+                    None => Err(Exception::throw_type(
+                        &ctx,
+                        &format!("Failed to load module script: {url}"),
+                    )),
+                },
+                // Declared already, by another's graph: its evaluation,
+                // which it has had or has now, once.
+                None => {
+                    state.set_direct(Some(url.to_owned()));
+                    let promise = Module::import(&ctx, url);
+                    state.set_direct(None);
+                    promise
+                }
+            };
+            match evaluation.catch(&ctx) {
+                Ok(promise) => evaluated(&ctx, &entries, promise)
+                    .catch(&ctx)
+                    .map_err(|caught| caught_error(&ctx, caught, url, false)),
+                Err(caught) => Err(report(&ctx, &entries, &exhausted, caught, url, false)),
+            }
+        });
+        self.end(host);
+        let result = match result {
+            Ok(()) if self.exhausted.get() => Err(ScriptError {
+                kind: ErrorKind::Budget,
+                message: String::new(),
+                url: url.to_owned(),
                 line: 0,
                 column: 0,
                 stack: Vec::new(),
@@ -514,6 +640,33 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                     .get::<_, Function<'_>>("serviceWorker")?
                     .call::<_, Value<'_>>((message.as_str(),))
             }),
+            Task::Imported {
+                id,
+                url,
+                modules,
+                error,
+            } => {
+                self.modules.give(modules);
+                let (state, slots) = (self.modules.clone(), self.entries.clone());
+                let (slot, budget) = (self.host.clone(), self.budget.clone());
+                self.context.with(|ctx| {
+                    modules::declare_given(&ctx, &state, &slot, &budget, modules);
+                    let promise = match error {
+                        Some(message) => modules::rejected(&ctx, message),
+                        None => {
+                            state.set_direct(Some(url.clone()));
+                            let promise = Module::import(&ctx, url.as_str());
+                            state.set_direct(None);
+                            promise
+                        }
+                    };
+                    promise
+                        .and_then(|promise| modules::settle(&ctx, &state, &slots, *id, promise))
+                        .catch(&ctx)
+                        .map(|()| false)
+                        .map_err(|caught| caught_error(&ctx, caught, "", false))
+                })
+            }
             Task::Fetched { id, answer } => self.context.with(|ctx| {
                 let called = entries.clone().restore(&ctx).and_then(|entries| {
                     let answer = match answer {
@@ -693,6 +846,24 @@ fn report<'js>(
     error
 }
 
+/// A module script's evaluation (D61, HTML's "run a module script"):
+/// its rejection, at once or after a top-level await, is reported as an
+/// uncaught exception, by the bootstrap's own `then`.
+fn evaluated<'js>(
+    ctx: &Ctx<'js>,
+    entries: &Entries,
+    promise: Promise<'js>,
+) -> rquickjs::Result<()> {
+    let Some(entries) = entries.borrow().clone() else {
+        return Ok(());
+    };
+    entries
+        .restore(ctx)?
+        .get::<_, Function<'_>>("moduleEvaluated")?
+        .call::<_, Value<'_>>((promise,))?;
+    Ok(())
+}
+
 /// An event's dictionary as the bootstrap's constructors read it: an
 /// object with no prototype, so that no getter a page put on
 /// `Object.prototype` answers for a member it leaves out.
@@ -818,7 +989,7 @@ fn first_frame(stack: &str) -> Option<(String, u32, u32)> {
     let column = parts.next()?.parse().ok()?;
     let line = parts.next()?.parse().ok()?;
     let url = parts.next()?;
-    Some((url.to_owned(), line, column))
+    Some((modules::page_url(url).to_owned(), line, column))
 }
 
 /// The frames of a stack as QuickJS writes it, innermost first, at most
@@ -849,12 +1020,16 @@ pub(crate) fn parse_stack(stack: &str) -> Vec<StackFrame> {
         let (Ok(line), Ok(column)) = (line.parse(), column.parse()) else {
             continue;
         };
-        if url == dom::BOOTSTRAP_NAME || url == dom::GPU_BINDINGS_NAME {
+        // An `import()`'s stub's (D61) too.
+        if url == dom::BOOTSTRAP_NAME
+            || url == dom::GPU_BINDINGS_NAME
+            || url.starts_with(modules::MARK)
+        {
             continue;
         }
         frames.push(StackFrame {
             function: function.to_owned(),
-            url: url.to_owned(),
+            url: modules::page_url(url).to_owned(),
             line,
             column,
         });

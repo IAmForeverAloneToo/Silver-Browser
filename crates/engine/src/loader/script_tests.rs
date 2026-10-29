@@ -60,7 +60,7 @@ fn inline_scripts_run_with_scripting_on_and_not_otherwise() {
 }
 
 #[test]
-fn only_classic_scripts_for_the_window_run() {
+fn only_scripts_for_the_window_run_and_nomodule_ones_do_not() {
     let (_, console) = scripted(
         "<script type=module>console.log('module')</script>\
          <script type=text/plain>console.log('plain')</script>\
@@ -73,7 +73,11 @@ fn only_classic_scripts_for_the_window_run() {
          <script language=javascript>console.log('language')</script>",
         true,
     );
-    assert_eq!(console, ["src", "window onload", "event alone", "language"]);
+    // The module script is deferred (D61).
+    assert_eq!(
+        console,
+        ["src", "window onload", "event alone", "language", "module"]
+    );
 }
 
 #[test]

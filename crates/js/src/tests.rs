@@ -31,6 +31,8 @@ pub(crate) struct Recorder {
     pub(crate) hidden: bool,
     /// The messages posted to the window (M31), by target origin.
     pub(crate) posted: Vec<(String, String)>,
+    /// The `import()`s that wanted a module fetched (D61), by id.
+    pub(crate) imports: Vec<(u32, String)>,
 }
 
 impl ScriptingHost for Recorder {
@@ -107,6 +109,11 @@ impl ScriptingHost for Recorder {
                 self.posted.push((target_origin, data));
                 Ok(Answer::Nothing)
             }
+            Call::ResolveModule { base, specifier } => resolve_module(&base, &specifier),
+            Call::ImportModule { id, url } => {
+                self.imports.push((id, url));
+                Ok(Answer::Nothing)
+            }
             call => self.tree.dom(call),
         }
     }
@@ -118,6 +125,27 @@ impl ScriptingHost for Recorder {
     fn report(&mut self, error: ScriptError) {
         self.reported.push(error);
     }
+}
+
+/// A module specifier resolved as these tests need it (D61): a URL as it
+/// is, a path against `base`'s directory, a bare name refused.
+fn resolve_module(base: &str, specifier: &str) -> Result<Answer, DomError> {
+    if specifier.starts_with("https:") {
+        return Ok(Answer::String(specifier.to_owned()));
+    }
+    let Some(path) = specifier.strip_prefix("./") else {
+        return Err(DomError::new(
+            "TypeError",
+            format!(
+                "Failed to resolve module specifier \"{specifier}\". Relative references \
+                 must start with either \"/\", \"./\", or \"../\"."
+            ),
+        ));
+    };
+    let directory = base
+        .rsplit_once('/')
+        .map_or(base, |(directory, _)| directory);
+    Ok(Answer::String(format!("{directory}/{path}")))
 }
 
 pub(crate) fn realm_with(limits: Limits) -> Box<dyn Realm<Recorder>> {

@@ -17,8 +17,10 @@ mod cssom;
 mod decoding;
 mod fetch;
 mod host;
+mod import_map;
 mod layout_observers;
 mod media_lists;
+pub(crate) mod modules;
 mod mutations;
 pub(crate) mod ports;
 mod rules;
@@ -201,6 +203,13 @@ enum Pending {
     /// Ready to run; `None` when its fetch failed (HTML: its result is
     /// null), which runs nothing.
     Ready(Option<Source>),
+    /// A module script's graph on its way (D61), and its element, which
+    /// has a `src` if `external`.
+    Module {
+        graph: u32,
+        element: NodeId,
+        external: bool,
+    },
 }
 
 /// A classic script, ready to run.
@@ -220,6 +229,9 @@ pub(crate) struct Source {
     /// Whether its fetch failed (M26): it runs nothing, and its element
     /// gets an `error` event.
     failed: bool,
+    /// A module script's graph (D61), fetched whole, which runs as a
+    /// module script rather than `text`.
+    module: Option<u32>,
 }
 
 impl Source {
@@ -233,6 +245,21 @@ impl Source {
             element: Some(element),
             external: true,
             failed: true,
+            module: None,
+        }
+    }
+
+    /// The module script of `element` whose graph `graph` is fetched.
+    fn module(graph: u32, element: NodeId, external: bool) -> Source {
+        Source {
+            text: String::new(),
+            url: String::new(),
+            line: 1,
+            muted: false,
+            element: Some(element),
+            external,
+            failed: false,
+            module: Some(graph),
         }
     }
 }
@@ -378,10 +405,10 @@ pub(crate) enum Prepared {
     /// Not started, and nothing runs: an inline script with no text, or
     /// an element whose type is not a script's. It may be prepared again.
     NotYet,
-    /// Started, and nothing runs: a module, an import map or speculation
-    /// rules (G41), `nomodule`, legacy `for` and `event` attributes for
-    /// another event, a `src` that is empty or does not parse, or a page
-    /// that fetches nothing.
+    /// Started, and nothing runs: speculation rules (D61, section 2), a
+    /// classic script with `nomodule` (modules being supported), legacy
+    /// `for` and `event` attributes for another event, a `src` that is
+    /// empty or does not parse, or a page that fetches nothing.
     Nothing,
     /// Started, and nothing runs, its `src` empty or not a URL: the
     /// element gets an `error` event (M26).
@@ -397,6 +424,15 @@ pub(crate) enum Prepared {
         url: Url,
         fallback: Encoding,
     },
+    /// A module script (D61): its graph to fetch by requests like
+    /// `request`, an external one's its root's; an inline one's text,
+    /// line and base URL.
+    Module {
+        request: Box<Request>,
+        inline: Option<(String, u32, Url)>,
+    },
+    /// An inline import map's text (D61).
+    ImportMap(String),
 }
 
 /// Prepares `element` as HTML section 4.12.1.1 does, its text starting
@@ -430,10 +466,15 @@ pub(crate) fn prepare_element(
     if src.is_none() && text.is_empty() {
         return Prepared::NotYet;
     }
-    if kind != ScriptType::Classic
-        || document.attr(element, "nomodule").is_some()
-        || !for_the_window(document, element)
-    {
+    match kind {
+        ScriptType::Module => {
+            return prepare_module(page, document, element, line, parser_inserted);
+        }
+        ScriptType::ImportMap => return prepare_import_map(page, document, element),
+        ScriptType::SpeculationRules => return Prepared::Nothing,
+        ScriptType::Classic => {}
+    }
+    if document.attr(element, "nomodule").is_some() || !for_the_window(document, element) {
         return Prepared::Nothing;
     }
     let Some(src) = src else {
@@ -453,6 +494,7 @@ pub(crate) fn prepare_element(
             element: Some(element),
             external: false,
             failed: false,
+            module: None,
         });
     };
     // An empty `src`, or one that does not parse, fires `error` (M26) and
@@ -489,6 +531,92 @@ pub(crate) fn prepare_element(
         url,
         fallback,
     }
+}
+
+/// Prepares the module script `element` (HTML section 4.12.1.1, D61):
+/// its graph fetched by requests in `cors` mode, of credentials as its
+/// `crossorigin` says (same-origin when absent), its nonce, integrity,
+/// referrer policy and who inserted it; an inline one held to the
+/// document's policies as a classic one is.
+fn prepare_module(
+    page: &mut Page,
+    document: &Document,
+    element: NodeId,
+    line: u32,
+    parser_inserted: bool,
+) -> Prepared {
+    let csp = page.csp(document).clone();
+    let src = document.attr(element, "src");
+    let (url, inline) = match src {
+        None => {
+            let text = document.text_content(element);
+            let nonce = page.checked_nonce(document, element);
+            let policies = page.csp(document);
+            let violations = policies.inline_violations(net::csp::Inline::Script, &nonce, &text);
+            policies.record(&violations);
+            if net::csp::enforced(violations).is_err() {
+                return Prepared::Refused;
+            }
+            let Some(base) = page.base_url(document) else {
+                return Prepared::Nothing;
+            };
+            (base.clone(), Some((text, line, base)))
+        }
+        Some(src) => match Some(src)
+            .filter(|src| !src.is_empty())
+            .and_then(|src| page.resolve(document, src))
+        {
+            Some(url) => (url, None),
+            None => return Prepared::Failed,
+        },
+    };
+    let Some(mut request) = script_request(page, url, csp) else {
+        return Prepared::Nothing;
+    };
+    request.nonce = page.checked_nonce(document, element);
+    if inline.is_none() {
+        request.integrity = document
+            .attr(element, "integrity")
+            .unwrap_or_default()
+            .to_owned();
+    }
+    request.parser_inserted = parser_inserted;
+    request.referrer_policy = document
+        .attr(element, "referrerpolicy")
+        .and_then(net::ReferrerPolicy::parse);
+    let credentials = crate::loader::cors_settings(document.attr(element, "crossorigin"))
+        .unwrap_or(net::Credentials::SameOrigin);
+    Prepared::Module {
+        request: Box::new(request.with_cors(credentials)),
+        inline,
+    }
+}
+
+/// Prepares the import map `element` (D61): an inline one, held to the
+/// document's policies as an inline script is; one with a `src` fails,
+/// as HTML has it.
+fn prepare_import_map(page: &mut Page, document: &Document, element: NodeId) -> Prepared {
+    if document.attr(element, "src").is_some() {
+        return Prepared::Failed;
+    }
+    let text = document.text_content(element);
+    let nonce = page.checked_nonce(document, element);
+    let csp = page.csp(document);
+    let violations = csp.inline_violations(net::csp::Inline::Script, &nonce, &text);
+    csp.record(&violations);
+    if net::csp::enforced(violations).is_err() {
+        return Prepared::Refused;
+    }
+    Prepared::ImportMap(text)
+}
+
+/// A module script found during a run (D61), whose graph the engine
+/// fetches after it.
+pub(crate) struct ModuleWanted {
+    pub(crate) element: NodeId,
+    pub(crate) request: Box<Request>,
+    pub(crate) inline: Option<(String, u32, Url)>,
+    pub(crate) place: Place,
 }
 
 /// Where a script fetched for an element waits to run (HTML section
@@ -580,6 +708,10 @@ pub(crate) struct Scripts {
     /// (M33.1).
     reports: Vec<(Url, String)>,
     reports_queued: usize,
+    /// The `<link rel=modulepreload>`s started (D61), and the graphs of
+    /// those on their way.
+    module_links: std::collections::HashSet<NodeId>,
+    preloading: Vec<(u32, NodeId)>,
 }
 
 impl Default for Scripts {
@@ -618,6 +750,8 @@ impl Scripts {
             code_guarded: false,
             reports: Vec::new(),
             reports_queued: 0,
+            module_links: std::collections::HashSet::new(),
+            preloading: Vec::new(),
         }
     }
 
@@ -667,6 +801,17 @@ impl Scripts {
         match prepared {
             Prepared::NotYet | Prepared::Nothing | Prepared::Refused => {}
             Prepared::Failed => self.events.push_back((element, "error")),
+            Prepared::Module { request, inline } => {
+                let place = module_place(lent.document, element, true);
+                let wanted = ModuleWanted {
+                    element,
+                    request,
+                    inline,
+                    place,
+                };
+                self.start_module(lent, wanted);
+            }
+            Prepared::ImportMap(text) => self.register_map(lent, element, &text, line),
             Prepared::Inline(source) => {
                 if lent.page.blocks_scripts() {
                     self.blocking = Some(Pending::Ready(Some(source)));
@@ -713,11 +858,271 @@ impl Scripts {
         }
     }
 
+    /// Starts the graph of the module script `wanted` (D61), which waits
+    /// where its place says; the realm, which finds its modules' imports,
+    /// made first.
+    fn start_module(&mut self, lent: &mut Lent<'_>, wanted: ModuleWanted) {
+        if !self.ensure_realm(lent.page.is_secure_context()) {
+            return;
+        }
+        let ModuleWanted {
+            element,
+            request,
+            inline,
+            place,
+        } = wanted;
+        let external = inline.is_none();
+        let root = match inline {
+            Some((text, line, base)) => modules::Root::Inline { text, line, base },
+            None => modules::Root::Url(request.url.clone()),
+        };
+        let graph = self.start_graph(modules::Purpose::Element, root, *request);
+        let pending = Pending::Module {
+            graph,
+            element,
+            external,
+        };
+        match place {
+            Place::Soon => self.soon.push(pending),
+            Place::InOrder => self.in_order.push_back(pending),
+            Place::Deferred | Place::Blocking => self.deferred.push_back(pending),
+        }
+        self.advance_modules(lent);
+    }
+
+    /// Starts a module graph for `purpose` (D61), its modules' imports
+    /// found by the realm.
+    fn start_graph(
+        &mut self,
+        purpose: modules::Purpose,
+        root: modules::Root,
+        template: Request,
+    ) -> u32 {
+        let Scripts { realm, host, .. } = self;
+        host.modules
+            .start(purpose, root, template, &mut |url, text| {
+                scan(realm, url, text)
+            })
+    }
+
+    /// Goes on with the document's module graphs (D61): the `import()`s
+    /// the last run wanted started, the modules that came taken in, their
+    /// imports fetched; a graph fetched for an `import()` settles its
+    /// promise in a task.
+    fn advance_modules(&mut self, lent: &mut Lent<'_>) {
+        for (id, url) in self.host.modules.take_wanted() {
+            let request = Url::parse(&url).ok().and_then(|url| {
+                let csp = lent.page.csp(lent.document).clone();
+                script_request(lent.page, url, csp)
+            });
+            match request {
+                Some(request) => {
+                    let root = modules::Root::Url(request.url.clone());
+                    let request = request.with_cors(net::Credentials::SameOrigin);
+                    self.start_graph(modules::Purpose::Import(id), root, request);
+                }
+                None => self.posted.push_back((
+                    Duration::ZERO,
+                    js::Task::Imported {
+                        id,
+                        error: Some(format!(
+                            "Failed to fetch dynamically imported module: {url}"
+                        )),
+                        url,
+                        modules: Vec::new(),
+                    },
+                )),
+            }
+        }
+        let Scripts { realm, host, .. } = self;
+        host.modules
+            .advance(&mut |url, text| scan(realm, url, text));
+        for text in self.host.modules.take_said() {
+            self.push(ConsoleEntry::of(
+                ConsoleSource::Network,
+                ConsoleLevel::Error,
+                cut(text),
+            ));
+        }
+        for (url, request) in self.host.modules.take_fetches() {
+            let id = lent.network.fetch(lent.page.id(), Target::Script, request);
+            self.host.modules.fetch_started(id, url);
+        }
+        for id in self.host.modules.imports_done() {
+            let task = js::Task::Imported {
+                id,
+                url: String::new(),
+                modules: Vec::new(),
+                error: None,
+            };
+            self.posted.push_back((Duration::ZERO, task));
+        }
+        // The module preloads that came: `load` at their links, or
+        // `error`; their modules stay in the map.
+        let (modules, events) = (&mut self.host.modules, &mut self.events);
+        self.preloading.retain(|&(graph, link)| {
+            let kind = match modules.progress(graph) {
+                modules::Progress::Waiting => return true,
+                modules::Progress::Ready => "load",
+                modules::Progress::Failed => "error",
+            };
+            modules.drop_graph(graph);
+            events.push_back((link, kind));
+            false
+        });
+        // The element's graphs fetched, or failed: their scripts ready.
+        let modules = &mut self.host.modules;
+        for pending in self
+            .deferred
+            .iter_mut()
+            .chain(&mut self.soon)
+            .chain(&mut self.in_order)
+        {
+            let Pending::Module {
+                graph,
+                element,
+                external,
+            } = *pending
+            else {
+                continue;
+            };
+            match modules.progress(graph) {
+                modules::Progress::Waiting => {}
+                modules::Progress::Ready => {
+                    *pending = Pending::Ready(Some(Source::module(graph, element, external)));
+                }
+                modules::Progress::Failed => {
+                    modules.drop_graph(graph);
+                    *pending = Pending::Ready(Some(Source::failed(element)));
+                }
+            }
+        }
+    }
+
+    /// Fetches the modules the document's `<link rel=modulepreload>`s
+    /// not yet started name (D61, HTML section 4.6.7.13): each by its
+    /// `href`, `crossorigin`, `integrity` and `referrerpolicy`, as an
+    /// external module script's; a `load` or `error` event at the link
+    /// once it came or failed. An `as` that is not `script` is an error.
+    pub(crate) fn preload_modules(&mut self, lent: &mut Lent<'_>) {
+        if self.stopped || self.aborted {
+            return;
+        }
+        let document = &*lent.document;
+        let links: Vec<NodeId> = document
+            .subtree(document.root())
+            .filter(|&node| {
+                document.tag(node) == Some("link")
+                    && !self.module_links.contains(&node)
+                    && document.attr(node, "rel").is_some_and(|rel| {
+                        rel.split(|c: char| c.is_ascii_whitespace())
+                            .any(|t| t.eq_ignore_ascii_case("modulepreload"))
+                    })
+            })
+            .collect();
+        for link in links {
+            let document = &*lent.document;
+            let Some(href) = document.attr(link, "href").filter(|href| !href.is_empty()) else {
+                continue;
+            };
+            self.module_links.insert(link);
+            if !document
+                .attr(link, "as")
+                .is_none_or(|kind| kind.is_empty() || kind.eq_ignore_ascii_case("script"))
+            {
+                self.events.push_back((link, "error"));
+                continue;
+            }
+            let Some(url) = lent.page.resolve(document, href) else {
+                continue;
+            };
+            if !self.ensure_realm(lent.page.is_secure_context()) {
+                return;
+            }
+            let csp = lent.page.csp(lent.document).clone();
+            let Some(mut request) = script_request(lent.page, url, csp) else {
+                continue;
+            };
+            let document = &*lent.document;
+            request.integrity = document
+                .attr(link, "integrity")
+                .unwrap_or_default()
+                .to_owned();
+            request.referrer_policy = document
+                .attr(link, "referrerpolicy")
+                .and_then(net::ReferrerPolicy::parse);
+            let credentials = crate::loader::cors_settings(document.attr(link, "crossorigin"))
+                .unwrap_or(net::Credentials::SameOrigin);
+            let root = modules::Root::Url(request.url.clone());
+            let request = request.with_cors(credentials);
+            let graph = self.start_graph(modules::Purpose::Preload, root, request);
+            self.preloading.push((graph, link));
+        }
+        if self.host.modules.busy() {
+            self.advance_modules(lent);
+        }
+    }
+
+    /// Whether the document's module graphs have work on their way, which
+    /// the engine goes on with though its scripts are otherwise settled.
+    pub(crate) fn modules_busy(&self) -> bool {
+        !self.stopped && self.host.modules.busy()
+    }
+
+    /// HTML's "register an import map" for the parser's `element`, at
+    /// `line`, of `text` (D61): its warnings on the console; one too late
+    /// an `error` event at its element; one that is none an exception
+    /// reported.
+    fn register_map(&mut self, lent: &mut Lent<'_>, element: NodeId, text: &str, line: u32) {
+        let Some(base) = lent.page.base_url(lent.document) else {
+            return;
+        };
+        match self.host.modules.register(text, &base) {
+            modules::Registered::Map(warnings) => {
+                for warning in warnings {
+                    self.push(ConsoleEntry::of(
+                        ConsoleSource::Engine,
+                        ConsoleLevel::Warn,
+                        cut(warning),
+                    ));
+                }
+            }
+            modules::Registered::Late(why) => {
+                self.push(ConsoleEntry::of(
+                    ConsoleSource::Engine,
+                    ConsoleLevel::Error,
+                    why.to_owned(),
+                ));
+                self.events.push_back((element, "error"));
+            }
+            modules::Registered::Error(error) => self.throw(lent, &error, line),
+        }
+    }
+
+    /// Reports `error`, an import map's that is none (D61), as an uncaught
+    /// exception of the document's at `line`: a script that throws it.
+    fn throw(&mut self, lent: &mut Lent<'_>, error: &import_map::MapError, line: u32) {
+        let source = format!("throw new {}({})", error.name, json_string(&error.message));
+        let url = lent.page.url().map(Url::to_string).unwrap_or_default();
+        let script = Script {
+            source: &source,
+            url: &url,
+            line,
+            muted: false,
+        };
+        self.run(lent, &script, How::default());
+    }
+
     /// Takes the result of fetch `id` for a script (HTML's "fetch a
     /// classic script"): the script, decoded, if it came with an ok status
     /// and a type a script may have; else a failure, which the console
-    /// says. A result no script waits for changes nothing.
+    /// says. A result no script waits for changes nothing. A module's
+    /// (D61) is taken in by the next [`Scripts::run_ready`].
     pub(crate) fn arrived(&mut self, id: FetchId, result: Result<Response, LoadError>) {
+        if self.host.modules.owns(id) {
+            self.host.modules.arrived(id, result);
+            return;
+        }
         let Some(pending) = self
             .blocking
             .iter_mut()
@@ -778,6 +1183,11 @@ impl Scripts {
         if self.mutations_waiting(lent.document) {
             self.enter(lent, &js::Task::Mutations, 0);
         }
+        // The module graphs gone on with (D61), a module preload's
+        // event queued.
+        if !self.stopped && self.host.modules.busy() {
+            self.advance_modules(lent);
+        }
         while let Some((element, kind)) = self.events.pop_front() {
             self.dispatch(
                 lent,
@@ -791,7 +1201,7 @@ impl Scripts {
                 ready.push(source.take());
                 false
             }
-            Pending::Fetching { .. } => true,
+            Pending::Fetching { .. } | Pending::Module { .. } => true,
         });
         for source in ready.into_iter().flatten() {
             self.run_source(lent, &source, false);
@@ -938,6 +1348,37 @@ impl Scripts {
                     lent,
                     js::Target::Node(handle(element)),
                     js::EventInit::new("Event", "error"),
+                );
+            }
+            return;
+        }
+        // A module script (D61): no `currentScript`, and its graph's
+        // modules the realm was not given.
+        if let Some(graph) = source.module {
+            if let Some(run) = self.host.modules.take_run(graph) {
+                let script = js::ModuleScript {
+                    url: &run.url,
+                    inline: run
+                        .inline
+                        .as_ref()
+                        .map(|(text, line)| (text.as_str(), *line)),
+                    modules: &run.modules,
+                };
+                let how = How {
+                    external: source.external,
+                    ..How::default()
+                };
+                self.run_with(lent, how, |realm, host| {
+                    realm.run_module(&script, host).map(|()| None)
+                });
+            }
+            if source.external
+                && let Some(element) = source.element
+            {
+                self.dispatch(
+                    lent,
+                    js::Target::Node(handle(element)),
+                    js::EventInit::new("Event", "load"),
                 );
             }
             return;
@@ -1186,6 +1627,20 @@ impl Scripts {
         script: &Script<'_>,
         how: How,
     ) -> Option<Completion> {
+        self.run_with(lent, how, |realm, host| realm.run(script, host).map(Some))
+    }
+
+    /// Runs what `run` runs in the realm as [`Scripts::run`] runs a
+    /// classic script: a module script too (D61).
+    fn run_with(
+        &mut self,
+        lent: &mut Lent<'_>,
+        how: How,
+        run: impl FnOnce(
+            &mut dyn Realm<DocumentHost>,
+            &mut DocumentHost,
+        ) -> Result<Option<Completion>, ScriptError>,
+    ) -> Option<Completion> {
         if !self.ensure_realm(lent.page.is_secure_context()) {
             return None;
         }
@@ -1201,7 +1656,7 @@ impl Scripts {
                 .is_some();
         host.in_flight = self.fetching.len();
         host.lend(lent, how, self.blocking.is_some());
-        let result = realm.run(script, host);
+        let result = run(realm.as_mut(), host);
         let errors = realm.checkpoint(host);
         let dead = realm.dead().is_some();
         host.sweep();
@@ -1223,7 +1678,7 @@ impl Scripts {
         self.report_violations(lent.page, lent.document, violations, (None, 0));
         self.errors += outputs.errors;
         let completion = match result {
-            Ok(completion) => Some(completion),
+            Ok(completion) => completion,
             Err(error) => {
                 self.report(&error);
                 None
@@ -1235,6 +1690,7 @@ impl Scripts {
         for wanted in outputs.wanted {
             self.fetch(lent, wanted);
         }
+        self.after_modules(lent, outputs.modules, outputs.thrown);
         self.start_fetches(lent, outputs.fetches, outputs.aborted);
         self.start_media(lent);
         self.font_changes.extend(outputs.fonts);
@@ -1255,6 +1711,26 @@ impl Scripts {
             self.stop();
         }
         completion
+    }
+
+    /// What a run left for the module graphs (D61): the module scripts
+    /// it inserted started, the import maps that were none reported, and
+    /// the `import()`s it made fetched.
+    fn after_modules(
+        &mut self,
+        lent: &mut Lent<'_>,
+        wanted: Vec<ModuleWanted>,
+        thrown: Vec<(import_map::MapError, u32)>,
+    ) {
+        for wanted in wanted {
+            self.start_module(lent, wanted);
+        }
+        for (error, line) in thrown {
+            self.throw(lent, &error, line);
+        }
+        if !self.stopped && self.host.modules.busy() {
+            self.advance_modules(lent);
+        }
     }
 
     /// Runs `task` in the document's realm (M26) as [`Scripts::run`]
@@ -1306,6 +1782,7 @@ impl Scripts {
         for wanted in outputs.wanted {
             self.fetch(lent, wanted);
         }
+        self.after_modules(lent, outputs.modules, outputs.thrown);
         self.start_fetches(lent, outputs.fetches, outputs.aborted);
         self.start_media(lent);
         self.font_changes.extend(outputs.fonts);
@@ -1712,7 +2189,29 @@ impl Scripts {
             && timer.is_none_or(|due| at <= due)
             && answer.is_none_or(|came| at <= came)
         {
-            return self.posted.pop_front().map(|(_, task)| (task, 0));
+            let (_, task) = self.posted.pop_front()?;
+            // An `import()`'s graph (D61): its modules given the realm
+            // now, as a module script's are when it runs.
+            if let js::Task::Imported {
+                id, error: None, ..
+            } = task
+            {
+                let Some((url, modules)) = self.host.modules.take_import(id) else {
+                    return self.take_next_task();
+                };
+                let (modules, error) = match modules {
+                    Ok(modules) => (modules, None),
+                    Err(error) => (Vec::new(), Some(error)),
+                };
+                let task = js::Task::Imported {
+                    id,
+                    url,
+                    modules,
+                    error,
+                };
+                return Some((task, 0));
+            }
+            return Some((task, 0));
         }
         if answer.is_some_and(|came| timer.is_none_or(|due| came <= due)) {
             let (_, id, answer) = self.answers.pop_front()?;
@@ -1899,6 +2398,16 @@ pub(crate) fn broadcast_id() -> u64 {
     (*START + NEXT.fetch_add(1, Ordering::Relaxed)) & ((1 << 53) - 1)
 }
 
+/// The static imports of the module `text` at `url` (D61), as `realm`
+/// declares it apart; `None` without a realm or when it does not parse.
+fn scan(
+    realm: &mut Option<Box<dyn Realm<DocumentHost>>>,
+    url: &str,
+    text: &str,
+) -> Option<Vec<String>> {
+    realm.as_mut()?.module_requests(url, text).ok()
+}
+
 pub(crate) fn handle(node: NodeId) -> js::Handle {
     js::Handle(node.to_bits())
 }
@@ -1919,6 +2428,20 @@ fn has_handlers(document: &Document, seen: &mut Option<(u64, bool)>) -> bool {
     });
     *seen = Some((version, has));
     has
+}
+
+/// Where the module script `element` waits (D61): as soon as its graph
+/// is fetched with `async`; else, inserted by the parser, once the
+/// document is parsed, in order; inserted by a script, in order as soon
+/// as possible.
+pub(crate) fn module_place(document: &Document, element: NodeId, parser_inserted: bool) -> Place {
+    if document.attr(element, "async").is_some() {
+        Place::Soon
+    } else if parser_inserted {
+        Place::Deferred
+    } else {
+        Place::InOrder
+    }
 }
 
 /// Where a parser-inserted script fetched for `element` waits: by its
@@ -2186,6 +2709,7 @@ fn script_source(response: &Response, fallback: Encoding) -> Result<Source, Stri
         element: None,
         external: true,
         failed: false,
+        module: None,
     })
 }
 

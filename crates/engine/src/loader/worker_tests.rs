@@ -164,7 +164,7 @@ fn a_workers_uncaught_error_reaches_its_object_then_the_window() {
              console.log('canceled at the object'); \
              var missing = new Worker('missing.js');\
              missing.onerror = function (e) { show('missing', e); \
-               var module = new Worker('throw.js', { type: 'module' });\
+               var module = new Worker('missing.js', { type: 'module' });\
                module.onerror = function (e) { console.log('module', e.constructor.name); \
                  var inHandler = new Worker('handler.js');\
                  inHandler.onerror = function (e) { show('handler', e); console.log('done'); };\
@@ -762,10 +762,10 @@ fn a_placeholder_drawn_here_takes_its_offscreens_size() {
 
 #[test]
 fn a_message_to_a_worker_that_ended_is_dropped() {
-    // A module worker fails to load here (G41): its thread never runs.
+    // A worker whose script is not there: its thread never runs.
     let (mut tab, _server) = page(
         "<script>\
-         var w = new Worker('w.js', { type: 'module' });\
+         var w = new Worker('missing.js');\
          w.onerror = function () {\
            try { w.postMessage(1); console.log('posted'); } catch (e) { console.log('threw', e.name); }\
          };\

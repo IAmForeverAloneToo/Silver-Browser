@@ -5609,6 +5609,20 @@ impl Engine {
                     .any(|change| loader::may_touch_sheets(document, change))
                 {
                     page.rescan(document, &mut self.network, Some(&media));
+                    // A `<link rel=modulepreload>` parsed (D61).
+                    if self.scripting && !page.sandbox().has(sandbox::Sandbox::SCRIPTS) {
+                        let loader::Parsing { load, scripts, .. } = &mut **parsing;
+                        let mut lent = scripts::Lent {
+                            document,
+                            images: None,
+                            page,
+                            parser: Some(load),
+                            network: &mut self.network,
+                            ready: scripts::ReadyState::Loading,
+                            window: window.clone(),
+                        };
+                        scripts.preload_modules(&mut lent);
+                    }
                 }
                 if changes.iter().any(may_touch_images) {
                     let activated = frames::lock(&self.frame.tree).may_start_sound();
@@ -5737,7 +5751,10 @@ impl Engine {
     /// is over: those run as soon as possible, and the deferred ones in
     /// order (M24.3). The load is over once none is left.
     fn run_scripts(&mut self) {
-        if self.shown.parsing.is_some() || self.shown.scripts.settled() {
+        // An `import()`'s graph (D61) goes on with the load over.
+        if self.shown.parsing.is_some()
+            || (self.shown.scripts.settled() && !self.shown.scripts.modules_busy())
+        {
             return;
         }
         let ready = self.ready_state();
@@ -6419,6 +6436,23 @@ impl Engine {
                     &mut self.shown.page,
                     &mut self.network,
                 );
+            }
+            // A `<link rel=modulepreload>` (D61), fetched into the
+            // module map of the document's realm.
+            if self.scripts_run() {
+                let ready = self.ready_state();
+                let window = self.window_env();
+                let shown = &mut self.shown;
+                let mut lent = scripts::Lent {
+                    document: &mut shown.document,
+                    images: Some(&mut shown.images),
+                    page: &mut shown.page,
+                    parser: shown.parsing.as_mut().map(|parsing| &mut parsing.load),
+                    network: &mut self.network,
+                    ready,
+                    window,
+                };
+                shown.scripts.preload_modules(&mut lent);
             }
             self.update_load_state();
             sheets = Some(self.shown.page.sheets())

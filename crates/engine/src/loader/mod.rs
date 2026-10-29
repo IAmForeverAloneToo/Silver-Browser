@@ -48,6 +48,8 @@ mod media_tests;
 #[cfg(test)]
 mod mixed_tests;
 #[cfg(test)]
+mod module_tests;
+#[cfg(test)]
 mod open_tests;
 #[cfg(test)]
 mod origin_tests;

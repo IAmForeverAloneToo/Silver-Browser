@@ -23,6 +23,8 @@ use super::canvas::{Canvases, names_context, needs_source};
 use super::host::{
     PLATFORM, Timers, image_bitmap, location_parts, offscreen_element, offscreen_source,
 };
+use super::import_map::ImportMap;
+use super::modules::{Modules, Progress, Purpose, Root};
 use super::ports::{SharedRouter, lock, port_call};
 use super::{ConsoleEntry, ConsoleSource, MAX_SCRIPT_BYTES, cut};
 use crate::loader::Waker;
@@ -232,8 +234,8 @@ pub(crate) fn inbox(wake: Option<Waker>) -> (Inbox, Mailbox) {
 pub(crate) struct Start {
     pub(crate) url: Url,
     pub(crate) name: String,
-    /// `type: "module"`, which fails to load here (module scripts are
-    /// G41).
+    /// `type: "module"` (D61): its script a module script, its graph
+    /// fetched before it runs.
     pub(crate) module: bool,
     pub(crate) credentials: Credentials,
     /// The client its fetches share with the engine's: its cookies and
@@ -341,14 +343,14 @@ impl Workers {
     }
 
     /// Starts a worker, or queues it when the document has
-    /// [`MAX_WORKERS`] live; its number. A module worker, or one past
-    /// [`MAX_WORKER_DEPTH`], fails to load.
+    /// [`MAX_WORKERS`] live; its number. One past [`MAX_WORKER_DEPTH`]
+    /// fails to load.
     pub(crate) fn start(&mut self, start: Start) -> u32 {
         let id = self.next;
         self.next += 1;
         let (to, mailbox) = inbox(None);
         let stop = Arc::new(AtomicBool::new(false));
-        if start.module || self.depth >= MAX_WORKER_DEPTH {
+        if self.depth >= MAX_WORKER_DEPTH {
             self.known.insert(
                 id,
                 Known {
@@ -653,8 +655,18 @@ fn run(setup: Setup) {
         }
         owner.send(WorkerMessage::FromWorker(id, FromWorker::Ended));
     };
-    let Some((source, url, csp)) = fetch_script(&start) else {
-        return ended(Some(None));
+    // A module worker's (D61): its root module's response, its graph
+    // fetched once the realm that finds its imports is made.
+    let (source, url, csp, root) = if start.module {
+        let Some((response, csp)) = fetch_module_root(&start) else {
+            return ended(Some(None));
+        };
+        (String::new(), response.url().clone(), csp, Some(response))
+    } else {
+        let Some((source, url, csp)) = fetch_script(&start) else {
+            return ended(Some(None));
+        };
+        (source, url, csp, None)
     };
     if stop.load(Ordering::SeqCst) {
         return;
@@ -726,7 +738,21 @@ fn run(setup: Setup) {
     {
         let _ = realm.enter(&Task::GuardCode, &mut host);
     }
-    let result = realm.run(&script, &mut host).map(|_| false);
+    let result = match root {
+        Some(response) => {
+            let Some(run) = host.root_graph(&mut *realm, &start, response, &stop) else {
+                lock(&router).remove_realm(realm_id);
+                return ended(Some(None));
+            };
+            let script = js::ModuleScript {
+                url: &run.url,
+                inline: None,
+                modules: &run.modules,
+            };
+            realm.run_module(&script, &mut host).map(|()| false)
+        }
+        None => realm.run(&script, &mut host).map(|_| false),
+    };
     host.finish(&mut *realm, result, &stop);
     work(&mut *realm, &mut host, &mailbox, &stop);
     lock(&router).remove_realm(realm_id);
@@ -1020,6 +1046,63 @@ fn fetch_script(start: &Start) -> Option<(String, Url, net::csp::Csp)> {
     Some((utf8_decode(&response.body), response.url().clone(), csp))
 }
 
+/// A module worker's root module (D61, HTML's "fetch a module worker
+/// script graph"): the response, if it came with an ok status and a
+/// JavaScript MIME type, and the worker's policies, as for a classic
+/// one.
+fn fetch_module_root(start: &Start) -> Option<(net::Response, net::csp::Csp)> {
+    let mut request = Request::get(start.url.clone(), Destination::Worker)
+        .initiated_by(start.initiator.clone())
+        .with_body_limit(MAX_SCRIPT_BYTES)
+        .with_csp(start.csp.clone())
+        .with_cors(start.credentials);
+    request.partition.clone_from(&start.partition);
+    request.referrer_policy = Some(start.referrer_policy);
+    request.local_network.clone_from(&start.local_network);
+    let response = start.client.fetch(&request).ok()?;
+    if !response.ok()
+        || !response
+            .mime_type
+            .as_ref()
+            .is_some_and(net::MimeType::is_javascript)
+    {
+        return None;
+    }
+    let csp = match start.url.scheme() {
+        "data" | "blob" => start.csp.inherited(),
+        _ => net::csp::Csp::from_headers(&response.headers, response.url()).with_sink(),
+    };
+    Some((response, csp))
+}
+
+/// Fetches the modules graph `graph` of `modules` waits for, each in
+/// turn by `client`, the worker waiting, their imports found by `realm`,
+/// until it is fetched whole or fails, or the worker is stopped.
+fn fetch_graph(
+    modules: &mut Modules,
+    graph: u32,
+    client: &dyn Fetcher,
+    realm: &mut dyn Realm<WorkerHost>,
+    stop: &AtomicBool,
+) {
+    loop {
+        modules.advance(&mut |url, text| realm.module_requests(url, text).ok());
+        if modules.progress(graph) != Progress::Waiting || stop.load(Ordering::SeqCst) {
+            return;
+        }
+        let fetches = modules.take_fetches();
+        if fetches.is_empty() {
+            return;
+        }
+        for (url, request) in fetches {
+            let result = client
+                .fetch(&request)
+                .map_err(crate::loader::LoadError::Network);
+            modules.arrived_at(url, result);
+        }
+    }
+}
+
 /// Encoding's "UTF-8 decode": a UTF-8 byte order mark taken away and the
 /// rest decoded as UTF-8, whatever another mark says (a worker's and an
 /// imported script's text, HTML section 10.2.4).
@@ -1096,6 +1179,10 @@ pub(crate) struct WorkerHost {
     blob_urls: crate::blob_urls::BlobOwner,
     /// The text its scripts' `TextDecoder`s are decoding (gap batch A).
     text_decoders: super::decoding::TextDecoders,
+    /// Its module map (D61), and whether the `import()`s its tasks made
+    /// are being fetched.
+    modules: Modules,
+    importing: bool,
 }
 
 impl Default for WorkerHost {
@@ -1134,6 +1221,8 @@ impl Default for WorkerHost {
             service: None,
             blob_urls: crate::blob_urls::BlobOwner::default(),
             text_decoders: super::decoding::TextDecoders::default(),
+            modules: Modules::default(),
+            importing: false,
         }
     }
 }
@@ -1320,6 +1409,31 @@ impl ScriptingHost for WorkerHost {
                 self.closing = true;
                 Ok(Answer::Nothing)
             }
+            // Module scripts (D61): a worker has no import map; a service
+            // worker no `import()`, as HTML has it.
+            Call::ResolveModule { base, specifier } => {
+                let base = Url::parse(&base).ok().or_else(|| self.url.clone());
+                base.and_then(|base| ImportMap::default().resolve(&specifier, &base).ok())
+                    .map(|url| Answer::String(url.to_string()))
+                    .ok_or_else(|| {
+                        DomError::new(
+                            "TypeError",
+                            format!(
+                                "Failed to resolve module specifier \"{specifier}\". Relative \
+                                 references must start with either \"/\", \"./\", or \"../\"."
+                            ),
+                        )
+                    })
+            }
+            Call::ImportModule { .. } if self.service.is_some() => Err(DomError::new(
+                "TypeError",
+                "import() is disallowed on ServiceWorkerGlobalScope by the HTML specification.",
+            )),
+            Call::ImportModule { id, url } => self
+                .modules
+                .want(id, url)
+                .map(|()| Answer::Nothing)
+                .map_err(|message| DomError::new("TypeError", message)),
             // A dedicated worker's animation frames (HTML section 8.10).
             Call::CodeAllowed { kind, source, .. } => {
                 let Some(csp) = &self.csp else {
@@ -1600,6 +1714,108 @@ impl WorkerHost {
             for commit in self.canvases.commits() {
                 lock(router).send_to(self.document, WorkerMessage::Frame(commit));
             }
+        }
+        // The `import()`s the task made (D61): each graph fetched, the
+        // worker waiting, then its promise settled in a task of its own.
+        if !self.importing {
+            self.importing = true;
+            loop {
+                let wanted = self.modules.take_wanted();
+                if wanted.is_empty() || self.closing || stop.load(Ordering::SeqCst) {
+                    break;
+                }
+                for (id, url) in wanted {
+                    let task = self.import_task(realm, id, url, stop);
+                    let result = realm.enter(&task, self);
+                    self.finish(realm, result, stop);
+                }
+            }
+            self.importing = false;
+        }
+    }
+
+    /// The request a module of the worker's graphs is fetched by (D61):
+    /// `cors`, of `credentials`, made by the worker, under its policies.
+    fn module_request(&self, url: Url, credentials: Credentials) -> Option<Request> {
+        let mut request = Request::get(url, Destination::Script)
+            .initiated_by(self.initiator.clone()?)
+            .with_body_limit(MAX_SCRIPT_BYTES);
+        if let Some(csp) = &self.csp {
+            request = request.with_csp(csp.clone());
+        }
+        request.partition.clone_from(&self.partition);
+        request.local_network.clone_from(&self.local_network);
+        Some(request.with_cors(credentials))
+    }
+
+    /// A module worker's graph (D61), from its root module's `response`:
+    /// fetched whole, the worker waiting, its module script to run; none
+    /// when a module of it could not be fetched.
+    fn root_graph(
+        &mut self,
+        realm: &mut dyn Realm<WorkerHost>,
+        start: &Start,
+        response: net::Response,
+        stop: &AtomicBool,
+    ) -> Option<super::modules::ModuleRun> {
+        let key = start.url.clone();
+        let template = self.module_request(key.clone(), start.credentials)?;
+        self.modules.arrived_at(key.to_string(), Ok(response));
+        let mut scan = |url: &str, text: &str| realm.module_requests(url, text).ok();
+        self.modules.advance(&mut scan);
+        let graph = self
+            .modules
+            .start(Purpose::Element, Root::Url(key), template, &mut scan);
+        fetch_graph(&mut self.modules, graph, &*start.client, realm, stop);
+        match self.modules.progress(graph) {
+            Progress::Ready => self.modules.take_run(graph),
+            Progress::Waiting | Progress::Failed => None,
+        }
+    }
+
+    /// The task that settles `import()` `id` of `url` (D61): its graph
+    /// fetched, the worker waiting.
+    fn import_task(
+        &mut self,
+        realm: &mut dyn Realm<WorkerHost>,
+        id: u32,
+        url: String,
+        stop: &AtomicBool,
+    ) -> Task {
+        let failed = |url: String| Task::Imported {
+            id,
+            error: Some(format!(
+                "Failed to fetch dynamically imported module: {url}"
+            )),
+            url,
+            modules: Vec::new(),
+        };
+        let (Ok(parsed), Some(client)) = (Url::parse(&url), self.client.clone()) else {
+            return failed(url);
+        };
+        let Some(template) = self.module_request(parsed.clone(), Credentials::SameOrigin) else {
+            return failed(url);
+        };
+        let mut scan = |url: &str, text: &str| realm.module_requests(url, text).ok();
+        let graph = self
+            .modules
+            .start(Purpose::Import(id), Root::Url(parsed), template, &mut scan);
+        fetch_graph(&mut self.modules, graph, &*client, realm, stop);
+        let _ = self.modules.imports_done();
+        match self.modules.take_import(id) {
+            Some((url, Ok(modules))) => Task::Imported {
+                id,
+                url,
+                modules,
+                error: None,
+            },
+            Some((url, Err(error))) => Task::Imported {
+                id,
+                url,
+                modules: Vec::new(),
+                error: Some(error),
+            },
+            None => failed(url),
         }
     }
 }

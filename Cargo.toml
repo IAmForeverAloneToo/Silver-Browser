@@ -182,8 +182,9 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 # The JavaScript engine (M24, roadmap D1, docs/design/scripting.md):
 # QuickJS-ng, which rquickjs-sys builds from its C source with `cc`,
 # pinned to the version the design note measured. Without the allocator
-# features, under which the heap limit would do nothing.
-rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
+# features, under which the heap limit would do nothing. Its `loader`
+# for module scripts (D61), whose one dependency was locked already.
+rquickjs = { version = "=0.14.0", default-features = false, features = ["std", "loader"] }
 # WebAssembly (M29, D21; docs/design/wasm.md): an interpreter in Rust,
 # validating every module; without its text format and memory64. Its
 # portable dispatch, a loop: the tail-call dispatch counts on sibling

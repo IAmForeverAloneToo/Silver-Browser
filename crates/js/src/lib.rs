@@ -28,6 +28,8 @@ mod event_tests;
 #[cfg(test)]
 mod intl_tests;
 #[cfg(test)]
+mod module_tests;
+#[cfg(test)]
 mod test_tree;
 #[cfg(test)]
 mod tests;
@@ -131,6 +133,44 @@ pub struct Script<'a> {
     /// Whether its errors are muted (section 8.1.4.6): it came from
     /// another origin, whose details a page may not learn.
     pub muted: bool,
+}
+
+/// The longest module specifier a realm resolves, in bytes (D61): the
+/// reference browser's longest URL. A longer one throws a `TypeError`.
+pub const MAX_SPECIFIER_BYTES: usize = 2 << 20;
+
+/// The deepest module graph a realm links (D61), its root at depth 0:
+/// the engine fetches none deeper. Its modules given leaves first, a
+/// realm links a graph twice as deep within [`MAX_SCRIPT_STACK`] in a
+/// release build, measured; QuickJS's linking is recursive.
+pub const MAX_MODULE_DEPTH: usize = 256;
+
+/// A module the engine fetched for a realm (D61): what its loader
+/// serves, and serves nothing else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleSource {
+    /// The URL it was asked for, by which the realm's module map knows
+    /// it, so that it is evaluated once a realm.
+    pub url: String,
+    /// Its base URL, its response's: what its imports resolve against
+    /// and what `import.meta.url` is.
+    pub base: String,
+    pub text: String,
+}
+
+/// A module script to run (HTML section 8.1.3.2, D61): its graph
+/// fetched whole.
+#[derive(Debug, Clone, Copy)]
+pub struct ModuleScript<'a> {
+    /// Its root's URL: an external one's, which is among `modules` or
+    /// in the realm already; an inline one's base URL, the document's,
+    /// the realm naming the module apart.
+    pub url: &'a str,
+    /// An inline script's text and the line of its document it starts
+    /// on; `None` for an external one.
+    pub inline: Option<(&'a str, u32)>,
+    /// The modules of its graph the realm was not given yet.
+    pub modules: &'a [ModuleSource],
 }
 
 /// The value a script ends with, kept as far as a `javascript:` URL
@@ -415,6 +455,16 @@ pub enum Task {
     /// The `matchMedia()` lists whose answer changed in a frame's update
     /// (gap batch A), by their numbers: a `change` at each.
     MediaChanged(Vec<u32>),
+    /// `import()` `id`'s graph came (D61, HTML's "fetch an import()
+    /// module script graph"): its modules the realm was not given, and
+    /// the promise settled as the module at `url` evaluates; or rejected
+    /// with a `TypeError` of `error` when the graph could not be fetched.
+    Imported {
+        id: u32,
+        url: String,
+        modules: Vec<ModuleSource>,
+        error: Option<String>,
+    },
 }
 
 /// Where a message is delivered (M31).
@@ -506,6 +556,17 @@ pub trait Realm<H: ScriptingHost> {
     /// of its own; what it ended with, or why it failed. The caller
     /// performs the microtask checkpoint that follows.
     fn run(&mut self, script: &Script<'_>, host: &mut H) -> Result<Completion, ScriptError>;
+    /// The specifiers of the static imports of the module `source` at
+    /// `url` (D61), found by declaring it apart, its imports none of the
+    /// realm's; a syntax error's report if it does not parse.
+    fn module_requests(&mut self, url: &str, source: &str) -> Result<Vec<String>, ScriptError>;
+    /// Links and evaluates a module script (HTML's "run a module
+    /// script", D61) with `host` and a step budget of its own, as
+    /// [`Realm::run`] runs a classic one: an error linking it reported
+    /// and returned, one evaluating it, a top-level await's too,
+    /// reported as an uncaught exception when it rejects. The caller
+    /// performs the microtask checkpoint that follows.
+    fn run_module(&mut self, script: &ModuleScript<'_>, host: &mut H) -> Result<(), ScriptError>;
     /// Runs `task` with `host` and a step budget of its own, as
     /// [`Realm::run`] runs a script: whether the event it dispatched was
     /// canceled (false for a task with no event), or why it failed. The

@@ -17,11 +17,13 @@ use style::{CascadeContext, FontMeasure, Styles, Stylesheets};
 
 use super::canvas::{Canvases, Drawn, Element, Owner, names_context, needs_source, needs_text};
 use super::cssom;
+use super::import_map::MapError;
+use super::modules::{Modules, Registered};
 use super::workers::{DocumentWorkers, Start, credentials_mode, worker_url};
 use super::{
-    ConsoleEntry, How, Lent, MAX_SCRIPT_NESTING, MAX_TIMERS, Place, Prepared, ReadyState,
-    ScriptNavigation, Source, TimeOrigin, Wanted, WindowEnv, cut, document_title, is_script,
-    parser_place, prepare_element, report_text,
+    ConsoleEntry, How, Lent, MAX_SCRIPT_NESTING, MAX_TIMERS, ModuleWanted, Place, Prepared,
+    ReadyState, ScriptNavigation, Source, TimeOrigin, Wanted, WindowEnv, cut, document_title,
+    is_script, module_place, parser_place, prepare_element, report_text,
 };
 use crate::loader::Page;
 use crate::sandbox::{NO_SAME_ORIGIN, Sandbox};
@@ -71,6 +73,12 @@ pub(crate) struct Outputs {
     /// The faces scripts added to the document's fonts or took away
     /// (D54).
     pub(crate) fonts: Vec<crate::web_fonts::FontChange>,
+    /// The module scripts scripts inserted or wrote (D61), whose graphs
+    /// the engine fetches after the run.
+    pub(crate) modules: Vec<ModuleWanted>,
+    /// The import maps scripts inserted that were none (D61): each
+    /// exception, to report, and its element's line.
+    pub(crate) thrown: Vec<(MapError, u32)>,
 }
 
 /// The document's styles as a run's `getComputedStyle` sees them: the
@@ -281,6 +289,8 @@ pub(crate) struct DocumentHost {
     /// operations of several calls the bindings began are nested.
     mutations: super::mutations::MutationObservers,
     scopes: u32,
+    /// Its module map, module scripts' graphs and import map (D61).
+    pub(crate) modules: Modules,
 }
 
 impl ScriptingHost for DocumentHost {
@@ -2504,6 +2514,31 @@ impl DocumentHost {
                 }
                 Ok(Answer::Nothing)
             }
+            // Module scripts (D61): a specifier resolved against its
+            // script's base URL, or the document's for code with none (a
+            // string `eval` ran); an `import()` that waits for a fetch.
+            Call::ResolveModule { base, specifier } => {
+                let base = net::Url::parse(&base).ok().or_else(|| {
+                    self.page
+                        .as_ref()
+                        .and_then(|page| page.base_url(&self.document))
+                });
+                let Some(base) = base else {
+                    return Err(DomError::new(
+                        "TypeError",
+                        format!("Failed to resolve module specifier \"{specifier}\"."),
+                    ));
+                };
+                self.modules
+                    .resolve(&specifier, &base)
+                    .map(|url| Answer::String(url.to_string()))
+                    .map_err(|message| DomError::new("TypeError", message))
+            }
+            Call::ImportModule { id, url } => self
+                .modules
+                .want(id, url)
+                .map(|()| Answer::Nothing)
+                .map_err(|message| DomError::new("TypeError", message)),
             Call::Nonce(node) => {
                 let node = self.node(node)?;
                 let nonce = self
@@ -3952,6 +3987,16 @@ impl DocumentHost {
         match prepared {
             Prepared::NotYet | Prepared::Nothing | Prepared::Refused => {}
             Prepared::Failed => self.outputs.events.push((element, "error")),
+            Prepared::Module { request, inline } => {
+                let place = module_place(&self.document, element, true);
+                self.outputs.modules.push(ModuleWanted {
+                    element,
+                    request,
+                    inline,
+                    place,
+                });
+            }
+            Prepared::ImportMap(text) => self.register_map(element, &text, line),
             Prepared::Inline(source) => {
                 if self.may_nest()
                     && let Some(parser) = self.parser.as_mut().and_then(html::Load::parser)
@@ -4020,6 +4065,20 @@ impl DocumentHost {
             match prepared {
                 Prepared::NotYet | Prepared::Nothing | Prepared::Refused => {}
                 Prepared::Failed => self.outputs.events.push((script, "error")),
+                Prepared::Module { request, inline } => {
+                    let forced = !self.not_forced.contains(&script);
+                    let place = match forced {
+                        true => Place::Soon,
+                        false => module_place(&self.document, script, false),
+                    };
+                    self.outputs.modules.push(ModuleWanted {
+                        element: script,
+                        request,
+                        inline,
+                        place,
+                    });
+                }
+                Prepared::ImportMap(text) => self.register_map(script, &text, 1),
                 Prepared::Inline(source) => {
                     if self.may_nest() {
                         self.now.push_back(source);
@@ -4045,6 +4104,32 @@ impl DocumentHost {
                     });
                 }
             }
+        }
+    }
+
+    /// HTML's "register an import map" for `element`, a script's or one
+    /// a write put in, of `text` (D61): its warnings on the console; one
+    /// too late an `error` event at its element; one that is none an
+    /// exception reported after the run, at `line`.
+    fn register_map(&mut self, element: NodeId, text: &str, line: u32) {
+        let Some(base) = self
+            .page
+            .as_ref()
+            .and_then(|page| page.base_url(&self.document))
+        else {
+            return;
+        };
+        match self.modules.register(text, &base) {
+            Registered::Map(warnings) => {
+                for warning in warnings {
+                    self.say(ConsoleLevel::Warn, warning);
+                }
+            }
+            Registered::Late(why) => {
+                self.say(ConsoleLevel::Error, why.to_owned());
+                self.outputs.events.push((element, "error"));
+            }
+            Registered::Error(error) => self.outputs.thrown.push((error, line)),
         }
     }
 

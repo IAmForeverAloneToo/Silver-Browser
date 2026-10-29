@@ -872,6 +872,20 @@ pub enum Call {
     SetNonce(Handle, String),
     /// The CSSOM just wrote the element's `style` attribute (M33.1).
     CssomStyled(Handle),
+    /// HTML's "resolve a module specifier" (D61): `specifier`, of the
+    /// script or module whose base URL is `base`, by the document's
+    /// import map. The answer is the URL, or a `TypeError` throws.
+    ResolveModule {
+        base: String,
+        specifier: String,
+    },
+    /// `import()` `id` wants the module at `url`, which the realm was
+    /// not given (D61): the engine fetches its graph and gives it in a
+    /// [`crate::Task::Imported`].
+    ImportModule {
+        id: u32,
+        url: String,
+    },
     /// A canvas's operation (M30): one variant for them all.
     Canvas(Box<CanvasCall>),
 }
