@@ -44,6 +44,7 @@ use paint::{DisplayItem, DisplayList, GroupKey, ImageRef, LayerReason, Rgba8, TI
 use style::transform::Matrix;
 use text::{FontCollection, FontError, Script};
 
+use paint::filter::{FilterOp, filter_reach};
 use paint::rounded::RoundedRect;
 
 use crate::{
@@ -78,6 +79,10 @@ const MASK_FLOATS: usize = 12;
 /// own coordinates, the matrix from there to clip coordinates, the
 /// texture coordinates of the corners, and the opacity with padding.
 const COMPOSITE_FLOATS: usize = 28;
+/// The floats of one filter pass's instance (gap batch E, D52): its quad
+/// in clip coordinates, its mode, box width and direction, and a colour
+/// matrix of twenty.
+const FILTER_FLOATS: usize = 28;
 
 /// The bytes of image textures kept (M23.2): past it the ones drawn
 /// longest ago are dropped, and uploaded again when drawn.
@@ -195,6 +200,75 @@ fn composite_vs(@builtin(vertex_index) i: u32, c: CompositeIn) -> CompositeOut {
 fn composite_fs(i: CompositeOut) -> @location(0) vec4<f32> {
     return textureSample(sampled, sampler_of, i.uv) * i.opacity;
 }
+
+struct FilterIn {
+    @location(0) quad: vec4<f32>,
+    @location(1) params: vec4<f32>,
+    @location(2) m0: vec4<f32>,
+    @location(3) m1: vec4<f32>,
+    @location(4) m2: vec4<f32>,
+    @location(5) m3: vec4<f32>,
+    @location(6) m4: vec4<f32>,
+};
+struct FilterOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) @interpolate(flat) params: vec4<f32>,
+    @location(1) @interpolate(flat) m0: vec4<f32>,
+    @location(2) @interpolate(flat) m1: vec4<f32>,
+    @location(3) @interpolate(flat) m2: vec4<f32>,
+    @location(4) @interpolate(flat) m3: vec4<f32>,
+    @location(5) @interpolate(flat) m4: vec4<f32>,
+};
+@vertex
+fn filter_vs(@builtin(vertex_index) i: u32, f: FilterIn) -> FilterOut {
+    var o: FilterOut;
+    o.pos = vec4<f32>(select(f.quad.x, f.quad.z, corner_x(i)), select(f.quad.y, f.quad.w, corner_y(i)), 0.0, 1.0);
+    o.params = f.params;
+    o.m0 = f.m0;
+    o.m1 = f.m1;
+    o.m2 = f.m2;
+    o.m3 = f.m3;
+    o.m4 = f.m4;
+    return o;
+}
+fn texel_or_none(p: vec2<i32>) -> vec4<f32> {
+    let size = vec2<i32>(textureDimensions(sampled));
+    if (p.x < 0 || p.y < 0 || p.x >= size.x || p.y >= size.y) {
+        return vec4<f32>(0.0);
+    }
+    return textureLoad(sampled, p, 0);
+}
+// A colour matrix on the unpremultiplied colour, clamped, or one box
+// blur along the pass's direction, as the software backend does.
+@fragment
+fn filter_fs(i: FilterOut) -> @location(0) vec4<f32> {
+    let p = vec2<i32>(floor(i.pos.xy));
+    if (i.params.x < 0.5) {
+        let c = texel_or_none(p);
+        var u = vec3<f32>(0.0);
+        if (c.a > 0.0) {
+            u = min(c.rgb / c.a, vec3<f32>(1.0));
+        }
+        let v = vec4<f32>(u, c.a);
+        let m = array<f32, 20>(i.m0.x, i.m0.y, i.m0.z, i.m0.w, i.m1.x, i.m1.y, i.m1.z, i.m1.w,
+            i.m2.x, i.m2.y, i.m2.z, i.m2.w, i.m3.x, i.m3.y, i.m3.z, i.m3.w,
+            i.m4.x, i.m4.y, i.m4.z, i.m4.w);
+        var out = vec4<f32>(0.0);
+        for (var r = 0; r < 4; r++) {
+            let k = r * 5;
+            out[r] = clamp(m[k] * v.x + m[k + 1] * v.y + m[k + 2] * v.z + m[k + 3] * v.w + m[k + 4], 0.0, 1.0);
+        }
+        return vec4<f32>(out.rgb * out.a, out.a);
+    }
+    let width = i32(i.params.y);
+    let r = width / 2;
+    let dir = vec2<i32>(i32(i.params.z), i32(i.params.w));
+    var sum = vec4<f32>(0.0);
+    for (var k = -r; k <= r; k++) {
+        sum += texel_or_none(p + dir * k);
+    }
+    return sum / f32(width);
+}
 "#;
 
 /// Why the GPU backend could not be made.
@@ -252,6 +326,8 @@ struct Pipelines {
     composite: wgpu::RenderPipeline,
     /// The mask pipeline multiplying the target by the coverage.
     erase: wgpu::RenderPipeline,
+    /// A filter's pass, replacing the target's pixels.
+    filter: wgpu::RenderPipeline,
     /// A texture and its sampler, what the mask and composite
     /// pipelines bind.
     sampled: wgpu::BindGroupLayout,
@@ -292,6 +368,8 @@ enum Kind {
     Composite(wgpu::BindGroup),
     /// A mask's coverage multiplying what is drawn (gap batch E, D51).
     Erase(wgpu::BindGroup),
+    /// One pass of a group's filter over the texture bound (D52).
+    Filter(wgpu::BindGroup),
 }
 
 /// The vertex and instance records of a frame, one list per pipeline,
@@ -302,6 +380,7 @@ struct Records {
     quads: Vec<f32>,
     masks: Vec<f32>,
     composites: Vec<f32>,
+    filters: Vec<f32>,
 }
 
 /// How far a sharp image's texture coordinates are moved back, as a
@@ -453,7 +532,7 @@ pub struct GpuBackend {
     passes: Vec<Pass>,
     records: Records,
     /// The vertex buffers, one per pipeline, grown as frames need.
-    buffers: [Option<wgpu::Buffer>; 4],
+    buffers: [Option<wgpu::Buffer>; 5],
     target: Option<Target>,
     /// The last frame read back.
     pixels: Vec<u8>,
@@ -539,7 +618,7 @@ impl GpuBackend {
             tile_time: Duration::ZERO,
             passes: Vec::new(),
             records: Records::default(),
-            buffers: [None, None, None, None],
+            buffers: [None, None, None, None, None],
             target: None,
             pixels: Vec::new(),
             errors,
@@ -898,9 +977,11 @@ impl GpuBackend {
                 key,
                 layer,
                 mask,
+                filters,
             } = item
                 && (State::needs_scratch(matrix, *opacity)
                     || mask.is_some()
+                    || filters.is_some()
                     || self.is_held(key, *layer))
             {
                 let end = group_end(items, i);
@@ -915,6 +996,7 @@ impl GpuBackend {
                     held,
                     size,
                     mask.as_deref(),
+                    filters.as_deref(),
                 );
                 i = end + 1;
                 continue;
@@ -947,11 +1029,13 @@ impl GpuBackend {
         held: Option<GroupKey>,
         size: (u32, u32),
         mask: Option<&RoundedRect>,
+        filters: Option<&[FilterOp]>,
     ) {
         let (width, height) = size;
         let Some(within) = clip.pixels(width, height) else {
             return;
         };
+        let spread = filters.map_or([0.0; 4], filter_reach);
         if let Some(key) = held
             && self.record_layer(draws, key, matrix, opacity, within, size)
         {
@@ -966,13 +1050,31 @@ impl GpuBackend {
                 }
                 state.apply(item);
             }
-            let Some(region) = reach.and_then(|r| r.intersect(within)) else {
+            // As the software backend takes a filter's reach.
+            let (sx, sy, _, _) = matrix
+                .scale_and_translation()
+                .unwrap_or((1.0, 1.0, 0.0, 0.0));
+            let grow = [
+                spread[0] * sx.abs(),
+                spread[1] * sy.abs(),
+                spread[2] * sx.abs(),
+                spread[3] * sy.abs(),
+            ];
+            let reach = reach.map(|r| r.grown_by(grow, width, height));
+            let Some(shown) = reach.and_then(|r| r.intersect(within)) else {
+                return;
+            };
+            let Some(region) =
+                reach.and_then(|r| r.intersect(within.grown_by(grow, width, height)))
+            else {
                 return;
             };
             let (w, h) = (region.x1 - region.x0, region.y1 - region.y0);
             let base =
                 Matrix::translate(-(region.x0 as f32), -(region.y0 as f32), 0.0).then(&matrix);
-            let Some(bind) = self.render_scratch(items, w, h, base, mask) else {
+            let Some(bind) =
+                self.render_scratch(items, w, h, base, mask, filters.map(|f| (f, (sx, sy))))
+            else {
                 return;
             };
             let at = Matrix::translate(region.x0 as f32, region.y0 as f32, 0.0);
@@ -983,7 +1085,7 @@ impl GpuBackend {
                 (0.0, 0.0, w as f32, h as f32),
                 &at,
                 opacity,
-                region,
+                shown,
                 size,
                 [0.0, 0.0, 1.0, 1.0],
             );
@@ -1009,6 +1111,12 @@ impl GpuBackend {
         let Some(reach) = reach(&mut self.text, items) else {
             return;
         };
+        let reach = Clip {
+            x0: reach.x0 - spread[0],
+            y0: reach.y0 - spread[1],
+            x1: reach.x1 + spread[2],
+            y1: reach.y1 + spread[3],
+        };
         let mut corners = whole_reach(reach);
         if !self.fits(corners) {
             let cut = reach.intersect(landing);
@@ -1027,7 +1135,9 @@ impl GpuBackend {
         }
         let (gw, gh) = (gw as u32, gh as u32);
         let base = Matrix::translate(-gx0, -gy0, 0.0);
-        let Some(bind) = self.render_scratch(items, gw, gh, base, mask) else {
+        let Some(bind) =
+            self.render_scratch(items, gw, gh, base, mask, filters.map(|f| (f, (1.0, 1.0))))
+        else {
             return;
         };
         Self::push_composite(
@@ -1053,6 +1163,7 @@ impl GpuBackend {
         height: u32,
         base: Matrix,
         mask: Option<&RoundedRect>,
+        filters: Option<(&[FilterOp], (f32, f32))>,
     ) -> Option<wgpu::BindGroup> {
         let (view, bind) = self.scratch(width, height)?;
         let mut draws = Vec::new();
@@ -1071,7 +1182,135 @@ impl GpuBackend {
             height,
             draws,
         });
-        Some(bind)
+        match filters {
+            Some((ops, scale)) => self.record_filters(bind, ops, scale, width, height),
+            None => Some(bind),
+        }
+    }
+
+    /// The passes of a group's filter `ops` over its texture `bind`,
+    /// `width` by `height`, their lengths scaled by `(sx, sy)` (gap batch
+    /// E, D52): a colour matrix a pass, a blur three box blurs a
+    /// direction, a drop shadow its tint blurred and laid under; the
+    /// last texture's binding.
+    fn record_filters(
+        &mut self,
+        bind: wgpu::BindGroup,
+        ops: &[FilterOp],
+        (sx, sy): (f32, f32),
+        width: u32,
+        height: u32,
+    ) -> Option<wgpu::BindGroup> {
+        let scale = (sx.abs() + sy.abs()) / 2.0;
+        let mut current = bind;
+        for op in ops {
+            current = match op {
+                FilterOp::Matrix(m) => self.filter_pass(current, width, height, 0.0, 0, m)?,
+                FilterOp::Blur(sigma) => self.blur_passes(current, width, height, sigma * scale)?,
+                FilterOp::DropShadow { x, y, sigma, color } => {
+                    let tint = crate::tint_matrix(*color);
+                    let shade = self.filter_pass(current.clone(), width, height, 0.0, 0, &tint)?;
+                    let shade = self.blur_passes(shade, width, height, sigma * scale)?;
+                    let (view, bind) = self.scratch(width, height)?;
+                    let whole = PixelRect {
+                        x0: 0,
+                        y0: 0,
+                        x1: width,
+                        y1: height,
+                    };
+                    let (dx, dy) = ((x * sx).round(), (y * sy).round());
+                    let mut draws = Vec::new();
+                    for (texture, at) in [
+                        (shade, Matrix::translate(dx, dy, 0.0)),
+                        (current, Matrix::IDENTITY),
+                    ] {
+                        Self::push_composite(
+                            &mut self.records,
+                            &mut draws,
+                            texture,
+                            (0.0, 0.0, width as f32, height as f32),
+                            &at,
+                            1.0,
+                            whole,
+                            (width, height),
+                            [0.0, 0.0, 1.0, 1.0],
+                        );
+                    }
+                    self.passes.push(Pass {
+                        view,
+                        width,
+                        height,
+                        draws,
+                    });
+                    bind
+                }
+            };
+        }
+        Some(current)
+    }
+
+    /// The box blurs of a Gaussian of `sigma` pixels over `bind`, rows
+    /// then columns for each, as the software backend runs them.
+    fn blur_passes(
+        &mut self,
+        bind: wgpu::BindGroup,
+        width: u32,
+        height: u32,
+        sigma: f32,
+    ) -> Option<wgpu::BindGroup> {
+        let mut current = bind;
+        if sigma <= 0.0 {
+            return Some(current);
+        }
+        for size in crate::shadow::boxes(sigma.min(crate::shadow::MAX_SIGMA)) {
+            if size <= 1 {
+                continue;
+            }
+            current = self.filter_pass(current, width, height, size as f32, 1, &[0.0; 20])?;
+            current = self.filter_pass(current, width, height, size as f32, 2, &[0.0; 20])?;
+        }
+        Some(current)
+    }
+
+    /// One filter pass over `bind` into a new texture: a colour matrix
+    /// `m` (`along` 0), or a box blur `size` wide along rows (1) or
+    /// columns (2).
+    fn filter_pass(
+        &mut self,
+        bind: wgpu::BindGroup,
+        width: u32,
+        height: u32,
+        size: f32,
+        along: u8,
+        m: &[f32; 20],
+    ) -> Option<wgpu::BindGroup> {
+        let (view, out) = self.scratch(width, height)?;
+        let index = (self.records.filters.len() / FILTER_FLOATS) as u32;
+        let (mode, dx, dy) = match along {
+            0 => (0.0, 0.0, 0.0),
+            1 => (1.0, 1.0, 0.0),
+            _ => (1.0, 0.0, 1.0),
+        };
+        self.records.filters.extend([-1.0, 1.0, 1.0, -1.0]);
+        self.records.filters.extend([mode, size, dx, dy]);
+        self.records.filters.extend(m);
+        let draws = vec![Draw {
+            kind: Kind::Filter(bind),
+            scissor: PixelRect {
+                x0: 0,
+                y0: 0,
+                x1: width,
+                y1: height,
+            },
+            range: index..index + 1,
+        }];
+        self.passes.push(Pass {
+            view,
+            width,
+            height,
+            draws,
+        });
+        Some(out)
     }
 
     /// Records the multiplying of a scratch by the coverage of its
@@ -2192,6 +2431,7 @@ impl GpuBackend {
             &records.quads,
             &records.masks,
             &records.composites,
+            &records.filters,
         ];
         for (buffer, data) in self.buffers.iter_mut().zip(lists) {
             if data.is_empty() {
@@ -2253,6 +2493,10 @@ impl GpuBackend {
                     Kind::Erase(bind) => {
                         rp.set_bind_group(0, bind, &[]);
                         (&self.pipelines.erase, &self.buffers[2])
+                    }
+                    Kind::Filter(bind) => {
+                        rp.set_bind_group(0, bind, &[]);
+                        (&self.pipelines.filter, &self.buffers[4])
                     }
                 };
                 let Some(buffer) = buffer else {
@@ -2471,6 +2715,24 @@ impl Pipelines {
                 alpha: multiply,
             },
         );
+        let filter = pipeline_blended(
+            "filter",
+            &textured,
+            "filter_vs",
+            "filter_fs",
+            FILTER_FLOATS as u64 * 4,
+            wgpu::VertexStepMode::Instance,
+            &[
+                float4(0, 0),
+                float4(1, 16),
+                float4(2, 32),
+                float4(3, 48),
+                float4(4, 64),
+                float4(5, 80),
+                float4(6, 96),
+            ],
+            wgpu::BlendState::REPLACE,
+        );
         let composite = pipeline(
             "composite",
             &textured,
@@ -2507,6 +2769,7 @@ impl Pipelines {
             mask,
             composite,
             erase,
+            filter,
             sampled,
             nearest: sampler(wgpu::FilterMode::Nearest),
             linear: sampler(wgpu::FilterMode::Linear),
@@ -2761,6 +3024,7 @@ mod tests {
             key: GroupKey::Document(key),
             layer,
             mask: None,
+            filters: None,
         }
     }
 
@@ -3103,6 +3367,56 @@ mod tests {
     }
 
     #[test]
+    fn filters_match() {
+        // Gap batch E, D52: each kind of operation, drawn through and
+        // under a scale, the GPU's passes the software's arithmetic.
+        use paint::filter::FilterOp;
+        let tint = Rgba8 {
+            r: 20,
+            g: 40,
+            b: 160,
+            a: 200,
+        };
+        let card = |x: f32, ops: Vec<FilterOp>, matrix: Matrix| {
+            vec![
+                DisplayItem::PushGroup {
+                    matrix,
+                    opacity: 1.0,
+                    key: GroupKey::Document(1),
+                    layer: None,
+                    mask: None,
+                    filters: Some(ops.into()),
+                },
+                rect(x, 20.0, 40.0, 30.0, Rgba8::rgb(200, 60, 30)),
+                rect(x + 10.0, 30.0, 20.0, 10.0, Rgba8::rgb(30, 160, 90)),
+                DisplayItem::PopGroup,
+            ]
+        };
+        let grey = paint::filter::filter_ops(&[style::computed::Filter::Grayscale(0.7)], |_| tint);
+        let hue = paint::filter::filter_ops(&[style::computed::Filter::HueRotate(120.0)], |_| tint);
+        let mut items = vec![rect(0.0, 0.0, 320.0, 120.0, Rgba8::rgb(255, 255, 255))];
+        items.extend(card(10.0, grey, Matrix::IDENTITY));
+        items.extend(card(60.0, hue, Matrix::IDENTITY));
+        items.extend(card(110.0, vec![FilterOp::Blur(3.0)], Matrix::IDENTITY));
+        items.extend(card(
+            170.0,
+            vec![FilterOp::DropShadow {
+                x: 4.0,
+                y: 6.0,
+                sigma: 2.0,
+                color: tint,
+            }],
+            Matrix::IDENTITY,
+        ));
+        items.extend(card(
+            115.0,
+            vec![FilterOp::Blur(1.5)],
+            Matrix::scale(2.0, 1.5, 1.0),
+        ));
+        equivalent("filters", &[DisplayList { items }], 320, 120);
+    }
+
+    #[test]
     fn shadows_match() {
         // Gap batch E, D52: blurred, hard and inset shadows, scaled, the
         // GPU's coverage the software's, from the atlas a second time.
@@ -3150,6 +3464,7 @@ mod tests {
                 key: GroupKey::Document(1),
                 layer: None,
                 mask: None,
+                filters: None,
             },
             shadow(
                 r(20.0, 64.0, 40.0, 20.0, 6.0),
@@ -3183,6 +3498,7 @@ mod tests {
                     key: GroupKey::Document(1),
                     layer: None,
                     mask: None,
+                    filters: None,
                 },
                 DisplayItem::PushGroup {
                     matrix: Matrix::IDENTITY,
@@ -3198,6 +3514,7 @@ mod tests {
                         },
                         radii: [(12.0, 8.0), (4.0, 4.0), (20.0, 20.0), (0.0, 0.0)],
                     })),
+                    filters: None,
                 },
                 rect(x - 5.0, 5.0, 60.0, 50.0, Rgba8::rgb(30, 120, 200)),
                 text("clip", x, 30.0, 14.0, Rgba8::rgb(0, 0, 0)),

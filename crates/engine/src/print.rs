@@ -289,6 +289,7 @@ fn rasterize_page(backend: &mut SoftwareBackend, page: PrintedPage, dpi: f32) ->
         key: GroupKey::Document(u32::MAX),
         layer: None,
         mask: None,
+        filters: None,
     });
     items.push(DisplayItem::PushClip {
         x: 0.0,
@@ -312,6 +313,7 @@ fn rasterize_page(backend: &mut SoftwareBackend, page: PrintedPage, dpi: f32) ->
             key,
             layer: None,
             mask: None,
+            filters: None,
         },
         other => other,
     }));

@@ -1594,6 +1594,58 @@ pub struct Effects {
     /// `box-shadow` (Backgrounds 3 section 7, gap batch E, D52): its
     /// shadows, the first on top; empty is `none`.
     pub box_shadow: Vec<Shadow>,
+    /// `filter` (Filter Effects 1 section 5, gap batch E, D52): its
+    /// functions in order; empty is `none`.
+    pub filter: Vec<Filter>,
+}
+
+/// A `filter` function, computed (Filter Effects 1 section 13):
+/// amounts as numbers, a percentage taken over 100, those of
+/// `grayscale()`, `invert()`, `opacity()` and `sepia()` at most 1; the
+/// hue's angle in degrees; lengths in CSS pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Filter {
+    Blur(f32),
+    Brightness(f32),
+    Contrast(f32),
+    Grayscale(f32),
+    HueRotate(f32),
+    Invert(f32),
+    Opacity(f32),
+    Saturate(f32),
+    Sepia(f32),
+    /// Its colour, offsets and blur radius, never negative.
+    DropShadow {
+        color: Color,
+        x: f32,
+        y: f32,
+        blur: f32,
+    },
+}
+
+impl Filter {
+    /// The function's value where it does nothing, of the kind of
+    /// `self`: what a shorter list is padded with when two interpolate
+    /// (section 15.2).
+    pub fn identity(&self) -> Filter {
+        match self {
+            Filter::Blur(_) => Filter::Blur(0.0),
+            Filter::Brightness(_) => Filter::Brightness(1.0),
+            Filter::Contrast(_) => Filter::Contrast(1.0),
+            Filter::Grayscale(_) => Filter::Grayscale(0.0),
+            Filter::HueRotate(_) => Filter::HueRotate(0.0),
+            Filter::Invert(_) => Filter::Invert(0.0),
+            Filter::Opacity(_) => Filter::Opacity(1.0),
+            Filter::Saturate(_) => Filter::Saturate(1.0),
+            Filter::Sepia(_) => Filter::Sepia(0.0),
+            Filter::DropShadow { .. } => Filter::DropShadow {
+                color: Color::TRANSPARENT,
+                x: 0.0,
+                y: 0.0,
+                blur: 0.0,
+            },
+        }
+    }
 }
 
 /// One of `box-shadow`'s shadows, computed: its colour, `currentcolor`
@@ -1627,6 +1679,7 @@ impl Default for Effects {
             will_change: WillChange::AUTO,
             animated: WillChange::AUTO,
             box_shadow: Vec::new(),
+            filter: Vec::new(),
         }
     }
 }
@@ -1660,6 +1713,7 @@ impl Effects {
             && (self.has_transform()
                 || self.perspective.is_some()
                 || self.transform_style == TransformStyle::Preserve3d))
+            || !self.filter.is_empty()
             || self
                 .will_change_in_effect()
                 .names_any(WillChange::CONTAINING)

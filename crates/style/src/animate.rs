@@ -188,6 +188,7 @@ longhands! {
     BackfaceVisibility = "backface-visibility": Discrete,
     Opacity = "opacity": ByComputedValue,
     BoxShadow = "box-shadow": ByComputedValue,
+    Filter = "filter": ByComputedValue,
     WillChange = "will-change": NotAnimatable,
     TransitionProperty = "transition-property": NotAnimatable,
     TransitionDuration = "transition-duration": NotAnimatable,
@@ -537,6 +538,11 @@ pub fn copy(property: Longhand, from: &ComputedStyle, to: &mut ComputedStyle) {
         BoxShadow => {
             if to.effects().box_shadow != from.effects().box_shadow {
                 to.effects_mut().box_shadow = from.effects().box_shadow.clone();
+            }
+        }
+        Filter => {
+            if to.effects().filter != from.effects().filter {
+                to.effects_mut().filter = from.effects().filter.clone();
             }
         }
         WillChange => copy_group!(to, from, effects, effects, effects_mut, will_change),
@@ -889,6 +895,7 @@ pub fn same(property: Longhand, a: &ComputedStyle, b: &ComputedStyle) -> bool {
         BackfaceVisibility => a.effects().backface_visibility == b.effects().backface_visibility,
         Opacity => a.effects().opacity == b.effects().opacity,
         BoxShadow => a.effects().box_shadow == b.effects().box_shadow,
+        Filter => a.effects().filter == b.effects().filter,
         WillChange => a.effects().will_change == b.effects().will_change,
         TransitionProperty => a.motion().transition_property == b.motion().transition_property,
         TransitionDuration => a.motion().transition_duration == b.motion().transition_duration,
@@ -1634,6 +1641,60 @@ pub fn interpolate(
                 number(a.effects().opacity, b.effects().opacity, p, 0.0, 1.0);
             true
         }
+        // Function by function where the lists are of the same
+        // functions, the shorter padded with the other's identities;
+        // else not (Filter Effects 1 section 15.2, gap batch E).
+        Filter => {
+            use computed::Filter as F;
+            let (x, y) = (&a.effects().filter, &b.effects().filter);
+            let n = x.len().max(y.len());
+            let mut out = Vec::with_capacity(n);
+            for i in 0..n {
+                let (s, t) = match (x.get(i), y.get(i)) {
+                    (Some(s), Some(t)) => (*s, *t),
+                    (Some(s), None) => (*s, s.identity()),
+                    (None, Some(t)) => (t.identity(), *t),
+                    (None, None) => break,
+                };
+                let amount = |u: f32, v: f32| number(u, v, p, 0.0, f32::MAX);
+                let capped = |u: f32, v: f32| number(u, v, p, 0.0, 1.0);
+                out.push(match (s, t) {
+                    (F::Blur(u), F::Blur(v)) => F::Blur(length(u, v, p, true)),
+                    (F::Brightness(u), F::Brightness(v)) => F::Brightness(amount(u, v)),
+                    (F::Contrast(u), F::Contrast(v)) => F::Contrast(amount(u, v)),
+                    (F::Grayscale(u), F::Grayscale(v)) => F::Grayscale(capped(u, v)),
+                    (F::HueRotate(u), F::HueRotate(v)) => {
+                        F::HueRotate(number(u, v, p, -f32::MAX, f32::MAX))
+                    }
+                    (F::Invert(u), F::Invert(v)) => F::Invert(capped(u, v)),
+                    (F::Opacity(u), F::Opacity(v)) => F::Opacity(capped(u, v)),
+                    (F::Saturate(u), F::Saturate(v)) => F::Saturate(amount(u, v)),
+                    (F::Sepia(u), F::Sepia(v)) => F::Sepia(capped(u, v)),
+                    (
+                        F::DropShadow {
+                            color: c,
+                            x: x0,
+                            y: y0,
+                            blur: b0,
+                        },
+                        F::DropShadow {
+                            color: d,
+                            x: x1,
+                            y: y1,
+                            blur: b1,
+                        },
+                    ) => F::DropShadow {
+                        color: color(c, d, p),
+                        x: length(x0, x1, p, false),
+                        y: length(y0, y1, p, false),
+                        blur: length(b0, b1, p, true),
+                    },
+                    _ => return false,
+                });
+            }
+            to.effects_mut().filter = out;
+            true
+        }
         // Shadow by shadow, the shorter list padded with transparent
         // ones of no length (Backgrounds 3 section 7.1); two of which one
         // is inset do not interpolate (gap batch E).
@@ -2021,6 +2082,30 @@ mod tests {
             .find(|&node| document.tag(node) == Some("div"))
             .expect("the div");
         styles.get(div).expect("styled").clone()
+    }
+
+    #[test]
+    fn filters_interpolate_function_by_function() {
+        use computed::Filter as F;
+        let (a, b) = (
+            style("filter: blur(2px) grayscale(0.2)"),
+            style("filter: blur(6px) grayscale(1) invert(1)"),
+        );
+        let mut to = a.clone();
+        assert!(interpolate(Longhand::Filter, &a, &b, 0.5, &mut to));
+        assert_eq!(
+            to.effects().filter,
+            [F::Blur(4.0), F::Grayscale(0.6), F::Invert(0.5)]
+        );
+        // Beyond the ends, a capped amount stays at most 1, a blur at
+        // least 0.
+        assert!(interpolate(Longhand::Filter, &a, &b, 1.5, &mut to));
+        assert_eq!(to.effects().filter[1], F::Grayscale(1.0));
+        assert!(interpolate(Longhand::Filter, &a, &b, -1.0, &mut to));
+        assert_eq!(to.effects().filter[0], F::Blur(0.0));
+        // Lists of other functions do not interpolate.
+        let c = style("filter: invert(1) blur(1px)");
+        assert!(!interpolate(Longhand::Filter, &a, &c, 0.5, &mut to));
     }
 
     #[test]

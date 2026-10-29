@@ -12,7 +12,7 @@
 pub mod gpu;
 
 /// Shadows and blurs (gap batch E, D52).
-mod shadow;
+pub(crate) mod shadow;
 
 /// The PDF a document prints to (M20.4): its pages' rasters as images.
 pub mod pdf;
@@ -24,6 +24,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use images::Orientation;
+use paint::filter::{FilterOp, filter_reach};
 use paint::rounded::RoundedRect;
 use paint::{DisplayItem, DisplayList, GroupKey, ImageRef, LayerReason, Rgba8, TILE_HEIGHT};
 use style::transform::Matrix;
@@ -191,6 +192,18 @@ impl PixelRect {
         (self.x1 - self.x0) as u64 * (self.y1 - self.y0) as u64
     }
 
+    /// The rectangle grown by `[left, top, right, bottom]` pixels, kept
+    /// within a `width` by `height` raster.
+    fn grown_by(self, by: [f32; 4], width: u32, height: u32) -> PixelRect {
+        let grow = |v: f32| v.max(0.0).ceil() as i64;
+        PixelRect {
+            x0: (i64::from(self.x0) - grow(by[0])).max(0) as u32,
+            y0: (i64::from(self.y0) - grow(by[1])).max(0) as u32,
+            x1: (i64::from(self.x1) + grow(by[2])).min(i64::from(width)) as u32,
+            y1: (i64::from(self.y1) + grow(by[3])).min(i64::from(height)) as u32,
+        }
+    }
+
     fn intersect(self, other: PixelRect) -> Option<PixelRect> {
         PixelRect::new(
             self.x0.max(other.x0) as i64,
@@ -259,6 +272,12 @@ struct GroupState {
     opacity: f32,
     layer: Option<GroupKey>,
     clips: usize,
+    /// How far, in raster pixels, the filters of this group and those
+    /// around it carry an item's pixels past the item (gap batch E).
+    spread: f32,
+    /// A fingerprint of the group's filter and mask (gap batch E): a
+    /// change of either changes how every item in it draws.
+    effects: u64,
 }
 
 /// The state a raster carries through a list (M9.3, M19): the clips in
@@ -303,6 +322,8 @@ impl State {
             opacity: 1.0,
             layer: None,
             clips: 0,
+            spread: 0.0,
+            effects: 0,
         });
         state
     }
@@ -320,6 +341,12 @@ impl State {
             state.clips.push(state.clip().intersect(clip));
         }
         state
+    }
+
+    /// How far the filters of the groups being drawn into carry an
+    /// item's pixels past it, in raster pixels.
+    fn spread(&self) -> f32 {
+        self.groups.last().map_or(0.0, |g| g.spread)
     }
 
     /// The clip in force.
@@ -410,16 +437,25 @@ impl State {
                 opacity,
                 key,
                 layer,
-                ..
+                filters,
+                mask,
             } => {
                 let composed = self.matrix().map_or(*matrix, |m| m.then(matrix));
                 let resampled = self.resampling() || State::is_resampled(matrix, *layer);
+                let own = filters.as_deref().map_or(0.0, |f| {
+                    let (sx, sy, _, _) = composed
+                        .scale_and_translation()
+                        .unwrap_or((1.0, 1.0, 0.0, 0.0));
+                    filter_reach(f).into_iter().fold(0.0, f32::max) * sx.abs().max(sy.abs())
+                });
                 self.groups.push(GroupState {
                     matrix: composed,
                     resampled,
                     opacity: *opacity,
                     layer: layer.map(|_| *key),
                     clips: self.clips.len(),
+                    spread: self.spread() + own,
+                    effects: effects_key(filters.as_deref(), mask.as_deref()),
                 });
             }
             DisplayItem::PopGroup => {
@@ -1606,9 +1642,11 @@ impl SoftwareBackend {
                 key,
                 layer,
                 mask,
+                filters,
             } = item
                 && (State::needs_scratch(matrix, *opacity)
                     || mask.is_some()
+                    || filters.is_some()
                     || self.is_held(key, *layer))
             {
                 let end = group_end(items, i);
@@ -1623,6 +1661,7 @@ impl SoftwareBackend {
                     None,
                     held,
                     mask.as_deref(),
+                    filters.as_deref(),
                 );
                 i = end + 1;
                 continue;
@@ -1664,9 +1703,11 @@ impl SoftwareBackend {
                 key,
                 layer,
                 mask,
+                filters,
             } = item
                 && (State::needs_scratch(matrix, *opacity)
                     || mask.is_some()
+                    || filters.is_some()
                     || self.is_held(key, *layer))
             {
                 i = group_end(items, i) + 1;
@@ -1702,11 +1743,13 @@ impl SoftwareBackend {
         only: Option<PixelRect>,
         held: Option<GroupKey>,
         mask: Option<&RoundedRect>,
+        filters: Option<&[FilterOp]>,
     ) {
         let (width, height) = (pixmap.width(), pixmap.height());
         let Some(within) = clip.pixels(width, height) else {
             return;
         };
+        let spread = filters.map_or([0.0; 4], filter_reach);
         let within = match only {
             Some(rect) => match within.intersect(rect) {
                 Some(within) => within,
@@ -1729,7 +1772,24 @@ impl SoftwareBackend {
                 }
                 state.apply(item);
             }
-            let Some(region) = reach.and_then(|r| r.intersect(within)) else {
+            // A filter reaches past the items, and reads them past what
+            // shows (gap batch E, D52): the scratch takes both.
+            let (sx, sy, _, _) = matrix
+                .scale_and_translation()
+                .unwrap_or((1.0, 1.0, 0.0, 0.0));
+            let grow = [
+                spread[0] * sx.abs(),
+                spread[1] * sy.abs(),
+                spread[2] * sx.abs(),
+                spread[3] * sy.abs(),
+            ];
+            let reach = reach.map(|r| r.grown_by(grow, width, height));
+            let Some(shown) = reach.and_then(|r| r.intersect(within)) else {
+                return;
+            };
+            let Some(region) =
+                reach.and_then(|r| r.intersect(within.grown_by(grow, width, height)))
+            else {
                 return;
             };
             let (w, h) = (region.x1 - region.x0, region.y1 - region.y0);
@@ -1739,13 +1799,16 @@ impl SoftwareBackend {
             let base =
                 Matrix::translate(-(region.x0 as f32), -(region.y0 as f32), 0.0).then(&matrix);
             self.draw_items(&mut scratch, items, State::masked(w, h, base, mask));
+            if let Some(filters) = filters {
+                apply_filters(&mut scratch, filters, (sx, sy));
+            }
             apply_mask(&mut scratch, mask, &base);
             blit(
                 pixmap,
                 &scratch,
                 (region.x0 as i64, region.y0 as i64),
                 opacity,
-                region,
+                shown,
             );
             return;
         }
@@ -1777,6 +1840,12 @@ impl SoftwareBackend {
         // same place as the whole, to the bit; only a reach with more
         // pixels than a frame may have is cut to what can land in the
         // region.
+        let reach = Clip {
+            x0: reach.x0 - spread[0],
+            y0: reach.y0 - spread[1],
+            x1: reach.x1 + spread[2],
+            y1: reach.y1 + spread[3],
+        };
         let mut corners = whole_reach(reach);
         if !fits_a_frame(corners) {
             let cut = reach.intersect(landing);
@@ -1799,6 +1868,9 @@ impl SoftwareBackend {
         };
         let base = Matrix::translate(-gx0, -gy0, 0.0);
         self.draw_items(&mut scratch, items, State::masked(gw, gh, base, mask));
+        if let Some(filters) = filters {
+            apply_filters(&mut scratch, filters, (1.0, 1.0));
+        }
         apply_mask(&mut scratch, mask, &base);
         composite_pixmap(
             pixmap,
@@ -2525,6 +2597,7 @@ impl SoftwareBackend {
                             key: ka,
                             layer: la,
                             mask: None,
+                            filters: None,
                         },
                         DisplayItem::PushGroup {
                             matrix: now,
@@ -2532,6 +2605,7 @@ impl SoftwareBackend {
                             key: kb,
                             layer: lb,
                             mask: None,
+                            filters: None,
                         },
                     ) = (&a[i], &b[j])
                     else {
@@ -2908,9 +2982,11 @@ impl SoftwareBackend {
                 key,
                 layer,
                 mask,
+                filters,
             } = item
                 && (State::needs_scratch(matrix, *opacity)
                     || mask.is_some()
+                    || filters.is_some()
                     || self.is_held(key, *layer))
             {
                 let end = group_end(items, i);
@@ -2925,6 +3001,7 @@ impl SoftwareBackend {
                     Some(rect),
                     held,
                     mask.as_deref(),
+                    filters.as_deref(),
                 );
                 i = end + 1;
                 continue;
@@ -3112,7 +3189,15 @@ fn bounds(
     height: u32,
 ) -> Option<PixelRect> {
     let extent = extent(text, item, state)?;
-    PixelRect::around(extent.x0, extent.y0, extent.x1, extent.y1, width, height)
+    let s = state.spread();
+    PixelRect::around(
+        extent.x0 - s,
+        extent.y0 - s,
+        extent.x1 + s,
+        extent.y1 + s,
+        width,
+        height,
+    )
 }
 
 /// How far `items`, in their own coordinates, reach: the union of
@@ -3135,6 +3220,8 @@ fn reach_at(text: &mut GlyphCache, items: &[DisplayItem], (sx, sy): (f32, f32)) 
             opacity: 1.0,
             layer: None,
             clips: 0,
+            spread: 0.0,
+            effects: 0,
         });
     }
     for item in items {
@@ -3802,6 +3889,165 @@ struct Coverage {
     width: usize,
     height: usize,
     values: Vec<f32>,
+}
+
+/// A fingerprint of a group's `filters` and `mask`, 0 for neither: the
+/// bits of their numbers hashed.
+fn effects_key(filters: Option<&[FilterOp]>, mask: Option<&RoundedRect>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    if filters.is_none() && mask.is_none() {
+        return 0;
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for op in filters.unwrap_or_default() {
+        let numbers: Vec<f32> = match op {
+            FilterOp::Matrix(m) => m.to_vec(),
+            FilterOp::Blur(sigma) => vec![-1.0, *sigma],
+            FilterOp::DropShadow { x, y, sigma, color } => vec![
+                -2.0,
+                *x,
+                *y,
+                *sigma,
+                f32::from(color.r),
+                f32::from(color.g),
+                f32::from(color.b),
+                f32::from(color.a),
+            ],
+        };
+        numbers.iter().for_each(|v| v.to_bits().hash(&mut hasher));
+    }
+    if let Some(m) = mask {
+        [m.rect.x, m.rect.y, m.rect.w, m.rect.h]
+            .iter()
+            .chain(m.radii.iter().flat_map(|(h, v)| [h, v]))
+            .for_each(|v| v.to_bits().hash(&mut hasher));
+    }
+    hasher.finish() | 1
+}
+
+/// A group's scratch run through its filter `ops` (gap batch E, D52), in
+/// order, their lengths scaled by `(sx, sy)` to the scratch's pixels:
+/// what the GPU backend's passes do, by the same arithmetic.
+fn apply_filters(scratch: &mut tiny_skia::Pixmap, ops: &[FilterOp], (sx, sy): (f32, f32)) {
+    let (w, h) = (scratch.width() as usize, scratch.height() as usize);
+    let scale = (sx.abs() + sy.abs()) / 2.0;
+    for op in ops {
+        match op {
+            FilterOp::Matrix(m) => {
+                for px in scratch.data_mut().as_chunks_mut::<4>().0 {
+                    *px = matrix_pixel(m, *px);
+                }
+            }
+            FilterOp::Blur(sigma) => {
+                let mut planes = planes_of(scratch.data(), w * h);
+                for plane in &mut planes {
+                    shadow::gaussian(plane, w, h, sigma * scale, 0.0);
+                }
+                write_planes(scratch.data_mut(), &planes);
+            }
+            FilterOp::DropShadow { x, y, sigma, color } => {
+                let tint = tint_matrix(*color);
+                let mut shade: Vec<u8> = scratch
+                    .data()
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .flat_map(|px| matrix_pixel(&tint, *px))
+                    .collect();
+                let mut planes = planes_of(&shade, w * h);
+                for plane in &mut planes {
+                    shadow::gaussian(plane, w, h, sigma * scale, 0.0);
+                }
+                write_planes(&mut shade, &planes);
+                // The shadow moved by whole pixels, the group over it.
+                let (dx, dy) = ((x * sx).round() as i64, (y * sy).round() as i64);
+                let data = scratch.data_mut();
+                for py in 0..h as i64 {
+                    for px in 0..w as i64 {
+                        let (qx, qy) = (px - dx, py - dy);
+                        let under = if qx >= 0 && qy >= 0 && qx < w as i64 && qy < h as i64 {
+                            let at = (qy as usize * w + qx as usize) * 4;
+                            [shade[at], shade[at + 1], shade[at + 2], shade[at + 3]]
+                        } else {
+                            [0; 4]
+                        };
+                        let at = (py as usize * w + px as usize) * 4;
+                        let over = 255 - u32::from(data[at + 3]);
+                        for c in 0..4 {
+                            data[at + c] = (u32::from(data[at + c])
+                                + (u32::from(under[c]) * over + 127) / 255)
+                                .min(255) as u8;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The matrix that makes a pixel `color` in the pixel's alpha: a drop
+/// shadow's tint.
+pub(crate) fn tint_matrix(color: Rgba8) -> [f32; 20] {
+    let mut m = [0.0f32; 20];
+    m[4] = f32::from(color.r) / 255.0;
+    m[9] = f32::from(color.g) / 255.0;
+    m[14] = f32::from(color.b) / 255.0;
+    m[18] = f32::from(color.a) / 255.0;
+    m
+}
+
+/// A premultiplied pixel through a colour matrix on its unpremultiplied
+/// colour, clamped, premultiplied again, as the GPU's filter pass does.
+fn matrix_pixel(m: &[f32; 20], px: [u8; 4]) -> [u8; 4] {
+    let a = f32::from(px[3]) / 255.0;
+    let c = if a > 0.0 {
+        [0, 1, 2].map(|i| (f32::from(px[i]) / 255.0 / a).min(1.0))
+    } else {
+        [0.0; 3]
+    };
+    let v = [c[0], c[1], c[2], a];
+    let out = [0, 1, 2, 3].map(|r| {
+        (m[r * 5] * v[0]
+            + m[r * 5 + 1] * v[1]
+            + m[r * 5 + 2] * v[2]
+            + m[r * 5 + 3] * v[3]
+            + m[r * 5 + 4])
+            .clamp(0.0, 1.0)
+    });
+    let alpha = out[3];
+    [
+        (out[0] * alpha * 255.0).round() as u8,
+        (out[1] * alpha * 255.0).round() as u8,
+        (out[2] * alpha * 255.0).round() as u8,
+        (alpha * 255.0).round() as u8,
+    ]
+}
+
+/// The four channels of premultiplied pixels as planes of `0..=1`.
+fn planes_of(data: &[u8], n: usize) -> [Vec<f32>; 4] {
+    let mut planes = [
+        vec![0.0f32; n],
+        vec![0.0f32; n],
+        vec![0.0f32; n],
+        vec![0.0f32; n],
+    ];
+    for (i, px) in data.as_chunks::<4>().0.iter().enumerate() {
+        for c in 0..4 {
+            planes[c][i] = f32::from(px[c]) / 255.0;
+        }
+    }
+    planes
+}
+
+/// [`planes_of`] back into pixels, each colour at most its alpha.
+fn write_planes(data: &mut [u8], planes: &[Vec<f32>; 4]) {
+    for (i, px) in data.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        let a = (planes[3][i].clamp(0.0, 1.0) * 255.0).round() as u8;
+        for c in 0..3 {
+            px[c] = ((planes[c][i].clamp(0.0, 1.0) * 255.0).round() as u8).min(a);
+        }
+        px[3] = a;
+    }
 }
 
 /// The shadow `item` drawn into `pixmap` through `(sx, sy, tx, ty)`,
@@ -5046,6 +5292,134 @@ mod tests {
     }
 
     #[test]
+    fn a_filtered_group_is_drawn_through_its_operations() {
+        // Gap batch E, D52.
+        use paint::filter::FilterOp;
+        let mut backend = test_backend();
+        let filtered = |ops: Vec<FilterOp>| DisplayList {
+            items: vec![
+                white_frame(60.0, 60.0),
+                DisplayItem::PushGroup {
+                    matrix: Matrix::IDENTITY,
+                    opacity: 1.0,
+                    key: group_key(),
+                    layer: None,
+                    mask: None,
+                    filters: Some(ops.into()),
+                },
+                DisplayItem::Rect {
+                    x: 20.0,
+                    y: 20.0,
+                    w: 20.0,
+                    h: 20.0,
+                    color: Rgba8::rgb(255, 0, 0),
+                },
+                DisplayItem::PopGroup,
+            ],
+        };
+        let ops = |filters: &[style::computed::Filter]| {
+            paint::filter::filter_ops(filters, |c| Rgba8 {
+                r: (c.r * 255.0) as u8,
+                g: (c.g * 255.0) as u8,
+                b: (c.b * 255.0) as u8,
+                a: (c.a * 255.0) as u8,
+            })
+        };
+        use style::computed::Filter as F;
+        // An inverted red is cyan; gray red is a gray.
+        let buf = backend
+            .rasterize(&filtered(ops(&[F::Invert(1.0)])), 60, 60)
+            .to_vec();
+        assert_eq!(px(&buf, 60, 30, 30), [0, 255, 255, 255]);
+        assert_eq!(px(&buf, 60, 5, 5), WHITE, "nothing drawn stays nothing");
+        let buf = backend
+            .rasterize(&filtered(ops(&[F::Grayscale(1.0)])), 60, 60)
+            .to_vec();
+        assert_eq!(px(&buf, 60, 30, 30), [54, 54, 54, 255]);
+        // A matrix takes a translucent colour unpremultiplied: half red
+        // inverted is half cyan, over white.
+        let half = DisplayList {
+            items: vec![
+                white_frame(60.0, 60.0),
+                DisplayItem::PushGroup {
+                    matrix: Matrix::IDENTITY,
+                    opacity: 1.0,
+                    key: group_key(),
+                    layer: None,
+                    mask: None,
+                    filters: Some(ops(&[F::Invert(1.0)]).into()),
+                },
+                DisplayItem::Rect {
+                    x: 20.0,
+                    y: 20.0,
+                    w: 20.0,
+                    h: 20.0,
+                    color: Rgba8 {
+                        r: 255,
+                        g: 0,
+                        b: 0,
+                        a: 128,
+                    },
+                },
+                DisplayItem::PopGroup,
+            ],
+        };
+        let buf = backend.rasterize(&half, 60, 60).to_vec();
+        let p = px(&buf, 60, 30, 30);
+        assert!(
+            p[0] < 130 && p[0] > 124 && p[1] == 255 && p[2] == 255,
+            "{p:?}"
+        );
+        // A blur reaches past the square, and fades its edge.
+        let buf = backend
+            .rasterize(&filtered(ops(&[F::Blur(8.0)])), 60, 60)
+            .to_vec();
+        assert_eq!(px(&buf, 60, 30, 30)[0], 255);
+        assert!(px(&buf, 60, 17, 30)[1] < 255, "past the edge");
+        assert_eq!(px(&buf, 60, 2, 30), WHITE, "far past it");
+        // A drop shadow under it, moved by its offset.
+        let shadow = F::DropShadow {
+            color: style::computed::Color::rgb8(0, 0, 255),
+            x: 10.0,
+            y: 10.0,
+            blur: 0.0,
+        };
+        let buf = backend
+            .rasterize(&filtered(ops(&[shadow])), 60, 60)
+            .to_vec();
+        assert_eq!(px(&buf, 60, 30, 30), [255, 0, 0, 255], "the box over it");
+        assert_eq!(px(&buf, 60, 45, 45), [0, 0, 255, 255], "the shadow");
+        assert_eq!(px(&buf, 60, 15, 15), WHITE);
+        // A blurred square moved: what is redrawn is what a whole frame
+        // gives, the blur's reach past the square among the damage.
+        let moved = |x: f32| DisplayList {
+            items: vec![
+                white_frame(60.0, 60.0),
+                DisplayItem::PushGroup {
+                    matrix: Matrix::IDENTITY,
+                    opacity: 1.0,
+                    key: group_key(),
+                    layer: None,
+                    mask: None,
+                    filters: Some(ops(&[F::Blur(6.0)]).into()),
+                },
+                DisplayItem::Rect {
+                    x,
+                    y: 20.0,
+                    w: 10.0,
+                    h: 10.0,
+                    color: Rgba8::rgb(0, 0, 0),
+                },
+                DisplayItem::PopGroup,
+            ],
+        };
+        backend.rasterize(&moved(10.0), 60, 60);
+        let incremental = backend.rasterize(&moved(30.0), 60, 60).to_vec();
+        let whole = test_backend().rasterize(&moved(30.0), 60, 60).to_vec();
+        assert_eq!(incremental, whole);
+    }
+
+    #[test]
     fn a_shadow_under_a_scale_is_blurred_at_the_scale() {
         // Gap batch E, D52: a shadow drawn through a group scaling by two
         // is the shadow of twice the size and twice the blur.
@@ -5113,6 +5487,7 @@ mod tests {
                         },
                         radii: [(10.0, 10.0); 4],
                     })),
+                    filters: None,
                 },
                 DisplayItem::Rect {
                     x: 0.0,
@@ -5423,6 +5798,7 @@ mod tests {
                     key: GroupKey::Document(rng.below(6) as u32),
                     layer,
                     mask: None,
+                    filters: None,
                 }
             }
             11..=12 => DisplayItem::PopGroup,
@@ -5983,6 +6359,7 @@ mod tests {
             key: group_key(),
             layer: None,
             mask: None,
+            filters: None,
         }
     }
 
@@ -6028,6 +6405,7 @@ mod tests {
                         key: fresh_key(),
                         layer,
                         mask: None,
+                        filters: None,
                     },
                     rect(20.0, 30.0, 40.0, 40.0, red),
                     DisplayItem::PopGroup,
@@ -6069,6 +6447,7 @@ mod tests {
                     key: group_key(),
                     layer,
                     mask: None,
+                    filters: None,
                 },
                 rect(0.0, 0.0, 80.0, 40.0, Rgba8::rgb(200, 220, 240)),
                 DisplayItem::Border {
@@ -6111,6 +6490,7 @@ mod tests {
             key: group_key(),
             layer: Some(LayerReason::WillChange),
             mask: None,
+            filters: None,
         };
         backend.rasterize(&moved, w, h);
         assert!(backend.layered().rasterized.is_empty());
@@ -6247,6 +6627,7 @@ mod tests {
                         key: GroupKey::Document(n as u32),
                         layer: Some(LayerReason::Scrolled),
                         mask: None,
+                        filters: None,
                     });
                     items.extend(piece.iter().cloned());
                     items.push(DisplayItem::PopGroup);
@@ -6645,6 +7026,7 @@ mod tests {
                     key,
                     layer: Some(LayerReason::WillChange),
                     mask: None,
+                    filters: None,
                 },
                 rect(4.0, 4.0, 10.0, 10.0, Rgba8::rgb(0, 0, 255)),
                 DisplayItem::Text {
@@ -6721,6 +7103,7 @@ mod tests {
                         key,
                         layer,
                         mask: None,
+                        filters: None,
                     },
                     rect(4.0, 4.0, 10.0, 10.0, Rgba8::rgb(0, 0, 255)),
                     DisplayItem::PopGroup,
@@ -6761,6 +7144,7 @@ mod tests {
             key,
             layer: Some(LayerReason::Scrolled),
             mask: None,
+            filters: None,
         };
         let layer = |key: GroupKey, m: [f32; 16], opacity: f32, text: &str, y: f32| {
             [
@@ -6770,6 +7154,7 @@ mod tests {
                     key,
                     layer: Some(LayerReason::Transformed),
                     mask: None,
+                    filters: None,
                 },
                 DisplayItem::Text {
                     text: text.to_string(),
@@ -6903,6 +7288,7 @@ mod tests {
                     key,
                     layer: Some(LayerReason::Scrolled),
                     mask: None,
+                    filters: None,
                 },
             ];
             for i in 0..40 {
@@ -6992,6 +7378,7 @@ mod tests {
                 key: GroupKey::Document(i),
                 layer: Some(LayerReason::WillChange),
                 mask: None,
+                filters: None,
             });
             items.push(rect(
                 0.0,
@@ -7087,6 +7474,7 @@ mod tests {
                     key,
                     layer: Some(LayerReason::Scrolled),
                     mask: None,
+                    filters: None,
                 },
             ];
             for i in 0..20 {
@@ -7105,6 +7493,7 @@ mod tests {
                 key: other,
                 layer: Some(LayerReason::WillChange),
                 mask: None,
+                filters: None,
             });
             items.push(rect(0.0, 0.0, 4.0, 4.0, Rgba8::rgb(0, 0, 255)));
             items.push(DisplayItem::PopGroup);
@@ -7171,6 +7560,7 @@ mod tests {
                     key,
                     layer: Some(LayerReason::WillChange),
                     mask: None,
+                    filters: None,
                 },
                 rect(0.0, 0.0, 8.0, 8.0, Rgba8::rgb(255, 0, 0)),
                 DisplayItem::PopGroup,
@@ -7180,6 +7570,7 @@ mod tests {
                     key,
                     layer: Some(LayerReason::WillChange),
                     mask: None,
+                    filters: None,
                 },
                 rect(0.0, 0.0, 8.0, 8.0, Rgba8::rgb(0, 255, 0)),
                 DisplayItem::PopGroup,
@@ -7199,6 +7590,7 @@ mod tests {
                     key,
                     layer,
                     mask: None,
+                    filters: None,
                 },
                 rect(0.0, 0.0, 8.0, 8.0, Rgba8::rgb(255, 0, 0)),
                 DisplayItem::PopGroup,

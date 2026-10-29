@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head>
+<title>Filters: each colour function, a blur, a drop shadow, a chain, and a filter with an opacity and a transform (gap batch E)</title>
+<meta name="reference-edge-tolerance" content="128">
+<meta name="reference-tolerance" content="4">
+<style>
+  body { margin: 0; background: #fff; }
+  .p { position: absolute; width: 100px; height: 60px;
+       background: linear-gradient(90deg, #c03030, #30a050 50%, #3050c0); }
+  .p::after { content: ""; position: absolute; left: 30px; top: 20px; width: 40px; height: 20px;
+              background: #f0d020; }
+  .a { left: 10px; top: 10px; filter: grayscale(1); }
+  .b { left: 130px; top: 10px; filter: sepia(0.8); }
+  .c { left: 250px; top: 10px; filter: saturate(3); }
+  .d { left: 370px; top: 10px; filter: hue-rotate(90deg); }
+  .e { left: 490px; top: 10px; filter: invert(0.7); }
+  .f { left: 610px; top: 10px; filter: brightness(0.6) contrast(1.5); }
+  .g { left: 10px; top: 110px; filter: opacity(0.4); }
+  .h { left: 130px; top: 110px; filter: blur(4px); }
+  .i { left: 260px; top: 110px; filter: drop-shadow(6px 8px 0 #2f3542); }
+  .j { left: 400px; top: 110px; filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.6)) grayscale(0.5); }
+  .k { left: 540px; top: 110px; filter: blur(2px) invert(1); opacity: 0.6; transform: rotate(8deg); }
+</style>
+</head>
+<body>
+<div class="p a"></div><div class="p b"></div><div class="p c"></div><div class="p d"></div>
+<div class="p e"></div><div class="p f"></div><div class="p g"></div><div class="p h"></div>
+<div class="p i"></div><div class="p j"></div><div class="p k"></div>
+</body>
+</html>

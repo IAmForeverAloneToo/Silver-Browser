@@ -1145,7 +1145,10 @@ impl<'a> Walk<'a, '_> {
             // opacity is about to change. It is on the stack of groups
             // while the box's descendants are gathered, so that the
             // clips met then are at the depth they are painted at.
-            let grouped = transformed || opacity < 1.0 || layer.is_some();
+            let grouped = transformed
+                || opacity < 1.0
+                || layer.is_some()
+                || !f.style.effects().filter.is_empty();
             let composed = Entered::new(
                 w.groups
                     .last()

@@ -122,7 +122,7 @@ use crate::computed::{
     TextAlign, TextAlignLast, TextJustify, TextTransform, VerticalAlign, WhiteSpace,
 };
 use crate::computed::{
-    AnimationPlayState, Backgrounds, BorderImage, Calc, Decoration, Effects, Fragmentation,
+    AnimationPlayState, Backgrounds, BorderImage, Calc, Decoration, Effects, Filter, Fragmentation,
     GridStyle, ImageStyle, JustifyItems, Lists, Motion, Radii, Svg, WillChange,
 };
 use crate::custom::{self, CustomProperties, DataType, Substituted, Substitutions};
@@ -3733,6 +3733,7 @@ fn apply_declaration(
         "box-shadow" => set_effects(style, parse_box_shadow(value, bases), |e, v| {
             e.box_shadow = v
         }),
+        "filter" => set_effects(style, parse_filter(value, bases), |e, v| e.filter = v),
         "opacity" => set_effects(style, effects::parse_opacity(value, bases), |e, v| {
             e.opacity = v
         }),
@@ -4623,6 +4624,7 @@ fn apply_css_wide(
         }),
         "opacity" => copy_effects(style, src, |e, s| e.opacity = s.opacity),
         "box-shadow" => copy_effects(style, src, |e, s| e.box_shadow = s.box_shadow.clone()),
+        "filter" => copy_effects(style, src, |e, s| e.filter = s.filter.clone()),
         "will-change" => copy_effects(style, src, |e, s| e.will_change = s.will_change),
         "transition-property" => copy_motion(style, src, |m, s| {
             m.transition_property = s.transition_property.clone()
@@ -6273,6 +6275,106 @@ fn parse_box_shadow(
     }
     (shadows.len() <= MAX_SHADOWS).then_some(shadows)
 }
+
+/// `filter` (Filter Effects 1 section 5 and 13, gap batch E, D52):
+/// `none`, or filter functions separated by white space, at most
+/// [`MAX_FILTERS`]; a `url()` (SVG's filters, G87) is not one here.
+fn parse_filter(tokens: &[Token], bases: &LengthBases<'_>) -> Option<Vec<Filter>> {
+    use crate::computed::Filter as F;
+    if single_ident(tokens).is_some_and(|w| w.eq_ignore_ascii_case("none")) {
+        return Some(Vec::new());
+    }
+    let mut out = Vec::new();
+    for part in split_components(tokens) {
+        let [Token::Function(name), arguments @ .., Token::CloseParen] = trim(&part) else {
+            return None;
+        };
+        let name = name.to_ascii_lowercase();
+        let args = trim(arguments);
+        // An amount: a number or a percentage, never negative, its
+        // default when left out; at most 1 where `capped`.
+        let amount = |default: f32, capped: bool| -> Option<f32> {
+            let v = if args.is_empty() {
+                default
+            } else {
+                match single_token(args) {
+                    Some(Token::Number { value, .. }) => *value as f32,
+                    Some(Token::Percentage { value }) => *value as f32 / 100.0,
+                    _ => match math(args, Want::NumberOrPercentage, bases, None)? {
+                        calc::Computed::Value(v) => v as f32,
+                        calc::Computed::Percent(p) => p as f32 / 100.0,
+                        calc::Computed::Expression(_) => return None,
+                    },
+                }
+            };
+            if !v.is_finite() || v < 0.0 {
+                return None;
+            }
+            Some(if capped { v.min(1.0) } else { v })
+        };
+        out.push(match name.as_str() {
+            "blur" => F::Blur(if args.is_empty() {
+                0.0
+            } else {
+                length(args, bases, Range::NonNegative)?
+            }),
+            "brightness" => F::Brightness(amount(1.0, false)?),
+            "contrast" => F::Contrast(amount(1.0, false)?),
+            "grayscale" => F::Grayscale(amount(1.0, true)?),
+            "invert" => F::Invert(amount(1.0, true)?),
+            "opacity" => F::Opacity(amount(1.0, true)?),
+            "saturate" => F::Saturate(amount(1.0, false)?),
+            "sepia" => F::Sepia(amount(1.0, true)?),
+            "hue-rotate" => F::HueRotate(if args.is_empty() {
+                0.0
+            } else {
+                angle_degrees(args, bases)?
+            }),
+            "drop-shadow" => {
+                let shadow = parse_box_shadow(args, bases)?;
+                let [s] = shadow.as_slice() else {
+                    return None;
+                };
+                let lengths = split_components(args)
+                    .iter()
+                    .filter(|p| length(p, bases, Range::All).is_some())
+                    .count();
+                if s.inset || lengths > 3 {
+                    return None;
+                }
+                F::DropShadow {
+                    color: s.color,
+                    x: s.x,
+                    y: s.y,
+                    blur: s.blur,
+                }
+            }
+            _ => return None,
+        });
+    }
+    (!out.is_empty() && out.len() <= MAX_FILTERS).then_some(out)
+}
+
+/// An `<angle>` in degrees, or `0`, or a math function of one.
+fn angle_degrees(tokens: &[Token], bases: &LengthBases<'_>) -> Option<f32> {
+    if let Some(calc::Computed::Value(v)) = math(tokens, Want::Angle, bases, None) {
+        return Some(v as f32);
+    }
+    match single_token(tokens)? {
+        Token::Number { value, .. } if *value == 0.0 => Some(0.0),
+        Token::Dimension { value, unit } => Some(match unit.to_ascii_lowercase().as_str() {
+            "deg" => *value as f32,
+            "grad" => (*value * 0.9) as f32,
+            "rad" => value.to_degrees() as f32,
+            "turn" => (*value * 360.0) as f32,
+            _ => return None,
+        }),
+        _ => None,
+    }
+}
+
+/// The most functions a `filter` takes.
+pub const MAX_FILTERS: usize = 32;
 
 /// The most shadows a `box-shadow` takes: each is a blur the backends
 /// work out, and a page asking for more is asking for too much.
@@ -8362,6 +8464,60 @@ mod tests {
         // Radii set back to zero keep no copy.
         let sheets = [sheet("div { border-radius: 3px; border-radius: 0 }")];
         assert!(style_of("<div>x</div>", &sheets, "div").radii.is_none());
+    }
+
+    #[test]
+    fn filter_computes_as_the_reference_browser_writes_it() {
+        // Gap batch E, D52: the reference browser's computed values.
+        let value = |css: &str| {
+            let sheets = [sheet(&format!("div {{ {css} }}"))];
+            let style = style_of("<div>x</div>", &sheets, "div");
+            crate::serialize::computed_value(&style, "filter").unwrap()
+        };
+        assert_eq!(
+            value("filter: blur(2px) brightness(0.5)"),
+            "blur(2px) brightness(0.5)"
+        );
+        assert_eq!(value("filter: grayscale()"), "grayscale(1)");
+        assert_eq!(
+            value("filter: drop-shadow(1px 2px 3px red)"),
+            "drop-shadow(rgb(255, 0, 0) 1px 2px 3px)"
+        );
+        assert_eq!(
+            value(
+                "filter: hue-rotate(90deg) saturate(200%) sepia(1) invert(50%) opacity(0.5) contrast(2)"
+            ),
+            "hue-rotate(90deg) saturate(2) sepia(1) invert(0.5) opacity(0.5) contrast(2)"
+        );
+        assert_eq!(
+            value("filter: drop-shadow(red 1px 2px)"),
+            "drop-shadow(rgb(255, 0, 0) 1px 2px 0px)"
+        );
+        assert_eq!(
+            value("filter: grayscale(250%) blur()"),
+            "grayscale(1) blur(0px)"
+        );
+        assert_eq!(value("filter: hue-rotate(0.5turn)"), "hue-rotate(180deg)");
+        for bad in [
+            "blur(-1px)",
+            "url(#f)",
+            "brightness(-1)",
+            "drop-shadow(1px 2px 3px 4px red)",
+            "drop-shadow(inset 1px 2px)",
+            "blur(1px) nope(1)",
+            "blur(1px), opacity(1)",
+        ] {
+            assert_eq!(
+                value(&format!("filter: invert(1); filter: {bad}")),
+                "invert(1)",
+                "{bad}"
+            );
+        }
+        // A filter makes a stacking context and a containing block.
+        let sheets = [sheet("div { filter: blur(1px) }")];
+        let style = style_of("<div>x</div>", &sheets, "div");
+        assert!(style.effects().is_stacking_context());
+        assert!(style.effects().contains_all_of(true));
     }
 
     #[test]

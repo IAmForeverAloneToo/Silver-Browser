@@ -66,6 +66,7 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "fill",
     "fill-opacity",
     "fill-rule",
+    "filter",
     "flex-basis",
     "flex-direction",
     "flex-grow",
@@ -322,6 +323,41 @@ pub fn computed_value(style: &ComputedStyle, name: &str) -> Option<String> {
         "row-gap" => gap(&style.row_gap)?,
         "column-gap" => gap(&style.column_gap)?,
         "opacity" => number(style.effects().opacity),
+        "filter" => {
+            use crate::computed::Filter as F;
+            let filters = &style.effects().filter;
+            if filters.is_empty() {
+                "none".to_owned()
+            } else {
+                filters
+                    .iter()
+                    .map(|f| match f {
+                        F::Blur(v) => format!("blur({})", px(*v)),
+                        F::Brightness(v) => format!("brightness({})", number(*v)),
+                        F::Contrast(v) => format!("contrast({})", number(*v)),
+                        F::Grayscale(v) => format!("grayscale({})", number(*v)),
+                        F::HueRotate(v) => format!("hue-rotate({}deg)", number(*v)),
+                        F::Invert(v) => format!("invert({})", number(*v)),
+                        F::Opacity(v) => format!("opacity({})", number(*v)),
+                        F::Saturate(v) => format!("saturate({})", number(*v)),
+                        F::Sepia(v) => format!("sepia({})", number(*v)),
+                        F::DropShadow {
+                            color: c,
+                            x,
+                            y,
+                            blur,
+                        } => format!(
+                            "drop-shadow({} {} {} {})",
+                            color(*c),
+                            px(*x),
+                            px(*y),
+                            px(*blur)
+                        ),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            }
+        }
         "box-shadow" => {
             let shadows = &style.effects().box_shadow;
             if shadows.is_empty() {

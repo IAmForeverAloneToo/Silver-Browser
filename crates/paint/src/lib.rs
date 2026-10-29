@@ -26,6 +26,8 @@
 #![forbid(unsafe_code)]
 
 /// Gradients rendered (M23.3).
+/// `filter`'s operations (gap batch E, D52).
+pub mod filter;
 pub mod gradient;
 pub mod order;
 /// Rounded boxes (gap batch E, D50).
@@ -104,6 +106,7 @@ pub fn scaled(items: &mut Vec<DisplayItem>, scale: f32, key: GroupKey) {
             key,
             layer: None,
             mask: None,
+            filters: None,
         },
     );
     items.push(DisplayItem::PopGroup);
@@ -689,6 +692,10 @@ pub enum DisplayItem {
         /// own, cut to the rectangle, and composited through the
         /// rounded rectangle's coverage. `None` for most groups.
         mask: Option<Box<RoundedRect>>,
+        /// The group's `filter` (gap batch E, D52): run on the group's
+        /// pixels in order before it is composited, in the group's
+        /// coordinates. `None` for most groups.
+        filters: Option<Arc<[filter::FilterOp]>>,
     },
     /// End the innermost [`DisplayItem::PushGroup`].
     PopGroup,
@@ -1207,6 +1214,7 @@ pub fn paint_fragments_with(
                         key: GroupKey::Rounded(node, 0),
                         layer: None,
                         mask: Some(Box::new(shape)),
+                        filters: None,
                     });
                 }
                 let rect = snapped(rect);
@@ -1232,12 +1240,19 @@ pub fn paint_fragments_with(
             } => {
                 transformed.push(fragment.is_some_and(|f| f.style.effects().has_transform()));
                 backdrop.in_transform = transformed.contains(&true);
+                // A filtered box's group carries its operations (gap
+                // batch E, D52), and is drawn afresh rather than kept.
+                let filters = fragment
+                    .map(|f| &f.style.effects().filter)
+                    .filter(|f| !f.is_empty())
+                    .map(|f| Arc::from(filter::filter_ops(f, to_rgba8)));
                 items.push(DisplayItem::PushGroup {
                     matrix,
                     opacity,
                     key,
-                    layer,
+                    layer: layer.filter(|_| filters.is_none()),
                     mask: None,
+                    filters,
                 });
                 // The canvas's images (CSS Backgrounds 3 section 2.11.2):
                 // under the whole document, which they scroll with, the
@@ -1507,6 +1522,7 @@ fn push_replaced(
                             key: GroupKey::Canvas(*node),
                             layer: Some(LayerReason::Canvas),
                             mask: None,
+                            filters: None,
                         });
                     }
                     let r = snapped(rect);
@@ -1655,6 +1671,7 @@ fn push_replaced(
                 key: GroupKey::Canvas(*node),
                 layer: Some(LayerReason::Canvas),
                 mask: None,
+                filters: None,
             });
             let clipped =
                 x < rect.x || y < rect.y || x + w > rect.x + rect.w || y + h > rect.y + rect.h;
@@ -2575,6 +2592,7 @@ fn push_rounded(
         key: GroupKey::Rounded(node, number),
         layer: None,
         mask: Some(Box::new(shape)),
+        filters: None,
     });
     items.extend(inside);
     items.push(DisplayItem::PopGroup);
@@ -5084,6 +5102,7 @@ mod fragment_tests {
                 layer: Some(LayerReason::Scrolled),
                 opacity,
                 mask: None,
+                filters: None,
             }) if *opacity == 1.0 => matrix.scale_and_translation(),
             other => panic!("the document's group follows the canvas: {other:?}"),
         };
