@@ -1,15 +1,18 @@
-//! html5lib's tree construction tests of foreign content (M32,
-//! `docs/design/svg.md`): the `.dat` files in
+//! html5lib's tree construction tests (M32, `docs/design/svg.md`; D57,
+//! `docs/design/text-dom-scripts.md`): every `.dat` file in
 //! `tests/html5lib/tree-construction/`, each test's input parsed as a
 //! document or as a fragment for its context element, its tree dumped as
 //! html5lib writes one (`<svg linearGradient>`, `xlink href="..."`) and
-//! compared with the expected one. The DOM keeps no comment or doctype
-//! nodes yet (G51), so their lines are taken out of the expected tree and
-//! the text either side of a comment joined, as the parser joins it.
-//! What fails for a reason that is not foreign content's, a gap of the
-//! tree builder's (G44) or of the DOM's, is named in `expectations.txt`
-//! beside the files with its reason; a test named there that passes is a
-//! failure too.
+//! compared with the expected one. The DOM keeps no comment, doctype or
+//! processing instruction nodes yet (G51), so their lines are taken out
+//! of the expected tree and the text either side of one joined, as the
+//! parser joins it. Nor
+//! has it a template's contents, a fragment of their own: the parser puts
+//! them under the `template` as its children, so the expected tree's
+//! `content` line is taken out and what is under it moved up a level.
+//! What fails, by a gap of the tree builder's or of the DOM's, is named
+//! in `expectations.txt` beside the files with its reason; a test named
+//! there that passes is a failure too.
 
 #![forbid(unsafe_code)]
 
@@ -92,10 +95,26 @@ fn expected_lines(document: &str) -> Vec<String> {
             }
         }
     }
-    let mut out: Vec<String> = Vec::new();
+    // A template's `content` line out, what is under it a level up.
+    let mut contents: Vec<usize> = Vec::new();
+    let mut flat: Vec<String> = Vec::new();
     for line in lines {
         let body = line.trim_start();
-        if body.starts_with("<!--") || body.starts_with("<!DOCTYPE") {
+        let depth = line.len() - body.len();
+        while contents.last().is_some_and(|&at| at >= depth) {
+            contents.pop();
+        }
+        if body == "content" {
+            contents.push(depth);
+            continue;
+        }
+        let depth = depth - 2 * contents.len();
+        flat.push(format!("{}{body}", " ".repeat(depth)));
+    }
+    let mut out: Vec<String> = Vec::new();
+    for line in flat {
+        let body = line.trim_start();
+        if body.starts_with("<!--") || body.starts_with("<!DOCTYPE") || body.starts_with("<?") {
             continue;
         }
         let depth = line.len() - body.len();
@@ -115,18 +134,30 @@ fn expected_lines(document: &str) -> Vec<String> {
 }
 
 /// How html5lib names an attribute of a foreign element in its
-/// namespace: `xlink href`, `xml lang`, `xmlns xlink`.
+/// namespace: `xlink href`, `xml lang`, `xmlns xlink`, those that
+/// "adjust foreign attributes" (HTML section 13.2.6.1) puts in one;
+/// another, `xml:base` among them, keeps its name, in none.
 fn attribute_name(ns: &Namespace, name: &str) -> String {
-    if *ns == Namespace::Html {
+    const ADJUSTED: [&str; 11] = [
+        "xlink:actuate",
+        "xlink:arcrole",
+        "xlink:href",
+        "xlink:role",
+        "xlink:show",
+        "xlink:title",
+        "xlink:type",
+        "xml:lang",
+        "xml:space",
+        "xmlns",
+        "xmlns:xlink",
+    ];
+    if *ns == Namespace::Html || !ADJUSTED.contains(&name) {
         return name.to_owned();
     }
     if name == "xmlns" {
         return "xmlns xmlns".to_owned();
     }
-    match name.split_once(':') {
-        Some((prefix @ ("xlink" | "xml" | "xmlns"), local)) => format!("{prefix} {local}"),
-        _ => name.to_owned(),
-    }
+    name.replacen(':', " ", 1)
 }
 
 /// The tree under `parent` as html5lib dumps it.
@@ -187,7 +218,7 @@ fn run(test: &Test) -> Vec<String> {
 }
 
 #[test]
-fn html5libs_tree_construction_tests_of_foreign_content_pass() {
+fn html5libs_tree_construction_tests_pass() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/html5lib/tree-construction");
     let expectations = fs::read_to_string(dir.join("expectations.txt")).unwrap_or_default();
     let mut expected_to_fail: BTreeMap<String, String> = BTreeMap::new();
@@ -209,16 +240,17 @@ fn html5libs_tree_construction_tests_of_foreign_content_pass() {
     let mut ran = 0;
     for file in files {
         let name = file.file_name().unwrap().to_string_lossy().into_owned();
-        // A checkout may have given the files CRLF line ends; the
-        // files themselves hold no CR.
-        let text = fs::read_to_string(&file)
-            .expect("a test file")
-            .replace("\r\n", "\n");
+        // Taken byte for byte: some tests' data holds a CR, and
+        // `.gitattributes` keeps the files' line ends as committed.
+        let text = fs::read_to_string(&file).expect("a test file");
+        let (mut ran_here, mut passed_here) = (0, 0);
         for (index, test) in tests(&text).iter().enumerate() {
             let id = format!("{name}#{index}");
             ran += 1;
             let got = run(test);
             let passed = got == test.expected;
+            ran_here += 1;
+            passed_here += usize::from(passed);
             match (passed, expected_to_fail.contains_key(&id)) {
                 (false, false) => unexpected.push(format!(
                     "FAIL {id}: {:?}\n  expected:\n    {}\n  got:\n    {}",
@@ -232,6 +264,7 @@ fn html5libs_tree_construction_tests_of_foreign_content_pass() {
                 _ => {}
             }
         }
+        eprintln!("{name}: {passed_here} of {ran_here} pass");
     }
     assert!(ran > 100, "{ran} tests ran");
     assert!(

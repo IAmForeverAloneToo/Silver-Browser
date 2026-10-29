@@ -2497,7 +2497,11 @@ mod tests {
                 ("fetch/a/s.https.any.js", "test(() => {});"),
                 ("fetch/a/t.sub.any.js", "test(() => {});"),
                 ("fetch/a/open.any.js", "window.open('x.html');"),
-                ("fetch/a/fs.html", &format!("{harness}<frame src=x.html>")),
+                // A frameset document: a `frame` in a body is no element.
+                (
+                    "fetch/a/fs.html",
+                    &format!("<head>{harness}</head><frameset><frame src=x.html></frameset>"),
+                ),
                 ("fetch/a/none.html", "<p>no harness</p>"),
                 // M31's: workers.
                 ("fetch/a/shared.any.js", "new SharedWorker('w.js');"),

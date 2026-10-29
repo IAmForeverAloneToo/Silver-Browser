@@ -237,8 +237,8 @@ impl std::error::Error for ParseError {}
 /// Parses an HTML document into a DOM tree.
 ///
 /// Any input yields a tree: unclosed elements close at EOF, unmatched
-/// end tags are dropped, and malformed markup degrades gracefully (see
-/// the [`tokenizer`] and [`tree_builder`] docs for the exact subset).
+/// end tags are dropped, and malformed markup is recovered from as HTML
+/// section 13.2 says (see the [`tokenizer`] and [`tree_builder`] docs).
 pub fn parse_document(input: &str) -> Result<Node, ParseError> {
     let mut parser = Parser::new(false);
     parser.feed(input);
@@ -428,6 +428,21 @@ mod tests {
             fragment("div", "<script>x()</script><i>y"),
             "<script>x()</script><i>y</i>"
         );
+        // The context sets the insertion mode: a table's rows go in a
+        // `tbody`, a row's cells are cells.
+        assert_eq!(
+            fragment("table", "<tr><td>x"),
+            "<tbody><tr><td>x</td></tr></tbody>"
+        );
+        assert_eq!(fragment("tr", "<td>a<td>b"), "<td>a</td><td>b</td>");
+        assert_eq!(fragment("div", "<td>a<tr>b"), "ab");
+        // A form context is the form element pointer: a form inside it
+        // is ignored, and so is the end tag of the one outside.
+        assert_eq!(
+            fragment("div", "<form><div>x</form>y"),
+            "<form><div>xy</div></form>"
+        );
+        assert_eq!(fragment("form", "<form><div>x</form>y"), "<div>xy</div>");
     }
 
     #[test]
