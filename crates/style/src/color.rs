@@ -262,12 +262,57 @@ impl Color {
     pub fn is_legacy(&self) -> bool {
         matches!(self.space, Space::Legacy | Space::Hsl | Space::Hwb)
     }
+
+    /// `currentcolor` (D66, G226): the keyword a computed colour keeps,
+    /// inherited as it, which is the element's own `color` where it is
+    /// used. Its channels are black until [`Color::resolve`]d, which the
+    /// cascade does for every colour of a style once its `color` is
+    /// final, so that what reads the channels reads the used colour.
+    pub const CURRENT: Color = Color {
+        missing: CURRENT,
+        ..Color::BLACK
+    };
+
+    /// Whether the colour is `currentcolor`.
+    pub fn is_current(&self) -> bool {
+        self.missing & CURRENT != 0
+    }
+
+    /// The colour used by an element whose `color` is `current`: for
+    /// `currentcolor`, `current`'s channels, still the keyword; any
+    /// other colour itself.
+    pub fn resolve(self, current: Color) -> Color {
+        if self.is_current() {
+            Color {
+                missing: (current.missing & !CURRENT) | CURRENT,
+                ..current
+            }
+        } else {
+            self
+        }
+    }
+
+    /// The colour as it is used, no longer the keyword: what a value
+    /// mixed from it, or made apart from the element, holds.
+    pub fn used(self) -> Color {
+        Color {
+            missing: self.missing & !CURRENT,
+            ..self
+        }
+    }
 }
+
+/// The bit of [`Color::missing`] that makes a colour `currentcolor`.
+const CURRENT: u8 = 1 << 7;
 
 impl PartialEq for Color {
     /// Two legacy colours are equal by their channels; others by their
-    /// space, components and alpha.
+    /// space, components and alpha. `currentcolor` is equal only to
+    /// itself resolved alike.
     fn eq(&self, other: &Color) -> bool {
+        if self.is_current() != other.is_current() {
+            return false;
+        }
         let channels = self.r == other.r && self.g == other.g && self.b == other.b;
         if self.is_legacy() && other.is_legacy() {
             return channels && self.a == other.a;

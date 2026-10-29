@@ -113,7 +113,6 @@ pub fn repaints_only(old: &ComputedStyle, new: &ComputedStyle) -> bool {
         probe.background_color = new.background_color;
         probe.background = new.background.clone();
         probe.border_color = new.border_color;
-        probe.border_current_color = new.border_current_color;
     }
     probe == *new
 }

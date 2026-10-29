@@ -4,8 +4,18 @@
 //! lengths `px` at their shortest, numbers and keywords as they are.
 //! What the reference browser gives as a used value (`width` of a box
 //! laid out, a percentage resolved) is given here as the computed value,
-//! a percentage as written (G46); a `calc()` with a percentage, a
-//! transform's matrix, are not given (the empty string).
+//! a percentage as written (G46); a `calc()` with a percentage as CSS
+//! Values 4 section 10.13 writes it (D66).
+//!
+//! Every longhand the engine computes is given, those past the ones here
+//! by `longhands`, and every shorthand of them by `shorthands`, from
+//! their longhands' values (D66, G159); an `<image>` as the reference
+//! browser writes it, its gradients among them (G232). What only the
+//! caller knows, a used value or a URL made absolute, it gives through a
+//! [`Resolver`].
+
+mod longhands;
+mod shorthands;
 
 use css::Token;
 
@@ -22,23 +32,44 @@ use crate::computed::{
 };
 use crate::computed::{FontStyle, LineHeight};
 
-/// The properties [`computed_value`] gives, in the order a computed
-/// style's declaration block lists them (alphabetical, as the reference
-/// browser's).
+/// The properties a computed style's declaration block lists, the
+/// longhands [`computed_value`] gives, in the reference browser's order:
+/// alphabetical, the `-webkit-` ones after (D66). `will-change`, whose
+/// names the engine does not keep, is not among them.
 pub const COMPUTED_PROPERTIES: &[&str] = &[
     "align-content",
     "align-items",
     "align-self",
+    "animation-delay",
+    "animation-direction",
+    "animation-duration",
+    "animation-fill-mode",
+    "animation-iteration-count",
+    "animation-name",
+    "animation-play-state",
+    "animation-timing-function",
     "aspect-ratio",
+    "backface-visibility",
+    "background-attachment",
+    "background-clip",
     "background-color",
+    "background-image",
+    "background-origin",
     "background-position-x",
     "background-position-y",
+    "background-repeat",
+    "background-size",
     "border-bottom-color",
     "border-bottom-left-radius",
     "border-bottom-right-radius",
     "border-bottom-style",
     "border-bottom-width",
     "border-collapse",
+    "border-image-outset",
+    "border-image-repeat",
+    "border-image-slice",
+    "border-image-source",
+    "border-image-width",
     "border-left-color",
     "border-left-style",
     "border-left-width",
@@ -53,6 +84,9 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "bottom",
     "box-shadow",
     "box-sizing",
+    "break-after",
+    "break-before",
+    "break-inside",
     "caption-side",
     "clear",
     "clip-path",
@@ -60,6 +94,10 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "color",
     "color-scheme",
     "column-gap",
+    "content",
+    "counter-increment",
+    "counter-reset",
+    "counter-set",
     "cursor",
     "cx",
     "cy",
@@ -84,11 +122,28 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "font-style",
     "font-variant-caps",
     "font-weight",
+    "grid-auto-columns",
+    "grid-auto-flow",
+    "grid-auto-rows",
+    "grid-column-end",
+    "grid-column-start",
+    "grid-row-end",
+    "grid-row-start",
+    "grid-template-areas",
+    "grid-template-columns",
+    "grid-template-rows",
     "height",
+    "image-orientation",
+    "image-rendering",
     "justify-content",
+    "justify-items",
+    "justify-self",
     "left",
     "letter-spacing",
     "line-height",
+    "list-style-image",
+    "list-style-position",
+    "list-style-type",
     "margin-bottom",
     "margin-left",
     "margin-right",
@@ -97,8 +152,11 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "max-width",
     "min-height",
     "min-width",
+    "object-fit",
+    "object-position",
     "opacity",
     "order",
+    "orphans",
     "outline-color",
     "outline-offset",
     "outline-style",
@@ -111,7 +169,11 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "padding-right",
     "padding-top",
     "paint-order",
+    "perspective",
+    "perspective-origin",
     "position",
+    "print-color-adjust",
+    "quotes",
     "r",
     "right",
     "rotate",
@@ -132,27 +194,89 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "stroke-width",
     "table-layout",
     "text-align",
+    "text-align-last",
     "text-anchor",
+    "text-decoration-color",
+    "text-decoration-line",
+    "text-decoration-style",
+    "text-decoration-thickness",
+    "text-justify",
     "text-shadow",
     "text-transform",
+    "text-underline-offset",
+    "text-underline-position",
     "text-wrap-mode",
     "top",
+    "transform",
     "transform-box",
+    "transform-origin",
+    "transform-style",
+    "transition-behavior",
+    "transition-delay",
+    "transition-duration",
+    "transition-property",
+    "transition-timing-function",
+    "translate",
     "vector-effect",
     "vertical-align",
     "visibility",
     "white-space-collapse",
+    "widows",
     "width",
     "word-break",
     "word-spacing",
     "x",
     "y",
     "z-index",
+    "-webkit-border-horizontal-spacing",
+    "-webkit-border-vertical-spacing",
 ];
 
+/// What a caller knows of an element that its computed style does not
+/// (D65, D66): a longhand's resolved value where it is not the computed
+/// one (a used value of its box), and a `url()`'s URL made absolute.
+pub struct Resolver<'a> {
+    /// A longhand's resolved value, `None` where it is the computed one.
+    pub longhand: &'a dyn Fn(&str) -> Option<String>,
+    /// A URL as written made absolute, `None` where it is kept.
+    pub url: &'a dyn Fn(&str) -> Option<String>,
+}
+
+impl Resolver<'_> {
+    /// Nothing past the computed style.
+    pub const COMPUTED: Resolver<'static> = Resolver {
+        longhand: &|_| None,
+        url: &|_| None,
+    };
+}
+
+/// `name`'s resolved value in `style` as `getComputedStyle` gives it
+/// (CSSOM section 9, D66), `name` lowercase or a custom property's: a
+/// longhand's, `resolver`'s where it has one, else its computed value; a
+/// shorthand's from its longhands'. `None` for a property this engine
+/// does not give.
+pub fn resolved_value(
+    style: &ComputedStyle,
+    name: &str,
+    resolver: &Resolver<'_>,
+) -> Option<String> {
+    if let Some(value) = shorthands::value(style, name, resolver) {
+        return value;
+    }
+    if let Some(value) = (resolver.longhand)(name) {
+        return Some(value);
+    }
+    longhand(style, name, resolver.url)
+}
+
 /// `name`'s computed value in `style` as text, `name` lowercase or a
-/// custom property's; `None` for a property this engine does not give.
+/// custom property's: [`resolved_value`] with nothing past the style.
 pub fn computed_value(style: &ComputedStyle, name: &str) -> Option<String> {
+    resolved_value(style, name, &Resolver::COMPUTED)
+}
+
+/// A longhand's computed value, or `white-space`'s.
+fn longhand(style: &ComputedStyle, name: &str, url: longhands::Url<'_>) -> Option<String> {
     if name.starts_with("--") {
         return style.custom_property(name).map(tokens);
     }
@@ -416,7 +540,7 @@ pub fn computed_value(style: &ComputedStyle, name: &str) -> Option<String> {
             VerticalAlign::TextBottom => "text-bottom".to_owned(),
             VerticalAlign::Length(v) => px(*v),
             VerticalAlign::Percent(p) => percent(*p),
-            VerticalAlign::Calc(_) => return None,
+            VerticalAlign::Calc(c) => longhands::calc(c),
         },
         "flex-direction" => match style.flex_direction {
             FlexDirection::Row => "row",
@@ -533,7 +657,7 @@ pub fn computed_value(style: &ComputedStyle, name: &str) -> Option<String> {
             TransformBox::ViewBox => "view-box",
         }
         .to_owned(),
-        _ => return svg(style, name),
+        _ => return svg(style, name).or_else(|| longhands::value(style, name, url)),
     })
 }
 
@@ -733,7 +857,7 @@ fn length_percentage(value: &LengthPercentage) -> Option<String> {
     match value {
         LengthPercentage::Px(v) => Some(px(*v)),
         LengthPercentage::Percent(p) => Some(percent(*p)),
-        LengthPercentage::Calc(_) => None,
+        LengthPercentage::Calc(c) => Some(longhands::calc(c)),
     }
 }
 
@@ -742,7 +866,7 @@ fn auto_length(value: &LengthPercentageAuto) -> String {
         LengthPercentageAuto::Auto => "auto".to_owned(),
         LengthPercentageAuto::Px(v) => px(*v),
         LengthPercentageAuto::Percent(p) => percent(*p),
-        LengthPercentageAuto::Calc(_) => String::new(),
+        LengthPercentageAuto::Calc(c) => longhands::calc(c),
     }
 }
 
@@ -751,7 +875,7 @@ fn size(value: &Size) -> Option<String> {
         Size::Auto => "auto".to_owned(),
         Size::Px(v) => px(*v),
         Size::Percent(p) => percent(*p),
-        Size::Calc(_) => return None,
+        Size::Calc(c) => longhands::calc(c),
         Size::MinContent => "min-content".to_owned(),
         Size::MaxContent => "max-content".to_owned(),
         Size::FitContent => "fit-content".to_owned(),
@@ -763,7 +887,7 @@ fn max_size(value: &MaxSize) -> Option<String> {
         MaxSize::None => "none".to_owned(),
         MaxSize::Px(v) => px(*v),
         MaxSize::Percent(p) => percent(*p),
-        MaxSize::Calc(_) => return None,
+        MaxSize::Calc(c) => longhands::calc(c),
         MaxSize::MinContent => "min-content".to_owned(),
         MaxSize::MaxContent => "max-content".to_owned(),
         MaxSize::FitContent => "fit-content".to_owned(),
@@ -873,6 +997,14 @@ fn self_alignment(value: SelfAlignment) -> String {
         SelfAlignment::Baseline(b) => baseline(b).to_owned(),
         SelfAlignment::Position(p, o) => position(p, o),
     }
+}
+
+/// A CSS string of `text`, quoted, its quotes and backslashes escaped.
+fn string(text: &str) -> String {
+    tokens(&[Token::String {
+        value: text.to_owned(),
+        bad: false,
+    }])
 }
 
 /// A custom property's value as text: its tokens written back, white
@@ -1000,9 +1132,277 @@ mod tests {
         for name in COMPUTED_PROPERTIES {
             assert!(value(name).is_some(), "{name}");
         }
-        let mut sorted = COMPUTED_PROPERTIES.to_vec();
+        // Alphabetical, the `-webkit-` ones after (D66).
+        let (webkit, standard): (Vec<&str>, Vec<&str>) = COMPUTED_PROPERTIES
+            .iter()
+            .partition(|name| name.starts_with("-webkit-"));
+        let mut sorted = standard.clone();
         sorted.sort_unstable();
-        assert_eq!(sorted, COMPUTED_PROPERTIES);
+        assert_eq!(sorted, standard);
+        let mut sorted = webkit.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, webkit);
+        assert_eq!(
+            COMPUTED_PROPERTIES.last(),
+            Some(&"-webkit-border-vertical-spacing")
+        );
+    }
+
+    /// The computed style of the element `#t` in `html`, styled by
+    /// `sheet`.
+    fn styled(html: &str, sheet: &str) -> ComputedStyle {
+        let document = dom::Document::from_node(&html::parse_document(html).expect("never fails"));
+        let sheets = [css::parse_stylesheet(sheet).expect("a valid sheet")];
+        let styles = crate::cascade_document(&document, &sheets, &crate::CascadeContext::default());
+        let list = crate::parse_selector_list(&css::tokenize("#t")).expect("valid selector");
+        document
+            .subtree(document.root())
+            .find(|&id| crate::matches_selector(&document, id, &list.0[0]))
+            .and_then(|id| styles.get(id).cloned())
+            .expect("an element #t")
+    }
+
+    /// `name`'s computed value on a `div#t` with `declarations`.
+    fn of(declarations: &str, name: &str) -> String {
+        let style = styled("<div id=t></div>", &format!("#t {{ {declarations} }}"));
+        computed_value(&style, name).unwrap_or_else(|| panic!("{name} of {declarations}"))
+    }
+
+    #[test]
+    fn shorthands_are_written_from_their_longhands() {
+        // D66, G159: the reference browser's values for an element with
+        // every initial value.
+        for (name, expected) in [
+            ("margin", "0px"),
+            ("padding", "0px"),
+            ("inset", "auto"),
+            ("border", "0px none rgb(0, 0, 0)"),
+            ("border-top", "0px none rgb(0, 0, 0)"),
+            ("border-width", "0px"),
+            ("border-style", "none"),
+            ("border-color", "rgb(0, 0, 0)"),
+            ("border-radius", "0px"),
+            ("border-image", "none"),
+            ("outline", "rgb(0, 0, 0) none 0px"),
+            ("gap", "normal"),
+            ("flex", "0 1 auto"),
+            ("flex-flow", "row nowrap"),
+            ("place-content", "normal"),
+            ("place-items", "normal"),
+            ("place-self", "auto"),
+            ("overflow", "visible"),
+            ("list-style", "outside none disc"),
+            ("text-decoration", "none solid rgb(0, 0, 0)"),
+            (
+                "background",
+                "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+            ),
+            ("transition", "all 0s ease 0s"),
+            ("font-variant", "normal"),
+            ("font", "16px sans-serif"),
+            ("grid-template", "none"),
+        ] {
+            assert_eq!(of("", name), expected, "{name}");
+        }
+        // At their shortest.
+        assert_eq!(of("margin: 1px 2px", "margin"), "1px 2px");
+        assert_eq!(of("margin: 1px 2px 3px", "margin"), "1px 2px 3px");
+        assert_eq!(of("padding: 1px 2px 1px 4px", "padding"), "1px 2px 1px 4px");
+        assert_eq!(of("border-radius: 10px 20px", "border-radius"), "10px 20px");
+        assert_eq!(
+            of("border-radius: 10px / 5px", "border-radius"),
+            "10px / 5px"
+        );
+        assert_eq!(
+            of("border: 1px solid red", "border"),
+            "1px solid rgb(255, 0, 0)"
+        );
+        assert_eq!(of("gap: 10px 20px", "gap"), "10px 20px");
+        assert_eq!(of("flex: 1", "flex"), "1 1 0%");
+        assert_eq!(
+            of("font: italic bold 12px/30px Georgia", "font"),
+            "italic 700 12px / 30px Georgia"
+        );
+        assert_eq!(of("font-variant: small-caps", "font-variant"), "small-caps");
+        assert_eq!(
+            of("text-decoration: underline", "text-decoration"),
+            "underline solid rgb(0, 0, 0)"
+        );
+        assert_eq!(
+            of("transition: opacity 1s ease-in 0.5s", "transition"),
+            "opacity 1s ease-in 0.5s"
+        );
+        assert_eq!(of("grid-row: 1 / 3", "grid-row"), "1 / 3");
+        // Not to be written as the shorthand: the empty string.
+        assert_eq!(
+            of("border: 1px solid red; border-left-width: 2px", "border"),
+            ""
+        );
+        assert_eq!(of("font-stretch: 80%", "font"), "");
+        // Not a property the engine has.
+        assert_eq!(computed_value(&ComputedStyle::default(), "columns"), None);
+    }
+
+    #[test]
+    fn the_longhands_past_the_first_are_given() {
+        for (declarations, name, expected) in [
+            ("", "transform", "none"),
+            (
+                "transform: translate(10px, 20px) scale(2)",
+                "transform",
+                "matrix(2, 0, 0, 2, 10, 20)",
+            ),
+            ("", "transform-origin", "50% 50%"),
+            ("", "translate", "none"),
+            ("", "text-decoration-line", "none"),
+            ("", "list-style-type", "disc"),
+            ("", "background-repeat", "repeat"),
+            (
+                "background-repeat: repeat-x",
+                "background-repeat",
+                "repeat-x",
+            ),
+            ("", "background-size", "auto"),
+            ("background-size: 10px auto", "background-size", "10px"),
+            ("", "animation-name", "none"),
+            ("", "transition-timing-function", "ease"),
+            (
+                "transition-timing-function: step-start, steps(3)",
+                "transition-timing-function",
+                "steps(1, start), steps(3)",
+            ),
+            ("", "grid-template-columns", "none"),
+            (
+                "grid-template-columns: [a] 1fr 10px",
+                "grid-template-columns",
+                "[a] 1fr 10px",
+            ),
+            ("", "-webkit-border-horizontal-spacing", "0px"),
+            ("", "content", "normal"),
+            ("", "counter-reset", "none"),
+            ("", "orphans", "2"),
+            ("", "object-position", "50% 50%"),
+            ("", "border-image-slice", "100%"),
+            ("", "border-image-width", "1"),
+        ] {
+            assert_eq!(of(declarations, name), expected, "{name}: {declarations}");
+        }
+    }
+
+    #[test]
+    fn images_and_gradients_are_written_as_the_reference_browser_writes_them() {
+        // G232.
+        let image = |value: &str| of(&format!("background-image: {value}"), "background-image");
+        assert_eq!(
+            image("linear-gradient(red, blue)"),
+            "linear-gradient(rgb(255, 0, 0), rgb(0, 0, 255))"
+        );
+        assert_eq!(
+            image("linear-gradient(to bottom, red, blue)"),
+            "linear-gradient(rgb(255, 0, 0), rgb(0, 0, 255))"
+        );
+        assert_eq!(
+            image("linear-gradient(to right, red 10%, blue)"),
+            "linear-gradient(to right, rgb(255, 0, 0) 10%, rgb(0, 0, 255))"
+        );
+        assert_eq!(
+            image("linear-gradient(45deg, red, blue)"),
+            "linear-gradient(45deg, rgb(255, 0, 0), rgb(0, 0, 255))"
+        );
+        assert_eq!(
+            image("repeating-linear-gradient(red 0px, blue 10px)"),
+            "repeating-linear-gradient(rgb(255, 0, 0) 0px, rgb(0, 0, 255) 10px)"
+        );
+        assert_eq!(
+            image("radial-gradient(circle, red, blue)"),
+            "radial-gradient(circle, rgb(255, 0, 0), rgb(0, 0, 255))"
+        );
+        assert_eq!(
+            image("radial-gradient(red, blue)"),
+            "radial-gradient(rgb(255, 0, 0), rgb(0, 0, 255))"
+        );
+        assert_eq!(
+            image("conic-gradient(from 90deg, red, blue)"),
+            "conic-gradient(from 90deg, rgb(255, 0, 0), rgb(0, 0, 255))"
+        );
+        assert_eq!(
+            image("url(a.png), linear-gradient(red, blue)"),
+            "url(\"a.png\"), linear-gradient(rgb(255, 0, 0), rgb(0, 0, 255))"
+        );
+        assert_eq!(
+            of(
+                "list-style-image: linear-gradient(red, blue)",
+                "list-style-image"
+            ),
+            "linear-gradient(rgb(255, 0, 0), rgb(0, 0, 255))"
+        );
+        assert_eq!(
+            of(
+                "border-image-source: linear-gradient(red, blue)",
+                "border-image-source"
+            ),
+            "linear-gradient(rgb(255, 0, 0), rgb(0, 0, 255))"
+        );
+        // A URL made absolute by the caller.
+        let style = styled("<div id=t></div>", "#t { background-image: url(a.png) }");
+        let resolver = Resolver {
+            longhand: &|_| None,
+            url: &|url| Some(format!("https://example.test/{url}")),
+        };
+        assert_eq!(
+            resolved_value(&style, "background-image", &resolver).as_deref(),
+            Some("url(\"https://example.test/a.png\")")
+        );
+    }
+
+    #[test]
+    fn calculations_are_written_as_values_4_says() {
+        // Section 10.13: the percentage before the length, a negative
+        // one subtracted, a function's own name at the top.
+        assert_eq!(
+            of(
+                "background-position-x: calc(10px + 50%)",
+                "background-position-x"
+            ),
+            "calc(50% + 10px)"
+        );
+        assert_eq!(of("width: calc(50% - 10px)", "width"), "calc(50% - 10px)");
+        assert_eq!(of("left: min(50%, 10px)", "left"), "min(50%, 10px)");
+        assert_eq!(
+            of("padding-left: calc(1em + 10%)", "padding-left"),
+            "calc(10% + 16px)"
+        );
+    }
+
+    #[test]
+    fn a_used_value_from_the_caller_makes_the_shorthand() {
+        let style = ComputedStyle::default();
+        let resolver = Resolver {
+            longhand: &|name| (name == "margin-left").then(|| "8px".to_owned()),
+            url: &|_| None,
+        };
+        assert_eq!(
+            resolved_value(&style, "margin", &resolver).as_deref(),
+            Some("0px 0px 0px 8px")
+        );
+        assert_eq!(
+            resolved_value(&style, "margin-left", &resolver).as_deref(),
+            Some("8px")
+        );
+    }
+
+    #[test]
+    fn currentcolor_is_the_elements_own_colour() {
+        // D66, G226: inherited as the keyword, the `p`'s blue.
+        let style = styled(
+            "<div style=\"color: red; border-color: currentcolor\">\
+             <p id=t style=\"color: blue; border-color: inherit\"></p></div>",
+            "",
+        );
+        assert_eq!(
+            computed_value(&style, "border-color").as_deref(),
+            Some("rgb(0, 0, 255)")
+        );
     }
 
     #[test]

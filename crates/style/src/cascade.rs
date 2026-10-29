@@ -2983,11 +2983,13 @@ fn compute_style(
     for (side, set) in border_color_set.into_iter().enumerate() {
         if !set {
             // `border-color`'s initial value is `currentcolor` (css-color-4
-            // §4.4) — resolved here now that `color` itself is final.
-            style.border_color[side] = style.color;
+            // section 4.4).
+            style.border_color[side] = Color::CURRENT;
         }
-        style.set_border_color_current(side, !set);
     }
+    // Every `currentcolor`, the inherited ones among them, is the
+    // element's own `color`, final now (D66, G226).
+    style.resolve_current_color();
     // CSS2 §9.7, the relationships between `display`, `position` and
     // `float` (M11): an absolutely positioned box does not float, and
     // a float or an absolutely positioned box takes the block-level
@@ -6571,7 +6573,8 @@ fn parse_shadows(
             (false, _) => blur,
         };
         shadows.push(crate::computed::Shadow {
-            color: color.unwrap_or(bases.color),
+            // A colour left out is `currentcolor` (D66).
+            color: color.unwrap_or(Color::CURRENT.resolve(bases.color)),
             x,
             y,
             blur,
@@ -6720,7 +6723,14 @@ pub(super) struct Colors {
 
 /// A colour, `currentcolor` being `colors.current`, the system colours and
 /// `light-dark()` by its scheme, in `color-mix()` too (gap batch E).
+/// `currentcolor` alone keeps its keyword (D66, G226), resolved for now
+/// to `colors.current` and again once the element's `color` is final
+/// ([`ComputedStyle::resolve_current_color`]); in a function it is the
+/// colour it is.
 pub(super) fn color_value(tokens: &[Token], colors: Colors) -> Option<Color> {
+    if single_ident(tokens).is_some_and(|w| w.eq_ignore_ascii_case("currentcolor")) {
+        return Some(Color::CURRENT.resolve(colors.current));
+    }
     color_with(tokens, Some(colors.current), colors.dark)
 }
 
@@ -8720,6 +8730,44 @@ mod tests {
     }
 
     #[test]
+    fn currentcolor_keeps_its_keyword_and_is_inherited_as_it() {
+        // D66, G226: the keyword is inherited, explicitly or by an
+        // inherited property, and is the inheriting element's colour.
+        let html = "<div style=\"color: red; border-color: currentcolor; \
+                    background-color: currentcolor; text-shadow: 1px 1px; \
+                    box-shadow: currentcolor 1px 1px; \
+                    background-image: linear-gradient(currentcolor, red)\">\
+                    <p style=\"color: blue; border-color: inherit; \
+                    background-color: inherit; box-shadow: inherit; \
+                    background-image: inherit\">x</p></div>";
+        let blue = Color::rgb8(0, 0, 255);
+        let p = style_of(html, &[], "p");
+        assert_eq!(p.border_color.map(Color::used), [blue; 4]);
+        assert!(p.border_color_is_current(TOP));
+        assert_eq!(p.background_color.used(), blue);
+        assert_eq!(p.decoration().text_shadow[0].color.used(), blue);
+        assert_eq!(p.effects().box_shadow[0].color.used(), blue);
+        let Some(Some(crate::computed::Image::Gradient(g))) = p.background().image.first() else {
+            panic!("a gradient");
+        };
+        assert_eq!(
+            g.items[0],
+            crate::computed::GradientItem::Stop(Color::CURRENT.resolve(blue), None)
+        );
+        let div = style_of(html, &[], "div");
+        assert_eq!(div.border_color[TOP].used(), Color::rgb8(255, 0, 0));
+        // A colour mixed from it is the colour it is where it computes
+        // (section 2 of the note).
+        let html = "<div style=\"color: red; \
+                    border-color: color-mix(in srgb, currentcolor, red)\">\
+                    <p style=\"color: blue; border-color: inherit\">x</p></div>";
+        let p = style_of(html, &[], "p");
+        let top = p.border_color[TOP];
+        assert_eq!((top.r, top.g, top.b), (1.0, 0.0, 0.0));
+        assert!(!p.border_color_is_current(TOP));
+    }
+
+    #[test]
     fn currentcolor_is_the_elements_colour_in_every_colour_property() {
         // Gap batch E: the reference browser's computed values.
         let sheets = [sheet(
@@ -8735,7 +8783,10 @@ mod tests {
         let html = "<div><p>x<span>y</span><b>z</b><i>w</i></p></div>";
         // The element's own colour, not the one it inherits.
         let i = style_of(html, &sheets, "i");
-        assert_eq!(i.background_color, Color::rgb8(0, 0, 255));
+        assert_eq!(
+            i.background_color,
+            Color::CURRENT.resolve(Color::rgb8(0, 0, 255))
+        );
         let p = style_of(html, &sheets, "p");
         let value = |s: &ComputedStyle, name: &str| crate::serialize::computed_value(s, name);
         assert_eq!(
@@ -9132,14 +9183,15 @@ mod tests {
     fn border_color_defaults_to_currentcolor() {
         let sheets = [sheet("p { color: red; border: 1px solid; }")];
         let s = style_of("<p>x</p>", &sheets, "p");
-        assert_eq!(s.border_color, [Color::rgb8(255, 0, 0); 4]);
+        let red = Color::CURRENT.resolve(Color::rgb8(255, 0, 0));
+        assert_eq!(s.border_color, [red; 4]);
         // Per side: a side with its own color keeps it, the others follow `color`.
         let sheets = [sheet(
             "p { color: red; border: 1px solid; border-left-color: blue; }",
         )];
         let s = style_of("<p>x</p>", &sheets, "p");
         assert_eq!(s.border_color[LEFT], Color::rgb8(0, 0, 255));
-        assert_eq!(s.border_color[TOP], Color::rgb8(255, 0, 0));
+        assert_eq!(s.border_color[TOP], red);
         let current = |s: &ComputedStyle| {
             (0..4)
                 .map(|side| s.border_color_is_current(side))
@@ -9159,7 +9211,7 @@ mod tests {
         ] {
             let sheets = [sheet(&format!("p {{ color: red; {rule} }}"))];
             let s = style_of("<p>x</p>", &sheets, "p");
-            assert_eq!(s.border_color, [Color::rgb8(255, 0, 0); 4], "{rule}");
+            assert_eq!(s.border_color, [red; 4], "{rule}");
             assert_eq!(current(&s), [true; 4], "{rule}");
             assert_eq!(s.border_style[TOP], BorderStyle::Inset, "{rule}");
         }
@@ -9214,7 +9266,7 @@ mod tests {
         assert_eq!(s.border_style[TOP], Dashed);
         assert_eq!(
             s.border_color[TOP],
-            Color::BLACK,
+            Color::CURRENT,
             "border-top without a color: currentcolor"
         );
         assert_eq!(s.border_color[BOTTOM], Color::rgb8(0, 0, 255));
@@ -10820,7 +10872,7 @@ mod tests {
         let red = Color::rgb8(255, 0, 0);
         assert_eq!(of("tbody").border_color, [red; 4]);
         assert_eq!(of("tbody tr").border_color, [red; 4]);
-        assert_eq!(td.border_color, [Color::BLACK; 4]);
+        assert_eq!(td.border_color, [Color::CURRENT; 4]);
         // The caption and the column boxes have no padding or border of
         // their own from the sheet.
         assert_eq!(

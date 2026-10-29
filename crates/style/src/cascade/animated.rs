@@ -309,7 +309,7 @@ fn border_color_side(longhand: Longhand) -> Option<usize> {
 fn current_color(style: &mut ComputedStyle, set: &[bool; 4], color: Color) {
     for (side, &set) in set.iter().enumerate() {
         if !set {
-            style.border_color[side] = color;
+            style.border_color[side] = Color::CURRENT.resolve(color);
         }
     }
 }

@@ -73,7 +73,7 @@ impl Geometry {
             ),
             GradientShape::Linear(direction) => {
                 let dir = match *direction {
-                    LineDirection::Angle(degrees) => {
+                    LineDirection::Angle(degrees) | LineDirection::Side(degrees) => {
                         let a = degrees.to_radians();
                         (a.sin(), -a.cos())
                     }
@@ -418,7 +418,9 @@ fn average(stops: &[(f32, Premultiplied)]) -> Premultiplied {
 /// and no more than [`MAX_GRADIENT_PIXELS`] in all.
 fn resolution(gradient: &Gradient, w: f32, h: f32) -> (u32, u32) {
     let (mut pw, mut ph) = (w.ceil().max(1.0), h.ceil().max(1.0));
-    if let GradientShape::Linear(LineDirection::Angle(degrees)) = gradient.shape {
+    if let GradientShape::Linear(direction) = gradient.shape
+        && let Some(degrees) = direction.degrees()
+    {
         let turned = degrees.rem_euclid(180.0);
         if turned == 0.0 {
             pw = 1.0;

@@ -1753,8 +1753,9 @@ impl Filter {
     }
 }
 
-/// One of `box-shadow`'s shadows, computed: its colour, `currentcolor`
-/// resolved, its offsets, blur radius and spread in CSS pixels.
+/// One of `box-shadow`'s shadows, computed: its colour, which may be
+/// `currentcolor` (D66), its offsets, blur radius and spread in CSS
+/// pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Shadow {
     pub color: Color,
@@ -2403,6 +2404,17 @@ pub enum Image {
     Gradient(Arc<Gradient>),
 }
 
+impl LineDirection {
+    /// The line's angle in degrees, 0 up and clockwise, when it is not
+    /// towards a corner.
+    pub fn degrees(self) -> Option<f32> {
+        match self {
+            LineDirection::Angle(degrees) | LineDirection::Side(degrees) => Some(degrees),
+            LineDirection::Corner { .. } => None,
+        }
+    }
+}
+
 impl Image {
     /// The URL the image is fetched from, if it is fetched.
     pub fn url(&self) -> Option<&str> {
@@ -2457,9 +2469,12 @@ pub enum GradientShape {
 /// A linear gradient's direction (section 3.1.1).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LineDirection {
-    /// An angle in degrees, 0 up and clockwise: `to top` is 0, `to
-    /// right` 90.
+    /// An angle in degrees, 0 up and clockwise.
     Angle(f32),
+    /// `to` a side, or none written, which is `to bottom`: its angle as
+    /// [`LineDirection::Angle`]'s, `to top` 0 and `to right` 90, kept
+    /// apart for the serialization (D66, G232).
+    Side(f32),
     /// `to` a corner: towards the right or the left, the bottom or the
     /// top.
     Corner { right: bool, bottom: bool },
@@ -3309,17 +3324,12 @@ pub struct ComputedStyle {
     /// read [`ComputedStyle::used_border_width`], never this alone.
     pub border_width: Edges,
     /// `border-{top,right,bottom,left}-color` (per side since M10) —
-    /// not inherited. Defaults to `color` when unset (`currentcolor` is
-    /// the spec initial value) — resolved once the rest of the cascade
-    /// for this element has been applied, see `cascade::compute_style`.
+    /// not inherited. The initial value is `currentcolor`, which keeps
+    /// its keyword (D66), resolved once the rest of the cascade for this
+    /// element has been applied, see `cascade::compute_style`; whether a
+    /// side's is, the reference browser's 3D styles read (M33, through
+    /// [`ComputedStyle::border_color_is_current`]).
     pub border_color: [Color; 4],
-    /// Which sides' `border-*-color` is `currentcolor`, resolved into
-    /// `border_color`, a bit each, `1 << side` (M33): the reference
-    /// browser draws an `inset`, `outset`, `groove` or `ridge` side of
-    /// that colour in rgb(238, 238, 238) whatever `color` is. A byte in
-    /// the padding; read and written by side through
-    /// [`ComputedStyle::border_color_is_current`].
-    pub border_current_color: u8,
     /// `border-{top,right,bottom,left}-style` (per side since M10) —
     /// not inherited.
     pub border_style: [BorderStyle; 4],
@@ -3510,9 +3520,8 @@ impl Default for ComputedStyle {
             height: Size::Auto,
             margin: [const { LengthPercentageAuto::Px(0.0) }; 4], // margin's initial value is `0`, not `auto`
             padding: [const { LengthPercentage::Px(0.0) }; 4],
-            border_width: [3.0; 4],          // `medium`
-            border_color: [Color::BLACK; 4], // corrected to `color` post-cascade
-            border_current_color: 0b1111,
+            border_width: [3.0; 4], // `medium`
+            border_color: [Color::CURRENT; 4],
             border_style: [BorderStyle::None; 4],
             overflow: Overflow::Visible,
             box_sizing: BoxSizing::ContentBox,
@@ -3573,17 +3582,93 @@ impl Default for ComputedStyle {
 }
 
 impl ComputedStyle {
-    /// Whether side `side`'s `border-*-color` is `currentcolor` (M33).
+    /// Whether side `side`'s `border-*-color` is `currentcolor` (M33):
+    /// the reference browser draws an `inset`, `outset`, `groove` or
+    /// `ridge` side of that colour in rgb(238, 238, 238) whatever
+    /// `color` is.
     pub fn border_color_is_current(&self, side: usize) -> bool {
-        self.border_current_color & (1 << side) != 0
+        self.border_color[side].is_current()
     }
 
-    /// Sets whether side `side`'s `border-*-color` is `currentcolor`.
+    /// Sets whether side `side`'s `border-*-color` is `currentcolor`,
+    /// its colour kept.
     pub fn set_border_color_current(&mut self, side: usize, current: bool) {
-        if current {
-            self.border_current_color |= 1 << side;
+        let color = self.border_color[side].used();
+        self.border_color[side] = if current {
+            Color::CURRENT.resolve(color)
         } else {
-            self.border_current_color &= !(1 << side);
+            color
+        };
+    }
+
+    /// Resolves every colour of the style that is `currentcolor` to its
+    /// `color` (D66, G226), the keyword kept: one inherited, or copied
+    /// from the parent by `inherit`, was its parent's colour. A group
+    /// behind a pointer is copied only where one of its colours changes.
+    /// SVG's paints, `outline-color` and `text-decoration-color` keep the
+    /// keyword apart, resolved where they are read.
+    pub fn resolve_current_color(&mut self) {
+        let current = self.color;
+        let stale = |c: &Color| c.is_current() && *c != c.resolve(current);
+        let fix = |c: &mut Color| *c = c.resolve(current);
+        fix(&mut self.background_color);
+        self.border_color.iter_mut().for_each(fix);
+        let shadows = |list: &[Shadow]| list.iter().any(|s| stale(&s.color));
+        let filters = |list: &[Filter]| {
+            list.iter()
+                .any(|f| matches!(f, Filter::DropShadow { color, .. } if stale(color)))
+        };
+        let effects = self.effects();
+        if shadows(&effects.box_shadow) || filters(&effects.filter) {
+            let effects = self.effects_mut();
+            effects
+                .box_shadow
+                .iter_mut()
+                .for_each(|s| fix(&mut s.color));
+            for filter in &mut effects.filter {
+                if let Filter::DropShadow { color, .. } = filter {
+                    fix(color);
+                }
+            }
+        }
+        if shadows(&self.decoration().text_shadow) {
+            let decoration = self.decoration_mut();
+            decoration
+                .text_shadow
+                .iter_mut()
+                .for_each(|s| fix(&mut s.color));
+        }
+        let image = |image: &Image| match image {
+            Image::Gradient(g) => g
+                .items
+                .iter()
+                .any(|i| matches!(i, GradientItem::Stop(c, _) if stale(c))),
+            Image::Url { .. } => false,
+        };
+        let resolved = |image: &mut Image| {
+            if let Image::Gradient(g) = image {
+                for item in &mut Arc::make_mut(g).items {
+                    if let GradientItem::Stop(c, _) = item {
+                        fix(c);
+                    }
+                }
+            }
+        };
+        if self.background().image.iter().flatten().any(image) {
+            self.background_mut()
+                .image
+                .iter_mut()
+                .flatten()
+                .for_each(resolved);
+        }
+        if self.border_image().source.as_ref().is_some_and(image) {
+            self.border_image_mut().source.iter_mut().for_each(resolved);
+        }
+        if self.lists().list_style_image.as_ref().is_some_and(image) {
+            self.lists_mut()
+                .list_style_image
+                .iter_mut()
+                .for_each(resolved);
         }
     }
 
@@ -4056,8 +4141,10 @@ mod tests {
         // pointer, with the family moved behind it from a wide one: 816
         // before them. The legacy `text-align` and how the parent's
         // places the box (D60), two bytes past the padding: 808 before
-        // them. Growing this is a decision, not an accident; say why where
-        // the number changes.
+        // them. `currentcolor` kept as a colour's keyword (D66) took the
+        // byte of which border colours are it into the colours, which
+        // left the size as it was. Growing this is a decision, not an
+        // accident; say why where the number changes.
         assert_eq!(std::mem::size_of::<ComputedStyle>(), 816);
         assert_eq!(ComputedStyle::default().grid, None);
         assert_eq!(*ComputedStyle::default().grid(), GridStyle::default());

@@ -2087,8 +2087,10 @@ impl DocumentHost {
                     _ => return Ok(Answer::MaybeString(None)),
                 };
                 // The properties CSSOM names resolve to their used values
-                // (D65), from the layout.
-                let used = pseudo.is_none() && USED_PROPERTIES.contains(&property.as_str());
+                // (D65), from the layout, and the shorthands of them (D66).
+                let used = pseudo.is_none()
+                    && (USED_PROPERTIES.contains(&property.as_str())
+                        || matches!(property.as_str(), "margin" | "padding"));
                 let geometry = if used {
                     self.geometry(node, false)
                 } else {
@@ -2099,25 +2101,21 @@ impl DocumentHost {
                     None => styles.and_then(|styles| styles.get(node)),
                     Some(pseudo) => styles.and_then(|styles| styles.pseudo(node, pseudo)),
                 };
-                if let Some(style) = style
-                    && let Some(value) = used_value(style, &property, &geometry)
-                {
-                    return Ok(Answer::MaybeString(Some(value)));
-                }
-                let value = match property.as_str() {
-                    // Its URLs resolved against the document's base, which
-                    // the style crate has not (gap batch A, G105).
-                    "background-image" => {
-                        let layers = style.map(|style| {
-                            style
-                                .background
-                                .as_ref()
-                                .map_or_else(|| vec![None], |b| b.image.clone())
-                        });
-                        layers.and_then(|layers| self.background_image(layers))
-                    }
-                    _ => style.and_then(|style| style::serialize::computed_value(style, &property)),
+                let Some(style) = style.cloned() else {
+                    return Ok(Answer::MaybeString(None));
                 };
+                let longhand = |name: &str| used_value(&style, name, &geometry);
+                // URLs resolved against the document's base, which the
+                // style crate has not (gap batch A, G105).
+                let url = |url: &str| {
+                    let page = self.page.as_ref()?;
+                    Some(page.resolve(&self.document, url)?.as_str().to_owned())
+                };
+                let resolver = style::serialize::Resolver {
+                    longhand: &longhand,
+                    url: &url,
+                };
+                let value = style::serialize::resolved_value(&style, &property, &resolver);
                 Ok(Answer::MaybeString(value))
             }
             Call::SvgQuery { node, query, args } => {
@@ -3237,26 +3235,6 @@ impl DocumentHost {
             }
             _ => Err(DomError::not_supported()),
         }
-    }
-
-    /// `background-image`'s computed value, of its `layers`, as the
-    /// reference writes it: each layer's absolute `url("...")`, or `none`;
-    /// `None` for a gradient, which this does not write yet.
-    fn background_image(&self, layers: Vec<Option<style::computed::Image>>) -> Option<String> {
-        let mut out = Vec::new();
-        for layer in layers {
-            out.push(match layer {
-                None => "none".to_owned(),
-                Some(style::computed::Image::Url { url, .. }) => {
-                    let page = self.page.as_ref()?;
-                    let resolved = page.resolve(&self.document, &url)?;
-                    let text = resolved.as_str().replace('\\', "\\\\").replace('"', "\\\"");
-                    format!("url(\"{text}\")")
-                }
-                Some(_) => return None,
-            });
-        }
-        Some(out.join(", "))
     }
 
     /// The document's changes since they were last taken, as records for

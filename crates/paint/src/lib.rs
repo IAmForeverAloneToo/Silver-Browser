@@ -4480,6 +4480,19 @@ mod fragment_tests {
         assert_eq!(rects(&list).len(), 1); // just the viewport background
     }
 
+    #[test]
+    fn an_inherited_currentcolor_is_drawn_in_the_inheriting_elements_colour() {
+        // D66, G226: the keyword is inherited, and is the `p`'s blue.
+        let root = Element::new("div").push(Element::new("p").text("x"));
+        let list = display_list_of(
+            root,
+            "div { color: #ff0000; border-color: currentcolor; } \
+             p { margin: 0; color: #0000ff; border: 2px solid; border-color: inherit; }",
+        );
+        let colours: Vec<Rgba8> = borders(&list).iter().map(|b| b.5).collect();
+        assert_eq!(colours, vec![Rgba8::rgb(0, 0, 255)]);
+    }
+
     /// The rectangles of a list but the viewport's background, as
     /// `(x, y, w, h, color)`.
     fn outline_rects(list: &DisplayList) -> Vec<(f32, f32, f32, f32, Rgba8)> {

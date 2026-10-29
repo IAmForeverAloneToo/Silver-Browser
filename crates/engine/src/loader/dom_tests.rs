@@ -1647,6 +1647,49 @@ fn computed_style_reads_the_cascade_as_it_stands() {
 }
 
 #[test]
+fn computed_style_gives_shorthands_gradients_and_the_inherited_currentcolor() {
+    // D66: a shorthand from its longhands, the used margins among them;
+    // a gradient as the reference browser writes it (G232); a
+    // calculation (Values 4 section 10.13); `currentcolor` inherited as
+    // the keyword, the inheriting element's colour (G226).
+    let page = "<div style='width: 300px'><div id=m style='width: 100px; margin: 0 10%'></div>\
+                </div><div id=g style='background-image: linear-gradient(to right, red, blue); \
+                background-position-x: calc(10px + 50%)'></div>\
+                <div style='color: red; border-color: currentcolor'>\
+                <p id=p style='color: blue; border: 1px solid; border-color: inherit'>x</p></div>\
+                <script>\
+                var m = getComputedStyle(document.getElementById('m')); \
+                var g = getComputedStyle(document.getElementById('g')); \
+                var p = getComputedStyle(document.getElementById('p')); \
+                console.log(m.margin, m.getPropertyValue('border'), m[m.length - 1]); \
+                console.log(g.backgroundImage); \
+                console.log(g.backgroundPositionX, p.borderColor, p.borderTopColor);\
+                </script>";
+    let server = serve(move |path| match path {
+        "/page.html" => Some(Reply::ok("text/html", page.as_bytes())),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.frame(800, 600);
+    load_all(&mut tab, server.url("/page.html"));
+    let console: Vec<String> = tab
+        .engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .collect();
+    assert_eq!(
+        console,
+        [
+            "0px 30px 0px none rgb(0, 0, 0) -webkit-border-vertical-spacing",
+            "linear-gradient(to right, rgb(255, 0, 0), rgb(0, 0, 255))",
+            "calc(50% + 10px) rgb(0, 0, 255) rgb(0, 0, 255)",
+        ]
+    );
+}
+
+#[test]
 fn a_script_run_after_a_frame_reaches_the_next_through_invalidation() {
     // What the dom_api fuzz target holds the engine to (M25.3): a script
     // run in the document shown after a frame, as a `javascript:` URL's

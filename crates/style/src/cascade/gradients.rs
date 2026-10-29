@@ -108,10 +108,7 @@ pub(super) fn gradient(part: &[Token], bases: &LengthBases<'_>) -> Option<Gradie
     } else if linear {
         match direction(&args[0], legacy, bases) {
             Some(direction) => (GradientShape::Linear(direction), &args[1..]),
-            None => (
-                GradientShape::Linear(LineDirection::Angle(180.0)),
-                &args[..],
-            ),
+            None => (GradientShape::Linear(LineDirection::Side(180.0)), &args[..]),
         }
     } else {
         match radial(&args[0], bases) {
@@ -199,8 +196,8 @@ fn direction(parts: &[&[Token]], legacy: bool, bases: &LengthBases<'_>) -> Optio
     };
     match (horizontal, vertical) {
         (Some(right), Some(bottom)) => Some(LineDirection::Corner { right, bottom }),
-        (Some(right), None) => Some(LineDirection::Angle(if right { 90.0 } else { 270.0 })),
-        (None, Some(bottom)) => Some(LineDirection::Angle(if bottom { 180.0 } else { 0.0 })),
+        (Some(right), None) => Some(LineDirection::Side(if right { 90.0 } else { 270.0 })),
+        (None, Some(bottom)) => Some(LineDirection::Side(if bottom { 180.0 } else { 0.0 })),
         (None, None) => None,
     }
 }
@@ -362,7 +359,7 @@ mod tests {
         };
         assert_eq!(
             direction("linear-gradient(red, blue)"),
-            Some(LineDirection::Angle(180.0))
+            Some(LineDirection::Side(180.0))
         );
         assert_eq!(
             direction("linear-gradient(45deg, red, blue)"),
@@ -378,7 +375,7 @@ mod tests {
         );
         assert_eq!(
             direction("linear-gradient(to left, red, blue)"),
-            Some(LineDirection::Angle(270.0))
+            Some(LineDirection::Side(270.0))
         );
         assert_eq!(
             direction("linear-gradient(to top right, red, blue)"),
@@ -398,7 +395,7 @@ mod tests {
         // the right, anticlockwise.
         assert_eq!(
             direction("-webkit-linear-gradient(top, red, blue)"),
-            Some(LineDirection::Angle(180.0))
+            Some(LineDirection::Side(180.0))
         );
         assert_eq!(
             direction("-webkit-linear-gradient(0deg, red, blue)"),
@@ -431,7 +428,7 @@ mod tests {
         );
         assert_eq!(
             parse("linear-gradient(in lab to right, red, blue)").map(|g| g.shape),
-            Some(GradientShape::Linear(LineDirection::Angle(90.0)))
+            Some(GradientShape::Linear(LineDirection::Side(90.0)))
         );
         assert!(parse("linear-gradient(in nope, red, blue)").is_none());
         assert!(parse("linear-gradient(in srgb longer hue, red, blue)").is_none());
