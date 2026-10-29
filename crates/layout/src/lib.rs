@@ -69,8 +69,25 @@ pub(crate) mod testing {
     use crate::{DocumentLayout, Fragment, LayoutBox, Preorder, preorder};
 
     /// The document `node` describes and its box tree, cascaded under
-    /// the UA sheet and `sheets` with no viewport and no font.
+    /// the UA sheet and `sheets` with no viewport and no font. A
+    /// fixture's top element stands for content of a page, not for its
+    /// root, whose own formatting context (gap batch E) is tested apart
+    /// with [`rooted_boxes_of`].
     pub(crate) fn boxes_of(node: &Node, sheets: &[css::Stylesheet]) -> (Document, Vec<LayoutBox>) {
+        let (document, mut boxes) = rooted_boxes_of(node, sheets);
+        for b in &mut boxes {
+            if b.style.root {
+                std::sync::Arc::make_mut(&mut b.style).root = false;
+            }
+        }
+        (document, boxes)
+    }
+
+    /// [`boxes_of`] with the root element's box the root it is.
+    pub(crate) fn rooted_boxes_of(
+        node: &Node,
+        sheets: &[css::Stylesheet],
+    ) -> (Document, Vec<LayoutBox>) {
         let document = Document::from_node(node);
         let sheets = style::Stylesheets::new(sheets.to_vec());
         let context = style::CascadeContext::default();

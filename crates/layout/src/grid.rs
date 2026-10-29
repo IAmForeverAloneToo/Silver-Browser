@@ -797,7 +797,7 @@ fn item_width<'a>(
         Some(widths) => Intrinsic::known(item.b, pass, widths),
         None => Intrinsic::of(item.b, pass),
     };
-    let w = width_constraints(style, width, horizontal, &intrinsic, room);
+    let w = width_constraints(style, width, None, horizontal, &intrinsic, room);
     let stretched = stretches(
         item.b,
         justify_self(style, container),

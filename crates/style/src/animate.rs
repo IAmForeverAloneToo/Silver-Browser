@@ -414,7 +414,10 @@ pub fn copy(property: Longhand, from: &ComputedStyle, to: &mut ComputedStyle) {
         BackgroundColor => to.background_color = from.background_color,
         FontSize => to.font_size_px = from.font_size_px,
         FontFamily => to.font_family = from.font_family.clone(),
-        Display => to.display = from.display,
+        Display => {
+            to.display = from.display;
+            to.flow_root = from.flow_root;
+        }
         TextAlignAll => to.text_align = from.text_align,
         TextAlignLast => to.text_align_last = from.text_align_last,
         TextJustify => to.text_justify = from.text_justify,
@@ -758,7 +761,7 @@ pub fn same(property: Longhand, a: &ComputedStyle, b: &ComputedStyle) -> bool {
         BackgroundColor => a.background_color == b.background_color,
         FontSize => a.font_size_px == b.font_size_px,
         FontFamily => a.font_family == b.font_family,
-        Display => a.display == b.display,
+        Display => a.display == b.display && a.flow_root == b.flow_root,
         TextAlignAll => a.text_align == b.text_align,
         TextAlignLast => a.text_align_last == b.text_align_last,
         TextJustify => a.text_justify == b.text_justify,

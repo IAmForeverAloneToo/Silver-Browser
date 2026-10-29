@@ -484,6 +484,8 @@ impl Target {
                 | "background-image"
                 | "background-repeat"
                 | "background-position"
+                | "background-position-x"
+                | "background-position-y"
                 | "background-size"
                 | "background-origin"
                 | "background-clip"
@@ -1495,6 +1497,7 @@ fn element_style(
     // takes its background from, and every other box is inside.
     if document.document_element() == Some(element) {
         style.display = style.display.blockified();
+        style.root = true;
     }
     style
 }
@@ -3283,6 +3286,15 @@ fn apply_declaration(
             backgrounds::parse_background_position(value, bases),
             |b, v| b.position = v,
         ),
+        // Its longhands (Backgrounds 4, gap batch E; G40).
+        "background-position-x" | "background-position-y" => {
+            let axis = usize::from(name == "background-position-y");
+            set_background(
+                style,
+                backgrounds::parse_background_position_axis(value, bases, axis == 0),
+                |b, v| b.position = backgrounds::with_axis(&b.position, v, axis),
+            )
+        }
         "background-size" => set_background(
             style,
             backgrounds::parse_background_size(value, bases),
@@ -3344,7 +3356,14 @@ fn apply_declaration(
             &mut style.font_family,
             parse_font_family(value).map(Into::into),
         ),
-        "display" => set(&mut style.display, parse_display(value)),
+        "display" => match parse_display(value) {
+            Some((display, flow_root)) => {
+                style.display = display;
+                style.flow_root = flow_root;
+                true
+            }
+            None => false,
+        },
         "text-align" => match parse_text_align(value) {
             Some(TextAlignValue::JustifyAll) => {
                 style.text_align = TextAlign::Justify;
@@ -4340,6 +4359,13 @@ fn apply_css_wide(
         "background-position" => {
             copy_background(style, src, |b, s| b.position = s.position.clone())
         }
+        "background-position-x" | "background-position-y" => {
+            let axis = usize::from(name == "background-position-y");
+            copy_background(style, src, |b, s| {
+                let values = s.position.iter().map(|p| p[axis].clone()).collect();
+                b.position = backgrounds::with_axis(&b.position, values, axis);
+            })
+        }
         "background-size" => copy_background(style, src, |b, s| b.size = s.size.clone()),
         "background-origin" => copy_background(style, src, |b, s| b.origin = s.origin.clone()),
         "background-clip" => copy_background(style, src, |b, s| b.clip = s.clip.clone()),
@@ -4357,7 +4383,10 @@ fn apply_css_wide(
         "border-image-repeat" => copy_border_image(style, src, |b, s| b.repeat = s.repeat),
         "font-size" => {} // the first pass, see `compute_style`
         "font-family" => style.font_family = src.font_family.clone(),
-        "display" => style.display = src.display,
+        "display" => {
+            style.display = src.display;
+            style.flow_root = src.flow_root;
+        }
         "text-align" => {
             style.text_align = src.text_align;
             style.text_align_last = src.text_align_last;
@@ -5094,11 +5123,35 @@ fn is_auto(tokens: &[Token]) -> bool {
     single_ident(tokens).is_some_and(|s| s.eq_ignore_ascii_case("auto"))
 }
 
-fn parse_display(tokens: &[Token]) -> Option<Display> {
+fn parse_display(tokens: &[Token]) -> Option<(Display, bool)> {
     if let Some(list_item) = parse_list_item_display(tokens) {
         return Some(list_item);
     }
-    match single_ident(tokens)?.to_ascii_lowercase().as_str() {
+    // `flow-root` (css-display-3 section 2.4, gap batch E), alone or as
+    // the inside of `block` or `inline`, which is `inline-block`.
+    let words: Vec<String> = tokens
+        .iter()
+        .filter_map(|t| match t {
+            Token::Whitespace => None,
+            Token::Ident(word) => Some(word.to_ascii_lowercase()),
+            _ => Some(String::new()),
+        })
+        .collect();
+    match words
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        ["flow-root"] | ["block", "flow-root"] | ["flow-root", "block"] => {
+            return Some((Display::Block, true));
+        }
+        ["inline", "flow-root"] | ["flow-root", "inline"] => {
+            return Some((Display::InlineBlock, false));
+        }
+        _ => {}
+    }
+    let display = match single_ident(tokens)?.to_ascii_lowercase().as_str() {
         "block" => Some(Display::Block),
         "inline" => Some(Display::Inline),
         "inline-block" => Some(Display::InlineBlock),
@@ -5118,15 +5171,16 @@ fn parse_display(tokens: &[Token]) -> Option<Display> {
         "inline-flex" | "-webkit-inline-flex" => Some(Display::InlineFlex),
         "grid" => Some(Display::Grid),
         "inline-grid" => Some(Display::InlineGrid),
-        _ => None, // contents, flow-root, ruby and the like are not values here
-    }
+        _ => None, // contents, ruby and the like are not values here
+    }?;
+    Some((display, false))
 }
 
 /// `display: list-item` (css-display-3 §2.4, M21.6) in the block forms
 /// this engine takes: `list-item`, with `block` or `flow` or both, in any
 /// order, each once. The inline and `flow-root` forms are not taken.
-fn parse_list_item_display(tokens: &[Token]) -> Option<Display> {
-    let mut seen = [false; 3];
+fn parse_list_item_display(tokens: &[Token]) -> Option<(Display, bool)> {
+    let mut seen = [false; 4];
     let mut any = false;
     for token in tokens {
         let at = match token {
@@ -5134,6 +5188,8 @@ fn parse_list_item_display(tokens: &[Token]) -> Option<Display> {
             Token::Ident(word) if word.eq_ignore_ascii_case("list-item") => 0,
             Token::Ident(word) if word.eq_ignore_ascii_case("block") => 1,
             Token::Ident(word) if word.eq_ignore_ascii_case("flow") => 2,
+            // `flow-root list-item` (gap batch E).
+            Token::Ident(word) if word.eq_ignore_ascii_case("flow-root") => 3,
             _ => return None,
         };
         if std::mem::replace(&mut seen[at], true) {
@@ -5141,7 +5197,7 @@ fn parse_list_item_display(tokens: &[Token]) -> Option<Display> {
         }
         any = true;
     }
-    (any && seen[0]).then_some(Display::ListItem)
+    (any && seen[0] && !(seen[2] && seen[3])).then_some((Display::ListItem, seen[3]))
 }
 
 /// `table-layout` (M12).
@@ -8102,6 +8158,31 @@ mod tests {
             value(&styles, &document, "p", "color"),
             "rgb(255, 255, 255)"
         );
+    }
+
+    #[test]
+    fn flow_root_computes_as_the_reference_browser_writes_it() {
+        // Gap batch E.
+        for (written, computed) in [
+            ("flow-root", "flow-root"),
+            ("block flow-root", "flow-root"),
+            ("inline flow-root", "inline-block"),
+            ("flow-root list-item", "flow-root list-item"),
+            ("flow-root; display: block", "block"),
+            ("flow flow-root list-item", "block"),
+        ] {
+            let sheets = [sheet(&format!("div {{ display: {written} }}"))];
+            let style = style_of("<div>x</div>", &sheets, "div");
+            assert_eq!(
+                crate::serialize::computed_value(&style, "display").as_deref(),
+                Some(computed),
+                "{written}"
+            );
+        }
+        // The root's box is a formatting context root, not a flow root.
+        let root = style_of("<p>x</p>", &[], "html");
+        assert!(root.root && !root.flow_root);
+        assert!(!style_of("<p>x</p>", &[], "p").root);
     }
 
     #[test]
@@ -11945,6 +12026,7 @@ mod tests {
             "list-item block",
             "flow list-item",
             "list-item flow block",
+            "flow-root list-item",
         ] {
             let p = p_with("<p>x</p>", &format!("p {{ display: {value} }}"));
             assert_eq!(p.display, Display::ListItem, "{value}");
@@ -11952,7 +12034,6 @@ mod tests {
         for value in [
             "inline list-item",
             "list-item list-item",
-            "flow-root list-item",
             "block flow",
             "list-item 2",
         ] {

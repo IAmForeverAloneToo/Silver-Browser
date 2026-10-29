@@ -761,6 +761,7 @@ fn max_keyword(size: &MaxSize) -> Size {
 pub(crate) fn width_constraints(
     style: &ComputedStyle,
     cb_width: f32,
+    cb_height: Option<f32>,
     non_content: f32,
     intrinsic: &Intrinsic<'_, '_>,
     stretch: f32,
@@ -773,8 +774,19 @@ pub(crate) fn width_constraints(
         Some(v) => Some(inner(v.resolve(cb_width))),
         None => intrinsic.keyword(v, stretch),
     };
+    // An `auto` width from a definite height through the box's preferred
+    // aspect ratio (css-sizing-4 section 5.2, gap batch E).
+    let from_ratio = || {
+        let ratio = preferred_ratio(style)?;
+        let vertical = vertical_edges(style, cb_width);
+        let height = definite_height(style, cb_height, vertical)?;
+        Some(match style.box_sizing {
+            BoxSizing::ContentBox => height * ratio,
+            BoxSizing::BorderBox => ((height + vertical) * ratio - non_content).max(0.0),
+        })
+    };
     WidthConstraints {
-        width: size(&style.width),
+        width: size(&style.width).or_else(from_ratio),
         min: size(&style.min_width).unwrap_or(0.0),
         max: match style.max_width.length_percentage() {
             Some(v) => Some(inner(v.resolve(cb_width))),
@@ -806,6 +818,7 @@ pub(crate) fn resolve_width_and_margins<'a>(
     let c = width_constraints(
         style,
         cb_width,
+        None,
         non_content_width,
         &Intrinsic::of(b, pass),
         stretch,
@@ -857,7 +870,7 @@ fn table_width_and_margins<'a>(
     // what an `auto` block would fill.
     let (room, _, _) = tentative_width(style, cb_width, available_width, non_content_width, None);
     let intrinsic = Intrinsic::of(b, pass);
-    let c = width_constraints(style, cb_width, non_content_width, &intrinsic, room);
+    let c = width_constraints(style, cb_width, None, non_content_width, &intrinsic, room);
     let (min_content, max_content) = intrinsic.widths();
     let used = c.width.unwrap_or(room.min(max_content));
     let used = c
@@ -936,6 +949,48 @@ fn tentative_width(
 /// The specified `height` as a content-box height, or `None` for
 /// `auto` — which a percentage of an indefinite containing-block height
 /// is too (CSS2 §10.5).
+/// The preferred aspect ratio, width over height, `aspect-ratio` gives
+/// a box that is not replaced (css-sizing-4 section 5.1, gap batch E;
+/// G36), of the box `box-sizing` names; `None` for `auto` or a
+/// degenerate ratio.
+pub(crate) fn preferred_ratio(style: &ComputedStyle) -> Option<f32> {
+    match style.image().aspect_ratio {
+        style::computed::AspectRatio::Auto => None,
+        style::computed::AspectRatio::Ratio(r) | style::computed::AspectRatio::AutoOr(r) => {
+            r.value()
+        }
+    }
+}
+
+/// A box's border and padding down, its padding's percentages of
+/// `cb_width`.
+fn vertical_edges(style: &ComputedStyle, cb_width: f32) -> f32 {
+    let border = style.used_border_width();
+    border[TOP]
+        + border[BOTTOM]
+        + style.padding[TOP].resolve(cb_width)
+        + style.padding[BOTTOM].resolve(cb_width)
+}
+
+/// An `auto` height from the content-box `width` through the box's
+/// preferred aspect ratio (css-sizing-4 section 5.2), as a content-box
+/// height; `None` where the box has none or its height is not `auto`.
+pub(crate) fn ratio_height(
+    style: &ComputedStyle,
+    width: f32,
+    non_content_width: f32,
+    non_content_height: f32,
+) -> Option<f32> {
+    let ratio = preferred_ratio(style)?;
+    if style.height != Size::Auto {
+        return None;
+    }
+    Some(match style.box_sizing {
+        BoxSizing::ContentBox => width / ratio,
+        BoxSizing::BorderBox => ((width + non_content_width) / ratio - non_content_height).max(0.0),
+    })
+}
+
 pub(crate) fn definite_height(
     style: &ComputedStyle,
     cb_height: Option<f32>,
@@ -1217,9 +1272,13 @@ pub(crate) fn relative_offset(
 /// of its own (CSS2 section 9.4.1, M10.4): `overflow` other than `visible`
 /// and `clip` (css-overflow-3 section 3, M26.11), an atomic inline (an
 /// inline-block, an inline table), a float or an absolutely positioned
-/// box (M11), a table, a table cell or a caption (M12).
+/// box (M11), a table, a table cell or a caption (M12), a flow root.
 pub(crate) fn establishes_bfc(style: &ComputedStyle) -> bool {
-    style.overflow.scrolls()
+    // `display: flow-root`, and the root element's box (css-display-3
+    // section 2.8; gap batch E).
+    style.flow_root
+        || style.root
+        || style.overflow.scrolls()
         || style.display.is_atomic_inline()
         || matches!(
             style.display,
@@ -1516,6 +1575,7 @@ pub(crate) fn layout_inline_block<'a>(
         None => width_constraints(
             &b.style,
             cb_width,
+            cb_height,
             edges.horizontal(),
             &intrinsic,
             available,
@@ -1616,13 +1676,27 @@ pub(crate) fn layout_block_contents<'a>(
         Some(_) => (0.0, None),
         None => height_bounds(&b.style, cb_height, non_content_height, content),
     };
+    // A box that is not replaced with a preferred aspect ratio takes its
+    // `auto` height from its width (gap batch E; G36), its automatic
+    // minimum its content's below, unless it scrolls (css-sizing-4
+    // section 5.2).
+    let ratio = (b.replaced.is_none() && b.control_size.is_none())
+        .then(|| {
+            ratio_height(
+                &b.style,
+                content_width,
+                edges.horizontal(),
+                non_content_height,
+            )
+        })
+        .flatten();
     let (specified_height, children_cb_height) = match imposed {
         Some(imposed) => {
             let height = (imposed.height - non_content_height).max(0.0);
             (Some(height), imposed.definite.then_some(height))
         }
         None => {
-            let specified = definite_height(&b.style, cb_height, non_content_height);
+            let specified = definite_height(&b.style, cb_height, non_content_height).or(ratio);
             (specified, specified.map(|h| clamp_height(h, bounds(None))))
         }
     };
@@ -1845,6 +1919,12 @@ pub(crate) fn layout_block_contents<'a>(
     // A form control's `auto` height is its own (M26.11), not its
     // content's, which it scrolls or clips.
     let natural_height = b.control_size.and_then(|size| size.height);
+    let specified_height = match (ratio, specified_height) {
+        (Some(r), Some(h)) if h == r && !b.style.overflow.scrolls() => {
+            Some(h.max(auto_content_height))
+        }
+        (_, h) => h,
+    };
     let content_height = clamp_height(
         specified_height
             .or(natural_height)
@@ -2184,6 +2264,7 @@ fn layout_absolute<'a>(
         None => width_constraints(
             style,
             cb_width,
+            cb_height,
             horizontal_edges,
             &intrinsic,
             stretch.max(0.0),
@@ -3675,6 +3756,101 @@ mod tests {
         assert_eq!(text("c").top(), p.y + p.h, "the line after the p");
         assert_eq!(div.children.len(), 3, "a, the p, c");
         assert_eq!(div.h, 3.0 * m.line_height());
+    }
+
+    #[test]
+    fn a_flow_root_and_the_root_element_are_block_formatting_context_roots() {
+        // Gap batch E: `display: flow-root` keeps its children's margins
+        // and holds its floats, as `overflow: hidden` does.
+        let root = Element::new("div")
+            .push(
+                Element::new("div")
+                    .attr("class", "r")
+                    .push(Element::new("p").text("x"))
+                    .push(Element::new("span").attr("class", "f")),
+            )
+            .push(Element::new("p").text("y"));
+        let frags = fragments_of(
+            root,
+            "div, p { margin: 0 } .r { display: flow-root } .r p { margin: 20px 0 } \
+             .f { float: left; width: 10px; height: 200px }",
+        );
+        let boxes = box_fragments(&frags);
+        let r = boxes[1];
+        assert_eq!(r.y, 0.0, "the p's top margin did not escape");
+        let line = test_fonts().primary().metrics(16.0).line_height();
+        assert_eq!(r.h, 20.0 + line + 20.0 + 200.0, "it holds its float");
+        // The root element's box (CSS2 section 8.3.1, css-display-3
+        // section 2.8; G11): the body's margin stays inside it, and the
+        // root holds its floats.
+        let doc = dom::Node::document(vec![
+            Element::new("html")
+                .push(
+                    Element::new("body")
+                        .push(Element::new("span").attr("class", "f"))
+                        .push(Element::new("p").text("x")),
+                )
+                .into(),
+        ]);
+        let sheet = css::parse_stylesheet(
+            "body { margin: 8px } p { margin: 0 } .f { float: left; width: 10px; height: 300px }",
+        )
+        .expect("valid");
+        let (_, boxes) = crate::testing::rooted_boxes_of(&doc, &[sheet]);
+        let layout = layout_document(&boxes, VIEWPORT, &test_fonts());
+        let html = &layout.roots[0];
+        assert_eq!(html.y, 0.0, "the body's margin did not escape the root");
+        assert_eq!(html.h, 8.0 + 300.0, "the root holds the float");
+    }
+
+    #[test]
+    fn aspect_ratio_sizes_a_box_that_is_not_replaced() {
+        // Gap batch E (G36), css-sizing-4 section 5.
+        let root = Element::new("div")
+            .push(Element::new("div").attr("class", "a"))
+            .push(Element::new("div").attr("class", "b"))
+            .push(
+                Element::new("div")
+                    .attr("class", "c")
+                    .push(Element::new("p").attr("class", "tall")),
+            )
+            .push(
+                Element::new("div")
+                    .attr("class", "d")
+                    .push(Element::new("p").attr("class", "tall")),
+            )
+            .push(Element::new("span").attr("class", "e"))
+            .push(Element::new("div").attr("class", "f"))
+            .push(Element::new("span").attr("class", "g"));
+        let frags = fragments_of(
+            root,
+            "div, p { margin: 0 } .a { width: 200px; aspect-ratio: 2 } \
+             .b { width: 200px; aspect-ratio: 2; padding: 10px; box-sizing: border-box } \
+             .c { width: 200px; aspect-ratio: 2 } .tall { height: 300px } \
+             .d { width: 200px; aspect-ratio: 2; overflow: hidden } \
+             .e { display: inline-block; height: 50px; aspect-ratio: 16 / 9 } \
+             .f { width: 200px; aspect-ratio: 2; height: 30px } \
+             .g { display: inline-block; height: 60px; aspect-ratio: 2; padding: 5px; \
+                  box-sizing: border-box }",
+        );
+        let boxes = box_fragments(&frags);
+        let size = |i: usize| (boxes[i].w, boxes[i].h);
+        assert_eq!(size(1), (200.0, 100.0), "the height from the width");
+        assert_eq!(size(2), (200.0, 100.0), "of the border box");
+        assert_eq!(size(3).1, 300.0, "the content's height its least");
+        assert_eq!(size(5).1, 100.0, "but for a scroll container");
+        let e = boxes
+            .iter()
+            .find(|f| (f.h - 50.0).abs() < 0.01)
+            .expect("the inline-block");
+        assert!(
+            (e.w - 50.0 * 16.0 / 9.0).abs() < 0.01,
+            "the width from the height"
+        );
+        let f = boxes.iter().find(|b| b.h == 30.0).unwrap();
+        assert_eq!((f.w, f.h), (200.0, 30.0), "a height given wins");
+        let g = boxes.iter().find(|b| b.h == 60.0).unwrap();
+        assert_eq!(g.w, 120.0, "the border box's width from its height");
     }
 
     #[test]

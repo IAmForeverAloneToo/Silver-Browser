@@ -260,6 +260,35 @@ pub(super) fn parse_background_position(
     list(tokens, |parts| position(parts, bases))
 }
 
+/// `background-position-x` or, where not `x`, `-y` (gap batch E).
+pub(super) fn parse_background_position_axis(
+    tokens: &[Token],
+    bases: &LengthBases<'_>,
+    x: bool,
+) -> Option<Vec<LengthPercentage>> {
+    list(tokens, |parts| {
+        super::effects::position_axis(parts, bases, x)
+    })
+}
+
+/// `positions` with one axis's values `axis` (0 along x) taken from
+/// `values`, each list repeated to the longer's length as layers repeat
+/// their lists (Backgrounds 3 section 2.2).
+pub(super) fn with_axis(
+    positions: &[[LengthPercentage; 2]],
+    values: Vec<LengthPercentage>,
+    axis: usize,
+) -> Vec<[LengthPercentage; 2]> {
+    let n = positions.len().max(values.len());
+    (0..n)
+        .map(|i| {
+            let mut pair = positions[i % positions.len().max(1)].clone();
+            pair[axis] = values[i % values.len()].clone();
+            pair
+        })
+        .collect()
+}
+
 /// `background-size`.
 pub(super) fn parse_background_size(
     tokens: &[Token],
@@ -498,6 +527,24 @@ mod tests {
             Some(vec![[p(50.0), LengthPercentage::Px(10.0)]])
         );
         assert_eq!(position("left 10% right"), None);
+        // Its longhands (gap batch E): an axis each, a list each.
+        let axis = |css: &str, x: bool| {
+            with_bases(|bases| parse_background_position_axis(&tokens(css), bases, x))
+        };
+        assert_eq!(axis("right 10%", true), Some(vec![p(90.0)]));
+        assert_eq!(axis("center, 20%", false), Some(vec![p(50.0), p(20.0)]));
+        assert_eq!(axis("left", true), Some(vec![p(0.0)]));
+        assert_eq!(axis("top", true), None);
+        assert_eq!(axis("left 10px 5px", true), None);
+        let pair = |x: f32, y: f32| [p(x), p(y)];
+        assert_eq!(
+            with_axis(&[pair(1.0, 2.0)], vec![p(7.0), p(8.0)], 0),
+            vec![pair(7.0, 2.0), pair(8.0, 2.0)]
+        );
+        assert_eq!(
+            with_axis(&[pair(1.0, 2.0), pair(3.0, 4.0)], vec![p(9.0)], 1),
+            vec![pair(1.0, 9.0), pair(3.0, 9.0)]
+        );
         assert_eq!(position("10px 20px 30px"), None);
         let size = |css: &str| with_bases(|bases| parse_background_size(&tokens(css), bases));
         assert_eq!(

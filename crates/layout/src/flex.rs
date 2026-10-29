@@ -509,7 +509,7 @@ impl<'a> Item<'a> {
     ) -> f32 {
         let horizontal = self.edges.horizontal();
         let room = (c.width - self.cross_margins - horizontal).max(0.0);
-        let w = width_constraints(&self.b.style, c.width, horizontal, intrinsic, room);
+        let w = width_constraints(&self.b.style, c.width, None, horizontal, intrinsic, room);
         let width = w
             .width
             .or(stretched)

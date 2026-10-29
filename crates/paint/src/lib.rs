@@ -2938,7 +2938,14 @@ mod testing {
         let context = style::CascadeContext::default();
         let styles = sheets.cascade(&document, &context);
         let recascade = sheets.recascader(&document, &styles, &context);
-        let boxes = layout::build_box_tree(&document, &styles, &recascade);
+        let mut boxes = layout::build_box_tree(&document, &styles, &recascade);
+        // A fixture's top element other than `html` stands for content
+        // of a page, not for its root (gap batch E).
+        for b in &mut boxes {
+            if b.style.root && document.tag(b.node) != Some("html") {
+                std::sync::Arc::make_mut(&mut b.style).root = false;
+            }
+        }
         let layout = layout::layout_document(&boxes, width, fonts);
         Laid { document, layout }
     }

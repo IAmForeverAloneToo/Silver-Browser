@@ -168,7 +168,11 @@ pub fn computed_value(style: &ComputedStyle, name: &str) -> Option<String> {
         "background-color" => color(style.background_color),
         "font-size" => px(style.font_size_px),
         "font-family" => style.font_family.to_string(),
-        "display" => display(style.display).to_owned(),
+        "display" => match (style.display, style.flow_root) {
+            (Display::Block, true) => "flow-root".to_owned(),
+            (Display::ListItem, true) => "flow-root list-item".to_owned(),
+            (other, _) => display(other).to_owned(),
+        },
         "text-align" => text_align(style.text_align).to_owned(),
         "text-transform" => match style.text_transform {
             TextTransform::None => "none",

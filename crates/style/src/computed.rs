@@ -3177,6 +3177,15 @@ pub struct ComputedStyle {
     /// while its style without it has `display: none` — so that hit
     /// testing passes over it and over what is inside it. Inherited.
     pub inert: bool,
+    /// `display: flow-root` (gap batch E): a block box that establishes
+    /// a block formatting context, `display` being `Block` (or
+    /// `ListItem`, `flow-root list-item`).
+    pub flow_root: bool,
+    /// Not a property: whether the style is the root element's, whose
+    /// box establishes an independent formatting context (css-display-3
+    /// section 2.8, CSS2 section 8.3.1: its margins do not collapse with
+    /// its children's; G11).
+    pub root: bool,
     /// The transition and animation properties (M22), behind one pointer
     /// as the effects are; `None` is every initial value. Read through
     /// [`ComputedStyle::motion`].
@@ -3272,6 +3281,8 @@ impl Default for ComputedStyle {
             lists: None,
             decoration: None,
             inert: false,
+            flow_root: false,
+            root: false,
             motion: None,
             image: None,
             background: None,

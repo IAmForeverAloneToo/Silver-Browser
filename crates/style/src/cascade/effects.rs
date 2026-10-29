@@ -410,6 +410,33 @@ pub(super) fn background_position(
     }
 }
 
+/// One axis of a `<bg-position>` (Backgrounds 4 section 3.4, gap batch
+/// E): `background-position-x`'s `center`, an edge, an offset, or an
+/// edge and an offset from it, along x where `x`, else along y.
+pub(super) fn position_axis(
+    components: &[&[Token]],
+    bases: &LengthBases<'_>,
+    x: bool,
+) -> Option<LengthPercentage> {
+    let places: Vec<Place> = components
+        .iter()
+        .map(|c| place(c, bases))
+        .collect::<Option<_>>()?;
+    let edge = |p: &Place| {
+        if x {
+            matches!(p, Place::Left | Place::Right)
+        } else {
+            matches!(p, Place::Top | Place::Bottom)
+        }
+    };
+    match places.as_slice() {
+        [one @ (Place::Center | Place::Offset(_))] => Some(one.offset()),
+        [one] if edge(one) => Some(one.offset()),
+        [one, Place::Offset(d)] if edge(one) => Some(one.offset_from_edge(d)),
+        _ => None,
+    }
+}
+
 /// The four-value form of `<position>`: `[ [ left | right ]
 /// <length-percentage> ] && [ [ top | bottom ] <length-percentage> ]`.
 fn position_with_offsets(places: &[Place]) -> Option<(LengthPercentage, LengthPercentage)> {

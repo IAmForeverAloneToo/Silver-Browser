@@ -999,8 +999,10 @@ mod tests {
             ".f { float: left; width: 20px; height: 60px }",
         );
         assert_eq!(s.pass(), (4, 0));
-        // Nor is anything the float was in the context of.
-        assert!(s.cache.is_empty());
+        // Nor is anything the float was in the context of, but the root,
+        // whose box is a context of its own (gap batch E).
+        assert!(!s.kept("d") && !s.kept("p"));
+        assert!(s.cache.len() <= 1);
         let p = s.id("p");
         s.change(|d| {
             let text = d.first_child(p).unwrap();

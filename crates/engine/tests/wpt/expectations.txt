@@ -160,7 +160,6 @@ css/css-animations/transform-animation-under-large-scale.html  the animated box 
 css/css-flexbox/aspect-ratio-intrinsic-size-003.html                     `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
 css/css-flexbox/aspect-ratio-intrinsic-size-008.html                     `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
 css/css-flexbox/aspect-ratio-intrinsic-size-010.html                     `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
-css/css-flexbox/aspect-ratio-transferred-max-size.html                   `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
 css/css-flexbox/flex-aspect-ratio-content-box-padding-001.html           `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
 css/css-flexbox/flex-aspect-ratio-cross-size-001.html                    the flex containers' height is from `aspect-ratio`, on a box that is not replaced, which computes but sizes nothing (G36)
 css/css-flexbox/flex-aspect-ratio-cross-size-002.html                    `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
@@ -194,7 +193,6 @@ css/css-flexbox/aspect-ratio-intrinsic-size-011.html                            
 css/css-flexbox/aspect-ratio-intrinsic-size-012.html                              `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
 css/css-flexbox/aspect-ratio-intrinsic-size-013.html                              `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
 css/css-flexbox/aspect-ratio-intrinsic-size-014.html                              `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
-css/css-grid/grid-items/aspect-ratio-grid-item-dynamic-container-shrink-001.html  `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
 css/css-grid/grid-definition/grid-auto-repeat-dynamic-001.html                    `repeat(auto-fill)` in a container with a minimum width and no width repeats as few tracks as fill the minimum (css-grid-2 7.2.3.2), two here; this engine repeats one and the container is its minimum wide
 css/css-grid/grid-definition/grid-auto-repeat-dynamic-003.html                    as grid-auto-repeat-dynamic-001.html, with the container's width from `aspect-ratio` on a box that is not replaced (G36)
 css/css-backgrounds/background-color-body-propagation-003.html                    the script makes the body `display: inline` with a green background, which this engine does not carry to the canvas as the reference browser does (css-backgrounds-3 2.11.2); the same declarations in the markup render the same here
@@ -1160,7 +1158,6 @@ css/css-transforms/transforms-rotate-degree-45.html                             
 css/css-transforms/css-transforms-transformlist.html                             the script reads transform.baseVal, the SVG DOM's animated values (G87)
 css/css-transforms/perspective-svg-child-001.html                                a perspective on the svg and a 3D transform of its rect: SVG content is drawn in 2D, its transforms flattened (G87)
 css/css-transforms/perspective-svg-child-002.html                                as perspective-svg-child-001.html: SVG content is drawn in 2D, its transforms flattened (G87)
-css/css-transforms/transform-background-005.html                                 the root's overflow is not carried to the viewport (css-overflow-3 3.3), so the viewport shows a scrollbar for the transformed root's overflow
 css/css-transforms/transform-fixed-bg-006.html                                   the body's overflow is not carried to the viewport (css-overflow-3 3.3), so the viewport shows a scrollbar for the rotated body and the body clips the fixed background's box
 css/css-transforms/transform-fixed-bg-007.html                                   as transform-fixed-bg-006.html: the body's overflow is not carried to the viewport (css-overflow-3 3.3)
 css/css-transforms/transform-fixed-bg-008.tentative.html                         as transform-fixed-bg-006.html: the body's overflow is not carried to the viewport (css-overflow-3 3.3)
