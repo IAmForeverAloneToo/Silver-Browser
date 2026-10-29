@@ -2727,6 +2727,17 @@ design note first and the milestones' method:
        every failure with its reason; colours held to the reference
        browser's on WPT's 1,503 computed cases, five reference pages
        (143-147); the gaps found G224-G232 (the note's section 4).
+- [ ] GD Text, the DOM and scripts (`docs/design/text-dom-scripts.md`,
+       D53-D66), the priorities' groups D, F, C and B: the font
+       properties (G22), web fonts and `visibility` (G12, part), line
+       breaking (G10), `text-shadow` (G20, part), the tree builder's
+       modes (G44), every kind of node (G47), presentational hints
+       (G45), `document.open` (G48), ranges and traversal (G52),
+       `moveBefore` (G66), module scripts and import maps (G41),
+       Subresource Integrity (G43), `Intl` (G42), binding chunks
+       (G163), a flush for scripts (G46), the CSSOM (G50), every
+       computed value (G159, G232) and `currentcolor` kept (G226).
+       Opened at the maintainer's word, 30 October 2026.
 
 Deferred from the milestones above, each with what it waits on:
 
@@ -3822,6 +3833,20 @@ Deferred from the milestones above, each with what it waits on:
 | D50 | How a rounded box is drawn | GE | a rounded-rectangle item each backend draws / curves in the display list / flattened paths | flattened paths, a new `Path` item filled by the nonzero rule with the exact-area coverage both backends share; boxes without radii keep their items |
 | D51 | How a rounded clip is made | GE | a mask applied to every item / a clip path in the backends / a group composited through a mask | a group drawn into a scratch and composited through the rounded rectangle's coverage, the axis-aligned clip around it in force |
 | D52 | How blurs, shadows and filters are drawn | GE | tiny-skia and wgpu's own / shared code on the CPU for all / shared masks for shadows, each backend filtering groups | shadows as masks shared by the backends (a Gaussian of three box blurs, cached); filters on a group's scratch, colour matrices in sRGB each applied and clamped alone, the GPU blurring in render passes |
+| D53 | How a box's font is chosen and drawn | GD | the system's one face / a face a run, chosen at raster time / a face a box, chosen in layout and named in the display list | the font properties computed into a shared `FontSpec`; faces matched by CSS Fonts 4, synthesized where missing, known by a `FaceId` the display list carries |
+| D54 | Where web fonts live | GD | in the process's collection / per document over the system's / per renderer | per document, `DocumentFonts` over the system collection, fetched when first needed, the fallback drawn until they arrive |
+| D55 | How lines break | GD | at white space only / a hand-written UAX #14 / ICU4X's segmenter | ICU4X's line segmenter with compiled data, `white-space` as CSS Text 4's longhands |
+| D56 | How a text shadow is drawn | GD | a filtered group a run / the glyphs' coverage blurred / not at all | the run's glyph coverage blurred by render's Gaussian and tinted, a `TextShadow` item |
+| D57 | How the tree builder is built | GD | patches on the skeleton modes / the standard's machine | HTML 13.2.6's insertion modes, active formatting elements, the adoption agency and foster parenting |
+| D58 | How new kinds of node are kept | GD | in the arena / script-side objects / both | comments, doctypes, processing instructions and fragments in the arena, template content an owned fragment; `Attr` a script object |
+| D59 | Where ranges live | GD | in the bootstrap / in the DOM crate | live ranges in `dom::Document`, moved by every mutation; traversal in the bootstrap |
+| D60 | How presentational attributes apply | GD | in the UA sheet / as the cascade's hints | as hints, beside M21.6's and M23's |
+| D61 | How module graphs load | GD | QuickJS's own loader / fetched by the engine, served to QuickJS | fetched by the engine, served by an rquickjs loader that refuses the bootstrap's names |
+| D62 | What Subresource Integrity checks | GD | scripts / scripts, sheets, preloads and fetch | scripts, sheets, preloads, module preloads and fetch's option, by `aws-lc-rs` |
+| D63 | Where `Intl` comes from | GD | a polyfill / ICU4X natives | ICU4X's formatters with compiled data, as a chunk read at first use |
+| D64 | How bindings stay cheap | GD | one bootstrap / chunks read at first use | M41's lazy GPU bindings generalized to named chunks |
+| D65 | What scripts measure | GD | a copy of the styles / the shown page's styles and layout | the shown page's, lent to the run, laid out when stale |
+| D66 | How the CSSOM keeps sheets | GD | rebuilt from text / an editable rule list an owner keeps | an editable rule list, kept until the owner's text changes; specified values serialized canonically; `currentcolor` a computed keyword |
 
 ---
 
