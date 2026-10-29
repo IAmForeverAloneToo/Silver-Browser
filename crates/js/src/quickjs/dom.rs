@@ -899,6 +899,8 @@ pub(super) fn install<'js, H: ScriptingHost>(
     )?;
     install_errors(ctx, host, &natives)?;
     super::wasm::install(ctx, &natives, budget)?;
+    // ECMA-402's computations (D63), which never reach the host.
+    super::intl::install(ctx, &natives)?;
     // WebGPU and WebGL's bindings' function, read when first asked for.
     natives.set(
         "gpuBindings",

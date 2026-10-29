@@ -6,6 +6,7 @@
 mod bytecode;
 pub(crate) mod console;
 mod dom;
+mod intl;
 mod wasm;
 
 pub use bytecode::warm as warm_bindings;

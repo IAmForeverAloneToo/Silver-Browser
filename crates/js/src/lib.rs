@@ -26,6 +26,8 @@ mod dom_tests;
 #[cfg(test)]
 mod event_tests;
 #[cfg(test)]
+mod intl_tests;
+#[cfg(test)]
 mod test_tree;
 #[cfg(test)]
 mod tests;

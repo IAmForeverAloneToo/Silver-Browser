@@ -87,6 +87,17 @@ unicode-bidi = "0.3"
 # UAX #14 line breaking (gap batch D, D55), the ICU4X major version idna
 # brings already, with its compiled data.
 icu_segmenter = "~2.3.0"
+# ECMA-402 Intl (gap batch D, D63): number and date formatting,
+# collation, plural rules and locales, on the same ICU4X minor line with
+# their compiled data.
+icu_decimal = "~2.3.0"
+icu_datetime = "~2.3.0"
+icu_collator = "~2.3.0"
+icu_plurals = "~2.3.0"
+icu_calendar = "~2.3.0"
+icu_locale = "~2.3.0"
+# ICU4X's decimal number, for the rounding modes ECMA-402 names.
+fixed_decimal = "~0.7.3"
 unicode-script = "0.5"
 # The Unicode general category, for the first-letter pattern (M16,
 # docs/design/selectors-pseudo.md); already in the tree through the
