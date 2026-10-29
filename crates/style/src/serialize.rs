@@ -49,6 +49,7 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "clip-path",
     "clip-rule",
     "color",
+    "color-scheme",
     "column-gap",
     "cursor",
     "cx",
@@ -160,6 +161,10 @@ pub fn computed_value(style: &ComputedStyle, name: &str) -> Option<String> {
     }
     Some(match name {
         "color" => color(style.color),
+        "color-scheme" => style
+            .color_scheme
+            .as_ref()
+            .map_or_else(|| "normal".to_owned(), |s| s.to_string()),
         "background-color" => color(style.background_color),
         "font-size" => px(style.font_size_px),
         "font-family" => style.font_family.to_string(),

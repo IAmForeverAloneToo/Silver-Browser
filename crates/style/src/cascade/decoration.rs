@@ -56,11 +56,14 @@ pub(super) fn parse_style(tokens: &[Token]) -> Option<DecorationStyle> {
 }
 
 /// `text-decoration-color`: a colour, or `currentcolor` (`Some(None)`).
-pub(super) fn parse_color_or_current(tokens: &[Token], current: Color) -> Option<Option<Color>> {
+pub(super) fn parse_color_or_current(
+    tokens: &[Token],
+    colors: super::Colors,
+) -> Option<Option<Color>> {
     if is_word(tokens, "currentcolor") {
         return Some(None);
     }
-    super::color_value(tokens, current).map(Some)
+    super::color_value(tokens, colors).map(Some)
 }
 
 /// `text-decoration-thickness`: `auto`, `from-font`, or a length or
@@ -151,7 +154,7 @@ pub(super) fn parse_shorthand(tokens: &[Token], bases: &LengthBases<'_>) -> Opti
         }
         let first = if let Some(value) = parse_style(part) {
             style.replace(value).is_none()
-        } else if let Some(value) = parse_color_or_current(part, bases.color) {
+        } else if let Some(value) = parse_color_or_current(part, bases.colors()) {
             color.replace(value).is_none()
         } else if let Some(value) = parse_thickness(part, bases) {
             thickness.replace(value).is_none()

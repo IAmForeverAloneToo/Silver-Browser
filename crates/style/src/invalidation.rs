@@ -736,7 +736,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::computed::Display;
+    use crate::computed::{Color, Display};
     use crate::selector_matching::PseudoElement;
     use crate::{CascadeContext, Restyle, Styles, Stylesheets};
 
@@ -1248,6 +1248,33 @@ mod tests {
         let m = by_id(&d, "m");
         let r = change(&mut d, &sheets, &mut styles, |d| {
             d.set_attribute(m, "content", "de").unwrap();
+        });
+        assert!(!r.full);
+    }
+
+    #[test]
+    fn a_colour_scheme_meta_changed_cascades_the_document_whole() {
+        // Gap batch E, D49: what `color-scheme: normal` is everywhere.
+        let (mut d, sheets, mut styles) = setup(
+            "<meta id=m name=color-scheme content=light><p id=p>x</p>",
+            "",
+        );
+        let m = by_id(&d, "m");
+        let p = by_id(&d, "p");
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(m, "content", "dark").unwrap();
+        });
+        assert!(r.full, "the meta's content");
+        assert_eq!(styles.get(p).unwrap().color, Color::rgb8(255, 255, 255));
+        let head = d.parent(m).unwrap();
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.remove_child(head, m).unwrap()
+        });
+        assert!(r.full, "the meta removed");
+        assert_eq!(styles.get(p).unwrap().color, Color::BLACK);
+        // Another meta's attribute leaves it be.
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(p, "title", "t").unwrap();
         });
         assert!(!r.full);
     }

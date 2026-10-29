@@ -981,6 +981,19 @@ pub fn canvas_color(roots: &[Fragment]) -> Option<Rgba8> {
     canvas_background(roots)
         .map(|f| to_rgba8(f.style.background_color))
         .filter(|c| c.a > 0)
+        .or_else(|| roots.first().filter(|f| f.style.dark).map(|_| DARK_CANVAS))
+}
+
+/// The `Canvas` system colour of the dark scheme (gap batch E, D49).
+const DARK_CANVAS: Rgba8 = Rgba8::rgb(18, 18, 18);
+
+/// The canvas a document gives no background: `Canvas` by the root's
+/// scheme, white or dark.
+fn scheme_canvas(roots: &[Fragment]) -> Rgba8 {
+    match roots.first() {
+        Some(root) if root.style.dark => DARK_CANVAS,
+        _ => Rgba8::rgb(0xff, 0xff, 0xff),
+    }
 }
 
 pub fn paint_fragments_with(
@@ -995,7 +1008,6 @@ pub fn paint_fragments_with(
     // not painted on the body itself. The canvas is white otherwise.
     let canvas = canvas_background(roots);
     let canvas_node = canvas.map(|f| f.node);
-    let white = Rgba8::rgb(0xff, 0xff, 0xff);
     let mut items = vec![DisplayItem::Rect {
         x: 0.0,
         y: 0.0,
@@ -1004,7 +1016,7 @@ pub fn paint_fragments_with(
         color: canvas
             .map(|f| to_rgba8(f.style.background_color))
             .filter(|c| c.a > 0)
-            .unwrap_or(white),
+            .unwrap_or_else(|| scheme_canvas(roots)),
     }];
     // The viewport in the document's coordinates, which a fixed
     // background is placed in (M23.3), and the canvas the canvas's
@@ -1450,7 +1462,13 @@ fn push_replaced(
                 push_controls(items, rect, *audio, &state);
             }
         }
-        Replaced::Mark(mark) => push_mark(items, *mark, rect, to_rgba8(fragment.style.color)),
+        Replaced::Mark(mark) => push_mark(
+            items,
+            *mark,
+            rect,
+            to_rgba8(fragment.style.color),
+            fragment.style.dark,
+        ),
         // An outer `<svg>` (M32) fills its content box, its `viewBox`
         // fitted in it by its own `preserveAspectRatio`: an image the
         // engine draws at the size it lands on.
@@ -1674,6 +1692,10 @@ const WHITE: Rgba8 = Rgba8 {
     b: 255,
     a: 255,
 };
+/// A dark control's field and edge (gap batch E, D49): the reference
+/// browser's `Field` and border of the dark scheme.
+const DARK_FIELD: Rgba8 = Rgba8::rgb(59, 59, 59);
+const DARK_EDGE: Rgba8 = Rgba8::rgb(133, 133, 133);
 
 /// A control's mark in `rect` (M26.7), as the reference browser draws
 /// one: a checkbox a white box with a grey edge, filled with the accent
@@ -1682,8 +1704,13 @@ const WHITE: Rgba8 = Rgba8 {
 /// edge and a dot in the accent colour when checked; a drop-down's
 /// arrow a chevron in the text's `color`, in the middle of its box. A
 /// disabled one is faded, and grey where it would be the accent.
-fn push_mark(items: &mut Vec<DisplayItem>, mark: Mark, rect: Rect, color: Rgba8) {
+fn push_mark(items: &mut Vec<DisplayItem>, mark: Mark, rect: Rect, color: Rgba8, dark: bool) {
     let r = snapped(rect);
+    let (field, mark_edge) = if dark {
+        (DARK_FIELD, DARK_EDGE)
+    } else {
+        (WHITE, MARK_EDGE)
+    };
     let fade = |c: Rgba8, disabled: bool| Rgba8 {
         a: if disabled { c.a / 3 + 10 } else { c.a },
         ..c
@@ -1705,8 +1732,8 @@ fn push_mark(items: &mut Vec<DisplayItem>, mark: Mark, rect: Rect, color: Rgba8)
             let on = checked || indeterminate;
             let fill = match (on, disabled) {
                 (true, false) => ACCENT,
-                (true, true) => MARK_EDGE,
-                (false, _) => WHITE,
+                (true, true) => mark_edge,
+                (false, _) => field,
             };
             items.push(DisplayItem::Rect {
                 x: r.x,
@@ -1722,7 +1749,7 @@ fn push_mark(items: &mut Vec<DisplayItem>, mark: Mark, rect: Rect, color: Rgba8)
                     w: r.w,
                     h: r.h,
                     widths: [1.0; 4],
-                    color: fade(MARK_EDGE, disabled),
+                    color: fade(mark_edge, disabled),
                 });
                 return;
             }
@@ -1752,7 +1779,7 @@ fn push_mark(items: &mut Vec<DisplayItem>, mark: Mark, rect: Rect, color: Rgba8)
             let edge = if checked && !disabled {
                 ACCENT
             } else {
-                MARK_EDGE
+                mark_edge
             };
             items.push(DisplayItem::Polygon {
                 points: circle(cx, cy, radius),
@@ -1760,7 +1787,7 @@ fn push_mark(items: &mut Vec<DisplayItem>, mark: Mark, rect: Rect, color: Rgba8)
             });
             items.push(DisplayItem::Polygon {
                 points: circle(cx, cy, (radius - 1.0).max(0.0)),
-                color: fade(WHITE, disabled),
+                color: fade(field, disabled),
             });
             if checked {
                 items.push(DisplayItem::Polygon {
@@ -4335,6 +4362,47 @@ mod fragment_tests {
         assert!(matches!(
             rects(&list)[0],
             DisplayItem::Rect { color, .. } if *color == Rgba8::rgb(255, 255, 255)
+        ));
+        // A dark checkbox and radio button are the dark field and edge.
+        let rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 13.0,
+            h: 13.0,
+        };
+        let colours = |mark, dark| {
+            let mut items = Vec::new();
+            push_mark(&mut items, mark, rect, WHITE, dark);
+            items
+                .iter()
+                .filter_map(|i| match i {
+                    DisplayItem::Rect { color, .. }
+                    | DisplayItem::Border { color, .. }
+                    | DisplayItem::Polygon { color, .. } => Some(*color),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let checkbox = Mark::Checkbox {
+            checked: false,
+            indeterminate: false,
+            disabled: false,
+        };
+        assert_eq!(colours(checkbox, true), [DARK_FIELD, DARK_EDGE]);
+        assert_eq!(colours(checkbox, false), [WHITE, MARK_EDGE]);
+        let radio = Mark::Radio {
+            checked: false,
+            disabled: false,
+        };
+        assert_eq!(colours(radio, true), [DARK_EDGE, DARK_FIELD]);
+        // Or `Canvas` of the root's dark scheme (gap batch E, D49).
+        let list = display_list_of(
+            Element::new("html").push(Element::new("p").text("x")),
+            "html { color-scheme: dark }",
+        );
+        assert!(matches!(
+            rects(&list)[0],
+            DisplayItem::Rect { color, .. } if *color == Rgba8::rgb(18, 18, 18)
         ));
     }
 

@@ -104,8 +104,8 @@ q::after { content: close-quote; }
  * one. Every link is unvisited, there being no history; one held down
  * is active, and the pointer over one is a hand (M26.4), as in the
  * reference browser. */
-:link { color: #0000EE; }
-:visited { color: #551A8B; }
+:link { color: light-dark(#0000EE, #9E9EFF); }
+:visited { color: light-dark(#551A8B, #D0ADF0); }
 :link:active, :visited:active { color: #FF0000; }
 :any-link { cursor: pointer; }
 
@@ -177,12 +177,14 @@ thead, tbody, tfoot, tr { border-color: inherit; }
  * grid item stretches. Controls are drawn as their computed style says, not in
  * the reference browser's native look; so a button's border is the
  * fields' grey, where the reference browser computes black and draws
- * its own. */
+ * its own. Their colours follow the element's scheme (gap batch E,
+ * D49): system colours, and `light-dark()` where the light colour is
+ * this sheet's own. */
 input, button, select, textarea {
   display: inline-block;
   font-size: 13.3333px;
   font-family: sans-serif;
-  color: black;
+  color: FieldText;
   letter-spacing: normal;
   word-spacing: normal;
   text-transform: none;
@@ -191,15 +193,15 @@ input, button, select, textarea {
 }
 input {
   padding: 1px 2px;
-  border: 2px inset rgb(118, 118, 118);
-  background-color: white;
+  border: 2px inset light-dark(rgb(118, 118, 118), rgb(133, 133, 133));
+  background-color: Field;
   overflow: clip;
   cursor: text;
 }
 textarea {
   padding: 2px;
-  border: 1px solid rgb(118, 118, 118);
-  background-color: white;
+  border: 1px solid light-dark(rgb(118, 118, 118), rgb(133, 133, 133));
+  background-color: Field;
   font-family: monospace;
   white-space: pre-wrap;
   overflow: auto;
@@ -208,8 +210,8 @@ textarea {
 select {
   box-sizing: border-box;
   padding: 0;
-  border: 1px solid rgb(118, 118, 118);
-  background-color: white;
+  border: 1px solid light-dark(rgb(118, 118, 118), rgb(133, 133, 133));
+  background-color: Field;
   white-space: pre;
   overflow: clip;
   cursor: default;
@@ -220,8 +222,9 @@ button, input[type=submit i], input[type=button i], input[type=reset i] {
   width: auto;
   height: auto;
   padding: 1px 6px;
-  border: 2px outset rgb(118, 118, 118);
-  background-color: rgb(240, 240, 240);
+  border: 2px outset light-dark(rgb(118, 118, 118), ButtonBorder);
+  background-color: ButtonFace;
+  color: ButtonText;
   text-align: center;
   cursor: default;
 }
@@ -251,16 +254,16 @@ input[type=image i] {
   cursor: pointer;
 }
 input:disabled, textarea:disabled, select:disabled {
-  color: rgb(84, 84, 84);
+  color: light-dark(rgb(84, 84, 84), rgb(170, 170, 170));
   border-color: rgba(118, 118, 118, 0.3);
-  background-color: rgba(239, 239, 239, 0.3);
+  background-color: light-dark(rgba(239, 239, 239, 0.3), rgba(59, 59, 59, 0.3));
   cursor: default;
 }
 button:disabled, input[type=submit i]:disabled, input[type=button i]:disabled,
 input[type=reset i]:disabled {
-  color: rgba(16, 16, 16, 0.3);
-  border-color: rgba(118, 118, 118, 0.3);
-  background-color: rgba(239, 239, 239, 0.3);
+  color: light-dark(rgba(16, 16, 16, 0.3), rgba(255, 255, 255, 0.3));
+  border-color: light-dark(rgba(118, 118, 118, 0.3), rgba(195, 195, 195, 0.3));
+  background-color: light-dark(rgba(239, 239, 239, 0.3), rgba(19, 1, 1, 0.3));
 }
 input[type=checkbox i]:disabled, input[type=radio i]:disabled {
   border: none;

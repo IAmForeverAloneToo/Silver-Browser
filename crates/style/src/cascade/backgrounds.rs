@@ -374,7 +374,7 @@ pub(super) fn parse_background(
             }
             if index == last
                 && color_of.is_none()
-                && let Some(found) = super::color_value(part, bases.color)
+                && let Some(found) = super::color_value(part, bases.colors())
             {
                 color_of = Some(found);
                 at += 1;

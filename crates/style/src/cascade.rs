@@ -127,7 +127,7 @@ use crate::computed::{
 };
 use crate::custom::{self, CustomProperties, DataType, Substituted, Substitutions};
 use crate::invalidation::{Reach, SelectorFeatures, invalidate};
-use crate::media::Media;
+use crate::media::{ColorScheme, Media};
 use crate::page::{PagePosition, PageStyle};
 use crate::rule_set::{InForce, KeyframesInForce, RuleSet};
 use crate::selector_matching::{Matcher, PseudoElement, SelectorList, Specificity};
@@ -182,6 +182,13 @@ pub struct Styles {
     /// its computed `display` left as it is, as the reference browser
     /// leaves it (M25).
     pub scripting: bool,
+    /// The document's `color-scheme` meta element's value the styles
+    /// were cascaded with (gap batch E, D49).
+    page_scheme: Option<Arc<String>>,
+    /// The user's colour scheme the styles were cascaded with, where
+    /// some element's scheme was chosen by it: what a change of the
+    /// preference restyles (D49). `None` where none was.
+    preferred_dark: Option<bool>,
 }
 
 impl Styles {
@@ -678,6 +685,9 @@ impl Stylesheets {
     /// change of the user's preferences; a few comparisons a list.
     pub fn media_changed(&self, styles: &Styles, media: &Media) -> bool {
         self.answers(media) != styles.media
+            || styles
+                .preferred_dark
+                .is_some_and(|dark| dark != (media.preferences.color_scheme == ColorScheme::Dark))
     }
 
     /// What the `@page` rules in force under `media` say of a page at
@@ -741,8 +751,11 @@ impl Stylesheets {
         let substitutions = Substitutions::new(self.id);
         let resolution = Resolution {
             rem,
+            root: false,
+            page_scheme: None,
             context: &context,
             viewport_used: &viewport_used,
+            scheme_read: None,
             attributes: &[],
             substitutions: &substitutions,
         };
@@ -750,6 +763,7 @@ impl Stylesheets {
             em: rem,
             resolution: &resolution,
             color: Color::BLACK,
+            dark: false,
         };
         let mut style = PageStyle::default();
         for (.., declaration) in applied {
@@ -872,7 +886,14 @@ impl Stylesheets {
         }
         let invalidation = invalidate(document, &self.features, changes);
         let mut cascader = self.cascader(document, context);
-        if invalidation.everything || cascader.media != styles.media {
+        let preferred_dark = context.media.preferences.color_scheme == ColorScheme::Dark;
+        if invalidation.everything
+            || cascader.media != styles.media
+            || cascader.page_scheme != styles.page_scheme
+            || styles
+                .preferred_dark
+                .is_some_and(|dark| dark != preferred_dark)
+        {
             *styles = cascader.cascade(Some(styles));
             return Restyle::full(styles);
         }
@@ -974,6 +995,9 @@ impl Stylesheets {
             }
         }
         styles.uses_viewport_units |= cascader.viewport_used.get();
+        if cascader.scheme_read.get() {
+            styles.preferred_dark = Some(preferred_dark);
+        }
         let rem = first_element
             .and_then(|root| styles.get(root))
             .map_or(ComputedStyle::default().font_size_px, |s| s.font_size_px);
@@ -1320,8 +1344,11 @@ impl Recascader<'_> {
         };
         let resolution = Resolution {
             rem,
+            root: self.document.document_element() == Some(element),
+            page_scheme: cascader.page_scheme.as_deref().map(String::as_str),
             context: cascader.context,
             viewport_used: &cascader.viewport_used,
+            scheme_read: Some(&cascader.scheme_read),
             attributes: self.document.attrs(element).unwrap_or_default(),
             substitutions: &cascader.substitutions,
         };
@@ -1766,11 +1793,16 @@ struct Cascader<'a> {
     media: Vec<bool>,
     /// Set when a viewport unit is met.
     viewport_used: Cell<bool>,
+    /// Set when the user's colour scheme chose an element's (D49).
+    scheme_read: Cell<bool>,
     /// What the substitutions of this cascade share (M21.1).
     substitutions: Substitutions,
     /// The `@keyframes` rules in force by name, when the context runs
     /// animations (M22.2).
     keyframes: HashMap<&'a str, KeyframesInForce<'a>>,
+    /// The document's `color-scheme` meta element's value (gap batch E,
+    /// D49), what `normal` is.
+    page_scheme: Option<Arc<String>>,
 }
 
 impl<'a> Cascader<'a> {
@@ -1797,8 +1829,10 @@ impl<'a> Cascader<'a> {
             reads_attributes: HashMap::new(),
             sets_composited: !plain(),
             context,
+            page_scheme: page_scheme(document),
             media,
             viewport_used: Cell::new(false),
+            scheme_read: Cell::new(false),
             substitutions: Substitutions::new(sheets),
             keyframes: HashMap::new(),
         }
@@ -1828,8 +1862,11 @@ impl<'a> Cascader<'a> {
         let key = self.style_key(element, &matched, parent.style, rem);
         let resolution = Resolution {
             rem,
+            root: self.document.document_element() == Some(element),
+            page_scheme: self.page_scheme.as_deref().map(String::as_str),
             context: self.context,
             viewport_used: &self.viewport_used,
+            scheme_read: Some(&self.scheme_read),
             attributes: self.document.attrs(element).unwrap_or_default(),
             substitutions: &self.substitutions,
         };
@@ -1899,6 +1936,7 @@ impl<'a> Cascader<'a> {
                     em: style.font_size_px,
                     resolution: &resolution,
                     color: style.color,
+                    dark: style.dark,
                 };
                 animated.apply(
                     &mut style,
@@ -2163,10 +2201,12 @@ impl<'a> Cascader<'a> {
     fn cascade(&mut self, old: Option<&Styles>) -> Styles {
         let document = self.document;
         self.viewport_used.set(false);
+        self.scheme_read.set(false);
         let mut styles = Styles {
             rem: ComputedStyle::default().font_size_px,
             media: self.media.clone(),
             scripting: self.context.media.scripting,
+            page_scheme: self.page_scheme.clone(),
             ..Styles::default()
         };
         styles.set(document.root(), Computed::default());
@@ -2213,6 +2253,10 @@ impl<'a> Cascader<'a> {
             pending.extend(children.into_iter().rev());
         }
         styles.uses_viewport_units = self.viewport_used.get();
+        styles.preferred_dark = self
+            .scheme_read
+            .get()
+            .then_some(self.context.media.preferences.color_scheme == ColorScheme::Dark);
         // The animations and transitions of elements the cascade did not
         // reach are those of elements out of the document: cancelled.
         if let Some(animations) = self.context.animations {
@@ -2317,9 +2361,15 @@ fn changed_style(
 struct Resolution<'a> {
     /// The root element's font size, for `rem`.
     rem: f32,
+    /// Whether the style is the root element's (gap batch E).
+    root: bool,
+    /// The document's `color-scheme` meta element's value (D49).
+    page_scheme: Option<&'a str>,
     context: &'a CascadeContext<'a>,
     /// Set when a viewport unit is met.
     viewport_used: &'a Cell<bool>,
+    /// Set when the user's colour scheme chooses the element's (D49).
+    scheme_read: Option<&'a Cell<bool>>,
     /// The attributes of the element, or the originating element of the
     /// pseudo-element, the style is for: what `attr()` reads.
     attributes: &'a [(String, String)],
@@ -2337,6 +2387,18 @@ struct LengthBases<'a> {
     /// The element's computed `color`, which `currentcolor` is in the
     /// other properties (gap batch E).
     color: Color,
+    /// Whether the element uses the dark scheme (D49).
+    dark: bool,
+}
+
+impl LengthBases<'_> {
+    /// What the element's colours resolve against.
+    fn colors(&self) -> Colors {
+        Colors {
+            current: self.color,
+            dark: self.dark,
+        }
+    }
 }
 
 /// A style rule in force, ready to match: its parsed selectors, its
@@ -2724,22 +2786,50 @@ fn compute_style(
         }
     }
 
+    // `color-scheme` next (gap batch E, D49): the scheme the element's
+    // system colours and `light-dark()` resolve by.
+    for a in &sorted {
+        if a.decl.name != "color-scheme" || !target.applies("color-scheme") {
+            continue;
+        }
+        let scheme = match specified(a, style.custom.as_ref(), resolution) {
+            Specified::Written(value) => color_scheme_of(value, parent),
+            Specified::Substituted(value) => {
+                Some(color_scheme_of(&value, parent).unwrap_or(parent.color_scheme.clone()))
+            }
+            Specified::Invalid => Some(parent.color_scheme.clone()),
+            Specified::Ignored => None,
+        };
+        if let Some(scheme) = scheme {
+            style.color_scheme = scheme;
+        }
+    }
+    style.dark = uses_dark(
+        style.color_scheme.as_deref().map(String::as_str),
+        resolution,
+    );
+    // The root's `color` is the initial `CanvasText`, by its scheme.
+    if resolution.root {
+        style.color = crate::color::system("canvastext", style.dark).unwrap_or(Color::BLACK);
+    }
+
     // `color` next (gap batch E): `currentcolor` in every other
     // property is the element's computed `color`, its own `currentcolor`
     // the parent's.
     let mut current = style.color;
+    let dark = style.dark;
     for a in &sorted {
         if a.decl.name != "color" || !target.applies("color") {
             continue;
         }
         match specified(a, style.custom.as_ref(), resolution) {
             Specified::Written(value) => {
-                if let Some(c) = color_of_color(value, parent) {
+                if let Some(c) = color_of_color(value, parent, dark) {
                     current = c;
                 }
             }
             Specified::Substituted(value) => {
-                current = color_of_color(&value, parent).unwrap_or(parent.color);
+                current = color_of_color(&value, parent, dark).unwrap_or(parent.color);
             }
             Specified::Invalid => current = parent.color,
             Specified::Ignored => {}
@@ -2760,6 +2850,7 @@ fn compute_style(
             em: style.font_size_px,
             resolution,
             color,
+            dark: style.dark,
         };
         for (n, a) in sorted.iter().enumerate() {
             if n == important
@@ -2935,6 +3026,7 @@ fn declared_font_size(
         em: parent.font_size_px,
         resolution,
         color: parent.color,
+        dark: parent.dark,
     };
     let font_size = |value: &[Token]| match css_wide_keyword(value) {
         Some(CssWide::Initial) => Some(ComputedStyle::default().font_size_px),
@@ -3068,8 +3160,11 @@ fn with_default_bases<R>(f: impl FnOnce(&LengthBases<'_>) -> R) -> R {
     let substitutions = Substitutions::new(0);
     let resolution = Resolution {
         rem: 16.0,
+        root: false,
+        page_scheme: None,
         context: &context,
         viewport_used: &viewport_used,
+        scheme_read: None,
         attributes: &[],
         substitutions: &substitutions,
     };
@@ -3077,6 +3172,7 @@ fn with_default_bases<R>(f: impl FnOnce(&LengthBases<'_>) -> R) -> R {
         em: 16.0,
         resolution: &resolution,
         color: Color::BLACK,
+        dark: false,
     })
 }
 
@@ -3144,11 +3240,26 @@ fn apply_declaration(
     border_color_set: &mut [bool; 4],
 ) -> bool {
     if let Some(keyword) = css_wide_keyword(value) {
+        // `color`'s initial value is `CanvasText` by the scheme (D49).
+        if name == "color" && matches!(keyword, CssWide::Initial) {
+            style.color = crate::color::system("canvastext", bases.dark).unwrap_or(Color::BLACK);
+            return true;
+        }
         return apply_css_wide(style, name, keyword, parent, border_color_set);
     }
     match name {
-        "color" => set(&mut style.color, color_of_color(value, parent)),
-        "background-color" => set(&mut style.background_color, color_value(value, bases.color)),
+        "color" => set(&mut style.color, color_of_color(value, parent, bases.dark)),
+        "color-scheme" => match color_scheme_of(value, parent) {
+            Some(scheme) => {
+                style.color_scheme = scheme;
+                true
+            }
+            None => false,
+        },
+        "background-color" => set(
+            &mut style.background_color,
+            color_value(value, bases.colors()),
+        ),
         "background" => match backgrounds::parse_background(value, bases) {
             Some((color, layers)) => {
                 style.background_color = color;
@@ -3301,7 +3412,7 @@ fn apply_declaration(
         "border-right-width" => set_border_width(style, RIGHT, value, bases),
         "border-bottom-width" => set_border_width(style, BOTTOM, value, bases),
         "border-left-width" => set_border_width(style, LEFT, value, bases),
-        "border-color" => match parse_1_to_4(value, |g| parse_border_color(g, bases.color)) {
+        "border-color" => match parse_1_to_4(value, |g| parse_border_color(g, bases.colors())) {
             Some(values) => {
                 for (side, value) in values.into_iter().enumerate() {
                     write_border_color(style, side, value, border_color_set);
@@ -3310,14 +3421,16 @@ fn apply_declaration(
             }
             None => false,
         },
-        "border-top-color" => set_border_color(style, TOP, value, bases.color, border_color_set),
+        "border-top-color" => set_border_color(style, TOP, value, bases.colors(), border_color_set),
         "border-right-color" => {
-            set_border_color(style, RIGHT, value, bases.color, border_color_set)
+            set_border_color(style, RIGHT, value, bases.colors(), border_color_set)
         }
         "border-bottom-color" => {
-            set_border_color(style, BOTTOM, value, bases.color, border_color_set)
+            set_border_color(style, BOTTOM, value, bases.colors(), border_color_set)
         }
-        "border-left-color" => set_border_color(style, LEFT, value, bases.color, border_color_set),
+        "border-left-color" => {
+            set_border_color(style, LEFT, value, bases.colors(), border_color_set)
+        }
         "border-style" => set(
             &mut style.border_style,
             parse_1_to_4(value, parse_border_style),
@@ -3370,9 +3483,11 @@ fn apply_declaration(
         "outline" => apply_outline_shorthand(style, value, bases),
         "outline-style" => set_outline(style, parse_outline_style(value), |o, v| o.style = v),
         "outline-width" => set_outline(style, parse_border_width(value, bases), |o, v| o.width = v),
-        "outline-color" => set_outline(style, parse_outline_color(value, bases.color), |o, v| {
-            o.color = v
-        }),
+        "outline-color" => {
+            set_outline(style, parse_outline_color(value, bases.colors()), |o, v| {
+                o.color = v
+            })
+        }
         "outline-offset" => set_outline(style, parse_length_px(value, bases), |o, v| o.offset = v),
         "cursor" => set(&mut style.cursor, parse_cursor(value)),
         "empty-cells" => set(&mut style.empty_cells, parse_empty_cells(value)),
@@ -3750,7 +3865,7 @@ fn apply_declaration(
         }
         "text-decoration-color" => set_decoration(
             style,
-            decoration::parse_color_or_current(value, bases.color),
+            decoration::parse_color_or_current(value, bases.colors()),
             |d, v| d.color = v,
         ),
         "text-decoration-thickness" => {
@@ -4058,10 +4173,10 @@ fn set_border_color(
     style: &mut ComputedStyle,
     side: usize,
     tokens: &[Token],
-    current: Color,
+    colors: Colors,
     color_set: &mut [bool; 4],
 ) -> bool {
-    let Some(value) = parse_border_color(tokens, current) else {
+    let Some(value) = parse_border_color(tokens, colors) else {
         return false;
     };
     write_border_color(style, side, value, color_set);
@@ -4070,10 +4185,10 @@ fn set_border_color(
 
 /// A `border-*-color` value: a colour, or `None` for `currentcolor`
 /// (M33), which the cascade resolves once `color` is final.
-fn parse_border_color(tokens: &[Token], current: Color) -> Option<Option<Color>> {
+fn parse_border_color(tokens: &[Token], colors: Colors) -> Option<Option<Color>> {
     match single_ident(tokens) {
         Some(ident) if ident.eq_ignore_ascii_case("currentcolor") => Some(None),
-        _ => color_value(tokens, current).map(Some),
+        _ => color_value(tokens, colors).map(Some),
     }
 }
 
@@ -4162,6 +4277,7 @@ fn is_inherited(name: &str) -> bool {
     matches!(
         name,
         "color"
+            | "color-scheme"
             | "font-size"
             | "font-family"
             | "text-align"
@@ -4213,6 +4329,7 @@ fn apply_css_wide(
     let src = if from_parent { parent } else { &initial };
     match name {
         "color" => style.color = src.color,
+        "color-scheme" => style.color_scheme = src.color_scheme.clone(),
         "background-color" => style.background_color = src.background_color,
         "background" => {
             style.background_color = src.background_color;
@@ -4668,7 +4785,7 @@ fn apply_border_shorthand(
         {
             border_style = Some(s);
         } else if color.is_none()
-            && let Some(c) = parse_border_color(&g, bases.color)
+            && let Some(c) = parse_border_color(&g, bases.colors())
         {
             color = Some(c);
         } else {
@@ -5075,14 +5192,14 @@ fn parse_outline_style(tokens: &[Token]) -> Option<OutlineStyle> {
 /// `outline-color`: a colour, or `auto` or `currentcolor`, `None` (CSS
 /// UI 4 section 5.4); the reference browser's focus ring colour is
 /// `-webkit-focus-ring-color`.
-fn parse_outline_color(tokens: &[Token], current: Color) -> Option<Option<Color>> {
+fn parse_outline_color(tokens: &[Token], colors: Colors) -> Option<Option<Color>> {
     match single_ident(tokens) {
         Some(ident)
             if ident.eq_ignore_ascii_case("auto") || ident.eq_ignore_ascii_case("currentcolor") =>
         {
             Some(None)
         }
-        _ => color_value(tokens, current).map(Some),
+        _ => color_value(tokens, colors).map(Some),
     }
 }
 
@@ -5110,7 +5227,7 @@ fn apply_outline_shorthand(
         {
             outline_style = Some(s);
         } else if color.is_none()
-            && let Some(c) = parse_outline_color(&g, bases.color)
+            && let Some(c) = parse_outline_color(&g, bases.colors())
         {
             color = Some(c);
         } else {
@@ -5717,8 +5834,11 @@ pub(crate) fn keyframe_easing(tokens: &[Token]) -> Option<crate::easing::Easing>
     let initial = ComputedStyle::default().font_size_px;
     let resolution = Resolution {
         rem: initial,
+        root: false,
+        page_scheme: None,
         context: &context,
         viewport_used: &viewport_used,
+        scheme_read: None,
         attributes: &[],
         substitutions: &substitutions,
     };
@@ -5726,6 +5846,7 @@ pub(crate) fn keyframe_easing(tokens: &[Token]) -> Option<crate::easing::Easing>
         em: initial,
         resolution: &resolution,
         color: Color::BLACK,
+        dark: false,
     };
     motion::parse_easings(tokens, &bases)?.into_iter().next()
 }
@@ -5883,46 +6004,173 @@ fn parse_font_family(tokens: &[Token]) -> Option<String> {
     Some(families.join(", "))
 }
 
-/// A colour, `currentcolor` being `current`, in `color-mix()` too (gap
-/// batch E).
-pub(super) fn color_value(tokens: &[Token], current: Color) -> Option<Color> {
-    let tokens = trim(tokens);
-    if single_ident(tokens).is_some_and(|word| word.eq_ignore_ascii_case("currentcolor")) {
-        return Some(current);
-    }
-    if let [Token::Function(name), arguments @ .., Token::CloseParen] = tokens
-        && name.eq_ignore_ascii_case("color-mix")
-    {
-        return crate::color::parse_mix(arguments, &mut |part| color_value(part, current));
-    }
-    parse_color(tokens)
-}
-
-/// `color`'s value: its `currentcolor` the parent's colour; a CSS-wide
-/// keyword the parent's or the initial colour.
-fn color_of_color(tokens: &[Token], parent: &ComputedStyle) -> Option<Color> {
+/// `color-scheme`'s value (Color Adjust 1 section 2.1): `normal`, or
+/// one or more scheme words and `only` at most once, kept as written
+/// with `only` last; `None` where it is not one. A CSS-wide keyword is
+/// the parent's or `normal`.
+fn color_scheme_of(tokens: &[Token], parent: &ComputedStyle) -> Option<Option<Arc<String>>> {
     match css_wide_keyword(tokens) {
-        Some(CssWide::Initial) => Some(ComputedStyle::default().color),
+        Some(CssWide::Initial) => return Some(None),
+        Some(_) => return Some(parent.color_scheme.clone()),
+        None => {}
+    }
+    let mut words: Vec<&str> = Vec::new();
+    let mut only = false;
+    for token in tokens {
+        match token {
+            Token::Whitespace => {}
+            Token::Ident(word) if word.eq_ignore_ascii_case("only") && !only => only = true,
+            Token::Ident(word) => {
+                let lower = word.to_ascii_lowercase();
+                if matches!(lower.as_str(), "normal" | "only" | "default" | "revert")
+                    || words.len() >= MAX_SCHEME_WORDS
+                {
+                    return single_ident(tokens)
+                        .filter(|w| w.eq_ignore_ascii_case("normal"))
+                        .map(|_| None);
+                }
+                words.push(word);
+            }
+            _ => return None,
+        }
+    }
+    if words.is_empty() {
+        return None;
+    }
+    let mut text = words.join(" ");
+    if only {
+        text.push_str(" only");
+    }
+    Some(Some(Arc::new(text)))
+}
+
+/// The page's supported colour schemes (HTML 4.2.5.4): the first
+/// `meta` named `color-scheme` in the document's head whose content is
+/// a `color-scheme` value other than `normal`.
+fn page_scheme(document: &Document) -> Option<Arc<String>> {
+    let root = document.document_element()?;
+    let head = document
+        .element_children(root)
+        .find(|&n| document.tag(n) == Some("head"))?;
+    document.subtree(head).find_map(|n| {
+        if document.tag(n) != Some("meta")
+            || !document
+                .attr(n, "name")
+                .is_some_and(|name| name.trim().eq_ignore_ascii_case("color-scheme"))
+        {
+            return None;
+        }
+        let tokens = css::tokenize(document.attr(n, "content")?);
+        css_wide_keyword(&tokens)
+            .is_none()
+            .then(|| color_scheme_of(&tokens, &ComputedStyle::default()))
+            .flatten()
+            .flatten()
+    })
+}
+
+/// The most words a `color-scheme` keeps.
+const MAX_SCHEME_WORDS: usize = 16;
+
+/// Whether an element of `scheme` uses the dark scheme (D49): it names
+/// `dark`, and the user prefers it or it names no `light`; `normal` is
+/// the page's, its `color-scheme` meta element's.
+fn uses_dark(scheme: Option<&str>, resolution: &Resolution<'_>) -> bool {
+    let Some(words) = scheme.or(resolution.page_scheme) else {
+        return false;
+    };
+    let has = |name: &str| words.split(' ').any(|w| w.eq_ignore_ascii_case(name));
+    if !has("dark") {
+        return false;
+    }
+    if !has("light") {
+        return true;
+    }
+    if let Some(read) = resolution.scheme_read {
+        read.set(true);
+    }
+    resolution.context.media.preferences.color_scheme == ColorScheme::Dark
+}
+
+/// What a colour resolves against (gap batch E): the element's
+/// `currentcolor`, and whether it uses the dark scheme (D49).
+#[derive(Clone, Copy)]
+pub(super) struct Colors {
+    pub(super) current: Color,
+    pub(super) dark: bool,
+}
+
+/// A colour, `currentcolor` being `colors.current`, the system colours and
+/// `light-dark()` by its scheme, in `color-mix()` too (gap batch E).
+pub(super) fn color_value(tokens: &[Token], colors: Colors) -> Option<Color> {
+    color_with(tokens, Some(colors.current), colors.dark)
+}
+
+/// `color`'s value: its `currentcolor` the parent's colour; `inherit`
+/// the parent's, `initial` `CanvasText` by the element's scheme (D49).
+fn color_of_color(tokens: &[Token], parent: &ComputedStyle, dark: bool) -> Option<Color> {
+    match css_wide_keyword(tokens) {
+        Some(CssWide::Initial) => crate::color::system("canvastext", dark),
         Some(_) => Some(parent.color),
-        None => color_value(tokens, parent.color),
+        None => color_with(tokens, Some(parent.color), dark),
     }
 }
 
+/// A colour, without an element: no `currentcolor`, the light scheme.
 pub(crate) fn parse_color(tokens: &[Token]) -> Option<Color> {
-    if let [Token::Function(name), arguments @ .., Token::CloseParen] = trim(tokens) {
+    color_with(tokens, None, false)
+}
+
+fn color_with(tokens: &[Token], current: Option<Color>, dark: bool) -> Option<Color> {
+    let tokens = trim(tokens);
+    if let [Token::Function(name), arguments @ .., Token::CloseParen] = tokens {
         return match name.to_ascii_lowercase().as_str() {
             "rgb" | "rgba" => parse_rgb(arguments),
             "hsl" | "hsla" => parse_hsl(arguments, false),
             "hwb" => parse_hsl(arguments, true),
-            "color-mix" => crate::color::parse_mix(arguments, &mut |part| parse_color(part)),
+            "color-mix" => {
+                crate::color::parse_mix(arguments, &mut |part| color_with(part, current, dark))
+            }
+            // `light-dark()` (Color 5 section 5): two colours, the one
+            // of the element's scheme taken.
+            "light-dark" => {
+                let parts = split_top_level_commas(arguments);
+                let [light, darker] = parts.as_slice() else {
+                    return None;
+                };
+                let light = color_with(light, current, dark)?;
+                let darker = color_with(darker, current, dark)?;
+                Some(if dark { darker } else { light })
+            }
             other => crate::color::parse_function(other, arguments),
         };
     }
     match single_token(tokens)? {
         Token::Hash { value, .. } => parse_hex_color(value),
-        Token::Ident(name) => named_color(name),
+        Token::Ident(name) if name.eq_ignore_ascii_case("currentcolor") => current,
+        Token::Ident(name) => named_color(name).or_else(|| crate::color::system(name, dark)),
         _ => None,
     }
+}
+
+/// `tokens` split at their commas outside any function or parentheses.
+fn split_top_level_commas(tokens: &[Token]) -> Vec<&[Token]> {
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    for (i, token) in tokens.iter().enumerate() {
+        match token {
+            Token::Function(_) | Token::OpenParen => depth += 1,
+            Token::CloseParen => depth = depth.saturating_sub(1),
+            Token::Comma if depth == 0 => {
+                out.push(&tokens[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&tokens[start..]);
+    out
 }
 
 /// The arguments of `rgb()` or `rgba()`, the same function (css-color-4
@@ -6751,8 +6999,11 @@ mod tests {
         let substitutions = Substitutions::new(0);
         let resolution = Resolution {
             rem: 16.0,
+            root: false,
+            page_scheme: None,
             context: &context,
             viewport_used: &viewport_used,
+            scheme_read: None,
             attributes: &[],
             substitutions: &substitutions,
         };
@@ -6760,6 +7011,7 @@ mod tests {
             em: 16.0,
             resolution: &resolution,
             color: Color::BLACK,
+            dark: false,
         })
     }
 
@@ -7744,6 +7996,178 @@ mod tests {
             value(&p, "color").as_deref(),
             Some("oklch(0.6 0.2 40 / 0.5)")
         );
+    }
+
+    /// The styles of `html` under `css`, the user preferring `scheme`.
+    fn schemed(html: &str, css: &str, scheme: crate::ColorScheme) -> (Document, Styles) {
+        let document = Document::from_node(&html::parse_document(html).expect("never fails"));
+        let mut media = Media::screen(800.0, 600.0);
+        media.preferences.color_scheme = scheme;
+        let context = CascadeContext {
+            media,
+            ..CascadeContext::default()
+        };
+        let styles = cascade_document(&document, &[sheet(css)], &context);
+        (document, styles)
+    }
+
+    #[test]
+    fn the_colour_scheme_decides_system_colours_light_dark_and_the_roots_colour() {
+        use crate::ColorScheme::{Dark, Light};
+        let value = |styles: &Styles, document: &Document, tag: &str, name: &str| {
+            crate::serialize::computed_value(
+                styles.get(first(document, tag)).expect("styled"),
+                name,
+            )
+            .unwrap()
+        };
+        // Gap batch E, D49: the reference browser's values.
+        let css = "#d { color-scheme: dark } \
+                   p { background-color: Canvas; border-top-color: light-dark(red, blue); \
+                       outline-color: LinkText }";
+        let html = "<div id=d><p>x</p></div><span><p>y</p></span>";
+        let (document, styles) = schemed(html, css, Light);
+        let p = styles.get(first(&document, "p")).unwrap();
+        assert!(p.dark);
+        assert_eq!(p.background_color, Color::rgb8(18, 18, 18));
+        assert_eq!(p.border_color[TOP], Color::rgb8(0, 0, 255));
+        assert_eq!(p.outline_color(), Color::rgb8(158, 158, 255));
+        // An element's scheme leaves the colour it inherits.
+        assert_eq!(p.color, Color::BLACK);
+        assert_eq!(value(&styles, &document, "div", "color-scheme"), "dark");
+        assert_eq!(value(&styles, &document, "span", "color-scheme"), "normal");
+        // Words as written, `only` last; what is not a value is dropped.
+        for (written, computed) in [
+            ("light dark", "light dark"),
+            ("only dark", "dark only"),
+            ("dark light foo", "dark light foo"),
+            ("normal", "normal"),
+            ("normal dark", "normal"),
+            ("only", "normal"),
+            ("dark only only", "normal"),
+        ] {
+            let (document, styles) = schemed(
+                "<div>x</div>",
+                &format!("div {{ color-scheme: {written} }}"),
+                Light,
+            );
+            assert_eq!(
+                value(&styles, &document, "div", "color-scheme"),
+                computed,
+                "{written}"
+            );
+        }
+        // The root's: its `color` is `CanvasText` by it.
+        let (document, styles) = schemed("<p>x</p>", ":root { color-scheme: dark }", Light);
+        assert_eq!(
+            value(&styles, &document, "p", "color"),
+            "rgb(255, 255, 255)"
+        );
+        // `light dark` is the user's choice.
+        let css = ":root { color-scheme: light dark } p { background: light-dark(red, blue) }";
+        let (document, styles) = schemed("<p>x</p>", css, Light);
+        assert_eq!(
+            value(&styles, &document, "p", "background-color"),
+            "rgb(255, 0, 0)"
+        );
+        assert_eq!(value(&styles, &document, "p", "color"), "rgb(0, 0, 0)");
+        let (document, styles) = schemed("<p>x</p>", css, Dark);
+        assert_eq!(
+            value(&styles, &document, "p", "background-color"),
+            "rgb(0, 0, 255)"
+        );
+        assert_eq!(
+            value(&styles, &document, "p", "color"),
+            "rgb(255, 255, 255)"
+        );
+        // `normal` is the page's, its meta element's; the property wins.
+        let html = "<head><meta name=color-scheme content='dark'></head><p>x</p>";
+        let (document, styles) = schemed(html, "", Light);
+        assert_eq!(
+            value(&styles, &document, "p", "color"),
+            "rgb(255, 255, 255)"
+        );
+        let (document, styles) = schemed(html, ":root { color-scheme: light }", Light);
+        assert_eq!(value(&styles, &document, "p", "color"), "rgb(0, 0, 0)");
+        let html = "<head><meta name=color-scheme content='light dark'></head><p>x</p>";
+        let (document, styles) = schemed(html, "", Light);
+        assert_eq!(value(&styles, &document, "p", "color"), "rgb(0, 0, 0)");
+        // `color: initial` is `CanvasText` by the element's scheme.
+        let (document, styles) = schemed(
+            "<p>x</p>",
+            "p { color-scheme: dark; color: initial }",
+            Light,
+        );
+        assert_eq!(
+            value(&styles, &document, "p", "color"),
+            "rgb(255, 255, 255)"
+        );
+    }
+
+    #[test]
+    fn a_change_of_the_users_scheme_is_a_change_of_media() {
+        // D49: `color-scheme` reads it with no `@media` rule to.
+        let document = Document::from_node(&html::parse_document("<p>x</p>").expect("parses"));
+        let sheets = Stylesheets::new(vec![sheet(":root { color-scheme: light dark }")]);
+        let light = Media::screen(800.0, 600.0);
+        let mut dark = light;
+        dark.preferences.color_scheme = crate::ColorScheme::Dark;
+        let context = CascadeContext {
+            media: light,
+            ..CascadeContext::default()
+        };
+        let styles = sheets.cascade(&document, &context);
+        assert!(!sheets.media_changed(&styles, &light));
+        assert!(sheets.media_changed(&styles, &dark));
+        // A page whose schemes the preference chooses none of is left be.
+        let sheets = Stylesheets::new(vec![sheet(":root { color-scheme: dark }")]);
+        let styles = sheets.cascade(&document, &context);
+        assert!(!sheets.media_changed(&styles, &dark));
+    }
+
+    #[test]
+    fn dark_controls_and_links_take_the_reference_browsers_dark_colours() {
+        let html = "<div style='color-scheme: dark'><input id=i><button id=b>b</button>\
+                    <input id=dis disabled><button id=bd disabled>x</button><a href=x>a</a></div>\
+                    <input id=li><button id=lb>b</button>";
+        let (document, styles) = schemed(html, "", crate::ColorScheme::Light);
+        let of = |id: &str| {
+            let node = document
+                .subtree(document.root())
+                .find(|&n| document.attr(n, "id") == Some(id))
+                .unwrap_or_else(|| panic!("#{id}"));
+            let style = styles.get(node).expect("styled");
+            ["color", "background-color", "border-top-color"]
+                .map(|name| crate::serialize::computed_value(style, name).unwrap())
+                .join("; ")
+        };
+        assert_eq!(
+            of("i"),
+            "rgb(255, 255, 255); rgb(59, 59, 59); rgb(133, 133, 133)"
+        );
+        assert_eq!(
+            of("b"),
+            "rgb(255, 255, 255); rgb(107, 107, 107); rgb(255, 255, 255)"
+        );
+        assert_eq!(
+            of("dis"),
+            "rgb(170, 170, 170); rgba(59, 59, 59, 0.3); rgba(118, 118, 118, 0.3)"
+        );
+        assert_eq!(
+            of("bd"),
+            "rgba(255, 255, 255, 0.3); rgba(19, 1, 1, 0.3); rgba(195, 195, 195, 0.3)"
+        );
+        // The light ones are what they were (M26.7).
+        assert_eq!(
+            of("li"),
+            "rgb(0, 0, 0); rgb(255, 255, 255); rgb(118, 118, 118)"
+        );
+        assert_eq!(
+            of("lb"),
+            "rgb(0, 0, 0); rgb(240, 240, 240); rgb(118, 118, 118)"
+        );
+        let a = styles.get(first(&document, "a")).unwrap();
+        assert_eq!(a.color, Color::rgb8(158, 158, 255));
     }
 
     #[test]

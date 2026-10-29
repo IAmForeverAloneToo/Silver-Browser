@@ -3147,6 +3147,13 @@ pub struct ComputedStyle {
     pub outline: Option<Arc<Outline>>,
     /// `cursor` (M26.4), inherited.
     pub cursor: Cursor,
+    /// Whether the element uses the dark colour scheme (gap batch E,
+    /// D49): what its system colours and `light-dark()` resolve by, its
+    /// `color-scheme` and the user's preference deciding.
+    pub dark: bool,
+    /// `color-scheme` (D49), inherited: its words as written, `only`
+    /// last; `None` is `normal`.
+    pub color_scheme: Option<Arc<String>>,
     /// The break properties, `orphans`, `widows` and
     /// `print-color-adjust` (M20), behind one pointer likewise; `None` is
     /// every initial value. Read through [`ComputedStyle::fragmentation`].
@@ -3258,6 +3265,8 @@ impl Default for ComputedStyle {
             effects: None,
             outline: None,
             cursor: Cursor::Auto,
+            dark: false,
+            color_scheme: None,
             fragmentation: None,
             custom: None,
             lists: None,
@@ -3547,6 +3556,8 @@ impl ComputedStyle {
             border_spacing: from.border_spacing,
             caption_side: from.caption_side,
             cursor: from.cursor,
+            dark: from.dark,
+            color_scheme: from.color_scheme.clone(),
             empty_cells: from.empty_cells,
             quotes: from.quotes.clone(),
             fragmentation: inherited_fragmentation(from),
@@ -3719,9 +3730,11 @@ mod tests {
         // before it, and seven bytes free now. Colours that keep the
         // space they were written in (gap batch E, D48) grew each of the
         // six from 16 bytes to 32, to hold the components beside the
-        // sRGB channels drawing reads: 704 before them. Growing this is a
-        // decision, not an accident; say why where the number changes.
-        assert_eq!(std::mem::size_of::<ComputedStyle>(), 800);
+        // sRGB channels drawing reads: 704 before them. `color-scheme`
+        // and the scheme it gives (D49), a pointer and a byte in the
+        // padding: 800 before them. Growing this is a decision, not an
+        // accident; say why where the number changes.
+        assert_eq!(std::mem::size_of::<ComputedStyle>(), 808);
         assert_eq!(ComputedStyle::default().grid, None);
         assert_eq!(*ComputedStyle::default().grid(), GridStyle::default());
         assert_eq!(ComputedStyle::default().effects, None);

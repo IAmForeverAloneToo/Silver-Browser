@@ -248,6 +248,65 @@ impl PartialEq for Color {
     }
 }
 
+/// The system colours (css-color-4 section 6.2, and appendix A's
+/// deprecated ones), by name in ASCII order for a binary search, light
+/// then dark (gap batch E, D49): the reference browser's values.
+const SYSTEM: [(&str, [u8; 3], [u8; 3]); 42] = [
+    ("accentcolor", [0, 117, 255], [0, 117, 255]),
+    ("accentcolortext", [255, 255, 255], [255, 255, 255]),
+    ("activeborder", [0, 0, 0], [255, 255, 255]),
+    ("activecaption", [255, 255, 255], [18, 18, 18]),
+    ("activetext", [0, 102, 204], [255, 0, 0]),
+    ("appworkspace", [255, 255, 255], [18, 18, 18]),
+    ("background", [255, 255, 255], [18, 18, 18]),
+    ("buttonborder", [0, 0, 0], [255, 255, 255]),
+    ("buttonface", [240, 240, 240], [107, 107, 107]),
+    ("buttonhighlight", [240, 240, 240], [107, 107, 107]),
+    ("buttonshadow", [240, 240, 240], [107, 107, 107]),
+    ("buttontext", [0, 0, 0], [255, 255, 255]),
+    ("canvas", [255, 255, 255], [18, 18, 18]),
+    ("canvastext", [0, 0, 0], [255, 255, 255]),
+    ("captiontext", [0, 0, 0], [255, 255, 255]),
+    ("field", [255, 255, 255], [59, 59, 59]),
+    ("fieldtext", [0, 0, 0], [255, 255, 255]),
+    ("graytext", [109, 109, 109], [128, 128, 128]),
+    ("highlight", [0, 120, 215], [25, 103, 210]),
+    ("highlighttext", [255, 255, 255], [255, 255, 255]),
+    ("inactiveborder", [0, 0, 0], [255, 255, 255]),
+    ("inactivecaption", [255, 255, 255], [18, 18, 18]),
+    ("inactivecaptiontext", [128, 128, 128], [128, 128, 128]),
+    ("infobackground", [255, 255, 255], [18, 18, 18]),
+    ("infotext", [0, 0, 0], [255, 255, 255]),
+    ("linktext", [0, 102, 204], [158, 158, 255]),
+    ("mark", [255, 255, 0], [255, 255, 0]),
+    ("marktext", [0, 0, 0], [0, 0, 0]),
+    ("menu", [255, 255, 255], [18, 18, 18]),
+    ("menutext", [0, 0, 0], [255, 255, 255]),
+    ("scrollbar", [255, 255, 255], [18, 18, 18]),
+    ("selecteditem", [25, 103, 210], [153, 200, 255]),
+    ("selecteditemtext", [255, 255, 255], [59, 59, 59]),
+    ("threeddarkshadow", [0, 0, 0], [255, 255, 255]),
+    ("threedface", [240, 240, 240], [107, 107, 107]),
+    ("threedhighlight", [0, 0, 0], [255, 255, 255]),
+    ("threedlightshadow", [0, 0, 0], [255, 255, 255]),
+    ("threedshadow", [0, 0, 0], [255, 255, 255]),
+    ("visitedtext", [0, 102, 204], [208, 173, 240]),
+    ("window", [255, 255, 255], [18, 18, 18]),
+    ("windowframe", [0, 0, 0], [255, 255, 255]),
+    ("windowtext", [0, 0, 0], [255, 255, 255]),
+];
+
+/// The system colour `name` is, by the light or the dark scheme.
+pub fn system(name: &str, dark: bool) -> Option<Color> {
+    let lower = name.to_ascii_lowercase();
+    let at = SYSTEM
+        .binary_search_by(|(n, ..)| n.cmp(&lower.as_str()))
+        .ok()?;
+    let (_, light, dusk) = SYSTEM[at];
+    let [r, g, b] = if dark { dusk } else { light };
+    Some(Color::rgb8(r, g, b))
+}
+
 type Matrix = [[f64; 3]; 3];
 
 fn multiply(m: &Matrix, v: [f64; 3]) -> [f64; 3] {
