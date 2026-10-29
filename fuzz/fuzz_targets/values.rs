@@ -21,7 +21,10 @@
 //!   counter style, and the extremes of the range written in each name
 //!   among its tokens, are no longer than
 //!   [`style::counter_style::MAX_REPRESENTATION`] code points, their
-//!   markers no more than their styles' prefixes and suffixes longer.
+//!   markers no more than their styles' prefixes and suffixes longer;
+//! - each colour function among the sheet's tokens (gap batch E) is
+//!   finite in sRGB, and one of a space past the legacy ones serializes
+//!   to text that parses to the same space and components.
 
 #![no_main]
 #![forbid(unsafe_code)]
@@ -156,6 +159,40 @@ fn math_functions(tokens: &[Token]) {
     }
 }
 
+fn colors(tokens: &[Token]) {
+    let starts = (0..tokens.len())
+        .filter(|&i| matches!(tokens[i], Token::Function(_)))
+        .take(64);
+    for start in starts {
+        let function = function_at(tokens, start);
+        let Some(c) = style::color::parse(function) else {
+            continue;
+        };
+        assert!(
+            [c.r, c.g, c.b].iter().all(|v| v.is_finite()) && (0.0..=1.0).contains(&c.a),
+            "{c:?}"
+        );
+        if c.is_legacy() {
+            continue;
+        }
+        let text = style::color::serialize(&c);
+        let again = style::parse_color_text(&text).unwrap_or_else(|| panic!("{text}"));
+        assert_eq!(again.space(), c.space(), "{text}");
+        for (x, y) in c.components().iter().zip(again.components()) {
+            match (x, y) {
+                (Some(x), Some(y)) => {
+                    assert!(
+                        (x - y).abs() <= 1e-4_f32.max(x.abs() * 1e-4),
+                        "{text}: {x} {y}"
+                    )
+                }
+                (None, None) => {}
+                _ => panic!("{text}: none lost"),
+            }
+        }
+    }
+}
+
 /// Holds `style`'s custom properties and lengths to their bounds.
 fn check(style: &ComputedStyle) {
     if let Some(custom) = &style.custom {
@@ -275,6 +312,7 @@ fuzz_target!(|data: &[u8]| {
     let source = parts.next().unwrap_or_default();
     let tokens = css::tokenize(source);
     math_functions(&tokens);
+    colors(&tokens);
     counter_styles(&tokens);
 
     let Ok(sheet) = css::parse_stylesheet(source) else {

@@ -749,6 +749,7 @@ impl Stylesheets {
         let bases = LengthBases {
             em: rem,
             resolution: &resolution,
+            color: Color::BLACK,
         };
         let mut style = PageStyle::default();
         for (.., declaration) in applied {
@@ -1897,6 +1898,7 @@ impl<'a> Cascader<'a> {
                 let bases = LengthBases {
                     em: style.font_size_px,
                     resolution: &resolution,
+                    color: style.color,
                 };
                 animated.apply(
                     &mut style,
@@ -2332,6 +2334,9 @@ struct Resolution<'a> {
 struct LengthBases<'a> {
     em: f32,
     resolution: &'a Resolution<'a>,
+    /// The element's computed `color`, which `currentcolor` is in the
+    /// other properties (gap batch E).
+    color: Color,
 }
 
 /// A style rule in force, ready to match: its parsed selectors, its
@@ -2719,90 +2724,108 @@ fn compute_style(
         }
     }
 
-    let bases = LengthBases {
-        em: style.font_size_px,
-        resolution,
-    };
-    let mut border_color_set = [false; 4];
-    for (n, a) in sorted.iter().enumerate() {
-        if n == important
-            && let Some(animated) = animated
-        {
-            animated.apply(&mut style, parent, target, &bases, &mut border_color_set);
-        }
-        let name = canonical_name(&a.decl.name);
-        if custom::is_custom_property_name(name) || !target.applies(name) {
+    // `color` next (gap batch E): `currentcolor` in every other
+    // property is the element's computed `color`, its own `currentcolor`
+    // the parent's.
+    let mut current = style.color;
+    for a in &sorted {
+        if a.decl.name != "color" || !target.applies("color") {
             continue;
         }
         match specified(a, style.custom.as_ref(), resolution) {
             Specified::Written(value) => {
-                apply_declaration(
-                    &mut style,
-                    name,
-                    value,
-                    &bases,
-                    parent,
-                    &mut border_color_set,
-                );
-            }
-            // A value substituted that its property does not take is
-            // invalid at computed-value time, the property `unset` — its
-            // inherited or initial value, not a value it beat in the
-            // cascade (Values 5 Appendix A). A shorthand leaves each of
-            // its longhands so.
-            Specified::Substituted(value) => {
-                if !apply_declaration(
-                    &mut style,
-                    name,
-                    &value,
-                    &bases,
-                    parent,
-                    &mut border_color_set,
-                ) {
-                    apply_css_wide(
-                        &mut style,
-                        name,
-                        CssWide::Unset,
-                        parent,
-                        &mut border_color_set,
-                    );
+                if let Some(c) = color_of_color(value, parent) {
+                    current = c;
                 }
             }
-            Specified::Invalid => {
-                apply_css_wide(
-                    &mut style,
-                    name,
-                    CssWide::Unset,
-                    parent,
-                    &mut border_color_set,
-                );
+            Specified::Substituted(value) => {
+                current = color_of_color(&value, parent).unwrap_or(parent.color);
             }
+            Specified::Invalid => current = parent.color,
             Specified::Ignored => {}
         }
     }
-    if important == sorted.len()
-        && let Some(animated) = animated
-    {
-        animated.apply(&mut style, parent, target, &bases, &mut border_color_set);
-    }
-    for transition in transitioned {
-        if let (Property::Longhand(longhand), Value::Style(start), Value::Style(end)) =
-            (&transition.property, &transition.start, &transition.end)
-            && *longhand != Longhand::FontSize
-            && target.applies(longhand.name())
-        {
-            animate::blend(*longhand, start, end, transition.progress, &mut style);
-            let side = match longhand {
-                Longhand::BorderTopColor => Some(TOP),
-                Longhand::BorderRightColor => Some(RIGHT),
-                Longhand::BorderBottomColor => Some(BOTTOM),
-                Longhand::BorderLeftColor => Some(LEFT),
-                _ => None,
-            };
-            if let Some(side) = side {
-                border_color_set[side] = true;
+    // Kept only where an animation or a transition may move `color`.
+    let moves = animated.is_some()
+        || transitioned.iter().any(|t| {
+            matches!(
+                t.property,
+                Property::Longhand(Longhand::Color) | Property::Custom(_)
+            )
+        });
+    let start = moves.then(|| style.clone());
+    let mut border_color_set = [false; 4];
+    let apply_all = |style: &mut ComputedStyle, border_color_set: &mut [bool; 4], color| {
+        let bases = LengthBases {
+            em: style.font_size_px,
+            resolution,
+            color,
+        };
+        for (n, a) in sorted.iter().enumerate() {
+            if n == important
+                && let Some(animated) = animated
+            {
+                animated.apply(style, parent, target, &bases, border_color_set);
+            }
+            let name = canonical_name(&a.decl.name);
+            if custom::is_custom_property_name(name) || !target.applies(name) {
+                continue;
+            }
+            match specified(a, style.custom.as_ref(), resolution) {
+                Specified::Written(value) => {
+                    apply_declaration(style, name, value, &bases, parent, border_color_set);
+                }
+                // A value substituted that its property does not take is
+                // invalid at computed-value time, the property `unset`: its
+                // inherited or initial value, not a value it beat in the
+                // cascade (Values 5 Appendix A). A shorthand leaves each of
+                // its longhands so.
+                Specified::Substituted(value) => {
+                    if !apply_declaration(style, name, &value, &bases, parent, border_color_set) {
+                        apply_css_wide(style, name, CssWide::Unset, parent, border_color_set);
+                    }
+                }
+                Specified::Invalid => {
+                    apply_css_wide(style, name, CssWide::Unset, parent, border_color_set);
+                }
+                Specified::Ignored => {}
             }
         }
+        if important == sorted.len()
+            && let Some(animated) = animated
+        {
+            animated.apply(style, parent, target, &bases, border_color_set);
+        }
+        for transition in transitioned {
+            if let (Property::Longhand(longhand), Value::Style(start), Value::Style(end)) =
+                (&transition.property, &transition.start, &transition.end)
+                && *longhand != Longhand::FontSize
+                && target.applies(longhand.name())
+            {
+                animate::blend(*longhand, start, end, transition.progress, style);
+                let side = match longhand {
+                    Longhand::BorderTopColor => Some(TOP),
+                    Longhand::BorderRightColor => Some(RIGHT),
+                    Longhand::BorderBottomColor => Some(BOTTOM),
+                    Longhand::BorderLeftColor => Some(LEFT),
+                    _ => None,
+                };
+                if let Some(side) = side {
+                    border_color_set[side] = true;
+                }
+            }
+        }
+    };
+    apply_all(&mut style, &mut border_color_set, current);
+    // An animation or a transition of `color` changes what
+    // `currentcolor` is: the rest are computed again with it.
+    if let Some(start) = start
+        && style.color != current
+    {
+        let color = style.color;
+        style = start;
+        border_color_set = [false; 4];
+        apply_all(&mut style, &mut border_color_set, color);
     }
     // `normal` computes to `none` on `::before` and `::after`. On an
     // element `content` is an image alone, which replaces what it shows
@@ -2911,6 +2934,7 @@ fn declared_font_size(
     let parent_bases = LengthBases {
         em: parent.font_size_px,
         resolution,
+        color: parent.color,
     };
     let font_size = |value: &[Token]| match css_wide_keyword(value) {
         Some(CssWide::Initial) => Some(ComputedStyle::default().font_size_px),
@@ -3052,6 +3076,7 @@ fn with_default_bases<R>(f: impl FnOnce(&LengthBases<'_>) -> R) -> R {
     f(&LengthBases {
         em: 16.0,
         resolution: &resolution,
+        color: Color::BLACK,
     })
 }
 
@@ -3122,8 +3147,8 @@ fn apply_declaration(
         return apply_css_wide(style, name, keyword, parent, border_color_set);
     }
     match name {
-        "color" => set(&mut style.color, parse_color(value)),
-        "background-color" => set(&mut style.background_color, parse_color(value)),
+        "color" => set(&mut style.color, color_of_color(value, parent)),
+        "background-color" => set(&mut style.background_color, color_value(value, bases.color)),
         "background" => match backgrounds::parse_background(value, bases) {
             Some((color, layers)) => {
                 style.background_color = color;
@@ -3276,7 +3301,7 @@ fn apply_declaration(
         "border-right-width" => set_border_width(style, RIGHT, value, bases),
         "border-bottom-width" => set_border_width(style, BOTTOM, value, bases),
         "border-left-width" => set_border_width(style, LEFT, value, bases),
-        "border-color" => match parse_1_to_4(value, parse_border_color) {
+        "border-color" => match parse_1_to_4(value, |g| parse_border_color(g, bases.color)) {
             Some(values) => {
                 for (side, value) in values.into_iter().enumerate() {
                     write_border_color(style, side, value, border_color_set);
@@ -3285,10 +3310,14 @@ fn apply_declaration(
             }
             None => false,
         },
-        "border-top-color" => set_border_color(style, TOP, value, border_color_set),
-        "border-right-color" => set_border_color(style, RIGHT, value, border_color_set),
-        "border-bottom-color" => set_border_color(style, BOTTOM, value, border_color_set),
-        "border-left-color" => set_border_color(style, LEFT, value, border_color_set),
+        "border-top-color" => set_border_color(style, TOP, value, bases.color, border_color_set),
+        "border-right-color" => {
+            set_border_color(style, RIGHT, value, bases.color, border_color_set)
+        }
+        "border-bottom-color" => {
+            set_border_color(style, BOTTOM, value, bases.color, border_color_set)
+        }
+        "border-left-color" => set_border_color(style, LEFT, value, bases.color, border_color_set),
         "border-style" => set(
             &mut style.border_style,
             parse_1_to_4(value, parse_border_style),
@@ -3341,7 +3370,9 @@ fn apply_declaration(
         "outline" => apply_outline_shorthand(style, value, bases),
         "outline-style" => set_outline(style, parse_outline_style(value), |o, v| o.style = v),
         "outline-width" => set_outline(style, parse_border_width(value, bases), |o, v| o.width = v),
-        "outline-color" => set_outline(style, parse_outline_color(value), |o, v| o.color = v),
+        "outline-color" => set_outline(style, parse_outline_color(value, bases.color), |o, v| {
+            o.color = v
+        }),
         "outline-offset" => set_outline(style, parse_length_px(value, bases), |o, v| o.offset = v),
         "cursor" => set(&mut style.cursor, parse_cursor(value)),
         "empty-cells" => set(&mut style.empty_cells, parse_empty_cells(value)),
@@ -3717,11 +3748,11 @@ fn apply_declaration(
         "text-decoration-style" => {
             set_decoration(style, decoration::parse_style(value), |d, v| d.style = v)
         }
-        "text-decoration-color" => {
-            set_decoration(style, decoration::parse_color_or_current(value), |d, v| {
-                d.color = v
-            })
-        }
+        "text-decoration-color" => set_decoration(
+            style,
+            decoration::parse_color_or_current(value, bases.color),
+            |d, v| d.color = v,
+        ),
         "text-decoration-thickness" => {
             set_decoration(style, decoration::parse_thickness(value, bases), |d, v| {
                 d.thickness = v
@@ -4027,9 +4058,10 @@ fn set_border_color(
     style: &mut ComputedStyle,
     side: usize,
     tokens: &[Token],
+    current: Color,
     color_set: &mut [bool; 4],
 ) -> bool {
-    let Some(value) = parse_border_color(tokens) else {
+    let Some(value) = parse_border_color(tokens, current) else {
         return false;
     };
     write_border_color(style, side, value, color_set);
@@ -4038,10 +4070,10 @@ fn set_border_color(
 
 /// A `border-*-color` value: a colour, or `None` for `currentcolor`
 /// (M33), which the cascade resolves once `color` is final.
-fn parse_border_color(tokens: &[Token]) -> Option<Option<Color>> {
+fn parse_border_color(tokens: &[Token], current: Color) -> Option<Option<Color>> {
     match single_ident(tokens) {
         Some(ident) if ident.eq_ignore_ascii_case("currentcolor") => Some(None),
-        _ => parse_color(tokens).map(Some),
+        _ => color_value(tokens, current).map(Some),
     }
 }
 
@@ -4636,7 +4668,7 @@ fn apply_border_shorthand(
         {
             border_style = Some(s);
         } else if color.is_none()
-            && let Some(c) = parse_border_color(&g)
+            && let Some(c) = parse_border_color(&g, bases.color)
         {
             color = Some(c);
         } else {
@@ -5043,14 +5075,14 @@ fn parse_outline_style(tokens: &[Token]) -> Option<OutlineStyle> {
 /// `outline-color`: a colour, or `auto` or `currentcolor`, `None` (CSS
 /// UI 4 section 5.4); the reference browser's focus ring colour is
 /// `-webkit-focus-ring-color`.
-fn parse_outline_color(tokens: &[Token]) -> Option<Option<Color>> {
+fn parse_outline_color(tokens: &[Token], current: Color) -> Option<Option<Color>> {
     match single_ident(tokens) {
         Some(ident)
             if ident.eq_ignore_ascii_case("auto") || ident.eq_ignore_ascii_case("currentcolor") =>
         {
             Some(None)
         }
-        _ => parse_color(tokens).map(Some),
+        _ => color_value(tokens, current).map(Some),
     }
 }
 
@@ -5078,7 +5110,7 @@ fn apply_outline_shorthand(
         {
             outline_style = Some(s);
         } else if color.is_none()
-            && let Some(c) = parse_outline_color(&g)
+            && let Some(c) = parse_outline_color(&g, bases.color)
         {
             color = Some(c);
         } else {
@@ -5693,6 +5725,7 @@ pub(crate) fn keyframe_easing(tokens: &[Token]) -> Option<crate::easing::Easing>
     let bases = LengthBases {
         em: initial,
         resolution: &resolution,
+        color: Color::BLACK,
     };
     motion::parse_easings(tokens, &bases)?.into_iter().next()
 }
@@ -5850,13 +5883,39 @@ fn parse_font_family(tokens: &[Token]) -> Option<String> {
     Some(families.join(", "))
 }
 
-fn parse_color(tokens: &[Token]) -> Option<Color> {
+/// A colour, `currentcolor` being `current`, in `color-mix()` too (gap
+/// batch E).
+pub(super) fn color_value(tokens: &[Token], current: Color) -> Option<Color> {
+    let tokens = trim(tokens);
+    if single_ident(tokens).is_some_and(|word| word.eq_ignore_ascii_case("currentcolor")) {
+        return Some(current);
+    }
+    if let [Token::Function(name), arguments @ .., Token::CloseParen] = tokens
+        && name.eq_ignore_ascii_case("color-mix")
+    {
+        return crate::color::parse_mix(arguments, &mut |part| color_value(part, current));
+    }
+    parse_color(tokens)
+}
+
+/// `color`'s value: its `currentcolor` the parent's colour; a CSS-wide
+/// keyword the parent's or the initial colour.
+fn color_of_color(tokens: &[Token], parent: &ComputedStyle) -> Option<Color> {
+    match css_wide_keyword(tokens) {
+        Some(CssWide::Initial) => Some(ComputedStyle::default().color),
+        Some(_) => Some(parent.color),
+        None => color_value(tokens, parent.color),
+    }
+}
+
+pub(crate) fn parse_color(tokens: &[Token]) -> Option<Color> {
     if let [Token::Function(name), arguments @ .., Token::CloseParen] = trim(tokens) {
         return match name.to_ascii_lowercase().as_str() {
             "rgb" | "rgba" => parse_rgb(arguments),
             "hsl" | "hsla" => parse_hsl(arguments, false),
             "hwb" => parse_hsl(arguments, true),
-            _ => None,
+            "color-mix" => crate::color::parse_mix(arguments, &mut |part| parse_color(part)),
+            other => crate::color::parse_function(other, arguments),
         };
     }
     match single_token(tokens)? {
@@ -5934,12 +5993,12 @@ fn parse_rgb(arguments: &[Token]) -> Option<Color> {
         Some(Token::Ident(none)) if none.eq_ignore_ascii_case("none") => 0.0,
         Some(_) => return None,
     };
-    Some(Color {
-        r: channel(channels[0])?,
-        g: channel(channels[1])?,
-        b: channel(channels[2])?,
+    Some(Color::rgba(
+        channel(channels[0])?,
+        channel(channels[1])?,
+        channel(channels[2])?,
         a,
-    })
+    ))
 }
 
 /// The arguments of `hsl()` or `hsla()`, the same function, or of `hwb()`
@@ -6041,12 +6100,7 @@ fn parse_hsl(arguments: &[Token], whiteness: bool) -> Option<Color> {
     } else {
         hsl(first, second)
     };
-    Some(Color {
-        r: r as f32,
-        g: g as f32,
-        b: b as f32,
-        a: a as f32,
-    })
+    Some(Color::rgba(r as f32, g as f32, b as f32, a as f32))
 }
 
 /// A colour written as CSS writes one, with the functions and names the
@@ -6194,30 +6248,10 @@ fn parse_hex_color(hex: &str) -> Option<Color> {
         Some((hi * 16 + lo) as f32 / 255.0)
     };
     match hex.len() {
-        3 => Some(Color {
-            r: one(0)?,
-            g: one(1)?,
-            b: one(2)?,
-            a: 1.0,
-        }),
-        4 => Some(Color {
-            r: one(0)?,
-            g: one(1)?,
-            b: one(2)?,
-            a: one(3)?,
-        }),
-        6 => Some(Color {
-            r: two(0)?,
-            g: two(2)?,
-            b: two(4)?,
-            a: 1.0,
-        }),
-        8 => Some(Color {
-            r: two(0)?,
-            g: two(2)?,
-            b: two(4)?,
-            a: two(6)?,
-        }),
+        3 => Some(Color::rgba(one(0)?, one(1)?, one(2)?, 1.0)),
+        4 => Some(Color::rgba(one(0)?, one(1)?, one(2)?, one(3)?)),
+        6 => Some(Color::rgba(two(0)?, two(2)?, two(4)?, 1.0)),
+        8 => Some(Color::rgba(two(0)?, two(2)?, two(4)?, two(6)?)),
         _ => None,
     }
 }
@@ -6689,7 +6723,7 @@ mod tests {
             ("width", "-5px"),
             ("width", "calc(10px + 1s)"),
             ("width", "sin(1deg)"),
-            ("color", "lab(0% 0 0)"),
+            ("color", "lab(0% 0 0 0)"),
             ("writing-mode", "vertical-rl"),
             ("bogus", "inherit"),
             ("font-size", "-1px"),
@@ -6725,6 +6759,7 @@ mod tests {
         f(&LengthBases {
             em: 16.0,
             resolution: &resolution,
+            color: Color::BLACK,
         })
     }
 
@@ -7661,6 +7696,54 @@ mod tests {
         // An omitted width is `medium`.
         let sheets = [sheet("p { border: solid; }")];
         assert_eq!(style_of("<p>x</p>", &sheets, "p").border_width, [3.0; 4]);
+    }
+
+    #[test]
+    fn currentcolor_is_the_elements_colour_in_every_colour_property() {
+        // Gap batch E: the reference browser's computed values.
+        let sheets = [sheet(
+            "div { color: rgb(0, 128, 0) } \
+             p { background-color: currentcolor; \
+                 border: 1px solid color-mix(in srgb, currentcolor, blue); \
+                 outline-color: color-mix(in srgb, currentColor 50%, red); \
+                 text-decoration-color: color-mix(in srgb, currentcolor, white) } \
+             span { color: currentcolor; background: linear-gradient(currentcolor, red) } \
+             b { color: color-mix(in srgb, currentcolor, blue) } \
+             i { color: blue; background-color: currentcolor }",
+        )];
+        let html = "<div><p>x<span>y</span><b>z</b><i>w</i></p></div>";
+        // The element's own colour, not the one it inherits.
+        let i = style_of(html, &sheets, "i");
+        assert_eq!(i.background_color, Color::rgb8(0, 0, 255));
+        let p = style_of(html, &sheets, "p");
+        let value = |s: &ComputedStyle, name: &str| crate::serialize::computed_value(s, name);
+        assert_eq!(
+            value(&p, "background-color").as_deref(),
+            Some("rgb(0, 128, 0)")
+        );
+        assert_eq!(
+            value(&p, "border-top-color").as_deref(),
+            Some("color(srgb 0 0.25098 0.5)")
+        );
+        assert_eq!(
+            value(&p, "outline-color").as_deref(),
+            Some("color(srgb 0.5 0.25098 0)")
+        );
+        let span = style_of(html, &sheets, "span");
+        assert_eq!(span.color, Color::rgb8(0, 128, 0));
+        // The parent's colour is `color`'s own `currentcolor`.
+        let b = style_of(html, &sheets, "b");
+        assert_eq!(
+            value(&b, "color").as_deref(),
+            Some("color(srgb 0 0.25098 0.5)")
+        );
+        // A colour of another space computes as itself.
+        let sheets = [sheet("p { color: oklch(60% 0.2 400deg / 50%) }")];
+        let p = style_of("<p>x</p>", &sheets, "p");
+        assert_eq!(
+            value(&p, "color").as_deref(),
+            Some("oklch(0.6 0.2 40 / 0.5)")
+        );
     }
 
     #[test]
@@ -9439,21 +9522,11 @@ mod tests {
         );
         assert_eq!(
             parse_color(&css::tokenize("#f00f")),
-            Some(Color {
-                r: 1.0,
-                g: 0.0,
-                b: 0.0,
-                a: 1.0
-            })
+            Some(Color::rgba(1.0, 0.0, 0.0, 1.0))
         );
         assert_eq!(
             parse_color(&css::tokenize("#ff000080")),
-            Some(Color {
-                r: 1.0,
-                g: 0.0,
-                b: 0.0,
-                a: 128.0 / 255.0
-            })
+            Some(Color::rgba(1.0, 0.0, 0.0, 128.0 / 255.0))
         );
         assert_eq!(parse_color(&css::tokenize("#ggg")), None);
         assert_eq!(parse_color(&css::tokenize("#ff")), None); // invalid length
@@ -9498,7 +9571,7 @@ mod tests {
             "rgb(255 0 51 / 0.5 / 1)",
             "rgb(1px 0 0)",
             "rgb(255 0 51",
-            "lab(0% 0 0)",
+            "lab(0% 0 0 0)",
         ] {
             assert_eq!(color(text), None, "{text}");
         }

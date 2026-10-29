@@ -1151,10 +1151,17 @@ mod tests {
              #t { color: #000; text-decoration: underline;
                   animation: k 1s linear paused -0.5s, g 1s linear paused -0.5s }
              #f { width: 100px; animation: f1 1s linear paused -0.5s }
-             #s { animation: fs 1s linear paused -0.5s }",
+             #s { animation: fs 1s linear paused -0.5s }
+             #u { color: #000; background-color: currentcolor; animation: c 1s linear paused -0.5s }",
             "<div id=a></div><div id=b></div><div id=c></div><div id=d></div>\
              <div id=g></div><div id=h></div><div id=i></div><div id=j></div>\
-             <div id=t></div><div id=f></div><div id=s></div>",
+             <div id=t></div><div id=f></div><div id=s></div><div id=u></div>",
+        );
+        // Gap batch E: another property's `currentcolor` is the colour of
+        // the moment too.
+        assert_eq!(
+            rgba(page.style("u").background_color),
+            [100.0, 100.0, 0.0, 1.0]
         );
         // `10em` of the animated font size, 20px.
         assert_eq!(page.style("a").font_size_px, 20.0);

@@ -1030,33 +1030,11 @@ fn integer(a: i64, b: i64, p: f64, min: i64, max: i64) -> i64 {
     (v.clamp(min as f64, max as f64)) as i64
 }
 
-/// A colour interpolated in sRGB with premultiplied alpha (Color 4
-/// §13.4): the alpha linearly, each channel premultiplied by its alpha
-/// and divided by the result's, a transparent result black.
+/// A colour interpolated (Color 4 section 12): in sRGB with
+/// premultiplied alpha when both are legacy, a transparent result black;
+/// else in Oklab (gap batch E, D48).
 pub fn color(a: computed::Color, b: computed::Color, p: f64) -> computed::Color {
-    let alpha = number(a.a, b.a, p, 0.0, 1.0);
-    if alpha == 0.0 {
-        return computed::Color {
-            r: 0.0,
-            g: 0.0,
-            b: 0.0,
-            a: 0.0,
-        };
-    }
-    let channel = |x: f32, y: f32| {
-        let v = lerp(f64::from(x * a.a), f64::from(y * b.a), p) / f64::from(alpha);
-        if v.is_nan() {
-            0.0
-        } else {
-            v.clamp(0.0, 1.0) as f32
-        }
-    };
-    computed::Color {
-        r: channel(a.r, b.r),
-        g: channel(a.g, b.g),
-        b: channel(a.b, b.b),
-        a: alpha,
-    }
+    crate::color::animate(&a, &b, p)
 }
 
 /// A length-percentage as `px + pct%` when it is one: a sum of lengths

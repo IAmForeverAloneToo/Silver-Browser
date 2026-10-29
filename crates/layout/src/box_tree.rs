@@ -310,12 +310,7 @@ pub enum Mark {
 
 /// The colour a placeholder is shown in (M26.7): the reference
 /// browser's `#757575`.
-const PLACEHOLDER_COLOUR: style::computed::Color = style::computed::Color {
-    r: 117.0 / 255.0,
-    g: 117.0 / 255.0,
-    b: 117.0 / 255.0,
-    a: 1.0,
-};
+const PLACEHOLDER_COLOUR: style::computed::Color = style::computed::Color::rgb8(117, 117, 117);
 
 /// The width of a drop-down select's arrow, in ems of its font (M26.7):
 /// with the text's 4px before it, the reference browser's 20px at its

@@ -464,6 +464,9 @@ fn spacing(value: f32) -> String {
 /// A color as CSSOM serializes an sRGB one: `rgb(r, g, b)`, or
 /// `rgba(r, g, b, a)` when not opaque.
 fn color(c: Color) -> String {
+    if !c.is_legacy() {
+        return crate::color::serialize(&c);
+    }
     let channel = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     let (r, g, b) = (channel(c.r), channel(c.g), channel(c.b));
     if c.a >= 1.0 {
@@ -724,12 +727,7 @@ mod tests {
         assert_eq!(value("row-gap").as_deref(), Some("normal"));
         assert_eq!(value("bogus"), None);
         // A channel between two bytes goes to the nearer.
-        let half = Color {
-            r: 0.5,
-            g: 0.1,
-            b: 1.0,
-            a: 1.0,
-        };
+        let half = Color::rgba(0.5, 0.1, 1.0, 1.0);
         assert_eq!(color(half), "rgb(128, 26, 255)");
         assert_eq!(value("--x"), None);
         assert_eq!(value("fill").as_deref(), Some("rgb(0, 0, 0)"));

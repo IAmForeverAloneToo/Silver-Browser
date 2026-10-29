@@ -82,7 +82,7 @@ impl Decorating {
         let line = self.line;
         (line.underline, line.overline, line.line_through, line.blink).hash(hasher);
         discriminant(&self.style).hash(hasher);
-        let Color { r, g, b, a } = self.color;
+        let Color { r, g, b, a, .. } = self.color;
         [r, g, b, a].map(f32::to_bits).hash(hasher);
         discriminant(&self.thickness).hash(hasher);
         if let DecorationThickness::Length(length) = &self.thickness {

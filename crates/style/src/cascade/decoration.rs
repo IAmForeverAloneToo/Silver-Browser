@@ -5,7 +5,7 @@
 
 use css::Token;
 
-use super::{LengthBases, Range, components, length_percentage, parse_color, single_ident};
+use super::{LengthBases, Range, components, length_percentage, single_ident};
 use crate::computed::{
     Color, DecorationLine, DecorationStyle, DecorationThickness, LengthPercentage,
     UnderlinePosition,
@@ -56,11 +56,11 @@ pub(super) fn parse_style(tokens: &[Token]) -> Option<DecorationStyle> {
 }
 
 /// `text-decoration-color`: a colour, or `currentcolor` (`Some(None)`).
-pub(super) fn parse_color_or_current(tokens: &[Token]) -> Option<Option<Color>> {
+pub(super) fn parse_color_or_current(tokens: &[Token], current: Color) -> Option<Option<Color>> {
     if is_word(tokens, "currentcolor") {
         return Some(None);
     }
-    parse_color(tokens).map(Some)
+    super::color_value(tokens, current).map(Some)
 }
 
 /// `text-decoration-thickness`: `auto`, `from-font`, or a length or
@@ -151,7 +151,7 @@ pub(super) fn parse_shorthand(tokens: &[Token], bases: &LengthBases<'_>) -> Opti
         }
         let first = if let Some(value) = parse_style(part) {
             style.replace(value).is_none()
-        } else if let Some(value) = parse_color_or_current(part) {
+        } else if let Some(value) = parse_color_or_current(part, bases.color) {
             color.replace(value).is_none()
         } else if let Some(value) = parse_thickness(part, bases) {
             thickness.replace(value).is_none()

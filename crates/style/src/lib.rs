@@ -51,6 +51,10 @@ pub mod calc;
 /// (which properties, which value syntaxes) and its documented gaps.
 pub mod cascade;
 
+/// Colour spaces past CSS Color 3 (gap batch E, D48): conversions,
+/// interpolation, `color-mix()` and serialization.
+pub mod color;
+
 /// Computed values resolved for one element (the cascade's output).
 pub mod computed;
 

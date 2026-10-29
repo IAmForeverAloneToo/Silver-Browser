@@ -20,8 +20,11 @@ use crate::easing::Easing;
 /// An RGBA color, 0.0–1.0 channels (see `paint::Rgba8` for the 8-bit
 /// form `render` actually blits — `style` owns its own color type per
 /// the layering contract: `paint` sits *above* `style` and converts at
-/// the boundary, not the other way around).
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// the boundary, not the other way around). The channels are sRGB's, a
+/// colour of a wider gamut's outside 0 to 1, clipped when drawn; the
+/// colour keeps the space it was written in and its components there
+/// (gap batch E, D48, [`crate::color`]).
+#[derive(Debug, Clone, Copy)]
 pub struct Color {
     /// Red channel.
     pub r: f32,
@@ -31,35 +34,26 @@ pub struct Color {
     pub b: f32,
     /// Alpha channel.
     pub a: f32,
+    /// The space it was written in.
+    pub(crate) space: crate::color::Space,
+    /// Its components there; the channels for a legacy colour.
+    pub(crate) c: [f32; 3],
+    /// Which components are `none`, a bit each, alpha's the fourth.
+    pub(crate) missing: u8,
 }
 
 impl Color {
     /// An opaque color from 0–255 channels (convenience for the named
     /// and hex-color tables).
     pub const fn rgb8(r: u8, g: u8, b: u8) -> Self {
-        Color {
-            r: r as f32 / 255.0,
-            g: g as f32 / 255.0,
-            b: b as f32 / 255.0,
-            a: 1.0,
-        }
+        Color::rgba(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0)
     }
 
     /// Fully transparent black — `background-color`'s initial value.
-    pub const TRANSPARENT: Color = Color {
-        r: 0.0,
-        g: 0.0,
-        b: 0.0,
-        a: 0.0,
-    };
+    pub const TRANSPARENT: Color = Color::rgba(0.0, 0.0, 0.0, 0.0);
 
     /// Opaque black — the conventional UA default for `color`.
-    pub const BLACK: Color = Color {
-        r: 0.0,
-        g: 0.0,
-        b: 0.0,
-        a: 1.0,
-    };
+    pub const BLACK: Color = Color::rgba(0.0, 0.0, 0.0, 1.0);
 }
 
 /// `display` (css-display-3, the box-generation values of CSS2 §9.2.4,
@@ -3722,9 +3716,12 @@ mod tests {
         // `cursor` a byte in the padding, 680 before them. SVG's
         // properties (M32) another, 688 before them. Which border colours
         // are `currentcolor` (M33), a byte that found no padding: 696
-        // before it, and seven bytes free now. Growing this is a
+        // before it, and seven bytes free now. Colours that keep the
+        // space they were written in (gap batch E, D48) grew each of the
+        // six from 16 bytes to 32, to hold the components beside the
+        // sRGB channels drawing reads: 704 before them. Growing this is a
         // decision, not an accident; say why where the number changes.
-        assert_eq!(std::mem::size_of::<ComputedStyle>(), 704);
+        assert_eq!(std::mem::size_of::<ComputedStyle>(), 800);
         assert_eq!(ComputedStyle::default().grid, None);
         assert_eq!(*ComputedStyle::default().grid(), GridStyle::default());
         assert_eq!(ComputedStyle::default().effects, None);

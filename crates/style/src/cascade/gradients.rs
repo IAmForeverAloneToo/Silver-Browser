@@ -201,7 +201,7 @@ fn stop_list(args: &[Vec<&[Token]>], bases: &LengthBases<'_>) -> Option<Vec<Grad
     for arg in args {
         let color_at = arg
             .iter()
-            .position(|part| super::parse_color(part).is_some());
+            .position(|part| super::color_value(part, bases.color).is_some());
         match (color_at, arg.len()) {
             (None, 1) => {
                 // A hint between two stops, never two in a row.
@@ -211,7 +211,7 @@ fn stop_list(args: &[Vec<&[Token]>], bases: &LengthBases<'_>) -> Option<Vec<Grad
                 items.push(GradientItem::Hint(position(arg[0])?));
             }
             (Some(at), 1..=3) => {
-                let color = super::parse_color(arg[at])?;
+                let color = super::color_value(arg[at], bases.color)?;
                 let positions: Vec<&[Token]> = arg
                     .iter()
                     .enumerate()
