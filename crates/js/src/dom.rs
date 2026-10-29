@@ -741,6 +741,12 @@ pub enum Call {
     /// Whether the document is hidden (HTML section 6.2): its window is
     /// minimized or covered.
     Hidden,
+    /// The document's fonts (CSS Font Loading 3, D54): an operation,
+    /// its words separated by spaces, and a face's data. `status` says
+    /// `loading` or `loaded`; `valid` whether the data is a font;
+    /// `add <id> <weight> <weight> <style> <stretch> <stretch> <family>`
+    /// adds a face of the data, `delete <id>` takes one away.
+    Fonts(String, Vec<u8>),
     /// `alert`, `confirm` or `prompt` (`kind`) was called with `message`
     /// and, for `prompt`, `default` (gap batch A, D43): the host asks the
     /// user, the script waiting. The answer is a string for OK, what

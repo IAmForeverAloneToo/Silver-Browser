@@ -752,6 +752,9 @@ const NATIVES: &[(&str, Decode)] = &[
     }),
     ("reportInvalid", |a| Ok(Call::ReportInvalid(a.handle(0)?))),
     ("hidden", |_| Ok(Call::Hidden)),
+    ("fonts", |a| {
+        Ok(Call::Fonts(a.string(0)?, a.bytes(1)?.unwrap_or_default()))
+    }),
     ("canvas", |a| a.canvas(None)),
     // `putImageData`'s pixels, as base64 (`toBase64` makes it at the
     // speed of C; `rquickjs` lends no buffer's bytes safely).

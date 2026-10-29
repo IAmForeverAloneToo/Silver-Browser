@@ -27,7 +27,7 @@ mod web;
 mod woff;
 
 pub use faces::{FaceId, FaceRecord, Font, FontRequest, MAX_CHOICES, SYNTHETIC_SKEW, Slant};
-pub use web::{DocumentFaces, FaceRule, FaceState, MAX_FONT_BYTES, MAX_FONT_FACES};
+pub use web::{DocumentFaces, FaceRule, FaceState, MAX_FONT_BYTES, MAX_FONT_FACES, is_font};
 
 use std::collections::HashMap;
 use std::fmt;

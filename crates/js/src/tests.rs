@@ -88,6 +88,14 @@ impl ScriptingHost for Recorder {
                 Ok(Answer::Nothing)
             }
             Call::Hidden => Ok(Answer::Bool(self.hidden)),
+            Call::Fonts(op, data) => Ok(match op.split(' ').next() {
+                Some("status") => Answer::String("loaded".into()),
+                // An sfnt's or a WOFF file's signature, for these tests.
+                Some("valid" | "add") => {
+                    Answer::Bool(data.starts_with(&[0, 1, 0, 0]) || data.starts_with(b"wOFF"))
+                }
+                _ => Answer::Nothing,
+            }),
             Call::TargetOrigin(target) => Ok(Answer::String(match target.as_str() {
                 "*" => target,
                 _ => "https://example.com".to_owned(),

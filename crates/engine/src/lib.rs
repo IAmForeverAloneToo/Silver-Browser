@@ -615,8 +615,12 @@ struct Shown {
     animated: Vec<NodeId>,
     /// The document's images (M23).
     images: ImageStore,
-    /// Its web fonts (D54), when its sheets have `@font-face` rules.
+    /// Its web fonts (D54), when its sheets have `@font-face` rules or
+    /// its scripts added faces.
     web_fonts: Option<web_fonts::WebFonts>,
+    /// The faces its scripts added to `document.fonts` (D54), by their
+    /// numbers, in order.
+    script_fonts: Vec<web_fonts::ScriptFace>,
     /// What its `img`s give a canvas to draw, shared with its scripts'
     /// host (M30).
     drawables: scripts::canvas::SharedDrawables,
@@ -725,6 +729,7 @@ impl Shown {
             animated: Vec::new(),
             images: ImageStore::default(),
             web_fonts: None,
+            script_fonts: Vec::new(),
             drawables: Default::default(),
             svgs: HashMap::new(),
             next_image_frame: None,
@@ -2023,6 +2028,7 @@ impl Engine {
             languages: self.languages.clone(),
             clock: Some(self.clock.clone()),
             hidden: self.hidden,
+            fonts_loading: self.fonts_loading(),
             focused: self.window_focused,
             keyboard: self.keyboard,
             storage: Some(self.storage.clone()),
@@ -5732,6 +5738,10 @@ impl Engine {
     fn scripts_ran(&mut self) {
         // What the parser and the scripts inserted hides its nonces.
         self.shown.page.hide_nonces(&mut self.shown.document);
+        let fonts = std::mem::take(&mut self.shown.scripts.font_changes);
+        if !fonts.is_empty() {
+            self.script_fonts_changed(fonts);
+        }
         // A `<style>` its policies refused hears `error` (M33.1), as a
         // task, after what runs now.
         let now = self.now();

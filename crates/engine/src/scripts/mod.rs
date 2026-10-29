@@ -282,6 +282,9 @@ pub(crate) struct WindowEnv {
     pub(crate) clock: Option<crate::Clock>,
     /// Whether the window is hidden: minimized or covered (M26).
     pub(crate) hidden: bool,
+    /// Whether the document's web fonts are loading (D54): a face asked
+    /// for or on its way, or faces to lay out with not laid out yet.
+    pub(crate) fonts_loading: bool,
     /// Whether the window has the system's focus, and whether the last
     /// input was a key, so that a focus a script gives is shown (M26.6).
     pub(crate) focused: bool,
@@ -549,6 +552,9 @@ pub(crate) struct Scripts {
     /// The messages posted (M31), each a task from when it was (the
     /// posted message task source), in that order.
     posted: VecDeque<(Duration, js::Task)>,
+    /// The faces scripts added to the document's fonts or took away
+    /// (D54), which the engine applies after the run.
+    pub(crate) font_changes: Vec<crate::web_fonts::FontChange>,
     /// The names of the window's child frames' elements, in tree order
     /// (M33.2), which its realm's frames by index and name follow.
     frame_list: Vec<String>,
@@ -590,6 +596,7 @@ impl Scripts {
             fetching: HashMap::new(),
             answers: VecDeque::new(),
             posted: VecDeque::new(),
+            font_changes: Vec::new(),
             frame_list: Vec::new(),
             code_guarded: false,
             reports: Vec::new(),
@@ -1208,6 +1215,7 @@ impl Scripts {
         }
         self.start_fetches(lent, outputs.fetches, outputs.aborted);
         self.start_media(lent);
+        self.font_changes.extend(outputs.fonts);
         self.posted.extend(outputs.messages);
         self.drop_tasks_of(&outputs.terminated);
         self.events.extend(outputs.events);
@@ -1277,6 +1285,7 @@ impl Scripts {
         }
         self.start_fetches(lent, outputs.fetches, outputs.aborted);
         self.start_media(lent);
+        self.font_changes.extend(outputs.fonts);
         self.posted.extend(outputs.messages);
         self.drop_tasks_of(&outputs.terminated);
         self.events.extend(outputs.events);

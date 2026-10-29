@@ -2376,3 +2376,86 @@ fn a_font_face_is_fetched_when_its_family_is_laid_out_and_lays_the_page_out_agai
     assert_eq!(fonts, ["/gone.ttf", "/f/w.ttf"]);
     assert!(requests.iter().all(|r| r.target != "/u.ttf"));
 }
+
+#[test]
+fn a_script_adds_a_font_face_which_the_page_is_laid_out_in() {
+    // CSS Font Loading 3 (D54).
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<p style='font-family: Added'>abc <b>de</b></p><script>\
+             const face = new FontFace('Added', 'url(f.ttf)', { weight: 'bold' });\
+             console.log(face.status, face.weight, document.fonts.size, document.fonts.status);\
+             document.fonts.add(face);\
+             const bad = new FontFace('Bad', new Uint8Array([1, 2, 3]));\
+             bad.loaded.catch(e => console.log('bad', bad.status, e.name));\
+             const loading = face.load();\
+             console.log(face.status, document.fonts.status);\
+             loading.then(f => {\
+               console.log(f === face, face.status, document.fonts.has(face), document.fonts.status);\
+               return document.fonts.ready;\
+             }).then(set => console.log('ready', set === document.fonts, [...document.fonts].length));\
+             </script>",
+        )),
+        "/f.ttf" => Some(Reply::ok("font/ttf", text::TEST_FONT)),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, server.url("/page.html"));
+    let lines = tab.run_until(|lines| lines.len() >= 5);
+    assert_eq!(
+        lines,
+        [
+            "unloaded bold 0 loaded",
+            "loading loading",
+            "bad error NetworkError",
+            "true loaded true loaded",
+            "ready true 1"
+        ]
+    );
+    // Its text in the face, which is bold, so no bold is made up for the
+    // bold text.
+    let fonts: Vec<text::Font> = tab
+        .engine
+        .layout(200.0)
+        .iter()
+        .filter(|f| matches!(f.kind, layout::FragmentKind::Text(_)))
+        .map(|f| f.font)
+        .collect();
+    assert_eq!(fonts.len(), 2);
+    assert!(
+        fonts.iter().all(|f| f.face != text::FaceId(0) && !f.bold),
+        "{fonts:?}"
+    );
+    // Taken away, the text is in the system's fonts again.
+    tab.engine
+        .run_classic("document.fonts.delete([...document.fonts][0])")
+        .expect("runs");
+    let face = tab
+        .engine
+        .layout(200.0)
+        .iter()
+        .find(|f| matches!(f.kind, layout::FragmentKind::Text(_)))
+        .map(|f| f.font.face);
+    assert_eq!(face, Some(text::FaceId(0)));
+    // A face of data had is loaded when made, and is the document's once
+    // added.
+    tab.engine
+        .run_classic(
+            "fetch('f.ttf').then(r => r.arrayBuffer()).then(b => {\
+               const face = new FontFace('Added', b);\
+               console.log(face.status);\
+               document.fonts.add(face);\
+             })",
+        )
+        .expect("runs");
+    let lines = tab.run_until(|lines| !lines.is_empty());
+    assert_eq!(lines, ["loaded"]);
+    let face = tab
+        .engine
+        .layout(200.0)
+        .iter()
+        .find(|f| matches!(f.kind, layout::FragmentKind::Text(_)))
+        .map(|f| f.font.face);
+    assert_ne!(face, Some(text::FaceId(0)));
+}

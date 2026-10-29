@@ -126,6 +126,13 @@ impl DocumentFaces {
         self.lock().get(index).map(|face| face.rule.clone())
     }
 
+    /// Whether a face is asked for or loading.
+    pub fn is_loading(&self) -> bool {
+        self.lock()
+            .iter()
+            .any(|face| matches!(face.state, FaceState::Wanted | FaceState::Loading))
+    }
+
     /// The faces matching asked for since last asked, now loading.
     pub fn wanted(&self) -> Vec<usize> {
         let mut faces = self.lock();
@@ -284,6 +291,11 @@ fn distance(value: f32, lo: f32, hi: f32, below_first: bool) -> f32 {
     } else {
         (lo - value) + if below_first { 100_000.0 } else { 0.0 }
     }
+}
+
+/// Whether `data` is a font file this crate reads: an sfnt, or WOFF 1.
+pub fn is_font(data: &[u8]) -> bool {
+    super::woff::sfnt(data.to_vec()).is_ok_and(|data| FontStore::from_bytes(data, 0).is_ok())
 }
 
 impl super::FontCollection {

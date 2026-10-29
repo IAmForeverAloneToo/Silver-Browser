@@ -24,6 +24,76 @@ pub(crate) struct WebFonts {
     fonts: FontCollection,
     /// Each face's source to try next.
     next: Vec<usize>,
+    /// How many script faces they were made with, after the rules'.
+    scripted: usize,
+}
+
+/// A face a script added to `document.fonts` (CSS Font Loading 3): its
+/// number, descriptors and data, a font.
+pub(crate) struct ScriptFace {
+    id: u32,
+    rule: FaceRule,
+    data: Vec<u8>,
+}
+
+/// What a script did to the document's fonts.
+pub(crate) enum FontChange {
+    Add(ScriptFace),
+    Delete(u32),
+}
+
+/// The answer to a script's `fonts` call (`js::Call::Fonts`): the
+/// fonts' status by `loading`, whether data is a font, and the faces
+/// added or taken away, kept in `changes` for the engine.
+pub(crate) fn answer(
+    op: &str,
+    data: Vec<u8>,
+    loading: bool,
+    changes: &mut Vec<FontChange>,
+) -> js::Answer {
+    let mut words = op.splitn(8, ' ');
+    match words.next() {
+        Some("status") => js::Answer::String(if loading { "loading" } else { "loaded" }.into()),
+        Some("valid") => js::Answer::Bool(text::is_font(&data)),
+        Some("add") => {
+            let mut number = || words.next().and_then(|w| w.parse::<f32>().ok());
+            let (Some(id), Some(w0), Some(w1)) = (number(), number(), number()) else {
+                return js::Answer::Bool(false);
+            };
+            let slant = match words.next() {
+                Some("italic") => Slant::Italic,
+                Some("oblique") => Slant::Oblique(14.0),
+                _ => Slant::Normal,
+            };
+            let mut number = || words.next().and_then(|w| w.parse::<f32>().ok());
+            let (Some(s0), Some(s1)) = (number(), number()) else {
+                return js::Answer::Bool(false);
+            };
+            let family = words.next().unwrap_or_default().to_owned();
+            if family.is_empty() || !text::is_font(&data) {
+                return js::Answer::Bool(false);
+            }
+            let clamp = |w: f32| w.clamp(1.0, 1000.0) as u16;
+            changes.push(FontChange::Add(ScriptFace {
+                id: id as u32,
+                rule: FaceRule {
+                    family,
+                    weight: (clamp(w0.min(w1)), clamp(w0.max(w1))),
+                    slant,
+                    stretch: (s0.min(s1), s0.max(s1)),
+                },
+                data,
+            }));
+            js::Answer::Bool(true)
+        }
+        Some("delete") => {
+            if let Some(id) = words.next().and_then(|w| w.parse().ok()) {
+                changes.push(FontChange::Delete(id));
+            }
+            js::Answer::Nothing
+        }
+        _ => js::Answer::Nothing,
+    }
 }
 
 /// The descriptors of `rule`'s face, as matching takes them.
@@ -50,32 +120,90 @@ impl Engine {
             .map_or(&self.layout_fonts, |web| &web.fonts)
     }
 
-    /// Gathers the shown document's `@font-face` rules: when they changed,
-    /// its faces are made anew, none loaded, and it is laid out again.
+    /// Gathers the shown document's `@font-face` rules: when they or the
+    /// faces its scripts added changed, its faces are made anew, the
+    /// rules' none loaded, and it is laid out again.
     pub(crate) fn update_web_fonts(&mut self) {
         let rules = self
             .shown
             .stylesheets
             .font_faces(&self.media(self.viewport));
+        let scripted = self.shown.script_fonts.len();
         let same = match &self.shown.web_fonts {
-            Some(web) => web.rules == rules,
-            None => rules.is_empty(),
+            Some(web) => web.rules == rules && web.scripted == scripted,
+            None => rules.is_empty() && scripted == 0,
         };
         if same {
             return;
         }
-        self.shown.web_fonts = (!rules.is_empty()).then(|| {
+        self.remake_web_fonts(rules);
+    }
+
+    /// Makes the shown document's faces anew from `rules` and its
+    /// scripts' faces, and lays it out again.
+    fn remake_web_fonts(&mut self, rules: Vec<FontFaceRule>) {
+        let scripts = &self.shown.script_fonts;
+        self.shown.web_fonts = (!rules.is_empty() || !scripts.is_empty()).then(|| {
             self.next_font_set += 1;
-            let faces = Arc::new(DocumentFaces::new(rules.iter().map(face_rule).collect()));
+            let faces: Vec<FaceRule> = rules
+                .iter()
+                .map(face_rule)
+                .chain(scripts.iter().map(|face| face.rule.clone()))
+                .collect();
+            let fonts = self
+                .layout_fonts
+                .with_document(Arc::new(DocumentFaces::new(faces)));
+            for (n, face) in scripts.iter().enumerate() {
+                let _ = fonts.face_arrived(rules.len() + n, face.data.clone());
+            }
             WebFonts {
                 id: self.next_font_set,
                 next: vec![0; rules.len()],
+                scripted: scripts.len(),
                 rules,
-                fonts: self.layout_fonts.with_document(faces),
+                fonts,
             }
         });
         self.shown.layout_cache.clear();
         self.shown.layout = None;
+        self.changed = true;
+    }
+
+    /// Applies what scripts did to the document's fonts.
+    pub(crate) fn script_fonts_changed(&mut self, changes: Vec<FontChange>) {
+        for change in changes {
+            match change {
+                FontChange::Add(face) => {
+                    self.shown.script_fonts.retain(|kept| kept.id != face.id);
+                    if self.shown.script_fonts.len() < text::MAX_FONT_FACES {
+                        self.shown.script_fonts.push(face);
+                    }
+                }
+                FontChange::Delete(id) => self.shown.script_fonts.retain(|kept| kept.id != id),
+            }
+        }
+        let rules = self
+            .shown
+            .web_fonts
+            .as_ref()
+            .map_or_else(Vec::new, |web| web.rules.clone());
+        self.remake_web_fonts(rules);
+    }
+
+    /// Whether the shown document's web fonts are loading: a face asked
+    /// for or coming, or `@font-face` rules not yet laid out with.
+    pub(crate) fn fonts_loading(&self) -> bool {
+        match &self.shown.web_fonts {
+            Some(web) => {
+                self.shown.layout.is_none() && !web.rules.is_empty()
+                    || web.fonts.document().is_some_and(|faces| faces.is_loading())
+            }
+            None => !self
+                .shown
+                .stylesheets
+                .font_faces(&self.media(self.viewport))
+                .is_empty(),
+        }
     }
 
     /// Fetches the faces the last layout asked for.
@@ -161,5 +289,56 @@ impl Engine {
         self.shown.layout_cache.clear();
         self.shown.layout = None;
         self.changed = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_face_a_script_adds_is_a_font_with_its_descriptors() {
+        let mut changes = Vec::new();
+        let added = answer(
+            "add 7 700 300 italic 125 75 My Font",
+            text::TEST_FONT.to_vec(),
+            false,
+            &mut changes,
+        );
+        assert!(matches!(added, js::Answer::Bool(true)));
+        let [FontChange::Add(face)] = changes.as_slice() else {
+            panic!("one face added");
+        };
+        assert_eq!(face.id, 7);
+        assert_eq!(
+            face.rule,
+            FaceRule {
+                family: "My Font".into(),
+                weight: (300, 700),
+                slant: Slant::Italic,
+                stretch: (75.0, 125.0),
+            }
+        );
+        // What is no font, or has no family, is not added.
+        let mut changes = Vec::new();
+        for op in [
+            "add 1 400 400 normal 100 100 X",
+            "add 1 400 400 normal 100 100",
+        ] {
+            let data = if op.ends_with('X') {
+                b"junk".to_vec()
+            } else {
+                text::TEST_FONT.to_vec()
+            };
+            assert!(matches!(
+                answer(op, data, false, &mut changes),
+                js::Answer::Bool(false)
+            ));
+        }
+        assert!(changes.is_empty());
+        assert!(matches!(
+            answer("status", Vec::new(), true, &mut changes),
+            js::Answer::String(s) if s == "loading"
+        ));
     }
 }

@@ -8038,6 +8038,12 @@
       return wrap(documentElement(self(this)));
     }
 
+    // The document's fonts (CSS Font Loading 3, D54).
+    get fonts() {
+      self(this);
+      return fontSetOf(this);
+    }
+
     get head() {
       return wrap(childOfHtml(self(this), "head"));
     }
@@ -20409,6 +20415,287 @@
       enumerable: true,
       configurable: true,
     });
+  }
+
+  // ---- fonts (CSS Font Loading 3, gap batch D, D54) ----------------------
+
+  // Each FontFace's state: its descriptors as strings, its status, its
+  // data once had, and its `loaded` promise with what settles it.
+  const fontFaces = new $WeakMap();
+  let nextFontFace = 1;
+
+  function faceOf(face) {
+    const state = WeakMapGet(fontFaces, face);
+    if (state === undefined) throw illegalInvocation();
+    return state;
+  }
+
+  // The face's data had: a font, loaded; else an error.
+  function faceData(face, state, bytes) {
+    if (bytes !== null && native.fonts("valid", binaryString(bytes))) {
+      state.bytes = bytes;
+      state.status = "loaded";
+      state.resolve(face);
+      if (state.sets.length > 0) addFace(face, state);
+    } else {
+      state.status = "error";
+      state.reject(new $DOMException("A network error occurred.", "NetworkError"));
+    }
+  }
+
+  // The url of a source string's first `url()`, or undefined.
+  function sourceUrl(source) {
+    const at = StringIndexOf(source, "url(");
+    if (at < 0) return undefined;
+    let rest = StringSlice(source, at + 4);
+    const end = StringIndexOf(rest, ")");
+    if (end < 0) return undefined;
+    rest = StringSlice(rest, 0, end);
+    let n = 0;
+    while (n < rest.length && rest[n] === " ") n++;
+    rest = StringSlice(rest, n);
+    let m = rest.length;
+    while (m > 0 && rest[m - 1] === " ") m--;
+    rest = StringSlice(rest, 0, m);
+    if (rest.length >= 2 && (rest[0] === "\"" || rest[0] === "'") && rest[rest.length - 1] === rest[0]) {
+      rest = StringSlice(rest, 1, rest.length - 1);
+    }
+    return rest;
+  }
+
+  // A descriptor's range as the natives take it: two numbers.
+  function faceRange(text, keywords, fallback) {
+    const words = [];
+    let word = "";
+    for (let i = 0; i <= text.length; i++) {
+      if (i === text.length || text[i] === " ") {
+        if (word !== "") ArrayPush(words, word);
+        word = "";
+      } else {
+        word += text[i];
+      }
+    }
+    const one = (w) => {
+      const lower = ToLowerCase(w);
+      if (keywords[lower] !== undefined) return keywords[lower];
+      const n = $Number(StringEndsWith(w, "%") ? StringSlice(w, 0, w.length - 1) : w);
+      return n === n ? n : fallback;
+    };
+    if (words.length === 0) return fallback + " " + fallback;
+    return one(words[0]) + " " + one(words.length > 1 ? words[1] : words[0]);
+  }
+
+  const WEIGHTS = { __proto__: null, normal: 400, bold: 700 };
+  const STRETCHES = {
+    __proto__: null, "ultra-condensed": 50, "extra-condensed": 62.5, condensed: 75,
+    "semi-condensed": 87.5, normal: 100, "semi-expanded": 112.5, expanded: 125,
+    "extra-expanded": 150, "ultra-expanded": 200,
+  };
+
+  // Gives the document face `face`, whose data is had.
+  function addFace(face, state) {
+    const style = ToLowerCase(state.style);
+    const slant = StringIncludes(style, "italic") ? "italic" : StringIncludes(style, "oblique") ? "oblique" : "normal";
+    native.fonts(
+      "add " + state.id + " " + faceRange(state.weight, WEIGHTS, 400) + " " + slant + " " +
+        faceRange(state.stretch, STRETCHES, 100) + " " + state.family,
+      binaryString(state.bytes),
+    );
+  }
+
+  class FontFace {
+    constructor(family, source, descriptors) {
+      needToConstruct(arguments.length, 2, "FontFace");
+      const d = descriptors === undefined || descriptors === null ? {} : descriptors;
+      const text = (name, initial) => (d[name] === undefined ? initial : $String(d[name]));
+      const state = {
+        id: nextFontFace++,
+        family: $String(family),
+        style: text("style", "normal"),
+        weight: text("weight", "normal"),
+        stretch: text("stretch", "normal"),
+        unicodeRange: text("unicodeRange", "U+0-10FFFF"),
+        featureSettings: text("featureSettings", "normal"),
+        display: text("display", "auto"),
+        status: "unloaded",
+        // The face sets it is in.
+        sets: [],
+        bytes: null,
+        url: undefined,
+        resolve: null,
+        reject: null,
+        loaded: null,
+      };
+      state.loaded = new $Promise((resolve, reject) => {
+        state.resolve = resolve;
+        state.reject = reject;
+      });
+      // A face that fails with nobody listening is not reported.
+      PromiseThen(state.loaded, undefined, () => {});
+      WeakMapSet(fontFaces, this, state);
+      const bytes = bufferBytes(source);
+      if (bytes !== undefined) {
+        state.status = "loading";
+        faceData(this, state, bytes);
+      } else {
+        state.url = sourceUrl($String(source));
+        if (state.url === undefined) {
+          state.status = "error";
+          state.reject(new $DOMException("Failed to construct 'FontFace': The source provided could not be parsed as a value list.", "SyntaxError"));
+        }
+      }
+    }
+
+    get family() { return faceOf(this).family; }
+    set family(value) { faceOf(this).family = $String(value); }
+    get style() { return faceOf(this).style; }
+    set style(value) { faceOf(this).style = $String(value); }
+    get weight() { return faceOf(this).weight; }
+    set weight(value) { faceOf(this).weight = $String(value); }
+    get stretch() { return faceOf(this).stretch; }
+    set stretch(value) { faceOf(this).stretch = $String(value); }
+    get unicodeRange() { return faceOf(this).unicodeRange; }
+    set unicodeRange(value) { faceOf(this).unicodeRange = $String(value); }
+    get featureSettings() { return faceOf(this).featureSettings; }
+    set featureSettings(value) { faceOf(this).featureSettings = $String(value); }
+    get display() { return faceOf(this).display; }
+    set display(value) { faceOf(this).display = $String(value); }
+    get status() { return faceOf(this).status; }
+    get loaded() { return faceOf(this).loaded; }
+
+    load() {
+      const state = faceOf(this);
+      if (state.status !== "unloaded") return state.loaded;
+      state.status = "loading";
+      const face = this;
+      PromiseThen(
+        PromiseThen(fetch(state.url), (response) => (response.ok ? response.arrayBuffer() : null)),
+        (buffer) => faceData(face, state, buffer === null ? null : new $Uint8Array(buffer)),
+        () => faceData(face, state, null),
+      );
+      return state.loaded;
+    }
+  }
+  expose(FontFace, "FontFace");
+
+  // Each face set's faces, in the order they were added.
+  const setFaces = new $WeakMap();
+
+  function facesOf(set) {
+    const faces = WeakMapGet(setFaces, set);
+    if (faces === undefined) throw illegalInvocation();
+    return faces;
+  }
+
+  class FontFaceSet extends EventTarget {
+    constructor(key) {
+      if (key !== KEY) throw illegalConstructor("FontFaceSet");
+      super();
+      WeakMapSet(setFaces, this, []);
+    }
+
+    add(face) {
+      const faces = facesOf(this);
+      const state = faceOf(face);
+      if (ArrayIndexOf(faces, face) < 0) {
+        ArrayPush(faces, face);
+        ArrayPush(state.sets, this);
+        if (state.status === "loaded") addFace(face, state);
+      }
+      return this;
+    }
+
+    delete(face) {
+      const faces = facesOf(this);
+      const state = faceOf(face);
+      const at = ArrayIndexOf(faces, face);
+      if (at < 0) return false;
+      ArraySplice(faces, at, 1);
+      ArraySplice(state.sets, ArrayIndexOf(state.sets, this), 1);
+      native.fonts("delete " + state.id, "");
+      return true;
+    }
+
+    clear() {
+      const faces = facesOf(this);
+      while (faces.length > 0) this.delete(faces[0]);
+    }
+
+    has(face) {
+      return ArrayIndexOf(facesOf(this), face) >= 0;
+    }
+
+    get size() {
+      return facesOf(this).length;
+    }
+
+    forEach(callback, thisArg) {
+      const faces = ArraySlice(facesOf(this));
+      for (let i = 0; i < faces.length; i++) ReflectApply(callback, thisArg, [faces[i], faces[i], this]);
+    }
+
+    values() {
+      return ReflectApply(ArrayValues, ArraySlice(facesOf(this)), []);
+    }
+
+    keys() {
+      return ReflectApply(ArrayValues, ArraySlice(facesOf(this)), []);
+    }
+
+    entries() {
+      const faces = facesOf(this);
+      const pairs = [];
+      for (let i = 0; i < faces.length; i++) ArrayPush(pairs, [faces[i], faces[i]]);
+      return ReflectApply(ArrayValues, pairs, []);
+    }
+
+    // Loading while a face of its own is, or one the document's sheets
+    // name is asked for or coming.
+    get status() {
+      const faces = facesOf(this);
+      for (let i = 0; i < faces.length; i++) {
+        if (WeakMapGet(fontFaces, faces[i]).status === "loading") return "loading";
+      }
+      return native.fonts("status", "");
+    }
+
+    get ready() {
+      const set = this;
+      return new $Promise((resolve) => {
+        const check = () => {
+          if (set.status === "loaded") resolve(set);
+          else startTimer(check, 16, [], false);
+        };
+        check();
+      });
+    }
+
+    check(font, text) {
+      need(arguments.length, 1, "check", "FontFaceSet");
+      return this.status === "loaded";
+    }
+
+    load(font, text) {
+      need(arguments.length, 1, "load", "FontFaceSet");
+      return PromiseThen(this.ready, () => []);
+    }
+  }
+  defineProperty(FontFaceSet.prototype, iteratorSymbol, {
+    value: FontFaceSet.prototype.values,
+    writable: true,
+    configurable: true,
+  });
+  expose(FontFaceSet, "FontFaceSet");
+
+  // The document's face set, made when first asked for.
+  const documentFonts = new $WeakMap();
+  function fontSetOf(document) {
+    let set = WeakMapGet(documentFonts, document);
+    if (set === undefined) {
+      set = new FontFaceSet(KEY);
+      WeakMapSet(documentFonts, document, set);
+    }
+    return set;
   }
 
   // ---- performance (High Resolution Time) --------------------------------

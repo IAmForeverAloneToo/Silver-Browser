@@ -1350,6 +1350,10 @@ impl ScriptingHost for WorkerHost {
                 Ok(Answer::Nothing)
             }
             Call::Hidden => Ok(Answer::Bool(false)),
+            // A worker's fonts are none (D54).
+            Call::Fonts(op, data) => {
+                Ok(crate::web_fonts::answer(&op, data, false, &mut Vec::new()))
+            }
             Call::WorkerStart {
                 url,
                 name,

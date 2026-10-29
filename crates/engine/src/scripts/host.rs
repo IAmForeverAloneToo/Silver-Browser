@@ -65,6 +65,9 @@ pub(crate) struct Outputs {
     /// What the document's policies refused, or would have, in the run
     /// (M33.1), each with the element to blame.
     pub(crate) violations: Vec<(net::csp::Violation, Option<NodeId>)>,
+    /// The faces scripts added to the document's fonts or took away
+    /// (D54).
+    pub(crate) fonts: Vec<crate::web_fonts::FontChange>,
 }
 
 /// The document's styles as a run's `getComputedStyle` sees them: the
@@ -1899,6 +1902,12 @@ impl DocumentHost {
                 Ok(Answer::Nothing)
             }
             Call::Hidden => Ok(Answer::Bool(self.window.hidden)),
+            Call::Fonts(op, data) => Ok(crate::web_fonts::answer(
+                &op,
+                data,
+                self.window.fonts_loading,
+                &mut self.outputs.fonts,
+            )),
             Call::Focusable(node) => {
                 let node = self.node(node)?;
                 self.styles_now();
