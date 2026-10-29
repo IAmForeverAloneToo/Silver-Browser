@@ -214,7 +214,7 @@ impl<'a> Animated<'a> {
                             style.custom.as_ref(),
                             resolution,
                         );
-                        declared_font_size(specified, parent, resolution)
+                        declared_font_size(specified, false, parent, resolution)
                     })
                     .unwrap_or(underlying)
             };

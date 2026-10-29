@@ -2924,6 +2924,67 @@ static INITIAL_FRAGMENTATION: LazyLock<Fragmentation> = LazyLock::new(Fragmentat
 
 static INITIAL_LISTS: LazyLock<Lists> = LazyLock::new(Lists::default);
 
+/// The font properties past the size (CSS Fonts 4, gap batch D, D53),
+/// inherited together: a box that sets none of them shares its
+/// parent's, and the initial style has none.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FontProps {
+    /// `font-family`, as declared (the family list, kept as one
+    /// string).
+    pub family: Arc<str>,
+    /// `font-weight`, 1 to 1000.
+    pub weight: u16,
+    /// `font-style`.
+    pub style: FontStyle,
+    /// `font-stretch`, a percentage of the normal width.
+    pub stretch: f32,
+    /// `font-variant-caps: small-caps` (and `font-variant`'s).
+    pub small_caps: bool,
+    /// `font-feature-settings`: each feature's tag and value, in order.
+    pub features: FontFeatures,
+    /// `line-height` (CSS 2 section 10.8).
+    pub line_height: LineHeight,
+}
+
+impl Default for FontProps {
+    fn default() -> Self {
+        FontProps {
+            family: Arc::clone(&SANS_SERIF),
+            weight: 400,
+            style: FontStyle::Normal,
+            stretch: 100.0,
+            small_caps: false,
+            features: Arc::from([]),
+            line_height: LineHeight::Normal,
+        }
+    }
+}
+
+/// `font-feature-settings`: each feature's tag and value, in order.
+pub type FontFeatures = Arc<[([u8; 4], u32)]>;
+
+/// `font-style`.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum FontStyle {
+    #[default]
+    Normal,
+    Italic,
+    /// Slanted by the angle, in degrees, -90 to 90.
+    Oblique(f32),
+}
+
+/// `line-height`'s computed value: `normal`, a number (inherited as a
+/// number, so a child's is its own size times it), or a length.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum LineHeight {
+    #[default]
+    Normal,
+    Number(f32),
+    Px(f32),
+}
+
+static INITIAL_FONT: LazyLock<FontProps> = LazyLock::new(FontProps::default);
+
 /// The background properties' initial values, which
 /// [`ComputedStyle::background`] gives a style that sets none of them.
 static INITIAL_BACKGROUND: LazyLock<Backgrounds> = LazyLock::new(Backgrounds::default);
@@ -3074,16 +3135,6 @@ pub struct ComputedStyle {
     /// element's own `font-size` resolves against the *parent's*
     /// font-size (a property can't be relative to itself).
     pub font_size_px: f32,
-    /// `font-family`, as declared (comma-separated family list, kept
-    /// as one string) — inherited. Still not consumed by `text`'s font
-    /// selection: M8.1 added per-*script* fallback (`text::
-    /// FontCollection`), not per-declared-family selection — this
-    /// string is parsed and carried through cascade/inheritance and
-    /// then simply never read. See `cascade::parse_font_family`'s doc
-    /// for why that's a real, separately-scoped gap, not an oversight.
-    /// Shared, not copied, by the styles that inherit it and the
-    /// fragments that copy their styles (M16.5).
-    pub font_family: Arc<str>,
     /// `display` — not inherited (every element's own box generation is
     /// independent of its parent's).
     pub display: Display,
@@ -3266,6 +3317,9 @@ pub struct ComputedStyle {
     /// a child as `fragmentation`'s is; `None` is every initial value.
     /// Read through [`ComputedStyle::lists`].
     pub lists: Option<Arc<Lists>>,
+    /// The font properties past the size and the family (gap batch D,
+    /// D53), inherited; `None` for their initial values.
+    pub font: Option<Arc<FontProps>>,
     /// The text decoration properties (M21.7), behind one pointer as the
     /// list properties are; `None` is every initial value. Read through
     /// [`ComputedStyle::decoration`].
@@ -3318,7 +3372,6 @@ impl Default for ComputedStyle {
             color: Color::BLACK,
             background_color: Color::TRANSPARENT,
             font_size_px: 16.0, // 'medium', by UA convention
-            font_family: Arc::clone(&SANS_SERIF),
             display: Display::Inline,
             text_align: TextAlign::Start,
             text_align_last: TextAlignLast::Auto,
@@ -3379,6 +3432,7 @@ impl Default for ComputedStyle {
             fragmentation: None,
             custom: None,
             lists: None,
+            font: None,
             decoration: None,
             inert: false,
             flow_root: false,
@@ -3509,6 +3563,18 @@ impl ComputedStyle {
     /// first if it shares them or has none.
     pub fn fragmentation_mut(&mut self) -> &mut Fragmentation {
         Arc::make_mut(self.fragmentation.get_or_insert_with(Default::default))
+    }
+
+    /// The font properties past the size and the family (gap batch D,
+    /// D53): this style's, or their initial values.
+    pub fn font(&self) -> &FontProps {
+        self.font.as_deref().unwrap_or(&INITIAL_FONT)
+    }
+
+    /// The font properties to change, this style's own copy made first
+    /// if it shares them or has none.
+    pub fn font_mut(&mut self) -> &mut FontProps {
+        Arc::make_mut(self.font.get_or_insert_with(Default::default))
     }
 
     /// The counter properties (M21.4): this style's, or their initial
@@ -3666,7 +3732,6 @@ impl ComputedStyle {
         ComputedStyle {
             color: from.color,
             font_size_px: from.font_size_px,
-            font_family: from.font_family.clone(),
             text_align: from.text_align,
             text_align_last: from.text_align_last,
             text_justify: from.text_justify,
@@ -3685,6 +3750,7 @@ impl ComputedStyle {
             quotes: from.quotes.clone(),
             fragmentation: inherited_fragmentation(from),
             lists: inherited_lists(from),
+            font: from.font.clone(),
             decoration: inherited_decoration(from),
             image: inherited_image(from),
             svg: inherited_svg(from),
@@ -3856,9 +3922,11 @@ mod tests {
         // sRGB channels drawing reads: 704 before them. `color-scheme`
         // and the scheme it gives (D49), a pointer and a byte in the
         // padding: 800 before them. The corners' radii (D50) a pointer:
-        // 808 before them. Growing this is a decision, not an accident;
-        // say why where the number changes.
-        assert_eq!(std::mem::size_of::<ComputedStyle>(), 816);
+        // 808 before them. The font properties past the size (D53) a
+        // pointer, with the family moved behind it from a wide one: 816
+        // before them. Growing this is a decision, not an accident; say
+        // why where the number changes.
+        assert_eq!(std::mem::size_of::<ComputedStyle>(), 808);
         assert_eq!(ComputedStyle::default().grid, None);
         assert_eq!(*ComputedStyle::default().grid(), GridStyle::default());
         assert_eq!(ComputedStyle::default().effects, None);

@@ -95,6 +95,12 @@ longhands! {
     BackgroundColor = "background-color": ByComputedValue,
     FontSize = "font-size": ByComputedValue,
     FontFamily = "font-family": Discrete,
+    FontWeight = "font-weight": ByComputedValue,
+    FontStyle = "font-style": Discrete,
+    FontStretch = "font-stretch": ByComputedValue,
+    FontVariantCaps = "font-variant-caps": Discrete,
+    FontFeatureSettings = "font-feature-settings": Discrete,
+    LineHeight = "line-height": ByComputedValue,
     Display = "display": Discrete,
     TextAlignAll = "text-align-all": Discrete,
     TextAlignLast = "text-align-last": Discrete,
@@ -300,6 +306,17 @@ pub fn longhands_of(name: &str) -> Vec<Longhand> {
             BackgroundAttachment,
         ],
         "margin" => &[MarginTop, MarginRight, MarginBottom, MarginLeft],
+        "font" => &[
+            FontStyle,
+            FontVariantCaps,
+            FontWeight,
+            FontStretch,
+            FontSize,
+            LineHeight,
+            FontFamily,
+            FontFeatureSettings,
+        ],
+        "font-variant" => &[FontVariantCaps],
         "padding" => &[PaddingTop, PaddingRight, PaddingBottom, PaddingLeft],
         "border-width" => &[
             BorderTopWidth,
@@ -435,7 +452,13 @@ pub fn copy(property: Longhand, from: &ComputedStyle, to: &mut ComputedStyle) {
         Color => to.color = from.color,
         BackgroundColor => to.background_color = from.background_color,
         FontSize => to.font_size_px = from.font_size_px,
-        FontFamily => to.font_family = from.font_family.clone(),
+        FontFamily => to.font_mut().family = from.font().family.clone(),
+        FontWeight => to.font_mut().weight = from.font().weight,
+        FontStyle => to.font_mut().style = from.font().style,
+        FontStretch => to.font_mut().stretch = from.font().stretch,
+        FontVariantCaps => to.font_mut().small_caps = from.font().small_caps,
+        FontFeatureSettings => to.font_mut().features = from.font().features.clone(),
+        LineHeight => to.font_mut().line_height = from.font().line_height,
         Display => {
             to.display = from.display;
             to.flow_root = from.flow_root;
@@ -801,7 +824,13 @@ pub fn same(property: Longhand, a: &ComputedStyle, b: &ComputedStyle) -> bool {
         Color => a.color == b.color,
         BackgroundColor => a.background_color == b.background_color,
         FontSize => a.font_size_px == b.font_size_px,
-        FontFamily => a.font_family == b.font_family,
+        FontFamily => a.font().family == b.font().family,
+        FontWeight => a.font().weight == b.font().weight,
+        FontStyle => a.font().style == b.font().style,
+        FontStretch => a.font().stretch == b.font().stretch,
+        FontVariantCaps => a.font().small_caps == b.font().small_caps,
+        FontFeatureSettings => a.font().features == b.font().features,
+        LineHeight => a.font().line_height == b.font().line_height,
         Display => a.display == b.display && a.flow_root == b.flow_root,
         TextAlignAll => a.text_align == b.text_align,
         TextAlignLast => a.text_align_last == b.text_align_last,
@@ -1413,6 +1442,34 @@ pub fn interpolate(
         }
         LetterSpacing => {
             to.letter_spacing = length(a.letter_spacing, b.letter_spacing, p, false);
+            true
+        }
+        // A number, 1 to 1000 (CSS Fonts 4 section 2.2).
+        FontWeight => {
+            let w = number(
+                f32::from(a.font().weight),
+                f32::from(b.font().weight),
+                p,
+                1.0,
+                1000.0,
+            );
+            to.font_mut().weight = w.round() as u16;
+            true
+        }
+        FontStretch => {
+            to.font_mut().stretch = number(a.font().stretch, b.font().stretch, p, 0.0, f32::MAX);
+            true
+        }
+        // A number with a number, a length with a length; `normal`
+        // and the two mixed are discrete.
+        LineHeight => {
+            use crate::computed::LineHeight as L;
+            let value = match (a.font().line_height, b.font().line_height) {
+                (L::Number(x), L::Number(y)) => L::Number(number(x, y, p, 0.0, f32::MAX)),
+                (L::Px(x), L::Px(y)) => L::Px(length(x, y, p, true)),
+                _ => return false,
+            };
+            to.font_mut().line_height = value;
             true
         }
         WordSpacing => {
@@ -2431,6 +2488,11 @@ mod tests {
             ]
         );
         assert!(longhands_of("unknown").is_empty());
+        assert_eq!(longhands_of("font").len(), 8);
+        assert_eq!(
+            longhands_of("font-variant"),
+            vec![Longhand::FontVariantCaps]
+        );
         assert_eq!(
             Longhand::WillChange.animation_type(),
             AnimationType::NotAnimatable
@@ -2443,7 +2505,7 @@ mod tests {
     fn copy_and_same_read_one_property_each() {
         // Two styles that differ in every property they can.
         let a = style(
-            "color: red; background-color: blue; font-size: 20px; font-family: serif; \
+            "color: red; background-color: blue; font-size: 20px; font-family: serif;              font-weight: 700; font-style: italic; font-stretch: 50%;              font-variant-caps: small-caps; font-feature-settings: 'liga' 0; line-height: 2; \
              display: flex; text-align: right; text-transform: uppercase; white-space: pre; \
              letter-spacing: 1px; word-spacing: 2px; width: 10px; height: 20px; \
              min-width: 1px; min-height: 2px; max-width: 30px; max-height: 40px; \
@@ -2487,6 +2549,54 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn font_weights_stretches_and_line_heights_interpolate() {
+        use crate::computed::LineHeight;
+        let w = blended(
+            Longhand::FontWeight,
+            "font-weight: 100",
+            "font-weight: 200",
+            0.555,
+        );
+        assert_eq!(w.font().weight, 156);
+        let s = blended(
+            Longhand::FontStretch,
+            "font-stretch: 50%",
+            "font-stretch: 150%",
+            0.25,
+        );
+        assert_eq!(s.font().stretch, 75.0);
+        let n = blended(
+            Longhand::LineHeight,
+            "line-height: 1",
+            "line-height: 2",
+            0.5,
+        );
+        assert_eq!(n.font().line_height, LineHeight::Number(1.5));
+        let l = blended(
+            Longhand::LineHeight,
+            "line-height: 10px",
+            "line-height: 20px",
+            0.5,
+        );
+        assert_eq!(l.font().line_height, LineHeight::Px(15.0));
+        // A number and a length do not mix: the change is at half way.
+        let early = blended(
+            Longhand::LineHeight,
+            "line-height: 1",
+            "line-height: 20px",
+            0.4,
+        );
+        assert_eq!(early.font().line_height, LineHeight::Number(1.0));
+        let late = blended(
+            Longhand::LineHeight,
+            "line-height: 1",
+            "line-height: 20px",
+            0.6,
+        );
+        assert_eq!(late.font().line_height, LineHeight::Px(20.0));
     }
 
     #[test]

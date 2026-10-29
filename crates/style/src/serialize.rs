@@ -20,6 +20,7 @@ use crate::computed::{
     DominantBaseline, FillRule, PaintLayer, ShapeRendering, StrokeLinecap, StrokeLinejoin,
     SvgPaint, TextAnchor, VectorEffect,
 };
+use crate::computed::{FontStyle, LineHeight};
 
 /// The properties [`computed_value`] gives, in the order a computed
 /// style's declaration block lists them (alphabetical, as the reference
@@ -77,11 +78,17 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "flex-wrap",
     "float",
     "font-family",
+    "font-feature-settings",
     "font-size",
+    "font-stretch",
+    "font-style",
+    "font-variant-caps",
+    "font-weight",
     "height",
     "justify-content",
     "left",
     "letter-spacing",
+    "line-height",
     "margin-bottom",
     "margin-left",
     "margin-right",
@@ -213,7 +220,41 @@ pub fn computed_value(style: &ComputedStyle, name: &str) -> Option<String> {
             }
         }
         "font-size" => px(style.font_size_px),
-        "font-family" => style.font_family.to_string(),
+        "font-family" => style.font().family.to_string(),
+        "font-weight" => style.font().weight.to_string(),
+        "font-style" => match style.font().style {
+            FontStyle::Normal => "normal".to_owned(),
+            FontStyle::Italic => "italic".to_owned(),
+            FontStyle::Oblique(14.0) => "oblique".to_owned(),
+            FontStyle::Oblique(a) => format!("oblique {}deg", number(a)),
+        },
+        "font-stretch" => format!("{}%", number(style.font().stretch)),
+        "font-variant-caps" => if style.font().small_caps {
+            "small-caps"
+        } else {
+            "normal"
+        }
+        .to_owned(),
+        "font-feature-settings" => {
+            let features = &style.font().features;
+            if features.is_empty() {
+                return Some("normal".to_owned());
+            }
+            let feature = |(tag, value): &([u8; 4], u32)| {
+                let tag = String::from_utf8_lossy(tag);
+                match value {
+                    1 => format!("\"{tag}\""),
+                    v => format!("\"{tag}\" {v}"),
+                }
+            };
+            features.iter().map(feature).collect::<Vec<_>>().join(", ")
+        }
+        // The used value (CSSOM 1 section 9): a number is of the size.
+        "line-height" => match style.font().line_height {
+            LineHeight::Normal => "normal".to_owned(),
+            LineHeight::Number(n) => px(n * style.font_size_px),
+            LineHeight::Px(v) => px(v),
+        },
         "display" => match (style.display, style.flow_root) {
             (Display::Block, true) => "flow-root".to_owned(),
             (Display::ListItem, true) => "flow-root list-item".to_owned(),

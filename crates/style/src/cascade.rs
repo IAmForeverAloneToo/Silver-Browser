@@ -122,8 +122,8 @@ use crate::computed::{
     TextAlign, TextAlignLast, TextJustify, TextTransform, VerticalAlign, WhiteSpace,
 };
 use crate::computed::{
-    AnimationPlayState, Backgrounds, BorderImage, Calc, Decoration, Effects, Filter, Fragmentation,
-    GridStyle, ImageStyle, JustifyItems, Lists, Motion, Radii, Svg, WillChange,
+    AnimationPlayState, Backgrounds, BorderImage, Calc, Decoration, Effects, Filter, FontProps,
+    Fragmentation, GridStyle, ImageStyle, JustifyItems, Lists, Motion, Radii, Svg, WillChange,
 };
 use crate::custom::{self, CustomProperties, DataType, Substituted, Substitutions};
 use crate::invalidation::{Reach, SelectorFeatures, invalidate};
@@ -137,6 +137,7 @@ mod backgrounds;
 mod border_image;
 mod decoration;
 mod effects;
+mod fonts;
 mod fragmentation;
 mod gradients;
 mod grid;
@@ -478,6 +479,14 @@ impl Target {
             name,
             "font-size"
                 | "font-family"
+                | "font"
+                | "font-weight"
+                | "font-style"
+                | "font-stretch"
+                | "font-variant"
+                | "font-variant-caps"
+                | "font-feature-settings"
+                | "line-height"
                 | "color"
                 | "background-color"
                 | "background"
@@ -510,6 +519,13 @@ impl Target {
                     name,
                     "font-size"
                         | "font-family"
+                        | "font"
+                        | "font-weight"
+                        | "font-style"
+                        | "font-stretch"
+                        | "font-variant"
+                        | "font-variant-caps"
+                        | "font-feature-settings"
                         | "color"
                         | "text-transform"
                         | "white-space"
@@ -2762,11 +2778,14 @@ fn compute_style(
         {
             animated.font_size(&mut style, parent, resolution);
         }
-        if a.decl.name != "font-size" {
-            continue;
-        }
+        // The `font` shorthand sets the size too (D53).
+        let shorthand = match &*a.decl.name {
+            "font-size" => false,
+            "font" => true,
+            _ => continue,
+        };
         let specified = specified(a, style.custom.as_ref(), resolution);
-        if let Some(px) = declared_font_size(specified, parent, resolution) {
+        if let Some(px) = declared_font_size(specified, shorthand, parent, resolution) {
             style.font_size_px = px;
         }
     }
@@ -3035,9 +3054,11 @@ fn compute_style(
 /// The font size a `font-size` declaration whose value is `specified`
 /// gives an element whose parent's style is `parent`: its own `em` and
 /// percentage of the parent's; `unset`, which is `inherit`, when it is
-/// invalid at computed-value time; `None` when it is ignored.
+/// invalid at computed-value time; `None` when it is ignored. Of a
+/// `font` declaration when `shorthand`.
 fn declared_font_size(
     specified: Specified<'_>,
+    shorthand: bool,
     parent: &ComputedStyle,
     resolution: &Resolution<'_>,
 ) -> Option<f32> {
@@ -3051,6 +3072,9 @@ fn declared_font_size(
         Some(CssWide::Initial) => Some(ComputedStyle::default().font_size_px),
         // `font-size` is inherited, so `unset` means `inherit`.
         Some(CssWide::Inherit | CssWide::Unset) => Some(parent.font_size_px),
+        None if shorthand => {
+            fonts::parse_font(value, parent.font().weight, &parent_bases).map(|f| f.size)
+        }
         None => parse_font_size(value, &parent_bases),
     };
     match specified {
@@ -3386,10 +3410,41 @@ fn apply_declaration(
         ),
         // The first pass of `compute_style` applies it.
         "font-size" => parse_font_size(value, bases).is_some(),
-        "font-family" => set(
-            &mut style.font_family,
-            parse_font_family(value).map(Into::into),
+        "font-family" => set_font(style, parse_font_family(value).map(Into::into), |f, v| {
+            f.family = v
+        }),
+        // The size is the first pass's.
+        "font" => match fonts::parse_font(value, parent.font().weight, bases) {
+            Some(font) => {
+                style.font = (font.props != FontProps::default()).then(|| Arc::new(font.props));
+                true
+            }
+            None => false,
+        },
+        "font-weight" => set_font(
+            style,
+            fonts::parse_font_weight(value, parent.font().weight, bases),
+            |f, v| f.weight = v,
         ),
+        "font-style" => set_font(style, fonts::parse_font_style(value, bases), |f, v| {
+            f.style = v
+        }),
+        "font-stretch" => set_font(style, fonts::parse_font_stretch(value, bases), |f, v| {
+            f.stretch = v
+        }),
+        "font-variant" | "font-variant-caps" => set_font(
+            style,
+            fonts::parse_small_caps(value, name == "font-variant"),
+            |f, v| f.small_caps = v,
+        ),
+        "font-feature-settings" => set_font(
+            style,
+            fonts::parse_font_feature_settings(value, bases),
+            |f, v| f.features = v,
+        ),
+        "line-height" => set_font(style, fonts::parse_line_height(value, bases), |f, v| {
+            f.line_height = v
+        }),
         "display" => match parse_display(value) {
             Some((display, flow_root)) => {
                 style.display = display;
@@ -3980,6 +4035,16 @@ fn set<T>(slot: &mut T, v: Option<T>) -> bool {
     v.map(|v| *slot = v).is_some()
 }
 
+/// [`set`] for the font properties behind [`ComputedStyle::font`]
+/// (D53).
+fn set_font<T>(
+    style: &mut ComputedStyle,
+    v: Option<T>,
+    update: impl FnOnce(&mut FontProps, T),
+) -> bool {
+    v.map(|v| update(style.font_mut(), v)).is_some()
+}
+
 /// [`set`] for the grid properties (M18), which live behind
 /// [`ComputedStyle::grid`]: `update` writes `v`, when there is one, into
 /// the style's own copy of them.
@@ -4337,6 +4402,14 @@ fn is_inherited(name: &str) -> bool {
             | "color-scheme"
             | "font-size"
             | "font-family"
+            | "font"
+            | "font-weight"
+            | "font-style"
+            | "font-stretch"
+            | "font-variant"
+            | "font-variant-caps"
+            | "font-feature-settings"
+            | "line-height"
             | "text-align"
             | "text-transform"
             | "white-space"
@@ -4428,7 +4501,17 @@ fn apply_css_wide(
         "border-image-outset" => copy_border_image(style, src, |b, s| b.outset = s.outset),
         "border-image-repeat" => copy_border_image(style, src, |b, s| b.repeat = s.repeat),
         "font-size" => {} // the first pass, see `compute_style`
-        "font-family" => style.font_family = src.font_family.clone(),
+        "font-family" => style.font_mut().family = src.font().family.clone(),
+        // Its size is the first pass's.
+        "font" => {
+            style.font = src.font.clone();
+        }
+        "font-weight" => style.font_mut().weight = src.font().weight,
+        "font-style" => style.font_mut().style = src.font().style,
+        "font-stretch" => style.font_mut().stretch = src.font().stretch,
+        "font-variant" | "font-variant-caps" => style.font_mut().small_caps = src.font().small_caps,
+        "font-feature-settings" => style.font_mut().features = src.font().features.clone(),
+        "line-height" => style.font_mut().line_height = src.font().line_height,
         "display" => {
             style.display = src.display;
             style.flow_root = src.flow_root;
@@ -9245,7 +9328,7 @@ mod tests {
             .expect("styled");
         assert_eq!(s.color, Color::rgb8(255, 0, 0));
         assert_eq!(s.background_color, Color::rgb8(0, 255, 0));
-        assert_eq!((s.font_size_px, &*s.font_family), (30.0, "serif"));
+        assert_eq!((s.font_size_px, &*s.font().family), (30.0, "serif"));
         assert_eq!(s.text_transform, TextTransform::Uppercase);
         assert_eq!((s.letter_spacing, s.word_spacing), (2.0, 3.0));
         assert_eq!(s.vertical_align, VerticalAlign::Top);
@@ -9441,7 +9524,7 @@ mod tests {
             .expect("styled");
         assert_eq!(s.color, Color::rgb8(255, 0, 0));
         assert_eq!(s.background_color, Color::rgb8(0, 255, 0));
-        assert_eq!((s.font_size_px, &*s.font_family), (30.0, "serif"));
+        assert_eq!((s.font_size_px, &*s.font().family), (30.0, "serif"));
         assert_eq!(s.text_transform, TextTransform::Uppercase);
         assert_eq!((s.letter_spacing, s.word_spacing), (2.0, 3.0));
         assert_eq!(s.vertical_align, VerticalAlign::Top);
@@ -10519,7 +10602,7 @@ mod tests {
             (textarea.width.clone(), textarea.height.clone()),
             (Size::Auto, Size::Auto)
         );
-        assert_eq!(&*textarea.font_family, "monospace");
+        assert_eq!(&*textarea.font().family, "monospace");
         assert_eq!(textarea.white_space, WhiteSpace::PreWrap);
         assert_eq!(textarea.overflow, Overflow::Auto);
     }
