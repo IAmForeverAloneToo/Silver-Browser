@@ -120,6 +120,7 @@ use crate::computed::{
     LengthPercentage, LengthPercentageAuto, MarginEdges, MaxSize, Outline, OutlineStyle, Overflow,
     OverflowAlign, PaddingEdges, Position, Quotes, RIGHT, SelfAlignment, Size, TOP, TableLayout,
     TextAlign, TextAlignLast, TextJustify, TextTransform, VerticalAlign, WhiteSpace,
+    WhiteSpaceCollapse,
 };
 use crate::computed::{
     AnimationPlayState, Backgrounds, BorderImage, Calc, Decoration, Effects, Filter, FontProps,
@@ -503,6 +504,7 @@ impl Target {
                 | "letter-spacing"
                 | "word-spacing"
                 | "vertical-align"
+                | "text-shadow"
         );
         match self {
             Target::FirstLine => line,
@@ -529,6 +531,9 @@ impl Target {
                         | "color"
                         | "text-transform"
                         | "white-space"
+                        | "white-space-collapse"
+                        | "text-wrap-mode"
+                        | "text-shadow"
                         | "letter-spacing"
                         | "word-spacing"
                         | "quotes"
@@ -3505,6 +3510,18 @@ fn apply_declaration(
         "text-justify" => set(&mut style.text_justify, parse_text_justify(value)),
         "text-transform" => set(&mut style.text_transform, parse_text_transform(value)),
         "white-space" => set(&mut style.white_space, parse_white_space(value)),
+        "white-space-collapse" => set(
+            &mut style.white_space.collapse,
+            parse_white_space_collapse(value),
+        ),
+        "text-wrap-mode" => set(&mut style.white_space.wrap, parse_text_wrap_mode(value)),
+        "text-wrap" => set(&mut style.white_space.wrap, parse_text_wrap(value)),
+        "overflow-wrap" => set(&mut style.overflow_wrap, parse_overflow_wrap(value)),
+        "word-break" => set(&mut style.word_break, parse_word_break(value)),
+        "visibility" => set(&mut style.visibility, parse_visibility(value)),
+        "text-shadow" => set_decoration(style, parse_shadows(value, bases, true), |d, v| {
+            d.text_shadow = v
+        }),
         "letter-spacing" => set(&mut style.letter_spacing, parse_spacing(value, bases)),
         "word-spacing" => set(&mut style.word_spacing, parse_spacing(value, bases)),
         "width" => set(&mut style.width, parse_size(value, bases)),
@@ -3804,7 +3821,7 @@ fn apply_declaration(
                 e.backface_visibility = v
             })
         }
-        "box-shadow" => set_effects(style, parse_box_shadow(value, bases), |e, v| {
+        "box-shadow" => set_effects(style, parse_shadows(value, bases, false), |e, v| {
             e.box_shadow = v
         }),
         "filter" => set_effects(style, parse_filter(value, bases), |e, v| e.filter = v),
@@ -4423,6 +4440,13 @@ fn is_inherited(name: &str) -> bool {
             | "text-align"
             | "text-transform"
             | "white-space"
+            | "white-space-collapse"
+            | "text-wrap-mode"
+            | "text-wrap"
+            | "overflow-wrap"
+            | "word-break"
+            | "visibility"
+            | "text-shadow"
             | "letter-spacing"
             | "word-spacing"
             | "border-collapse"
@@ -4535,6 +4559,12 @@ fn apply_css_wide(
         "text-justify" => style.text_justify = src.text_justify,
         "text-transform" => style.text_transform = src.text_transform,
         "white-space" => style.white_space = src.white_space,
+        "white-space-collapse" => style.white_space.collapse = src.white_space.collapse,
+        "text-wrap-mode" | "text-wrap" => style.white_space.wrap = src.white_space.wrap,
+        "overflow-wrap" => style.overflow_wrap = src.overflow_wrap,
+        "word-break" => style.word_break = src.word_break,
+        "visibility" => style.visibility = src.visibility,
+        "text-shadow" => copy_decoration(style, src, |d, s| d.text_shadow = s.text_shadow.clone()),
         "letter-spacing" => style.letter_spacing = src.letter_spacing,
         "word-spacing" => style.word_spacing = src.word_spacing,
         "width" => style.width = src.width.clone(),
@@ -6009,6 +6039,7 @@ pub(crate) fn canonical_name(name: &str) -> &str {
         "-webkit-justify-content" => "justify-content",
         "-webkit-order" => "order",
         "-webkit-box-sizing" => "box-sizing",
+        "word-wrap" => "overflow-wrap",
         "-webkit-transform" => "transform",
         "-webkit-transform-origin" => "transform-origin",
         "-webkit-transform-style" => "transform-style",
@@ -6132,14 +6163,104 @@ fn parse_text_transform(tokens: &[Token]) -> Option<TextTransform> {
     }
 }
 
+/// `white-space` (CSS Text 4 section 3): one of its six keywords, or a
+/// `white-space-collapse` value and a `text-wrap-mode` one, in either
+/// order, each at most once, the one left out initial.
 fn parse_white_space(tokens: &[Token]) -> Option<WhiteSpace> {
-    match single_ident(tokens)?.to_ascii_lowercase().as_str() {
-        "normal" => Some(WhiteSpace::Normal),
-        "pre" => Some(WhiteSpace::Pre),
-        "pre-wrap" => Some(WhiteSpace::PreWrap),
-        "pre-line" => Some(WhiteSpace::PreLine),
-        _ => None, // `break-spaces` (css-text-4) lands later
+    let words = split_components(tokens);
+    if let [one] = words.as_slice() {
+        let keyword = match single_ident(one)?.to_ascii_lowercase().as_str() {
+            "normal" => Some(WhiteSpace::NORMAL),
+            "pre" => Some(WhiteSpace::PRE),
+            "pre-wrap" => Some(WhiteSpace::PRE_WRAP),
+            "pre-line" => Some(WhiteSpace::PRE_LINE),
+            "nowrap" => Some(WhiteSpace::NOWRAP),
+            "break-spaces" => Some(WhiteSpace::BREAK_SPACES),
+            _ => None,
+        };
+        if keyword.is_some() {
+            return keyword;
+        }
     }
+    let (mut collapse, mut wrap) = (None, None);
+    for word in &words {
+        if let Some(c) = parse_white_space_collapse(word) {
+            if collapse.replace(c).is_some() {
+                return None;
+            }
+        } else if wrap.replace(parse_text_wrap_mode(word)?).is_some() {
+            return None;
+        }
+    }
+    (!words.is_empty()).then(|| WhiteSpace {
+        collapse: collapse.unwrap_or(WhiteSpaceCollapse::Collapse),
+        wrap: wrap.unwrap_or(true),
+    })
+}
+
+/// `white-space-collapse`.
+fn parse_white_space_collapse(tokens: &[Token]) -> Option<WhiteSpaceCollapse> {
+    Some(match single_ident(tokens)?.to_ascii_lowercase().as_str() {
+        "collapse" => WhiteSpaceCollapse::Collapse,
+        "preserve" => WhiteSpaceCollapse::Preserve,
+        "preserve-breaks" => WhiteSpaceCollapse::PreserveBreaks,
+        "break-spaces" => WhiteSpaceCollapse::BreakSpaces,
+        "preserve-spaces" => WhiteSpaceCollapse::PreserveSpaces,
+        _ => return None,
+    })
+}
+
+/// `text-wrap-mode`: whether lines wrap.
+fn parse_text_wrap_mode(tokens: &[Token]) -> Option<bool> {
+    match single_ident(tokens)?.to_ascii_lowercase().as_str() {
+        "wrap" => Some(true),
+        "nowrap" => Some(false),
+        _ => None,
+    }
+}
+
+/// `text-wrap`, of which `text-wrap-mode` is taken: `wrap` and `nowrap`,
+/// and `balance`, `pretty` and `stable`, which wrap as `wrap` does here.
+fn parse_text_wrap(tokens: &[Token]) -> Option<bool> {
+    match single_ident(tokens)?.to_ascii_lowercase().as_str() {
+        "wrap" | "balance" | "pretty" | "stable" | "auto" => Some(true),
+        "nowrap" => Some(false),
+        _ => None,
+    }
+}
+
+/// `overflow-wrap`.
+fn parse_overflow_wrap(tokens: &[Token]) -> Option<crate::computed::OverflowWrap> {
+    use crate::computed::OverflowWrap as O;
+    Some(match single_ident(tokens)?.to_ascii_lowercase().as_str() {
+        "normal" => O::Normal,
+        "anywhere" => O::Anywhere,
+        "break-word" => O::BreakWord,
+        _ => return None,
+    })
+}
+
+/// `word-break`.
+fn parse_word_break(tokens: &[Token]) -> Option<crate::computed::WordBreak> {
+    use crate::computed::WordBreak as W;
+    Some(match single_ident(tokens)?.to_ascii_lowercase().as_str() {
+        "normal" => W::Normal,
+        "break-all" => W::BreakAll,
+        "keep-all" => W::KeepAll,
+        "break-word" => W::BreakWord,
+        _ => return None,
+    })
+}
+
+/// `visibility`.
+fn parse_visibility(tokens: &[Token]) -> Option<crate::computed::Visibility> {
+    use crate::computed::Visibility as V;
+    Some(match single_ident(tokens)?.to_ascii_lowercase().as_str() {
+        "visible" => V::Visible,
+        "hidden" => V::Hidden,
+        "collapse" => V::Collapse,
+        _ => return None,
+    })
 }
 
 /// `normal` (resets to `0`) or a length — `letter-spacing`/`word-spacing`
@@ -6351,10 +6472,12 @@ fn parse_border_radius(tokens: &[Token], bases: &LengthBases<'_>) -> Option<Radi
 /// or shadows separated by commas, each two to four lengths, the offsets,
 /// the blur radius, never negative, and the spread, with a colour and
 /// `inset` before or after them, each at most once. At most
-/// [`MAX_SHADOWS`]; a longer list is no value.
-fn parse_box_shadow(
+/// [`MAX_SHADOWS`]; a longer list is no value. `text-shadow` (D56) when
+/// `text`: no spread and no `inset`.
+fn parse_shadows(
     tokens: &[Token],
     bases: &LengthBases<'_>,
+    text: bool,
 ) -> Option<Vec<crate::computed::Shadow>> {
     if single_ident(tokens).is_some_and(|w| w.eq_ignore_ascii_case("none")) {
         return Some(Vec::new());
@@ -6369,7 +6492,7 @@ fn parse_box_shadow(
         // Where the lengths stand: one run, nothing between them.
         let mut run_ended = false;
         for part in &parts {
-            if single_ident(part).is_some_and(|w| w.eq_ignore_ascii_case("inset")) {
+            if !text && single_ident(part).is_some_and(|w| w.eq_ignore_ascii_case("inset")) {
                 if inset {
                     return None;
                 }
@@ -6393,7 +6516,7 @@ fn parse_box_shadow(
         let [x, y, blur, spread] = match lengths.as_slice() {
             [x, y] => [*x, *y, 0.0, 0.0],
             [x, y, b] => [*x, *y, *b, 0.0],
-            [x, y, b, s] => [*x, *y, *b, *s],
+            [x, y, b, s] if !text => [*x, *y, *b, *s],
             _ => return None,
         };
         // A negative blur is invalid, a calculation's clamped to 0.
@@ -6470,7 +6593,7 @@ fn parse_filter(tokens: &[Token], bases: &LengthBases<'_>) -> Option<Vec<Filter>
                 angle_degrees(args, bases)?
             }),
             "drop-shadow" => {
-                let shadow = parse_box_shadow(args, bases)?;
+                let shadow = parse_shadows(args, bases, false)?;
                 let [s] = shadow.as_slice() else {
                     return None;
                 };
@@ -8158,20 +8281,127 @@ mod tests {
     }
 
     #[test]
-    fn white_space_parses_all_four_values() {
+    fn white_space_is_the_shorthand_of_collapse_and_wrap_mode() {
+        let ws = |css: &str| {
+            let sheets = [sheet(&format!("p {{ {css} }}"))];
+            style_of("<p>x</p>", &sheets, "p").white_space
+        };
+        let pair = |collapse, wrap| WhiteSpace { collapse, wrap };
         for (value, expected) in [
-            ("normal", WhiteSpace::Normal),
-            ("pre", WhiteSpace::Pre),
-            ("pre-wrap", WhiteSpace::PreWrap),
-            ("pre-line", WhiteSpace::PreLine),
+            ("normal", WhiteSpace::NORMAL),
+            ("pre", WhiteSpace::PRE),
+            ("pre-wrap", WhiteSpace::PRE_WRAP),
+            ("pre-line", WhiteSpace::PRE_LINE),
+            ("nowrap", WhiteSpace::NOWRAP),
+            ("break-spaces", WhiteSpace::BREAK_SPACES),
+            (
+                "preserve-spaces",
+                pair(WhiteSpaceCollapse::PreserveSpaces, true),
+            ),
+            (
+                "nowrap preserve-breaks",
+                pair(WhiteSpaceCollapse::PreserveBreaks, false),
+            ),
+            ("wrap", WhiteSpace::NORMAL),
         ] {
-            let sheets = [sheet(&format!("p {{ white-space: {value}; }}"))];
+            assert_eq!(ws(&format!("white-space: {value}")), expected, "{value}");
+        }
+        for invalid in ["wrap wrap", "pre nowrap", "collapse preserve", "bogus"] {
             assert_eq!(
-                style_of("<p>x</p>", &sheets, "p").white_space,
-                expected,
-                "{value}"
+                ws(&format!("white-space: pre; white-space: {invalid}")),
+                WhiteSpace::PRE,
+                "{invalid}"
             );
         }
+        assert_eq!(
+            ws("white-space: pre; text-wrap-mode: wrap"),
+            WhiteSpace::PRE_WRAP
+        );
+        assert_eq!(
+            ws("white-space-collapse: preserve-breaks"),
+            WhiteSpace::PRE_LINE
+        );
+        assert_eq!(
+            ws("text-wrap: balance; white-space-collapse: preserve"),
+            WhiteSpace::PRE_WRAP
+        );
+        assert_eq!(ws("text-wrap: nowrap"), WhiteSpace::NOWRAP);
+        assert_eq!(
+            ws("white-space: pre; text-wrap: balance"),
+            WhiteSpace::PRE_WRAP
+        );
+        // Inherited, longhand by longhand.
+        let sheets = [sheet("div { white-space: pre } p { text-wrap-mode: wrap }")];
+        assert_eq!(
+            style_of("<div><p>x</p></div>", &sheets, "p").white_space,
+            WhiteSpace::PRE_WRAP
+        );
+    }
+
+    #[test]
+    fn text_breaking_visibility_and_text_shadow_are_computed_and_inherited() {
+        use crate::computed::{OverflowWrap, Visibility, WordBreak};
+        let sheets = [sheet(
+            "div { overflow-wrap: anywhere; word-break: keep-all; visibility: hidden; \
+             text-shadow: 1px 2px red, blue 0 0 3px } \
+             i { word-wrap: break-word; word-break: break-all; visibility: visible } \
+             b { visibility: collapse; text-shadow: none } \
+             u { text-shadow: 1px 2px 3px 4px } s { text-shadow: inset 1px 1px }",
+        )];
+        let html = "<div><p>x</p><i>y</i><b>z</b><u>u</u><s>s</s></div>";
+        let p = style_of(html, &sheets, "p");
+        assert_eq!(
+            (p.overflow_wrap, p.word_break, p.visibility),
+            (
+                OverflowWrap::Anywhere,
+                WordBreak::KeepAll,
+                Visibility::Hidden
+            )
+        );
+        assert_eq!(p.decoration().text_shadow.len(), 2);
+        assert_eq!(p.decoration().text_shadow[1].blur, 3.0);
+        let i = style_of(html, &sheets, "i");
+        assert_eq!(
+            (i.overflow_wrap, i.word_break, i.visibility),
+            (
+                OverflowWrap::BreakWord,
+                WordBreak::BreakAll,
+                Visibility::Visible
+            )
+        );
+        let unset = [sheet("div { visibility: hidden } p { visibility: unset }")];
+        assert_eq!(
+            style_of("<div><p>x</p></div>", &unset, "p").visibility,
+            Visibility::Hidden
+        );
+        let b = style_of(html, &sheets, "b");
+        assert_eq!(b.visibility, Visibility::Collapse);
+        assert!(b.decoration().text_shadow.is_empty());
+        // A spread or `inset` is no text shadow: the inherited one stands.
+        for tag in ["u", "s"] {
+            assert_eq!(
+                style_of(html, &sheets, tag).decoration().text_shadow.len(),
+                2,
+                "{tag}"
+            );
+        }
+        let value = |name| crate::serialize::computed_value(&p, name).unwrap();
+        assert_eq!(
+            value("text-shadow"),
+            "rgb(255, 0, 0) 1px 2px 0px, rgb(0, 0, 255) 0px 0px 3px"
+        );
+        assert_eq!(value("overflow-wrap"), "anywhere");
+        assert_eq!(value("word-break"), "keep-all");
+        assert_eq!(value("visibility"), "hidden");
+        let pre_line = style_of(
+            "<p>x</p>",
+            &[sheet("p { white-space: preserve-breaks nowrap }")],
+            "p",
+        );
+        let value = |name| crate::serialize::computed_value(&pre_line, name).unwrap();
+        assert_eq!(value("white-space"), "preserve-breaks nowrap");
+        assert_eq!(value("white-space-collapse"), "preserve-breaks");
+        assert_eq!(value("text-wrap-mode"), "nowrap");
     }
 
     #[test]
@@ -9351,7 +9581,7 @@ mod tests {
         assert_eq!(s.width, Size::Auto);
         assert_eq!(s.position, Position::Static);
         assert_eq!(s.content, Content::Normal);
-        assert_eq!(s.white_space, WhiteSpace::PreWrap);
+        assert_eq!(s.white_space, WhiteSpace::PRE_WRAP);
         assert_eq!(s.overflow, Overflow::Visible);
         assert_eq!(s.border_collapse, BorderCollapse::Separate);
         assert_eq!(
@@ -9545,7 +9775,7 @@ mod tests {
         );
         assert_eq!(
             (s.float, s.display, s.white_space),
-            (Float::None, Display::Inline, WhiteSpace::Normal)
+            (Float::None, Display::Inline, WhiteSpace::NORMAL)
         );
     }
 
@@ -10613,7 +10843,7 @@ mod tests {
             (Size::Auto, Size::Auto)
         );
         assert_eq!(&*textarea.font().family, "monospace");
-        assert_eq!(textarea.white_space, WhiteSpace::PreWrap);
+        assert_eq!(textarea.white_space, WhiteSpace::PRE_WRAP);
         assert_eq!(textarea.overflow, Overflow::Auto);
     }
 
@@ -10822,7 +11052,7 @@ mod tests {
     #[test]
     fn pre_defaults_to_white_space_pre() {
         let s = style_of("<pre>x</pre>", &[], "pre");
-        assert_eq!(s.white_space, WhiteSpace::Pre);
+        assert_eq!(s.white_space, WhiteSpace::PRE);
         assert_eq!(s.display, Display::Block);
     }
 
@@ -12769,7 +12999,7 @@ mod tests {
         assert_eq!(marker.color, Color::rgb8(0, 0, 255));
         assert_eq!(marker.content, Content::Normal);
         assert_eq!(marker.text_transform, TextTransform::None);
-        assert_eq!(marker.white_space, WhiteSpace::Pre);
+        assert_eq!(marker.white_space, WhiteSpace::PRE);
         // What is no list item has none.
         assert_eq!(
             pseudo_of("<p>a</p>", &sheets, "p", PseudoElement::Marker),

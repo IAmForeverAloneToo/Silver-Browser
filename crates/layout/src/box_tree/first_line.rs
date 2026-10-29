@@ -117,7 +117,7 @@ fn has_line(items: &[LayoutBox]) -> bool {
         BoxKind::Text(text) => {
             let breaks_kept = matches!(
                 b.style.white_space,
-                WhiteSpace::Pre | WhiteSpace::PreWrap | WhiteSpace::PreLine
+                WhiteSpace::PRE | WhiteSpace::PRE_WRAP | WhiteSpace::PRE_LINE
             );
             text.chars()
                 .any(|c| !crate::inline::is_css_space(c) || (c == '\n' && breaks_kept))

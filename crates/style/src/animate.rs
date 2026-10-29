@@ -106,7 +106,12 @@ longhands! {
     TextAlignLast = "text-align-last": Discrete,
     TextJustify = "text-justify": Discrete,
     TextTransform = "text-transform": Discrete,
-    WhiteSpace = "white-space": Discrete,
+    WhiteSpaceCollapse = "white-space-collapse": Discrete,
+    TextWrapMode = "text-wrap-mode": Discrete,
+    OverflowWrap = "overflow-wrap": Discrete,
+    WordBreak = "word-break": Discrete,
+    Visibility = "visibility": ByComputedValue,
+    TextShadow = "text-shadow": ByComputedValue,
     LetterSpacing = "letter-spacing": ByComputedValue,
     WordSpacing = "word-spacing": ByComputedValue,
     Width = "width": ByComputedValue,
@@ -317,6 +322,8 @@ pub fn longhands_of(name: &str) -> Vec<Longhand> {
             FontFeatureSettings,
         ],
         "font-variant" => &[FontVariantCaps],
+        "white-space" => &[WhiteSpaceCollapse, TextWrapMode],
+        "text-wrap" => &[TextWrapMode],
         "padding" => &[PaddingTop, PaddingRight, PaddingBottom, PaddingLeft],
         "border-width" => &[
             BorderTopWidth,
@@ -467,7 +474,12 @@ pub fn copy(property: Longhand, from: &ComputedStyle, to: &mut ComputedStyle) {
         TextAlignLast => to.text_align_last = from.text_align_last,
         TextJustify => to.text_justify = from.text_justify,
         TextTransform => to.text_transform = from.text_transform,
-        WhiteSpace => to.white_space = from.white_space,
+        WhiteSpaceCollapse => to.white_space.collapse = from.white_space.collapse,
+        TextWrapMode => to.white_space.wrap = from.white_space.wrap,
+        OverflowWrap => to.overflow_wrap = from.overflow_wrap,
+        WordBreak => to.word_break = from.word_break,
+        Visibility => to.visibility = from.visibility,
+        TextShadow => to.decoration_mut().text_shadow = from.decoration().text_shadow.clone(),
         LetterSpacing => to.letter_spacing = from.letter_spacing,
         WordSpacing => to.word_spacing = from.word_spacing,
         Width => to.width = from.width.clone(),
@@ -836,7 +848,12 @@ pub fn same(property: Longhand, a: &ComputedStyle, b: &ComputedStyle) -> bool {
         TextAlignLast => a.text_align_last == b.text_align_last,
         TextJustify => a.text_justify == b.text_justify,
         TextTransform => a.text_transform == b.text_transform,
-        WhiteSpace => a.white_space == b.white_space,
+        WhiteSpaceCollapse => a.white_space.collapse == b.white_space.collapse,
+        TextWrapMode => a.white_space.wrap == b.white_space.wrap,
+        OverflowWrap => a.overflow_wrap == b.overflow_wrap,
+        WordBreak => a.word_break == b.word_break,
+        Visibility => a.visibility == b.visibility,
+        TextShadow => a.decoration().text_shadow == b.decoration().text_shadow,
         LetterSpacing => a.letter_spacing == b.letter_spacing,
         WordSpacing => a.word_spacing == b.word_spacing,
         Width => a.width == b.width,
@@ -1079,6 +1096,46 @@ fn lerp(a: f64, b: f64, p: f64) -> f64 {
 /// zero: what the cascade's font size pass mixes (M22.2).
 pub(crate) fn font_size(a: f32, b: f32, p: f64) -> f32 {
     length(a, b, p, true)
+}
+
+/// Shadow by shadow, the shorter list padded with transparent ones of no
+/// length (Backgrounds 3 section 7.1); `None` where one of two is inset
+/// and the other not (gap batch E).
+fn shadows(
+    x: &[computed::Shadow],
+    y: &[computed::Shadow],
+    p: f64,
+) -> Option<Vec<computed::Shadow>> {
+    let n = x.len().max(y.len());
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let pad = |other: &computed::Shadow| computed::Shadow {
+            color: computed::Color::TRANSPARENT,
+            x: 0.0,
+            y: 0.0,
+            blur: 0.0,
+            spread: 0.0,
+            inset: other.inset,
+        };
+        let (s, t) = match (x.get(i), y.get(i)) {
+            (Some(s), Some(t)) => (*s, *t),
+            (Some(s), None) => (*s, pad(s)),
+            (None, Some(t)) => (pad(t), *t),
+            (None, None) => break,
+        };
+        if s.inset != t.inset {
+            return None;
+        }
+        out.push(computed::Shadow {
+            color: color(s.color, t.color, p),
+            x: length(s.x, t.x, p, false),
+            y: length(s.y, t.y, p, false),
+            blur: length(s.blur, t.blur, p, true),
+            spread: length(s.spread, t.spread, p, false),
+            inset: s.inset,
+        });
+    }
+    Some(out)
 }
 
 /// A number interpolated, within `min` and `max`.
@@ -1755,38 +1812,28 @@ pub fn interpolate(
         // Shadow by shadow, the shorter list padded with transparent
         // ones of no length (Backgrounds 3 section 7.1); two of which one
         // is inset do not interpolate (gap batch E).
-        BoxShadow => {
-            let (x, y) = (&a.effects().box_shadow, &b.effects().box_shadow);
-            let n = x.len().max(y.len());
-            let mut out = Vec::with_capacity(n);
-            for i in 0..n {
-                let pad = |other: &computed::Shadow| computed::Shadow {
-                    color: computed::Color::TRANSPARENT,
-                    x: 0.0,
-                    y: 0.0,
-                    blur: 0.0,
-                    spread: 0.0,
-                    inset: other.inset,
-                };
-                let (s, t) = match (x.get(i), y.get(i)) {
-                    (Some(s), Some(t)) => (*s, *t),
-                    (Some(s), None) => (*s, pad(s)),
-                    (None, Some(t)) => (pad(t), *t),
-                    (None, None) => break,
-                };
-                if s.inset != t.inset {
-                    return false;
-                }
-                out.push(computed::Shadow {
-                    color: color(s.color, t.color, p),
-                    x: length(s.x, t.x, p, false),
-                    y: length(s.y, t.y, p, false),
-                    blur: length(s.blur, t.blur, p, true),
-                    spread: length(s.spread, t.spread, p, false),
-                    inset: s.inset,
-                });
+        BoxShadow => set!(
+            to.effects_mut().box_shadow,
+            shadows(&a.effects().box_shadow, &b.effects().box_shadow, p)
+        ),
+        TextShadow => set!(
+            to.decoration_mut().text_shadow,
+            shadows(&a.decoration().text_shadow, &b.decoration().text_shadow, p)
+        ),
+        // Visible while either end is, between them (CSS 2 section 11.2
+        // and Web Animations' visibility rule).
+        Visibility => {
+            let visible = computed::Visibility::Visible;
+            if a.visibility != visible && b.visibility != visible {
+                return false;
             }
-            to.effects_mut().box_shadow = out;
+            to.visibility = if p <= 0.0 {
+                a.visibility
+            } else if p >= 1.0 {
+                b.visibility
+            } else {
+                visible
+            };
             true
         }
         Orphans | Widows => {
@@ -2490,6 +2537,10 @@ mod tests {
         assert!(longhands_of("unknown").is_empty());
         assert_eq!(longhands_of("font").len(), 8);
         assert_eq!(
+            longhands_of("white-space"),
+            vec![Longhand::WhiteSpaceCollapse, Longhand::TextWrapMode]
+        );
+        assert_eq!(
             longhands_of("font-variant"),
             vec![Longhand::FontVariantCaps]
         );
@@ -2549,6 +2600,55 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn visibility_is_visible_between_and_text_shadows_interpolate() {
+        use crate::computed::Visibility;
+        let v = |p| {
+            blended(
+                Longhand::Visibility,
+                "visibility: hidden",
+                "visibility: visible",
+                p,
+            )
+            .visibility
+        };
+        assert_eq!(
+            (v(0.0), v(0.1), v(0.9), v(1.0)),
+            (
+                Visibility::Hidden,
+                Visibility::Visible,
+                Visibility::Visible,
+                Visibility::Visible
+            )
+        );
+        let back = blended(
+            Longhand::Visibility,
+            "visibility: visible",
+            "visibility: hidden",
+            0.9,
+        );
+        assert_eq!(back.visibility, Visibility::Visible, "until the end");
+        let both = blended(
+            Longhand::Visibility,
+            "visibility: hidden",
+            "visibility: collapse",
+            0.6,
+        );
+        assert_eq!(
+            both.visibility,
+            Visibility::Collapse,
+            "neither visible: discrete"
+        );
+        let t = blended(
+            Longhand::TextShadow,
+            "text-shadow: 2px 4px 6px red",
+            "text-shadow: none",
+            0.5,
+        );
+        let s = t.decoration().text_shadow[0];
+        assert_eq!((s.x, s.y, s.blur, s.color.a), (1.0, 2.0, 3.0, 0.5));
     }
 
     #[test]

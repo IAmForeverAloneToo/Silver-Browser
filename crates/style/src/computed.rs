@@ -537,21 +537,112 @@ pub enum TextTransform {
     Capitalize,
 }
 
-/// `white-space` (M8.4 v1: the four classic values — `break-spaces` is
-/// a finer-grained css-text-4 addition left for later).
+/// `white-space` (CSS Text 4 section 3, gap batch D, D55): the
+/// shorthand of `white-space-collapse` and `text-wrap-mode`, whose
+/// values these are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WhiteSpace {
-    /// Collapse whitespace runs to one space; wrap at them. The initial
-    /// value.
+pub struct WhiteSpace {
+    pub collapse: WhiteSpaceCollapse,
+    /// `text-wrap-mode: wrap`.
+    pub wrap: bool,
+}
+
+/// `white-space-collapse`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhiteSpaceCollapse {
+    /// Runs of white space collapse to one space, newlines among them.
+    Collapse,
+    /// White space kept, newlines as forced breaks.
+    Preserve,
+    /// Spaces collapse, newlines kept as forced breaks.
+    PreserveBreaks,
+    /// As `Preserve`, and a space at a line's end does not hang.
+    BreakSpaces,
+    /// Spaces and tabs kept, newlines turned to spaces.
+    PreserveSpaces,
+}
+
+impl WhiteSpace {
+    /// `normal`, the initial value.
+    pub const NORMAL: WhiteSpace = WhiteSpace {
+        collapse: WhiteSpaceCollapse::Collapse,
+        wrap: true,
+    };
+    pub const PRE: WhiteSpace = WhiteSpace {
+        collapse: WhiteSpaceCollapse::Preserve,
+        wrap: false,
+    };
+    pub const PRE_WRAP: WhiteSpace = WhiteSpace {
+        collapse: WhiteSpaceCollapse::Preserve,
+        wrap: true,
+    };
+    pub const PRE_LINE: WhiteSpace = WhiteSpace {
+        collapse: WhiteSpaceCollapse::PreserveBreaks,
+        wrap: true,
+    };
+    pub const NOWRAP: WhiteSpace = WhiteSpace {
+        collapse: WhiteSpaceCollapse::Collapse,
+        wrap: false,
+    };
+    pub const BREAK_SPACES: WhiteSpace = WhiteSpace {
+        collapse: WhiteSpaceCollapse::BreakSpaces,
+        wrap: true,
+    };
+
+    /// Whether a newline is a forced break.
+    pub fn preserves_breaks(self) -> bool {
+        matches!(
+            self.collapse,
+            WhiteSpaceCollapse::Preserve
+                | WhiteSpaceCollapse::PreserveBreaks
+                | WhiteSpaceCollapse::BreakSpaces
+        )
+    }
+
+    /// Whether spaces are kept, each as wide as a space.
+    pub fn preserves_spaces(self) -> bool {
+        matches!(
+            self.collapse,
+            WhiteSpaceCollapse::Preserve
+                | WhiteSpaceCollapse::BreakSpaces
+                | WhiteSpaceCollapse::PreserveSpaces
+        )
+    }
+}
+
+/// `overflow-wrap` (CSS Text 3 section 5.5): whether a word too long for
+/// its line may break anywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OverflowWrap {
+    #[default]
     Normal,
-    /// Preserve whitespace verbatim (including newlines as forced
-    /// breaks); never wrap.
-    Pre,
-    /// Preserve whitespace verbatim; wrap at it anyway.
-    PreWrap,
-    /// Collapse whitespace runs to one space, but keep newlines as
-    /// forced breaks; wrap at ordinary spaces.
-    PreLine,
+    /// Its breaks count toward the min-content width.
+    Anywhere,
+    /// Its breaks do not.
+    BreakWord,
+}
+
+/// `word-break` (CSS Text 3 section 5.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WordBreak {
+    #[default]
+    Normal,
+    /// Between any two letters.
+    BreakAll,
+    /// Not within words, CJK ones too.
+    KeepAll,
+    /// `normal` with `overflow-wrap: anywhere`.
+    BreakWord,
+}
+
+/// `visibility` (CSS 2 section 11.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Visibility {
+    #[default]
+    Visible,
+    Hidden,
+    /// `hidden`, and a table's row or column takes no room.
+    Collapse,
 }
 
 /// `overflow` (M9.3 v1: the shorthand's four keywords, one value for
@@ -2589,15 +2680,19 @@ pub struct Decoration {
     pub underline_offset: Option<LengthPercentage>,
     /// `text-underline-position`.
     pub underline_position: UnderlinePosition,
+    /// `text-shadow` (D56), inherited: the shadows, none of them
+    /// inset or spread.
+    pub text_shadow: Vec<Shadow>,
 }
 
 impl Decoration {
     /// The values a child inherits: the underline's offset and
-    /// position, the rest initial.
+    /// position and the text's shadows, the rest initial.
     fn inherited(&self) -> Decoration {
         Decoration {
             underline_offset: self.underline_offset.clone(),
             underline_position: self.underline_position,
+            text_shadow: self.text_shadow.clone(),
             ..Decoration::default()
         }
     }
@@ -3151,6 +3246,12 @@ pub struct ComputedStyle {
     pub text_transform: TextTransform,
     /// `white-space` (M8.4) — inherited.
     pub white_space: WhiteSpace,
+    /// `overflow-wrap` (D55), inherited.
+    pub overflow_wrap: OverflowWrap,
+    /// `word-break` (D55), inherited.
+    pub word_break: WordBreak,
+    /// `visibility` (D56), inherited.
+    pub visibility: Visibility,
     /// `letter-spacing`, CSS pixels, extra space after each character —
     /// inherited. `0.0` (the initial value) is the common case, kept
     /// cheap: `layout::inline` only splits a word into per-character
@@ -3377,7 +3478,10 @@ impl Default for ComputedStyle {
             text_align_last: TextAlignLast::Auto,
             text_justify: TextJustify::Auto,
             text_transform: TextTransform::None,
-            white_space: WhiteSpace::Normal,
+            white_space: WhiteSpace::NORMAL,
+            overflow_wrap: OverflowWrap::Normal,
+            word_break: WordBreak::Normal,
+            visibility: Visibility::Visible,
             letter_spacing: 0.0,
             word_spacing: 0.0,
             direction: Direction::Ltr,
@@ -3737,6 +3841,9 @@ impl ComputedStyle {
             text_justify: from.text_justify,
             text_transform: from.text_transform,
             white_space: from.white_space,
+            overflow_wrap: from.overflow_wrap,
+            word_break: from.word_break,
+            visibility: from.visibility,
             letter_spacing: from.letter_spacing,
             word_spacing: from.word_spacing,
             direction: from.direction,
@@ -3848,7 +3955,7 @@ mod tests {
         assert_eq!(s.text_align_last, TextAlignLast::Auto);
         assert_eq!(s.text_justify, TextJustify::Auto);
         assert_eq!(s.text_transform, TextTransform::None);
-        assert_eq!(s.white_space, WhiteSpace::Normal);
+        assert_eq!(s.white_space, WhiteSpace::NORMAL);
         assert_eq!(s.letter_spacing, 0.0);
         assert_eq!(s.word_spacing, 0.0);
         assert_eq!(s.direction, Direction::Ltr);

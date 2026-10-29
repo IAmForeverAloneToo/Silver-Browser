@@ -1902,7 +1902,7 @@ impl BlockContainer<'_> {
         let styled = self.styled;
         let mut style = styled.style_or_initial(parent);
         if styled.document.tag(node) != Some("textarea") {
-            style.white_space = style::computed::WhiteSpace::Pre;
+            style.white_space = style::computed::WhiteSpace::PRE;
         }
         if styled.control_text(node).1 {
             style.color = PLACEHOLDER_COLOUR;

@@ -463,7 +463,7 @@ pub(crate) fn layout_inline<'a>(
                 ..
             } => {
                 let (start, _) = edge_widths(style, cb_width);
-                let can_break = style.white_space != WhiteSpace::Pre
+                let can_break = style.white_space != WhiteSpace::PRE
                     && (*gap_before || after_atomic)
                     && !after_marker;
                 lines.place(
@@ -1074,7 +1074,7 @@ impl<'a> Collector<'a, '_> {
                 InlineItem::Open {
                     style, gap_before, ..
                 } => reach.room.is_some_and(|room| {
-                    let breaks = style.white_space != WhiteSpace::Pre && *gap_before;
+                    let breaks = style.white_space != WhiteSpace::PRE && *gap_before;
                     reach.take(edge_widths(style, room).0, style, breaks)
                 }),
                 InlineItem::Close(style) => reach
@@ -1172,12 +1172,12 @@ impl<'a> Collector<'a, '_> {
         if let Some(last) = text.chars().next_back() {
             self.at_word_start = last.is_whitespace();
         }
-        let no_wrap = style.white_space == WhiteSpace::Pre;
+        let no_wrap = style.white_space == WhiteSpace::PRE;
         // `pre`/`pre-wrap`/`pre-line` all keep literal newlines as
         // forced breaks; only `normal` collapses them away like any
         // other whitespace (see the module doc for what's *not*
         // preserved: multi-space run width).
-        let preserves_newlines = style.white_space != WhiteSpace::Normal;
+        let preserves_newlines = style.white_space != WhiteSpace::NORMAL;
         // Always split on literal newlines, even under `normal` (where
         // they're not a forced break — just whitespace like any other,
         // a gap). This is also what keeps `\n` from ever reaching
@@ -1332,7 +1332,7 @@ pub(crate) fn run_intrinsic_widths<'a>(
             InlineItem::Open {
                 style, gap_before, ..
             } => {
-                style.white_space != WhiteSpace::Pre && !line_empty && (*gap_before || after_atomic)
+                style.white_space != WhiteSpace::PRE && !line_empty && (*gap_before || after_atomic)
             }
             InlineItem::Atomic { .. } => !line_empty,
             InlineItem::Marker { b, .. } => {
@@ -2664,7 +2664,7 @@ mod tests {
     fn white_space_pre_line_preserves_newlines_as_forced_breaks() {
         let fonts = test_fonts();
         let style = ComputedStyle {
-            white_space: WhiteSpace::PreLine,
+            white_space: WhiteSpace::PRE_LINE,
             ..ComputedStyle::default()
         };
         let (fragments, _) = lay(
@@ -2752,7 +2752,7 @@ mod tests {
         let word_width = fonts.measure("aaaa", 16.0);
         assert!(word_width > 0.0);
         let style = ComputedStyle {
-            white_space: WhiteSpace::Pre,
+            white_space: WhiteSpace::PRE,
             font_size_px: 16.0,
             ..ComputedStyle::default()
         };
@@ -2913,7 +2913,7 @@ mod tests {
     fn blank_lines_in_preformatted_text_take_a_line_each() {
         let fonts = test_fonts();
         let line_height = fonts.primary().metrics(16.0).line_height();
-        for ws in [WhiteSpace::Pre, WhiteSpace::PreWrap, WhiteSpace::PreLine] {
+        for ws in [WhiteSpace::PRE, WhiteSpace::PRE_WRAP, WhiteSpace::PRE_LINE] {
             let style = ComputedStyle {
                 white_space: ws,
                 font_size_px: 16.0,
@@ -2935,7 +2935,7 @@ mod tests {
         }
         // A trailing newline adds no line: `<pre>a\n</pre>` is one line.
         let style = ComputedStyle {
-            white_space: WhiteSpace::Pre,
+            white_space: WhiteSpace::PRE,
             font_size_px: 16.0,
             ..ComputedStyle::default()
         };
@@ -3001,7 +3001,7 @@ mod tests {
         assert_eq!(max, min);
         // Under `pre` a line is one piece, and a newline ends it.
         let pre = ComputedStyle {
-            white_space: WhiteSpace::Pre,
+            white_space: WhiteSpace::PRE,
             ..ComputedStyle::default()
         };
         let run = [styled_text_box("a b\ncccc", pre)];
@@ -3031,7 +3031,7 @@ mod tests {
             }
         };
         let w = |text, size| fonts.measure(text, size);
-        let boxes = [on_first_line("aa bb", WhiteSpace::Normal)];
+        let boxes = [on_first_line("aa bb", WhiteSpace::NORMAL)];
         let items = collect_inline_items(&boxes, &fonts);
         let first = collect_first_line_items(&boxes, &fonts, None);
         assert_eq!(
@@ -3042,7 +3042,7 @@ mod tests {
             )
         );
         // After a forced break, the next line is the run's own.
-        let boxes = [on_first_line("aa\nbbbbbb", WhiteSpace::Pre)];
+        let boxes = [on_first_line("aa\nbbbbbb", WhiteSpace::PRE)];
         let items = collect_inline_items(&boxes, &fonts);
         let first = collect_first_line_items(&boxes, &fonts, None);
         let (min, max) = run_intrinsic_widths(&items, Some(&first), &Pass::new(&fonts));
@@ -3095,7 +3095,7 @@ mod tests {
         // ended at the next break opportunity: the items end with it.
         let fonts = test_fonts();
         let w = |t| fonts.measure(t, 32.0);
-        let normal = || big(WhiteSpace::Normal);
+        let normal = || big(WhiteSpace::NORMAL);
         let run = [with_first_line(text_box("aa bb cc dd ee", 16.0), normal())];
         let first = |room| shapes(&collect_first_line_items(&run, &fonts, room));
         assert_eq!(first(None), ["aa@32", "bb@32", "cc@32", "dd@32", "ee@32"]);
@@ -3129,12 +3129,12 @@ mod tests {
             );
         }
         let pre_line = ComputedStyle {
-            white_space: WhiteSpace::PreLine,
+            white_space: WhiteSpace::PRE_LINE,
             ..ComputedStyle::default()
         };
         let run = [with_first_line(
             styled_text_box("aa bb\ncc", pre_line),
-            big(WhiteSpace::PreLine),
+            big(WhiteSpace::PRE_LINE),
         )];
         assert_eq!(
             shapes(&collect_first_line_items(&run, &fonts, Some(0.0))),
@@ -3148,7 +3148,7 @@ mod tests {
         // after its first item: not between words set flush, nor before
         // an inline element's start edge with no gap before it.
         let fonts = test_fonts();
-        let normal = || big(WhiteSpace::Normal);
+        let normal = || big(WhiteSpace::NORMAL);
         let bold = |text: &str| {
             with_first_line(
                 inline_box(vec![with_first_line(text_box(text, 16.0), normal())]),
@@ -3174,19 +3174,19 @@ mod tests {
         // Nor anywhere under `pre` but at a forced break, where the line
         // ends whatever the room.
         let pre = ComputedStyle {
-            white_space: WhiteSpace::Pre,
+            white_space: WhiteSpace::PRE,
             ..ComputedStyle::default()
         };
         let run = [
-            with_first_line(styled_text_box("aa bb ", pre.clone()), big(WhiteSpace::Pre)),
+            with_first_line(styled_text_box("aa bb ", pre.clone()), big(WhiteSpace::PRE)),
             with_first_line(
                 inline_box(vec![with_first_line(
                     styled_text_box("cc", pre.clone()),
-                    big(WhiteSpace::Pre),
+                    big(WhiteSpace::PRE),
                 )]),
-                big(WhiteSpace::Pre),
+                big(WhiteSpace::PRE),
             ),
-            with_first_line(styled_text_box("\ndd", pre), big(WhiteSpace::Pre)),
+            with_first_line(styled_text_box("\ndd", pre), big(WhiteSpace::PRE)),
         ];
         for room in [Some(0.0), None] {
             assert_eq!(
@@ -3207,7 +3207,7 @@ mod tests {
             shapes(&collect_first_line_items(run, &fonts, Some(0.0)))
                 == shapes(&collect_first_line_items(run, &fonts, None))
         };
-        let normal = || big(WhiteSpace::Normal);
+        let normal = || big(WhiteSpace::NORMAL);
         let words = |text: &str, style: ComputedStyle| with_first_line(text_box(text, 16.0), style);
         assert!(!bounded_is_all(&[words("aa bb cc", normal())]));
         let atomic = LayoutBox {
@@ -3256,7 +3256,7 @@ mod tests {
 
     #[test]
     fn a_run_is_restyled_on_the_first_line_where_a_box_in_it_is() {
-        let restyled = || big(WhiteSpace::Normal);
+        let restyled = || big(WhiteSpace::NORMAL);
         assert!(!restyled_on_first_line(&[
             text_box("aa", 16.0),
             inline_box(vec![text_box("bb", 16.0)]),

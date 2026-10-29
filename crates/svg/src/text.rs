@@ -294,7 +294,7 @@ fn collapse<'a>(
     let keeps = |owner: usize, owners: &[Owner<'_>]| {
         matches!(
             owners[owner].style.white_space,
-            WhiteSpace::Pre | WhiteSpace::PreWrap
+            WhiteSpace::PRE | WhiteSpace::PRE_WRAP
         )
     };
     let mut kept = Vec::with_capacity(chars.len());

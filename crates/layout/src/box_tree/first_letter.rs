@@ -143,7 +143,7 @@ fn in_line(items: &[LayoutBox], path: &mut Vec<usize>) -> Found {
 fn in_text(text: &str, white_space: WhiteSpace) -> Found {
     let breaks_kept = matches!(
         white_space,
-        WhiteSpace::Pre | WhiteSpace::PreWrap | WhiteSpace::PreLine
+        WhiteSpace::PRE | WhiteSpace::PRE_WRAP | WhiteSpace::PRE_LINE
     );
     let Some((start, _)) = text
         .char_indices()
@@ -383,17 +383,17 @@ mod tests {
             Found::Blocked => None,
             Found::Empty => Some((0, 0)),
         };
-        assert_eq!(found("  \tThe", WhiteSpace::Normal), Some((3, 4)));
-        assert_eq!(found("\nThe", WhiteSpace::Normal), Some((1, 2)));
-        assert_eq!(found("  The", WhiteSpace::Pre), Some((2, 3)));
-        for white_space in [WhiteSpace::Pre, WhiteSpace::PreWrap, WhiteSpace::PreLine] {
+        assert_eq!(found("  \tThe", WhiteSpace::NORMAL), Some((3, 4)));
+        assert_eq!(found("\nThe", WhiteSpace::NORMAL), Some((1, 2)));
+        assert_eq!(found("  The", WhiteSpace::PRE), Some((2, 3)));
+        for white_space in [WhiteSpace::PRE, WhiteSpace::PRE_WRAP, WhiteSpace::PRE_LINE] {
             assert_eq!(found(" \nThe", white_space), None, "{white_space:?}");
         }
         // Only white space: nothing here, the letter is further on.
-        assert_eq!(found(" \n ", WhiteSpace::Normal), Some((0, 0)));
+        assert_eq!(found(" \n ", WhiteSpace::NORMAL), Some((0, 0)));
         // A no-break space is no white space to pass over.
-        assert_eq!(found("\u{a0}The", WhiteSpace::Normal), None);
+        assert_eq!(found("\u{a0}The", WhiteSpace::NORMAL), None);
         // Nor is the pattern's absence.
-        assert_eq!(found(" ...", WhiteSpace::Normal), None);
+        assert_eq!(found(" ...", WhiteSpace::NORMAL), None);
     }
 }

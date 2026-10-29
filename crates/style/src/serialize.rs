@@ -103,6 +103,7 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "outline-offset",
     "outline-style",
     "outline-width",
+    "overflow-wrap",
     "overflow-x",
     "overflow-y",
     "padding-bottom",
@@ -132,13 +133,17 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "table-layout",
     "text-align",
     "text-anchor",
+    "text-shadow",
     "text-transform",
+    "text-wrap-mode",
     "top",
     "transform-box",
     "vector-effect",
     "vertical-align",
-    "white-space",
+    "visibility",
+    "white-space-collapse",
     "width",
+    "word-break",
     "word-spacing",
     "x",
     "y",
@@ -269,10 +274,55 @@ pub fn computed_value(style: &ComputedStyle, name: &str) -> Option<String> {
         }
         .to_owned(),
         "white-space" => match style.white_space {
-            WhiteSpace::Normal => "normal",
-            WhiteSpace::Pre => "pre",
-            WhiteSpace::PreWrap => "pre-wrap",
-            WhiteSpace::PreLine => "pre-line",
+            WhiteSpace::NORMAL => "normal".to_owned(),
+            WhiteSpace::PRE => "pre".to_owned(),
+            WhiteSpace::PRE_WRAP => "pre-wrap".to_owned(),
+            WhiteSpace::PRE_LINE => "pre-line".to_owned(),
+            WhiteSpace::NOWRAP => "nowrap".to_owned(),
+            WhiteSpace::BREAK_SPACES => "break-spaces".to_owned(),
+            other => format!(
+                "{} {}",
+                white_space_collapse(other.collapse),
+                if other.wrap { "wrap" } else { "nowrap" }
+            ),
+        },
+        "white-space-collapse" => white_space_collapse(style.white_space.collapse).to_owned(),
+        "text-wrap-mode" => if style.white_space.wrap {
+            "wrap"
+        } else {
+            "nowrap"
+        }
+        .to_owned(),
+        "overflow-wrap" => match style.overflow_wrap {
+            crate::computed::OverflowWrap::Normal => "normal",
+            crate::computed::OverflowWrap::Anywhere => "anywhere",
+            crate::computed::OverflowWrap::BreakWord => "break-word",
+        }
+        .to_owned(),
+        "word-break" => match style.word_break {
+            crate::computed::WordBreak::Normal => "normal",
+            crate::computed::WordBreak::BreakAll => "break-all",
+            crate::computed::WordBreak::KeepAll => "keep-all",
+            crate::computed::WordBreak::BreakWord => "break-word",
+        }
+        .to_owned(),
+        "visibility" => match style.visibility {
+            crate::computed::Visibility::Visible => "visible",
+            crate::computed::Visibility::Hidden => "hidden",
+            crate::computed::Visibility::Collapse => "collapse",
+        }
+        .to_owned(),
+        "text-shadow" => {
+            let shadows = &style.decoration().text_shadow;
+            if shadows.is_empty() {
+                "none".to_owned()
+            } else {
+                shadows
+                    .iter()
+                    .map(|s| format!("{} {} {} {}", color(s.color), px(s.x), px(s.y), px(s.blur)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
         }
         .to_owned(),
         "letter-spacing" => spacing(style.letter_spacing),
@@ -616,6 +666,18 @@ fn number(value: f32) -> String {
         "0".to_owned()
     } else {
         value.to_string()
+    }
+}
+
+/// A `white-space-collapse` keyword.
+fn white_space_collapse(collapse: crate::computed::WhiteSpaceCollapse) -> &'static str {
+    use crate::computed::WhiteSpaceCollapse as W;
+    match collapse {
+        W::Collapse => "collapse",
+        W::Preserve => "preserve",
+        W::PreserveBreaks => "preserve-breaks",
+        W::BreakSpaces => "break-spaces",
+        W::PreserveSpaces => "preserve-spaces",
     }
 }
 

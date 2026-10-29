@@ -651,7 +651,7 @@ fn text_types_are_shown_as_text_documents() {
     );
     // HTML lets the user agent add a style: a long line wraps.
     let white_space = tab.engine.styles().get(pre).unwrap().white_space;
-    assert_eq!(white_space, style::computed::WhiteSpace::PreWrap);
+    assert_eq!(white_space, style::computed::WhiteSpace::PRE_WRAP);
     assert_eq!(tab.engine.load_state(), &LoadState::Loaded);
 
     for (path, shown) in [
