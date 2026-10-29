@@ -7785,9 +7785,11 @@ impl Engine {
             }
             match step {
                 // An inert box, and what is inside it, is passed over
-                // (M22.1).
+                // (M22.1); a hidden box, but not what is visible in it
+                // (D56).
                 Step::Box { fragment, .. } | Step::Text { fragment, .. }
-                    if fragment.style.inert => {}
+                    if fragment.style.inert
+                        || fragment.style.visibility != style::computed::Visibility::Visible => {}
                 Step::Box { fragment, rect, .. } => {
                     if under(&rect, &clips, &points) {
                         let (px, py) = points[points.len() - 1];
@@ -9670,6 +9672,30 @@ mod tests {
             px(&scrolled, 100, 70, 0),
             [0xff, 0, 0, 0xff],
             "the top row is still inside it"
+        );
+    }
+
+    #[test]
+    fn a_hidden_box_is_not_hit_but_what_is_visible_in_it_is() {
+        // D56.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 }</style>\
+             <div class=outer style=\"width: 200px; height: 100px; visibility: hidden\">\
+               <div class=inner style=\"width: 50px; height: 50px; visibility: visible\"></div>\
+             </div>",
+        );
+        engine.frame(400, 300);
+        let document = engine.document().clone();
+        let class =
+            |node: Option<NodeId>| node.and_then(|n| document.attr(n, "class").map(str::to_string));
+        assert_eq!(
+            class(engine.hit_test(10.0, 10.0)),
+            Some("inner".to_string())
+        );
+        assert_ne!(
+            class(engine.hit_test(150.0, 80.0)),
+            Some("outer".to_string())
         );
     }
 

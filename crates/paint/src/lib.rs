@@ -1141,6 +1141,12 @@ pub fn paint_fragments_with(
     }
     for step in steps {
         match step {
+            // A hidden box paints nothing of its own; what is in it and
+            // visible still paints (CSS 2 section 11.2, D56).
+            Step::Box { fragment, .. }
+            | Step::Text { fragment, .. }
+            | Step::Scrollbar { fragment, .. }
+                if fragment.style.visibility != style::computed::Visibility::Visible => {}
             Step::Box {
                 fragment,
                 rect,
@@ -3689,6 +3695,38 @@ mod fragment_tests {
             30.0,
         );
         assert_ne!(laid(&fixed[0]).1, at("scroll"));
+    }
+
+    #[test]
+    fn a_hidden_box_paints_nothing_of_its_own_but_its_visible_content_paints() {
+        // D56.
+        let root = Element::new("div")
+            .push(Element::new("i").text("x"))
+            .push(Element::new("b").text("y"));
+        let list = display_list_of(
+            root,
+            "div { visibility: hidden; background: #0f0; height: 40px } \
+             b { visibility: visible; background: #00f }",
+        );
+        let texts: Vec<&str> = list
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                DisplayItem::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, ["y"]);
+        let colours: Vec<Rgba8> = list
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                DisplayItem::Rect { color, .. } => Some(*color),
+                _ => None,
+            })
+            .collect();
+        assert!(!colours.contains(&Rgba8::rgb(0, 255, 0)), "{colours:?}");
+        assert!(colours.contains(&Rgba8::rgb(0, 0, 255)), "{colours:?}");
     }
 
     #[test]

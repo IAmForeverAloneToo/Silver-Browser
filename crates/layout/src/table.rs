@@ -254,10 +254,23 @@ pub(crate) fn layout_table_contents<'a>(
     // one, or to the header and footer groups when there is none; among
     // the groups as among rows, a group with a length `height` being
     // constrained; and in each group to its rows.
-    let rows_height = if heights.is_empty() {
+    // A row of `visibility: collapse` takes no room, nor its spacing
+    // (CSS 2 section 17.5.5, D56).
+    let collapsed_rows: Vec<bool> = grid
+        .rows
+        .iter()
+        .map(|row| row.b.style.visibility == style::computed::Visibility::Collapse)
+        .collect();
+    for (height, collapsed) in heights.iter_mut().zip(&collapsed_rows) {
+        if *collapsed {
+            *height = 0.0;
+        }
+    }
+    let shown = collapsed_rows.iter().filter(|c| !**c).count();
+    let rows_height = if shown == 0 {
         0.0
     } else {
-        heights.iter().sum::<f32>() + (heights.len() + 1) as f32 * vspacing
+        heights.iter().sum::<f32>() + (shown + 1) as f32 * vspacing
     };
     // A height imposed on the table (M17: a stretched or flexed flex
     // item's) is a minimum in place of its own `height` and
@@ -293,6 +306,11 @@ pub(crate) fn layout_table_contents<'a>(
                 &constrained[group.span()],
             );
         }
+        for (height, collapsed) in heights.iter_mut().zip(&collapsed_rows) {
+            if *collapsed {
+                *height = 0.0;
+            }
+        }
     }
     let content_height = rows_height.max(wanted);
 
@@ -306,9 +324,11 @@ pub(crate) fn layout_table_contents<'a>(
     }
     let mut row_y = Vec::with_capacity(heights.len());
     let mut y = border[TOP] + padding[TOP] + vspacing;
-    for h in &heights {
+    for (h, collapsed) in heights.iter().zip(&collapsed_rows) {
         row_y.push(y);
-        y += h + vspacing;
+        if !collapsed {
+            y += h + vspacing;
+        }
     }
     let grid_left = col_x
         .first()
@@ -2946,6 +2966,32 @@ mod tests {
             4.0,
             "inside the first cell's 2px"
         );
+    }
+
+    #[test]
+    fn a_collapsed_row_takes_no_room() {
+        // D56, CSS 2 section 17.5.5. Nodes: table 4, tr 5, td 6, tr 7,
+        // td 8, tr 9, td 10.
+        let html = "<table><tr><td>a</td></tr><tr><td>b</td></tr><tr><td>c</td></tr></table>";
+        let css = "table { border-spacing: 2px } td { height: 20px; padding: 0 }";
+        let shown = document_of(html, css);
+        let hidden = document_of(
+            html,
+            &format!("{css} tr:nth-child(2) {{ visibility: collapse }}"),
+        );
+        assert_eq!(
+            fragment_of(&hidden, 10).y,
+            fragment_of(&shown, 8).y,
+            "the third row where the second was"
+        );
+        assert_eq!(fragment_of(&hidden, 7).h, 0.0);
+        assert_eq!(fragment_of(&hidden, 4).h, fragment_of(&shown, 4).h - 22.0);
+        // `hidden` keeps its room.
+        let kept = document_of(
+            html,
+            &format!("{css} tr:nth-child(2) {{ visibility: hidden }}"),
+        );
+        assert_eq!(fragment_of(&kept, 10).y, fragment_of(&shown, 10).y);
     }
 
     #[test]
