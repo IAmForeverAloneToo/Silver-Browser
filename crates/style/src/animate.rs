@@ -1078,7 +1078,7 @@ fn linear_expression(e: &Expression) -> Option<(f64, f64)> {
             (x, 0.0) => Some((1.0 / x, 0.0)),
             _ => None,
         },
-        Expression::Min(_) | Expression::Max(_) | Expression::Clamp(_) => {
+        Expression::Min(_) | Expression::Max(_) | Expression::Clamp(_) | Expression::Call(..) => {
             // Constant only when no percentage is in it, which a
             // computed value folds: what is left has one.
             None
@@ -1133,6 +1133,7 @@ fn depth(e: &Expression) -> usize {
         | Expression::Max(children) => children.iter().map(depth).max().unwrap_or(0),
         Expression::Negate(child) | Expression::Invert(child) => depth(child),
         Expression::Clamp(parts) => parts.iter().map(depth).max().unwrap_or(0),
+        Expression::Call(_, args) => args.iter().map(depth).max().unwrap_or(0),
     }
 }
 

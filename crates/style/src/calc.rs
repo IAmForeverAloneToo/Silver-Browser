@@ -342,6 +342,146 @@ enum Expr {
     Max(Vec<Expr>),
     /// `clamp()`, its `none` bounds absent.
     Clamp(Option<Box<Expr>>, Box<Expr>, Option<Box<Expr>>),
+    /// One of the other functions, of its arguments.
+    Call(Op, Vec<Expr>),
+}
+
+/// A math function past `calc()`, `min()`, `max()` and `clamp()`
+/// (sections 10.3 and 10.5 to 10.8; gap batch E): the stepped
+/// value, trigonometric, exponential and sign-related functions.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Op {
+    Round(Rounding),
+    Mod,
+    Rem,
+    Abs,
+    Sign,
+    /// Of an angle in degrees when true, else of a number of radians.
+    Sin(bool),
+    Cos(bool),
+    Tan(bool),
+    /// In degrees, as every angle computes.
+    Asin,
+    Acos,
+    Atan,
+    Atan2,
+    Pow,
+    Sqrt,
+    Hypot,
+    Log,
+    Exp,
+}
+
+/// `round()`'s strategy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rounding {
+    Nearest,
+    Up,
+    Down,
+    ToZero,
+}
+
+impl Op {
+    /// The function of `args` by sections 10.3 to 10.8, their edge
+    /// cases among it.
+    fn apply(self, args: &[f64]) -> f64 {
+        let a = args.first().copied().unwrap_or(f64::NAN);
+        let b = args.get(1).copied();
+        let radians = |degrees: bool| if degrees { a.to_radians() } else { a };
+        match self {
+            Op::Round(how) => round(how, a, b.unwrap_or(1.0)),
+            Op::Mod => {
+                let b = b.unwrap_or(f64::NAN);
+                if b == 0.0 || a.is_infinite() || b.is_nan() {
+                    f64::NAN
+                } else if b.is_infinite() {
+                    if a == 0.0 || a.is_sign_negative() == b.is_sign_negative() {
+                        a
+                    } else {
+                        f64::NAN
+                    }
+                } else {
+                    a - b * (a / b).floor()
+                }
+            }
+            Op::Rem => {
+                let b = b.unwrap_or(f64::NAN);
+                if b == 0.0 || a.is_infinite() || b.is_nan() {
+                    f64::NAN
+                } else if b.is_infinite() {
+                    a
+                } else {
+                    a - b * (a / b).trunc()
+                }
+            }
+            Op::Abs => a.abs(),
+            Op::Sign => {
+                if a == 0.0 || a.is_nan() {
+                    a
+                } else {
+                    a.signum()
+                }
+            }
+            Op::Sin(degrees) => radians(degrees).sin(),
+            Op::Cos(degrees) => radians(degrees).cos(),
+            Op::Tan(degrees) => radians(degrees).tan(),
+            Op::Asin => a.asin().to_degrees(),
+            Op::Acos => a.acos().to_degrees(),
+            Op::Atan => a.atan().to_degrees(),
+            Op::Atan2 => a.atan2(b.unwrap_or(f64::NAN)).to_degrees(),
+            Op::Pow => a.powf(b.unwrap_or(f64::NAN)),
+            Op::Sqrt => a.sqrt(),
+            Op::Hypot => args.iter().map(|v| v * v).sum::<f64>().sqrt(),
+            Op::Log => match b {
+                Some(base) => a.ln() / base.ln(),
+                None => a.ln(),
+            },
+            Op::Exp => a.exp(),
+        }
+    }
+}
+
+/// `round(how, a, b)` (section 10.3): `a` to a multiple of `b`.
+fn round(how: Rounding, a: f64, b: f64) -> f64 {
+    if b == 0.0 || a.is_nan() || b.is_nan() || (a.is_infinite() && b.is_infinite()) {
+        return f64::NAN;
+    }
+    if a.is_infinite() {
+        return a;
+    }
+    if b.is_infinite() {
+        return match how {
+            Rounding::Up if a > 0.0 => f64::INFINITY,
+            Rounding::Down if a < 0.0 => f64::NEG_INFINITY,
+            Rounding::Up | Rounding::Down if a == 0.0 => a,
+            _ if a.is_sign_negative() => -0.0,
+            _ => 0.0,
+        };
+    }
+    let b = b.abs();
+    let lower = (a / b).floor() * b;
+    if lower == a {
+        return a;
+    }
+    let upper = lower + b;
+    match how {
+        Rounding::Nearest => {
+            if a - lower < upper - a {
+                lower
+            } else {
+                upper
+            }
+        }
+        Rounding::Up => upper,
+        Rounding::Down => lower,
+        Rounding::ToZero => {
+            if a > 0.0 {
+                lower
+            } else {
+                upper
+            }
+        }
+    }
 }
 
 /// A math function parsed and typed, to be computed for each element.
@@ -361,9 +501,12 @@ pub fn is_math_function(tokens: &[Token]) -> bool {
 }
 
 fn math_name(name: &str) -> bool {
-    ["calc", "min", "max", "clamp"]
-        .iter()
-        .any(|known| name.eq_ignore_ascii_case(known))
+    [
+        "calc", "min", "max", "clamp", "round", "mod", "rem", "abs", "sign", "sin", "cos", "tan",
+        "asin", "acos", "atan", "atan2", "pow", "sqrt", "hypot", "log", "exp",
+    ]
+    .iter()
+    .any(|known| name.eq_ignore_ascii_case(known))
 }
 
 /// Parses `tokens`, white space aside one math function, for a place
@@ -435,6 +578,43 @@ fn type_of(expr: &Expr, want: Want) -> Option<Type> {
             }
             ty
         }
+        Expr::Call(op, args) => {
+            let types: Vec<Type> = args
+                .iter()
+                .map(|arg| type_of(arg, want))
+                .collect::<Option<_>>()?;
+            let same = || {
+                let mut types = types.iter().copied();
+                let mut ty = types.next()?;
+                for next in types {
+                    ty = ty.add(next)?;
+                }
+                Some(ty)
+            };
+            let numbers = || types.iter().all(|t| t.is_number()).then_some(Type::NUMBER);
+            match op {
+                // `round()` without its step rounds a number to 1.
+                Op::Round(_) if types.len() == 1 => numbers()?,
+                Op::Round(_) | Op::Mod | Op::Rem | Op::Abs | Op::Hypot => same()?,
+                Op::Sign => {
+                    same()?;
+                    Type::NUMBER
+                }
+                Op::Sin(_) | Op::Cos(_) | Op::Tan(_) => {
+                    let ty = same()?;
+                    (ty.is_number() || ty.is(Base::Angle)).then_some(Type::NUMBER)?
+                }
+                Op::Asin | Op::Acos | Op::Atan => {
+                    numbers()?;
+                    Type::of(Base::Angle)
+                }
+                Op::Atan2 => {
+                    same()?;
+                    Type::of(Base::Angle)
+                }
+                Op::Pow | Op::Sqrt | Op::Log | Op::Exp => numbers()?,
+            }
+        }
     })
 }
 
@@ -498,9 +678,75 @@ impl Parser<'_> {
                 self.close()?;
                 Expr::Clamp(min.map(Box::new), Box::new(value), max.map(Box::new))
             }
-            _ => return None,
+            _ => return self.call(&name, depth),
         };
         Some(expr)
+    }
+
+    /// One of Values 4's other math functions, after its name: its
+    /// arguments, as many as it takes.
+    fn call(&mut self, name: &str, depth: usize) -> Option<Expr> {
+        let (op, least, most) = match name {
+            "round" => (Op::Round(self.rounding()), 1, 2),
+            "mod" => (Op::Mod, 2, 2),
+            "rem" => (Op::Rem, 2, 2),
+            "abs" => (Op::Abs, 1, 1),
+            "sign" => (Op::Sign, 1, 1),
+            "sin" => (Op::Sin(false), 1, 1),
+            "cos" => (Op::Cos(false), 1, 1),
+            "tan" => (Op::Tan(false), 1, 1),
+            "asin" => (Op::Asin, 1, 1),
+            "acos" => (Op::Acos, 1, 1),
+            "atan" => (Op::Atan, 1, 1),
+            "atan2" => (Op::Atan2, 2, 2),
+            "pow" => (Op::Pow, 2, 2),
+            "sqrt" => (Op::Sqrt, 1, 1),
+            "hypot" => (Op::Hypot, 1, usize::MAX),
+            "log" => (Op::Log, 1, 2),
+            "exp" => (Op::Exp, 1, 1),
+            _ => return None,
+        };
+        let mut args = vec![self.sum(depth + 1)?];
+        while self.comma() {
+            args.push(self.sum(depth + 1)?);
+        }
+        self.close()?;
+        if args.len() < least || args.len() > most {
+            return None;
+        }
+        // Whether a trigonometric function's argument is an angle, in
+        // degrees once computed, or a number of radians.
+        let degrees = || type_of(&args[0], Want::Angle).is_some_and(|ty| ty.is(Base::Angle));
+        let op = match op {
+            Op::Sin(_) => Op::Sin(degrees()),
+            Op::Cos(_) => Op::Cos(degrees()),
+            Op::Tan(_) => Op::Tan(degrees()),
+            other => other,
+        };
+        Some(Expr::Call(op, args))
+    }
+
+    /// `round()`'s optional strategy and the comma after it.
+    fn rounding(&mut self) -> Rounding {
+        self.skip_whitespace();
+        let how = match self.peek() {
+            Some(Token::Ident(word)) => match word.to_ascii_lowercase().as_str() {
+                "nearest" => Rounding::Nearest,
+                "up" => Rounding::Up,
+                "down" => Rounding::Down,
+                "to-zero" => Rounding::ToZero,
+                _ => return Rounding::Nearest,
+            },
+            _ => return Rounding::Nearest,
+        };
+        let at = self.pos;
+        self.pos += 1;
+        if self.comma() {
+            how
+        } else {
+            self.pos = at;
+            Rounding::Nearest
+        }
     }
 
     /// A `clamp()` bound: `none`, or a sum.
@@ -679,6 +925,8 @@ pub enum Expression {
     Max(Box<[Expression]>),
     /// `clamp()`, a `none` bound an infinity.
     Clamp(Box<[Expression; 3]>),
+    /// One of the other functions (gap batch E), of its arguments.
+    Call(Op, Box<[Expression]>),
 }
 
 impl Expression {
@@ -711,6 +959,10 @@ impl Expression {
                 let [low, value, high] = &**bounds;
                 clamp(low.at(basis), value.at(basis), high.at(basis))
             }
+            Expression::Call(op, args) => {
+                let values: Vec<f64> = args.iter().map(|a| a.at(basis)).collect();
+                op.apply(&values)
+            }
         }
     }
 
@@ -725,6 +977,7 @@ impl Expression {
             | Expression::Min(children)
             | Expression::Max(children) => children.iter().any(Expression::has_percent),
             Expression::Clamp(bounds) => bounds.iter().any(Expression::has_percent),
+            Expression::Call(_, args) => args.iter().any(Expression::has_percent),
         }
     }
 }
@@ -952,6 +1205,23 @@ fn simplify(expr: &Expr, lengths: &dyn Lengths, basis: Option<f64>) -> Folded {
                 ]))),
             }
         }
+        Expr::Call(op, args) => {
+            let folded: Vec<Folded> = args.iter().map(|a| simplify(a, lengths, basis)).collect();
+            if folded.iter().all(|f| matches!(f, Folded::Value(_))) {
+                let values: Vec<f64> = folded
+                    .iter()
+                    .map(|f| match f {
+                        Folded::Value(v) => *v,
+                        Folded::Tree(_) => f64::NAN,
+                    })
+                    .collect();
+                return Folded::Value(op.apply(&values));
+            }
+            Folded::Tree(Expression::Call(
+                *op,
+                folded.into_iter().map(Folded::into_expression).collect(),
+            ))
+        }
     }
 }
 
@@ -1035,6 +1305,67 @@ mod tests {
             Some(Computed::Value(v)) => v,
             other => panic!("{source}: {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_other_functions_compute_as_the_reference_browser_computes_them() {
+        // Gap batch E: the reference browser's computed widths.
+        let near = |source: &str, want: Want, expected: f64| {
+            let v = value(source, want);
+            assert!((v - expected).abs() < 1e-9, "{source}: {v}");
+        };
+        near("round(55px, 10px)", Want::Length, 60.0);
+        near("round(down, 55px, 10px)", Want::Length, 50.0);
+        near("round(up, 51px, 10px)", Want::Length, 60.0);
+        near("round(to-zero, -55px, 10px)", Want::Length, -50.0);
+        near("round(nearest, -55px, 10px)", Want::Length, -50.0);
+        near("calc(round(2.5) * 1px)", Want::Length, 3.0);
+        near("mod(55px, 10px)", Want::Length, 5.0);
+        near("mod(-55px, 10px)", Want::Length, 5.0);
+        near("rem(-55px, 10px)", Want::Length, -5.0);
+        near("calc(100px * sin(30deg))", Want::Length, 50.0);
+        near("calc(100px * cos(0))", Want::Length, 100.0);
+        near("calc(abs(-20px))", Want::Length, 20.0);
+        near("calc(sign(-3px) * -10px)", Want::Length, 10.0);
+        near("calc(pow(2, 3) * 1px)", Want::Length, 8.0);
+        near("calc(sqrt(16) * 1px)", Want::Length, 4.0);
+        near("hypot(3px, 4px)", Want::Length, 5.0);
+        near("calc(log(8, 2) * 1px)", Want::Length, 3.0);
+        near("calc(exp(0) * 1px)", Want::Length, 1.0);
+        near("calc(1px * atan2(1, 1) / 1deg)", Want::Length, 45.0);
+        near("calc(asin(1))", Want::Angle, 90.0);
+        near("acos(0)", Want::Angle, 90.0);
+        near("atan(1)", Want::Angle, 45.0);
+        near("atan2(1, 0)", Want::Angle, 90.0);
+        near("calc(tan(45deg) * 1px)", Want::Length, 1.0);
+        // A percentage of a length is kept for layout.
+        let Some(Computed::Expression(e)) = compute("round(55%, 10px)", Want::LengthPercentage)
+        else {
+            panic!("an expression");
+        };
+        assert_eq!(e.evaluate(800.0), 440.0);
+        assert_eq!(Calc::new(e, true).resolve(800.0), 440.0);
+        // What each takes: `sin()` no length, `pow()` numbers alone,
+        // `round()`'s step only of a number, its arguments of one type.
+        for source in [
+            "calc(sin(1px) * 1px)",
+            "calc(pow(2px, 2))",
+            "round(5px)",
+            "mod(5px, 2)",
+            "calc(asin(1deg))",
+            "abs()",
+            "mod(1px)",
+            "round(up 5px, 1px)",
+        ] {
+            assert!(compute(source, Want::Length).is_none(), "{source}");
+        }
+        // Edge cases: a step of zero is NaN, censored to 0.
+        assert_eq!(value("round(5px, 0px)", Want::Length), 0.0);
+        assert_eq!(value("mod(5px, 0px)", Want::Length), 0.0);
+        assert_eq!(
+            value("round(up, 5px, infinity * 1px)", Want::Length),
+            f64::INFINITY
+        );
     }
 
     #[test]
