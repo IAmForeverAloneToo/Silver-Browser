@@ -260,6 +260,10 @@ longhands! {
     ImageRendering = "image-rendering": Discrete,
     BorderImageSource = "border-image-source": Discrete,
     BorderImageSlice = "border-image-slice": ByComputedValue,
+    BorderTopLeftRadius = "border-top-left-radius": ByComputedValue,
+    BorderTopRightRadius = "border-top-right-radius": ByComputedValue,
+    BorderBottomRightRadius = "border-bottom-right-radius": ByComputedValue,
+    BorderBottomLeftRadius = "border-bottom-left-radius": ByComputedValue,
     BorderImageWidth = "border-image-width": ByComputedValue,
     BorderImageOutset = "border-image-outset": ByComputedValue,
     BorderImageRepeat = "border-image-repeat": Discrete,
@@ -340,6 +344,12 @@ pub fn longhands_of(name: &str) -> Vec<Longhand> {
             BorderImageRepeat,
         ],
         "border-top" => &[BorderTopWidth, BorderTopStyle, BorderTopColor],
+        "border-radius" => &[
+            BorderTopLeftRadius,
+            BorderTopRightRadius,
+            BorderBottomRightRadius,
+            BorderBottomLeftRadius,
+        ],
         "outline" => &[OutlineColor, OutlineStyle, OutlineWidth],
         "border-right" => &[BorderRightWidth, BorderRightStyle, BorderRightColor],
         "border-bottom" => &[BorderBottomWidth, BorderBottomStyle, BorderBottomColor],
@@ -407,6 +417,16 @@ macro_rules! copy_group {
 }
 
 /// Copies `property`'s computed value from `from` into `to`.
+/// The corner a radius longhand names, in [`computed::Radii`]'s order.
+fn corner(property: Longhand) -> usize {
+    match property {
+        Longhand::BorderTopLeftRadius => 0,
+        Longhand::BorderTopRightRadius => 1,
+        Longhand::BorderBottomRightRadius => 2,
+        _ => 3,
+    }
+}
+
 pub fn copy(property: Longhand, from: &ComputedStyle, to: &mut ComputedStyle) {
     use Longhand::*;
     match property {
@@ -645,6 +665,15 @@ pub fn copy(property: Longhand, from: &ComputedStyle, to: &mut ComputedStyle) {
                 border_image_mut,
                 source
             )
+        }
+        BorderTopLeftRadius
+        | BorderTopRightRadius
+        | BorderBottomRightRadius
+        | BorderBottomLeftRadius => {
+            let i = corner(property);
+            if to.radii().0[i] != from.radii().0[i] {
+                to.radii_mut().0[i] = from.radii().0[i].clone();
+            }
         }
         BorderImageSlice => {
             copy_group!(
@@ -891,6 +920,13 @@ pub fn same(property: Longhand, a: &ComputedStyle, b: &ComputedStyle) -> bool {
         AspectRatio => a.image().aspect_ratio == b.image().aspect_ratio,
         ObjectFit => a.image().object_fit == b.image().object_fit,
         BorderImageSource => a.border_image().source == b.border_image().source,
+        BorderTopLeftRadius
+        | BorderTopRightRadius
+        | BorderBottomRightRadius
+        | BorderBottomLeftRadius => {
+            let i = corner(property);
+            a.radii().0[i] == b.radii().0[i]
+        }
         BorderImageSlice => {
             let (x, y) = (a.border_image(), b.border_image());
             x.slice == y.slice && x.fill == y.fill
@@ -1697,6 +1733,22 @@ pub fn interpolate(
                 _ => false,
             }
         }
+        // A corner's two radii, each a length-percentage (gap batch E).
+        BorderTopLeftRadius
+        | BorderTopRightRadius
+        | BorderBottomRightRadius
+        | BorderBottomLeftRadius => {
+            let i = corner(property);
+            let (x, y) = (&a.radii().0[i], &b.radii().0[i]);
+            let (Some(h), Some(v)) = (
+                length_percentage(&x[0], &y[0], p, true),
+                length_percentage(&x[1], &y[1], p, true),
+            ) else {
+                return false;
+            };
+            to.radii_mut().0[i] = [h, v];
+            true
+        }
         // Each side of one kind interpolates (M23.3); others step.
         BorderImageSlice => {
             use crate::computed::SliceSide as S;
@@ -1925,6 +1977,39 @@ mod tests {
             .find(|&node| document.tag(node) == Some("div"))
             .expect("the div");
         styles.get(div).expect("styled").clone()
+    }
+
+    #[test]
+    fn a_corners_radii_interpolate() {
+        // Gap batch E: each radius a length-percentage, never negative.
+        let (a, b) = (
+            style("border-top-left-radius: 10px 20%"),
+            style("border-top-left-radius: 30px 40%; border-bottom-left-radius: 8px"),
+        );
+        let mut to = a.clone();
+        assert!(interpolate(
+            Longhand::BorderTopLeftRadius,
+            &a,
+            &b,
+            0.5,
+            &mut to
+        ));
+        assert_eq!(
+            to.radii().0[0],
+            [LengthPercentage::Px(20.0), LengthPercentage::Percent(30.0)]
+        );
+        assert!(interpolate(
+            Longhand::BorderBottomLeftRadius,
+            &a,
+            &b,
+            -1.0,
+            &mut to
+        ));
+        assert_eq!(to.radii().0[3][0], LengthPercentage::Px(0.0));
+        assert!(!same(Longhand::BorderTopLeftRadius, &a, &b));
+        copy(Longhand::BorderBottomLeftRadius, &b, &mut to);
+        assert_eq!(to.radii().0[3][0], LengthPercentage::Px(8.0));
+        assert_eq!(longhands_of("border-radius").len(), 4);
     }
 
     #[test]

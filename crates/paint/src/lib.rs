@@ -28,6 +28,8 @@
 /// Gradients rendered (M23.3).
 pub mod gradient;
 pub mod order;
+/// Rounded boxes (gap batch E, D50).
+pub mod rounded;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -43,6 +45,7 @@ use style::computed::{
 use style::transform::Matrix;
 
 pub use order::{Rect, Step, padding_box, paint_order, paint_order_in};
+use rounded::RoundedRect;
 
 /// What names a group across frames (M19), which a backend keeps a
 /// layer under; ordered, so that a choice among layers is fixed.
@@ -590,6 +593,15 @@ pub enum DisplayItem {
     /// coordinates, in order around the shape.
     Polygon {
         points: Vec<(f32, f32)>,
+        color: Rgba8,
+    },
+    /// Fill the contours, closed polygons, by the nonzero rule,
+    /// anti-aliased by the exact area as a [`DisplayItem::Polygon`] is
+    /// (gap batch E, D50): a rounded box's background, its border band
+    /// (the inner contour the other way round), a side of it. Points in
+    /// viewport coordinates.
+    Path {
+        contours: Vec<Vec<(f32, f32)>>,
         color: Rgba8,
     },
     /// Fill the band between the rectangle at `(x, y)` of size `w` by
@@ -1899,14 +1911,32 @@ fn push_box(
         // The colour under every layer, in the bottom one's clip box
         // (CSS Backgrounds 3 section 2.7).
         if f.style.background_color.a > 0.0 {
-            let r = placed.box_of(f.style.background().color_clip());
-            items.push(DisplayItem::Rect {
-                x: r.x,
-                y: r.y,
-                w: r.w,
-                h: r.h,
-                color: to_rgba8(f.style.background_color),
-            });
+            let clip = f.style.background().color_clip();
+            let r = placed.box_of(clip);
+            let color = to_rgba8(f.style.background_color);
+            // A rounded box's colour fills its clip box's curve (gap
+            // batch E, D50).
+            match RoundedRect::of(&f.style, outer) {
+                Some(rounded) => {
+                    let inner = rounded.inset([
+                        r.y - outer.y,
+                        outer.x + outer.w - (r.x + r.w),
+                        outer.y + outer.h - (r.y + r.h),
+                        r.x - outer.x,
+                    ]);
+                    items.push(DisplayItem::Path {
+                        contours: vec![inner.contour()],
+                        color,
+                    });
+                }
+                None => items.push(DisplayItem::Rect {
+                    x: r.x,
+                    y: r.y,
+                    w: r.w,
+                    h: r.h,
+                    color,
+                }),
+            }
         }
         push_layers(items, f, placed, backdrop);
     }
@@ -2603,6 +2633,10 @@ fn scale_channels(c: Rgba8, k: f32) -> Rgba8 {
 /// light [`tones`], the halves of the last two in opposite tones, a
 /// side of `currentcolor` toned from [`CURRENT_3D`] (M33).
 fn push_border(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, widths: [f32; 4]) {
+    if let Some(rounded) = RoundedRect::of(&f.style, rect) {
+        push_rounded_border(items, f, rounded, widths);
+        return;
+    }
     let uniform = f
         .style
         .border_style
@@ -2625,49 +2659,17 @@ fn push_border(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, widths: [
         if width <= 0.0 {
             continue;
         }
-        let color = to_rgba8(f.style.border_color[side]);
-        let toned = || {
-            tones(if f.style.border_color_is_current(side) {
-                CURRENT_3D
-            } else {
-                color
-            })
-        };
-        // Which tone the outer and inner halves of a 3D style get: the
-        // top and left sides of an `outset` box catch the light.
-        let lit = side == TOP || side == LEFT;
-        let band = |a: f32, b: f32, color: Rgba8| Band { a, b, color };
-        bands[side] = match f.style.border_style[side] {
-            BorderStyle::None | BorderStyle::Hidden => Vec::new(),
-            BorderStyle::Solid => vec![band(0.0, 1.0, color)],
-            BorderStyle::Double => vec![band(0.0, 1.0 / 3.0, color), band(2.0 / 3.0, 1.0, color)],
-            BorderStyle::Dashed => {
-                push_dashes(items, side, geometry, width * 3.0, color);
-                Vec::new()
-            }
-            BorderStyle::Dotted => {
-                push_dashes(items, side, geometry, width, color);
-                Vec::new()
-            }
-            BorderStyle::Inset => {
-                let (dark, light) = toned();
-                vec![band(0.0, 1.0, if lit { dark } else { light })]
-            }
-            BorderStyle::Outset => {
-                let (dark, light) = toned();
-                vec![band(0.0, 1.0, if lit { light } else { dark })]
-            }
-            BorderStyle::Groove => {
-                let (dark, light) = toned();
-                let (outer, inner) = if lit { (dark, light) } else { (light, dark) };
-                vec![band(0.0, 0.5, outer), band(0.5, 1.0, inner)]
-            }
-            BorderStyle::Ridge => {
-                let (dark, light) = toned();
-                let (outer, inner) = if lit { (light, dark) } else { (dark, light) };
-                vec![band(0.0, 0.5, outer), band(0.5, 1.0, inner)]
-            }
-        };
+        let (own, dash) = side_bands(f, side, width);
+        if let Some(dash) = dash {
+            push_dashes(
+                items,
+                side,
+                geometry,
+                dash,
+                to_rgba8(f.style.border_color[side]),
+            );
+        }
+        bands[side] = own;
     }
     for k in 0..2 {
         let band_of = |side: usize| bands[side].get(k).copied();
@@ -2726,6 +2728,141 @@ fn push_border(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, widths: [
             }
             items.push(DisplayItem::Polygon {
                 points: run_polygon(run, geometry, band.a, band.b, cuts),
+                color: band.color,
+            });
+        }
+    }
+}
+
+/// The bands of `side`'s border of `width`, outer first, by its style;
+/// or, for a dashed or dotted side, none and the length of its dashes.
+fn side_bands(f: &Fragment, side: usize, width: f32) -> (Vec<Band>, Option<f32>) {
+    let color = to_rgba8(f.style.border_color[side]);
+    let toned = || {
+        tones(if f.style.border_color_is_current(side) {
+            CURRENT_3D
+        } else {
+            color
+        })
+    };
+    // Which tone the outer and inner halves of a 3D style get: the
+    // top and left sides of an `outset` box catch the light.
+    let lit = side == TOP || side == LEFT;
+    let band = |a: f32, b: f32, color: Rgba8| Band { a, b, color };
+    let bands = match f.style.border_style[side] {
+        BorderStyle::None | BorderStyle::Hidden => Vec::new(),
+        BorderStyle::Solid => vec![band(0.0, 1.0, color)],
+        BorderStyle::Double => vec![band(0.0, 1.0 / 3.0, color), band(2.0 / 3.0, 1.0, color)],
+        BorderStyle::Dashed => return (Vec::new(), Some(width * 3.0)),
+        BorderStyle::Dotted => return (Vec::new(), Some(width)),
+        BorderStyle::Inset => {
+            let (dark, light) = toned();
+            vec![band(0.0, 1.0, if lit { dark } else { light })]
+        }
+        BorderStyle::Outset => {
+            let (dark, light) = toned();
+            vec![band(0.0, 1.0, if lit { light } else { dark })]
+        }
+        BorderStyle::Groove => {
+            let (dark, light) = toned();
+            let (outer, inner) = if lit { (dark, light) } else { (light, dark) };
+            vec![band(0.0, 0.5, outer), band(0.5, 1.0, inner)]
+        }
+        BorderStyle::Ridge => {
+            let (dark, light) = toned();
+            let (outer, inner) = if lit { (light, dark) } else { (dark, light) };
+            vec![band(0.0, 0.5, outer), band(0.5, 1.0, inner)]
+        }
+    };
+    (bands, None)
+}
+
+/// A border with rounded corners (gap batch E, D50): each band between
+/// two rounded rectangles, the border box's inset by the band's
+/// fractions of the widths; one path when a band is alike all round,
+/// else a path a side, divided at the corners where the widths say. A
+/// dashed or dotted side has its dashes along its straight run and its
+/// corners solid, a departure the design note records.
+fn push_rounded_border(
+    items: &mut Vec<DisplayItem>,
+    f: &Fragment,
+    outer: RoundedRect,
+    widths: [f32; 4],
+) {
+    let mitres = rounded::Mitres {
+        border: outer.rect,
+        widths,
+    };
+    let at = |fraction: f32| outer.inset(widths.map(|w| w * fraction));
+    let mut bands: [Vec<Band>; 4] = Default::default();
+    for side in [TOP, RIGHT, BOTTOM, LEFT] {
+        let width = widths[side];
+        if width <= 0.0 {
+            continue;
+        }
+        let (own, dash) = side_bands(f, side, width);
+        bands[side] = own;
+        let Some(dash) = dash else {
+            continue;
+        };
+        let color = to_rgba8(f.style.border_color[side]);
+        let inner = at(1.0);
+        let (start, end) = rounded::corners_of(side);
+        for corner in [start, end] {
+            items.push(DisplayItem::Path {
+                contours: vec![rounded::corner_band(&outer, &inner, side, corner, &mitres)],
+                color,
+            });
+        }
+        // The straight run, between the corners' curves.
+        let r = outer.radii;
+        let Rect { x, y, w, h } = outer.rect;
+        let geometry = match side {
+            TOP => (x + r[start].0, y, w - r[start].0 - r[end].0, h, widths),
+            BOTTOM => (x + r[end].0, y, w - r[start].0 - r[end].0, h, widths),
+            RIGHT => (x, y + r[start].1, w, h - r[start].1 - r[end].1, widths),
+            _ => (x, y + r[end].1, w, h - r[start].1 - r[end].1, widths),
+        };
+        push_dashes(items, side, geometry, dash, color);
+    }
+    for k in 0..2 {
+        let band_of = |side: usize| bands[side].get(k).copied();
+        let first = band_of(TOP);
+        if let Some(band) = first
+            && [RIGHT, BOTTOM, LEFT].iter().all(|&s| band_of(s) == first)
+        {
+            if band.color.a > 0 {
+                let mut inner = at(band.b).contour();
+                inner.reverse();
+                items.push(DisplayItem::Path {
+                    contours: vec![at(band.a).contour(), inner],
+                    color: band.color,
+                });
+            }
+            continue;
+        }
+        // Where two opaque sides meet, the one drawn first takes the
+        // whole corner and the other is drawn over it from the mitre, so
+        // that no seam of the background shows between their edges: the
+        // top first, then clockwise.
+        let opaque = |side: usize| band_of(side).is_some_and(|b| b.color.a == 255);
+        for side in [TOP, RIGHT, BOTTOM, LEFT] {
+            let Some(band) = band_of(side).filter(|b| b.color.a > 0) else {
+                continue;
+            };
+            let (before, after) = ((side + 3) % 4, (side + 1) % 4);
+            let whole = (
+                side == TOP && opaque(side) && opaque(before),
+                side != LEFT && opaque(side) && opaque(after),
+            );
+            items.push(DisplayItem::Path {
+                contours: vec![rounded::side_band(
+                    &at(band.a),
+                    &at(band.b),
+                    side,
+                    &mitres,
+                    whole,
+                )],
                 color: band.color,
             });
         }
@@ -4315,6 +4452,96 @@ mod fragment_tests {
             })
             .collect();
         assert_eq!(dashes, vec![(91.0, 0.0, 9.0, 27.0)]);
+    }
+
+    #[test]
+    fn a_rounded_box_paints_its_background_and_border_as_paths() {
+        // Gap batch E, D50.
+        let paths = |css: &str| -> Vec<(usize, Rgba8)> {
+            let list = display_list_of(Element::new("div").text("x"), css);
+            list.items
+                .iter()
+                .filter_map(|i| match i {
+                    DisplayItem::Path { contours, color } => Some((contours.len(), *color)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let red = Rgba8::rgb(255, 0, 0);
+        let blue = Rgba8::rgb(0, 0, 255);
+        // The colour's curve, and a solid band in one colour a path of two
+        // contours.
+        let one = paths(
+            "div { width: 100px; height: 50px; border-radius: 10px; background: red; \
+             border: 4px solid blue }",
+        );
+        assert_eq!(one, [(1, red), (2, blue)]);
+        // Sides of other colours a path each; a double band two slots.
+        let sides = paths(
+            "div { width: 100px; height: 50px; border-radius: 10px; border: 6px double blue; \
+             border-left-color: red }",
+        );
+        assert_eq!(sides.len(), 8);
+        assert_eq!(sides.iter().filter(|(_, c)| *c == red).count(), 2);
+        // Dashes along the straight run, the corners solid.
+        let dashed = list_of_dashes(
+            "div { width: 100px; height: 50px; border-radius: 10px; border: 2px dashed blue }",
+        );
+        assert_eq!(dashed.0, 8, "a path for each corner of each side");
+        assert!(!dashed.1.is_empty(), "dashes along the top");
+        // And the right side's between its corners' curves too.
+        let list = display_list_of(
+            Element::new("div").text("x"),
+            "div { width: 100px; height: 50px; border-radius: 10px; border: 2px dashed blue }",
+        );
+        let rights: Vec<(f32, f32)> = list
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                DisplayItem::Rect { x, y, h, w, .. } if *x == 102.0 && *w == 2.0 => Some((*y, *h)),
+                _ => None,
+            })
+            .collect();
+        assert!(!rights.is_empty());
+        assert!(
+            rights
+                .iter()
+                .all(|(y, h)| *y >= 10.0 - 1e-3 && y + h <= 44.0 + 1e-3)
+        );
+        assert!(
+            dashed
+                .1
+                .iter()
+                .all(|r| r.0 >= 10.0 - 1e-3 && r.0 + r.2 <= 110.0 + 1e-3)
+        );
+        // A box with no radius keeps its rectangles.
+        assert!(
+            paths("div { width: 100px; height: 50px; background: red; border: 4px solid blue }")
+                .is_empty()
+        );
+    }
+
+    /// The corner paths and the top side's dashes of the box `css` styles.
+    fn list_of_dashes(css: &str) -> (usize, Vec<(f32, f32, f32)>) {
+        let list = display_list_of(Element::new("div").text("x"), css);
+        let corners = list
+            .items
+            .iter()
+            .filter(|i| matches!(i, DisplayItem::Path { .. }))
+            .count();
+        let tops = list
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                DisplayItem::Rect { x, y, w, h, color }
+                    if *y == 0.0 && *h == 2.0 && *color == Rgba8::rgb(0, 0, 255) =>
+                {
+                    Some((*x, *y, *w))
+                }
+                _ => None,
+            })
+            .collect();
+        (corners, tops)
     }
 
     #[test]

@@ -2850,6 +2850,22 @@ static INITIAL_BACKGROUND: LazyLock<Backgrounds> = LazyLock::new(Backgrounds::de
 /// [`ComputedStyle::border_image`] gives a style that sets none of them.
 static INITIAL_BORDER_IMAGE: LazyLock<BorderImage> = LazyLock::new(BorderImage::default);
 
+/// `border-radius`'s longhands (Backgrounds 3 section 5.1, gap batch E,
+/// D50): each corner's horizontal and vertical radius, the top-left,
+/// top-right, bottom-right and bottom-left corners in that order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Radii(pub [[LengthPercentage; 2]; 4]);
+
+impl Default for Radii {
+    fn default() -> Self {
+        Radii(std::array::from_fn(|_| {
+            [LengthPercentage::Px(0.0), LengthPercentage::Px(0.0)]
+        }))
+    }
+}
+
+static INITIAL_RADII: LazyLock<Radii> = LazyLock::new(Radii::default);
+
 /// The image properties' initial values, which [`ComputedStyle::image`]
 /// gives a style that sets none of them.
 static INITIAL_IMAGE: LazyLock<ImageStyle> = LazyLock::new(ImageStyle::default);
@@ -3202,6 +3218,8 @@ pub struct ComputedStyle {
     /// The border image properties (M23.3): `None` while all are their
     /// initial values.
     pub border_image: Option<Arc<BorderImage>>,
+    /// The corners' radii (gap batch E, D50): `None` while all are 0.
+    pub radii: Option<Arc<Radii>>,
     /// SVG's properties (M32): `None` while all are their initial
     /// values. Read through [`ComputedStyle::svg`] and
     /// [`ComputedStyle::svg_own`].
@@ -3287,6 +3305,7 @@ impl Default for ComputedStyle {
             image: None,
             background: None,
             border_image: None,
+            radii: None,
             svg: None,
         }
     }
@@ -3470,6 +3489,17 @@ impl ComputedStyle {
     /// made first if it shares them or has none.
     pub fn border_image_mut(&mut self) -> &mut BorderImage {
         Arc::make_mut(self.border_image.get_or_insert_with(Default::default))
+    }
+
+    /// The corners' radii (gap batch E), all 0 when the style sets
+    /// none.
+    pub fn radii(&self) -> &Radii {
+        self.radii.as_deref().unwrap_or(&INITIAL_RADII)
+    }
+
+    /// The radii to change, this style's own copy made first.
+    pub fn radii_mut(&mut self) -> &mut Radii {
+        Arc::make_mut(self.radii.get_or_insert_with(Default::default))
     }
 
     /// SVG's inherited properties (M32): this style's, or their initial
@@ -3743,9 +3773,10 @@ mod tests {
         // six from 16 bytes to 32, to hold the components beside the
         // sRGB channels drawing reads: 704 before them. `color-scheme`
         // and the scheme it gives (D49), a pointer and a byte in the
-        // padding: 800 before them. Growing this is a decision, not an
-        // accident; say why where the number changes.
-        assert_eq!(std::mem::size_of::<ComputedStyle>(), 808);
+        // padding: 800 before them. The corners' radii (D50) a pointer:
+        // 808 before them. Growing this is a decision, not an accident;
+        // say why where the number changes.
+        assert_eq!(std::mem::size_of::<ComputedStyle>(), 816);
         assert_eq!(ComputedStyle::default().grid, None);
         assert_eq!(*ComputedStyle::default().grid(), GridStyle::default());
         assert_eq!(ComputedStyle::default().effects, None);

@@ -123,7 +123,7 @@ use crate::computed::{
 };
 use crate::computed::{
     AnimationPlayState, Backgrounds, BorderImage, Calc, Decoration, Effects, Fragmentation,
-    GridStyle, ImageStyle, JustifyItems, Lists, Motion, Svg, WillChange,
+    GridStyle, ImageStyle, JustifyItems, Lists, Motion, Radii, Svg, WillChange,
 };
 use crate::custom::{self, CustomProperties, DataType, Substituted, Substitutions};
 use crate::invalidation::{Reach, SelectorFeatures, invalidate};
@@ -3013,6 +3013,13 @@ fn compute_style(
     if style.svg.as_deref().is_some_and(|s| *s == Svg::default()) {
         style.svg = None;
     }
+    if style
+        .radii
+        .as_deref()
+        .is_some_and(|r| *r == Radii::default())
+    {
+        style.radii = None;
+    }
     style
 }
 
@@ -3315,6 +3322,24 @@ fn apply_declaration(
             backgrounds::parse_background_attachment(value),
             |b, v| b.attachment = v,
         ),
+        // `border-radius` (Backgrounds 3 section 5, gap batch E, D50).
+        "border-radius" => match parse_border_radius(value, bases) {
+            Some(radii) => {
+                style.radii = (radii != Radii::default()).then(|| Arc::new(radii));
+                true
+            }
+            None => false,
+        },
+        "border-top-left-radius"
+        | "border-top-right-radius"
+        | "border-bottom-right-radius"
+        | "border-bottom-left-radius" => match parse_corner_radius(value, bases) {
+            Some(corner) => {
+                style.radii_mut().0[corner_of(name)] = corner;
+                true
+            }
+            None => false,
+        },
         "border-image" => match border_image::parse_border_image(value, bases) {
             Some(image) => {
                 style.border_image = (image != BorderImage::default()).then(|| Arc::new(image));
@@ -4373,6 +4398,14 @@ fn apply_css_wide(
             copy_background(style, src, |b, s| b.attachment = s.attachment.clone())
         }
         "border-image" => style.border_image = src.border_image.clone(),
+        "border-radius" => style.radii = src.radii.clone(),
+        "border-top-left-radius"
+        | "border-top-right-radius"
+        | "border-bottom-right-radius"
+        | "border-bottom-left-radius" => {
+            let corner = corner_of(name);
+            style.radii_mut().0[corner] = src.radii().0[corner].clone();
+        }
         "border-image-source" => copy_border_image(style, src, |b, s| b.source = s.source.clone()),
         "border-image-slice" => copy_border_image(style, src, |b, s| {
             b.slice = s.slice;
@@ -6123,6 +6156,56 @@ fn page_scheme(document: &Document) -> Option<Arc<String>> {
             .flatten()
             .flatten()
     })
+}
+
+/// The corner a `border-*-radius` longhand names, in [`Radii`]'s order.
+fn corner_of(name: &str) -> usize {
+    match name {
+        "border-top-left-radius" => 0,
+        "border-top-right-radius" => 1,
+        "border-bottom-right-radius" => 2,
+        _ => 3,
+    }
+}
+
+/// A `border-*-radius` longhand: one or two non-negative lengths or
+/// percentages, horizontal then vertical.
+fn parse_corner_radius(tokens: &[Token], bases: &LengthBases<'_>) -> Option<[LengthPercentage; 2]> {
+    let groups = split_components(tokens);
+    let values: Vec<LengthPercentage> = groups
+        .iter()
+        .map(|g| parse_non_negative_length_percentage(g, bases))
+        .collect::<Option<_>>()?;
+    match values.as_slice() {
+        [one] => Some([one.clone(), one.clone()]),
+        [h, v] => Some([h.clone(), v.clone()]),
+        _ => None,
+    }
+}
+
+/// `border-radius`: one to four horizontal radii, then after a `/` one
+/// to four vertical ones, each list expanded as `margin`'s is from the
+/// top-left corner clockwise; no `/`, the vertical ones the same.
+fn parse_border_radius(tokens: &[Token], bases: &LengthBases<'_>) -> Option<Radii> {
+    let mut halves = tokens.split(|t| matches!(t, Token::Delim('/')));
+    let horizontal = halves.next()?;
+    let vertical = halves.next();
+    if halves.next().is_some() {
+        return None;
+    }
+    let list = |part: &[Token]| -> Option<[LengthPercentage; 4]> {
+        let values: Vec<LengthPercentage> = split_components(part)
+            .iter()
+            .map(|g| parse_non_negative_length_percentage(g, bases))
+            .collect::<Option<_>>()?;
+        expand_1_to_4(&values)
+    };
+    let h = list(horizontal)?;
+    let v = match vertical {
+        Some(part) => list(part)?,
+        None => h.clone(),
+    };
+    Some(Radii(std::array::from_fn(|i| [h[i].clone(), v[i].clone()])))
 }
 
 /// The most words a `color-scheme` keeps.
@@ -8158,6 +8241,57 @@ mod tests {
             value(&styles, &document, "p", "color"),
             "rgb(255, 255, 255)"
         );
+    }
+
+    #[test]
+    fn border_radius_computes_as_the_reference_browser_writes_it() {
+        // Gap batch E, D50.
+        let value = |css: &str, name: &str| {
+            let sheets = [sheet(&format!("div {{ {css} }}"))];
+            let style = style_of("<div>x</div>", &sheets, "div");
+            crate::serialize::computed_value(&style, name).unwrap()
+        };
+        assert_eq!(
+            value("border-radius: 10px", "border-top-left-radius"),
+            "10px"
+        );
+        let css = "border-radius: 10px 20px / 5px";
+        assert_eq!(value(css, "border-top-left-radius"), "10px 5px");
+        assert_eq!(value(css, "border-top-right-radius"), "20px 5px");
+        assert_eq!(value(css, "border-bottom-right-radius"), "10px 5px");
+        assert_eq!(value(css, "border-bottom-left-radius"), "20px 5px");
+        let css = "border-radius: 1px 2px 3px";
+        assert_eq!(value(css, "border-bottom-left-radius"), "2px");
+        assert_eq!(value(css, "border-bottom-right-radius"), "3px");
+        assert_eq!(
+            value("border-top-left-radius: 10px 20%", "border-top-left-radius"),
+            "10px 20%"
+        );
+        // A negative radius, or a third value, is no value.
+        assert_eq!(
+            value(
+                "border-radius: 4px; border-radius: -1px",
+                "border-top-left-radius"
+            ),
+            "4px"
+        );
+        assert_eq!(
+            value(
+                "border-radius: 4px; border-radius: 1px / 2px / 3px",
+                "border-top-left-radius"
+            ),
+            "4px"
+        );
+        assert_eq!(
+            value(
+                "border-top-left-radius: 4px; border-top-left-radius: 1px 2px 3px",
+                "border-top-left-radius"
+            ),
+            "4px"
+        );
+        // Radii set back to zero keep no copy.
+        let sheets = [sheet("div { border-radius: 3px; border-radius: 0 }")];
+        assert!(style_of("<div>x</div>", &sheets, "div").radii.is_none());
     }
 
     #[test]

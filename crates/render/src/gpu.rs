@@ -47,8 +47,8 @@ use text::{FontCollection, FontError, Script};
 use crate::{
     Backend, Clip, GlyphCache, Layer, LayerInfo, Layered, Layers, MAX_FRAME_PIXELS,
     MAX_PARTIAL_SIDE, PixelRect, Pixels, Redrawn, RenderBackend, State, Store, Tile, Turned,
-    bounds, clip_polygon, damaged, fits_a_frame, group_end, landing_of, outward_clip,
-    polygon_coverage, raster_scale, reach, reach_at, tile_rows, unscaled, visible_in, whole_reach,
+    bounds, clip_polygon, contours_coverage, damaged, fits_a_frame, group_end, landing_of,
+    outward_clip, raster_scale, reach, reach_at, tile_rows, unscaled, visible_in, whole_reach,
 };
 
 /// The side of an atlas page, in texels: four mebibytes of coverage,
@@ -1332,15 +1332,33 @@ impl GpuBackend {
                 let last = (self.records.quads.len() / QUAD_FLOATS) as u32;
                 Self::push_draw(draws, Kind::Quad, outer, first..last);
             }
-            DisplayItem::Polygon { points, color } => {
-                let points: Vec<(f32, f32)> = points.iter().map(|p| point(*p)).collect();
-                let Some(coverage) = polygon_coverage(&points, clip, size) else {
+            DisplayItem::Polygon { .. } | DisplayItem::Path { .. } => {
+                let (contours, color) = match item {
+                    DisplayItem::Polygon { points, color } => {
+                        (vec![points.iter().map(|p| point(*p)).collect()], color)
+                    }
+                    DisplayItem::Path { contours, color } => (
+                        contours
+                            .iter()
+                            .map(|c| c.iter().map(|p| point(*p)).collect())
+                            .collect(),
+                        color,
+                    ),
+                    _ => return,
+                };
+                let Some(coverage) = contours_coverage(&contours, clip, size) else {
                     return;
                 };
+                // The contours' points, a pair of NaN bits between two.
                 let key = MaskKey::Polygon(
-                    points
+                    contours
                         .iter()
-                        .map(|p| (p.0.to_bits(), p.1.to_bits()))
+                        .enumerate()
+                        .flat_map(|(i, c)| {
+                            let gap = (i > 0).then_some((u32::MAX, u32::MAX));
+                            gap.into_iter()
+                                .chain(c.iter().map(|p| (p.0.to_bits(), p.1.to_bits())))
+                        })
                         .collect(),
                     [
                         clip.x0.to_bits(),
@@ -2852,6 +2870,41 @@ mod tests {
             ],
         };
         equivalent("text, quads and polygons", &[list], 240, 160);
+    }
+
+    #[test]
+    fn paths_match() {
+        // Gap batch E, D50: a ring, a band between two contours, and a
+        // shape of curves, as the rounded boxes make.
+        let ring = |r: f32, n: usize, cx: f32, cy: f32| -> Vec<(f32, f32)> {
+            (0..n)
+                .map(|i| {
+                    let t = i as f32 * std::f32::consts::TAU / n as f32;
+                    (cx + r * t.cos(), cy + r * t.sin())
+                })
+                .collect()
+        };
+        let mut hole = ring(20.0, 48, 60.0, 60.0);
+        hole.reverse();
+        let list = DisplayList {
+            items: vec![
+                rect(0.0, 0.0, 160.0, 120.0, Rgba8::rgb(255, 255, 255)),
+                DisplayItem::Path {
+                    contours: vec![ring(40.0, 64, 60.0, 60.0), hole],
+                    color: Rgba8::rgb(200, 30, 30),
+                },
+                DisplayItem::Path {
+                    contours: vec![ring(15.5, 32, 130.3, 40.7)],
+                    color: Rgba8 {
+                        r: 0,
+                        g: 0,
+                        b: 200,
+                        a: 160,
+                    },
+                },
+            ],
+        };
+        equivalent("paths", &[list], 160, 120);
     }
 
     #[test]

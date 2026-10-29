@@ -30,6 +30,8 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "align-self",
     "background-color",
     "border-bottom-color",
+    "border-bottom-left-radius",
+    "border-bottom-right-radius",
     "border-bottom-style",
     "border-bottom-width",
     "border-collapse",
@@ -40,6 +42,8 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "border-right-style",
     "border-right-width",
     "border-top-color",
+    "border-top-left-radius",
+    "border-top-right-radius",
     "border-top-style",
     "border-top-width",
     "bottom",
@@ -146,6 +150,20 @@ pub fn computed_value(style: &ComputedStyle, name: &str) -> Option<String> {
     }
     if let Some(i) = side("padding-", "") {
         return length_percentage(&style.padding[i]);
+    }
+    let corner = match name {
+        "border-top-left-radius" => Some(0),
+        "border-top-right-radius" => Some(1),
+        "border-bottom-right-radius" => Some(2),
+        "border-bottom-left-radius" => Some(3),
+        _ => None,
+    };
+    if let Some(i) = corner {
+        // One value where the two are alike, as the reference browser
+        // writes it (gap batch E).
+        let [h, v] = &style.radii().0[i];
+        let (h, v) = (length_percentage(h)?, length_percentage(v)?);
+        return Some(if h == v { h } else { format!("{h} {v}") });
     }
     if let Some(i) = side("border-", "-width") {
         return Some(px(style.used_border_width()[i]));

@@ -2763,6 +2763,19 @@ impl SoftwareBackend {
                 let points: Vec<(f32, f32)> = points.iter().map(|p| point(*p)).collect();
                 fill_polygon_by_area(pixmap, &points, color, clip, frame);
             }
+            DisplayItem::Path { contours, color } => {
+                let frame = PixelRect {
+                    x0: 0,
+                    y0: 0,
+                    x1: pixmap.width(),
+                    y1: pixmap.height(),
+                };
+                let contours: Vec<Vec<(f32, f32)>> = contours
+                    .iter()
+                    .map(|c| c.iter().map(|p| point(*p)).collect())
+                    .collect();
+                fill_contours_by_area(pixmap, &contours, color, clip, frame);
+            }
             DisplayItem::Image {
                 x,
                 y,
@@ -2902,6 +2915,14 @@ impl SoftwareBackend {
                         .collect();
                     fill_polygon_by_area(pixmap, &points, color, clip, rect);
                 }
+                DisplayItem::Path { contours, color } => {
+                    let (sx, sy, tx, ty) = through;
+                    let contours: Vec<Vec<(f32, f32)>> = contours
+                        .iter()
+                        .map(|c| c.iter().map(|(x, y)| (x * sx + tx, y * sy + ty)).collect())
+                        .collect();
+                    fill_contours_by_area(pixmap, &contours, color, clip, rect);
+                }
                 DisplayItem::Quad { .. } => {
                     // Drawn on a copy of what is under it, of which
                     // only the part inside the rectangle comes back.
@@ -2995,6 +3016,10 @@ fn extent(text: &mut GlyphCache, item: &DisplayItem, state: &State) -> Option<Cl
             None => return (!clip.is_empty()).then_some(clip),
         },
         DisplayItem::Polygon { points, .. } => (hull(points)?, 0.0, 0.0),
+        DisplayItem::Path { contours, .. } => {
+            let all: Vec<(f32, f32)> = contours.iter().flatten().copied().collect();
+            (hull(&all)?, 0.0, 0.0)
+        }
     };
     let texels = texels + if in_scratch { 1.0 } else { 0.0 };
     let pixels = pixels + if in_scratch { 1.0 } else { 0.0 };
@@ -3646,7 +3671,26 @@ fn fill_polygon_by_area(
     clip: Clip,
     write: PixelRect,
 ) {
-    let Some(coverage) = polygon_coverage(points, clip, (pixmap.width(), pixmap.height())) else {
+    fill_contours_by_area(
+        pixmap,
+        std::slice::from_ref(&points.to_vec()),
+        color,
+        clip,
+        write,
+    );
+}
+
+/// [`fill_polygon_by_area`] for several contours, filled by the nonzero
+/// rule (gap batch E).
+fn fill_contours_by_area(
+    pixmap: &mut tiny_skia::Pixmap,
+    contours: &[Vec<(f32, f32)>],
+    color: &Rgba8,
+    clip: Clip,
+    write: PixelRect,
+) {
+    let Some(coverage) = contours_coverage(contours, clip, (pixmap.width(), pixmap.height()))
+    else {
         return;
     };
     let pw = pixmap.width() as i64;
@@ -3669,7 +3713,7 @@ fn fill_polygon_by_area(
     }
 }
 
-/// The coverage of a polygon's pixels (see [`polygon_coverage`]): the
+/// The coverage of a polygon's pixels (see [`contours_coverage`]): the
 /// share of each pixel of the `width` by `height` block at `(x0, y0)`
 /// the polygon covers, row-major, in `[0, 1]`.
 struct Coverage {
@@ -3680,26 +3724,32 @@ struct Coverage {
     values: Vec<f32>,
 }
 
-/// The coverage of the simple polygon `points` clipped to `clip`, in a
-/// `width` by `height` raster, by exact area: the share of each pixel
-/// the polygon covers, over the pixels of its bounds within the raster,
-/// from the signed-area accumulation of the polygon's edges (the way
-/// font rasterizers compute it): every edge adds, to the pixels of each
-/// row it crosses, the area it sweeps and the cover it carries to the
-/// pixels right of it, and a running sum along the row gives each
-/// pixel's covered area, exact for a polygon that does not cross itself
-/// whichever way it winds. `None` when nothing is covered.
-fn polygon_coverage(
-    points: &[(f32, f32)],
+/// The coverage of closed contours, each cut to `clip`, in a `width` by
+/// `height` raster, by exact area: the share of each pixel they cover,
+/// over the pixels of their bounds within the raster; `None` where they
+/// cover none. Their edges are accumulated together, so that a contour
+/// inside another the other way round is a hole (gap batch E, D50).
+fn contours_coverage(
+    contours: &[Vec<(f32, f32)>],
     clip: Clip,
     (width, height): (u32, u32),
 ) -> Option<Coverage> {
-    let polygon = clip_polygon(points, clip);
-    if polygon.len() < 3 || polygon.iter().any(|p| !p.0.is_finite() || !p.1.is_finite()) {
+    let clipped: Vec<Vec<(f32, f32)>> = contours
+        .iter()
+        .map(|c| clip_polygon(c, clip))
+        .filter(|c| c.len() >= 3)
+        .collect();
+    if clipped.is_empty()
+        || clipped
+            .iter()
+            .flatten()
+            .any(|p| !p.0.is_finite() || !p.1.is_finite())
+    {
         return None;
     }
+    let polygon: Vec<(f32, f32)> = clipped.iter().flatten().copied().collect();
     let (pw, ph) = (width as i64, height as i64);
-    // The pixels the polygon can touch: its bounds, within the frame.
+    // The pixels the contours can touch: their bounds, within the frame.
     let min_x = polygon
         .iter()
         .map(|p| p.0)
@@ -3729,16 +3779,18 @@ fn polygon_coverage(
     // One extra column: an edge's cover spills into the pixel after it.
     let stride = bw + 2;
     let mut acc = vec![0.0f32; stride * bh];
-    for i in 0..polygon.len() {
-        let (ax, ay) = polygon[i];
-        let (bx, by) = polygon[(i + 1) % polygon.len()];
-        accumulate_edge(
-            &mut acc,
-            stride,
-            bh,
-            (ax - x0 as f32, ay - y0 as f32),
-            (bx - x0 as f32, by - y0 as f32),
-        );
+    for contour in &clipped {
+        for i in 0..contour.len() {
+            let (ax, ay) = contour[i];
+            let (bx, by) = contour[(i + 1) % contour.len()];
+            accumulate_edge(
+                &mut acc,
+                stride,
+                bh,
+                (ax - x0 as f32, ay - y0 as f32),
+                (bx - x0 as f32, by - y0 as f32),
+            );
+        }
     }
     let mut values = vec![0.0f32; bw * bh];
     for row in 0..bh {
@@ -4803,6 +4855,41 @@ mod tests {
             (backend.shape_cache_len(), backend.text.cached_glyphs),
             (0, 0)
         );
+    }
+
+    #[test]
+    fn a_paths_inner_contour_the_other_way_round_is_a_hole() {
+        // Gap batch E, D50: a 10-pixel square band round a 4-pixel hole.
+        let mut backend = test_backend();
+        let black = Rgba8::rgb(0, 0, 0);
+        let square = |a: f32, b: f32| vec![(a, a), (b, a), (b, b), (a, b)];
+        let mut hole = square(3.0, 7.0);
+        hole.reverse();
+        let list = DisplayList {
+            items: vec![
+                white_frame(10.0, 10.0),
+                DisplayItem::Path {
+                    contours: vec![square(0.0, 10.0), hole],
+                    color: black,
+                },
+            ],
+        };
+        let buf = backend.rasterize(&list, 10, 10);
+        assert_eq!(px(buf, 10, 1, 1), BLACK);
+        assert_eq!(px(buf, 10, 5, 5), WHITE, "the hole");
+        assert_eq!(px(buf, 10, 8, 5), BLACK);
+        // The same way round, the inner contour does not cut it.
+        let list = DisplayList {
+            items: vec![
+                white_frame(10.0, 10.0),
+                DisplayItem::Path {
+                    contours: vec![square(0.0, 10.0), square(3.0, 7.0)],
+                    color: black,
+                },
+            ],
+        };
+        let buf = backend.rasterize(&list, 10, 10);
+        assert_eq!(px(buf, 10, 5, 5), BLACK);
     }
 
     #[test]
