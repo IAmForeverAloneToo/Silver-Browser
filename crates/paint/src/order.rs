@@ -89,8 +89,13 @@ use style::computed::{
 };
 use style::transform::Matrix;
 
+use crate::rounded::RoundedRect;
 use crate::{GroupKey, LayerReason, ScrollOffsets, Viewport};
 use style::computed::WillChange;
+
+/// A clip of the chain in force: the node it scrolls, its effective
+/// rectangle, the depth of groups it is in, and its rounded shape.
+type ChainClip = (Option<NodeId>, Rect, usize, Option<(NodeId, RoundedRect)>);
 
 /// An axis-aligned rectangle in viewport coordinates.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -158,7 +163,14 @@ pub enum Step<'a> {
     /// generated box's is its element's own, so it clips and does not
     /// scroll. The clipping box's content is scrolled by its offset;
     /// the box, its clip and its scrollbar are not.
-    PushClip { node: Option<NodeId>, rect: Rect },
+    PushClip {
+        node: Option<NodeId>,
+        rect: Rect,
+        /// The clipping box's rounded padding box and the box's node,
+        /// when its corners are rounded (gap batch E, D51): what the
+        /// clip cuts to besides `rect`.
+        rounded: Option<(NodeId, RoundedRect)>,
+    },
     /// The end of the innermost [`Step::PushClip`].
     PopClip,
     /// Everything up to the matching [`Step::PopGroup`] is a group
@@ -487,7 +499,7 @@ struct Walk<'a, 'o> {
     /// is intersected with the ones around it in the same group, whose
     /// coordinates it shares, and the consumers of the steps intersect
     /// across groups themselves, each in its own coordinates.
-    chain: Vec<(Option<NodeId>, Rect, usize)>,
+    chain: Vec<ChainClip>,
     /// The groups being walked into (M19), outermost first: each one's
     /// matrix composed with those around it, from its coordinates to the
     /// viewport's, for what the viewport meets.
@@ -529,7 +541,7 @@ struct Walk<'a, 'o> {
 struct Positioned<'a> {
     f: &'a Fragment,
     containing: Rect,
-    chain: Vec<(Option<NodeId>, Rect, usize)>,
+    chain: Vec<ChainClip>,
     ox: f32,
     oy: f32,
     ts: u32,
@@ -779,8 +791,8 @@ impl<'a> Walk<'a, '_> {
         self.chain
             .iter()
             .rev()
-            .find(|(_, _, d)| *d == depth)
-            .map(|(_, rect, _)| *rect)
+            .find(|(_, _, d, _)| *d == depth)
+            .map(|(_, rect, _, _)| *rect)
     }
 
     /// Whether what is listed meets `rect`, a rectangle in the
@@ -979,13 +991,17 @@ impl<'a> Walk<'a, '_> {
         // A clip that is no scroll container (`overflow: clip`, M26.7)
         // names no node: nothing scrolls it, as a generated box's.
         let node = (f.generated.is_none() && f.style.overflow.scrolls()).then_some(f.node);
+        let rounded =
+            RoundedRect::of(&f.style, rect).map(|r| (f.node, r.inset(f.style.used_border_width())));
         if emit != Emit::Nothing {
             self.steps.push(Step::PushClip {
                 node,
                 rect: effective,
+                rounded,
             });
         }
-        self.chain.push((node, effective, self.groups.len()));
+        self.chain
+            .push((node, effective, self.groups.len(), rounded));
         let offset = node.map_or(0.0, |node| self.offsets.offset(node));
         // The scrolled content of a container whose `will-change` names
         // `scroll-position` is a group that is a layer (M19), its matrix
@@ -1578,8 +1594,12 @@ impl<'a> Walk<'a, '_> {
             self.steps.push(Step::PopClip);
         }
         let mark = self.steps.len();
-        for &(node, rect, _) in &self.chain[shared..] {
-            self.steps.push(Step::PushClip { node, rect });
+        for &(node, rect, _, rounded) in &self.chain[shared..] {
+            self.steps.push(Step::PushClip {
+                node,
+                rect,
+                rounded,
+            });
         }
         let opened = self.chain.len() - shared;
         let (ox, oy, ts) = (self.ox, self.oy, self.ts);
@@ -1601,8 +1621,12 @@ impl<'a> Walk<'a, '_> {
                 self.steps.push(Step::PopClip);
             }
         }
-        for &(node, rect, _) in &current[shared..] {
-            self.steps.push(Step::PushClip { node, rect });
+        for &(node, rect, _, rounded) in &current[shared..] {
+            self.steps.push(Step::PushClip {
+                node,
+                rect,
+                rounded,
+            });
         }
         self.chain = current;
     }
@@ -1721,7 +1745,7 @@ mod tests {
                     FragmentKind::Replaced(replaced) => format!("replaced {replaced:?}"),
                     FragmentKind::Box | FragmentKind::InlineBox => unreachable!(),
                 },
-                Step::PushClip { node, rect } => {
+                Step::PushClip { node, rect, .. } => {
                     let node = node.map_or(0, |node| layout.number(node));
                     format!("clip {node} {} {} {} {}", rect.x, rect.y, rect.w, rect.h)
                 }
@@ -1838,7 +1862,7 @@ mod tests {
         let clips: Vec<(Option<usize>, f32)> = steps
             .iter()
             .filter_map(|s| match s {
-                Step::PushClip { node, rect } => Some((node.map(|n| layout.number(n)), rect.y)),
+                Step::PushClip { node, rect, .. } => Some((node.map(|n| layout.number(n)), rect.y)),
                 _ => None,
             })
             .collect();
@@ -1907,7 +1931,8 @@ mod tests {
                     y: 0.0,
                     h: 100.0,
                     ..
-                }
+                },
+                ..
             } if node.map(|node| layout.number(node)) == Some(2)
         ));
         assert!(matches!(
@@ -1964,7 +1989,7 @@ mod tests {
         let clips: Vec<(usize, f32)> = steps
             .iter()
             .filter_map(|s| match s {
-                Step::PushClip { node, rect } => Some((layout.number(node.unwrap()), rect.h)),
+                Step::PushClip { node, rect, .. } => Some((layout.number(node.unwrap()), rect.h)),
                 _ => None,
             })
             .collect();

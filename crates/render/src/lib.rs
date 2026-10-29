@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use images::Orientation;
+use paint::rounded::RoundedRect;
 use paint::{DisplayItem, DisplayList, GroupKey, ImageRef, LayerReason, Rgba8, TILE_HEIGHT};
 use style::transform::Matrix;
 use text::{
@@ -303,6 +304,21 @@ impl State {
         state
     }
 
+    /// [`State::based`] for a group a rounded rectangle clips (gap batch
+    /// E, D51): the rectangle, in the group's coordinates, the clip in
+    /// force from the start.
+    fn masked(width: u32, height: u32, base: Matrix, mask: Option<&RoundedRect>) -> Self {
+        let mut state = State::based(width, height, base);
+        if let Some(mask) = mask {
+            let r = mask.rect;
+            let clip = state
+                .map(r.x, r.y, r.w, r.h)
+                .unwrap_or(Clip::new(0.0, 0.0, 0.0, 0.0));
+            state.clips.push(state.clip().intersect(clip));
+        }
+        state
+    }
+
     /// The clip in force.
     fn clip(&self) -> Clip {
         self.clips.last().copied().unwrap_or(self.frame)
@@ -391,6 +407,7 @@ impl State {
                 opacity,
                 key,
                 layer,
+                ..
             } => {
                 let composed = self.matrix().map_or(*matrix, |m| m.then(matrix));
                 let resampled = self.resampling() || State::is_resampled(matrix, *layer);
@@ -1585,8 +1602,11 @@ impl SoftwareBackend {
                 opacity,
                 key,
                 layer,
+                mask,
             } = item
-                && (State::needs_scratch(matrix, *opacity) || self.is_held(key, *layer))
+                && (State::needs_scratch(matrix, *opacity)
+                    || mask.is_some()
+                    || self.is_held(key, *layer))
             {
                 let end = group_end(items, i);
                 let composed = state.matrix().map_or(*matrix, |m| m.then(matrix));
@@ -1599,6 +1619,7 @@ impl SoftwareBackend {
                     state.clip(),
                     None,
                     held,
+                    mask.as_deref(),
                 );
                 i = end + 1;
                 continue;
@@ -1639,8 +1660,11 @@ impl SoftwareBackend {
                 opacity,
                 key,
                 layer,
+                mask,
             } = item
-                && (State::needs_scratch(matrix, *opacity) || self.is_held(key, *layer))
+                && (State::needs_scratch(matrix, *opacity)
+                    || mask.is_some()
+                    || self.is_held(key, *layer))
             {
                 i = group_end(items, i) + 1;
                 continue;
@@ -1674,6 +1698,7 @@ impl SoftwareBackend {
         clip: Clip,
         only: Option<PixelRect>,
         held: Option<GroupKey>,
+        mask: Option<&RoundedRect>,
     ) {
         let (width, height) = (pixmap.width(), pixmap.height());
         let Some(within) = clip.pixels(width, height) else {
@@ -1710,7 +1735,8 @@ impl SoftwareBackend {
             };
             let base =
                 Matrix::translate(-(region.x0 as f32), -(region.y0 as f32), 0.0).then(&matrix);
-            self.draw_items(&mut scratch, items, State::based(w, h, base));
+            self.draw_items(&mut scratch, items, State::masked(w, h, base, mask));
+            apply_mask(&mut scratch, mask, &base);
             blit(
                 pixmap,
                 &scratch,
@@ -1769,7 +1795,8 @@ impl SoftwareBackend {
             return;
         };
         let base = Matrix::translate(-gx0, -gy0, 0.0);
-        self.draw_items(&mut scratch, items, State::based(gw, gh, base));
+        self.draw_items(&mut scratch, items, State::masked(gw, gh, base, mask));
+        apply_mask(&mut scratch, mask, &base);
         composite_pixmap(
             pixmap,
             &scratch,
@@ -2494,12 +2521,14 @@ impl SoftwareBackend {
                             opacity: oa,
                             key: ka,
                             layer: la,
+                            mask: None,
                         },
                         DisplayItem::PushGroup {
                             matrix: now,
                             opacity: ob,
                             key: kb,
                             layer: lb,
+                            mask: None,
                         },
                     ) = (&a[i], &b[j])
                     else {
@@ -2866,8 +2895,11 @@ impl SoftwareBackend {
                 opacity,
                 key,
                 layer,
+                mask,
             } = item
-                && (State::needs_scratch(matrix, *opacity) || self.is_held(key, *layer))
+                && (State::needs_scratch(matrix, *opacity)
+                    || mask.is_some()
+                    || self.is_held(key, *layer))
             {
                 let end = group_end(items, i);
                 let composed = state.matrix().map_or(*matrix, |m| m.then(matrix));
@@ -2880,6 +2912,7 @@ impl SoftwareBackend {
                     state.clip(),
                     Some(rect),
                     held,
+                    mask.as_deref(),
                 );
                 i = end + 1;
                 continue;
@@ -3722,6 +3755,66 @@ struct Coverage {
     width: usize,
     height: usize,
     values: Vec<f32>,
+}
+
+/// `mask` in the group's coordinates, mapped by `base` into a scratch's,
+/// which only translates and scales: its rectangle and radii.
+fn mapped_mask(mask: &RoundedRect, base: &Matrix) -> Option<RoundedRect> {
+    let (sx, sy, tx, ty) = base.scale_and_translation()?;
+    let r = mask.rect;
+    Some(RoundedRect {
+        rect: paint::Rect {
+            x: r.x * sx + tx,
+            y: r.y * sy + ty,
+            w: r.w * sx,
+            h: r.h * sy,
+        },
+        radii: mask.radii.map(|(h, v)| (h * sx.abs(), v * sy.abs())),
+    })
+}
+
+/// Multiplies a group's scratch by the coverage of its rounded `mask`,
+/// in the group's coordinates, `base` mapping them to the scratch's (gap
+/// batch E, D51): what is outside the rounded rectangle goes, its curve
+/// anti-aliased by the exact area.
+fn apply_mask(scratch: &mut tiny_skia::Pixmap, mask: Option<&RoundedRect>, base: &Matrix) {
+    let Some(mask) = mask else {
+        return;
+    };
+    let (w, h) = (scratch.width(), scratch.height());
+    let data = scratch.data_mut();
+    let coverage = mapped_mask(mask, base).and_then(|m| {
+        contours_coverage(
+            &[m.contour()],
+            Clip::new(0.0, 0.0, w as f32, h as f32),
+            (w, h),
+        )
+    });
+    let Some(coverage) = coverage else {
+        data.fill(0);
+        return;
+    };
+    for y in 0..h as i64 {
+        for x in 0..w as i64 {
+            let (cx, cy) = (x - coverage.x0, y - coverage.y0);
+            let covered = if cx >= 0
+                && cy >= 0
+                && (cx as usize) < coverage.width
+                && (cy as usize) < coverage.height
+            {
+                coverage.values[cy as usize * coverage.width + cx as usize]
+            } else {
+                0.0
+            };
+            if covered >= 1.0 {
+                continue;
+            }
+            let at = (y as usize * w as usize + x as usize) * 4;
+            for c in &mut data[at..at + 4] {
+                *c = (f32::from(*c) * covered).round() as u8;
+            }
+        }
+    }
 }
 
 /// The coverage of closed contours, each cut to `clip`, in a `width` by
@@ -4858,6 +4951,61 @@ mod tests {
     }
 
     #[test]
+    fn a_masked_group_shows_inside_its_rounded_rectangle_alone() {
+        // Gap batch E, D51: a red square under a mask of radius 10 at
+        // (10, 10) 40 by 40, over white; scaled by two by a group around.
+        let mut backend = test_backend();
+        let red = Rgba8::rgb(255, 0, 0);
+        let masked = |outer: Matrix| DisplayList {
+            items: vec![
+                white_frame(120.0, 120.0),
+                group(outer, 1.0),
+                DisplayItem::PushGroup {
+                    matrix: Matrix::IDENTITY,
+                    opacity: 1.0,
+                    key: group_key(),
+                    layer: None,
+                    mask: Some(Box::new(RoundedRect {
+                        rect: paint::Rect {
+                            x: 10.0,
+                            y: 10.0,
+                            w: 40.0,
+                            h: 40.0,
+                        },
+                        radii: [(10.0, 10.0); 4],
+                    })),
+                },
+                DisplayItem::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 60.0,
+                    h: 60.0,
+                    color: red,
+                },
+                DisplayItem::PopGroup,
+                DisplayItem::PopGroup,
+            ],
+        };
+        let buf = backend
+            .rasterize(&masked(Matrix::IDENTITY), 120, 120)
+            .to_vec();
+        assert_eq!(px(&buf, 120, 30, 30), [255, 0, 0, 0xff], "inside");
+        assert_eq!(px(&buf, 120, 5, 30), WHITE, "outside the rectangle");
+        assert_eq!(px(&buf, 120, 11, 11), WHITE, "outside the curve");
+        assert_eq!(
+            px(&buf, 120, 11, 30),
+            [255, 0, 0, 0xff],
+            "inside the straight edge"
+        );
+        let edge = px(&buf, 120, 12, 12);
+        assert!(edge[1] > 0 && edge[1] < 255, "the curve blends: {edge:?}");
+        // Under a scale the mask scales with the content.
+        let buf = backend.rasterize(&masked(Matrix::scale(2.0, 2.0, 1.0)), 120, 120);
+        assert_eq!(px(buf, 120, 24, 24), WHITE, "outside the scaled curve");
+        assert_eq!(px(buf, 120, 60, 60), [255, 0, 0, 0xff]);
+    }
+
+    #[test]
     fn a_paths_inner_contour_the_other_way_round_is_a_hole() {
         // Gap batch E, D50: a 10-pixel square band round a 4-pixel hole.
         let mut backend = test_backend();
@@ -5135,6 +5283,7 @@ mod tests {
                     opacity,
                     key: GroupKey::Document(rng.below(6) as u32),
                     layer,
+                    mask: None,
                 }
             }
             11..=12 => DisplayItem::PopGroup,
@@ -5694,6 +5843,7 @@ mod tests {
             opacity,
             key: group_key(),
             layer: None,
+            mask: None,
         }
     }
 
@@ -5738,6 +5888,7 @@ mod tests {
                         opacity: 1.0,
                         key: fresh_key(),
                         layer,
+                        mask: None,
                     },
                     rect(20.0, 30.0, 40.0, 40.0, red),
                     DisplayItem::PopGroup,
@@ -5778,6 +5929,7 @@ mod tests {
                     opacity: 1.0,
                     key: group_key(),
                     layer,
+                    mask: None,
                 },
                 rect(0.0, 0.0, 80.0, 40.0, Rgba8::rgb(200, 220, 240)),
                 DisplayItem::Border {
@@ -5819,6 +5971,7 @@ mod tests {
             opacity: 1.0,
             key: group_key(),
             layer: Some(LayerReason::WillChange),
+            mask: None,
         };
         backend.rasterize(&moved, w, h);
         assert!(backend.layered().rasterized.is_empty());
@@ -5954,6 +6107,7 @@ mod tests {
                         opacity: 1.0,
                         key: GroupKey::Document(n as u32),
                         layer: Some(LayerReason::Scrolled),
+                        mask: None,
                     });
                     items.extend(piece.iter().cloned());
                     items.push(DisplayItem::PopGroup);
@@ -6351,6 +6505,7 @@ mod tests {
                     opacity,
                     key,
                     layer: Some(LayerReason::WillChange),
+                    mask: None,
                 },
                 rect(4.0, 4.0, 10.0, 10.0, Rgba8::rgb(0, 0, 255)),
                 DisplayItem::Text {
@@ -6426,6 +6581,7 @@ mod tests {
                         opacity,
                         key,
                         layer,
+                        mask: None,
                     },
                     rect(4.0, 4.0, 10.0, 10.0, Rgba8::rgb(0, 0, 255)),
                     DisplayItem::PopGroup,
@@ -6465,6 +6621,7 @@ mod tests {
             opacity: 1.0,
             key,
             layer: Some(LayerReason::Scrolled),
+            mask: None,
         };
         let layer = |key: GroupKey, m: [f32; 16], opacity: f32, text: &str, y: f32| {
             [
@@ -6473,6 +6630,7 @@ mod tests {
                     opacity,
                     key,
                     layer: Some(LayerReason::Transformed),
+                    mask: None,
                 },
                 DisplayItem::Text {
                     text: text.to_string(),
@@ -6605,6 +6763,7 @@ mod tests {
                     opacity: 1.0,
                     key,
                     layer: Some(LayerReason::Scrolled),
+                    mask: None,
                 },
             ];
             for i in 0..40 {
@@ -6693,6 +6852,7 @@ mod tests {
                 opacity: 1.0,
                 key: GroupKey::Document(i),
                 layer: Some(LayerReason::WillChange),
+                mask: None,
             });
             items.push(rect(
                 0.0,
@@ -6787,6 +6947,7 @@ mod tests {
                     opacity: 1.0,
                     key,
                     layer: Some(LayerReason::Scrolled),
+                    mask: None,
                 },
             ];
             for i in 0..20 {
@@ -6804,6 +6965,7 @@ mod tests {
                 opacity: 1.0,
                 key: other,
                 layer: Some(LayerReason::WillChange),
+                mask: None,
             });
             items.push(rect(0.0, 0.0, 4.0, 4.0, Rgba8::rgb(0, 0, 255)));
             items.push(DisplayItem::PopGroup);
@@ -6869,6 +7031,7 @@ mod tests {
                     opacity: 1.0,
                     key,
                     layer: Some(LayerReason::WillChange),
+                    mask: None,
                 },
                 rect(0.0, 0.0, 8.0, 8.0, Rgba8::rgb(255, 0, 0)),
                 DisplayItem::PopGroup,
@@ -6877,6 +7040,7 @@ mod tests {
                     opacity: 1.0,
                     key,
                     layer: Some(LayerReason::WillChange),
+                    mask: None,
                 },
                 rect(0.0, 0.0, 8.0, 8.0, Rgba8::rgb(0, 255, 0)),
                 DisplayItem::PopGroup,
@@ -6895,6 +7059,7 @@ mod tests {
                     opacity: 1.0,
                     key,
                     layer,
+                    mask: None,
                 },
                 rect(0.0, 0.0, 8.0, 8.0, Rgba8::rgb(255, 0, 0)),
                 DisplayItem::PopGroup,

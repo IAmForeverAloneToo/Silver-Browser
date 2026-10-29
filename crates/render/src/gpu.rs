@@ -44,11 +44,14 @@ use paint::{DisplayItem, DisplayList, GroupKey, ImageRef, LayerReason, Rgba8, TI
 use style::transform::Matrix;
 use text::{FontCollection, FontError, Script};
 
+use paint::rounded::RoundedRect;
+
 use crate::{
     Backend, Clip, GlyphCache, Layer, LayerInfo, Layered, Layers, MAX_FRAME_PIXELS,
     MAX_PARTIAL_SIDE, PixelRect, Pixels, Redrawn, RenderBackend, State, Store, Tile, Turned,
     bounds, clip_polygon, contours_coverage, damaged, fits_a_frame, group_end, landing_of,
-    outward_clip, raster_scale, reach, reach_at, tile_rows, unscaled, visible_in, whole_reach,
+    mapped_mask, outward_clip, raster_scale, reach, reach_at, tile_rows, unscaled, visible_in,
+    whole_reach,
 };
 
 /// The side of an atlas page, in texels: four mebibytes of coverage,
@@ -247,6 +250,8 @@ struct Pipelines {
     quad: wgpu::RenderPipeline,
     mask: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
+    /// The mask pipeline multiplying the target by the coverage.
+    erase: wgpu::RenderPipeline,
     /// A texture and its sampler, what the mask and composite
     /// pipelines bind.
     sampled: wgpu::BindGroupLayout,
@@ -285,6 +290,8 @@ enum Kind {
     Quad,
     Mask(wgpu::BindGroup),
     Composite(wgpu::BindGroup),
+    /// A mask's coverage multiplying what is drawn (gap batch E, D51).
+    Erase(wgpu::BindGroup),
 }
 
 /// The vertex and instance records of a frame, one list per pipeline,
@@ -886,8 +893,11 @@ impl GpuBackend {
                 opacity,
                 key,
                 layer,
+                mask,
             } = item
-                && (State::needs_scratch(matrix, *opacity) || self.is_held(key, *layer))
+                && (State::needs_scratch(matrix, *opacity)
+                    || mask.is_some()
+                    || self.is_held(key, *layer))
             {
                 let end = group_end(items, i);
                 let composed = state.matrix().map_or(*matrix, |m| m.then(matrix));
@@ -900,6 +910,7 @@ impl GpuBackend {
                     state.clip(),
                     held,
                     size,
+                    mask.as_deref(),
                 );
                 i = end + 1;
                 continue;
@@ -931,6 +942,7 @@ impl GpuBackend {
         clip: Clip,
         held: Option<GroupKey>,
         size: (u32, u32),
+        mask: Option<&RoundedRect>,
     ) {
         let (width, height) = size;
         let Some(within) = clip.pixels(width, height) else {
@@ -956,7 +968,7 @@ impl GpuBackend {
             let (w, h) = (region.x1 - region.x0, region.y1 - region.y0);
             let base =
                 Matrix::translate(-(region.x0 as f32), -(region.y0 as f32), 0.0).then(&matrix);
-            let Some(bind) = self.render_scratch(items, w, h, base) else {
+            let Some(bind) = self.render_scratch(items, w, h, base, mask) else {
                 return;
             };
             let at = Matrix::translate(region.x0 as f32, region.y0 as f32, 0.0);
@@ -1011,7 +1023,7 @@ impl GpuBackend {
         }
         let (gw, gh) = (gw as u32, gh as u32);
         let base = Matrix::translate(-gx0, -gy0, 0.0);
-        let Some(bind) = self.render_scratch(items, gw, gh, base) else {
+        let Some(bind) = self.render_scratch(items, gw, gh, base, mask) else {
             return;
         };
         Self::push_composite(
@@ -1036,10 +1048,114 @@ impl GpuBackend {
         width: u32,
         height: u32,
         base: Matrix,
+        mask: Option<&RoundedRect>,
     ) -> Option<wgpu::BindGroup> {
         let (view, bind) = self.scratch(width, height)?;
-        self.render_pass(view, width, height, items, base);
+        let mut draws = Vec::new();
+        self.record_items(
+            &mut draws,
+            items,
+            State::masked(width, height, base, mask),
+            (width, height),
+        );
+        if let Some(mask) = mask {
+            self.record_erase(&mut draws, mask, &base, (width, height));
+        }
+        self.passes.push(Pass {
+            view,
+            width,
+            height,
+            draws,
+        });
         Some(bind)
+    }
+
+    /// Records the multiplying of a scratch by the coverage of its
+    /// rounded `mask`, in the group's coordinates, `base` mapping them to
+    /// the scratch's (gap batch E, D51): the same coverage the software
+    /// backend multiplies by, from the atlas.
+    fn record_erase(
+        &mut self,
+        draws: &mut Vec<Draw>,
+        mask: &RoundedRect,
+        base: &Matrix,
+        size: (u32, u32),
+    ) {
+        let (width, height) = size;
+        let whole = PixelRect {
+            x0: 0,
+            y0: 0,
+            x1: width,
+            y1: height,
+        };
+        let contour = mapped_mask(mask, base).map(|m| m.contour());
+        let clip = Clip::new(0.0, 0.0, width as f32, height as f32);
+        let coverage = contour
+            .as_ref()
+            .and_then(|c| contours_coverage(std::slice::from_ref(c), clip, size));
+        let (Some(contour), Some(coverage)) = (contour, coverage) else {
+            // Nothing of the group shows.
+            self.push_erase_all(draws, whole, size);
+            return;
+        };
+        let key = MaskKey::Polygon(
+            contour
+                .iter()
+                .map(|p| (p.0.to_bits(), p.1.to_bits()))
+                .collect(),
+            [0, 0, width, height],
+            size,
+        );
+        let (w, h) = (coverage.width as u32, coverage.height as u32);
+        let bytes: Vec<u8> = coverage
+            .values
+            .iter()
+            .map(|v| (v * 255.0).round() as u8)
+            .collect();
+        let Some(place) = self.place(key, w, h, &bytes) else {
+            return;
+        };
+        let page = &self.atlas.pages[place.page].texture;
+        let (pw, ph) = (page.width as f32, page.height as f32);
+        let n = ndc(size);
+        let (x0, y0) = (coverage.x0, coverage.y0);
+        let (ax, ay) = n(x0 as f32, y0 as f32);
+        let (bx, by) = n((x0 + i64::from(w)) as f32, (y0 + i64::from(h)) as f32);
+        let (u0, v0) = (place.x as f32 / pw, place.y as f32 / ph);
+        let (u1, v1) = (
+            (place.x as f32 + w as f32) / pw,
+            (place.y as f32 + h as f32) / ph,
+        );
+        let index = (self.records.masks.len() / MASK_FLOATS) as u32;
+        self.records.masks.extend([ax, ay, bx, by, u0, v0, u1, v1]);
+        self.records.masks.extend([1.0; 4]);
+        draws.push(Draw {
+            kind: Kind::Erase(page.bind.clone()),
+            scissor: whole,
+            range: index..index + 1,
+        });
+    }
+
+    /// Records the clearing of a whole scratch: a mask of no coverage.
+    fn push_erase_all(&mut self, draws: &mut Vec<Draw>, whole: PixelRect, size: (u32, u32)) {
+        let key = MaskKey::Polygon(Vec::new(), [0; 4], (1, 1));
+        let Some(place) = self.place(key, 1, 1, &[0]) else {
+            return;
+        };
+        let page = &self.atlas.pages[place.page].texture;
+        let (pw, ph) = (page.width as f32, page.height as f32);
+        let n = ndc(size);
+        let (ax, ay) = n(0.0, 0.0);
+        let (bx, by) = n(size.0 as f32, size.1 as f32);
+        let (u, v) = ((place.x as f32 + 0.5) / pw, (place.y as f32 + 0.5) / ph);
+        let index = (self.records.masks.len() / MASK_FLOATS) as u32;
+        self.records.masks.extend([ax, ay, bx, by, u, v, u, v]);
+        self.records.masks.extend([1.0; 4]);
+        draws.push(Draw {
+            kind: Kind::Erase(page.bind.clone()),
+            scissor: whole,
+            range: index..index + 1,
+        });
     }
 
     /// Records a pass that draws `items` into `view`, `width` by
@@ -2065,6 +2181,10 @@ impl GpuBackend {
                         rp.set_bind_group(0, bind, &[]);
                         (&self.pipelines.composite, &self.buffers[3])
                     }
+                    Kind::Erase(bind) => {
+                        rp.set_bind_group(0, bind, &[]);
+                        (&self.pipelines.erase, &self.buffers[2])
+                    }
                 };
                 let Some(buffer) = buffer else {
                     continue;
@@ -2172,13 +2292,21 @@ impl Pipelines {
             offset,
             shader_location: location,
         };
-        let pipeline = |label: &str,
-                        layout: &wgpu::PipelineLayout,
-                        vs: &str,
-                        fs: &str,
-                        stride: u64,
-                        step_mode: wgpu::VertexStepMode,
-                        attributes: &[wgpu::VertexAttribute]| {
+        // What multiplies the target by a mask's coverage: the target
+        // times the source's alpha, the source itself adding nothing.
+        let multiply = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::Zero,
+            dst_factor: wgpu::BlendFactor::SrcAlpha,
+            operation: wgpu::BlendOperation::Add,
+        };
+        let pipeline_blended = |label: &str,
+                                layout: &wgpu::PipelineLayout,
+                                vs: &str,
+                                fs: &str,
+                                stride: u64,
+                                step_mode: wgpu::VertexStepMode,
+                                attributes: &[wgpu::VertexAttribute],
+                                blend: wgpu::BlendState| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(layout),
@@ -2201,13 +2329,31 @@ impl Pipelines {
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: wgpu::TextureFormat::Rgba8Unorm,
-                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        blend: Some(blend),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                 }),
                 multiview_mask: None,
                 cache: None,
             })
+        };
+        let pipeline = |label: &str,
+                        layout: &wgpu::PipelineLayout,
+                        vs: &str,
+                        fs: &str,
+                        stride: u64,
+                        step_mode: wgpu::VertexStepMode,
+                        attributes: &[wgpu::VertexAttribute]| {
+            pipeline_blended(
+                label,
+                layout,
+                vs,
+                fs,
+                stride,
+                step_mode,
+                attributes,
+                wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+            )
         };
         let rect = pipeline(
             "rect",
@@ -2242,6 +2388,19 @@ impl Pipelines {
             MASK_FLOATS as u64 * 4,
             wgpu::VertexStepMode::Instance,
             &[float4(0, 0), float4(1, 16), float4(2, 32)],
+        );
+        let erase = pipeline_blended(
+            "erase",
+            &textured,
+            "mask_vs",
+            "mask_fs",
+            MASK_FLOATS as u64 * 4,
+            wgpu::VertexStepMode::Instance,
+            &[float4(0, 0), float4(1, 16), float4(2, 32)],
+            wgpu::BlendState {
+                color: multiply,
+                alpha: multiply,
+            },
         );
         let composite = pipeline(
             "composite",
@@ -2278,6 +2437,7 @@ impl Pipelines {
             quad,
             mask,
             composite,
+            erase,
             sampled,
             nearest: sampler(wgpu::FilterMode::Nearest),
             linear: sampler(wgpu::FilterMode::Linear),
@@ -2531,6 +2691,7 @@ mod tests {
             opacity,
             key: GroupKey::Document(key),
             layer,
+            mask: None,
         }
     }
 
@@ -2870,6 +3031,47 @@ mod tests {
             ],
         };
         equivalent("text, quads and polygons", &[list], 240, 160);
+    }
+
+    #[test]
+    fn masked_groups_match() {
+        // Gap batch E, D51: rounded clips drawn through, scaled and
+        // rotated, the GPU's coverage the software's.
+        let masked = |outer: Matrix, x: f32| {
+            vec![
+                DisplayItem::PushGroup {
+                    matrix: outer,
+                    opacity: 1.0,
+                    key: GroupKey::Document(1),
+                    layer: None,
+                    mask: None,
+                },
+                DisplayItem::PushGroup {
+                    matrix: Matrix::IDENTITY,
+                    opacity: 1.0,
+                    key: GroupKey::Document(2),
+                    layer: None,
+                    mask: Some(Box::new(RoundedRect {
+                        rect: paint::Rect {
+                            x,
+                            y: 10.0,
+                            w: 50.0,
+                            h: 40.0,
+                        },
+                        radii: [(12.0, 8.0), (4.0, 4.0), (20.0, 20.0), (0.0, 0.0)],
+                    })),
+                },
+                rect(x - 5.0, 5.0, 60.0, 50.0, Rgba8::rgb(30, 120, 200)),
+                text("clip", x, 30.0, 14.0, Rgba8::rgb(0, 0, 0)),
+                DisplayItem::PopGroup,
+                DisplayItem::PopGroup,
+            ]
+        };
+        let mut items = vec![rect(0.0, 0.0, 240.0, 120.0, Rgba8::rgb(255, 255, 255))];
+        items.extend(masked(Matrix::IDENTITY, 10.0));
+        items.extend(masked(Matrix::scale(1.5, 1.5, 1.0), 60.0));
+        items.extend(masked(Matrix::rotate_z(12.0), 160.0));
+        equivalent("masked groups", &[DisplayList { items }], 240, 120);
     }
 
     #[test]

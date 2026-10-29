@@ -7615,7 +7615,7 @@ impl Engine {
                         matrices.pop();
                     }
                 }
-                Step::PushClip { node, rect } => {
+                Step::PushClip { node, rect, .. } => {
                     let mut clip = map(&matrix, rect);
                     if let Some((_, outer)) = clips.last() {
                         let left = clip[0].max(outer[0]);
@@ -7788,7 +7788,7 @@ impl Engine {
                         };
                     }
                 }
-                Step::PushClip { node, rect } => clips.push((node, rect, points.len() - 1)),
+                Step::PushClip { node, rect, .. } => clips.push((node, rect, points.len() - 1)),
                 Step::PopClip => {
                     clips.pop();
                 }

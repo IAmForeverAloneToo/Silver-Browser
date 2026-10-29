@@ -65,6 +65,10 @@ pub enum GroupKey {
     Document(u32),
     /// The bitmap of this `canvas` element (M30.3), alone.
     Canvas(NodeId),
+    /// What this element's rounded corners clip (gap batch E, D51): its
+    /// content, its image or a background layer, by its number among
+    /// the element's.
+    Rounded(NodeId, u8),
 }
 
 /// The bit a canvas's image number has (M30.3), apart from the engine's
@@ -99,6 +103,7 @@ pub fn scaled(items: &mut Vec<DisplayItem>, scale: f32, key: GroupKey) {
             opacity: 1.0,
             key,
             layer: None,
+            mask: None,
         },
     );
     items.push(DisplayItem::PopGroup);
@@ -667,6 +672,11 @@ pub enum DisplayItem {
         /// backend may still draw a layer the other way, when its
         /// budget has no room for it.
         layer: Option<LayerReason>,
+        /// A rounded rectangle in the group's coordinates that clips it
+        /// (gap batch E, D51): the group is drawn into a scratch of its
+        /// own, cut to the rectangle, and composited through the
+        /// rounded rectangle's coverage. `None` for most groups.
+        mask: Option<Box<RoundedRect>>,
     },
     /// End the innermost [`DisplayItem::PushGroup`].
     PopGroup,
@@ -1049,6 +1059,10 @@ pub fn paint_fragments_with(
     };
     // Whether each group open is a transformed box's.
     let mut transformed: Vec<bool> = Vec::new();
+    // Whether each clip open is a rounded box's, a group besides.
+    let mut rounded_clips: Vec<bool> = Vec::new();
+    // The rounded content boxes of the boxes of replaced content met.
+    let mut rounded_content: HashMap<NodeId, RoundedRect> = HashMap::new();
     let bottom = roots.iter().map(|f| f.top() + f.h).fold(0.0, f32::max);
     let canvas_area = Rect {
         x: 0.0,
@@ -1105,7 +1119,25 @@ pub fn paint_fragments_with(
                 fragment,
                 rect,
                 cb_width,
-            } => push_box(&mut items, fragment, rect, cb_width, canvas_node, &backdrop),
+            } => {
+                // A rounded box's replaced content is cut to its content
+                // box's curve (gap batch E, D51), drawn later.
+                let replaced = fragment
+                    .children
+                    .first()
+                    .is_some_and(|c| matches!(c.kind, FragmentKind::Replaced(_)));
+                if replaced && let Some(rounded) = RoundedRect::of(&fragment.style, snapped(rect)) {
+                    let border = fragment.style.used_border_width();
+                    let padding = fragment
+                        .style
+                        .padding
+                        .each_ref()
+                        .map(|p| p.resolve(cb_width));
+                    let edges = [0, 1, 2, 3].map(|i| border[i] + padding[i]);
+                    rounded_content.insert(fragment.node, rounded.inset(edges));
+                }
+                push_box(&mut items, fragment, rect, cb_width, canvas_node, &backdrop)
+            }
             Step::Text {
                 fragment,
                 rect,
@@ -1140,12 +1172,31 @@ pub fn paint_fragments_with(
                 FragmentKind::Marker(shape) => {
                     push_marker(&mut items, *shape, rect, to_rgba8(fragment.style.color));
                 }
-                FragmentKind::Replaced(replaced) => {
-                    push_replaced(&mut items, fragment, replaced, rect, pictures);
-                }
+                FragmentKind::Replaced(replaced) => match rounded_content.get(&fragment.node) {
+                    Some(shape) => {
+                        let mut inside = Vec::new();
+                        push_replaced(&mut inside, fragment, replaced, rect, pictures);
+                        if !inside.is_empty() {
+                            push_rounded(&mut items, fragment.node, 0, *shape, inside);
+                        }
+                    }
+                    None => push_replaced(&mut items, fragment, replaced, rect, pictures),
+                },
                 _ => {}
             },
-            Step::PushClip { rect, .. } => {
+            Step::PushClip { rect, rounded, .. } => {
+                // A rounded box's clip is a group cut to its curve too
+                // (gap batch E, D51).
+                rounded_clips.push(rounded.is_some());
+                if let Some((node, shape)) = rounded {
+                    items.push(DisplayItem::PushGroup {
+                        matrix: Matrix::IDENTITY,
+                        opacity: 1.0,
+                        key: GroupKey::Rounded(node, 0),
+                        layer: None,
+                        mask: Some(Box::new(shape)),
+                    });
+                }
                 let rect = snapped(rect);
                 items.push(DisplayItem::PushClip {
                     x: rect.x,
@@ -1154,7 +1205,12 @@ pub fn paint_fragments_with(
                     h: rect.h,
                 })
             }
-            Step::PopClip => items.push(DisplayItem::PopClip),
+            Step::PopClip => {
+                items.push(DisplayItem::PopClip);
+                if rounded_clips.pop() == Some(true) {
+                    items.push(DisplayItem::PopGroup);
+                }
+            }
             Step::PushGroup {
                 fragment,
                 matrix,
@@ -1169,6 +1225,7 @@ pub fn paint_fragments_with(
                     opacity,
                     key,
                     layer,
+                    mask: None,
                 });
                 // The canvas's images (CSS Backgrounds 3 section 2.11.2):
                 // under the whole document, which they scroll with, the
@@ -1437,6 +1494,7 @@ fn push_replaced(
                             opacity: 1.0,
                             key: GroupKey::Canvas(*node),
                             layer: Some(LayerReason::Canvas),
+                            mask: None,
                         });
                     }
                     let r = snapped(rect);
@@ -1584,6 +1642,7 @@ fn push_replaced(
                 opacity: 1.0,
                 key: GroupKey::Canvas(*node),
                 layer: Some(LayerReason::Canvas),
+                mask: None,
             });
             let clipped =
                 x < rect.x || y < rect.y || x + w > rect.x + rect.w || y + h > rect.y + rect.h;
@@ -2304,7 +2363,14 @@ fn push_layers(
         return;
     };
     let layers: Vec<_> = background.layers().collect();
-    for layer in layers.iter().rev() {
+    // A rounded box's layers are cut to their clip box's curve (gap
+    // batch E, D51); the canvas's are not.
+    let rounded = placed
+        .area
+        .is_none()
+        .then(|| RoundedRect::of(&f.style, placed.border))
+        .flatten();
+    for (index, layer) in layers.iter().enumerate().rev() {
         // An image's natural size, its resolution applied, and its
         // number; an SVG image what it has of one (M32); a gradient
         // neither.
@@ -2379,7 +2445,7 @@ fn push_layers(
             positioning.h,
             tile_h,
         );
-        items.push(DisplayItem::Pattern {
+        let pattern = DisplayItem::Pattern {
             x: area.x,
             y: area.y,
             w: area.w,
@@ -2389,8 +2455,42 @@ fn push_layers(
             repeat: [repeat_x, repeat_y],
             image,
             sharp: f.style.image().image_rendering.is_sharp(),
-        });
+        };
+        match rounded {
+            Some(rounded) => {
+                let border = placed.border;
+                let shape = rounded.inset([
+                    area.y - border.y,
+                    border.x + border.w - (area.x + area.w),
+                    border.y + border.h - (area.y + area.h),
+                    area.x - border.x,
+                ]);
+                let number = u8::try_from(index + 1).unwrap_or(u8::MAX);
+                push_rounded(items, f.node, number, shape, [pattern]);
+            }
+            None => items.push(pattern),
+        }
     }
+}
+
+/// `inside` in a group cut to the rounded rectangle `shape` (gap batch
+/// E, D51), named by `node` and its `number` among the node's.
+fn push_rounded(
+    items: &mut Vec<DisplayItem>,
+    node: NodeId,
+    number: u8,
+    shape: RoundedRect,
+    inside: impl IntoIterator<Item = DisplayItem>,
+) {
+    items.push(DisplayItem::PushGroup {
+        matrix: Matrix::IDENTITY,
+        opacity: 1.0,
+        key: GroupKey::Rounded(node, number),
+        layer: None,
+        mask: Some(Box::new(shape)),
+    });
+    items.extend(inside);
+    items.push(DisplayItem::PopGroup);
 }
 
 /// A raster image's natural size: both sides, and their ratio where
@@ -4826,6 +4926,7 @@ mod fragment_tests {
                 key: GroupKey::Document(0),
                 layer: Some(LayerReason::Scrolled),
                 opacity,
+                mask: None,
             }) if *opacity == 1.0 => matrix.scale_and_translation(),
             other => panic!("the document's group follows the canvas: {other:?}"),
         };

@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+<head>
+<title>Rounded clips: an image, a box's clipped content, background images and gradients cut to their box's curves (gap batch E)</title>
+<meta name="reference-load" content="file">
+<meta name="reference-edge-tolerance" content="128">
+<meta name="reference-tolerance" content="2">
+<style>
+  body { margin: 0; background: #fff; }
+  .p { position: absolute; }
+  img.a { left: 10px; top: 10px; width: 100px; height: 100px; border-radius: 50%; image-rendering: pixelated; }
+  img.b { left: 130px; top: 10px; width: 120px; height: 80px; border-radius: 20px;
+          border: 6px solid #2f3542; padding: 4px; background: #e0d8c8; image-rendering: pixelated; }
+  .c { left: 280px; top: 10px; width: 120px; height: 90px; border-radius: 24px; overflow: hidden;
+       background: #e0d8c8; }
+  .c div { width: 200px; height: 30px; background: #c03030; margin-top: 4px; }
+  .d { left: 430px; top: 10px; width: 120px; height: 90px; border-radius: 30px / 20px;
+       background-image: linear-gradient(90deg, #3050c0, #30a050); }
+  .e { left: 580px; top: 10px; width: 120px; height: 90px; border-radius: 26px;
+       border: 10px solid rgba(0, 0, 0, 0.25); padding: 6px;
+       background: linear-gradient(#c0a030, #c03030) content-box; }
+  .f { left: 10px; top: 140px; width: 160px; height: 100px; border-radius: 40px 0;
+       overflow: hidden; border: 3px solid #2f3542; }
+  .f div { position: relative; left: -20px; top: -10px; width: 220px; height: 140px;
+           background: linear-gradient(45deg, #89b4fa 25%, #f6f2ea 25%, #f6f2ea 50%,
+           #89b4fa 50%, #89b4fa 75%, #f6f2ea 75%) 0 0 / 20px 20px; }
+</style>
+</head>
+<body>
+<img class="p a" src="images/red-blue.jpg">
+<img class="p b" src="images/quad.png">
+<div class="p c"><div></div><div></div><div></div></div>
+<div class="p d"></div>
+<div class="p e"></div>
+<div class="p f"><div></div></div>
+</body>
+</html>
