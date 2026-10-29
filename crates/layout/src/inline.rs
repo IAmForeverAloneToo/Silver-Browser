@@ -113,6 +113,7 @@ use crate::block::{
 use crate::box_tree::{BoxKind, FirstLine, LayoutBox};
 use crate::decoration::{self, Decorated, Decorating, DrawnLine};
 use crate::float::{At, FloatContext, PendingFloat};
+use crate::font;
 use crate::marker::Marker;
 use crate::pass::Pass;
 
@@ -358,7 +359,7 @@ pub(crate) fn layout_inline<'a>(
     pass: &Pass<'a>,
 ) -> InlineLayout<'a> {
     let flat = collect_inline_items(items, pass.fonts);
-    let strut = pass.fonts.metrics_for_text(" ", container.font_size_px);
+    let strut = font::line(pass.fonts, " ", container);
     // The items as on the first line, as far as it can reach; the run's
     // own when nothing in it is restyled there.
     let first_items = first_line
@@ -383,7 +384,7 @@ pub(crate) fn layout_inline<'a>(
         available_width: cb_width,
         alignment: Alignment::of(container),
         strut: match (&first, first_line) {
-            (Some(_), Some(line)) => pass.fonts.metrics_for_text(" ", line.style.font_size_px),
+            (Some(_), Some(line)) => font::line(pass.fonts, " ", &line.style),
             _ => strut,
         },
         pass,
@@ -486,10 +487,7 @@ pub(crate) fn layout_inline<'a>(
                 // not nothing.
                 if !lines.flush(true) {
                     lines.start_line();
-                    let m = join(
-                        lines.strut,
-                        pass.fonts.metrics_for_text(" ", style.font_size_px),
-                    );
+                    let m = join(lines.strut, font::line(pass.fonts, " ", style));
                     lines.last_baseline = Some(lines.y + m.ascent);
                     lines.first_baseline = lines.first_baseline.or(lines.last_baseline);
                     lines.first_line = lines.first_line.or(Some((lines.y, m.line_height())));
@@ -1508,7 +1506,7 @@ fn apply_text_transform(
 /// A space's width plus `word-spacing` (M8.4) — the gap between two
 /// words on the same line.
 pub(crate) fn space_width(style: &ComputedStyle, fonts: &FontCollection) -> f32 {
-    fonts.measure(" ", style.font_size_px) + style.word_spacing
+    font::measure(fonts, " ", style) + style.word_spacing
 }
 
 /// `word`'s width, including `letter-spacing`'s contribution (M8.4).
@@ -1521,14 +1519,15 @@ pub(crate) fn space_width(style: &ComputedStyle, fonts: &FontCollection) -> f32 
 /// consistent with what actually gets drawn, instead of drifting apart
 /// by whatever a given font's kerning happens to be).
 fn measure_word(word: &str, style: &ComputedStyle, fonts: &FontCollection) -> f32 {
+    let font = font::font_of(fonts, style);
     if style.letter_spacing == 0.0 {
-        return fonts.measure(word, style.font_size_px);
+        return fonts.measure_in(font, word, style.font_size_px);
     }
     let mut buf = [0u8; 4];
     let mut total = 0.0;
     let mut count = 0u32;
     for ch in word.chars() {
-        total += fonts.measure(ch.encode_utf8(&mut buf), style.font_size_px);
+        total += fonts.measure_in(font, ch.encode_utf8(&mut buf), style.font_size_px);
         count += 1;
     }
     total + style.letter_spacing * count as f32
@@ -1603,7 +1602,7 @@ fn flush_line<'a>(
                 // extends the existing "shared baseline sits at the
                 // tallest metrics present" rule (M7.4) to cover that,
                 // not just mixed sizes.
-                let m = fonts.metrics_for_text(word.text, word.style.font_size_px);
+                let m = font::line(fonts, word.text, word.style);
                 max_ascent = max_ascent.max(m.ascent);
                 max_descent = max_descent.max(m.descent);
                 max_below = max_below.max(m.descent + m.line_gap);
@@ -1853,7 +1852,7 @@ fn close_inline<'a>(
     let (b, own) = (inline.b, inline.style);
     let edges = Edges::of(own, cb_width);
     let margin = |side: usize| own.margin[side].resolve(cb_width, 0.0);
-    let m = fonts.metrics_for_text(" ", own.font_size_px);
+    let m = font::content(fonts, " ", own);
     let left = if inline.starts {
         inline.x + margin(LEFT)
     } else {
@@ -2123,9 +2122,10 @@ fn emit_letter_spaced(
 ) {
     let mut buf = [0u8; 4];
     let last = word.text.chars().count().saturating_sub(1);
+    let font = font::font_of(fonts, word.style);
     for (i, ch) in word.text.chars().enumerate() {
         let ch_str = ch.encode_utf8(&mut buf);
-        let w = fonts.measure(ch_str, word.style.font_size_px);
+        let w = fonts.measure_in(font, ch_str, word.style.font_size_px);
         let one = LineWord {
             text: ch_str,
             width: w,

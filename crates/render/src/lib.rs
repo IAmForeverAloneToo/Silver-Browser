@@ -29,7 +29,7 @@ use paint::rounded::RoundedRect;
 use paint::{DisplayItem, DisplayList, GroupKey, ImageRef, LayerReason, Rgba8, TILE_HEIGHT};
 use style::transform::Matrix;
 use text::{
-    Curve, FontCollection, FontError, GlyphMask, MAX_MASK_PIXELS, Script, ShapedGlyph,
+    Curve, FaceId, Font, FontCollection, FontError, GlyphMask, MAX_MASK_PIXELS, ShapedGlyph,
     glyph_outline, rasterize_glyph,
 };
 
@@ -1327,41 +1327,58 @@ pub(crate) fn pattern_fills(
 /// is the same coverage in both.
 pub struct GlyphCache {
     fonts: FontCollection,
-    /// Glyph mask cache, keyed by (script, glyph id, font size bits).
-    ///
-    /// `Script` is part of the key, not just an input to computing it
-    /// (M8.1): a `glyph_id` is only meaningful relative to the specific
-    /// font that produced it, and two unrelated fonts routinely reuse
-    /// the same small integer id for unrelated glyphs. Since
-    /// `FontCollection::font_for` deterministically picks one font per
-    /// script for this backend's whole lifetime, `Script` is a safe,
-    /// stable stand-in for "which font" — cheaper than carrying a
-    /// font-instance identity around, at the cost of (harmless)
-    /// duplicate cache entries when two scripts happen to resolve to
-    /// the same font (e.g. Hiragana and Katakana, see
-    /// `fallback_families_for`).
-    masks: HashMap<(Script, u16, u32), GlyphMask>,
-    /// The masks of glyphs scaled unevenly (M19), by script, glyph id,
-    /// font size bits and the two scales' bits: their outlines filled
-    /// through the scale, which a mask at another size cannot stand in
-    /// for. Counted and emptied with `masks`.
-    outlined: HashMap<(Script, u16, u32, u32, u32), GlyphMask>,
+    /// Glyph mask cache, keyed by how the glyph is drawn, its id and
+    /// the font size's bits. The face is part of the key (M8.1, D53): a
+    /// `glyph_id` is only meaningful relative to the face that produced
+    /// it, and two unrelated faces routinely reuse the same small
+    /// integer id for unrelated glyphs.
+    masks: HashMap<(Drawn, u16, u32), GlyphMask>,
+    /// The masks of glyphs scaled unevenly (M19), by how they are drawn,
+    /// glyph id, font size bits and the two scales' bits: their outlines
+    /// filled through the scale, which a mask at another size cannot
+    /// stand in for. Counted and emptied with `masks`.
+    outlined: HashMap<(Drawn, u16, u32, u32, u32), GlyphMask>,
     /// Coverage bytes held in `masks` and `outlined`, against
     /// [`MASK_CACHE_BUDGET`].
     cached_bytes: usize,
-    /// Shaped runs by font size (bits) and text (M9.5): a scroll draws
+    /// Shaped runs by font and size (bits) and text (M9.5): a scroll draws
     /// the same runs frame after frame, and shaping them anew was most
     /// of a frame — the text stack of today parses the face on every
     /// call (decision D7). Bounded by [`SHAPE_CACHE_GLYPHS`]; emptied
     /// with the mask cache.
-    shaped: HashMap<u32, HashMap<String, Run>>,
+    shaped: HashMap<(Drawn, u32), HashMap<String, Run>>,
     /// Glyphs held in `shaped`, against [`SHAPE_CACHE_GLYPHS`].
     cached_glyphs: usize,
 }
 
+/// How a glyph is drawn (D53): its face, and the bold and slant made
+/// up for the font asked for, the skew's bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct Drawn {
+    pub(crate) face: FaceId,
+    bold: bool,
+    skew: u32,
+}
+
+impl Drawn {
+    /// A glyph of `face` in `font`.
+    fn of(font: Font, face: FaceId) -> Self {
+        Drawn {
+            face,
+            bold: font.bold,
+            skew: font.skew.to_bits(),
+        }
+    }
+
+    /// What is made up: the bold, and the skew.
+    fn synthesis(self) -> (bool, f32) {
+        (self.bold, f32::from_bits(self.skew))
+    }
+}
+
 /// A shaped run, and how far its ink reaches.
 struct Run {
-    glyphs: Vec<(Script, ShapedGlyph)>,
+    glyphs: Vec<(Drawn, ShapedGlyph)>,
     /// The ink's extent from the run's origin, from its glyphs' masks:
     /// `None` until a raster asks, then `Some(None)` for a run that
     /// inks nothing.
@@ -1409,16 +1426,27 @@ impl GlyphCache {
         self.shaped.values().map(HashMap::len).sum()
     }
 
-    /// The shaped glyphs of `text` at `size`, from the run cache or
-    /// shaped now and kept.
-    fn shaped(&mut self, text: &str, size: f32) -> Vec<(Script, ShapedGlyph)> {
-        let key = size.to_bits();
+    /// The font of the display list's font properties `props` (D53),
+    /// as layout measured it.
+    pub(crate) fn font(&self, props: Option<&style::computed::FontProps>) -> Font {
+        paint::font_of_props(&self.fonts, props)
+    }
+
+    /// The shaped glyphs of `text` in `font` at `size`, from the run
+    /// cache or shaped now and kept.
+    fn shaped(&mut self, font: Font, text: &str, size: f32) -> Vec<(Drawn, ShapedGlyph)> {
+        let key = (Drawn::of(font, font.face), size.to_bits());
         if let Some(run) = self.shaped.get(&key).and_then(|runs| runs.get(text)) {
             return run.glyphs.clone();
         }
-        // Itemized + per-script fallback-dispatched (M8.1), not always
-        // the one primary font — see `FontCollection::shape`'s doc.
-        let glyphs = self.fonts.shape(text, size);
+        // Itemized + per-script fallback-dispatched (M8.1), in the
+        // face the font chose (D53); see `FontCollection::shape_in`.
+        let glyphs: Vec<(Drawn, ShapedGlyph)> = self
+            .fonts
+            .shape_in(font, text, size)
+            .into_iter()
+            .map(|(face, g)| (Drawn::of(font, face), g))
+            .collect();
         if self.cached_glyphs + glyphs.len() > SHAPE_CACHE_GLYPHS {
             self.shaped.clear();
             self.cached_glyphs = 0;
@@ -1434,12 +1462,12 @@ impl GlyphCache {
         glyphs
     }
 
-    /// How far the ink of `text` at `size` reaches from its origin:
-    /// the union of its glyphs' masks where
+    /// How far the ink of `text` in `font` at `size` reaches from its
+    /// origin: the union of its glyphs' masks where
     /// [`SoftwareBackend::draw_text`] puts them, before the origin's
     /// rounding.
-    fn ink(&mut self, text: &str, size: f32) -> Option<Ink> {
-        let key = size.to_bits();
+    fn ink(&mut self, font: Font, text: &str, size: f32) -> Option<Ink> {
+        let key = (Drawn::of(font, font.face), size.to_bits());
         if let Some(ink) = self
             .shaped
             .get(&key)
@@ -1449,8 +1477,8 @@ impl GlyphCache {
             return ink;
         }
         let mut ink: Option<Ink> = None;
-        for (script, g) in self.shaped(text, size) {
-            let mask = self.mask_for(script, g.glyph_id, size);
+        for (drawn, g) in self.shaped(font, text, size) {
+            let mask = self.mask_for(drawn, g.glyph_id, size);
             if mask.width == 0 || mask.height == 0 {
                 continue;
             }
@@ -1482,10 +1510,16 @@ impl GlyphCache {
         ink
     }
 
-    fn mask_for(&mut self, script: Script, glyph_id: u16, size: f32) -> &GlyphMask {
-        let key = (script, glyph_id, size.to_bits());
+    pub(crate) fn mask_for(&mut self, drawn: Drawn, glyph_id: u16, size: f32) -> &GlyphMask {
+        let key = (drawn, glyph_id, size.to_bits());
         if !self.masks.contains_key(&key) {
-            let mask = rasterize_glyph(self.fonts.font_for(script).glyph_font(), glyph_id, size);
+            let face = self.fonts.face(drawn.face);
+            // A made-up bold or slant is the outline's, filled (D53).
+            let mask = match drawn.synthesis() {
+                (false, 0.0) => rasterize_glyph(face.glyph_font(), glyph_id, size),
+                synthesis => outline_mask(face.glyph_font(), glyph_id, size, (1.0, 1.0), synthesis),
+            };
+            drop(face);
             let bytes = mask.coverage.len();
             if self.cached_bytes + bytes > MASK_CACHE_BUDGET {
                 self.clear();
@@ -1499,17 +1533,24 @@ impl GlyphCache {
     /// The mask of a glyph scaled by `(sx, sy)`, two different scales
     /// (M19): its outline at `size` filled through the scale, from the
     /// pen at a whole pixel, as [`outline_mask`] makes it.
-    fn scaled_mask(
+    pub(crate) fn scaled_mask(
         &mut self,
-        script: Script,
+        drawn: Drawn,
         glyph_id: u16,
         size: f32,
         (sx, sy): (f32, f32),
     ) -> &GlyphMask {
-        let key = (script, glyph_id, size.to_bits(), sx.to_bits(), sy.to_bits());
+        let key = (drawn, glyph_id, size.to_bits(), sx.to_bits(), sy.to_bits());
         if !self.outlined.contains_key(&key) {
-            let font = self.fonts.font_for(script).glyph_font();
-            let mask = outline_mask(font, glyph_id, size, (sx, sy));
+            let face = self.fonts.face(drawn.face);
+            let mask = outline_mask(
+                face.glyph_font(),
+                glyph_id,
+                size,
+                (sx, sy),
+                drawn.synthesis(),
+            );
+            drop(face);
             let bytes = mask.coverage.len();
             if self.cached_bytes + bytes > MASK_CACHE_BUDGET {
                 self.clear();
@@ -1557,8 +1598,8 @@ impl SoftwareBackend {
         self.text.runs_len()
     }
 
-    /// Draws `text` with its baseline's left end at `origin`, in the
-    /// raster's coordinates, its glyphs scaled by `scale` (M19): the run
+    /// Draws `text` in `font` with its baseline's left end at `origin`,
+    /// in the raster's coordinates, its glyphs scaled by `scale` (M19): the run
     /// is shaped at `size` and its glyphs placed from the scaled
     /// origin; a glyph is rasterized at the size the scale makes when
     /// the scale is the same both ways, which is as sharp as text of
@@ -1568,7 +1609,7 @@ impl SoftwareBackend {
     fn draw_text(
         &mut self,
         pixmap: &mut tiny_skia::Pixmap,
-        text: &str,
+        (text, font): (&str, Font),
         origin: (f32, f32),
         size: f32,
         color: &Rgba8,
@@ -1577,13 +1618,13 @@ impl SoftwareBackend {
     ) {
         let (x, y) = origin;
         let (sx, sy) = scale;
-        let glyphs = self.text.shaped(text, size);
-        for (script, g) in glyphs {
+        let glyphs = self.text.shaped(font, text, size);
+        for (drawn, g) in glyphs {
             let (gx, gy) = (x + g.x * sx, y + g.y * sy);
             let mask = if sx == sy {
-                self.text.mask_for(script, g.glyph_id, size * sx)
+                self.text.mask_for(drawn, g.glyph_id, size * sx)
             } else {
-                self.text.scaled_mask(script, g.glyph_id, size, scale)
+                self.text.scaled_mask(drawn, g.glyph_id, size, scale)
             };
             let base_x = gx + mask.left as f32;
             let base_y = gy + mask.top as f32;
@@ -2815,11 +2856,21 @@ impl SoftwareBackend {
                 y,
                 size,
                 color,
+                font,
             } => {
                 if clip.is_empty() {
                     return;
                 }
-                self.draw_text(pixmap, text, point((*x, *y)), *size, color, clip, (sx, sy));
+                let font = self.text.font(font.as_deref());
+                self.draw_text(
+                    pixmap,
+                    (text, font),
+                    point((*x, *y)),
+                    *size,
+                    color,
+                    clip,
+                    (sx, sy),
+                );
             }
             // No anti-aliasing for a quad: quads that share an
             // edge must tile it without a seam (a border's bands in
@@ -3092,12 +3143,14 @@ fn extent(text: &mut GlyphCache, item: &DisplayItem, state: &State) -> Option<Cl
             x,
             y,
             size,
+            font,
             ..
         } => {
             if !x.is_finite() || !y.is_finite() {
                 return (!clip.is_empty()).then_some(clip);
             }
-            let ink = text.ink(run, *size)?;
+            let font = text.font(font.as_deref());
+            let ink = text.ink(font, run, *size)?;
             let reach = Clip {
                 x0: x + ink.left,
                 y0: y + ink.top,
@@ -3328,19 +3381,47 @@ fn damaged(
     rects
 }
 
+/// How much wider a made-up bold's stroke is than nothing, at a font
+/// size of `size`: the reference browser's (Skia's fake bold), a 24th of
+/// the size up to 9 pixels, a 32nd from 36, and between them in step.
+fn fake_bold(size: f32) -> f32 {
+    let (small, large) = (9.0, 36.0);
+    let ratio = if size <= small {
+        1.0 / 24.0
+    } else if size >= large {
+        1.0 / 32.0
+    } else {
+        let t = (size - small) / (large - small);
+        1.0 / 24.0 + (1.0 / 32.0 - 1.0 / 24.0) * t
+    };
+    size * ratio
+}
+
 /// The mask of the glyph `glyph_id` of `font` at `size`, its outline
 /// filled through the scale `(sx, sy)` with the pen at a whole pixel
 /// (M19): coverage from tiny-skia's anti-aliased fill of the outline's
-/// contours, placed like a mask [`rasterize_glyph`] makes. Empty for a
+/// contours, placed like a mask [`rasterize_glyph`] makes. With the
+/// made-up `(bold, skew)` of a font whose face lacks them (D53): the
+/// outline slanted by the skew, x moved right by that much of its height
+/// above the baseline, and emboldened as the reference browser does,
+/// stroked as well as filled by [`fake_bold`] of the size. Empty for a
 /// glyph without an outline, or one larger than [`MAX_MASK_PIXELS`].
 fn outline_mask(
     font: &ab_glyph::FontArc,
     glyph_id: u16,
     size: f32,
     (sx, sy): (f32, f32),
+    (bold, skew): (bool, f32),
 ) -> GlyphMask {
     let Some(curves) = glyph_outline(font, glyph_id, size) else {
         return GlyphMask::empty();
+    };
+    // Outline y grows downward, the baseline at zero.
+    let map = |(x, y): (f32, f32)| ((x - skew * y) * sx, y * sy);
+    let stroke = if bold {
+        fake_bold(size) * (sx + sy) / 2.0
+    } else {
+        0.0
     };
     let mut pb = tiny_skia::PathBuilder::new();
     let mut at: Option<(f32, f32)> = None;
@@ -3354,13 +3435,21 @@ fn outline_mask(
             if at.is_some() {
                 pb.close();
             }
-            pb.move_to(start.0 * sx, start.1 * sy);
+            let (x, y) = map(start);
+            pb.move_to(x, y);
         }
         match curve {
-            Curve::Line(_, b) => pb.line_to(b.0 * sx, b.1 * sy),
-            Curve::Quad(_, b, c) => pb.quad_to(b.0 * sx, b.1 * sy, c.0 * sx, c.1 * sy),
+            Curve::Line(_, b) => {
+                let (bx, by) = map(b);
+                pb.line_to(bx, by)
+            }
+            Curve::Quad(_, b, c) => {
+                let ((bx, by), (cx, cy)) = (map(b), map(c));
+                pb.quad_to(bx, by, cx, cy)
+            }
             Curve::Cubic(_, b, c, d) => {
-                pb.cubic_to(b.0 * sx, b.1 * sy, c.0 * sx, c.1 * sy, d.0 * sx, d.1 * sy)
+                let ((bx, by), (cx, cy), (dx, dy)) = (map(b), map(c), map(d));
+                pb.cubic_to(bx, by, cx, cy, dx, dy)
             }
         }
         at = Some(end);
@@ -3372,8 +3461,15 @@ fn outline_mask(
         return GlyphMask::empty();
     };
     let bounds = path.bounds();
-    let (left, top) = (bounds.left().floor() as f64, bounds.top().floor() as f64);
-    let (right, bottom) = (bounds.right().ceil() as f64, bounds.bottom().ceil() as f64);
+    let reach = stroke / 2.0;
+    let (left, top) = (
+        (bounds.left() - reach).floor() as f64,
+        (bounds.top() - reach).floor() as f64,
+    );
+    let (right, bottom) = (
+        (bounds.right() + reach).ceil() as f64,
+        (bounds.bottom() + reach).ceil() as f64,
+    );
     let (width, height) = ((right - left).max(0.0), (bottom - top).max(0.0));
     if !(left.is_finite() && top.is_finite() && width >= 1.0 && height >= 1.0)
         || width * height > MAX_MASK_PIXELS as f64
@@ -3390,13 +3486,15 @@ fn outline_mask(
     let mut paint = tiny_skia::Paint::default();
     paint.set_color(tiny_skia::Color::WHITE);
     paint.anti_alias = true;
-    pixmap.fill_path(
-        &path,
-        &paint,
-        tiny_skia::FillRule::Winding,
-        tiny_skia::Transform::from_translate(-(left as f32), -(top as f32)),
-        None,
-    );
+    let to_mask = tiny_skia::Transform::from_translate(-(left as f32), -(top as f32));
+    pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, to_mask, None);
+    if stroke > 0.0 {
+        let pen = tiny_skia::Stroke {
+            width: stroke,
+            ..tiny_skia::Stroke::default()
+        };
+        pixmap.stroke_path(&path, &paint, &pen, to_mask, None);
+    }
     GlyphMask {
         width,
         height,
@@ -5237,6 +5335,7 @@ mod tests {
             y: 12.0,
             size: 16.0,
             color: Rgba8::rgb(0, 0, 0),
+            font: None,
         };
         let unclipped = backend
             .rasterize(
@@ -5294,6 +5393,7 @@ mod tests {
             y: 10.0,
             size,
             color: Rgba8::rgb(0, 0, 0),
+            font: None,
         };
         let list = DisplayList {
             items: vec![
@@ -5891,6 +5991,7 @@ mod tests {
                 y: rng.coord(4.0, h + 8.0),
                 size: [8.0, 12.5, 16.0, 23.0][rng.below(4)],
                 color: rng.color(),
+                font: None,
             },
             5 => {
                 let (dx, dy) = (rng.coord(1.0, 20.0), rng.coord(1.0, 12.0));
@@ -6371,6 +6472,68 @@ mod tests {
     }
 
     #[test]
+    fn a_made_up_bold_is_wider_and_a_made_up_slant_leans_right() {
+        use ab_glyph::Font as _;
+        let mut backend = test_backend();
+        let id = backend.text.fonts.primary().glyph_font().glyph_id('l').0;
+        let mut mask = |font: Font| {
+            backend
+                .text
+                .mask_for(Drawn::of(font, FaceId(0)), id, 32.0)
+                .clone()
+        };
+        let plain = mask(Font::default());
+        let bold = mask(Font {
+            bold: true,
+            ..Font::default()
+        });
+        let ink = |m: &GlyphMask| m.coverage.iter().map(|c| u32::from(*c)).sum::<u32>();
+        assert!(bold.width > plain.width, "{} {}", bold.width, plain.width);
+        assert!(ink(&bold) > ink(&plain) * 11 / 10);
+        let slanted = mask(Font {
+            skew: text::SYNTHETIC_SKEW,
+            ..Font::default()
+        });
+        // The bar of an l: its top row's ink right of its bottom row's.
+        let middle = |m: &GlyphMask, row: u32| {
+            let cells = &m.coverage[(row * m.width) as usize..((row + 1) * m.width) as usize];
+            let (sum, weight) = cells.iter().enumerate().fold((0.0, 0.0), |(s, w), (x, c)| {
+                (s + x as f32 * f32::from(*c), w + f32::from(*c))
+            });
+            sum / weight
+        };
+        let (top, bottom) = (middle(&slanted, 1), middle(&slanted, slanted.height - 2));
+        assert!(top > bottom + 3.0, "{top} {bottom}");
+        assert!((middle(&plain, 1) - middle(&plain, plain.height - 2)).abs() < 1.0);
+        assert!(fake_bold(32.0) < 32.0 / 24.0 && fake_bold(32.0) > 32.0 / 32.0);
+        assert_eq!((fake_bold(6.0), fake_bold(64.0)), (6.0 / 24.0, 2.0));
+    }
+
+    #[test]
+    fn a_text_item_is_drawn_in_the_font_its_properties_choose() {
+        // D53: the bold asked for, the test font having none, made up.
+        let mut backend = test_backend();
+        let item = |font: Option<Arc<style::computed::FontProps>>| DisplayList {
+            items: vec![DisplayItem::Text {
+                text: "lll".into(),
+                x: 2.0,
+                y: 30.0,
+                size: 32.0,
+                color: Rgba8::rgb(0, 0, 0),
+                font,
+            }],
+        };
+        let ink = |buf: &[u8]| buf.chunks(4).map(|p| u32::from(p[3])).sum::<u32>();
+        let plain = ink(backend.rasterize(&item(None), 64, 40));
+        let props = style::computed::FontProps {
+            weight: 700,
+            ..Default::default()
+        };
+        let bold = ink(backend.rasterize(&item(Some(Arc::new(props))), 64, 40));
+        assert!(bold > plain * 11 / 10, "{bold} {plain}");
+    }
+
+    #[test]
     fn mask_cache_does_not_collide_across_scripts() {
         // M8.1: a `glyph_id` is only meaningful relative to the font
         // that produced it, so the *same* (glyph_id, size) from two
@@ -6379,8 +6542,9 @@ mod tests {
         // cache entry. The glyph id itself doesn't need to be real;
         // this is about the cache key, not what gets rasterized.
         let mut backend = test_backend();
-        backend.text.mask_for(Script::Latin, 1, 16.0);
-        backend.text.mask_for(Script::Han, 1, 16.0);
+        let drawn = |face| Drawn::of(Font::default(), FaceId(face));
+        backend.text.mask_for(drawn(0), 1, 16.0);
+        backend.text.mask_for(drawn(1), 1, 16.0);
         assert_eq!(
             backend.text.masks.len(),
             2,
@@ -6416,6 +6580,7 @@ mod tests {
             y: 10.0,
             size,
             color: Rgba8::rgb(0, 0, 0),
+            font: None,
         };
         // Each 2000px `M` is a mask of over a megabyte; sixty of them
         // pass the budget, and the cache starts again rather than grow.
@@ -6560,6 +6725,7 @@ mod tests {
                     y: 26.0,
                     size: 14.0,
                     color: black,
+                    font: None,
                 },
                 DisplayItem::PopGroup,
             ],
@@ -6667,6 +6833,7 @@ mod tests {
                             y: rng.coord(10.0, 400.0).round(),
                             size: [12.0, 16.0][rng.below(2)],
                             color: rng.color(),
+                            font: None,
                         },
                         1 => DisplayItem::Border {
                             x: rng.coord(0.0, 90.0).round(),
@@ -6715,6 +6882,7 @@ mod tests {
                     y: 60.0,
                     size: 12.0,
                     color: Rgba8::rgb(30, 30, 30),
+                    font: None,
                 });
                 for (n, piece) in pieces.iter().enumerate() {
                     items.push(DisplayItem::PushGroup {
@@ -6903,6 +7071,7 @@ mod tests {
             y,
             size,
             color: Rgba8::rgb(0, 0, 0),
+            font: None,
         };
         let scaled = list(vec![
             group(Matrix::scale(2.0, 2.0, 1.0), 1.0),
@@ -7131,6 +7300,7 @@ mod tests {
                     y: 30.0,
                     size: 12.0,
                     color: Rgba8::rgb(0, 0, 0),
+                    font: None,
                 },
                 DisplayItem::PopGroup,
             ],
@@ -7258,6 +7428,7 @@ mod tests {
                     y,
                     size: 10.0,
                     color: Rgba8::rgb(0, 0, 0),
+                    font: None,
                 },
                 DisplayItem::PopGroup,
             ]

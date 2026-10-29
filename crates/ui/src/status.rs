@@ -82,6 +82,7 @@ impl StatusBubble {
                     y: (h + metrics.ascent - metrics.descent) / 2.0,
                     size: FONT_SIZE,
                     color: TEXT,
+                    font: None,
                 },
             ],
         };

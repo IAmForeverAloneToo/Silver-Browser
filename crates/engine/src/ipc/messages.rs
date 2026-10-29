@@ -95,7 +95,13 @@ wire_enum! {
         /// The files of the fonts the browser found (M35.6,
         /// `text::FontFiles`), which the renderer reads rather than
         /// scanning the system's: sent after the hello, before any view.
-        25 => Fonts { primary: (String, u32), fallbacks: Vec<(u8, (String, u32))> },
+        /// With the system's faces (D53), each its file, face index,
+        /// weight, style and stretch, and families.
+        25 => Fonts {
+            primary: (String, u32),
+            fallbacks: Vec<(u8, (String, u32))>,
+            faces: Vec<(String, u32, (u16, u8, u8), Vec<String>)>,
+        },
         /// The view, the DevTools panel's (M36), hears `message` from the
         /// browser.
         26 => DevTools { view: u32, message: String },

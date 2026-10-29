@@ -46,6 +46,7 @@ use style::computed::{
 };
 use style::transform::Matrix;
 
+pub use layout::font::font_of_props;
 pub use order::{Rect, Step, padding_box, paint_order, paint_order_in};
 use rounded::RoundedRect;
 
@@ -286,6 +287,7 @@ fn push_controls(
         y: c.time.1,
         size: 12.0,
         color: ink,
+        font: None,
     });
     let t = c.timeline;
     if t.w > 0.0 {
@@ -585,6 +587,10 @@ pub enum DisplayItem {
         size: f32,
         /// Text color.
         color: Rgba8,
+        /// The font properties past the size, the family among them,
+        /// which choose the face drawn (D53); the initial ones when
+        /// none.
+        font: Option<Arc<style::computed::FontProps>>,
     },
     /// Fill a convex quadrilateral, without anti-aliasing, so that
     /// quads sharing an edge tile it exactly: the bands of a border
@@ -846,6 +852,7 @@ pub fn paint_document(root: &Node, viewport_w: f32, viewport_h: f32) -> DisplayL
             y: baseline,
             size,
             color,
+            font: None,
         });
         baseline += size * 1.6;
     }
@@ -902,6 +909,7 @@ pub fn paint_styled_document(
             y: TOP_INSET,
             size: 16.0,
             color: Rgba8::rgb(0xa6, 0xad, 0xc8),
+            font: None,
         });
     }
 
@@ -951,6 +959,7 @@ fn paint_children(
                     y: *cursor_y,
                     size: style.font_size_px,
                     color: to_rgba8(style.color),
+                    font: style.font.clone(),
                 });
                 *cursor_y += style.font_size_px * 1.6; // matches paint_document's line spacing
             }
@@ -1182,6 +1191,7 @@ pub fn paint_fragments_with(
                             y: baseline,
                             size: fragment.style.font_size_px,
                             color: to_rgba8(fragment.style.color),
+                            font: fragment.style.font.clone(),
                         });
                     }
                     if let Some(decorated) = decorated {
@@ -5099,6 +5109,7 @@ mod fragment_tests {
                 y,
                 size,
                 color,
+                font: _,
             } => {
                 assert_eq!(text, "hi");
                 // The baseline is the font's own ascent at this size

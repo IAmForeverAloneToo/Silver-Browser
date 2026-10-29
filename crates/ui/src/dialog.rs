@@ -240,6 +240,7 @@ impl DialogSheet {
                 y: baseline(PADDING + index as f32 * LINE, LINE),
                 size: FONT_SIZE,
                 color: TEXT,
+                font: None,
             });
         }
         if open.kind == DialogKind::Prompt {
@@ -288,6 +289,7 @@ impl DialogSheet {
                 y: baseline(top, FIELD_H),
                 size: FONT_SIZE,
                 color: TEXT,
+                font: None,
             });
             if selection.is_empty() {
                 items.push(DisplayItem::Rect {
@@ -331,6 +333,7 @@ impl DialogSheet {
                     y: baseline(top, BUTTON_H),
                     size: FONT_SIZE,
                     color: ink,
+                    font: None,
                 },
             ]);
         }

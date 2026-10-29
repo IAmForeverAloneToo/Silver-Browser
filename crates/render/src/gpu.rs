@@ -42,13 +42,13 @@ use std::time::{Duration, Instant};
 use images::Orientation;
 use paint::{DisplayItem, DisplayList, GroupKey, ImageRef, LayerReason, Rgba8, TILE_HEIGHT};
 use style::transform::Matrix;
-use text::{FontCollection, FontError, Script};
+use text::{Font, FontCollection, FontError};
 
 use paint::filter::{FilterOp, filter_reach};
 use paint::rounded::RoundedRect;
 
 use crate::{
-    Backend, Clip, GlyphCache, Layer, LayerInfo, Layered, Layers, MAX_FRAME_PIXELS,
+    Backend, Clip, Drawn, GlyphCache, Layer, LayerInfo, Layered, Layers, MAX_FRAME_PIXELS,
     MAX_PARTIAL_SIDE, PixelRect, Pixels, Redrawn, RenderBackend, State, Store, Tile, Turned,
     clip_polygon, contours_coverage, damaged, fits_a_frame, group_end, landing_of, mapped_mask,
     outward_clip, raster_scale, reach, reach_at, scratch_region, shadow_item_coverage, tile_rows,
@@ -423,8 +423,8 @@ struct Scratch {
 /// is cut to.
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum MaskKey {
-    Glyph(Script, u16, u32),
-    Scaled(Script, u16, u32, u32, u32),
+    Glyph(Drawn, u16, u32),
+    Scaled(Drawn, u16, u32, u32, u32),
     Polygon(Vec<(u32, u32)>, [u32; 4], (u32, u32)),
 }
 
@@ -1708,13 +1708,15 @@ impl GpuBackend {
                 y,
                 size: font_size,
                 color,
+                font,
             } => {
                 if clip.is_empty() {
                     return;
                 }
+                let font = self.text.font(font.as_deref());
                 self.record_text(
                     draws,
-                    text,
+                    (text, font),
                     point((*x, *y)),
                     *font_size,
                     color,
@@ -1892,7 +1894,7 @@ impl GpuBackend {
     fn record_text(
         &mut self,
         draws: &mut Vec<Draw>,
-        text: &str,
+        (text, font): (&str, Font),
         (x, y): (f32, f32),
         font_size: f32,
         color: &Rgba8,
@@ -1905,26 +1907,26 @@ impl GpuBackend {
             return;
         };
         let colour = premultiplied(color);
-        let glyphs = self.text.shaped(text, font_size);
-        for (script, g) in glyphs {
+        let glyphs = self.text.shaped(font, text, font_size);
+        for (drawn, g) in glyphs {
             let (gx, gy) = (x + g.x * sx, y + g.y * sy);
             let (key, mask) = if sx == sy {
                 let at = font_size * sx;
                 (
-                    MaskKey::Glyph(script, g.glyph_id, at.to_bits()),
-                    self.text.mask_for(script, g.glyph_id, at),
+                    MaskKey::Glyph(drawn, g.glyph_id, at.to_bits()),
+                    self.text.mask_for(drawn, g.glyph_id, at),
                 )
             } else {
                 (
                     MaskKey::Scaled(
-                        script,
+                        drawn,
                         g.glyph_id,
                         font_size.to_bits(),
                         sx.to_bits(),
                         sy.to_bits(),
                     ),
                     self.text
-                        .scaled_mask(script, g.glyph_id, font_size, (sx, sy)),
+                        .scaled_mask(drawn, g.glyph_id, font_size, (sx, sy)),
                 )
             };
             if mask.width == 0 || mask.height == 0 {
@@ -3002,6 +3004,7 @@ mod tests {
             y,
             size,
             color,
+            font: None,
         }
     }
 

@@ -1904,7 +1904,7 @@ pub(crate) fn layout_block_contents<'a>(
         .as_ref()
         .filter(|_| children.first_baseline.is_none())
         .map(|marker| {
-            let strut = pass.fonts.metrics_for_text(" ", b.style.font_size_px);
+            let strut = crate::font::line(pass.fonts, " ", &b.style);
             let ascent = strut.ascent.max(marker.metrics.ascent);
             let below = (strut.descent + strut.line_gap)
                 .max(marker.metrics.descent + marker.metrics.line_gap);
@@ -3122,6 +3122,52 @@ mod tests {
         assert_eq!(frags.len(), 1);
         let f = &frags[0];
         assert_eq!((f.x, f.y, f.w, f.h), (0.0, 0.0, VIEWPORT, 0.0));
+    }
+
+    #[test]
+    fn line_height_sets_the_height_of_each_line() {
+        // D53: the strut and each word with half the leading above and
+        // the rest below (CSS 2 section 10.8.1).
+        let m = test_fonts().primary().metrics(16.0);
+        let height = |css: &str| {
+            let root = Element::new("div").push(Element::new("p").text("a b"));
+            let frags = fragments_of(
+                root,
+                &format!("div {{ margin: 0; }} p {{ margin: 0; {css} }}"),
+            );
+            let text = frags
+                .iter()
+                .find(|f| matches!(f.kind, FragmentKind::Text(_)))
+                .expect("the text")
+                .clone();
+            (box_fragments(&frags)[1].h, text.y)
+        };
+        assert_eq!(height(""), (m.line_height(), m.ascent));
+        let half = ((40.0 - (m.ascent + m.descent)) / 2.0f32).floor();
+        assert_eq!(height("line-height: 40px"), (40.0, m.ascent + half));
+        assert_eq!(height("line-height: 2.5"), (40.0, m.ascent + half));
+        assert_eq!(height("font: 16px/250% serif"), (40.0, m.ascent + half));
+        // Two lines, each as tall.
+        assert_eq!(height("line-height: 40px; width: 1px").0, 80.0);
+        // The strut's line height and the text's each count: the taller
+        // makes the line.
+        let span = |outer: &str, inner: &str| {
+            let root =
+                Element::new("div").push(Element::new("p").push(Element::new("span").text("a")));
+            let css = format!(
+                "div {{ margin: 0; }} p {{ margin: 0; line-height: {outer}; }}                  span {{ line-height: {inner}; }}"
+            );
+            box_fragments(&fragments_of(root, &css))[1].h
+        };
+        assert_eq!(span("40px", "10px"), 40.0);
+        assert_eq!(span("normal", "60px"), 60.0);
+        // A number is inherited as a number: of the child's own size.
+        let root = Element::new("div").push(Element::new("p").text("a"));
+        let frags = fragments_of(
+            root,
+            "div { margin: 0; line-height: 2; } p { margin: 0; font-size: 10px; }",
+        );
+        assert_eq!(box_fragments(&frags)[1].h, 20.0);
     }
 
     #[test]

@@ -29,6 +29,7 @@ use text::{FontCollection, FontMetrics};
 
 use crate::block::{Fragment, FragmentKind};
 use crate::box_tree::{BoxKind, LayoutBox, Replaced};
+use crate::font;
 
 /// The room between an image marker and the content it marks, inside or
 /// outside (M23.3): the reference browser's 7 pixels.
@@ -68,7 +69,7 @@ impl<'a> Marker<'a> {
             unreachable!("a marker box");
         };
         let text = text_of(b);
-        let metrics = fonts.metrics_for_text(text.unwrap_or(" "), style.font_size_px);
+        let metrics = font::content(fonts, text.unwrap_or(" "), style);
         let width = match (&b.replaced, shape) {
             (Some(image), _) => image_size(image, &metrics).0 + IMAGE_GAP,
             (None, Some(_)) => Shape::of(&metrics).side,
@@ -168,7 +169,7 @@ impl<'a> Marker<'a> {
         let mut buf = [0u8; 4];
         for c in text.chars() {
             let c = c.encode_utf8(&mut buf);
-            let w = fonts.measure(c, self.style.font_size_px);
+            let w = font::measure(fonts, c, self.style);
             out.push(text_fragment(at, c, w));
             at += w + self.style.letter_spacing;
         }
@@ -187,11 +188,11 @@ fn text_of(b: &LayoutBox) -> Option<&str> {
 /// `text`'s width in `style`, `letter-spacing` after each character.
 fn measure(text: &str, style: &ComputedStyle, fonts: &FontCollection) -> f32 {
     if style.letter_spacing == 0.0 {
-        return fonts.measure(text, style.font_size_px);
+        return font::measure(fonts, text, style);
     }
     let mut buf = [0u8; 4];
     text.chars()
-        .map(|c| fonts.measure(c.encode_utf8(&mut buf), style.font_size_px) + style.letter_spacing)
+        .map(|c| font::measure(fonts, c.encode_utf8(&mut buf), style) + style.letter_spacing)
         .sum()
 }
 
@@ -288,11 +289,9 @@ impl Place<'_> {
                 .map(|f| f.x + f.w)
                 .fold(f32::NEG_INFINITY, f32::max);
             let shape = match group[0].kind {
-                FragmentKind::Marker(_) => Some(Shape::of(
-                    &self
-                        .fonts
-                        .metrics_for_text(" ", group[0].style.font_size_px),
-                )),
+                FragmentKind::Marker(_) => {
+                    Some(Shape::of(&font::content(self.fonts, " ", &group[0].style)))
+                }
                 _ => None,
             };
             // An image's box holds the gap too, on its end side.

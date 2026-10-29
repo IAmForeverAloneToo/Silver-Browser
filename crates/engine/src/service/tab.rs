@@ -607,6 +607,14 @@ impl RemoteTab {
                     let _ = renderer.send(&ToRenderer::Fonts {
                         primary: files.primary,
                         fallbacks: files.fallbacks,
+                        faces: files
+                            .faces
+                            .into_iter()
+                            .map(|face| {
+                                let shape = (face.weight, face.style, face.stretch);
+                                (face.path, face.index, shape, face.families)
+                            })
+                            .collect(),
                     });
                 }
                 super::frames::lock(&self.registry).reach(number, renderer.sender());

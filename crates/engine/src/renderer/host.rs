@@ -234,9 +234,29 @@ impl Host {
         match message {
             ToRenderer::Shutdown {} => return Ok(false),
             ToRenderer::Hello { .. } => return Err("a second hello".into()),
-            ToRenderer::Fonts { primary, fallbacks } => {
+            ToRenderer::Fonts {
+                primary,
+                fallbacks,
+                faces,
+            } => {
                 if self.fonts.is_none() {
-                    self.font_files = Some(text::FontFiles { primary, fallbacks });
+                    self.font_files = Some(text::FontFiles {
+                        primary,
+                        fallbacks,
+                        faces: faces
+                            .into_iter()
+                            .map(|(path, index, (weight, style, stretch), families)| {
+                                text::FaceRecord {
+                                    families,
+                                    path,
+                                    index,
+                                    weight,
+                                    style,
+                                    stretch,
+                                }
+                            })
+                            .collect(),
+                    });
                 }
             }
             ToRenderer::CreateView {
@@ -759,6 +779,7 @@ mod tests {
         let sent = || ToRenderer::Fonts {
             primary: (font.to_owned(), 0),
             fallbacks: Vec::new(),
+            faces: Vec::new(),
         };
         let host = |fonts| {
             Host::new(
@@ -781,6 +802,7 @@ mod tests {
             let lost = ToRenderer::Fonts {
                 primary: ("no such font file".to_owned(), 0),
                 fallbacks: Vec::new(),
+                faces: Vec::new(),
             };
             gone.handle(lost).expect("taken");
             assert_eq!(gone.fonts().expect("scanned").files(), system.files());

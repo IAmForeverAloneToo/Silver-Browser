@@ -30,6 +30,7 @@ mod composite;
 pub mod decoration;
 mod flex;
 mod float;
+pub mod font;
 mod grid;
 pub mod inline;
 mod intrinsic;

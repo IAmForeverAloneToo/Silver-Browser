@@ -117,6 +117,7 @@ impl PromptBar {
                 y: baseline(0.0, h),
                 size: FONT_SIZE,
                 color: TEXT,
+                font: None,
             },
         ];
         let top = (h - BUTTON_H) / 2.0;
@@ -145,6 +146,7 @@ impl PromptBar {
                     y: baseline(top, BUTTON_H),
                     size: FONT_SIZE,
                     color: TEXT,
+                    font: None,
                 },
             ]);
         }

@@ -659,6 +659,7 @@ impl Toolbar {
                 y: baseline,
                 size: FONT_SIZE,
                 color: self.colors.text,
+                font: None,
             });
         }
         if self.focused && selection.is_empty() {

@@ -294,6 +294,7 @@ fn a_renderer_draws_with_the_font_files_the_browser_sent() {
     let files = text::FontFiles {
         primary: (file.to_owned(), 0),
         fallbacks: Vec::new(),
+        faces: Vec::new(),
     };
     let read = text::FontCollection::from_files(&files).expect("read");
     let frame = |launcher: ThreadLauncher| {

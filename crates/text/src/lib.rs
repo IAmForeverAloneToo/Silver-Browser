@@ -22,6 +22,9 @@
 #![forbid(unsafe_code)]
 
 pub mod edit;
+mod faces;
+
+pub use faces::{FaceId, FaceRecord, Font, FontRequest, MAX_CHOICES, SYNTHETIC_SKEW, Slant};
 
 use std::collections::HashMap;
 use std::fmt;
@@ -852,6 +855,9 @@ impl Fallback {
 pub struct FontCollection {
     primary: FontStore,
     fallbacks: HashMap<Script, Arc<Fallback>>,
+    /// The faces chosen by the font properties (D53), the fallbacks
+    /// among them, shared by the collection's clones.
+    faces: Arc<faces::Faces>,
     /// The widths [`FontCollection::measure`] has given, shared by the
     /// collection's clones, in [`MEASURE_SHARDS`] parts by text, each
     /// behind its own lock.
@@ -883,6 +889,8 @@ pub struct FontFiles {
     /// Each fallback's script, by its place among the scripts with
     /// fallbacks, and its file and face index.
     pub fallbacks: Vec<(u8, (String, u32))>,
+    /// The system's faces, which a font's properties choose among (D53).
+    pub faces: Vec<FaceRecord>,
 }
 
 /// The file and face index of the face `id` of `db`, when it is in one.
@@ -894,29 +902,17 @@ fn file_of(db: &fontdb::Database, id: fontdb::ID) -> Option<(std::path::PathBuf,
     }
 }
 
-/// The fallbacks of `files`, each script's, those of one face shared.
+/// The fallbacks of `files`, each script's, handed out as faces of
+/// `faces`, those of one face shared.
 fn fallbacks_of(
+    faces: &faces::Faces,
     files: impl Iterator<Item = (Script, std::path::PathBuf, u32)>,
 ) -> HashMap<Script, Arc<Fallback>> {
-    let mut fallbacks: HashMap<Script, Arc<Fallback>> = HashMap::new();
-    let mut found: Vec<Arc<Fallback>> = Vec::new();
+    let mut fallbacks = HashMap::new();
     for (script, path, index) in files {
-        let fallback = match found
-            .iter()
-            .find(|known| known.path == path && known.index == index)
-        {
-            Some(known) => known.clone(),
-            None => {
-                let new = Arc::new(Fallback {
-                    path,
-                    index,
-                    font: std::sync::OnceLock::new(),
-                });
-                found.push(new.clone());
-                new
-            }
-        };
-        fallbacks.insert(script, fallback);
+        if let Some(fallback) = faces.loaded(faces.handed_out(path, index)) {
+            fallbacks.insert(script, fallback);
+        }
     }
     fallbacks
 }
@@ -938,6 +934,11 @@ fn no_measures() -> Arc<[Mutex<Measures>]> {
         .collect()
 }
 
+/// A width's key beside its text: the face and the font size.
+fn measure_key(face: FaceId, size: u32) -> u64 {
+    u64::from(face.0) << 32 | u64::from(size)
+}
+
 /// The shard `text` at `size` is kept in: an FNV-1a hash of both.
 fn shard_of(size: u32, text: &str) -> usize {
     let mut hash: u32 = 0x811c_9dc5;
@@ -952,18 +953,19 @@ fn shard_of(size: u32, text: &str) -> usize {
 /// asks for every word it lays out, the same words at every pass).
 #[derive(Default)]
 struct Measures {
-    by_size: HashMap<u32, HashMap<Box<str>, f32>>,
+    by_size: HashMap<u64, HashMap<Box<str>, f32>>,
     count: usize,
 }
 
 impl Measures {
-    fn get(&self, size: u32, text: &str) -> Option<f32> {
+    /// The width of `text` by `size`, a [`measure_key`].
+    fn get(&self, size: u64, text: &str) -> Option<f32> {
         self.by_size.get(&size)?.get(text).copied()
     }
 
     /// Keeps `width`, all of the shard's dropped first when it has as
     /// many as a shard keeps.
-    fn keep(&mut self, size: u32, text: &str, width: f32) {
+    fn keep(&mut self, size: u64, text: &str, width: f32) {
         if self.count >= MAX_MEASURES / MEASURE_SHARDS {
             *self = Measures::default();
         }
@@ -994,9 +996,11 @@ impl FontCollection {
     /// same font on every machine rather than whichever system font
     /// [`FontCollection::new`] finds there.
     pub fn from_bytes(data: Vec<u8>, index: u32) -> Result<Self, FontError> {
+        let style = faces::style_of(&data, index);
         Ok(FontCollection {
             primary: FontStore::from_bytes(data, index)?,
             fallbacks: HashMap::new(),
+            faces: Arc::new(faces::Faces::new(None, None, style)),
             measures: no_measures(),
             primary_file: None,
         })
@@ -1017,6 +1021,7 @@ impl FontCollection {
         Some(FontFiles {
             primary: named(path, *index)?,
             fallbacks,
+            faces: self.faces.records(),
         })
     }
 
@@ -1026,17 +1031,24 @@ impl FontCollection {
     pub fn from_files(files: &FontFiles) -> Result<Self, FontError> {
         let (path, index) = &files.primary;
         let data = std::fs::read(path).map_err(|_| FontError::NoFontFound)?;
+        let style = faces::style_of(&data, *index);
         let primary = FontStore::from_bytes(data, *index)?;
-        let fallbacks =
-            fallbacks_of(files.fallbacks.iter().filter_map(|(place, (path, index))| {
+        let primary_file = (std::path::PathBuf::from(path), *index);
+        let db = (!files.faces.is_empty()).then(|| faces::Faces::database_of(&files.faces));
+        let faces = faces::Faces::new(db, Some(primary_file.clone()), style);
+        let fallbacks = fallbacks_of(
+            &faces,
+            files.fallbacks.iter().filter_map(|(place, (path, index))| {
                 let script = *FALLBACK_SCRIPTS.get(usize::from(*place))?;
                 Some((script, std::path::PathBuf::from(path), *index))
-            }));
+            }),
+        );
         Ok(FontCollection {
             primary,
             fallbacks,
+            faces: Arc::new(faces),
             measures: no_measures(),
-            primary_file: Some((std::path::PathBuf::from(path), *index)),
+            primary_file: Some(primary_file),
         })
     }
 
@@ -1064,15 +1076,27 @@ impl FontCollection {
         let mut db = fontdb::Database::new();
         db.load_system_fonts();
         let primary = FontStore::query(&db, PRIMARY_FAMILIES)?;
-        let primary_file = face_of(&db, PRIMARY_FAMILIES).and_then(|id| file_of(&db, id));
-        let fallbacks = fallbacks_of(FALLBACK_SCRIPTS.into_iter().filter_map(|script| {
-            let families = fallback_families_for(script)?;
-            let (path, index) = file_of(&db, face_of(&db, families)?)?;
-            Some((script, path, index))
-        }));
+        let primary_id = face_of(&db, PRIMARY_FAMILIES);
+        let primary_file = primary_id.and_then(|id| file_of(&db, id));
+        let style = primary_id
+            .and_then(|id| db.face(id))
+            .map_or((400, false), |face| {
+                (face.weight.0, face.style != fontdb::Style::Normal)
+            });
+        let files: Vec<_> = FALLBACK_SCRIPTS
+            .into_iter()
+            .filter_map(|script| {
+                let families = fallback_families_for(script)?;
+                let (path, index) = file_of(&db, face_of(&db, families)?)?;
+                Some((script, path, index))
+            })
+            .collect();
+        let faces = faces::Faces::new(Some(db), primary_file.clone(), style);
+        let fallbacks = fallbacks_of(&faces, files.into_iter());
         Ok(FontCollection {
             primary,
             fallbacks,
+            faces: Arc::new(faces),
             measures: no_measures(),
             primary_file,
         })
@@ -1093,6 +1117,38 @@ impl FontCollection {
             .unwrap_or(&self.primary)
     }
 
+    /// The font CSS's matching chooses for `request` (D53).
+    pub fn font(&self, request: &FontRequest<'_>) -> Font {
+        self.faces.choose(request)
+    }
+
+    /// The face handed out as `id`: the primary font for 0, for one
+    /// whose file is gone, and for a number never handed out.
+    pub fn face(&self, id: FaceId) -> FaceRef<'_> {
+        FaceRef {
+            primary: &self.primary,
+            loaded: self.faces.loaded(id),
+        }
+    }
+
+    /// The face `font`'s text of `script` is in, and its number: the
+    /// script's fallback where it has one, else the font's face.
+    pub fn face_for(&self, font: Font, script: Script) -> (FaceId, FaceRef<'_>) {
+        if let Some(fallback) = self.fallbacks.get(&script)
+            && fallback.font().is_some()
+        {
+            let id = self.faces.id_of(fallback);
+            return (
+                id,
+                FaceRef {
+                    primary: &self.primary,
+                    loaded: Some(fallback.clone()),
+                },
+            );
+        }
+        (font.face, self.face(font.face))
+    }
+
     /// `text`'s total advance width at `font_size_px`, itemizing it
     /// into per-script runs (M8.1) and measuring each with
     /// [`FontCollection::font_for`]'s pick rather than always the
@@ -1103,21 +1159,31 @@ impl FontCollection {
     /// Each width is kept, up to [`MAX_MEASURES`] of them, and given again
     /// without shaping when the same text is asked for at the same size.
     pub fn measure(&self, text: &str, font_size_px: f32) -> f32 {
+        self.measure_in(Font::default(), text, font_size_px)
+    }
+
+    /// [`FontCollection::measure`] in `font` (D53). A made-up bold or
+    /// slant leaves the advances as they are.
+    pub fn measure_in(&self, font: Font, text: &str, font_size_px: f32) -> f32 {
         let size = font_size_px.to_bits();
+        let key = measure_key(font.face, size);
         let shard = &self.measures[shard_of(size, text)];
         let kept = shard
             .lock()
             .ok()
-            .and_then(|measures| measures.get(size, text));
+            .and_then(|measures| measures.get(key, text));
         if let Some(width) = kept {
             return width;
         }
         let mut width = 0.0;
         for_each_run(text, |range, script| {
-            width += self.font_for(script).measure(&text[range], font_size_px);
+            width += self
+                .face_for(font, script)
+                .1
+                .measure(&text[range], font_size_px);
         });
         if let Ok(mut measures) = shard.lock() {
-            measures.keep(size, text, width);
+            measures.keep(key, text, width);
         }
         width
     }
@@ -1157,13 +1223,18 @@ impl FontCollection {
     /// zero-initialized fold starting point, so composing this via
     /// `.max()` across words never needs a special empty case.
     pub fn metrics_for_text(&self, text: &str, font_size_px: f32) -> FontMetrics {
+        self.metrics_in(Font::default(), text, font_size_px)
+    }
+
+    /// [`FontCollection::metrics_for_text`] in `font` (D53).
+    pub fn metrics_in(&self, font: Font, text: &str, font_size_px: f32) -> FontMetrics {
         let mut metrics = FontMetrics {
             ascent: 0.0,
             descent: 0.0,
             line_gap: 0.0,
         };
         for_each_run(text, |_, script| {
-            let m = self.font_for(script).metrics(font_size_px);
+            let m = self.face_for(font, script).1.metrics(font_size_px);
             metrics = FontMetrics {
                 ascent: metrics.ascent.max(m.ascent),
                 descent: metrics.descent.max(m.descent),
@@ -1189,9 +1260,9 @@ impl FontCollection {
         let mut out = Vec::new();
         let mut pen_x = 0.0f32;
         for (range, script) in itemize(text) {
-            let font = self.font_for(script);
+            let face = self.face_for(Font::default(), script).1;
             let run_text = &text[range];
-            for g in font.shape(run_text, font_size_px) {
+            for g in face.shape(run_text, font_size_px) {
                 out.push((
                     script,
                     ShapedGlyph {
@@ -1201,7 +1272,35 @@ impl FontCollection {
                     },
                 ));
             }
-            pen_x += font.measure(run_text, font_size_px);
+            pen_x += face.measure(run_text, font_size_px);
+        }
+        out
+    }
+
+    /// [`FontCollection::shape`] in `font` (D53), each glyph with the
+    /// face it is of, which drawing reads its outline from.
+    pub fn shape_in(
+        &self,
+        font: Font,
+        text: &str,
+        font_size_px: f32,
+    ) -> Vec<(FaceId, ShapedGlyph)> {
+        let mut out = Vec::new();
+        let mut pen_x = 0.0f32;
+        for (range, script) in itemize(text) {
+            let (id, face) = self.face_for(font, script);
+            let run_text = &text[range];
+            for g in face.shape(run_text, font_size_px) {
+                out.push((
+                    id,
+                    ShapedGlyph {
+                        glyph_id: g.glyph_id,
+                        x: g.x + pen_x,
+                        y: g.y,
+                    },
+                ));
+            }
+            pen_x += face.measure(run_text, font_size_px);
         }
         out
     }
@@ -1212,16 +1311,39 @@ impl FontCollection {
     /// [`FontCollection::shape`] places them: one stop per character
     /// boundary, the last at the whole text's advance.
     pub fn caret_stops(&self, text: &str, font_size_px: f32) -> Vec<f32> {
+        self.caret_stops_in(Font::default(), text, font_size_px)
+    }
+
+    /// [`FontCollection::caret_stops`] in `font` (D53).
+    pub fn caret_stops_in(&self, font: Font, text: &str, font_size_px: f32) -> Vec<f32> {
         let mut stops = vec![0.0];
         let mut pen_x = 0.0f32;
         for (range, script) in itemize(text) {
-            let font = self.font_for(script);
+            let face = self.face_for(font, script).1;
             let run_text = &text[range];
-            let run = font.caret_stops(run_text, font_size_px);
+            let run = face.caret_stops(run_text, font_size_px);
             stops.extend(run.iter().skip(1).map(|x| x + pen_x));
-            pen_x += font.measure(run_text, font_size_px);
+            pen_x += face.measure(run_text, font_size_px);
         }
         stops
+    }
+}
+
+/// A face of a collection's ([`FontCollection::face`]): one handed out,
+/// read when first needed, or the primary font.
+pub struct FaceRef<'a> {
+    primary: &'a FontStore,
+    loaded: Option<Arc<Fallback>>,
+}
+
+impl std::ops::Deref for FaceRef<'_> {
+    type Target = FontStore;
+
+    fn deref(&self) -> &FontStore {
+        self.loaded
+            .as_ref()
+            .and_then(|face| face.font())
+            .unwrap_or(self.primary)
     }
 }
 
@@ -1457,8 +1579,13 @@ mod tests {
         let shard = fonts.measures[shard_of(size, "cell")]
             .lock()
             .expect("not poisoned");
-        assert_eq!(shard.get(size, "cell"), Some(store.measure("cell", 16.0)));
-        assert_eq!(shard.get(15.0f32.to_bits(), "cell"), None);
+        let key = measure_key(FaceId(0), size);
+        assert_eq!(shard.get(key, "cell"), Some(store.measure("cell", 16.0)));
+        assert_eq!(
+            shard.get(measure_key(FaceId(0), 15.0f32.to_bits()), "cell"),
+            None
+        );
+        assert_eq!(shard.get(measure_key(FaceId(1), size), "cell"), None);
     }
 
     /// The widths are spread over the shards, so that threads measuring
@@ -2102,6 +2229,7 @@ mod tests {
         let gone = FontFiles {
             primary: ("no such font file".to_owned(), 0),
             fallbacks: Vec::new(),
+            faces: Vec::new(),
         };
         assert_eq!(
             FontCollection::from_files(&gone).err(),

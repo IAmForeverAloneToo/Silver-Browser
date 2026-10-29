@@ -158,12 +158,22 @@ pub(super) fn parse_font_feature_settings(
                 Some("on") => 1,
                 Some("off") => 0,
                 Some(_) => return None,
+                // An integer as written, or calculated and rounded.
                 None => {
-                    let n = number(v, bases)?;
-                    if n < 0.0 || n.fract() != 0.0 {
+                    let n = match math(v, Want::Number, bases, None) {
+                        Some(Computed::Value(n)) => n.round(),
+                        _ => match single_token(v)? {
+                            Token::Number {
+                                value,
+                                is_integer: true,
+                            } => *value,
+                            _ => return None,
+                        },
+                    };
+                    if n.is_nan() || n < 0.0 || !n.is_finite() {
                         return None;
                     }
-                    n.min(u32::MAX as f32) as u32
+                    n.min(f64::from(u32::MAX)) as u32
                 }
             },
             _ => return None,
@@ -464,6 +474,11 @@ mod tests {
         assert_eq!(features("liga"), None);
         assert_eq!(features("\"liga\" -1"), None);
         assert_eq!(features("\"liga\" 1.5"), None);
+        // An integer, not a number with an exponent; a calculation is
+        // rounded.
+        assert_eq!(features("\"liga\" 1e1"), None);
+        assert_eq!(features("\"liga\" calc(10.1)"), Some(vec![(*b"liga", 10)]));
+        assert_eq!(features("\"liga\" calc(-1)"), None);
         assert_eq!(features("\"liga\" 1 2"), None);
         assert_eq!(features("\"liga\","), None);
         let many = vec!["\"liga\""; MAX_FONT_FEATURES + 1].join(",");

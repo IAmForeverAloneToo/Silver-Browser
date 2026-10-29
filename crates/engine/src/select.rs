@@ -488,6 +488,7 @@ impl Engine {
                 y: baseline,
                 size: popup.size,
                 color,
+                font: None,
             });
         }
         items.push(DisplayItem::PopClip);

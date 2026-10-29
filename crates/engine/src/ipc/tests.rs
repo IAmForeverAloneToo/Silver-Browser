@@ -134,6 +134,12 @@ fn messages_go_there_and_back() {
         ToRenderer::Fonts {
             primary: ("C:\\Windows\\Fonts\\segoeui.ttf".to_owned(), 0),
             fallbacks: vec![(0, ("msyh.ttc".to_owned(), 1))],
+            faces: vec![(
+                "segoeuib.ttf".to_owned(),
+                0,
+                (700, 0, 5),
+                vec!["Segoe UI".to_owned()],
+            )],
         },
     ];
     for message in to_renderer {
