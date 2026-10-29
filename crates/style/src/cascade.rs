@@ -2819,23 +2819,26 @@ fn compute_style(
     // `color` next (gap batch E): `currentcolor` in every other
     // property is the element's computed `color`, its own `currentcolor`
     // the parent's.
+    // Each declaration's colour is kept, by its place, for the pass
+    // below, which does not substitute and parse it again.
     let mut current = style.color;
+    let mut declared: Vec<(usize, Color)> = Vec::new();
     let dark = style.dark;
-    for a in &sorted {
+    for (n, a) in sorted.iter().enumerate() {
         if a.decl.name != "color" || !target.applies("color") {
             continue;
         }
-        match specified(a, style.custom.as_ref(), resolution) {
-            Specified::Written(value) => {
-                if let Some(c) = color_of_color(value, parent, dark) {
-                    current = c;
-                }
-            }
+        let color = match specified(a, style.custom.as_ref(), resolution) {
+            Specified::Written(value) => color_of_color(value, parent, dark),
             Specified::Substituted(value) => {
-                current = color_of_color(&value, parent, dark).unwrap_or(parent.color);
+                Some(color_of_color(&value, parent, dark).unwrap_or(parent.color))
             }
-            Specified::Invalid => current = parent.color,
-            Specified::Ignored => {}
+            Specified::Invalid => Some(parent.color),
+            Specified::Ignored => None,
+        };
+        if let Some(c) = color {
+            current = c;
+            declared.push((n, c));
         }
     }
     // Kept only where an animation or a transition may move `color`.
@@ -2863,6 +2866,12 @@ fn compute_style(
             }
             let name = canonical_name(&a.decl.name);
             if custom::is_custom_property_name(name) || !target.applies(name) {
+                continue;
+            }
+            if name == "color" {
+                if let Some(&(_, c)) = declared.iter().find(|(at, _)| *at == n) {
+                    style.color = c;
+                }
                 continue;
             }
             match specified(a, style.custom.as_ref(), resolution) {
