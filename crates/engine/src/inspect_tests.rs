@@ -599,7 +599,10 @@ fn the_tree_is_given_as_deep_as_it_is_open() {
     let (mut tab, _server) = inspected(INSPECTED);
     let tree = ask(&mut tab, "dom.tree", Json::object([])).expect("a tree");
     assert_eq!(name(&tree), "#document");
-    let html = &children(&tree)[0];
+    // The doctype first, as the reference browser shows it.
+    let doctype = &children(&tree)[0];
+    assert_eq!(doctype.get("type").and_then(Json::as_u64), Some(10));
+    let html = &children(&tree)[1];
     assert_eq!(name(html), "html");
     let names: Vec<&str> = children(html).iter().map(name).collect();
     assert_eq!(names, ["head", "body"]);

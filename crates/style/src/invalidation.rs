@@ -883,11 +883,11 @@ mod tests {
         });
         assert!(!restyle.full);
         assert_eq!(styles.get(span).unwrap().display, Display::Block);
-        // And put back, the span is an element like any other again.
+        // The DOM takes no second element back (D58).
         change(&mut document, &sheets, &mut styles, |d| {
-            d.insert_before(root, div, Some(span)).unwrap();
+            assert!(d.insert_before(root, div, Some(span)).is_err());
         });
-        assert_eq!(styles.get(span).unwrap().display, Display::Inline);
+        assert_eq!(styles.get(span).unwrap().display, Display::Block);
     }
 
     #[test]

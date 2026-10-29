@@ -1015,7 +1015,7 @@ impl<'a> Styled<'a> {
             // A node none of whose pseudo-elements is styled, as most
             // are not, generates none.
             Item::Node(node) if self.styles.pseudo_styles(node).is_none() => {
-                self.document.children(node).map(Item::Node).collect()
+                self.boxed_children(node).map(Item::Node).collect()
             }
             Item::Node(node) => {
                 let generated = |side| {
@@ -1025,13 +1025,21 @@ impl<'a> Styled<'a> {
                 generated(Side::Marker)
                     .into_iter()
                     .chain(generated(Side::Before))
-                    .chain(self.document.children(node).map(Item::Node))
+                    .chain(self.boxed_children(node).map(Item::Node))
                     .chain(generated(Side::After))
                     .collect()
             }
             Item::Generated(element, side) => vec![Item::GeneratedText(element, side)],
             Item::GeneratedText(..) | Item::ControlText(_) | Item::ControlArrow(_) => Vec::new(),
         }
+    }
+
+    /// The children of `node` that may make boxes: its elements and
+    /// text, not its comments or processing instructions (D58).
+    fn boxed_children(&self, node: NodeId) -> impl Iterator<Item = NodeId> + '_ {
+        self.document
+            .children(node)
+            .filter(|&child| self.document.is_element(child) || self.document.is_text(child))
     }
 
     /// What a control has inside its box in place of its children (M26.7,

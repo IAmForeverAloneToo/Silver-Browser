@@ -48,19 +48,53 @@ pub fn serialize_node(document: &Document, node: NodeId, scripting: bool) -> Str
             }
         }
         Some(NodeData::Text(text)) => escape(text, false, &mut out),
-        Some(NodeData::Document) | None => write_children(document, node, scripting, &mut out),
+        Some(
+            data @ (NodeData::Comment(_)
+            | NodeData::DocumentType { .. }
+            | NodeData::ProcessingInstruction { .. }),
+        ) => write_other(data, &mut out),
+        Some(NodeData::Document | NodeData::DocumentFragment) | None => {
+            write_children(document, node, scripting, &mut out)
+        }
     }
     out
 }
 
+/// A comment, doctype or processing instruction's markup.
+fn write_other(data: &NodeData, out: &mut String) {
+    match data {
+        NodeData::Comment(text) => {
+            out.push_str("<!--");
+            out.push_str(text);
+            out.push_str("-->");
+        }
+        NodeData::DocumentType { name, .. } => {
+            out.push_str("<!DOCTYPE ");
+            out.push_str(name);
+            out.push('>');
+        }
+        NodeData::ProcessingInstruction { target, data } => {
+            out.push_str("<?");
+            out.push_str(target);
+            out.push(' ');
+            out.push_str(data);
+            out.push('>');
+        }
+        _ => {}
+    }
+}
+
 /// Writes the children of `node`, and theirs, in tree order: each
-/// element's start tag on the way down, its end tag on the way up.
+/// element's start tag on the way down, its end tag on the way up; a
+/// template's contents stand for its children.
 fn write_children(document: &Document, node: NodeId, scripting: bool, out: &mut String) {
+    let node = document.template_content(node).unwrap_or(node);
     let raw = |parent: NodeId| {
         document
             .tag(parent)
             .is_some_and(|tag| RAW_TEXT.contains(&tag) || (tag == "noscript" && scripting))
     };
+    let inner = |n: NodeId| document.template_content(n).unwrap_or(n);
     let Some(mut at) = document.first_child(node) else {
         return;
     };
@@ -79,16 +113,17 @@ fn write_children(document: &Document, node: NodeId, scripting: bool, out: &mut 
                 // Only HTML's void elements have no end tag: a foreign
                 // element empty or not has one (`<rect></rect>`).
                 if !(*ns == Namespace::Html && VOID.contains(&tag.as_str())) {
-                    if document.first_child(at).is_some() {
+                    if document.first_child(inner(at)).is_some() {
                         descend = true;
                     } else {
                         end_tag(tag, out);
                     }
                 }
             }
-            _ => {}
+            Some(data) => write_other(data, out),
+            None => {}
         }
-        if descend && let Some(child) = document.first_child(at) {
+        if descend && let Some(child) = document.first_child(inner(at)) {
             at = child;
             continue;
         }
@@ -101,6 +136,8 @@ fn write_children(document: &Document, node: NodeId, scripting: bool, out: &mut 
             }
             match document.parent(at) {
                 Some(parent) if parent != node => {
+                    // A template's contents end at the template.
+                    let parent = document.template_host(parent).unwrap_or(parent);
                     if let Some((_, tag)) = document.element_name(parent) {
                         end_tag(tag, out);
                     }

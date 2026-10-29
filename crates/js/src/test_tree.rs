@@ -143,7 +143,7 @@ impl Tree {
                 } else {
                     ""
                 };
-                Answer::Strings(vec![name, String::new(), ns.to_owned()])
+                Answer::Strings(vec![name, String::new(), ns.to_owned(), n.kind.to_string()])
             }
             Call::Children(h) => {
                 let node = self.node(h)?;

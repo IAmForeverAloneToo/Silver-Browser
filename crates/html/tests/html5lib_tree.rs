@@ -3,14 +3,9 @@
 //! `tests/html5lib/tree-construction/`, each test's input parsed as a
 //! document or as a fragment for its context element, its tree dumped as
 //! html5lib writes one (`<svg linearGradient>`, `xlink href="..."`) and
-//! compared with the expected one. The DOM keeps no comment, doctype or
-//! processing instruction nodes yet (G51), so their lines are taken out
-//! of the expected tree and the text either side of one joined, as the
-//! parser joins it. Nor
-//! has it a template's contents, a fragment of their own: the parser puts
-//! them under the `template` as its children, so the expected tree's
-//! `content` line is taken out and what is under it moved up a level.
-//! What fails, by a gap of the tree builder's or of the DOM's, is named
+//! compared with the expected one: comments, doctypes and processing
+//! instructions too, and a template's contents under a `content` line
+//! (D58). What fails, by a gap of the tree builder's or of the DOM's, is named
 //! in `expectations.txt` beside the files with its reason; a test named
 //! there that passes is a failure too.
 
@@ -78,9 +73,7 @@ fn tests(text: &str) -> Vec<Test> {
     out
 }
 
-/// The expected tree's lines, without comments and doctypes, which the
-/// DOM does not keep: a text node's lines joined into one, and two text
-/// nodes a comment parted joined as the parser joins them.
+/// The expected tree's lines, a text node's lines joined into one.
 fn expected_lines(document: &str) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     for line in document.trim_end_matches('\n').split('\n') {
@@ -95,42 +88,7 @@ fn expected_lines(document: &str) -> Vec<String> {
             }
         }
     }
-    // A template's `content` line out, what is under it a level up.
-    let mut contents: Vec<usize> = Vec::new();
-    let mut flat: Vec<String> = Vec::new();
-    for line in lines {
-        let body = line.trim_start();
-        let depth = line.len() - body.len();
-        while contents.last().is_some_and(|&at| at >= depth) {
-            contents.pop();
-        }
-        if body == "content" {
-            contents.push(depth);
-            continue;
-        }
-        let depth = depth - 2 * contents.len();
-        flat.push(format!("{}{body}", " ".repeat(depth)));
-    }
-    let mut out: Vec<String> = Vec::new();
-    for line in flat {
-        let body = line.trim_start();
-        if body.starts_with("<!--") || body.starts_with("<!DOCTYPE") || body.starts_with("<?") {
-            continue;
-        }
-        let depth = line.len() - body.len();
-        if let Some(text) = body.strip_prefix('"')
-            && let Some(last) = out.last_mut()
-        {
-            let last_body = last.trim_start();
-            if last.len() - last_body.len() == depth && last_body.starts_with('"') {
-                let joined = format!("{}{}", &last[..last.len() - 1], text);
-                *last = joined;
-                continue;
-            }
-        }
-        out.push(line);
-    }
-    out
+    lines
 }
 
 /// How html5lib names an attribute of a foreign element in its
@@ -182,7 +140,28 @@ fn dump(document: &Document, parent: NodeId, depth: usize, out: &mut Vec<String>
                     .collect();
                 shown.sort();
                 out.extend(shown);
+                if let Some(content) = document.template_content(child) {
+                    out.push(format!("{indent}  content"));
+                    dump(document, content, depth + 2, out);
+                }
                 dump(document, child, depth + 1, out);
+            }
+            Some(NodeData::Comment(data)) => out.push(format!("{indent}<!-- {data} -->")),
+            Some(NodeData::ProcessingInstruction { target, data }) => {
+                out.push(format!("{indent}<?{target} {data}?>"));
+            }
+            Some(NodeData::DocumentType {
+                name,
+                public_id,
+                system_id,
+            }) => {
+                if public_id.is_empty() && system_id.is_empty() {
+                    out.push(format!("{indent}<!DOCTYPE {name}>"));
+                } else {
+                    out.push(format!(
+                        "{indent}<!DOCTYPE {name} \"{public_id}\" \"{system_id}\">"
+                    ));
+                }
             }
             _ => {}
         }

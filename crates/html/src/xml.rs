@@ -9,8 +9,9 @@
 //! scope (the `xml` prefix bound from the start); attributes keep their
 //! qualified names, normalized as section 3.3.3 says; character data and
 //! CDATA sections become text, adjacent text joined. Comments,
-//! processing instructions and the document type declaration leave no
-//! node: the DOM keeps none yet (G51). The internal subset's general
+//! processing instructions and the document type declaration are nodes
+//! (D58), but for those in the internal subset; what is in an HTML
+//! `template` goes in its contents. The internal subset's general
 //! entities are expanded where they are referenced, their markup parsed
 //! as content, with the five predefined ones and character references;
 //! an external subset or entity is never fetched, and a reference to an
@@ -321,9 +322,9 @@ impl Parser {
         loop {
             c.space();
             if c.starts_with("<!--") {
-                self.comment(c)?;
+                self.comment(c, true)?;
             } else if c.starts_with("<?") {
-                self.processing_instruction(c)?;
+                self.processing_instruction(c, true)?;
             } else if c.starts_with("<!DOCTYPE") {
                 self.doctype(c)?;
             } else {
@@ -332,16 +333,22 @@ impl Parser {
         }
     }
 
-    fn comment(&mut self, c: &mut Cursor) -> Result<(), XmlError> {
+    /// A comment, made a node when `keep`.
+    fn comment(&mut self, c: &mut Cursor, keep: bool) -> Result<(), XmlError> {
         c.skip("<!--");
         let body = c.until(self, "-->", "Comment")?;
         if body.contains("--") || body.ends_with('-') {
             return Err(c.error(self, "Double hyphen within comment".to_owned()));
         }
+        if keep {
+            let node = self.document.create_comment(body);
+            self.insert(c, node)?;
+        }
         Ok(())
     }
 
-    fn processing_instruction(&mut self, c: &mut Cursor) -> Result<(), XmlError> {
+    /// A processing instruction, made a node when `keep`.
+    fn processing_instruction(&mut self, c: &mut Cursor, keep: bool) -> Result<(), XmlError> {
         c.skip("<?");
         let target = c.name(self, "Processing instruction")?;
         if target.eq_ignore_ascii_case("xml") {
@@ -350,8 +357,34 @@ impl Parser {
                 "XML declaration allowed only at the start of the document".to_owned(),
             ));
         }
-        c.until(self, "?>", "Processing instruction")?;
+        c.space();
+        let data = c.until(self, "?>", "Processing instruction")?;
+        if keep {
+            let node = self.document.create_processing_instruction(target, data);
+            self.insert(c, node)?;
+        }
         Ok(())
+    }
+
+    /// Where the next node goes: in the open element, a template's
+    /// contents for an HTML `template`, or the document.
+    fn parent(&self) -> NodeId {
+        self.open.last().map_or(self.document.root(), |open| {
+            self.document
+                .template_content(open.node)
+                .unwrap_or(open.node)
+        })
+    }
+
+    /// Appends the node just made where the next node goes.
+    fn insert(
+        &mut self,
+        c: &Cursor,
+        node: Result<NodeId, dom::MutationError>,
+    ) -> Result<(), XmlError> {
+        let parent = self.parent();
+        node.and_then(|node| self.document.append_new(parent, node))
+            .map_err(|_| c.error(self, "the document is too large".to_owned()))
     }
 
     /// `<!DOCTYPE name [external id] [internal subset]>`: the subset's
@@ -361,12 +394,14 @@ impl Parser {
         if !c.space() {
             return Err(c.error(self, "Space required after '<!DOCTYPE'".to_owned()));
         }
-        c.name(self, "DOCTYPE")?;
+        let name = c.name(self, "DOCTYPE")?;
         c.space();
+        let (mut public_id, mut system_id) = ("", "");
         if c.starts_with("SYSTEM") || c.starts_with("PUBLIC") {
-            self.external_id(c)?;
+            (public_id, system_id) = self.external_id(c)?;
             c.space();
         }
+        let node = self.document.create_doctype(name, public_id, system_id);
         if c.skip("[") {
             self.internal_subset(c)?;
             c.space();
@@ -374,24 +409,26 @@ impl Parser {
         if !c.skip(">") {
             return Err(c.error(self, "DOCTYPE improperly terminated".to_owned()));
         }
-        Ok(())
+        self.insert(c, node)
     }
 
-    /// `SYSTEM "..."` or `PUBLIC "..." "..."`.
-    fn external_id(&mut self, c: &mut Cursor) -> Result<(), XmlError> {
+    /// `SYSTEM "..."` or `PUBLIC "..." "..."`: the public and system
+    /// identifiers.
+    fn external_id<'a>(&mut self, c: &mut Cursor<'a>) -> Result<(&'a str, &'a str), XmlError> {
         let public = c.skip("PUBLIC");
         if !public {
             c.skip("SYSTEM");
         }
         c.space();
-        self.literal(c)?;
-        if public {
-            c.space();
-            if matches!(c.peek(), Some('"' | '\'')) {
-                self.literal(c)?;
-            }
+        let first = self.literal(c)?;
+        if !public {
+            return Ok(("", first));
         }
-        Ok(())
+        c.space();
+        if matches!(c.peek(), Some('"' | '\'')) {
+            return Ok((first, self.literal(c)?));
+        }
+        Ok((first, ""))
     }
 
     /// A quoted literal's content.
@@ -413,9 +450,9 @@ impl Parser {
                 return Err(c.error(self, "internal subset not terminated".to_owned()));
             }
             if c.starts_with("<!--") {
-                self.comment(c)?;
+                self.comment(c, false)?;
             } else if c.starts_with("<?") {
-                self.processing_instruction(c)?;
+                self.processing_instruction(c, false)?;
             } else if c.skip("<!ENTITY") {
                 self.entity_declaration(c)?;
             } else if c.starts_with("<!") {
@@ -528,7 +565,7 @@ impl Parser {
             if c.starts_with("</") {
                 self.end_tag(c)?;
             } else if c.starts_with("<!--") {
-                self.comment(c)?;
+                self.comment(c, true)?;
             } else if c.starts_with("<![CDATA[") {
                 if self.open.is_empty() {
                     return Err(c.error(self, "Start tag expected, '<' not found".to_owned()));
@@ -538,7 +575,7 @@ impl Parser {
                 self.check_chars(c, text)?;
                 self.text(c, text)?;
             } else if c.starts_with("<?") {
-                self.processing_instruction(c)?;
+                self.processing_instruction(c, true)?;
             } else if c.starts_with("<!") {
                 return Err(c.error(self, "StartTag: invalid element name".to_owned()));
             } else if c.starts_with("<") {
@@ -597,10 +634,10 @@ impl Parser {
         if text.is_empty() {
             return Ok(());
         }
-        let Some(open) = self.open.last() else {
+        if self.open.is_empty() {
             return Ok(());
-        };
-        let parent = open.node;
+        }
+        let parent = self.parent();
         if let Some(last) = self.document.last_child(parent)
             && self.document.is_text(last)
         {
@@ -924,10 +961,7 @@ impl Parser {
             }
             expanded.push(key);
         }
-        let parent = self
-            .open
-            .last()
-            .map_or(self.document.root(), |open| open.node);
+        let parent = self.parent();
         let node = self
             .document
             .create_element_ns(ns, &name, attrs)
@@ -1034,6 +1068,10 @@ mod tests {
                     );
                 }
                 Some(NodeData::Text(text)) => out.push(format!("{indent}{text:?}")),
+                Some(NodeData::Comment(text)) => out.push(format!("{indent}<!--{text}-->")),
+                Some(NodeData::ProcessingInstruction { target, data }) => {
+                    out.push(format!("{indent}<?{target} {data}?>"));
+                }
                 _ => {}
             }
         }
@@ -1178,10 +1216,33 @@ mod tests {
                  </style><!-- d --><?pi x?></svg><!-- after -->\n"
             )),
             [
+                "<?xml-stylesheet href=\"a.css\"?>",
+                "<!-- c -->",
                 "svg svg xmlns=\"http://www.w3.org/2000/svg\"",
                 "  svg style",
                 "    \"a<b\"",
+                "  <!-- d -->",
+                "  <?pi x?>",
+                "<!-- after -->",
             ]
+        );
+        let document = parse_xml_text(&format!(
+            "<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \"x.dtd\" [<!-- no -->]><svg{SVG}/>"
+        ))
+        .unwrap();
+        let doctype = document.doctype().expect("a doctype");
+        assert_eq!(
+            document.data(doctype),
+            Some(&NodeData::DocumentType {
+                name: "svg".into(),
+                public_id: "-//W3C//DTD SVG 1.1//EN".into(),
+                system_id: "x.dtd".into(),
+            })
+        );
+        assert_eq!(
+            document.children(document.root()).count(),
+            2,
+            "no comment from the subset"
         );
         // White space is kept as written; line ends are line feeds;
         // attribute values are normalized, a reference's newline kept.

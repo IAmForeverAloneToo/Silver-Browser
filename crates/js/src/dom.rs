@@ -82,19 +82,18 @@ pub enum Call {
     /// The document node.
     Document,
     /// The bindings make an object for the node, which the host then
-    /// holds until it is released: the node's name, its qualified name
-    /// for an element, `#text` or `#document`; `connected` or empty; an
-    /// element's namespace's URI, or empty (M32); then the names of its
-    /// attributes that start with `on`, which may be event handlers
-    /// (M26), as strings.
+    /// holds until it is released: the node's name (its `nodeName`, an
+    /// element's qualified name); `connected` or empty; an element's
+    /// namespace's URI, or empty (M32); its `nodeType` (D58); then the
+    /// names of its attributes that start with `on`, which may be event
+    /// handlers (M26), as strings.
     Wrap(Handle),
     /// The nodes scripts hold whose place in the document changed since
     /// this was last asked, each with whether it is now in the document:
     /// the bindings hold the object of a node in the document as the
     /// document does, and let go of it when it leaves.
     TakePins,
-    /// The node's `nodeType`: 1 for an element, 3 for text, 9 for the
-    /// document.
+    /// The node's `nodeType`.
     Kind(Handle),
     /// An element's qualified name: an HTML element's lowercase.
     Tag(Handle),
@@ -118,9 +117,9 @@ pub enum Call {
         node: Handle,
         other: Handle,
     },
-    /// A text node's data.
+    /// A text, comment or processing instruction node's data.
     Data(Handle),
-    /// Sets a text node's data.
+    /// Sets a text, comment or processing instruction node's data.
     SetData(Handle, String),
     /// The text of the node's subtree in tree order, or `None` for the
     /// document (the DOM's `textContent`).
@@ -147,6 +146,22 @@ pub enum Call {
     CreateElementNs(Option<String>, String),
     /// A new text node.
     CreateText(String),
+    /// A new comment (D58).
+    CreateComment(String),
+    /// A new processing instruction: its target, which the bindings
+    /// checked, and data.
+    CreateProcessingInstruction(String, String),
+    /// A new, empty document fragment.
+    CreateFragment,
+    /// A new doctype: its name, which the bindings checked, and public
+    /// and system identifiers.
+    CreateDoctype(String, String, String),
+    /// A doctype's name, public identifier and system identifier.
+    DoctypeIds(Handle),
+    /// A template's contents, a fragment.
+    TemplateContent(Handle),
+    /// The document's doctype, or `None`.
+    Doctype,
     /// Inserts `node` under `parent` before `before`, or last: the DOM's
     /// "pre-insert", `node` taken from where it was first.
     Insert {

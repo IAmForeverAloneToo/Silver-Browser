@@ -10796,9 +10796,9 @@ mod tests {
         assert_eq!(of("th").padding, td.padding);
         assert_eq!(of("caption").text_align, TextAlign::Center);
         // An HTML cell is centred vertically: the row group says
-        // `middle`, and `tr`, `td` and `th` inherit it, a row directly in
-        // the table included (this parser inserts no `tbody`); a CSS
-        // table cell sits on the baseline.
+        // `middle`, and `tr`, `td` and `th` inherit it, the `tbody` the
+        // parser makes for a bare row included; a CSS table cell sits on
+        // the baseline.
         for selector in [
             "thead", "tbody", "tfoot", "thead tr", "th", "tbody td", "tfoot td",
         ] {
@@ -10808,8 +10808,8 @@ mod tests {
                 "{selector}"
             );
         }
-        assert_eq!(of("table > tr").vertical_align, VerticalAlign::Middle);
-        assert_eq!(of("table > tr > td").vertical_align, VerticalAlign::Middle);
+        assert_eq!(of("table + table tr").vertical_align, VerticalAlign::Middle);
+        assert_eq!(of("table + table td").vertical_align, VerticalAlign::Middle);
         assert_eq!(of(".cell").vertical_align, VerticalAlign::Baseline);
         assert_eq!(
             of(".cell").padding,

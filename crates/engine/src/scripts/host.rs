@@ -558,15 +558,27 @@ impl DocumentHost {
             Call::Wrap(node) => {
                 let id = self.node(node)?;
                 self.exposed.insert(id);
-                let (name, ns) = match self.document.data(id) {
-                    Some(NodeData::Element { tag, ns, .. }) => {
+                let data = self
+                    .document
+                    .data(id)
+                    .ok_or(MutationError::NoSuchNode)
+                    .map_err(refused)?;
+                let kind = data.node_type().to_string();
+                let (name, ns) = match data {
+                    NodeData::Element { tag, ns, .. } => {
                         (tag.clone(), ns.uri().unwrap_or_default().to_owned())
                     }
-                    Some(NodeData::Text(_)) => ("#text".to_owned(), String::new()),
-                    _ => ("#document".to_owned(), String::new()),
+                    NodeData::Text(_) => ("#text".to_owned(), String::new()),
+                    NodeData::Comment(_) => ("#comment".to_owned(), String::new()),
+                    NodeData::ProcessingInstruction { target, .. } => {
+                        (target.to_string(), String::new())
+                    }
+                    NodeData::DocumentType { name, .. } => (name.to_string(), String::new()),
+                    NodeData::DocumentFragment => ("#document-fragment".to_owned(), String::new()),
+                    NodeData::Document => ("#document".to_owned(), String::new()),
                 };
                 let connected = if self.connected(id) { "connected" } else { "" };
-                let mut answer = vec![name, connected.to_owned(), ns];
+                let mut answer = vec![name, connected.to_owned(), ns, kind];
                 // The attributes that may be event handlers (M26).
                 answer.extend(
                     self.document
@@ -587,12 +599,11 @@ impl DocumentHost {
                 ))
             }
             Call::Kind(node) => {
-                let kind = match self.document.data(self.node(node)?) {
-                    Some(NodeData::Element { .. }) => 1.0,
-                    Some(NodeData::Text(_)) => 3.0,
-                    _ => 9.0,
-                };
-                Ok(Answer::Number(kind))
+                let kind = self
+                    .document
+                    .data(self.node(node)?)
+                    .map_or(9, NodeData::node_type);
+                Ok(Answer::Number(f64::from(kind)))
             }
             Call::Tag(node) => {
                 let tag = self
@@ -652,7 +663,10 @@ impl DocumentHost {
                 ))
             }
             Call::Data(node) => {
-                let data = self.document.text(self.node(node)?).unwrap_or_default();
+                let data = self
+                    .document
+                    .character_data(self.node(node)?)
+                    .unwrap_or_default();
                 self.work += data.len() as u64 / 64;
                 Ok(Answer::String(data.to_owned()))
             }
@@ -664,8 +678,15 @@ impl DocumentHost {
             }
             Call::TextContent(node) => {
                 let node = self.node(node)?;
-                if node == self.document.root() {
+                if matches!(
+                    self.document.data(node),
+                    Some(NodeData::Document | NodeData::DocumentType { .. })
+                ) {
                     return Ok(Answer::MaybeString(None));
+                }
+                if let Some(data) = self.document.character_data(node) {
+                    self.work += data.len() as u64 / 64;
+                    return Ok(Answer::MaybeString(Some(data.to_owned())));
                 }
                 let mut text = String::new();
                 for n in self.document.subtree(node) {
@@ -753,6 +774,55 @@ impl DocumentHost {
                 let text = self.document.create_text(&data).map_err(refused)?;
                 self.detached.push(text);
                 Ok(self.give(Some(text)))
+            }
+            Call::CreateComment(data) => {
+                self.work += data.len() as u64 / 64;
+                let made = self.document.create_comment(&data).map_err(refused)?;
+                self.detached.push(made);
+                Ok(self.give(Some(made)))
+            }
+            Call::CreateProcessingInstruction(target, data) => {
+                self.work += (target.len() + data.len()) as u64 / 64;
+                let made = self
+                    .document
+                    .create_processing_instruction(&target, &data)
+                    .map_err(refused)?;
+                self.detached.push(made);
+                Ok(self.give(Some(made)))
+            }
+            Call::CreateFragment => {
+                let made = self.document.create_fragment().map_err(refused)?;
+                self.detached.push(made);
+                Ok(self.give(Some(made)))
+            }
+            Call::CreateDoctype(name, public_id, system_id) => {
+                self.work += (name.len() + public_id.len() + system_id.len()) as u64 / 64;
+                let made = self
+                    .document
+                    .create_doctype(&name, &public_id, &system_id)
+                    .map_err(refused)?;
+                self.detached.push(made);
+                Ok(self.give(Some(made)))
+            }
+            Call::DoctypeIds(node) => match self.document.data(self.node(node)?) {
+                Some(NodeData::DocumentType {
+                    name,
+                    public_id,
+                    system_id,
+                }) => Ok(Answer::Strings(vec![
+                    name.to_string(),
+                    public_id.to_string(),
+                    system_id.to_string(),
+                ])),
+                _ => Ok(Answer::Strings(vec![String::new(); 3])),
+            },
+            Call::TemplateContent(node) => {
+                let content = self.document.template_content(self.node(node)?);
+                Ok(self.give(content))
+            }
+            Call::Doctype => {
+                let doctype = self.document.doctype();
+                Ok(self.give(doctype))
             }
             Call::Insert {
                 parent,
@@ -927,6 +997,8 @@ impl DocumentHost {
                 let node = self.node(node)?;
                 let context = self.fragment_context(node);
                 let container = self.parse_fragment(&context, node, &markup)?;
+                // A template's markup is its contents'.
+                let node = self.document.template_content(node).unwrap_or(node);
                 while let Some(child) = self.document.first_child(node) {
                     self.work += 1;
                     if self.document.remove_child(node, child).is_err() {
@@ -3289,91 +3361,132 @@ impl DocumentHost {
         node: NodeId,
         before: Option<NodeId>,
     ) -> Result<(), DomError> {
+        self.check_insert(
+            parent,
+            node,
+            before,
+            None,
+            "The node before which the new node is to be inserted is not a child of this node.",
+        )?;
         let document = &self.document;
-        let hierarchy = |reason: &str| Err(DomError::new("HierarchyRequestError", reason));
-        if document.is_text(parent) {
-            return hierarchy("This node type does not support this method.");
-        }
-        if document.is_inclusive_ancestor(node, parent) {
-            return hierarchy("The new child element contains the parent.");
-        }
-        if let Some(before) = before
-            && document.parent(before) != Some(parent)
-        {
-            return Err(DomError::new(
-                "NotFoundError",
-                "The node before which the new node is to be inserted is not a child of this \
-                 node.",
-            ));
-        }
-        if node == document.root() {
-            return hierarchy(
-                "Nodes of type '#document' may not be inserted inside nodes of type '#document'.",
-            );
-        }
-        if parent == document.root() {
-            if document.is_text(node) {
-                return hierarchy(
-                    "Nodes of type '#text' may not be inserted inside nodes of type '#document'.",
-                );
-            }
-            if document.element_children(parent).next().is_some() {
-                return hierarchy("Only one element on document allowed.");
-            }
-        }
         if document.first_child(node).is_some() {
             self.work += document.subtree(node).count() as u64;
         }
+        // A fragment's children go in its place.
+        let moved: Vec<NodeId> = match document.data(node) {
+            Some(NodeData::DocumentFragment) => document.children(node).collect(),
+            _ => vec![node],
+        };
         self.document
             .insert_before(parent, node, before)
             .map_err(refused)?;
-        self.put_in(node);
+        for node in moved {
+            self.put_in(node);
+        }
         Ok(())
+    }
+
+    /// The DOM's checks of putting `node` under `parent` before `before`,
+    /// or in place of `replacing`, in its order, with the reference
+    /// browser's messages; `missing` is the one for a reference that is
+    /// not `parent`'s child.
+    fn check_insert(
+        &self,
+        parent: NodeId,
+        node: NodeId,
+        before: Option<NodeId>,
+        replacing: Option<NodeId>,
+        missing: &str,
+    ) -> Result<(), DomError> {
+        let document = &self.document;
+        let hierarchy = |reason: String| Err(DomError::new("HierarchyRequestError", reason));
+        // The `nodeName`s the reference browser's messages give.
+        let name = |n: NodeId| match document.data(n) {
+            Some(NodeData::Element { tag, ns, .. }) if *ns == Namespace::Html => {
+                tag.to_ascii_uppercase()
+            }
+            Some(NodeData::Element { tag, .. }) => tag.clone(),
+            Some(NodeData::Text(_)) => "#text".to_owned(),
+            Some(NodeData::Comment(_)) => "#comment".to_owned(),
+            Some(NodeData::ProcessingInstruction { target, .. }) => target.to_string(),
+            Some(NodeData::DocumentType { name, .. }) => name.to_string(),
+            Some(NodeData::DocumentFragment) => "#document-fragment".to_owned(),
+            Some(NodeData::Document) | None => "#document".to_owned(),
+        };
+        if !matches!(
+            document.data(parent),
+            Some(NodeData::Element { .. } | NodeData::Document | NodeData::DocumentFragment)
+        ) {
+            return hierarchy("This node type does not support this method.".to_owned());
+        }
+        let mut up = Some(parent);
+        while let Some(at) = up {
+            if at == node {
+                return hierarchy("The new child element contains the parent.".to_owned());
+            }
+            up = document.parent(at).or_else(|| document.template_host(at));
+        }
+        if let Some(reference) = before
+            && document.parent(reference) != Some(parent)
+        {
+            return Err(DomError::new("NotFoundError", missing));
+        }
+        let Err(_) = document.check_insert(parent, node, before, replacing) else {
+            return Ok(());
+        };
+        let (kind, into) = (name(node), name(parent));
+        if parent == document.root() {
+            let element = || {
+                document.is_element(node) || document.children(node).any(|n| document.is_element(n))
+            };
+            if !document.is_text(node)
+                && node != document.root()
+                && !matches!(document.data(node), Some(NodeData::DocumentType { .. }))
+                && element()
+            {
+                return hierarchy("Only one element on document allowed.".to_owned());
+            }
+            if matches!(document.data(node), Some(NodeData::DocumentType { .. })) {
+                return hierarchy("Only one doctype on document allowed.".to_owned());
+            }
+        }
+        hierarchy(format!(
+            "Nodes of type '{kind}' may not be inserted inside nodes of type '{into}'."
+        ))
     }
 
     /// The DOM's "replace a child": its checks, in its order, then `child`
     /// taken out and `node` put in its place.
     fn replace(&mut self, parent: NodeId, node: NodeId, child: NodeId) -> Result<(), DomError> {
+        self.check_insert(
+            parent,
+            node,
+            Some(child),
+            Some(child),
+            "The node to be replaced is not a child of this node.",
+        )?;
         let document = &self.document;
-        let hierarchy = |reason: &str| Err(DomError::new("HierarchyRequestError", reason));
-        if document.is_text(parent) {
-            return hierarchy("This node type does not support this method.");
-        }
-        if document.is_inclusive_ancestor(node, parent) {
-            return hierarchy("The new child element contains the parent.");
-        }
-        if document.parent(child) != Some(parent) {
-            return Err(DomError::new(
-                "NotFoundError",
-                "The node to be replaced is not a child of this node.",
-            ));
-        }
-        if parent == document.root() {
-            if document.is_text(node) {
-                return hierarchy(
-                    "Nodes of type '#text' may not be inserted inside nodes of type '#document'.",
-                );
-            }
-            if document.is_element(node)
-                && document
-                    .element_children(parent)
-                    .any(|other| other != child)
-            {
-                return hierarchy("Only one element on document allowed.");
-            }
-        }
         // `dom` takes a reference that is `node` itself for the place after
         // it, as the DOM's step does by hand.
         let before = document.next_sibling(child);
         if document.first_child(node).is_some() {
             self.work += document.subtree(node).count() as u64;
         }
+        let moved: Vec<NodeId> = match document.data(node) {
+            Some(NodeData::DocumentFragment) => document.children(node).collect(),
+            _ => vec![node],
+        };
+        if child == node {
+            return Ok(());
+        }
         self.document.remove_child(parent, child).map_err(refused)?;
         self.taken_out(child);
         self.document
             .insert_before(parent, node, before)
             .map_err(refused)?;
-        self.put_in(node);
+        for node in moved {
+            self.put_in(node);
+        }
         Ok(())
     }
 
@@ -3511,10 +3624,13 @@ impl DocumentHost {
     /// one text node holding `text`, or by none for the empty string; a
     /// text node's data set; nothing for the document.
     fn set_text_content(&mut self, node: NodeId, text: &str) -> Result<(), DomError> {
-        if self.document.is_text(node) {
+        if self.document.character_data(node).is_some() {
             return self.document.set_text(node, text).map_err(refused);
         }
-        if node == self.document.root() {
+        if matches!(
+            self.document.data(node),
+            Some(NodeData::Document | NodeData::DocumentType { .. })
+        ) {
             return Ok(());
         }
         let made = if text.is_empty() {
@@ -3569,6 +3685,24 @@ impl DocumentHost {
                     let data = data.clone();
                     document.create_text(&data)
                 }
+                Some(NodeData::Comment(data)) => {
+                    let data = data.clone();
+                    document.create_comment(&data)
+                }
+                Some(NodeData::ProcessingInstruction { target, data }) => {
+                    let (target, data) = (target.clone(), data.clone());
+                    document.create_processing_instruction(&target, &data)
+                }
+                Some(NodeData::DocumentType {
+                    name,
+                    public_id,
+                    system_id,
+                }) => {
+                    let (name, public_id, system_id) =
+                        (name.clone(), public_id.clone(), system_id.clone());
+                    document.create_doctype(&name, &public_id, &system_id)
+                }
+                Some(NodeData::DocumentFragment) => document.create_fragment(),
                 _ => Err(MutationError::WrongKind),
             }
         };
@@ -3577,9 +3711,16 @@ impl DocumentHost {
         if !deep {
             return Ok(top);
         }
-        // Each entry: a node whose children are still to copy, and its copy.
+        // Each entry: a node whose children are still to copy, and its
+        // copy; a template's contents are copied into its copy's.
         let mut pending = vec![(node, top)];
         while let Some((from, to)) = pending.pop() {
+            if let (Some(from), Some(to)) = (
+                self.document.template_content(from),
+                self.document.template_content(to),
+            ) {
+                pending.push((from, to));
+            }
             let children: Vec<NodeId> = self.document.children(from).collect();
             for child in children {
                 self.work += 1;
@@ -3661,7 +3802,8 @@ impl DocumentHost {
                 return false;
             }
             if document
-                .subtree(root)
+                .subtree_with_contents(root)
+                .into_iter()
                 .any(|node| exposed.contains(&node) || held.contains(&node))
             {
                 return true;

@@ -974,7 +974,7 @@ fn paint_children(
                 });
                 *cursor_y += style.font_size_px * 1.6; // matches paint_document's line spacing
             }
-            Some(NodeData::Document) | None => {}
+            _ => {}
         }
     }
 }

@@ -248,6 +248,26 @@ const NATIVES: &[(&str, Decode)] = &[
         ))
     }),
     ("createText", |a| Ok(Call::CreateText(a.string(0)?))),
+    ("createComment", |a| Ok(Call::CreateComment(a.string(0)?))),
+    ("createProcessingInstruction", |a| {
+        Ok(Call::CreateProcessingInstruction(
+            a.string(0)?,
+            a.string(1)?,
+        ))
+    }),
+    ("createFragment", |_| Ok(Call::CreateFragment)),
+    ("createDoctype", |a| {
+        Ok(Call::CreateDoctype(
+            a.string(0)?,
+            a.string(1)?,
+            a.string(2)?,
+        ))
+    }),
+    ("doctypeIds", |a| Ok(Call::DoctypeIds(a.handle(0)?))),
+    ("templateContent", |a| {
+        Ok(Call::TemplateContent(a.handle(0)?))
+    }),
+    ("doctype", |_| Ok(Call::Doctype)),
     ("insert", |a| {
         Ok(Call::Insert {
             parent: a.handle(0)?,

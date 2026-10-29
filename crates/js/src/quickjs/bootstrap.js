@@ -374,27 +374,35 @@
       }
     }
     const answer = native.wrap(handle);
-    const object = make(handle, answer[0], answer[2]);
+    const object = make(handle, answer[0], answer[2], +answer[3]);
     MapSet(objects, handle, {
       ref: new $WeakRef(object),
       strong: answer[1] === "" ? null : object,
     });
     Register(registry, object, handle);
-    for (let i = 3; i < answer.length; i++) {
+    for (let i = 4; i < answer.length; i++) {
       attributeHandler(object, answer[i], true);
     }
     return object;
   }
 
-  // A new object for a node, of the interface its name and namespace
-  // say. The host hears it from `wrap`, and holds the node until it is
-  // released.
-  function make(handle, name, ns) {
-    if (name === "#text") {
-      return new Text(KEY, handle, 3, name);
-    }
-    if (name === "#document") {
-      return new HTMLDocument(KEY, handle, 9, name);
+  // A new object for a node, of the interface its kind, name and
+  // namespace say. The host hears it from `wrap`, and holds the node
+  // until it is released.
+  function make(handle, name, ns, kind) {
+    switch (kind) {
+      case 3:
+        return new Text(KEY, handle, 3, name);
+      case 7:
+        return new ProcessingInstruction(KEY, handle, 7, name);
+      case 8:
+        return new Comment(KEY, handle, 8, name);
+      case 9:
+        return new HTMLDocument(KEY, handle, 9, name);
+      case 10:
+        return new DocumentType(KEY, handle, 10, name);
+      case 11:
+        return new DocumentFragment(KEY, handle, 11, name);
     }
     const object = new (elementInterface(name, ns))(KEY, handle, 1, name);
     setNsOf(object, ns === "" ? null : ns);
@@ -6810,7 +6818,7 @@
 
   class Node extends EventTarget {
     #handle;
-    // `nodeType`, and the tag (lowercase) or `#text` or `#document`,
+    // `nodeType`, and the `nodeName` (an element's tag, lowercase),
     // which never change.
     #kind;
     #name;
@@ -6939,12 +6947,12 @@
 
     get nodeValue() {
       const handle = self(this);
-      return kindOf(this) === 3 ? native.data(handle) : null;
+      return isCharacterData(this) ? native.data(handle) : null;
     }
 
     set nodeValue(value) {
       const handle = self(this);
-      if (kindOf(this) === 3) {
+      if (isCharacterData(this)) {
         native.setData(handle, strOrEmpty(value));
       }
     }
@@ -7077,6 +7085,23 @@
     defineProperty(Node.prototype, NODE_TYPES[i], { value: NODE_TYPES[i + 1], enumerable: true });
   }
 
+  // Whether `node` is a Text, ProcessingInstruction or Comment node.
+  function isCharacterData(node) {
+    const kind = kindOf(node);
+    return kind === 3 || kind === 7 || kind === 8;
+  }
+
+  // The interface a ParentNode or ChildNode member of `node` is named
+  // by in its errors.
+  function parentIface(node) {
+    const kind = kindOf(node);
+    return kind === 9 ? "Document" : kind === 11 ? "DocumentFragment" : "Element";
+  }
+  function childIface(node) {
+    const kind = kindOf(node);
+    return kind === 1 ? "Element" : kind === 10 ? "DocumentType" : "CharacterData";
+  }
+
   // `this` as a node's handle, or Illegal invocation.
   function self(node) {
     if (!isNode(node)) {
@@ -7105,22 +7130,15 @@
     return false;
   }
 
-  // The DOM's "convert nodes into a node", without a DocumentFragment:
-  // each string made a Text node, and, when there is more than one node
-  // (when the DOM makes a fragment of them), each node taken out of its
-  // parent, as appending it to the fragment would; their handles in
-  // order.
+  // The DOM's "convert nodes into a node": each string made a Text
+  // node, and more than one node put in a new DocumentFragment; the
+  // handle of the node, in an array, marked `made` for a fragment.
   function convert(nodes, method, iface) {
     const handles = [];
     for (let i = 0; i < nodes.length; i++) {
       const node = nodes[i];
       if (isNode(node)) {
-        const handle = handleOf(node);
-        const parent = native.parent(handle);
-        if (parent !== null && nodes.length > 1) {
-          native.remove(parent, handle);
-        }
-        ArrayPush(handles, handle);
+        ArrayPush(handles, handleOf(node));
       } else {
         const text = str(node);
         try {
@@ -7130,7 +7148,20 @@
         }
       }
     }
-    return handles;
+    if (handles.length <= 1) {
+      return handles;
+    }
+    try {
+      const fragment = native.createFragment();
+      for (let i = 0; i < handles.length; i++) {
+        native.insert(fragment, handles[i], null);
+      }
+      const made = [fragment];
+      made.made = true;
+      return made;
+    } catch (error) {
+      throw failed(error, method, iface);
+    }
   }
 
   // Inserts each of `handles` under `parent` before `before`, one
@@ -7142,13 +7173,22 @@
         native.insert(parent, handles[i], before);
       }
     } catch (error) {
+      // The nodes of a fragment made for them are left in no parent, as
+      // the reference browser leaves them.
+      if (handles.made) {
+        for (let child = native.firstChild(handles[0]); child !== null;
+          child = native.firstChild(handles[0])) {
+          native.remove(handles[0], child);
+        }
+      }
       throw failed(error, method, iface);
     } finally {
       native.mutationScope(false);
     }
   }
 
-  // The ParentNode mixin (DOM section 4.2.6), on Document and Element.
+  // The ParentNode mixin (DOM section 4.2.6), on Document,
+  // DocumentFragment and Element.
   const ParentNode = {
     get children() {
       self(this);
@@ -7177,7 +7217,7 @@
 
     querySelector(selectors) {
       const handle = self(this);
-      const iface = kindOf(this) === 9 ? "Document" : "Element";
+      const iface = parentIface(this);
       need(arguments.length, 1, "querySelector", iface);
       const text = str(selectors);
       let found;
@@ -7191,7 +7231,7 @@
 
     querySelectorAll(selectors) {
       const handle = self(this);
-      const iface = kindOf(this) === 9 ? "Document" : "Element";
+      const iface = parentIface(this);
       need(arguments.length, 1, "querySelectorAll", iface);
       const text = str(selectors);
       let found;
@@ -7205,21 +7245,21 @@
 
     prepend(...nodes) {
       const parent = self(this);
-      const iface = kindOf(this) === 9 ? "Document" : "Element";
+      const iface = parentIface(this);
       const handles = convert(nodes, "prepend", iface);
       insertAll(parent, handles, native.firstChild(parent), "prepend", iface);
     },
 
     append(...nodes) {
       const parent = self(this);
-      const iface = kindOf(this) === 9 ? "Document" : "Element";
+      const iface = parentIface(this);
       const handles = convert(nodes, "append", iface);
       insertAll(parent, handles, null, "append", iface);
     },
 
     replaceChildren(...nodes) {
       const parent = self(this);
-      const iface = kindOf(this) === 9 ? "Document" : "Element";
+      const iface = parentIface(this);
       const handles = convert(nodes, "replaceChildren", iface);
       // One operation for mutation observers.
       native.mutationScope(true);
@@ -7282,12 +7322,12 @@
     },
   };
 
-  // The ChildNode mixin (DOM section 4.2.8), on Element and
-  // CharacterData.
+  // The ChildNode mixin (DOM section 4.2.8), on Element, DocumentType
+  // and CharacterData.
   const ChildNode = {
     before(...nodes) {
       const handle = self(this);
-      const iface = kindOf(this) === 1 ? "Element" : "CharacterData";
+      const iface = childIface(this);
       const parent = native.parent(handle);
       if (parent === null) {
         return;
@@ -7303,7 +7343,7 @@
 
     after(...nodes) {
       const handle = self(this);
-      const iface = kindOf(this) === 1 ? "Element" : "CharacterData";
+      const iface = childIface(this);
       const parent = native.parent(handle);
       if (parent === null) {
         return;
@@ -7318,7 +7358,7 @@
 
     replaceWith(...nodes) {
       const handle = self(this);
-      const iface = kindOf(this) === 1 ? "Element" : "CharacterData";
+      const iface = childIface(this);
       const parent = native.parent(handle);
       if (parent === null) {
         return;
@@ -8309,7 +8349,616 @@
     }
   }
 
-  include(ParentNode, [Document.prototype, Element.prototype]);
+  // ---- Comments, processing instructions, doctypes and fragments ------
+  // (D58), and attributes as Attr objects over their elements'.
+
+  class Comment extends CharacterData {
+    // `new Comment(data)` is a script's to make, as the DOM lets it.
+    constructor(key, handle, kind, name) {
+      if (key !== KEY) {
+        const data = key === undefined ? "" : str(key);
+        try {
+          return wrap(native.createComment(data));
+        } catch (error) {
+          throw failed(error, "Comment", "Comment");
+        }
+      }
+      super(key, handle, kind, name);
+    }
+  }
+
+  class ProcessingInstruction extends CharacterData {
+    constructor(key, handle, kind, name) {
+      if (key !== KEY) {
+        throw illegalConstructor("ProcessingInstruction");
+      }
+      super(key, handle, kind, name);
+    }
+
+    get target() {
+      self(this);
+      return nameOf(this);
+    }
+  }
+
+  class DocumentType extends Node {
+    constructor(key, handle, kind, name) {
+      if (key !== KEY) {
+        throw illegalConstructor("DocumentType");
+      }
+      super(key, handle, kind, name);
+    }
+
+    get name() {
+      self(this);
+      return nameOf(this);
+    }
+
+    get publicId() {
+      return native.doctypeIds(self(this))[1];
+    }
+
+    get systemId() {
+      return native.doctypeIds(self(this))[2];
+    }
+  }
+
+  class DocumentFragment extends Node {
+    // `new DocumentFragment()` is a script's to make.
+    constructor(key, handle, kind, name) {
+      if (key !== KEY) {
+        try {
+          return wrap(native.createFragment());
+        } catch (error) {
+          throw failed(error, "DocumentFragment", "DocumentFragment");
+        }
+      }
+      super(key, handle, kind, name);
+    }
+
+    getElementById(elementId) {
+      const handle = self(this);
+      need(arguments.length, 1, "getElementById", "DocumentFragment");
+      return wrap(native.elementById(handle, str(elementId)));
+    }
+  }
+
+  // A processing instruction's target or a doctype's name: a name the
+  // DOM takes, or the reference browser's error.
+  function checkName(name, method, iface) {
+    const first = name.length > 0 ? CharCodeAt(name, 0) : 48;
+    if (!validAttributeName(name) || (first >= 48 && first <= 57) || first === 45 || first === 46) {
+      throw domError(
+        "InvalidCharacterError",
+        "The " + (iface === "Document" ? "target" : "qualified name") + " provided ('" + name +
+          "') is not a valid name.",
+        method,
+        iface,
+      );
+    }
+  }
+
+  include(
+    {
+      createComment(data) {
+        self(this);
+        need(arguments.length, 1, "createComment", "Document");
+        const text = str(data);
+        try {
+          return wrap(native.createComment(text));
+        } catch (error) {
+          throw failed(error, "createComment", "Document");
+        }
+      },
+
+      createDocumentFragment() {
+        self(this);
+        try {
+          return wrap(native.createFragment());
+        } catch (error) {
+          throw failed(error, "createDocumentFragment", "Document");
+        }
+      },
+
+      createProcessingInstruction(target, data) {
+        self(this);
+        need(arguments.length, 2, "createProcessingInstruction", "Document");
+        const name = str(target);
+        const text = str(data);
+        checkName(name, "createProcessingInstruction", "Document");
+        if (StringIndexOf(text, "?>") >= 0) {
+          throw domError(
+            "InvalidCharacterError",
+            "The data provided ('" + text + "') contains '?>'.",
+            "createProcessingInstruction",
+            "Document",
+          );
+        }
+        try {
+          return wrap(native.createProcessingInstruction(name, text));
+        } catch (error) {
+          throw failed(error, "createProcessingInstruction", "Document");
+        }
+      },
+
+      get doctype() {
+        self(this);
+        return wrap(native.doctype());
+      },
+
+      get implementation() {
+        self(this);
+        if (theImplementation === null) {
+          theImplementation = new DOMImplementation(KEY);
+        }
+        return theImplementation;
+      },
+    },
+    [Document.prototype],
+  );
+
+  // `document.implementation`: doctypes it makes; no other documents.
+  let theImplementation = null;
+  class DOMImplementation {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("DOMImplementation");
+      }
+    }
+
+    createDocumentType(qualifiedName, publicId, systemId) {
+      need(arguments.length, 3, "createDocumentType", "DOMImplementation");
+      const name = str(qualifiedName);
+      validateAndExtract(null, name, "createDocumentType", "DOMImplementation");
+      try {
+        return wrap(native.createDoctype(name, str(publicId), str(systemId)));
+      } catch (error) {
+        throw failed(error, "createDocumentType", "DOMImplementation");
+      }
+    }
+
+    hasFeature() {
+      return true;
+    }
+  }
+
+  // Each element's Attr objects, by qualified name, made when asked for;
+  // and each NamedNodeMap's element.
+  const attrsOf = new $WeakMap();
+  const attrMapOwners = new $WeakMap();
+  const namedMaps = new $WeakMap();
+  let attrElement;
+  let attrBind;
+
+  class Attr extends Node {
+    // The element it is an attribute of, or null; its qualified name and
+    // namespace; and its value as last seen, which it keeps once it is
+    // no attribute of the element.
+    #element;
+    #name;
+    #ns;
+    #value;
+
+    constructor(key, element, name, ns, value) {
+      if (key !== KEY) {
+        throw illegalConstructor("Attr");
+      }
+      super(KEY, -1, 2, name);
+      this.#element = element;
+      this.#name = name;
+      this.#ns = ns;
+      this.#value = value;
+    }
+
+    static {
+      // The element `attr` is still an attribute of, its value read.
+      attrElement = (attr) => {
+        const element = attr.#element;
+        if (element === null) {
+          return null;
+        }
+        const value = native.attribute(handleOf(element), attr.#name);
+        if (value === null) {
+          attr.#element = null;
+          return null;
+        }
+        attr.#value = value;
+        return element;
+      };
+      attrBind = (attr, element) => {
+        attr.#element = element;
+      };
+    }
+
+    get name() {
+      return this.#name;
+    }
+
+    get nodeName() {
+      return this.#name;
+    }
+
+    get localName() {
+      return this.#ns === null ? this.#name : localPart(this.#name);
+    }
+
+    get prefix() {
+      return this.#ns === null ? null : prefixPart(this.#name);
+    }
+
+    get namespaceURI() {
+      return this.#ns;
+    }
+
+    get ownerElement() {
+      return attrElement(this);
+    }
+
+    get specified() {
+      return true;
+    }
+
+    get value() {
+      attrElement(this);
+      return this.#value;
+    }
+
+    set value(value) {
+      const text = str(value);
+      const element = attrElement(this);
+      if (element !== null) {
+        setAttribute(handleOf(element), this.#name, text, "value");
+      }
+      this.#value = text;
+    }
+
+    get nodeValue() {
+      return this.value;
+    }
+
+    set nodeValue(value) {
+      this.value = strOrEmpty(value);
+    }
+
+    get textContent() {
+      return this.value;
+    }
+
+    set textContent(value) {
+      this.value = strOrEmpty(value);
+    }
+
+    get parentNode() {
+      return null;
+    }
+
+    get parentElement() {
+      return null;
+    }
+
+    get firstChild() {
+      return null;
+    }
+
+    get lastChild() {
+      return null;
+    }
+
+    get previousSibling() {
+      return null;
+    }
+
+    get nextSibling() {
+      return null;
+    }
+
+    get childNodes() {
+      return snapshot(NodeList, []);
+    }
+
+    get isConnected() {
+      const element = attrElement(this);
+      return element !== null && element.isConnected;
+    }
+
+    hasChildNodes() {
+      return false;
+    }
+
+    getRootNode() {
+      return this;
+    }
+
+    contains(other) {
+      return other === this;
+    }
+
+    cloneNode() {
+      return new Attr(KEY, null, this.#name, this.#ns, this.value);
+    }
+  }
+
+  // The Attr object for `element`'s attribute `name`, the same each time
+  // while it is one.
+  function attrFor(element, name) {
+    let attrs = WeakMapGet(attrsOf, element);
+    if (attrs === undefined) {
+      attrs = new $Map();
+      WeakMapSet(attrsOf, element, attrs);
+    }
+    let attr = MapGet(attrs, name);
+    if (attr === undefined || attrElement(attr) !== element) {
+      const value = native.attribute(handleOf(element), name);
+      attr = new Attr(KEY, element, name, attributeNamespace(element, name), value);
+      MapSet(attrs, name, attr);
+    }
+    return attr;
+  }
+
+  // An argument that must be an Attr.
+  function attrArgument(value, method, iface) {
+    if (!(value instanceof Attr)) {
+      throw new $TypeError(
+        prefix(method, iface) + "parameter 1 is not of type 'Attr'.",
+      );
+    }
+    return value;
+  }
+
+  // Sets `attr` on `element`: the attribute it replaces, as an Attr, or
+  // null; an InUseAttributeError if another element has it.
+  function setAttr(element, attr, method, iface) {
+    const owner = attrElement(attr);
+    if (owner !== null && owner !== element) {
+      throw domError(
+        "InUseAttributeError",
+        "The node provided is an attribute node that is already an attribute of another " +
+          "Element; attribute nodes must be explicitly cloned.",
+        method,
+        iface,
+      );
+    }
+    if (owner === element) {
+      return attr;
+    }
+    const ns = attr.namespaceURI;
+    const before = attributeNamed(element, ns, attr.localName);
+    const old = before === null ? null : attrFor(element, before);
+    if (old !== null) {
+      attrElement(old);
+      attrBind(old, null);
+      if (before !== attr.name) {
+        removeAttribute(handleOf(element), before);
+      }
+    }
+    setAttribute(handleOf(element), attr.name, attr.value, method);
+    attrBind(attr, element);
+    let attrs = WeakMapGet(attrsOf, element);
+    if (attrs === undefined) {
+      attrs = new $Map();
+      WeakMapSet(attrsOf, element, attrs);
+    }
+    MapSet(attrs, attr.name, attr);
+    return old;
+  }
+
+  // Takes `element`'s attribute `name` out, its Attr kept with its value.
+  function removeAttr(element, name) {
+    const attr = attrFor(element, name);
+    attrElement(attr);
+    attrBind(attr, null);
+    removeAttribute(handleOf(element), name);
+    return attr;
+  }
+
+  class NamedNodeMap {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("NamedNodeMap");
+      }
+    }
+
+    get length() {
+      return native.attributeNames(handleOf(mapOwner(this))).length;
+    }
+
+    item(index) {
+      const element = mapOwner(this);
+      need(arguments.length, 1, "item", "NamedNodeMap");
+      const names = native.attributeNames(handleOf(element));
+      const i = unsigned(index);
+      return i < names.length ? attrFor(element, names[i]) : null;
+    }
+
+    getNamedItem(qualifiedName) {
+      const element = mapOwner(this);
+      need(arguments.length, 1, "getNamedItem", "NamedNodeMap");
+      const name = attrKey(element, str(qualifiedName));
+      return native.attribute(handleOf(element), name) === null ? null : attrFor(element, name);
+    }
+
+    getNamedItemNS(namespace, localName) {
+      const element = mapOwner(this);
+      need(arguments.length, 2, "getNamedItemNS", "NamedNodeMap");
+      const name = attributeNamed(element, nullable(namespace), str(localName));
+      return name === null ? null : attrFor(element, name);
+    }
+
+    setNamedItem(attr) {
+      const element = mapOwner(this);
+      need(arguments.length, 1, "setNamedItem", "NamedNodeMap");
+      return setAttr(element, attrArgument(attr, "setNamedItem", "NamedNodeMap"), "setNamedItem", "NamedNodeMap");
+    }
+
+    setNamedItemNS(attr) {
+      const element = mapOwner(this);
+      need(arguments.length, 1, "setNamedItemNS", "NamedNodeMap");
+      return setAttr(element, attrArgument(attr, "setNamedItemNS", "NamedNodeMap"), "setNamedItemNS", "NamedNodeMap");
+    }
+
+    removeNamedItem(qualifiedName) {
+      const element = mapOwner(this);
+      need(arguments.length, 1, "removeNamedItem", "NamedNodeMap");
+      const given = str(qualifiedName);
+      const name = attrKey(element, given);
+      if (native.attribute(handleOf(element), name) === null) {
+        throw domError(
+          "NotFoundError",
+          "No item with name '" + given + "' was found.",
+          "removeNamedItem",
+          "NamedNodeMap",
+        );
+      }
+      return removeAttr(element, name);
+    }
+
+    removeNamedItemNS(namespace, localName) {
+      const element = mapOwner(this);
+      need(arguments.length, 2, "removeNamedItemNS", "NamedNodeMap");
+      const name = attributeNamed(element, nullable(namespace), str(localName));
+      if (name === null) {
+        throw domError(
+          "NotFoundError",
+          "No item with namespace '" + nullable(namespace) + "' and local name '" + str(localName) +
+            "' was found.",
+          "removeNamedItemNS",
+          "NamedNodeMap",
+        );
+      }
+      return removeAttr(element, name);
+    }
+  }
+
+  function mapOwner(map) {
+    const element = WeakMapGet(attrMapOwners, map);
+    if (element === undefined) {
+      throw illegalInvocation();
+    }
+    return element;
+  }
+
+  // A NamedNodeMap's indices and its attributes' names as properties.
+  const namedMapHandlers = {
+    get(target, key, receiver) {
+      const element = WeakMapGet(attrMapOwners, target);
+      const i = arrayIndex(key);
+      if (i >= 0) {
+        const names = native.attributeNames(handleOf(element));
+        return i < names.length ? attrFor(element, names[i]) : undefined;
+      }
+      if (typeof key === "string" && !ReflectHas(target, key) &&
+          native.attribute(handleOf(element), key) !== null) {
+        return attrFor(element, key);
+      }
+      return ReflectGet(target, key, receiver);
+    },
+    has(target, key) {
+      const element = WeakMapGet(attrMapOwners, target);
+      const i = arrayIndex(key);
+      if (i >= 0) {
+        return i < native.attributeNames(handleOf(element)).length;
+      }
+      return ReflectHas(target, key) ||
+        (typeof key === "string" && native.attribute(handleOf(element), key) !== null);
+    },
+    ownKeys(target) {
+      const element = WeakMapGet(attrMapOwners, target);
+      const names = native.attributeNames(handleOf(element));
+      const keys = [];
+      for (let i = 0; i < names.length; i++) {
+        ArrayPush(keys, $String(i));
+      }
+      for (let i = 0; i < names.length; i++) {
+        ArrayPush(keys, names[i]);
+      }
+      const own = ReflectOwnKeys(target);
+      for (let i = 0; i < own.length; i++) {
+        ArrayPush(keys, own[i]);
+      }
+      return keys;
+    },
+    getOwnPropertyDescriptor(target, key) {
+      const element = WeakMapGet(attrMapOwners, target);
+      const i = arrayIndex(key);
+      const names = native.attributeNames(handleOf(element));
+      if (i >= 0) {
+        return i < names.length
+          ? { value: attrFor(element, names[i]), writable: false, enumerable: true, configurable: true }
+          : undefined;
+      }
+      if (typeof key === "string" && native.attribute(handleOf(element), key) !== null) {
+        return { value: attrFor(element, key), writable: false, enumerable: false, configurable: true };
+      }
+      return ReflectGetOwnPropertyDescriptor(target, key);
+    },
+    set(target, key, value, receiver) {
+      if (arrayIndex(key) >= 0) {
+        return false;
+      }
+      return ReflectSet(target, key, value, receiver);
+    },
+  };
+
+  include(
+    {
+      get attributes() {
+        self(this);
+        let map = WeakMapGet(namedMaps, this);
+        if (map === undefined) {
+          const target = new NamedNodeMap(KEY);
+          map = new $Proxy(target, namedMapHandlers);
+          WeakMapSet(attrMapOwners, target, this);
+          WeakMapSet(attrMapOwners, map, this);
+          WeakMapSet(namedMaps, this, map);
+        }
+        return map;
+      },
+
+      getAttributeNode(qualifiedName) {
+        const handle = self(this);
+        need(arguments.length, 1, "getAttributeNode", "Element");
+        const name = attrKey(this, str(qualifiedName));
+        return native.attribute(handle, name) === null ? null : attrFor(this, name);
+      },
+
+      getAttributeNodeNS(namespace, localName) {
+        self(this);
+        need(arguments.length, 2, "getAttributeNodeNS", "Element");
+        const name = attributeNamed(this, nullable(namespace), str(localName));
+        return name === null ? null : attrFor(this, name);
+      },
+
+      setAttributeNode(attr) {
+        self(this);
+        need(arguments.length, 1, "setAttributeNode", "Element");
+        return setAttr(this, attrArgument(attr, "setAttributeNode", "Element"), "setAttributeNode", "Element");
+      },
+
+      setAttributeNodeNS(attr) {
+        self(this);
+        need(arguments.length, 1, "setAttributeNodeNS", "Element");
+        return setAttr(this, attrArgument(attr, "setAttributeNodeNS", "Element"), "setAttributeNodeNS", "Element");
+      },
+
+      removeAttributeNode(attr) {
+        self(this);
+        need(arguments.length, 1, "removeAttributeNode", "Element");
+        attrArgument(attr, "removeAttributeNode", "Element");
+        if (attrElement(attr) !== this) {
+          throw domError(
+            "NotFoundError",
+            "The node provided is owned by another element.",
+            "removeAttributeNode",
+            "Element",
+          );
+        }
+        return removeAttr(this, attr.name);
+      },
+    },
+    [Element.prototype],
+  );
+
+  include(ParentNode, [Document.prototype, DocumentFragment.prototype, Element.prototype]);
   include(ElementLookups, [Document.prototype, Element.prototype]);
 
   // `getElementsByName` (HTML section 3.1.5, M26.11): a live NodeList
@@ -8363,13 +9012,25 @@
     },
     [Document.prototype],
   );
-  include(ChildNode, [Element.prototype, CharacterData.prototype]);
+  include(ChildNode, [Element.prototype, DocumentType.prototype, CharacterData.prototype]);
   include(NonDocumentTypeChildNode, [Element.prototype, CharacterData.prototype]);
 
   expose(EventTarget, "EventTarget");
   expose(Node, "Node");
   expose(CharacterData, "CharacterData");
   expose(Text, "Text");
+  expose(Comment, "Comment");
+  expose(ProcessingInstruction, "ProcessingInstruction");
+  expose(DocumentType, "DocumentType");
+  expose(DocumentFragment, "DocumentFragment");
+  expose(DOMImplementation, "DOMImplementation");
+  expose(Attr, "Attr");
+  expose(NamedNodeMap, "NamedNodeMap");
+  defineProperty(NamedNodeMap.prototype, iteratorSymbol, {
+    value: ArrayValues,
+    writable: true,
+    configurable: true,
+  });
   expose(Element, "Element");
   expose(HTMLElement, "HTMLElement");
   expose(Document, "Document");
@@ -9691,6 +10352,15 @@
     element(ELEMENTS[i][0], ELEMENTS[i][1], ELEMENTS[i][2]);
   }
   const HTMLUnknownElement = element("HTMLUnknownElement", []);
+  // A template's contents (D58), a fragment the element owns.
+  include(
+    {
+      get content() {
+        return wrap(native.templateContent(self(this)));
+      },
+    },
+    [MapGet(interfaces, "template").prototype],
+  );
   // A script element's members (HTML section 4.12.1): its text, and
   // `async`, which reads its "force async" flag as well as the attribute
   // and clears the flag when set.

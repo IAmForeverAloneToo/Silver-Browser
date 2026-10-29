@@ -31,12 +31,9 @@
 //! context sets the form element pointer (an ancestor form of the
 //! context's is not known here).
 //!
-//! The DOM has no comment, doctype or processing instruction nodes yet
-//! (D58), so where the standard inserts one the builder works out the
-//! place and goes no further (`insert_comment` and its like). Nor has
-//! it a template's contents, a fragment of their own: a `template`'s
-//! content goes in as its children, parsed by the "in template" rules
-//! all the same. A doctype still sets the document's
+//! Comments, the doctype and processing instructions go in as their own
+//! nodes (D58), and what goes in a `template` goes in its contents, the
+//! fragment the DOM made with it. A doctype also sets the document's
 //! quirks mode ([`TreeBuilder::quirks_mode`]), which decides whether a
 //! `table` closes an open `p`.
 //!
@@ -2232,8 +2229,16 @@ impl TreeBuilder {
     /// The appropriate place for inserting a node (section 13.2.6.1),
     /// its target the open element at `target` or the current node: last
     /// in it, or, with foster parenting enabled and a table-ish target,
-    /// before the last open table (or in a template after it).
+    /// before the last open table (or in a template after it); in a
+    /// template, in its contents.
     fn place(&self, document: &Document, target: Option<usize>) -> Place {
+        match self.place_in(document, target) {
+            Place::Last(parent) => Place::Last(document.template_content(parent).unwrap_or(parent)),
+            before => before,
+        }
+    }
+
+    fn place_in(&self, document: &Document, target: Option<usize>) -> Place {
         let Some(at) = target.or(self.open.len().checked_sub(1)) else {
             return Place::Last(document.root());
         };
@@ -2373,7 +2378,10 @@ impl TreeBuilder {
             Place::Last(parent) => (parent, document.last_child(parent)),
             Place::Before(parent, child) => (parent, document.prev_sibling(child)),
         };
-        if !matches!(document.data(parent), Some(NodeData::Element { .. })) {
+        if !matches!(
+            document.data(parent),
+            Some(NodeData::Element { .. } | NodeData::DocumentFragment)
+        ) {
             return;
         }
         if let Some(before) = before
@@ -2387,14 +2395,14 @@ impl TreeBuilder {
         }
     }
 
-    /// Where the standard inserts a comment (section 13.2.6.1): the DOM
-    /// has no comment node yet (D58), so nothing goes there.
+    /// Inserts a comment at `place` (section 13.2.6.1).
     fn insert_comment(&mut self, document: &mut Document, data: &str, place: Place) {
-        let _ = (document, data, place);
+        if let Ok(node) = document.create_comment(data) {
+            put(document, place, node);
+        }
     }
 
-    /// Where the standard inserts a processing instruction: the DOM has
-    /// no processing instruction node yet (D58), so nothing goes there.
+    /// Inserts a processing instruction at `place`.
     fn insert_processing_instruction(
         &mut self,
         document: &mut Document,
@@ -2402,13 +2410,22 @@ impl TreeBuilder {
         data: &str,
         place: Place,
     ) {
-        let _ = (document, target, data, place);
+        if let Ok(node) = document.create_processing_instruction(target, data) {
+            put(document, place, node);
+        }
     }
 
-    /// Where the standard appends a doctype to the document ("initial"):
-    /// the DOM has no doctype node yet (D58), so nothing goes there.
+    /// Appends a doctype to the document ("initial"), its missing name
+    /// and identifiers empty.
     fn append_doctype(&mut self, document: &mut Document, doctype: &Doctype) {
-        let _ = (document, doctype);
+        let field = |value: &Option<String>| value.clone().unwrap_or_default();
+        if let Ok(node) = document.create_doctype(
+            &field(&doctype.name),
+            &field(&doctype.public_id),
+            &field(&doctype.system_id),
+        ) {
+            put(document, Place::Last(document.root()), node);
+        }
     }
 
     // ---- The stack of open elements ----------------------------------------
@@ -2858,13 +2875,15 @@ fn put(document: &mut Document, place: Place, node: NodeId) -> bool {
 }
 
 /// How many elements the path from the root to `node` holds, `node`
-/// counted.
+/// counted, a template's contents counted under the template.
 fn element_depth(document: &Document, node: NodeId) -> usize {
-    usize::from(document.is_element(node))
-        + document
-            .ancestors(node)
-            .filter(|&n| document.is_element(n))
-            .count()
+    let mut depth = 0;
+    let mut at = Some(node);
+    while let Some(n) = at {
+        depth += usize::from(document.is_element(n));
+        at = document.parent(n).or_else(|| document.template_host(n));
+    }
+    depth
 }
 
 /// The spec's ASCII white space: tab, line feed, form feed, carriage

@@ -557,10 +557,13 @@ impl<'a> Matcher<'a> {
                 p.type_index + 1 == p.type_count
             }
             PseudoClass::OnlyOfType => self.position(element).type_count == 1,
-            // selectors-4: any child, element or text (even white
-            // space), makes it non-empty; the document holds no other
-            // kind of child.
-            PseudoClass::Empty => document.first_child(element).is_none(),
+            // selectors-4: any element or text child (even white space)
+            // makes it non-empty; comments and processing instructions
+            // count as nothing, and so, in the reference browser, does an
+            // empty text node.
+            PseudoClass::Empty => !document.children(element).any(|child| {
+                document.is_element(child) || document.text(child).is_some_and(|t| !t.is_empty())
+            }),
             PseudoClass::Root => document.parent(element) == Some(document.root()),
             PseudoClass::Scope => match self.scope {
                 Some(scope) => element == scope,
@@ -1441,6 +1444,19 @@ mod tests {
             e("div").push(e("p")).into(), // element child: NOT empty
         ]);
         assert_eq!(matched_tags(&doc, "div:empty"), vec!["div"]);
+        // A comment, or an empty text node, is nothing (D58).
+        let mut document = Document::new();
+        let root = document.root();
+        let div = document.create_element("div").unwrap();
+        document.append_child(root, div).unwrap();
+        let comment = document.create_comment("c").unwrap();
+        let empty = document.create_text("").unwrap();
+        document.append_child(div, comment).unwrap();
+        document.append_child(div, empty).unwrap();
+        let list = parse_selector_list(&css::tokenize(":empty")).unwrap();
+        assert!(matches_selector_list(&document, div, &list));
+        document.set_text(empty, " ").unwrap();
+        assert!(!matches_selector_list(&document, div, &list));
     }
 
     #[test]

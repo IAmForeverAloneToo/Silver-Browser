@@ -132,8 +132,55 @@ pub enum NodeData {
         attrs: Vec<(String, String)>,
         ns: Namespace,
     },
-    /// Character data.
+    /// Character data; XML's CDATA sections are text too.
     Text(String),
+    /// A comment (D58).
+    Comment(String),
+    /// A document type node, the document's child before its element.
+    DocumentType {
+        name: Box<str>,
+        public_id: Box<str>,
+        system_id: Box<str>,
+    },
+    /// A processing instruction, which XML documents have.
+    ProcessingInstruction { target: Box<str>, data: String },
+    /// A document fragment: never a child, its children moved where it
+    /// is inserted; a template's contents are one ([`Document::template_content`]).
+    DocumentFragment,
+}
+
+impl NodeData {
+    /// The DOM's `nodeType` for the node.
+    pub fn node_type(&self) -> u16 {
+        match self {
+            NodeData::Element { .. } => 1,
+            NodeData::Text(_) => 3,
+            NodeData::ProcessingInstruction { .. } => 7,
+            NodeData::Comment(_) => 8,
+            NodeData::Document => 9,
+            NodeData::DocumentType { .. } => 10,
+            NodeData::DocumentFragment => 11,
+        }
+    }
+
+    /// The data of a text, comment or processing instruction node.
+    pub fn character_data(&self) -> Option<&str> {
+        match self {
+            NodeData::Text(data)
+            | NodeData::Comment(data)
+            | NodeData::ProcessingInstruction { data, .. } => Some(data),
+            _ => None,
+        }
+    }
+
+    fn character_data_mut(&mut self) -> Option<&mut String> {
+        match self {
+            NodeData::Text(data)
+            | NodeData::Comment(data)
+            | NodeData::ProcessingInstruction { data, .. } => Some(data),
+            _ => None,
+        }
+    }
 }
 
 /// One change to the document, as the DOM sees it. Ids may be stale by
@@ -240,7 +287,8 @@ pub enum MutationError {
     /// The operation needs an element, or a text node, and got another
     /// kind of node.
     WrongKind,
-    /// [`Document::free`] was given an attached node, or the root.
+    /// [`Document::free`] was given an attached node, the root, or a
+    /// template's contents.
     Attached,
 }
 
@@ -352,6 +400,15 @@ pub struct Document {
     /// and the names that came or went since they were last taken;
     /// boxed, to keep the document small.
     named: Box<Named>,
+    /// Each HTML `template`'s contents (D58), a fragment made with it,
+    /// and each such fragment's template.
+    templates: Box<Templates>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct Templates {
+    contents: std::collections::HashMap<NodeId, NodeId>,
+    hosts: std::collections::HashMap<NodeId, NodeId>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -400,6 +457,7 @@ impl Document {
             within: None,
             observing: None,
             named: Box::default(),
+            templates: Box::default(),
         };
         document.root = document.allocate(NodeData::Document);
         document
@@ -473,7 +531,11 @@ impl Document {
             }
             let children = finished.pop()?;
             let node = match &record.data {
-                NodeData::Document => Node::Document(children),
+                NodeData::Document | NodeData::DocumentFragment => Node::Document(children),
+                // The owned tree has no such nodes: they are left out.
+                NodeData::Comment(_)
+                | NodeData::DocumentType { .. }
+                | NodeData::ProcessingInstruction { .. } => continue,
                 NodeData::Element { tag, attrs, ns } => Node::Element(Element {
                     tag: tag.clone(),
                     attrs: attrs.clone(),
@@ -771,6 +833,44 @@ impl Document {
         }
     }
 
+    /// The data of a text, comment or processing instruction node.
+    #[inline]
+    pub fn character_data(&self, id: NodeId) -> Option<&str> {
+        self.data(id)?.character_data()
+    }
+
+    /// A template's contents, the fragment made with it (D58).
+    pub fn template_content(&self, template: NodeId) -> Option<NodeId> {
+        self.templates.contents.get(&template).copied()
+    }
+
+    /// The template whose contents `fragment` is.
+    pub fn template_host(&self, fragment: NodeId) -> Option<NodeId> {
+        self.templates.hosts.get(&fragment).copied()
+    }
+
+    /// The subtree at `id` in tree order, then the contents of each
+    /// template in it, theirs too.
+    pub fn subtree_with_contents(&self, id: NodeId) -> Vec<NodeId> {
+        let mut out = Vec::new();
+        let mut tops = vec![id];
+        while let Some(top) = tops.pop() {
+            for node in self.subtree(top) {
+                out.push(node);
+                if let Some(content) = self.template_content(node) {
+                    tops.push(content);
+                }
+            }
+        }
+        out
+    }
+
+    /// The document's doctype: its first `DocumentType` child.
+    pub fn doctype(&self) -> Option<NodeId> {
+        self.children(self.root)
+            .find(|&n| matches!(self.data(n), Some(NodeData::DocumentType { .. })))
+    }
+
     /// The node's parent; `None` for the root and a detached node.
     #[inline]
     pub fn parent(&self, id: NodeId) -> Option<NodeId> {
@@ -876,8 +976,12 @@ impl Document {
         self.contains(node) && (ancestor == node || self.ancestors(node).any(|a| a == ancestor))
     }
 
-    /// The text of the subtree at `id`, in tree order.
+    /// The text of the subtree at `id`, in tree order: its text nodes'
+    /// data, or a comment's or processing instruction's own.
     pub fn text_content(&self, id: NodeId) -> String {
+        if let Some(data) = self.character_data(id) {
+            return data.to_owned();
+        }
         self.subtree(id).filter_map(|n| self.text(n)).collect()
     }
 
@@ -943,6 +1047,49 @@ impl Document {
         Ok(self.allocate(NodeData::Text(data.to_string())))
     }
 
+    /// A new, detached comment.
+    pub fn create_comment(&mut self, data: &str) -> Result<NodeId, MutationError> {
+        self.check_room()?;
+        self.check_data(data.len())?;
+        Ok(self.allocate(NodeData::Comment(data.to_owned())))
+    }
+
+    /// A new, detached processing instruction.
+    pub fn create_processing_instruction(
+        &mut self,
+        target: &str,
+        data: &str,
+    ) -> Result<NodeId, MutationError> {
+        self.check_room()?;
+        self.check_data(target.len() + data.len())?;
+        Ok(self.allocate(NodeData::ProcessingInstruction {
+            target: target.into(),
+            data: data.to_owned(),
+        }))
+    }
+
+    /// A new, detached document type node.
+    pub fn create_doctype(
+        &mut self,
+        name: &str,
+        public_id: &str,
+        system_id: &str,
+    ) -> Result<NodeId, MutationError> {
+        self.check_room()?;
+        self.check_data(name.len() + public_id.len() + system_id.len())?;
+        Ok(self.allocate(NodeData::DocumentType {
+            name: name.into(),
+            public_id: public_id.into(),
+            system_id: system_id.into(),
+        }))
+    }
+
+    /// A new, empty document fragment.
+    pub fn create_fragment(&mut self) -> Result<NodeId, MutationError> {
+        self.check_room()?;
+        Ok(self.allocate(NodeData::DocumentFragment))
+    }
+
     /// Inserts `child` as `parent`'s last child, taking it from where it
     /// was first, as the DOM's `appendChild` does.
     pub fn append_child(&mut self, parent: NodeId, child: NodeId) -> Result<(), MutationError> {
@@ -959,8 +1106,9 @@ impl Document {
         child: NodeId,
         reference: Option<NodeId>,
     ) -> Result<(), MutationError> {
-        let parent_data = self.data(parent).ok_or(MutationError::NoSuchNode)?;
-        let child_data = self.data(child).ok_or(MutationError::NoSuchNode)?;
+        if !self.contains(parent) || !self.contains(child) {
+            return Err(MutationError::NoSuchNode);
+        }
         if let Some(r) = reference
             && self.parent(r) != Some(parent)
         {
@@ -970,17 +1118,30 @@ impl Document {
                 MutationError::NoSuchNode
             });
         }
-        let allowed = match (parent_data, child_data) {
-            (NodeData::Text(_), _) | (_, NodeData::Document) => false,
-            (NodeData::Document, NodeData::Text(_)) => false,
-            _ => !self.is_inclusive_ancestor(child, parent),
-        };
-        if !allowed {
-            return Err(MutationError::HierarchyRequest);
-        }
+        self.check_insert(parent, child, reference, None)?;
         let depth = self.element_depth(parent) + self.element_height(child);
         if depth > MAX_DEPTH {
             return Err(MutationError::TooDeep);
+        }
+        if matches!(self.data(child), Some(NodeData::DocumentFragment)) {
+            // A fragment's children go in its place, in order.
+            let moved: Vec<NodeId> = self.children(child).collect();
+            for node in moved {
+                self.detach(node);
+                match reference {
+                    Some(r) => self.link_before(parent.index, node.index, r.index),
+                    None => self.link_last(parent.index, node.index),
+                }
+                self.record_change(Change::Inserted {
+                    parent,
+                    child: node,
+                });
+                self.observe_insertion(parent, node);
+                if self.has_names(node) && self.connected(parent) {
+                    self.index_names(node, true);
+                }
+            }
+            return Ok(());
         }
         let reference = match reference {
             Some(r) if r == child => self.next_sibling(child),
@@ -1012,12 +1173,8 @@ impl Document {
         if child_record.parent.is_some() || child_record.first_child.is_some() || child == parent {
             return Err(MutationError::HierarchyRequest);
         }
-        let allowed = !matches!(
-            (parent_data, &child_record.data),
-            (NodeData::Text(_), _)
-                | (_, NodeData::Document)
-                | (NodeData::Document, NodeData::Text(_))
-        );
+        let allowed = self.may_insert(parent_data, &child_record.data)
+            && !matches!(child_record.data, NodeData::DocumentFragment);
         if !allowed || child == self.root {
             return Err(MutationError::HierarchyRequest);
         }
@@ -1163,11 +1320,12 @@ impl Document {
         Ok(())
     }
 
-    /// Replaces a text node's data; the same data changes nothing but is
-    /// still a change to mutation observers ("replace data").
+    /// Replaces a text, comment or processing instruction node's data;
+    /// the same data changes nothing but is still a change to mutation
+    /// observers ("replace data").
     pub fn set_text(&mut self, node: NodeId, data: &str) -> Result<(), MutationError> {
         let record = self.record(node).ok_or(MutationError::NoSuchNode)?;
-        let NodeData::Text(text) = &record.data else {
+        let Some(text) = record.data.character_data() else {
             return Err(MutationError::WrongKind);
         };
         if text == data {
@@ -1179,7 +1337,10 @@ impl Document {
         self.check_data(data.len().saturating_sub(old))?;
         self.data_bytes = self.data_bytes + data.len() - old;
         let mut old = None;
-        if let Some(NodeData::Text(text)) = self.record_mut(node).map(|r| &mut r.data) {
+        if let Some(text) = self
+            .record_mut(node)
+            .and_then(|r| r.data.character_data_mut())
+        {
             old = Some(std::mem::replace(text, data.to_owned()));
         }
         if let Some(old) = old {
@@ -1194,7 +1355,7 @@ impl Document {
     /// without copying what the node has.
     pub fn append_data(&mut self, node: NodeId, data: &str) -> Result<(), MutationError> {
         let record = self.record(node).ok_or(MutationError::NoSuchNode)?;
-        if !matches!(record.data, NodeData::Text(_)) {
+        if record.data.character_data().is_none() {
             return Err(MutationError::WrongKind);
         }
         if data.is_empty() {
@@ -1204,7 +1365,10 @@ impl Document {
         self.data_bytes += data.len();
         let observing = self.observing.is_some();
         let mut old = None;
-        if let Some(NodeData::Text(text)) = self.record_mut(node).map(|r| &mut r.data) {
+        if let Some(text) = self
+            .record_mut(node)
+            .and_then(|r| r.data.character_data_mut())
+        {
             old = observing.then(|| text.clone());
             text.push_str(data);
         }
@@ -1221,11 +1385,18 @@ impl Document {
         if !self.contains(id) {
             return Err(MutationError::NoSuchNode);
         }
-        if id == self.root || self.parent(id).is_some() {
+        // A template's contents go with the template.
+        if id == self.root || self.parent(id).is_some() || self.template_host(id).is_some() {
             return Err(MutationError::Attached);
         }
-        let doomed: Vec<u32> = self.subtree(id).map(|n| n.index).collect();
-        for index in doomed {
+        // The subtree, and the contents of each template in it, theirs too.
+        let doomed = self.subtree_with_contents(id);
+        for node in &doomed {
+            if let Some(content) = self.templates.contents.remove(node) {
+                self.templates.hosts.remove(&content);
+            }
+        }
+        for index in doomed.into_iter().map(|n| n.index) {
             let slot = &mut self.slots[index as usize];
             if let Some(record) = slot.record.take() {
                 self.data_bytes -=
@@ -1515,6 +1686,18 @@ impl Document {
                 self.data_bytes
             ));
         }
+        for (&template, &content) in &self.templates.contents {
+            if !self.is_element(template)
+                || self.data(content) != Some(&NodeData::DocumentFragment)
+                || self.parent(content).is_some()
+                || self.template_host(content) != Some(template)
+            {
+                return Err(format!("template {template}'s contents are wrong"));
+            }
+        }
+        if self.templates.hosts.len() != self.templates.contents.len() {
+            return Err("a template's contents are not mirrored".into());
+        }
         if let Some(slot) = self.slots.iter().find(|s| s.generation >= MAX_GENERATION) {
             return Err(format!("a slot at generation {}", slot.generation));
         }
@@ -1599,7 +1782,23 @@ impl Document {
         }
     }
 
+    /// A new node holding `data`; an HTML `template` is made with its
+    /// contents, an empty fragment (D58).
     fn allocate(&mut self, data: NodeData) -> NodeId {
+        let template = matches!(
+            &data,
+            NodeData::Element { tag, ns: Namespace::Html, .. } if tag == "template"
+        );
+        let id = self.allocate_one(data);
+        if template {
+            let content = self.allocate_one(NodeData::DocumentFragment);
+            self.templates.contents.insert(id, content);
+            self.templates.hosts.insert(content, id);
+        }
+        id
+    }
+
+    fn allocate_one(&mut self, data: NodeData) -> NodeId {
         self.data_bytes += data_size(&data);
         let record = Record {
             data,
@@ -1632,11 +1831,113 @@ impl Document {
     }
 
     /// The number of elements from `id` up, `id` included when it is one.
+    /// The DOM's hierarchy checks of inserting `node` under `parent`
+    /// before `reference` ("ensure pre-insertion validity"), or in place
+    /// of its child `replacing` ("replace a child"): a node into a
+    /// container, never into itself or what holds it, and the document's
+    /// one element and one doctype, the doctype first.
+    pub fn check_insert(
+        &self,
+        parent: NodeId,
+        node: NodeId,
+        reference: Option<NodeId>,
+        replacing: Option<NodeId>,
+    ) -> Result<(), MutationError> {
+        let parent_data = self.data(parent).ok_or(MutationError::NoSuchNode)?;
+        let node_data = self.data(node).ok_or(MutationError::NoSuchNode)?;
+        if !self.may_insert(parent_data, node_data)
+            || self.is_host_including_ancestor(node, parent)
+            || !self.fits_document(parent, node, reference, replacing)
+        {
+            return Err(MutationError::HierarchyRequest);
+        }
+        Ok(())
+    }
+
+    /// Whether the DOM lets a node like `child` be a child of one like
+    /// `parent` ("ensure pre-insertion validity", steps 1, 4 and 5).
+    fn may_insert(&self, parent: &NodeData, child: &NodeData) -> bool {
+        let container = matches!(
+            parent,
+            NodeData::Document | NodeData::DocumentFragment | NodeData::Element { .. }
+        );
+        let document = matches!(parent, NodeData::Document);
+        container
+            && match child {
+                NodeData::Document => false,
+                NodeData::Text(_) => !document,
+                NodeData::DocumentType { .. } => document,
+                _ => true,
+            }
+    }
+
+    /// Whether `ancestor` is a host-including inclusive ancestor of
+    /// `node`: an ancestor, or one of a template whose contents hold it.
+    fn is_host_including_ancestor(&self, ancestor: NodeId, node: NodeId) -> bool {
+        let mut at = Some(node);
+        while let Some(n) = at {
+            if n == ancestor {
+                return true;
+            }
+            at = self.parent(n).or_else(|| self.template_host(n));
+        }
+        false
+    }
+
+    /// The document's own rules (step 6 of "ensure pre-insertion
+    /// validity", or of "replace" with `replacing`): at most one element
+    /// and one doctype, the doctype first. `reference` is the child the
+    /// node goes before.
+    fn fits_document(
+        &self,
+        parent: NodeId,
+        child: NodeId,
+        reference: Option<NodeId>,
+        replacing: Option<NodeId>,
+    ) -> bool {
+        if !matches!(self.data(parent), Some(NodeData::Document)) {
+            return true;
+        }
+        let is_doctype = |n: NodeId| matches!(self.data(n), Some(NodeData::DocumentType { .. }));
+        // The children that stay: all but the one replaced.
+        let stays = |n: NodeId| Some(n) != replacing;
+        let has_element = || {
+            self.children(parent)
+                .any(|n| stays(n) && self.is_element(n))
+        };
+        let doctype_from = |r: Option<NodeId>| {
+            std::iter::successors(r, |&n| self.next_sibling(n)).any(|n| stays(n) && is_doctype(n))
+        };
+        let element_before = |r: Option<NodeId>| match r {
+            Some(r) => std::iter::successors(self.prev_sibling(r), |&n| self.prev_sibling(n))
+                .any(|n| stays(n) && self.is_element(n)),
+            None => has_element(),
+        };
+        let one_element =
+            |count: usize| count == 0 || (count == 1 && !has_element() && !doctype_from(reference));
+        match self.data(child) {
+            Some(NodeData::DocumentFragment) => {
+                let kids: Vec<NodeId> = self.children(child).collect();
+                !kids.iter().any(|&n| self.is_text(n))
+                    && one_element(kids.iter().filter(|&&n| self.is_element(n)).count())
+            }
+            Some(NodeData::Element { .. }) => one_element(1),
+            Some(NodeData::DocumentType { .. }) => {
+                !self.children(parent).any(|n| stays(n) && is_doctype(n))
+                    && !element_before(reference)
+            }
+            _ => true,
+        }
+    }
+
     fn element_depth(&self, id: NodeId) -> usize {
-        std::iter::once(id)
-            .chain(self.ancestors(id))
-            .filter(|&n| self.is_element(n))
-            .count()
+        let mut depth = 0;
+        let mut at = Some(id);
+        while let Some(node) = at {
+            depth += usize::from(self.is_element(node));
+            at = self.parent(node).or_else(|| self.template_host(node));
+        }
+        depth
     }
 
     /// The most elements on one path down from `id`, `id` included when
@@ -1648,6 +1949,9 @@ impl Document {
             deepest = deepest.max(depth);
             for child in self.children(node) {
                 stack.push((child, depth + usize::from(self.is_element(child))));
+            }
+            if let Some(content) = self.template_content(node) {
+                stack.push((content, depth));
             }
         }
         deepest
@@ -1773,11 +2077,17 @@ impl Document {
 /// The bytes of data a node holds, for [`MAX_DATA_BYTES`].
 fn data_size(data: &NodeData) -> usize {
     match data {
-        NodeData::Document => 0,
+        NodeData::Document | NodeData::DocumentFragment => 0,
         NodeData::Element { tag, attrs, .. } => {
             tag.len() + attrs.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>()
         }
-        NodeData::Text(text) => text.len(),
+        NodeData::Text(text) | NodeData::Comment(text) => text.len(),
+        NodeData::DocumentType {
+            name,
+            public_id,
+            system_id,
+        } => name.len() + public_id.len() + system_id.len(),
+        NodeData::ProcessingInstruction { target, data } => target.len() + data.len(),
     }
 }
 
@@ -1861,9 +2171,127 @@ mod tests {
             Some(NodeData::Element { tag, .. }) => tag.clone(),
             Some(NodeData::Text(t)) => format!("'{t}'"),
             Some(NodeData::Document) => "#document".into(),
+            Some(other) => format!("#{}", other.node_type()),
             None => "?".into(),
         })
         .collect()
+    }
+
+    #[test]
+    fn the_document_takes_one_doctype_then_one_element_and_no_text() {
+        let mut doc = Document::new();
+        let root = doc.root();
+        let html = doc.create_element("html").unwrap();
+        let doctype = doc.create_doctype("html", "", "").unwrap();
+        let text = doc.create_text("t").unwrap();
+        let comment = doc.create_comment("c").unwrap();
+        doc.append_child(root, html).unwrap();
+        // A doctype after the element, or under one, is refused.
+        assert_eq!(
+            doc.append_child(root, doctype),
+            Err(MutationError::HierarchyRequest)
+        );
+        assert_eq!(
+            doc.append_child(html, doctype),
+            Err(MutationError::HierarchyRequest)
+        );
+        doc.insert_before(root, doctype, Some(html)).unwrap();
+        let second = doc.create_doctype("x", "", "").unwrap();
+        assert_eq!(
+            doc.insert_before(root, second, Some(html)),
+            Err(MutationError::HierarchyRequest)
+        );
+        assert_eq!(
+            doc.append_child(root, text),
+            Err(MutationError::HierarchyRequest)
+        );
+        let body = doc.create_element("body").unwrap();
+        assert_eq!(
+            doc.append_child(root, body),
+            Err(MutationError::HierarchyRequest)
+        );
+        // Comments go anywhere; nothing goes under one.
+        doc.append_child(root, comment).unwrap();
+        assert_eq!(
+            doc.append_child(comment, text),
+            Err(MutationError::HierarchyRequest)
+        );
+        assert_eq!(doc.doctype(), Some(doctype));
+        assert_eq!(doc.text_content(comment), "c");
+        doc.validate().unwrap();
+    }
+
+    #[test]
+    fn a_fragment_inserted_gives_its_children_in_order() {
+        let mut doc = Document::new();
+        let root = doc.root();
+        let div = doc.create_element("div").unwrap();
+        doc.append_child(root, div).unwrap();
+        let last = doc.create_element("p").unwrap();
+        doc.append_child(div, last).unwrap();
+        let fragment = doc.create_fragment().unwrap();
+        let (a, b) = (
+            doc.create_text("a").unwrap(),
+            doc.create_comment("b").unwrap(),
+        );
+        doc.append_child(fragment, a).unwrap();
+        doc.append_child(fragment, b).unwrap();
+        doc.take_changes();
+        doc.insert_before(div, fragment, Some(last)).unwrap();
+        assert_eq!(doc.children(div).collect::<Vec<_>>(), [a, b, last]);
+        assert_eq!(doc.first_child(fragment), None);
+        assert!(doc.changes().contains(&Change::Inserted {
+            parent: div,
+            child: b
+        }));
+        // A fragment with two elements, or text, is refused by the document.
+        let two = doc.create_fragment().unwrap();
+        let (x, y) = (
+            doc.create_element("x").unwrap(),
+            doc.create_element("y").unwrap(),
+        );
+        doc.remove_child(root, div).unwrap();
+        doc.append_child(two, x).unwrap();
+        doc.append_child(two, y).unwrap();
+        assert_eq!(
+            doc.append_child(root, two),
+            Err(MutationError::HierarchyRequest)
+        );
+        assert_eq!(doc.first_child(two), Some(x), "nothing moved");
+        doc.validate().unwrap();
+    }
+
+    #[test]
+    fn a_template_owns_its_contents_and_frees_them_with_it() {
+        let mut doc = Document::new();
+        let root = doc.root();
+        let template = doc.create_element("template").unwrap();
+        let content = doc
+            .template_content(template)
+            .expect("contents made with it");
+        assert_eq!(doc.template_host(content), Some(template));
+        assert_eq!(doc.data(content), Some(&NodeData::DocumentFragment));
+        // An SVG `template` is no HTML one: it has none.
+        let svg = doc
+            .create_element_ns(Namespace::Svg, "template", Vec::new())
+            .unwrap();
+        assert_eq!(doc.template_content(svg), None);
+        doc.append_child(root, template).unwrap();
+        let b = doc.create_element("b").unwrap();
+        doc.append_child(content, b).unwrap();
+        // The contents are no part of the tree, and go with the template
+        // only: the template cannot go into its own contents.
+        assert!(!doc.subtree(root).any(|n| n == b));
+        assert_eq!(doc.free(content), Err(MutationError::Attached));
+        assert_eq!(
+            doc.append_child(b, template),
+            Err(MutationError::HierarchyRequest)
+        );
+        doc.validate().unwrap();
+        doc.remove_child(root, template).unwrap();
+        doc.free(template).unwrap();
+        assert!(!doc.contains(content) && !doc.contains(b));
+        doc.validate().unwrap();
     }
 
     #[test]
@@ -2358,7 +2786,10 @@ mod tests {
     #[test]
     fn observed_changes_are_kept_only_while_observing() {
         let mut doc = Document::new();
-        let root = doc.root();
+        // The document takes one element: the changes are under it.
+        let root = doc.create_element("html").unwrap();
+        let top = doc.root();
+        doc.append_child(top, root).unwrap();
         let a = doc.create_element("a").unwrap();
         doc.append_child(root, a).unwrap();
         assert!(doc.take_observed().is_empty(), "not observing");
@@ -2484,8 +2915,8 @@ mod tests {
         // Another element of the same id: no change; one of two gone, none.
         let a2 = doc.create_element("p").unwrap();
         doc.set_attribute(a2, "id", "a").unwrap();
-        doc.append_child(root, a2).unwrap();
-        doc.remove_child(root, a2).unwrap();
+        doc.append_child(div, a2).unwrap();
+        doc.remove_child(div, a2).unwrap();
         // A subtree taken out takes its names.
         doc.remove_child(root, div).unwrap();
         let changes = |pairs: &[(&str, bool)]| {

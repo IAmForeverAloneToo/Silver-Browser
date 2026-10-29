@@ -128,6 +128,15 @@ fn nodes_scripts_let_go_of_are_freed_and_those_they_hold_are_not() {
 }
 
 #[test]
+fn a_templates_contents_live_while_a_script_holds_a_node_in_them() {
+    // The template let go of is kept for the node in its contents (D58).
+    let page = "<p>x</p><script>                var body = document.documentElement.lastChild;                 var t = body.appendChild(document.createElement('template'));                 var inner = t.content.appendChild(document.createElement('inner'));                 body.removeChild(t); t = null;                </script><script>console.log(inner.parentNode.nodeName)</script>";
+    let (tab, console) = scripted(page, true);
+    assert_eq!(console, ["#document-fragment"]);
+    tab.engine.document().validate().unwrap();
+}
+
+#[test]
 fn a_node_the_parser_still_fills_can_be_taken_out_and_freed() {
     // The body is taken out while the parser is inside it, and let go
     // of: the parser's insertions into it go nowhere, and nothing breaks.
@@ -490,6 +499,85 @@ fn the_tree_changes_as_the_reference_browser_changes_it() {
                  document.documentElement.parentElement]; })()",
                 "ok [3,\"B\",\"qz\",null,null,true,true,1,\"BODY\",null]",
             ),
+        ],
+    );
+}
+
+#[test]
+fn every_kind_of_node_as_the_reference_browser_has_it() {
+    // D58: comments, doctypes, processing instructions, fragments, a
+    // template's contents and attributes as Attr objects.
+    probed_in(
+        "<!--c--><p id=a>x<!--in-->y</p><template id=t><b>in</b></template>",
+        "var a = document.getElementById('a'), t = document.getElementById('t');",
+        &[
+            ("document.firstChild.nodeType", "ok 8"),
+            ("document.firstChild.data", "ok \"c\""),
+            ("document.doctype", "ok null"),
+            ("names(a)", "ok \"x,#comment,y\""),
+            ("a.textContent", "ok \"xy\""),
+            ("a.innerHTML", "ok \"x<!--in-->y\""),
+            ("a.cloneNode(true).innerHTML", "ok \"x<!--in-->y\""),
+            ("t.content.nodeName", "ok \"#document-fragment\""),
+            ("t.childNodes.length", "ok 0"),
+            ("t.content.firstChild.nodeName", "ok \"B\""),
+            ("t.innerHTML", "ok \"<b>in</b>\""),
+            ("document.querySelector('template b')", "ok null"),
+            ("t.cloneNode(true).content.firstChild.nodeName", "ok \"B\""),
+            (
+                "(function () { t.innerHTML = '<i>n</i>';                  return [t.childNodes.length, t.content.firstChild.nodeName]; })()",
+                "ok [0,\"I\"]",
+            ),
+            (
+                "(function () { var f = document.createDocumentFragment(); \
+                 f.append('a', document.createElement('i')); var d = document.createElement('div'); \
+                 d.appendChild(f); return [names(d), f.childNodes.length]; })()",
+                "ok [\"a,I\",0]",
+            ),
+            ("new DocumentFragment().nodeType", "ok 11"),
+            ("document.createComment('x').nodeName", "ok \"#comment\""),
+            ("new Comment('q').data", "ok \"q\""),
+            ("document.createProcessingInstruction('x', 'y').target", "ok \"x\""),
+            (
+                "document.createProcessingInstruction('x', 'y?>')",
+                "InvalidCharacterError: Failed to execute 'createProcessingInstruction' on \
+                 'Document': The data provided ('y?>') contains '?>'.",
+            ),
+            (
+                "document.implementation.createDocumentType('html', 'p', 's').publicId",
+                "ok \"p\"",
+            ),
+            (
+                "document.body.appendChild(document.implementation.createDocumentType('html', \
+                 '', ''))",
+                "HierarchyRequestError: Failed to execute 'appendChild' on 'Node': Nodes of type \
+                 'html' may not be inserted inside nodes of type 'BODY'.",
+            ),
+            (
+                "document.appendChild(document.createTextNode('t'))",
+                "HierarchyRequestError: Failed to execute 'appendChild' on 'Node': Nodes of type \
+                 '#text' may not be inserted inside nodes of type '#document'.",
+            ),
+            (
+                "document.appendChild(document.createElement('x'))",
+                "HierarchyRequestError: Failed to execute 'appendChild' on 'Node': Only one \
+                 element on document allowed.",
+            ),
+            ("a.attributes.length", "ok 1"),
+            ("a.attributes[0].name", "ok \"id\""),
+            ("a.getAttributeNode('id').value", "ok \"a\""),
+            ("a.attributes.id === a.getAttributeNode('id')", "ok true"),
+            ("a.getAttributeNode('id').ownerElement === a", "ok true"),
+            (
+                "(function () { var c = document.createComment('k'); a.prepend(c); c.after('z'); \
+                 return names(a); })()",
+                "ok \"#comment,z,x,#comment,y\"",
+            ),
+            (
+                "document.appendChild(document.createComment('end')).nodeName",
+                "ok \"#comment\"",
+            ),
+            ("document.lastChild.data", "ok \"end\""),
         ],
     );
 }

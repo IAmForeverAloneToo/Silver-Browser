@@ -678,6 +678,26 @@ fn tree_json(
             let cut: String = text.chars().take(MAX_TREE_TEXT).collect();
             members.push(("text", Json::from(cut)));
         }
+        Some(
+            data @ (NodeData::Comment(text) | NodeData::ProcessingInstruction { data: text, .. }),
+        ) => {
+            members.push(("type", Json::from(u32::from(data.node_type()))));
+            let name = match data {
+                NodeData::ProcessingInstruction { target, .. } => target,
+                _ => "#comment",
+            };
+            members.push(("name", Json::from(name)));
+            let cut: String = text.chars().take(MAX_TREE_TEXT).collect();
+            members.push(("text", Json::from(cut)));
+        }
+        Some(NodeData::DocumentType { name, .. }) => {
+            members.push(("type", Json::from(10u32)));
+            members.push(("name", Json::from(&**name)));
+        }
+        Some(NodeData::DocumentFragment) => {
+            members.push(("type", Json::from(11u32)));
+            members.push(("name", Json::from("#document-fragment")));
+        }
         Some(NodeData::Document) | None => {
             members.push(("type", Json::from(9u32)));
             members.push(("name", Json::from("#document")));
