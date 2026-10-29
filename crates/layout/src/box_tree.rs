@@ -4927,6 +4927,20 @@ mod tests {
     }
 
     #[test]
+    fn kept_spaces_alone_are_the_first_line() {
+        // D55: a run of preserved spaces is a line, so the `::first-line`
+        // is there and not in the block after it.
+        let tree = tree_of(
+            "<div><span>  </span><p>x</p></div>",
+            "span { white-space: pre } div::first-line { color: #f00 }",
+        );
+        let div = &tree.body().children[0];
+        assert!(div.children[0].first_line.is_some(), "the spaces' run");
+        let p = &div.children[1];
+        assert!(p.children.iter().all(|b| b.first_line.is_none()));
+    }
+
+    #[test]
     fn the_first_lines_run_holds_the_first_line_and_its_boxes_their_styles_there() {
         // Nodes: p 4, b 5.
         let tree = tree_of(

@@ -11,9 +11,7 @@ use std::sync::Arc;
 
 use canvas::{Matrix, Path};
 use dom::NodeId;
-use style::computed::{
-    ComputedStyle, Display, DominantBaseline, TextAnchor, TextTransform, WhiteSpace,
-};
+use style::computed::{ComputedStyle, Display, DominantBaseline, TextAnchor, TextTransform};
 use text::FontCollection;
 
 use crate::syntax::{Axis, Viewport, parse_lengths};
@@ -291,12 +289,8 @@ fn collapse<'a>(
     chars: Vec<(char, usize)>,
     mut owners: Vec<Owner<'a>>,
 ) -> (Vec<(char, usize)>, Vec<Owner<'a>>) {
-    let keeps = |owner: usize, owners: &[Owner<'_>]| {
-        matches!(
-            owners[owner].style.white_space,
-            WhiteSpace::PRE | WhiteSpace::PRE_WRAP
-        )
-    };
+    let keeps =
+        |owner: usize, owners: &[Owner<'_>]| owners[owner].style.white_space.preserves_spaces();
     let mut kept = Vec::with_capacity(chars.len());
     // For each character as written, how many were kept before it.
     let mut before = Vec::with_capacity(chars.len() + 1);

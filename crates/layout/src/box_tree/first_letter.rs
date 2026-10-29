@@ -141,10 +141,7 @@ fn in_line(items: &[LayoutBox], path: &mut Vec<usize>) -> Found {
 /// what comes first is not the pattern — a forced line break among
 /// them, which is not passed over.
 fn in_text(text: &str, white_space: WhiteSpace) -> Found {
-    let breaks_kept = matches!(
-        white_space,
-        WhiteSpace::PRE | WhiteSpace::PRE_WRAP | WhiteSpace::PRE_LINE
-    );
+    let breaks_kept = white_space.preserves_breaks();
     let Some((start, _)) = text
         .char_indices()
         .find(|&(_, c)| !crate::inline::is_css_space(c) || (c == '\n' && breaks_kept))

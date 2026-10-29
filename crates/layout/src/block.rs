@@ -3130,6 +3130,23 @@ mod tests {
     }
 
     #[test]
+    fn spaces_kept_alone_make_a_line() {
+        // D55: a line box of preserved white space, collapsible white space
+        // none.
+        let height = |css: &str| {
+            let root = Element::new("div").push(Element::new("span").text("   "));
+            box_fragments(&fragments_of(
+                root,
+                &format!("div {{ margin: 0 }} span {{ {css} }}"),
+            ))[0]
+                .h
+        };
+        assert_eq!(height(""), 0.0);
+        assert!(height("white-space: pre") > 0.0);
+        assert!(height("white-space: preserve-spaces") > 0.0);
+    }
+
+    #[test]
     fn line_height_sets_the_height_of_each_line() {
         // D53: the strut and each word with half the leading above and
         // the rest below (CSS 2 section 10.8.1).

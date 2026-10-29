@@ -101,7 +101,7 @@ use std::sync::Arc;
 use dom::NodeId;
 use style::computed::{
     BOTTOM, BorderStyle, ComputedStyle, Direction, LEFT, RIGHT, TOP, TextAlign, TextAlignLast,
-    TextJustify, TextTransform, WhiteSpace,
+    TextJustify, TextTransform,
 };
 use style::selector_matching::PseudoElement;
 use text::{FontCollection, FontMetrics};
@@ -133,6 +133,15 @@ pub(crate) enum InlineItem<'a> {
         /// in the boxes before it): a gap of a space's width, and a
         /// soft wrap opportunity unless `no_wrap`.
         gap_before: bool,
+        /// The soft wrap opportunities within it (D55), as byte offsets
+        /// into `text`: UAX #14's, after a hyphen, between ideographs,
+        /// after preserved spaces. It is cut at one only where a line
+        /// breaks there.
+        breaks: Vec<usize>,
+        /// How much of `width` is preserved spaces at its end, which hang
+        /// past the line's end rather than wrap it (CSS Text 3 section
+        /// 4.1.3); none under `break-spaces`.
+        hang: f32,
         /// The element the text belongs to (M9.4), carried into its
         /// fragment.
         node: NodeId,
@@ -209,6 +218,12 @@ pub(crate) enum InlineItem<'a> {
 struct LineWord<'i> {
     text: &'i str,
     width: f32,
+    /// The preserved spaces at its end, which may hang past the line.
+    hang: f32,
+    /// The opportunities of the item's text (D55), and where in that
+    /// text this word, all of it or a piece of it, begins.
+    breaks: &'i [usize],
+    offset: usize,
     style: &'i Arc<ComputedStyle>,
     node: NodeId,
     generated: Option<PseudoElement>,
@@ -237,6 +252,14 @@ enum LineItem<'a, 'i> {
 }
 
 impl LineItem<'_, '_> {
+    /// How much of its width may hang past the line's end.
+    fn hang(&self) -> f32 {
+        match self {
+            LineItem::Word(w) => w.hang,
+            _ => 0.0,
+        }
+    }
+
     fn width(&self) -> f32 {
         match self {
             LineItem::Word(w) => w.width,
@@ -417,6 +440,8 @@ pub(crate) fn layout_inline<'a>(
                 style,
                 no_wrap,
                 gap_before,
+                breaks,
+                hang,
                 node,
                 generated,
                 decorations,
@@ -425,6 +450,9 @@ pub(crate) fn layout_inline<'a>(
                 let word = LineWord {
                     text: text.as_str(),
                     width: *width,
+                    hang: *hang,
+                    breaks,
+                    offset: 0,
                     style,
                     node: *node,
                     generated: *generated,
@@ -463,9 +491,8 @@ pub(crate) fn layout_inline<'a>(
                 ..
             } => {
                 let (start, _) = edge_widths(style, cb_width);
-                let can_break = style.white_space != WhiteSpace::PRE
-                    && (*gap_before || after_atomic)
-                    && !after_marker;
+                let can_break =
+                    style.white_space.wrap && (*gap_before || after_atomic) && !after_marker;
                 lines.place(
                     LineItem::Open(b, style, start),
                     index,
@@ -619,21 +646,39 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
                 InlineItem::Word {
                     text,
                     width,
+                    hang,
+                    breaks,
                     style,
                     node,
                     generated,
                     decorations,
                     ..
                 },
-                LineItem::Word(_),
-            ) => LineItem::Word(LineWord {
-                text,
-                width: *width,
-                style,
-                node: *node,
-                generated: *generated,
-                decorations: *decorations,
-            }),
+                LineItem::Word(piece),
+            ) if piece.offset == 0 || piece.offset + piece.text.len() == text.len() => {
+                let range = piece.offset..piece.offset + piece.text.len();
+                let whole = range == (0..text.len());
+                let text = &text[range];
+                LineItem::Word(LineWord {
+                    text,
+                    width: if whole {
+                        *width
+                    } else {
+                        measure_word(text, style, self.pass.fonts)
+                    },
+                    hang: if whole {
+                        *hang
+                    } else {
+                        hang_of(text, style, self.pass.fonts)
+                    },
+                    breaks,
+                    offset: piece.offset,
+                    style,
+                    node: *node,
+                    generated: *generated,
+                    decorations: *decorations,
+                })
+            }
             (InlineItem::Open { b, style, .. }, LineItem::Open(..)) => {
                 LineItem::Open(b, style, edge_widths(style, self.cb_width).0)
             }
@@ -716,11 +761,30 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
         } else {
             0.0
         };
+        // A word too wide for the room left is cut at its last
+        // opportunity that fits (D55), or, alone on its line, where
+        // `overflow-wrap` lets it or at its first: the head ends the
+        // line, the rest goes on.
+        let room = self.available_width - self.line_width - gap;
+        if let LineItem::Word(word) = &item
+            && item.width() - item.hang() > room
+            && word.style.white_space.wrap
+            && let Some((head, tail)) = cut_word(word, room, self.line.is_empty(), self.pass.fonts)
+        {
+            self.place(LineItem::Word(head), index, gap_before, can_break);
+            let was_first = self.first.is_some();
+            self.flush(false);
+            let tail = self.settled(LineItem::Word(tail), index, was_first);
+            self.place(tail, index, false, true);
+            return;
+        }
         // Greedy line breaking at a soft-wrap opportunity (M7.3): if
         // this item doesn't fit, start a new line — unless the line is
         // still empty (a solo word wider than `available_width` just
         // overflows; see the module doc's overflow-wrap note).
-        if !self.line.is_empty() && self.line_width + gap + item.width() > self.available_width {
+        if !self.line.is_empty()
+            && self.line_width + gap + item.width() - item.hang() > self.available_width
+        {
             let was_first = self.first.is_some();
             if can_break {
                 self.flush(false);
@@ -1074,7 +1138,7 @@ impl<'a> Collector<'a, '_> {
                 InlineItem::Open {
                     style, gap_before, ..
                 } => reach.room.is_some_and(|room| {
-                    let breaks = style.white_space != WhiteSpace::PRE && *gap_before;
+                    let breaks = style.white_space.wrap && *gap_before;
                     reach.take(edge_widths(style, room).0, style, breaks)
                 }),
                 InlineItem::Close(style) => reach
@@ -1172,12 +1236,12 @@ impl<'a> Collector<'a, '_> {
         if let Some(last) = text.chars().next_back() {
             self.at_word_start = last.is_whitespace();
         }
-        let no_wrap = style.white_space == WhiteSpace::PRE;
-        // `pre`/`pre-wrap`/`pre-line` all keep literal newlines as
-        // forced breaks; only `normal` collapses them away like any
-        // other whitespace (see the module doc for what's *not*
-        // preserved: multi-space run width).
-        let preserves_newlines = style.white_space != WhiteSpace::NORMAL;
+        let no_wrap = !style.white_space.wrap;
+        // Where newlines are kept they are forced breaks; elsewhere they
+        // collapse away like any other white space.
+        let preserves_newlines = style.white_space.preserves_breaks();
+        // Where spaces are kept they are text, each a space wide (D55).
+        let preserves_spaces = style.white_space.preserves_spaces();
         // Always split on literal newlines, even under `normal` (where
         // they're not a forced break — just whitespace like any other,
         // a gap). This is also what keeps `\n` from ever reaching
@@ -1213,15 +1277,61 @@ impl<'a> Collector<'a, '_> {
             // right-to-left via UAX#9 embedding regardless, but the
             // *paragraph's* own direction only follows content when
             // nothing set it, which this engine doesn't yet do.
+            // Kept tabs go to the next tab stop, every eight columns
+            // (`tab-size`'s initial value), the columns counted from the
+            // line's start in this text.
+            let expanded;
+            let line = if preserves_spaces && line.contains('\t') {
+                expanded = expand_tabs(line, TAB_SIZE);
+                expanded.as_str()
+            } else {
+                line
+            };
             let reordered = text::bidi_reorder(line, Some(base_direction));
+            // The line's soft wrap opportunities (UAX #14, D55), within
+            // what is unbroken by collapsible white space.
+            let mut breaks = if no_wrap {
+                Vec::new()
+            } else {
+                text::line_breaks(&reordered, word_breaking(style))
+            };
+            // Under `break-spaces` after every space too (CSS Text 3
+            // section 5.1).
+            if !no_wrap
+                && style.white_space.collapse == style::computed::WhiteSpaceCollapse::BreakSpaces
+            {
+                breaks.extend(
+                    reordered
+                        .char_indices()
+                        .filter(|&(i, c)| c == ' ' && i + 1 < reordered.len())
+                        .map(|(i, _)| i + 1),
+                );
+                breaks.sort_unstable();
+                breaks.dedup();
+            }
+            if preserves_spaces {
+                // Spaces are text: the line is one word, spaces and all,
+                // with its opportunities.
+                let gap_before = std::mem::take(&mut self.space_pending);
+                self.word(b, style, &reordered, no_wrap, gap_before, breaks);
+                continue;
+            }
             // A word runs from a non-space to the next space; it takes
             // the gap pending when it starts, and every space seen,
-            // before, between or after, leaves one pending.
+            // before, between or after, leaves one pending. It takes the
+            // opportunities within it.
             let mut word: Option<(usize, bool)> = None;
             for (i, c) in reordered.char_indices() {
                 if is_css_space(c) {
                     if let Some((start, gap_before)) = word.take() {
-                        self.word(b, style, &reordered[start..i], no_wrap, gap_before);
+                        self.words(
+                            b,
+                            style,
+                            (&reordered, start..i),
+                            &breaks,
+                            no_wrap,
+                            gap_before,
+                        );
                         if self.done {
                             return;
                         }
@@ -1232,9 +1342,36 @@ impl<'a> Collector<'a, '_> {
                 }
             }
             if let Some((start, gap_before)) = word {
-                self.word(b, style, &reordered[start..], no_wrap, gap_before);
+                let end = reordered.len();
+                self.words(
+                    b,
+                    style,
+                    (&reordered, start..end),
+                    &breaks,
+                    no_wrap,
+                    gap_before,
+                );
             }
         }
+    }
+
+    /// The word `range` of `line`, with the opportunities in `breaks`
+    /// within it.
+    fn words(
+        &mut self,
+        b: &'a LayoutBox,
+        style: &'a Arc<ComputedStyle>,
+        (line, range): (&str, std::ops::Range<usize>),
+        breaks: &[usize],
+        no_wrap: bool,
+        gap_before: bool,
+    ) {
+        let within = breaks
+            .iter()
+            .filter(|&&at| at > range.start && at < range.end)
+            .map(|at| at - range.start)
+            .collect();
+        self.word(b, style, &line[range], no_wrap, gap_before, within);
     }
 
     fn word(
@@ -1244,14 +1381,17 @@ impl<'a> Collector<'a, '_> {
         text: &str,
         no_wrap: bool,
         gap_before: bool,
+        breaks: Vec<usize>,
     ) {
         self.gap_placed = false;
         self.push(InlineItem::Word {
             text: text.to_string(),
             width: measure_word(text, style, self.fonts),
+            hang: hang_of(text, style, self.fonts),
             style,
             no_wrap,
             gap_before,
+            breaks,
             node: b.node,
             generated: b.generated,
             decorations: b.decorations.as_ref(),
@@ -1331,9 +1471,7 @@ pub(crate) fn run_intrinsic_widths<'a>(
             } => !no_wrap && !line_empty && (*gap_before || after_atomic),
             InlineItem::Open {
                 style, gap_before, ..
-            } => {
-                style.white_space != WhiteSpace::PRE && !line_empty && (*gap_before || after_atomic)
-            }
+            } => style.white_space.wrap && !line_empty && (*gap_before || after_atomic),
             InlineItem::Atomic { .. } => !line_empty,
             InlineItem::Marker { b, .. } => {
                 !line_empty && matches!(b.kind, BoxKind::Marker { outside: false, .. })
@@ -1353,8 +1491,10 @@ pub(crate) fn run_intrinsic_widths<'a>(
                     ..
                 },
                 InlineItem::Word {
+                    text: piece_text,
                     width: piece_width,
                     style: piece_style,
+                    breaks: piece_breaks,
                     ..
                 },
             ) => {
@@ -1366,11 +1506,45 @@ pub(crate) fn run_intrinsic_widths<'a>(
                         space_width(item.gap_style().unwrap_or(style), fonts)
                     }
                 };
-                piece = if starts_piece {
-                    *piece_width
+                // `overflow-wrap: anywhere` breaks a word at any letter
+                // for the min-content width too (CSS Text 3 section 5.5):
+                // its widest letter is the piece.
+                if piece_style.overflow_wrap == style::computed::OverflowWrap::Anywhere
+                    && piece_style.white_space.wrap
+                {
+                    let mut buf = [0u8; 4];
+                    let widest = piece_text
+                        .chars()
+                        .map(|c| measure_word(c.encode_utf8(&mut buf), piece_style, fonts))
+                        .fold(0.0f32, f32::max);
+                    min = min.max(piece);
+                    piece = widest;
+                } else if !piece_breaks.is_empty() && piece_style.white_space.wrap {
+                    // Its opportunities (D55): the first segment ends the
+                    // piece before it, each one after is a piece, the last
+                    // goes on; spaces hanging at a segment's end count
+                    // for none.
+                    let ends = piece_breaks.iter().copied().chain([piece_text.len()]);
+                    let mut start = 0;
+                    for (n, end) in ends.enumerate() {
+                        let segment = &piece_text[start..end];
+                        let width = measure_word(segment, piece_style, fonts)
+                            - hang_of(segment, piece_style, fonts);
+                        if n == 0 && !starts_piece {
+                            piece += gap(in_piece, piece_style) + width;
+                        } else {
+                            piece = width;
+                        }
+                        min = min.max(piece);
+                        start = end;
+                    }
                 } else {
-                    piece + gap(in_piece, piece_style) + piece_width
-                };
+                    piece = if starts_piece {
+                        *piece_width
+                    } else {
+                        piece + gap(in_piece, piece_style) + piece_width
+                    };
+                }
                 line += gap(in_line, style) + width;
                 line_empty = false;
                 after_atomic = false;
@@ -1501,6 +1675,130 @@ fn apply_text_transform(
             Cow::Owned(out)
         }
     }
+}
+
+/// `tab-size`'s initial value, in spaces.
+const TAB_SIZE: usize = 8;
+
+/// `line` with each tab replaced by the spaces to the next multiple of
+/// `size` columns.
+fn expand_tabs(line: &str, size: usize) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut column = 0;
+    for c in line.chars() {
+        if c == '\t' {
+            let spaces = size - column % size;
+            out.extend(std::iter::repeat_n(' ', spaces));
+            column += spaces;
+        } else {
+            out.push(c);
+            column += 1;
+        }
+    }
+    out
+}
+
+/// The opportunities `style`'s `word-break` gives (D55).
+fn word_breaking(style: &ComputedStyle) -> text::WordBreaking {
+    match style.word_break {
+        style::computed::WordBreak::BreakAll => text::WordBreaking::BreakAll,
+        style::computed::WordBreak::KeepAll => text::WordBreaking::KeepAll,
+        _ => text::WordBreaking::Normal,
+    }
+}
+
+/// Whether `style` lets a word too long for its line break anywhere:
+/// `overflow-wrap: anywhere` or `break-word`, or `word-break:
+/// break-word`.
+fn breaks_anywhere(style: &ComputedStyle) -> bool {
+    style.overflow_wrap != style::computed::OverflowWrap::Normal
+        || style.word_break == style::computed::WordBreak::BreakWord
+}
+
+/// How much of `text`'s width is preserved spaces at its end, which hang
+/// past a line's end (CSS Text 3 section 4.1.3): none under
+/// `break-spaces`, where they wrap, or where spaces collapse.
+fn hang_of(text: &str, style: &ComputedStyle, fonts: &FontCollection) -> f32 {
+    let kept = text.trim_end_matches([' ', '\t']);
+    if kept.len() == text.len()
+        || !style.white_space.preserves_spaces()
+        || style.white_space.collapse == style::computed::WhiteSpaceCollapse::BreakSpaces
+    {
+        return 0.0;
+    }
+    measure_word(text, style, fonts) - measure_word(kept, style, fonts)
+}
+
+/// `word` cut for a line with `room` left (D55): at its last opportunity
+/// whose head fits; alone on its line (`alone`), where `overflow-wrap`
+/// lets it, else at its first opportunity. `None` where it is not cut.
+fn cut_word<'i>(
+    word: &LineWord<'i>,
+    room: f32,
+    alone: bool,
+    fonts: &FontCollection,
+) -> Option<(LineWord<'i>, LineWord<'i>)> {
+    let end = word.offset + word.text.len();
+    let within: Vec<usize> = word
+        .breaks
+        .iter()
+        .copied()
+        .filter(|&at| at > word.offset && at < end)
+        .map(|at| at - word.offset)
+        .collect();
+    let fits = within.iter().rev().copied().find(|&at| {
+        let head = &word.text[..at];
+        measure_word(head, word.style, fonts) - hang_of(head, word.style, fonts) <= room
+    });
+    let at = match fits {
+        Some(at) => at,
+        None if !alone => return None,
+        None if breaks_anywhere(word.style) => return split_to_fit(word, room, fonts),
+        None => *within.first()?,
+    };
+    Some(split_at(word, at, fonts))
+}
+
+/// `word` in two at byte `at` of its text.
+fn split_at<'i>(
+    word: &LineWord<'i>,
+    at: usize,
+    fonts: &FontCollection,
+) -> (LineWord<'i>, LineWord<'i>) {
+    let (head, tail) = word.text.split_at(at);
+    let piece = |text: &'i str, offset: usize| LineWord {
+        text,
+        width: measure_word(text, word.style, fonts),
+        hang: hang_of(text, word.style, fonts),
+        offset,
+        ..*word
+    };
+    (piece(head, word.offset), piece(tail, word.offset + at))
+}
+
+/// `word` cut where it reaches `room`: the characters that fit, at least
+/// one, and the rest; `None` for a word of one character.
+fn split_to_fit<'i>(
+    word: &LineWord<'i>,
+    room: f32,
+    fonts: &FontCollection,
+) -> Option<(LineWord<'i>, LineWord<'i>)> {
+    let mut ends = word.text.char_indices().map(|(i, _)| i).skip(1).peekable();
+    ends.peek()?;
+    let mut cut = None;
+    for end in ends {
+        if measure_word(&word.text[..end], word.style, fonts) > room {
+            break;
+        }
+        cut = Some(end);
+    }
+    let cut = cut.unwrap_or_else(|| {
+        word.text
+            .char_indices()
+            .nth(1)
+            .map_or(word.text.len(), |(i, _)| i)
+    });
+    Some(split_at(word, cut, fonts))
 }
 
 /// A space's width plus `word-spacing` (M8.4) — the gap between two
@@ -2133,6 +2431,9 @@ fn emit_letter_spaced(
         let one = LineWord {
             text: ch_str,
             width: w,
+            hang: 0.0,
+            breaks: &[],
+            offset: 0,
             style: word.style,
             node: word.node,
             generated: word.generated,
@@ -2156,6 +2457,7 @@ fn emit_letter_spaced(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use style::computed::WhiteSpace;
 
     /// The bundled test font, so that every machine measures the same.
     fn test_fonts() -> FontCollection {
@@ -2746,6 +3048,192 @@ mod tests {
         );
     }
 
+    /// The lines of `text` in `style` at 16px laid out `width` wide: each
+    /// line's texts, joined.
+    fn lines_of(text: &str, style: ComputedStyle, width: f32) -> Vec<String> {
+        let fonts = test_fonts();
+        let style = ComputedStyle {
+            font_size_px: 16.0,
+            ..style
+        };
+        let (fragments, _) = lay(
+            &[styled_text_box(text, style)],
+            width,
+            TextAlign::Left,
+            &fonts,
+        );
+        let mut lines: Vec<(f32, String)> = Vec::new();
+        for f in &fragments {
+            let FragmentKind::Text(t) = &f.kind else {
+                continue;
+            };
+            match lines.last_mut() {
+                Some((y, line)) if *y == f.y => {
+                    line.push('|');
+                    line.push_str(t);
+                }
+                _ => lines.push((f.y, t.clone())),
+            }
+        }
+        lines.into_iter().map(|(_, line)| line).collect()
+    }
+
+    #[test]
+    fn lines_break_where_uax_14_lets_them_and_where_white_space_says() {
+        // D55.
+        let fonts = test_fonts();
+        let w = |s: &str| fonts.measure(s, 16.0);
+        let normal = ComputedStyle::default();
+        // After a hyphen, within a word.
+        assert_eq!(
+            lines_of("well-known", normal.clone(), w("known") + 1.0),
+            ["well-", "known"]
+        );
+        // `nowrap` keeps a line whole; collapsible spaces still collapse.
+        let nowrap = ComputedStyle {
+            white_space: WhiteSpace::NOWRAP,
+            ..ComputedStyle::default()
+        };
+        assert_eq!(lines_of("aa   bb", nowrap, 1.0), ["aa|bb"]);
+        // `pre-wrap` keeps spaces, which hang at a line's end; under
+        // `break-spaces` they take room and wrap.
+        let wrap = |white_space| ComputedStyle {
+            white_space,
+            ..ComputedStyle::default()
+        };
+        let room = w("aaaa") + 1.0;
+        assert_eq!(
+            lines_of("aaaa    bbbb", wrap(WhiteSpace::PRE_WRAP), room),
+            ["aaaa    ", "bbbb"]
+        );
+        assert_eq!(
+            lines_of(
+                "aaaa  bbbb",
+                wrap(WhiteSpace::BREAK_SPACES),
+                w("aaaa ") + 1.0
+            ),
+            ["aaaa ", " bbbb"]
+        );
+        // `word-break: break-all` breaks between letters.
+        let break_all = ComputedStyle {
+            word_break: style::computed::WordBreak::BreakAll,
+            ..ComputedStyle::default()
+        };
+        // A word cut only where a line breaks: each line one fragment.
+        assert_eq!(lines_of("aaaa", break_all, w("aa") + 0.5), ["aa", "aa"]);
+        // A word too long for its line overflows, unless `overflow-wrap`
+        // breaks it where the line ends.
+        assert_eq!(lines_of("aaaaa", normal, w("aa") + 0.5), ["aaaaa"]);
+        for overflow_wrap in [
+            style::computed::OverflowWrap::Anywhere,
+            style::computed::OverflowWrap::BreakWord,
+        ] {
+            let style = ComputedStyle {
+                overflow_wrap,
+                ..ComputedStyle::default()
+            };
+            assert_eq!(lines_of("aaaaa", style, w("aa") + 0.5), ["aa", "aa", "a"]);
+        }
+        let style = ComputedStyle {
+            word_break: style::computed::WordBreak::BreakWord,
+            ..ComputedStyle::default()
+        };
+        assert_eq!(
+            lines_of("aaa", style, 1.0),
+            ["a", "a", "a"],
+            "a letter at least"
+        );
+    }
+
+    #[test]
+    fn white_space_keeps_newlines_wraps_and_hangs_as_its_longhands_say() {
+        let fonts = test_fonts();
+        let w = |s: &str| fonts.measure(s, 16.0);
+        // `nowrap` collapses newlines as `normal` does.
+        let nowrap = ComputedStyle {
+            white_space: WhiteSpace::NOWRAP,
+            ..ComputedStyle::default()
+        };
+        assert_eq!(lines_of("aa\nbb", nowrap, 400.0), ["aa|bb"]);
+        // `keep-all` keeps ideographs together; normally each may break.
+        let cjk = "\u{65e5}\u{672c}\u{8a9e}";
+        let keep_all = ComputedStyle {
+            word_break: style::computed::WordBreak::KeepAll,
+            ..ComputedStyle::default()
+        };
+        assert_eq!(lines_of(cjk, ComputedStyle::default(), 1.0).len(), 3);
+        assert_eq!(lines_of(cjk, keep_all, 1.0).len(), 1);
+        // Spaces kept at the end of a line hang after what is on it.
+        let normal = ComputedStyle {
+            font_size_px: 16.0,
+            ..ComputedStyle::default()
+        };
+        let pre_wrap = ComputedStyle {
+            white_space: WhiteSpace::PRE_WRAP,
+            ..normal.clone()
+        };
+        let (fragments, _) = lay(
+            &[
+                styled_text_box("x ", normal),
+                styled_text_box("aaaa    ", pre_wrap),
+            ],
+            w("x aaaa") + 1.0,
+            TextAlign::Left,
+            &fonts,
+        );
+        let ys: Vec<f32> = fragments.iter().map(|f| f.y).collect();
+        assert!(ys.iter().all(|&y| y == ys[0]), "one line: {ys:?}");
+    }
+
+    #[test]
+    fn kept_tabs_go_to_the_next_stop_of_eight_columns() {
+        assert_eq!(expand_tabs("\tab", 8), "        ab");
+        assert_eq!(expand_tabs("    \tx", 8), "        x");
+        assert_eq!(expand_tabs("abcdefgh\ti", 8), "abcdefgh        i");
+        assert_eq!(expand_tabs("a\t\tb", 4), "a       b");
+        let pre = ComputedStyle {
+            white_space: WhiteSpace::PRE,
+            ..ComputedStyle::default()
+        };
+        assert_eq!(lines_of("a\tb", pre, 400.0), ["a       b"]);
+    }
+
+    #[test]
+    fn a_words_first_segment_joins_what_it_is_glued_to() {
+        // D55: "xx" and "yy-zz" set flush; the min-content piece is
+        // "xxyy-", where the line may first break.
+        let fonts = test_fonts();
+        let w = |s: &str| fonts.measure(s, 16.0);
+        let run = [text_box("xx", 16.0), text_box("yy-zz", 16.0)];
+        let items = collect_inline_items(&run, &fonts);
+        let (min, _) = run_intrinsic_widths(&items, None, &Pass::new(&fonts));
+        assert_eq!(min, w("xx") + w("yy-"));
+        // After a gap it starts a piece of its own.
+        let run = [text_box("a bb-cc", 16.0)];
+        let items = collect_inline_items(&run, &fonts);
+        let (min, _) = run_intrinsic_widths(&items, None, &Pass::new(&fonts));
+        assert_eq!(min, w("bb-"));
+    }
+
+    #[test]
+    fn overflow_wrap_anywhere_counts_toward_the_min_content_width() {
+        let fonts = test_fonts();
+        let w = |s: &str| fonts.measure(s, 16.0);
+        let min = |overflow_wrap| {
+            let style = ComputedStyle {
+                overflow_wrap,
+                font_size_px: 16.0,
+                ..ComputedStyle::default()
+            };
+            let run = [styled_text_box("mmm ii", style)];
+            let items = collect_inline_items(&run, &fonts);
+            run_intrinsic_widths(&items, None, &Pass::new(&fonts)).0
+        };
+        assert_eq!(min(style::computed::OverflowWrap::Normal), w("mmm"));
+        assert_eq!(min(style::computed::OverflowWrap::BreakWord), w("mmm"));
+        assert_eq!(min(style::computed::OverflowWrap::Anywhere), w("m"));
+    }
+
     #[test]
     fn white_space_pre_never_wraps_even_when_too_narrow() {
         let fonts = test_fonts();
@@ -2757,17 +3245,17 @@ mod tests {
             ..ComputedStyle::default()
         };
         // Same narrow width that forces 3 separate lines under `normal`
-        // (see `narrow_width_wraps_each_word_onto_its_own_line`) — under
-        // `pre`, it must still be exactly one line.
+        // (see `narrow_width_wraps_each_word_onto_its_own_line`): under
+        // `pre`, one line, its spaces kept as text (D55), each a space
+        // wide, a run of them too.
         let (fragments, _) = lay(
-            &[styled_text_box("aaaa bbbb cccc", style)],
+            &[styled_text_box("aaaa bbbb  cccc", style)],
             word_width + 1.0,
             TextAlign::Left,
             &fonts,
         );
-        assert_eq!(texts_of(&fragments), vec!["aaaa", "bbbb", "cccc"]);
-        assert_eq!(fragments[0].y, fragments[1].y);
-        assert_eq!(fragments[1].y, fragments[2].y);
+        assert_eq!(texts_of(&fragments), vec!["aaaa bbbb  cccc"]);
+        assert_eq!(fragments[0].w, fonts.measure("aaaa bbbb  cccc", 16.0));
     }
 
     #[test]
@@ -3191,7 +3679,7 @@ mod tests {
         for room in [Some(0.0), None] {
             assert_eq!(
                 shapes(&collect_first_line_items(&run, &fonts, room)),
-                ["aa@32", "bb@32", "<", "cc@32", ">", "/"]
+                ["aa bb @32", "<", "cc@32", ">", "/"]
             );
         }
     }

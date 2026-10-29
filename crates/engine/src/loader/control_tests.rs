@@ -303,7 +303,8 @@ fn controls_show_their_values_labels_and_choices() {
          document.getElementById('a').value = 'new area';",
     );
     let shown = texts(&mut tab);
-    for text in ["changed", "typed", "two", "new"] {
+    // A field's spaces are kept: its text one run (D55).
+    for text in ["changed", "typed", "two", "new area"] {
         assert!(shown.iter().any(|t| t == text), "{text}: {shown:?}");
     }
     assert!(
@@ -434,7 +435,7 @@ fn a_fields_text_stays_on_one_line() {
         .filter(|f| f.node == t && matches!(f.kind, layout::FragmentKind::Text(_)))
         .map(|f| f.y)
         .collect();
-    assert!(lines.len() > 1, "{lines:?}");
+    assert!(!lines.is_empty(), "{lines:?}");
     assert!(lines.iter().all(|&y| y == lines[0]), "one line: {lines:?}");
 }
 

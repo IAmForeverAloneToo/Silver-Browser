@@ -10,6 +10,7 @@ rustybuzz.workspace = true
 self_cell.workspace = true
 ab_glyph.workspace = true
 flate2.workspace = true
+icu_segmenter.workspace = true
 ttf-parser.workspace = true
 unicode-bidi.workspace = true
 unicode-script.workspace = true

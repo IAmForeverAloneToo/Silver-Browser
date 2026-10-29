@@ -27,7 +27,7 @@
 //! inline keeps its style, as do the boxes in it; a float or an
 //! absolutely positioned box is not on the line.
 
-use style::computed::{LEFT, LengthPercentage, LengthPercentageAuto, RIGHT, WhiteSpace};
+use style::computed::{LEFT, LengthPercentage, LengthPercentageAuto, RIGHT};
 use style::selector_matching::PseudoElement;
 use style::{ComputedStyle, Recascade};
 
@@ -115,12 +115,15 @@ pub(super) fn in_blocks(children: &[LayoutBox], path: &mut Vec<usize>) -> Found 
 fn has_line(items: &[LayoutBox]) -> bool {
     items.iter().any(|b| match &b.kind {
         BoxKind::Text(text) => {
-            let breaks_kept = matches!(
-                b.style.white_space,
-                WhiteSpace::PRE | WhiteSpace::PRE_WRAP | WhiteSpace::PRE_LINE
+            let (breaks_kept, spaces_kept) = (
+                b.style.white_space.preserves_breaks(),
+                b.style.white_space.preserves_spaces(),
             );
-            text.chars()
-                .any(|c| !crate::inline::is_css_space(c) || (c == '\n' && breaks_kept))
+            text.chars().any(|c| {
+                !crate::inline::is_css_space(c)
+                    || (c == '\n' && breaks_kept)
+                    || (c != '\n' && spaces_kept)
+            })
         }
         BoxKind::Inline => has_edges(&b.style) || has_line(&b.children),
         // An inside marker drawn as a shape is an item on the line; an

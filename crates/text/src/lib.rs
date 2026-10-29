@@ -21,11 +21,13 @@
 
 #![forbid(unsafe_code)]
 
+mod breaks;
 pub mod edit;
 mod faces;
 mod web;
 mod woff;
 
+pub use breaks::{WordBreaking, line_breaks};
 pub use faces::{FaceId, FaceRecord, Font, FontRequest, MAX_CHOICES, SYNTHETIC_SKEW, Slant};
 pub use web::{DocumentFaces, FaceRule, FaceState, MAX_FONT_BYTES, MAX_FONT_FACES, is_font};
 
@@ -371,6 +373,33 @@ impl FontStore {
     /// Returns an empty vector if the face cannot be constructed — never
     /// panics on untrusted input.
     pub fn shape(&self, text: &str, font_size_px: f32) -> Vec<ShapedGlyph> {
+        // The white space at the ends of a run in visual order stays at
+        // its end whichever way the rest reads (D55: kept spaces after a
+        // right-to-left word): each part shaped apart, side by side.
+        let core = text.trim_matches(char::is_whitespace);
+        if !core.is_empty() && core.len() < text.len() {
+            let start = text.len() - text.trim_start_matches(char::is_whitespace).len();
+            let parts = [&text[..start], core, &text[start + core.len()..]];
+            let mut out = Vec::new();
+            let mut pen_x = 0.0f32;
+            for part in parts.into_iter().filter(|part| !part.is_empty()) {
+                out.extend(
+                    self.shape_run(part, font_size_px)
+                        .into_iter()
+                        .map(|g| ShapedGlyph {
+                            x: g.x + pen_x,
+                            ..g
+                        }),
+                );
+                pen_x += self.measure(part, font_size_px);
+            }
+            return out;
+        }
+        self.shape_run(text, font_size_px)
+    }
+
+    /// [`FontStore::shape`] of one run, shaped whole.
+    fn shape_run(&self, text: &str, font_size_px: f32) -> Vec<ShapedGlyph> {
         let Some((face, shaped)) = self.shape_raw(text) else {
             return Vec::new();
         };
@@ -458,6 +487,19 @@ impl FontStore {
         let mut buffer = rustybuzz::UnicodeBuffer::new();
         buffer.push_str(text);
         buffer.guess_segment_properties();
+        // The text is in visual order already; a run with no letter that
+        // reads right to left, digits of an Arabic script among them, is
+        // shaped left to right, so that its spaces stay where they are.
+        if buffer.direction() == rustybuzz::Direction::RightToLeft
+            && !text.chars().any(|c| {
+                matches!(
+                    unicode_bidi::bidi_class(c),
+                    unicode_bidi::BidiClass::R | unicode_bidi::BidiClass::AL
+                )
+            })
+        {
+            buffer.set_direction(rustybuzz::Direction::LeftToRight);
+        }
         let plan = self.plan(face, &buffer);
         let shaped = rustybuzz::shape_with_plan(face, &plan, buffer);
         Some((face, shaped))
@@ -2219,6 +2261,33 @@ mod tests {
             );
         }
         assert_eq!(bidi_reorder("one\u{2029}two", None), "one\u{2029}two");
+    }
+
+    #[test]
+    fn spaces_at_the_ends_of_a_right_to_left_run_stay_at_its_ends() {
+        let store = test_store();
+        use ab_glyph::Font as _;
+        let space = store.glyph_font().glyph_id(' ').0;
+        let glyphs = store.shape("\u{5d0}\u{5d1}. ", 16.0);
+        assert_ne!(glyphs.first().map(|g| g.glyph_id), Some(space));
+        assert_eq!(glyphs.last().map(|g| g.glyph_id), Some(space));
+        assert!(glyphs.windows(2).all(|w| w[0].x <= w[1].x));
+        assert_eq!(store.shape("   ", 16.0).len(), 3);
+    }
+
+    #[test]
+    fn a_run_of_digits_of_an_arabic_script_is_shaped_left_to_right() {
+        // Its glyphs from the left in the text's order, the space last.
+        let store = test_store();
+        let glyphs = store.shape("\u{661}\u{662}. ", 16.0);
+        let font = store.glyph_font();
+        use ab_glyph::Font as _;
+        let ids: Vec<u16> = ['\u{661}', '\u{662}', '.', ' ']
+            .iter()
+            .map(|&c| font.glyph_id(c).0)
+            .collect();
+        assert_eq!(glyphs.iter().map(|g| g.glyph_id).collect::<Vec<_>>(), ids);
+        assert!(glyphs.windows(2).all(|w| w[0].x <= w[1].x));
     }
 
     #[test]

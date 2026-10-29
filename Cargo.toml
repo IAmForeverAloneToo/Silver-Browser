@@ -84,6 +84,9 @@ rayon = "1.12"
 ab_glyph = "0.2"
 ttf-parser = "0.25"
 unicode-bidi = "0.3"
+# UAX #14 line breaking (gap batch D, D55), the ICU4X major version idna
+# brings already, with its compiled data.
+icu_segmenter = "~2.3.0"
 unicode-script = "0.5"
 # The Unicode general category, for the first-letter pattern (M16,
 # docs/design/selectors-pseudo.md); already in the tree through the
