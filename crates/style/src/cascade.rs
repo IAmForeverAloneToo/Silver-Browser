@@ -146,11 +146,15 @@ mod images;
 mod lists;
 mod motion;
 mod page;
+mod presentational;
 mod svg;
 
 use animated::Animated;
-pub(crate) use images::is_img_hint;
+pub(crate) use images::{is_frame_hint, is_img_hint};
 pub(crate) use lists::is_list_hint;
+pub(crate) use presentational::{
+    is_presentational_hint, reaches_descendants as presentational_reaches_descendants,
+};
 pub(crate) use svg::is_svg_hint;
 
 /// The built-in default stylesheet (M5.6), compiled in — loading it is
@@ -2603,6 +2607,7 @@ fn hint_declarations(document: &Document, element: NodeId) -> Vec<css::Declarati
         lists::list_hints(tag, attr)
             + &images::img_hints(tag, attr)
             + &images::frame_hints(tag, attr)
+            + &presentational::hints(document, element, tag)
     });
     let svg_hints = match (document.svg_tag(element), document.attrs(element)) {
         (Some(tag), Some(attrs)) => svg::svg_hints(tag, attrs),
@@ -3468,26 +3473,37 @@ fn apply_declaration(
             }
             None => false,
         },
-        "text-align" => match parse_text_align(value) {
-            Some(TextAlignValue::JustifyAll) => {
-                style.text_align = TextAlign::Justify;
-                style.text_align_last = TextAlignLast::Align(TextAlign::Justify);
-                true
-            }
-            Some(TextAlignValue::MatchParent) => {
-                style.text_align = parent.text_align.matched(parent.direction);
-                style.text_align_last = matched_last(parent);
-                true
-            }
-            Some(TextAlignValue::Align(align)) => {
-                style.text_align = align;
-                style.text_align_last = TextAlignLast::Auto;
-                true
-            }
-            None => false,
-        },
+        "text-align" => {
+            let legacy = match parse_text_align(value) {
+                Some(TextAlignValue::JustifyAll) => {
+                    style.text_align = TextAlign::Justify;
+                    style.text_align_last = TextAlignLast::Align(TextAlign::Justify);
+                    crate::computed::LegacyAlign::None
+                }
+                Some(TextAlignValue::MatchParent) => {
+                    style.text_align = parent.text_align.matched(parent.direction);
+                    style.text_align_last = matched_last(parent);
+                    parent.legacy_align
+                }
+                Some(TextAlignValue::Align(align)) => {
+                    style.text_align = align;
+                    style.text_align_last = TextAlignLast::Auto;
+                    crate::computed::LegacyAlign::None
+                }
+                Some(TextAlignValue::Legacy(align, legacy)) => {
+                    style.text_align = align;
+                    style.text_align_last = TextAlignLast::Auto;
+                    legacy
+                }
+                None => return false,
+            };
+            style.legacy_align = legacy;
+            true
+        }
         "text-align-all" => match parse_text_align(value) {
-            Some(TextAlignValue::Align(align)) => set(&mut style.text_align, Some(align)),
+            Some(TextAlignValue::Align(align) | TextAlignValue::Legacy(align, _)) => {
+                set(&mut style.text_align, Some(align))
+            }
             Some(TextAlignValue::MatchParent) => set(
                 &mut style.text_align,
                 Some(parent.text_align.matched(parent.direction)),
@@ -3497,7 +3513,7 @@ fn apply_declaration(
         "text-align-last" => match single_ident(value).map(str::to_ascii_lowercase).as_deref() {
             Some("auto") => set(&mut style.text_align_last, Some(TextAlignLast::Auto)),
             _ => match parse_text_align(value) {
-                Some(TextAlignValue::Align(align)) => set(
+                Some(TextAlignValue::Align(align) | TextAlignValue::Legacy(align, _)) => set(
                     &mut style.text_align_last,
                     Some(TextAlignLast::Align(align)),
                 ),
@@ -4039,8 +4055,25 @@ fn apply_declaration(
 }
 
 /// A `font-size` (CSS2 §15.7): a non-negative length, or a percentage
-/// of the parent's font size, which is `bases.em` here.
+/// of the parent's font size, which is `bases.em` here; or a keyword
+/// (D60): an absolute size, the reference browser's at a `medium` of
+/// 16px, or `larger` and `smaller`, the parent's by 1.2.
 fn parse_font_size(value: &[Token], bases: &LengthBases<'_>) -> Option<f32> {
+    if let Some(word) = single_ident(value) {
+        return Some(match word.to_ascii_lowercase().as_str() {
+            "xx-small" => 9.0,
+            "x-small" => 10.0,
+            "small" => 13.0,
+            "medium" => 16.0,
+            "large" => 18.0,
+            "x-large" => 24.0,
+            "xx-large" => 32.0,
+            "xxx-large" => 48.0,
+            "larger" => bases.em * 1.2,
+            "smaller" => bases.em / 1.2,
+            _ => return None,
+        });
+    }
     if let Some(calc::Computed::Value(px)) = math(
         value,
         Want::LengthPercentage,
@@ -4553,6 +4586,7 @@ fn apply_css_wide(
         "text-align" => {
             style.text_align = src.text_align;
             style.text_align_last = src.text_align_last;
+            style.legacy_align = src.legacy_align;
         }
         "text-align-all" => style.text_align = src.text_align,
         "text-align-last" => style.text_align_last = src.text_align_last,
@@ -6116,6 +6150,8 @@ enum TextAlignValue {
     Align(TextAlign),
     MatchParent,
     JustifyAll,
+    /// `-webkit-left`, `-webkit-right`, `-webkit-center` (D60).
+    Legacy(TextAlign, crate::computed::LegacyAlign),
 }
 
 fn parse_text_align(tokens: &[Token]) -> Option<TextAlignValue> {
@@ -6127,6 +6163,15 @@ fn parse_text_align(tokens: &[Token]) -> Option<TextAlignValue> {
         "center" => TextAlignValue::Align(TextAlign::Center),
         "justify" => TextAlignValue::Align(TextAlign::Justify),
         "match-parent" => TextAlignValue::MatchParent,
+        "-webkit-left" => {
+            TextAlignValue::Legacy(TextAlign::Left, crate::computed::LegacyAlign::Left)
+        }
+        "-webkit-right" => {
+            TextAlignValue::Legacy(TextAlign::Right, crate::computed::LegacyAlign::Right)
+        }
+        "-webkit-center" => {
+            TextAlignValue::Legacy(TextAlign::Center, crate::computed::LegacyAlign::Center)
+        }
         "justify-all" => TextAlignValue::JustifyAll,
         _ => return None,
     })

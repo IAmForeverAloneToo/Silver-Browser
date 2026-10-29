@@ -133,6 +133,11 @@ pub(super) fn img_hints(tag: &str, attr: impl Fn(&str) -> Option<String>) -> Str
     out
 }
 
+/// Whether `name` on an element named `tag` is one of a frame's hints.
+pub(crate) fn is_frame_hint(tag: &str, name: &str) -> bool {
+    tag == "iframe" && matches!(name, "width" | "height" | "frameborder")
+}
+
 /// The presentational hints of an `iframe` (M33.2, HTML sections 15.4.3
 /// and 15.4.4): its `width` and `height` map to the dimension
 /// properties, with no ratio, and a `frameborder` that parses as the

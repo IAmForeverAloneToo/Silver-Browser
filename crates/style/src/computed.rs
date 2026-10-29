@@ -498,6 +498,20 @@ impl TextAlign {
     }
 }
 
+/// The legacy `text-align` values (`-webkit-left`, `-webkit-right`,
+/// `-webkit-center`, gap batch D, D60): aligned as `left`, `right` and
+/// `center`, and a block child whose inline margins are not `auto` is
+/// placed by them too, as the reference browser does for HTML's `align`
+/// and `<center>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LegacyAlign {
+    #[default]
+    None,
+    Left,
+    Right,
+    Center,
+}
+
 /// `text-align-last`'s computed value (css-text-3 §7.2, M21.7): how the
 /// last line of a block and a line before a forced break are aligned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3252,6 +3266,11 @@ pub struct ComputedStyle {
     pub word_break: WordBreak,
     /// `visibility` (D56), inherited.
     pub visibility: Visibility,
+    /// The legacy `text-align` value this element's `text-align` is, if
+    /// any (D60), inherited with it.
+    pub legacy_align: LegacyAlign,
+    /// Its parent's [`LegacyAlign`]: how it is placed in its parent.
+    pub placed_by: LegacyAlign,
     /// `letter-spacing`, CSS pixels, extra space after each character —
     /// inherited. `0.0` (the initial value) is the common case, kept
     /// cheap: `layout::inline` only splits a word into per-character
@@ -3482,6 +3501,8 @@ impl Default for ComputedStyle {
             overflow_wrap: OverflowWrap::Normal,
             word_break: WordBreak::Normal,
             visibility: Visibility::Visible,
+            legacy_align: LegacyAlign::None,
+            placed_by: LegacyAlign::None,
             letter_spacing: 0.0,
             word_spacing: 0.0,
             direction: Direction::Ltr,
@@ -3844,6 +3865,8 @@ impl ComputedStyle {
             overflow_wrap: from.overflow_wrap,
             word_break: from.word_break,
             visibility: from.visibility,
+            legacy_align: from.legacy_align,
+            placed_by: from.legacy_align,
             letter_spacing: from.letter_spacing,
             word_spacing: from.word_spacing,
             direction: from.direction,
@@ -4031,9 +4054,11 @@ mod tests {
         // padding: 800 before them. The corners' radii (D50) a pointer:
         // 808 before them. The font properties past the size (D53) a
         // pointer, with the family moved behind it from a wide one: 816
-        // before them. Growing this is a decision, not an accident; say
-        // why where the number changes.
-        assert_eq!(std::mem::size_of::<ComputedStyle>(), 808);
+        // before them. The legacy `text-align` and how the parent's
+        // places the box (D60), two bytes past the padding: 808 before
+        // them. Growing this is a decision, not an accident; say why where
+        // the number changes.
+        assert_eq!(std::mem::size_of::<ComputedStyle>(), 816);
         assert_eq!(ComputedStyle::default().grid, None);
         assert_eq!(*ComputedStyle::default().grid(), GridStyle::default());
         assert_eq!(ComputedStyle::default().effects, None);

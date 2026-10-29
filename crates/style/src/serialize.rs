@@ -265,7 +265,12 @@ pub fn computed_value(style: &ComputedStyle, name: &str) -> Option<String> {
             (Display::ListItem, true) => "flow-root list-item".to_owned(),
             (other, _) => display(other).to_owned(),
         },
-        "text-align" => text_align(style.text_align).to_owned(),
+        "text-align" => match style.legacy_align {
+            crate::computed::LegacyAlign::Left => "-webkit-left".to_owned(),
+            crate::computed::LegacyAlign::Right => "-webkit-right".to_owned(),
+            crate::computed::LegacyAlign::Center => "-webkit-center".to_owned(),
+            crate::computed::LegacyAlign::None => text_align(style.text_align).to_owned(),
+        },
         "text-transform" => match style.text_transform {
             TextTransform::None => "none",
             TextTransform::Uppercase => "uppercase",

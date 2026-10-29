@@ -83,8 +83,8 @@ use std::sync::Arc;
 use dom::NodeId;
 
 use style::computed::{
-    BOTTOM, BoxSizing, Clear, ComputedStyle, Direction, Display, Float, LEFT, LengthPercentage,
-    LengthPercentageAuto, ListStylePosition, MaxSize, Position, RIGHT, Size, TOP,
+    BOTTOM, BoxSizing, Clear, ComputedStyle, Direction, Display, Float, LEFT, LegacyAlign,
+    LengthPercentage, LengthPercentageAuto, ListStylePosition, MaxSize, Position, RIGHT, Size, TOP,
 };
 use style::selector_matching::PseudoElement;
 use style::transform::{Matrix, ReferenceBox};
@@ -941,6 +941,16 @@ fn tentative_width(
             (w, half, half)
         }
         (true, false) if !overflows => (w, remaining - fixed_right, fixed_right),
+        // Neither `auto`: a parent's legacy alignment places it (D60).
+        (false, false) if !overflows && style.placed_by != LegacyAlign::None => {
+            let free = remaining - fixed_left - fixed_right;
+            let left = match style.placed_by {
+                LegacyAlign::Center => fixed_left + free / 2.0,
+                LegacyAlign::Right => fixed_left + free,
+                _ => fixed_left,
+            };
+            (w, left, remaining - left)
+        }
         _ => {
             // Over-constrained (both specified, or overflowing): per the
             // ltr rule, margin-right is recomputed regardless of its
@@ -3127,6 +3137,30 @@ mod tests {
         assert_eq!(frags.len(), 1);
         let f = &frags[0];
         assert_eq!((f.x, f.y, f.w, f.h), (0.0, 0.0, VIEWPORT, 0.0));
+    }
+
+    #[test]
+    fn a_legacy_alignment_places_block_children_whose_margins_are_not_auto() {
+        // D60: `<div align=center>` centres a child of a given width; a
+        // child with an `auto` margin keeps its own; the box itself is
+        // not moved by its own alignment.
+        let root = Element::new("div")
+            .push(Element::new("p").text("x"))
+            .push(Element::new("span").text("y"));
+        let frags = fragments_of(
+            root,
+            "div { margin: 0; width: 300px; text-align: -webkit-center } \
+             p { margin: 0; width: 100px } span { display: block; width: 100px; margin: 0 auto 0 0 }",
+        );
+        let boxes = box_fragments(&frags);
+        assert_eq!(boxes[0].x, 0.0);
+        assert_eq!(boxes[1].x, 100.0);
+        assert_eq!(boxes[2].x, 0.0);
+        let right = fragments_of(
+            Element::new("div").push(Element::new("p").text("x")),
+            "div { margin: 0; width: 300px; text-align: -webkit-right } p { margin: 0 10px; width: 100px }",
+        );
+        assert_eq!(box_fragments(&right)[1].x, 190.0);
     }
 
     #[test]

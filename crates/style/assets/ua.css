@@ -129,6 +129,12 @@ listing, main, menu, nav, plaintext, search, section, summary, xmp {
   display: block;
 }
 
+/* `hidden` (HTML section 15.3.1), and `<center>` and the table's
+ * defaults the presentational hints build on (D60). */
+[hidden]:not([hidden=until-found i]) { display: none; }
+center { text-align: -webkit-center; }
+table { border-color: gray; }
+
 dl { margin: 1em 0; }
 dd { margin-left: 40px; }
 hr { margin: 8px 0; border-width: 1px; border-style: solid; }

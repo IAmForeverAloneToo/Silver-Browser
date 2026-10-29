@@ -616,10 +616,19 @@ pub(crate) fn invalidate(
                     at = document.next_element_sibling(sibling);
                 }
             }
+        } else if tag
+            .is_some_and(|tag| crate::cascade::presentational_reaches_descendants(tag, name))
+        {
+            // A table's `border` and `cellpadding` its cells read, and
+            // `body`'s `link` its links (D60).
+            out.mark(document, element, Reach::Subtree);
         } else if name == "style"
             || name == "dir"
             || tag.is_some_and(|tag| {
-                crate::cascade::is_list_hint(tag, name) || crate::cascade::is_img_hint(tag, name)
+                crate::cascade::is_list_hint(tag, name)
+                    || crate::cascade::is_img_hint(tag, name)
+                    || crate::cascade::is_frame_hint(tag, name)
+                    || crate::cascade::is_presentational_hint(tag, name)
             })
             || document
                 .svg_tag(element)
@@ -1034,6 +1043,29 @@ mod tests {
             d.set_attribute(z, "start", "4").unwrap();
         });
         assert_eq!(r.computed, 0);
+    }
+
+    #[test]
+    fn a_presentational_attribute_restyles_its_element_or_what_reads_it() {
+        // D60: `bgcolor` on a cell restyles the cell; `cellpadding` on a
+        // table its cells too; `hidden` the element.
+        let (mut d, sheets, mut styles) = setup(
+            "<table id=t><tr><td id=c>a</td><td>b</td></tr></table><p id=p>p</p>",
+            "",
+        );
+        let (t, c, p) = (by_id(&d, "t"), by_id(&d, "c"), by_id(&d, "p"));
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(c, "bgcolor", "red").unwrap();
+        });
+        assert_eq!(r.changed.len(), 1);
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(t, "cellpadding", "4").unwrap();
+        });
+        assert_eq!(r.changed.len(), 2, "both cells");
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(p, "hidden", "").unwrap();
+        });
+        assert_eq!(r.changed.len(), 1);
     }
 
     #[test]
