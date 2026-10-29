@@ -51,8 +51,8 @@ use crate::{
     Backend, Clip, Drawn, GlyphCache, Layer, LayerInfo, Layered, Layers, MAX_FRAME_PIXELS,
     MAX_PARTIAL_SIDE, PixelRect, Pixels, Redrawn, RenderBackend, State, Store, Tile, Turned,
     clip_polygon, contours_coverage, damaged, fits_a_frame, group_end, landing_of, mapped_mask,
-    outward_clip, raster_scale, reach, reach_at, scratch_region, shadow_item_coverage, tile_rows,
-    unscaled, visible_in, whole_reach,
+    outward_clip, raster_scale, reach, reach_at, scratch_region, shadow_item_coverage,
+    text_shadow_coverage, tile_rows, unscaled, visible_in, whole_reach,
 };
 
 /// The side of an atlas page, in texels: four mebibytes of coverage,
@@ -1636,6 +1636,55 @@ impl GpuBackend {
                         (place, at)
                     }
                     (None, None) => return,
+                };
+                self.push_mask(draws, place, at, premultiplied(color), outer, size);
+            }
+            // A run's shadow (D56): its coverage, the software
+            // backend's, worked out each frame and drawn as a mask.
+            DisplayItem::TextShadow {
+                text,
+                x,
+                y,
+                size: font_size,
+                sigma,
+                color,
+                ..
+            } => {
+                let Some(coverage) =
+                    text_shadow_coverage(&mut self.text, item, clip, (sx, sy, tx, ty), size)
+                else {
+                    return;
+                };
+                let (w, h) = (coverage.width as u32, coverage.height as u32);
+                let bytes: Vec<u8> = coverage
+                    .values
+                    .iter()
+                    .map(|v| (v * 255.0).round() as u8)
+                    .collect();
+                let at = (
+                    coverage.x0,
+                    coverage.y0,
+                    coverage.x0 + i64::from(w),
+                    coverage.y0 + i64::from(h),
+                );
+                // Kept by what makes it: the run, its place and size, the
+                // blur, the mapping and the clip.
+                let mut points: Vec<(u32, u32)> = text.chars().map(|c| (u32::from(c), 0)).collect();
+                points.push((x.to_bits(), y.to_bits()));
+                points.push((font_size.to_bits(), sigma.to_bits()));
+                points.push((sx.to_bits() ^ sy.to_bits(), tx.to_bits() ^ ty.to_bits()));
+                let key = MaskKey::Polygon(
+                    points,
+                    [
+                        clip.x0.to_bits(),
+                        clip.y0.to_bits(),
+                        clip.x1.to_bits(),
+                        clip.y1.to_bits(),
+                    ],
+                    size,
+                );
+                let Some(place) = self.place(key, w, h, &bytes) else {
+                    return;
                 };
                 self.push_mask(draws, place, at, premultiplied(color), outer, size);
             }

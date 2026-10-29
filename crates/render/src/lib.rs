@@ -2907,6 +2907,20 @@ impl SoftwareBackend {
                 };
                 fill_shadow(pixmap, item, clip, (sx, sy, tx, ty), frame);
             }
+            DisplayItem::TextShadow { color, .. } => {
+                let frame = PixelRect {
+                    x0: 0,
+                    y0: 0,
+                    x1: pixmap.width(),
+                    y1: pixmap.height(),
+                };
+                let size = (pixmap.width(), pixmap.height());
+                if let Some(coverage) =
+                    text_shadow_coverage(&mut self.text, item, clip, (sx, sy, tx, ty), size)
+                {
+                    blend_coverage(pixmap, &coverage, color, frame);
+                }
+            }
             DisplayItem::Image {
                 x,
                 y,
@@ -3041,6 +3055,7 @@ impl SoftwareBackend {
                 DisplayItem::Rect { .. }
                 | DisplayItem::Border { .. }
                 | DisplayItem::Text { .. }
+                | DisplayItem::TextShadow { .. }
                 | DisplayItem::Image { .. }
                 | DisplayItem::Pattern { .. } => {
                     self.draw(pixmap, item, clip.intersect(inside), through);
@@ -3161,6 +3176,29 @@ fn extent(text: &mut GlyphCache, item: &DisplayItem, state: &State) -> Option<Cl
         DisplayItem::Path { contours, .. } => {
             let all: Vec<(f32, f32)> = contours.iter().flatten().copied().collect();
             (hull(&all)?, 0.0, 0.0)
+        }
+        // Its run's ink, and the blur's reach as a box shadow's.
+        DisplayItem::TextShadow {
+            text: run,
+            x,
+            y,
+            size,
+            font,
+            sigma,
+            ..
+        } => {
+            if !x.is_finite() || !y.is_finite() {
+                return (!clip.is_empty()).then_some(clip);
+            }
+            let ink = text.ink(*font, run, *size)?;
+            let e = shadow::reach(*sigma * 4.0);
+            let reach = Clip {
+                x0: x + ink.left - e,
+                y0: y + ink.top - e,
+                x1: x + ink.right + e,
+                y1: y + ink.bottom + e,
+            };
+            (reach, 1.0, 1.0 + if scaled { 1.0 } else { 0.0 })
         }
         DisplayItem::Shadow {
             shape,
@@ -4192,6 +4230,116 @@ fn fill_shadow(
         return;
     };
     blend_coverage(pixmap, &coverage, color, write);
+}
+
+/// The coverage of the text shadow `item` (D56) in a `size` raster,
+/// through `(sx, sy, tx, ty)` under `clip`: its glyphs' masks where the
+/// run draws them, blurred. What both backends draw.
+pub(crate) fn text_shadow_coverage(
+    text: &mut GlyphCache,
+    item: &DisplayItem,
+    clip: Clip,
+    (sx, sy, tx, ty): (f32, f32, f32, f32),
+    size: (u32, u32),
+) -> Option<Coverage> {
+    let DisplayItem::TextShadow {
+        text: run,
+        x,
+        y,
+        size: font_size,
+        font,
+        sigma,
+        ..
+    } = item
+    else {
+        return None;
+    };
+    let sigma = (sigma * (sx.abs() + sy.abs()) / 2.0).clamp(0.0, shadow::MAX_SIGMA);
+    let e = shadow::reach(sigma) as i64;
+    let (ox, oy) = (x * sx + tx, y * sy + ty);
+    if !ox.is_finite() || !oy.is_finite() {
+        return None;
+    }
+    // The glyphs' masks, where they go.
+    let mut placed: Vec<(Drawn, u16, i64, i64)> = Vec::new();
+    let mut ink: Option<(i64, i64, i64, i64)> = None;
+    for (drawn, g) in text.shaped(*font, run, *font_size) {
+        let mask = if sx == sy {
+            text.mask_for(drawn, g.glyph_id, font_size * sx)
+        } else {
+            text.scaled_mask(drawn, g.glyph_id, *font_size, (sx, sy))
+        };
+        if mask.width == 0 || mask.height == 0 {
+            continue;
+        }
+        let gx = (ox + g.x * sx + mask.left as f32).floor() as i64;
+        let gy = (oy + g.y * sy + mask.top as f32).floor() as i64;
+        let (w, h) = (mask.width as i64, mask.height as i64);
+        ink = Some(match ink {
+            None => (gx, gy, gx + w, gy + h),
+            Some((a, b, c, d)) => (a.min(gx), b.min(gy), c.max(gx + w), d.max(gy + h)),
+        });
+        placed.push((drawn, g.glyph_id, gx, gy));
+    }
+    let (ix0, iy0, ix1, iy1) = ink?;
+    let visible = clip.pixels(size.0, size.1)?;
+    // What shows: the ink and the blur's reach, in the raster and clip.
+    let sx0 = (ix0 - e).max(i64::from(visible.x0)).max(0);
+    let sy0 = (iy0 - e).max(i64::from(visible.y0)).max(0);
+    let sx1 = (ix1 + e).min(i64::from(visible.x1)).min(i64::from(size.0));
+    let sy1 = (iy1 + e).min(i64::from(visible.y1)).min(i64::from(size.1));
+    if sx0 >= sx1 || sy0 >= sy1 {
+        return None;
+    }
+    // The work: the ink and the blur's reach whatever the clip, so that
+    // a pixel comes out the same in a part of the raster as in the whole.
+    let (wx0, wy0) = (ix0 - e, iy0 - e);
+    let (w, h) = ((ix1 - ix0 + 2 * e) as usize, (iy1 - iy0 + 2 * e) as usize);
+    if (w as u64) * (h as u64) > MAX_FRAME_PIXELS {
+        return None;
+    }
+    let mut values = vec![0.0f32; w * h];
+    for (drawn, glyph, gx, gy) in placed {
+        let mask = if sx == sy {
+            text.mask_for(drawn, glyph, font_size * sx)
+        } else {
+            text.scaled_mask(drawn, glyph, *font_size, (sx, sy))
+        };
+        for row in 0..mask.height as i64 {
+            let vy = gy + row - wy0;
+            if vy < 0 || vy >= h as i64 {
+                continue;
+            }
+            for col in 0..mask.width as i64 {
+                let vx = gx + col - wx0;
+                if vx < 0 || vx >= w as i64 {
+                    continue;
+                }
+                let c = f32::from(mask.coverage[(row * mask.width as i64 + col) as usize]) / 255.0;
+                let at = vy as usize * w + vx as usize;
+                values[at] = (values[at] + c).min(1.0);
+            }
+        }
+    }
+    shadow::gaussian(&mut values, w, h, sigma, 0.0);
+    let (cw, ch) = ((sx1 - sx0) as usize, (sy1 - sy0) as usize);
+    let mut out = vec![0.0f32; cw * ch];
+    let mut any = false;
+    for row in 0..ch {
+        for col in 0..cw {
+            let at = (sy0 - wy0) as usize + row;
+            let v = values[at * w + (sx0 - wx0) as usize + col].clamp(0.0, 1.0);
+            any |= v > 0.0;
+            out[row * cw + col] = v;
+        }
+    }
+    any.then_some(Coverage {
+        x0: sx0,
+        y0: sy0,
+        width: cw,
+        height: ch,
+        values: out,
+    })
 }
 
 /// The coverage of the shadow `item` in a `size` raster, through
@@ -5977,13 +6125,23 @@ mod tests {
                 ],
                 color: rng.color(),
             },
-            3..=4 => DisplayItem::Text {
+            3 => DisplayItem::Text {
                 text: ["Ag", "hello", "M", "x y z", "\u{5d0}\u{5d1}"][rng.below(5)].to_string(),
                 x,
                 y: rng.coord(4.0, h + 8.0),
                 size: [8.0, 12.5, 16.0, 23.0][rng.below(4)],
                 color: rng.color(),
                 font: Default::default(),
+            },
+            // A run's shadow (D56), its blur reaching past its ink.
+            4 => DisplayItem::TextShadow {
+                text: ["Ag", "hello", "M", "x y z"][rng.below(4)].to_string(),
+                x,
+                y: rng.coord(4.0, h + 8.0),
+                size: [8.0, 12.5, 16.0, 23.0][rng.below(4)],
+                font: Default::default(),
+                sigma: [0.0, 1.0, 3.5][rng.below(3)],
+                color: rng.color(),
             },
             5 => {
                 let (dx, dy) = (rng.coord(1.0, 20.0), rng.coord(1.0, 12.0));
@@ -6461,6 +6619,52 @@ mod tests {
         let mut backend = test_backend();
         let buf = backend.rasterize(&DisplayList::default(), 0, 0);
         assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn a_text_shadow_is_the_runs_ink_moved_and_blurred() {
+        // D56: the shadow alone, in red; sharp, then blurred.
+        let mut backend = test_backend();
+        let shadow = |sigma: f32| DisplayList {
+            items: vec![DisplayItem::TextShadow {
+                text: "l".into(),
+                x: 10.0,
+                y: 30.0,
+                size: 32.0,
+                font: Font::default(),
+                sigma,
+                color: Rgba8::rgb(255, 0, 0),
+            }],
+        };
+        let reds = |buf: &[u8]| -> Vec<(usize, u8)> {
+            buf.chunks(4)
+                .enumerate()
+                .filter(|(_, p)| p[3] > 0)
+                .map(|(i, p)| (i, p[3]))
+                .collect()
+        };
+        let sharp = reds(backend.rasterize(&shadow(0.0), 40, 40));
+        let text = DisplayList {
+            items: vec![DisplayItem::Text {
+                text: "l".into(),
+                x: 10.0,
+                y: 30.0,
+                size: 32.0,
+                color: Rgba8::rgb(255, 0, 0),
+                font: Font::default(),
+            }],
+        };
+        let drawn = reds(backend.rasterize(&text, 40, 40));
+        assert_eq!(sharp, drawn, "unblurred, the run's own coverage");
+        let soft = reds(backend.rasterize(&shadow(2.0), 40, 40));
+        assert!(
+            soft.len() > sharp.len() * 2,
+            "spread: {} {}",
+            soft.len(),
+            sharp.len()
+        );
+        let peak = |v: &[(usize, u8)]| v.iter().map(|p| p.1).max().unwrap_or(0);
+        assert!(peak(&soft) < peak(&sharp), "softer");
     }
 
     #[test]

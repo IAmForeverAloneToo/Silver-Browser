@@ -616,6 +616,19 @@ pub enum DisplayItem {
         contours: Vec<Vec<(f32, f32)>>,
         color: Rgba8,
     },
+    /// A run's shadow (`text-shadow`, D56): the coverage of `text`'s
+    /// glyphs in `font` at `size`, its baseline's left end at `(x, y)`,
+    /// blurred by a Gaussian of standard deviation `sigma` px, in
+    /// `color`. Before the run, the last shadow of the list first.
+    TextShadow {
+        text: String,
+        x: f32,
+        y: f32,
+        size: f32,
+        font: layout::TextFont,
+        sigma: f32,
+        color: Rgba8,
+    },
     /// A box's shadow (gap batch E, D52): `shape`'s coverage blurred by a
     /// Gaussian of standard deviation `sigma` px, cut to outside `boxed`
     /// (an outer shadow, `boxed` the border box), or, `inset`, the
@@ -1189,6 +1202,18 @@ pub fn paint_fragments_with(
                         push_decorations(&mut items, decorated, rect, baseline, false);
                     }
                     if !text.trim().is_empty() {
+                        // Its shadows under it, the first on top (D56).
+                        for shadow in fragment.style.decoration().text_shadow.iter().rev() {
+                            items.push(DisplayItem::TextShadow {
+                                text: text.clone(),
+                                x: rect.x + shadow.x,
+                                y: baseline + shadow.y,
+                                size: fragment.style.font_size_px,
+                                font: fragment.font,
+                                sigma: shadow.blur / 2.0,
+                                color: to_rgba8(shadow.color),
+                            });
+                        }
                         items.push(DisplayItem::Text {
                             text: text.clone(),
                             x: rect.x,
@@ -3695,6 +3720,54 @@ mod fragment_tests {
             30.0,
         );
         assert_ne!(laid(&fixed[0]).1, at("scroll"));
+    }
+
+    #[test]
+    fn a_runs_shadows_go_under_it_the_first_on_top() {
+        // D56.
+        let list = display_list_of(
+            Element::new("p").text("x"),
+            "p { margin: 0; text-shadow: 1px 2px red, 3px 4px 6px blue }",
+        );
+        let runs: Vec<(String, f32, f32, f32, Rgba8)> = list
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                DisplayItem::TextShadow {
+                    text,
+                    x,
+                    y,
+                    sigma,
+                    color,
+                    ..
+                } => Some((format!("shadow {text}"), *x, *y, *sigma, *color)),
+                DisplayItem::Text {
+                    text, x, y, color, ..
+                } => Some((text.clone(), *x, *y, 0.0, *color)),
+                _ => None,
+            })
+            .collect();
+        let (_, x, y, _, _) = runs[2].clone();
+        assert_eq!(
+            runs,
+            [
+                (
+                    "shadow x".to_string(),
+                    x + 3.0,
+                    y + 4.0,
+                    3.0,
+                    Rgba8::rgb(0, 0, 255)
+                ),
+                (
+                    "shadow x".to_string(),
+                    x + 1.0,
+                    y + 2.0,
+                    0.0,
+                    Rgba8::rgb(255, 0, 0)
+                ),
+                ("x".to_string(), x, y, 0.0, Rgba8::rgb(0, 0, 0)),
+            ]
+        );
     }
 
     #[test]
