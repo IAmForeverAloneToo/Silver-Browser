@@ -2712,6 +2712,15 @@ design note first and the milestones' method:
        subtests expected to fail with reasons), the note's probe page
        the reference's lines but for two, and the gaps found G216-G223
        (the note's section 4).
+- [ ] GE Boxes and colour (`docs/design/boxes-colour.md`, D48-D52):
+       `border-radius`, `box-shadow` and `filter` (G32), the colour
+       functions past Color 3 and `color-mix()` (G16), `color-scheme`,
+       `light-dark()` and the system colours (G6), Values 4's math
+       functions (G15, part), `display: flow-root` (G23), the root's
+       margins (G11), `aspect-ratio` on boxes not replaced (G36),
+       `background-position-x` and `-y` (G40), conic gradients and
+       gradients' interpolation methods (G37, part). Opened at the
+       maintainer's word, 29 October 2026.
 
 Deferred from the milestones above, each with what it waits on:
 
@@ -3751,6 +3760,11 @@ Deferred from the milestones above, each with what it waits on:
 | D45 | When resize and intersection observations run | GA | after each change / on a timer / in the frame's update | right after the frame is drawn, the engine's update running before layout (section 4), their geometry from one walk of the frame's paint order |
 | D46 | How a `BroadcastChannel` message crosses | GA | the network service / a renderer's own / the browser relaying by storage key | the engine's context in one process; the browser between renderers, holding each to its storage key, as it relays storage areas' changes |
 | D47 | What a binding's `toString()` says | GA | its script / bytecode without source / `[native code]` by a set of the bindings' functions | `function NAME() { [native code] }` for the functions the bindings make, their bytecode written without source so that QuickJS says so itself (section 4); other functions as QuickJS writes them |
+| D48 | How a colour is kept | GE | sRGB channels alone / the colour as written, converted when drawn / its space and components with its sRGB channels | its space, components and alpha, with the sRGB channels worked out once when it is made; serialized in its own form, clipped to sRGB when drawn (`docs/design/boxes-colour.md`) |
+| D49 | Where the colour scheme takes effect | GE | the page's paint / the cascade's computed values / the user agent stylesheet alone | the computed values: system colours, `light-dark()` and `color`'s initial `CanvasText` resolved by each element's used scheme; the canvas by the root's; controls by system colours in the user agent stylesheet |
+| D50 | How a rounded box is drawn | GE | a rounded-rectangle item each backend draws / curves in the display list / flattened paths | flattened paths, a new `Path` item filled by the nonzero rule with the exact-area coverage both backends share; boxes without radii keep their items |
+| D51 | How a rounded clip is made | GE | a mask applied to every item / a clip path in the backends / a group composited through a mask | a group drawn into a scratch and composited through the rounded rectangle's coverage, the axis-aligned clip around it in force |
+| D52 | How blurs, shadows and filters are drawn | GE | tiny-skia and wgpu's own / shared code on the CPU for all / shared masks for shadows, each backend filtering groups | shadows as masks shared by the backends (a Gaussian of three box blurs, cached); filters on a group's scratch, colour matrices in sRGB, the GPU blurring in render passes |
 
 ---
 
