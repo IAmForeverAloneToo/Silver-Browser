@@ -187,6 +187,7 @@ longhands! {
     PerspectiveOrigin = "perspective-origin": ByComputedValue,
     BackfaceVisibility = "backface-visibility": Discrete,
     Opacity = "opacity": ByComputedValue,
+    BoxShadow = "box-shadow": ByComputedValue,
     WillChange = "will-change": NotAnimatable,
     TransitionProperty = "transition-property": NotAnimatable,
     TransitionDuration = "transition-duration": NotAnimatable,
@@ -533,6 +534,11 @@ pub fn copy(property: Longhand, from: &ComputedStyle, to: &mut ComputedStyle) {
             copy_group!(to, from, effects, effects, effects_mut, backface_visibility)
         }
         Opacity => copy_group!(to, from, effects, effects, effects_mut, opacity),
+        BoxShadow => {
+            if to.effects().box_shadow != from.effects().box_shadow {
+                to.effects_mut().box_shadow = from.effects().box_shadow.clone();
+            }
+        }
         WillChange => copy_group!(to, from, effects, effects, effects_mut, will_change),
         TransitionProperty => {
             copy_group!(to, from, motion, motion, motion_mut, transition_property)
@@ -882,6 +888,7 @@ pub fn same(property: Longhand, a: &ComputedStyle, b: &ComputedStyle) -> bool {
         PerspectiveOrigin => a.effects().perspective_origin == b.effects().perspective_origin,
         BackfaceVisibility => a.effects().backface_visibility == b.effects().backface_visibility,
         Opacity => a.effects().opacity == b.effects().opacity,
+        BoxShadow => a.effects().box_shadow == b.effects().box_shadow,
         WillChange => a.effects().will_change == b.effects().will_change,
         TransitionProperty => a.motion().transition_property == b.motion().transition_property,
         TransitionDuration => a.motion().transition_duration == b.motion().transition_duration,
@@ -1627,6 +1634,43 @@ pub fn interpolate(
                 number(a.effects().opacity, b.effects().opacity, p, 0.0, 1.0);
             true
         }
+        // Shadow by shadow, the shorter list padded with transparent
+        // ones of no length (Backgrounds 3 section 7.1); two of which one
+        // is inset do not interpolate (gap batch E).
+        BoxShadow => {
+            let (x, y) = (&a.effects().box_shadow, &b.effects().box_shadow);
+            let n = x.len().max(y.len());
+            let mut out = Vec::with_capacity(n);
+            for i in 0..n {
+                let pad = |other: &computed::Shadow| computed::Shadow {
+                    color: computed::Color::TRANSPARENT,
+                    x: 0.0,
+                    y: 0.0,
+                    blur: 0.0,
+                    spread: 0.0,
+                    inset: other.inset,
+                };
+                let (s, t) = match (x.get(i), y.get(i)) {
+                    (Some(s), Some(t)) => (*s, *t),
+                    (Some(s), None) => (*s, pad(s)),
+                    (None, Some(t)) => (pad(t), *t),
+                    (None, None) => break,
+                };
+                if s.inset != t.inset {
+                    return false;
+                }
+                out.push(computed::Shadow {
+                    color: color(s.color, t.color, p),
+                    x: length(s.x, t.x, p, false),
+                    y: length(s.y, t.y, p, false),
+                    blur: length(s.blur, t.blur, p, true),
+                    spread: length(s.spread, t.spread, p, false),
+                    inset: s.inset,
+                });
+            }
+            to.effects_mut().box_shadow = out;
+            true
+        }
         Orphans | Widows => {
             let (x, y) = if property == Orphans {
                 (a.fragmentation().orphans, b.fragmentation().orphans)
@@ -1977,6 +2021,29 @@ mod tests {
             .find(|&node| document.tag(node) == Some("div"))
             .expect("the div");
         styles.get(div).expect("styled").clone()
+    }
+
+    #[test]
+    fn shadows_interpolate_one_by_one_padded_with_none() {
+        let (a, b) = (
+            style("box-shadow: 0 0 0 0 rgb(0, 0, 0)"),
+            style("box-shadow: 10px 20px 4px 2px rgb(200, 0, 0), 4px 4px rgb(0, 0, 200)"),
+        );
+        let mut to = a.clone();
+        assert!(interpolate(Longhand::BoxShadow, &a, &b, 0.5, &mut to));
+        let s = &to.effects().box_shadow;
+        assert_eq!(s.len(), 2);
+        assert_eq!(
+            (s[0].x, s[0].y, s[0].blur, s[0].spread),
+            (5.0, 10.0, 2.0, 1.0)
+        );
+        assert_eq!(s[0].color, computed::Color::rgb8(100, 0, 0));
+        assert_eq!((s[1].x, s[1].color.a), (2.0, 0.5));
+        // A blur never below zero, an inset shadow apart from an outer.
+        assert!(interpolate(Longhand::BoxShadow, &a, &b, -1.0, &mut to));
+        assert_eq!(to.effects().box_shadow[0].blur, 0.0);
+        let c = style("box-shadow: inset 1px 1px red");
+        assert!(!interpolate(Longhand::BoxShadow, &a, &c, 0.5, &mut to));
     }
 
     #[test]

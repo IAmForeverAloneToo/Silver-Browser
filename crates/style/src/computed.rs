@@ -1591,6 +1591,22 @@ pub struct Effects {
     /// opacity makes the box what it will be to layout for the whole
     /// run. The cascade sets it beside the properties.
     pub animated: WillChange,
+    /// `box-shadow` (Backgrounds 3 section 7, gap batch E, D52): its
+    /// shadows, the first on top; empty is `none`.
+    pub box_shadow: Vec<Shadow>,
+}
+
+/// One of `box-shadow`'s shadows, computed: its colour, `currentcolor`
+/// resolved, its offsets, blur radius and spread in CSS pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shadow {
+    pub color: Color,
+    pub x: f32,
+    pub y: f32,
+    /// Never negative.
+    pub blur: f32,
+    pub spread: f32,
+    pub inset: bool,
 }
 
 impl Default for Effects {
@@ -1610,6 +1626,7 @@ impl Default for Effects {
             opacity: 1.0,
             will_change: WillChange::AUTO,
             animated: WillChange::AUTO,
+            box_shadow: Vec::new(),
         }
     }
 }

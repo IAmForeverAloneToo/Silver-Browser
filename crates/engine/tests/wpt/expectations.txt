@@ -3235,7 +3235,6 @@ css/cssom/getComputedStyle-resolved-colors.html	The resolved value for 'border-b
 css/cssom/getComputedStyle-resolved-colors.html	The resolved value for 'border-block-start-color' is the used value	getComputedStyle's resolved values and pseudo-elements (G46, G159)
 css/cssom/getComputedStyle-resolved-colors.html	The resolved value for 'border-inline-end-color' is the used value	getComputedStyle's resolved values and pseudo-elements (G46, G159)
 css/cssom/getComputedStyle-resolved-colors.html	The resolved value for 'border-inline-start-color' is the used value	getComputedStyle's resolved values and pseudo-elements (G46, G159)
-css/cssom/getComputedStyle-resolved-colors.html	The resolved value for 'box-shadow' is the used value	no shadow trees (G53)
 css/cssom/getComputedStyle-resolved-colors.html	The resolved value for 'caret-color' is the used value	getComputedStyle's resolved values and pseudo-elements (G46, G159)
 css/cssom/getComputedStyle-resolved-min-size-auto.html	Resolved value of min-width & min-height 'auto' keyword behaves as expected on element with id="block-box"	getComputedStyle's resolved values and pseudo-elements (G46, G159)
 css/cssom/getComputedStyle-resolved-min-size-auto.html	Resolved value of min-width & min-height 'auto' keyword behaves as expected on element with id="inline-box"	getComputedStyle's resolved values and pseudo-elements (G46, G159)

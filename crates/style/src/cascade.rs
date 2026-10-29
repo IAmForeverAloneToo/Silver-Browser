@@ -3730,6 +3730,9 @@ fn apply_declaration(
                 e.backface_visibility = v
             })
         }
+        "box-shadow" => set_effects(style, parse_box_shadow(value, bases), |e, v| {
+            e.box_shadow = v
+        }),
         "opacity" => set_effects(style, effects::parse_opacity(value, bases), |e, v| {
             e.opacity = v
         }),
@@ -4619,6 +4622,7 @@ fn apply_css_wide(
             e.backface_visibility = s.backface_visibility
         }),
         "opacity" => copy_effects(style, src, |e, s| e.opacity = s.opacity),
+        "box-shadow" => copy_effects(style, src, |e, s| e.box_shadow = s.box_shadow.clone()),
         "will-change" => copy_effects(style, src, |e, s| e.will_change = s.will_change),
         "transition-property" => copy_motion(style, src, |m, s| {
             m.transition_property = s.transition_property.clone()
@@ -6207,6 +6211,72 @@ fn parse_border_radius(tokens: &[Token], bases: &LengthBases<'_>) -> Option<Radi
     };
     Some(Radii(std::array::from_fn(|i| [h[i].clone(), v[i].clone()])))
 }
+
+/// `box-shadow` (Backgrounds 3 section 7.1, gap batch E, D52): `none`,
+/// or shadows separated by commas, each two to four lengths, the offsets,
+/// the blur radius, never negative, and the spread, with a colour and
+/// `inset` before or after them, each at most once. At most
+/// [`MAX_SHADOWS`]; a longer list is no value.
+fn parse_box_shadow(
+    tokens: &[Token],
+    bases: &LengthBases<'_>,
+) -> Option<Vec<crate::computed::Shadow>> {
+    if single_ident(tokens).is_some_and(|w| w.eq_ignore_ascii_case("none")) {
+        return Some(Vec::new());
+    }
+    let mut shadows = Vec::new();
+    for item in split_top_level_commas(tokens) {
+        let parts = split_components(item);
+        let mut lengths: Vec<f32> = Vec::new();
+        let mut color = None;
+        let mut inset = false;
+        // Where the lengths stand: one run, nothing between them.
+        let mut run_ended = false;
+        for part in &parts {
+            if single_ident(part).is_some_and(|w| w.eq_ignore_ascii_case("inset")) {
+                if inset {
+                    return None;
+                }
+                inset = true;
+                run_ended |= !lengths.is_empty();
+            } else if let Some(px) = length(part, bases, Range::All) {
+                if run_ended {
+                    return None;
+                }
+                lengths.push(px);
+            } else if color.is_none()
+                && let Some(c) = color_value(part, bases.colors())
+            {
+                color = Some(c);
+                run_ended |= !lengths.is_empty();
+            } else {
+                return None;
+            }
+        }
+        let [x, y, blur, spread] = match lengths.as_slice() {
+            [x, y] => [*x, *y, 0.0, 0.0],
+            [x, y, b] => [*x, *y, *b, 0.0],
+            [x, y, b, s] => [*x, *y, *b, *s],
+            _ => return None,
+        };
+        if blur < 0.0 {
+            return None;
+        }
+        shadows.push(crate::computed::Shadow {
+            color: color.unwrap_or(bases.color),
+            x,
+            y,
+            blur,
+            spread,
+            inset,
+        });
+    }
+    (shadows.len() <= MAX_SHADOWS).then_some(shadows)
+}
+
+/// The most shadows a `box-shadow` takes: each is a blur the backends
+/// work out, and a page asking for more is asking for too much.
+pub const MAX_SHADOWS: usize = 64;
 
 /// The most words a `color-scheme` keeps.
 const MAX_SCHEME_WORDS: usize = 16;
@@ -8292,6 +8362,50 @@ mod tests {
         // Radii set back to zero keep no copy.
         let sheets = [sheet("div { border-radius: 3px; border-radius: 0 }")];
         assert!(style_of("<div>x</div>", &sheets, "div").radii.is_none());
+    }
+
+    #[test]
+    fn box_shadow_computes_as_the_reference_browser_writes_it() {
+        // Gap batch E, D52: the reference browser's computed values.
+        let value = |css: &str| {
+            let sheets = [sheet(&format!("div {{ color: rgb(0, 128, 0); {css} }}"))];
+            let style = style_of("<div>x</div>", &sheets, "div");
+            crate::serialize::computed_value(&style, "box-shadow").unwrap()
+        };
+        assert_eq!(
+            value("box-shadow: 1px 2px 3px 4px red"),
+            "rgb(255, 0, 0) 1px 2px 3px 4px"
+        );
+        assert_eq!(
+            value("box-shadow: inset 0 0 5px blue, 1px 1px"),
+            "rgb(0, 0, 255) 0px 0px 5px 0px inset, rgb(0, 128, 0) 1px 1px 0px 0px"
+        );
+        assert_eq!(
+            value("box-shadow: 1px 2px red inset"),
+            "rgb(255, 0, 0) 1px 2px 0px 0px inset"
+        );
+        assert_eq!(
+            value("box-shadow: currentcolor 1px 2px"),
+            "rgb(0, 128, 0) 1px 2px 0px 0px"
+        );
+        assert_eq!(value("box-shadow: none"), "none");
+        for bad in [
+            "1px 2px -3px red",
+            "1px",
+            "1px 2px 3px 4px 5px",
+            "1px red 2px",
+            "inset 1px 2px inset",
+            "red 1px 2px blue",
+            "1px 2px,",
+        ] {
+            assert_eq!(
+                value(&format!("box-shadow: 4px 4px; box-shadow: {bad}")),
+                "rgb(0, 128, 0) 4px 4px 0px 0px",
+                "{bad}"
+            );
+        }
+        let many = vec!["1px 1px"; MAX_SHADOWS + 1].join(", ");
+        assert_eq!(value(&format!("box-shadow: {many}")), "none");
     }
 
     #[test]

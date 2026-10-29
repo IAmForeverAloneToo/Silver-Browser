@@ -47,6 +47,7 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "border-top-style",
     "border-top-width",
     "bottom",
+    "box-shadow",
     "box-sizing",
     "caption-side",
     "clear",
@@ -321,6 +322,31 @@ pub fn computed_value(style: &ComputedStyle, name: &str) -> Option<String> {
         "row-gap" => gap(&style.row_gap)?,
         "column-gap" => gap(&style.column_gap)?,
         "opacity" => number(style.effects().opacity),
+        "box-shadow" => {
+            let shadows = &style.effects().box_shadow;
+            if shadows.is_empty() {
+                "none".to_owned()
+            } else {
+                shadows
+                    .iter()
+                    .map(|s| {
+                        let mut text = format!(
+                            "{} {} {} {} {}",
+                            color(s.color),
+                            px(s.x),
+                            px(s.y),
+                            px(s.blur),
+                            px(s.spread)
+                        );
+                        if s.inset {
+                            text.push_str(" inset");
+                        }
+                        text
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        }
         "transform-box" => match style.effects().transform_box {
             TransformBox::ContentBox => "content-box",
             TransformBox::BorderBox => "border-box",

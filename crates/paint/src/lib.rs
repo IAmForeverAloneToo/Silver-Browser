@@ -609,6 +609,18 @@ pub enum DisplayItem {
         contours: Vec<Vec<(f32, f32)>>,
         color: Rgba8,
     },
+    /// A box's shadow (gap batch E, D52): `shape`'s coverage blurred by a
+    /// Gaussian of standard deviation `sigma` px, cut to outside `boxed`
+    /// (an outer shadow, `boxed` the border box), or, `inset`, the
+    /// shape's hole blurred and cut to inside `boxed` (the padding box);
+    /// in `color`. The backends work its coverage out by shared code.
+    Shadow {
+        shape: Box<RoundedRect>,
+        sigma: f32,
+        inset: bool,
+        boxed: Box<RoundedRect>,
+        color: Rgba8,
+    },
     /// Fill the band between the rectangle at `(x, y)` of size `w` by
     /// `h` and the rectangle inset from it by `widths`, top, right,
     /// bottom and left, as one shape, anti-aliased (M19): a border
@@ -1969,6 +1981,7 @@ fn push_box(
         };
         // The colour under every layer, in the bottom one's clip box
         // (CSS Backgrounds 3 section 2.7).
+        push_shadows(items, f, outer, false);
         if f.style.background_color.a > 0.0 {
             let clip = f.style.background().color_clip();
             let r = placed.box_of(clip);
@@ -1998,6 +2011,7 @@ fn push_box(
             }
         }
         push_layers(items, f, placed, backdrop);
+        push_shadows(items, f, outer, true);
     }
     if !push_border_image(items, f, outer, widths, backdrop.pictures)
         && f.style.border_style.iter().any(|s| s.paints())
@@ -2470,6 +2484,79 @@ fn push_layers(
             }
             None => items.push(pattern),
         }
+    }
+}
+
+/// The outer shadows of the box `f` whose border box is `border`, or its
+/// inset ones (Backgrounds 3 section 7, gap batch E, D52), the last
+/// first so that the first is on top: an outer one under the
+/// background, an inset one over it, under the border.
+fn push_shadows(items: &mut Vec<DisplayItem>, f: &Fragment, border: Rect, inset: bool) {
+    let shadows = &f.style.effects().box_shadow;
+    if shadows.is_empty() {
+        return;
+    }
+    let rounded = RoundedRect::of(&f.style, border).unwrap_or(RoundedRect {
+        rect: border,
+        radii: [(0.0, 0.0); 4],
+    });
+    let widths = f.style.used_border_width();
+    let padding = rounded.inset(widths);
+    for shadow in shadows.iter().rev().filter(|s| s.inset == inset) {
+        let color = to_rgba8(shadow.color);
+        if color.a == 0 {
+            continue;
+        }
+        let (boxed, base, spread) = if inset {
+            (padding, padding, -shadow.spread)
+        } else {
+            (rounded, rounded, shadow.spread)
+        };
+        let shape = spread_out(&base, spread, shadow.x, shadow.y);
+        if !inset && (shape.rect.w <= 0.0 || shape.rect.h <= 0.0) {
+            continue;
+        }
+        items.push(DisplayItem::Shadow {
+            shape: Box::new(shape),
+            sigma: shadow.blur / 2.0,
+            inset,
+            boxed: Box::new(boxed),
+            color,
+        });
+    }
+}
+
+/// `r` grown by `spread` on every side (shrunk by a negative one) and
+/// moved by `(dx, dy)`: a shadow's shape (section 7.1.1), each radius
+/// grown by the spread but a small one less than that, so that a square
+/// corner stays square, as section 7.1.1's formula has it.
+fn spread_out(r: &RoundedRect, spread: f32, dx: f32, dy: f32) -> RoundedRect {
+    let rect = Rect {
+        x: r.rect.x - spread + dx,
+        y: r.rect.y - spread + dy,
+        w: (r.rect.w + 2.0 * spread).max(0.0),
+        h: (r.rect.h + 2.0 * spread).max(0.0),
+    };
+    let grow = |radius: f32| {
+        if radius <= 0.0 {
+            0.0
+        } else if spread >= 0.0 && radius < spread {
+            let ratio = radius / spread;
+            (radius + spread * (1.0 + (ratio - 1.0).powi(3))).max(0.0)
+        } else {
+            (radius + spread).max(0.0)
+        }
+    };
+    RoundedRect {
+        rect,
+        radii: r.radii.map(|(h, v)| {
+            let (h, v) = (grow(h), grow(v));
+            if h > 0.0 && v > 0.0 {
+                (h, v)
+            } else {
+                (0.0, 0.0)
+            }
+        }),
     }
 }
 
@@ -4552,6 +4639,76 @@ mod fragment_tests {
             })
             .collect();
         assert_eq!(dashes, vec![(91.0, 0.0, 9.0, 27.0)]);
+    }
+
+    #[test]
+    fn a_spread_grows_a_small_radius_less() {
+        // Backgrounds 3 section 7.1.1: a radius below the spread grows by
+        // spread * (1 + (radius / spread - 1)^3); a larger one by the
+        // spread; a square corner stays square.
+        let r = |radius: f32| RoundedRect {
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+            },
+            radii: [(radius, radius), (20.0, 20.0), (0.0, 0.0), (radius, radius)],
+        };
+        let out = spread_out(&r(4.0), 10.0, 0.0, 0.0);
+        assert!((out.radii[0].0 - (4.0 + 10.0 * (1.0 - 0.216))).abs() < 1e-4);
+        assert_eq!(out.radii[1], (30.0, 30.0));
+        assert_eq!(out.radii[2], (0.0, 0.0));
+        assert_eq!(out.rect.x, -10.0);
+        let shrunk = spread_out(&r(4.0), -6.0, 1.0, 2.0);
+        assert_eq!(shrunk.radii[0], (0.0, 0.0));
+        assert_eq!(
+            (shrunk.rect.x, shrunk.rect.y, shrunk.rect.w),
+            (7.0, 8.0, 88.0)
+        );
+    }
+
+    #[test]
+    fn shadows_paint_outer_under_the_background_inset_over_it() {
+        // Gap batch E, D52: the last shadow first, the first on top.
+        let list = display_list_of(
+            Element::new("div").text("x"),
+            "div { width: 100px; height: 50px; background: red; border: 2px solid blue;              box-shadow: 1px 1px green, inset 0 0 4px 2px black, 3px 3px 6px 2px yellow }",
+        );
+        let kinds: Vec<String> = list
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                DisplayItem::Shadow {
+                    inset,
+                    color,
+                    shape,
+                    sigma,
+                    ..
+                } => Some(format!(
+                    "shadow {inset} {} {} {}",
+                    color.g, shape.rect.x, sigma
+                )),
+                DisplayItem::Rect { color, .. } if *color == Rgba8::rgb(255, 0, 0) => {
+                    Some("background".to_owned())
+                }
+                DisplayItem::Border { .. } => Some("border".to_owned()),
+                _ => None,
+            })
+            .collect();
+        // Outer: yellow (spread 2, offset 3: x 1) then green on top;
+        // the background; inset black (spread 2 shrinks the shape: x 4);
+        // the border.
+        assert_eq!(
+            kinds,
+            [
+                "shadow false 255 1 3",
+                "shadow false 128 1 0",
+                "background",
+                "shadow true 0 4 2",
+                "border"
+            ]
+        );
     }
 
     #[test]

@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head>
+<title>Box shadows: offsets, blurs and spreads, inset, several on one box, along rounded corners, under translucent and transparent boxes (gap batch E)</title>
+<meta name="reference-edge-tolerance" content="128">
+<meta name="reference-tolerance" content="4">
+<style>
+  body { margin: 0; background: #fff; }
+  div { position: absolute; width: 100px; height: 70px; background: #e0d8c8; }
+  .a { left: 20px; top: 20px; box-shadow: 6px 8px #2f3542; }
+  .b { left: 170px; top: 20px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5); }
+  .c { left: 320px; top: 20px; box-shadow: 0 0 0 6px #3050c0; border-radius: 12px; }
+  .d { left: 470px; top: 20px; box-shadow: 10px 10px 20px 4px #c03030; border-radius: 30px; }
+  .e { left: 620px; top: 20px; box-shadow: inset 0 0 0 10px #30a050; }
+  .f { left: 20px; top: 150px; box-shadow: inset 6px 6px 10px rgba(0, 0, 0, 0.6); border-radius: 16px; }
+  .g { left: 170px; top: 150px; box-shadow: 3px 3px #c03030, -3px -3px #3050c0, 0 0 0 10px #c0a030; }
+  .h { left: 320px; top: 150px; background: rgba(48, 80, 192, 0.3); box-shadow: 8px 8px 0 -4px #2f3542; }
+  .i { left: 470px; top: 150px; background: transparent; border: 4px solid #2f3542;
+       box-shadow: inset 0 0 16px #c03030, 0 0 16px #3050c0; border-radius: 50%; }
+  .j { left: 620px; top: 150px; box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.7); }
+</style>
+</head>
+<body>
+<div class="a"></div><div class="b"></div><div class="c"></div><div class="d"></div>
+<div class="e"></div><div class="f"></div><div class="g"></div><div class="h"></div>
+<div class="i"></div><div class="j"></div>
+</body>
+</html>

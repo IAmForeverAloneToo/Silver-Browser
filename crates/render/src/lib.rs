@@ -11,6 +11,9 @@
 #[cfg(feature = "gpu")]
 pub mod gpu;
 
+/// Shadows and blurs (gap batch E, D52).
+mod shadow;
+
 /// The PDF a document prints to (M20.4): its pages' rasters as images.
 pub mod pdf;
 
@@ -2805,6 +2808,15 @@ impl SoftwareBackend {
                     .collect();
                 fill_contours_by_area(pixmap, &contours, color, clip, frame);
             }
+            DisplayItem::Shadow { .. } => {
+                let frame = PixelRect {
+                    x0: 0,
+                    y0: 0,
+                    x1: pixmap.width(),
+                    y1: pixmap.height(),
+                };
+                fill_shadow(pixmap, item, clip, (sx, sy, tx, ty), frame);
+            }
             DisplayItem::Image {
                 x,
                 y,
@@ -2956,6 +2968,9 @@ impl SoftwareBackend {
                         .collect();
                     fill_contours_by_area(pixmap, &contours, color, clip, rect);
                 }
+                DisplayItem::Shadow { .. } => {
+                    fill_shadow(pixmap, item, clip, through, rect);
+                }
                 DisplayItem::Quad { .. } => {
                     // Drawn on a copy of what is under it, of which
                     // only the part inside the rectangle comes back.
@@ -3052,6 +3067,27 @@ fn extent(text: &mut GlyphCache, item: &DisplayItem, state: &State) -> Option<Cl
         DisplayItem::Path { contours, .. } => {
             let all: Vec<(f32, f32)> = contours.iter().flatten().copied().collect();
             (hull(&all)?, 0.0, 0.0)
+        }
+        DisplayItem::Shadow {
+            shape,
+            sigma,
+            inset,
+            boxed,
+            ..
+        } => {
+            let r = if *inset { boxed.rect } else { shape.rect };
+            let e = if *inset {
+                0.0
+            } else {
+                shadow::reach(*sigma * 4.0)
+            };
+            let corners = [
+                (r.x - e, r.y - e),
+                (r.x + r.w + e, r.y - e),
+                (r.x + r.w + e, r.y + r.h + e),
+                (r.x - e, r.y + r.h + e),
+            ];
+            (hull(&corners)?, 0.0, 1.0)
         }
     };
     let texels = texels + if in_scratch { 1.0 } else { 0.0 };
@@ -3726,6 +3762,17 @@ fn fill_contours_by_area(
     else {
         return;
     };
+    blend_coverage(pixmap, &coverage, color, write);
+}
+
+/// `color` blended into `pixmap` by `coverage`, the pixels of `write`
+/// alone.
+fn blend_coverage(
+    pixmap: &mut tiny_skia::Pixmap,
+    coverage: &Coverage,
+    color: &Rgba8,
+    write: PixelRect,
+) {
     let pw = pixmap.width() as i64;
     let data = pixmap.data_mut();
     for row in 0..coverage.height {
@@ -3757,12 +3804,60 @@ struct Coverage {
     values: Vec<f32>,
 }
 
+/// The shadow `item` drawn into `pixmap` through `(sx, sy, tx, ty)`,
+/// under `clip`, writing the pixels of `write` alone (gap batch E, D52).
+fn fill_shadow(
+    pixmap: &mut tiny_skia::Pixmap,
+    item: &DisplayItem,
+    clip: Clip,
+    through: (f32, f32, f32, f32),
+    write: PixelRect,
+) {
+    let Some(coverage) =
+        shadow_item_coverage(item, clip, through, (pixmap.width(), pixmap.height()))
+    else {
+        return;
+    };
+    let DisplayItem::Shadow { color, .. } = item else {
+        return;
+    };
+    blend_coverage(pixmap, &coverage, color, write);
+}
+
+/// The coverage of the shadow `item` in a `size` raster, through
+/// `(sx, sy, tx, ty)` under `clip`: what both backends draw.
+fn shadow_item_coverage(
+    item: &DisplayItem,
+    clip: Clip,
+    (sx, sy, tx, ty): (f32, f32, f32, f32),
+    size: (u32, u32),
+) -> Option<Coverage> {
+    let DisplayItem::Shadow {
+        shape,
+        sigma,
+        inset,
+        boxed,
+        ..
+    } = item
+    else {
+        return None;
+    };
+    let shape = mapped_by(shape, (sx, sy, tx, ty));
+    let boxed = mapped_by(boxed, (sx, sy, tx, ty));
+    let sigma = sigma * (sx.abs() + sy.abs()) / 2.0;
+    shadow::shadow_coverage(&shape, sigma, *inset, &boxed, clip, size)
+}
+
 /// `mask` in the group's coordinates, mapped by `base` into a scratch's,
 /// which only translates and scales: its rectangle and radii.
 fn mapped_mask(mask: &RoundedRect, base: &Matrix) -> Option<RoundedRect> {
-    let (sx, sy, tx, ty) = base.scale_and_translation()?;
+    Some(mapped_by(mask, base.scale_and_translation()?))
+}
+
+/// `r` scaled by `(sx, sy)` and moved by `(tx, ty)`.
+fn mapped_by(mask: &RoundedRect, (sx, sy, tx, ty): (f32, f32, f32, f32)) -> RoundedRect {
     let r = mask.rect;
-    Some(RoundedRect {
+    RoundedRect {
         rect: paint::Rect {
             x: r.x * sx + tx,
             y: r.y * sy + ty,
@@ -3770,7 +3865,7 @@ fn mapped_mask(mask: &RoundedRect, base: &Matrix) -> Option<RoundedRect> {
             h: r.h * sy,
         },
         radii: mask.radii.map(|(h, v)| (h * sx.abs(), v * sy.abs())),
-    })
+    }
 }
 
 /// Multiplies a group's scratch by the coverage of its rounded `mask`,
@@ -4948,6 +5043,50 @@ mod tests {
             (backend.shape_cache_len(), backend.text.cached_glyphs),
             (0, 0)
         );
+    }
+
+    #[test]
+    fn a_shadow_under_a_scale_is_blurred_at_the_scale() {
+        // Gap batch E, D52: a shadow drawn through a group scaling by two
+        // is the shadow of twice the size and twice the blur.
+        let mut backend = test_backend();
+        let shadow = |at: f32, size: f32, sigma: f32| DisplayItem::Shadow {
+            shape: Box::new(RoundedRect {
+                rect: paint::Rect {
+                    x: at,
+                    y: at,
+                    w: size,
+                    h: size,
+                },
+                radii: [(0.0, 0.0); 4],
+            }),
+            sigma,
+            inset: false,
+            boxed: Box::new(RoundedRect {
+                rect: paint::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 1.0,
+                    h: 1.0,
+                },
+                radii: [(0.0, 0.0); 4],
+            }),
+            color: Rgba8::rgb(0, 0, 0),
+        };
+        let scaled = DisplayList {
+            items: vec![
+                white_frame(100.0, 100.0),
+                group(Matrix::scale(2.0, 2.0, 1.0), 1.0),
+                shadow(10.0, 20.0, 3.0),
+                DisplayItem::PopGroup,
+            ],
+        };
+        let plain = DisplayList {
+            items: vec![white_frame(100.0, 100.0), shadow(20.0, 40.0, 6.0)],
+        };
+        let a = backend.rasterize(&scaled, 100, 100).to_vec();
+        let b = backend.rasterize(&plain, 100, 100).to_vec();
+        assert_eq!(a, b);
     }
 
     #[test]

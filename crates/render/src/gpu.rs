@@ -50,8 +50,8 @@ use crate::{
     Backend, Clip, GlyphCache, Layer, LayerInfo, Layered, Layers, MAX_FRAME_PIXELS,
     MAX_PARTIAL_SIDE, PixelRect, Pixels, Redrawn, RenderBackend, State, Store, Tile, Turned,
     bounds, clip_polygon, contours_coverage, damaged, fits_a_frame, group_end, landing_of,
-    mapped_mask, outward_clip, raster_scale, reach, reach_at, tile_rows, unscaled, visible_in,
-    whole_reach,
+    mapped_mask, outward_clip, raster_scale, reach, reach_at, shadow_item_coverage, tile_rows,
+    unscaled, visible_in, whole_reach,
 };
 
 /// The side of an atlas page, in texels: four mebibytes of coverage,
@@ -396,6 +396,9 @@ impl Page {
 struct Atlas {
     pages: Vec<Page>,
     places: HashMap<MaskKey, Place>,
+    /// Where in the raster each shadow's coverage kept lies (gap batch
+    /// E): its pixels' rectangle, which the key does not tell.
+    shadows: HashMap<MaskKey, (i64, i64, i64, i64)>,
     bytes: usize,
 }
 
@@ -403,6 +406,7 @@ impl Atlas {
     fn clear(&mut self) {
         self.pages.clear();
         self.places.clear();
+        self.shadows.clear();
         self.bytes = 0;
     }
 }
@@ -1345,6 +1349,71 @@ impl GpuBackend {
             return;
         };
         match item {
+            DisplayItem::Shadow {
+                shape,
+                sigma,
+                inset,
+                boxed,
+                color,
+            } => {
+                // Its coverage worked out once and kept in the atlas
+                // while the shadow, its place and its clip stay (gap
+                // batch E, D52).
+                let bits = |r: &RoundedRect| {
+                    let mut v = vec![
+                        (r.rect.x.to_bits(), r.rect.y.to_bits()),
+                        (r.rect.w.to_bits(), r.rect.h.to_bits()),
+                    ];
+                    v.extend(r.radii.iter().map(|(h, v)| (h.to_bits(), v.to_bits())));
+                    v
+                };
+                let mut points = bits(shape);
+                points.push((u32::MAX, sigma.to_bits()));
+                points.push((u32::MAX - u32::from(*inset), sx.to_bits() ^ sy.to_bits()));
+                points.push((tx.to_bits(), ty.to_bits()));
+                points.extend(bits(boxed));
+                let key = MaskKey::Polygon(
+                    points,
+                    [
+                        clip.x0.to_bits(),
+                        clip.y0.to_bits(),
+                        clip.x1.to_bits(),
+                        clip.y1.to_bits(),
+                    ],
+                    size,
+                );
+                let coverage = match self.atlas.places.get(&key) {
+                    Some(_) => None,
+                    None => shadow_item_coverage(item, clip, (sx, sy, tx, ty), size),
+                };
+                let (place, at) = match (self.atlas.places.get(&key).copied(), coverage) {
+                    (Some(place), _) => match self.atlas.shadows.get(&key) {
+                        Some(at) => (place, *at),
+                        None => return,
+                    },
+                    (None, Some(coverage)) => {
+                        let (w, h) = (coverage.width as u32, coverage.height as u32);
+                        let bytes: Vec<u8> = coverage
+                            .values
+                            .iter()
+                            .map(|v| (v * 255.0).round() as u8)
+                            .collect();
+                        let at = (
+                            coverage.x0,
+                            coverage.y0,
+                            coverage.x0 + i64::from(w),
+                            coverage.y0 + i64::from(h),
+                        );
+                        let Some(place) = self.place(key.clone(), w, h, &bytes) else {
+                            return;
+                        };
+                        self.atlas.shadows.insert(key, at);
+                        (place, at)
+                    }
+                    (None, None) => return,
+                };
+                self.push_mask(draws, place, at, premultiplied(color), outer, size);
+            }
             DisplayItem::PushClip { .. }
             | DisplayItem::PopClip
             | DisplayItem::PushGroup { .. }
@@ -3031,6 +3100,75 @@ mod tests {
             ],
         };
         equivalent("text, quads and polygons", &[list], 240, 160);
+    }
+
+    #[test]
+    fn shadows_match() {
+        // Gap batch E, D52: blurred, hard and inset shadows, scaled, the
+        // GPU's coverage the software's, from the atlas a second time.
+        let r = |x: f32, y: f32, w: f32, h: f32, radius: f32| {
+            Box::new(RoundedRect {
+                rect: paint::Rect { x, y, w, h },
+                radii: [(radius, radius); 4],
+            })
+        };
+        let shadow = |shape, sigma, inset, boxed| DisplayItem::Shadow {
+            shape,
+            sigma,
+            inset,
+            boxed,
+            color: Rgba8 {
+                r: 40,
+                g: 40,
+                b: 90,
+                a: 180,
+            },
+        };
+        let items = vec![
+            rect(0.0, 0.0, 240.0, 140.0, Rgba8::rgb(255, 255, 255)),
+            shadow(
+                r(24.0, 26.0, 60.0, 40.0, 8.0),
+                6.0,
+                false,
+                r(20.0, 20.0, 60.0, 40.0, 8.0),
+            ),
+            shadow(
+                r(110.0, 24.0, 50.0, 40.0, 0.0),
+                0.0,
+                false,
+                r(104.0, 20.0, 50.0, 40.0, 0.0),
+            ),
+            shadow(
+                r(190.0, 30.0, 30.0, 20.0, 4.0),
+                3.0,
+                true,
+                r(180.0, 20.0, 50.0, 40.0, 10.0),
+            ),
+            DisplayItem::PushGroup {
+                matrix: Matrix::scale(1.5, 1.5, 1.0),
+                opacity: 1.0,
+                key: GroupKey::Document(1),
+                layer: None,
+                mask: None,
+            },
+            shadow(
+                r(20.0, 64.0, 40.0, 20.0, 6.0),
+                4.0,
+                false,
+                r(16.0, 60.0, 40.0, 20.0, 6.0),
+            ),
+            DisplayItem::PopGroup,
+        ];
+        let list = DisplayList { items };
+        // The same shadows blurred otherwise: none of the first frame's
+        // coverage is taken for theirs.
+        let mut softer = list.clone();
+        for item in &mut softer.items {
+            if let DisplayItem::Shadow { sigma, .. } = item {
+                *sigma += 2.0;
+            }
+        }
+        equivalent("shadows", &[list.clone(), list, softer], 240, 140);
     }
 
     #[test]
