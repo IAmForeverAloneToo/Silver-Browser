@@ -345,6 +345,7 @@ const NATIVES: &[(&str, Decode)] = &[
             referrer: a.string(10)?,
             referrer_policy: a.string(11)?,
             target_address_space: a.string(12)?,
+            integrity: a.string(13).unwrap_or_default(),
         })))
     }),
     ("fetchNow", |a| {
@@ -362,6 +363,7 @@ const NATIVES: &[(&str, Decode)] = &[
             referrer: "about:client".to_owned(),
             referrer_policy: String::new(),
             target_address_space: String::new(),
+            integrity: String::new(),
         })))
     }),
     ("decode", |a| {

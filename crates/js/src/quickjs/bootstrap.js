@@ -5696,7 +5696,7 @@
           id, state.method, state.url, flatten(headersState(state.headers).list),
           body === null ? null : binaryString(body),
           state.mode, state.credentials, state.redirect, false, state.cache,
-          state.referrer, state.referrerPolicy, state.targetAddressSpace,
+          state.referrer, state.referrerPolicy, state.targetAddressSpace, state.integrity,
         );
       } catch (e) {
         reject(failed(e, "fetch", GLOBAL_INTERFACE));

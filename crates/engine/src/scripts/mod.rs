@@ -458,8 +458,13 @@ pub(crate) fn prepare_element(
     let Some(mut request) = script_request(page, url.clone(), csp) else {
         return Prepared::Nothing;
     };
-    // Its nonce and who inserted it, for its directive (M33.1).
+    // Its nonce and who inserted it, for its directive (M33.1), and its
+    // integrity metadata (D62).
     request.nonce = page.checked_nonce(document, element);
+    request.integrity = document
+        .attr(element, "integrity")
+        .unwrap_or_default()
+        .to_owned();
     request.parser_inserted = parser_inserted;
     // Its `referrerpolicy` (M33.3), else the document's.
     request.referrer_policy = document

@@ -30,6 +30,7 @@ mod infra;
 pub mod mime;
 pub mod observe;
 pub mod referrer;
+pub mod sri;
 #[cfg(any(test, feature = "test-server"))]
 pub mod test_server;
 pub mod transport;

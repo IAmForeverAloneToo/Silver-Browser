@@ -139,6 +139,7 @@ pub(crate) fn request(
         "loopback" => Some(net::AddressSpace::Loopback),
         _ => None,
     };
+    request.integrity.clone_from(&call.integrity);
     request.method = method;
     request.headers = fields;
     request.body = call.body.clone();
@@ -202,6 +203,7 @@ mod tests {
             referrer: "about:client".to_owned(),
             referrer_policy: String::new(),
             target_address_space: String::new(),
+            integrity: String::new(),
         };
         change(&mut call);
         call

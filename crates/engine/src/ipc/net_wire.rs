@@ -372,6 +372,7 @@ impl Wire for Request {
         self.target_address_space.encode(out);
         self.client.encode(out);
         self.reserved_client.encode(out);
+        self.integrity.encode(out);
     }
     fn decode(input: &mut Decoder<'_>) -> Result<Self, Malformed> {
         Ok(Request {
@@ -405,6 +406,7 @@ impl Wire for Request {
             target_address_space: Option::decode(input)?,
             client: Option::decode(input)?,
             reserved_client: Option::decode(input)?,
+            integrity: String::decode(input)?,
         })
     }
 }
@@ -548,6 +550,7 @@ impl Wire for NetworkError {
                 out.str(why);
             }
             NetworkError::BlobUrl => out.u8(29),
+            NetworkError::Integrity => out.u8(30),
         }
     }
     fn decode(input: &mut Decoder<'_>) -> Result<Self, Malformed> {
@@ -590,6 +593,7 @@ impl Wire for NetworkError {
             27 => NetworkError::Moved,
             28 => NetworkError::Http2(input.str()?.to_owned()),
             29 => NetworkError::BlobUrl,
+            30 => NetworkError::Integrity,
             tag => return Err(Malformed::Tag("NetworkError", u32::from(tag))),
         })
     }

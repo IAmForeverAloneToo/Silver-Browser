@@ -2459,3 +2459,71 @@ fn a_script_adds_a_font_face_which_the_page_is_laid_out_in() {
         .map(|f| f.font.face);
     assert_ne!(face, Some(text::FaceId(0)));
 }
+
+#[test]
+fn integrity_lets_through_only_what_matches_its_metadata() {
+    // Subresource Integrity (D62): a script and a sheet that match run
+    // and apply; ones that do not, or another origin's read without CORS,
+    // are network errors; `fetch()` too; a sheet a script adds as well.
+    let good = "sha384-BGGdpSh8eu/yW3h4MP3mzm/KY9VBYDdicQ8B8V1l8vq7Ed0hzH2CgpH0gpPo6z69";
+    let sheet = "sha256-54HYCAXWzaBwX2+DlUSVjp5+94cQl9Oz+ssT14SD/JM=";
+    let data = "sha256-Om6weQ85rIfJTzhWst0sXREOaBFgImGpqSPTuyOtyLc=";
+    let other = serve(|path| match path {
+        "/ok.js" => Some(Reply::ok("text/javascript", b"console.log('ran');")),
+        _ => None,
+    });
+    let elsewhere = other.url("/ok.js");
+    let page = format!(
+        "<link rel=stylesheet href=s.css integrity='{sheet}'>\
+         <link rel=stylesheet href=t.css integrity='sha256-AAAA'>\
+         <p id=p>p</p><b id=b>b</b><i id=i>i</i>\
+         <script src=ok.js integrity='{good}'></script>\
+         <script src=ok.js integrity='sha512-AAAA {good}'></script>\
+         <script src='{elsewhere}' integrity='{good}'></script>\
+         <script>\
+           const link = document.createElement('link');\
+           link.rel = 'stylesheet'; link.href = 'u.css'; link.integrity = 'sha256-AAAA';\
+           link.setAttribute('integrity', 'sha256-AAAA');\
+           document.head.appendChild(link);\
+           Promise.all([\
+             fetch('d.txt', {{ integrity: '{data}' }}).then(r => r.text()),\
+             fetch('d.txt', {{ integrity: 'sha256-AAAA' }}).then(() => 'read', e => e.name),\
+           ]).then(([a, b]) => console.log(a, b));\
+         </script>"
+    );
+    let server = serve(move |path| match path {
+        "/page.html" => Some(html(&page)),
+        "/ok.js" => Some(Reply::ok("text/javascript", b"console.log('ran');")),
+        "/s.css" => Some(Reply::ok("text/css", b"p { color: rgb(1, 2, 3) }")),
+        "/t.css" => Some(Reply::ok("text/css", b"b { color: rgb(4, 5, 6) }")),
+        "/u.css" => Some(Reply::ok("text/css", b"i { color: rgb(7, 8, 9) }")),
+        "/d.txt" => Some(Reply::ok("text/plain", b"data")),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, server.url("/page.html"));
+    let lines = tab.run_until(|lines| lines.iter().any(|l| l.starts_with("data")));
+    let ran: Vec<&String> = lines.iter().filter(|l| *l == "ran").collect();
+    assert_eq!(ran.len(), 1, "the matching one only: {lines:?}");
+    assert!(lines.contains(&"data TypeError".to_string()), "{lines:?}");
+    // The added sheet asked for and answered.
+    tab.wait_until(|engine| {
+        server.requests().iter().any(|r| r.target == "/u.css") && incoming(engine).is_none()
+    });
+    let document = &tab.engine.shown.document;
+    let node = |id: &str| {
+        document
+            .subtree(document.root())
+            .find(|&n| document.attr(n, "id") == Some(id))
+            .expect("the element")
+    };
+    let (p, b, i) = (node("p"), node("b"), node("i"));
+    let styles = tab.engine.cached_styles();
+    let colour = |n| styles.get(n).expect("styled").color;
+    assert_eq!(colour(p), style::computed::Color::rgb8(1, 2, 3));
+    assert_ne!(colour(b), style::computed::Color::rgb8(4, 5, 6));
+    assert_ne!(colour(i), style::computed::Color::rgb8(7, 8, 9));
+    let fetched: Vec<String> = server.requests().iter().map(|r| r.target.clone()).collect();
+    assert!(fetched.contains(&"/u.css".to_string()), "{fetched:?}");
+}

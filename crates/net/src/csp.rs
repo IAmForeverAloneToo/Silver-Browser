@@ -165,9 +165,9 @@ impl Inline {
     }
 }
 
-/// A hash source's algorithm (section 2.3.1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Hash {
+/// A hash source's algorithm (section 2.3.1), the weakest first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Hash {
     Sha256,
     Sha384,
     Sha512,
@@ -700,7 +700,7 @@ fn hash_of(expression: &str) -> Option<(Hash, &str)> {
 }
 
 /// `bytes`' digest by `hash`.
-fn digest(hash: Hash, bytes: &[u8]) -> Vec<u8> {
+pub(crate) fn digest(hash: Hash, bytes: &[u8]) -> Vec<u8> {
     let algorithm = match hash {
         Hash::Sha256 => &aws_lc_rs::digest::SHA256,
         Hash::Sha384 => &aws_lc_rs::digest::SHA384,
@@ -712,7 +712,7 @@ fn digest(hash: Hash, bytes: &[u8]) -> Vec<u8> {
 }
 
 /// `bytes` in base64 with padding (RFC 4648 section 4).
-fn base64(bytes: &[u8]) -> String {
+pub(crate) fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
@@ -733,7 +733,7 @@ fn base64(bytes: &[u8]) -> String {
 
 /// A hash source's value with base64url's two characters as base64's,
 /// as the reference browser takes it.
-fn normalized_base64(value: &str) -> String {
+pub(crate) fn normalized_base64(value: &str) -> String {
     value.replace('-', "+").replace('_', "/")
 }
 

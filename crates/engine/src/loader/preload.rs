@@ -189,6 +189,7 @@ impl Hints {
                 // link's `noreferrer` (M33).
                 request.nonce = nonce(&hint.attrs);
                 request.parser_inserted = hint.kind == HintKind::Script;
+                request.integrity = hint.attr("integrity").unwrap_or_default().to_owned();
                 if hint.kind == HintKind::Stylesheet
                     && hint.attr("rel").is_some_and(|rel| {
                         rel.split(|c: char| c.is_ascii_whitespace())

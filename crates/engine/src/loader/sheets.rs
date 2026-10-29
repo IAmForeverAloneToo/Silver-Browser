@@ -165,6 +165,8 @@ enum Key {
         disabled: bool,
         /// Its CORS settings attribute (M27.3).
         crossorigin: Option<String>,
+        /// Its integrity metadata (D62).
+        integrity: Option<String>,
     },
     Style {
         text: String,
@@ -1102,7 +1104,10 @@ fn start(
         .unwrap_or(context.encoding);
     let sheet = match &found.key {
         key @ Key::Link {
-            href, crossorigin, ..
+            href,
+            crossorigin,
+            integrity,
+            ..
         } if link_wants_sheet(key) => href
             .as_deref()
             .zip(base)
@@ -1110,8 +1115,10 @@ fn start(
             .and_then(|url| context.request(url))
             .map(|request| super::with_cors_settings(request, crossorigin.as_deref()))
             .map(|mut request| {
-                // Its element's nonce (M33.1), and referrer (M33.3).
+                // Its element's nonce (M33.1), referrer (M33.3) and
+                // integrity (D62).
                 request.nonce.clone_from(&found.nonce);
+                request.integrity = integrity.clone().unwrap_or_default();
                 request.referrer_policy = found.referrer_policy;
                 if found.noreferrer {
                     request.referrer = Referrer::None;
@@ -1290,6 +1297,7 @@ fn scan(
                     kind: attr("type"),
                     disabled: document.attr(node, "disabled").is_some(),
                     crossorigin: attr("crossorigin"),
+                    integrity: attr("integrity"),
                 },
                 title: title(),
                 media: attr("media"),

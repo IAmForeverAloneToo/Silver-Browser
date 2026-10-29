@@ -43,6 +43,9 @@ pub enum NetworkError {
     UnaskedUpgrade,
     /// The connection ended inside the response.
     Truncated,
+    /// The body did not match the request's integrity metadata, or was
+    /// another origin's without CORS (D62).
+    Integrity,
     /// The connection failed inside the response.
     Io(String),
     /// The response's header was too large.
@@ -132,6 +135,9 @@ impl fmt::Display for NetworkError {
             NetworkError::Malformed(what) => write!(f, "malformed response: {what:?}"),
             NetworkError::UnaskedUpgrade => f.write_str("a protocol switch no request asked for"),
             NetworkError::Truncated => f.write_str("the connection closed inside the response"),
+            NetworkError::Integrity => {
+                f.write_str("the response did not match the integrity metadata")
+            }
             NetworkError::Io(why) => write!(f, "the connection failed: {why}"),
             NetworkError::HeadersTooLarge => f.write_str("the response's header is too large"),
             NetworkError::BodyTooLarge => f.write_str("the response's body is too large"),

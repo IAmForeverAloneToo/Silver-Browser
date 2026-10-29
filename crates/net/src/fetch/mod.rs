@@ -353,6 +353,9 @@ pub struct Request {
     /// Fetch's reserved client (M39 step 6): a navigation's, the id the
     /// document it makes is to have.
     pub reserved_client: Option<String>,
+    /// Its integrity metadata (Subresource Integrity, D62), as written;
+    /// empty for none.
+    pub integrity: String,
 }
 
 impl Request {
@@ -407,6 +410,7 @@ impl Request {
             target_address_space: None,
             client: None,
             reserved_client: None,
+            integrity: String::new(),
         }
     }
 
@@ -743,7 +747,21 @@ impl Client {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         });
         let streamed = deliver.is_some();
-        let result = self.fetch_hops(request, deliver, fetch);
+        let mut result = self.fetch_hops(request, deliver, fetch);
+        // Subresource Integrity (D62, Fetch's main fetch step 22): a body
+        // that does not match the metadata, or one a script may not read,
+        // is a network error. A streamed body was handed over as it came
+        // and is not checked.
+        if !streamed && !request.integrity.is_empty() {
+            let integrity = crate::sri::Integrity::parse(&request.integrity);
+            if let Ok(response) = &result
+                && !integrity.is_empty()
+                && (response.response_type == ResponseType::Opaque
+                    || !integrity.matches(&response.body))
+            {
+                result = Err(NetworkError::Integrity);
+            }
+        }
         match &result {
             Ok(response) => {
                 // A body taken whole is told whole; a streamed one was

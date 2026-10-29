@@ -403,6 +403,10 @@ fn network_error(url: &Url, place: &str, error: &NetworkError) -> (String, Strin
             reach,
             "The page arrived compressed, and would not decompress.".to_owned(),
         ),
+        NetworkError::Integrity => (
+            reach,
+            "What arrived is not what the page said it would be.".to_owned(),
+        ),
         NetworkError::DataUrl => (
             "Can't open this data: address".to_owned(),
             "It is not a data: address that can be read.".to_owned(),
