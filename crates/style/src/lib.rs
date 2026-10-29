@@ -74,6 +74,7 @@ pub mod custom;
 /// Easing functions (M22): the computed values of the timing functions
 /// of transitions and animations, and the progress each gives.
 pub mod easing;
+pub mod font_face;
 
 /// Style invalidation (M13.1): which elements a change to a document
 /// can restyle.

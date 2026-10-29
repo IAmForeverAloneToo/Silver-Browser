@@ -814,6 +814,16 @@ impl Stylesheets {
         style
     }
 
+    /// The faces of the `@font-face` rules in force under `media`, in
+    /// order (D54).
+    pub fn font_faces(&self, media: &Media) -> Vec<crate::font_face::FontFaceRule> {
+        self.rules
+            .font_faces_in_force(&self.rules.answers(media))
+            .into_iter()
+            .cloned()
+            .collect()
+    }
+
     /// The answers of the UA sheet's `@media` lists, then these sheets'.
     fn answers(&self, media: &Media) -> Vec<bool> {
         let mut answers = ua().rules.answers(media);

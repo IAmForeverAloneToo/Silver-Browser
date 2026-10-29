@@ -57,6 +57,8 @@ pub use composite::{Composited, EffectsChange, Patch, StyleChange, repaints_only
 pub use paginate::{MAX_PAGES, PageSlice, Paginated, paginate};
 pub use parallel::{MAX_WORKER_THREADS, PARALLEL_MIN_ITEMS};
 pub use replaced::{AUDIO_CONTROLS, ICON_SIZE};
+/// The font a text fragment is drawn in (D53).
+pub use text::Font as TextFont;
 
 #[cfg(test)]
 pub(crate) mod testing {
@@ -178,6 +180,7 @@ pub(crate) mod testing {
             parent: None,
             in_3d: false,
             decorated: None,
+            font: Default::default(),
         }
     }
 

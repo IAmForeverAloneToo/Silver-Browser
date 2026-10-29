@@ -23,8 +23,11 @@
 
 pub mod edit;
 mod faces;
+mod web;
+mod woff;
 
 pub use faces::{FaceId, FaceRecord, Font, FontRequest, MAX_CHOICES, SYNTHETIC_SKEW, Slant};
+pub use web::{DocumentFaces, FaceRule, FaceState, MAX_FONT_BYTES, MAX_FONT_FACES};
 
 use std::collections::HashMap;
 use std::fmt;
@@ -858,6 +861,9 @@ pub struct FontCollection {
     /// The faces chosen by the font properties (D53), the fallbacks
     /// among them, shared by the collection's clones.
     faces: Arc<faces::Faces>,
+    /// A document's faces over the system's (D54), when this is the
+    /// collection a document measures with.
+    document: Option<Arc<DocumentFaces>>,
     /// The widths [`FontCollection::measure`] has given, shared by the
     /// collection's clones, in [`MEASURE_SHARDS`] parts by text, each
     /// behind its own lock.
@@ -1001,6 +1007,7 @@ impl FontCollection {
             primary: FontStore::from_bytes(data, index)?,
             fallbacks: HashMap::new(),
             faces: Arc::new(faces::Faces::new(None, None, style)),
+            document: None,
             measures: no_measures(),
             primary_file: None,
         })
@@ -1047,6 +1054,7 @@ impl FontCollection {
             primary,
             fallbacks,
             faces: Arc::new(faces),
+            document: None,
             measures: no_measures(),
             primary_file: Some(primary_file),
         })
@@ -1097,6 +1105,7 @@ impl FontCollection {
             primary,
             fallbacks,
             faces: Arc::new(faces),
+            document: None,
             measures: no_measures(),
             primary_file,
         })
@@ -1119,7 +1128,10 @@ impl FontCollection {
 
     /// The font CSS's matching chooses for `request` (D53).
     pub fn font(&self, request: &FontRequest<'_>) -> Font {
-        self.faces.choose(request)
+        match &self.document {
+            Some(document) => self.document_font(document, request),
+            None => self.faces.choose(request),
+        }
     }
 
     /// The face handed out as `id`: the primary font for 0, for one

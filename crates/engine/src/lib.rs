@@ -142,6 +142,7 @@ mod svg_images;
 #[cfg(test)]
 mod testing;
 mod view;
+mod web_fonts;
 mod webaudio;
 pub mod webgl;
 mod webgpu;
@@ -452,6 +453,8 @@ pub struct Engine {
     decoder: Decoder,
     /// The number the next image is given.
     next_image: u64,
+    /// The number the last set of web fonts was given (D54).
+    next_font_set: u64,
     /// The clock tasks, timers and scripts read (M26).
     clock: Clock,
     /// The profile what the browsing keeps is written to, and the Web
@@ -612,6 +615,8 @@ struct Shown {
     animated: Vec<NodeId>,
     /// The document's images (M23).
     images: ImageStore,
+    /// Its web fonts (D54), when its sheets have `@font-face` rules.
+    web_fonts: Option<web_fonts::WebFonts>,
     /// What its `img`s give a canvas to draw, shared with its scripts'
     /// host (M30).
     drawables: scripts::canvas::SharedDrawables,
@@ -719,6 +724,7 @@ impl Shown {
             timeline_origin: None,
             animated: Vec::new(),
             images: ImageStore::default(),
+            web_fonts: None,
             drawables: Default::default(),
             svgs: HashMap::new(),
             next_image_frame: None,
@@ -1330,6 +1336,7 @@ impl Engine {
             changed: true,
             events: Vec::new(),
             next_image: 0,
+            next_font_set: 0,
             clock: {
                 let made = Instant::now();
                 Arc::new(move || made.elapsed())
@@ -5174,6 +5181,7 @@ impl Engine {
             // A preload's waits in the network for a request (M38).
             Target::Report | Target::Preload => {}
             Target::Image { url } => self.image_arrived(page, &url, result),
+            Target::Font { set, face } => self.font_arrived(page, (set, face), result),
             Target::Fetch => {
                 // A task, run when tasks are (M27.1).
                 let now = self.now();
@@ -6636,7 +6644,7 @@ impl Engine {
                 &boxes,
                 viewport_width,
                 Some(self.viewport.1 as f32),
-                &self.layout_fonts,
+                self.document_fonts(),
             )
             .roots,
         )
@@ -6824,6 +6832,13 @@ impl Engine {
                 || (cached.layout.depends_on_viewport_height && cached.height != viewport_height)
         });
         if stale {
+            self.update_web_fonts();
+        }
+        let stale = self.shown.layout.as_ref().is_none_or(|cached| {
+            cached.width != viewport_width
+                || (cached.layout.depends_on_viewport_height && cached.height != viewport_height)
+        });
+        if stale {
             let styles = &self.shown.styled.as_ref().expect("just computed").styles;
             let fonts = FontMeasurer(&self.layout_fonts);
             let context = cascade_context(
@@ -6850,7 +6865,7 @@ impl Engine {
                 &boxes,
                 viewport_width,
                 Some(viewport_height),
-                &self.layout_fonts,
+                self.document_fonts(),
                 &self.shown.layout_cache,
             );
             self.shown.layout_cache.keep_boxes(boxes);
@@ -6863,6 +6878,7 @@ impl Engine {
                 height: viewport_height,
                 layout,
             });
+            self.request_fonts();
         }
         &self.shown.layout.as_ref().expect("just computed").layout
     }

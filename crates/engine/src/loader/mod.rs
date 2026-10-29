@@ -202,6 +202,9 @@ pub(crate) enum Target {
     Icon,
     /// An image a page shows, by its URL (M23).
     Image { url: String },
+    /// A web font's face (D54): face `face` of the set of web fonts
+    /// numbered `set`.
+    Font { set: u64, face: usize },
     /// A script's, from a `script` element's `src` (M24.3).
     Script,
     /// A script's `fetch()` (M27.1).

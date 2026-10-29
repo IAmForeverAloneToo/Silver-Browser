@@ -177,7 +177,7 @@ impl Engine {
         let boxes =
             layout::build_box_tree_showing(document, &styles, &recascade, &self.shown.images);
         let (width, height) = first_box.layout_area();
-        let laid = layout::layout_document_in(&boxes, width, Some(height), &self.layout_fonts);
+        let laid = layout::layout_document_in(&boxes, width, Some(height), self.document_fonts());
         let paginated = layout::paginate(laid, &|position| page_box(rem, position).layout_area().1);
         let pages = paginated
             .pages

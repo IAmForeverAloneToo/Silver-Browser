@@ -127,6 +127,7 @@ impl<'a> Marker<'a> {
             parent: Some(self.b.node),
             in_3d: false,
             decorated: None,
+            font: Default::default(),
         };
         // An image, its bottom on the baseline, the gap after it.
         if let Some(image) = &self.b.replaced {
@@ -157,9 +158,13 @@ impl<'a> Marker<'a> {
         };
         let direction = crate::inline::to_text_direction(self.style.direction);
         let text = &text::bidi_reorder(text, Some(direction));
+        let font = font::font_of(fonts, self.style);
         let text_fragment = |x: f32, text: &str, w: f32| {
             let kind = FragmentKind::Text(text.to_string());
-            fragment(x, baseline, w, ascent + descent, kind, ascent)
+            Fragment {
+                font,
+                ..fragment(x, baseline, w, ascent + descent, kind, ascent)
+            }
         };
         if self.style.letter_spacing == 0.0 {
             return vec![text_fragment(x, text, self.width)];

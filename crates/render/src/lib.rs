@@ -1366,7 +1366,7 @@ impl Drawn {
         Drawn {
             face,
             bold: font.bold,
-            skew: font.skew.to_bits(),
+            skew: font.skew().to_bits(),
         }
     }
 
@@ -1424,12 +1424,6 @@ impl GlyphCache {
     /// Shaped runs cached right now.
     pub fn runs_len(&self) -> usize {
         self.shaped.values().map(HashMap::len).sum()
-    }
-
-    /// The font of the display list's font properties `props` (D53),
-    /// as layout measured it.
-    pub(crate) fn font(&self, props: Option<&style::computed::FontProps>) -> Font {
-        paint::font_of_props(&self.fonts, props)
     }
 
     /// The shaped glyphs of `text` in `font` at `size`, from the run
@@ -2861,10 +2855,9 @@ impl SoftwareBackend {
                 if clip.is_empty() {
                     return;
                 }
-                let font = self.text.font(font.as_deref());
                 self.draw_text(
                     pixmap,
-                    (text, font),
+                    (text, *font),
                     point((*x, *y)),
                     *size,
                     color,
@@ -3149,8 +3142,7 @@ fn extent(text: &mut GlyphCache, item: &DisplayItem, state: &State) -> Option<Cl
             if !x.is_finite() || !y.is_finite() {
                 return (!clip.is_empty()).then_some(clip);
             }
-            let font = text.font(font.as_deref());
-            let ink = text.ink(font, run, *size)?;
+            let ink = text.ink(*font, run, *size)?;
             let reach = Clip {
                 x0: x + ink.left,
                 y0: y + ink.top,
@@ -5335,7 +5327,7 @@ mod tests {
             y: 12.0,
             size: 16.0,
             color: Rgba8::rgb(0, 0, 0),
-            font: None,
+            font: Default::default(),
         };
         let unclipped = backend
             .rasterize(
@@ -5393,7 +5385,7 @@ mod tests {
             y: 10.0,
             size,
             color: Rgba8::rgb(0, 0, 0),
-            font: None,
+            font: Default::default(),
         };
         let list = DisplayList {
             items: vec![
@@ -5991,7 +5983,7 @@ mod tests {
                 y: rng.coord(4.0, h + 8.0),
                 size: [8.0, 12.5, 16.0, 23.0][rng.below(4)],
                 color: rng.color(),
-                font: None,
+                font: Default::default(),
             },
             5 => {
                 let (dx, dy) = (rng.coord(1.0, 20.0), rng.coord(1.0, 12.0));
@@ -6491,7 +6483,7 @@ mod tests {
         assert!(bold.width > plain.width, "{} {}", bold.width, plain.width);
         assert!(ink(&bold) > ink(&plain) * 11 / 10);
         let slanted = mask(Font {
-            skew: text::SYNTHETIC_SKEW,
+            slanted: true,
             ..Font::default()
         });
         // The bar of an l: its top row's ink right of its bottom row's.
@@ -6510,10 +6502,10 @@ mod tests {
     }
 
     #[test]
-    fn a_text_item_is_drawn_in_the_font_its_properties_choose() {
-        // D53: the bold asked for, the test font having none, made up.
+    fn a_text_item_is_drawn_in_the_font_layout_chose() {
+        // D53: the bold made up for a face that has none.
         let mut backend = test_backend();
-        let item = |font: Option<Arc<style::computed::FontProps>>| DisplayList {
+        let item = |font: Font| DisplayList {
             items: vec![DisplayItem::Text {
                 text: "lll".into(),
                 x: 2.0,
@@ -6524,12 +6516,12 @@ mod tests {
             }],
         };
         let ink = |buf: &[u8]| buf.chunks(4).map(|p| u32::from(p[3])).sum::<u32>();
-        let plain = ink(backend.rasterize(&item(None), 64, 40));
-        let props = style::computed::FontProps {
-            weight: 700,
-            ..Default::default()
+        let plain = ink(backend.rasterize(&item(Font::default()), 64, 40));
+        let bold = Font {
+            bold: true,
+            ..Font::default()
         };
-        let bold = ink(backend.rasterize(&item(Some(Arc::new(props))), 64, 40));
+        let bold = ink(backend.rasterize(&item(bold), 64, 40));
         assert!(bold > plain * 11 / 10, "{bold} {plain}");
     }
 
@@ -6580,7 +6572,7 @@ mod tests {
             y: 10.0,
             size,
             color: Rgba8::rgb(0, 0, 0),
-            font: None,
+            font: Default::default(),
         };
         // Each 2000px `M` is a mask of over a megabyte; sixty of them
         // pass the budget, and the cache starts again rather than grow.
@@ -6725,7 +6717,7 @@ mod tests {
                     y: 26.0,
                     size: 14.0,
                     color: black,
-                    font: None,
+                    font: Default::default(),
                 },
                 DisplayItem::PopGroup,
             ],
@@ -6833,7 +6825,7 @@ mod tests {
                             y: rng.coord(10.0, 400.0).round(),
                             size: [12.0, 16.0][rng.below(2)],
                             color: rng.color(),
-                            font: None,
+                            font: Default::default(),
                         },
                         1 => DisplayItem::Border {
                             x: rng.coord(0.0, 90.0).round(),
@@ -6882,7 +6874,7 @@ mod tests {
                     y: 60.0,
                     size: 12.0,
                     color: Rgba8::rgb(30, 30, 30),
-                    font: None,
+                    font: Default::default(),
                 });
                 for (n, piece) in pieces.iter().enumerate() {
                     items.push(DisplayItem::PushGroup {
@@ -7071,7 +7063,7 @@ mod tests {
             y,
             size,
             color: Rgba8::rgb(0, 0, 0),
-            font: None,
+            font: Default::default(),
         };
         let scaled = list(vec![
             group(Matrix::scale(2.0, 2.0, 1.0), 1.0),
@@ -7300,7 +7292,7 @@ mod tests {
                     y: 30.0,
                     size: 12.0,
                     color: Rgba8::rgb(0, 0, 0),
-                    font: None,
+                    font: Default::default(),
                 },
                 DisplayItem::PopGroup,
             ],
@@ -7428,7 +7420,7 @@ mod tests {
                     y,
                     size: 10.0,
                     color: Rgba8::rgb(0, 0, 0),
-                    font: None,
+                    font: Default::default(),
                 },
                 DisplayItem::PopGroup,
             ]

@@ -1716,6 +1716,7 @@ fn flush_line<'a>(
                     max_ascent,
                     max_descent,
                     decorated,
+                    font::font_of(fonts, word.style),
                 ));
                 x += word.width;
             }
@@ -1901,6 +1902,7 @@ fn close_inline<'a>(
         parent: b.parent,
         in_3d: b.in_3d,
         decorated: None,
+        font: Default::default(),
     }
 }
 
@@ -2081,6 +2083,7 @@ fn text_fragment(
     ascent: f32,
     descent: f32,
     decorated: Option<Box<Decorated>>,
+    font: text::Font,
 ) -> Fragment {
     Fragment {
         x,
@@ -2099,6 +2102,7 @@ fn text_fragment(
         parent: Some(word.node),
         in_3d: false,
         decorated,
+        font,
     }
 }
 
@@ -2143,7 +2147,7 @@ fn emit_letter_spaced(
             })
         });
         fragments.push(text_fragment(
-            *x, baseline_y, &one, ascent, descent, decorated,
+            *x, baseline_y, &one, ascent, descent, decorated, font,
         ));
         *x += w + spacing;
     }

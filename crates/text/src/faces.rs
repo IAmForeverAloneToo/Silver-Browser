@@ -52,14 +52,22 @@ impl Default for FontRequest<'_> {
 }
 
 /// A face chosen, with what drawing makes up for it.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct Font {
     pub face: FaceId,
     /// Emboldened: bold was asked for and the face is not.
     pub bold: bool,
-    /// The horizontal skew a slant was asked for with an upright face:
-    /// x moves right by this much of the height above the baseline.
-    pub skew: f32,
+    /// Slanted by [`SYNTHETIC_SKEW`]: a slant was asked for with an
+    /// upright face.
+    pub slanted: bool,
+}
+
+impl Font {
+    /// The horizontal skew drawing makes up: x moves right by this much
+    /// of the height above the baseline.
+    pub fn skew(self) -> f32 {
+        if self.slanted { SYNTHETIC_SKEW } else { 0.0 }
+    }
 }
 
 /// The skew of a made-up slant, the reference browser's: a quarter,
@@ -101,14 +109,15 @@ pub(crate) struct Faces {
     /// The primary font's weight and whether it is slanted.
     primary_style: (u16, bool),
     /// The faces handed out past the primary font: face `n` is the
-    /// `n - 1`th.
-    loaded: RwLock<Vec<Arc<Fallback>>>,
+    /// `n - 1`th. The system's are kept; a document's are lent, and gone
+    /// with the document.
+    loaded: RwLock<Vec<Slot>>,
     /// The fonts chosen, by what they were asked for.
     chosen: RwLock<HashMap<Key, Font>>,
 }
 
 /// What a choice is kept by: the families, weight, slant and stretch.
-type Key = (Box<str>, u16, u32, u32);
+pub(crate) type Key = (Box<str>, u16, u32, u32);
 
 impl Faces {
     /// The faces of `db`, the primary font in `primary`, whose weight and
@@ -224,52 +233,50 @@ impl Faces {
         font
     }
 
-    /// The font CSS's matching gives `request`.
+    /// The font CSS's matching gives `request`: the first of its
+    /// families the system has, else the primary font's family.
     fn matched(&self, request: &FontRequest<'_>) -> Font {
-        let slanted = request.slant != Slant::Normal;
-        let Some(db) = &self.db else {
-            let (weight, italic) = self.primary_style;
-            return synthesized(FaceId(0), request, weight, italic);
-        };
-        let query = |families: &[fontdb::Family<'_>]| {
-            db.query(&fontdb::Query {
-                families,
-                weight: fontdb::Weight(request.weight),
-                style: if slanted {
-                    fontdb::Style::Italic
-                } else {
-                    fontdb::Style::Normal
-                },
-                stretch: stretch_of_percentage(request.stretch),
-            })
-        };
-        let primary: Vec<fontdb::Family<'_>> = PRIMARY_FAMILIES
-            .iter()
-            .map(|name| fontdb::Family::Name(name))
-            .collect();
-        let mut found = None;
-        for family in request.families.split(',').map(str::trim) {
-            let lower = family.to_ascii_lowercase();
-            found = match lower.as_str() {
-                "" => None,
-                "sans-serif" | "system-ui" | "ui-sans-serif" | "-apple-system" => query(&primary),
-                "serif" | "ui-serif" => query(&[fontdb::Family::Serif]),
-                "monospace" | "ui-monospace" => query(&[fontdb::Family::Monospace]),
-                "cursive" => query(&[fontdb::Family::Cursive]),
-                "fantasy" => query(&[fontdb::Family::Fantasy]),
-                _ => self
-                    .names
-                    .get(&family.to_lowercase())
-                    .and_then(|name| query(&[fontdb::Family::Name(name)])),
-            };
-            if found.is_some() {
-                break;
+        families(request.families)
+            .find_map(|family| self.family_font(family, request))
+            .unwrap_or_else(|| self.fallback_font(request))
+    }
+
+    /// The system's face of `family` that best matches `request`, when
+    /// it has the family.
+    pub(crate) fn family_font(&self, family: &str, request: &FontRequest<'_>) -> Option<Font> {
+        let db = self.db.as_ref()?;
+        let id = match family.to_ascii_lowercase().as_str() {
+            "" => None,
+            "sans-serif" | "system-ui" | "ui-sans-serif" | "-apple-system" => {
+                query(db, &primary_families(), request)
             }
-        }
-        let Some(id) = found.or_else(|| query(&primary)) else {
-            let (weight, italic) = self.primary_style;
+            "serif" | "ui-serif" => query(db, &[fontdb::Family::Serif], request),
+            "monospace" | "ui-monospace" => query(db, &[fontdb::Family::Monospace], request),
+            "cursive" => query(db, &[fontdb::Family::Cursive], request),
+            "fantasy" => query(db, &[fontdb::Family::Fantasy], request),
+            _ => self
+                .names
+                .get(&family.to_lowercase())
+                .and_then(|name| query(db, &[fontdb::Family::Name(name)], request)),
+        }?;
+        Some(self.font_of_id(db, id, request))
+    }
+
+    /// The font for `request` when none of its families is had: the
+    /// primary font's family's best face.
+    pub(crate) fn fallback_font(&self, request: &FontRequest<'_>) -> Font {
+        let (weight, italic) = self.primary_style;
+        let Some(db) = &self.db else {
             return synthesized(FaceId(0), request, weight, italic);
         };
+        match query(db, &primary_families(), request) {
+            Some(id) => self.font_of_id(db, id, request),
+            None => synthesized(FaceId(0), request, weight, italic),
+        }
+    }
+
+    /// The font of the database's face `id` for `request`.
+    fn font_of_id(&self, db: &fontdb::Database, id: fontdb::ID, request: &FontRequest<'_>) -> Font {
         let Some(info) = db.face(id) else {
             return Font::default();
         };
@@ -285,10 +292,12 @@ impl Faces {
     /// The face in `path` at `index`: the number it was handed out with,
     /// or a new one.
     pub(crate) fn handed_out(&self, path: PathBuf, index: u32) -> FaceId {
-        let number = |faces: &[Arc<Fallback>]| {
+        let number = |faces: &[Slot]| {
             faces
                 .iter()
-                .position(|face| face.path == path && face.index == index)
+                .position(|slot| {
+                    matches!(slot, Slot::Kept(face) if face.path == path && face.index == index)
+                })
                 .map(|n| FaceId(n as u32 + 1))
         };
         if let Ok(loaded) = self.loaded.read()
@@ -302,11 +311,20 @@ impl Faces {
         if let Some(id) = number(&loaded) {
             return id;
         }
-        loaded.push(Arc::new(Fallback {
+        loaded.push(Slot::Kept(Arc::new(Fallback {
             path,
             index,
             font: std::sync::OnceLock::new(),
-        }));
+        })));
+        FaceId(loaded.len() as u32)
+    }
+
+    /// A number for `face`, a document's: the registry does not keep it.
+    pub(crate) fn lend(&self, face: &Arc<Fallback>) -> FaceId {
+        let Ok(mut loaded) = self.loaded.write() else {
+            return FaceId(0);
+        };
+        loaded.push(Slot::Lent(Arc::downgrade(face)));
         FaceId(loaded.len() as u32)
     }
 
@@ -316,29 +334,77 @@ impl Faces {
         self.loaded
             .read()
             .ok()
-            .and_then(|loaded| loaded.iter().position(|f| Arc::ptr_eq(f, face)))
+            .and_then(|loaded| {
+                loaded.iter().position(|slot| match slot {
+                    Slot::Kept(f) => Arc::ptr_eq(f, face),
+                    Slot::Lent(f) => std::ptr::eq(f.as_ptr(), Arc::as_ptr(face)),
+                })
+            })
             .map_or(FaceId(0), |n| FaceId(n as u32 + 1))
     }
 
     /// The face handed out as `id`, when there is one past the primary
-    /// font.
+    /// font and it is still had.
     pub(crate) fn loaded(&self, id: FaceId) -> Option<Arc<Fallback>> {
         let n = id.0.checked_sub(1)? as usize;
-        self.loaded.read().ok()?.get(n).cloned()
+        match self.loaded.read().ok()?.get(n)? {
+            Slot::Kept(face) => Some(face.clone()),
+            Slot::Lent(face) => face.upgrade(),
+        }
     }
+}
+
+/// A face handed out: kept by the registry, or lent by a document.
+enum Slot {
+    Kept(Arc<Fallback>),
+    Lent(std::sync::Weak<Fallback>),
+}
+
+/// The names in a family list, in order.
+pub(crate) fn families(list: &str) -> impl Iterator<Item = &str> {
+    list.split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+}
+
+/// The primary font's families.
+fn primary_families() -> Vec<fontdb::Family<'static>> {
+    PRIMARY_FAMILIES
+        .iter()
+        .map(|name| fontdb::Family::Name(name))
+        .collect()
+}
+
+/// The face of `families` in `db` that best matches `request`.
+fn query(
+    db: &fontdb::Database,
+    families: &[fontdb::Family<'_>],
+    request: &FontRequest<'_>,
+) -> Option<fontdb::ID> {
+    db.query(&fontdb::Query {
+        families,
+        weight: fontdb::Weight(request.weight),
+        style: if request.slant != Slant::Normal {
+            fontdb::Style::Italic
+        } else {
+            fontdb::Style::Normal
+        },
+        stretch: stretch_of_percentage(request.stretch),
+    })
 }
 
 /// `face`, whose weight is `weight` and which is slanted when `italic`,
 /// with what drawing makes up for `request`.
-fn synthesized(face: FaceId, request: &FontRequest<'_>, weight: u16, italic: bool) -> Font {
+pub(crate) fn synthesized(
+    face: FaceId,
+    request: &FontRequest<'_>,
+    weight: u16,
+    italic: bool,
+) -> Font {
     Font {
         face,
         bold: request.weight >= BOLD && weight < BOLD,
-        skew: if request.slant != Slant::Normal && !italic {
-            SYNTHETIC_SKEW
-        } else {
-            0.0
-        },
+        slanted: request.slant != Slant::Normal && !italic,
     }
 }
 
@@ -416,7 +482,7 @@ mod tests {
             Font {
                 face: FaceId(0),
                 bold: true,
-                skew: SYNTHETIC_SKEW
+                slanted: true
             }
         );
         assert!(!faces.choose(&request("a", 599, Slant::Normal)).bold);
@@ -471,7 +537,7 @@ mod tests {
             let path = faces
                 .loaded(font.face)
                 .map_or("primary".to_owned(), |f| f.path.display().to_string());
-            (path, font.bold, font.skew)
+            (path, font.bold, font.skew())
         };
         assert_eq!(
             pick("sans-serif", 400, Slant::Normal),

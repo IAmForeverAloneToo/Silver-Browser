@@ -55,6 +55,9 @@ pub(crate) struct RuleSet {
     named: Vec<(u32, Option<u32>)>,
     /// The `@keyframes` rules kept, in the order they appear (M22).
     keyframes: Vec<KeyframesRule>,
+    /// The `@font-face` rules' faces, in the order they appear, each
+    /// with the innermost `@media` block around it (D54).
+    font_faces: Vec<(crate::font_face::FontFaceRule, Option<u32>)>,
 }
 
 /// A `@keyframes` rule kept: its name, where it is, as a
@@ -416,6 +419,20 @@ impl RuleSet {
         }
     }
 
+    /// The `@font-face` rules' faces that `answers` leave in force, in
+    /// order (D54).
+    pub(crate) fn font_faces_in_force(
+        &self,
+        answers: &[bool],
+    ) -> Vec<&crate::font_face::FontFaceRule> {
+        let (holds, _) = self.ordered(answers);
+        self.font_faces
+            .iter()
+            .filter(|(_, block)| block.is_none_or(|b| holds[b as usize]))
+            .map(|(face, _)| face)
+            .collect()
+    }
+
     /// The `@page` rules of `sheets` that `answers` leave in force, in
     /// order, each with its layer's place, as [`RuleSet::in_force`] gives
     /// the style rules.
@@ -680,6 +697,13 @@ impl Builder<'_> {
             _ => None,
         };
         match (name.as_str(), rules) {
+            ("font-face", None) => {
+                if let Some(Block::Declarations(declarations)) = &at.block
+                    && let Some(face) = crate::font_face::read(declarations)
+                {
+                    self.set.font_faces.push((face, place.block));
+                }
+            }
             ("page", None) => {
                 if let (Some(Block::Declarations(_)), Some(selectors)) =
                     (&at.block, parse_page_selectors(&at.prelude))

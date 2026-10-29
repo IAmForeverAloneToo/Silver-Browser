@@ -176,6 +176,10 @@ pub struct Fragment {
     /// For a text fragment, the text decorations drawn with it (M21.7):
     /// the lines, and how far past it they reach; `None` for none.
     pub decorated: Option<Box<Decorated>>,
+    /// For a text fragment, the face its text was measured in and the
+    /// bold and slant made up for it (D53), which drawing takes as it
+    /// is; the primary font otherwise.
+    pub font: text::Font,
 }
 
 /// What names a box's stacking context across the fragment tree: the
@@ -2711,6 +2715,7 @@ pub(crate) fn box_fragment(w: f32, h: f32, b: &LayoutBox) -> Fragment {
         parent: b.parent,
         in_3d: b.in_3d,
         decorated: None,
+        font: Default::default(),
     }
 }
 

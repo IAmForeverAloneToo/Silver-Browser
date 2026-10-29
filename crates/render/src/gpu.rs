@@ -1713,10 +1713,9 @@ impl GpuBackend {
                 if clip.is_empty() {
                     return;
                 }
-                let font = self.text.font(font.as_deref());
                 self.record_text(
                     draws,
-                    (text, font),
+                    (text, *font),
                     point((*x, *y)),
                     *font_size,
                     color,
@@ -3004,7 +3003,7 @@ mod tests {
             y,
             size,
             color,
-            font: None,
+            font: Default::default(),
         }
     }
 

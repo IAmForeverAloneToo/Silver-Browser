@@ -2338,3 +2338,41 @@ fn a_page_left_while_an_image_decodes_is_not_kept() {
     tab.wait_until(|engine| engine.url() == Some(&a) && engine.load_state() == &LoadState::Loaded);
     assert_eq!(pages(&server), 2);
 }
+
+#[test]
+fn a_font_face_is_fetched_when_its_family_is_laid_out_and_lays_the_page_out_again() {
+    // D54: the first source an error, the next taken; a face no text asks
+    // for is not fetched.
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<style>@font-face { font-family: Web; src: url(gone.ttf), url(f/w.ttf) format(truetype) } \
+             @font-face { font-family: Unused; src: url(u.ttf) } p { font-family: Web, serif }</style>\
+             <p>abc</p>",
+        )),
+        "/f/w.ttf" => Some(Reply::ok("font/ttf", text::TEST_FONT)),
+        // An error's body is no face, a font though it be.
+        "/gone.ttf" => Some(Reply::with_fields(404, &[], text::TEST_FONT)),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    load_all(&mut tab, server.url("/page.html"));
+    let face = |engine: &mut Engine| {
+        engine
+            .layout(200.0)
+            .iter()
+            .find(|f| matches!(f.kind, layout::FragmentKind::Text(_)))
+            .map(|f| f.font.face)
+    };
+    assert_eq!(face(&mut tab.engine), Some(text::FaceId(0)), "stood in for");
+    tab.wait_until(|engine| engine.shown.layout.is_none());
+    let web = face(&mut tab.engine).expect("the text");
+    assert_ne!(web, text::FaceId(0));
+    let requests = server.requests();
+    let fonts: Vec<_> = requests
+        .iter()
+        .filter(|r| r.header("sec-fetch-dest") == Some("font"))
+        .map(|r| r.target.as_str())
+        .collect();
+    assert_eq!(fonts, ["/gone.ttf", "/f/w.ttf"]);
+    assert!(requests.iter().all(|r| r.target != "/u.ttf"));
+}

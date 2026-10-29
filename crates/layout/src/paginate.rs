@@ -1209,6 +1209,7 @@ mod tests {
             parent: None,
             in_3d: false,
             decorated: None,
+            font: Default::default(),
         }
     }
 

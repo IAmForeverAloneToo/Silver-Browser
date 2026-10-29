@@ -2735,9 +2735,10 @@ mod tests {
         // Each holds its style shared (M35.9), where each held a 704-byte
         // style of its own, copied into every box and every fragment,
         // every word's among them; a fragment its children shared too.
-        // Growing them is a decision too.
+        // Growing them is a decision too. A fragment's font (D53), the
+        // face its text was measured in, eight bytes: 128 before it.
         assert_eq!(std::mem::size_of::<LayoutBox>(), 160);
-        assert_eq!(std::mem::size_of::<crate::Fragment>(), 128);
+        assert_eq!(std::mem::size_of::<crate::Fragment>(), 136);
     }
 
     /// A box tree and the document it was built from, whose nodes the

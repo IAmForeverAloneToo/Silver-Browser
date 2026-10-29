@@ -86,7 +86,7 @@ const ACCEPT_LANGUAGE: &[u8] = b"en-US,en;q=0.9";
 fn priority(destination: Destination) -> Option<&'static str> {
     match destination {
         Destination::Document | Destination::Iframe => Some("u=0, i"),
-        Destination::Style => Some("u=0"),
+        Destination::Style | Destination::Font => Some("u=0"),
         Destination::Script | Destination::Worker | Destination::ServiceWorker => Some("u=1"),
         Destination::Image => Some("u=5, i"),
         Destination::Empty | Destination::Report | Destination::Audio | Destination::Video => None,
@@ -163,6 +163,9 @@ pub enum Destination {
     /// `video` element's.
     Audio,
     Video,
+    /// A web font (D54): an `@font-face` rule's or a `FontFace`'s
+    /// source.
+    Font,
 }
 
 impl Destination {
@@ -180,6 +183,7 @@ impl Destination {
             Destination::Report => "report",
             Destination::Audio => "audio",
             Destination::Video => "video",
+            Destination::Font => "font",
         }
     }
 
@@ -197,7 +201,8 @@ impl Destination {
             | Destination::Empty
             | Destination::Report
             | Destination::Audio
-            | Destination::Video => b"*/*",
+            | Destination::Video
+            | Destination::Font => b"*/*",
         }
     }
 }
@@ -366,7 +371,7 @@ impl Request {
             destination,
             mode: match destination {
                 Destination::Document | Destination::Iframe => Mode::Navigate,
-                Destination::Empty => Mode::Cors,
+                Destination::Empty | Destination::Font => Mode::Cors,
                 Destination::Worker | Destination::ServiceWorker => Mode::SameOrigin,
                 Destination::Style
                 | Destination::Image
@@ -379,7 +384,8 @@ impl Request {
                 Destination::Empty
                 | Destination::Worker
                 | Destination::ServiceWorker
-                | Destination::Report => Credentials::SameOrigin,
+                | Destination::Report
+                | Destination::Font => Credentials::SameOrigin,
                 _ => Credentials::Include,
             },
             redirect: Redirect::Follow,

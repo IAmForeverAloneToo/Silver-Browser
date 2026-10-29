@@ -195,6 +195,7 @@ fn destination_name(destination: net::Destination) -> &'static str {
         Report => "report",
         Audio => "audio",
         Video => "video",
+        Font => "font",
     }
 }
 

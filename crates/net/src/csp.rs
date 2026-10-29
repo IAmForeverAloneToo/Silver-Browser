@@ -198,6 +198,7 @@ fn fetch_directives(destination: Destination) -> (&'static [&'static str], &'sta
             "the stylesheet",
         ),
         Destination::Image => (&["img-src", "default-src"], "the image"),
+        Destination::Font => (&["font-src", "default-src"], "the font"),
         Destination::Audio | Destination::Video => (&["media-src", "default-src"], "media from"),
         Destination::Iframe => (&["frame-src", "child-src", "default-src"], "the frame"),
         Destination::Worker | Destination::ServiceWorker => (
@@ -1307,6 +1308,23 @@ mod tests {
     fn request(policy: &Csp, destination: Destination, target: &str) -> Vec<Violation> {
         let target = url(target);
         policy.request_violations(destination, (&target, &target), 0, "", true)
+    }
+
+    #[test]
+    fn a_font_is_held_to_font_src_then_default_src() {
+        let both = csp(&["default-src 'none'; font-src https://fonts.example"]);
+        assert!(request(&both, Destination::Font, "https://fonts.example/a.woff").is_empty());
+        let refused = request(&both, Destination::Font, "https://other.example/a.woff");
+        assert_eq!(refused.len(), 1);
+        assert_eq!(refused[0].directive, "font-src");
+        let fallen = csp(&["default-src 'self'"]);
+        assert!(!request(&fallen, Destination::Font, "https://other.example/a.woff").is_empty());
+        use crate::{Credentials, Mode, Request};
+        let request = Request::get(url("https://fonts.example/a.woff"), Destination::Font);
+        assert_eq!(
+            (request.mode, request.credentials, Destination::Font.name()),
+            (Mode::Cors, Credentials::SameOrigin, "font")
+        );
     }
 
     #[test]

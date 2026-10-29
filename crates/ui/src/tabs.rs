@@ -508,7 +508,7 @@ impl TabStrip {
                 y: y + (h + metrics.ascent - metrics.descent) / 2.0,
                 size: FONT_SIZE,
                 color: c.text,
-                font: None,
+                font: Default::default(),
             });
             items.push(DisplayItem::PopClip);
         }

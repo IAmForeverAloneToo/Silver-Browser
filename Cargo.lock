@@ -3015,6 +3015,7 @@ name = "text"
 version = "0.0.1"
 dependencies = [
  "ab_glyph",
+ "flate2",
  "fontdb",
  "rustybuzz",
  "self_cell",
