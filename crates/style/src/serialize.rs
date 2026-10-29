@@ -878,7 +878,7 @@ fn self_alignment(value: SelfAlignment) -> String {
 /// A custom property's value as text: its tokens written back, white
 /// space as one space, trimmed; and a selector's or a condition's, for
 /// the DevTools' rules (M36).
-pub(crate) fn tokens(value: &[Token]) -> String {
+pub fn tokens(value: &[Token]) -> String {
     let mut out = String::new();
     for token in value {
         match token {

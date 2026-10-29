@@ -69,6 +69,9 @@ pub(crate) struct Page {
     /// Whether it is the DevTools panel's page (M36), which the browser
     /// alone shows: its window has the bridge to the browser.
     panel: bool,
+    /// Whether a script changed a sheet through the CSSOM (D66) since
+    /// the engine last took the sheets.
+    cssom_edited: bool,
 }
 
 /// What a page's fetches are made with.
@@ -186,6 +189,9 @@ enum Slot {
 }
 
 struct Sheet {
+    /// Which sheet it is, for the CSSOM's objects (D66): a new number
+    /// for each sheet made.
+    serial: u64,
     rules: css::Stylesheet,
     /// The URL the sheet was requested from, which its imports resolve
     /// against; `None` for a `<style>` element's.
@@ -280,6 +286,7 @@ impl Page {
             referrer_policy: None,
             referrer: String::new(),
             panel: false,
+            cssom_edited: false,
         }
     }
 
@@ -322,6 +329,7 @@ impl Page {
             referrer_policy: None,
             referrer: String::new(),
             panel: false,
+            cssom_edited: false,
         }
     }
 
@@ -927,6 +935,7 @@ impl Page {
             rules::absolute_urls(&mut rules.rules, location);
         }
         let mut sheet = Sheet {
+            serial: next_serial(),
             rules,
             location,
             encoding,
@@ -1010,6 +1019,105 @@ impl Page {
             }
         }
         sheets
+    }
+}
+
+/// A new sheet's serial number.
+fn next_serial() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// What the CSSOM reads of a sheet (D66): its rules, the URL it came
+/// from, and the sheets its `@import` rules fetched, by their rules'
+/// indices.
+pub(crate) struct SheetView<'a> {
+    pub(crate) rules: &'a css::Stylesheet,
+    pub(crate) location: Option<&'a Url>,
+    pub(crate) serial: u64,
+}
+
+impl Page {
+    /// The CSSOM's `document.styleSheets` (D66): each element whose
+    /// sheet is there, in tree order, with its sheet's serial number.
+    pub(crate) fn cssom_sheets(&self) -> Vec<(NodeId, u64)> {
+        self.owners
+            .iter()
+            .filter_map(|owner| match &owner.sheet {
+                Slot::Ready(sheet) => Some((owner.node, sheet.serial)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The sheet of `owner`, or of an import of its at `imports` (each
+    /// an import's place among its sheet's `@import` rules).
+    pub(crate) fn cssom_sheet(&self, owner: NodeId, imports: &[usize]) -> Option<SheetView<'_>> {
+        let owner = self.owners.iter().find(|o| o.node == owner)?;
+        let mut sheet = match &owner.sheet {
+            Slot::Ready(sheet) => sheet,
+            _ => return None,
+        };
+        for &i in imports {
+            sheet = match &sheet.imports.get(i)?.sheet {
+                Slot::Ready(inner) => inner,
+                _ => return None,
+            };
+        }
+        Some(SheetView {
+            rules: &sheet.rules,
+            location: sheet.location.as_ref(),
+            serial: sheet.serial,
+        })
+    }
+
+    /// The `title` and `media` of `owner`'s element.
+    pub(crate) fn cssom_owner(&self, owner: NodeId) -> Option<(&str, Option<&str>)> {
+        let owner = self.owners.iter().find(|o| o.node == owner)?;
+        Some((owner.title.as_str(), owner.media.as_deref()))
+    }
+
+    /// Changes the rules of `owner`'s sheet, or an import's, by `edit`:
+    /// what a script does through the CSSOM. The `@import` rules keep
+    /// their fetched sheets by `kept`, which the edit gives as the old
+    /// index of each rule now there (`None` for one it made).
+    pub(crate) fn cssom_edit<R>(
+        &mut self,
+        owner: NodeId,
+        imports: &[usize],
+        edit: impl FnOnce(&mut css::Stylesheet) -> Option<(R, Vec<Option<usize>>)>,
+    ) -> Option<R> {
+        let owner = self.owners.iter_mut().find(|o| o.node == owner)?;
+        let mut sheet = match &mut owner.sheet {
+            Slot::Ready(sheet) => sheet,
+            _ => return None,
+        };
+        for &i in imports {
+            sheet = match &mut sheet.imports.get_mut(i)?.sheet {
+                Slot::Ready(inner) => inner,
+                _ => return None,
+            };
+        }
+        let (result, kept) = edit(&mut sheet.rules)?;
+        // The imports follow their rules; one whose rule went goes.
+        let imports = std::mem::take(&mut sheet.imports);
+        sheet.imports = imports
+            .into_iter()
+            .filter_map(|mut imported| {
+                let now = kept
+                    .iter()
+                    .position(|&old| old == Some(imported.import.rule))?;
+                imported.import.rule = now;
+                Some(imported)
+            })
+            .collect();
+        self.cssom_edited = true;
+        Some(result)
+    }
+
+    /// Whether a script changed a sheet since this was last asked.
+    pub(crate) fn take_cssom_edited(&mut self) -> bool {
+        std::mem::take(&mut self.cssom_edited)
     }
 }
 
@@ -1144,6 +1252,7 @@ fn start(
         }
         key @ Key::Style { text, .. } if style_makes_sheet(key) => {
             let mut sheet = Sheet {
+                serial: next_serial(),
                 rules: css::parse_stylesheet(text).unwrap_or_default(),
                 location: None,
                 encoding: context.encoding,

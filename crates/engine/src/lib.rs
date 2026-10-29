@@ -5787,6 +5787,10 @@ impl Engine {
         if let Some(node) = self.shown.scripts.take_scroll() {
             self.scroll_focus_into_view(node);
         }
+        // A sheet a script changed through the CSSOM (D66).
+        if self.shown.page.take_cssom_edited() {
+            self.sheets_changed();
+        }
         // A script's scroll is at once (CSSOM View's "auto" behavior).
         for (node, y) in self.shown.scripts.take_scrolls() {
             match node {

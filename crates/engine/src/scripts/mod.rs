@@ -21,6 +21,7 @@ mod layout_observers;
 mod media_lists;
 mod mutations;
 pub(crate) mod ports;
+mod rules;
 pub(crate) mod service_workers;
 #[cfg(test)]
 mod service_workers_tests;

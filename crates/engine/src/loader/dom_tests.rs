@@ -2053,3 +2053,77 @@ fn layout_queries_lay_the_page_out_as_it_stands() {
         .expect("the scroller");
     assert_eq!(tab.engine.element_scroll(s), 160.0);
 }
+
+#[test]
+fn style_sheets_and_their_rules_as_the_reference_browser_has_them() {
+    // D66: document.styleSheets, a sheet's rules read and changed, the
+    // cascade following; a new text a new sheet.
+    let page = "<style id=s>p { color: red } @media (min-width: 1px) { b { top: 0 } }</style>\
+                <p id=p>x</p><script>\
+                var sheet = document.styleSheets[0], s = document.getElementById('s'), \
+                p = document.getElementById('p'); \
+                console.log(document.styleSheets.length, sheet === s.sheet, sheet.ownerNode === s, \
+                sheet.cssRules.length); \
+                console.log(sheet.cssRules[0].cssText, sheet.cssRules[0].selectorText, \
+                sheet.cssRules[1].type, sheet.cssRules[1].cssRules[0].cssText); \
+                var first = sheet.cssRules[0], media = sheet.cssRules[1]; \
+                sheet.insertRule('p { color: rgb(0, 128, 0) }', 1); \
+                console.log(sheet.cssRules.length, sheet.cssRules[0] === first, \
+                sheet.cssRules[2] === media, getComputedStyle(p).color); \
+                first.style.color = 'blue'; console.log(first.cssText); \
+                sheet.deleteRule(1); \
+                try { sheet.insertRule('nonsense', 0); } catch (e) { console.log(e.name); } \
+                try { sheet.replaceSync(''); } catch (e) { console.log(e.name); } \
+                console.log(getComputedStyle(p).color, first.parentStyleSheet === sheet); \
+                s.textContent = 'i { }';\
+                </script><script>\
+                console.log(document.styleSheets[0] === sheet, \
+                document.styleSheets[0].cssRules[0].cssText);</script>";
+    let (tab, console) = scripted(page, true);
+    assert_eq!(
+        console,
+        [
+            "1 true true 2",
+            "p { color: red; } p 4 b { top: 0; }",
+            "3 true true rgb(0, 128, 0)",
+            "p { color: blue; }",
+            "SyntaxError",
+            "NotAllowedError",
+            "rgb(0, 0, 255) true",
+            "false i { }",
+        ]
+    );
+    drop(tab);
+}
+
+#[test]
+fn a_rule_a_script_changed_is_the_cascades() {
+    // After the load, so that only the CSSOM's change takes the sheets
+    // again; an import whose rule goes takes its rules with it.
+    let server = serve(|path| match path {
+        "/page.html" => Some(Reply::ok(
+            "text/html",
+            b"<style>@import 'a.css'; @import 'b.css'; p { color: red }</style><p id=p>x</p>\
+              <script>setTimeout(function () { var sheet = document.styleSheets[0]; \
+              sheet.cssRules[2].style.color = 'blue'; sheet.deleteRule(0); \
+              console.log('done'); }, 0);</script>",
+        )),
+        "/a.css" => Some(Reply::ok("text/css", b"p { color: rgb(1, 2, 3) }")),
+        "/b.css" => Some(Reply::ok("text/css", b"i { color: rgb(1, 2, 3) }")),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, server.url("/page.html"));
+    tab.run_until(|lines| lines.iter().any(|line| line == "done"));
+    let document = tab.engine.document();
+    let p = document
+        .subtree(document.root())
+        .find(|&n| document.attr(n, "id") == Some("p"))
+        .expect("the paragraph");
+    let styles = tab.engine.cached_styles();
+    assert_eq!(
+        styles.get(p).expect("styled").color,
+        style::computed::Color::rgb8(0, 0, 255)
+    );
+}

@@ -50,6 +50,9 @@
   const ArraySplice = uncurry(Array.prototype.splice);
   const ArrayShift = uncurry(Array.prototype.shift);
   const StringIndexOf = uncurry(String.prototype.indexOf);
+  const StringSplit = uncurry(String.prototype.split);
+  const StringTrim = uncurry(String.prototype.trim);
+  const PromiseReject = (value) => ReflectApply(Promise.reject, Promise, [value]);
   const FromCharCode = String.fromCharCode;
   const MapGet = uncurry(Map.prototype.get);
   const MapSet = uncurry(Map.prototype.set);
@@ -11161,6 +11164,9 @@
 
   // The block's declarations: name, value, priority, three in a row.
   function declarationsOf(state) {
+    if (state.rule !== undefined) {
+      return native.parseDeclarations(ruleData(state.rule)[3]);
+    }
     const text = native.attribute(state.handle, "style");
     return text === null ? [] : native.parseDeclarations(text);
   }
@@ -11170,6 +11176,10 @@
     for (let i = 0; i < flat.length; i += 3) {
       text += (i === 0 ? "" : " ") + flat[i] + ": " + flat[i + 1];
       text += (flat[i + 2] === "" ? "" : " !important") + ";";
+    }
+    if (state.rule !== undefined) {
+      setRule(state.rule, text, false);
+      return;
     }
     setAttribute(state.handle, "style", text, method);
     // The CSSOM's, which the policies let through (M33.1).
@@ -11293,6 +11303,791 @@
     }
   }
   expose(CSSStyleDeclaration, "CSSStyleDeclaration");
+
+  // ---- Style sheets and their rules (CSSOM sections 6.1 to 6.4, D66) ----
+
+  // A sheet's state: its owner element's object and handle, the imports
+  // down to it, its serial number, and its rule list.
+  const sheetStates = new $WeakMap();
+  // Each owner element's sheet object, with the serial it is of.
+  const ownerSheets = new $WeakMap();
+
+  function sheetState(sheet) {
+    const state = WeakMapGet(sheetStates, sheet);
+    if (state === undefined) {
+      throw illegalInvocation();
+    }
+    return state;
+  }
+
+  // The native path of a rule list: the imports' count, the imports, the
+  // rule path.
+  function cssomPath(state, rulePath) {
+    const out = [state.imports.length];
+    for (let i = 0; i < state.imports.length; i++) {
+      ArrayPush(out, state.imports[i]);
+    }
+    for (let i = 0; i < rulePath.length; i++) {
+      ArrayPush(out, rulePath[i]);
+    }
+    return out;
+  }
+
+  // The sheet object of `owner`'s sheet `serial` (or of an import of it
+  // at `imports`, under `parent`), made once.
+  function sheetFor(owner, serial, imports, parent, ownerRule) {
+    if (imports.length === 0) {
+      const known = WeakMapGet(ownerSheets, owner);
+      if (known !== undefined && known.serial === serial) {
+        return known.sheet;
+      }
+    }
+    const sheet = new CSSStyleSheet(KEY);
+    const state = {
+      owner,
+      handle: handleOf(owner),
+      imports,
+      serial,
+      parent,
+      ownerRule,
+      list: null,
+    };
+    state.list = ruleList(state, [], null);
+    WeakMapSet(sheetStates, sheet, state);
+    if (imports.length === 0) {
+      WeakMapSet(ownerSheets, owner, { serial, sheet });
+    }
+    return sheet;
+  }
+
+  // A rule list's state: its sheet, its path, the grouping rule holding
+  // it, and its rule objects, kept so that one rule is one object.
+  const listStates = new $WeakMap();
+
+  function ruleList(sheet, path, parentRule) {
+    const list = new CSSRuleList(KEY);
+    const state = { sheet, path, parentRule, objects: [] };
+    const proxy = new $Proxy(list, ruleListHandlers);
+    WeakMapSet(listStates, list, state);
+    WeakMapSet(listStates, proxy, state);
+    state.proxy = proxy;
+    return state;
+  }
+
+  // The rules of a list as the native answers: four strings a rule.
+  function listData(state) {
+    const sheet = state.sheet;
+    return native.cssom("rules", sheet.handle, cssomPath(sheet, state.path), "", 0);
+  }
+
+  // The list's rule objects brought up to the rules now there: one of the
+  // same kind at the same place kept, another made.
+  function listObjects(state) {
+    const data = listData(state);
+    const count = data.length / 4;
+    if (state.objects.length > count) {
+      state.objects.length = count;
+    }
+    for (let i = 0; i < count; i++) {
+      const kind = data[i * 4];
+      const kept = state.objects[i];
+      if (kept === undefined || WeakMapGet(ruleStates, kept).kind !== kind) {
+        state.objects[i] = makeRule(kind, state);
+      }
+    }
+    return state.objects;
+  }
+
+  const ruleListHandlers = {
+    get(target, key, receiver) {
+      const i = arrayIndex(key);
+      if (i >= 0) {
+        const objects = listObjects(WeakMapGet(listStates, target));
+        return i < objects.length ? objects[i] : undefined;
+      }
+      return ReflectGet(target, key, receiver);
+    },
+    has(target, key) {
+      const i = arrayIndex(key);
+      if (i >= 0) {
+        return i < listObjects(WeakMapGet(listStates, target)).length;
+      }
+      return ReflectHas(target, key);
+    },
+    ownKeys(target) {
+      const keys = [];
+      const count = listObjects(WeakMapGet(listStates, target)).length;
+      for (let i = 0; i < count; i++) {
+        ArrayPush(keys, $String(i));
+      }
+      const own = ReflectOwnKeys(target);
+      for (let i = 0; i < own.length; i++) {
+        ArrayPush(keys, own[i]);
+      }
+      return keys;
+    },
+    getOwnPropertyDescriptor(target, key) {
+      const i = arrayIndex(key);
+      if (i >= 0) {
+        const objects = listObjects(WeakMapGet(listStates, target));
+        return i < objects.length
+          ? { value: objects[i], writable: false, enumerable: true, configurable: true }
+          : undefined;
+      }
+      return ReflectGetOwnPropertyDescriptor(target, key);
+    },
+    set(target, key, value, receiver) {
+      if (arrayIndex(key) >= 0) {
+        return false;
+      }
+      return ReflectSet(target, key, value, receiver);
+    },
+  };
+
+  class CSSRuleList {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("CSSRuleList");
+      }
+    }
+
+    get length() {
+      return listObjects(listStateOf(this)).length;
+    }
+
+    item(index) {
+      need(arguments.length, 1, "item", "CSSRuleList");
+      const objects = listObjects(listStateOf(this));
+      const i = unsigned(index);
+      return i < objects.length ? objects[i] : null;
+    }
+  }
+  defineProperty(CSSRuleList.prototype, iteratorSymbol, {
+    value: ArrayValues,
+    writable: true,
+    configurable: true,
+  });
+
+  function listStateOf(list) {
+    const state = WeakMapGet(listStates, list);
+    if (state === undefined) {
+      throw illegalInvocation();
+    }
+    return state;
+  }
+
+  // Inserts `text` as a rule at `index` of the list, its objects moved
+  // to make room: CSSOM's "insert a CSS rule".
+  function insertInList(state, text, index, method, iface) {
+    listObjects(state);
+    const sheet = state.sheet;
+    let at;
+    try {
+      at = native.cssom("insert", sheet.handle, cssomPath(sheet, state.path), text, index);
+    } catch (error) {
+      throw failed(error, method, iface);
+    }
+    ArraySplice(state.objects, at, 0, undefined);
+    listObjects(state);
+    return at;
+  }
+
+  function deleteFromList(state, index, method, iface) {
+    listObjects(state);
+    const sheet = state.sheet;
+    try {
+      native.cssom("delete", sheet.handle, cssomPath(sheet, state.path), "", index);
+    } catch (error) {
+      throw failed(error, method, iface);
+    }
+    const gone = state.objects[index];
+    ArraySplice(state.objects, index, 1);
+    if (gone !== undefined) {
+      WeakMapGet(ruleStates, gone).list = null;
+    }
+  }
+
+  // ---- The rules -------------------------------------------------------
+
+  const ruleStates = new $WeakMap();
+
+  function ruleState(rule) {
+    const state = WeakMapGet(ruleStates, rule);
+    if (state === undefined) {
+      throw illegalInvocation();
+    }
+    return state;
+  }
+
+  // A rule's place: its list's path and its index there; null once it
+  // was taken out.
+  function rulePath(state) {
+    if (state.list === null) {
+      return null;
+    }
+    const at = ArrayIndexOf(state.list.objects, state.object);
+    if (at < 0) {
+      return null;
+    }
+    const path = [];
+    for (let i = 0; i < state.list.path.length; i++) {
+      ArrayPush(path, state.list.path[i]);
+    }
+    ArrayPush(path, at);
+    return path;
+  }
+
+  // The four strings of a rule: kind, cssText, and two by kind; empty
+  // for one taken out.
+  function ruleData(state) {
+    const path = rulePath(state);
+    if (path === null) {
+      return state.last;
+    }
+    const data = listData(state.list);
+    const i = path[path.length - 1] * 4;
+    state.last = [data[i], data[i + 1], data[i + 2], data[i + 3]];
+    return state.last;
+  }
+
+  const RULE_CLASSES = { __proto__: null };
+
+  function makeRule(kind, list) {
+    const cls = RULE_CLASSES[kind];
+    const rule = new cls(KEY);
+    const state = { kind, list, object: rule, last: [kind, "", "", ""], children: null };
+    WeakMapSet(ruleStates, rule, state);
+    return rule;
+  }
+
+  // Sets a rule's declarations or selector by the native.
+  function setRule(state, text, selector) {
+    const path = rulePath(state);
+    if (path === null) {
+      return;
+    }
+    const sheet = state.list.sheet;
+    native.cssom("set", sheet.handle, cssomPath(sheet, path), text, selector ? 1 : 0);
+  }
+
+  class CSSRule {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("CSSRule");
+      }
+    }
+
+    get type() {
+      return RULE_TYPES[ruleState(this).kind];
+    }
+
+    get cssText() {
+      return ruleData(ruleState(this))[1];
+    }
+
+    set cssText(value) {
+      ruleState(this);
+    }
+
+    get parentRule() {
+      const state = ruleState(this);
+      return state.list === null ? null : state.list.parentRule;
+    }
+
+    get parentStyleSheet() {
+      const state = ruleState(this);
+      return state.list === null ? null : sheetObject(state.list.sheet);
+    }
+  }
+  const RULE_TYPES = {
+    __proto__: null,
+    style: 1,
+    import: 3,
+    media: 4,
+    "font-face": 5,
+    page: 6,
+    keyframes: 7,
+    keyframe: 8,
+    supports: 12,
+    layer: 0,
+  };
+  const CSSRULE_CONSTANTS = [
+    "STYLE_RULE", 1, "CHARSET_RULE", 2, "IMPORT_RULE", 3, "MEDIA_RULE", 4, "FONT_FACE_RULE", 5,
+    "PAGE_RULE", 6, "KEYFRAMES_RULE", 7, "KEYFRAME_RULE", 8, "MARGIN_RULE", 9,
+    "NAMESPACE_RULE", 10, "COUNTER_STYLE_RULE", 11, "SUPPORTS_RULE", 12,
+    "FONT_FEATURE_VALUES_RULE", 14,
+  ];
+  for (let i = 0; i < CSSRULE_CONSTANTS.length; i += 2) {
+    defineProperty(CSSRule, CSSRULE_CONSTANTS[i], { value: CSSRULE_CONSTANTS[i + 1], enumerable: true });
+    defineProperty(CSSRule.prototype, CSSRULE_CONSTANTS[i], {
+      value: CSSRULE_CONSTANTS[i + 1],
+      enumerable: true,
+    });
+  }
+
+  // The sheet object of a sheet's state.
+  function sheetObject(state) {
+    if (state.imports.length === 0) {
+      return sheetFor(state.owner, state.serial, [], null, null);
+    }
+    return state.object;
+  }
+
+  // A rule's `style`: a declaration block over its declarations.
+  function ruleStyle(rule) {
+    const state = ruleState(rule);
+    if (state.style === undefined) {
+      const target = new CSSStyleDeclaration(KEY);
+      const block = { owner: rule, rule: state };
+      const proxy = new $Proxy(target, styleHandlers);
+      WeakMapSet(declarationBlocks, proxy, block);
+      WeakMapSet(declarationBlocks, target, block);
+      state.style = proxy;
+    }
+    return state.style;
+  }
+
+  // A grouping rule's list of rules, made once.
+  function ruleChildren(rule) {
+    const state = ruleState(rule);
+    if (state.children === null) {
+      const path = rulePath(state) || [];
+      state.children = ruleList(state.list.sheet, path, rule);
+    }
+    const path = rulePath(state);
+    if (path !== null) {
+      state.children.path = path;
+    }
+    return state.children;
+  }
+
+  class CSSStyleRule extends CSSRule {
+    get selectorText() {
+      return ruleData(ruleState(this))[2];
+    }
+
+    set selectorText(value) {
+      setRule(ruleState(this), str(value), true);
+    }
+
+    get style() {
+      return ruleStyle(this);
+    }
+  }
+
+  class CSSImportRule extends CSSRule {
+    get href() {
+      return ruleData(ruleState(this))[2];
+    }
+
+    get media() {
+      return mediaList(ruleData(ruleState(this))[3]);
+    }
+
+    get styleSheet() {
+      const state = ruleState(this);
+      if (state.list === null || state.list.path.length > 0) {
+        return null;
+      }
+      // Its place among its sheet's imports.
+      const objects = listObjects(state.list);
+      let n = 0;
+      for (let i = 0; i < objects.length && objects[i] !== this; i++) {
+        if (ruleState(objects[i]).kind === "import") {
+          n++;
+        }
+      }
+      const parent = state.list.sheet;
+      const imports = [];
+      for (let i = 0; i < parent.imports.length; i++) {
+        ArrayPush(imports, parent.imports[i]);
+      }
+      ArrayPush(imports, n);
+      const serial = native.cssom("sheet", parent.handle, cssomPath({ imports }, []), "", 0);
+      if (serial.length === 0) {
+        return null;
+      }
+      if (state.sheet === undefined || state.sheetSerial !== serial[0]) {
+        const sheet = sheetFor(parent.owner, serial[0], imports, sheetObject(parent), this);
+        WeakMapGet(sheetStates, sheet).object = sheet;
+        state.sheet = sheet;
+        state.sheetSerial = serial[0];
+      }
+      return state.sheet;
+    }
+
+    get layerName() {
+      return null;
+    }
+
+    get supportsText() {
+      return null;
+    }
+  }
+
+  class CSSGroupingRule extends CSSRule {
+    get cssRules() {
+      return ruleChildren(this).proxy;
+    }
+
+    insertRule(rule, index = 0) {
+      need(arguments.length, 1, "insertRule", "CSSGroupingRule");
+      return insertInList(ruleChildren(this), str(rule), unsigned(index), "insertRule", "CSSGroupingRule");
+    }
+
+    deleteRule(index) {
+      need(arguments.length, 1, "deleteRule", "CSSGroupingRule");
+      deleteFromList(ruleChildren(this), unsigned(index), "deleteRule", "CSSGroupingRule");
+    }
+  }
+
+  class CSSConditionRule extends CSSGroupingRule {
+    get conditionText() {
+      return ruleData(ruleState(this))[2];
+    }
+  }
+
+  class CSSMediaRule extends CSSConditionRule {
+    get media() {
+      return mediaList(ruleData(ruleState(this))[2]);
+    }
+  }
+
+  class CSSSupportsRule extends CSSConditionRule {}
+
+  class CSSLayerBlockRule extends CSSGroupingRule {
+    get name() {
+      return ruleData(ruleState(this))[2];
+    }
+  }
+
+  class CSSPageRule extends CSSGroupingRule {
+    get selectorText() {
+      return ruleData(ruleState(this))[2];
+    }
+
+    get style() {
+      return ruleStyle(this);
+    }
+  }
+
+  class CSSFontFaceRule extends CSSRule {
+    get style() {
+      return ruleStyle(this);
+    }
+  }
+
+  class CSSKeyframeRule extends CSSRule {
+    get keyText() {
+      return ruleData(ruleState(this))[2];
+    }
+
+    set keyText(value) {
+      setRule(ruleState(this), str(value), true);
+    }
+
+    get style() {
+      return ruleStyle(this);
+    }
+  }
+
+  class CSSKeyframesRule extends CSSRule {
+    get name() {
+      return ruleData(ruleState(this))[2];
+    }
+
+    get cssRules() {
+      return ruleChildren(this).proxy;
+    }
+
+    get length() {
+      return listObjects(ruleChildren(this)).length;
+    }
+
+    appendRule(rule) {
+      need(arguments.length, 1, "appendRule", "CSSKeyframesRule");
+      const list = ruleChildren(this);
+      insertInList(list, str(rule), listObjects(list).length, "appendRule", "CSSKeyframesRule");
+    }
+
+    findRule(select) {
+      need(arguments.length, 1, "findRule", "CSSKeyframesRule");
+      const at = keyframeAt(this, str(select));
+      return at < 0 ? null : listObjects(ruleChildren(this))[at];
+    }
+
+    deleteRule(select) {
+      need(arguments.length, 1, "deleteRule", "CSSKeyframesRule");
+      const at = keyframeAt(this, str(select));
+      if (at >= 0) {
+        deleteFromList(ruleChildren(this), at, "deleteRule", "CSSKeyframesRule");
+      }
+    }
+  }
+
+  // The last keyframe whose key is `select`, `from` and `to` as 0% and
+  // 100%; -1 for none.
+  function keyframeAt(rule, select) {
+    const want = ToLowerCase(StringTrim(select));
+    const key = want === "from" ? "0%" : want === "to" ? "100%" : want;
+    const objects = listObjects(ruleChildren(rule));
+    for (let i = objects.length - 1; i >= 0; i--) {
+      if (ruleData(ruleState(objects[i]))[2] === key) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  RULE_CLASSES.style = CSSStyleRule;
+  RULE_CLASSES.import = CSSImportRule;
+  RULE_CLASSES.media = CSSMediaRule;
+  RULE_CLASSES["font-face"] = CSSFontFaceRule;
+  RULE_CLASSES.page = CSSPageRule;
+  RULE_CLASSES.keyframes = CSSKeyframesRule;
+  RULE_CLASSES.keyframe = CSSKeyframeRule;
+  RULE_CLASSES.supports = CSSSupportsRule;
+  RULE_CLASSES.layer = CSSLayerBlockRule;
+
+  // A media list over the media text it is made of, read-only here.
+  class MediaList {
+    #text;
+
+    constructor(key, text) {
+      if (key !== KEY) {
+        throw illegalConstructor("MediaList");
+      }
+      this.#text = text;
+    }
+
+    get mediaText() {
+      return this.#text;
+    }
+
+    get length() {
+      return this.#items().length;
+    }
+
+    item(index) {
+      need(arguments.length, 1, "item", "MediaList");
+      const items = this.#items();
+      const i = unsigned(index);
+      return i < items.length ? items[i] : null;
+    }
+
+    #items() {
+      const out = [];
+      if (this.#text === "") {
+        return out;
+      }
+      const parts = StringSplit(this.#text, ",");
+      for (let i = 0; i < parts.length; i++) {
+        ArrayPush(out, StringTrim(parts[i]));
+      }
+      return out;
+    }
+
+    toString() {
+      return this.#text;
+    }
+  }
+
+  function mediaList(text) {
+    return new MediaList(KEY, text);
+  }
+
+  // ---- The sheets ------------------------------------------------------
+
+  class StyleSheet {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("StyleSheet");
+      }
+    }
+
+    get type() {
+      sheetState(this);
+      return "text/css";
+    }
+
+    get href() {
+      const state = sheetState(this);
+      const href = sheetInfo(state)[0];
+      return href === "" ? null : href;
+    }
+
+    get ownerNode() {
+      const state = sheetState(this);
+      return state.imports.length === 0 ? state.owner : null;
+    }
+
+    get parentStyleSheet() {
+      return sheetState(this).parent;
+    }
+
+    get title() {
+      const title = sheetInfo(sheetState(this))[1];
+      return title === "" ? null : title;
+    }
+
+    get media() {
+      return mediaList(sheetInfo(sheetState(this))[2]);
+    }
+
+    get disabled() {
+      return sheetState(this).disabled === true;
+    }
+
+    set disabled(value) {
+      sheetState(this).disabled = !!value;
+    }
+  }
+
+  function sheetInfo(state) {
+    try {
+      return native.cssom("info", state.handle, cssomPath(state, []), "", 0);
+    } catch (error) {
+      return ["", "", ""];
+    }
+  }
+
+  class CSSStyleSheet extends StyleSheet {
+    get ownerRule() {
+      return sheetState(this).ownerRule;
+    }
+
+    get cssRules() {
+      return sheetState(this).list.proxy;
+    }
+
+    get rules() {
+      return sheetState(this).list.proxy;
+    }
+
+    insertRule(rule, index = 0) {
+      const state = sheetState(this);
+      need(arguments.length, 1, "insertRule", "CSSStyleSheet");
+      return insertInList(state.list, str(rule), unsigned(index), "insertRule", "CSSStyleSheet");
+    }
+
+    deleteRule(index) {
+      const state = sheetState(this);
+      need(arguments.length, 1, "deleteRule", "CSSStyleSheet");
+      deleteFromList(state.list, unsigned(index), "deleteRule", "CSSStyleSheet");
+    }
+
+    replace(text) {
+      sheetState(this);
+      return PromiseReject(
+        domError(
+          "NotAllowedError",
+          "Can't call replace on non-constructed CSSStyleSheets.",
+          "replace",
+          "CSSStyleSheet",
+        ),
+      );
+    }
+
+    replaceSync(text) {
+      sheetState(this);
+      throw domError(
+        "NotAllowedError",
+        "Can't call replaceSync on non-constructed CSSStyleSheets.",
+        "replaceSync",
+        "CSSStyleSheet",
+      );
+    }
+  }
+
+  // `document.styleSheets`: one list, its sheets read at each ask.
+  class StyleSheetList {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("StyleSheetList");
+      }
+    }
+
+    get length() {
+      return documentSheets().length;
+    }
+
+    item(index) {
+      need(arguments.length, 1, "item", "StyleSheetList");
+      const sheets = documentSheets();
+      const i = unsigned(index);
+      return i < sheets.length ? sheets[i] : null;
+    }
+  }
+  defineProperty(StyleSheetList.prototype, iteratorSymbol, {
+    value: ArrayValues,
+    writable: true,
+    configurable: true,
+  });
+
+  function documentSheets() {
+    const flat = native.cssom("sheets", null, [], "", 0);
+    const out = [];
+    for (let i = 0; i < flat.length; i += 2) {
+      ArrayPush(out, sheetFor(wrap(flat[i]), flat[i + 1], [], null, null));
+    }
+    return out;
+  }
+
+  let theSheetList = null;
+  const sheetListHandlers = {
+    get(target, key, receiver) {
+      const i = arrayIndex(key);
+      if (i >= 0) {
+        const sheets = documentSheets();
+        return i < sheets.length ? sheets[i] : undefined;
+      }
+      return ReflectGet(target, key, receiver);
+    },
+    has(target, key) {
+      const i = arrayIndex(key);
+      return i >= 0 ? i < documentSheets().length : ReflectHas(target, key);
+    },
+  };
+
+  include(
+    {
+      get styleSheets() {
+        self(this);
+        if (theSheetList === null) {
+          theSheetList = new $Proxy(new StyleSheetList(KEY), sheetListHandlers);
+        }
+        return theSheetList;
+      },
+    },
+    [Document.prototype],
+  );
+
+  // `<style>.sheet` and `<link>.sheet`: the element's sheet, or null.
+  const elementSheet = {
+    get sheet() {
+      const handle = self(this);
+      const serial = native.cssom("sheet", handle, [0], "", 0);
+      return serial.length === 0 ? null : sheetFor(this, serial[0], [], null, null);
+    },
+  };
+
+  expose(StyleSheet, "StyleSheet");
+  expose(CSSStyleSheet, "CSSStyleSheet");
+  expose(StyleSheetList, "StyleSheetList");
+  expose(CSSRuleList, "CSSRuleList");
+  expose(MediaList, "MediaList");
+  expose(CSSRule, "CSSRule");
+  expose(CSSStyleRule, "CSSStyleRule");
+  expose(CSSImportRule, "CSSImportRule");
+  expose(CSSGroupingRule, "CSSGroupingRule");
+  expose(CSSConditionRule, "CSSConditionRule");
+  expose(CSSMediaRule, "CSSMediaRule");
+  expose(CSSSupportsRule, "CSSSupportsRule");
+  expose(CSSLayerBlockRule, "CSSLayerBlockRule");
+  expose(CSSPageRule, "CSSPageRule");
+  expose(CSSFontFaceRule, "CSSFontFaceRule");
+  expose(CSSKeyframeRule, "CSSKeyframeRule");
+  expose(CSSKeyframesRule, "CSSKeyframesRule");
 
   // A computed style (CSSOM's getComputedStyle): the element's values
   // read through the host as they stand when asked, nothing written.
@@ -11947,6 +12742,11 @@
     },
     [MapGet(interfaces, "template").prototype],
   );
+  // `<style>.sheet` and `<link>.sheet` (D66).
+  include(elementSheet, [
+    MapGet(interfaces, "style").prototype,
+    MapGet(interfaces, "link").prototype,
+  ]);
   // A script element's members (HTML section 4.12.1): its text, and
   // `async`, which reads its "force async" flag as well as the attribute
   // and clears the flag when set.

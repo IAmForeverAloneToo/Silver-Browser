@@ -1010,6 +1010,17 @@ impl DocumentHost {
                 let found = self.elements_from_point(x as f32, y as f32, all);
                 Ok(Answer::Nodes(found.into_iter().map(handle).collect()))
             }
+            Call::Cssom {
+                op,
+                owner,
+                path,
+                text,
+                index,
+            } => {
+                let owner = owner.map(|owner| self.node(owner)).transpose()?;
+                self.work += 1 + text.len() as u64 / 64;
+                self.cssom(&op, owner, &path, &text, index)
+            }
             Call::InnerText(node) => {
                 let node = self.node(node)?;
                 Ok(Answer::String(self.inner_text(node)))
@@ -3399,6 +3410,118 @@ impl DocumentHost {
         self.work += self.document.len().saturating_sub(before) as u64;
     }
 
+    /// The CSSOM's sheets and rules (D66), `op` on `owner`'s sheet:
+    /// `sheets`, the document's list as owners and serial numbers;
+    /// `sheet`, an element's sheet's serial number; `info`, a sheet's URL,
+    /// title and media; `rules`, a rule list's rules as
+    /// [`super::rules::rules`] gives them; `insert`, `delete`, and `set`
+    /// a rule's declarations (`index` 0) or selector (1).
+    fn cssom(
+        &mut self,
+        op: &str,
+        owner: Option<NodeId>,
+        path: &[f64],
+        text: &str,
+        index: f64,
+    ) -> Result<Answer, DomError> {
+        let gone = || DomError::new("NotFoundError", "The style sheet is gone.");
+        let Some(page) = self.page.as_mut() else {
+            return Err(gone());
+        };
+        let indices: Vec<usize> = path
+            .iter()
+            .take(1 << 10)
+            .map(|&n| {
+                if n.is_finite() && n >= 0.0 {
+                    n as usize
+                } else {
+                    usize::MAX
+                }
+            })
+            .collect();
+        let count = indices
+            .first()
+            .copied()
+            .unwrap_or(0)
+            .min(indices.len().saturating_sub(1));
+        let imports = indices.get(1..=count).unwrap_or_default();
+        let rule_path = indices.get(count + 1..).unwrap_or_default();
+        let index = if index.is_finite() && index >= 0.0 {
+            index.min(u32::MAX as f64) as usize
+        } else {
+            usize::MAX
+        };
+        if op == "sheets" {
+            let sheets = page.cssom_sheets();
+            self.work += sheets.len() as u64;
+            return Ok(Answer::Numbers(
+                sheets
+                    .into_iter()
+                    .flat_map(|(node, serial)| [handle(node).0 as f64, serial as f64])
+                    .collect(),
+            ));
+        }
+        let owner = owner.ok_or_else(gone)?;
+        match op {
+            "sheet" => Ok(Answer::Numbers(
+                page.cssom_sheet(owner, imports)
+                    .map(|view| vec![view.serial as f64])
+                    .unwrap_or_default(),
+            )),
+            "info" => {
+                let view = page.cssom_sheet(owner, imports).ok_or_else(gone)?;
+                let href = view
+                    .location
+                    .map_or_else(String::new, |url| url.to_string());
+                let (title, media) = page.cssom_owner(owner).unwrap_or(("", None));
+                let (title, media) = if imports.is_empty() {
+                    (title.to_owned(), media.unwrap_or_default().to_owned())
+                } else {
+                    (String::new(), String::new())
+                };
+                Ok(Answer::Strings(vec![href, title, media]))
+            }
+            "rules" => {
+                let view = page.cssom_sheet(owner, imports).ok_or_else(gone)?;
+                let flat = super::rules::rules(view.rules, rule_path);
+                self.work += flat.len() as u64;
+                Ok(Answer::Strings(flat))
+            }
+            "insert" | "delete" | "set" => {
+                let mut failure = None;
+                let done = page.cssom_edit(owner, imports, |sheet| {
+                    let same: Vec<Option<usize>> = (0..sheet.rules.len()).map(Some).collect();
+                    let result = match op {
+                        "insert" => super::rules::insert(sheet, rule_path, text, index),
+                        "delete" => {
+                            super::rules::delete(sheet, rule_path, index).map(|kept| (0, kept))
+                        }
+                        _ => Ok((
+                            usize::from(super::rules::set(sheet, rule_path, text, index == 1)),
+                            same,
+                        )),
+                    };
+                    match result {
+                        Ok(done) => Some(done),
+                        Err(error) => {
+                            failure = Some(error);
+                            None
+                        }
+                    }
+                });
+                if let Some(error) = failure {
+                    return Err(error);
+                }
+                let done = done.ok_or_else(gone)?;
+                // The cascade and layout of the run are of the old rules.
+                self.computed = None;
+                self.laid_out = None;
+                Ok(Answer::Number(done as f64))
+            }
+            _ => Err(gone()),
+        }
+    }
+
     /// The document laid out as it now stands, for what scripts ask of
     /// it (D65): its styles brought up to date, and at most one layout a
     /// version of the document; none for a document without a window.
@@ -4852,11 +4975,19 @@ fn used_value(style: &style::ComputedStyle, property: &str, geometry: &[f64]) ->
     let border_box = style.box_sizing == style::computed::BoxSizing::BorderBox;
     let value = match property {
         "width" if !inline => {
-            let edges = if border_box { 0.0 } else { g(5) + g(7) + g(9) + g(11) };
+            let edges = if border_box {
+                0.0
+            } else {
+                g(5) + g(7) + g(9) + g(11)
+            };
             (g(2) - edges).max(0.0)
         }
         "height" if !inline => {
-            let edges = if border_box { 0.0 } else { g(4) + g(6) + g(8) + g(10) };
+            let edges = if border_box {
+                0.0
+            } else {
+                g(4) + g(6) + g(8) + g(10)
+            };
             (g(3) - edges).max(0.0)
         }
         "padding-top" => g(8),

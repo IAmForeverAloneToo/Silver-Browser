@@ -298,6 +298,15 @@ const NATIVES: &[(&str, Decode)] = &[
         })
     }),
     ("innerText", |a| Ok(Call::InnerText(a.handle(0)?))),
+    ("cssom", |a| {
+        Ok(Call::Cssom {
+            op: a.string(0)?,
+            owner: a.maybe_handle(1)?,
+            path: a.numbers(2)?,
+            text: a.string(3)?,
+            index: a.number(4),
+        })
+    }),
     ("documentClose", |_| Ok(Call::DocumentClose)),
     ("comparePosition", |a| {
         Ok(Call::ComparePosition(a.handle(0)?, a.handle(1)?))

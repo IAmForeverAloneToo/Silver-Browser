@@ -230,6 +230,17 @@ pub enum Call {
     },
     /// An element's `innerText`.
     InnerText(Handle),
+    /// The CSSOM's sheets and rules (D66): `op` on the sheet of `owner`
+    /// (none for the document's list), `path` its imports' count, the
+    /// imports, then the rule path; `text` and `index` what the op
+    /// takes.
+    Cssom {
+        op: String,
+        owner: Option<Handle>,
+        path: Vec<f64>,
+        text: String,
+        index: f64,
+    },
     /// `document.open()` (HTML section 8.4.2.1).
     DocumentOpen,
     /// `document.close()`.
