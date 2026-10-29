@@ -2321,7 +2321,12 @@ pub struct Gradient {
     pub repeating: bool,
     /// The stops and hints as written, a double position being two
     /// stops: a stop first and last, a hint only between two stops.
+    /// A conic gradient's positions are angles, kept as pixels of
+    /// degrees, or percentages of a turn (gap batch E).
     pub items: Vec<GradientItem>,
+    /// Its `<color-interpolation-method>` (Images 4 section 3.1, gap
+    /// batch E); `None` is sRGB for legacy colours and Oklab otherwise.
+    pub method: Option<crate::color::Method>,
 }
 
 /// What a gradient's line is (sections 3.1 and 3.2).
@@ -2334,6 +2339,12 @@ pub enum GradientShape {
     Radial {
         ellipse: bool,
         size: RadialSize,
+        center: [LengthPercentage; 2],
+    },
+    /// `conic-gradient()` (Images 4 section 3.3, gap batch E): the
+    /// angle it starts from, in degrees, and its centre.
+    Conic {
+        from: f32,
         center: [LengthPercentage; 2],
     },
 }

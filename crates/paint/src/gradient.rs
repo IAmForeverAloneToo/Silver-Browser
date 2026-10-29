@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 
+use style::color::Method;
 use style::computed::{Color, Gradient, GradientItem, GradientShape, LineDirection, RadialSize};
 
 /// The most pixels a gradient is rendered with: a larger tile is
@@ -53,6 +54,9 @@ enum Geometry {
         ry: f32,
         flat: bool,
     },
+    /// Round `center` from the angle `from`, in degrees clockwise from
+    /// up, the line a turn of 360 (gap batch E).
+    Conic { center: (f32, f32), from: f32 },
 }
 
 impl Geometry {
@@ -60,6 +64,13 @@ impl Geometry {
     /// its line, against which its percentages resolve.
     fn of(gradient: &Gradient, w: f32, h: f32) -> (Geometry, f32) {
         match &gradient.shape {
+            GradientShape::Conic { from, center } => (
+                Geometry::Conic {
+                    center: (center[0].resolve(w), center[1].resolve(h)),
+                    from: *from,
+                },
+                360.0,
+            ),
             GradientShape::Linear(direction) => {
                 let dir = match *direction {
                     LineDirection::Angle(degrees) => {
@@ -184,6 +195,10 @@ impl Geometry {
                     + (y - f64::from(start.1)) * f64::from(dir.1)
             }
             Geometry::Radial { flat: true, .. } => f64::INFINITY,
+            Geometry::Conic { center, from } => {
+                let (dx, dy) = (x - f64::from(center.0), y - f64::from(center.1));
+                (dx.atan2(-dy).to_degrees() - f64::from(from)).rem_euclid(360.0)
+            }
             Geometry::Radial { center, rx, ry, .. } => {
                 let (dx, dy) = (x - f64::from(center.0), y - f64::from(center.1));
                 if ry.is_infinite() {
@@ -201,8 +216,8 @@ impl Geometry {
 /// 0% and the last at 100% where they have no position, no position
 /// before an earlier one, and the rest spaced evenly between those
 /// around them; and each hint made stops, as [`hint_stops`] makes them.
-fn stops(items: &[GradientItem], length: f32) -> Vec<(f32, Premultiplied)> {
-    let mut out: Vec<(Option<f32>, Premultiplied, Option<f32>)> = Vec::new();
+fn stops(items: &[GradientItem], length: f32, method: Option<Method>) -> Vec<(f32, Premultiplied)> {
+    let mut out: Vec<(Option<f32>, Color, Option<f32>)> = Vec::new();
     let mut floor = f32::NEG_INFINITY;
     let count = items
         .iter()
@@ -223,7 +238,7 @@ fn stops(items: &[GradientItem], length: f32) -> Vec<(f32, Premultiplied)> {
                     floor = floor.max(at);
                     floor
                 });
-                out.push((at, premultiplied(*color), None));
+                out.push((at, *color, None));
                 index += 1;
             }
             GradientItem::Hint(position) => {
@@ -235,7 +250,7 @@ fn stops(items: &[GradientItem], length: f32) -> Vec<(f32, Premultiplied)> {
         }
     }
     // The runs without a position, evenly between those with one.
-    let mut placed: Vec<(f32, Premultiplied, Option<f32>)> = Vec::with_capacity(out.len());
+    let mut placed: Vec<(f32, Color, Option<f32>)> = Vec::with_capacity(out.len());
     let mut i = 0;
     while i < out.len() {
         match out[i].0 {
@@ -258,15 +273,44 @@ fn stops(items: &[GradientItem], length: f32) -> Vec<(f32, Premultiplied)> {
             }
         }
     }
+    // Colours mixed in another space than sRGB (Images 4 section 3.5.2,
+    // gap batch E): the method's, or Oklab where a colour is not a
+    // legacy one; each span cut into pieces by colours mixed there, the
+    // pieces blended evenly between them.
+    let method = method.or_else(|| {
+        placed
+            .iter()
+            .any(|(_, c, _)| !c.is_legacy())
+            .then_some(Method::OKLAB)
+    });
     let mut out = Vec::with_capacity(placed.len());
     for (i, &(at, color, hint)) in placed.iter().enumerate() {
-        out.push((at, color));
-        if let (Some(hint), Some(&(right, next, _))) = (hint, placed.get(i + 1)) {
-            out.extend(hint_stops((at, color), hint, (right, next)));
+        out.push((at, premultiplied(color)));
+        let Some(&(right, next, _)) = placed.get(i + 1) else {
+            continue;
+        };
+        if let Some(hint) = hint {
+            out.extend(hint_stops(
+                (at, premultiplied(color)),
+                hint,
+                (right, premultiplied(next)),
+            ));
+        } else if let Some(method) = method
+            && right > at
+        {
+            for k in 1..METHOD_PIECES {
+                let t = k as f32 / METHOD_PIECES as f32;
+                let mixed = style::color::interpolate(&color, &next, f64::from(t), method, 1.0);
+                out.push((at + (right - at) * t, premultiplied(mixed)));
+            }
         }
     }
     out
 }
+
+/// How many pieces a span between two stops is cut into when its
+/// colours mix in another space than sRGB.
+const METHOD_PIECES: usize = 64;
 
 /// The stops the reference browser draws a hint at `hint` between the
 /// stops `left` and `right` as (M23.3; Blink's
@@ -400,7 +444,7 @@ fn render_on(gradient: &Gradient, w: f32, h: f32, threads: usize) -> images::Ima
     let (w, h) = (w.max(0.0), h.max(0.0));
     let (pw, ph) = resolution(gradient, w, h);
     let (geometry, length) = Geometry::of(gradient, w, h);
-    let stops = stops(&gradient.items, length);
+    let stops = stops(&gradient.items, length, gradient.method);
     let (first, last) = (stops[0].0, stops[stops.len() - 1].0);
     let period = last - first;
     // A repeating gradient of no period is its last colour, as the
@@ -622,7 +666,7 @@ mod tests {
             let GradientShape::Linear(_) = gradient(css).shape else {
                 panic!("linear")
             };
-            stops(&gradient(css).items, 100.0)
+            stops(&gradient(css).items, 100.0, None)
                 .iter()
                 .map(|s| s.0)
                 .collect::<Vec<f32>>()
@@ -732,7 +776,7 @@ mod tests {
         // 80px from the right, 20px from the bottom.
         let radii = |css: &str| match Geometry::of(&gradient(css), 100.0, 40.0).0 {
             Geometry::Radial { rx, ry, .. } => (rx, ry),
-            Geometry::Linear { .. } => panic!("radial"),
+            _ => panic!("radial"),
         };
         let at = "at 20px 20px, red, blue)";
         assert_eq!(

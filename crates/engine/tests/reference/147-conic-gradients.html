@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head>
+<title>Conic gradients, repeating ones, and gradients whose colours mix in other spaces (gap batch E)</title>
+<meta name="reference-edge-tolerance" content="8">
+<meta name="reference-tolerance" content="4">
+<style>
+  body { margin: 0; background: #fff; }
+  div { position: absolute; width: 120px; height: 90px; }
+  .a { left: 10px; top: 10px; background: conic-gradient(#c03030, #3050c0, #30a050, #c03030); }
+  .b { left: 150px; top: 10px; background: conic-gradient(from 45deg at 30% 70%, #f0d020 0deg, #2f3542 90deg, #f0d020 180deg); }
+  .c { left: 290px; top: 10px; background: repeating-conic-gradient(#2f3542 0 25%, #e0d8c8 0 50%) 0 0 / 30px 30px; }
+  .d { left: 430px; top: 10px; background: conic-gradient(in oklch longer hue, #c03030, #3050c0); }
+  .e { left: 10px; top: 120px; height: 40px; width: 300px; background: linear-gradient(to right, #ff0000, #0000ff); }
+  .f { left: 10px; top: 170px; height: 40px; width: 300px; background: linear-gradient(to right in oklab, #ff0000, #0000ff); }
+  .g { left: 10px; top: 220px; height: 40px; width: 300px; background: linear-gradient(to right in oklch, #ff0000, #0000ff); }
+  .h { left: 330px; top: 120px; height: 40px; width: 300px; background: linear-gradient(in hsl longer hue to right, #ff0000, #0000ff); }
+  .i { left: 330px; top: 170px; height: 40px; width: 300px; background: linear-gradient(to right, oklch(0.7 0.15 30), oklch(0.7 0.15 250)); }
+  .j { left: 330px; top: 220px; height: 40px; width: 300px; background: radial-gradient(in lab, #ffcc00, #3050c0); }
+</style>
+</head>
+<body>
+<div class="a"></div><div class="b"></div><div class="c"></div><div class="d"></div>
+<div class="e"></div><div class="f"></div><div class="g"></div><div class="h"></div>
+<div class="i"></div><div class="j"></div>
+</body>
+</html>

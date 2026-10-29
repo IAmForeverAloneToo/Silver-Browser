@@ -5,8 +5,10 @@
 //! the line starts from and whose angles run from the right,
 //! anticlockwise. A gradient's computed value is as written but for
 //! its colours, computed, and a double position, which is two stops.
-//! `<color-interpolation-method>`, conic gradients and the other
-//! Images 4 additions are not parsed (G37).
+//! Images 4's `conic-gradient()` and `repeating-conic-gradient()`, and a
+//! `<color-interpolation-method>` beside any gradient's direction or
+//! shape, are taken since gap batch E; the other Images 4 additions are
+//! not (G37).
 
 use css::Token;
 
@@ -41,17 +43,69 @@ pub(super) fn gradient(part: &[Token], bases: &LengthBases<'_>) -> Option<Gradie
     let [Token::Function(name), inside @ .., Token::CloseParen] = part else {
         return None;
     };
-    let (linear, repeating, legacy) = match name.to_ascii_lowercase().as_str() {
+    let lower = name.to_ascii_lowercase();
+    let conic = lower.ends_with("conic-gradient");
+    let (linear, repeating, legacy) = match lower.as_str() {
         "linear-gradient" => (true, false, false),
         "repeating-linear-gradient" => (true, true, false),
-        "radial-gradient" => (false, false, false),
-        "repeating-radial-gradient" => (false, true, false),
+        "radial-gradient" | "conic-gradient" => (false, false, false),
+        "repeating-radial-gradient" | "repeating-conic-gradient" => (false, true, false),
         "-webkit-linear-gradient" => (true, false, true),
         "-webkit-repeating-linear-gradient" => (true, true, true),
         _ => return None,
     };
-    let args = arguments(inside)?;
-    let (shape, stops) = if linear {
+    let mut args = arguments(inside)?;
+    // A `<color-interpolation-method>` beside the first argument's
+    // direction or shape, or alone as the first argument.
+    let mut method = None;
+    if !legacy && let Some(at) = args[0].iter().position(|p| is(p, "in")) {
+        let after = &args[0][at + 1..];
+        let words: Vec<&Token> = after.iter().take(3).filter_map(|p| p.first()).collect();
+        let (found, used) = match words.as_slice() {
+            [space, how, hue]
+                if crate::color::parse_method(&[&Token::Ident("in".into()), space, how, hue])
+                    .is_some() =>
+            {
+                (
+                    crate::color::parse_method(&[&Token::Ident("in".into()), space, how, hue]),
+                    3,
+                )
+            }
+            [space, ..] => (
+                crate::color::parse_method(&[&Token::Ident("in".into()), space]),
+                1,
+            ),
+            [] => (None, 0),
+        };
+        let found = found?;
+        // The method stands before or after the rest, not inside it.
+        if at != 0 && at + 1 + used != args[0].len() {
+            return None;
+        }
+        method = Some(found);
+        args[0].drain(at..at + 1 + used);
+        if args[0].is_empty() {
+            args.remove(0);
+            if args.is_empty() {
+                return None;
+            }
+        }
+    }
+    let (shape, stops) = if conic {
+        match conic_start(&args[0], bases) {
+            Some(shape) => (shape, &args[1..]),
+            None => (
+                GradientShape::Conic {
+                    from: 0.0,
+                    center: [
+                        LengthPercentage::Percent(50.0),
+                        LengthPercentage::Percent(50.0),
+                    ],
+                },
+                &args[..],
+            ),
+        }
+    } else if linear {
         match direction(&args[0], legacy, bases) {
             Some(direction) => (GradientShape::Linear(direction), &args[1..]),
             None => (
@@ -78,8 +132,34 @@ pub(super) fn gradient(part: &[Token], bases: &LengthBases<'_>) -> Option<Gradie
     Some(Gradient {
         shape,
         repeating,
-        items: stop_list(stops, bases)?,
+        items: stop_list(stops, bases, conic)?,
+        method,
     })
+}
+
+/// A conic gradient's first argument (Images 4 section 3.3): `from` an
+/// angle, `at` a position, either or both in that order.
+fn conic_start(parts: &[&[Token]], bases: &LengthBases<'_>) -> Option<GradientShape> {
+    let mut from = 0.0;
+    let mut rest = parts;
+    if let [word, angle, tail @ ..] = rest
+        && is(word, "from")
+    {
+        from = super::effects::angle(angle, true, bases)?;
+        rest = tail;
+    }
+    let mut center = [
+        LengthPercentage::Percent(50.0),
+        LengthPercentage::Percent(50.0),
+    ];
+    if let [word, position @ ..] = rest
+        && is(word, "at")
+    {
+        let (x, y) = super::effects::position(position, bases, true)?;
+        center = [x, y];
+        rest = &[];
+    }
+    (rest.is_empty() && rest.len() < parts.len()).then_some(GradientShape::Conic { from, center })
 }
 
 /// A linear gradient's direction: an angle, or `to` a side or corner;
@@ -195,9 +275,24 @@ fn radial(parts: &[&[Token]], bases: &LengthBases<'_>) -> Option<GradientShape> 
 /// A `<color-stop-list>`: stops, a colour with a position or two, in
 /// either order, or none, and transition hints, a position alone, each
 /// between two stops; one stop at least, [`MAX_GRADIENT_STOPS`] at most.
-fn stop_list(args: &[Vec<&[Token]>], bases: &LengthBases<'_>) -> Option<Vec<GradientItem>> {
+fn stop_list(
+    args: &[Vec<&[Token]>],
+    bases: &LengthBases<'_>,
+    conic: bool,
+) -> Option<Vec<GradientItem>> {
     let mut items: Vec<GradientItem> = Vec::new();
-    let position = |part: &[Token]| length_percentage(part, bases, Range::All);
+    // A conic gradient's positions are angles, as pixels of degrees, or
+    // percentages of a turn.
+    let position = |part: &[Token]| {
+        if conic {
+            match super::single_token(part) {
+                Some(Token::Percentage { value }) => Some(LengthPercentage::Percent(*value as f32)),
+                _ => super::effects::angle(part, true, bases).map(LengthPercentage::Px),
+            }
+        } else {
+            length_percentage(part, bases, Range::All)
+        }
+    };
     for arg in args {
         let color_at = arg
             .iter()
@@ -263,7 +358,7 @@ mod tests {
     fn a_linear_gradients_direction_is_an_angle_or_a_side_or_corner() {
         let direction = |css: &str| match parse(css)?.shape {
             GradientShape::Linear(d) => Some(d),
-            GradientShape::Radial { .. } => None,
+            _ => None,
         };
         assert_eq!(
             direction("linear-gradient(red, blue)"),
@@ -320,7 +415,64 @@ mod tests {
         assert!(parse("linear-gradient(to left left, red, blue)").is_none());
         assert!(parse("linear-gradient(top, red, blue)").is_none());
         assert!(parse("linear-gradient(1, red, blue)").is_none());
-        assert!(parse("linear-gradient(in oklab, red, blue)").is_none());
+        // A method beside the direction or alone (gap batch E).
+        let method = |css: &str| parse(css).and_then(|g| g.method);
+        let oklch = crate::color::Method {
+            space: crate::color::Space::Oklch,
+            hue: crate::color::Hue::Longer,
+        };
+        assert_eq!(
+            method("linear-gradient(in oklch longer hue, red, blue)"),
+            Some(oklch)
+        );
+        assert_eq!(
+            method("linear-gradient(to right in oklch longer hue, red, blue)"),
+            Some(oklch)
+        );
+        assert_eq!(
+            parse("linear-gradient(in lab to right, red, blue)").map(|g| g.shape),
+            Some(GradientShape::Linear(LineDirection::Angle(90.0)))
+        );
+        assert!(parse("linear-gradient(in nope, red, blue)").is_none());
+        assert!(parse("linear-gradient(in srgb longer hue, red, blue)").is_none());
+        assert!(parse("linear-gradient(to in lab right, red, blue)").is_none());
+    }
+
+    #[test]
+    fn a_conic_gradient_starts_from_an_angle_at_a_centre() {
+        let g = parse("conic-gradient(from 90deg at 10% 20%, red 0deg, blue 0.5turn, green 75%)")
+            .expect("a conic gradient");
+        assert_eq!(
+            g.shape,
+            GradientShape::Conic {
+                from: 90.0,
+                center: [
+                    LengthPercentage::Percent(10.0),
+                    LengthPercentage::Percent(20.0)
+                ]
+            }
+        );
+        assert_eq!(
+            g.items,
+            [
+                GradientItem::Stop(RED, Some(LengthPercentage::Px(0.0))),
+                GradientItem::Stop(BLUE, Some(LengthPercentage::Px(180.0))),
+                GradientItem::Stop(
+                    Color::rgb8(0, 128, 0),
+                    Some(LengthPercentage::Percent(75.0))
+                ),
+            ]
+        );
+        assert!(
+            parse("repeating-conic-gradient(red 0 10%, blue 10% 20%)").is_some_and(|g| g.repeating)
+        );
+        assert!(parse("conic-gradient(red, blue)").is_some());
+        assert!(
+            parse("conic-gradient(red 10px, blue)").is_none(),
+            "no lengths"
+        );
+        assert!(parse("conic-gradient(from 1px, red, blue)").is_none());
+        assert!(parse("conic-gradient(at 10%, red, blue)").is_some());
     }
 
     #[test]
@@ -373,7 +525,7 @@ mod tests {
                 size,
                 center,
             } => Some((ellipse, size, center)),
-            GradientShape::Linear(_) => None,
+            _ => None,
         };
         let p = LengthPercentage::Percent;
         let middle = [p(50.0), p(50.0)];
@@ -418,7 +570,6 @@ mod tests {
             parse("radial-gradient(at left 10px top, red, blue)").is_none(),
             "three values are background-position's alone"
         );
-        assert!(parse("conic-gradient(red, blue)").is_none());
         assert!(parse("repeating-linear-gradient(red, blue)").is_some_and(|g| g.repeating));
     }
 }
