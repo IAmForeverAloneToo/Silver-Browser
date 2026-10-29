@@ -744,8 +744,12 @@ impl Players {
         let mut loads = Vec::new();
         let mut selects = Vec::new();
         let mut pauses = Vec::new();
+        // A medium moved (`moveBefore`) plays on.
+        let moved = crate::moved_nodes(changes);
         for change in changes {
             match change {
+                dom::Change::Inserted { child, .. } | dom::Change::Removed { child, .. }
+                    if moved.contains(child) => {}
                 dom::Change::AttributeChanged { element, name, .. }
                     if name == "src" && is_media(*element) =>
                 {

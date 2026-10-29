@@ -1120,7 +1120,8 @@ fn may_touch_images(change: &Change) -> bool {
         Change::AttributeChanged { name, .. } => matches!(name.as_str(), "src" | "href" | "poster"),
         Change::TextChanged { .. }
         | Change::StateChanged { .. }
-        | Change::ControlChanged { .. } => false,
+        | Change::ControlChanged { .. }
+        | Change::Moved { .. } => false,
     }
 }
 
@@ -1156,6 +1157,18 @@ fn in_svg_content(document: &Document, node: NodeId) -> bool {
     false
 }
 
+/// The nodes `changes` moved (`moveBefore`, D59), which keep what they
+/// hold where a node taken out loses it.
+pub(crate) fn moved_nodes(changes: &[Change]) -> HashSet<NodeId> {
+    changes
+        .iter()
+        .filter_map(|change| match change {
+            Change::Moved { child, .. } => Some(*child),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Whether `change` is within an outer `<svg>`'s content (M32), which
 /// its drawing shows and layout does not read.
 fn change_in_svg(document: &Document, change: &Change) -> bool {
@@ -1167,7 +1180,7 @@ fn change_in_svg(document: &Document, change: &Change) -> bool {
         | Change::StateChanged { element, .. }
         | Change::ControlChanged { element } => in_svg_content(document, *element),
         Change::TextChanged { node } => in_svg_content(document, *node),
-        Change::Everything => false,
+        Change::Everything | Change::Moved { .. } => false,
     }
 }
 
@@ -6351,10 +6364,12 @@ impl Engine {
         let animations = self.shown.animations.get_mut();
         if !animations.is_empty() {
             let document = &self.shown.document;
+            // A node moved (`moveBefore`) keeps them.
+            let moved = moved_nodes(&changes);
             let taken_out: HashSet<NodeId> = changes
                 .iter()
                 .filter_map(|change| match change {
-                    Change::Removed { child, .. } => Some(*child),
+                    Change::Removed { child, .. } if !moved.contains(child) => Some(*child),
                     _ => None,
                 })
                 .flat_map(|child| document.subtree(child))

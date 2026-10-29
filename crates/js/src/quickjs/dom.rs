@@ -268,6 +268,67 @@ const NATIVES: &[(&str, Decode)] = &[
         Ok(Call::TemplateContent(a.handle(0)?))
     }),
     ("doctype", |_| Ok(Call::Doctype)),
+    ("moveBefore", |a| {
+        Ok(Call::MoveBefore {
+            parent: a.handle(0)?,
+            node: a.handle(1)?,
+            before: a.maybe_handle(2)?,
+        })
+    }),
+    ("documentOpen", |_| Ok(Call::DocumentOpen)),
+    ("documentClose", |_| Ok(Call::DocumentClose)),
+    ("comparePosition", |a| {
+        Ok(Call::ComparePosition(a.handle(0)?, a.handle(1)?))
+    }),
+    ("isEqualNode", |a| {
+        Ok(Call::IsEqualNode(a.handle(0)?, a.handle(1)?))
+    }),
+    ("normalize", |a| Ok(Call::Normalize(a.handle(0)?))),
+    ("replaceData", |a| {
+        Ok(Call::ReplaceData(
+            a.handle(0)?,
+            a.integer(1) as u32,
+            a.integer(2) as u32,
+            a.string(3)?,
+        ))
+    }),
+    ("splitText", |a| {
+        Ok(Call::SplitText(a.handle(0)?, a.integer(1) as u32))
+    }),
+    ("nodeLength", |a| Ok(Call::NodeLength(a.handle(0)?))),
+    ("indexOf", |a| Ok(Call::IndexOf(a.handle(0)?))),
+    ("createRange", |a| Ok(Call::CreateRange(a.handle(0)?))),
+    ("dropRange", |a| Ok(Call::DropRange(a.integer(0) as u32))),
+    ("rangeOf", |a| Ok(Call::RangeOf(a.integer(0) as u32))),
+    ("setRange", |a| {
+        Ok(Call::SetRange(
+            a.integer(0) as u32,
+            a.handle(1)?,
+            a.integer(2) as u32,
+            a.handle(3)?,
+            a.integer(4) as u32,
+        ))
+    }),
+    ("compareBoundaries", |a| {
+        Ok(Call::CompareBoundaries(
+            a.handle(0)?,
+            a.integer(1) as u32,
+            a.handle(2)?,
+            a.integer(3) as u32,
+        ))
+    }),
+    ("createIterator", |a| Ok(Call::CreateIterator(a.handle(0)?))),
+    ("dropIterator", |a| {
+        Ok(Call::DropIterator(a.integer(0) as u32))
+    }),
+    ("iteratorOf", |a| Ok(Call::IteratorOf(a.integer(0) as u32))),
+    ("setIterator", |a| {
+        Ok(Call::SetIterator(
+            a.integer(0) as u32,
+            a.handle(1)?,
+            a.bool(2),
+        ))
+    }),
     ("insert", |a| {
         Ok(Call::Insert {
             parent: a.handle(0)?,

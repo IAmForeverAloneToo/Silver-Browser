@@ -348,6 +348,8 @@
     "insertAdjacentHTML",
     "setTitle",
     "write",
+    "normalize",
+    "splitText",
   ];
   for (let i = 0; i < MOVING.length; i++) {
     const call = native[MOVING[i]];
@@ -7257,6 +7259,21 @@
       insertAll(parent, handles, null, "append", iface);
     },
 
+    // DOM's `moveBefore` (section 4.2.6): `node` moved before `child`
+    // keeping its state.
+    moveBefore(node, child) {
+      const parent = self(this);
+      const iface = parentIface(this);
+      need(arguments.length, 2, "moveBefore", iface);
+      const handle = nodeArgument(node, 1, "moveBefore", iface);
+      const before = child === null ? null : nodeArgument(child, 2, "moveBefore", iface);
+      try {
+        native.moveBefore(parent, handle, before);
+      } catch (error) {
+        throw failed(error, "moveBefore", iface);
+      }
+    },
+
     replaceChildren(...nodes) {
       const parent = self(this);
       const iface = parentIface(this);
@@ -7457,37 +7474,40 @@
     appendData(data) {
       const handle = self(this);
       need(arguments.length, 1, "appendData", "CharacterData");
-      setData(handle, native.data(handle) + str(data), "appendData");
+      const text = str(data);
+      replaceData(handle, native.data(handle).length, 0, text, "appendData");
     }
 
     insertData(offset, data) {
       const handle = self(this);
       need(arguments.length, 2, "insertData", "CharacterData");
-      const old = native.data(handle);
-      const at = checkOffset(old, unsigned(offset), "insertData");
-      setData(handle, StringSlice(old, 0, at) + str(data) + StringSlice(old, at), "insertData");
+      const at = checkOffset(native.data(handle), unsigned(offset), "insertData");
+      replaceData(handle, at, 0, str(data), "insertData");
     }
 
     deleteData(offset, count) {
       const handle = self(this);
       need(arguments.length, 2, "deleteData", "CharacterData");
-      const old = native.data(handle);
-      const at = checkOffset(old, unsigned(offset), "deleteData");
-      const rest = StringSlice(old, at + unsigned(count));
-      setData(handle, StringSlice(old, 0, at) + rest, "deleteData");
+      const at = checkOffset(native.data(handle), unsigned(offset), "deleteData");
+      replaceData(handle, at, unsigned(count), "", "deleteData");
     }
 
     replaceData(offset, count, data) {
       const handle = self(this);
       need(arguments.length, 3, "replaceData", "CharacterData");
-      const old = native.data(handle);
-      const at = checkOffset(old, unsigned(offset), "replaceData");
-      const text = str(data);
-      setData(
-        handle,
-        StringSlice(old, 0, at) + text + StringSlice(old, at + unsigned(count)),
-        "replaceData",
-      );
+      const at = checkOffset(native.data(handle), unsigned(offset), "replaceData");
+      const n = unsigned(count);
+      replaceData(handle, at, n, str(data), "replaceData");
+    }
+  }
+
+  // The DOM's "replace data" (section 4.10), which moves the live ranges
+  // in the node as it changes.
+  function replaceData(handle, offset, count, data, method) {
+    try {
+      native.replaceData(handle, offset, count, data);
+    } catch (error) {
+      throw failed(error, method, "CharacterData");
     }
   }
 
@@ -7540,18 +7560,11 @@
           "Text",
         );
       }
-      let made;
       try {
-        made = native.createText(StringSlice(data, at));
+        return wrap(native.splitText(handle, at));
       } catch (error) {
         throw failed(error, "splitText", "Text");
       }
-      const parent = native.parent(handle);
-      if (parent !== null) {
-        native.insert(parent, made, native.nextSibling(handle));
-      }
-      native.setData(handle, StringSlice(data, 0, at));
-      return wrap(made);
     }
 
     get wholeText() {
@@ -8486,6 +8499,22 @@
         return wrap(native.doctype());
       },
 
+      // `document.open()` (HTML section 8.4.2.1); with three arguments,
+      // the window's `open`.
+      open(...args) {
+        self(this);
+        if (args.length >= 3) {
+          return global.open(args[0], args[1], args[2]);
+        }
+        native.documentOpen();
+        return this;
+      },
+
+      close() {
+        self(this);
+        native.documentClose();
+      },
+
       get implementation() {
         self(this);
         if (theImplementation === null) {
@@ -8959,6 +8988,1556 @@
   );
 
   include(ParentNode, [Document.prototype, DocumentFragment.prototype, Element.prototype]);
+
+  // ---- Ranges, traversal and the selection (D59) -------------------------
+
+  // Whether the node `handle` names is character data.
+  function isCharacterHandle(handle) {
+    const kind = native.kind(handle);
+    return kind === 3 || kind === 7 || kind === 8;
+  }
+
+  // Whether `ancestor` is `node` or one of its ancestors.
+  function inclusiveAncestor(ancestor, node) {
+    for (let at = node; at !== null; at = native.parent(at)) {
+      if (at === ancestor) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // The root of `handle`'s tree.
+  function rootHandle(handle) {
+    let at = handle;
+    for (let up = native.parent(at); up !== null; up = native.parent(at)) {
+      at = up;
+    }
+    return at;
+  }
+
+  // A boundary point's node and offset, checked as "set the start or
+  // end" checks them (DOM section 5.5): no doctype, no offset past its
+  // length.
+  function checkPoint(node, offset, method, iface) {
+    const handle = nodeArgument(node, 1, method, iface);
+    if (node instanceof Attr) {
+      throw domError("InvalidNodeTypeError", "The node provided is of type 'Attr'.", method, iface);
+    }
+    if (native.kind(handle) === 10) {
+      throw domError(
+        "InvalidNodeTypeError",
+        "The node provided is of type 'DocumentType'.",
+        method,
+        iface,
+      );
+    }
+    const at = unsigned(offset);
+    const length = native.nodeLength(handle);
+    if (at > length) {
+      throw domError(
+        "IndexSizeError",
+        isCharacterHandle(handle)
+          ? "The offset " + at + " is larger than the node's length (" + length + ")."
+          : "There is no child at offset " + at + ".",
+        method,
+        iface,
+      );
+    }
+    return [handle, at];
+  }
+
+  // A node's parent, or the InvalidNodeTypeError of one with none.
+  function parentOf(handle, method) {
+    const parent = native.parent(handle);
+    if (parent === null) {
+      throw domError("InvalidNodeTypeError", "the given Node has no parent.", method, "Range");
+    }
+    return parent;
+  }
+
+  const rangeIds = new $WeakMap();
+  const staticBounds = new $WeakMap();
+  const rangesGone = new $FinalizationRegistry((id) => native.dropRange(id));
+
+  // A range's boundary points: start node, start offset, end node, end
+  // offset.
+  function boundsOf(range) {
+    const id = WeakMapGet(rangeIds, range);
+    if (id !== undefined) {
+      return native.rangeOf(id);
+    }
+    const fixed = WeakMapGet(staticBounds, range);
+    if (fixed === undefined) {
+      throw illegalInvocation();
+    }
+    return fixed;
+  }
+
+  function rangeId(range) {
+    const id = WeakMapGet(rangeIds, range);
+    if (id === undefined) {
+      throw illegalInvocation();
+    }
+    return id;
+  }
+
+  class AbstractRange {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("AbstractRange");
+      }
+    }
+
+    get startContainer() {
+      return wrap(boundsOf(this)[0]);
+    }
+
+    get startOffset() {
+      return boundsOf(this)[1];
+    }
+
+    get endContainer() {
+      return wrap(boundsOf(this)[2]);
+    }
+
+    get endOffset() {
+      return boundsOf(this)[3];
+    }
+
+    get collapsed() {
+      const b = boundsOf(this);
+      return b[0] === b[2] && b[1] === b[3];
+    }
+  }
+
+  class StaticRange extends AbstractRange {
+    constructor(init) {
+      need(arguments.length, 1, "StaticRange", "StaticRange");
+      super(KEY);
+      if (init === null || typeof init !== "object") {
+        throw new $TypeError(
+          "Failed to construct 'StaticRange': The provided value is not of type 'StaticRangeInit'.",
+        );
+      }
+      const points = [];
+      const names = ["startContainer", "startOffset", "endContainer", "endOffset"];
+      for (let i = 0; i < 4; i++) {
+        const value = init[names[i]];
+        if (value === undefined) {
+          throw new $TypeError(
+            "Failed to construct 'StaticRange': Failed to read the '" + names[i] +
+              "' property from 'StaticRangeInit': Required member is undefined.",
+          );
+        }
+        if (i % 2 === 0) {
+          if (!isNode(value)) {
+            throw new $TypeError(
+              "Failed to construct 'StaticRange': Failed to read the '" + names[i] +
+                "' property from 'StaticRangeInit': Failed to convert value to 'Node'.",
+            );
+          }
+          const kind = kindOf(value);
+          if (kind === 2 || kind === 10) {
+            throw domError(
+              "InvalidNodeTypeError",
+              "The supplied node is of type " + (kind === 2 ? "'Attr'." : "'DocumentType'."),
+              "StaticRange",
+              "StaticRange",
+            );
+          }
+          ArrayPush(points, handleOf(value));
+        } else {
+          ArrayPush(points, unsigned(value));
+        }
+      }
+      WeakMapSet(staticBounds, this, points);
+    }
+  }
+
+  class Range extends AbstractRange {
+    // `new Range()`: collapsed at the start of the document.
+    constructor() {
+      super(KEY);
+      let id;
+      try {
+        id = native.createRange(native.document());
+      } catch (error) {
+        throw failed(error, "Range", "Range");
+      }
+      WeakMapSet(rangeIds, this, id);
+      Register(rangesGone, this, id);
+    }
+
+    get commonAncestorContainer() {
+      const b = boundsOf(this);
+      let common = b[0];
+      while (!inclusiveAncestor(common, b[2])) {
+        common = native.parent(common);
+      }
+      return wrap(common);
+    }
+
+    setStart(node, offset) {
+      rangeId(this);
+      need(arguments.length, 2, "setStart", "Range");
+      const [handle, at] = checkPoint(node, offset, "setStart", "Range");
+      setStart(this, handle, at);
+    }
+
+    setEnd(node, offset) {
+      rangeId(this);
+      need(arguments.length, 2, "setEnd", "Range");
+      const [handle, at] = checkPoint(node, offset, "setEnd", "Range");
+      setEnd(this, handle, at);
+    }
+
+    setStartBefore(node) {
+      rangeId(this);
+      need(arguments.length, 1, "setStartBefore", "Range");
+      const handle = nodeArgument(node, 1, "setStartBefore", "Range");
+      setStart(this, parentOf(handle, "setStartBefore"), native.indexOf(handle));
+    }
+
+    setStartAfter(node) {
+      rangeId(this);
+      need(arguments.length, 1, "setStartAfter", "Range");
+      const handle = nodeArgument(node, 1, "setStartAfter", "Range");
+      setStart(this, parentOf(handle, "setStartAfter"), native.indexOf(handle) + 1);
+    }
+
+    setEndBefore(node) {
+      rangeId(this);
+      need(arguments.length, 1, "setEndBefore", "Range");
+      const handle = nodeArgument(node, 1, "setEndBefore", "Range");
+      setEnd(this, parentOf(handle, "setEndBefore"), native.indexOf(handle));
+    }
+
+    setEndAfter(node) {
+      rangeId(this);
+      need(arguments.length, 1, "setEndAfter", "Range");
+      const handle = nodeArgument(node, 1, "setEndAfter", "Range");
+      setEnd(this, parentOf(handle, "setEndAfter"), native.indexOf(handle) + 1);
+    }
+
+    collapse(toStart = false) {
+      const id = rangeId(this);
+      const b = native.rangeOf(id);
+      if (toStart) {
+        native.setRange(id, b[0], b[1], b[0], b[1]);
+      } else {
+        native.setRange(id, b[2], b[3], b[2], b[3]);
+      }
+    }
+
+    selectNode(node) {
+      const id = rangeId(this);
+      need(arguments.length, 1, "selectNode", "Range");
+      const handle = nodeArgument(node, 1, "selectNode", "Range");
+      const parent = parentOf(handle, "selectNode");
+      const index = native.indexOf(handle);
+      native.setRange(id, parent, index, parent, index + 1);
+    }
+
+    selectNodeContents(node) {
+      const id = rangeId(this);
+      need(arguments.length, 1, "selectNodeContents", "Range");
+      const handle = nodeArgument(node, 1, "selectNodeContents", "Range");
+      if (native.kind(handle) === 10) {
+        throw domError(
+          "InvalidNodeTypeError",
+          "The node provided is of type 'DocumentType'.",
+          "selectNodeContents",
+          "Range",
+        );
+      }
+      native.setRange(id, handle, 0, handle, native.nodeLength(handle));
+    }
+
+    compareBoundaryPoints(how, sourceRange) {
+      rangeId(this);
+      need(arguments.length, 2, "compareBoundaryPoints", "Range");
+      const code = unsignedShort(how);
+      if (!(sourceRange instanceof Range)) {
+        throw new $TypeError(
+          prefix("compareBoundaryPoints", "Range") + "parameter 2 is not of type 'Range'.",
+        );
+      }
+      if (code > 3) {
+        throw domError(
+          "NotSupportedError",
+          "The comparison method provided must be one of 'START_TO_START', 'START_TO_END', " +
+            "'END_TO_END', or 'END_TO_START'.",
+          "compareBoundaryPoints",
+          "Range",
+        );
+      }
+      const a = boundsOf(this);
+      const b = boundsOf(sourceRange);
+      // START_TO_START, START_TO_END, END_TO_END, END_TO_START: which of
+      // this range's points against which of the source's.
+      const mine = code === 0 || code === 3 ? 0 : 2;
+      const theirs = code === 0 || code === 1 ? 0 : 2;
+      const order = native.compareBoundaries(a[mine], a[mine + 1], b[theirs], b[theirs + 1]);
+      if (order === 2) {
+        throw domError(
+          "WrongDocumentError",
+          "The two Ranges are not in the same tree.",
+          "compareBoundaryPoints",
+          "Range",
+        );
+      }
+      return order;
+    }
+
+    isPointInRange(node, offset) {
+      const b = boundsOf(this);
+      need(arguments.length, 2, "isPointInRange", "Range");
+      const handle = nodeArgument(node, 1, "isPointInRange", "Range");
+      if (rootHandle(handle) !== rootHandle(b[0])) {
+        return false;
+      }
+      const [, at] = checkPoint(node, offset, "isPointInRange", "Range");
+      return native.compareBoundaries(handle, at, b[0], b[1]) !== -1 &&
+        native.compareBoundaries(handle, at, b[2], b[3]) !== 1;
+    }
+
+    comparePoint(node, offset) {
+      const b = boundsOf(this);
+      need(arguments.length, 2, "comparePoint", "Range");
+      const handle = nodeArgument(node, 1, "comparePoint", "Range");
+      if (rootHandle(handle) !== rootHandle(b[0])) {
+        throw domError(
+          "WrongDocumentError",
+          "The node provided and the Range are not in the same tree.",
+          "comparePoint",
+          "Range",
+        );
+      }
+      const [, at] = checkPoint(node, offset, "comparePoint", "Range");
+      if (native.compareBoundaries(handle, at, b[0], b[1]) === -1) {
+        return -1;
+      }
+      return native.compareBoundaries(handle, at, b[2], b[3]) === 1 ? 1 : 0;
+    }
+
+    intersectsNode(node) {
+      const b = boundsOf(this);
+      need(arguments.length, 1, "intersectsNode", "Range");
+      const handle = nodeArgument(node, 1, "intersectsNode", "Range");
+      if (rootHandle(handle) !== rootHandle(b[0])) {
+        return false;
+      }
+      const parent = native.parent(handle);
+      if (parent === null) {
+        return true;
+      }
+      const index = native.indexOf(handle);
+      return native.compareBoundaries(parent, index, b[2], b[3]) === -1 &&
+        native.compareBoundaries(parent, index + 1, b[0], b[1]) === 1;
+    }
+
+    cloneRange() {
+      const b = boundsOf(this);
+      const copy = new Range();
+      native.setRange(rangeId(copy), b[0], b[1], b[2], b[3]);
+      return copy;
+    }
+
+    detach() {
+      rangeId(this);
+    }
+
+    deleteContents() {
+      const id = rangeId(this);
+      try {
+        deleteBounds(id, native.rangeOf(id));
+      } catch (error) {
+        throw failed(error, "deleteContents", "Range");
+      }
+    }
+
+    extractContents() {
+      const id = rangeId(this);
+      try {
+        return wrap(extractBounds(native.rangeOf(id), id));
+      } catch (error) {
+        throw failed(error, "extractContents", "Range");
+      }
+    }
+
+    cloneContents() {
+      rangeId(this);
+      try {
+        return wrap(cloneBounds(boundsOf(this)));
+      } catch (error) {
+        throw failed(error, "cloneContents", "Range");
+      }
+    }
+
+    insertNode(node) {
+      const id = rangeId(this);
+      need(arguments.length, 1, "insertNode", "Range");
+      const handle = nodeArgument(node, 1, "insertNode", "Range");
+      try {
+        insertInRange(id, handle);
+      } catch (error) {
+        throw failed(error, "insertNode", "Range");
+      }
+    }
+
+    surroundContents(newParent) {
+      const id = rangeId(this);
+      need(arguments.length, 1, "surroundContents", "Range");
+      const handle = nodeArgument(newParent, 1, "surroundContents", "Range");
+      const b = native.rangeOf(id);
+      if (partlyHoldsNonText(b)) {
+        throw domError(
+          "InvalidStateError",
+          "The Range has partially selected a non-Text node.",
+          "surroundContents",
+          "Range",
+        );
+      }
+      const kind = native.kind(handle);
+      if (kind === 9 || kind === 10 || kind === 11) {
+        throw domError(
+          "InvalidNodeTypeError",
+          "The node provided is of type '" + nameOf(newParent) + "'.",
+          "surroundContents",
+          "Range",
+        );
+      }
+      try {
+        const fragment = extractBounds(b, id);
+        for (let child = native.firstChild(handle); child !== null;
+          child = native.firstChild(handle)) {
+          native.remove(handle, child);
+        }
+        insertInRange(id, handle);
+        native.insert(handle, fragment, null);
+        const parent = native.parent(handle);
+        const index = native.indexOf(handle);
+        native.setRange(id, parent, index, parent, index + 1);
+      } catch (error) {
+        throw failed(error, "surroundContents", "Range");
+      }
+    }
+
+    toString() {
+      const b = boundsOf(this);
+      if (b[0] === b[2] && native.kind(b[0]) === 3) {
+        return StringSlice(native.data(b[0]), b[1], b[3]);
+      }
+      let text = "";
+      if (native.kind(b[0]) === 3) {
+        text += StringSlice(native.data(b[0]), b[1]);
+      }
+      const nodes = containedNodes(b);
+      for (let i = 0; i < nodes.length; i++) {
+        if (native.kind(nodes[i]) === 3) {
+          text += native.data(nodes[i]);
+        }
+      }
+      if (native.kind(b[2]) === 3) {
+        text += StringSlice(native.data(b[2]), 0, b[3]);
+      }
+      return text;
+    }
+  }
+
+  const RANGE_CONSTANTS = ["START_TO_START", 0, "START_TO_END", 1, "END_TO_END", 2, "END_TO_START", 3];
+  for (let i = 0; i < RANGE_CONSTANTS.length; i += 2) {
+    defineProperty(Range, RANGE_CONSTANTS[i], { value: RANGE_CONSTANTS[i + 1], enumerable: true });
+    defineProperty(Range.prototype, RANGE_CONSTANTS[i], {
+      value: RANGE_CONSTANTS[i + 1],
+      enumerable: true,
+    });
+  }
+
+  // "Set the start" and "set the end" of a range (DOM section 5.5): a
+  // point in another tree, or past the other end, moves both ends.
+  function setStart(range, handle, offset) {
+    const id = rangeId(range);
+    const b = native.rangeOf(id);
+    const order = native.compareBoundaries(handle, offset, b[2], b[3]);
+    if (order === 2 || order === 1) {
+      native.setRange(id, handle, offset, handle, offset);
+    } else {
+      native.setRange(id, handle, offset, b[2], b[3]);
+    }
+  }
+
+  function setEnd(range, handle, offset) {
+    const id = rangeId(range);
+    const b = native.rangeOf(id);
+    const order = native.compareBoundaries(handle, offset, b[0], b[1]);
+    if (order === 2 || order === -1) {
+      native.setRange(id, handle, offset, handle, offset);
+    } else {
+      native.setRange(id, b[0], b[1], handle, offset);
+    }
+  }
+
+  // Whether `handle` is contained in the range `b` bounds: wholly after
+  // its start and before its end.
+  function contained(b, handle) {
+    return rootHandle(handle) === rootHandle(b[0]) &&
+      native.compareBoundaries(handle, 0, b[0], b[1]) === 1 &&
+      native.compareBoundaries(handle, native.nodeLength(handle), b[2], b[3]) === -1;
+  }
+
+  // The nodes `b` contains, in tree order.
+  function containedNodes(b) {
+    const out = [];
+    let common = b[0];
+    while (!inclusiveAncestor(common, b[2])) {
+      common = native.parent(common);
+    }
+    // Every node after the start, up to the end node.
+    let at = common;
+    while (at !== null) {
+      if (at !== common && contained(b, at)) {
+        ArrayPush(out, at);
+      }
+      if (at === b[2] && native.firstChild(at) === null) {
+        break;
+      }
+      let next = native.firstChild(at);
+      while (next === null && at !== null && at !== common) {
+        next = native.nextSibling(at);
+        if (next === null) {
+          at = native.parent(at);
+        }
+      }
+      if (next === null) {
+        break;
+      }
+      at = next;
+    }
+    return out;
+  }
+
+  // Where the range of `b` collapses to when its contents go: the start,
+  // or just after the start's ancestor that is not the end's.
+  function collapsePoint(b) {
+    if (inclusiveAncestor(b[0], b[2])) {
+      return [b[0], b[1]];
+    }
+    let reference = b[0];
+    while (!inclusiveAncestor(native.parent(reference), b[2])) {
+      reference = native.parent(reference);
+    }
+    return [native.parent(reference), native.indexOf(reference) + 1];
+  }
+
+  // The range's common ancestor's children that partly hold it, first
+  // and last, each null when the end it would hold is the ancestor.
+  function partialChildren(b, common) {
+    let first = null;
+    let last = null;
+    if (!inclusiveAncestor(b[0], b[2])) {
+      first = b[0];
+      while (native.parent(first) !== common) {
+        first = native.parent(first);
+      }
+    }
+    if (!inclusiveAncestor(b[2], b[0])) {
+      last = b[2];
+      while (native.parent(last) !== common) {
+        last = native.parent(last);
+      }
+    }
+    return [first, last];
+  }
+
+  function commonOf(b) {
+    let common = b[0];
+    while (!inclusiveAncestor(common, b[2])) {
+      common = native.parent(common);
+    }
+    return common;
+  }
+
+  // Whether a node other than text is partly in `b`: an ancestor of one
+  // end and not of the other.
+  function partlyHoldsNonText(b) {
+    for (let at = b[0]; at !== null; at = native.parent(at)) {
+      if (!inclusiveAncestor(at, b[2]) && native.kind(at) !== 3) {
+        return true;
+      }
+    }
+    for (let at = b[2]; at !== null; at = native.parent(at)) {
+      if (!inclusiveAncestor(at, b[0]) && native.kind(at) !== 3) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // A shallow copy of character data `handle` holding UTF-16 units
+  // `from` to `to` of its data.
+  function partCopy(handle, from, to) {
+    const copy = native.clone(handle, false);
+    native.setData(copy, StringSlice(native.data(handle), from, to));
+    return copy;
+  }
+
+  // The DOM's "extract" a live range's contents (section 5.5) into a
+  // new fragment; `id`, when given, the range collapsed after.
+  function extractBounds(b, id) {
+    const fragment = native.createFragment();
+    if (b[0] === b[2] && b[1] === b[3]) {
+      return fragment;
+    }
+    if (b[0] === b[2] && isCharacterHandle(b[0])) {
+      native.insert(fragment, partCopy(b[0], b[1], b[3]), null);
+      native.replaceData(b[0], b[1], b[3] - b[1], "");
+      return fragment;
+    }
+    const common = commonOf(b);
+    const [first, last] = partialChildren(b, common);
+    const children = [];
+    for (let c = native.firstChild(common); c !== null; c = native.nextSibling(c)) {
+      if (contained(b, c)) {
+        if (native.kind(c) === 10) {
+          throw domError("HierarchyRequestError", "The Range contains a doctype node.");
+        }
+        ArrayPush(children, c);
+      }
+    }
+    const [newNode, newOffset] = collapsePoint(b);
+    if (first !== null && isCharacterHandle(first)) {
+      const length = native.nodeLength(b[0]);
+      native.insert(fragment, partCopy(b[0], b[1], length), null);
+      native.replaceData(b[0], b[1], length - b[1], "");
+    } else if (first !== null) {
+      const copy = native.clone(first, false);
+      native.insert(fragment, copy, null);
+      const inner = extractBounds([b[0], b[1], first, native.nodeLength(first)]);
+      native.insert(copy, inner, null);
+    }
+    for (let i = 0; i < children.length; i++) {
+      native.insert(fragment, children[i], null);
+    }
+    if (last !== null && isCharacterHandle(last)) {
+      native.insert(fragment, partCopy(b[2], 0, b[3]), null);
+      native.replaceData(b[2], 0, b[3], "");
+    } else if (last !== null) {
+      const copy = native.clone(last, false);
+      native.insert(fragment, copy, null);
+      const inner = extractBounds([last, 0, b[2], b[3]]);
+      native.insert(copy, inner, null);
+    }
+    if (id !== undefined) {
+      native.setRange(id, newNode, newOffset, newNode, newOffset);
+    }
+    return fragment;
+  }
+
+  // The DOM's "clone the contents" of a live range (section 5.5).
+  function cloneBounds(b) {
+    const fragment = native.createFragment();
+    if (b[0] === b[2] && b[1] === b[3]) {
+      return fragment;
+    }
+    if (b[0] === b[2] && isCharacterHandle(b[0])) {
+      native.insert(fragment, partCopy(b[0], b[1], b[3]), null);
+      return fragment;
+    }
+    const common = commonOf(b);
+    const [first, last] = partialChildren(b, common);
+    const children = [];
+    for (let c = native.firstChild(common); c !== null; c = native.nextSibling(c)) {
+      if (contained(b, c)) {
+        if (native.kind(c) === 10) {
+          throw domError("HierarchyRequestError", "The Range contains a doctype node.");
+        }
+        ArrayPush(children, c);
+      }
+    }
+    if (first !== null && isCharacterHandle(first)) {
+      native.insert(fragment, partCopy(b[0], b[1], native.nodeLength(b[0])), null);
+    } else if (first !== null) {
+      const copy = native.clone(first, false);
+      native.insert(fragment, copy, null);
+      native.insert(copy, cloneBounds([b[0], b[1], first, native.nodeLength(first)]), null);
+    }
+    for (let i = 0; i < children.length; i++) {
+      native.insert(fragment, native.clone(children[i], true), null);
+    }
+    if (last !== null && isCharacterHandle(last)) {
+      native.insert(fragment, partCopy(b[2], 0, b[3]), null);
+    } else if (last !== null) {
+      const copy = native.clone(last, false);
+      native.insert(fragment, copy, null);
+      native.insert(copy, cloneBounds([last, 0, b[2], b[3]]), null);
+    }
+    return fragment;
+  }
+
+  // `deleteContents()` (DOM section 5.5).
+  function deleteBounds(id, b) {
+    if (b[0] === b[2] && b[1] === b[3]) {
+      return;
+    }
+    if (b[0] === b[2] && isCharacterHandle(b[0])) {
+      native.replaceData(b[0], b[1], b[3] - b[1], "");
+      return;
+    }
+    // The contained nodes whose parents are not: the tops of what goes.
+    const nodes = containedNodes(b);
+    const tops = [];
+    for (let i = 0; i < nodes.length; i++) {
+      const parent = native.parent(nodes[i]);
+      if (parent === null || !contained(b, parent)) {
+        ArrayPush(tops, nodes[i]);
+      }
+    }
+    const [newNode, newOffset] = collapsePoint(b);
+    if (isCharacterHandle(b[0])) {
+      native.replaceData(b[0], b[1], native.nodeLength(b[0]) - b[1], "");
+    }
+    for (let i = 0; i < tops.length; i++) {
+      const parent = native.parent(tops[i]);
+      if (parent !== null) {
+        native.remove(parent, tops[i]);
+      }
+    }
+    if (isCharacterHandle(b[2])) {
+      native.replaceData(b[2], 0, b[3], "");
+    }
+    native.setRange(id, newNode, newOffset, newNode, newOffset);
+  }
+
+  // The DOM's "insert" into a live range (section 5.5).
+  function insertInRange(id, node) {
+    const b = native.rangeOf(id);
+    const start = b[0];
+    const kind = native.kind(start);
+    if (kind === 7 || kind === 8 || (kind === 3 && native.parent(start) === null) ||
+        start === node) {
+      throw domError("HierarchyRequestError", "The Range's start node can not hold the node.");
+    }
+    let reference = null;
+    if (kind === 3) {
+      reference = start;
+    } else {
+      reference = native.firstChild(start);
+      for (let i = 0; i < b[1] && reference !== null; i++) {
+        reference = native.nextSibling(reference);
+      }
+    }
+    const parent = reference === null ? start : native.parent(reference);
+    if (kind === 3) {
+      reference = native.splitText(start, b[1]);
+    }
+    if (node === reference) {
+      reference = native.nextSibling(reference);
+    }
+    const old = native.parent(node);
+    if (old !== null) {
+      native.remove(old, node);
+    }
+    let offset = reference === null ? native.nodeLength(parent) : native.indexOf(reference);
+    offset += native.kind(node) === 11 ? native.nodeLength(node) : 1;
+    native.insert(parent, node, reference);
+    const after = native.rangeOf(id);
+    if (after[0] === after[2] && after[1] === after[3]) {
+      native.setRange(id, after[0], after[1], parent, offset);
+    }
+  }
+
+  // ---- The selection (Selection API) ------------------------------------
+
+  // The document's one selection: its range, or null, and whether its
+  // anchor is the range's end.
+  let selectionRange = null;
+  let selectionBackward = false;
+  let theSelection = null;
+
+  class Selection {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("Selection");
+      }
+    }
+
+    get anchorNode() {
+      selectionOf(this);
+      return selectionRange === null ? null
+        : selectionBackward ? selectionRange.endContainer : selectionRange.startContainer;
+    }
+
+    get anchorOffset() {
+      selectionOf(this);
+      return selectionRange === null ? 0
+        : selectionBackward ? selectionRange.endOffset : selectionRange.startOffset;
+    }
+
+    get focusNode() {
+      selectionOf(this);
+      return selectionRange === null ? null
+        : selectionBackward ? selectionRange.startContainer : selectionRange.endContainer;
+    }
+
+    get focusOffset() {
+      selectionOf(this);
+      return selectionRange === null ? 0
+        : selectionBackward ? selectionRange.startOffset : selectionRange.endOffset;
+    }
+
+    get isCollapsed() {
+      selectionOf(this);
+      return selectionRange === null || selectionRange.collapsed;
+    }
+
+    get rangeCount() {
+      selectionOf(this);
+      return selectionRange === null ? 0 : 1;
+    }
+
+    get type() {
+      selectionOf(this);
+      return selectionRange === null ? "None" : selectionRange.collapsed ? "Caret" : "Range";
+    }
+
+    get direction() {
+      selectionOf(this);
+      if (selectionRange === null || selectionRange.collapsed) {
+        return "none";
+      }
+      return selectionBackward ? "backward" : "forward";
+    }
+
+    getRangeAt(index) {
+      selectionOf(this);
+      need(arguments.length, 1, "getRangeAt", "Selection");
+      const i = unsigned(index);
+      if (selectionRange === null || i > 0) {
+        throw domError(
+          "IndexSizeError",
+          "The index provided (" + i + ") is greater than or equal to the maximum bound (" +
+            (selectionRange === null ? 0 : 1) + ").",
+          "getRangeAt",
+          "Selection",
+        );
+      }
+      return selectionRange;
+    }
+
+    addRange(range) {
+      selectionOf(this);
+      need(arguments.length, 1, "addRange", "Selection");
+      if (!(range instanceof Range)) {
+        throw new $TypeError(prefix("addRange", "Selection") + "parameter 1 is not of type 'Range'.");
+      }
+      if (selectionRange !== null) {
+        return;
+      }
+      if (rootHandle(boundsOf(range)[0]) !== native.document()) {
+        return;
+      }
+      selectionRange = range;
+      selectionBackward = false;
+    }
+
+    removeRange(range) {
+      selectionOf(this);
+      need(arguments.length, 1, "removeRange", "Selection");
+      if (!(range instanceof Range)) {
+        throw new $TypeError(
+          prefix("removeRange", "Selection") + "parameter 1 is not of type 'Range'.",
+        );
+      }
+      if (range !== selectionRange) {
+        throw domError(
+          "NotFoundError",
+          "The given range isn't in document.",
+          "removeRange",
+          "Selection",
+        );
+      }
+      selectionRange = null;
+    }
+
+    removeAllRanges() {
+      selectionOf(this);
+      selectionRange = null;
+    }
+
+    empty() {
+      selectionOf(this);
+      selectionRange = null;
+    }
+
+    collapse(node, offset = 0) {
+      selectionOf(this);
+      need(arguments.length, 1, "collapse", "Selection");
+      if (node === null) {
+        selectionRange = null;
+        return;
+      }
+      const [handle, at] = checkPoint(node, offset, "collapse", "Selection");
+      if (rootHandle(handle) !== native.document()) {
+        return;
+      }
+      const range = new Range();
+      native.setRange(rangeId(range), handle, at, handle, at);
+      selectionRange = range;
+      selectionBackward = false;
+    }
+
+    setPosition(node, offset = 0) {
+      selectionOf(this);
+      need(arguments.length, 1, "setPosition", "Selection");
+      return this.collapse(node, offset);
+    }
+
+    collapseToStart() {
+      selectionOf(this);
+      if (selectionRange === null) {
+        throw domError("InvalidStateError", "there is no selection.", "collapseToStart", "Selection");
+      }
+      const b = boundsOf(selectionRange);
+      const range = new Range();
+      native.setRange(rangeId(range), b[0], b[1], b[0], b[1]);
+      selectionRange = range;
+      selectionBackward = false;
+    }
+
+    collapseToEnd() {
+      selectionOf(this);
+      if (selectionRange === null) {
+        throw domError("InvalidStateError", "there is no selection.", "collapseToEnd", "Selection");
+      }
+      const b = boundsOf(selectionRange);
+      const range = new Range();
+      native.setRange(rangeId(range), b[2], b[3], b[2], b[3]);
+      selectionRange = range;
+      selectionBackward = false;
+    }
+
+    extend(node, offset = 0) {
+      selectionOf(this);
+      need(arguments.length, 1, "extend", "Selection");
+      const [handle, at] = checkPoint(node, offset, "extend", "Selection");
+      if (rootHandle(handle) !== native.document()) {
+        return;
+      }
+      if (selectionRange === null) {
+        throw domError(
+          "InvalidStateError",
+          "This Selection object doesn't have any Ranges.",
+          "extend",
+          "Selection",
+        );
+      }
+      const b = boundsOf(selectionRange);
+      const anchor = selectionBackward ? [b[2], b[3]] : [b[0], b[1]];
+      const range = new Range();
+      const order = native.compareBoundaries(anchor[0], anchor[1], handle, at);
+      if (order === 2 || order !== 1) {
+        native.setRange(rangeId(range), anchor[0], anchor[1], handle, at);
+        selectionBackward = false;
+      } else {
+        native.setRange(rangeId(range), handle, at, anchor[0], anchor[1]);
+        selectionBackward = true;
+      }
+      selectionRange = range;
+    }
+
+    setBaseAndExtent(anchorNode, anchorOffset, focusNode, focusOffset) {
+      selectionOf(this);
+      need(arguments.length, 4, "setBaseAndExtent", "Selection");
+      const [a, ao] = checkPoint(anchorNode, anchorOffset, "setBaseAndExtent", "Selection");
+      const [f, fo] = checkPoint(focusNode, focusOffset, "setBaseAndExtent", "Selection");
+      const document = native.document();
+      if (rootHandle(a) !== document || rootHandle(f) !== document) {
+        return;
+      }
+      const range = new Range();
+      if (native.compareBoundaries(a, ao, f, fo) === 1) {
+        native.setRange(rangeId(range), f, fo, a, ao);
+        selectionBackward = true;
+      } else {
+        native.setRange(rangeId(range), a, ao, f, fo);
+        selectionBackward = false;
+      }
+      selectionRange = range;
+    }
+
+    selectAllChildren(node) {
+      selectionOf(this);
+      need(arguments.length, 1, "selectAllChildren", "Selection");
+      const handle = nodeArgument(node, 1, "selectAllChildren", "Selection");
+      if (native.kind(handle) === 10) {
+        throw domError(
+          "InvalidNodeTypeError",
+          "The node provided is of type 'DocumentType'.",
+          "selectAllChildren",
+          "Selection",
+        );
+      }
+      if (rootHandle(handle) !== native.document()) {
+        return;
+      }
+      const range = new Range();
+      native.setRange(rangeId(range), handle, 0, handle, native.nodeLength(handle));
+      selectionRange = range;
+      selectionBackward = false;
+    }
+
+    deleteFromDocument() {
+      selectionOf(this);
+      if (selectionRange !== null) {
+        selectionRange.deleteContents();
+      }
+    }
+
+    containsNode(node, allowPartialContainment = false) {
+      selectionOf(this);
+      need(arguments.length, 1, "containsNode", "Selection");
+      const handle = nodeArgument(node, 1, "containsNode", "Selection");
+      if (selectionRange === null || rootHandle(handle) !== native.document()) {
+        return false;
+      }
+      const b = boundsOf(selectionRange);
+      const length = native.nodeLength(handle);
+      const startsIn = native.compareBoundaries(b[0], b[1], handle, 0) !== 1;
+      const endsIn = native.compareBoundaries(b[2], b[3], handle, length) !== -1;
+      if (!allowPartialContainment) {
+        return startsIn && endsIn;
+      }
+      return native.compareBoundaries(b[0], b[1], handle, length) !== 1 &&
+        native.compareBoundaries(b[2], b[3], handle, 0) !== -1;
+    }
+
+    toString() {
+      selectionOf(this);
+      return selectionRange === null ? "" : selectionRange.toString();
+    }
+  }
+
+  function selectionOf(value) {
+    if (value !== theSelection || theSelection === null) {
+      throw illegalInvocation();
+    }
+    return value;
+  }
+
+  // The document's selection, made at its first ask.
+  function getSelection() {
+    if (theSelection === null) {
+      theSelection = new Selection(KEY);
+    }
+    return theSelection;
+  }
+
+  // ---- Traversal (DOM section 6) ----------------------------------------
+
+  const NodeFilter = {
+    FILTER_ACCEPT: 1,
+    FILTER_REJECT: 2,
+    FILTER_SKIP: 3,
+    SHOW_ALL: 0xffffffff,
+    SHOW_ELEMENT: 0x1,
+    SHOW_ATTRIBUTE: 0x2,
+    SHOW_TEXT: 0x4,
+    SHOW_CDATA_SECTION: 0x8,
+    SHOW_ENTITY_REFERENCE: 0x10,
+    SHOW_ENTITY: 0x20,
+    SHOW_PROCESSING_INSTRUCTION: 0x40,
+    SHOW_COMMENT: 0x80,
+    SHOW_DOCUMENT: 0x100,
+    SHOW_DOCUMENT_TYPE: 0x200,
+    SHOW_DOCUMENT_FRAGMENT: 0x400,
+    SHOW_NOTATION: 0x800,
+  };
+  if (!WORKER) {
+    defineProperty(global, "NodeFilter", { value: NodeFilter, writable: true, configurable: true });
+  }
+
+  // A traverser's state: its root's object, what it shows, its filter
+  // and whether the filter runs.
+  const traversers = new $WeakMap();
+
+  function traverser(value, iface) {
+    const state = WeakMapGet(traversers, value);
+    if (state === undefined || state.iface !== iface) {
+      throw illegalInvocation();
+    }
+    return state;
+  }
+
+  // The DOM's "filter" a node (section 6.1): FILTER_SKIP for a kind it
+  // does not show, else what its filter says.
+  function filterNode(state, handle, method) {
+    if (state.active) {
+      throw domError(
+        "InvalidStateError",
+        "The filter is already running.",
+        method,
+        state.iface,
+      );
+    }
+    const n = native.kind(handle) - 1;
+    if (((state.whatToShow >>> n) & 1) === 0) {
+      return 3;
+    }
+    const filter = state.filter;
+    if (filter === null) {
+      return 1;
+    }
+    state.active = true;
+    try {
+      let result;
+      if (typeof filter === "function") {
+        result = ReflectApply(filter, undefined, [wrap(handle)]);
+      } else {
+        const accept = filter.acceptNode;
+        if (typeof accept !== "function") {
+          throw new $TypeError("Failed to execute '" + method + "' on '" + state.iface +
+            "': The provided callback is not callable.");
+        }
+        result = ReflectApply(accept, filter, [wrap(handle)]);
+      }
+      return $Number(result) & 0xffff;
+    } finally {
+      state.active = false;
+    }
+  }
+
+  function makeTraverser(root, whatToShow, filter, iface) {
+    const handle = nodeArgument(root, 1, "create" + iface, "Document");
+    return {
+      iface,
+      root,
+      rootHandle: handle,
+      whatToShow: whatToShow === undefined ? 0xffffffff : whatToShow >>> 0,
+      filter: filter === undefined ? null : filter,
+      active: false,
+    };
+  }
+
+  class TreeWalker {
+    #current;
+
+    constructor(key, state) {
+      if (key !== KEY) {
+        throw illegalConstructor("TreeWalker");
+      }
+      WeakMapSet(traversers, this, state);
+      this.#current = state.root;
+    }
+
+    get root() {
+      return traverser(this, "TreeWalker").root;
+    }
+
+    get whatToShow() {
+      return traverser(this, "TreeWalker").whatToShow;
+    }
+
+    get filter() {
+      return traverser(this, "TreeWalker").filter;
+    }
+
+    get currentNode() {
+      traverser(this, "TreeWalker");
+      return this.#current;
+    }
+
+    set currentNode(node) {
+      traverser(this, "TreeWalker");
+      nodeArgument(node, 1, "currentNode", "TreeWalker");
+      this.#current = node;
+    }
+
+    parentNode() {
+      const state = traverser(this, "TreeWalker");
+      let node = handleOf(this.#current);
+      while (node !== null && node !== state.rootHandle) {
+        node = native.parent(node);
+        if (node !== null && filterNode(state, node, "parentNode") === 1) {
+          this.#current = wrap(node);
+          return this.#current;
+        }
+      }
+      return null;
+    }
+
+    firstChild() {
+      return this.#children(true, "firstChild");
+    }
+
+    lastChild() {
+      return this.#children(false, "lastChild");
+    }
+
+    previousSibling() {
+      return this.#siblings(false, "previousSibling");
+    }
+
+    nextSibling() {
+      return this.#siblings(true, "nextSibling");
+    }
+
+    // The DOM's "traverse children" (section 6.2).
+    #children(first, method) {
+      const state = traverser(this, "TreeWalker");
+      const start = (h) => (first ? native.firstChild(h) : native.lastChild(h));
+      const step = (h) => (first ? native.nextSibling(h) : native.previousSibling(h));
+      const top = handleOf(this.#current);
+      let node = start(top);
+      while (node !== null) {
+        const result = filterNode(state, node, method);
+        if (result === 1) {
+          this.#current = wrap(node);
+          return this.#current;
+        }
+        if (result === 3) {
+          const child = start(node);
+          if (child !== null) {
+            node = child;
+            continue;
+          }
+        }
+        while (node !== null) {
+          const sibling = step(node);
+          if (sibling !== null) {
+            node = sibling;
+            break;
+          }
+          const parent = native.parent(node);
+          if (parent === null || parent === state.rootHandle || parent === top) {
+            return null;
+          }
+          node = parent;
+        }
+      }
+      return null;
+    }
+
+    // The DOM's "traverse siblings".
+    #siblings(next, method) {
+      const state = traverser(this, "TreeWalker");
+      const step = (h) => (next ? native.nextSibling(h) : native.previousSibling(h));
+      const into = (h) => (next ? native.firstChild(h) : native.lastChild(h));
+      let node = handleOf(this.#current);
+      if (node === state.rootHandle) {
+        return null;
+      }
+      while (true) {
+        let sibling = step(node);
+        while (sibling !== null) {
+          node = sibling;
+          const result = filterNode(state, node, method);
+          if (result === 1) {
+            this.#current = wrap(node);
+            return this.#current;
+          }
+          sibling = into(node);
+          if (result === 2 || sibling === null) {
+            sibling = step(node);
+          }
+        }
+        node = native.parent(node);
+        if (node === null || node === state.rootHandle) {
+          return null;
+        }
+        if (filterNode(state, node, method) === 1) {
+          return null;
+        }
+      }
+    }
+
+    previousNode() {
+      const state = traverser(this, "TreeWalker");
+      let node = handleOf(this.#current);
+      while (node !== state.rootHandle) {
+        let sibling = native.previousSibling(node);
+        while (sibling !== null) {
+          node = sibling;
+          let result = filterNode(state, node, "previousNode");
+          while (result !== 2 && native.firstChild(node) !== null) {
+            node = native.lastChild(node);
+            result = filterNode(state, node, "previousNode");
+          }
+          if (result === 1) {
+            this.#current = wrap(node);
+            return this.#current;
+          }
+          sibling = native.previousSibling(node);
+        }
+        const parent = native.parent(node);
+        if (node === state.rootHandle || parent === null) {
+          return null;
+        }
+        node = parent;
+        if (filterNode(state, node, "previousNode") === 1) {
+          this.#current = wrap(node);
+          return this.#current;
+        }
+      }
+      return null;
+    }
+
+    nextNode() {
+      const state = traverser(this, "TreeWalker");
+      let node = handleOf(this.#current);
+      let result = 1;
+      while (true) {
+        while (result !== 2 && native.firstChild(node) !== null) {
+          node = native.firstChild(node);
+          result = filterNode(state, node, "nextNode");
+          if (result === 1) {
+            this.#current = wrap(node);
+            return this.#current;
+          }
+        }
+        // The next node after `node`'s subtree, under the root.
+        let sibling = null;
+        let temporary = node;
+        while (temporary !== null) {
+          if (temporary === state.rootHandle) {
+            return null;
+          }
+          sibling = native.nextSibling(temporary);
+          if (sibling !== null) {
+            node = sibling;
+            break;
+          }
+          temporary = native.parent(temporary);
+        }
+        if (temporary === null) {
+          return null;
+        }
+        result = filterNode(state, node, "nextNode");
+        if (result === 1) {
+          this.#current = wrap(node);
+          return this.#current;
+        }
+      }
+    }
+  }
+
+  const iteratorsGone = new $FinalizationRegistry((id) => native.dropIterator(id));
+
+  class NodeIterator {
+    #id;
+
+    constructor(key, state) {
+      if (key !== KEY) {
+        throw illegalConstructor("NodeIterator");
+      }
+      WeakMapSet(traversers, this, state);
+      this.#id = native.createIterator(state.rootHandle);
+      Register(iteratorsGone, this, this.#id);
+    }
+
+    get root() {
+      return traverser(this, "NodeIterator").root;
+    }
+
+    get whatToShow() {
+      return traverser(this, "NodeIterator").whatToShow;
+    }
+
+    get filter() {
+      return traverser(this, "NodeIterator").filter;
+    }
+
+    get referenceNode() {
+      traverser(this, "NodeIterator");
+      return wrap(native.iteratorOf(this.#id)[0]);
+    }
+
+    get pointerBeforeReferenceNode() {
+      traverser(this, "NodeIterator");
+      return native.iteratorOf(this.#id)[1] === 1;
+    }
+
+    nextNode() {
+      return this.#traverse(true, "nextNode");
+    }
+
+    previousNode() {
+      return this.#traverse(false, "previousNode");
+    }
+
+    detach() {
+      traverser(this, "NodeIterator");
+    }
+
+    // The DOM's "traverse" (section 6.1).
+    #traverse(next, method) {
+      const state = traverser(this, "NodeIterator");
+      const now = native.iteratorOf(this.#id);
+      let node = now[0];
+      let before = now[1] === 1;
+      const root = state.rootHandle;
+      while (true) {
+        if (next) {
+          if (!before) {
+            node = following(node, root);
+            if (node === null) {
+              return null;
+            }
+          } else {
+            before = false;
+          }
+        } else if (before) {
+          node = preceding(node, root);
+          if (node === null) {
+            return null;
+          }
+        } else {
+          before = true;
+        }
+        const result = filterNode(state, node, method);
+        if (result === 1) {
+          break;
+        }
+      }
+      native.setIterator(this.#id, node, before);
+      return wrap(node);
+    }
+  }
+
+  // The node after `handle` in tree order, within `root`; null past it.
+  function following(handle, root) {
+    const child = native.firstChild(handle);
+    if (child !== null) {
+      return child;
+    }
+    for (let at = handle; at !== null && at !== root; at = native.parent(at)) {
+      const sibling = native.nextSibling(at);
+      if (sibling !== null) {
+        return sibling;
+      }
+    }
+    return null;
+  }
+
+  // The node before `handle` in tree order, within `root`.
+  function preceding(handle, root) {
+    if (handle === root) {
+      return null;
+    }
+    let sibling = native.previousSibling(handle);
+    if (sibling === null) {
+      return native.parent(handle);
+    }
+    for (let last = native.lastChild(sibling); last !== null; last = native.lastChild(sibling)) {
+      sibling = last;
+    }
+    return sibling;
+  }
+
+  include(
+    {
+      createRange() {
+        self(this);
+        return new Range();
+      },
+
+      createTreeWalker(root, whatToShow = undefined, filter = null) {
+        self(this);
+        need(arguments.length, 1, "createTreeWalker", "Document");
+        return new TreeWalker(KEY, makeTraverser(root, whatToShow, filter, "TreeWalker"));
+      },
+
+      createNodeIterator(root, whatToShow = undefined, filter = null) {
+        self(this);
+        need(arguments.length, 1, "createNodeIterator", "Document");
+        try {
+          return new NodeIterator(KEY, makeTraverser(root, whatToShow, filter, "NodeIterator"));
+        } catch (error) {
+          throw failed(error, "createNodeIterator", "Document");
+        }
+      },
+
+      getSelection() {
+        self(this);
+        return getSelection();
+      },
+    },
+    [Document.prototype],
+  );
+  windowOnly("getSelection", {
+    value: function getSelection() {
+      return getSelectionOf();
+    },
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+  function getSelectionOf() {
+    return getSelection();
+  }
+
+  // Node's comparisons and `normalize()` (DOM section 4.4).
+  include(
+    {
+      compareDocumentPosition(other) {
+        self(this);
+        need(arguments.length, 1, "compareDocumentPosition", "Node");
+        nodeArgument(other, 1, "compareDocumentPosition", "Node");
+        if (this === other) {
+          return 0;
+        }
+        let node1 = other;
+        let node2 = this;
+        let attr1 = null;
+        if (node1 instanceof Attr) {
+          attr1 = node1;
+          node1 = attr1.ownerElement;
+        }
+        if (node2 instanceof Attr) {
+          const attr2 = node2;
+          node2 = attr2.ownerElement;
+          if (attr1 !== null && node1 !== null && node1 === node2) {
+            // Two attributes of one element: by their order on it.
+            const names = native.attributeNames(handleOf(node2));
+            return ArrayIndexOf(names, attr1.name) < ArrayIndexOf(names, attr2.name) ? 34 : 36;
+          }
+        }
+        if (node1 === null || node2 === null) {
+          return 1 | 32 | 4;
+        }
+        if (node1 === node2) {
+          // An element and an attribute of its.
+          return attr1 !== null ? 20 : 10;
+        }
+        return native.comparePosition(handleOf(node2), handleOf(node1));
+      },
+
+      isEqualNode(otherNode) {
+        self(this);
+        need(arguments.length, 1, "isEqualNode", "Node");
+        if (otherNode === null) {
+          return false;
+        }
+        nodeArgument(otherNode, 1, "isEqualNode", "Node");
+        if (this instanceof Attr || otherNode instanceof Attr) {
+          return this instanceof Attr && otherNode instanceof Attr &&
+            this.namespaceURI === otherNode.namespaceURI &&
+            this.localName === otherNode.localName && this.value === otherNode.value;
+        }
+        return native.isEqualNode(handleOf(this), handleOf(otherNode));
+      },
+
+      normalize() {
+        const handle = self(this);
+        if (this instanceof Attr) {
+          return;
+        }
+        native.normalize(handle);
+      },
+    },
+    [Node.prototype],
+  );
   include(ElementLookups, [Document.prototype, Element.prototype]);
 
   // `getElementsByName` (HTML section 3.1.5, M26.11): a live NodeList
@@ -9026,6 +10605,12 @@
   expose(DOMImplementation, "DOMImplementation");
   expose(Attr, "Attr");
   expose(NamedNodeMap, "NamedNodeMap");
+  expose(AbstractRange, "AbstractRange");
+  expose(StaticRange, "StaticRange");
+  expose(Range, "Range");
+  expose(Selection, "Selection");
+  expose(TreeWalker, "TreeWalker");
+  expose(NodeIterator, "NodeIterator");
   defineProperty(NamedNodeMap.prototype, iteratorSymbol, {
     value: ArrayValues,
     writable: true,

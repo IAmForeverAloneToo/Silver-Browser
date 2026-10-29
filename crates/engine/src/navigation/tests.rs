@@ -1779,7 +1779,7 @@ fn a_public_page_may_not_take_its_icon_from_a_local_address_and_others_ask_for_n
 }
 
 #[test]
-fn a_javascript_url_is_no_script_elements_and_cannot_write_once_parsed() {
+fn a_javascript_url_is_no_script_element_and_its_write_opens_the_document() {
     let server = serve(|path| match path {
         "/a" => Some(html(
             "<p>x</p>\
@@ -1801,15 +1801,14 @@ fn a_javascript_url_is_no_script_elements_and_cannot_write_once_parsed() {
     };
     click(&mut tab, "state");
     assert_eq!(console(&mut tab), ["complete null"]);
-    let before = tab.engine.document().len();
+    // Written once the document is parsed, it replaces the document
+    // (D59's `document.open`).
     click(&mut tab, "write");
-    let lines = console(&mut tab);
-    assert_eq!(lines.len(), 2, "{lines:?}");
-    assert!(
-        lines[0].starts_with("document.write() outside the parse"),
-        "{lines:?}"
-    );
-    assert_eq!(tab.engine.document().len(), before);
+    assert!(console(&mut tab).is_empty());
+    let document = tab.engine.document();
+    let text = document.text_content(document.root());
+    assert_eq!(text, "goney\n");
+    document.validate().unwrap();
 }
 
 #[test]

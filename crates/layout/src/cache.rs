@@ -324,8 +324,9 @@ impl LayoutCache {
                     }
                 }
                 // A state's change lays out what it restyles, which the
-                // restyled list holds (M26.4).
-                Change::StateChanged { .. } => {}
+                // restyled list holds (M26.4); a move's `Removed` and
+                // `Inserted` say what it changed.
+                Change::StateChanged { .. } | Change::Moved { .. } => {}
                 // A control's state changes what it shows (M26.7), and
                 // an option's what its select shows.
                 Change::ControlChanged { element } => {

@@ -162,6 +162,52 @@ pub enum Call {
     TemplateContent(Handle),
     /// The document's doctype, or `None`.
     Doctype,
+    /// `compareDocumentPosition`'s bits of the second node against the
+    /// first (D59).
+    ComparePosition(Handle, Handle),
+    /// Whether two nodes are equal, as `isEqualNode` says.
+    IsEqualNode(Handle, Handle),
+    /// `normalize()`.
+    Normalize(Handle),
+    /// The DOM's "replace data": UTF-16 offset, count, and new data.
+    ReplaceData(Handle, u32, u32, String),
+    /// `splitText` at a UTF-16 offset: the new text node.
+    SplitText(Handle, u32),
+    /// A node's length, as ranges count it.
+    NodeLength(Handle),
+    /// A node's index among its parent's children.
+    IndexOf(Handle),
+    /// A new live range at the start of the node: its id.
+    CreateRange(Handle),
+    /// Lets go of a live range.
+    DropRange(u32),
+    /// A live range's start node and offset and end node and offset.
+    RangeOf(u32),
+    /// Sets a live range's boundary points, which the bindings checked.
+    SetRange(u32, Handle, u32, Handle, u32),
+    /// Where the first boundary point is against the second: -1, 0, 1,
+    /// or 2 for points in different trees.
+    CompareBoundaries(Handle, u32, Handle, u32),
+    /// A new node iterator over the node's subtree: its id.
+    CreateIterator(Handle),
+    /// Lets go of a node iterator.
+    DropIterator(u32),
+    /// A node iterator's reference node and whether its pointer is
+    /// before it (1) or not (0).
+    IteratorOf(u32),
+    /// Moves a node iterator.
+    SetIterator(u32, Handle, bool),
+    /// `moveBefore`: the node moved under the parent before the child,
+    /// or last, keeping its state.
+    MoveBefore {
+        parent: Handle,
+        node: Handle,
+        before: Option<Handle>,
+    },
+    /// `document.open()` (HTML section 8.4.2.1).
+    DocumentOpen,
+    /// `document.close()`.
+    DocumentClose,
     /// Inserts `node` under `parent` before `before`, or last: the DOM's
     /// "pre-insert", `node` taken from where it was first.
     Insert {

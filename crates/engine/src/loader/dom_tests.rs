@@ -137,6 +137,19 @@ fn a_templates_contents_live_while_a_script_holds_a_node_in_them() {
 }
 
 #[test]
+fn a_node_a_live_range_holds_is_kept() {
+    let page = "<p>x</p><script>\
+                var gone = document.createElement('gone'); \
+                gone.appendChild(document.createElement('child')); \
+                var range = document.createRange(); range.setStart(gone, 1); \
+                gone = null;\
+                </script><script>console.log(range.startContainer.nodeName)</script>";
+    let (tab, console) = scripted(page, true);
+    assert_eq!(console, ["GONE"]);
+    tab.engine.document().validate().unwrap();
+}
+
+#[test]
 fn a_node_the_parser_still_fills_can_be_taken_out_and_freed() {
     // The body is taken out while the parser is inside it, and let go
     // of: the parser's insertions into it go nowhere, and nothing breaks.
@@ -537,7 +550,10 @@ fn every_kind_of_node_as_the_reference_browser_has_it() {
             ("new DocumentFragment().nodeType", "ok 11"),
             ("document.createComment('x').nodeName", "ok \"#comment\""),
             ("new Comment('q').data", "ok \"q\""),
-            ("document.createProcessingInstruction('x', 'y').target", "ok \"x\""),
+            (
+                "document.createProcessingInstruction('x', 'y').target",
+                "ok \"x\"",
+            ),
             (
                 "document.createProcessingInstruction('x', 'y?>')",
                 "InvalidCharacterError: Failed to execute 'createProcessingInstruction' on \
@@ -580,6 +596,188 @@ fn every_kind_of_node_as_the_reference_browser_has_it() {
             ("document.lastChild.data", "ok \"end\""),
         ],
     );
+}
+
+#[test]
+fn ranges_traversal_and_the_selection_as_the_reference_browser_has_them() {
+    // D59: live ranges moved by the tree's changes, their contents
+    // taken, cloned and wrapped; the selection; tree walkers and node
+    // iterators; the comparisons and `normalize()`.
+    probed_in(
+        "<p id=a>one<b>two</b>three</p><p id=c>four</p>",
+        "var a = document.getElementById('a'), c = document.getElementById('c'), \
+         r = document.createRange(), d = document.createElement('div'); \
+         d.innerHTML = '<p>x<b>y</b></p><!--c--><i></i>';",
+        &[
+            (
+                "[r.startContainer.nodeName, r.startOffset, r.collapsed]",
+                "ok [\"#document\",0,true]",
+            ),
+            (
+                "(r.setStart(a.firstChild, 1), r.setEnd(a.lastChild, 2), r.toString())",
+                "ok \"netwoth\"",
+            ),
+            ("r.commonAncestorContainer.id", "ok \"a\""),
+            ("r.cloneContents().textContent", "ok \"netwoth\""),
+            (
+                "(function () { var f = r.extractContents(); return [f.childNodes.length, \
+                 a.innerHTML, r.collapsed, r.startContainer.id, r.startOffset]; })()",
+                "ok [3,\"oree\",true,\"a\",1]",
+            ),
+            (
+                "(function () { var t = a.firstChild, q = document.createRange(); \
+                 q.setStart(t, 1); t.insertData(0, 'xx'); return q.startOffset; })()",
+                "ok 3",
+            ),
+            (
+                "(function () { var q = document.createRange(); q.selectNodeContents(c); \
+                 c.firstChild.remove(); return [q.startOffset, q.endOffset]; })()",
+                "ok [0,0]",
+            ),
+            (
+                "(function () { var t = document.createTextNode('abcdef'); c.appendChild(t); \
+                 var q = document.createRange(); q.setStart(t, 4); q.setEnd(t, 5); \
+                 var u = t.splitText(2); return [q.startContainer === u, q.startOffset, \
+                 q.endOffset]; })()",
+                "ok [true,2,3]",
+            ),
+            (
+                "r.setStart(c, 5)",
+                "IndexSizeError: Failed to execute 'setStart' on 'Range': There is no child at \
+                 offset 5.",
+            ),
+            (
+                "r.compareBoundaryPoints(5, r)",
+                "NotSupportedError: Failed to execute 'compareBoundaryPoints' on 'Range': The \
+                 comparison method provided must be one of 'START_TO_START', 'START_TO_END', \
+                 'END_TO_END', or 'END_TO_START'.",
+            ),
+            (
+                "(function () { var p = document.createElement('p'); p.textContent = 'hello'; \
+                 var q = document.createRange(); q.setStart(p.firstChild, 2); \
+                 q.insertNode(document.createElement('br')); return [p.innerHTML, \
+                 q.startContainer.nodeName, q.startOffset, q.endContainer.nodeName, \
+                 q.endOffset]; })()",
+                "ok [\"he<br>llo\",\"#text\",2,\"P\",2]",
+            ),
+            (
+                "(function () { var p = document.createElement('p'); p.innerHTML = 'abc'; \
+                 var q = document.createRange(); q.setStart(p.firstChild, 1); \
+                 q.setEnd(p.firstChild, 2); q.surroundContents(document.createElement('b')); \
+                 return [p.innerHTML, q.startContainer.nodeName, q.startOffset, \
+                 q.endOffset]; })()",
+                "ok [\"a<b>b</b>c\",\"P\",1,2]",
+            ),
+            ("r.intersectsNode(document.createElement('x'))", "ok false"),
+            ("r.comparePoint(document.body, 2)", "ok 1"),
+            (
+                "new StaticRange({startContainer: c, startOffset: 0, endContainer: c, \
+                 endOffset: 9}).endOffset",
+                "ok 9",
+            ),
+            ("a.compareDocumentPosition(c)", "ok 4"),
+            ("c.compareDocumentPosition(a)", "ok 2"),
+            ("document.body.compareDocumentPosition(a)", "ok 20"),
+            ("a.compareDocumentPosition(document.body)", "ok 10"),
+            ("d.cloneNode(true).isEqualNode(d)", "ok true"),
+            ("a.isEqualNode(c)", "ok false"),
+            (
+                "(function () { var e = document.createElement('div'); e.append('a', '', 'b'); \
+                 e.appendChild(document.createElement('i')); e.append('c'); e.normalize(); \
+                 return e.childNodes.length + ':' + e.firstChild.data; })()",
+                "ok \"3:ab\"",
+            ),
+            (
+                "(function () { var w = document.createTreeWalker(d, NodeFilter.SHOW_ELEMENT), \
+                 out = []; while (w.nextNode()) out.push(w.currentNode.nodeName); \
+                 return out.join(); })()",
+                "ok \"P,B,I\"",
+            ),
+            (
+                "(function () { var w = document.createTreeWalker(d, 1, function (n) { \
+                 return n.nodeName === 'P' ? NodeFilter.FILTER_REJECT : 1; }), out = []; \
+                 while (w.nextNode()) out.push(w.currentNode.nodeName); return out.join(); })()",
+                "ok \"I\"",
+            ),
+            (
+                "(function () { var w = document.createTreeWalker(d, 1, function (n) { \
+                 return n.nodeName === 'P' ? NodeFilter.FILTER_SKIP : 1; }), out = []; \
+                 while (w.nextNode()) out.push(w.currentNode.nodeName); return out.join(); })()",
+                "ok \"B,I\"",
+            ),
+            (
+                "(function () { var w = document.createTreeWalker(d, 1); \
+                 w.currentNode = d.lastChild; return w.previousNode().nodeName; })()",
+                "ok \"B\"",
+            ),
+            (
+                "(function () { var w = document.createTreeWalker(d, 1, function (n) { \
+                 return n.nodeName === 'B' ? 1 : NodeFilter.FILTER_SKIP; }); \
+                 return w.firstChild().nodeName; })()",
+                "ok \"B\"",
+            ),
+            (
+                "(function () { var e = document.createElement('div'); \
+                 e.innerHTML = '<i></i><p><b></b></p><u></u>'; \
+                 var w = document.createTreeWalker(e, 1, function (n) { \
+                 return n.nodeName === 'P' ? 2 : 1; }); w.currentNode = e.firstChild; \
+                 return w.nextSibling().nodeName; })()",
+                "ok \"U\"",
+            ),
+            (
+                "(function () { var it = document.createNodeIterator(d, NodeFilter.SHOW_ELEMENT); \
+                 var first = it.nextNode(), second = it.nextNode(); second.remove(); \
+                 return [first.nodeName, second.nodeName, it.referenceNode.nodeName, \
+                 it.pointerBeforeReferenceNode, it.nextNode().nodeName]; })()",
+                "ok [\"DIV\",\"P\",\"DIV\",false,\"I\"]",
+            ),
+            (
+                "(function () { var s = getSelection(); s.selectAllChildren(c); \
+                 return [s.rangeCount, s.anchorNode.id, s.type, \
+                 s === document.getSelection()]; })()",
+                "ok [1,\"c\",\"Range\",true]",
+            ),
+            (
+                "(function () { var s = getSelection(); s.collapse(c, 1); s.extend(c, 0); \
+                 return [s.anchorOffset, s.focusOffset, s.direction]; })()",
+                "ok [1,0,\"backward\"]",
+            ),
+        ],
+    );
+}
+
+#[test]
+fn move_before_keeps_the_focus_and_checks_as_insertion_does() {
+    let console = logged(
+        "<p id=a>a</p><p id=b><input id=i></p><script>\
+         var i = document.getElementById('i'), a = document.getElementById('a'); i.focus(); \
+         a.moveBefore(i, a.firstChild); \
+         console.log(document.activeElement === i, a.firstChild === i); \
+         try { a.moveBefore(document.createElement('x'), null); } catch (e) { console.log(e.name); } \
+         try { document.body.moveBefore(a, i); } catch (e) { console.log(e.name); }</script>",
+    );
+    assert_eq!(
+        console,
+        ["true true", "HierarchyRequestError", "NotFoundError"]
+    );
+}
+
+#[test]
+fn document_open_replaces_the_document_with_what_is_written() {
+    let (mut tab, _) = scripted(
+        "<p>x</p><script>setTimeout(function () { \
+         var old = document.documentElement; document.open(); \
+         console.log(document.childNodes.length, old.parentNode); \
+         document.write('<p id=n>new</p><script>console.log(\"ran\", \
+         document.getElementById(\"n\").textContent)<\\/script>'); \
+         document.close(); \
+         console.log(document.getElementsByTagName('p').length, document.URL !== ''); }, 0);\
+         </script>",
+        true,
+    );
+    let console = tab.run_until(|lines| lines.len() >= 3);
+    assert_eq!(console, ["0 null", "ran new", "1 true"]);
+    tab.engine.document().validate().unwrap();
 }
 
 #[test]

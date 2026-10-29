@@ -34,6 +34,9 @@ use std::fmt;
 use crate::forms::ControlState;
 use crate::{Element, Namespace, Node, Text, local_part};
 
+mod live;
+pub use live::{Boundary, IteratorState, LiveRange, MAX_ITERATORS, MAX_RANGES};
+
 /// The deepest elements may nest: 512, the HTML parser's cap on its
 /// stack of open elements (`html::MAX_DEPTH` is this constant), which
 /// keeps the recursive walks over a finished tree within any thread's
@@ -212,6 +215,10 @@ pub enum Change {
     /// A form control's state changed (M26.7): its value, checkedness,
     /// selectedness, indeterminate flag or selection.
     ControlChanged { element: NodeId },
+    /// `child` was moved under `parent` (`moveBefore`, D59), after the
+    /// `Removed` and `Inserted` records the move also made: what it holds
+    /// (a frame, animations, a playing medium) is kept.
+    Moved { parent: NodeId, child: NodeId },
     /// More changed than the journal keeps ([`MAX_JOURNAL`]): treat the
     /// whole document as changed.
     Everything,
@@ -287,6 +294,8 @@ pub enum MutationError {
     /// The operation needs an element, or a text node, and got another
     /// kind of node.
     WrongKind,
+    /// An offset past a node's length.
+    IndexSize,
     /// [`Document::free`] was given an attached node, the root, or a
     /// template's contents.
     Attached,
@@ -302,6 +311,7 @@ impl fmt::Display for MutationError {
             MutationError::TooManyNodes => "the document holds too many nodes",
             MutationError::TooMuchData => "the document holds too much data",
             MutationError::WrongKind => "the node is of the wrong kind",
+            MutationError::IndexSize => "the offset is past the node's length",
             MutationError::Attached => "the node is attached or is the document",
         })
     }
@@ -400,11 +410,13 @@ pub struct Document {
     /// and the names that came or went since they were last taken;
     /// boxed, to keep the document small.
     named: Box<Named>,
-    /// Each HTML `template`'s contents (D58), a fragment made with it,
-    /// and each such fragment's template.
-    templates: Box<Templates>,
+    /// What fewer documents use, boxed: template contents (D58), live
+    /// ranges and node iterators (D59).
+    rare: Box<live::Live>,
 }
 
+/// Each HTML `template`'s contents (D58), a fragment made with it, and
+/// each such fragment's template.
 #[derive(Debug, Clone, Default)]
 struct Templates {
     contents: std::collections::HashMap<NodeId, NodeId>,
@@ -457,7 +469,7 @@ impl Document {
             within: None,
             observing: None,
             named: Box::default(),
-            templates: Box::default(),
+            rare: Box::default(),
         };
         document.root = document.allocate(NodeData::Document);
         document
@@ -841,12 +853,12 @@ impl Document {
 
     /// A template's contents, the fragment made with it (D58).
     pub fn template_content(&self, template: NodeId) -> Option<NodeId> {
-        self.templates.contents.get(&template).copied()
+        self.rare.templates.contents.get(&template).copied()
     }
 
     /// The template whose contents `fragment` is.
     pub fn template_host(&self, fragment: NodeId) -> Option<NodeId> {
-        self.templates.hosts.get(&fragment).copied()
+        self.rare.templates.hosts.get(&fragment).copied()
     }
 
     /// The subtree at `id` in tree order, then the contents of each
@@ -1132,6 +1144,7 @@ impl Document {
                     Some(r) => self.link_before(parent.index, node.index, r.index),
                     None => self.link_last(parent.index, node.index),
                 }
+                self.live_inserted(parent, node);
                 self.record_change(Change::Inserted {
                     parent,
                     child: node,
@@ -1152,11 +1165,72 @@ impl Document {
             Some(r) => self.link_before(parent.index, child.index, r.index),
             None => self.link_last(parent.index, child.index),
         }
+        self.live_inserted(parent, child);
         self.record_change(Change::Inserted { parent, child });
         self.observe_insertion(parent, child);
         if self.has_names(child) && self.connected(parent) {
             self.index_names(child, true);
         }
+        Ok(())
+    }
+
+    /// Moves `node` under `parent` before `reference` without its removal
+    /// and insertion steps (DOM's `moveBefore`, D59): in one tree, an
+    /// element or character data, by the insertion rules; the journal
+    /// says `Moved` after its `Removed` and `Inserted`, and the focus
+    /// stays.
+    pub fn move_before(
+        &mut self,
+        parent: NodeId,
+        node: NodeId,
+        reference: Option<NodeId>,
+    ) -> Result<(), MutationError> {
+        if !self.contains(parent) || !self.contains(node) {
+            return Err(MutationError::NoSuchNode);
+        }
+        let movable = matches!(
+            self.data(node),
+            Some(NodeData::Element { .. } | NodeData::Text(_) | NodeData::Comment(_))
+                | Some(NodeData::ProcessingInstruction { .. })
+        );
+        if !movable || self.root_of(parent) != self.root_of(node) {
+            return Err(MutationError::HierarchyRequest);
+        }
+        if let Some(r) = reference
+            && self.parent(r) != Some(parent)
+        {
+            return Err(MutationError::NotAChild);
+        }
+        self.check_insert(
+            parent,
+            node,
+            reference,
+            self.parent(node).filter(|&p| p == parent).map(|_| node),
+        )?;
+        let reference = match reference {
+            Some(r) if r == node => self.next_sibling(node),
+            other => other,
+        };
+        self.rare.moving = true;
+        self.detach(node);
+        self.rare.moving = false;
+        match reference {
+            Some(r) => self.link_before(parent.index, node.index, r.index),
+            None => self.link_last(parent.index, node.index),
+        }
+        self.live_inserted(parent, node);
+        self.record_change(Change::Inserted {
+            parent,
+            child: node,
+        });
+        self.observe_insertion(parent, node);
+        if self.has_names(node) && self.connected(parent) {
+            self.index_names(node, true);
+        }
+        self.record_change(Change::Moved {
+            parent,
+            child: node,
+        });
         Ok(())
     }
 
@@ -1179,6 +1253,7 @@ impl Document {
             return Err(MutationError::HierarchyRequest);
         }
         self.link_last(parent.index, child.index);
+        self.live_inserted(parent, child);
         self.record_change(Change::Inserted { parent, child });
         self.observe_insertion(parent, child);
         if self.has_names(child) && self.connected(parent) {
@@ -1324,6 +1399,15 @@ impl Document {
     /// the same data changes nothing but is still a change to mutation
     /// observers ("replace data").
     pub fn set_text(&mut self, node: NodeId, data: &str) -> Result<(), MutationError> {
+        let old = self.node_length(node);
+        self.store_data(node, data)?;
+        self.live_replaced(node, old);
+        Ok(())
+    }
+
+    /// Puts `data` in place of character data's, telling observers and
+    /// the journal, the live ranges left to the caller.
+    fn store_data(&mut self, node: NodeId, data: &str) -> Result<(), MutationError> {
         let record = self.record(node).ok_or(MutationError::NoSuchNode)?;
         let Some(text) = record.data.character_data() else {
             return Err(MutationError::WrongKind);
@@ -1392,8 +1476,8 @@ impl Document {
         // The subtree, and the contents of each template in it, theirs too.
         let doomed = self.subtree_with_contents(id);
         for node in &doomed {
-            if let Some(content) = self.templates.contents.remove(node) {
-                self.templates.hosts.remove(&content);
+            if let Some(content) = self.rare.templates.contents.remove(node) {
+                self.rare.templates.hosts.remove(&content);
             }
         }
         for index in doomed.into_iter().map(|n| n.index) {
@@ -1686,7 +1770,7 @@ impl Document {
                 self.data_bytes
             ));
         }
-        for (&template, &content) in &self.templates.contents {
+        for (&template, &content) in &self.rare.templates.contents {
             if !self.is_element(template)
                 || self.data(content) != Some(&NodeData::DocumentFragment)
                 || self.parent(content).is_some()
@@ -1695,7 +1779,7 @@ impl Document {
                 return Err(format!("template {template}'s contents are wrong"));
             }
         }
-        if self.templates.hosts.len() != self.templates.contents.len() {
+        if self.rare.templates.hosts.len() != self.rare.templates.contents.len() {
             return Err("a template's contents are not mirrored".into());
         }
         if let Some(slot) = self.slots.iter().find(|s| s.generation >= MAX_GENERATION) {
@@ -1792,8 +1876,8 @@ impl Document {
         let id = self.allocate_one(data);
         if template {
             let content = self.allocate_one(NodeData::DocumentFragment);
-            self.templates.contents.insert(id, content);
-            self.templates.hosts.insert(content, id);
+            self.rare.templates.contents.insert(id, content);
+            self.rare.templates.hosts.insert(content, id);
         }
         id
     }
@@ -1962,7 +2046,8 @@ impl Document {
     /// out that has it or holds what has, at once (M26.6, HTML's focus
     /// fixup).
     fn detach(&mut self, child: NodeId) {
-        if let Some(focused) = self.focused().or(self.within.filter(|&w| self.contains(w)))
+        if !self.rare.moving
+            && let Some(focused) = self.focused().or(self.within.filter(|&w| self.contains(w)))
             && self.is_inclusive_ancestor(child, focused)
             && self.parent(child).is_some()
         {
@@ -1976,6 +2061,9 @@ impl Document {
         };
         if self.has_names(child) && self.connected(child) {
             self.index_names(child, false);
+        }
+        if let Some(parent) = self.link(Some(parent)) {
+            self.live_removing(parent, child);
         }
         let Some(record) = self.record(child) else {
             return;

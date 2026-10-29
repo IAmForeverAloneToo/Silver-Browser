@@ -928,18 +928,20 @@ pub(crate) fn may_touch_frames(document: &Document, change: &Change) -> bool {
         Change::Everything => true,
         Change::TextChanged { .. }
         | Change::StateChanged { .. }
-        | Change::ControlChanged { .. } => false,
+        | Change::ControlChanged { .. }
+        | Change::Moved { .. } => false,
     }
 }
 
 /// The `iframe`s `changes` took out of `document`, put back or not:
 /// their frames are dropped, a new one made for one put back, as HTML's
-/// removal and insertion steps do.
+/// removal and insertion steps do; one moved (`moveBefore`) keeps its.
 pub(crate) fn removed_frames(document: &Document, changes: &[Change]) -> HashSet<NodeId> {
+    let moved = crate::moved_nodes(changes);
     changes
         .iter()
         .filter_map(|change| match change {
-            Change::Removed { child, .. } => Some(*child),
+            Change::Removed { child, .. } if !moved.contains(child) => Some(*child),
             _ => None,
         })
         .flat_map(|child| document.subtree(child))

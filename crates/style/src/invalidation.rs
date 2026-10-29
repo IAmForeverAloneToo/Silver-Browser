@@ -456,13 +456,15 @@ pub(crate) fn invalidate(
                     }
                 }
             }
+            // Its `Removed` and `Inserted` say what changed.
             Change::AttributeChanged { .. }
             | Change::TextChanged { .. }
             | Change::StateChanged { .. }
-            | Change::ControlChanged { .. } => {}
+            | Change::ControlChanged { .. }
+            | Change::Moved { .. } => {}
         }
         match change {
-            Change::Everything => {}
+            Change::Everything | Change::Moved { .. } => {}
             Change::Inserted { parent, child } => {
                 let element = !document.is_text(*child);
                 if document.parent(*child) == Some(*parent) {

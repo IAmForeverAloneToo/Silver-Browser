@@ -191,6 +191,9 @@ pub(crate) struct DocumentHost {
     /// loading stands.
     page: Option<Page>,
     parser: Option<html::Load>,
+    /// The parser `document.open()` made (HTML section 8.4.2.1): what
+    /// `write` gives it is parsed at once, `close` ends it.
+    opened: Option<html::Parser>,
     ready: ReadyState,
     /// The scripts running, innermost last.
     frames: Vec<Frame>,
@@ -307,6 +310,8 @@ impl ScriptingHost for DocumentHost {
                 | Call::SetInnerHtml(..)
                 | Call::SetOuterHtml(..)
                 | Call::InsertAdjacentHtml { .. }
+                | Call::Write(..)
+                | Call::DocumentClose
         );
         let answer = self.answer(call);
         if self.scopes == 0 {
@@ -823,6 +828,161 @@ impl DocumentHost {
             Call::Doctype => {
                 let doctype = self.document.doctype();
                 Ok(self.give(doctype))
+            }
+            Call::ComparePosition(node, other) => {
+                let (node, other) = (self.node(node)?, self.node(other)?);
+                self.work += 1 + self.document.ancestors(node).count() as u64;
+                let bits = self.document.compare_position(node, other);
+                Ok(Answer::Number(f64::from(bits)))
+            }
+            Call::IsEqualNode(a, b) => {
+                let (a, b) = (self.node(a)?, self.node(b)?);
+                self.work += self.document.subtree(a).count() as u64;
+                Ok(Answer::Bool(self.document.nodes_equal(a, b)))
+            }
+            Call::Normalize(node) => {
+                let node = self.node(node)?;
+                let texts: Vec<NodeId> = self
+                    .document
+                    .subtree(node)
+                    .filter(|&n| self.document.is_text(n))
+                    .collect();
+                self.work += texts.len() as u64;
+                self.document.normalize(node).map_err(refused)?;
+                // The text nodes it took out may be freed.
+                for text in texts {
+                    if self.document.parent(text).is_none() {
+                        self.taken_out(text);
+                    }
+                }
+                Ok(Answer::Nothing)
+            }
+            Call::ReplaceData(node, offset, count, data) => {
+                let node = self.node(node)?;
+                self.work += data.len() as u64 / 64;
+                self.document
+                    .replace_data(node, offset, count, &data)
+                    .map_err(refused)?;
+                Ok(Answer::Nothing)
+            }
+            Call::SplitText(node, offset) => {
+                let node = self.node(node)?;
+                let made = self.document.split_text(node, offset).map_err(refused)?;
+                if self.document.parent(made).is_none() {
+                    self.detached.push(made);
+                }
+                Ok(self.give(Some(made)))
+            }
+            Call::NodeLength(node) => {
+                let length = self.document.node_length(self.node(node)?);
+                Ok(Answer::Number(f64::from(length)))
+            }
+            Call::IndexOf(node) => {
+                let index = self.document.index_of(self.node(node)?);
+                self.work += u64::from(index) / 64;
+                Ok(Answer::Number(f64::from(index)))
+            }
+            Call::CreateRange(node) => {
+                let id = self
+                    .document
+                    .create_range(self.node(node)?)
+                    .map_err(refused)?;
+                Ok(Answer::Number(f64::from(id)))
+            }
+            Call::DropRange(id) => {
+                self.document.drop_range(id);
+                Ok(Answer::Nothing)
+            }
+            Call::RangeOf(id) => {
+                let range = self
+                    .document
+                    .range(id)
+                    .ok_or_else(|| refused(MutationError::NoSuchNode))?;
+                Ok(Answer::Numbers(vec![
+                    handle(range.start.node).0 as f64,
+                    f64::from(range.start.offset),
+                    handle(range.end.node).0 as f64,
+                    f64::from(range.end.offset),
+                ]))
+            }
+            Call::SetRange(id, start, start_offset, end, end_offset) => {
+                let range = dom::LiveRange {
+                    start: dom::Boundary {
+                        node: self.node(start)?,
+                        offset: start_offset,
+                    },
+                    end: dom::Boundary {
+                        node: self.node(end)?,
+                        offset: end_offset,
+                    },
+                };
+                self.document.set_range(id, range).map_err(refused)?;
+                Ok(Answer::Nothing)
+            }
+            Call::CompareBoundaries(a, a_offset, b, b_offset) => {
+                let a = dom::Boundary {
+                    node: self.node(a)?,
+                    offset: a_offset,
+                };
+                let b = dom::Boundary {
+                    node: self.node(b)?,
+                    offset: b_offset,
+                };
+                self.work += 1 + self.document.ancestors(a.node).count() as u64;
+                let order = match self.document.compare_boundaries(a, b) {
+                    Some(std::cmp::Ordering::Less) => -1.0,
+                    Some(std::cmp::Ordering::Equal) => 0.0,
+                    Some(std::cmp::Ordering::Greater) => 1.0,
+                    None => 2.0,
+                };
+                Ok(Answer::Number(order))
+            }
+            Call::CreateIterator(root) => {
+                let id = self
+                    .document
+                    .create_iterator(self.node(root)?)
+                    .map_err(refused)?;
+                Ok(Answer::Number(f64::from(id)))
+            }
+            Call::DropIterator(id) => {
+                self.document.drop_iterator(id);
+                Ok(Answer::Nothing)
+            }
+            Call::IteratorOf(id) => {
+                let state = self
+                    .document
+                    .iterator(id)
+                    .ok_or_else(|| refused(MutationError::NoSuchNode))?;
+                Ok(Answer::Numbers(vec![
+                    handle(state.reference).0 as f64,
+                    f64::from(u8::from(state.before)),
+                ]))
+            }
+            Call::SetIterator(id, reference, before) => {
+                let reference = self.node(reference)?;
+                self.document.set_iterator(id, reference, before);
+                Ok(Answer::Nothing)
+            }
+            Call::MoveBefore {
+                parent,
+                node,
+                before,
+            } => {
+                let (parent, node) = (self.node(parent)?, self.node(node)?);
+                let before = before.map(|before| self.node(before)).transpose()?;
+                self.move_before(parent, node, before)?;
+                Ok(Answer::Nothing)
+            }
+            Call::DocumentOpen => {
+                self.open_document();
+                Ok(Answer::Nothing)
+            }
+            Call::DocumentClose => {
+                if let Some(mut parser) = self.opened.take() {
+                    parser.end();
+                    self.parse_opened(&mut parser);
+                }
+                Ok(Answer::Nothing)
             }
             Call::Insert {
                 parent,
@@ -3117,20 +3277,112 @@ impl DocumentHost {
             .as_mut()
             .and_then(html::Load::parser)
             .is_some_and(|parser| parser.has_insertion_point());
-        if !defined {
-            if !self.frames.iter().any(|frame| frame.external) {
-                self.say(
-                    ConsoleLevel::Warn,
-                    "document.write() outside the parse would replace the document, which is \
-                     not supported yet: nothing was written"
-                        .to_owned(),
-                );
+        if defined {
+            if let Some(parser) = self.parser.as_mut().and_then(html::Load::parser) {
+                parser.write(text);
             }
             return;
         }
-        if let Some(parser) = self.parser.as_mut().and_then(html::Load::parser) {
-            parser.write(text);
+        // No insertion point: a script from a file writes nothing (the
+        // ignore-destructive-writes counter); another opens the document
+        // first, which replaces it.
+        if self.frames.iter().any(|frame| frame.external) {
+            return;
         }
+        if self.opened.is_none() {
+            self.open_document();
+        }
+        if let Some(mut parser) = self.opened.take() {
+            parser.feed(text);
+            self.parse_opened(&mut parser);
+            self.opened = Some(parser);
+        }
+    }
+
+    /// `document.open()` (HTML section 8.4.2.1): nothing while the
+    /// parser runs a script (a write goes to its insertion point); else
+    /// the document's children removed and a new parser made for what is
+    /// written, the URL left as it is.
+    fn open_document(&mut self) {
+        let nested = self
+            .parser
+            .as_mut()
+            .and_then(html::Load::parser)
+            .is_some_and(|parser| parser.has_insertion_point());
+        if nested {
+            return;
+        }
+        let root = self.document.root();
+        while let Some(child) = self.document.first_child(root) {
+            self.work += 1;
+            if self.document.remove_child(root, child).is_err() {
+                break;
+            }
+            self.taken_out(child);
+        }
+        self.opened = Some(html::Parser::new(true));
+    }
+
+    /// Parses what `parser`, `document.open()`'s, has been given: its
+    /// scripts are the parser's, run as scripts' scripts are.
+    fn parse_opened(&mut self, parser: &mut html::Parser) {
+        let before = self.document.len();
+        loop {
+            match parser.parse(&mut self.document, usize::MAX) {
+                html::Stop::Script { element, .. } => self.made_by_script(element, false),
+                html::Stop::Slice => {}
+                html::Stop::Input | html::Stop::Done => break,
+            }
+        }
+        self.work += self.document.len().saturating_sub(before) as u64;
+    }
+
+    /// `moveBefore` (DOM section 4.2.3's "move"): its checks with the
+    /// reference browser's messages, then `node` moved keeping its state.
+    fn move_before(
+        &mut self,
+        parent: NodeId,
+        node: NodeId,
+        before: Option<NodeId>,
+    ) -> Result<(), DomError> {
+        let hierarchy = |reason: &str| Err(DomError::new("HierarchyRequestError", reason));
+        if self.document.root_of(parent) != self.document.root_of(node) {
+            return hierarchy(
+                "State-preserving atomic move cannot be performed on nodes participating in \
+                 different trees.",
+            );
+        }
+        self.check_insert(
+            parent,
+            node,
+            before,
+            None,
+            "The node before which the new node is to be moved is not a child of this node.",
+        )
+        .or_else(|error| {
+            // The node is already the document's element when moved
+            // within the document.
+            if self.document.parent(node) == Some(parent) {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        })?;
+        if !matches!(
+            self.document.data(node),
+            Some(
+                NodeData::Element { .. }
+                    | NodeData::Text(_)
+                    | NodeData::Comment(_)
+                    | NodeData::ProcessingInstruction { .. }
+            )
+        ) {
+            return hierarchy("The node to be moved must be an Element or CharacterData node.");
+        }
+        self.document
+            .move_before(parent, node, before)
+            .map_err(refused)?;
+        Ok(())
     }
 
     /// The parser stopped at the end tag of a script that a write put in
@@ -3792,8 +4044,10 @@ impl DocumentHost {
     pub(crate) fn sweep(&mut self) {
         let document = &mut self.document;
         let exposed = &self.exposed;
-        // The nodes mutation records name are kept too.
-        let held = self.mutations.held();
+        // The nodes mutation records name are kept too, and those live
+        // ranges and iterators hold.
+        let mut held = self.mutations.held();
+        held.extend(document.live_nodes());
         self.detached.retain(|&root| {
             if !document.contains(root)
                 || root == document.root()
@@ -4163,6 +4417,10 @@ fn refused(error: MutationError) -> DomError {
             "The node before which the new node is to be inserted is not a child of this node.",
         ),
         MutationError::NoSuchNode => DomError::new("NotFoundError", "The node is no longer there."),
+        MutationError::IndexSize => DomError::new(
+            "IndexSizeError",
+            "The offset is greater than the node's length.",
+        ),
         MutationError::HierarchyRequest | MutationError::WrongKind | MutationError::Attached => {
             DomError::new(
                 "HierarchyRequestError",

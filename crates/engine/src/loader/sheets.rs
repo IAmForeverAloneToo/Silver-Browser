@@ -1406,7 +1406,7 @@ pub(crate) fn may_touch_sheets(document: &Document, change: &Change) -> bool {
         }
         Change::AttributeChanged { element, .. } => owns(*element),
         Change::TextChanged { node } => document.parent(*node).is_some_and(is_style),
-        Change::StateChanged { .. } | Change::ControlChanged { .. } => false,
+        Change::StateChanged { .. } | Change::ControlChanged { .. } | Change::Moved { .. } => false,
         Change::Everything => true,
     }
 }
