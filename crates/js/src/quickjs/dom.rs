@@ -276,6 +276,28 @@ const NATIVES: &[(&str, Decode)] = &[
         })
     }),
     ("documentOpen", |_| Ok(Call::DocumentOpen)),
+    ("geometry", |a| {
+        Ok(Call::Geometry {
+            node: a.handle(0)?,
+            scrolled: a.bool(1),
+        })
+    }),
+    ("offsetParent", |a| Ok(Call::OffsetParent(a.handle(0)?))),
+    ("scrollOffset", |a| {
+        Ok(Call::ScrollOffset(a.maybe_handle(0)?))
+    }),
+    ("scrollTo", |a| {
+        Ok(Call::ScrollTo(a.maybe_handle(0)?, a.number(1)))
+    }),
+    ("scrollIntoView", |a| Ok(Call::ScrollIntoView(a.handle(0)?))),
+    ("elementsFromPoint", |a| {
+        Ok(Call::ElementsFromPoint {
+            x: a.number(0),
+            y: a.number(1),
+            all: a.bool(2),
+        })
+    }),
+    ("innerText", |a| Ok(Call::InnerText(a.handle(0)?))),
     ("documentClose", |_| Ok(Call::DocumentClose)),
     ("comparePosition", |a| {
         Ok(Call::ComparePosition(a.handle(0)?, a.handle(1)?))

@@ -1988,3 +1988,68 @@ fn the_user_agents_rules_are_htmls_or_svgs_and_a_sheet_declares_its_namespaces()
         ["rgb(1, 2, 3) auto inline block hidden rgb(1, 2, 3)"]
     );
 }
+
+#[test]
+fn layout_queries_lay_the_page_out_as_it_stands() {
+    // D65: CSSOM View's members and getComputedStyle's used values read a
+    // layout of the document as the script left it.
+    let page = "<style>body { margin: 0 } \
+                #a { width: 100px; height: 50px; padding: 5px; border: 2px solid; margin: 10px } \
+                #s { height: 40px; overflow: auto } #s div { height: 200px }</style>\
+                <div id=a>x</div><div id=s><div></div></div>\
+                <p id=t>one <b>two</b><br>three</p><div id=n style='display: none'>hidden text</div>\
+                <script>\
+                var a = document.getElementById('a'), s = document.getElementById('s'), \
+                t = document.getElementById('t'), r = a.getBoundingClientRect(); \
+                console.log(r.x, r.y, r.width, r.height); \
+                console.log(a.offsetTop, a.offsetLeft, a.offsetWidth, a.offsetHeight, \
+                a.offsetParent === document.body); \
+                console.log(a.clientTop, a.clientWidth, a.clientHeight); \
+                var cs = getComputedStyle(a); \
+                console.log(cs.width, cs.height, cs.marginTop, cs.paddingLeft); \
+                console.log(s.scrollHeight, s.clientHeight); \
+                s.scrollTop = 30; console.log(s.scrollTop); s.scrollTop = 999; console.log(s.scrollTop); \
+                console.log(JSON.stringify(t.innerText), document.getElementById('n').innerText); \
+                console.log(JSON.stringify(document.body.innerText.split(String.fromCharCode(10, 10))[0])); \
+                console.log(document.elementFromPoint(20, 20).id, window.scrollY, \
+                document.scrollingElement.nodeName, t.querySelector('b').getClientRects().length); \
+                a.style.width = '200px'; console.log(a.offsetWidth);\
+                </script>";
+    let server = serve(move |path| match path {
+        "/page.html" => Some(Reply::ok("text/html", page.as_bytes())),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.frame(800, 600);
+    load_all(&mut tab, server.url("/page.html"));
+    let console: Vec<String> = tab
+        .engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .collect();
+    assert_eq!(
+        console,
+        [
+            "10 10 114 64",
+            "10 10 114 64 true",
+            "2 110 60",
+            "100px 50px 10px 5px",
+            "200 40",
+            "30",
+            "160",
+            "\"one two\\nthree\" hidden text",
+            "\"x\"",
+            "a 0 HTML 1",
+            "214",
+        ]
+    );
+    // The scroll a script set is the engine's once the run ends.
+    let document = tab.engine.document();
+    let s = document
+        .subtree(document.root())
+        .find(|&n| document.attr(n, "id") == Some("s"))
+        .expect("the scroller");
+    assert_eq!(tab.engine.element_scroll(s), 160.0);
+}

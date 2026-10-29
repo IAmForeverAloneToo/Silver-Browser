@@ -51,6 +51,9 @@ pub(crate) struct Outputs {
     pub(crate) events: Vec<(NodeId, &'static str)>,
     /// The element a script focused, to be scrolled into view (M26.6).
     pub(crate) scroll_to: Option<NodeId>,
+    /// The scroll offsets scripts set (D65), the viewport's as `None`,
+    /// in order.
+    pub(crate) scrolls: Vec<(Option<NodeId>, f32)>,
     /// A validation message reported, for the notice (M26.9b).
     pub(crate) notice: Option<String>,
     /// The fetches scripts asked for (M27.1), by their numbers.
@@ -229,6 +232,11 @@ pub(crate) struct DocumentHost {
     /// for the run, so that a script asking of many elements builds it
     /// once.
     svg_questions: Option<(NodeId, u64, Arc<svg::Tree>)>,
+    /// The shown document's images, lent for a run (D65).
+    images: crate::image_store::ImageStore,
+    /// The layout scripts asked of (D65), by the document's version it
+    /// is of; at most one a version.
+    laid_out: Option<(u64, layout::DocumentLayout)>,
     /// The document's timers (M26).
     pub(crate) timers: Timers,
     /// The timer nesting level of the task the run is (HTML section
@@ -972,6 +980,39 @@ impl DocumentHost {
                 let before = before.map(|before| self.node(before)).transpose()?;
                 self.move_before(parent, node, before)?;
                 Ok(Answer::Nothing)
+            }
+            Call::Geometry { node, scrolled } => {
+                let node = self.node(node)?;
+                Ok(Answer::Numbers(self.geometry(node, scrolled)))
+            }
+            Call::OffsetParent(node) => {
+                let node = self.node(node)?;
+                let parent = self.offset_parent(node);
+                Ok(self.give(parent))
+            }
+            Call::ScrollOffset(node) => {
+                let node = node.map(|node| self.node(node)).transpose()?;
+                Ok(Answer::Numbers(self.scroll_offset(node)))
+            }
+            Call::ScrollTo(node, y) => {
+                let node = node.map(|node| self.node(node)).transpose()?;
+                self.scroll_to(node, y);
+                Ok(Answer::Nothing)
+            }
+            Call::ScrollIntoView(node) => {
+                let node = self.node(node)?;
+                if self.connected(node) {
+                    self.outputs.scroll_to = Some(node);
+                }
+                Ok(Answer::Nothing)
+            }
+            Call::ElementsFromPoint { x, y, all } => {
+                let found = self.elements_from_point(x as f32, y as f32, all);
+                Ok(Answer::Nodes(found.into_iter().map(handle).collect()))
+            }
+            Call::InnerText(node) => {
+                let node = self.node(node)?;
+                Ok(Answer::String(self.inner_text(node)))
             }
             Call::DocumentOpen => {
                 self.open_document();
@@ -2024,11 +2065,24 @@ impl DocumentHost {
                     "marker" => Some(PseudoElement::Marker),
                     _ => return Ok(Answer::MaybeString(None)),
                 };
+                // The properties CSSOM names resolve to their used values
+                // (D65), from the layout.
+                let used = pseudo.is_none() && USED_PROPERTIES.contains(&property.as_str());
+                let geometry = if used {
+                    self.geometry(node, false)
+                } else {
+                    Vec::new()
+                };
                 let styles = self.styles_now();
                 let style = match pseudo {
                     None => styles.and_then(|styles| styles.get(node)),
                     Some(pseudo) => styles.and_then(|styles| styles.pseudo(node, pseudo)),
                 };
+                if let Some(style) = style
+                    && let Some(value) = used_value(style, &property, &geometry)
+                {
+                    return Ok(Answer::MaybeString(Some(value)));
+                }
                 let value = match property.as_str() {
                     // Its URLs resolved against the document's base, which
                     // the style crate has not (gap batch A, G105).
@@ -3216,6 +3270,10 @@ impl DocumentHost {
         self.window = std::mem::take(&mut lent.window);
         self.computed = None;
         self.svg_questions = None;
+        self.laid_out = None;
+        if let Some(images) = lent.images.as_deref_mut() {
+            self.images = std::mem::take(images);
+        }
         self.nesting = how.nesting;
         self.frames = vec![Frame {
             element: how.element,
@@ -3233,10 +3291,14 @@ impl DocumentHost {
         if let (Some(load), Some(lent)) = (self.parser.take(), lent.parser.as_deref_mut()) {
             *lent = load;
         }
+        if let Some(images) = lent.images.as_deref_mut() {
+            *images = std::mem::take(&mut self.images);
+        }
         self.frames.clear();
         self.now.clear();
         self.computed = None;
         self.svg_questions = None;
+        self.laid_out = None;
         std::mem::take(&mut self.outputs)
     }
 
@@ -3335,6 +3397,369 @@ impl DocumentHost {
             }
         }
         self.work += self.document.len().saturating_sub(before) as u64;
+    }
+
+    /// The document laid out as it now stands, for what scripts ask of
+    /// it (D65): its styles brought up to date, and at most one layout a
+    /// version of the document; none for a document without a window.
+    fn layout_now(&mut self) -> Option<&layout::DocumentLayout> {
+        let version = self.document.version();
+        if self.laid_out.as_ref().is_some_and(|(at, _)| *at == version) {
+            return self.laid_out.as_ref().map(|(_, layout)| layout);
+        }
+        let (width, height) = self.window.viewport;
+        if width == 0 {
+            return None;
+        }
+        self.styles_now()?;
+        let page = self.page.as_ref()?;
+        let computed = self.computed.as_ref()?;
+        let fonts = self
+            .window
+            .layout_fonts
+            .as_ref()
+            .or(self.window.fonts.as_ref())?;
+        let measure = Measure(fonts);
+        let animations = RefCell::new(Animations::new());
+        let context = CascadeContext {
+            viewport_width: width as f32,
+            viewport_height: height as f32,
+            fonts: Some(&measure as &dyn FontMeasure),
+            language: page.language(),
+            media: self.window.media,
+            animations: Some(&animations),
+            inline_styles: Some(page),
+        };
+        let recascade = computed
+            .sheets
+            .recascader(&self.document, &computed.styles, &context);
+        let boxes = layout::build_box_tree_showing(
+            &self.document,
+            &computed.styles,
+            &recascade,
+            &self.images,
+        );
+        let laid_out = layout::layout_document_in(&boxes, width as f32, Some(height as f32), fonts);
+        self.work += self.document.len() as u64;
+        self.laid_out = Some((version, laid_out));
+        self.laid_out.as_ref().map(|(_, layout)| layout)
+    }
+
+    /// The viewport's scroll offset and each scroll container's, as the
+    /// frame drew them and scripts since set them.
+    fn scroll_state(&self) -> (f32, HashMap<NodeId, f32>) {
+        let (mut y, mut offsets) = (*self.window.scroll).clone();
+        for (node, to) in &self.outputs.scrolls {
+            match node {
+                None => y = *to,
+                Some(node) => {
+                    offsets.insert(*node, *to);
+                }
+            }
+        }
+        (y, offsets)
+    }
+
+    /// `node` measured in the layout (CSSOM View): where its border box
+    /// is, in viewport coordinates when `scrolled`, else in the
+    /// document's, unscrolled; then its border widths, its padding, its
+    /// margins (each top, right, bottom, left), its scroll height, and
+    /// each of its boxes' rectangles. Empty for an element with no box.
+    fn geometry(&mut self, node: NodeId, scrolled: bool) -> Vec<f64> {
+        let (scroll_y, offsets) = if scrolled {
+            self.scroll_state()
+        } else {
+            (0.0, HashMap::new())
+        };
+        let (width, height) = self.window.viewport;
+        let Some(layout) = self.layout_now() else {
+            return Vec::new();
+        };
+        let viewport = paint::Viewport {
+            width: width as f32,
+            height: height as f32,
+            scroll_y,
+        };
+        let targets = std::iter::once(node).collect();
+        let measured = crate::geometry::measure(layout, viewport, &offsets, &targets);
+        let scroll_height = layout
+            .iter()
+            .filter(|f| f.node == node && f.generated.is_none())
+            .map(|f| f.scroll_height)
+            .fold(0.0f32, f32::max);
+        let Some(m) = measured.get(&node) else {
+            return Vec::new();
+        };
+        let mut out: Vec<f64> = m
+            .bounds
+            .iter()
+            .chain(&m.border)
+            .chain(&m.padding)
+            .chain(&m.margin)
+            .map(|&v| f64::from(v))
+            .collect();
+        out.push(f64::from(scroll_height));
+        out.extend(m.rects.iter().flatten().map(|&v| f64::from(v)));
+        self.work += layout.iter().count() as u64 / 16;
+        out
+    }
+
+    /// CSSOM View's `offsetParent`: none for the root, the body, a fixed
+    /// box or one not rendered; else the nearest ancestor that is
+    /// positioned, a cell or a table, or the body.
+    fn offset_parent(&mut self, node: NodeId) -> Option<NodeId> {
+        if !self.connected(node) || !self.document.is_element(node) {
+            return None;
+        }
+        let ancestors: Vec<NodeId> = self.document.ancestors(node).collect();
+        self.styles_now()?;
+        let styles = &self.computed.as_ref()?.styles;
+        let shown = |n: NodeId| {
+            styles
+                .get(n)
+                .is_some_and(|s| s.display != style::computed::Display::None)
+        };
+        let position = |n: NodeId| styles.get(n).map(|s| s.position);
+        let document = &self.document;
+        if matches!(document.tag(node), Some("body" | "html"))
+            || document.parent(node) == Some(document.root())
+            || !shown(node)
+            || ancestors
+                .iter()
+                .any(|&a| document.is_element(a) && !shown(a))
+            || position(node) == Some(style::computed::Position::Fixed)
+        {
+            return None;
+        }
+        let static_position = position(node) == Some(style::computed::Position::Static);
+        ancestors.into_iter().find(|&a| {
+            document.is_element(a)
+                && (position(a).is_some_and(|p| p != style::computed::Position::Static)
+                    || document.tag(a) == Some("body")
+                    || (static_position && matches!(document.tag(a), Some("td" | "th" | "table"))))
+        })
+    }
+
+    /// A scroll offset and how far it may go: the viewport's for
+    /// `None`, else the scroll container `node`'s (none for another
+    /// element).
+    fn scroll_offset(&mut self, node: Option<NodeId>) -> Vec<f64> {
+        let (scroll_y, offsets) = self.scroll_state();
+        let height = self.window.viewport.1 as f32;
+        let Some(layout) = self.layout_now() else {
+            return vec![0.0, 0.0];
+        };
+        let (at, max) = match node {
+            None => {
+                let bottom = layout
+                    .roots
+                    .iter()
+                    .map(|f| f.y + f.h)
+                    .fold(0.0f32, f32::max)
+                    .max(layout.height);
+                (scroll_y, (bottom - height).max(0.0))
+            }
+            Some(node) => {
+                let max = layout
+                    .iter()
+                    .filter(|f| f.node == node && f.generated.is_none() && f.clips())
+                    .map(|f| f.max_scroll())
+                    .fold(0.0f32, f32::max);
+                (offsets.get(&node).copied().unwrap_or(0.0), max)
+            }
+        };
+        vec![f64::from(at.min(max)), f64::from(max)]
+    }
+
+    /// A script's scroll of the viewport (`None`) or of `node` to `y`,
+    /// clamped: kept for what the run asks next, and for the engine.
+    fn scroll_to(&mut self, node: Option<NodeId>, y: f64) {
+        if !y.is_finite() {
+            return;
+        }
+        let max = self.scroll_offset(node).get(1).copied().unwrap_or(0.0);
+        if node.is_some() && max <= 0.0 {
+            return;
+        }
+        self.outputs.scrolls.push((node, y.clamp(0.0, max) as f32));
+    }
+
+    /// CSSOM View's `elementsFromPoint` at the viewport point `(x, y)`:
+    /// the elements under it, topmost first, the root last; or only the
+    /// topmost, for `elementFromPoint`.
+    fn elements_from_point(&mut self, x: f32, y: f32, all: bool) -> Vec<NodeId> {
+        let (scroll_y, offsets) = self.scroll_state();
+        let (width, height) = self.window.viewport;
+        if x < 0.0 || y < 0.0 || x > width as f32 || y > height as f32 {
+            return Vec::new();
+        }
+        let Some(layout) = self.layout_now() else {
+            return Vec::new();
+        };
+        let viewport = paint::Viewport {
+            width: width as f32,
+            height: height as f32,
+            scroll_y,
+        };
+        let (_, _, hits) = crate::geometry::hit(layout, viewport, &offsets, x, y);
+        let document = &self.document;
+        let mut found: Vec<NodeId> = Vec::new();
+        for node in hits.into_iter().rev() {
+            let element = std::iter::once(node)
+                .chain(document.ancestors(node))
+                .find(|&n| document.is_element(n));
+            if let Some(element) = element
+                && !found.contains(&element)
+            {
+                found.push(element);
+            }
+        }
+        if let Some(root) = document.document_element()
+            && !found.contains(&root)
+        {
+            found.push(root);
+        }
+        if !all {
+            found.truncate(1);
+        }
+        found
+    }
+
+    /// HTML's `innerText` getter (section 3.2.7, "rendered text
+    /// collection steps") over the styles: the text of what is rendered,
+    /// white space collapsed as its `white-space` says, a line break for
+    /// each `br` and around each block, two around a `p`, a tab between
+    /// cells and a line break after a row; the text content for an
+    /// element not rendered.
+    fn inner_text(&mut self, node: NodeId) -> String {
+        use style::computed::{Display, Visibility, WhiteSpaceCollapse};
+        if self.styles_now().is_none() {
+            return self.document.text_content(node);
+        }
+        let Some(computed) = self.computed.as_ref() else {
+            return self.document.text_content(node);
+        };
+        let styles = &computed.styles;
+        let document = &self.document;
+        let mut work = 0u64;
+        let rendered = |n: NodeId| styles.get(n).is_some_and(|s| s.display != Display::None);
+        let connected =
+            node == document.root() || document.ancestors(node).last() == Some(document.root());
+        if !connected || !rendered(node) {
+            return document.text_content(node);
+        }
+        // The text, and line breaks still to come (a count, or none).
+        let mut out = String::new();
+        let mut pending: usize = 0;
+        let mut started = false;
+        let push = |out: &mut String, pending: &mut usize, started: &mut bool, text: &str| {
+            if text.is_empty() {
+                return;
+            }
+            if *started {
+                out.extend(std::iter::repeat_n('\n', *pending));
+            }
+            *pending = 0;
+            *started = true;
+            out.push_str(text);
+        };
+        // A walk with each element's end visited: (node, leaving).
+        let mut stack = vec![(node, false)];
+        let mut space = false;
+        while let Some((n, leaving)) = stack.pop() {
+            work += 1;
+            if let Some(text) = document.text(n) {
+                let Some(style) = document.parent(n).and_then(|p| styles.get(p)) else {
+                    continue;
+                };
+                if style.visibility != Visibility::Visible {
+                    continue;
+                }
+                let collapse = style.white_space.collapse;
+                let piece = match collapse {
+                    WhiteSpaceCollapse::Collapse => {
+                        let mut piece = String::new();
+                        for c in text.chars() {
+                            if matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{c}') {
+                                space = true;
+                            } else {
+                                if space && !piece.is_empty() || space && started && pending == 0 {
+                                    piece.push(' ');
+                                }
+                                space = false;
+                                piece.push(c);
+                            }
+                        }
+                        piece
+                    }
+                    _ => {
+                        space = false;
+                        text.to_owned()
+                    }
+                };
+                push(&mut out, &mut pending, &mut started, &piece);
+                continue;
+            }
+            if !document.is_element(n) {
+                continue;
+            }
+            let Some(style) = styles.get(n) else {
+                continue;
+            };
+            if style.display == Display::None {
+                continue;
+            }
+            let tag = document.tag(n);
+            let block = !matches!(style.display, Display::Inline | Display::None)
+                && !matches!(
+                    style.display,
+                    Display::InlineBlock
+                        | Display::InlineFlex
+                        | Display::InlineGrid
+                        | Display::InlineTable
+                );
+            if leaving {
+                match tag {
+                    Some("p") => pending = pending.max(2),
+                    _ if style.display == Display::TableCell
+                        && document.next_element_sibling(n).is_some() =>
+                    {
+                        push(&mut out, &mut pending, &mut started, "\t");
+                    }
+                    _ if style.display == Display::TableRow => pending = pending.max(1),
+                    _ if block => pending = pending.max(1),
+                    _ => {}
+                }
+                if block || tag == Some("p") {
+                    space = false;
+                }
+                continue;
+            }
+            if n != node {
+                if tag == Some("br") {
+                    push(&mut out, &mut 0, &mut started, "\n");
+                    space = false;
+                    continue;
+                }
+                match tag {
+                    Some("p") => pending = pending.max(2),
+                    _ if block && style.display != Display::TableCell => {
+                        pending = pending.max(1);
+                    }
+                    _ => {}
+                }
+                if block {
+                    space = false;
+                }
+            }
+            stack.push((n, true));
+            let children: Vec<NodeId> = document.children(n).collect();
+            for child in children.into_iter().rev() {
+                stack.push((child, false));
+            }
+        }
+        self.work += work;
+        out
     }
 
     /// `moveBefore` (DOM section 4.2.3's "move"): its checks with the
@@ -4397,6 +4822,54 @@ pub(crate) fn valid_attribute_local_name(name: &str) -> bool {
         && !name
             .chars()
             .any(|c| c.is_ascii_whitespace() || matches!(c, '\0' | '/' | '=' | '>'))
+}
+
+/// The properties whose resolved values are used values (CSSOM section
+/// 9, D65).
+const USED_PROPERTIES: [&str; 10] = [
+    "width",
+    "height",
+    "margin-top",
+    "margin-right",
+    "margin-bottom",
+    "margin-left",
+    "padding-top",
+    "padding-right",
+    "padding-bottom",
+    "padding-left",
+];
+
+/// `property`'s used value from an element's `geometry` (as
+/// [`DocumentHost::geometry`] gives it), for one of [`USED_PROPERTIES`];
+/// `None` for an element with no box, or a width or height of an inline
+/// box, which keep their computed values.
+fn used_value(style: &style::ComputedStyle, property: &str, geometry: &[f64]) -> Option<String> {
+    if geometry.len() < 16 {
+        return None;
+    }
+    let g = |i: usize| geometry[i] as f32;
+    let inline = style.display == style::computed::Display::Inline;
+    let border_box = style.box_sizing == style::computed::BoxSizing::BorderBox;
+    let value = match property {
+        "width" if !inline => {
+            let edges = if border_box { 0.0 } else { g(5) + g(7) + g(9) + g(11) };
+            (g(2) - edges).max(0.0)
+        }
+        "height" if !inline => {
+            let edges = if border_box { 0.0 } else { g(4) + g(6) + g(8) + g(10) };
+            (g(3) - edges).max(0.0)
+        }
+        "padding-top" => g(8),
+        "padding-right" => g(9),
+        "padding-bottom" => g(10),
+        "padding-left" => g(11),
+        "margin-top" => g(12),
+        "margin-right" => g(13),
+        "margin-bottom" => g(14),
+        "margin-left" => g(15),
+        _ => return None,
+    };
+    Some(style::serialize::px(value))
 }
 
 /// A refusal of `dom`'s as the exception a script gets.

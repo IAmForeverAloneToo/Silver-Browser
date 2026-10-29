@@ -204,6 +204,32 @@ pub enum Call {
         node: Handle,
         before: Option<Handle>,
     },
+    /// An element's place in the layout (CSSOM View, D65): its border
+    /// box in viewport coordinates (`scrolled`) or the document's, then
+    /// its borders, padding and margins, its scroll height and each of
+    /// its boxes; empty with no box.
+    Geometry {
+        node: Handle,
+        scrolled: bool,
+    },
+    /// An element's `offsetParent`.
+    OffsetParent(Handle),
+    /// The viewport's scroll offset (`None`) or an element's, and its
+    /// most.
+    ScrollOffset(Option<Handle>),
+    /// Scrolls the viewport (`None`) or an element to an offset.
+    ScrollTo(Option<Handle>, f64),
+    /// Scrolls an element into view.
+    ScrollIntoView(Handle),
+    /// The elements under a viewport point, topmost first, or the
+    /// topmost alone.
+    ElementsFromPoint {
+        x: f64,
+        y: f64,
+        all: bool,
+    },
+    /// An element's `innerText`.
+    InnerText(Handle),
     /// `document.open()` (HTML section 8.4.2.1).
     DocumentOpen,
     /// `document.close()`.

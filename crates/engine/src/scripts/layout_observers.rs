@@ -25,6 +25,10 @@ pub(crate) struct Measured {
     pub(crate) padding: [f32; 4],
     pub(crate) bounds: [f32; 4],
     pub(crate) clips: Vec<(Option<NodeId>, [f32; 4])>,
+    /// Each of its boxes' bounds, an inline element's one a line (D65).
+    pub(crate) rects: Vec<[f32; 4]>,
+    /// Its used margins, top, right, bottom and left.
+    pub(crate) margin: [f32; 4],
 }
 
 impl Measured {
@@ -317,6 +321,8 @@ mod tests {
             padding: [2.0; 4],
             bounds,
             clips: Vec::new(),
+            rects: vec![bounds],
+            margin: [0.0; 4],
         }
     }
 

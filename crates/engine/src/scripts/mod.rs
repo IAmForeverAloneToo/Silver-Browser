@@ -260,6 +260,8 @@ impl ReadyState {
 /// fetch, where its loading stands, and what the window reports.
 pub(crate) struct Lent<'a> {
     pub(crate) document: &'a mut Document,
+    /// The shown document's images, for the layout scripts ask of (D65).
+    pub(crate) images: Option<&'a mut crate::image_store::ImageStore>,
     pub(crate) page: &'a mut Page,
     pub(crate) parser: Option<&'a mut html::Load>,
     pub(crate) network: &'a mut Network,
@@ -276,6 +278,12 @@ pub(crate) struct WindowEnv {
     pub(crate) viewport: (u32, u32),
     pub(crate) media: style::Media,
     pub(crate) fonts: Option<text::FontCollection>,
+    /// The fonts the document lays out with, its web fonts among them
+    /// (D65).
+    pub(crate) layout_fonts: Option<text::FontCollection>,
+    /// The viewport's scroll offset and each scroll container's, as
+    /// drawn (D65).
+    pub(crate) scroll: Arc<(f32, std::collections::HashMap<NodeId, f32>)>,
     pub(crate) compat: bool,
     /// The user's languages, the most wanted first (M37).
     pub(crate) languages: Vec<String>,
@@ -540,6 +548,8 @@ pub(crate) struct Scripts {
     navigation: Option<ScriptNavigation>,
     /// The element a script focused, to be scrolled into view (M26.6).
     scroll_to: Option<NodeId>,
+    /// The scroll offsets scripts set (D65), the viewport's as `None`.
+    scrolls: Vec<(Option<NodeId>, f32)>,
     /// What a script's validation reported, for the notice (M26.9b).
     notice: Option<String>,
     /// The events to fire at elements when its scripts next run (M26):
@@ -595,6 +605,7 @@ impl Scripts {
             events: VecDeque::new(),
             handlers: None,
             scroll_to: None,
+            scrolls: Vec::new(),
             notice: None,
             aborted: false,
             navigation: None,
@@ -619,6 +630,11 @@ impl Scripts {
     /// scrolled into view (M26.6).
     pub(crate) fn take_scroll(&mut self) -> Option<NodeId> {
         self.scroll_to.take()
+    }
+
+    /// The scroll offsets scripts set since this was last asked (D65).
+    pub(crate) fn take_scrolls(&mut self) -> Vec<(Option<NodeId>, f32)> {
+        std::mem::take(&mut self.scrolls)
     }
 
     /// What a script's `reportValidity()` or a form's interactive
@@ -1227,6 +1243,7 @@ impl Scripts {
         if outputs.scroll_to.is_some() {
             self.scroll_to = outputs.scroll_to;
         }
+        self.scrolls.extend(outputs.scrolls);
         if outputs.notice.is_some() {
             self.notice = outputs.notice;
         }
@@ -1297,6 +1314,7 @@ impl Scripts {
         if outputs.scroll_to.is_some() {
             self.scroll_to = outputs.scroll_to;
         }
+        self.scrolls.extend(outputs.scrolls);
         if outputs.notice.is_some() {
             self.notice = outputs.notice;
         }
@@ -2247,6 +2265,7 @@ mod tests {
         let mut network = Network::new();
         let mut lent = Lent {
             document,
+            images: None,
             page: &mut page,
             parser: None,
             network: &mut network,

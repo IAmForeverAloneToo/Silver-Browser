@@ -70,6 +70,7 @@
   const Register = uncurry(FinalizationRegistry.prototype.register);
   const ArrayPush = uncurry(Array.prototype.push);
   const ArrayValues = Array.prototype.values;
+  const MathRound = Math.round;
   const ArrayEntries = Array.prototype.entries;
   const ArrayKeys = Array.prototype.keys;
   const ArrayForEach = Array.prototype.forEach;
@@ -16828,6 +16829,377 @@
   expose(DOMRect, "DOMRect");
   expose(DOMMatrixReadOnly, "DOMMatrixReadOnly");
   expose(DOMMatrix, "DOMMatrix");
+
+  // ---- CSSOM View: what scripts ask of the layout (D65) -----------------
+
+  // An element's geometry as `native.geometry` answers: bounds x, y,
+  // width, height; border top, right, bottom, left; padding; margins;
+  // scroll height; then each box's x, y, width, height. Empty with no box.
+  const G_BORDER = 4;
+  const G_PADDING = 8;
+  const G_MARGIN = 12;
+  const G_SCROLL_HEIGHT = 16;
+  const G_RECTS = 17;
+
+  function geometryOf(element, scrolled) {
+    return native.geometry(self(element), scrolled);
+  }
+
+  class DOMRectList {
+    #rects;
+
+    constructor(key, rects) {
+      if (key !== KEY) {
+        throw illegalConstructor("DOMRectList");
+      }
+      this.#rects = rects;
+      for (let i = 0; i < rects.length; i++) {
+        defineProperty(this, $String(i), { value: rects[i], enumerable: true });
+      }
+    }
+
+    get length() {
+      return this.#rects.length;
+    }
+
+    item(index) {
+      need(arguments.length, 1, "item", "DOMRectList");
+      const i = unsigned(index);
+      return i < this.#rects.length ? this.#rects[i] : null;
+    }
+  }
+  defineProperty(DOMRectList.prototype, iteratorSymbol, {
+    value: ArrayValues,
+    writable: true,
+    configurable: true,
+  });
+  expose(DOMRectList, "DOMRectList");
+
+  // Whether `element` lays out as an inline box, which has no client
+  // area (CSSOM View section 6).
+  function inlineBox(element) {
+    return native.computedValue(self(element), "", "display") === "inline";
+  }
+
+  // Whether `element` is the document's element, which stands for the
+  // viewport in the scroll members (the scrolling element).
+  function scrollingRoot(element) {
+    return handleOf(element) === documentElement(native.document());
+  }
+
+  // `scrollTo()`'s arguments, x and y or an options dictionary, as the
+  // offset asked for, `current` kept for what is not given.
+  function scrollArguments(args, current, relative) {
+    if (args.length === 1 && args[0] !== null && typeof args[0] === "object") {
+      const top = args[0].top;
+      if (top === undefined) {
+        return relative ? 0 : current;
+      }
+      return $Number(top);
+    }
+    if (args.length >= 2) {
+      return $Number(args[1]);
+    }
+    return relative ? 0 : current;
+  }
+
+  include(
+    {
+      getBoundingClientRect() {
+        const g = geometryOf(this, true);
+        return g.length === 0 ? new DOMRect(0, 0, 0, 0) : new DOMRect(g[0], g[1], g[2], g[3]);
+      },
+
+      getClientRects() {
+        const g = geometryOf(this, true);
+        const rects = [];
+        for (let i = G_RECTS; i + 3 < g.length; i += 4) {
+          ArrayPush(rects, new DOMRect(g[i], g[i + 1], g[i + 2], g[i + 3]));
+        }
+        return new DOMRectList(KEY, rects);
+      },
+
+      get clientTop() {
+        const g = geometryOf(this, false);
+        return g.length === 0 || inlineBox(this) ? 0 : MathRound(g[G_BORDER]);
+      },
+
+      get clientLeft() {
+        const g = geometryOf(this, false);
+        return g.length === 0 || inlineBox(this) ? 0 : MathRound(g[G_BORDER + 3]);
+      },
+
+      get clientWidth() {
+        if (scrollingRoot(this)) {
+          return native.viewport()[0];
+        }
+        const g = geometryOf(this, false);
+        if (g.length === 0 || inlineBox(this)) {
+          return 0;
+        }
+        return MathRound(g[2] - g[G_BORDER + 1] - g[G_BORDER + 3]);
+      },
+
+      get clientHeight() {
+        if (scrollingRoot(this)) {
+          return native.viewport()[1];
+        }
+        const g = geometryOf(this, false);
+        if (g.length === 0 || inlineBox(this)) {
+          return 0;
+        }
+        return MathRound(g[3] - g[G_BORDER] - g[G_BORDER + 2]);
+      },
+
+      get scrollTop() {
+        const handle = self(this);
+        return native.scrollOffset(scrollingRoot(this) ? null : handle)[0];
+      },
+
+      set scrollTop(value) {
+        const handle = self(this);
+        native.scrollTo(scrollingRoot(this) ? null : handle, $Number(value));
+      },
+
+      get scrollLeft() {
+        self(this);
+        return 0;
+      },
+
+      set scrollLeft(value) {
+        self(this);
+      },
+
+      get scrollWidth() {
+        return this.clientWidth;
+      },
+
+      get scrollHeight() {
+        const handle = self(this);
+        if (scrollingRoot(this)) {
+          return MathRound(native.scrollOffset(null)[1] + native.viewport()[1]);
+        }
+        const g = geometryOf(this, false);
+        if (g.length === 0) {
+          return 0;
+        }
+        const own = g[G_SCROLL_HEIGHT];
+        return MathRound(own > 0 ? own : g[3] - g[G_BORDER] - g[G_BORDER + 2]);
+      },
+
+      scrollTo(...args) {
+        const handle = self(this);
+        const target = scrollingRoot(this) ? null : handle;
+        native.scrollTo(target, scrollArguments(args, native.scrollOffset(target)[0], false));
+      },
+
+      scroll(...args) {
+        return this.scrollTo(...args);
+      },
+
+      scrollBy(...args) {
+        const handle = self(this);
+        const target = scrollingRoot(this) ? null : handle;
+        const now = native.scrollOffset(target)[0];
+        native.scrollTo(target, now + scrollArguments(args, now, true));
+      },
+
+      scrollIntoView() {
+        native.scrollIntoView(self(this));
+      },
+    },
+    [Element.prototype],
+  );
+
+  include(
+    {
+      get offsetParent() {
+        return wrap(native.offsetParent(self(this)));
+      },
+
+      get offsetTop() {
+        return MathRound(offsetOf(this)[1]);
+      },
+
+      get offsetLeft() {
+        return MathRound(offsetOf(this)[0]);
+      },
+
+      get offsetWidth() {
+        const g = geometryOf(this, false);
+        return g.length === 0 ? 0 : MathRound(g[2]);
+      },
+
+      get offsetHeight() {
+        const g = geometryOf(this, false);
+        return g.length === 0 ? 0 : MathRound(g[3]);
+      },
+
+      get innerText() {
+        return native.innerText(self(this));
+      },
+
+      set innerText(value) {
+        const handle = self(this);
+        setRenderedText(handle, strOrEmpty(value), "innerText");
+      },
+
+      get outerText() {
+        return native.innerText(self(this));
+      },
+
+      set outerText(value) {
+        const handle = self(this);
+        const parent = native.parent(handle);
+        if (parent === null) {
+          throw domError(
+            "NoModificationAllowedError",
+            "The element has no parent.",
+            "outerText",
+            "HTMLElement",
+          );
+        }
+        // Its place taken by the text, lines parted by `br`s.
+        const fragment = renderedFragment(strOrEmpty(value));
+        native.mutationScope(true);
+        try {
+          native.insert(parent, fragment, handle);
+          native.remove(parent, handle);
+        } finally {
+          native.mutationScope(false);
+        }
+      },
+    },
+    [HTMLElement.prototype],
+  );
+
+  // An element's offset from its offsetParent's padding edge, or from
+  // the document's origin with none (CSSOM View section 7).
+  function offsetOf(element) {
+    const g = geometryOf(element, false);
+    if (g.length === 0) {
+      return [0, 0];
+    }
+    const parent = native.offsetParent(handleOf(element));
+    if (parent === null || native.tag(parent) === "body") {
+      return [g[0], g[1]];
+    }
+    const p = native.geometry(parent, false);
+    if (p.length === 0) {
+      return [g[0], g[1]];
+    }
+    return [g[0] - p[0] - p[G_BORDER + 3], g[1] - p[1] - p[G_BORDER]];
+  }
+
+  // HTML's "rendered text fragment": `text` as text nodes, each line
+  // break a `br`.
+  function renderedFragment(text) {
+    const fragment = native.createFragment();
+    let at = 0;
+    while (at <= text.length) {
+      let end = at;
+      while (end < text.length && text[end] !== "\n" && text[end] !== "\r") {
+        end++;
+      }
+      if (end > at) {
+        native.insert(fragment, native.createText(StringSlice(text, at, end)), null);
+      }
+      if (end >= text.length) {
+        break;
+      }
+      native.insert(fragment, native.createElement("br"), null);
+      at = end + (text[end] === "\r" && text[end + 1] === "\n" ? 2 : 1);
+    }
+    return fragment;
+  }
+
+  // The `innerText` setter: the children replaced by the text.
+  function setRenderedText(handle, text, method) {
+    try {
+      const fragment = renderedFragment(text);
+      native.mutationScope(true);
+      try {
+        for (let child = native.firstChild(handle); child !== null;
+          child = native.firstChild(handle)) {
+          native.remove(handle, child);
+        }
+        native.insert(handle, fragment, null);
+      } finally {
+        native.mutationScope(false);
+      }
+    } catch (error) {
+      throw failed(error, method, "HTMLElement");
+    }
+  }
+
+  include(
+    {
+      elementFromPoint(x, y) {
+        self(this);
+        need(arguments.length, 2, "elementFromPoint", "Document");
+        const found = native.elementsFromPoint($Number(x), $Number(y), false);
+        return found.length === 0 ? null : wrap(found[0]);
+      },
+
+      elementsFromPoint(x, y) {
+        self(this);
+        need(arguments.length, 2, "elementsFromPoint", "Document");
+        const found = native.elementsFromPoint($Number(x), $Number(y), true);
+        const out = [];
+        for (let i = 0; i < found.length; i++) {
+          ArrayPush(out, wrap(found[i]));
+        }
+        return out;
+      },
+
+      get scrollingElement() {
+        return wrap(documentElement(self(this)));
+      },
+    },
+    [Document.prototype],
+  );
+
+  // The window's scroll members (CSSOM View section 5): the viewport
+  // scrolls down only.
+  const viewportScrollY = {
+    get() {
+      return native.scrollOffset(null)[0];
+    },
+    enumerable: true,
+    configurable: true,
+  };
+  const viewportScrollX = {
+    get() {
+      return 0;
+    },
+    enumerable: true,
+    configurable: true,
+  };
+  windowOnly("scrollY", viewportScrollY);
+  windowOnly("pageYOffset", viewportScrollY);
+  windowOnly("scrollX", viewportScrollX);
+  windowOnly("pageXOffset", viewportScrollX);
+  const windowScrollTo = function scrollTo(...args) {
+    native.scrollTo(null, scrollArguments(args, native.scrollOffset(null)[0], false));
+  };
+  windowOnly("scrollTo", { value: windowScrollTo, writable: true, enumerable: true, configurable: true });
+  windowOnly("scroll", {
+    value: function scroll(...args) {
+      return ReflectApply(windowScrollTo, undefined, args);
+    },
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+  windowOnly("scrollBy", {
+    value: function scrollBy(...args) {
+      const now = native.scrollOffset(null)[0];
+      native.scrollTo(null, now + scrollArguments(args, now, true));
+    },
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
 
   // ---- Images for a canvas (HTML section 4.8.4, M30) ----------------------
 

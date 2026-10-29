@@ -686,7 +686,7 @@ fn white_space_collapse(collapse: crate::computed::WhiteSpaceCollapse) -> &'stat
     }
 }
 
-fn px(value: f32) -> String {
+pub fn px(value: f32) -> String {
     format!("{}px", number(value))
 }
 
