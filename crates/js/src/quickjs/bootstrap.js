@@ -135,6 +135,53 @@
     configurable: true,
   });
 
+  // The current time (ECMA-262 21.4): `Date.now()`, `new Date()` and
+  // `Date()` read the system's precise clock in whole milliseconds, as
+  // the reference browser's do. QuickJS reads Windows' coarse clock, which
+  // steps by about 16 ms, so that two calls milliseconds apart read the
+  // same. The constructor is QuickJS's behind one of the same shape,
+  // which keeps its prototype; given a time, it is QuickJS's.
+  {
+    const QuickDate = Date;
+    const QuickDateString = uncurry(QuickDate.prototype.toString);
+    const wall = () => native.wallClock();
+    const PreciseDate = function Date(year, month, date, hours, minutes, seconds, ms) {
+      if (new.target === undefined) {
+        return QuickDateString(new QuickDate(wall()));
+      }
+      const args = arguments.length === 0 ? [wall()] : arguments;
+      return ReflectConstruct(QuickDate, args, new.target);
+    };
+    defineProperty(PreciseDate, "prototype", {
+      value: QuickDate.prototype,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+    defineProperty(PreciseDate, "now", {
+      value: {
+        now() {
+          return wall();
+        },
+      }.now,
+      writable: true,
+      configurable: true,
+    });
+    for (const name of ["parse", "UTC"]) {
+      defineProperty(PreciseDate, name, getOwnPropertyDescriptor(QuickDate, name));
+    }
+    defineProperty(QuickDate.prototype, "constructor", {
+      value: PreciseDate,
+      writable: true,
+      configurable: true,
+    });
+    defineProperty(global, "Date", {
+      value: PreciseDate,
+      writable: true,
+      configurable: true,
+    });
+  }
+
   // An `unsigned long`: ToUint32.
   function unsigned(value) {
     return value >>> 0;
@@ -14897,7 +14944,19 @@
           throw new $DOMException(where + "The script at '" + urls[i] + "' failed to load.",
             "NetworkError");
         }
-        native.evaluate(script[0], script[1]);
+        // Another origin's script, not by CORS, throws a NetworkError for
+        // whatever it threw (HTML's "run a classic script" with muted
+        // errors), which tells nothing of it.
+        if (script[2] !== "muted") {
+          native.evaluate(script[0], script[1]);
+          continue;
+        }
+        try {
+          native.evaluate(script[0], script[1]);
+        } catch (_) {
+          throw new $DOMException(where + "The script at '" + urls[i] + "' failed to load.",
+            "NetworkError");
+        }
       }
     }
   }
@@ -21605,6 +21664,8 @@
     "ChannelSplitterNode", "ChannelMergerNode", "WaveShaperNode", "DynamicsCompressorNode",
     "ConvolverNode", "AnalyserNode", "PeriodicWave", "BaseAudioContext", "AudioContext",
     "MediaElementAudioSourceNode", "OfflineAudioContext", "OfflineAudioCompletionEvent",
+    "ScriptProcessorNode", "AudioProcessingEvent", "MediaStreamAudioDestinationNode",
+    "MediaStreamAudioSourceNode", "MediaStream", "MediaStreamTrack",
   ]);
 
   // What the chunk keeps of the built-ins, kept before any page ran.
@@ -22229,9 +22290,10 @@
       toStringTag, viewLength,
     }),
     audio: () => ({
-      $DOMException, $Float32Array, $Map, $NumberIsFinite, $Promise, $RangeError, $TypeError,
-      $Uint8Array, ArrayPush, Event, EventTarget, HTMLMediaElement, JSONParse, JSONStringify, KEY,
-      MapDelete, MapGet, MapSet, MathAbs, MathFround, MathMax, MathMin, StringSlice, TypedArraySet,
+      $ArrayIsArray, $DOMException, $Float32Array, $Map, $NumberIsFinite, $Promise, $RangeError,
+      $TypeError, $Uint8Array, ArrayPush, Event, EventTarget, HTMLMediaElement, JSONParse,
+      JSONStringify, KEY, MapDelete, MapGet, MapSet, MathAbs, MathFloor, MathFround, MathMax,
+      MathMin, MathRandom, StringSlice, TypedArraySet,
       binaryString, bufferLength, defineHandlers, defineProperty, dispatching, domError, eventState,
       expose, failed, getOwnPropertyNames, illegalConstructor, include, listed, native, need,
       needToConstruct, performance, prefix, rejected, resolved, self, str, unsigned, viewBuffer,

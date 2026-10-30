@@ -829,3 +829,38 @@ fn a_workers_xhr_scripts_and_url_are_a_workers() {
         ]
     );
 }
+
+#[test]
+fn another_origins_imported_script_throws_a_network_error_for_its_error() {
+    // HTML's muted errors (WPT's report-error-cross-origin): what a script
+    // importScripts() took from another origin without CORS threw is a
+    // NetworkError; one of the worker's own origin throws its own error.
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<script>new Worker('w.js').onmessage = (e) => console.log(e.data);</script>",
+        )),
+        "/w.js" => Some(script(
+            "const port = location.port;\
+             const out = [];\
+             for (const host of ['a.localhost', 'b.localhost']) {\
+               try { importScripts('http://' + host + ':' + port + '/bad.js'); }\
+               catch (e) { out.push(host + ' ' + e.name); }\
+             }\
+             postMessage(out.join(', '));",
+        )),
+        "/bad.js" => Some(script("var x = ;")),
+        _ => None,
+    });
+    let port = server.url("/").port().expect("a port");
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine
+        .navigate(net::Url::parse(&format!("http://a.localhost:{port}/page.html")).expect("a URL"));
+    let lines = tab.run_until(|lines| lines.iter().any(|l| l.contains("b.localhost")));
+    assert!(
+        lines
+            .iter()
+            .any(|l| l == "a.localhost SyntaxError, b.localhost NetworkError"),
+        "{lines:?}"
+    );
+}

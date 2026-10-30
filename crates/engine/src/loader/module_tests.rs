@@ -640,3 +640,33 @@ fn inserted_classic_and_module_scripts_not_async_run_in_insertion_order() {
     let lines = tab.run_until(|lines| lines.len() >= 3);
     assert_eq!(lines, ["c1", "m", "c2"]);
 }
+
+#[test]
+fn a_module_another_imports_is_fetched_with_its_url_as_the_referrer() {
+    // HTML's "fetch the descendants of a module script": the importing
+    // module's base URL is the referrer, under the document's policy
+    // (WPT's referrer-strict-policies.sub.html).
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<meta name=referrer content=unsafe-url><script type=module src=m/a.js></script>",
+        )),
+        "/m/a.js" => Some(javascript("import './b.js'; console.log('a');")),
+        "/m/b.js" => Some(javascript("console.log('b');")),
+        _ => None,
+    });
+    let mut tab = scripting();
+    load_all(&mut tab, server.url("/page.html"));
+    tab.run_until(|lines| lines.iter().any(|line| line == "a"));
+    let referrer = |path: &str| {
+        server
+            .requests()
+            .into_iter()
+            .find(|r| r.target == path)
+            .and_then(|r| r.header("Referer").map(str::to_owned))
+    };
+    assert_eq!(
+        referrer("/m/a.js"),
+        Some(server.url("/page.html").to_string())
+    );
+    assert_eq!(referrer("/m/b.js"), Some(server.url("/m/a.js").to_string()));
+}

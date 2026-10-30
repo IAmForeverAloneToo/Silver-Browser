@@ -8,9 +8,10 @@
 (function (env) {
   "use strict";
   const {
-    $DOMException, $Float32Array, $Map, $NumberIsFinite, $Promise, $RangeError, $TypeError,
-    $Uint8Array, ArrayPush, Event, EventTarget, HTMLMediaElement, JSONParse, JSONStringify, KEY,
-    MapDelete, MapGet, MapSet, MathAbs, MathFround, MathMax, MathMin, StringSlice, TypedArraySet,
+    $ArrayIsArray, $DOMException, $Float32Array, $Map, $NumberIsFinite, $Promise, $RangeError,
+    $TypeError, $Uint8Array, ArrayPush, Event, EventTarget, HTMLMediaElement, JSONParse,
+    JSONStringify, KEY, MapDelete, MapGet, MapSet, MathAbs, MathFloor, MathFround, MathMax,
+    MathMin, MathRandom, StringSlice, TypedArraySet,
     binaryString, bufferLength, defineHandlers, defineProperty, dispatching, domError, eventState,
     expose, failed, getOwnPropertyNames, illegalConstructor, include, listed, native, need,
     needToConstruct, performance, prefix, rejected, resolved, self, str, unsigned, viewBuffer,
@@ -116,6 +117,7 @@
 
   let audioBufferPayload;
   let audioBufferFromEngine;
+  let audioBufferFill;
 
   function audioBufferCheck(channels, length, rate, words) {
     if (channels < 1 || channels > 32) {
@@ -168,6 +170,11 @@
         buffer.#id = id;
         buffer.#fresh = true;
         return buffer;
+      };
+      // Channel `c` of `buffer` set to `floats`.
+      audioBufferFill = (buffer, c, floats) => {
+        TypedArraySet(buffer.#data[c], floats);
+        buffer.#fresh = false;
       };
     }
 
@@ -389,6 +396,9 @@
       if (n < 1 || n > 32) {
         throw new $DOMException(words + "The channel count provided (" + n + ") is outside the range [1, 32].", "NotSupportedError");
       }
+      if (kind === "script" && n !== this.#count) {
+        throw new $DOMException(words + "channelCount cannot be changed from " + this.#count + " to " + n, "NotSupportedError");
+      }
       if (kind === "destination" && n > audioMaxChannels(this.#ctx)) {
         throw new $DOMException(words + "The channel count provided (" + n + ") is outside the range [1, " + audioMaxChannels(this.#ctx) + "].", "IndexSizeError");
       }
@@ -407,6 +417,9 @@
       const words = setWords("channelCountMode", "AudioNode");
       if ((kind === "splitter" || kind === "merger") && mode !== this.#mode) {
         throw new $DOMException(words + "Cannot change channel count mode.", "InvalidStateError");
+      }
+      if (kind === "script" && mode !== "explicit") {
+        throw new $DOMException(words + "channelCountMode cannot be changed from 'explicit' to '" + mode + "'", "NotSupportedError");
       }
       if (AUDIO_TWO[kind] && mode === "max") {
         throw new $DOMException(words + "'max' is not allowed.", "NotSupportedError");
@@ -1511,6 +1524,383 @@
     [AudioContext.prototype],
   );
 
+
+  // ---- ScriptProcessorNode (Web Audio 1.1 section 1.29) ----
+  // Its buffers fill on the rendering thread and come here, each an
+  // `audioprocess` event; what the page leaves in the output buffer goes
+  // back, played two buffers later, as the reference browser has it. An
+  // offline rendering waits for each answer, so one is always given.
+
+  const audioScripts = new $Map();
+  let audioScriptProcess;
+
+  class AudioProcessingEvent extends Event {
+    #time; #input; #output;
+
+    constructor(type, eventInitDict) {
+      needToConstruct(arguments.length, 2, "AudioProcessingEvent");
+      const words = "Failed to construct 'AudioProcessingEvent': ";
+      const init = eventInitDict;
+      if (init === null || (typeof init !== "object" && typeof init !== "function")) {
+        throw new $TypeError(words + "The provided value is not of type 'AudioProcessingEventInit'.");
+      }
+      const names = ["inputBuffer", "outputBuffer", "playbackTime"];
+      for (let i = 0; i < names.length; i++) {
+        if (init[names[i]] === undefined) {
+          throw new $TypeError(words + "Failed to read the '" + names[i] + "' property from 'AudioProcessingEventInit': Required member is undefined.");
+        }
+      }
+      const input = init.inputBuffer;
+      const output = init.outputBuffer;
+      if ((input !== null && !(input instanceof AudioBuffer)) || (output !== null && !(output instanceof AudioBuffer))) {
+        throw new $TypeError(words + "Failed to read the '" + (input instanceof AudioBuffer ? "outputBuffer" : "inputBuffer") + "' property from 'AudioProcessingEventInit': Failed to convert value to 'AudioBuffer'.");
+      }
+      const time = audioFloat(init.playbackTime, words, true);
+      super(type, init);
+      this.#time = time;
+      this.#input = input;
+      this.#output = output;
+    }
+
+    get playbackTime() { return this.#time; }
+    get inputBuffer() { return this.#input; }
+    get outputBuffer() { return this.#output; }
+  }
+  expose(AudioProcessingEvent, "AudioProcessingEvent");
+
+  class ScriptProcessorNode extends AudioNode {
+    #size; #input; #output;
+
+    constructor(key, ctx, info, size, inputs, outputs) {
+      if (key !== KEY) throw illegalConstructor("ScriptProcessorNode");
+      info.count = inputs;
+      super(KEY, ctx, info, "script");
+      this.#size = size;
+      const rate = ctx.sampleRate;
+      // One input buffer and one output buffer, given to every event, as
+      // the reference browser gives them; none of no channels.
+      this.#input = inputs === 0 ? null : new AudioBuffer({ numberOfChannels: inputs, length: size, sampleRate: rate });
+      this.#output = outputs === 0 ? null : new AudioBuffer({ numberOfChannels: outputs, length: size, sampleRate: rate });
+      MapSet(audioScripts, audioContextId(ctx) + ":" + info.node, this);
+    }
+
+    static {
+      // Buffer `told.seq` filled, its samples `bytes`: the event, then
+      // the output back.
+      audioScriptProcess = function* (node, told, bytes) {
+        const input = node.#input;
+        const output = node.#output;
+        if (input !== null && bytes !== null) {
+          const n = MathMin(told.channels, input.numberOfChannels);
+          for (let c = 0; c < n; c++) {
+            audioBufferFill(input, c, new $Float32Array(bytes, c * told.length * 4, told.length));
+          }
+        }
+        try {
+          const event = new AudioProcessingEvent("audioprocess", {
+            bubbles: true, playbackTime: told.time, inputBuffer: input, outputBuffer: output,
+          });
+          eventState(event).trusted = true;
+          yield* dispatching(node, event);
+        } finally {
+          const payload = output === null ? null : audioBufferPayload(output, true);
+          audioCall({
+            op: "scriptOutput", ctx: told.ctx, node: told.node, seq: told.seq,
+            channels: payload === null ? 0 : payload.op.channels,
+          }, payload === null ? new $Uint8Array(0) : payload.bytes, "audioprocess", "ScriptProcessorNode");
+        }
+      };
+    }
+
+    get bufferSize() { return this.#size; }
+  }
+  expose(ScriptProcessorNode, "ScriptProcessorNode");
+  defineHandlers(ScriptProcessorNode.prototype, ["audioprocess"], false);
+
+  include(
+    {
+      createScriptProcessor(bufferSize, numberOfInputChannels, numberOfOutputChannels) {
+        let size = bufferSize === undefined ? 0 : unsigned(bufferSize);
+        const inputs = numberOfInputChannels === undefined ? 2 : unsigned(numberOfInputChannels);
+        const outputs = numberOfOutputChannels === undefined ? 2 : unsigned(numberOfOutputChannels);
+        const fail = (message) => domError("IndexSizeError", message, "createScriptProcessor", "BaseAudioContext");
+        if (inputs === 0 && outputs === 0) {
+          throw fail("number of input channels and output channels cannot both be zero.");
+        }
+        if (inputs > 32) throw fail("number of input channels (" + inputs + ") exceeds maximum (32).");
+        if (outputs > 32) throw fail("number of output channels (" + outputs + ") exceeds maximum (32).");
+        if (size === 0) {
+          // The reference's choice: four times its output's callback,
+          // a power of two; a quantum's offline.
+          size = this instanceof OfflineAudioContext ? 256 : 2048;
+        } else if (size < 256 || size > 16384 || (size & (size - 1)) !== 0) {
+          throw fail("buffer size (" + size + ") must be 0 or a power of two between 256 and 16384.");
+        }
+        const info = audioMake(this, "script", { size, inputs, outputs }, "ScriptProcessorNode");
+        return new ScriptProcessorNode(KEY, this, info, size, inputs, outputs);
+      },
+    },
+    [BaseAudioContext.prototype],
+  );
+
+  // ---- MediaStream and MediaStreamTrack (Media Capture and Streams) ----
+  // As far as Web Audio makes and takes them: a
+  // MediaStreamAudioDestinationNode's track, which a
+  // MediaStreamAudioSourceNode reads; no camera, microphone or video. A
+  // track is the engine's by number.
+
+  const HEX = "0123456789abcdef";
+
+  // A version 4 UUID, as the reference names streams and tracks.
+  function audioUuid() {
+    let text = "";
+    for (let i = 0; i < 32; i++) {
+      let digit = MathFloor(MathRandom() * 16);
+      if (i === 12) digit = 4;
+      if (i === 16) digit = 8 + (digit & 3);
+      if (i === 8 || i === 12 || i === 16 || i === 20) text += "-";
+      text += HEX[digit];
+    }
+    return text;
+  }
+
+  let trackNumber;
+  let trackId;
+  let trackLive;
+  let streamAudioTracks;
+
+  class MediaStreamTrack extends EventTarget {
+    #id = audioUuid(); #kind; #label; #number; #enabled = true; #state = "live";
+    #device = "WebAudio-" + audioUuid(); #rate;
+
+    constructor(key, kind, label, number, rate) {
+      if (key !== KEY) throw illegalConstructor("MediaStreamTrack");
+      super();
+      this.#kind = kind; this.#label = label; this.#number = number; this.#rate = rate;
+    }
+
+    static {
+      trackNumber = (track) => track.#number;
+      trackId = (track) => track.#id;
+      trackLive = (track) => track.#state === "live";
+    }
+
+    get kind() { return this.#kind; }
+    get id() { return this.#id; }
+    get label() { return this.#label; }
+    get enabled() { return this.#enabled; }
+    set enabled(v) { this.#enabled = !!v; }
+    get muted() { return false; }
+    get readyState() { return this.#state; }
+    get contentHint() { return ""; }
+
+    getSettings() {
+      return { channelCount: 2, deviceId: this.#device, latency: 0.01, sampleRate: this.#rate, sampleSize: 16 };
+    }
+    getCapabilities() { return {}; }
+    getConstraints() { return {}; }
+
+    // Ends the track: whatever reads it hears silence from now.
+    stop() {
+      if (this.#state === "ended") return;
+      this.#state = "ended";
+      audioCall({ op: "stopTrack", track: this.#number }, null, "stop", "MediaStreamTrack");
+    }
+
+    clone() {
+      const copy = new MediaStreamTrack(KEY, this.#kind, this.#label, this.#number, this.#rate);
+      copy.#state = this.#state;
+      copy.#enabled = this.#enabled;
+      return copy;
+    }
+  }
+  expose(MediaStreamTrack, "MediaStreamTrack");
+  defineHandlers(MediaStreamTrack.prototype, ["ended", "mute", "unmute"], false);
+
+  class MediaStream extends EventTarget {
+    #id = audioUuid(); #tracks = [];
+
+    constructor(streamOrTracks) {
+      super();
+      if (arguments.length === 0 || streamOrTracks === undefined) return;
+      let tracks;
+      if (streamOrTracks instanceof MediaStream) {
+        tracks = streamOrTracks.#tracks;
+      } else if ($ArrayIsArray(streamOrTracks)) {
+        tracks = streamOrTracks;
+      } else {
+        throw new $TypeError("Failed to construct 'MediaStream': The provided value cannot be converted to a sequence.");
+      }
+      for (let i = 0; i < tracks.length; i++) {
+        if (!(tracks[i] instanceof MediaStreamTrack)) {
+          throw new $TypeError("Failed to construct 'MediaStream': Failed to convert value to 'MediaStreamTrack'.");
+        }
+      }
+      for (let i = 0; i < tracks.length; i++) this.#add(tracks[i]);
+    }
+
+    #add(track) {
+      for (let i = 0; i < this.#tracks.length; i++) {
+        if (this.#tracks[i] === track) return;
+      }
+      ArrayPush(this.#tracks, track);
+    }
+
+    get id() { return this.#id; }
+
+    static {
+      streamAudioTracks = (stream) => stream.#of("audio");
+    }
+
+    get active() {
+      for (let i = 0; i < this.#tracks.length; i++) {
+        if (trackLive(this.#tracks[i])) return true;
+      }
+      return false;
+    }
+
+    #of(kind) {
+      const out = [];
+      for (let i = 0; i < this.#tracks.length; i++) {
+        if (kind === null || this.#tracks[i].kind === kind) ArrayPush(out, this.#tracks[i]);
+      }
+      return out;
+    }
+
+    getTracks() { return this.#of(null); }
+    getAudioTracks() { return this.#of("audio"); }
+    getVideoTracks() { return this.#of("video"); }
+
+    getTrackById(trackId) {
+      need(arguments.length, 1, "getTrackById", "MediaStream");
+      const id = str(trackId);
+      for (let i = 0; i < this.#tracks.length; i++) {
+        if (trackId(this.#tracks[i]) === id) return this.#tracks[i];
+      }
+      return null;
+    }
+
+    addTrack(track) {
+      need(arguments.length, 1, "addTrack", "MediaStream");
+      if (!(track instanceof MediaStreamTrack)) {
+        throw new $TypeError(prefix("addTrack", "MediaStream") + "parameter 1 is not of type 'MediaStreamTrack'.");
+      }
+      this.#add(track);
+    }
+
+    removeTrack(track) {
+      need(arguments.length, 1, "removeTrack", "MediaStream");
+      if (!(track instanceof MediaStreamTrack)) {
+        throw new $TypeError(prefix("removeTrack", "MediaStream") + "parameter 1 is not of type 'MediaStreamTrack'.");
+      }
+      const kept = [];
+      for (let i = 0; i < this.#tracks.length; i++) {
+        if (this.#tracks[i] !== track) ArrayPush(kept, this.#tracks[i]);
+      }
+      this.#tracks = kept;
+    }
+
+    clone() {
+      const copy = new MediaStream();
+      for (let i = 0; i < this.#tracks.length; i++) copy.#add(this.#tracks[i].clone());
+      return copy;
+    }
+  }
+  expose(MediaStream, "MediaStream");
+  defineHandlers(MediaStream.prototype, ["addtrack", "removetrack", "active", "inactive"], false);
+
+  // A realtime context's node, or a TypeError in the reference's words.
+  function audioRealtime(context, iface) {
+    if (!(context instanceof AudioContext)) {
+      throw new $TypeError("Failed to construct '" + iface + "': parameter 1 is not of type 'AudioContext'.");
+    }
+  }
+
+  // A graph's sound as a stream's track (Web Audio 1.1 section 1.24).
+  class MediaStreamAudioDestinationNode extends AudioNode {
+    #stream;
+
+    constructor(context, options) {
+      needToConstruct(arguments.length, 1, "MediaStreamAudioDestinationNode");
+      audioRealtime(context, "MediaStreamAudioDestinationNode");
+      if (options !== undefined && options !== null && typeof options !== "object" && typeof options !== "function") {
+        throw new $TypeError("Failed to construct 'MediaStreamAudioDestinationNode': The provided value is not of type 'AudioNodeOptions'.");
+      }
+      const info = audioMake(context, "streamDestination", undefined, "MediaStreamAudioDestinationNode");
+      super(KEY, context, info, "streamDestination");
+      audioNodeOptions(this, options);
+      this.#stream = new MediaStream([
+        new MediaStreamTrack(KEY, "audio", "MediaStreamAudioDestinationNode", info.track, context.sampleRate),
+      ]);
+    }
+
+    get stream() { return this.#stream; }
+  }
+  expose(MediaStreamAudioDestinationNode, "MediaStreamAudioDestinationNode");
+
+  // A stream's first audio track by id, taken into a graph (Web Audio
+  // 1.1 section 1.23).
+  class MediaStreamAudioSourceNode extends AudioNode {
+    #stream;
+
+    constructor(context, options) {
+      needToConstruct(arguments.length, 2, "MediaStreamAudioSourceNode");
+      audioRealtime(context, "MediaStreamAudioSourceNode");
+      const words = "Failed to construct 'MediaStreamAudioSourceNode': ";
+      const stream = options === null || typeof options !== "object" ? undefined : options.mediaStream;
+      if (stream === undefined) {
+        throw new $TypeError(words + "Failed to read the 'mediaStream' property from 'MediaStreamAudioSourceOptions': Required member is undefined.");
+      }
+      if (!(stream instanceof MediaStream)) {
+        throw new $TypeError(words + "Failed to read the 'mediaStream' property from 'MediaStreamAudioSourceOptions': Failed to convert value to 'MediaStream'.");
+      }
+      const tracks = streamAudioTracks(stream);
+      if (tracks.length === 0) {
+        throw new $DOMException(words + "MediaStream has no audio track", "InvalidStateError");
+      }
+      let first = tracks[0];
+      for (let i = 1; i < tracks.length; i++) {
+        if (trackId(tracks[i]) < trackId(first)) first = tracks[i];
+      }
+      const track = trackLive(first) ? trackNumber(first) : 0;
+      const info = audioMake(context, "streamSource", { track }, "MediaStreamAudioSourceNode");
+      super(KEY, context, info, "streamSource");
+      this.#stream = stream;
+    }
+
+    get mediaStream() { return this.#stream; }
+  }
+  expose(MediaStreamAudioSourceNode, "MediaStreamAudioSourceNode");
+
+  // Rethrows a constructor's DOMException as the factory's.
+  function audioFactory(make, method) {
+    try {
+      return make();
+    } catch (e) {
+      if (e instanceof $DOMException) {
+        const words = "Failed to construct 'MediaStreamAudioSourceNode': ";
+        throw new $DOMException(prefix(method, "AudioContext") + StringSlice(e.message, words.length), e.name);
+      }
+      throw e;
+    }
+  }
+
+  include(
+    {
+      createMediaStreamDestination() {
+        return new MediaStreamAudioDestinationNode(this);
+      },
+      createMediaStreamSource(mediaStream) {
+        need(arguments.length, 1, "createMediaStreamSource", "AudioContext");
+        if (!(mediaStream instanceof MediaStream)) {
+          throw new $TypeError(prefix("createMediaStreamSource", "AudioContext") + "parameter 1 is not of type 'MediaStream'.");
+        }
+        return audioFactory(() => new MediaStreamAudioSourceNode(this, { mediaStream }), "createMediaStreamSource");
+      },
+    },
+    [AudioContext.prototype],
+  );
+
   let offlineRendered;
   let offlineSuspended;
 
@@ -1641,6 +2031,15 @@
       }
       case "state": {
         if (ctx !== undefined) yield* audioStateEvent(ctx, told.state);
+        return false;
+      }
+      case "process": {
+        const node = MapGet(audioScripts, told.ctx + ":" + told.node);
+        if (node !== undefined) {
+          yield* audioScriptProcess(node, told, bytes);
+        } else if (ctx !== undefined) {
+          audioCall({ op: "scriptOutput", ctx: told.ctx, node: told.node, seq: told.seq, channels: 0 }, new $Uint8Array(0), "audioprocess", "ScriptProcessorNode");
+        }
         return false;
       }
       case "decoded":

@@ -808,6 +808,9 @@ pub(crate) struct Scripts {
     /// `document.open()` stopped the navigation under way, for the
     /// engine to cancel.
     stop_navigation: bool,
+    /// The string one of them ended with: the HTML of the document that
+    /// replaces this one.
+    javascript_result: Option<String>,
 }
 
 /// The most `javascript:` URLs a loading document keeps to run.
@@ -854,6 +857,7 @@ impl Scripts {
             javascript_urls: VecDeque::new(),
             content_loaded: None,
             stop_navigation: false,
+            javascript_result: None,
         }
     }
 
@@ -886,6 +890,12 @@ impl Scripts {
     /// last asked, if any: the last of them.
     pub(crate) fn take_navigation(&mut self) -> Option<ScriptNavigation> {
         self.navigation.take()
+    }
+
+    /// The HTML a `javascript:` URL the loading document ran ended with,
+    /// if one did: the document that replaces it (HTML 7.4.2.3.2).
+    pub(crate) fn take_javascript_result(&mut self) -> Option<String> {
+        self.javascript_result.take()
     }
 
     /// The element a script focused since this was last asked, to be
@@ -1222,8 +1232,9 @@ impl Scripts {
     }
 
     /// Runs `url`, a `javascript:` URL, in the loading document, held to
-    /// its policies as the engine's own runs one: what it ends with is
-    /// not a new document while this one loads.
+    /// its policies as the engine's own runs one: a string it ends with
+    /// is the HTML of the document that replaces this one, as the
+    /// reference browser has it, and the URLs after it are dropped.
     fn run_javascript_url(&mut self, lent: &mut Lent<'_>, url: &Url) {
         if self.stopped || lent.page.sandbox().has(crate::sandbox::Sandbox::SCRIPTS) {
             return;
@@ -1250,7 +1261,10 @@ impl Scripts {
             base: "",
             options: 0,
         };
-        self.run(lent, &script, How::default());
+        if let Some(Completion::String(html)) = self.run(lent, &script, How::default()) {
+            self.javascript_result = Some(html);
+            self.javascript_urls.clear();
+        }
     }
 
     /// Whether the document's module graphs have work on their way, which
@@ -1368,9 +1382,13 @@ impl Scripts {
         if self.mutations_waiting(lent.document) {
             self.enter(lent, &js::Task::Mutations, 0);
         }
-        // The `javascript:` URLs its scripts navigated it to.
+        // The `javascript:` URLs its scripts navigated it to; one that
+        // ended with a document's HTML ends this one's parsing.
         while let Some(url) = self.javascript_urls.pop_front() {
             self.run_javascript_url(lent, &url);
+        }
+        if self.javascript_result.is_some() {
+            return false;
         }
         // The module graphs gone on with (D61), a module preload's
         // event queued.
@@ -2179,6 +2197,11 @@ impl Scripts {
         self.host.workers.workers.any()
     }
 
+    /// Whether an audio context of the document renders now.
+    pub(crate) fn renders_sound(&self) -> bool {
+        !self.stopped && self.host.audio.rendering()
+    }
+
     /// The sizes the placeholder canvases are to take (M31.4), taken.
     pub(crate) fn take_placeholder_resizes(&mut self) -> Vec<(NodeId, (u32, u32))> {
         self.host.canvases.take_resizes()
@@ -2773,6 +2796,21 @@ fn blocked_report_url(text: &str) -> String {
     }
 }
 
+/// What a report or an event names of `violation`'s blocked URL: as
+/// [`blocked_report_url`] gives it, but a frame's or an object's of
+/// another origin by its origin alone, as the reference browser strips
+/// those (crbug.com/633306; WPT's frame-src-blocked-path-matching).
+fn blocked_of(violation: &Violation, page: &Page) -> String {
+    if matches!(violation.effective.as_str(), "frame-src" | "object-src")
+        && let Ok(url) = Url::parse(&violation.blocked)
+        && matches!(url.scheme(), "http" | "https")
+        && url.origin() != *page.origin()
+    {
+        return url.origin().serialization();
+    }
+    blocked_report_url(&violation.blocked)
+}
+
 /// Whether `violation` was of something at a URL, a request, rather
 /// than of the document's own content: then it names no source file.
 fn of_a_request(violation: &Violation) -> bool {
@@ -2805,10 +2843,7 @@ fn violation_event(
         .with("composed", js::Field::Bool(true))
         .with("documentURI", js::Field::String(document))
         .with("referrer", js::Field::String(page.referrer().to_owned()))
-        .with(
-            "blockedURI",
-            js::Field::String(blocked_report_url(&violation.blocked)),
-        )
+        .with("blockedURI", js::Field::String(blocked_of(violation, page)))
         .with(
             "violatedDirective",
             js::Field::String(violation.effective.clone()),
@@ -2854,7 +2889,7 @@ fn report_body(violation: &Violation, page: &Page, line: u32) -> String {
         ("effective-directive", violation.effective.clone()),
         ("original-policy", violation.policy.clone()),
         ("disposition", violation.disposition.name().to_owned()),
-        ("blocked-uri", blocked_report_url(&violation.blocked)),
+        ("blocked-uri", blocked_of(violation, page)),
     ]
     .iter()
     .map(|(name, value)| format!("\"{name}\":{}", json_string(value)))

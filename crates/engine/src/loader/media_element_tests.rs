@@ -339,6 +339,8 @@ addEventListener('keydown', async () => {
   log(typeof OfflineAudioContext.prototype.createMediaElementSource);
   const g = ctx.createGain(); g.gain.value = 0.5;
   source.connect(g).connect(ctx.destination);
+  // The element's volume holds in the graph too.
+  b.volume = 0.5;
   await b.play();
   await wait(b, 'ended');
   log('done');
@@ -372,11 +374,11 @@ addEventListener('keydown', async () => {
             "done",
         ]
     );
-    // Through the graph, at half the gain.
+    // Through the graph, at half the gain and half the volume.
     let second = capture.samples.lock().unwrap().clone();
     let (crossings, left, _) = heard(unbroken(&second, 0.05));
     assert!((173..=179).contains(&crossings), "{crossings}");
-    assert!((0.25..=0.27).contains(&left), "{left}");
+    assert!((0.125..=0.135).contains(&left), "{left}");
 }
 
 #[test]
@@ -423,6 +425,52 @@ log('done');
             "IndexSizeError: Failed to execute 'start' on 'TimeRanges': The index provided (0) is greater than or equal to the maximum bound (0).",
         ]
     );
+}
+
+#[test]
+fn a_graph_of_another_rate_hears_an_element_at_its_pitch() {
+    // The element's sound, at the output's 48 kHz, taken to the graph's
+    // 24 kHz: 440 Hz still, not half of it.
+    let _turn = audio_turn();
+    let capture = std::sync::Arc::new(Capture::paced());
+    let _sink = Sink::set(capture.clone());
+    let page = server(
+        r#"
+const wait = (m, e) => new Promise(r => m.addEventListener(e, r, {once: true}));
+log('ready');
+addEventListener('keydown', async () => {
+  const a = new Audio('/media/clip-audio.webm');
+  const ctx = new AudioContext({ sampleRate: 24000 });
+  ctx.createMediaElementSource(a).connect(ctx.destination);
+  await a.play();
+  await wait(a, 'ended');
+  log('done');
+}, { once: true });
+"#,
+    );
+    let lines = run(&page, true);
+    assert!(lines.is_empty(), "{lines:?}");
+    let samples = capture.samples.lock().unwrap().clone();
+    let (_, left, _) = heard(unbroken(&samples, 0.1));
+    assert!((0.45..=0.55).contains(&left), "{left}");
+    // Its pitch: the left channel's crossings in each fifth of a second
+    // of its sound, the median of them, which a moment the feed ran short
+    // does not move.
+    let start = samples.iter().position(|s| s.abs() > 0.1).unwrap_or(0) / 2;
+    let left: Vec<f32> = samples.iter().step_by(2).skip(start).copied().collect();
+    let mut counts: Vec<usize> = left
+        .as_chunks::<9600>()
+        .0
+        .iter()
+        .map(|c| {
+            c.windows(2)
+                .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
+                .count()
+        })
+        .collect();
+    counts.sort_unstable();
+    let median = counts.get(counts.len() / 2).copied().unwrap_or(0);
+    assert!((173..=179).contains(&median), "{counts:?}");
 }
 
 #[test]

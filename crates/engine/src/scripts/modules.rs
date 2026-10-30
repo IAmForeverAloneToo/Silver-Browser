@@ -137,8 +137,9 @@ pub(crate) struct Modules {
     fetching: HashMap<FetchId, String>,
     /// Their results, not yet taken in.
     arrivals: Vec<(String, Result<Response, LoadError>)>,
-    /// The URLs to fetch, each with the graph whose request it takes.
-    to_fetch: Vec<(String, u32)>,
+    /// The URLs to fetch, each with the graph whose request it takes and
+    /// the base URL of the module that imports it, its referrer.
+    to_fetch: Vec<(String, u32, Option<String>)>,
     import_map: ImportMap,
     /// The specifiers resolved so far (HTML's resolved module set), once
     /// each.
@@ -247,7 +248,13 @@ impl Modules {
             told: false,
         };
         self.graphs.insert(id, graph);
-        self.visit(id, first.into());
+        self.visit(
+            id,
+            first
+                .into_iter()
+                .map(|(url, depth)| (url, depth, None))
+                .collect(),
+        );
         id
     }
 
@@ -274,7 +281,7 @@ impl Modules {
     /// those the map has not are fetched and waited for, those it has
     /// lead to their imports; a module that failed fails the graph, and
     /// so does one past [`MAX_MODULES`] or [`MAX_MODULE_DEPTH`].
-    fn visit(&mut self, id: u32, mut queue: VecDeque<(String, usize)>) {
+    fn visit(&mut self, id: u32, mut queue: VecDeque<(String, usize, Option<String>)>) {
         let Modules {
             map,
             graphs,
@@ -285,7 +292,7 @@ impl Modules {
         let Some(graph) = graphs.get_mut(&id) else {
             return;
         };
-        while let Some((url, depth)) = queue.pop_front() {
+        while let Some((url, depth, referrer)) = queue.pop_front() {
             if graph.progress != Progress::Waiting {
                 return;
             }
@@ -298,7 +305,7 @@ impl Modules {
                 }
                 None => {
                     map.insert(url.clone(), Entry::Fetching);
-                    to_fetch.push((url.clone(), id));
+                    to_fetch.push((url.clone(), id, referrer));
                     graph.waiting.insert(url);
                 }
                 Some(Entry::Fetching) => {
@@ -308,7 +315,7 @@ impl Modules {
                 // A module preload's is its one module (HTML: its
                 // descendants fetched at most optionally).
                 Some(Entry::Fetched { .. }) if graph.purpose == Purpose::Preload => {}
-                Some(Entry::Fetched { imports, .. }) => {
+                Some(Entry::Fetched { base, imports, .. }) => {
                     for import in imports.iter().flatten() {
                         if graph.depth.contains_key(import) {
                             continue;
@@ -322,7 +329,7 @@ impl Modules {
                             break;
                         }
                         graph.depth.insert(import.clone(), depth + 1);
-                        queue.push_back((import.clone(), depth + 1));
+                        queue.push_back((import.clone(), depth + 1, Some(base.clone())));
                     }
                 }
             }
@@ -338,7 +345,7 @@ impl Modules {
     pub(crate) fn take_fetches(&mut self) -> Vec<(String, Request)> {
         let wanted = std::mem::take(&mut self.to_fetch);
         let mut fetches = Vec::with_capacity(wanted.len());
-        for (url, id) in wanted {
+        for (url, id, referrer) in wanted {
             let parsed = Url::parse(module_of_name(&url).0);
             let (Some(graph), Ok(parsed)) = (self.graphs.get(&id), parsed) else {
                 self.arrivals
@@ -358,6 +365,12 @@ impl Modules {
                 ModuleKind::Css => request.destination = Destination::Style,
             }
             request.url = parsed;
+            // A module another imports is fetched with that one's base URL
+            // as its referrer, under the graph's policy (HTML's "fetch the
+            // descendants of a module script").
+            if let Some(referrer) = referrer.and_then(|r| Url::parse(&r).ok()) {
+                request.referrer = net::Referrer::Url(Box::new(referrer));
+            }
             // A `blob:` URL pinned when `import()` resolved it: its blob,
             // as Fetch's scheme fetch answers it.
             if let Some((bytes, kind)) = self.pinned.remove(request.url.as_str()) {
@@ -481,7 +494,7 @@ impl Modules {
                 })
                 .collect();
             for (id, depth) in waiting {
-                self.visit(id, VecDeque::from([(url.clone(), depth)]));
+                self.visit(id, VecDeque::from([(url.clone(), depth, None)]));
             }
         }
     }

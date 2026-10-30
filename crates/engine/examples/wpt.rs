@@ -64,8 +64,9 @@
 //! worker (M31), as its `global` says, a `.window.js` or `.worker.js`
 //! test, or a page that loads `testharness.js`, with the scripts it
 //! loads, and no Python handler, no `.sub` template, no other host,
-//! nothing over `https:`, no shared or service worker, no module worker
-//! (G41) and no `SharedArrayBuffer` (G83); `blob:` URLs and
+//! nothing over HTTP/2, no shared or service worker, no module worker
+//! (G41) and no `SharedArrayBuffer` (G83); `.https` tests, which the
+//! runner loads over TLS, are taken since gap batch D; `blob:` URLs and
 //! `BroadcastChannel`, left out until gap batch A, are taken since. The
 //! real `testharness.js` is copied
 //! with them, and the files of the directories of
@@ -809,8 +810,8 @@ fn take_testharness(
         return Err((*why).to_string());
     }
     let name = rel.rsplit('/').next().unwrap_or(rel);
-    if name.contains(".https.") || name.contains(".h2.") {
-        return Err("https:".to_string());
+    if name.contains(".h2.") {
+        return Err("HTTP/2".to_string());
     }
     if [".serviceworker.", ".sharedworker.", ".worker-module."]
         .iter()
@@ -2290,7 +2291,7 @@ fn readme(
          them; `expectations.txt` names those expected to fail, and why.\n\n\
          With them are the testharness.js tests of {testharness} (M27, M29, M31, M40, M41, gap batches A and E)\n\
          that the runner's one server can serve: no Python handler, no `.sub`\n\
-         template, no other host, nothing over `https:`, no shared or\n\
+         template, no other host, nothing over HTTP/2, no shared or\n\
          service worker and no module worker. `resources/testharness.js` is\n\
          the real one; the runner serves its own `testharnessreport.js`, and\n\
          the pages wptserve makes of an `.any.js` test (for a window and,\n\
@@ -2575,6 +2576,7 @@ mod tests {
                     &format!("{harness}<iframe src=x.html></iframe>"),
                 ),
                 ("fetch/a/s.https.any.js", "test(() => {});"),
+                ("fetch/a/s.h2.any.js", "test(() => {});"),
                 ("fetch/a/t.sub.any.js", "test(() => {});"),
                 ("fetch/a/open.any.js", "window.open('x.html');"),
                 // A frameset document: a `frame` in a body is no element.
@@ -2692,7 +2694,7 @@ mod tests {
             ("workers/a/sab.any.js", "SharedArrayBuffer (G83)"),
             ("fetch/a/open.any.js", "a window"),
             ("fetch/a/fs.html", "a frame of another kind than iframe"),
-            ("fetch/a/s.https.any.js", "https:"),
+            ("fetch/a/s.h2.any.js", "HTTP/2"),
             ("fetch/a/none.html", "not a testharness test"),
         ] {
             assert_eq!(take(rel), Err(why.to_string()), "{rel}");
@@ -2707,6 +2709,8 @@ mod tests {
             "fetch/a/upper.any.js",
             "fetch/a/f.html",
             "fetch/a/t.sub.any.js",
+            // Since gap batch D: `.https` tests, loaded over TLS.
+            "fetch/a/s.https.any.js",
         ] {
             assert!(take(rel).is_ok(), "{rel}: {:?}", take(rel));
         }

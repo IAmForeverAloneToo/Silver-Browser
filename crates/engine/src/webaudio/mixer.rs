@@ -27,8 +27,10 @@ const AHEAD: u64 = OUTPUT_RATE as u64 * 30 / 1000;
 /// is let go of what it missed.
 const MAX_QUANTA_A_TICK: u64 = 64;
 
-/// What a context's rendering tells its document: the sources that ended.
-pub(crate) type Ended = Box<dyn Fn(Vec<audio::NodeId>) + Send>;
+/// What a context's rendering tells its document: the sources that
+/// ended, and the `ScriptProcessorNode`s' buffers filled.
+pub(crate) type Ended =
+    Box<dyn Fn(Vec<audio::NodeId>, Vec<(audio::NodeId, audio::nodes::script::Filled)>) + Send>;
 
 /// A running context, as the mixer keeps it.
 struct Live {
@@ -212,16 +214,25 @@ fn mix_once(written: &mut Written) {
     }
     let frames = quanta as usize * QUANTUM;
     let mut out = vec![0.0f32; frames * OUTPUT_CHANNELS];
-    for entry in live.values_mut() {
+    // In the order they started running: a context that gives its sound
+    // to another's stream source before the one that took the stream
+    // renders it, which then reads this wake's sound, not a gap.
+    let mut keys: Vec<u64> = live.keys().copied().collect();
+    keys.sort_unstable();
+    for key in keys {
+        let Some(entry) = live.get_mut(&key) else {
+            continue;
+        };
         let Some(graph) = entry.graph.upgrade() else {
             continue;
         };
         let mut graph = lock(&graph);
         render(entry, &mut graph, frames, &mut out);
         let ended = graph.take_ended();
+        let filled = graph.take_filled();
         drop(graph);
-        if !ended.is_empty() {
-            (entry.ended)(ended);
+        if !ended.is_empty() || !filled.is_empty() {
+            (entry.ended)(ended, filled);
         }
     }
     for sound in &elements {

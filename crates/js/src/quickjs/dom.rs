@@ -1040,6 +1040,16 @@ pub(super) fn install<'js, H: ScriptingHost>(
     super::wasm::install(ctx, &natives, budget)?;
     // ECMA-402's computations (D63), which never reach the host.
     super::intl::install(ctx, &natives)?;
+    // `Date.now()`: the system's precise clock in whole milliseconds since
+    // the Unix epoch, which never reaches the host.
+    natives.set(
+        "wallClock",
+        Function::new(ctx.clone(), || -> f64 {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0.0, |since| since.as_millis() as f64)
+        })?,
+    )?;
     // A binding chunk's function (D64), read when first asked for.
     natives.set(
         "chunk",

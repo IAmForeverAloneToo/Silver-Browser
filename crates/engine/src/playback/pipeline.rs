@@ -92,6 +92,9 @@ pub(crate) struct ElementSound {
     pub(crate) taken: AtomicU64,
     pub(crate) feed: Mutex<Option<audio::nodes::external::External>>,
     pub(crate) tainted: AtomicBool,
+    /// What takes the sound from the output's rate to that of a graph
+    /// that took it, and that rate.
+    to_graph: Mutex<Option<(f32, media::Resampler)>>,
 }
 
 impl ElementSound {
@@ -101,6 +104,24 @@ impl ElementSound {
 
     pub(crate) fn gain(&self) -> f32 {
         f32::from_bits(self.gain.load(Ordering::Relaxed))
+    }
+
+    /// `samples`, interleaved at the output's rate, at `rate`: a graph's
+    /// of another rate hears the sound at its pitch (0 is the output's).
+    fn at_rate(&self, samples: Vec<f32>, rate: f32) -> Vec<f32> {
+        if rate <= 0.0 || rate == OUTPUT_RATE as f32 {
+            return samples;
+        }
+        let mut to_graph = self.to_graph.lock().unwrap_or_else(PoisonError::into_inner);
+        if to_graph.as_ref().is_none_or(|(at, _)| *at != rate) {
+            let resampler =
+                media::Resampler::new(f64::from(OUTPUT_RATE), f64::from(rate), OUTPUT_CHANNELS);
+            *to_graph = Some((rate, resampler));
+        }
+        match to_graph.as_mut() {
+            Some((_, resampler)) => resampler.process(&samples),
+            None => samples,
+        }
     }
 
     /// Takes up to `into.len()` samples, adding them at its gain to
@@ -122,6 +143,7 @@ impl ElementSound {
                     .drain(..n)
                     .map(|s| if silent { 0.0 } else { s * gain })
                     .collect();
+                let samples = self.at_rate(samples, external.rate);
                 external
                     .feed
                     .lock()

@@ -1985,6 +1985,19 @@ impl Engine {
         };
         // It takes the document's policies (M33.1).
         let creator = self.shown.page.creator(&self.shown.document);
+        self.javascript_document(url, creator, html, Handling::Replace);
+    }
+
+    /// The document a `javascript:` URL's result `html` makes at `url`,
+    /// with `creator`'s policies, in place of the one that ran it: the
+    /// navigation on its way, if any, cancelled.
+    fn javascript_document(
+        &mut self,
+        url: Url,
+        creator: loader::Creator,
+        html: String,
+        handling: Handling,
+    ) {
         self.cancel_navigation();
         let response = net::Response {
             url_list: vec![url.clone()],
@@ -2006,7 +2019,7 @@ impl Engine {
                 body: html.into_bytes(),
                 sniffed: false,
             },
-            handling: Handling::Replace,
+            handling,
             started: self.time_origin(),
             creator: Some(creator),
             sandbox: self.creation_sandbox(),
@@ -5596,6 +5609,22 @@ impl Engine {
             window: window.clone(),
         };
         let go_on = scripts.run_ready(&mut lent, false);
+        // A `javascript:` URL it ran made the document that replaces it.
+        if let Some(html) = scripts.take_javascript_result() {
+            let (url, creator) = (page.url().cloned(), page.creator(document));
+            // What it wrote is the tab's, as a document's that is left.
+            let lines = scripts.take_console();
+            let lines = self.frame_lines(lines, url.as_ref());
+            self.departed.extend(lines);
+            let handling = self
+                .navigation
+                .as_ref()
+                .map_or(Handling::Replace, |n| n.handling);
+            if let Some(url) = url {
+                self.javascript_document(url, creator, html, handling);
+            }
+            return;
+        }
         if let Some(navigation) = scripts.take_navigation() {
             self.incoming_navigation(navigation);
             return;
@@ -5734,6 +5763,10 @@ impl Engine {
             window: window.clone(),
         };
         if !queue.run_ready(&mut lent, false) {
+            if let Some(html) = queue.take_javascript_result() {
+                self.show_javascript_result(html);
+                return;
+            }
             self.scripts_ran();
             return;
         }
@@ -6430,6 +6463,14 @@ impl Engine {
     /// real time.
     pub fn has_workers(&self) -> bool {
         self.shown.scripts.has_workers() || self.frames_busy(Engine::has_workers)
+    }
+
+    /// Whether the document shown has an audio context rendering: a
+    /// runner on a hand's clock lets real time pass with its own, as an
+    /// `AudioContext` renders at the output's clock and an offline one
+    /// on a thread of its own, and waits for what it tells.
+    pub fn renders_sound(&self) -> bool {
+        self.shown.scripts.renders_sound() || self.frames_busy(Engine::renders_sound)
     }
 
     /// Whether a fetch is in flight (M27): a runner on a hand's clock

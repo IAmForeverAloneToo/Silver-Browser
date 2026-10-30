@@ -561,3 +561,57 @@ fn a_splitter_and_a_merger_swap_channels() {
     });
     assert_eq!((out[0][5], out[1][5]), (0.75, 0.25));
 }
+
+#[test]
+fn a_tap_gives_one_graphs_sound_to_another_until_it_stops() {
+    let tap = nodes::external::Tap::default();
+    let mut from = Graph::new(R, 1);
+    let c = from.add(nodes::constant()).unwrap();
+    from.node_mut(c).unwrap().params[0].value = 0.5;
+    started(&mut from, c);
+    let t = from.add(nodes::tap(tap.clone())).unwrap();
+    from.connect(c, 0, t, 0);
+    let mut to = Graph::new(R, 1);
+    let source = to.add(nodes::external(tap.reader())).unwrap();
+    to.connect(source, 0, 0, 0);
+    // Nothing given yet: silence; and until four quanta came.
+    assert_eq!(to.render()[0][0], 0.0);
+    for _ in 0..3 {
+        from.render();
+    }
+    assert_eq!(to.render()[0][5], 0.0);
+    from.render();
+    assert_eq!(to.render()[0][5], 0.5);
+    from.render();
+    assert_eq!(to.render()[0][5], 0.5);
+    // Once stopped, what came plays out, then silence.
+    tap.stop();
+    from.render();
+    let heard: Vec<f32> = (0..6).map(|_| to.render()[0][5]).collect();
+    assert_eq!(heard, [0.5, 0.5, 0.5, 0.0, 0.0, 0.0]);
+}
+
+#[test]
+fn a_script_processor_hands_out_its_input_and_plays_the_answers() {
+    let mut graph = Graph::new(R, 1);
+    let c = graph.add(nodes::constant()).unwrap();
+    graph.node_mut(c).unwrap().params[0].value = 0.25;
+    started(&mut graph, c);
+    let s = graph.add(nodes::script(256, 1, 1)).unwrap();
+    graph.connect(c, 0, s, 0);
+    graph.connect(s, 0, 0, 0);
+    let mut heard = Vec::new();
+    for _ in 0..8 {
+        heard.push(graph.render()[0][0]);
+        for (id, filled) in graph.take_filled() {
+            assert_eq!(id, s);
+            assert!(filled.channels[0].iter().all(|v| *v == 0.25));
+            let doubled = filled.channels[0].iter().map(|v| v * 2.0).collect();
+            if let Kind::Script(script) = &mut graph.node_mut(s).unwrap().kind {
+                script.answer(filled.seq, vec![doubled]);
+            }
+        }
+    }
+    // Two buffers of 256 frames late.
+    assert_eq!(heard, [0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 0.5]);
+}

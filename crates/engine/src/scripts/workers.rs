@@ -1391,7 +1391,9 @@ impl ScriptingHost for WorkerHost {
             }
             Call::ImportScript(url) => Ok(Answer::Strings(
                 self.import_script(&url)
-                    .map_or_else(Vec::new, |(text, url)| vec![text, url]),
+                    .map_or_else(Vec::new, |(text, url, muted)| {
+                        vec![text, url, if muted { "muted" } else { "" }.to_owned()]
+                    }),
             )),
             Call::ServiceWorker(request) => match self.service.as_mut() {
                 Some(service) => Ok(Answer::String(service.call(&request))),
@@ -1622,7 +1624,7 @@ impl WorkerHost {
     /// A script `importScripts` runs (HTML's "fetch a classic
     /// worker-imported script"): fetched as a script, which needs an ok
     /// status and a JavaScript type, decoded as UTF-8; its text and URL.
-    fn import_script(&mut self, url: &str) -> Option<(String, String)> {
+    fn import_script(&mut self, url: &str) -> Option<(String, String, bool)> {
         let url = Url::parse(url).ok()?;
         // A service worker's (M39): fetched while it is evaluated and kept
         // as its version's, after that only those kept.
@@ -1630,7 +1632,7 @@ impl WorkerHost {
             && !service.recording()
         {
             let body = service.stored(&url)?;
-            return Some((utf8_decode(&body), url.to_string()));
+            return Some((utf8_decode(&body), url.to_string(), false));
         }
         let mut request = Request::get(url, Destination::Script)
             .initiated_by(self.initiator.clone()?)
@@ -1651,7 +1653,14 @@ impl WorkerHost {
         if let Some(service) = self.service.as_mut() {
             service.record(response.url().clone(), &response.body);
         }
-        Some((utf8_decode(&response.body), response.url().to_string()))
+        // Another origin's, not by CORS: its errors are muted (HTML's
+        // "muted errors").
+        let muted = response.response_type == net::ResponseType::Opaque;
+        Some((
+            utf8_decode(&response.body),
+            response.url().to_string(),
+            muted,
+        ))
     }
 
     /// A canvas's call in a worker (M31): an `OffscreenCanvas`'s or an

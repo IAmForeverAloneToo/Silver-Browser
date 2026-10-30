@@ -1,11 +1,14 @@
 //! An `OfflineAudioContext`'s rendering (Web Audio 1.1 section 1.3): a
 //! thread that renders its graph as fast as it can into the buffer
 //! `startRendering()` resolves with, stopping at each `suspend()` frame
-//! until the page resumes it.
+//! until the page resumes it, and at each `ScriptProcessorNode` buffer
+//! filled until the page answers it, as the reference browser waits for
+//! the page offline.
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Condvar, Mutex};
 
+use audio::nodes::script::Filled;
 use audio::{Graph, NodeId, QUANTUM};
 
 /// What the rendering tells the document.
@@ -14,6 +17,8 @@ pub(crate) enum Report {
     Suspended(u64),
     /// Sources ended.
     Ended(Vec<NodeId>),
+    /// `ScriptProcessorNode`s' buffers filled, which the page answers.
+    Filled(Vec<(NodeId, Filled)>),
     /// It rendered every frame: the channels.
     Done(Vec<Vec<f32>>),
 }
@@ -26,6 +31,10 @@ struct Shared {
     paused: bool,
     /// The document went: it stops.
     cancelled: bool,
+    /// The buffers handed to the page not yet answered.
+    owed: usize,
+    /// It rendered every frame, or stopped.
+    finished: bool,
 }
 
 type Pair = Arc<(Mutex<Shared>, Condvar)>;
@@ -57,6 +66,21 @@ impl Offline {
         lock(&self.shared.0).suspends.insert(frame)
     }
 
+    /// Whether it renders now: started, not finished, not stopped at a
+    /// suspension.
+    pub(crate) fn busy(&self) -> bool {
+        let shared = lock(&self.shared.0);
+        self.started && !shared.finished && !shared.paused
+    }
+
+    /// The page answered a buffer it was handed.
+    pub(crate) fn answered(&self) {
+        let (shared, wake) = &*self.shared;
+        let mut shared = lock(shared);
+        shared.owed = shared.owed.saturating_sub(1);
+        wake.notify_all();
+    }
+
     /// Lets a stopped rendering go on.
     pub(crate) fn resume(&self) -> bool {
         let (shared, wake) = &*self.shared;
@@ -80,7 +104,10 @@ impl Offline {
         let length = self.length;
         let _ = std::thread::Builder::new()
             .name("offline audio".to_owned())
-            .spawn(move || render(&graph, channels, length, &shared, &*report));
+            .spawn(move || {
+                render(&graph, channels, length, &shared, &*report);
+                lock(&shared.0).finished = true;
+            });
     }
 }
 
@@ -126,6 +153,7 @@ fn render(
         let mut g = lock(graph);
         let bus = g.render();
         let ended = g.take_ended();
+        let filled = g.take_filled();
         drop(g);
         let take = (length - frame as usize).min(QUANTUM);
         for (channel, data) in out
@@ -136,6 +164,20 @@ fn render(
         }
         if !ended.is_empty() {
             report(Report::Ended(ended));
+        }
+        if !filled.is_empty() {
+            let (state, wake) = &**shared;
+            lock(state).owed += filled.len();
+            report(Report::Filled(filled));
+            let mut state = lock(state);
+            while state.owed > 0 && !state.cancelled {
+                state = wake
+                    .wait(state)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+            if state.cancelled {
+                return;
+            }
         }
         frame += QUANTUM as u64;
     }

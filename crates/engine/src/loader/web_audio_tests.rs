@@ -582,6 +582,30 @@ c.onstatechange = () => { log('statechange ' + c.state); c.close().then(() => lo
 }
 
 #[test]
+fn a_running_context_is_said_to_render_sound_until_it_is_suspended() {
+    // What the WPT runner's hand clock waits on in real time.
+    let _turn = audio_turn();
+    let page = server(
+        r#"
+const c = new AudioContext();
+c.onstatechange = () => log('statechange ' + c.state);
+addEventListener('keydown', () => c.suspend().then(() => log('done')));
+"#,
+    );
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.set_autoplay(true);
+    tab.engine.navigate(page.url("/page.html"));
+    assert!(!tab.engine.renders_sound());
+    tab.run_until(|lines| lines.iter().any(|l| l == "statechange running"));
+    assert!(tab.engine.renders_sound());
+    tab.engine
+        .key_down(&crate::Key::new("a", "KeyA").with_text("a"));
+    until_done(&mut tab);
+    assert!(!tab.engine.renders_sound());
+}
+
+#[test]
 fn options_and_floats_are_checked_as_the_reference_checks_them() {
     // WPT's ctor-*.html, pannernode-setposition-throws.html,
     // createPeriodicWaveInfiniteValuesThrows.html and audionode.html.
@@ -617,6 +641,129 @@ log('done');
             "far orientation TypeError",
             "orientation 1",
             "infinite wave TypeError",
+        ]
+    );
+}
+
+#[test]
+fn a_script_processor_hands_out_its_buffers_and_plays_the_pages_two_later() {
+    // As the reference browser renders WPT's simple-input-output.html
+    // and its own numbers (Chrome 156): buffers of 512 frames, the
+    // event of the first at its fourth quantum, output two buffers late.
+    let server = server(
+        r#"
+(async () => {
+  const c = new OfflineAudioContext(1, 2048, 48000);
+  const s = c.createScriptProcessor(512, 1, 1);
+  const k = c.createConstantSource();
+  k.offset.value = 0.5;
+  k.connect(s).connect(c.destination);
+  k.start();
+  let n = 0, first;
+  s.onaudioprocess = (e) => {
+    n++;
+    if (n === 1) first = e;
+    log(e.type + ' ' + e.playbackTime * 48000 + ' ' + e.inputBuffer.length + ' ' + e.inputBuffer.getChannelData(0)[511] + ' ' + (e.inputBuffer === first.inputBuffer) + ' ' + e.isTrusted + ' ' + e.bubbles + ' ' + (e instanceof AudioProcessingEvent));
+    const out = e.outputBuffer.getChannelData(0);
+    for (let i = 0; i < out.length; i++) out[i] = e.inputBuffer.getChannelData(0)[i] + n;
+  };
+  const b = await c.startRendering();
+  const d = b.getChannelData(0);
+  log([0, 1023, 1024, 1535, 1536, 2047].map(i => d[i]).join(' '));
+  log([c.createScriptProcessor().bufferSize, s.channelCount, s.channelCountMode, s.numberOfInputs, s.numberOfOutputs, c.createScriptProcessor(256, 0, 1).channelCount].join());
+  for (const args of [[100], [256, 0, 0], [256, 33, 1], [256, 1, 40]]) {
+    try { c.createScriptProcessor(...args); } catch (e) { log(e.name + ': ' + e.message); }
+  }
+  try { s.channelCount = 2; } catch (e) { log(e.name + ': ' + e.message); }
+  try { s.channelCountMode = 'max'; } catch (e) { log(e.name + ': ' + e.message); }
+  try { new ScriptProcessorNode(); } catch (e) { log(e.name + ': ' + e.message); }
+  try { new AudioProcessingEvent('x'); } catch (e) { log(e.name + ': ' + e.message); }
+  log('done');
+})().catch(e => log('failed ' + e + ' ' + e.stack));
+"#,
+    );
+    let mut tab = open(&server);
+    let lines = until_done(&mut tab);
+    assert_eq!(
+        lines,
+        [
+            "audioprocess 896.0000000000001 512 0.5 true true true true",
+            "audioprocess 1408 512 0.5 true true true true",
+            "audioprocess 1920 512 0.5 true true true true",
+            "audioprocess 2432 512 0.5 true true true true",
+            "0 0 1.5 1.5 2.5 2.5",
+            "256,1,explicit,1,1,0",
+            "IndexSizeError: Failed to execute 'createScriptProcessor' on 'BaseAudioContext': buffer size (100) must be 0 or a power of two between 256 and 16384.",
+            "IndexSizeError: Failed to execute 'createScriptProcessor' on 'BaseAudioContext': number of input channels and output channels cannot both be zero.",
+            "IndexSizeError: Failed to execute 'createScriptProcessor' on 'BaseAudioContext': number of input channels (33) exceeds maximum (32).",
+            "IndexSizeError: Failed to execute 'createScriptProcessor' on 'BaseAudioContext': number of output channels (40) exceeds maximum (32).",
+            "NotSupportedError: Failed to set the 'channelCount' property on 'AudioNode': channelCount cannot be changed from 1 to 2",
+            "NotSupportedError: Failed to set the 'channelCountMode' property on 'AudioNode': channelCountMode cannot be changed from 'explicit' to 'max'",
+            "TypeError: Failed to construct 'ScriptProcessorNode': Illegal constructor",
+            "TypeError: Failed to construct 'AudioProcessingEvent': 2 arguments required, but only 1 present.",
+        ]
+    );
+}
+
+#[test]
+fn a_stream_destinations_track_is_heard_by_a_stream_source_until_it_stops() {
+    // One context's sound through a MediaStream into another's, read by
+    // a ScriptProcessorNode there; silence once the track stopped. The
+    // stream's shape and errors are the reference browser's (Chrome 156).
+    let _turn = audio_turn();
+    let server = server(
+        r#"
+(async () => {
+  const a = new AudioContext(), b = new AudioContext();
+  const dest = a.createMediaStreamDestination();
+  const track = dest.stream.getAudioTracks()[0];
+  log([dest.numberOfInputs, dest.numberOfOutputs, dest.channelCount, dest.channelCountMode, dest.stream instanceof MediaStream, dest.stream === dest.stream, dest.stream.getTracks().length, track.kind, track.label, track.readyState, track.id.length, dest.stream.active].join());
+  const k = a.createConstantSource();
+  k.offset.value = 0.25;
+  k.connect(dest);
+  k.start();
+  const src = b.createMediaStreamSource(dest.stream);
+  log([src.numberOfInputs, src.numberOfOutputs, src.channelCount, src.channelCountMode, src.mediaStream === dest.stream].join());
+  try { b.createMediaStreamSource(new MediaStream()); } catch (e) { log(e.name + ': ' + e.message); }
+  try { new MediaStreamAudioDestinationNode(new OfflineAudioContext(1, 1, 8000)); } catch (e) { log(e.name + ': ' + e.message); }
+  log(typeof OfflineAudioContext.prototype.createMediaStreamDestination);
+  const sp = b.createScriptProcessor(1024, 2, 1);
+  src.connect(sp);
+  const heard = () => new Promise(r => sp.onaudioprocess = (e) => r(e.inputBuffer.getChannelData(0)[1000]));
+  let v = 0;
+  for (let i = 0; i < 40 && v !== 0.25; i++) v = await heard();
+  log('heard ' + v);
+  // The writer renders before the reader each wake: no gap once heard.
+  const whole = () => new Promise(r => sp.onaudioprocess = (e) => r(e.inputBuffer.getChannelData(0).every(s => s === 0.25)));
+  let gaps = 0;
+  for (let i = 0; i < 8; i++) if (!await whole()) gaps++;
+  log('gaps ' + gaps);
+  track.stop();
+  log(track.readyState + ' ' + dest.stream.active);
+  for (let i = 0; i < 40 && v !== 0; i++) v = await heard();
+  log('then ' + v);
+  a.close(); b.close();
+  log('done');
+})().catch(e => log('failed ' + e + ' ' + e.stack));
+"#,
+    );
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.set_autoplay(true);
+    tab.engine.navigate(server.url("/page.html"));
+    let lines = until_done(&mut tab);
+    assert_eq!(
+        lines,
+        [
+            "1,0,2,explicit,true,true,1,audio,MediaStreamAudioDestinationNode,live,36,true",
+            "0,1,2,max,true",
+            "InvalidStateError: Failed to execute 'createMediaStreamSource' on 'AudioContext': MediaStream has no audio track",
+            "TypeError: Failed to construct 'MediaStreamAudioDestinationNode': parameter 1 is not of type 'AudioContext'.",
+            "undefined",
+            "heard 0.25",
+            "gaps 0",
+            "ended false",
+            "then 0",
         ]
     );
 }

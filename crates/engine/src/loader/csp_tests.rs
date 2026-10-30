@@ -304,6 +304,34 @@ fn a_frames_navigations_are_held_to_its_containers_frame_src() {
 }
 
 #[test]
+fn a_refused_frame_of_another_origin_is_named_by_its_origin() {
+    // As the reference browser strips cross-origin `frame-src` and
+    // `object-src` violations (WPT's frame-src-blocked-path-matching);
+    // one of its own origin keeps its path.
+    static PAGES: Pages = &[(
+        "/page.html",
+        &[("Content-Security-Policy", "frame-src 'none'")],
+        "<script>let n = 0;\
+         addEventListener('securitypolicyviolation', e => {\
+           console.log(e.effectiveDirective + ' ' + e.blockedURI);\
+           if (++n == 2) console.log('both');\
+         });</script>\
+         <iframe src='http://b.localhost:PORT/away.html#x'></iframe>\
+         <iframe src='/own.html#y'></iframe>",
+    )];
+    let server = sites(PAGES);
+    let lines = run_to(&server, at(&server, "a.localhost", "/page.html"), "both");
+    assert!(
+        lines.contains(&"frame-src http://b.localhost:PORT".to_owned()),
+        "{lines:?}"
+    );
+    assert!(
+        lines.contains(&"frame-src http://a.localhost:PORT/own.html".to_owned()),
+        "{lines:?}"
+    );
+}
+
+#[test]
 fn a_worker_is_held_to_worker_src_and_its_own_policies() {
     static PAGES: Pages = &[
         (

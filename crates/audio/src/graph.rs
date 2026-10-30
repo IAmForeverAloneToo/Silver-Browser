@@ -91,6 +91,8 @@ pub struct Graph {
     pub listener: Vec<Param>,
     /// Sources that ended in the last quantum, for their `ended` events.
     ended: Vec<NodeId>,
+    /// The `ScriptProcessorNode`s' buffers filled, for the page.
+    filled: Vec<(NodeId, crate::nodes::script::Filled)>,
 }
 
 impl Graph {
@@ -104,6 +106,7 @@ impl Graph {
             order: None,
             listener: crate::nodes::panner::listener_params(),
             ended: Vec::new(),
+            filled: Vec::new(),
         }
     }
 
@@ -223,6 +226,12 @@ impl Graph {
     /// The sources that ended since this was last asked.
     pub fn take_ended(&mut self) -> Vec<NodeId> {
         std::mem::take(&mut self.ended)
+    }
+
+    /// The `ScriptProcessorNode`s' buffers filled since this was last
+    /// asked, by node.
+    pub fn take_filled(&mut self) -> Vec<(NodeId, crate::nodes::script::Filled)> {
+        std::mem::take(&mut self.filled)
     }
 
     /// Orders the nodes, marks cycles: those through a delay broken there,
@@ -424,9 +433,14 @@ impl Graph {
             } else {
                 outputs
             };
+            let filled = match &mut node.kind {
+                Kind::Script(script) => script.take_ready(),
+                _ => Vec::new(),
+            };
             if ended {
                 self.ended.push(id);
             }
+            self.filled.extend(filled.into_iter().map(|f| (id, f)));
         }
         for id in late_writes {
             let Some(node) = self.node(id) else { continue };

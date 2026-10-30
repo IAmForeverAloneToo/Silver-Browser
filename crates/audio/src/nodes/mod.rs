@@ -9,6 +9,7 @@ pub mod delay;
 pub mod external;
 pub mod filters;
 pub mod panner;
+pub mod script;
 pub mod shaper;
 pub mod sources;
 
@@ -43,6 +44,8 @@ pub enum Kind {
     Convolver(convolver::Convolver),
     Analyser(analyser::Analyser),
     External(external::External),
+    Script(script::Script),
+    Tap(external::Tap),
 }
 
 /// The largest single-precision float: the standard's "most positive
@@ -291,6 +294,34 @@ pub fn external(feed: external::External) -> Node {
     )
 }
 
+/// A `ScriptProcessorNode` of buffers of `size` frames: its channel count
+/// its input channels', explicit.
+pub fn script(size: usize, input_channels: usize, output_channels: usize) -> Node {
+    Node::new(
+        Kind::Script(script::Script::new(size, input_channels, output_channels)),
+        1,
+        1,
+        input_channels.max(1),
+        Mode::Explicit,
+        Interpretation::Speakers,
+        vec![],
+    )
+}
+
+/// A `MediaStreamAudioDestinationNode`: its input given to `tap`, two
+/// channels, explicit.
+pub fn tap(tap: external::Tap) -> Node {
+    Node::new(
+        Kind::Tap(tap),
+        1,
+        0,
+        2,
+        Mode::Explicit,
+        Interpretation::Speakers,
+        vec![],
+    )
+}
+
 impl Kind {
     /// Processes one quantum: the outputs, and whether a source ended in
     /// it.
@@ -368,6 +399,11 @@ impl Kind {
                 (vec![bus], false)
             }
             Kind::External(feed) => (vec![feed.take()], false),
+            Kind::Script(script) => (vec![script.process(&input(), context.quantum.start)], false),
+            Kind::Tap(tap) => {
+                tap.give(&input());
+                (Vec::new(), false)
+            }
         }
     }
 

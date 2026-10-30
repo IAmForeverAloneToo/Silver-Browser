@@ -580,6 +580,44 @@ fn a_realm_has_no_unrounded_clock_and_no_shared_memory() {
 }
 
 #[test]
+fn the_date_reads_the_system_clock_to_the_millisecond() {
+    let before = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("after the epoch")
+        .as_millis();
+    // The first step of the clock: a millisecond or so, not the coarse
+    // clock's sixteen.
+    let done = realm()
+        .run(
+            &script(
+                "const a = Date.now(); let b = a; while (b === a) b = Date.now();                  const c = new Date().getTime(), d = Date.parse(Date());                  class Later extends Date {}                  const later = new Later(5);                  [Number.isInteger(a), b - a < 8, c >= b && c - b < 1000, d <= c && c - d < 2000,                  later instanceof Date && later.getTime() === 5 && new Date(7).getTime() === 7,                  new Date(2020, 1).getMonth() === 1 && Date.prototype.constructor === Date,                  a, Date.now.name, Date.now.length, String(Date.now), Date.name, Date.length,                  String(Date)].join()",
+            ),
+            &mut Recorder::default(),
+        )
+        .expect("it runs");
+    let Completion::String(text) = done else {
+        panic!("a string: {done:?}");
+    };
+    let parts: Vec<&str> = text.split(',').collect();
+    assert_eq!(parts[..6], ["true"; 6], "{text}");
+    let read: u128 = parts[6].parse().expect("a number");
+    // Not before the time read just before: QuickJS's coarse clock may
+    // read up to a step behind.
+    assert!(read >= before && read < before + 5_000, "{read} {before}");
+    assert_eq!(
+        parts[7..],
+        [
+            "now",
+            "0",
+            "function now() { [native code] }",
+            "Date",
+            "7",
+            "function Date() { [native code] }"
+        ]
+    );
+}
+
+#[test]
 fn timers_keep_their_callbacks_and_the_host_their_times() {
     let mut realm = realm();
     let mut host = Recorder::default();

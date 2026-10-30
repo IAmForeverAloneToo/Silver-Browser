@@ -11,8 +11,11 @@ pub(crate) mod mixer;
 pub(crate) mod offline;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use audio::nodes::external::Tap;
+use audio::nodes::script::Filled;
 use audio::nodes::{self, Kind, filters::BiquadType, panner::DistanceModel, shaper::Oversample};
 use audio::{AudioData, Buffer, Event, Graph, Interpretation, Mode, NodeId, PeriodicWave, Rate};
 use devtools::Json;
@@ -28,6 +31,10 @@ pub(crate) const MAX_AUDIO_BUFFER_BYTES: usize = 512 << 20;
 pub(crate) const MAX_AUDIO_CONTEXTS: usize = 32;
 /// The most bytes `decodeAudioData()` decodes to.
 pub(crate) const MAX_DECODE_AUDIO_BYTES: usize = 512 << 20;
+/// The most live `MediaStreamTrack`s a document's
+/// `MediaStreamAudioDestinationNode`s make; past them, a new one is
+/// refused.
+pub(crate) const MAX_AUDIO_TRACKS: usize = 256;
 
 /// Whether `samples` decoded at `from` hertz are within
 /// [`MAX_DECODE_AUDIO_BYTES`] once resampled to `to` hertz.
@@ -107,11 +114,19 @@ impl State {
     }
 }
 
+/// The most `ScriptProcessorNode` buffers a context hands its document
+/// that it has not answered: past them a realtime one's are not handed
+/// out, and play as silence, so that a page that does not keep up does
+/// not fill its inbox.
+pub(crate) const MAX_SCRIPT_BUFFERS_OWED: usize = 64;
+
 /// What a context's threads tell its document.
 #[derive(Clone)]
 struct Teller {
     inbox: Inbox,
     context: u32,
+    /// The `ScriptProcessorNode` buffers handed out, not yet answered.
+    owed: Arc<AtomicUsize>,
 }
 
 impl Teller {
@@ -143,6 +158,33 @@ impl Teller {
             );
         }
     }
+
+    /// `ScriptProcessorNode`s' buffers filled: an `audioprocess` event
+    /// each, its input the samples, its `playbackTime` when the page's
+    /// output for it plays. A realtime context's (`bounded`) past
+    /// [`MAX_SCRIPT_BUFFERS_OWED`] are not handed out; an offline one
+    /// waits for each answer.
+    fn filled(&self, rate: f32, filled: Vec<(NodeId, Filled)>, bounded: bool) {
+        for (node, buffer) in filled {
+            let owed = self.owed.fetch_add(1, Ordering::Relaxed);
+            if bounded && owed >= MAX_SCRIPT_BUFFERS_OWED {
+                self.owed.fetch_sub(1, Ordering::Relaxed);
+                continue;
+            }
+            let length = buffer.channels.first().map_or(0, Vec::len);
+            self.tell(
+                vec![
+                    ("type", Json::from("process")),
+                    ("node", Json::from(node)),
+                    ("seq", Json::from(buffer.seq)),
+                    ("time", Json::from(buffer.plays_at as f64 / f64::from(rate))),
+                    ("channels", Json::from(buffer.channels.len() as u64)),
+                    ("length", Json::from(length as u64)),
+                ],
+                samples_to_bytes(&buffer.channels),
+            );
+        }
+    }
 }
 
 struct Context {
@@ -171,9 +213,13 @@ impl Context {
     fn run(&mut self) {
         if self.running.is_none() {
             let teller = self.teller.clone();
+            let rate = self.rate;
             self.running = Some(mixer::run(
                 &self.graph,
-                Box::new(move |ended| teller.ended(&ended)),
+                Box::new(move |ended, filled| {
+                    teller.ended(&ended);
+                    teller.filled(rate, filled, true);
+                }),
             ));
         }
         self.state = State::Running;
@@ -185,6 +231,10 @@ impl Context {
 pub(crate) struct WebAudio {
     contexts: HashMap<u32, Context>,
     next: u32,
+    /// The `MediaStreamTrack`s its `MediaStreamAudioDestinationNode`s
+    /// made, live, by number: any of its contexts may read one.
+    tracks: HashMap<u32, Tap>,
+    next_track: u32,
 }
 
 /// What a call needs of its document: its inbox, and whether the user
@@ -222,6 +272,14 @@ impl WebAudio {
         self.contexts
             .values()
             .any(|c| c.offline.is_none() && c.state != State::Closed)
+    }
+
+    /// Whether a context renders now: an `AudioContext` on the mixer's
+    /// clock, or an `OfflineAudioContext` on its thread.
+    pub(crate) fn rendering(&self) -> bool {
+        self.contexts
+            .values()
+            .any(|c| c.running.is_some() || c.offline.as_ref().is_some_and(offline::Offline::busy))
     }
 
     /// Whether a context waits for the user's activation to start.
@@ -281,6 +339,15 @@ impl WebAudio {
         let name = text(op, "op");
         if name == "newContext" {
             return self.new_context(op, env);
+        }
+        if name == "stopTrack" {
+            if let Some(tap) = self.tracks.remove(&whole(op, "track")?) {
+                tap.stop();
+            }
+            return Ok((Json::Null, Vec::new()));
+        }
+        if name == "newNode" && matches!(text(op, "kind"), "streamDestination" | "streamSource") {
+            return self.stream_node(op);
         }
         let activated = env.activated;
         let context = self.context(op)?;
@@ -507,6 +574,7 @@ impl WebAudio {
                             Vec::new(),
                         ),
                         offline::Report::Ended(nodes) => teller.ended(&nodes),
+                        offline::Report::Filled(filled) => teller.filled(rate, filled, false),
                         offline::Report::Done(channels) => {
                             let length = channels.first().map_or(0, Vec::len);
                             let bytes = samples_to_bytes(&channels);
@@ -588,6 +656,31 @@ impl WebAudio {
                 lock(&context.buffers).remove(&id);
                 empty()
             }
+            // The page's output for a `ScriptProcessorNode`'s buffer: an
+            // offline rendering waiting for it goes on.
+            "scriptOutput" => {
+                let (node, seq) = (whole(op, "node")?, number(op, "seq").unwrap_or(-1.0));
+                let count = whole(op, "channels")? as usize;
+                let mut graph = lock(&context.graph);
+                if let Some(Kind::Script(script)) = graph.node_mut(node).map(|n| &mut n.kind)
+                    && seq >= 0.0
+                {
+                    let size = script.size;
+                    if let Some(channels) = bytes_to_samples(&bytes, count, size) {
+                        script.answer(seq as u64, channels);
+                    }
+                }
+                drop(graph);
+                let _ = context.teller.owed.fetch_update(
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                    |owed| owed.checked_sub(1),
+                );
+                if let Some(offline) = &context.offline {
+                    offline.answered();
+                }
+                empty()
+            }
             "analyser" => analyser_op(context, op),
             "response" => response_op(context, op, &bytes),
             "reduction" => {
@@ -601,6 +694,33 @@ impl WebAudio {
             }
             other => fail("TypeError", format!("no operation '{other}'")),
         }
+    }
+
+    /// A `MediaStreamAudioDestinationNode`, which makes a track, or a
+    /// `MediaStreamAudioSourceNode` reading one (silence for a track
+    /// that stopped or that is not here).
+    fn stream_node(&mut self, op: &Json) -> Result<(Json, Vec<u8>), Failure> {
+        let mut track = None;
+        let node = if text(op, "kind") == "streamDestination" {
+            self.tracks
+                .retain(|_, tap| tap.readers.lock().map_or(true, |readers| !readers.stopped));
+            if self.tracks.len() >= MAX_AUDIO_TRACKS {
+                return fail("NotSupportedError", "too many media stream tracks");
+            }
+            let tap = Tap::default();
+            self.next_track += 1;
+            self.tracks.insert(self.next_track, tap.clone());
+            track = Some(self.next_track);
+            nodes::tap(tap)
+        } else {
+            let feed = number(op, "track")
+                .and_then(|t| self.tracks.get(&(t as u32)))
+                .map_or_else(nodes::external::External::default, Tap::reader);
+            nodes::external(feed)
+        };
+        let context = self.context(op)?;
+        let extra = track.map(|t| ("track", Json::from(t)));
+        add_node(context, node, extra)
     }
 
     fn new_context(&mut self, op: &Json, env: &Env) -> Result<(Json, Vec<u8>), Failure> {
@@ -640,6 +760,7 @@ impl WebAudio {
             teller: Teller {
                 inbox: env.inbox.clone(),
                 context: id,
+                owed: Arc::default(),
             },
         };
         // A realtime context made once the user has activated the page
@@ -708,6 +829,14 @@ fn new_node(
         "compressor" => nodes::compressor(rate),
         "convolver" => nodes::convolver(),
         "analyser" => nodes::analyser(),
+        "script" => {
+            let size = whole(op, "size")? as usize;
+            if !nodes::script::SIZES.contains(&size) {
+                return fail("IndexSizeError", "the buffer size");
+            }
+            let channels = |name| whole(op, name).map(|c| (c as usize).min(audio::MAX_CHANNELS));
+            nodes::script(size, channels("inputs")?, channels("outputs")?)
+        }
         // An element's sound, taken out of the output into the graph, for
         // good.
         "mediaElementSource" => {
@@ -724,7 +853,10 @@ fn new_node(
                     "HTMLMediaElement already connected previously to a different MediaElementSourceNode.",
                 );
             }
-            let external = nodes::external::External::default();
+            let external = nodes::external::External {
+                rate: context.rate,
+                ..Default::default()
+            };
             *feed = Some(external.clone());
             nodes::external(external)
         }
@@ -732,12 +864,22 @@ fn new_node(
             let graph = lock(&context.graph);
             let n = graph.node(0).map_or(2, |n| n.channel_count);
             return Ok((
-                describe(0, 1, 1, n, "explicit", "speakers", &[]),
+                describe(0, 1, 1, n, "explicit", "speakers", &[], None),
                 Vec::new(),
             ));
         }
         other => return fail("TypeError", format!("no node '{other}'")),
     };
+    add_node(context, node, None)
+}
+
+/// Adds `node` to the context's graph: its number, its shape, its
+/// params' ranges, and `extra`.
+fn add_node(
+    context: &mut Context,
+    node: audio::Node,
+    extra: Option<(&str, Json)>,
+) -> Result<(Json, Vec<u8>), Failure> {
     let (inputs, outputs, count, mode, interpretation) = (
         node.inputs,
         node.outputs,
@@ -763,11 +905,21 @@ fn new_node(
         Interpretation::Discrete => "discrete",
     };
     Ok((
-        describe(id, inputs, outputs, count, mode, interpretation, &params),
+        describe(
+            id,
+            inputs,
+            outputs,
+            count,
+            mode,
+            interpretation,
+            &params,
+            extra,
+        ),
         Vec::new(),
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn describe(
     id: NodeId,
     inputs: usize,
@@ -776,8 +928,9 @@ fn describe(
     mode: &str,
     interpretation: &str,
     params: &[(f32, f32, f32, Rate)],
+    extra: Option<(&str, Json)>,
 ) -> Json {
-    Json::object([
+    let members = [
         ("node", Json::from(id)),
         ("inputs", Json::from(inputs as u64)),
         ("outputs", Json::from(outputs as u64)),
@@ -803,7 +956,8 @@ fn describe(
                     .collect(),
             ),
         ),
-    ])
+    ];
+    Json::object(members.into_iter().chain(extra))
 }
 
 /// A param's value, its rate, or an automation call.

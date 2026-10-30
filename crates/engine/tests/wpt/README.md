@@ -22,7 +22,7 @@ them; `expectations.txt` names those expected to fail, and why.
 
 With them are the testharness.js tests of `fetch/api/headers`, `fetch/api/request`, `fetch/api/response`, `fetch/api/basic`, `xhr`, `url`, `FileAPI/blob`, `webstorage`, `wasm/jsapi` (the `interface.*` tests), `wasm/jsapi` (the `prototypes.*` tests), `wasm/jsapi/constructor`, `wasm/jsapi/global`, `wasm/jsapi/instance`, `wasm/jsapi/memory`, `wasm/jsapi/module`, `wasm/jsapi/table`, `html/canvas/element`, `html/canvas/offscreen`, `workers`, `webmessaging`, `html/infrastructure/safe-passing-of-structured-data`, `html/webappapis/structured-clone`, `content-security-policy`, `html/browsers/sandboxing`, `referrer-policy`, `html/semantics/embedded-content/the-iframe-element`, `webaudio`, `html/semantics/embedded-content/media-elements`, `webgl`, `encoding`, `FileAPI/reading-data-section`, `FileAPI/FileReader`, `dom/nodes` (the `MutationObserver-*` tests), `intersection-observer`, `resize-observer`, `requestidlecallback`, `css/cssom`, `html/webappapis/user-prompts`, `html/browsers/the-window-object/named-access-on-the-window-object`, `css/css-color`, `css/css-color-adjust`, `css/css-backgrounds`, `css/filter-effects`, `css/css-values`, `css/css-images`, `css/css-display`, `css/css-sizing/aspect-ratio`, `html/syntax/parsing`, `dom/ranges`, `dom/traversal`, `selection`, `html/semantics/scripting-1`, `subresource-integrity`, `css/css-fonts`, `css/css-text`, `css/cssom-view` (M27, M29, M31, M40, M41, gap batches A and E)
 that the runner's one server can serve: no Python handler, no `.sub`
-template, no other host, nothing over `https:`, no shared or
+template, no other host, nothing over HTTP/2, no shared or
 service worker and no module worker. `resources/testharness.js` is
 the real one; the runner serves its own `testharnessreport.js`, and
 the pages wptserve makes of an `.any.js` test (for a window and,
@@ -37,8 +37,8 @@ subtest they fail is named in `expectations.txt`, and why.
 | checklayout | 75 |
 | crashtest | 126 |
 | reftest | 4149 |
-| testharness | 7672 |
-| all | 12022 |
+| testharness | 7724 |
+| all | 12074 |
 
 ## Left out
 
@@ -48,19 +48,18 @@ the tests taken, of some directories):
 
 | Reason | Tests |
 | --- | ---: |
-| not a testharness test | 4453 |
+| not a testharness test | 4454 |
 | @font-face | 1458 |
 | script | 1158 |
-| Python handler | 334 |
+| Python handler | 360 |
 | declaration of display | 262 |
 | not a reftest, a check-layout test or a crashtest | 166 |
-| wptserve pipe | 150 |
+| wptserve pipe | 152 |
 | the legacy CJK encodings (M42) | 141 |
 | SVG <filter> (G87) | 113 |
-| https: | 109 |
 | a frame of another kind than iframe | 106 |
+| a shared or service worker | 91 |
 | declaration of backdrop-filter | 85 |
-| a shared or service worker | 82 |
 | dir=rtl | 51 |
 | wptserve substitution (.sub) | 51 |
 | element <object> | 49 |
@@ -76,16 +75,17 @@ the tests taken, of some directories):
 | declaration of overflow-y | 17 |
 | @property | 16 |
 | declaration of width | 15 |
+| SharedArrayBuffer (G83) | 14 |
 | declaration of contain | 14 |
 | declaration of object-view-box | 14 |
 | element <canvas> | 14 |
 | element <hr> | 13 |
+| missing file resources/WebIDLParser.js | 13 |
 | declaration of direction | 12 |
-| missing file resources/WebIDLParser.js | 12 |
 | a module worker (G41) | 11 |
+| a window | 11 |
 | declaration of background | 11 |
 | declaration of color | 11 |
-| a window | 10 |
 | declaration of height | 10 |
 | not for a window or a dedicated worker | 10 |
 | declaration of font-synthesis | 9 |
@@ -98,6 +98,7 @@ the tests taken, of some directories):
 | declaration of font-size | 5 |
 | declaration of font-variation-settings | 5 |
 | declaration of mask-image | 5 |
+| missing file permissions-policy/resources/permissions-policy.js | 5 |
 | missing file service-workers/service-worker/resources/test-helpers.sub.js | 5 |
 | selector | 5 |
 | declaration of border-image | 4 |
@@ -123,7 +124,6 @@ the tests taken, of some directories):
 | @font-palette-values | 2 |
 | @namespace | 2 |
 | SVG <mask> (G87) | 2 |
-| SharedArrayBuffer (G83) | 2 |
 | declaration of caret-animation | 2 |
 | declaration of font-family | 2 |
 | declaration of image-rendering | 2 |

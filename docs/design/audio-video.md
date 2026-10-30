@@ -483,11 +483,12 @@ quantum.
   so many of its media tests are expected failures.
 - *Media Source Extensions* (`MediaSource`, `SourceBuffer`) and
   *WebCodecs*: each a milestone's.
-- *`AudioWorklet`* and *`ScriptProcessorNode`*: script on the
-  rendering thread, a realm of its own there.
-- *`MediaStream`* and what takes or makes one: `srcObject`,
-  `captureStream()`, `MediaStreamAudioSourceNode` and its destination
-  (M43, WebRTC, holds streams).
+- *`AudioWorklet`*: script on the rendering thread, a realm of its own
+  there. (`ScriptProcessorNode`, whose script runs on the control
+  thread, came after M40; section 4.)
+- *`MediaStream`* beyond Web Audio's: `srcObject`, `captureStream()`,
+  cameras and microphones (M43, WebRTC, holds streams). Web Audio's
+  own streams came after M40 (section 4).
 - *The HRTF panning model* (its impulse responses are data the
   reference ships), `setSinkId()` and choosing a device.
 - *Text tracks*: `<track>`, WebVTT, `textTracks` beyond an empty list.
@@ -624,3 +625,25 @@ step:
   for them. Most media element tests play H.264 (`common/media.js` asks
   for VP9 in WebM first, then MP4) and are expected failures by D36.
   The bench's figures are in `docs/perf-budgets.md`.
+- **After M40 (gap batch D).** `ScriptProcessorNode`: the `audio` crate
+  gathers its input into buffers (`nodes::script`), handed to the page
+  as `audioprocess` tasks; the page's output plays two buffers later,
+  silence if late, as the reference double-buffers it. An offline
+  rendering waits for each answer, outside the graph's lock, as the
+  reference waits offline. Its default size is the reference's: 2,048
+  frames realtime, 256 offline; its event's `playbackTime` is the
+  filling quantum's first frame and a buffer on. Web Audio's
+  `MediaStream`s: a `MediaStreamAudioDestinationNode` is a tap
+  (`nodes::external::Tap`) its track names by number, and a
+  `MediaStreamAudioSourceNode` a feed reading it, 16,384 frames kept at
+  most; `MediaStream` and `MediaStreamTrack` are the audio chunk's. The
+  element's volume and muted were already applied to a graph that takes
+  its sound; its sound is now resampled to the graph's rate (it reached
+  a 24 kHz graph at 48 kHz, an octave low), and a feed gathers four
+  quanta before it is read, and again after it runs dry, so that what
+  comes at another pace plays without gaps. The mixer renders its
+  contexts in the order they started, a stream's writer before its
+  reader. A `DelayNode` gives its input's channel count at once, as
+  the reference does (probe: it renders 0.25 at frame 0 of WPT's
+  delaynode-channel-count-1). The WPT runner lets real time pass with
+  its hand clock while an `AudioContext` renders (`renders_sound`).

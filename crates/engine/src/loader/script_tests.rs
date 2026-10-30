@@ -1202,3 +1202,26 @@ fn a_javascript_url_a_loading_documents_script_navigates_to_runs_in_it() {
     assert!(console.contains(&"two".to_owned()), "{console:?}");
     assert_eq!(tab.engine.load_state(), &crate::LoadState::Loaded);
 }
+
+#[test]
+fn a_javascript_url_a_loading_document_runs_replaces_it_with_its_string() {
+    // HTML's "evaluate a javascript: URL": a string it ends with is the
+    // HTML of the document that replaces the one still being parsed,
+    // with its policies, as the reference browser has it (WPT's
+    // javascript-url-srcdoc-cross-origin-iframe-inheritance helper).
+    let page = "<meta http-equiv=Content-Security-Policy content=\"img-src 'none'\">\
+                <script>console.log('one');\
+                location.replace(\"javascript:'<p>new</p><img src=/i.png>'\");\
+                console.log('end one')</script><p>old</p>";
+    let (tab, console) = scripted(page, true);
+    assert_eq!(console[..2], ["one", "end one"]);
+    assert!(
+        console
+            .iter()
+            .any(|l| l.starts_with("Content-Security-Policy refused the image")),
+        "{console:?}"
+    );
+    let document = tab.engine.document();
+    assert_eq!(document.text_content(document.root()), "new");
+    assert_eq!(tab.engine.load_state(), &crate::LoadState::Loaded);
+}

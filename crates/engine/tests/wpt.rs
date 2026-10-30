@@ -5,7 +5,11 @@
 //!
 //! The directory is served from the `net` crate's test server on
 //! 127.0.0.1, so a test and its stylesheets load through the engine's
-//! own loader by their URLs. Each test is loaded in an engine of its
+//! own loader by their URLs. The testharness tests' server listens on a
+//! second port too, another origin, and over TLS on a third, with a
+//! certificate for the runner's hosts from a root made for the run that
+//! only the runner's clients trust; the Python handlers of WPT the tests
+//! need are written natively, and so is the `header` pipe. Each test is loaded in an engine of its
 //! own, with the bundled font, at 800 by 600, on as many threads as
 //! there are cores, its scripts run as a browser under `wptrunner` runs
 //! them (M24). A test's animations and transitions are drawn at
@@ -288,31 +292,78 @@ const ALT_HOST: &str = "not-web-platform.localhost";
 static TRANSPORT: LazyLock<Arc<net::transport::Transport>> =
     LazyLock::new(|| Arc::new(net::transport::Transport::new(runner_hosts())));
 
-fn runner_hosts() -> net::transport::Config {
-    let mut config = net::transport::Config::default();
-    let here = std::net::IpAddr::from([127, 0, 0, 1]);
+/// The runner's hosts and their subdomains, as the test certificate
+/// names them.
+fn host_names() -> Vec<String> {
+    let mut names = Vec::new();
     for site in [HOST, ALT_HOST] {
         for sub in ["", "www.", "www1.", "www2."] {
-            config = config.resolve(&format!("{sub}{site}"), here);
+            names.push(format!("{sub}{site}"));
         }
+    }
+    names
+}
+
+/// The authority of the runner's `https:` server: a root made for the
+/// run, which the runner's clients trust and nothing else does.
+static AUTHORITY: LazyLock<net::test_server::TestAuthority> =
+    LazyLock::new(net::test_server::TestAuthority::new);
+
+fn runner_hosts() -> net::transport::Config {
+    let mut config = net::transport::Config::default().trust(AUTHORITY.root.clone());
+    let here = std::net::IpAddr::from([127, 0, 0, 1]);
+    for name in host_names() {
+        config = config.resolve(&name, here);
     }
     config
 }
 
-/// The URL the runner loads `path` at: on [`HOST`], the server's port.
+/// The ports a template names, as wptserve's `{{ports[scheme][i]}}`: the
+/// harness's server and a second one serving the same for `http`, an
+/// `https:` one for `https`.
+#[derive(Clone, Debug)]
+struct Ports {
+    http: Vec<u16>,
+    https: Vec<u16>,
+}
+
+/// The run's ports, once its servers listen.
+static PORTS: std::sync::OnceLock<Ports> = std::sync::OnceLock::new();
+
+/// The URL the runner loads `path` at: on [`HOST`], the server's port;
+/// for a test whose name says `.https`, over TLS, at the `https:`
+/// server's, as wptserve serves one.
 fn test_url(server: &TestServer, path: &str) -> net::Url {
     let port = server.url("/").port().expect("the server's port");
-    net::Url::parse(&format!("http://{HOST}:{port}/{path}")).expect("a test's URL")
+    let secure = PORTS.get().and_then(|ports| ports.https.first().copied());
+    url_at(path, port, secure)
+}
+
+/// [`test_url`]'s URL of `path` given the server's `port` and the
+/// `https:` server's, if any.
+fn url_at(path: &str, port: u16, secure: Option<u16>) -> net::Url {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let (scheme, port) = match secure.filter(|_| name.contains(".https.")) {
+        Some(secure) => ("https", secure),
+        None => ("http", port),
+    };
+    net::Url::parse(&format!("{scheme}://{HOST}:{port}/{path}")).expect("a test's URL")
 }
 
 /// `text`, a `.sub` template, filled as wptserve fills one (M33): the
-/// hosts and their subdomains, the ports (the server's for `http`, and
-/// for what the runner does not serve, `https` and the WebSockets, a
-/// port the engine never connects to), the request's location, query
-/// (a parameter it does not have empty) and fields, a new UUID each time
-/// one is asked for, and the variables a template sets (`{{$id:...}}`)
-/// and reads (`{{$id}}`). What it does not know stays as written.
-fn substitute(text: &str, request: &net::test_server::ServerRequest, port: u16) -> String {
+/// hosts and their subdomains, the ports (`ports`'s, and for what the
+/// runner does not serve, the WebSockets, a port the engine never
+/// connects to), the request's location (`https` when it came over TLS),
+/// query (a parameter it does not have empty) and fields, a new UUID
+/// each time one is asked for, and the variables a template sets
+/// (`{{$id:...}}`) and reads (`{{$id}}`). What it does not know stays as
+/// written.
+fn substitute(
+    text: &str,
+    request: &net::test_server::ServerRequest,
+    port: u16,
+    ports: &Ports,
+) -> String {
     static UUIDS: AtomicU64 = AtomicU64::new(1);
     let mut variables: HashMap<String, String> = HashMap::new();
     let host_of = |site: &str, sub: &str| match sub {
@@ -320,6 +371,11 @@ fn substitute(text: &str, request: &net::test_server::ServerRequest, port: u16) 
         sub => format!("{sub}.{site}"),
     };
     let header = request.header("Host").unwrap_or(HOST);
+    let scheme = if request.sni.is_some() {
+        "https"
+    } else {
+        "http"
+    };
     let (path, query) = request
         .target
         .split_once('?')
@@ -366,9 +422,14 @@ fn substitute(text: &str, request: &net::test_server::ServerRequest, port: u16) 
                 _ => host_of(HOST, sub),
             })
         } else if let Some(pair) = key("ports") {
-            pair.split_once("][").map(|(scheme, _)| match scheme {
-                "http" => port.to_string(),
-                _ => "1".to_owned(),
+            pair.split_once("][").map(|(scheme, index)| {
+                let index: usize = index.parse().unwrap_or(0);
+                let list = match scheme {
+                    "http" => &ports.http,
+                    "https" => &ports.https,
+                    _ => &Vec::new(),
+                };
+                list.get(index).copied().unwrap_or(1).to_string()
             })
         } else if let Some(part) = key("location") {
             let hostname = header.rsplit_once(':').map_or(header, |(name, _)| name);
@@ -376,8 +437,8 @@ fn substitute(text: &str, request: &net::test_server::ServerRequest, port: u16) 
                 "host" => Some(header.to_owned()),
                 "hostname" => Some(hostname.to_owned()),
                 "port" => Some(port.to_string()),
-                "scheme" => Some("http".to_owned()),
-                "server" => Some(format!("http://{header}")),
+                "scheme" => Some(scheme.to_owned()),
+                "server" => Some(format!("{scheme}://{header}")),
                 "path" | "pathname" => Some(path.to_owned()),
                 "query" => Some(if query.is_empty() {
                     String::new()
@@ -603,92 +664,226 @@ fn worker_script(name: &str, source: &str) -> String {
 /// its test; without, the harness's scripts are not found, the runner
 /// standing in for them. A file's `.headers` beside it are sent with it.
 fn serve(root: PathBuf, harness: bool) -> TestServer {
-    TestServer::plain(move |request| {
-        let path = request.target.split(['?', '#']).next().unwrap_or("");
-        let file = path.trim_start_matches('/');
-        let safe = !file.split('/').any(|part| part == ".." || part.is_empty());
-        let not_found = || {
-            Reply::Send(
-                b"HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 9\r\n\r\nnot found"
-                    .to_vec(),
-            )
-        };
-        if !safe {
+    TestServer::plain(move |request| answer(&root, harness, request))
+}
+
+/// The testharness tests' server over TLS, with a certificate for the
+/// runner's hosts that the test authority issued.
+fn serve_tls(root: PathBuf) -> TestServer {
+    let names = host_names();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let config = AUTHORITY.server(&names, net::test_server::VALID);
+    TestServer::tls(config, move |request| answer(&root, true, request))
+}
+
+/// What a server of [`serve`] answers `request` with.
+fn answer(root: &Path, harness: bool, request: &net::test_server::ServerRequest) -> Reply {
+    let path = request.target.split(['?', '#']).next().unwrap_or("");
+    let file = path.trim_start_matches('/');
+    let safe = !file.split('/').any(|part| part == ".." || part.is_empty());
+    let not_found = || {
+        Reply::Send(
+            b"HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 9\r\n\r\nnot found"
+                .to_vec(),
+        )
+    };
+    if !safe {
+        return not_found();
+    }
+    // The request's port, as its Host says, for a template (M33).
+    let port = request
+        .header("Host")
+        .and_then(|host| host.rsplit_once(':'))
+        .and_then(|(_, port)| port.parse().ok())
+        .unwrap_or(80);
+    let ports = PORTS.get().cloned().unwrap_or_else(|| Ports {
+        http: vec![port],
+        https: Vec::new(),
+    });
+    if harness && let Some(reply) = handler(file, request) {
+        return reply;
+    }
+    match (harness, file) {
+        (true, "resources/testharnessreport.js") => {
+            return Reply::ok("text/javascript", REPORT.as_bytes());
+        }
+        (false, "resources/testharness.js" | "resources/testharnessreport.js") => {
             return not_found();
         }
-        match (harness, file) {
-            (true, "resources/testharnessreport.js") => {
-                return Reply::ok("text/javascript", REPORT.as_bytes());
-            }
-            (false, "resources/testharness.js" | "resources/testharnessreport.js") => {
-                return not_found();
-            }
-            _ => {}
+        _ => {}
+    }
+    if harness && !root.join(file).is_file() {
+        // A test for a dedicated worker (M31): its page, and an
+        // `.any.js` one's script.
+        let worker = file
+            .strip_suffix(".any.worker.html")
+            .map(|stem| (stem, ".any.js", ".any.worker.js"))
+            .or_else(|| {
+                file.strip_suffix(".worker.html")
+                    .map(|stem| (stem, ".worker.js", ".worker.js"))
+            });
+        // The test's `.headers` go with the pages and scripts made of
+        // it, as wptserve sends them (M33: a policy's tests).
+        let headers_of = |test: &str| fs::read_to_string(root.join(format!("{test}.headers")));
+        if let Some((stem, test, script)) = worker
+            && let Ok(source) = read_lossy(&root.join(format!("{stem}{test}")))
+        {
+            let name = format!("{}{script}", stem.rsplit('/').next().unwrap_or(stem));
+            let page = worker_page(&name, &source);
+            let headers = headers_of(&format!("{stem}{test}")).ok();
+            return reply("text/html; charset=utf-8", page.into_bytes(), headers);
         }
-        if harness && !root.join(file).is_file() {
-            // A test for a dedicated worker (M31): its page, and an
-            // `.any.js` one's script.
-            let worker = file
-                .strip_suffix(".any.worker.html")
-                .map(|stem| (stem, ".any.js", ".any.worker.js"))
-                .or_else(|| {
-                    file.strip_suffix(".worker.html")
-                        .map(|stem| (stem, ".worker.js", ".worker.js"))
-                });
-            // The test's `.headers` go with the pages and scripts made of
-            // it, as wptserve sends them (M33: a policy's tests).
-            let headers_of = |test: &str| fs::read_to_string(root.join(format!("{test}.headers")));
-            if let Some((stem, test, script)) = worker
-                && let Ok(source) = read_lossy(&root.join(format!("{stem}{test}")))
+        if let Some(stem) = file.strip_suffix(".any.worker.js")
+            && let Ok(source) = read_lossy(&root.join(format!("{stem}.any.js")))
+        {
+            let name = format!("{}.any.js", stem.rsplit('/').next().unwrap_or(stem));
+            let script = worker_script(&name, &source);
+            let headers = headers_of(&format!("{stem}.any.js")).ok();
+            return reply("text/javascript", script.into_bytes(), headers);
+        }
+        for (page, script, any) in [
+            (".any.html", ".any.js", true),
+            (".window.html", ".window.js", false),
+        ] {
+            if let Some(stem) = file.strip_suffix(page)
+                && let Ok(source) = read_lossy(&root.join(format!("{stem}{script}")))
             {
                 let name = format!("{}{script}", stem.rsplit('/').next().unwrap_or(stem));
-                let page = worker_page(&name, &source);
-                let headers = headers_of(&format!("{stem}{test}")).ok();
+                let page = wrapper(&name, &source, any);
+                let headers = headers_of(&format!("{stem}{script}")).ok();
                 return reply("text/html; charset=utf-8", page.into_bytes(), headers);
             }
-            if let Some(stem) = file.strip_suffix(".any.worker.js")
-                && let Ok(source) = read_lossy(&root.join(format!("{stem}.any.js")))
-            {
-                let name = format!("{}.any.js", stem.rsplit('/').next().unwrap_or(stem));
-                let script = worker_script(&name, &source);
-                let headers = headers_of(&format!("{stem}.any.js")).ok();
-                return reply("text/javascript", script.into_bytes(), headers);
+        }
+    }
+    let Ok(mut body) = fs::read(root.join(file)) else {
+        return not_found();
+    };
+    if file.contains(".sub.") {
+        body = substitute(&String::from_utf8_lossy(&body), request, port, &ports).into_bytes();
+    }
+    if file.ends_with(".asis") {
+        return Reply::SendAndClose(body);
+    }
+    let headers = fs::read_to_string(root.join(format!("{file}.headers"))).or_else(|_| {
+        fs::read_to_string(root.join(format!("{file}.sub.headers")))
+            .map(|text| substitute(&text, request, port, &ports))
+    });
+    let mut headers = headers.ok();
+    // wptserve's `header` pipe: `?pipe=header(Name,Value)`, each field
+    // after the file's own.
+    if let Some(pipe) = query_value(request, "pipe") {
+        for step in pipe.split('|') {
+            let field = step
+                .strip_prefix("header(")
+                .and_then(|rest| rest.strip_suffix(')'))
+                .and_then(|args| args.split_once(','));
+            if let Some((name, value)) = field {
+                let text = headers.get_or_insert_with(String::new);
+                let _ = writeln!(text, "{}: {}", name.trim(), value.trim());
             }
-            for (page, script, any) in [
-                (".any.html", ".any.js", true),
-                (".window.html", ".window.js", false),
-            ] {
-                if let Some(stem) = file.strip_suffix(page)
-                    && let Ok(source) = read_lossy(&root.join(format!("{stem}{script}")))
-                {
-                    let name = format!("{}{script}", stem.rsplit('/').next().unwrap_or(stem));
-                    let page = wrapper(&name, &source, any);
-                    let headers = headers_of(&format!("{stem}{script}")).ok();
-                    return reply("text/html; charset=utf-8", page.into_bytes(), headers);
-                }
-            }
         }
-        let Ok(mut body) = fs::read(root.join(file)) else {
-            return not_found();
-        };
-        // The request's port, as its Host says, for a template (M33).
-        let port = request
-            .header("Host")
-            .and_then(|host| host.rsplit_once(':'))
-            .and_then(|(_, port)| port.parse().ok())
-            .unwrap_or(80);
-        if file.contains(".sub.") {
-            body = substitute(&String::from_utf8_lossy(&body), request, port).into_bytes();
-        }
-        if file.ends_with(".asis") {
-            return Reply::SendAndClose(body);
-        }
-        let headers = fs::read_to_string(root.join(format!("{file}.headers"))).or_else(|_| {
-            fs::read_to_string(root.join(format!("{file}.sub.headers")))
-                .map(|text| substitute(&text, request, port))
-        });
-        reply(content_type(file), body, headers.ok())
+    }
+    reply(content_type(file), body, headers)
+}
+
+/// The value of the query parameter `name` of `request`, decoded.
+fn query_value(request: &net::test_server::ServerRequest, name: &str) -> Option<String> {
+    let query = request.target.split_once('?')?.1;
+    let query = query.split('#').next().unwrap_or(query);
+    query.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        (form_decoded(key) == name).then(|| form_decoded(value))
     })
+}
+
+/// The Python handlers of WPT the tests here ask for, written natively:
+/// what each answers at `file`, or `None` for a file served as it is.
+/// The two XHR subframes are made by `.py` handlers that the checkout
+/// does not hold; theirs are made here from what their tests say they
+/// do.
+fn handler(file: &str, request: &net::test_server::ServerRequest) -> Option<Reply> {
+    let name = file.rsplit('/').next().unwrap_or(file);
+    match name {
+        // `/common/redirect.py` and its copies: `status` (302 by
+        // default) to `location`.
+        "redirect.py" => {
+            let status = query_value(request, "status")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(302);
+            let location = query_value(request, "location").unwrap_or_default();
+            Some(Reply::with_fields(status, &[("Location", &location)], b""))
+        }
+        // A module exporting the request's `Referer`.
+        "referrer-checker.py" => {
+            let referrer = request.header("Referer").unwrap_or("");
+            let body = format!("export const referrer = '{referrer}';");
+            Some(Reply::with_fields(
+                200,
+                &[
+                    ("Content-Type", "text/javascript"),
+                    ("Access-Control-Allow-Origin", "*"),
+                ],
+                body.as_bytes(),
+            ))
+        }
+        // A module that comes after `ms` milliseconds (500 by default).
+        "delayed-modulescript.py" => {
+            let ms = query_value(request, "ms")
+                .and_then(|ms| ms.parse::<f64>().ok())
+                .filter(|ms| ms.is_finite() && *ms >= 0.0)
+                .unwrap_or(500.0);
+            let body = b"export let delayedLoaded = true;";
+            Some(Reply::After(
+                Duration::from_secs_f64(ms.min(10_000.0) / 1000.0),
+                Box::new(Reply::ok("text/javascript", body)),
+            ))
+        }
+        "xmlhttprequest-sync-block-defer-scripts-subframe.html"
+        | "xmlhttprequest-sync-not-hang-scriptloader-subframe.html" => {
+            let defer = name.contains("block-defer");
+            Some(xhr_subframe(defer, query_value(request, "part")))
+        }
+        _ => None,
+    }
+}
+
+/// The subframes of `xhr/xmlhttprequest-sync-block-defer-scripts.html`
+/// (`defer`) and `xhr/xmlhttprequest-sync-not-hang-scriptloader.html`:
+/// the page, and by `part` its scripts and the slow resource their
+/// synchronous XHR fetches. In the first, a defer script's synchronous
+/// XHR must hold back the next defer script, which posts what the first
+/// set; in the second, an async script a defer script adds before its
+/// synchronous XHR must still run and post `done`.
+fn xhr_subframe(defer: bool, part: Option<String>) -> Reply {
+    let script = |text: &str| Reply::ok("text/javascript", text.as_bytes());
+    let sync_xhr = "var xhr = new XMLHttpRequest();\n\
+                    xhr.open('GET', location.pathname + '?part=slow', false);\n\
+                    xhr.send();\n";
+    match (defer, part.as_deref()) {
+        (_, Some("slow")) => Reply::After(
+            Duration::from_millis(200),
+            Box::new(Reply::ok("text/plain", b"slow")),
+        ),
+        (true, None) => Reply::ok(
+            "text/html; charset=utf-8",
+            b"<!doctype html>\n<script>var x = 0;</script>\n\
+              <script defer src='?part=first'></script>\n\
+              <script defer src='?part=second'></script>\n",
+        ),
+        (true, Some("first")) => script(&format!("{sync_xhr}x = 1;\n")),
+        (true, Some("second")) => script("parent.postMessage(x, '*');\n"),
+        (false, None) => Reply::ok(
+            "text/html; charset=utf-8",
+            b"<!doctype html>\n<script defer src='?part=defer'></script>\n",
+        ),
+        (false, Some("defer")) => script(&format!(
+            "var s = document.createElement('script');\n\
+             s.src = '?part=async';\n\
+             document.head.appendChild(s);\n{sync_xhr}"
+        )),
+        (false, Some("async")) => script("parent.postMessage('done', '*');\n"),
+        _ => Reply::with_fields(404, &[("Content-Type", "text/plain")], b"not found"),
+    }
 }
 
 /// A response of `body` as `content_type`, with the fields of a
@@ -888,6 +1083,10 @@ fn a_template_is_filled_as_wptserve_fills_it() {
          {{headers[x-y]}} {{$id:uuid()}} {{$id}} {{unknown}}",
         &request,
         8000,
+        &Ports {
+            http: vec![8000, 8001],
+            https: vec![8443],
+        },
     );
     let words: Vec<&str> = filled.split(' ').collect();
     assert_eq!(
@@ -898,7 +1097,7 @@ fn a_template_is_filled_as_wptserve_fills_it() {
             ALT_HOST,
             &format!("www2.{HOST}"),
             "8000",
-            "1",
+            "8443",
             &format!("http://{HOST}:8000"),
             "/dir/t.sub.html?logs=%5B%22a+b%22%5D&x=1",
             "[\"a",
@@ -914,6 +1113,123 @@ fn a_template_is_filled_as_wptserve_fills_it() {
     assert!(words[12].starts_with("00000000-0000-4000-8000-"));
     assert_eq!(words[14], "{{unknown}}");
     assert_eq!(form_decoded("a%2Fb+c%zz"), "a/b c%zz");
+    // Over TLS the location is `https:`; the second port is its own.
+    let tls = net::test_server::ServerRequest {
+        sni: Some(HOST.to_string()),
+        ..request
+    };
+    let ports = Ports {
+        http: vec![8000, 8001],
+        https: vec![8443],
+    };
+    assert_eq!(
+        substitute(
+            "{{location[server]}} {{ports[http][1]}} {{ports[ws][0]}}",
+            &tls,
+            8443,
+            &ports
+        ),
+        format!("https://{HOST}:8000 8001 1")
+    );
+}
+
+#[test]
+fn a_test_named_https_is_loaded_over_tls() {
+    assert_eq!(
+        url_at("d/t.https.any.html", 80, Some(443)).as_str(),
+        format!("https://{HOST}/d/t.https.any.html")
+    );
+    assert_eq!(
+        url_at("d/https.html", 8000, Some(8443)).as_str(),
+        format!("http://{HOST}:8000/d/https.html")
+    );
+    assert_eq!(
+        url_at("d/t.https.html", 8000, None).as_str(),
+        format!("http://{HOST}:8000/d/t.https.html")
+    );
+}
+
+#[test]
+fn the_python_handlers_answer_as_wptserve_does() {
+    let get = |target: &str, headers: &[(&str, &str)]| net::test_server::ServerRequest {
+        method: "GET".to_string(),
+        target: target.to_string(),
+        headers: headers
+            .iter()
+            .map(|(n, v)| (n.to_string(), v.to_string()))
+            .collect(),
+        body: Vec::new(),
+        connection: 0,
+        index: 0,
+        sni: None,
+        stream: 0,
+    };
+    let text = |reply: Option<Reply>| match reply {
+        Some(Reply::Send(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
+        Some(Reply::After(wait, reply)) => match *reply {
+            Reply::Send(bytes) => format!("{wait:?} {}", String::from_utf8_lossy(&bytes)),
+            other => format!("{other:?}"),
+        },
+        other => format!("{other:?}"),
+    };
+    let redirect = text(handler(
+        "common/redirect.py",
+        &get(
+            "/common/redirect.py?location=http%3A%2F%2Fa%2Fb%3Fc&status=307",
+            &[],
+        ),
+    ));
+    assert!(redirect.starts_with("HTTP/1.1 307 "), "{redirect}");
+    assert!(
+        redirect.contains("Location: http://a/b?c\r\n"),
+        "{redirect}"
+    );
+    let referrer = text(handler(
+        "m/resources/referrer-checker.py",
+        &get(
+            "/m/resources/referrer-checker.py?name=x",
+            &[("Referer", "http://r/")],
+        ),
+    ));
+    assert!(
+        referrer.contains("Access-Control-Allow-Origin: *"),
+        "{referrer}"
+    );
+    assert!(
+        referrer.ends_with("export const referrer = 'http://r/';"),
+        "{referrer}"
+    );
+    let delayed = text(handler(
+        "m/resources/delayed-modulescript.py",
+        &get("/m/resources/delayed-modulescript.py?ms=20", &[]),
+    ));
+    assert!(delayed.starts_with("20ms HTTP/1.1 200"), "{delayed}");
+    assert!(
+        delayed.ends_with("export let delayedLoaded = true;"),
+        "{delayed}"
+    );
+    let page = text(handler(
+        "xhr/xmlhttprequest-sync-block-defer-scripts-subframe.html",
+        &get(
+            "/xhr/xmlhttprequest-sync-block-defer-scripts-subframe.html",
+            &[],
+        ),
+    ));
+    assert!(page.contains("<script defer src='?part=first'>"), "{page}");
+    assert!(handler("x/redirect.pyc", &get("/x/redirect.pyc", &[])).is_none());
+    // The `header` pipe adds its fields to a file's.
+    let piped = text(Some(answer(
+        &root(),
+        true,
+        &get(
+            "/resources/testharness.js?pipe=header(Access-Control-Allow-Origin,*)",
+            &[],
+        ),
+    )));
+    assert!(
+        piped.contains("\r\nAccess-Control-Allow-Origin: *\r\n"),
+        "{piped}"
+    );
 }
 
 #[test]
@@ -1161,13 +1477,19 @@ const WORKER_SLICE: Duration = Duration::from_millis(20);
 const WORKER_WAIT: Duration = Duration::from_secs(1);
 
 /// The results the report wrote into the page, once it has; a subtest
-/// that names the server's port, which each run's server chooses, has it
-/// as `PORT` (M33).
+/// that names one of the servers' ports, which each run's servers
+/// choose, has it as `PORT` (M33).
 fn harness_results(engine: &Engine) -> Option<Harness> {
-    let port = engine
+    // The page's port, and the run's others.
+    let mut ports: Vec<String> = engine
         .url()
         .and_then(net::Url::port)
-        .map(|port| port.to_string());
+        .map(|port| port.to_string())
+        .into_iter()
+        .collect();
+    if let Some(run) = PORTS.get() {
+        ports.extend(run.http.iter().chain(&run.https).map(u16::to_string));
+    }
     let document = engine.document();
     let out = document
         .subtree(document.root())
@@ -1179,11 +1501,9 @@ fn harness_results(engine: &Engine) -> Option<Harness> {
         .filter_map(|line| {
             let mut fields = line.splitn(3, '\t');
             let status = fields.next()?.parse().ok()?;
-            let name = fields.next()?.to_string();
-            let name = match &port {
-                Some(port) => name.replace(port.as_str(), "PORT"),
-                None => name,
-            };
+            let name = ports.iter().fold(fields.next()?.to_string(), |name, port| {
+                name.replace(port.as_str(), "PORT")
+            });
             Some((name, status, fields.next().unwrap_or("").to_string()))
         })
         .collect();
@@ -1267,9 +1587,10 @@ fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
         // taken for a slice of real time before the page's clock moves
         // on, however often they send; and a move longer than a slice is
         // waited out in real time, up to a second (M33), so that a worker
-        // the page's own timeout waits for has the time it would have.
+        // the page's own timeout waits for has the time it would have. So
+        // does a page whose `AudioContext` renders, at the output's clock.
         let slice = moved.elapsed();
-        if engine.has_workers() {
+        if engine.has_workers() || engine.renders_sound() {
             let jump = next.map_or(Duration::ZERO, |at| at.saturating_sub(now));
             let real = jump.clamp(WORKER_SLICE, WORKER_WAIT);
             if slice < real {
@@ -1282,10 +1603,10 @@ fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
                 clock.set(at);
                 moved = Instant::now();
             }
-            // Only the network, a decoder or a worker can change
-            // anything now; a worker may take its time.
+            // Only the network, a decoder, a worker or a graph can
+            // change anything now; a worker or a graph may take its time.
             None => {
-                let quiet = if engine.has_workers() {
+                let quiet = if engine.has_workers() || engine.renders_sound() {
                     left
                 } else {
                     left.min(Duration::from_secs(1))
@@ -1942,6 +2263,14 @@ fn the_web_platform_tests_subset_runs_as_expected() {
     };
     let server = serve(root(), false);
     let harness = serve(root(), true);
+    // A second port of the same, a distinct origin, and the same over
+    // TLS, for the templates' `{{ports[http][1]}}` and `{{ports[https][0]}}`.
+    let second = serve(root(), true);
+    let secure = serve_tls(root());
+    let _ = PORTS.set(Ports {
+        http: vec![harness.port(), second.port()],
+        https: vec![secure.port()],
+    });
     let next = AtomicUsize::new(0);
     let results: Mutex<Vec<Option<Outcome>>> = Mutex::new((0..tests.len()).map(|_| None).collect());
     let threads = thread::available_parallelism()
