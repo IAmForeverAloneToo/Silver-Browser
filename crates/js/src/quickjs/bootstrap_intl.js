@@ -185,12 +185,12 @@
     return run >= 3;
   }
 
-  // What ICU4X supports of each keyword (section 9.1's
+  // What the reference browser's ICU supports of each keyword (section 9.1's
   // [[LocaleData]]); the lists `Intl.supportedValuesOf` answers.
   const INTL_CALENDARS = [
-    "buddhist", "chinese", "coptic", "dangi", "ethioaa", "ethiopic", "gregory", "hebrew",
-    "indian", "islamic-civil", "islamic-tbla", "islamic-umalqura", "iso8601", "japanese",
-    "persian", "roc",
+    "buddhist", "chinese", "coptic", "dangi", "ethioaa", "ethiopic", "gregory", "hebrew", "indian",
+    "islamic", "islamic-civil", "islamic-rgsa", "islamic-tbla", "islamic-umalqura", "iso8601",
+    "japanese", "persian", "roc",
   ];
   const INTL_COLLATIONS = [
     "compat", "emoji", "eor", "phonebk", "pinyin", "searchjl", "stroke", "trad", "unihan",
@@ -198,12 +198,13 @@
   ];
   const INTL_NUMBERING = [
     "adlm", "ahom", "arab", "arabext", "bali", "beng", "bhks", "brah", "cakm", "cham", "deva",
-    "diak", "fullwide", "gong", "gonm", "gujr", "guru", "hanidec", "hmng", "hmnp", "java", "kali",
-    "kawi", "khmr", "knda", "lana", "lanatham", "laoo", "latn", "lepc", "limb", "mathbold",
-    "mathdbl", "mathmono", "mathsanb", "mathsans", "mlym", "modi", "mong", "mroo", "mtei", "mymr",
-    "mymrshan", "mymrtlng", "nagm", "newa", "nkoo", "olck", "orya", "osma", "rohg", "saur",
-    "segment", "shrd", "sind", "sinh", "sora", "sund", "takr", "talu", "tamldec", "telu", "thai",
-    "tibt", "tirh", "tnsa", "vaii", "wara", "wcho",
+    "diak", "fullwide", "gara", "gong", "gonm", "gujr", "gukh", "guru", "hanidec", "hmng", "hmnp",
+    "java", "kali", "kawi", "khmr", "knda", "krai", "lana", "lanatham", "laoo", "latn", "lepc",
+    "limb", "mathbold", "mathdbl", "mathmono", "mathsanb", "mathsans", "mlym", "modi", "mong",
+    "mroo", "mtei", "mymr", "mymrepka", "mymrpao", "mymrshan", "mymrtlng", "nagm", "newa", "nkoo",
+    "olck", "onao", "orya", "osma", "outlined", "rohg", "saur", "segment", "shrd", "sind", "sinh",
+    "sora", "sund", "sunu", "takr", "talu", "tamldec", "telu", "thai", "tibt", "tirh", "tnsa",
+    "tols", "vaii", "wara", "wcho",
   ];
   // The units section 6.6.2 sanctions.
   const INTL_UNITS = [
@@ -215,11 +216,19 @@
     "terabit", "terabyte", "week", "yard", "year",
   ];
   const INTL_CURRENCIES = [
-    "AED", "ARS", "AUD", "BDT", "BGN", "BHD", "BRL", "CAD", "CHF", "CLP", "CNY", "COP", "CZK",
-    "DKK", "EGP", "EUR", "GBP", "HKD", "HUF", "IDR", "ILS", "INR", "IQD", "ISK", "JOD", "JPY",
-    "KES", "KRW", "KWD", "MAD", "MXN", "MYR", "NGN", "NOK", "NZD", "OMR", "PEN", "PHP", "PKR",
-    "PLN", "QAR", "RON", "RSD", "RUB", "SAR", "SEK", "SGD", "THB", "TND", "TRY", "TWD", "UAH",
-    "USD", "VND", "ZAR",
+    "AED", "AFN", "ALL", "AMD", "ANG", "AOA", "ARS", "AUD", "AWG", "AZN", "BAM", "BBD", "BDT",
+    "BGN", "BHD", "BIF", "BMD", "BND", "BOB", "BRL", "BSD", "BTN", "BWP", "BYN", "BZD", "CAD",
+    "CDF", "CHF", "CLP", "CNY", "COP", "CRC", "CUC", "CUP", "CVE", "CZK", "DJF", "DKK", "DOP",
+    "DZD", "EGP", "ERN", "ETB", "EUR", "FJD", "FKP", "GBP", "GEL", "GHS", "GIP", "GMD", "GNF",
+    "GTQ", "GYD", "HKD", "HNL", "HRK", "HTG", "HUF", "IDR", "ILS", "INR", "IQD", "IRR", "ISK",
+    "JMD", "JOD", "JPY", "KES", "KGS", "KHR", "KMF", "KPW", "KRW", "KWD", "KYD", "KZT", "LAK",
+    "LBP", "LKR", "LRD", "LSL", "LYD", "MAD", "MDL", "MGA", "MKD", "MMK", "MNT", "MOP", "MRU",
+    "MUR", "MVR", "MWK", "MXN", "MYR", "MZN", "NAD", "NGN", "NIO", "NOK", "NPR", "NZD", "OMR",
+    "PAB", "PEN", "PGK", "PHP", "PKR", "PLN", "PYG", "QAR", "RON", "RSD", "RUB", "RWF", "SAR",
+    "SBD", "SCR", "SDG", "SEK", "SGD", "SHP", "SLL", "SOS", "SRD", "SSP", "STN", "SVC", "SYP",
+    "SZL", "THB", "TJS", "TMT", "TND", "TOP", "TRY", "TTD", "TWD", "TZS", "UAH", "UGX", "USD",
+    "UYU", "UZS", "VES", "VND", "VUV", "WST", "XAF", "XCD", "XDR", "XOF", "XPF", "XSU", "YER",
+    "ZAR", "ZMW", "ZWL",
   ];
 
   function validKeyword(key, value) {
@@ -293,6 +302,22 @@
     return parts;
   }
 
+  // A range's parts as the natives give them, [type, text, source, ...],
+  // as one string or as `formatRangeToParts`'s objects.
+  function joinRange(flat) {
+    let text = "";
+    for (let i = 1; i < flat.length; i += 3) text += flat[i];
+    return text;
+  }
+
+  function rangeObjects(flat) {
+    const parts = [];
+    for (let i = 0; i + 2 < flat.length; i += 3) {
+      ArrayPush(parts, { type: flat[i], value: flat[i + 1], source: flat[i + 2] });
+    }
+    return parts;
+  }
+
   // ---- NumberFormat (section 15) ----
 
   const ROUNDING_MODES = [
@@ -301,17 +326,18 @@
   ];
   const ROUNDING_INCREMENTS = [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000];
 
-  // ISO 4217's minor units where they are not 2.
+  // The fraction digits the reference browser's ICU gives a currency
+  // where they are not 2.
   function currencyDigits(currency) {
     switch (currency) {
-      case "BIF": case "CLP": case "DJF": case "GNF": case "ISK": case "JPY": case "KMF":
-      case "KRW": case "PYG": case "RWF": case "UGX": case "UYI": case "VND": case "VUV":
-      case "XAF": case "XOF": case "XPF":
+      case "AFN": case "ALL": case "BIF": case "CLP": case "COP": case "DJF": case "GNF": case "HUF":
+      case "IDR": case "IQD": case "IRR": case "ISK": case "JPY": case "KMF": case "KPW": case "KRW":
+      case "LAK": case "LBP": case "MGA": case "MMK": case "PKR": case "PYG": case "RSD": case "RWF":
+      case "SLL": case "SOS": case "SYP": case "UGX": case "VND": case "VUV": case "XAF": case "XOF":
+      case "XPF": case "YER":
         return 0;
-      case "BHD": case "IQD": case "JOD": case "KWD": case "LYD": case "OMR": case "TND":
+      case "BHD": case "JOD": case "KWD": case "LYD": case "OMR": case "TND":
         return 3;
-      case "CLF": case "UYW":
-        return 4;
     }
     return 2;
   }
@@ -434,6 +460,10 @@
       ArrayIndexOf(ROUNDING_MODES, slot.roundingMode),
       slot.trailingZeroDisplay === "stripIfInteger" ? 1 : 0,
       slot.roundingIncrement,
+      MathMax(ArrayIndexOf(["symbol", "narrowSymbol", "code", "name"], slot.currencyDisplay), 0),
+      slot.currencySign === "accounting" ? 1 : 0,
+      MathMax(ArrayIndexOf(["short", "narrow", "long"], slot.unitDisplay), 0),
+      slot.compactDisplay === "long" ? 1 : 0,
     ];
   }
 
@@ -527,9 +557,28 @@
   }
 
   function formatNumberParts(slot, value) {
-    return native.intlNumber(slot.tag, slot.codes,
-      slot.style === "currency" ? slot.currency : slot.style === "unit" ? slot.unit : "",
-      intlNumeric(value));
+    return native.intlNumber(slot.tag, slot.codes, slotUnit(slot), intlNumeric(value));
+  }
+
+  function slotUnit(slot) {
+    return slot.style === "currency" ? slot.currency : slot.style === "unit" ? slot.unit : "";
+  }
+
+  // Section 15.5.22, FormatNumericRange's checks: both ends given and
+  // neither NaN.
+  function rangeEnd(value, which) {
+    if (value === undefined) throw new $TypeError(which + " is undefined");
+    const x = intlNumeric(value);
+    if ((typeof x === "number" && x !== x) || (typeof x === "string" && $Number(x) !== $Number(x))) {
+      throw new $RangeError(which + " is NaN");
+    }
+    return x;
+  }
+
+  function formatNumberRange(slot, start, end) {
+    const x = rangeEnd(start, "start");
+    const y = rangeEnd(end, "end");
+    return native.intlNumberRange(slot.tag, slot.codes, slotUnit(slot), x, y);
   }
 
   intlClass(NumberFormat, "NumberFormat", {
@@ -542,6 +591,13 @@
     },
     formatToParts(value) {
       return partObjects(formatNumberParts(intlSlot(this, "NumberFormat", "formatToParts"), value));
+    },
+    formatRange(start, end) {
+      return joinRange(formatNumberRange(intlSlot(this, "NumberFormat", "formatRange"), start, end));
+    },
+    formatRangeToParts(start, end) {
+      const slot = intlSlot(this, "NumberFormat", "formatRangeToParts");
+      return rangeObjects(formatNumberRange(slot, start, end));
     },
     resolvedOptions() {
       const slot = intlSlot(this, "NumberFormat", "resolvedOptions");
@@ -584,6 +640,17 @@
     select(value) {
       const slot = intlSlot(this, "PluralRules", "select");
       return native.intlPlural(slot.dataLocale, slot.type === "ordinal", slot.codes, $Number(value));
+    },
+    // Section 17.3.4, Intl.PluralRules.prototype.selectRange.
+    selectRange(start, end) {
+      const slot = intlSlot(this, "PluralRules", "selectRange");
+      if (start === undefined || end === undefined) {
+        throw new $TypeError("start or end is undefined");
+      }
+      const x = $Number(start);
+      const y = $Number(end);
+      if (x !== x || y !== y) throw new $RangeError("start or end is NaN");
+      return native.intlPluralRange(slot.dataLocale, slot.type === "ordinal", slot.codes, x, y);
     },
     resolvedOptions() {
       const slot = intlSlot(this, "PluralRules", "resolvedOptions");
@@ -736,9 +803,9 @@
     return c === 43 ? minutes : -minutes;
   }
 
-  // The time zone a DateTimeFormat formats in: UTC, a fixed offset, or
-  // the system's (section 11.1.2 steps 29-35). Other IANA zones need a
-  // time zone database this engine has not.
+  // The time zone a DateTimeFormat formats in: UTC, a fixed offset, the
+  // system's, or an IANA zone by its name as ICU canonicalizes it, its
+  // offsets the natives' (section 11.1.2 steps 29-35).
   function timeZoneOf(value) {
     if (value === undefined) {
       const name = systemZone();
@@ -751,9 +818,11 @@
     if (ArrayIndexOf(UTC_NAMES, upper) >= 0) return { kind: "utc", name: "UTC" };
     const minutes = offsetMinutes(text);
     if (minutes !== undefined) return { kind: "offset", name: offsetName(minutes), offset: minutes };
-    const name = systemZone();
-    if (name !== "" && ToUpperCase(name) === upper) return { kind: "system", name };
-    throw new $RangeError("Invalid time zone specified: " + text);
+    const name = native.intlTimeZone(text);
+    if (name === "") throw new $RangeError("Invalid time zone specified: " + text);
+    if (name === "UTC") return { kind: "utc", name };
+    if (name === systemZone()) return { kind: "system", name };
+    return { kind: "zone", name };
   }
 
   // Section 11.1.2, CreateDateTimeFormat, `required` and `defaults` as
@@ -821,8 +890,8 @@
         chosen[6] = chosen[7] = chosen[8] = "numeric";
       }
     }
-    // The codes `intlDateTime` takes (dayPeriod, which ICU4X's field
-    // sets do not ask for, left out).
+    // The codes `intlDateTime` takes: the components but the day period,
+    // the styles, then the day period.
     for (let i = 0; i < DATE_COMPONENTS.length; i++) {
       if (i === 5) continue;
       const values = DATE_COMPONENTS[i][1];
@@ -831,44 +900,75 @@
     }
     ArrayPush(codes, dateStyle === undefined ? 0 : ArrayIndexOf(DATE_STYLES, dateStyle) + 1);
     ArrayPush(codes, timeStyle === undefined ? 0 : ArrayIndexOf(DATE_STYLES, timeStyle) + 1);
+    ArrayPush(codes, chosen[5] === undefined ? 0 : ArrayIndexOf(DATE_COMPONENTS[5][1], chosen[5]) + 1);
     slot.components = chosen;
     slot.dateStyle = dateStyle;
     slot.timeStyle = timeStyle;
-    // The hour cycle ICU4X is asked for: the locale's 12- or 24-hour one
-    // for `hour12`, else the option's or the keyword's.
-    let hc = hour12 !== undefined ? (hour12 ? "c12" : "c24") : r.values.hc;
-    if (hc === "h24") hc = "h23";
+    // The hour cycle asked for: the locale's 12- or 24-hour one for
+    // `hour12`, else the option's or the keyword's.
+    const hc = hour12 !== undefined ? (hour12 ? "c12" : "c24") : r.values.hc;
     slot.tag = formatterTag(r.dataLocale, ["ca", r.values.ca, "hc", hc, "nu", r.values.nu]);
     slot.codes = codes;
+    // The calendar, the hour cycle, and the components the pattern the
+    // natives found resolves them to (V8 reports those).
     const info = native.intlDateTimeInfo(slot.tag, codes);
     slot.calendar = info[0];
-    slot.hourCycle = info[1] === "" ? undefined
-      : hour12 === undefined && r.values.hc === "h24" ? "h24" : info[1];
+    slot.hourCycle = info[1] === "" ? undefined : info[1];
+    if (info.length > 2) {
+      const resolved = [];
+      for (let i = 0; i < DATE_COMPONENTS.length; i++) ArrayPush(resolved, undefined);
+      for (let j = 2; j + 1 < info.length; j += 2) {
+        for (let i = 0; i < DATE_COMPONENTS.length; i++) {
+          if (DATE_COMPONENTS[i][0] === info[j]) {
+            resolved[i] = i === 9 ? $Number(info[j + 1]) : info[j + 1];
+          }
+        }
+      }
+      slot.components = resolved;
+    }
     slot.numberingSystem = native.intlNumberingSystem(formatterTag(r.dataLocale, ["nu", r.values.nu]));
     WeakMapSet(intlSlots, object, slot);
     return slot;
   }
 
-  // Section 11.5.6, FormatDateTimePattern's parts of a time value.
-  function formatDateParts(slot, date) {
-    let t = date === undefined ? DateNow() : $Number(date);
+  // Section 11.5.6's time value, TimeClip'd, or a RangeError.
+  function timeValue(date) {
+    const t = $Number(date);
     if (t !== t || t === Infinity || t === -Infinity || MathAbs(t) > 8.64e15) {
       throw new $RangeError("Invalid time value");
     }
-    t = MathTrunc(t) + 0;
-    let zone = "";
-    let offset = 0;
-    if (slot.zone.kind === "utc") {
-      zone = "UTC";
-    } else if (slot.zone.kind === "offset") {
-      offset = slot.zone.offset;
-    } else {
-      offset = -DateGetTimezoneOffset(new $Date(t));
-      zone = systemZone();
-    }
-    const flat = native.intlDateTime(slot.tag, slot.codes, zone, t, offset);
+    return MathTrunc(t) + 0;
+  }
+
+  // The zone's name for the natives ("UTC", an IANA name, or "" for one
+  // known by its offset alone) and its offset at `t`, in minutes.
+  function zoneAt(slot, t) {
+    const zone = slot.zone;
+    if (zone.kind === "utc") return ["UTC", 0];
+    if (zone.kind === "offset") return ["", zone.offset];
+    if (zone.kind === "zone") return [zone.name, native.intlZoneOffset(zone.name, t)];
+    return [systemZone(), -DateGetTimezoneOffset(new $Date(t))];
+  }
+
+  // Section 11.5.6, FormatDateTimePattern's parts of a time value.
+  function formatDateParts(slot, date) {
+    const t = date === undefined ? DateNow() : timeValue(date);
+    const at = zoneAt(slot, t);
+    const flat = native.intlDateTime(slot.tag, slot.codes, at[0], t, at[1]);
     flat.length -= 1;
     return flat;
+  }
+
+  // Section 11.5.9, PartitionDateTimeRangePattern's parts of two.
+  function formatDateRange(slot, start, end) {
+    if (start === undefined || end === undefined) {
+      throw new $TypeError("startDate or endDate is undefined");
+    }
+    const x = timeValue(start);
+    const y = timeValue(end);
+    const xAt = zoneAt(slot, x);
+    const yAt = zoneAt(slot, y);
+    return native.intlDateTimeRange(slot.tag, slot.codes, xAt[0], [x, xAt[1]], [y, yAt[1]]);
   }
 
   function DateTimeFormat() {
@@ -888,6 +988,14 @@
     },
     formatToParts(date) {
       return partObjects(formatDateParts(intlSlot(this, "DateTimeFormat", "formatToParts"), date));
+    },
+    formatRange(startDate, endDate) {
+      const slot = intlSlot(this, "DateTimeFormat", "formatRange");
+      return joinRange(formatDateRange(slot, startDate, endDate));
+    },
+    formatRangeToParts(startDate, endDate) {
+      const slot = intlSlot(this, "DateTimeFormat", "formatRangeToParts");
+      return rangeObjects(formatDateRange(slot, startDate, endDate));
     },
     resolvedOptions() {
       const slot = intlSlot(this, "DateTimeFormat", "resolvedOptions");
@@ -962,6 +1070,29 @@
     return value === "" ? undefined : value;
   }
 
+  // The Intl Locale Info proposal's answers, each a new object or array:
+  // the locale's own keyword's value if it has one, else its data's.
+  function localeInfo(object, name) {
+    const slot = intlSlot(object, "Locale", name);
+    switch (name) {
+      case "getCalendars":
+        return slot.calendar !== "" ? [slot.calendar] : native.intlCalendars(slot.tag);
+      case "getCollations":
+        return slot.collation !== "" ? [slot.collation] : native.intlCollations(slot.tag);
+      case "getHourCycles":
+        return [slot.hourCycle !== "" ? slot.hourCycle : native.intlHourCycle(slot.baseName)];
+      case "getNumberingSystems":
+        return [slot.numberingSystem !== "" ? slot.numberingSystem
+          : native.intlNumberingSystem(slot.baseName)];
+      case "getTimeZones":
+        return slot.region === "" ? undefined : native.intlTimeZones(slot.region);
+      case "getTextInfo":
+        return { direction: native.intlTextDirection(slot.tag) };
+    }
+    const week = native.intlWeekInfo(slot.tag);
+    return { firstDay: week[0], weekend: ArraySlice(week, 1) };
+  }
+
   intlClass(Locale, "Locale", {
     maximize() {
       return new Locale(native.intlLikely(intlSlot(this, "Locale", "maximize").tag, true));
@@ -982,6 +1113,13 @@
     get language() { return localeField(this, "language"); },
     get script() { return localeField(this, "script"); },
     get region() { return localeField(this, "region"); },
+    getCalendars() { return localeInfo(this, "getCalendars"); },
+    getCollations() { return localeInfo(this, "getCollations"); },
+    getHourCycles() { return localeInfo(this, "getHourCycles"); },
+    getNumberingSystems() { return localeInfo(this, "getNumberingSystems"); },
+    getTimeZones() { return localeInfo(this, "getTimeZones"); },
+    getTextInfo() { return localeInfo(this, "getTextInfo"); },
+    getWeekInfo() { return localeInfo(this, "getWeekInfo"); },
   });
 
   // ---- The namespace's functions (section 8.3) ----
@@ -999,12 +1137,7 @@
         case "collation": return ArraySlice(INTL_COLLATIONS);
         case "currency": return ArraySlice(INTL_CURRENCIES);
         case "numberingSystem": return ArraySlice(INTL_NUMBERING);
-        case "timeZone": {
-          const zones = ["UTC"];
-          const name = systemZone();
-          if (name !== "" && name !== "UTC") ArrayPush(zones, name);
-          return ArraySort(zones);
-        }
+        case "timeZone": return native.intlTimeZones("");
         case "unit": return ArraySlice(INTL_UNITS);
       }
       throw new $RangeError("Invalid key : " + toString(key));

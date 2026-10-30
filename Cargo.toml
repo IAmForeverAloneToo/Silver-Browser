@@ -101,8 +101,19 @@ icu_collator = "~2.3.0"
 icu_plurals = "~2.3.0"
 icu_calendar = "~2.3.0"
 icu_locale = "~2.3.0"
+# Time zones: the Windows zone mapping and the offsets each zone keeps.
+icu_time = "~2.3.0"
 # ICU4X's decimal number, for the rounding modes ECMA-402 names.
 fixed_decimal = "~0.7.3"
+# Currencies, units and compact numbers for Intl.NumberFormat, the
+# release on the same ICU4X 2.3 line, with its compiled data.
+icu_experimental = "~0.6.0"
+# ICU4X's data provider, for the unit names icu_experimental keeps but
+# its formatters do not reach; and the trait ICU4X's pattern formatter
+# writes through, for dates formatted by the reference browser's
+# patterns (both in the tree already).
+icu_provider = "~2.3.0"
+writeable = "~0.6.4"
 unicode-script = "0.5"
 # The Unicode general category, for the first-letter pattern (M16,
 # docs/design/selectors-pseudo.md); already in the tree through the
@@ -158,9 +169,11 @@ pdf-writer = "0.15"
 # its neighbours already bring there, with the features those calls
 # need alone; and the renderers' processes, their pipes, their job
 # objects, their sandbox and their crashes' dumps (M34,
-# docs/design/processes.md).
+# docs/design/processes.md); and the system's time zone and the user's
+# region, for Intl (D63).
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Globalization",
     "Win32_Security",
     "Win32_Security_Cryptography",
     "Win32_Storage_FileSystem",
@@ -171,6 +184,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Pipes",
     "Win32_System_ProcessStatus",
     "Win32_System_Threading",
+    "Win32_System_Time",
     "Win32_UI_WindowsAndMessaging",
 ] }
 # The browser's audio output (M40, D37, docs/design/audio-video.md):

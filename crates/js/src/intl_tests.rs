@@ -15,9 +15,26 @@ fn evaluated(source: &str) -> String {
 }
 
 fn check(cases: &[(&str, &str)]) {
+    // Every mismatch, not the first alone.
+    let mut bad = Vec::new();
     for (source, expected) in cases {
-        assert_eq!(evaluated(source), *expected, "{source}");
+        let got = evaluated(source);
+        if got != *expected {
+            bad.push(format!(
+                "{source}
+  want {expected:?}
+  got  {got:?}"
+            ));
+        }
     }
+    assert!(
+        bad.is_empty(),
+        "{}",
+        bad.join(
+            "
+"
+        )
+    );
 }
 
 #[test]
@@ -322,18 +339,18 @@ fn dates_format_in_utc_as_the_reference_does() {
         ),
         (
             &format("dateStyle: 'full', timeStyle: 'long'"),
-            "Thursday, January 2, 2020 at 3:04:05\u{202f}PM UTC",
+            "Thursday, January 2, 2020 at 3:04:05 PM UTC",
         ),
         (
             &format("dateStyle: 'medium', timeStyle: 'short'"),
-            "Jan 2, 2020, 3:04\u{202f}PM",
+            "Jan 2, 2020, 3:04 PM",
         ),
         (&format("dateStyle: 'long'"), "January 2, 2020"),
         (&format("dateStyle: 'short'"), "1/2/20"),
-        (&format("timeStyle: 'medium'"), "3:04:05\u{202f}PM"),
+        (&format("timeStyle: 'medium'"), "3:04:05 PM"),
         (
             &format("timeStyle: 'full'"),
-            "3:04:05\u{202f}PM Coordinated Universal Time",
+            "3:04:05 PM Coordinated Universal Time",
         ),
         (
             &format("weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'"),
@@ -343,10 +360,7 @@ fn dates_format_in_utc_as_the_reference_does() {
             &format("year: 'numeric', month: '2-digit', day: '2-digit'"),
             "01/02/2020",
         ),
-        (
-            &format("hour: '2-digit', minute: '2-digit'"),
-            "03:04\u{202f}PM",
-        ),
+        (&format("hour: '2-digit', minute: '2-digit'"), "03:04 PM"),
         (
             &format("hour: 'numeric', minute: '2-digit', hour12: false"),
             "15:04",
@@ -359,14 +373,14 @@ fn dates_format_in_utc_as_the_reference_does() {
         (&format("month: 'long'"), "January"),
         (&format("year: 'numeric', month: 'long'"), "January 2020"),
         (&format("weekday: 'short'"), "Thu"),
-        (&format("hour: 'numeric'"), "3\u{202f}PM"),
+        (&format("hour: 'numeric'"), "3 PM"),
         (
             &format!("new Date({at}).toLocaleString('en-US', {{timeZone: 'UTC'}})"),
-            "1/2/2020, 3:04:05\u{202f}PM",
+            "1/2/2020, 3:04:05 PM",
         ),
         (
             &format!("new Date({at}).toLocaleTimeString('en-US', {{timeZone: 'UTC'}})"),
-            "3:04:05\u{202f}PM",
+            "3:04:05 PM",
         ),
         (
             &format!("new Date({at}).toLocaleDateString('en-GB', {{timeZone: 'UTC'}})"),
@@ -382,7 +396,7 @@ fn dates_format_in_utc_as_the_reference_does() {
             &format!(
                 "new Intl.DateTimeFormat('en-US', {{timeZone: '+05:30', timeStyle: 'short'}}).format({at})"
             ),
-            "8:34\u{202f}PM",
+            "8:34 PM",
         ),
         ("new Date(NaN).toLocaleString()", "Invalid Date"),
     ]);
@@ -395,11 +409,11 @@ fn dates_format_in_the_systems_zone_as_date_does() {
     check(&[
         (
             "new Date(2020, 0, 2, 15, 4, 5).toLocaleString('en-US')",
-            "1/2/2020, 3:04:05\u{202f}PM",
+            "1/2/2020, 3:04:05 PM",
         ),
         (
             "new Date(2020, 6, 2, 9, 4, 5).toLocaleString('en-US')",
-            "7/2/2020, 9:04:05\u{202f}AM",
+            "7/2/2020, 9:04:05 AM",
         ),
         (
             "new Intl.DateTimeFormat('en-US').format(new Date(2020, 0, 2))",
@@ -417,7 +431,7 @@ fn date_parts_and_resolved_options_are_ecma_402s() {
     check(&[
         (
             "JSON.stringify(new Intl.DateTimeFormat('en-US', {timeZone: 'UTC', hour: 'numeric', minute: 'numeric'}).formatToParts(Date.UTC(2020, 0, 2, 15, 4)))",
-            "[{\"type\":\"hour\",\"value\":\"3\"},{\"type\":\"literal\",\"value\":\":\"},{\"type\":\"minute\",\"value\":\"04\"},{\"type\":\"literal\",\"value\":\"\u{202f}\"},{\"type\":\"dayPeriod\",\"value\":\"PM\"}]",
+            "[{\"type\":\"hour\",\"value\":\"3\"},{\"type\":\"literal\",\"value\":\":\"},{\"type\":\"minute\",\"value\":\"04\"},{\"type\":\"literal\",\"value\":\" \"},{\"type\":\"dayPeriod\",\"value\":\"PM\"}]",
         ),
         (
             "new Intl.DateTimeFormat('en-US', {timeZone: 'UTC'}).formatToParts(0).map(p => p.type).join()",
@@ -476,7 +490,7 @@ fn locales_canonicalize_and_negotiate() {
         ("JSON.stringify(Intl.getCanonicalLocales())", "[]"),
         (
             "try { Intl.getCanonicalLocales('en_US') } catch (e) { e.name + ': ' + e.message }",
-            "RangeError: Incorrect locale information provided",
+            "RangeError: Invalid language tag: en_US",
         ),
         (
             "try { Intl.getCanonicalLocales([5]) } catch (e) { e.name }",
@@ -649,7 +663,7 @@ fn hostile_options_are_bounded() {
         ),
         (
             "new Intl.NumberFormat('en', {maximumFractionDigits: 20}).format(0.1)",
-            "0.10000000000000000555",
+            "0.1",
         ),
         (
             "new Intl.NumberFormat('en', {minimumFractionDigits: 100}).format(5e-324).length + ''",
@@ -662,6 +676,532 @@ fn hostile_options_are_bounded() {
         (
             "String(new Intl.NumberFormat('en').format('9'.repeat(5000)).length > 0)",
             "true",
+        ),
+    ]);
+}
+
+#[test]
+fn currencies_are_written_by_symbol_code_or_name() {
+    let usd = |options: &str, x: &str| {
+        format!(
+            "new Intl.NumberFormat('en', {{style: 'currency', currency: 'USD'{options}}}).format({x})"
+        )
+    };
+    check(&[
+        (&usd("", "1234.5"), "$1,234.50"),
+        (&usd("", "-1234.5"), "-$1,234.50"),
+        (&usd(", signDisplay: 'always'", "5"), "+$5.00"),
+        (&usd(", currencySign: 'accounting'", "-5"), "($5.00)"),
+        (&usd(", currencyDisplay: 'code'", "5"), "USD\u{a0}5.00"),
+        (&usd(", currencyDisplay: 'name'", "5"), "5.00 US dollars"),
+        (&usd(", maximumFractionDigits: 0", "5"), "$5"),
+        (&usd("", "NaN"), "$NaN"),
+        (
+            "new Intl.NumberFormat('en', {style: 'currency', currency: 'EUR'}).format(5)",
+            "\u{20ac}5.00",
+        ),
+        (
+            "new Intl.NumberFormat('en', {style: 'currency', currency: 'CAD'}).format(5)",
+            "CA$5.00",
+        ),
+        (
+            "new Intl.NumberFormat('en', {style: 'currency', currency: 'CAD', currencyDisplay: 'narrowSymbol'}).format(5)",
+            "$5.00",
+        ),
+        (
+            "new Intl.NumberFormat('de', {style: 'currency', currency: 'EUR'}).format(1234.5)",
+            "1.234,50\u{a0}\u{20ac}",
+        ),
+        (
+            "new Intl.NumberFormat('ja', {style: 'currency', currency: 'JPY'}).format(1234.5)",
+            "\u{ffe5}1,235",
+        ),
+        (
+            "JSON.stringify(new Intl.NumberFormat('en', {style: 'currency', currency: 'USD'}).formatToParts(-1234.5))",
+            r#"[{"type":"minusSign","value":"-"},{"type":"currency","value":"$"},{"type":"integer","value":"1"},{"type":"group","value":","},{"type":"integer","value":"234"},{"type":"decimal","value":"."},{"type":"fraction","value":"50"}]"#,
+        ),
+        (
+            "JSON.stringify(new Intl.NumberFormat('de', {style: 'currency', currency: 'EUR'}).formatToParts(5))",
+            "[{\"type\":\"integer\",\"value\":\"5\"},{\"type\":\"decimal\",\"value\":\",\"},{\"type\":\"fraction\",\"value\":\"00\"},{\"type\":\"literal\",\"value\":\"\u{a0}\"},{\"type\":\"currency\",\"value\":\"\u{20ac}\"}]",
+        ),
+    ]);
+}
+
+#[test]
+fn units_are_written_by_their_names() {
+    let unit = |locale: &str, options: &str, x: &str| {
+        format!("new Intl.NumberFormat('{locale}', {{style: 'unit', {options}}}).format({x})")
+    };
+    check(&[
+        (&unit("en", "unit: 'kilometer'", "5"), "5 km"),
+        (
+            &unit("en", "unit: 'kilometer', unitDisplay: 'long'", "1"),
+            "1 kilometer",
+        ),
+        (
+            &unit("en", "unit: 'kilometer', unitDisplay: 'long'", "1.5"),
+            "1.5 kilometers",
+        ),
+        (&unit("en", "unit: 'kilometer-per-hour'", "50"), "50 km/h"),
+        (&unit("en", "unit: 'liter-per-second'", "5"), "5 L/s"),
+        (
+            &unit("en", "unit: 'hour', unitDisplay: 'long'", "2"),
+            "2 hours",
+        ),
+        (
+            &unit("de", "unit: 'hour', unitDisplay: 'long'", "2"),
+            "2 Stunden",
+        ),
+        (&unit("en", "unit: 'liter'", "-3"), "-3 L"),
+        (
+            &unit("en", "unit: 'megabyte', unitDisplay: 'narrow'", "5"),
+            "5MB",
+        ),
+        (&unit("en", "unit: 'percent'", "5"), "5%"),
+        (&unit("en", "unit: 'celsius'", "21"), "21\u{b0}C"),
+        (
+            "JSON.stringify(new Intl.NumberFormat('en', {style: 'unit', unit: 'kilogram'}).formatToParts(5))",
+            r#"[{"type":"integer","value":"5"},{"type":"literal","value":" "},{"type":"unit","value":"kg"}]"#,
+        ),
+    ]);
+}
+
+#[test]
+fn compact_notation_abbreviates_as_the_locale_does() {
+    let compact = |locale: &str, options: &str, x: &str| {
+        format!("new Intl.NumberFormat('{locale}', {{notation: 'compact'{options}}}).format({x})")
+    };
+    check(&[
+        (&compact("en", "", "1234"), "1.2K"),
+        (&compact("en", "", "999999"), "1M"),
+        (&compact("en", "", "-1234567"), "-1.2M"),
+        (&compact("en", "", "999"), "999"),
+        (
+            &compact("en", ", compactDisplay: 'long'", "1234"),
+            "1.2 thousand",
+        ),
+        (&compact("de", "", "1234567"), "1,2\u{a0}Mio."),
+        (&compact("de", "", "12345"), "12.345"),
+        (&compact("ja", "", "12345"), "1.2\u{4e07}"),
+        (
+            &compact("en", ", style: 'currency', currency: 'USD'", "1234"),
+            "$1.2K",
+        ),
+        (
+            "JSON.stringify(new Intl.NumberFormat('en', {notation: 'compact'}).formatToParts(1234))",
+            r#"[{"type":"integer","value":"1"},{"type":"decimal","value":"."},{"type":"fraction","value":"2"},{"type":"compact","value":"K"}]"#,
+        ),
+    ]);
+}
+
+#[test]
+fn ranges_format_as_the_reference_does() {
+    check(&[
+        (
+            "new Intl.NumberFormat('en').formatRange(3, 5)",
+            "3\u{2013}5",
+        ),
+        ("new Intl.NumberFormat('en').formatRange(3, 3)", "~3"),
+        (
+            "new Intl.NumberFormat('en').formatRange(-5, -3)",
+            "-5 \u{2013} -3",
+        ),
+        (
+            "new Intl.NumberFormat('en', {style: 'currency', currency: 'USD', maximumFractionDigits: 0}).formatRange(3, 5)",
+            "$3 \u{2013} $5",
+        ),
+        (
+            "new Intl.NumberFormat('en', {style: 'currency', currency: 'USD', maximumFractionDigits: 0}).formatRange(2.9, 3.1)",
+            "~$3",
+        ),
+        (
+            "new Intl.NumberFormat('es-ES', {style: 'currency', currency: 'EUR', maximumFractionDigits: 0}).formatRange(3, 5)",
+            "3-5\u{a0}\u{20ac}",
+        ),
+        (
+            "JSON.stringify(new Intl.NumberFormat('en').formatRangeToParts(3, 5))",
+            "[{\"type\":\"integer\",\"value\":\"3\",\"source\":\"startRange\"},{\"type\":\"literal\",\"value\":\"\u{2013}\",\"source\":\"shared\"},{\"type\":\"integer\",\"value\":\"5\",\"source\":\"endRange\"}]",
+        ),
+        (
+            "try { new Intl.NumberFormat('en').formatRange(1) } catch (e) { e.name }",
+            "TypeError",
+        ),
+        (
+            "try { new Intl.NumberFormat('en').formatRange(1, NaN) } catch (e) { e.name }",
+            "RangeError",
+        ),
+        ("new Intl.PluralRules('en').selectRange(1, 2)", "other"),
+        ("new Intl.PluralRules('fr').selectRange(0, 1)", "one"),
+        ("new Intl.PluralRules('sl').selectRange(102, 201)", "few"),
+        (
+            "try { new Intl.PluralRules('en').selectRange(1) } catch (e) { e.name }",
+            "TypeError",
+        ),
+        (
+            "new Intl.DateTimeFormat('en', {timeZone: 'UTC'}).formatRange(Date.UTC(2020, 0, 2), Date.UTC(2020, 0, 5))",
+            "1/2/2020 \u{2013} 1/5/2020",
+        ),
+        (
+            "new Intl.DateTimeFormat('en', {timeZone: 'UTC'}).formatRange(Date.UTC(2020, 0, 2, 3), Date.UTC(2020, 0, 2, 5))",
+            "1/2/2020",
+        ),
+        (
+            "new Intl.DateTimeFormat('en', {timeZone: 'UTC'}).formatRangeToParts(0, 864e5).map(p => p.source).join()",
+            "startRange,startRange,startRange,startRange,startRange,shared,endRange,endRange,endRange,endRange,endRange",
+        ),
+        (
+            "try { new Intl.DateTimeFormat('en').formatRange(0) } catch (e) { e.name }",
+            "TypeError",
+        ),
+    ]);
+}
+
+#[test]
+fn numeric_dates_pick_the_pattern_the_reference_picks() {
+    let at = "Date.UTC(2020, 0, 2)";
+    let date = |locale: &str, options: &str| {
+        format!("new Intl.DateTimeFormat('{locale}', {{timeZone: 'UTC'{options}}}).format({at})")
+    };
+    check(&[
+        (&date("de", ""), "2.1.2020"),
+        (
+            &date("de", ", year: 'numeric', month: '2-digit', day: '2-digit'"),
+            "02.01.2020",
+        ),
+        (&date("de", ", dateStyle: 'medium'"), "02.01.2020"),
+        (&date("de", ", month: 'numeric', day: 'numeric'"), "2.1."),
+        (&date("it", ""), "02/01/2020"),
+        (&date("nl", ""), "2-1-2020"),
+        (&date("ja", ""), "2020/1/2"),
+        (&date("en-GB", ""), "02/01/2020"),
+        (&date("fr", ""), "02/01/2020"),
+        (
+            &format!("new Date({at}).toLocaleDateString('de', {{timeZone: 'UTC'}})"),
+            "2.1.2020",
+        ),
+    ]);
+}
+
+#[test]
+fn iana_zones_keep_their_offsets_and_names() {
+    let winter = "Date.UTC(2020, 0, 2, 15, 4, 5)";
+    let summer = "Date.UTC(2020, 6, 2, 15, 4, 5)";
+    let format = |locale: &str, zone: &str, options: &str, at: &str| {
+        format!(
+            "new Intl.DateTimeFormat('{locale}', {{timeZone: '{zone}', {options}}}).format({at})"
+        )
+    };
+    check(&[
+        (
+            &format("en-US", "America/New_York", "timeStyle: 'long'", winter),
+            "10:04:05 AM EST",
+        ),
+        (
+            &format("en-US", "America/New_York", "timeStyle: 'long'", summer),
+            "11:04:05 AM EDT",
+        ),
+        (
+            &format(
+                "en-US",
+                "America/Los_Angeles",
+                "dateStyle: 'full', timeStyle: 'full'",
+                summer,
+            ),
+            "Thursday, July 2, 2020 at 8:04:05 AM Pacific Daylight Time",
+        ),
+        (
+            &format("de-DE", "Europe/Berlin", "timeStyle: 'full'", summer),
+            "17:04:05 Mitteleurop\u{e4}ische Sommerzeit",
+        ),
+        (
+            &format("en-GB", "Europe/London", "timeStyle: 'long'", summer),
+            "16:04:05 BST",
+        ),
+        (
+            &format("en-US", "Asia/Kolkata", "timeStyle: 'long'", summer),
+            "8:34:05 PM GMT+5:30",
+        ),
+        (
+            &format("en-US", "Australia/Sydney", "timeStyle: 'long'", winter),
+            "2:04:05 AM GMT+11",
+        ),
+        (
+            &format("en-US", "Etc/GMT+5", "timeStyle: 'long'", summer),
+            "10:04:05 AM GMT-5",
+        ),
+        (
+            "new Intl.DateTimeFormat('en-US', {timeZone: 'asia/kolkata'}).resolvedOptions().timeZone",
+            "Asia/Calcutta",
+        ),
+        (
+            "new Intl.DateTimeFormat('en-US', {timeZone: 'US/Eastern'}).resolvedOptions().timeZone",
+            "America/New_York",
+        ),
+        (
+            "new Intl.DateTimeFormat('en-US', {timeZone: 'Etc/UTC'}).resolvedOptions().timeZone",
+            "UTC",
+        ),
+        (
+            "String(Intl.supportedValuesOf('timeZone').includes('Europe/Berlin'))",
+            "true",
+        ),
+    ]);
+}
+
+#[test]
+fn locales_tell_their_weeks_calendars_and_zones() {
+    // Chrome 156's: the methods, no getters, no minimal days.
+    check(&[
+        (
+            "JSON.stringify(new Intl.Locale('en-US').getWeekInfo())",
+            r#"{"firstDay":7,"weekend":[6,7]}"#,
+        ),
+        (
+            "JSON.stringify(new Intl.Locale('de').getWeekInfo())",
+            r#"{"firstDay":1,"weekend":[6,7]}"#,
+        ),
+        (
+            "JSON.stringify(new Intl.Locale('ar-SA').getWeekInfo())",
+            r#"{"firstDay":7,"weekend":[5,6]}"#,
+        ),
+        (
+            "new Intl.Locale('ar').getTextInfo().direction + new Intl.Locale('en').getTextInfo().direction",
+            "rtlltr",
+        ),
+        (
+            "JSON.stringify([new Intl.Locale('en-US').getHourCycles(), new Intl.Locale('ja').getHourCycles(), new Intl.Locale('en-u-hc-h23').getHourCycles()])",
+            r#"[["h12"],["h23"],["h23"]]"#,
+        ),
+        (
+            "JSON.stringify([new Intl.Locale('ja-JP').getCalendars(), new Intl.Locale('th').getCalendars(), new Intl.Locale('en').getCalendars()])",
+            r#"[["gregory","japanese"],["buddhist","gregory"],["gregory"]]"#,
+        ),
+        (
+            "JSON.stringify([new Intl.Locale('de').getCollations(), new Intl.Locale('en').getCollations()])",
+            r#"[["emoji","eor","phonebk"],["emoji","eor"]]"#,
+        ),
+        (
+            "JSON.stringify([new Intl.Locale('ar-EG').getNumberingSystems(), new Intl.Locale('en').getNumberingSystems()])",
+            r#"[["arab"],["latn"]]"#,
+        ),
+        (
+            "JSON.stringify(new Intl.Locale('de-DE').getTimeZones())",
+            r#"["Europe/Berlin","Europe/Busingen"]"#,
+        ),
+        (
+            "new Intl.Locale('en-US').getTimeZones().length + ' ' + new Intl.Locale('en-US').getTimeZones()[0]",
+            "29 America/Adak",
+        ),
+        ("String(new Intl.Locale('en').getTimeZones())", "undefined"),
+        (
+            "[typeof new Intl.Locale('en').weekInfo, typeof new Intl.Locale('en').hourCycles, typeof new Intl.Locale('en').textInfo].join()",
+            "undefined,undefined,undefined",
+        ),
+    ]);
+}
+
+#[test]
+fn outputs_are_the_reference_browsers() {
+    // Chrome 156's answers (en-US its default): units, currencies and
+    // numbers by its data, plural ranges, collation and hour cycles of
+    // languages its ICU keeps no data of, date ranges by ICU's interval
+    // formats and fallbacks, zones' names by ICU's TimeZoneFormat, the
+    // Buddhist and Persian calendars, and its error text.
+    check(&[
+        (
+            "new Intl.NumberFormat('de', {style: 'unit', unit: 'kilometer-per-hour', unitDisplay: 'long'}).format(50)",
+            "50 Kilometer pro Stunde",
+        ),
+        (
+            "new Intl.NumberFormat('ja', {style: 'unit', unit: 'gigabyte', unitDisplay: 'short'}).format(3)",
+            "3 GB",
+        ),
+        (
+            "new Intl.NumberFormat('ar', {style: 'unit', unit: 'hour', unitDisplay: 'long'}).format(3)",
+            "3 \u{633}\u{627}\u{639}\u{627}\u{62a}",
+        ),
+        (
+            "new Intl.NumberFormat('ru', {style: 'unit', unit: 'kilogram', unitDisplay: 'long'}).format(5)",
+            "5 \u{43a}\u{438}\u{43b}\u{43e}\u{433}\u{440}\u{430}\u{43c}\u{43c}",
+        ),
+        (
+            "new Intl.NumberFormat('fr-CA', {style: 'unit', unit: 'meter', unitDisplay: 'short'}).format(1)",
+            "1\u{a0}m",
+        ),
+        (
+            "new Intl.NumberFormat('en-IN', {style: 'unit', unit: 'liter', unitDisplay: 'short'}).format(5)",
+            "5 l",
+        ),
+        (
+            "new Intl.NumberFormat('en-AU', {style: 'unit', unit: 'gallon', unitDisplay: 'short'}).format(2)",
+            "2 gal US",
+        ),
+        (
+            "new Intl.NumberFormat('ak', {style: 'unit', unit: 'meter', unitDisplay: 'long'}).format(2)",
+            "2 meters",
+        ),
+        (
+            "new Intl.NumberFormat('pl', {style: 'unit', unit: 'mile-per-gallon', unitDisplay: 'long'}).format(5)",
+            "5 mil na galon",
+        ),
+        (
+            "new Intl.NumberFormat('en', {style: 'currency', currency: 'USD', currencyDisplay: 'name', maximumFractionDigits: 0}).format(1.2)",
+            "1 US dollar",
+        ),
+        (
+            "new Intl.NumberFormat('en', {style: 'currency', currency: 'USD', currencyDisplay: 'name'}).format(1)",
+            "1.00 US dollars",
+        ),
+        (
+            "new Intl.NumberFormat('sr-Latn', {style: 'currency', currency: 'USD', currencyDisplay: 'name'}).format(2)",
+            "2,00 ameri\u{10d}kih dolara",
+        ),
+        (
+            "new Intl.NumberFormat('az', {style: 'currency', currency: 'USD'}).format(1234.5)",
+            "$\u{a0}1,234.50",
+        ),
+        (
+            "new Intl.NumberFormat('es-MX', {style: 'currency', currency: 'EGP', currencyDisplay: 'narrowSymbol'}).format(1234.5)",
+            "E\u{a3}1,234.50",
+        ),
+        (
+            "new Intl.NumberFormat('en', {maximumFractionDigits: 2}).format(1.005)",
+            "1.01",
+        ),
+        (
+            "new Intl.NumberFormat('de', {style: 'percent'}).format(0.25)",
+            "25\u{a0}%",
+        ),
+        (
+            "new Intl.NumberFormat('en', {notation: 'compact'}).formatRange(1000, 5000)",
+            "1K \u{2013} 5K",
+        ),
+        ("new Intl.PluralRules('he').selectRange(0.5, 1)", "other"),
+        ("new Intl.PluralRules('kok').selectRange(0, 1)", "other"),
+        ("new Intl.PluralRules('en').selectRange(1, 2)", "other"),
+        (
+            "['a', 'b', 'ch', 'c', 'h'].sort(new Intl.Collator('uz').compare).join()",
+            "a,b,c,ch,h",
+        ),
+        (
+            "JSON.stringify(new Intl.Locale('pa-Arab').getHourCycles())",
+            "[\"h12\"]",
+        ),
+        (
+            "new Intl.DateTimeFormat('en', {timeZone: 'UTC', month: 'long', day: 'numeric', year: 'numeric'}).formatRange(Date.UTC(2020, 0, 2), Date.UTC(2020, 0, 5))",
+            "January 2 \u{2013} 5, 2020",
+        ),
+        (
+            "new Intl.DateTimeFormat('en', {timeZone: 'UTC', hour: 'numeric', minute: 'numeric'}).formatRange(Date.UTC(2020, 0, 2, 10), Date.UTC(2020, 0, 2, 15))",
+            "10:00 AM \u{2013} 3:00 PM",
+        ),
+        (
+            "new Intl.DateTimeFormat('en', {timeZone: 'UTC', hour: 'numeric', minute: 'numeric'}).formatRange(Date.UTC(2020, 0, 2, 10), Date.UTC(2020, 0, 5, 10))",
+            "1/2/2020, 10:00 AM \u{2013} 1/5/2020, 10:00 AM",
+        ),
+        (
+            "new Intl.DateTimeFormat('ca', {timeZone: 'UTC', year: 'numeric', month: 'short'}).formatRange(Date.UTC(2020, 0, 2), Date.UTC(2020, 2, 5))",
+            "gen. del 2020 \u{2013} mar\u{e7} del 2020",
+        ),
+        (
+            "new Intl.DateTimeFormat('fa', {timeZone: 'UTC', year: 'numeric', month: 'short'}).formatRange(Date.UTC(2020, 5, 2), Date.UTC(2020, 7, 25))",
+            "\u{62e}\u{631}\u{62f}\u{627}\u{62f} \u{6f1}\u{6f3}\u{6f9}\u{6f9}",
+        ),
+        (
+            "new Intl.DateTimeFormat('cs', {timeZone: 'UTC', dateStyle: 'short', timeStyle: 'short'}).formatRange(Date.UTC(2020, 0, 2, 10), Date.UTC(2020, 0, 2, 11, 30))",
+            "02. 01. 20 10:00\u{2013}11:30",
+        ),
+        (
+            "new Intl.DateTimeFormat('zh-Hant', {timeZone: 'UTC', dateStyle: 'short', timeStyle: 'short'}).formatRange(Date.UTC(2020, 0, 2, 10), Date.UTC(2020, 0, 2, 15))",
+            "2020/1/2 \u{4e0a}\u{5348}10:00 \u{2013} \u{4e0b}\u{5348}3:00",
+        ),
+        (
+            "new Intl.DateTimeFormat('af', {timeZone: 'UTC', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit'}).formatRange(Date.UTC(2020, 0, 2, 10), Date.UTC(2021, 2, 5, 10))",
+            "2 Januarie 2020 om 10:00 \u{2013} 5 Maart 2021 om 10:00",
+        ),
+        (
+            "new Intl.DateTimeFormat('en', {timeZone: 'Asia/Tokyo', timeZoneName: 'longGeneric'}).format(Date.UTC(2020, 6, 2))",
+            "7/2/2020, Japan Standard Time",
+        ),
+        (
+            "new Intl.DateTimeFormat('en', {timeZone: 'Asia/Hong_Kong', timeZoneName: 'shortGeneric'}).format(Date.UTC(2020, 6, 2))",
+            "7/2/2020, Hong Kong Time",
+        ),
+        (
+            "new Intl.DateTimeFormat('en', {timeZone: 'Europe/London', timeZoneName: 'longGeneric'}).format(Date.UTC(2020, 6, 2))",
+            "7/2/2020, United Kingdom Time",
+        ),
+        (
+            "new Intl.DateTimeFormat('en', {timeZone: 'Europe/Dublin', timeZoneName: 'longGeneric'}).format(Date.UTC(2020, 6, 2))",
+            "7/2/2020, Ireland Time",
+        ),
+        (
+            "new Intl.DateTimeFormat('de', {timeZone: 'Africa/Cairo', timeZoneName: 'shortGeneric'}).format(Date.UTC(2020, 6, 2))",
+            "2.7.2020, OEZ (\u{c4}gypten)",
+        ),
+        (
+            "new Intl.DateTimeFormat('ja', {timeZone: 'America/New_York', timeZoneName: 'shortGeneric'}).format(Date.UTC(2020, 6, 2))",
+            "2020/7/1 New York\u{6642}\u{9593}",
+        ),
+        (
+            "new Intl.DateTimeFormat('ko', {timeZone: 'America/New_York', timeZoneName: 'long'}).format(Date.UTC(2020, 6, 2))",
+            "2020. 7. 1. \u{bd81}\u{bbf8} \u{b3d9}\u{bd80} \u{d558}\u{acc4} \u{d45c}\u{c900}\u{c2dc}",
+        ),
+        (
+            "new Intl.DateTimeFormat('de', {timeZone: 'Europe/Istanbul', timeZoneName: 'long'}).format(Date.UTC(2020, 6, 2))",
+            "2.7.2020, T\u{fc}rkische Normalzeit",
+        ),
+        (
+            "new Intl.DateTimeFormat('bs-Cyrl', {timeZone: 'Asia/Tokyo', timeZoneName: 'shortGeneric'}).format(Date.UTC(2020, 6, 2))",
+            "02.07.2020. JP",
+        ),
+        (
+            "new Intl.DateTimeFormat('fr', {timeZone: 'UTC', timeZoneName: 'shortOffset'}).format(Date.UTC(2020, 6, 2))",
+            "02/07/2020 UTC+0",
+        ),
+        (
+            "new Intl.DateTimeFormat('he', {timeZone: 'America/Los_Angeles', timeZoneName: 'short'}).format(Date.UTC(2020, 6, 2))",
+            "1.7.2020, GMT-7\u{200e}",
+        ),
+        (
+            "new Intl.DateTimeFormat('cs', {timeZone: 'UTC', timeZoneName: 'longOffset'}).format(Date.UTC(2020, 6, 2))",
+            "2. 7. 2020 GMT+00:00",
+        ),
+        (
+            "new Intl.DateTimeFormat('en', {timeZone: 'Africa/Casablanca', timeZoneName: 'longOffset'}).format(Date.UTC(2025, 2, 1))",
+            "3/1/2025, GMT+00:00",
+        ),
+        (
+            "new Intl.DateTimeFormat('th', {timeZone: 'UTC', dateStyle: 'full'}).format(Date.UTC(2020, 0, 2))",
+            "\u{e27}\u{e31}\u{e19}\u{e1e}\u{e24}\u{e2b}\u{e31}\u{e2a}\u{e1a}\u{e14}\u{e35}\u{e17}\u{e35}\u{e48} 2 \u{e21}\u{e01}\u{e23}\u{e32}\u{e04}\u{e21} \u{e1e}.\u{e28}. 2563",
+        ),
+        (
+            "new Intl.DateTimeFormat('fa', {timeZone: 'UTC', dateStyle: 'full'}).format(Date.UTC(2020, 0, 2))",
+            "\u{6f1}\u{6f3}\u{6f9}\u{6f8} \u{62f}\u{6cc} \u{6f1}\u{6f2}, \u{67e}\u{646}\u{62c}\u{634}\u{646}\u{628}\u{647}",
+        ),
+        (
+            "new Intl.DateTimeFormat('pa-Arab', {timeZone: 'UTC', month: 'long'}).format(Date.UTC(2020, 0, 2))",
+            "\u{62c}\u{646}\u{648}\u{631}\u{6cc}",
+        ),
+        (
+            "new Intl.DateTimeFormat('cs', {timeZone: 'UTC', era: 'short'}).format(Date.UTC(2020, 0, 2))",
+            "2. 1. 2020 n. l.",
+        ),
+        (
+            "new Intl.DateTimeFormat('de', {timeZone: 'UTC', second: 'numeric', fractionalSecondDigits: 2}).format(Date.UTC(2020, 0, 2, 0, 0, 5))",
+            "5,00",
+        ),
+        (
+            "new Intl.DateTimeFormat('en', {timeZone: 'UTC', dayPeriod: 'long'}).format(Date.UTC(2020, 0, 2, 15))",
+            "in the afternoon",
+        ),
+        (
+            "new Intl.DateTimeFormat('de', {timeZone: 'UTC', year: 'numeric', month: 'numeric', day: 'numeric'}).format(Date.UTC(2020, 0, 2))",
+            "2.1.2020",
+        ),
+        (
+            "try { Intl.getCanonicalLocales('en_US') } catch (e) { e.message }",
+            "Invalid language tag: en_US",
         ),
     ]);
 }

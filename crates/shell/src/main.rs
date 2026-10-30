@@ -1108,6 +1108,11 @@ fn start_page(arg: OsString) -> Result<Option<Url>, String> {
 }
 
 fn main() {
+    // The system's time zone for `Intl` (D63), in the browser and its
+    // renderers alike, before any page runs.
+    if let Some((zone, region)) = platform::time_zone() {
+        engine::set_windows_time_zone(&zone, &region);
+    }
     // A renderer (M34) or the check of renderers: no window, no page.
     match std::env::args_os().nth(1) {
         Some(first) if first == "--renderer" => std::process::exit(processes::renderer()),

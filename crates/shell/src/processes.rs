@@ -132,6 +132,8 @@ const REFUSED: [&str; 9] = [
 
 /// What it must allow one.
 const FONTS: &str = "the system's fonts, read";
+/// And another: Windows's name of the time zone, for `Intl` (D63).
+const ZONE: &str = "the system's time zone, read";
 
 /// A probe's outcome: `refused` when the system denied it access.
 fn outcome<T>(result: std::io::Result<T>) -> String {
@@ -201,6 +203,13 @@ fn probe(file: &Path) -> Vec<(&'static str, String)> {
         Ok(_) => "allowed".to_owned(),
         Err(error) => format!("failed ({error})"),
     };
+    // Windows names the zone to a renderer as to the browser (D63); none
+    // elsewhere, where the zone comes from `TZ` or `/etc/localtime`.
+    let zone = match crate::platform::time_zone() {
+        Some(_) => "allowed".to_owned(),
+        None if cfg!(windows) => "failed".to_owned(),
+        None => "allowed".to_owned(),
+    };
     vec![
         (REFUSED[0], outcome(std::fs::read(file))),
         (REFUSED[1], outcome(std::fs::read_dir(&home))),
@@ -222,6 +231,7 @@ fn probe(file: &Path) -> Vec<(&'static str, String)> {
             },
         ),
         (FONTS, fonts),
+        (ZONE, zone),
     ]
 }
 
@@ -482,8 +492,10 @@ fn check_sandbox() -> Result<(), String> {
             return Err(format!("{probe}: {}", said_of(probe)));
         }
     }
-    if said_of(FONTS) != "allowed" {
-        return Err(format!("{FONTS}: {}", said_of(FONTS)));
+    for probe in [FONTS, ZONE] {
+        if said_of(probe) != "allowed" {
+            return Err(format!("{probe}: {}", said_of(probe)));
+        }
     }
     Ok(())
 }

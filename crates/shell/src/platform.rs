@@ -158,6 +158,21 @@ pub(crate) fn reduced_motion() -> Option<bool> {
     }
 }
 
+/// The system's time zone as Windows names it (its key name, `W. Europe
+/// Standard Time`) and the user's region (`DE`, or ""), which `Intl`
+/// maps to an IANA name as ICU does (D63). `None` elsewhere, where the
+/// `TZ` variable or `/etc/localtime` names the zone.
+pub(crate) fn time_zone() -> Option<(String, String)> {
+    #[cfg(windows)]
+    {
+        windows::time_zone()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 /// What a process of this executable is started as: a renderer, by its
 /// number, or the GPU process (M41, D38).
 #[derive(Clone, Copy)]
@@ -1544,6 +1559,7 @@ mod audio {
 #[allow(unsafe_code)]
 mod windows {
     use windows_sys::Win32::Foundation::{CloseHandle, LocalFree};
+    use windows_sys::Win32::Globalization::{GEO_ISO2, GEOCLASS_NATION, GetGeoInfoW, GetUserGeoID};
     use windows_sys::Win32::Security::Cryptography::{
         CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
     };
@@ -1551,6 +1567,9 @@ mod windows {
         K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
     };
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows_sys::Win32::System::Time::{
+        DYNAMIC_TIME_ZONE_INFORMATION, GetDynamicTimeZoneInformation, TIME_ZONE_ID_INVALID,
+    };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW,
     };
@@ -1672,6 +1691,41 @@ mod windows {
         Some(bytes)
     }
 
+    pub(super) fn time_zone() -> Option<(String, String)> {
+        let mut zone = DYNAMIC_TIME_ZONE_INFORMATION::default();
+        // SAFETY: the call writes one `DYNAMIC_TIME_ZONE_INFORMATION`,
+        // which `zone` is, alive and unaliased for the call.
+        let read = unsafe { GetDynamicTimeZoneInformation(&raw mut zone) };
+        if read == TIME_ZONE_ID_INVALID {
+            return None;
+        }
+        let key = &zone.TimeZoneKeyName;
+        let name = String::from_utf16_lossy(&key[..key.iter().position(|&c| c == 0)?]);
+        if name.is_empty() {
+            return None;
+        }
+        // SAFETY: the call takes a class of location and returns a number;
+        // no memory is passed.
+        let nation = unsafe { GetUserGeoID(GEOCLASS_NATION) };
+        let mut region = [0u16; 8];
+        // SAFETY: the buffer is ours, alive for the call, and its length in
+        // characters is passed; the call writes no more than that.
+        let written = unsafe {
+            GetGeoInfoW(
+                nation,
+                GEO_ISO2,
+                region.as_mut_ptr(),
+                region.len() as i32,
+                0,
+            )
+        };
+        let region = match usize::try_from(written) {
+            Ok(written @ 2..=8) => String::from_utf16_lossy(&region[..written - 1]),
+            _ => String::new(),
+        };
+        Some((name, region))
+    }
+
     pub(super) fn reduced_motion() -> Option<bool> {
         let mut animations: BOOL = 1;
         // SAFETY: `SPI_GETCLIENTAREAANIMATION` takes a pointer to one
@@ -1717,6 +1771,19 @@ mod tests {
         let last = damaged.len() - 1;
         damaged[last] ^= 1;
         assert_eq!((wrap.unwrap)(&damaged), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_names_the_systems_time_zone_and_region() {
+        let (zone, region) = time_zone().expect("the zone read");
+        // A key name (`Tokyo Standard Time`, `UTC-11`).
+        assert!(!zone.is_empty() && zone.is_ascii(), "{zone}");
+        assert!(
+            region.is_empty()
+                || region.len() == 2 && region.bytes().all(|b| b.is_ascii_uppercase()),
+            "{region}"
+        );
     }
 
     /// An environment of the variables `pairs` gives.

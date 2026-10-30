@@ -44,7 +44,7 @@ pub use dom::{
     Answer, Call, CanvasCall, DomError, FetchCall, Handle, MAX_HANDLE, NestedScript, WORK_PER_STEP,
 };
 pub use pattern::pattern_matches;
-pub use quickjs::{QuickJs, warm_bindings};
+pub use quickjs::{QuickJs, set_windows_time_zone, warm_bindings};
 
 /// The most heap a realm may hold, in bytes. An allocation past it
 /// throws; one that escapes a run with the heap still full leaves the

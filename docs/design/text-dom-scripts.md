@@ -240,9 +240,45 @@ network error is; a cross-origin request without CORS fails it.
 `RelativeTimeFormat`, `ListFormat`, `Locale`, `getCanonicalLocales`
 and `supportedValuesOf`, and the locale forms of `toLocaleString`,
 `toLocaleDateString`, `toLocaleTimeString` and `localeCompare`, by
-ICU4X's formatters with compiled data for its full locale set; options
-as ECMA-402 resolves them, `formatToParts` and `resolvedOptions`
-included. The time zone is the system's or UTC. `Temporal` is not here.
+ICU4X's formatters with compiled data; options as ECMA-402 resolves
+them, `formatToParts` and `resolvedOptions` included. The reference is
+Chrome's (V8 over ICU 78, CLDR 48): its 60 languages (others resolve to
+the default, `en-US`), and where ICU4X's data or behavior differ from
+ICU's, tables read from Chrome's own `icudtl.dat` or its outputs:
+`intl_dates.txt` (the date patterns, available formats, interval
+formats, eras, day periods and zone formats of each language, the
+Buddhist and Persian calendars of `th` and `fa`, the names ICU4X lacks
+for `pa-Arab`, regions' hour cycles, zones' regions, metazones and
+their reference zones, and the zone and region names where ICU4X's
+differ), `intl_units.txt` (unit patterns ICU4X lacks or writes
+otherwise) and `intl_zones.txt` (each zone's offsets from 1970 on, its
+zoneinfo64's changes and final rule). A date's pattern is the one ICU's
+DateTimePatternGenerator finds for V8's skeleton of the options (a
+style's for `dateStyle` and `timeStyle`), formatted by ICU4X's names
+with the fields ICU writes otherwise quoted in; a range's is the one
+ICU's DateIntervalFormat picks for the skeleton of that pattern (the
+greatest different field's interval format, else the fallback), and
+zones' names follow ICU's TimeZoneFormat over ICU4X's metazone names
+(standard names for a zone keeping no daylight time near the date, the
+location format by region or by the city in the zone's name, a partial
+location where the zone keeps another time than the metazone's
+reference zone). The time zone is the system's (on Windows its zone's
+key name and the user's region, which the shell reads as it starts, a
+call the renderers' sandbox allows, mapped by CLDR's windowsZones), UTC,
+an offset, or any IANA zone, names canonical as ICU keeps them
+(`Asia/Calcutta`). Currencies (symbol, narrow symbol, code, plural
+name by the formatted number's own digits, accounting) and compact
+notation by `icu_experimental` 0.6 and `icu_decimal`'s compact
+formatter; units by `icu_experimental`'s data provider for every
+sanctioned unit in every language. `formatRange` and
+`formatRangeToParts` of both formatters, `PluralRules.selectRange`
+(ICU's plural ranges, `other` where a locale has none) and
+`Intl.Locale`'s week (first day and weekend, no minimal days, as
+Chrome 156 has it), text, hour cycle, calendar,
+collation (the root order for the languages ICU keeps no collation
+of), numbering system and time zone information. Calendars other
+than the gregorian one, the Buddhist and the Persian (those a `-u-ca-`
+asks for) keep ICU4X's own patterns. `Temporal` is not here.
 The bindings are a chunk read at their first use (D64).
 
 ### D64: binding chunks read at their first use

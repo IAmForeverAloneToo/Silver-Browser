@@ -161,7 +161,7 @@ pub use frames::{MAX_FRAME_DEPTH, MAX_FRAME_HEAP, MAX_FRAMES, OpenTab};
 pub use image_store::MAX_DECODE_THREADS;
 pub use inspect::MAX_INSPECTED_MESSAGES;
 pub use js::{ConsoleKind, MAX_PREVIEW_BYTES, MAX_STACK_FRAMES, StackFrame};
-pub use js::{ConsoleLevel, warm_bindings};
+pub use js::{ConsoleLevel, set_windows_time_zone, warm_bindings};
 pub use keys::{Key, KeyOutcome};
 pub use loader::{LoadError, LoadState};
 pub use net::{Client, NetworkError, Url};

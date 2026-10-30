@@ -7,10 +7,13 @@ mod bytecode;
 pub(crate) mod console;
 mod dom;
 mod intl;
+mod intl_dates;
+mod intl_zone;
 mod modules;
 mod wasm;
 
 pub use bytecode::warm as warm_bindings;
+pub use intl_zone::set_windows_time_zone;
 
 #[cfg(test)]
 pub(crate) use wasm::from_base64;

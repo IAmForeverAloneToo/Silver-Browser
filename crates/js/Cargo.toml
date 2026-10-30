@@ -9,14 +9,18 @@ rquickjs.workspace = true
 wasmi.workspace = true
 wasmi_core.workspace = true
 wasmparser.workspace = true
-# Intl (D63).
-icu_decimal.workspace = true
+# Intl (D63); of ICU4X's unstable parts, the compact formatter.
+icu_decimal = { workspace = true, features = ["unstable"] }
 icu_datetime.workspace = true
 icu_collator.workspace = true
 icu_plurals.workspace = true
 icu_calendar.workspace = true
 icu_locale.workspace = true
+icu_time.workspace = true
 fixed_decimal.workspace = true
+icu_experimental.workspace = true
+icu_provider.workspace = true
+writeable.workspace = true
 
 [dev-dependencies]
 # The text format, for the tests' modules (M29).
