@@ -739,6 +739,13 @@ impl Page {
         Url::parse_with(href, base.as_ref(), self.context.encoding).ok()
     }
 
+    /// `href` parsed against the document's base URL by the UTF-8 URL
+    /// parser, whatever the document's encoding (Fetch's `Request`).
+    pub(crate) fn resolve_utf8(&self, document: &Document, href: &str) -> Option<Url> {
+        let base = self.base_url(document);
+        Url::parse_with(href, base.as_ref(), encoding::UTF_8).ok()
+    }
+
     /// `href` parsed against the document's own URL, its fallback base
     /// URL, as a `<base>`'s `href` is read (M27).
     pub(crate) fn resolve_from_document(&self, href: &str) -> Option<Url> {

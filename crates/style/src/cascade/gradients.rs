@@ -526,6 +526,9 @@ mod tests {
         assert!(items("linear-gradient(red blue)").is_none());
         let many = vec!["red"; MAX_GRADIENT_STOPS + 1].join(",");
         assert!(items(&format!("linear-gradient({many})")).is_none());
+        // The reference browser takes 500 stops and more.
+        let five_hundred = vec!["red"; 501].join(",");
+        assert!(items(&format!("linear-gradient({five_hundred})")).is_some());
         let most = vec!["red"; MAX_GRADIENT_STOPS].join(",");
         assert!(items(&format!("linear-gradient({most})")).is_some());
     }

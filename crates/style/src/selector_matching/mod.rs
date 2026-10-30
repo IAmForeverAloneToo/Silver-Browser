@@ -183,7 +183,9 @@ pub struct CompoundSelector {
 /// One simple selector.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SimpleSelector {
-    /// A type selector (tag name, lowercased at parse time).
+    /// A type selector: the tag name as written, which matches an
+    /// element's in any ASCII case in an HTML document and exactly in
+    /// an XML one (Selectors 4 section 5.1).
     Type(String),
     /// `*`
     Universal,
@@ -193,7 +195,8 @@ pub enum SimpleSelector {
     Class(String),
     /// An attribute selector.
     Attribute {
-        /// Attribute name (ASCII lowercased).
+        /// The attribute's name as written, matched as a type
+        /// selector's is.
         name: String,
         /// The comparison.
         op: AttrOp,

@@ -883,6 +883,8 @@ fn base() -> FontBase {
         em: 10.0,
         rem: 10.0,
         viewport: (800.0, 600.0),
+        lh: 12.0,
+        rlh: 12.0,
     }
 }
 
@@ -969,15 +971,31 @@ fn fonts_parse_and_serialize_as_the_reference_browser_has_them() {
     let inside = FontBase {
         em: 20.0,
         rem: 16.0,
+        lh: 40.0,
+        rlh: 18.0,
         ..base()
     };
-    let sizes: Vec<String> = ["1em serif", "50% serif", "larger serif", "2rem serif"]
-        .iter()
-        .map(|text| parse_font(text, &inside).unwrap().serialize())
-        .collect();
+    let sizes: Vec<String> = [
+        "1em serif",
+        "50% serif",
+        "larger serif",
+        "2rem serif",
+        "2lh/100 serif",
+        "1rlh serif",
+    ]
+    .iter()
+    .map(|text| parse_font(text, &inside).unwrap().serialize())
+    .collect();
     assert_eq!(
         sizes,
-        ["20px serif", "10px serif", "24px serif", "32px serif"]
+        [
+            "20px serif",
+            "10px serif",
+            "24px serif",
+            "32px serif",
+            "80px serif",
+            "18px serif"
+        ]
     );
 }
 

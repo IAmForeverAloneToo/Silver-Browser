@@ -11,11 +11,15 @@ use css::Token;
 /// What a font's relative sizes are of: the canvas element's computed
 /// `font-size`, the root element's, and the viewport's size; 10 pixels
 /// each for a canvas with no style, as the reference browser has it.
+/// `lh` and `rlh` are the canvas element's and the root's line heights,
+/// a normal line of 10 pixels without.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FontBase {
     pub em: f64,
     pub rem: f64,
     pub viewport: (f64, f64),
+    pub lh: f64,
+    pub rlh: f64,
 }
 
 impl Default for FontBase {
@@ -24,6 +28,8 @@ impl Default for FontBase {
             em: 10.0,
             rem: 10.0,
             viewport: (0.0, 0.0),
+            lh: 12.0,
+            rlh: 12.0,
         }
     }
 }
@@ -201,6 +207,8 @@ pub(crate) fn length(value: f64, unit: &str, base: &FontBase, font: f64) -> Opti
         "em" | "ic" => value * font,
         "ex" | "ch" => value * font / 2.0,
         "rem" => value * base.rem,
+        "lh" => value * base.lh,
+        "rlh" => value * base.rlh,
         "vw" => value * base.viewport.0 / 100.0,
         "vh" => value * base.viewport.1 / 100.0,
         "vmin" => value * base.viewport.0.min(base.viewport.1) / 100.0,

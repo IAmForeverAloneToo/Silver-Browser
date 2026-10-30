@@ -12,6 +12,15 @@ use text::{DocumentFaces, FaceRule, FaceSlant, FaceState, FontCollection};
 use crate::Engine;
 use crate::loader::{LoadError, Target};
 
+/// The fonts a document with the web fonts `web` lays out with: the
+/// engine's `base`, with the faces over them.
+pub(crate) fn fonts_of<'a>(
+    web: Option<&'a WebFonts>,
+    base: &'a FontCollection,
+) -> &'a FontCollection {
+    web.map_or(base, |web| &web.fonts)
+}
+
 /// The shown document's web fonts.
 pub(crate) struct WebFonts {
     /// The number of this set, never another's: an answer for an older
@@ -407,9 +416,23 @@ impl Engine {
                 self.fetch_font(n);
             }
         }
+        self.font_units_changed();
         self.shown.layout_cache.clear();
         self.shown.layout = None;
         self.changed = true;
+    }
+
+    /// The document's fonts changed: styles whose font-relative units
+    /// measured them are computed again (G12).
+    fn font_units_changed(&mut self) {
+        if self
+            .shown
+            .styled
+            .as_ref()
+            .is_some_and(|cached| cached.styles.uses_font_units)
+        {
+            self.shown.recascade = true;
+        }
     }
 
     /// Applies what scripts did to the document's fonts: faces added or
@@ -656,6 +679,7 @@ impl Engine {
             *data = Some((body.to_vec(), 0));
         }
         web.period.0.push(face);
+        self.font_units_changed();
         self.shown.layout_cache.clear();
         self.shown.layout = None;
         self.changed = true;

@@ -917,7 +917,7 @@ pub fn shown_text(document: &Document, element: NodeId) -> Option<(String, bool)
     };
     match document.tag(element) {
         Some("input") => match input_type(document, element) {
-            "checkbox" | "radio" | "hidden" | "image" => None,
+            "checkbox" | "radio" | "hidden" | "image" | "color" => None,
             "submit" | "reset" | "button" => {
                 let label = match (
                     document.attr(element, "value"),

@@ -743,12 +743,20 @@ pub(super) fn optional_image(image: Option<&Image>, url: Url<'_>) -> String {
 /// so; a gradient with its colours computed.
 pub(super) fn image(image: &Image, url: Url<'_>) -> String {
     match image {
-        Image::Url { url: written, .. } => {
-            let absolute = url(written).unwrap_or_else(|| written.to_string());
-            format!("url({})", string(&absolute))
-        }
+        Image::Url { url: written, .. } => url_value(written, url),
         Image::Gradient(gradient) => self::gradient(gradient),
     }
+}
+
+/// A `url()` of a string, its URL absolute where `url` makes it so; an
+/// empty or fragment-only one as written (Values 4 sections 4.5.1 and
+/// 4.5.2).
+pub(super) fn url_value(written: &str, url: Url<'_>) -> String {
+    let absolute = match written.is_empty() || written.starts_with('#') {
+        true => written.to_string(),
+        false => url(written).unwrap_or_else(|| written.to_string()),
+    };
+    format!("url({})", string(&absolute))
 }
 
 /// A gradient (CSS Images 3 and 4 section 3), as the reference browser

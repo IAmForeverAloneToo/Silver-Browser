@@ -2392,7 +2392,13 @@ pub struct ImageStyle {
     pub object_position: ObjectPosition,
     pub image_orientation: ImageOrientation,
     pub image_rendering: ImageRendering,
+    /// `cursor`'s images before its keyword (CSS UI 4 section 4.1), each
+    /// its URL as written and its hotspot: kept and inherited, not shown.
+    pub cursor_images: Arc<[CursorImage]>,
 }
+
+/// A `cursor` image: its URL as written and its hotspot.
+pub type CursorImage = (Arc<str>, Option<[f32; 2]>);
 
 impl ImageStyle {
     /// The values a child inherits: the inherited ones kept, the others
@@ -2401,6 +2407,7 @@ impl ImageStyle {
         ImageStyle {
             image_orientation: self.image_orientation,
             image_rendering: self.image_rendering,
+            cursor_images: Arc::clone(&self.cursor_images),
             ..ImageStyle::default()
         }
     }
@@ -2443,8 +2450,9 @@ impl Image {
 }
 
 /// The most colour stops a gradient may have (M23.3): one with more is
-/// invalid.
-pub const MAX_GRADIENT_STOPS: usize = 256;
+/// invalid. The reference browser takes 500 and more; painting one at
+/// the cap stays a few megabytes of stops.
+pub const MAX_GRADIENT_STOPS: usize = 4_096;
 
 /// A gradient (CSS Images 3 section 3, M23.3): its line or ending shape,
 /// whether it repeats, and its colour stops and transition hints.
@@ -2649,6 +2657,10 @@ pub struct Backgrounds {
     pub origin: Vec<BackgroundBox>,
     pub clip: Vec<BackgroundBox>,
     pub attachment: Vec<Attachment>,
+    /// `background-color`'s value when it mixes `currentcolor` in a
+    /// `color-mix()`: kept unresolved, as Color 5 section 3.1 says, so
+    /// that an element inheriting it mixes its own colour.
+    pub color_mix: Option<Arc<[css::Token]>>,
 }
 
 impl Default for Backgrounds {
@@ -2664,6 +2676,7 @@ impl Default for Backgrounds {
             origin: vec![BackgroundBox::PaddingBox],
             clip: vec![BackgroundBox::BorderBox],
             attachment: vec![Attachment::Scroll],
+            color_mix: None,
         }
     }
 }
@@ -3213,6 +3226,11 @@ pub enum LineHeight {
 
 static INITIAL_FONT: LazyLock<FontProps> = LazyLock::new(FontProps::default);
 
+/// The font properties' initial values.
+pub(crate) fn initial_font() -> &'static FontProps {
+    &INITIAL_FONT
+}
+
 /// The background properties' initial values, which
 /// [`ComputedStyle::background`] gives a style that sets none of them.
 static INITIAL_BACKGROUND: LazyLock<Backgrounds> = LazyLock::new(Backgrounds::default);
@@ -3723,6 +3741,11 @@ impl ComputedStyle {
     /// keyword apart, resolved where they are read.
     pub fn resolve_current_color(&mut self) {
         let current = self.color;
+        if let Some(mix) = self.background().color_mix.clone()
+            && let Some(mixed) = crate::cascade::mix_again(&mix, current, self.dark)
+        {
+            self.background_color = mixed;
+        }
         let stale = |c: &Color| c.is_current() && *c != c.resolve(current);
         let fix = |c: &mut Color| *c = c.resolve(current);
         fix(&mut self.background_color);

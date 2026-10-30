@@ -399,7 +399,7 @@ fn parse_compound(c: &mut Cursor, depth: usize, scope: Scope) -> Option<Compound
                     return None;
                 }
                 seen_type = true;
-                simple.push(SimpleSelector::Type(name.to_ascii_lowercase()));
+                simple.push(SimpleSelector::Type(name.clone()));
                 spec.2 += 1;
             }
             Token::Delim('*') => {
@@ -521,7 +521,7 @@ fn parse_attribute(c: &mut Cursor) -> Option<(String, AttrOp, String, CaseFlag)>
         _ => {}
     }
     let name = match c.peek() {
-        Some(Token::Ident(name)) => name.to_ascii_lowercase(),
+        Some(Token::Ident(name)) => name.clone(),
         _ => return None,
     };
     c.advance();
@@ -1000,10 +1000,12 @@ mod tests {
     }
 
     #[test]
-    fn type_selectors_are_lowercased() {
+    fn type_selectors_keep_their_case() {
+        // Matching folds the case in an HTML document, and not in an
+        // XML one.
         assert_eq!(
             ok("DIV").0[0].compounds[0].simple,
-            vec![SimpleSelector::Type("div".into())]
+            vec![SimpleSelector::Type("DIV".into())]
         );
     }
 
@@ -1207,11 +1209,11 @@ mod tests {
     }
 
     #[test]
-    fn attribute_name_is_lowercased() {
+    fn attribute_name_keeps_its_case() {
         assert_eq!(
             ok("[DATA-X=y]").0[0].compounds[0].simple,
             vec![SimpleSelector::Attribute {
-                name: "data-x".into(),
+                name: "DATA-X".into(),
                 op: AttrOp::Equals,
                 value: "y".into(),
                 case: CaseFlag::Unset,
@@ -1644,26 +1646,22 @@ mod tests {
     #[test]
     fn names_are_compared_in_ascii_lowercase() {
         // The Kelvin sign is Unicode-lowercased to `k`; ASCII lowercasing
-        // leaves it, so `:lin\u{212A}` is not `:link`, and the type
-        // selector `\u{212A}BD` does not name `kbd`.
+        // leaves it, so `:lin\u{212A}` is not `:link`. Type selectors and
+        // attribute names keep their case, which matching folds in ASCII.
         err(":lin\u{212A}");
         err("::mar\u{212A}er");
         assert_eq!(
             ok("\u{212A}BD").0[0].compounds[0].simple,
-            vec![SimpleSelector::Type("\u{212A}bd".into())]
+            vec![SimpleSelector::Type("\u{212A}BD".into())]
         );
         assert_eq!(
             ok("[\u{212A}EY=x]").0[0].compounds[0].simple,
             vec![SimpleSelector::Attribute {
-                name: "\u{212A}ey".into(),
+                name: "\u{212A}EY".into(),
                 op: AttrOp::Equals,
                 value: "x".into(),
                 case: CaseFlag::Unset,
             }]
-        );
-        assert_eq!(
-            ok("ÉTÉ").0[0].compounds[0].simple,
-            vec![SimpleSelector::Type("ÉtÉ".into())]
         );
         assert!(parse(":NOT(.a):Hover::BEFORE").is_ok());
     }

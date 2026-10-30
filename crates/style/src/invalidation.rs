@@ -186,6 +186,7 @@ impl SelectorFeatures {
                 self.classes.insert(class.clone());
             }
             SimpleSelector::Attribute { name, .. } => {
+                self.attributes.insert(name.to_ascii_lowercase());
                 self.attributes.insert(name.clone());
             }
             SimpleSelector::PseudoClass(pc) => self.add_pseudo_class(pc, at),
@@ -293,7 +294,11 @@ impl SelectorFeatures {
     /// Whether changing attribute `name` from `old` to `new` can change
     /// which selectors match its element.
     fn mentions(&self, name: &str, old: Option<&str>, new: Option<&str>) -> bool {
-        if self.any_attribute || self.attributes.contains(name) {
+        if self.any_attribute
+            || self.attributes.contains(name)
+            || (name.bytes().any(|b| b.is_ascii_uppercase())
+                && self.attributes.contains(&name.to_ascii_lowercase()))
+        {
             return true;
         }
         match name {

@@ -37,7 +37,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use dom::{Document, Node, NodeData, NodeId};
-use layout::{Fragment, FragmentKind, Mark, MarkerShape, Replaced};
+use layout::{Fragment, FragmentKind, Mark, MarkerShape, Replaced, SWATCH_INSET};
 use style::Styles;
 use style::computed::{
     Attachment, BOTTOM, BackgroundBox, BackgroundSize, BorderImageRepeat, BorderImageWidth,
@@ -1939,6 +1939,9 @@ const WHITE: Rgba8 = Rgba8 {
 const DARK_FIELD: Rgba8 = Rgba8::rgb(59, 59, 59);
 const DARK_EDGE: Rgba8 = Rgba8::rgb(133, 133, 133);
 
+/// The edge of a colour input's swatch, the reference browser's.
+const SWATCH_EDGE: Rgba8 = Rgba8::rgb(119, 119, 119);
+
 /// A control's mark in `rect` (M26.7), as the reference browser draws
 /// one: a checkbox a white box with a grey edge, filled with the accent
 /// colour and a white tick when checked or a white bar when
@@ -2037,6 +2040,28 @@ fn push_mark(items: &mut Vec<DisplayItem>, mark: Mark, rect: Rect, color: Rgba8,
                     color: fade(edge, disabled),
                 });
             }
+        }
+        // The swatch in from the content box, a grey edge around the
+        // colour, as the reference browser's.
+        Mark::Swatch([red, green, blue]) => {
+            let [dx, dy] = SWATCH_INSET;
+            let (w, h) = ((r.w - 2.0 * dx).max(0.0), (r.h - 2.0 * dy).max(0.0));
+            let (x, y) = (r.x + dx, r.y + dy);
+            items.push(DisplayItem::Rect {
+                x,
+                y,
+                w,
+                h,
+                color: Rgba8::rgb(red, green, blue),
+            });
+            items.push(DisplayItem::Border {
+                x,
+                y,
+                w,
+                h,
+                widths: [1.0; 4],
+                color: SWATCH_EDGE,
+            });
         }
         Mark::Arrow => {
             let (cx, cy) = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
@@ -2637,12 +2662,13 @@ fn push_layers(
         // An image's natural size, its resolution applied, and its
         // number; an SVG image what it has of one (M32); a gradient
         // neither.
-        let (natural, picture) = match layer.image {
+        let (natural, picture, raster) = match layer.image {
             Some(Image::Url { url, resolution }) => {
                 let Some((id, header)) = backdrop.pictures.picture(url) else {
                     continue;
                 };
                 let ((w, h), orientation) = oriented(&f.style, &header);
+                let raster = header.vector.is_none();
                 let natural = header.vector.unwrap_or_else(|| sized(w, h));
                 let by = |side: Option<f32>| side.map(|side| side / resolution);
                 (
@@ -2652,9 +2678,10 @@ fn push_layers(
                         ratio: natural.ratio,
                     },
                     Some((id, orientation)),
+                    raster,
                 )
             }
-            Some(Image::Gradient(_)) => (images::Vector::default(), None),
+            Some(Image::Gradient(_)) => (images::Vector::default(), None, false),
             None => continue,
         };
         let local = layer.attachment == Attachment::Local;
@@ -2676,7 +2703,14 @@ fn push_layers(
             }
             Attachment::Fixed | Attachment::Local | Attachment::Scroll => {}
         }
-        let (tile_w, tile_h) = tile_size(layer.size, natural, positioning, layer.repeat);
+        let (mut tile_w, mut tile_h) = tile_size(layer.size, natural, positioning, layer.repeat);
+        // A raster image's tile is whole pixels, at least one, as the
+        // reference browser snaps it; one fitted by `round`, whose other
+        // side keeps the ratio, an SVG image's and a gradient's are as
+        // they are.
+        if raster && tile_w > 0.0 && tile_h > 0.0 && !layer.repeat.contains(&Repeat::Round) {
+            (tile_w, tile_h) = (snap_tile(tile_w), snap_tile(tile_h));
+        }
         if !(tile_w > 0.0 && tile_h > 0.0 && area.w > 0.0 && area.h > 0.0) {
             continue;
         }
@@ -2940,6 +2974,11 @@ pub fn tile_size(
         fw = w * fh / h;
     }
     (fw, fh)
+}
+
+/// A tile's side snapped to whole pixels, one at least.
+fn snap_tile(side: f32) -> f32 {
+    side.round().max(1.0)
 }
 
 /// Where a layer's tiles go along one axis (sections 2.3 and 2.5): the
@@ -4340,6 +4379,9 @@ mod fragment_tests {
         assert_eq!(size("50% 50%")[2..], [55.0, 30.0]);
         assert_eq!(size("cover")[2..], [120.0, 60.0]);
         assert_eq!(size("contain")[2..], [110.0, 55.0]);
+        // A fractional tile is whole pixels, one at least.
+        assert_eq!(size("116.8px 0.8px")[2..], [117.0, 1.0]);
+        assert_eq!(size("0.2px 10.4px")[2..], [1.0, 10.0]);
         // Rounded to a whole number of tiles, the other side keeping the
         // ratio; spaced from edge to edge.
         let round = laid(&patterns("div { background: url(a.png) round }", 0.0)[0]);

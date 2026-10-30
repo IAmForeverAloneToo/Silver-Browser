@@ -112,6 +112,21 @@ struct ComputedStyles {
     styles: Styles,
     version: u64,
     mark: usize,
+    /// The fonts' faces they were computed with ([`fonts_key`]).
+    fonts: (usize, usize, usize),
+}
+
+/// What tells one state of `fonts`' document faces from another: the
+/// faces, how many, and how many came or failed. The styles of the
+/// font-relative units are computed again when it changes.
+fn fonts_key(fonts: Option<&text::FontCollection>) -> (usize, usize, usize) {
+    match fonts.and_then(text::FontCollection::document) {
+        Some(faces) => {
+            let (len, settled) = faces.settled();
+            (Arc::as_ptr(faces) as usize, len, settled)
+        }
+        None => (0, 0, 0),
+    }
 }
 
 /// A document's timers (M26, HTML section 8.6): each set timer by when
@@ -198,20 +213,12 @@ impl Timers {
     }
 }
 
-/// The window's fonts, measuring for the cascade (`ex` and `ch`).
+/// The window's fonts, measuring for the cascade's font-relative units.
 struct Measure<'a>(&'a text::FontCollection);
 
 impl FontMeasure for Measure<'_> {
-    fn x_height(&self, font_size_px: f32) -> f32 {
-        self.0.x_height(font_size_px)
-    }
-
-    fn zero_advance(&self, font_size_px: f32) -> f32 {
-        self.0.zero_advance(font_size_px)
-    }
-
-    fn zero_advance_in(&self, font_size_px: f32, families: &str) -> f32 {
-        self.0.zero_advance_in(font_size_px, families)
+    fn units(&self, font: &style::computed::FontProps, font_size_px: f32) -> style::FontUnits {
+        crate::font_units(self.0, font, font_size_px)
     }
 }
 
@@ -228,6 +235,9 @@ pub(crate) struct DocumentHost {
     detached: Vec<NodeId>,
     /// The work done since the realm last asked.
     work: u64,
+    /// The handlers the parser set, by element and text, whose refusal
+    /// by the document's policies was told as they were set.
+    pub(crate) parsed_handlers: HashSet<(NodeId, String)>,
     /// How many fetches the document has in flight (M27.1).
     pub(crate) in_flight: usize,
     /// The engine's client, lent for a run, for a synchronous XHR
@@ -1558,6 +1568,13 @@ impl DocumentHost {
                     .and_then(|page| page.resolve(&self.document, &text));
                 Ok(Answer::MaybeString(url.map(|url| url.to_string())))
             }
+            Call::ResolveUrlUtf8(text) => {
+                let url = self
+                    .page
+                    .as_ref()
+                    .and_then(|page| page.resolve_utf8(&self.document, &text));
+                Ok(Answer::MaybeString(url.map(|url| url.to_string())))
+            }
             Call::ResolveUrlFromDocument(text) => {
                 let url = self
                     .page
@@ -2593,6 +2610,9 @@ impl DocumentHost {
                 let node = self.node(node)?;
                 forms::set_selectedness(&mut self.document, node, selected, true)
                     .map_err(refused)?;
+                if let Some(select) = forms::owner_select(&self.document, node) {
+                    html::tree_builder::update_selectedcontent(&mut self.document, select);
+                }
                 Ok(Answer::Nothing)
             }
             Call::Options(node) => {
@@ -2707,6 +2727,8 @@ impl DocumentHost {
             Call::ResetForm(form) => {
                 let form = self.node(form)?;
                 forms::reset_form(&mut self.document, form);
+                let root = self.document.root();
+                html::tree_builder::update_selectedcontents_under(&mut self.document, root);
                 Ok(Answer::Nothing)
             }
             Call::Validity(node) => {
@@ -2783,7 +2805,15 @@ impl DocumentHost {
                     _ => csp.eval_violations(&source),
                 };
                 let refused = net::csp::enforced(violations.clone()).err();
-                self.say_violations_at(violations, element, position);
+                // One the parser set was told of as it was set.
+                let told = kind == "handler"
+                    && position == (0, 0)
+                    && element.is_some_and(|element| {
+                        self.parsed_handlers.remove(&(element, source.clone()))
+                    });
+                if !told {
+                    self.say_violations_at(violations, element, position);
+                }
                 Ok(Answer::String(
                     refused.map_or_else(String::new, |violation| code_refusal(&kind, &violation)),
                 ))
@@ -3247,13 +3277,33 @@ impl DocumentHost {
             .is_some_and(|dir| dir.trim().eq_ignore_ascii_case("rtl"));
         if self.connected(node) {
             let root = self.document.document_element();
+            let measure = self
+                .window
+                .layout_fonts
+                .clone()
+                .or(self.window.fonts.clone());
+            // A style's line in pixels, a normal one its font's.
+            let line = |style: &style::ComputedStyle| {
+                let size = style.font_size_px;
+                f64::from(match style.font().line_height {
+                    style::computed::LineHeight::Px(px) => px,
+                    style::computed::LineHeight::Number(n) => n * size,
+                    style::computed::LineHeight::Normal => {
+                        measure.as_ref().map_or(size * 1.2, |fonts| {
+                            crate::font_units(fonts, style.font(), size).normal_line_height
+                        })
+                    }
+                })
+            };
             if let Some(styles) = self.styles_now() {
                 if let Some(style) = styles.get(node) {
                     base.em = f64::from(style.font_size_px);
+                    base.lh = line(style);
                     rtl = style.direction == style::computed::Direction::Rtl;
                 }
                 if let Some(style) = root.and_then(|root| styles.get(root)) {
                     base.rem = f64::from(style.font_size_px);
+                    base.rlh = line(style);
                 }
             }
         }
@@ -5328,7 +5378,22 @@ impl DocumentHost {
     fn styles_now(&mut self) -> Option<&Styles> {
         self.inline_sheets();
         let page = self.page.as_ref()?;
-        let measure = self.window.fonts.as_ref().map(Measure);
+        // The document's fonts, its web fonts among them, which its
+        // font-relative units measure.
+        let fonts = self
+            .window
+            .layout_fonts
+            .as_ref()
+            .or(self.window.fonts.as_ref());
+        let fonts_now = fonts_key(fonts);
+        if self
+            .computed
+            .as_ref()
+            .is_some_and(|cached| cached.styles.uses_font_units && cached.fonts != fonts_now)
+        {
+            self.computed = None;
+        }
+        let measure = fonts.map(Measure);
         let animations = RefCell::new(Animations::new());
         let context = CascadeContext {
             viewport_width: self.window.viewport.0 as f32,
@@ -5388,6 +5453,7 @@ impl DocumentHost {
                     styles,
                     version,
                     mark: changes.len(),
+                    fonts: fonts_now,
                 });
             }
         }

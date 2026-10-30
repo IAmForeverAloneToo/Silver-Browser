@@ -59,10 +59,12 @@ pub(crate) fn absolute_urls(rules: &mut [Rule], base: &Url) {
 
 /// [`absolute_urls`] for one value's tokens.
 fn absolute_in(tokens: &mut [Token], base: &Url) {
-    // An empty URL stays empty: it names nothing (Values 4 section 4.5.1).
+    // An empty URL stays empty: it names nothing (Values 4 section
+    // 4.5.1); a fragment-only one stays as written, a reference into the
+    // document that uses it (section 4.5.2).
     let absolute = |value: &str| {
-        if value.is_empty() {
-            return String::new();
+        if value.is_empty() || value.starts_with('#') {
+            return value.to_owned();
         }
         base.join(value)
             .map_or_else(|_| String::new(), |url| url.as_str().to_owned())

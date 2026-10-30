@@ -472,11 +472,13 @@ impl<'a> Matcher<'a> {
         match simple {
             // In an HTML document a type selector matches any element's
             // local name in any case, an SVG one's too, as the reference
-            // browser matches `lineargradient` (M32). An HTML element's
-            // name is kept lowercase, as the selector's is: compared as
-            // it is, the cascade's commonest test.
+            // browser matches `lineargradient` (M32); in an XML document
+            // only in its own case, as there (Selectors 4 section 5.1).
             SimpleSelector::Type(t) => match document.element_name(element) {
-                Some((dom::Namespace::Html, tag)) if !tag.contains(':') => tag == t,
+                _ if document.is_xml_document() => document.local_name(element) == Some(t),
+                Some((dom::Namespace::Html, tag)) if !tag.contains(':') => {
+                    tag.eq_ignore_ascii_case(t)
+                }
                 Some(_) => document
                     .local_name(element)
                     .is_some_and(|name| name.eq_ignore_ascii_case(t)),
@@ -989,6 +991,11 @@ const HTML_CASE_INSENSITIVE_VALUES: [&str; 46] = [
 /// Whether HTML compares the values of the attribute `name` (in ASCII
 /// lowercase, as the parser leaves it) ASCII case-insensitively.
 fn html_value_is_case_insensitive(name: &str) -> bool {
+    if name.bytes().any(|b| b.is_ascii_uppercase()) {
+        return HTML_CASE_INSENSITIVE_VALUES
+            .iter()
+            .any(|value| value.eq_ignore_ascii_case(name));
+    }
     HTML_CASE_INSENSITIVE_VALUES.binary_search(&name).is_ok()
 }
 
@@ -1002,9 +1009,11 @@ fn matches_attribute(
     case: CaseFlag,
 ) -> bool {
     // An HTML element's attributes are kept lowercase; a foreign one's
-    // in their case (`viewBox`), which the selector's lowercased name
-    // matches in any case.
-    let actual = if document.is_html(element) {
+    // in their case (`viewBox`), which the selector's name matches in any
+    // case; in an XML document only in its own.
+    let exact = document.is_xml_document()
+        || (document.is_html(element) && !name.bytes().any(|b| b.is_ascii_uppercase()));
+    let actual = if exact {
         document.attr(element, name)
     } else {
         document.attrs(element).and_then(|attrs| {
@@ -1020,7 +1029,7 @@ fn matches_attribute(
     let fold = match case {
         CaseFlag::I => true,
         CaseFlag::S => false,
-        CaseFlag::Unset => html_value_is_case_insensitive(name),
+        CaseFlag::Unset => !document.is_xml_document() && html_value_is_case_insensitive(name),
     };
     let compare = Compare { fold };
     match op {
@@ -1169,6 +1178,40 @@ mod tests {
         let mut matcher = Matcher::new(&document).with_scope(Some(outer));
         assert!(!matcher.matches_list(outer, &list));
         assert!(matcher.matches_list(inner, &list));
+    }
+
+    #[test]
+    fn names_match_in_their_own_case_in_an_xml_document() {
+        let doc = p(vec![
+            e("html")
+                .push(e("div").attr("data-x", "1").attr("Data-y", "Two"))
+                .push(e("Div").attr("type", "A"))
+                .into(),
+        ]);
+        let mut document = Document::from_node(&doc);
+        let matched = |document: &Document, selector: &str| -> Vec<String> {
+            let list = parse_selector_list(&css::tokenize(selector)).expect("valid selector");
+            elements(document)
+                .into_iter()
+                .filter(|&id| matches_selector_list(document, id, &list))
+                .map(|id| document.local_name(id).unwrap().to_string())
+                .collect()
+        };
+        // In an HTML document, in any case.
+        assert_eq!(matched(&document, "DIV"), ["div", "Div"]);
+        assert_eq!(matched(&document, "[DATA-X]"), ["div"]);
+        assert_eq!(matched(&document, "[type=a]"), ["Div"]);
+        // In an XML one, only in its own, and `type`'s value too.
+        document.set_xml_document(true);
+        assert_eq!(matched(&document, "div"), ["div"]);
+        assert_eq!(matched(&document, "Div"), ["Div"]);
+        assert!(matched(&document, "DIV").is_empty());
+        assert_eq!(matched(&document, "[data-x]"), ["div"]);
+        assert!(matched(&document, "[DATA-X]").is_empty());
+        assert_eq!(matched(&document, "[Data-y=Two]"), ["div"]);
+        assert!(matched(&document, "[data-y]").is_empty());
+        assert!(matched(&document, "[type=a]").is_empty());
+        assert_eq!(matched(&document, "[type=a i]"), ["Div"]);
     }
 
     #[test]

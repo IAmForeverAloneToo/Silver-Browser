@@ -90,7 +90,7 @@ use style::selector_matching::PseudoElement;
 use style::transform::{Matrix, ReferenceBox};
 use text::FontCollection;
 
-use crate::box_tree::{BoxKind, LayoutBox, MarkerShape, Replaced};
+use crate::box_tree::{BoxKind, LayoutBox, Mark, MarkerShape, Replaced, SWATCH_INSET};
 use crate::cache::{Inputs, LayoutCache};
 use crate::children::Children;
 use crate::decoration::Decorated;
@@ -1641,6 +1641,12 @@ pub(crate) fn layout_inline_block<'a>(
     };
     let ascent = match baseline {
         Some(baseline) => margin_top + baseline,
+        // A colour input sits on its swatch's bottom, 4px above its
+        // content's, as the reference browser's does.
+        None if matches!(b.replaced, Some(Replaced::Mark(Mark::Swatch(_)))) => {
+            let bottom = edges.border[BOTTOM] + edges.padding[BOTTOM] + SWATCH_INSET[1];
+            (height - margin_bottom - bottom).max(margin_top)
+        }
         None => height,
     };
     AtomicLayout {
@@ -1675,6 +1681,11 @@ pub(crate) fn layout_block_contents<'a>(
     cache: Option<&LayoutCache>,
     imposed: Option<Imposed>,
 ) -> BlockLayout<'a> {
+    // A box's primary font is had for its line, text in it or not, as
+    // the reference browser has it: a web font it names is asked for.
+    if pass.fonts.document().is_some() && !b.anonymous {
+        let _ = crate::font::font_of(pass.fonts, &b.style);
+    }
     if crate::fieldset::rendered_legend(b).is_some() {
         return crate::fieldset::layout_fieldset_contents(
             b,
@@ -2082,9 +2093,17 @@ pub(crate) fn layout_flow<'a>(
         last_baseline.get_or_insert(baseline);
         let shape = matches!(marker.b.kind, BoxKind::Marker { shape: Some(_), .. })
             .then(|| crate::marker::Shape::of(&marker.metrics));
+        // A list item that is a formatting context root keeps its marker
+        // outside it, whatever its own floats take of its content, as the
+        // reference browser does.
+        let shift = if bfc_root {
+            0.0
+        } else {
+            float_shift(Some(band))
+        };
         let x =
             crate::marker::outside_left(&b.style, border_box_width, marker.width, shape.as_ref())
-                + float_shift(Some(band));
+                + shift;
         let fragments = marker.fragments(
             x,
             baseline,

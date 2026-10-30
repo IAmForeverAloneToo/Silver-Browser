@@ -342,6 +342,8 @@ impl crate::Engine {
     /// With no realm there is no listener to hear a `reset`.
     pub(crate) fn reset_form(&mut self, form: NodeId) {
         forms::reset_form(&mut self.shown.document, form);
+        let root = self.shown.document.root();
+        html::tree_builder::update_selectedcontents_under(&mut self.shown.document, root);
         self.state_changed();
     }
 

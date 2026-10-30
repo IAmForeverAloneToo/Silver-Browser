@@ -17,6 +17,7 @@ fn destination(as_: &str) -> Option<Destination> {
         "style" => Some(Destination::Style),
         "script" => Some(Destination::Script),
         "image" => Some(Destination::Image),
+        "font" => Some(Destination::Font),
         _ => None,
     }
 }
@@ -101,6 +102,7 @@ fn request(
     request = match destination {
         Destination::Script => request.with_body_limit(crate::scripts::MAX_SCRIPT_BYTES),
         Destination::Image => request.with_body_limit(images::MAX_IMAGE_BYTES),
+        Destination::Font => request.with_body_limit(text::MAX_FONT_BYTES),
         _ => request,
     };
     request.referrer_policy = Some(
@@ -235,7 +237,9 @@ impl Hints {
 }
 
 /// Preloads what the `<link rel=preload>`s of `document`, `page`'s, ask
-/// for (M38): those a script made, or the scanner did not see.
+/// for (M38): those a script made, or the scanner did not see. Each is
+/// held to the page's policies as the element's own request, a refusal
+/// said, and gets its `load` or `error` (HTML's preload processing).
 pub(crate) fn preload_links(document: &Document, page: &mut Page, network: &mut Network) {
     let mut policies = None;
     let links = document.subtree(document.root()).filter(|&node| {
@@ -258,16 +262,16 @@ pub(crate) fn preload_links(document: &Document, page: &mut Page, network: &mut 
             continue;
         };
         let policies = policies.get_or_insert_with(|| Policies::of(page, document));
-        if let Some(request) = request(
+        if let Some(mut request) = request(
             page,
             policies,
             url,
             destination,
             document.attr(node, "crossorigin"),
             document.attr(node, "referrerpolicy"),
-        ) && policies.allow(&request)
-        {
-            network.preload(page.id(), request, true);
+        ) {
+            request.csp = Some(page.csp(document).clone());
+            network.link_preload(page.id(), node, request);
         }
     }
 }

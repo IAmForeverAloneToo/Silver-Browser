@@ -1051,7 +1051,7 @@ struct CachedStyle {
     styles: Styles,
 }
 
-/// The engine's fonts, lent to the cascade for `ex` and `ch`.
+/// The engine's fonts, lent to the cascade for the font-relative units.
 struct FontMeasurer<'a>(&'a text::FontCollection);
 
 /// An outer `<svg>`'s render tree (M32), as the document and its styles
@@ -1228,16 +1228,39 @@ fn cascade_context<'a>(
 }
 
 impl FontMeasure for FontMeasurer<'_> {
-    fn x_height(&self, font_size_px: f32) -> f32 {
-        self.0.x_height(font_size_px)
+    fn units(&self, font: &style::computed::FontProps, font_size_px: f32) -> style::FontUnits {
+        font_units(self.0, font, font_size_px)
     }
+}
 
-    fn zero_advance(&self, font_size_px: f32) -> f32 {
-        self.0.zero_advance(font_size_px)
+/// The changes in `document`'s journal from `before` on: all of it when
+/// it overflowed since.
+fn changes_since(document: &Document, before: usize) -> &[dom::Change] {
+    let changes = document.changes();
+    match changes.first() {
+        Some(dom::Change::Everything) => changes,
+        _ => changes.get(before..).unwrap_or(changes),
     }
+}
 
-    fn zero_advance_in(&self, font_size_px: f32, families: &str) -> f32 {
-        self.0.zero_advance_in(font_size_px, families)
+/// The figures of the first available font of `font` among `fonts` at
+/// `font_size_px` (Values 4 section 6.1.1): its x-height, its zero's
+/// advance (by the font's chain, as text is), its cap height, its water
+/// ideograph's advance and its normal line's height.
+pub(crate) fn font_units(
+    fonts: &text::FontCollection,
+    font: &style::computed::FontProps,
+    font_size_px: f32,
+) -> style::FontUnits {
+    let chosen = layout::font::font_of_props(fonts, Some(font));
+    let face = fonts.face(chosen.face);
+    let zero = fonts.measure_in(chosen, "0", font_size_px);
+    style::FontUnits {
+        x_height: face.x_height(font_size_px),
+        zero_advance: if zero > 0.0 { zero } else { font_size_px * 0.5 },
+        cap_height: face.cap_height(font_size_px),
+        ic_advance: face.ic_advance(font_size_px),
+        normal_line_height: face.metrics(font_size_px).line_height(),
     }
 }
 
@@ -3872,6 +3895,8 @@ impl Engine {
             .any(|change| loader::may_touch_sheets(document, change))
         {
             incoming.rescan(document, &mut self.network, Some(&media));
+            // A `<link rel=preload>` a script made (M38).
+            loader::preload::preload_links(document, incoming, &mut self.network);
         }
         if let Some(navigation) = asked {
             self.incoming_navigation(navigation);
@@ -4185,6 +4210,8 @@ impl Engine {
             .any(|change| loader::may_touch_sheets(document, change))
         {
             page.rescan(document, &mut self.network, Some(&media));
+            // A `<link rel=preload>` a script made (M38).
+            loader::preload::preload_links(document, page, &mut self.network);
         }
         if let Some(navigation) = asked {
             self.incoming_navigation(navigation);
@@ -4763,6 +4790,11 @@ impl Engine {
                 loader::Taken::Head { page, response } => self.document_head(page, response),
                 loader::Taken::Body { page, bytes } => self.document_body(page, &bytes),
             }
+        }
+        // The `<link rel=preload>`s whose fetches ended.
+        for (link, loaded) in self.network.take_settled_links(self.shown.page.id()) {
+            let kind = if loaded { "load" } else { "error" };
+            self.shown.scripts.element_event(link, kind);
         }
         self.parse_incoming();
         self.parse_shown();
@@ -5673,7 +5705,15 @@ impl Engine {
             return;
         }
         let mut asked = None;
-        match parsing.load.parse(document, PARSE_SLICE) {
+        let before = document.changes().len();
+        let progress = parsing.load.parse(document, PARSE_SLICE);
+        if scripting && matches!(progress, html::Progress::Parsed(_)) {
+            let elements = scripts::parsed_elements(document, changes_since(document, before));
+            parsing
+                .scripts
+                .check_parsed_handlers(page, document, &elements);
+        }
+        match progress {
             html::Progress::Restarted => {
                 // The sheets found so far go, the document fetch stays.
                 page.rescan(&Document::new(), &mut self.network, None);
@@ -5736,6 +5776,8 @@ impl Engine {
                     .any(|change| loader::may_touch_sheets(document, change))
                 {
                     page.rescan(document, &mut self.network, Some(&media));
+                    // A `<link rel=preload>` a script made (M38).
+                    loader::preload::preload_links(document, page, &mut self.network);
                     // A `<link rel=modulepreload>` parsed (D61).
                     if self.scripting && !page.sandbox().has(sandbox::Sandbox::SCRIPTS) {
                         let loader::Parsing { load, scripts, .. } = &mut **parsing;
@@ -5813,7 +5855,16 @@ impl Engine {
         let Some(parsing) = &mut self.shown.parsing else {
             return;
         };
-        match parsing.load.parse(&mut self.shown.document, PARSE_SLICE) {
+        let before = self.shown.document.changes().len();
+        let progress = parsing.load.parse(&mut self.shown.document, PARSE_SLICE);
+        if self.scripting && matches!(progress, html::Progress::Parsed(_)) {
+            let document = &self.shown.document;
+            let elements = scripts::parsed_elements(document, changes_since(document, before));
+            self.shown
+                .scripts
+                .check_parsed_handlers(&mut self.shown.page, document, &elements);
+        }
+        match progress {
             html::Progress::Restarted => {
                 // Shown already: the document starts again in place.
                 let head = parsing.head.clone();
@@ -6854,7 +6905,10 @@ impl Engine {
         animations: &RefCell<Animations>,
         before: Option<&Styles>,
     ) -> Styles {
-        let fonts = FontMeasurer(&self.layout_fonts);
+        let fonts = FontMeasurer(crate::web_fonts::fonts_of(
+            self.shown.web_fonts.as_ref(),
+            &self.layout_fonts,
+        ));
         let context = cascade_context(
             viewport,
             &fonts,
@@ -6890,7 +6944,10 @@ impl Engine {
         // The animations as they stand, changed by nothing done here.
         let animations = RefCell::new(self.shown.animations.borrow().clone());
         let styles = self.cascade(viewport, &animations, None);
-        let fonts = FontMeasurer(&self.layout_fonts);
+        let fonts = FontMeasurer(crate::web_fonts::fonts_of(
+            self.shown.web_fonts.as_ref(),
+            &self.layout_fonts,
+        ));
         let context = cascade_context(
             viewport,
             &fonts,
@@ -6961,7 +7018,10 @@ impl Engine {
         } else if !self.shown.pending.is_empty() || !self.shown.animated.is_empty() {
             let changes = std::mem::take(&mut self.shown.pending);
             let animated = std::mem::take(&mut self.shown.animated);
-            let fonts = FontMeasurer(&self.layout_fonts);
+            let fonts = FontMeasurer(crate::web_fonts::fonts_of(
+                self.shown.web_fonts.as_ref(),
+                &self.layout_fonts,
+            ));
             let context = cascade_context(
                 self.viewport,
                 &fonts,
@@ -7111,7 +7171,10 @@ impl Engine {
         });
         if stale {
             let styles = &self.shown.styled.as_ref().expect("just computed").styles;
-            let fonts = FontMeasurer(&self.layout_fonts);
+            let fonts = FontMeasurer(crate::web_fonts::fonts_of(
+                self.shown.web_fonts.as_ref(),
+                &self.layout_fonts,
+            ));
             let context = cascade_context(
                 self.viewport,
                 &fonts,
@@ -8044,7 +8107,10 @@ impl Engine {
         }
         let tree = {
             let styles = &self.shown.styled.as_ref()?.styles;
-            let fonts = FontMeasurer(&self.layout_fonts);
+            let fonts = FontMeasurer(crate::web_fonts::fonts_of(
+                self.shown.web_fonts.as_ref(),
+                &self.layout_fonts,
+            ));
             let context = cascade_context(
                 self.viewport,
                 &fonts,

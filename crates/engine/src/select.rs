@@ -239,6 +239,7 @@ impl Engine {
                 }
             }
         }
+        html::tree_builder::update_selectedcontent(&mut self.shown.document, select);
         self.state_changed();
         self.choice_changed(select);
     }
@@ -418,6 +419,7 @@ impl Engine {
             }
             let on = forms::selectedness(&self.shown.document, option);
             let _ = forms::set_selectedness(&mut self.shown.document, option, !on, true);
+            html::tree_builder::update_selectedcontent(&mut self.shown.document, select);
             self.state_changed();
             self.choice_changed(select);
             return;

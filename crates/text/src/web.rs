@@ -137,6 +137,17 @@ impl DocumentFaces {
         self.lock().get(index).map(|face| face.rule.clone())
     }
 
+    /// How many faces it has, and how many of them came or failed: what
+    /// changes the fonts matching chooses.
+    pub fn settled(&self) -> (usize, usize) {
+        let faces = self.lock();
+        let settled = faces
+            .iter()
+            .filter(|face| matches!(face.state, FaceState::Loaded | FaceState::Failed))
+            .count();
+        (faces.len(), settled)
+    }
+
     /// Whether a face is asked for or loading.
     pub fn is_loading(&self) -> bool {
         self.lock()

@@ -932,6 +932,36 @@ mod tests {
     }
 
     #[test]
+    fn a_colour_input_shows_its_swatch_and_sits_on_its_bottom() {
+        // As the reference browser's: 50 by 27, its baseline the swatch's
+        // bottom, 6px above its own (a border, a padding, the inset).
+        let l = laid(
+            "<p id=p>x<input id=c type=color value=#FF8000>y</p>",
+            "p { margin: 0 }",
+        );
+        let own = fragments(&l, "c");
+        let input = own
+            .iter()
+            .find(|f| matches!(f.kind, FragmentKind::Box))
+            .expect("its box");
+        assert_eq!((input.w, input.h), (50.0, 27.0));
+        assert!(
+            own.iter().any(|f| matches!(
+                f.kind,
+                FragmentKind::Replaced(Replaced::Mark(crate::box_tree::Mark::Swatch([
+                    255, 128, 0
+                ])))
+            )),
+            "{own:?}"
+        );
+        let text = l
+            .iter()
+            .find(|f| matches!(&f.kind, FragmentKind::Text(t) if t == "x"))
+            .expect("the text");
+        assert_eq!(input.y + input.h - 6.0, text.y);
+    }
+
+    #[test]
     fn an_inline_image_sits_on_the_baseline_and_makes_its_line_tall() {
         let l = laid(
             "<p id=p>x<img id=i src=200x100.png>y</p>",

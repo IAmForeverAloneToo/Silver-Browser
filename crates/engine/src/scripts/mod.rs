@@ -35,7 +35,7 @@ pub(crate) mod workers;
 #[cfg(test)]
 pub(crate) use fetch::MAX_SCRIPT_FETCHES;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -2618,6 +2618,57 @@ impl Scripts {
         }
     }
 
+    /// Queues the event `kind`, a simple one, at `element` as a task: a
+    /// link's `load` or `error`.
+    pub(crate) fn element_event(&mut self, element: NodeId, kind: &'static str) {
+        self.post(
+            Duration::ZERO,
+            js::Task::Dispatch {
+                target: js::Target::Node(handle(element)),
+                event: js::EventInit::new("Event", kind),
+            },
+        );
+    }
+
+    /// Holds the event handler content attributes the parser set on
+    /// `elements` to the document's policies as it sets them (HTML's
+    /// attribute change steps, CSP 3 section 4.2.3): a refusal is said and
+    /// reported at its element then, and not again when a script first
+    /// reaches the element and its handler is made.
+    pub(crate) fn check_parsed_handlers(
+        &mut self,
+        page: &mut Page,
+        document: &Document,
+        elements: &[NodeId],
+    ) {
+        for &element in elements {
+            let Some(attrs) = document.attrs(element) else {
+                continue;
+            };
+            let window = matches!(document.tag(element), Some("body" | "frameset"));
+            for (name, value) in attrs {
+                if !is_handler_attribute(name, window) {
+                    continue;
+                }
+                let violations = page.csp(document).inline_violations(
+                    net::csp::Inline::ScriptAttribute,
+                    "",
+                    value,
+                );
+                if violations.is_empty() {
+                    continue;
+                }
+                if self.host.parsed_handlers.len() < MAX_PARSED_HANDLERS {
+                    self.host.parsed_handlers.insert((element, value.clone()));
+                }
+                for violation in violations {
+                    self.say(violation_level(&violation), violation_text(&violation));
+                    self.announce(page, document, &violation, (Some(element), 0, 0));
+                }
+            }
+        }
+    }
+
     /// Writes `text` to the console at `level`: what the engine says of
     /// the document (M33.2: an iframe left empty).
     pub(crate) fn say(&mut self, level: ConsoleLevel, text: String) {
@@ -2690,6 +2741,169 @@ fn scan(
 
 pub(crate) fn handle(node: NodeId) -> js::Handle {
     js::Handle(node.to_bits())
+}
+
+/// The most parser-set handlers kept as told of their refusal: past it,
+/// a refusal is told again when a script reaches its element.
+const MAX_PARSED_HANDLERS: usize = 4096;
+
+/// The event types of GlobalEventHandlers' handlers, and of
+/// DocumentAndElementEventHandlers', in order: what an element's `on...`
+/// attribute sets (the bindings' list).
+const ELEMENT_HANDLERS: &[&str] = &[
+    "abort",
+    "animationcancel",
+    "animationend",
+    "animationiteration",
+    "animationstart",
+    "auxclick",
+    "beforeinput",
+    "beforematch",
+    "beforetoggle",
+    "blur",
+    "cancel",
+    "canplay",
+    "canplaythrough",
+    "change",
+    "click",
+    "close",
+    "contextlost",
+    "contextmenu",
+    "contextrestored",
+    "copy",
+    "cuechange",
+    "cut",
+    "dblclick",
+    "drag",
+    "dragend",
+    "dragenter",
+    "dragleave",
+    "dragover",
+    "dragstart",
+    "drop",
+    "durationchange",
+    "emptied",
+    "ended",
+    "error",
+    "focus",
+    "formdata",
+    "gotpointercapture",
+    "input",
+    "invalid",
+    "keydown",
+    "keypress",
+    "keyup",
+    "load",
+    "loadeddata",
+    "loadedmetadata",
+    "loadstart",
+    "lostpointercapture",
+    "mousedown",
+    "mouseenter",
+    "mouseleave",
+    "mousemove",
+    "mouseout",
+    "mouseover",
+    "mouseup",
+    "paste",
+    "pause",
+    "play",
+    "playing",
+    "pointercancel",
+    "pointerdown",
+    "pointerenter",
+    "pointerleave",
+    "pointermove",
+    "pointerout",
+    "pointerover",
+    "pointerup",
+    "progress",
+    "ratechange",
+    "reset",
+    "resize",
+    "scroll",
+    "scrollend",
+    "securitypolicyviolation",
+    "seeked",
+    "seeking",
+    "select",
+    "selectionchange",
+    "selectstart",
+    "slotchange",
+    "stalled",
+    "submit",
+    "suspend",
+    "timeupdate",
+    "toggle",
+    "transitioncancel",
+    "transitionend",
+    "transitionrun",
+    "transitionstart",
+    "volumechange",
+    "waiting",
+    "webkitanimationend",
+    "webkitanimationiteration",
+    "webkitanimationstart",
+    "webkittransitionend",
+    "wheel",
+];
+
+/// WindowEventHandlers' event types, in order, which a `body`'s or a
+/// `frameset`'s `on...` attribute sets on its window.
+const WINDOW_HANDLERS: &[&str] = &[
+    "afterprint",
+    "beforeprint",
+    "beforeunload",
+    "hashchange",
+    "languagechange",
+    "message",
+    "messageerror",
+    "offline",
+    "online",
+    "pagehide",
+    "pagereveal",
+    "pageshow",
+    "pageswap",
+    "popstate",
+    "rejectionhandled",
+    "storage",
+    "unhandledrejection",
+    "unload",
+];
+
+/// Whether the attribute `name` is an event handler content attribute,
+/// of a `body` or a `frameset` when `window`.
+fn is_handler_attribute(name: &str, window: bool) -> bool {
+    let Some(kind) = name.strip_prefix("on") else {
+        return false;
+    };
+    ELEMENT_HANDLERS.binary_search(&kind).is_ok()
+        || (window && WINDOW_HANDLERS.binary_search(&kind).is_ok())
+}
+
+/// The elements the parser inserted among `changes`, with what they
+/// hold: every element of `document` when the journal overflowed.
+pub(crate) fn parsed_elements(document: &Document, changes: &[dom::Change]) -> Vec<NodeId> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    let mut add = |node: NodeId| {
+        for at in document.subtree(node) {
+            if document.is_element(at) && seen.insert(at) {
+                out.push(at);
+            }
+        }
+    };
+    for change in changes {
+        match *change {
+            dom::Change::Everything => {
+                add(document.root());
+                break;
+            }
+            dom::Change::Inserted { child, .. } => add(child),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Whether an element of `document` has an attribute that may be an
@@ -3432,5 +3646,22 @@ mod tests {
                 Some(SpeculationRules)
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod handler_tests {
+    use super::*;
+
+    #[test]
+    fn handler_attributes_are_the_bindings_event_types() {
+        assert!(ELEMENT_HANDLERS.windows(2).all(|w| w[0] < w[1]));
+        assert!(WINDOW_HANDLERS.windows(2).all(|w| w[0] < w[1]));
+        assert!(is_handler_attribute("onclick", false));
+        assert!(is_handler_attribute("onpaste", false));
+        assert!(!is_handler_attribute("onfoo", false));
+        assert!(!is_handler_attribute("click", false));
+        assert!(!is_handler_attribute("onhashchange", false));
+        assert!(is_handler_attribute("onhashchange", true));
     }
 }

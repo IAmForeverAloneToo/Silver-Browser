@@ -1284,7 +1284,9 @@ impl ScriptingHost for WorkerHost {
             Call::SecureContext => Ok(Answer::Bool(self.secure)),
             // The worker's URL is the base its URLs are parsed against
             // (HTML section 10.2.1.1), and its location's.
-            Call::ResolveUrl(text) | Call::ResolveUrlFromDocument(text) => Ok(Answer::MaybeString(
+            Call::ResolveUrl(text)
+            | Call::ResolveUrlUtf8(text)
+            | Call::ResolveUrlFromDocument(text) => Ok(Answer::MaybeString(
                 Url::parse_with(&text, self.url.as_ref(), encoding::UTF_8)
                     .ok()
                     .map(|url| url.to_string()),

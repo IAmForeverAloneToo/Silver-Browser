@@ -214,6 +214,9 @@ pub struct FontStore {
     line_gap_units: f32,
     /// The OS/2 table's x-height, in font units, when the font gives one.
     x_height_units: Option<f32>,
+    /// The OS/2 table's cap height, in font units, when the font gives
+    /// one.
+    cap_height_units: Option<f32>,
     /// The `post` table's underline position, the top of the line above
     /// the baseline (negative below it), and thickness, in font units,
     /// when the font gives them.
@@ -299,6 +302,7 @@ impl FontStore {
         let descender_units = (-f32::from(ttf.descender())).max(0.0);
         let line_gap_units = f32::from(ttf.line_gap()).max(0.0);
         let x_height_units = ttf.x_height().map(f32::from).filter(|x| *x > 0.0);
+        let cap_height_units = ttf.capital_height().map(f32::from).filter(|x| *x > 0.0);
         let underline_units = ttf
             .underline_metrics()
             .map(|line| (f32::from(line.position), f32::from(line.thickness)))
@@ -340,6 +344,7 @@ impl FontStore {
             descender_units,
             line_gap_units,
             x_height_units,
+            cap_height_units,
             underline_units,
             integer_ppem,
             baselines,
@@ -369,6 +374,37 @@ impl FontStore {
             }
         }
         font_size_px * 0.5
+    }
+
+    /// The cap height at `font_size_px` (what CSS's `cap` is): the OS/2
+    /// table's figure when the font gives one, else the `H` glyph's
+    /// outline, else the ascent, as Values 4 section 6.1.1 allows.
+    pub fn cap_height(&self, font_size_px: f32) -> f32 {
+        if let Some(units) = self.cap_height_units {
+            return units * font_size_px / self.units_per_em;
+        }
+        let id = self.glyph_font.glyph_id('H');
+        if id.0 != 0
+            && let Some(outline) = self
+                .glyph_font
+                .outline_glyph(id.with_scale(px_scale(&self.glyph_font, font_size_px.max(0.0))))
+        {
+            let top = -outline.px_bounds().min.y;
+            if top.is_finite() && top > 0.0 {
+                return top;
+            }
+        }
+        self.ascender_units * font_size_px / self.units_per_em
+    }
+
+    /// The advance of the water ideograph, U+6C34, at `font_size_px`
+    /// (what CSS's `ic` is); the font size when the font has none.
+    pub fn ic_advance(&self, font_size_px: f32) -> f32 {
+        if !self.has_glyph('\u{6C34}') {
+            return font_size_px;
+        }
+        let advance = self.measure("\u{6C34}", font_size_px);
+        if advance > 0.0 { advance } else { font_size_px }
     }
 
     /// The advance of the digit zero at `font_size_px` (what CSS's `ch`

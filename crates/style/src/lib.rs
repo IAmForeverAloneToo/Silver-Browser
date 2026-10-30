@@ -120,10 +120,11 @@ pub mod svg_transform;
 pub use selector_matching::{matches_selector, matches_selector_list, parse_selector_list};
 
 pub use cascade::{
-    CascadeContext, Composited, FontMeasure, FrameMargins, InlineStyles, MatchedDeclaration,
-    MatchedRule, PseudoStyles, Recascade, Recascader, Restyle, RuleOrigin, Styles, Stylesheets,
-    VARIANT_LONGHANDS, cascade_document, font_longhands, font_shorthand_families, parse_color_text,
-    parse_variant, property_name, stretch_name, supports, write_font_variant,
+    CascadeContext, Composited, FontMeasure, FontUnits, FrameMargins, InlineStyles,
+    MatchedDeclaration, MatchedRule, PseudoStyles, Recascade, Recascader, Restyle, RuleOrigin,
+    Styles, Stylesheets, VARIANT_LONGHANDS, cascade_document, font_longhands,
+    font_shorthand_families, parse_color_text, parse_variant, property_name, stretch_name,
+    supports, write_font_variant,
 };
 pub use computed::ComputedStyle;
 pub use conditions::supports_condition;

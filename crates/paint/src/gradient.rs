@@ -879,4 +879,32 @@ mod tests {
         );
         assert!(number(&g, 1.0, 1.0) >> 63 == 1);
     }
+
+    #[test]
+    fn a_gradient_at_the_stop_cap_stays_bounded() {
+        // As many stops as a gradient may have, each with a hint, mixed
+        // in Oklab: the most stops painting makes of one.
+        let n = style::computed::MAX_GRADIENT_STOPS;
+        let mut css = String::from("linear-gradient(90deg in oklab, ");
+        for i in 0..n - 1 {
+            let colour = if i % 2 == 0 { "red" } else { "blue" };
+            css.push_str(&format!(
+                "{colour} {}%, {}%, ",
+                i as f32 * 0.02,
+                i as f32 * 0.02 + 0.007
+            ));
+        }
+        css.push_str("lime 100%)");
+        let g = gradient(&css);
+        let made = stops(&g.items, 1000.0, g.method);
+        assert!(
+            made.len() <= n * (METHOD_PIECES + 1) + n * 10,
+            "{}",
+            made.len()
+        );
+        let started = std::time::Instant::now();
+        let image = render(&g, 400.0, 300.0);
+        assert_eq!((image.width, image.height), (400, 1));
+        assert!(started.elapsed().as_secs() < 20, "{:?}", started.elapsed());
+    }
 }

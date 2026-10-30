@@ -570,7 +570,20 @@ fn longhand(style: &ComputedStyle, name: &str, url: longhands::Url<'_>) -> Optio
         "outline-width" => px(style.used_outline_width()),
         "outline-color" => color(style.outline_color()),
         "outline-offset" => px(style.outline().offset),
-        "cursor" => style.cursor.keyword().to_owned(),
+        // Its images as written, a URL absolute where `url` makes it so,
+        // then its keyword.
+        "cursor" => {
+            let mut out = String::new();
+            for (written, hotspot) in style.image().cursor_images.iter() {
+                out.push_str(&longhands::url_value(written, url));
+                if let Some([x, y]) = hotspot {
+                    out.push_str(&format!(" {} {}", number(*x), number(*y)));
+                }
+                out.push_str(", ");
+            }
+            out.push_str(style.cursor.keyword());
+            out
+        }
         "caption-side" => match style.caption_side {
             CaptionSide::Top => "top",
             CaptionSide::Bottom => "bottom",
@@ -1462,6 +1475,28 @@ mod tests {
         assert_eq!(
             resolved_value(&style, "background-image", &resolver).as_deref(),
             Some("url(\"https://example.test/a.png\")")
+        );
+        // An empty or fragment-only one is kept as written, a cursor's
+        // images too, before its keyword.
+        let style = styled(
+            "<div id=t></div>",
+            "#t { background-image: url(#foo); cursor: url(a.png) 2 3, url(), url('#b'), pointer }",
+        );
+        assert_eq!(
+            resolved_value(&style, "background-image", &resolver).as_deref(),
+            Some("url(\"#foo\")")
+        );
+        assert_eq!(
+            resolved_value(&style, "cursor", &resolver).as_deref(),
+            Some("url(\"https://example.test/a.png\") 2 3, url(\"\"), url(\"#b\"), pointer")
+        );
+        let style = styled(
+            "<div id=t><p id=c></p></div>",
+            "#t { cursor: url(a.png), auto } #c { cursor: url(a.png) 1, auto }",
+        );
+        assert_eq!(
+            computed_value(&style, "cursor").as_deref(),
+            Some("url(\"a.png\"), auto")
         );
     }
 

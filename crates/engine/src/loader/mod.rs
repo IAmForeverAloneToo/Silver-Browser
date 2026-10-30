@@ -462,6 +462,12 @@ pub(crate) struct Network {
     preloaded: std::collections::HashSet<PreloadKey>,
     preload_counts: HashMap<PageId, usize>,
     ready: std::collections::VecDeque<Arrived>,
+    /// The `<link rel=preload>`s a page's preloads are for, by fetch,
+    /// each link once; and those settled, whether they loaded, for their
+    /// `load` or `error` events.
+    link_preloads: HashMap<FetchId, NodeId>,
+    links_seen: std::collections::HashSet<(PageId, NodeId)>,
+    settled_links: Vec<(PageId, NodeId, bool)>,
 }
 
 impl Network {
@@ -492,6 +498,9 @@ impl Network {
             preloaded: std::collections::HashSet::new(),
             preload_counts: HashMap::new(),
             ready: std::collections::VecDeque::new(),
+            link_preloads: HashMap::new(),
+            links_seen: std::collections::HashSet::new(),
+            settled_links: Vec::new(),
         }
     }
 
@@ -702,14 +711,19 @@ impl Network {
     /// before, the page made [`MAX_PRELOADS`], or the HTTP cache holds
     /// it fresh, so that the page's own request is answered at once;
     /// `explicit` for a `<link rel=preload>`'s. Says whether it did.
-    pub(crate) fn preload(&mut self, page: PageId, mut request: Request, explicit: bool) -> bool {
+    pub(crate) fn preload(
+        &mut self,
+        page: PageId,
+        mut request: Request,
+        explicit: bool,
+    ) -> Option<FetchId> {
         let key = PreloadKey::of(page, &request);
         let made = self.preload_counts.get(&page).copied().unwrap_or(0);
         if self.preloaded.contains(&key) || made >= MAX_PRELOADS {
             if let Some(preload) = self.preloads.get_mut(&key) {
                 preload.explicit |= explicit;
             }
-            return false;
+            return None;
         }
         if request.partition.is_none() {
             request.partition = self.partitions.get(&page).cloned();
@@ -724,7 +738,7 @@ impl Network {
         self.preloaded.insert(key.clone());
         *self.preload_counts.entry(page).or_default() += 1;
         if fresh {
-            return false;
+            return None;
         }
         let policies = policies_of(&request);
         let id = self.fetch(page, Target::Preload, request);
@@ -737,7 +751,36 @@ impl Network {
                 explicit,
             },
         );
-        true
+        Some(id)
+    }
+
+    /// Preloads `request` for the `<link rel=preload>` `link` of `page`,
+    /// once a link: its `load` or `error` is told by
+    /// [`Network::take_settled_links`] once the fetch ends; at once when
+    /// its key was preloaded already or the HTTP cache has it.
+    pub(crate) fn link_preload(&mut self, page: PageId, link: NodeId, request: Request) {
+        if !self.links_seen.insert((page, link)) {
+            return;
+        }
+        match self.preload(page, request, true) {
+            Some(id) => {
+                self.link_preloads.insert(id, link);
+            }
+            None => self.settled_links.push((page, link, true)),
+        }
+    }
+
+    /// The `<link rel=preload>`s of `page` whose fetches ended since
+    /// last asked, and whether each loaded.
+    pub(crate) fn take_settled_links(&mut self, page: PageId) -> Vec<(NodeId, bool)> {
+        let mut out = Vec::new();
+        self.settled_links.retain(|&(of, link, loaded)| {
+            if of == page {
+                out.push((link, loaded));
+            }
+            of != page
+        });
+        out
     }
 
     /// How many preloads wait for a request to take them, for the tests.
@@ -994,6 +1037,16 @@ impl Network {
             // to be refused itself, and say so.
             let taken = match taken {
                 Some(Taken::Arrived(arrived)) if arrived.target == Target::Preload => {
+                    if let Some(link) = self.link_preloads.remove(&arrived.id) {
+                        // An opaque answer, another origin's with no CORS,
+                        // loaded as far as the link can tell.
+                        let loaded = matches!(
+                            &arrived.result,
+                            Ok(response) if (200..300).contains(&response.status)
+                                || response.response_type == net::ResponseType::Opaque
+                        );
+                        self.settled_links.push((arrived.page, link, loaded));
+                    }
                     if let Some(key) = self.preloading.remove(&arrived.id) {
                         if matches!(
                             arrived.result,

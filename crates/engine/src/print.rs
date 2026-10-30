@@ -131,7 +131,10 @@ impl Engine {
         };
         let sheets = &self.shown.stylesheets;
         let document = &self.shown.document;
-        let fonts = FontMeasurer(&self.layout_fonts);
+        let fonts = FontMeasurer(crate::web_fonts::fonts_of(
+            self.shown.web_fonts.as_ref(),
+            &self.layout_fonts,
+        ));
         let first = PagePosition {
             first: true,
             ..PagePosition::default()

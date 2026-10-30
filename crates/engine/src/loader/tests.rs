@@ -2378,6 +2378,23 @@ fn a_font_face_is_fetched_when_its_family_is_laid_out_and_lays_the_page_out_agai
 }
 
 #[test]
+fn a_boxs_web_font_is_fetched_with_no_text_laid_out() {
+    // As the reference browser has a box's primary font for its line,
+    // text in it or not: the body's family is fetched.
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<style>@font-face { font-family: Web; src: url(w.ttf) }              body { font-family: Web, serif }</style><div></div>",
+        )),
+        "/w.ttf" => Some(Reply::ok("font/ttf", text::TEST_FONT)),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    load_all(&mut tab, server.url("/page.html"));
+    let _ = tab.engine.layout(200.0);
+    tab.wait_until(|_| server.requests().iter().any(|r| r.target == "/w.ttf"));
+}
+
+#[test]
 fn a_script_adds_a_font_face_which_the_page_is_laid_out_in() {
     // CSS Font Loading 3 (D54).
     let server = serve(|path| match path {

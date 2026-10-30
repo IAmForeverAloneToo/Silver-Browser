@@ -443,6 +443,15 @@ mod tests {
             let marker = marker_of(&laid, id);
             assert_eq!(marker[0].x + marker[0].w, end, "#{id}");
         }
+        // A list item that is a formatting context root keeps its own
+        // floats inside it: its marker stays outside it.
+        let laid = lay(
+            "<ol><li id=f><i></i></li></ol>",
+            "ol { padding-left: 200px; margin: 0 } li { display: flow-root list-item }
+             i { float: left; width: 250px; height: 30px }",
+        );
+        let marker = marker_of(&laid, "f");
+        assert_eq!(marker[0].x + marker[0].w, by_id(&laid, "f").x);
     }
 
     #[test]

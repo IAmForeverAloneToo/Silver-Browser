@@ -54,6 +54,29 @@ fn page_with(
 }
 
 #[test]
+fn a_requests_url_is_parsed_as_utf8_in_a_legacy_encoded_document() {
+    // The page is windows-1252, which a link's URL is encoded in; a
+    // Request's, its referrer's and a redirect's are UTF-8's.
+    let server = TestServer::plain(|_| {
+        Reply::ok(
+            "text/html; charset=windows-1252",
+            b"<script>const a = document.createElement('a'); a.href = '?\\u00DF';\
+              const after = u => u.split('?')[1];\
+              console.log(document.characterSet, after(a.href), after(new Request('?\\u00DF').url),\
+                after(new Request('x', { referrer: '?\\u00DF' }).referrer),\
+                after(Response.redirect('?\\u00DF').headers.get('location')));</script>",
+        )
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, server.url("/page.html"));
+    assert_eq!(
+        logged(&mut tab, 1),
+        ["windows-1252 %DF %C3%9F %C3%9F %C3%9F"]
+    );
+}
+
+#[test]
 fn a_fetch_resolves_with_what_a_script_may_see_of_a_basic_response() {
     let (mut tab, _server) = page_with(
         "fetch('/r').then(r => r.json().then(j => console.log(r.status, r.ok, r.statusText, r.type, \

@@ -49,8 +49,8 @@ pub use block::{
 };
 pub use box_tree::{
     BoxKind, FirstLine, ImageState, Images, LayoutBox, MAX_GENERATED_TEXT, Mark, MarkerShape,
-    MediaState, Replaced, RowGroupKind, VideoBox, build_box_tree, build_box_tree_kept,
-    build_box_tree_showing, canvas_size, is_outer_svg,
+    MediaState, Replaced, RowGroupKind, SWATCH_INSET, VideoBox, build_box_tree,
+    build_box_tree_kept, build_box_tree_showing, canvas_size, is_outer_svg,
 };
 pub use cache::{LayoutCache, shown_by_controls};
 pub use children::Children;

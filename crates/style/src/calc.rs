@@ -73,6 +73,22 @@ pub enum LengthUnit {
     Rem,
     Ex,
     Ch,
+    /// The cap height of the element's font.
+    Cap,
+    /// The advance of the CJK water ideograph in the element's font.
+    Ic,
+    /// The element's computed `line-height`.
+    Lh,
+    /// The root element's `line-height`.
+    Rlh,
+    /// `cap` of the root element's font.
+    Rcap,
+    /// `ch` of the root element's font.
+    Rch,
+    /// `ex` of the root element's font.
+    Rex,
+    /// `ic` of the root element's font.
+    Ric,
     Vw,
     Vh,
     Vmin,
@@ -94,6 +110,14 @@ impl LengthUnit {
             "rem" => LengthUnit::Rem,
             "ex" => LengthUnit::Ex,
             "ch" => LengthUnit::Ch,
+            "cap" => LengthUnit::Cap,
+            "ic" => LengthUnit::Ic,
+            "lh" => LengthUnit::Lh,
+            "rlh" => LengthUnit::Rlh,
+            "rcap" => LengthUnit::Rcap,
+            "rch" => LengthUnit::Rch,
+            "rex" => LengthUnit::Rex,
+            "ric" => LengthUnit::Ric,
             "vw" => LengthUnit::Vw,
             "vh" => LengthUnit::Vh,
             "vmin" => LengthUnit::Vmin,

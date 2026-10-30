@@ -328,7 +328,8 @@ a token serializer in the `css` crate and one for specified values in
 `currentcolor` keeps its keyword (G226): a computed colour may be the
 keyword, inherited as such and resolved to the element's own `color`
 where it is used, in paint, the canvas and serialization; a
-`color-mix()` holding it stays resolved where it computes (section 2).
+`color-mix()` holding it stays resolved where it computes (section 2;
+`background-color`'s since kept, section 4).
 
 ## 2. Not in this batch, said rather than hidden
 
@@ -665,3 +666,34 @@ step:
   Chrome 156; no text is scaled), segment break transformation (Chrome
   156 keeps the spaces too); Chrome 156 ships no `hanging-punctuation`,
   `hyphenate-limit-lines`, `word-space-transform` or `text-group-align`.
+  Not done: template contents have no owner document of their own
+  (G47, G51).
+- *Leftovers closed after the batch*: the font-relative units `cap`,
+  `ic`, `lh`, `rlh`, `rcap`, `rch`, `rex` and `ric`, and `ex` and `ch`,
+  measure the element's first available font (`FontMeasure::units`,
+  the document's web fonts among them), its family, weight, slant,
+  features and `line-height` applied ahead of the other properties; in
+  the font properties they are the parent's, `lh` in `line-height` the
+  parent's line, the root units the initial font's in the root's.
+  Styles that used them are cascaded again when a web font comes
+  (`Styles::uses_font_units`, G12). A box's primary web font is asked
+  for when the box is laid out, text in it or not; a `<link
+  rel=preload>` (`as=font` too) a script made is fetched under the
+  page's policies and fires `load` or `error`. Times, Courier and
+  Helvetica are Times New Roman, Courier New and Arial, as Blink has
+  them. Gradients take 4,096 stops. A `background-color` mixing
+  `currentcolor` in a `color-mix()` keeps its value, which an
+  inheriting element mixes with its own colour (other colour
+  properties do not yet). An empty or fragment-only `url()` is kept as
+  written; `cursor` keeps its images. A raster image's background tile
+  is whole pixels. An inline table whose first row's cells are all
+  empty has no baseline; a list item that is a formatting context root
+  keeps its marker outside its own floats; a colour input is a 50 by 27
+  button showing its swatch. Selectors match names in their own case in
+  an XML document (Selectors 4 section 5.1), `attr()` not yet. A
+  `select`'s `selectedcontent` follows the selection a script or the
+  user makes; the parser's event handler attributes are held to the
+  policies as they are set; a `Request`'s and `Response.redirect()`'s
+  URL is parsed as UTF-8. Not done: `font-variant-emoji` and the
+  variation selectors (no colour fonts), `url()`'s request modifiers,
+  and animations of `line-height` in `lh`.

@@ -179,7 +179,11 @@ fn a_link_preload_is_taken_by_its_request_and_one_nothing_took_is_said() {
     tab.engine.set_scripting(true);
     load_all(&mut tab, server.url("/page.html"));
     // A preload nothing took may still be on its way at the load.
-    tab.wait_until(|_| reached(&server, "/unused.js") >= 1 && reached(&server, "/cors.png") >= 2);
+    tab.wait_until(|_| {
+        reached(&server, "/unused.js") >= 1
+            && reached(&server, "/cors.png") >= 2
+            && reached(&server, "/font.woff") >= 1
+    });
     assert_eq!(
         reached(&server, "/used.png"),
         1,
@@ -191,7 +195,7 @@ fn a_link_preload_is_taken_by_its_request_and_one_nothing_took_is_said() {
             .collect::<Vec<_>>()
     );
     assert_eq!(reached(&server, "/unused.js"), 1);
-    assert_eq!(reached(&server, "/font.woff"), 0, "no font is fetched");
+    assert_eq!(reached(&server, "/font.woff"), 1, "a font is preloaded too");
     // A CORS preload is not a plain image's: asked again.
     assert_eq!(reached(&server, "/cors.png"), 2);
     let warnings: Vec<String> = tab
@@ -205,6 +209,8 @@ fn a_link_preload_is_taken_by_its_request_and_one_nothing_took_is_said() {
         warnings,
         [
             "The resource /cors.png was preloaded using link preload but not used by the \
+             window's load event.",
+            "The resource /font.woff was preloaded using link preload but not used by the \
              window's load event.",
             "The resource /unused.js was preloaded using link preload but not used by the \
              window's load event."

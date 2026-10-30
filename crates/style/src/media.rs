@@ -298,8 +298,15 @@ fn math_value(parsed: &calc::Parsed, media: &Media) -> f64 {
             let unit = match unit {
                 calc::LengthUnit::Em => LengthUnit::Em,
                 calc::LengthUnit::Rem => LengthUnit::Rem,
-                calc::LengthUnit::Ex => LengthUnit::Ex,
-                calc::LengthUnit::Ch => LengthUnit::Ch,
+                calc::LengthUnit::Ex
+                | calc::LengthUnit::Rex
+                | calc::LengthUnit::Cap
+                | calc::LengthUnit::Rcap => LengthUnit::Ex,
+                calc::LengthUnit::Ch | calc::LengthUnit::Rch => LengthUnit::Ch,
+                calc::LengthUnit::Ic
+                | calc::LengthUnit::Ric
+                | calc::LengthUnit::Lh
+                | calc::LengthUnit::Rlh => LengthUnit::Em,
                 calc::LengthUnit::Vw => LengthUnit::Vw,
                 calc::LengthUnit::Vh => LengthUnit::Vh,
                 calc::LengthUnit::Vmin => LengthUnit::Vmin,

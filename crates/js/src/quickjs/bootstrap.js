@@ -5539,7 +5539,7 @@
       const inputIsRequest = isRequest(input);
       if (!inputIsRequest) {
         const text = str(input);
-        const url = native.resolveUrl(text);
+        const url = native.resolveUrlUtf8(text);
         if (url === null) {
           throw fail("Failed to parse URL from " + text);
         }
@@ -5579,7 +5579,7 @@
         if (referrer === "") {
           state.referrer = "no-referrer";
         } else {
-          const url = native.resolveUrl(referrer);
+          const url = native.resolveUrlUtf8(referrer);
           if (url === null) throw fail("The referrer URL " + referrer + " is invalid.");
           state.referrer = url === "about:client" || native.sameOriginUrl(url) === false ? "about:client" : url;
         }
@@ -5789,7 +5789,7 @@
     static redirect(url, status) {
       need(arguments.length, 1, "redirect", "Response");
       const text = str(url);
-      const parsed = native.resolveUrl(text);
+      const parsed = native.resolveUrlUtf8(text);
       if (parsed === null) {
         throw new $TypeError(prefix("redirect", "Response") + "Failed to parse URL from " + text);
       }

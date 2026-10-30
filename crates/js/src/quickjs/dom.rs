@@ -487,6 +487,7 @@ const NATIVES: &[(&str, Decode)] = &[
     ("cssLonghands", |a| Ok(Call::CssLonghands(a.string(0)?))),
     ("cssBlockText", |a| Ok(Call::CssBlockText(a.strings(0)?))),
     ("resolveUrl", |a| Ok(Call::ResolveUrl(a.string(0)?))),
+    ("resolveUrlUtf8", |a| Ok(Call::ResolveUrlUtf8(a.string(0)?))),
     ("resolveUrlFromDocument", |a| {
         Ok(Call::ResolveUrlFromDocument(a.string(0)?))
     }),

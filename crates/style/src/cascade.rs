@@ -188,6 +188,14 @@ pub struct Styles {
     /// restyle can set it and never clears it: a stale `true` costs a
     /// needless cascade on resize, a stale `false` would be wrong.
     pub uses_viewport_units: bool,
+    /// Whether any declaration used a unit a font's figures give (`ex`,
+    /// `ch`, `cap`, `ic`, `lh` and their root forms), so that these
+    /// styles are computed again when a web font arrives (G12). Stale
+    /// as `uses_viewport_units` is.
+    pub uses_font_units: bool,
+    /// The root element's font, which the root units measure; `None`
+    /// for the initial one.
+    root_font: Option<Arc<FontProps>>,
     /// The answer each `@media` list gave, the UA sheet's then the
     /// author sheets', which decided the rules in force (M20).
     media: Vec<bool>,
@@ -576,21 +584,44 @@ impl Target {
     }
 }
 
-/// What the font can say about itself, for the units that need it:
-/// `ex` (the x-height) and `ch` (the advance of `0`). `style` has no
-/// font of its own (the layering contract: `text` is a sibling, not a
-/// dependency), so the caller lends one through this trait; without
-/// one, both units fall back to half an em (css-values-4 §6.1.1).
+/// What a font can say about itself, for the units that need it
+/// (Values 4 section 6.1.1). `style` has no font of its own (the
+/// layering contract: `text` is a sibling, not a dependency), so the
+/// caller lends one through this trait; without one, the units take
+/// [`FontUnits::fallback`].
 pub trait FontMeasure {
-    /// The x-height, in CSS pixels, of the font at `font_size_px`.
-    fn x_height(&self, font_size_px: f32) -> f32;
-    /// The advance, in CSS pixels, of the digit zero at `font_size_px`.
-    fn zero_advance(&self, font_size_px: f32) -> f32;
-    /// The advance of the digit zero in the first of `families` had, the
-    /// list as `font-family` computes it; the primary font's for none.
-    fn zero_advance_in(&self, font_size_px: f32, families: &str) -> f32 {
-        let _ = families;
-        self.zero_advance(font_size_px)
+    /// The figures of the first available font of `font` at
+    /// `font_size_px`, in CSS pixels.
+    fn units(&self, font: &FontProps, font_size_px: f32) -> FontUnits;
+}
+
+/// A font's figures for the font-relative units, in CSS pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FontUnits {
+    /// `ex`: the x-height.
+    pub x_height: f32,
+    /// `ch`: the advance of the digit zero.
+    pub zero_advance: f32,
+    /// `cap`: the cap height.
+    pub cap_height: f32,
+    /// `ic`: the advance of the water ideograph, U+6C34.
+    pub ic_advance: f32,
+    /// A `normal` line's height, which `lh` is then.
+    pub normal_line_height: f32,
+}
+
+impl FontUnits {
+    /// The figures Values 4 allows when the font gives none: half an em
+    /// for `ex` and `ch`, an em for `ic`, the em's ascent-like 0.7 for
+    /// `cap`, and 1.2 ems for a normal line.
+    pub fn fallback(font_size_px: f32) -> FontUnits {
+        FontUnits {
+            x_height: font_size_px * 0.5,
+            zero_advance: font_size_px * 0.5,
+            cap_height: font_size_px * 0.7,
+            ic_advance: font_size_px,
+            normal_line_height: font_size_px * 1.2,
+        }
     }
 }
 
@@ -813,13 +844,17 @@ impl Stylesheets {
             page_scheme: None,
             context: &context,
             viewport_used: &viewport_used,
+            fonts_used: None,
+            root_font: None,
+            root_size: rem,
             scheme_read: None,
             attributes: &[],
             substitutions: &substitutions,
         };
         let bases = LengthBases {
             em: rem,
-            family: "",
+            font: crate::computed::initial_font(),
+            line: (crate::computed::initial_font(), rem),
             resolution: &resolution,
             color: Color::BLACK,
             dark: false,
@@ -955,6 +990,7 @@ impl Stylesheets {
         }
         let invalidation = invalidate(document, &self.features, changes);
         let mut cascader = self.cascader(document, context);
+        cascader.root_font = styles.root_font.clone();
         let preferred_dark = context.media.preferences.color_scheme == ColorScheme::Dark;
         if invalidation.everything
             || cascader.media != styles.media
@@ -1064,16 +1100,22 @@ impl Stylesheets {
             }
         }
         styles.uses_viewport_units |= cascader.viewport_used.get();
+        styles.uses_font_units |= cascader.fonts_used.get();
         if cascader.scheme_read.get() {
             styles.preferred_dark = Some(preferred_dark);
         }
         let rem = first_element
             .and_then(|root| styles.get(root))
             .map_or(ComputedStyle::default().font_size_px, |s| s.font_size_px);
-        if rem != styles.rem {
+        let root_font = first_element
+            .and_then(|root| styles.get(root))
+            .and_then(|s| s.font.clone());
+        // The root's font matters to the root units alone.
+        if rem != styles.rem || (root_font != styles.root_font && styles.uses_font_units) {
             *styles = cascader.cascade(Some(styles));
             return Restyle::full(styles);
         }
+        styles.root_font = root_font;
         restyle
     }
 }
@@ -1418,6 +1460,13 @@ impl Recascader<'_> {
             page_scheme: cascader.page_scheme.as_deref().map(String::as_str),
             context: cascader.context,
             viewport_used: &cascader.viewport_used,
+            fonts_used: Some(&cascader.fonts_used),
+            root_font: self
+                .styles
+                .root_font
+                .as_deref()
+                .filter(|_| self.document.document_element() != Some(element)),
+            root_size: rem,
             scheme_read: Some(&cascader.scheme_read),
             attributes: self.document.attrs(element).unwrap_or_default(),
             substitutions: &cascader.substitutions,
@@ -1886,6 +1935,10 @@ struct Cascader<'a> {
     media: Vec<bool>,
     /// Set when a viewport unit is met.
     viewport_used: Cell<bool>,
+    /// Set when a unit a font's figures give is met.
+    fonts_used: Cell<bool>,
+    /// The root element's font, once it is computed.
+    root_font: Option<Arc<FontProps>>,
     /// Set when the user's colour scheme chose an element's (D49).
     scheme_read: Cell<bool>,
     /// What the substitutions of this cascade share (M21.1).
@@ -1925,6 +1978,8 @@ impl<'a> Cascader<'a> {
             page_scheme: page_scheme(document),
             media,
             viewport_used: Cell::new(false),
+            fonts_used: Cell::new(false),
+            root_font: None,
             scheme_read: Cell::new(false),
             substitutions: Substitutions::new(sheets),
             keyframes: HashMap::new(),
@@ -1960,6 +2015,12 @@ impl<'a> Cascader<'a> {
             page_scheme: self.page_scheme.as_deref().map(String::as_str),
             context: self.context,
             viewport_used: &self.viewport_used,
+            fonts_used: Some(&self.fonts_used),
+            root_font: self
+                .root_font
+                .as_deref()
+                .filter(|_| self.document.document_element() != Some(element)),
+            root_size: rem,
             scheme_read: Some(&self.scheme_read),
             attributes: self.document.attrs(element).unwrap_or_default(),
             substitutions: &self.substitutions,
@@ -2026,10 +2087,14 @@ impl<'a> Cascader<'a> {
                     return None;
                 }
                 let mut style = base.clone();
-                let family = style.font().family.clone();
+                let font = style.font.clone();
                 let bases = LengthBases {
                     em: style.font_size_px,
-                    family: &family,
+                    font: font.as_deref().unwrap_or(crate::computed::initial_font()),
+                    line: (
+                        font.as_deref().unwrap_or(crate::computed::initial_font()),
+                        style.font_size_px,
+                    ),
                     resolution: &resolution,
                     color: style.color,
                     dark: style.dark,
@@ -2344,12 +2409,15 @@ impl<'a> Cascader<'a> {
                 if root_font_size.is_none() {
                     root_font_size = Some(computed.style.font_size_px);
                     styles.rem = computed.style.font_size_px;
+                    self.root_font = computed.style.font.clone();
+                    styles.root_font = self.root_font.clone();
                 }
                 styles.set(child, computed);
             }
             pending.extend(children.into_iter().rev());
         }
         styles.uses_viewport_units = self.viewport_used.get();
+        styles.uses_font_units = self.fonts_used.get();
         styles.preferred_dark = self
             .scheme_read
             .get()
@@ -2465,6 +2533,14 @@ struct Resolution<'a> {
     context: &'a CascadeContext<'a>,
     /// Set when a viewport unit is met.
     viewport_used: &'a Cell<bool>,
+    /// Set when a unit a font's figures give is met.
+    fonts_used: Option<&'a Cell<bool>>,
+    /// The root element's font, which the root units measure; `None`
+    /// for the initial one, as on the root itself.
+    root_font: Option<&'a FontProps>,
+    /// The size the root units measure `root_font` at: the root's font
+    /// size, `rem` but in the root's `line-height`.
+    root_size: f32,
     /// Set when the user's colour scheme chooses the element's (D49).
     scheme_read: Option<&'a Cell<bool>>,
     /// The attributes of the element, or the originating element of the
@@ -2480,9 +2556,12 @@ struct Resolution<'a> {
 #[derive(Clone, Copy)]
 struct LengthBases<'a> {
     em: f32,
-    /// The element's `font-family`, which `ch` is measured in; empty for
-    /// the primary font.
-    family: &'a str,
+    /// The font `ex`, `ch`, `cap` and `ic` measure, at `em`: the
+    /// element's, the parent's in the font properties.
+    font: &'a FontProps,
+    /// The font and size whose `line-height` `lh` is: the element's,
+    /// the parent's in the font properties and `line-height`.
+    line: (&'a FontProps, f32),
     resolution: &'a Resolution<'a>,
     /// The element's computed `color`, which `currentcolor` is in the
     /// other properties (gap batch E).
@@ -2491,7 +2570,20 @@ struct LengthBases<'a> {
     dark: bool,
 }
 
-impl LengthBases<'_> {
+impl<'a> LengthBases<'a> {
+    /// The bases of the font properties, `parent`'s: the font-relative
+    /// units measure the parent's font (Values 4 section 6.1.1).
+    fn of_parent(parent: &'a ComputedStyle, resolution: &'a Resolution<'a>) -> Self {
+        LengthBases {
+            em: parent.font_size_px,
+            font: parent.font(),
+            line: (parent.font(), parent.font_size_px),
+            resolution,
+            color: parent.color,
+            dark: parent.dark,
+        }
+    }
+
     /// What the element's colours resolve against.
     fn colors(&self) -> Colors {
         Colors {
@@ -2881,43 +2973,6 @@ fn compute_style(
     {
         animated.font_size(&mut style, parent, resolution);
     }
-    // The element's own `font-family` next, which `ch` is measured in,
-    // from the longhand or the `font` shorthand; the parent's where it
-    // declares none.
-    let mut family = style.font().family.clone();
-    let font_bases = LengthBases {
-        em: style.font_size_px,
-        family: "",
-        resolution,
-        color: style.color,
-        dark: style.dark,
-    };
-    for a in &sorted {
-        let shorthand = match &*a.decl.name {
-            "font-family" => false,
-            "font" => true,
-            _ => continue,
-        };
-        if !target.applies("font-family") {
-            continue;
-        }
-        let of = |value: &[Token]| {
-            if shorthand {
-                fonts::parse_font(value, parent.font().weight, &font_bases)
-                    .map(|font| font.props.family)
-            } else {
-                parse_font_family(value).map(Into::into)
-            }
-        };
-        let declared = match specified(a, style.custom.as_ref(), resolution) {
-            Specified::Written(value) => of(value),
-            Specified::Substituted(value) => of(&value),
-            Specified::Invalid | Specified::Ignored => None,
-        };
-        if let Some(declared) = declared {
-            family = declared;
-        }
-    }
     for transition in transitioned {
         if let (Property::Longhand(Longhand::FontSize), Value::Style(start), Value::Style(end)) =
             (&transition.property, &transition.start, &transition.end)
@@ -2931,13 +2986,79 @@ fn compute_style(
             );
         }
     }
-    // On the root element `rem` is the initial font size in `font-size`
-    // alone; past it, the size the root computed (Values 4 section
-    // 6.1.1).
+    // The rest of the font and `line-height` next, as the pass below
+    // applies them: the font-relative units of every other property
+    // measure the element's font and line (Values 4 section 6.1.1).
+    // The pass below applies them again, in their order with any
+    // animation. On the root, `rem` in `line-height` is the root's own
+    // size, the root units the initial font's.
+    let line_resolution_on_root;
+    let line_resolution = if resolution.root && target == Target::Element {
+        line_resolution_on_root = Resolution {
+            rem: style.font_size_px,
+            ..*resolution
+        };
+        &line_resolution_on_root
+    } else {
+        resolution
+    };
+    for pass in [FontPass::Font, FontPass::Line] {
+        let font = style.font.clone();
+        let own = LengthBases {
+            em: style.font_size_px,
+            font: font.as_deref().unwrap_or(crate::computed::initial_font()),
+            line: (parent.font(), parent.font_size_px),
+            resolution: match pass {
+                FontPass::Font => resolution,
+                FontPass::Line => line_resolution,
+            },
+            color: parent.color,
+            dark: style.dark,
+        };
+        let of_parent = LengthBases::of_parent(parent, resolution);
+        for a in &sorted {
+            let name = canonical_name(&a.decl.name);
+            if FontPass::of(name) != Some(pass) || !target.applies(name) {
+                continue;
+            }
+            let bases = font_bases(name, &own, &of_parent, &own);
+            let specified = specified(a, style.custom.as_ref(), resolution);
+            apply_specified(&mut style, name, specified, bases, parent, &mut [false; 4]);
+        }
+        // A transition of `line-height` moves what `lh` is.
+        for transition in transitioned.iter().filter(|_| pass == FontPass::Line) {
+            if let (
+                Property::Longhand(Longhand::LineHeight),
+                Value::Style(start),
+                Value::Style(end),
+            ) = (&transition.property, &transition.start, &transition.end)
+                && target.applies("line-height")
+            {
+                animate::blend(
+                    Longhand::LineHeight,
+                    start,
+                    end,
+                    transition.progress,
+                    &mut style,
+                );
+            }
+        }
+    }
+    // On the root element `rem` and the root units are the initial
+    // font's in the font properties alone; past them, the root's own
+    // (Values 4 section 6.1.1).
     let root_resolution;
+    let root_font = style.font.clone();
+    let font_resolution = resolution;
     let resolution = if resolution.root && target == Target::Element {
         root_resolution = Resolution {
             rem: style.font_size_px,
+            root_font: Some(
+                root_font
+                    .as_deref()
+                    .unwrap_or(crate::computed::initial_font()),
+            ),
+            root_size: style.font_size_px,
             ..*resolution
         };
         &root_resolution
@@ -3008,12 +3129,26 @@ fn compute_style(
     let start = moves.then(|| style.clone());
     let mut border_color_set = [false; 4];
     let apply_all = |style: &mut ComputedStyle, border_color_set: &mut [bool; 4], color| {
+        let font = style.font.clone();
+        let font = font.as_deref().unwrap_or(crate::computed::initial_font());
         let bases = LengthBases {
             em: style.font_size_px,
-            family: &family,
+            font,
+            line: (font, style.font_size_px),
             resolution,
             color,
             dark: style.dark,
+        };
+        // The font properties' and `line-height`'s on the root are the
+        // initial font's.
+        let of_parent = LengthBases {
+            color,
+            ..LengthBases::of_parent(parent, font_resolution)
+        };
+        let line = LengthBases {
+            line: (parent.font(), parent.font_size_px),
+            resolution: line_resolution,
+            ..bases
         };
         for (n, a) in sorted.iter().enumerate() {
             if n == important
@@ -3031,25 +3166,14 @@ fn compute_style(
                 }
                 continue;
             }
-            match specified(a, style.custom.as_ref(), resolution) {
-                Specified::Written(value) => {
-                    apply_declaration(style, name, value, &bases, parent, border_color_set);
-                }
-                // A value substituted that its property does not take is
-                // invalid at computed-value time, the property `unset`: its
-                // inherited or initial value, not a value it beat in the
-                // cascade (Values 5 Appendix A). A shorthand leaves each of
-                // its longhands so.
-                Specified::Substituted(value) => {
-                    if !apply_declaration(style, name, &value, &bases, parent, border_color_set) {
-                        apply_css_wide(style, name, CssWide::Unset, parent, border_color_set);
-                    }
-                }
-                Specified::Invalid => {
-                    apply_css_wide(style, name, CssWide::Unset, parent, border_color_set);
-                }
-                Specified::Ignored => {}
-            }
+            apply_specified(
+                style,
+                name,
+                specified(a, style.custom.as_ref(), resolution),
+                font_bases(name, &bases, &of_parent, &line),
+                parent,
+                border_color_set,
+            );
         }
         if important == sorted.len()
             && let Some(animated) = animated
@@ -3211,6 +3335,77 @@ fn compute_style(
     style
 }
 
+/// The properties applied ahead of the rest, so that the rest's
+/// font-relative units measure the element's font and line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FontPass {
+    /// The font's family, weight, slant, width and features.
+    Font,
+    /// `line-height`, which `lh` is.
+    Line,
+}
+
+impl FontPass {
+    /// The pass the property `name` is applied in ahead, if any.
+    fn of(name: &str) -> Option<FontPass> {
+        match name {
+            "font-family"
+            | "font"
+            | "font-weight"
+            | "font-style"
+            | "font-stretch"
+            | "font-feature-settings" => Some(FontPass::Font),
+            "line-height" => Some(FontPass::Line),
+            _ => None,
+        }
+    }
+}
+
+/// The bases the property `name` reads its lengths against: the font
+/// longhands the parent's (Values 4 section 6.1.1), `line-height` the
+/// element's but for `lh`, the parent's line, and the rest `own`.
+fn font_bases<'b, 'a>(
+    name: &str,
+    own: &'b LengthBases<'a>,
+    of_parent: &'b LengthBases<'a>,
+    line: &'b LengthBases<'a>,
+) -> &'b LengthBases<'a> {
+    match name {
+        "font-weight" | "font-style" | "font-stretch" | "font-feature-settings" => of_parent,
+        "line-height" => line,
+        _ => own,
+    }
+}
+
+/// Applies the declaration of `name` as `specified` gives it. A value
+/// substituted that its property does not take is invalid at
+/// computed-value time, the property `unset`: its inherited or initial
+/// value, not a value it beat in the cascade (Values 5 Appendix A). A
+/// shorthand leaves each of its longhands so.
+fn apply_specified(
+    style: &mut ComputedStyle,
+    name: &str,
+    specified: Specified<'_>,
+    bases: &LengthBases<'_>,
+    parent: &ComputedStyle,
+    border_color_set: &mut [bool; 4],
+) {
+    match specified {
+        Specified::Written(value) => {
+            apply_declaration(style, name, value, bases, parent, border_color_set);
+        }
+        Specified::Substituted(value) => {
+            if !apply_declaration(style, name, &value, bases, parent, border_color_set) {
+                apply_css_wide(style, name, CssWide::Unset, parent, border_color_set);
+            }
+        }
+        Specified::Invalid => {
+            apply_css_wide(style, name, CssWide::Unset, parent, border_color_set);
+        }
+        Specified::Ignored => {}
+    }
+}
+
 /// The font size a `font-size` declaration whose value is `specified`
 /// gives an element whose parent's style is `parent`: its own `em` and
 /// percentage of the parent's; `unset`, which is `inherit`, when it is
@@ -3222,13 +3417,7 @@ fn declared_font_size(
     parent: &ComputedStyle,
     resolution: &Resolution<'_>,
 ) -> Option<f32> {
-    let parent_bases = LengthBases {
-        em: parent.font_size_px,
-        family: &parent.font().family,
-        resolution,
-        color: parent.color,
-        dark: parent.dark,
-    };
+    let parent_bases = LengthBases::of_parent(parent, resolution);
     let font_size = |value: &[Token]| match css_wide_keyword(value) {
         Some(CssWide::Initial) => Some(ComputedStyle::default().font_size_px),
         // `font-size` is inherited, so `unset` means `inherit`.
@@ -3368,13 +3557,17 @@ fn with_default_bases<R>(f: impl FnOnce(&LengthBases<'_>) -> R) -> R {
         page_scheme: None,
         context: &context,
         viewport_used: &viewport_used,
+        fonts_used: None,
+        root_font: None,
+        root_size: 16.0,
         scheme_read: None,
         attributes: &[],
         substitutions: &substitutions,
     };
     f(&LengthBases {
         em: 16.0,
-        family: "",
+        font: crate::computed::initial_font(),
+        line: (crate::computed::initial_font(), 16.0),
         resolution: &resolution,
         color: Color::BLACK,
         dark: false,
@@ -3464,10 +3657,16 @@ fn apply_declaration(
             }
             None => false,
         },
-        "background-color" => set(
-            &mut style.background_color,
-            color_value(value, bases.colors()),
-        ),
+        "background-color" => {
+            let applied = set(
+                &mut style.background_color,
+                color_value(value, bases.colors()),
+            );
+            if applied {
+                keep_color_mix(style, mixes_current_color(value).then(|| Arc::from(value)));
+            }
+            applied
+        }
         "background" => match backgrounds::parse_background(value, bases) {
             Some((color, layers)) => {
                 style.background_color = color;
@@ -3885,7 +4084,16 @@ fn apply_declaration(
             })
         }
         "outline-offset" => set_outline(style, parse_length_px(value, bases), |o, v| o.offset = v),
-        "cursor" => set(&mut style.cursor, parse_cursor(value)),
+        "cursor" => match parse_cursor(value) {
+            Some((cursor, images)) => {
+                style.cursor = cursor;
+                if !images.is_empty() || !style.image().cursor_images.is_empty() {
+                    style.image_mut().cursor_images = images.into();
+                }
+                true
+            }
+            None => false,
+        },
         "empty-cells" => set(&mut style.empty_cells, parse_empty_cells(value)),
         "vertical-align" => set(
             &mut style.vertical_align,
@@ -4834,7 +5042,10 @@ fn apply_css_wide(
     match name {
         "color" => style.color = src.color,
         "color-scheme" => style.color_scheme = src.color_scheme.clone(),
-        "background-color" => style.background_color = src.background_color,
+        "background-color" => {
+            style.background_color = src.background_color;
+            keep_color_mix(style, src.background().color_mix.clone());
+        }
         "background" => {
             style.background_color = src.background_color;
             style.background = src.background.clone();
@@ -5046,7 +5257,13 @@ fn apply_css_wide(
         "outline-width" => copy_outline(style, src, |o, s| o.width = s.width),
         "outline-color" => copy_outline(style, src, |o, s| o.color = s.color),
         "outline-offset" => copy_outline(style, src, |o, s| o.offset = s.offset),
-        "cursor" => style.cursor = src.cursor,
+        "cursor" => {
+            style.cursor = src.cursor;
+            let images = &src.image().cursor_images;
+            if !images.is_empty() || !style.image().cursor_images.is_empty() {
+                style.image_mut().cursor_images = Arc::clone(images);
+            }
+        }
         "empty-cells" => style.empty_cells = src.empty_cells,
         "vertical-align" => style.vertical_align = src.vertical_align.clone(),
         "content" => style.content = src.content.clone(),
@@ -5685,21 +5902,49 @@ fn unit_px(value: f64, unit: LengthUnit, bases: &LengthBases<'_>) -> f64 {
         value * f64::from(size) / 100.0
     };
     let em = f64::from(bases.em);
+    // The root's font, the initial one on the root itself.
+    let root = r.root_font.unwrap_or(crate::computed::initial_font());
+    // A unit of a font's figures or a line: what a web font's arrival
+    // and a change of the root's font compute again.
+    let used = || {
+        if let Some(used) = r.fonts_used {
+            used.set(true);
+        }
+    };
+    let figures = |font: &FontProps, size: f32| match r.context.fonts {
+        Some(fonts) => fonts.units(font, size),
+        None => FontUnits::fallback(size),
+    };
+    if !matches!(
+        unit,
+        LengthUnit::Em
+            | LengthUnit::Rem
+            | LengthUnit::Vw
+            | LengthUnit::Vh
+            | LengthUnit::Vmin
+            | LengthUnit::Vmax
+    ) {
+        used();
+    }
+    let line = |(font, size): (&FontProps, f32)| match font.line_height {
+        crate::computed::LineHeight::Normal => figures(font, size).normal_line_height,
+        crate::computed::LineHeight::Number(n) => n * size,
+        crate::computed::LineHeight::Px(px) => px,
+    };
+    let of = |figure: f32| value * f64::from(figure);
     match unit {
         LengthUnit::Em => value * em,
         LengthUnit::Rem => value * f64::from(r.rem),
-        LengthUnit::Ex => {
-            value
-                * r.context
-                    .fonts
-                    .map_or(em * 0.5, |f| f64::from(f.x_height(bases.em)))
-        }
-        LengthUnit::Ch => {
-            value
-                * r.context.fonts.map_or(em * 0.5, |f| {
-                    f64::from(f.zero_advance_in(bases.em, bases.family))
-                })
-        }
+        LengthUnit::Ex => of(figures(bases.font, bases.em).x_height),
+        LengthUnit::Ch => of(figures(bases.font, bases.em).zero_advance),
+        LengthUnit::Cap => of(figures(bases.font, bases.em).cap_height),
+        LengthUnit::Ic => of(figures(bases.font, bases.em).ic_advance),
+        LengthUnit::Lh => of(line(bases.line)),
+        LengthUnit::Rex => of(figures(root, r.root_size).x_height),
+        LengthUnit::Rch => of(figures(root, r.root_size).zero_advance),
+        LengthUnit::Rcap => of(figures(root, r.root_size).cap_height),
+        LengthUnit::Ric => of(figures(root, r.root_size).ic_advance),
+        LengthUnit::Rlh => of(line((root, r.root_size))),
         LengthUnit::Vw => viewport(vw),
         LengthUnit::Vh => viewport(vh),
         LengthUnit::Vmin => viewport(vw.min(vh)),
@@ -6014,21 +6259,45 @@ fn apply_outline_shorthand(
 
 /// `cursor` (CSS UI 4 section 4.1): `[ <url> [<x> <y>]? , ]*` and a
 /// keyword; the images are not shown, so the keyword is the value.
-fn parse_cursor(tokens: &[Token]) -> Option<Cursor> {
+fn parse_cursor(tokens: &[Token]) -> Option<(Cursor, Vec<crate::computed::CursorImage>)> {
     let mut parts = tokens.split(|token| matches!(token, Token::Comma));
     let last = parts.next_back()?;
+    let mut images = Vec::new();
     for image in parts {
-        let is_url = match trim(image).first() {
-            Some(Token::Url { .. }) => true,
-            Some(Token::Function(name)) => name.eq_ignore_ascii_case("url"),
-            _ => false,
+        let words: Vec<&Token> = trim(image)
+            .iter()
+            .filter(|t| !matches!(t, Token::Whitespace))
+            .collect();
+        let url = match words.first() {
+            Some(Token::Url { value, bad: false }) => value.clone(),
+            Some(Token::Function(name)) if name.eq_ignore_ascii_case("url") => match words.get(1) {
+                Some(Token::String { value, bad: false }) => value.clone(),
+                _ => return None,
+            },
+            _ => return None,
         };
-        if !is_url {
-            return None;
+        let rest = match words.first() {
+            Some(Token::Function(_)) => &words[3.min(words.len())..],
+            _ => &words[1..],
+        };
+        let number = |t: &Token| match t {
+            Token::Number { value, .. } if value.is_finite() => Some(*value as f32),
+            _ => None,
+        };
+        let hotspot = match rest {
+            [] => None,
+            [x, y] => Some([number(x)?, number(y)?]),
+            _ => return None,
+        };
+        if images.len() < MAX_CURSOR_IMAGES {
+            images.push((Arc::from(url.as_str()), hotspot));
         }
     }
-    Cursor::from_keyword(single_ident(last)?)
+    Some((Cursor::from_keyword(single_ident(last)?)?, images))
 }
+
+/// The most images a `cursor` keeps.
+const MAX_CURSOR_IMAGES: usize = 16;
 
 /// `caption-side` (M12): `top` or `bottom`; css-logical's `inline-start`
 /// and `inline-end` are not accepted.
@@ -6609,13 +6878,17 @@ pub(crate) fn keyframe_easing(tokens: &[Token]) -> Option<crate::easing::Easing>
         page_scheme: None,
         context: &context,
         viewport_used: &viewport_used,
+        fonts_used: None,
+        root_font: None,
+        root_size: initial,
         scheme_read: None,
         attributes: &[],
         substitutions: &substitutions,
     };
     let bases = LengthBases {
         em: initial,
-        family: "",
+        font: crate::computed::initial_font(),
+        line: (crate::computed::initial_font(), initial),
         resolution: &resolution,
         color: Color::BLACK,
         dark: false,
@@ -7145,6 +7418,31 @@ fn uses_dark(scheme: Option<&str>, resolution: &Resolution<'_>) -> bool {
 pub(super) struct Colors {
     pub(super) current: Color,
     pub(super) dark: bool,
+}
+
+/// Whether `tokens` mix `currentcolor` in a `color-mix()`: a value kept
+/// unresolved for the element where it is used (Color 5 section 3.1).
+fn mixes_current_color(tokens: &[Token]) -> bool {
+    tokens
+        .iter()
+        .any(|t| matches!(t, Token::Function(name) if name.eq_ignore_ascii_case("color-mix")))
+        && tokens
+            .iter()
+            .any(|t| matches!(t, Token::Ident(name) if name.eq_ignore_ascii_case("currentcolor")))
+}
+
+/// Keeps `mix` as `style`'s `background-color` mixing `currentcolor`, or
+/// none; a style with no other background keeps none.
+fn keep_color_mix(style: &mut ComputedStyle, mix: Option<Arc<[Token]>>) {
+    if mix.is_some() || style.background().color_mix.is_some() {
+        style.background_mut().color_mix = mix;
+    }
+}
+
+/// The colour `mix`, a value mixing `currentcolor`, is for an element
+/// whose `color` is `current`.
+pub(crate) fn mix_again(mix: &[Token], current: Color, dark: bool) -> Option<Color> {
+    color_value(mix, Colors { current, dark })
 }
 
 /// A colour, `currentcolor` being `colors.current`, the system colours and
@@ -8071,13 +8369,17 @@ mod tests {
             page_scheme: None,
             context: &context,
             viewport_used: &viewport_used,
+            fonts_used: None,
+            root_font: None,
+            root_size: 16.0,
             scheme_read: None,
             attributes: &[],
             substitutions: &substitutions,
         };
         f(&LengthBases {
             em: 16.0,
-            family: "",
+            font: crate::computed::initial_font(),
+            line: (crate::computed::initial_font(), 16.0),
             resolution: &resolution,
             color: Color::BLACK,
             dark: false,
@@ -8976,26 +9278,128 @@ mod tests {
         assert_eq!(s.margin[TOP], LengthPercentageAuto::Percent(-5.0));
     }
 
-    /// A font that answers `ex` with 0.4em and `ch` with 0.6em, so a
-    /// test can tell the trait's answer from the fallbacks.
+    /// A font that answers `ex` with 0.4em, `ch` with 0.6em, `cap` with
+    /// 0.7em, `ic` with 0.9em and a normal line with 1.25em, so a test
+    /// can tell the trait's answer from the fallbacks; a family named
+    /// `wide` twice each.
     struct StubFont;
 
     impl FontMeasure for StubFont {
-        fn x_height(&self, font_size_px: f32) -> f32 {
-            font_size_px * 0.4
-        }
-
-        fn zero_advance(&self, font_size_px: f32) -> f32 {
-            font_size_px * 0.6
-        }
-
-        fn zero_advance_in(&self, font_size_px: f32, families: &str) -> f32 {
-            if families == "monospace" {
-                font_size_px * 0.5
+        fn units(&self, font: &FontProps, size: f32) -> FontUnits {
+            let k = if font.family.contains("wide") {
+                2.0
             } else {
-                self.zero_advance(font_size_px)
+                1.0
+            };
+            // A fixed-width family's zero is narrower.
+            let zero = if &*font.family == "monospace" {
+                0.5
+            } else {
+                0.6
+            };
+            FontUnits {
+                x_height: size * 0.4 * k,
+                zero_advance: size * zero * k,
+                cap_height: size * 0.7 * k,
+                ic_advance: size * 0.9 * k,
+                normal_line_height: size * 1.25 * k,
             }
         }
+    }
+
+    /// A context with [`StubFont`] in an 800 by 600 viewport.
+    fn stub_context() -> CascadeContext<'static> {
+        CascadeContext {
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            fonts: Some(&StubFont),
+            language: None,
+            media: Media::screen(800.0, 600.0),
+            animations: None,
+            inline_styles: None,
+            frame_margins: FrameMargins::default(),
+        }
+    }
+
+    #[test]
+    fn the_font_relative_units_measure_the_elements_font_and_line() {
+        let context = stub_context();
+        let sheets = [sheet(
+            "html { font-size: 20px; line-height: 30px; font-family: wide }
+             body { font-family: serif; line-height: 2lh }
+             p { width: 1ch; font-size: 10px; line-height: 2; font-family: wide;
+                 margin: 1cap 1ic 1lh 1rlh; padding: 1rex 1rch 1rcap 1ric }
+             span { font-size: 2ex; font-weight: calc(1em / 1px) }",
+        )];
+        let html = "<p>x<span>y</span></p>";
+        let p = style_of_in(html, &sheets, "p", &context);
+        use LengthPercentageAuto::Px;
+        assert_eq!(p.width, Size::Px(12.0), "ch of its own wide font, after it");
+        assert_eq!(
+            p.margin,
+            [Px(14.0), Px(18.0), Px(20.0), Px(30.0)],
+            "cap, ic and lh its own, rlh the root's line"
+        );
+        assert_eq!(
+            p.padding,
+            [16.0, 24.0, 28.0, 36.0].map(LengthPercentage::Px),
+            "the root's font at the root's size"
+        );
+        // `lh` in `line-height` is the parent's line.
+        let body = style_of_in(html, &sheets, "body", &context);
+        assert_eq!(
+            body.font().line_height,
+            crate::computed::LineHeight::Px(60.0)
+        );
+        // In the font properties the units are the parent's.
+        let span = style_of_in(html, &sheets, "span", &context);
+        assert_eq!(span.font_size_px, 16.0, "2ex of the parent's wide 10px");
+        assert_eq!(span.font().weight, 10.0, "em of the parent's 10px");
+        // On the root the root units are the initial font's in its font
+        // properties.
+        let sheets = [sheet(
+            "html { font-size: 20px; line-height: 2rlh; margin: 1rlh }",
+        )];
+        let root = style_of_in(html, &sheets, "html", &context);
+        assert_eq!(
+            root.font().line_height,
+            crate::computed::LineHeight::Px(40.0),
+            "2 of 1.25 * 16"
+        );
+        assert_eq!(root.margin[TOP], Px(40.0), "its own line elsewhere");
+    }
+
+    #[test]
+    fn a_color_mix_of_currentcolor_is_inherited_unresolved() {
+        let sheets = [sheet(
+            "div { color: red; background-color: color-mix(in srgb, currentColor 50%, lime) }
+             p { color: blue; background-color: inherit }
+             span { color: lime }",
+        )];
+        let html = "<div><p>x<span>y</span></p></div>";
+        let channels = |c: Color| [c.r, c.g, c.b].map(|v| (v * 100.0).round() / 100.0);
+        assert_eq!(
+            channels(style_of(html, &sheets, "div").background_color),
+            [0.5, 0.5, 0.0]
+        );
+        // The child mixes its own colour, not its parent's mix.
+        assert_eq!(
+            channels(style_of(html, &sheets, "p").background_color),
+            [0.0, 0.5, 0.5]
+        );
+        // An element that sets none has none.
+        assert_eq!(style_of(html, &sheets, "span").background().color_mix, None);
+    }
+
+    #[test]
+    fn font_weight_and_style_take_em_of_the_parent() {
+        let sheets = [sheet(
+            "div { font-size: 10px } p { font-size: 100px; font-weight: calc(1em / 1px);
+             font-style: oblique calc(1em / 1px * 1deg) }",
+        )];
+        let p = style_of("<div><p>x</p></div>", &sheets, "p");
+        assert_eq!(p.font().weight, 10.0);
+        assert_eq!(p.font().style, crate::computed::FontStyle::Oblique(10.0));
     }
 
     /// [`style_of`] with a cascade context.
@@ -9017,16 +9421,7 @@ mod tests {
 
     #[test]
     fn relative_units_resolve_against_the_context() {
-        let context = CascadeContext {
-            viewport_width: 800.0,
-            viewport_height: 600.0,
-            fonts: Some(&StubFont),
-            language: None,
-            media: Media::screen(800.0, 600.0),
-            animations: None,
-            inline_styles: None,
-            frame_margins: FrameMargins::default(),
-        };
+        let context = stub_context();
         let sheets = [sheet(
             "html { font-size: 20px }
              p { font-size: 10px; margin: 2rem 1ex 1ch 1em; padding: 10vw 10vh 10vmin 10vmax;
@@ -9132,6 +9527,12 @@ mod tests {
         let sheets = [sheet("p { width: 10em; margin: 1rem }")];
         let styles = cascade_document(&document, &sheets, &CascadeContext::default());
         assert!(!styles.uses_viewport_units);
+        // The units of a font or a line are said to be used, em and rem not.
+        let context = stub_context();
+        let styles = cascade_document(&document, &sheets, &context);
+        assert!(!styles.uses_font_units);
+        let sheets = [sheet("p { width: 1cap }")];
+        assert!(cascade_document(&document, &sheets, &context).uses_font_units);
         // A unit nobody knows is not a length; an infinite one is
         // rejected even through a viewport unit.
         let sheets = [sheet("p { width: 10furlong; margin-top: 1e39vw }")];

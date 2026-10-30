@@ -306,7 +306,13 @@ pub enum Mark {
     Radio { checked: bool, disabled: bool },
     /// A drop-down select's arrow.
     Arrow,
+    /// A colour input's swatch of its value, `[r, g, b]`.
+    Swatch([u8; 3]),
 }
+
+/// How far a colour input's swatch is in from its content box, across
+/// and down, as the reference browser's swatch wrapper pads it.
+pub const SWATCH_INSET: [f32; 2] = [2.0, 4.0];
 
 /// The colour a placeholder is shown in (M26.7): the reference
 /// browser's `#757575`.
@@ -1285,7 +1291,14 @@ impl<'a> Styled<'a> {
                 let kind = dom::forms::input_type(document, node);
                 if matches!(
                     kind,
-                    "checkbox" | "radio" | "hidden" | "submit" | "reset" | "button" | "image"
+                    "checkbox"
+                        | "radio"
+                        | "hidden"
+                        | "submit"
+                        | "reset"
+                        | "button"
+                        | "image"
+                        | "color"
                 ) {
                     return None;
                 }
@@ -1526,7 +1539,8 @@ impl<'a> Styled<'a> {
     }
 
     /// The mark a checkbox or a radio button shows (M26.7), as its state
-    /// is; `None` for any other element.
+    /// is, or a colour input its value's swatch; `None` for any other
+    /// element.
     fn mark_of(&self, node: NodeId) -> Option<Mark> {
         let document = self.document;
         if document.tag(node) != Some("input") {
@@ -1541,6 +1555,12 @@ impl<'a> Styled<'a> {
                 disabled,
             }),
             "radio" => Some(Mark::Radio { checked, disabled }),
+            "color" => {
+                let value = dom::forms::value(document, node);
+                let hex = value.strip_prefix('#').filter(|h| h.len() == 6)?;
+                let channel = |i: usize| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok();
+                Some(Mark::Swatch([channel(0)?, channel(2)?, channel(4)?]))
+            }
             _ => None,
         }
     }

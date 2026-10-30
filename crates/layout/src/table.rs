@@ -420,7 +420,15 @@ pub(crate) fn layout_table_contents<'a>(
         });
         row_y[r] + own.unwrap_or(heights[r])
     };
-    let first_row_baseline = (!heights.is_empty()).then(|| row_baseline(0));
+    // A first row of empty cells alone gives the table no baseline, as
+    // the reference browser has it: an inline table then sits on its
+    // bottom.
+    let empty_row = |r: usize| {
+        grid.row_cells[r].clone().all(|i| {
+            cells[i].layout.first_baseline.is_none() && cells[i].layout.auto_content_height == 0.0
+        })
+    };
+    let first_row_baseline = (!heights.is_empty() && !empty_row(0)).then(|| row_baseline(0));
     let last_row_baseline = (!heights.is_empty()).then(|| row_baseline(heights.len() - 1));
 
     // The table box's fragment, the grid's parts inside it.
@@ -2816,6 +2824,19 @@ mod tests {
         let table = fragment_of(&layout, 6);
         assert_eq!((table.y, table.h), (30.0, 50.0));
         assert_eq!(fragment_of(&layout, 14).y, 30.0);
+        // A first row of empty cells, 64 tall, gives none: the table's
+        // bottom is on the baseline, with the inline-block's. Nodes: div
+        // 4, span 5, table 6, tbody 7, tr 8, td 9, tr 10, td 11.
+        let layout = document_of(
+            "<div class=c><span class='ib i50'></span><table class=it>\
+             <tr><td class=tall></td></tr><tr><td class=tall></td></tr></table></div>",
+            &format!(
+                "{BASELINES} .c {{ display: block; }} .it {{ display: inline-table; }}
+                 .tall {{ height: 64px; padding: 0; }} table {{ border-spacing: 0 }}"
+            ),
+        );
+        let table = fragment_of(&layout, 6);
+        assert_eq!(table.y + table.h, fragment_of(&layout, 5).y + 50.0);
     }
 
     #[test]

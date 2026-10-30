@@ -2968,6 +2968,37 @@ fn maybe_clone_into_selectedcontent(document: &mut Document, option: NodeId) {
     }
 }
 
+/// HTML's "update a select's selectedcontent", run when what `select`
+/// has selected changes: its enabled `selectedcontent`'s children made
+/// copies of its selected option's, or none when it has none selected.
+pub fn update_selectedcontent(document: &mut Document, select: NodeId) {
+    let Some(selectedcontent) = enabled_selectedcontent(document, select) else {
+        return;
+    };
+    match dom::forms::selected_option(document, select) {
+        Some(option) => clone_option_into(document, option, selectedcontent),
+        None => {
+            while let Some(child) = document.first_child(selectedcontent) {
+                if document.remove_child(selectedcontent, child).is_err() {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// [`update_selectedcontent`] for every `select` under `root`, as a
+/// form's reset needs.
+pub fn update_selectedcontents_under(document: &mut Document, root: NodeId) {
+    let selects: Vec<NodeId> = document
+        .subtree(root)
+        .filter(|&node| document.tag(node) == Some("select"))
+        .collect();
+    for select in selects {
+        update_selectedcontent(document, select);
+    }
+}
+
 /// HTML's "clone an option into a selectedcontent": `selectedcontent`'s
 /// children replaced by deep copies of `option`'s.
 pub fn clone_option_into(document: &mut Document, option: NodeId, selectedcontent: NodeId) {
@@ -3631,6 +3662,35 @@ mod tests {
             ),
             ""
         );
+    }
+
+    #[test]
+    fn a_selectedcontent_follows_the_selection_made_later() {
+        let (_, mut document) =
+            parsed("<select><button><selectedcontent></button><option>a<option>b<i>c</i></select>");
+        let find = |document: &Document, tag: &str| -> Vec<NodeId> {
+            document
+                .subtree(document.root())
+                .filter(|&n| document.tag(n) == Some(tag))
+                .collect()
+        };
+        let select = find(&document, "select")[0];
+        let content = find(&document, "selectedcontent")[0];
+        let options = find(&document, "option");
+        let shown = |document: &Document| crate::serialize_children(document, content, true);
+        assert_eq!(shown(&document), "a");
+        dom::forms::set_selectedness(&mut document, options[1], true, true).unwrap();
+        update_selectedcontent(&mut document, select);
+        assert_eq!(shown(&document), "b<i>c</i>");
+        // None selected: none shown.
+        dom::forms::set_selectedness(&mut document, options[1], false, true).unwrap();
+        update_selectedcontent(&mut document, select);
+        assert_eq!(shown(&document), "");
+        // Every select under a node, as a form's reset brings them.
+        dom::forms::set_selectedness(&mut document, options[0], true, true).unwrap();
+        let root = document.root();
+        update_selectedcontents_under(&mut document, root);
+        assert_eq!(shown(&document), "a");
     }
 
     #[test]

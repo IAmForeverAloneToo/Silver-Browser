@@ -327,6 +327,7 @@ pub(super) fn parse_background(
     let last = items.len() - 1;
     let initial = Backgrounds::default();
     let mut out = Backgrounds {
+        color_mix: None,
         image: Vec::new(),
         repeat: Vec::new(),
         position: Vec::new(),

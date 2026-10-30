@@ -373,7 +373,10 @@ impl Engine {
         self.cached_styles();
         let viewport = self.viewport;
         let animations = RefCell::new(self.shown.animations.borrow().clone());
-        let fonts = FontMeasurer(&self.layout_fonts);
+        let fonts = FontMeasurer(crate::web_fonts::fonts_of(
+            self.shown.web_fonts.as_ref(),
+            &self.layout_fonts,
+        ));
         let context = cascade_context(
             viewport,
             &fonts,

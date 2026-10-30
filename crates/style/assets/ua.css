@@ -265,6 +265,18 @@ input[type=checkbox i], input[type=radio i] {
   cursor: default;
 }
 input[type=radio i] { margin: 3px 3px 0 5px; }
+/* A colour input is a button 50 by 27, as the reference browser's sheet
+ * has it, showing its colour as a swatch. */
+input[type=color i] {
+  box-sizing: border-box;
+  width: 50px;
+  height: 27px;
+  padding: 1px 2px;
+  border: 1px solid ButtonBorder;
+  background-color: ButtonFace;
+  color: ButtonText;
+  cursor: default;
+}
 input[type=image i] {
   width: auto;
   height: auto;

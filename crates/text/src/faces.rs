@@ -556,10 +556,13 @@ impl Faces {
             Family::Generic("cursive") => query(db, &[fontdb::Family::Cursive], request),
             Family::Generic("fantasy") => query(db, &[fontdb::Family::Fantasy], request),
             Family::Generic(_) => None,
-            Family::Name(name) => self
-                .names
-                .get(&name.to_lowercase())
-                .and_then(|name| query(db, &[fontdb::Family::Name(name)], request)),
+            Family::Name(name) => {
+                let lower = name.to_lowercase();
+                self.names
+                    .get(&lower)
+                    .or_else(|| alternate_family(&lower).and_then(|other| self.names.get(other)))
+                    .and_then(|name| query(db, &[fontdb::Family::Name(name)], request))
+            }
         }?;
         Some(self.font_of_id(db, id, request))
     }
@@ -770,6 +773,22 @@ fn primary_families() -> Vec<fontdb::Family<'static>> {
         .collect()
 }
 
+/// The family the reference browser takes for a family the system does
+/// not have, by its lowercase name (Blink's `AlternateFamilyName`):
+/// Times and Times New Roman, Courier and Courier New, Helvetica and
+/// Arial, each for the other.
+fn alternate_family(lower: &str) -> Option<&'static str> {
+    Some(match lower {
+        "times" => "times new roman",
+        "times new roman" => "times",
+        "courier" => "courier new",
+        "courier new" => "courier",
+        "helvetica" => "arial",
+        "arial" => "helvetica",
+        _ => return None,
+    })
+}
+
 /// The face of `families` in `db` that best matches `request`.
 fn query(
     db: &fontdb::Database,
@@ -959,6 +978,16 @@ mod tests {
         assert_eq!(
             pick("Nothing", 400, Slant::Normal),
             ("primary".into(), false, 0.0)
+        );
+        // Times and Courier, which the system has not, are its Times New
+        // Roman and Courier New, as in the reference browser.
+        assert_eq!(
+            pick("Times", 400, Slant::Normal),
+            ("times.ttf".into(), false, 0.0)
+        );
+        assert_eq!(
+            pick("courier, serif", 400, Slant::Normal),
+            ("cour.ttf".into(), false, 0.0)
         );
         // A face is handed out once.
         let a = faces.choose(&request("serif", 400, Slant::Normal));

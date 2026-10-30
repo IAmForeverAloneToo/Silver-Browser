@@ -508,11 +508,13 @@ fn handlers_and_javascript_urls_need_unsafe_inline_or_their_hash_with_unsafe_has
     let policy = "script-src 'nonce-n1' 'unsafe-hashes' \
                   'sha256-mKO3dbAQavALIF8PI6Y9pSmdsqPKu5KIQ7wIb73GgI0=' \
                   'sha256-vojPZRgpYTJJDqV9v1ys7HwKq7QYV+VROTr47k0NH50='";
+    // The div's handler is refused as the parser sets it, before the
+    // script runs.
     assert_eq!(
         lines,
         [
-            "clicked".to_owned(),
             format!("Content-Security-Policy refused an event handler: {policy}"),
+            "clicked".to_owned(),
             format!("Content-Security-Policy refused a javascript: URL: {policy}"),
             "ok".to_owned(),
         ]
@@ -1092,6 +1094,81 @@ fn a_handler_is_held_to_the_policies_when_its_attribute_is_set() {
         events,
         ["#document | inline | 4 | true", "DIV | inline | 2 | true"]
     );
+}
+
+#[test]
+fn a_handler_the_parser_sets_is_held_to_the_policies_as_it_is_parsed() {
+    // As the reference browser checks it: when the parser sets it, at
+    // line 0, its element the target, before a script reaches it; and
+    // not again when one does.
+    static PAGES: Pages = &[(
+        "/page.html",
+        &[("Content-Security-Policy", "script-src 'nonce-n1'")],
+        "<script nonce=n1>\
+         document.addEventListener('securitypolicyviolation', e => console.log([\
+           e.target.id, e.blockedURI, e.lineNumber, e.violatedDirective].join(' | ')));\
+         </script>\
+         <a id=a onclick=\"void 0\" onfoo=\"void 0\">a</a><b id=b onclick=\"void 1\">b</b>\
+         <script nonce=n1>\
+         setTimeout(() => {\
+           console.log(typeof document.getElementById('a').onclick);\
+           setTimeout(() => console.log('done'), 20);\
+         }, 20);\
+         </script>",
+    )];
+    let server = sites(PAGES);
+    let lines = run_to(&server, at(&server, "a.localhost", "/page.html"), "done");
+    let events: Vec<&String> = lines.iter().filter(|line| line.contains(" | ")).collect();
+    // `#b`, which no script reaches, as `#a`, which one does, once.
+    assert_eq!(
+        events,
+        [
+            "a | inline | 0 | script-src-attr",
+            "b | inline | 0 | script-src-attr"
+        ],
+        "{lines:?}"
+    );
+    assert!(lines.contains(&"object".to_owned()), "{lines:?}");
+}
+
+#[test]
+fn a_font_preload_fires_load_or_error_at_its_link() {
+    // A `<link rel=preload as=font>` a script made: `load` once fetched,
+    // `error` when font-src refuses it, the violation said.
+    static PAGES: Pages = &[
+        (
+            "/page.html",
+            &[(
+                "Content-Security-Policy",
+                "font-src 'self'; script-src 'nonce-n1'",
+            )],
+            "<script nonce=n1>\
+             document.addEventListener('securitypolicyviolation',\
+               e => console.log('refused', e.violatedDirective));\
+             for (const href of ['/f.ttf', 'http://b.localhost:PORT/f.ttf']) {\
+               const link = document.createElement('link');\
+               link.rel = 'preload'; link.as = 'font'; link.href = href;\
+               link.onload = () => console.log('load', href.length);\
+               link.onerror = () => console.log('error', href.length);\
+               document.head.append(link);\
+             }\
+             </script>",
+        ),
+        ("/f.ttf", &[], "font"),
+    ];
+    let server = sites(PAGES);
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine
+        .navigate(at(&server, "a.localhost", "/page.html"));
+    let lines = tab.run_until(|lines| {
+        lines.iter().any(|l| l.starts_with("load"))
+            && lines.iter().any(|l| l.starts_with("error"))
+            && lines.iter().any(|l| l.starts_with("refused"))
+    });
+    assert!(lines.contains(&"load 6".to_owned()), "{lines:?}");
+    assert!(lines.iter().any(|l| l.starts_with("error ")), "{lines:?}");
+    assert!(lines.contains(&"refused font-src".to_owned()), "{lines:?}");
 }
 
 #[test]
