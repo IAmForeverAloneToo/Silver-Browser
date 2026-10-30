@@ -3565,6 +3565,7 @@ impl DocumentHost {
             media: self.window.media,
             animations: Some(&animations),
             inline_styles: Some(page),
+            frame_margins: self.window.frame_margins,
         };
         let recascade = computed
             .sheets
@@ -4370,6 +4371,7 @@ impl DocumentHost {
             media: self.window.media,
             animations: Some(&animations),
             inline_styles: Some(page),
+            frame_margins: self.window.frame_margins,
         };
         let recascade = computed
             .sheets
@@ -4413,6 +4415,7 @@ impl DocumentHost {
             media: self.window.media,
             animations: Some(&animations),
             inline_styles: Some(page),
+            frame_margins: self.window.frame_margins,
         };
         let version = self.document.version();
         let changes = self.document.changes();

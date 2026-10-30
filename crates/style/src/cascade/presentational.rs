@@ -6,6 +6,15 @@
 
 use dom::{Document, NodeId};
 
+/// The `marginwidth` and `marginheight` of the `iframe` whose document
+/// this is, which its `body` takes in place of its own (as the reference
+/// browser does, which writes them on the body).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FrameMargins {
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+}
+
 /// Whether `name` on an element named `tag` is a presentational hint
 /// here, whose change restyles the element: and the element's subtree
 /// where its descendants read it (a table's `border` and `cellpadding`,
@@ -44,6 +53,9 @@ pub(crate) fn is_presentational_hint(tag: &str, name: &str) -> bool {
             tag,
             "body" | "table" | "tr" | "td" | "th" | "thead" | "tbody" | "tfoot"
         ),
+        "marginwidth" | "marginheight" | "leftmargin" | "topmargin" => tag == "body",
+        "frame" | "rules" | "bordercolor" => tag == "table",
+        "wrap" => tag == "pre",
         "valign" => matches!(
             tag,
             "tr" | "td" | "th" | "thead" | "tbody" | "tfoot" | "col" | "colgroup"
@@ -70,25 +82,22 @@ pub(crate) fn is_presentational_hint(tag: &str, name: &str) -> bool {
 pub(crate) fn reaches_descendants(tag: &str, name: &str) -> bool {
     matches!(
         (tag, name),
-        ("table", "border" | "cellpadding") | ("body", "link")
+        ("table", "border" | "cellpadding" | "rules" | "bordercolor") | ("body", "link")
     )
 }
 
 /// The declarations `element`'s presentational attributes give, as the
 /// text of a declaration block; empty for none.
-pub(super) fn hints(document: &Document, element: NodeId, tag: &str) -> String {
+pub(super) fn hints(
+    document: &Document,
+    element: NodeId,
+    tag: &str,
+    frame: FrameMargins,
+) -> String {
     let attr = |name: &str| document.attr(element, name);
     let mut out = String::new();
     let mut push = |text: String| out.push_str(&text);
-    let dimension = |name: &str, nonzero: bool| {
-        attr(name)
-            .and_then(dom::parse_dimension)
-            .and_then(|d| match d {
-                dom::Dimension::Length(px) if nonzero && px == 0.0 => None,
-                dom::Dimension::Length(px) => Some(format!("{px}px")),
-                dom::Dimension::Percentage(p) => Some(format!("{p}%")),
-            })
-    };
+    let dimension = |name: &str, nonzero: bool| attr(name).and_then(|v| length(v, nonzero));
     let pixels = |name: &str| {
         attr(name)
             .and_then(dom::parse_integer)
@@ -110,6 +119,13 @@ pub(super) fn hints(document: &Document, element: NodeId, tag: &str) -> String {
             push(image("background").unwrap_or_default());
             if let Some(c) = colour("text") {
                 push(format!("color: {c};"));
+            }
+            let (across, down) = body_margins(document, element, frame);
+            if let Some(m) = across {
+                push(format!("margin-left: {m}; margin-right: {m};"));
+            }
+            if let Some(m) = down {
+                push(format!("margin-top: {m}; margin-bottom: {m};"));
             }
         }
         // A link takes `body`'s `link` colour (every link is unvisited).
@@ -166,14 +182,45 @@ pub(super) fn hints(document: &Document, element: NodeId, tag: &str) -> String {
             if let Some(s) = pixels("cellspacing") {
                 push(format!("border-spacing: {s}px;"));
             }
-            if let Some(b) = table_border(document, element) {
+            let border = table_border(document, element);
+            if let Some(b) = border {
                 push(format!("border-width: {b}px;"));
-                if b > 0 {
-                    push("border-style: outset;".into());
+            }
+            let coloured = colour("bordercolor");
+            if let Some(c) = &coloured {
+                push(format!("border-color: {c};"));
+            }
+            let rules = table_rules(document, element);
+            if rules.is_some() {
+                push("border-collapse: collapse;".into());
+            }
+            // The style the attributes give the border, unless `frame`
+            // says which sides have one.
+            match attr("frame").and_then(frame_sides) {
+                Some(sides) => {
+                    let style = |on: bool| if on { "solid" } else { "hidden" };
+                    push(format!(
+                        "border-width: thin; border-style: {} {} {} {};",
+                        style(sides[0]),
+                        style(sides[1]),
+                        style(sides[2]),
+                        style(sides[3])
+                    ));
                 }
+                None if coloured.is_some() => push("border-style: solid;".into()),
+                None if border.is_some_and(|b| b > 0) => push("border-style: outset;".into()),
+                None if rules.is_some() => push("border-style: hidden;".into()),
+                None => {}
             }
         }
         "tr" | "thead" | "tbody" | "tfoot" | "td" | "th" => {
+            // A row group's borders under `rules=groups`.
+            if matches!(tag, "thead" | "tbody" | "tfoot")
+                && ancestor(document, element, "table")
+                    .is_some_and(|t| table_rules(document, t) == Some(Rules::Groups))
+            {
+                push("border-top: thin solid; border-bottom: thin solid;".into());
+            }
             if let Some(align) = attr("align").and_then(legacy_text_align) {
                 push(format!("text-align: {align};"));
             }
@@ -201,9 +248,7 @@ pub(super) fn hints(document: &Document, element: NodeId, tag: &str) -> String {
                 }
                 let table = ancestor(document, element, "table");
                 if let Some(table) = table {
-                    if table_border(document, table).is_some_and(|b| b > 0) {
-                        push("border-width: 1px; border-style: inset;".into());
-                    }
+                    push(cell_borders(document, table).into());
                     let padding = document
                         .attr(table, "cellpadding")
                         .and_then(dom::parse_integer)
@@ -215,6 +260,12 @@ pub(super) fn hints(document: &Document, element: NodeId, tag: &str) -> String {
             }
         }
         "col" | "colgroup" => {
+            if tag == "colgroup"
+                && ancestor(document, element, "table")
+                    .is_some_and(|t| table_rules(document, t) == Some(Rules::Groups))
+            {
+                push("border-left: thin solid; border-right: thin solid;".into());
+            }
             if let Some(w) = dimension("width", true) {
                 push(format!("width: {w};"));
             }
@@ -249,7 +300,11 @@ pub(super) fn hints(document: &Document, element: NodeId, tag: &str) -> String {
                 push(format!("width: {w};"));
             }
         }
-        "pre" => {}
+        "pre" => {
+            if attr("wrap").is_some() {
+                push("white-space: pre-wrap;".into());
+            }
+        }
         "img" | "iframe" | "embed" | "object" | "video" | "input" => {
             if tag != "input" || attr("type").is_some_and(|t| t.eq_ignore_ascii_case("image")) {
                 if let Some(h) = pixels("hspace").filter(|_| tag != "input") {
@@ -302,6 +357,124 @@ fn ancestor(document: &Document, element: NodeId, tag: &str) -> Option<NodeId> {
         at = document.parent(node);
     }
     None
+}
+
+/// `value` as a length the attributes map: pixels or a percentage, none
+/// of zero where `nonzero`.
+fn length(value: &str, nonzero: bool) -> Option<String> {
+    match dom::parse_dimension(value)? {
+        dom::Dimension::Length(px) if nonzero && px == 0.0 => None,
+        dom::Dimension::Length(px) => Some(format!("{px}px")),
+        dom::Dimension::Percentage(p) => Some(format!("{p}%")),
+    }
+}
+
+/// The margins `body` takes across and down: `marginwidth` or
+/// `leftmargin` for both sides, `marginheight` or `topmargin` for top
+/// and bottom, the later attribute winning, and the iframe's own in
+/// place of the body's `marginwidth` and `marginheight`. `rightmargin`
+/// and `bottommargin` map to nothing, as in the reference browser.
+fn body_margins(
+    document: &Document,
+    element: NodeId,
+    frame: FrameMargins,
+) -> (Option<String>, Option<String>) {
+    let mut attrs: Vec<(&str, String)> = document
+        .attrs(element)
+        .unwrap_or_default()
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.clone()))
+        .collect();
+    for (name, value) in [("marginwidth", frame.width), ("marginheight", frame.height)] {
+        let Some(value) = value else {
+            continue;
+        };
+        match attrs.iter_mut().find(|(n, _)| *n == name) {
+            Some(kept) => kept.1 = value.to_string(),
+            None => attrs.push((name, value.to_string())),
+        }
+    }
+    let (mut across, mut down) = (None, None);
+    for (name, value) in attrs {
+        let target = match name {
+            "marginwidth" | "leftmargin" => &mut across,
+            "marginheight" | "topmargin" => &mut down,
+            _ => continue,
+        };
+        if let Some(m) = length(&value, false) {
+            *target = Some(m);
+        }
+    }
+    (across, down)
+}
+
+/// The sides `frame` gives a table a border on: top, right, bottom and
+/// left; `None` for a value it does not know.
+fn frame_sides(value: &str) -> Option<[bool; 4]> {
+    Some(match value.trim().to_ascii_lowercase().as_str() {
+        "void" => [false; 4],
+        "above" => [true, false, false, false],
+        "below" => [false, false, true, false],
+        "hsides" => [true, false, true, false],
+        "vsides" => [false, true, false, true],
+        "lhs" => [false, false, false, true],
+        "rhs" => [false, true, false, false],
+        "box" | "border" => [true; 4],
+        _ => return None,
+    })
+}
+
+/// A table's `rules`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Rules {
+    None,
+    Groups,
+    Rows,
+    Cols,
+    All,
+}
+
+/// The `rules` of `table`, when it says one of them.
+fn table_rules(document: &Document, table: NodeId) -> Option<Rules> {
+    Some(
+        match document
+            .attr(table, "rules")?
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "none" => Rules::None,
+            "groups" => Rules::Groups,
+            "rows" => Rules::Rows,
+            "cols" => Rules::Cols,
+            "all" => Rules::All,
+            _ => return None,
+        },
+    )
+}
+
+/// The borders a table's attributes give its cells: by `rules`, else
+/// inset where it has a border, solid where it has a `bordercolor` too.
+fn cell_borders(document: &Document, table: NodeId) -> &'static str {
+    const SOLID: &str = "border-width: 1px; border-style: solid; border-color: inherit;";
+    match table_rules(document, table) {
+        Some(Rules::None | Rules::Groups) => "",
+        Some(Rules::All) => SOLID,
+        Some(Rules::Cols) => {
+            "border-left: thin solid; border-right: thin solid; border-color: inherit;"
+        }
+        Some(Rules::Rows) => {
+            "border-top: thin solid; border-bottom: thin solid; border-color: inherit;"
+        }
+        None if !table_border(document, table).is_some_and(|b| b > 0) => "",
+        None if document
+            .attr(table, "bordercolor")
+            .is_some_and(|c| !c.is_empty()) =>
+        {
+            SOLID
+        }
+        None => "border-width: 1px; border-style: inset; border-color: inherit;",
+    }
 }
 
 /// A table's `border`: its integer, an empty or unparsable one 1.
@@ -573,6 +746,100 @@ mod tests {
             style(author, "d").padding,
             [const { LengthPercentage::Px(0.0) }; 4]
         );
+    }
+
+    #[test]
+    fn a_body_takes_its_margins_and_its_iframes() {
+        let px = LengthPercentageAuto::Px;
+        let margins = |html: &str, frame: FrameMargins| {
+            let document = Document::from_node(&html::parse_document(html).expect("never fails"));
+            let context = CascadeContext {
+                frame_margins: frame,
+                ..CascadeContext::default()
+            };
+            let styles = cascade_document(&document, &[], &context);
+            let body = document
+                .subtree(document.root())
+                .find(|&n| document.tag(n) == Some("body"))
+                .expect("a body");
+            styles.get(body).expect("styled").margin.clone()
+        };
+        let none = FrameMargins::default();
+        // Each pair sets both of its sides; the later attribute wins.
+        assert_eq!(
+            margins("<body marginwidth=3 topmargin=4 leftmargin=5>", none),
+            [px(4.0), px(5.0), px(4.0), px(5.0)]
+        );
+        assert_eq!(
+            margins("<body leftmargin=5 marginwidth=3 marginheight=10%>", none)[..2],
+            [LengthPercentageAuto::Percent(10.0), px(3.0)]
+        );
+        // One that does not parse leaves the one before.
+        assert_eq!(
+            margins("<body leftmargin=5 marginwidth=x>", none)[1],
+            px(5.0)
+        );
+        // `rightmargin` and `bottommargin` map to nothing.
+        assert_eq!(
+            margins("<body rightmargin=9 bottommargin=9>", none),
+            [px(8.0), px(8.0), px(8.0), px(8.0)]
+        );
+        // The iframe's stand for the body's own `marginwidth` and
+        // `marginheight`, where those were.
+        let frame = FrameMargins {
+            width: Some(0),
+            height: Some(2),
+        };
+        assert_eq!(
+            margins("<body>", frame),
+            [px(2.0), px(0.0), px(2.0), px(0.0)]
+        );
+        assert_eq!(
+            margins("<body marginwidth=3 leftmargin=5>", frame)[1],
+            px(5.0)
+        );
+        assert_eq!(
+            margins("<body leftmargin=5 marginwidth=3>", frame)[1],
+            px(0.0)
+        );
+    }
+
+    #[test]
+    fn a_tables_frame_rules_and_bordercolor_draw_its_borders() {
+        use crate::computed::BorderCollapse;
+        let html = "<table id=f frame=hsides border=4><tr><td id=fd>a</td></tr></table>\
+            <table id=r rules=rows><tbody id=rb><tr><td id=rd>a</td></tr></tbody></table>\
+            <table id=c rules=cols><tr><td id=cd>a</td></tr></table>\
+            <table id=g rules=groups><colgroup id=gc></colgroup><tbody id=gb>\
+            <tr><td id=gd>a</td></tr></tbody></table>\
+            <table id=a rules=all><tr><td id=ad>a</td></tr></table>\
+            <table id=k border=2 bordercolor=red><tr><td id=kd>a</td></tr></table>\
+            <table id=n rules=bogus><tr><td id=nd>a</td></tr></table>\
+            <pre id=w wrap>w</pre>";
+        let s = |id| style(html, id);
+        let (none, solid, hidden) = (BorderStyle::None, BorderStyle::Solid, BorderStyle::Hidden);
+        let f = s("f");
+        assert_eq!(f.border_style, [solid, hidden, solid, hidden]);
+        assert_eq!(f.used_border_width()[0], 1.0, "thin, not the border's 4");
+        assert_eq!(s("fd").border_style[0], BorderStyle::Inset);
+        let r = s("r");
+        assert_eq!(r.border_collapse, BorderCollapse::Collapse);
+        assert_eq!(r.border_style, [hidden; 4]);
+        assert_eq!(s("rd").border_style, [solid, none, solid, none]);
+        assert_eq!(s("rb").border_style, [none; 4]);
+        assert_eq!(s("cd").border_style, [none, solid, none, solid]);
+        assert_eq!(s("gd").border_style, [none; 4]);
+        assert_eq!(s("gb").border_style, [solid, none, solid, none]);
+        assert_eq!(s("gc").border_style, [none, solid, none, solid]);
+        assert_eq!(s("ad").border_style, [solid; 4]);
+        assert_eq!(s("ad").used_border_width(), [1.0; 4]);
+        let k = s("k");
+        assert_eq!(k.border_style, [solid; 4]);
+        assert_eq!(k.border_color[0], Color::rgb8(255, 0, 0));
+        assert_eq!(s("kd").border_style, [solid; 4]);
+        assert_eq!(s("n").border_collapse, BorderCollapse::Separate);
+        assert_eq!(s("nd").border_style, [none; 4]);
+        assert!(s("w").white_space.wrap);
     }
 
     #[test]

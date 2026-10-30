@@ -152,6 +152,7 @@ mod svg;
 use animated::Animated;
 pub(crate) use images::{is_frame_hint, is_img_hint};
 pub(crate) use lists::is_list_hint;
+pub use presentational::FrameMargins;
 pub(crate) use presentational::{
     is_presentational_hint, reaches_descendants as presentational_reaches_descendants,
 };
@@ -602,6 +603,9 @@ pub struct CascadeContext<'a> {
     /// What decides whether an element's `style` attribute applies
     /// (M33.1); `None` applies every one.
     pub inline_styles: Option<&'a dyn InlineStyles>,
+    /// The margins of the iframe the document is in, which its `body`
+    /// takes.
+    pub frame_margins: FrameMargins,
 }
 
 /// Resolves the computed style of every element under `document`'s
@@ -1162,7 +1166,7 @@ impl Recascader<'_> {
         for (in_force, author) in [(&cascader.ua, false), (&cascader.author, true)] {
             if author {
                 // The hints come before every author sheet's rules.
-                let hints = hint_declarations(document, element);
+                let hints = hint_declarations(document, element, cascader.context.frame_margins);
                 if !hints.is_empty() {
                     add_block(
                         &mut blocks,
@@ -1373,6 +1377,7 @@ impl Recascader<'_> {
             element,
             (&cascader.ua, &cascader.author),
             cascader.context.inline_styles,
+            cascader.context.frame_margins,
         );
         let rem = if self.document.document_element() == Some(element) {
             ComputedStyle::default().font_size_px
@@ -1896,6 +1901,7 @@ impl<'a> Cascader<'a> {
             element,
             (&self.ua, &self.author),
             self.context.inline_styles,
+            self.context.frame_margins,
         );
         let key = self.style_key(element, &matched, parent.style, rem);
         let resolution = Resolution {
@@ -2539,6 +2545,7 @@ fn declarations_for<'a>(
     element: NodeId,
     (ua, author): (&InForce<'a>, &InForce<'a>),
     inline_styles: Option<&dyn InlineStyles>,
+    frame: FrameMargins,
 ) -> Matched<'a> {
     let mut order = 0u32;
     let mut out = Matched::default();
@@ -2555,7 +2562,7 @@ fn declarations_for<'a>(
     // HTML's presentational hints (M21.6): author declarations with no
     // specificity, before every author sheet's, so that any author rule
     // overrides them.
-    for decl in hint_declarations(document, element) {
+    for decl in hint_declarations(document, element, frame) {
         out.element().push(Applied {
             tier: tier(TierBase::AuthorSheet, false),
             layer: 0,
@@ -2601,13 +2608,17 @@ fn declarations_for<'a>(
 /// `element`'s presentational hints (M21.6) and, for an SVG element,
 /// its presentation attributes (M32), built as declarations, never as
 /// text a value could add another to.
-fn hint_declarations(document: &Document, element: NodeId) -> Vec<css::Declaration> {
+fn hint_declarations(
+    document: &Document,
+    element: NodeId,
+    frame: FrameMargins,
+) -> Vec<css::Declaration> {
     let hints = document.tag(element).map_or_else(String::new, |tag| {
         let attr = |name: &str| document.attr(element, name).map(str::to_string);
         lists::list_hints(tag, attr)
             + &images::img_hints(tag, attr)
             + &images::frame_hints(tag, attr)
-            + &presentational::hints(document, element, tag)
+            + &presentational::hints(document, element, tag, frame)
     });
     let svg_hints = match (document.svg_tag(element), document.attrs(element)) {
         (Some(tag), Some(attrs)) => svg::svg_hints(tag, attrs),
@@ -7634,6 +7645,7 @@ mod tests {
             media: Media::screen(800.0, 600.0),
             animations: None,
             inline_styles: None,
+            frame_margins: FrameMargins::default(),
         };
         let viewport_used = Cell::new(false);
         let substitutions = Substitutions::new(0);
@@ -8588,6 +8600,7 @@ mod tests {
             media: Media::screen(800.0, 600.0),
             animations: None,
             inline_styles: None,
+            frame_margins: FrameMargins::default(),
         };
         let sheets = [sheet(
             "html { font-size: 20px }

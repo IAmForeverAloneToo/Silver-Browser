@@ -137,6 +137,37 @@ fn a_srcdoc_is_drawn_into_its_box_and_its_canvas_is_clear() {
 }
 
 #[test]
+fn a_frames_body_takes_its_iframes_margins() {
+    // The iframe's `marginwidth` and `marginheight` stand for the body's
+    // own (D60), and a change of them restyles its document.
+    let mut tab = Tab::new();
+    tab.engine.load_document(
+        "<body style='margin:0; background: rgb(0, 128, 0)'>\
+         <iframe style='border:0' marginwidth=20 marginheight=bad srcdoc=\"<body marginheight=30>\
+         <div style='height:50px; background: rgb(255, 0, 0)'></div>\"></iframe>",
+    );
+    settle_frames(&mut tab);
+    let shown = tab.engine.frame(400, 200);
+    // Not a whole integer: 0, in place of the body's 30.
+    assert_eq!(pixel(&shown, 400, 25, 2), [255, 0, 0, 255]);
+    assert_eq!(pixel(&shown, 400, 15, 2), [0, 128, 0, 255], "20 across");
+    let iframe = iframes(&tab.engine)[0];
+    let document = &mut tab.engine.shown.document;
+    document
+        .set_attribute(iframe, "marginwidth", "0")
+        .expect("set");
+    document
+        .set_attribute(iframe, "marginheight", "10")
+        .expect("set");
+    let changes = tab.engine.shown.document.take_changes();
+    tab.engine.document_changed(changes);
+    settle_frames(&mut tab);
+    let shown = tab.engine.frame(400, 200);
+    assert_eq!(pixel(&shown, 400, 2, 12), [255, 0, 0, 255]);
+    assert_eq!(pixel(&shown, 400, 2, 5), [0, 128, 0, 255], "10 down");
+}
+
+#[test]
 fn a_frame_is_drawn_again_when_its_document_changes() {
     let mut tab = Tab::new();
     tab.engine.load_document(

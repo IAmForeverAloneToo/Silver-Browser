@@ -161,6 +161,7 @@ impl Engine {
                 media,
                 animations: Some(&animations),
                 inline_styles: None,
+                frame_margins: self.frame_margins,
             }
         };
         let mut styles = sheets.cascade(document, &context(&first_box));

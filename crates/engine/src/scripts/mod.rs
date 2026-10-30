@@ -305,6 +305,8 @@ pub(crate) struct Lent<'a> {
 pub(crate) struct WindowEnv {
     pub(crate) viewport: (u32, u32),
     pub(crate) media: style::Media,
+    /// The margins of the iframe the document is in (D60).
+    pub(crate) frame_margins: style::FrameMargins,
     pub(crate) fonts: Option<text::FontCollection>,
     /// The fonts the document lays out with, its web fonts among them
     /// (D65).

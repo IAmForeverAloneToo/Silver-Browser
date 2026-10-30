@@ -380,6 +380,7 @@ impl Engine {
             &self.shown.page,
             self.media(viewport),
             &animations,
+            self.frame_margins,
         );
         let Some(cached) = &self.shown.styled else {
             return Err("no styles".to_owned());

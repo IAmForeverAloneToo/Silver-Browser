@@ -915,7 +915,7 @@ fn is_iframe(document: &Document, node: NodeId) -> bool {
 }
 
 /// Whether `change` may change the frames: an `iframe` in or out, or an
-/// attribute its frame is navigated by.
+/// attribute its frame is navigated by or its document's body takes.
 pub(crate) fn may_touch_frames(document: &Document, change: &Change) -> bool {
     match change {
         Change::Inserted { child, .. } | Change::Removed { child, .. } => document
@@ -923,7 +923,10 @@ pub(crate) fn may_touch_frames(document: &Document, change: &Change) -> bool {
             .any(|node| is_iframe(document, node)),
         Change::AttributeChanged { element, name, .. } => {
             is_iframe(document, *element)
-                && matches!(name.as_str(), "src" | "srcdoc" | "name" | "sandbox")
+                && matches!(
+                    name.as_str(),
+                    "src" | "srcdoc" | "name" | "sandbox" | "marginwidth" | "marginheight"
+                )
         }
         Change::Everything => true,
         Change::TextChanged { .. }
@@ -1107,6 +1110,12 @@ impl Engine {
             self.drop_frame(node);
         }
         for node in iframes {
+            // Its `marginwidth` and `marginheight`, for its document's
+            // body (D60).
+            let margins = frame_margins(&self.shown.document, node);
+            if let Some(frame) = self.shown.frames.get_mut(&node) {
+                frame.engine.set_frame_margins(margins);
+            }
             let source = self.frame_source(node);
             // A change of its `sandbox` applies at the frame's next
             // navigation (M33.2).
@@ -1150,6 +1159,7 @@ impl Engine {
     /// A frame for the `iframe` `node`, showing the initial `about:blank`
     /// of this document's origin, unless the tab's limits refuse it.
     fn make_frame(&mut self, node: NodeId) -> Option<Frame> {
+        let margins = frame_margins(&self.shown.document, node);
         let id = if self.frame.depth >= MAX_FRAME_DEPTH {
             Err(format!("frames nest {MAX_FRAME_DEPTH} deep at most"))
         } else {
@@ -1175,6 +1185,7 @@ impl Engine {
             return None;
         };
         let mut engine = Box::new(engine);
+        engine.set_frame_margins(margins);
         let creator = self.shown.page.creator(&self.shown.document);
         engine.show_blank(&creator, true);
         Some(Frame {
@@ -1925,7 +1936,7 @@ impl Engine {
     /// The frames of other renderers this page shows, and its frames',
     /// with their content boxes in its viewport, CSS pixels (M34): the
     /// holes the browser fills.
-    pub(crate) fn remote_holes(&mut self) -> Vec<(u32, [f32; 4])> {
+    pub(crate) fn remote_holes(&mut self) -> Vec<(u32, [f32; 4], style::FrameMargins)> {
         let nodes: Vec<NodeId> = self.shown.frames.keys().copied().collect();
         let mut holes = Vec::new();
         for node in nodes {
@@ -1936,14 +1947,12 @@ impl Engine {
                 continue;
             };
             match frame.remote {
-                Some(remote) => holes.push((remote.key, rect)),
-                None => holes.extend(
-                    frame
-                        .engine
-                        .remote_holes()
-                        .into_iter()
-                        .map(|(key, [x, y, w, h])| (key, [x + rect[0], y + rect[1], w, h])),
-                ),
+                Some(remote) => {
+                    holes.push((remote.key, rect, frame_margins(&self.shown.document, node)))
+                }
+                None => holes.extend(frame.engine.remote_holes().into_iter().map(
+                    |(key, [x, y, w, h], margins)| (key, [x + rect[0], y + rect[1], w, h], margins),
+                )),
             }
         }
         holes
@@ -2149,6 +2158,20 @@ impl Engine {
             .drawn
             .as_ref()
             .map(|drawn| (drawn.frame, drawn.pixels.clone()))
+    }
+}
+
+/// The `marginwidth` and `marginheight` of the iframe `node`, as the
+/// reference browser reads them: a whole integer, anything else 0.
+fn frame_margins(document: &Document, node: NodeId) -> style::FrameMargins {
+    let read = |name: &str| {
+        document
+            .attr(node, name)
+            .map(|value| value.trim().parse::<i32>().map_or(0, i64::from))
+    };
+    style::FrameMargins {
+        width: read("marginwidth"),
+        height: read("marginheight"),
     }
 }
 

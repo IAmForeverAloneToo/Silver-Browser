@@ -84,6 +84,8 @@ struct FrameView {
     told: Option<Url>,
     /// The raster size it was last given.
     raster: (u32, u32),
+    /// The iframe margins it was last given (D60).
+    margins: (Option<i32>, Option<i32>),
 }
 
 /// A dialog a document of the tab's has open, its renderer waiting on
@@ -105,6 +107,7 @@ impl FrameView {
             state: ViewState::default(),
             told: Url::parse("about:blank").ok(),
             raster: (0, 0),
+            margins: (None, None),
         }
     }
 
@@ -1486,6 +1489,18 @@ impl RemoteTab {
         let Some(view) = self.root_of(hole.key) else {
             return;
         };
+        let Some(frame) = self.frame_views.get_mut(&view) else {
+            return;
+        };
+        let margins = (hole.margin_width, hole.margin_height);
+        if frame.margins != margins {
+            frame.margins = margins;
+            self.send_to(view, |view| ToRenderer::FrameMargins {
+                view,
+                width: margins.0,
+                height: margins.1,
+            });
+        }
         let Some(frame) = self.frame_views.get_mut(&view) else {
             return;
         };

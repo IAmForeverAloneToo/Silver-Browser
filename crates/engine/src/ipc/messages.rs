@@ -168,6 +168,9 @@ wire_enum! {
             data: String,
             sender: u64,
         },
+        /// The `marginwidth` and `marginheight` of the iframe a frame
+        /// view's documents show in, which their `body` takes (D60).
+        39 => FrameMargins { view: u32, width: Option<i32>, height: Option<i32> },
     }
 }
 
@@ -185,7 +188,7 @@ wire_struct! {
 wire_struct! {
     /// Where a frame of another renderer is in a view's frame (M34): the
     /// browser's number for it, and its content box in the view's raster
-    /// pixels.
+    /// pixels; and its element's `marginwidth` and `marginheight` (D60).
     #[derive(Debug, Clone, Copy, PartialEq)]
     pub struct Hole {
         pub key: u32,
@@ -193,6 +196,8 @@ wire_struct! {
         pub y: i32,
         pub width: u32,
         pub height: u32,
+        pub margin_width: Option<i32>,
+        pub margin_height: Option<i32>,
     }
 }
 

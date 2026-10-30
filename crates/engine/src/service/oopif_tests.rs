@@ -116,6 +116,11 @@ fn server() -> TestServer {
                  onload = () => console.log('load ' + loads);</script>"
             ),
             "/same" => "<p>same</p>".to_owned(),
+            "/margined" => format!(
+                "<body style='margin: 0; background: #fed'>                 <iframe src='http://b.localhost:{port}/bare' marginwidth=0 marginheight=0                  style='border: 0; width: 200px; height: 100px'></iframe>"
+            ),
+            "/bare" => "<body style='background: rgb(0, 128, 0)'>                 <div style='height: 20px; background: rgb(255, 0, 0)'></div>"
+                .to_owned(),
             "/slow" => {
                 return Reply::After(
                     Duration::from_millis(1000),
@@ -204,6 +209,32 @@ fn a_frame_of_another_site_is_its_sites_renderers_and_drawn_in_its_hole() {
         .filter(|(a, b)| a != b)
         .count();
     assert_eq!(differ, 0, "pixels that differ from one engine's");
+}
+
+#[test]
+fn a_frame_of_another_site_takes_its_iframes_margins() {
+    // The iframe's `marginwidth` and `marginheight` cross to the frame's
+    // renderer with its hole (D60): its body has none of the 8px.
+    let server = server();
+    let mut tab = tab();
+    tab.frame_at(SIZE.0, SIZE.1, FrameTime::at(Duration::ZERO));
+    tab.navigate(url(&server, "a.localhost", "/margined"));
+    let mut lines = Vec::new();
+    settle(&mut tab, &mut lines, "the frame shown", |tab, _| {
+        *tab.load_state() == LoadState::Loaded
+            && tab.frame_roots().iter().any(|(_, url)| {
+                url.as_ref()
+                    .is_some_and(|url| url.as_str().ends_with("/bare"))
+            })
+    });
+    assert_eq!(tab.renderers().len(), 2);
+    let frame = composed(&mut tab);
+    assert_eq!(
+        pixel(&frame, 1, 1),
+        [255, 0, 0, 255],
+        "the frame's div at 0, 0"
+    );
+    assert_eq!(pixel(&frame, 100, 30), [0, 128, 0, 255], "the frame's body");
 }
 
 #[test]

@@ -388,6 +388,18 @@ impl Host {
                 view.raster = clipped(raster_width, raster_height);
                 view.owed = true;
             }
+            ToRenderer::FrameMargins {
+                view,
+                width,
+                height,
+            } => {
+                let view = self.view(view)?;
+                view.engine.set_frame_margins(style::FrameMargins {
+                    width: width.map(i64::from),
+                    height: height.map(i64::from),
+                });
+                view.owed = true;
+            }
             ToRenderer::Settings { view, settings } => {
                 let view = self.view(view)?;
                 apply(&mut view.engine, &settings);
@@ -677,12 +689,14 @@ fn draw(view: &mut View, id: u32, now: Instant, time: Duration, out: &mut Vec<To
         .engine
         .remote_holes()
         .into_iter()
-        .map(|(key, [x, y, w, h])| Hole {
+        .map(|(key, [x, y, w, h], margins)| Hole {
             key,
             x: (x * scale).round() as i32,
             y: (y * scale).round() as i32,
             width: (w * scale).round().max(0.0) as u32,
             height: (h * scale).round().max(0.0) as u32,
+            margin_width: margins.width.map(clamp_i32),
+            margin_height: margins.height.map(clamp_i32),
         })
         .collect();
     let pixels = view.engine.frame_at(width, height, FrameTime::at(time));
@@ -741,6 +755,11 @@ fn draw(view: &mut View, id: u32, now: Instant, time: Duration, out: &mut Vec<To
         width,
         height,
     });
+}
+
+/// `n` as an `i32`, held to its range.
+fn clamp_i32(n: i64) -> i32 {
+    n.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
 #[cfg(test)]

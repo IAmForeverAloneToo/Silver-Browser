@@ -119,8 +119,8 @@ pub mod svg_transform;
 pub use selector_matching::{matches_selector, matches_selector_list, parse_selector_list};
 
 pub use cascade::{
-    CascadeContext, Composited, FontMeasure, InlineStyles, MatchedDeclaration, MatchedRule,
-    PseudoStyles, Recascade, Recascader, Restyle, RuleOrigin, Styles, Stylesheets,
+    CascadeContext, Composited, FontMeasure, FrameMargins, InlineStyles, MatchedDeclaration,
+    MatchedRule, PseudoStyles, Recascade, Recascader, Restyle, RuleOrigin, Styles, Stylesheets,
     cascade_document, parse_color_text, property_name, supports,
 };
 pub use computed::ComputedStyle;

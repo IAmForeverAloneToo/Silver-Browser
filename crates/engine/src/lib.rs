@@ -417,6 +417,9 @@ pub struct Engine {
     restyled_elements: u64,
     /// How many layouts have run: what proves a scroll does not.
     layout_runs: u64,
+    /// The margins of the iframe this engine's frame is in, which the
+    /// document's `body` takes.
+    pub(crate) frame_margins: style::FrameMargins,
     /// How many restyles left the layout standing (M22.4): their changes
     /// reached nothing layout reads, or only the transforms and
     /// opacities of boxes, which were written into it.
@@ -1193,6 +1196,7 @@ fn cascade_context<'a>(
     page: &'a Page,
     media: Media,
     animations: &'a RefCell<Animations>,
+    frame_margins: style::FrameMargins,
 ) -> CascadeContext<'a> {
     CascadeContext {
         viewport_width: viewport.0 as f32,
@@ -1203,6 +1207,7 @@ fn cascade_context<'a>(
         animations: Some(animations),
         // Its `style` attributes as its policies allow them (M33.1).
         inline_styles: Some(page),
+        frame_margins,
     }
 }
 
@@ -1341,6 +1346,7 @@ impl Engine {
             style_runs: 0,
             restyled_elements: 0,
             layout_runs: 0,
+            frame_margins: style::FrameMargins::default(),
             layouts_kept: 0,
             boxes_laid_out: 0,
             boxes_reused: 0,
@@ -2036,6 +2042,7 @@ impl Engine {
         scripts::WindowEnv {
             viewport: self.viewport,
             media: self.media(self.viewport),
+            frame_margins: self.frame_margins,
             fonts: Some(self.layout_fonts.clone()),
             layout_fonts: Some(self.document_fonts().clone()),
             scroll: Arc::new(self.drawn_offsets()),
@@ -6679,6 +6686,7 @@ impl Engine {
             &self.shown.page,
             self.media(viewport),
             animations,
+            self.frame_margins,
         );
         let (sheets, document) = (&self.shown.stylesheets, &self.shown.document);
         match before {
@@ -6714,6 +6722,7 @@ impl Engine {
             &self.shown.page,
             self.media(viewport),
             &animations,
+            self.frame_margins,
         );
         let recascade = self
             .shown
@@ -6784,6 +6793,7 @@ impl Engine {
                 &self.shown.page,
                 self.media(self.viewport),
                 &self.shown.animations,
+                self.frame_margins,
             );
             let cached = self.shown.styled.as_mut().expect("not stale");
             let restyle = self.shown.stylesheets.restyle_animated(
@@ -6933,6 +6943,7 @@ impl Engine {
                 &self.shown.page,
                 self.media(self.viewport),
                 &self.shown.animations,
+                self.frame_margins,
             );
             let recascade =
                 self.shown
@@ -6967,6 +6978,16 @@ impl Engine {
             self.request_fonts();
         }
         &self.shown.layout.as_ref().expect("just computed").layout
+    }
+
+    /// Gives the document the margins of the iframe its frame is in,
+    /// which its `body` takes (D60): a change restyles it.
+    pub(crate) fn set_frame_margins(&mut self, margins: style::FrameMargins) {
+        if self.frame_margins != margins {
+            self.frame_margins = margins;
+            self.shown.recascade = true;
+            self.changed = true;
+        }
     }
 
     /// How many layouts this session has run.
@@ -7767,6 +7788,7 @@ impl Engine {
                 &self.shown.page,
                 self.media(self.viewport),
                 &self.shown.animations,
+                self.frame_margins,
             );
             let recascade =
                 self.shown
