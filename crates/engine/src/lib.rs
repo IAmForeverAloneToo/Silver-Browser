@@ -5794,6 +5794,8 @@ impl Engine {
         if !fonts.is_empty() {
             self.script_fonts_changed(fonts);
         }
+        // The faces a canvas's text asked for are fetched (D54).
+        self.request_fonts();
         // A `<style>` its policies refused hears `error` (M33.1), as a
         // task, after what runs now.
         let now = self.now();

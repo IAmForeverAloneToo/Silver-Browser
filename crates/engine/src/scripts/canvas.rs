@@ -1529,6 +1529,8 @@ impl Canvases {
                     m.alphabetic,
                     m.hanging,
                     m.ideographic,
+                    m.em_ascent,
+                    m.em_descent,
                 ])
             }
             "lineWidth" if set => {

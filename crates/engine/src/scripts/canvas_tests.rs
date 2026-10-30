@@ -841,8 +841,9 @@ step("direction", () => { const c = fresh(); c.dir = "rtl"; const x = c.getConte
             (
                 "metricsProto",
                 "\"actualBoundingBoxAscent actualBoundingBoxDescent actualBoundingBoxLeft \
-                 actualBoundingBoxRight alphabeticBaseline constructor fontBoundingBoxAscent \
-                 fontBoundingBoxDescent hangingBaseline ideographicBaseline width\"",
+                 actualBoundingBoxRight alphabeticBaseline constructor emHeightAscent \
+                 emHeightDescent fontBoundingBoxAscent fontBoundingBoxDescent hangingBaseline \
+                 ideographicBaseline width\"",
             ),
             (
                 "defaults",
@@ -858,7 +859,7 @@ step("direction", () => { const c = fresh(); c.dir = "rtl"; const x = c.getConte
                  'CanvasRenderingContext2D': 3 arguments required, but only 2 present.\",\"ok\"]",
             ),
             ("drawn", "[true,true,0,true]"),
-            ("metrics", "[true,true,0,true,\"undefined\"]"),
+            ("metrics", "[true,true,0,true,\"number\"]"),
             ("rtl", "[true,true,\"start\"]"),
             ("direction", "[\"rtl\"]"),
         ],

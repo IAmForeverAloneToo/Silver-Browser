@@ -920,6 +920,7 @@ const NATIVES: &[(&str, Decode)] = &[
     }),
     ("nonce", |a| Ok(Call::Nonce(a.handle(0)?))),
     ("cssomStyled", |a| Ok(Call::CssomStyled(a.handle(0)?))),
+    ("styleAllowed", |a| Ok(Call::StyleAllowed(a.handle(0)?))),
     ("setNonce", |a| {
         Ok(Call::SetNonce(a.handle(0)?, a.string(1)?))
     }),

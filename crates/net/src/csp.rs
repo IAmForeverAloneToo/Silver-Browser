@@ -218,13 +218,15 @@ impl Policy {
 
     /// *Parse a serialized CSP* (section 2.2.1): directives split on
     /// `;`, each a lowercased name and its whitespace-separated value; a
-    /// token not ASCII, empty, or naming a directive already seen is
-    /// skipped.
+    /// token empty, naming a directive already seen, or with a character
+    /// the grammar has not (not printable ASCII nor ASCII whitespace, as
+    /// a vertical tab) is skipped, as the reference browser skips it.
     pub fn parse_as(serialized: &str, disposition: Disposition) -> Policy {
         let mut directives: Vec<Directive> = Vec::new();
         for token in serialized.split(';') {
             let token = token.trim_matches(is_ascii_whitespace);
-            if token.is_empty() || !token.is_ascii() {
+            let printable = |c: char| c.is_ascii_graphic() || is_ascii_whitespace(c);
+            if token.is_empty() || !token.chars().all(printable) {
                 continue;
             }
             let mut parts = token.split(is_ascii_whitespace).filter(|p| !p.is_empty());
@@ -343,15 +345,17 @@ impl Csp {
     /// one for each policy whose directive does not allow it, naming
     /// `reported` (the request's first URL after a redirect to another
     /// origin, which a report may not reveal). A nonce matches for a
-    /// script's or a stylesheet's element; `'strict-dynamic'` in a
-    /// script's or a worker's list leaves its URLs aside and allows what
-    /// the parser did not insert.
+    /// script's or a stylesheet's element, and a script's `integrity`
+    /// whose every hash the list has; `'strict-dynamic'` in a script's or
+    /// a worker's list leaves its URLs aside and allows what the parser
+    /// did not insert.
     pub fn request_violations(
         &self,
         destination: Destination,
         (url, reported): (&Url, &Url),
         redirects: usize,
         nonce: &str,
+        integrity: &str,
         parser_inserted: bool,
     ) -> Vec<Violation> {
         let (names, noun) = fetch_directives(destination);
@@ -366,6 +370,9 @@ impl Csp {
                 && !nonce.is_empty()
                 && list.iter().any(|source| nonce_of(source) == Some(nonce))
             {
+                return true;
+            }
+            if effective == "script-src-elem" && integrity_matches(list, integrity) {
                 return true;
             }
             if dynamic
@@ -383,7 +390,7 @@ impl Csp {
     /// `url` after `redirects` redirects: the first enforced violation,
     /// if one.
     pub fn check_script_url(&self, url: &Url, redirects: usize) -> Result<(), Box<Violation>> {
-        enforced(self.request_violations(Destination::Script, (url, url), redirects, "", true))
+        enforced(self.request_violations(Destination::Script, (url, url), redirects, "", "", true))
     }
 
     /// The violations of inline content of `kind` (section 6.7.3.3, "does
@@ -395,6 +402,22 @@ impl Csp {
     pub fn inline_violations(&self, kind: Inline, nonce: &str, source: &str) -> Vec<Violation> {
         self.violations(kind.directives(), ("inline", source), kind.what(), |list| {
             inline_allowed(list, kind, nonce, source)
+        })
+    }
+
+    /// [`Csp::inline_violations`] of an inline script, which
+    /// `'strict-dynamic'` allows when the parser did not insert it, as
+    /// the reference browser has it.
+    pub fn inline_script_violations(
+        &self,
+        nonce: &str,
+        source: &str,
+        parser_inserted: bool,
+    ) -> Vec<Violation> {
+        let kind = Inline::Script;
+        self.violations(kind.directives(), ("inline", source), kind.what(), |list| {
+            (!parser_inserted && has_keyword(list, "'strict-dynamic'"))
+                || inline_allowed(list, kind, nonce, source)
         })
     }
 
@@ -683,6 +706,31 @@ fn inline_allowed(list: &[String], kind: Inline, nonce: &str, source: &str) -> b
             normalized_base64(value) == base64(&digest(hash, source.as_bytes()))
         })
     })
+}
+
+/// Whether `list` has a hash source for every hash of `integrity`, a
+/// script's integrity metadata (section 6.7.1.1, step 5): not when it
+/// has none of a hash this reads.
+fn integrity_matches(list: &[String], integrity: &str) -> bool {
+    if !list.iter().any(|expression| hash_of(expression).is_some()) {
+        return false;
+    }
+    let mut any = false;
+    for token in integrity.split_ascii_whitespace() {
+        let token = token.split_once('?').map_or(token, |(before, _)| before);
+        let Some((hash, value)) = hash_of(&format!("'{token}'")).map(|(h, v)| (h, v.to_owned()))
+        else {
+            continue;
+        };
+        any = true;
+        let listed = list
+            .iter()
+            .any(|expression| hash_of(expression).is_some_and(|(h, v)| h == hash && v == value));
+        if !listed {
+            return false;
+        }
+    }
+    any
 }
 
 /// A hash source's algorithm and base64 value, `'sha256-...'` and the
@@ -1025,6 +1073,12 @@ mod tests {
         // A token not ASCII is skipped; nothing left, no policy.
         assert!(Policy::parse("script-src caf\u{e9}.example").is_empty());
         assert!(Policy::parse(" ; ").is_empty());
+        // So is one with a control character that is no ASCII white
+        // space, a vertical tab inside a value: not a split.
+        let tabbed = Policy::parse("img-src http://a.example\u{b}http://b.example; img-src 'none'");
+        assert_eq!(tabbed.directives[0].value, ["'none'"]);
+        let spaced = Policy::parse("img-src http://a.example\u{c}http://b.example");
+        assert_eq!(spaced.directives[0].value.len(), 2);
         // A meta element may not deliver these.
         let meta =
             Policy::parse("sandbox; report-uri /r; frame-ancestors 'none'; script-src 'none'")
@@ -1307,7 +1361,7 @@ mod tests {
 
     fn request(policy: &Csp, destination: Destination, target: &str) -> Vec<Violation> {
         let target = url(target);
-        policy.request_violations(destination, (&target, &target), 0, "", true)
+        policy.request_violations(destination, (&target, &target), 0, "", "", true)
     }
 
     #[test]
@@ -1389,7 +1443,7 @@ mod tests {
         let allowed = |destination, nonce: &str, parser: bool| {
             let target = url("https://other.example/a");
             policy
-                .request_violations(destination, (&target, &target), 0, nonce, parser)
+                .request_violations(destination, (&target, &target), 0, nonce, "", parser)
                 .is_empty()
         };
         assert!(allowed(Destination::Script, "abc", true));
@@ -1400,6 +1454,42 @@ mod tests {
         assert!(!request(&policy, Destination::Script, "https://example.com/a.js").is_empty());
         assert!(allowed(Destination::Style, "xyz", true));
         assert!(!allowed(Destination::Style, "abc", true));
+        // A script's integrity whose every hash the list has.
+        let hashed = csp(&["script-src 'sha256-AAAA' 'sha384-BBBB' 'strict-dynamic'"]);
+        let integrity = |integrity: &str| {
+            let target = url("https://other.example/a.js");
+            hashed
+                .request_violations(
+                    Destination::Script,
+                    (&target, &target),
+                    0,
+                    "",
+                    integrity,
+                    true,
+                )
+                .is_empty()
+        };
+        assert!(integrity("sha256-AAAA"));
+        assert!(integrity("sha256-AAAA sha384-BBBB?x"));
+        assert!(!integrity("sha256-AAAA sha384-CCCC"));
+        assert!(!integrity("sha256-aaaa"));
+        assert!(!integrity("md5-AAAA"));
+        assert!(!integrity(""));
+        // An inline script the parser did not insert.
+        let dynamic = csp(&["script-src 'strict-dynamic' 'nonce-abc'"]);
+        assert!(
+            dynamic
+                .inline_script_violations("", "a()", false)
+                .is_empty()
+        );
+        assert!(!dynamic.inline_script_violations("", "a()", true).is_empty());
+        assert!(
+            dynamic
+                .inline_script_violations("abc", "a()", true)
+                .is_empty()
+        );
+        let plain = csp(&["script-src 'nonce-abc'"]);
+        assert!(!plain.inline_script_violations("", "a()", false).is_empty());
         // An image's request has no nonce that matches.
         assert!(!allowed(Destination::Image, "abc", true));
     }

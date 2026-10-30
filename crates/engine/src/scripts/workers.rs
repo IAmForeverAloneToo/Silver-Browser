@@ -1153,6 +1153,8 @@ pub(crate) struct WorkerHost {
     canvases: Canvases,
     viewport: (u32, u32),
     fonts: Option<text::FontCollection>,
+    /// The number of each face its scripts gave its fonts, by its place.
+    font_faces: Vec<u32>,
     compat: bool,
     /// `close()` was called: the task ends, and nothing more runs.
     closing: bool,
@@ -1208,6 +1210,7 @@ impl Default for WorkerHost {
             canvases: Canvases::default(),
             viewport: (0, 0),
             fonts: None,
+            font_faces: Vec::new(),
             compat: false,
             closing: false,
             workers: None,
@@ -1464,9 +1467,14 @@ impl ScriptingHost for WorkerHost {
                 Ok(Answer::Nothing)
             }
             Call::Hidden => Ok(Answer::Bool(false)),
-            // A worker's fonts are none (D54).
+            // A worker's faces are its own, none loading (D54).
             Call::Fonts(op, data) => {
-                Ok(crate::web_fonts::answer(&op, data, false, &mut Vec::new()))
+                let mut changes = Vec::new();
+                let answer = crate::web_fonts::answer(&op, data, false, &mut changes);
+                if let Some(fonts) = &mut self.fonts {
+                    crate::web_fonts::worker_fonts_changed(fonts, &mut self.font_faces, changes);
+                }
+                Ok(answer)
             }
             Call::WorkerStart {
                 url,

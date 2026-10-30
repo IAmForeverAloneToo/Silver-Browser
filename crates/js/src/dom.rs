@@ -872,6 +872,9 @@ pub enum Call {
     SetNonce(Handle, String),
     /// The CSSOM just wrote the element's `style` attribute (M33.1).
     CssomStyled(Handle),
+    /// Whether the policies let the element's `style` attribute be its
+    /// declarations (M33.1).
+    StyleAllowed(Handle),
     /// HTML's "resolve a module specifier" (D61): `specifier`, of the
     /// script or module whose base URL is `base`, by the document's
     /// import map. The answer is the URL, or a `TypeError` throws.

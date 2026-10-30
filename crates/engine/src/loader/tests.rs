@@ -2460,6 +2460,83 @@ fn a_script_adds_a_font_face_which_the_page_is_laid_out_in() {
     assert_ne!(face, Some(text::FaceId(0)));
 }
 
+/// Ahem, whose every glyph but the space is a full em square, its
+/// ascent 0.8 em and its descent 0.2.
+const AHEM: &[u8] = include_bytes!("../../tests/wpt/fonts/Ahem.ttf");
+
+#[test]
+fn a_canvas_draws_in_a_documents_face_it_alone_asks_for() {
+    // D53, D54: the canvas's font chooses the face of an `@font-face`
+    // rule no box uses, which is fetched for it.
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<style>@font-face { font-family: Square; src: url(a.ttf) }</style><canvas id=c></canvas>",
+        )),
+        "/a.ttf" => Some(Reply::ok("font/ttf", AHEM)),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, server.url("/page.html"));
+    tab.engine.layout(200.0);
+    tab.engine
+        .run_classic(
+            "const x = document.getElementById('c').getContext('2d');\
+             x.font = '50px Square, serif';\
+             console.log(x.measureText('A').width === 50);\
+             document.fonts.ready.then(() => {\
+               const m = x.measureText('A');\
+               console.log([m.width, m.fontBoundingBoxAscent, m.fontBoundingBoxDescent,\
+                 m.emHeightAscent, m.emHeightDescent, m.actualBoundingBoxRight].join());\
+             });",
+        )
+        .expect("runs");
+    let mut lines = tab.run_until(|lines| !lines.is_empty());
+    // Its face come, the page is laid out again, and the fonts are ready.
+    tab.wait_until(|engine| engine.shown.layout.is_none());
+    tab.engine.layout(200.0);
+    lines.extend(tab.run_until(|lines| !lines.is_empty()));
+    assert_eq!(lines, ["false", "50,40,10,40,10,50"]);
+    let fetched = server
+        .requests()
+        .iter()
+        .filter(|r| r.target == "/a.ttf")
+        .count();
+    assert_eq!(fetched, 1);
+}
+
+#[test]
+fn a_workers_font_faces_are_its_own_and_its_canvases_draw_in_them() {
+    // D54: `FontFace` and `self.fonts` in a worker.
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<script>new Worker('w.js').onmessage = e => console.log(e.data)</script>",
+        )),
+        "/w.js" => Some(Reply::ok(
+            "text/javascript",
+            b"const x = new OffscreenCanvas(10, 10).getContext('2d');\
+              x.font = '20px Square';\
+              const before = x.measureText('A').width;\
+              const f = new FontFace('Square', \"url('a.ttf')\");\
+              f.load();\
+              self.fonts.add(f);\
+              self.fonts.ready.then(() => {\
+                const after = x.measureText('A').width;\
+                self.fonts.delete(f);\
+                postMessage([before === 20, after, x.measureText('A').width === 20,\
+                  self.fonts.size, f.status, self.fonts instanceof FontFaceSet].join());\
+              });",
+        )),
+        "/a.ttf" => Some(Reply::ok("font/ttf", AHEM)),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, server.url("/page.html"));
+    let lines = tab.run_until(|lines| !lines.is_empty());
+    assert_eq!(lines, ["false,20,false,0,loaded,true"]);
+}
+
 #[test]
 fn integrity_lets_through_only_what_matches_its_metadata() {
     // Subresource Integrity (D62): a script and a sheet that match run

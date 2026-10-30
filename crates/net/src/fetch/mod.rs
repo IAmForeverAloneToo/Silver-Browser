@@ -1935,6 +1935,7 @@ fn csp_check(request: &Request, url: &Url, redirects: usize) -> Result<(), Netwo
                 (url, reported),
                 redirects,
                 &request.nonce,
+                &request.integrity,
                 request.parser_inserted,
             ),
         };

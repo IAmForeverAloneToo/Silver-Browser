@@ -244,7 +244,7 @@
     XMLHttpRequestUpload: "notservice", ServiceWorker: true, ServiceWorkerRegistration: true,
     ServiceWorkerContainer: true, ServiceWorkerGlobalScope: "service", ExtendableEvent: "service",
     InstallEvent: "service", ExtendableMessageEvent: "service", Clients: "service", Client: "service",
-    WindowClient: "service", FetchEvent: "service",
+    WindowClient: "service", FetchEvent: "service", FontFace: true, FontFaceSet: true,
   };
 
   // Whether an interface `where` says so is the realm's.
@@ -11399,7 +11399,9 @@
       return native.parseDeclarations(ruleData(state.rule)[3]);
     }
     const text = native.attribute(state.handle, "style");
-    return text === null ? [] : native.parseDeclarations(text);
+    // One the policies refuse is no declarations (M33.1).
+    if (text === null || !native.styleAllowed(state.handle)) return [];
+    return native.parseDeclarations(text);
   }
 
   function writeDeclarations(state, flat, method) {
@@ -14650,6 +14652,12 @@
 
     get navigator() {
       return workerNavigator;
+    }
+
+    // Its own face set (CSS Font Loading 3, D54), which its canvases'
+    // text is drawn in.
+    get fonts() {
+      return fontSetOf(global);
     }
 
     // importScripts (HTML section 10.3.3): every URL parsed against the
@@ -20415,16 +20423,16 @@
 
   function startTimer(handler, timeout, args, repeat) {
     const callback = typeof handler === "function" ? handler : str(handler);
+    // A string the policies refuse to compile (M33.1): nothing runs,
+    // and the id is 0, as the reference browser gives it.
+    if (typeof callback === "string" && native.codeAllowed("eval", callback, -1) !== "") {
+      return 0;
+    }
     let id = lastTimer;
     do {
       id = id >= 2147483647 ? 1 : id + 1;
     } while (MapHas(timers, id));
     lastTimer = id;
-    // A string the policies refuse to compile (M33.1): an id, and
-    // nothing runs.
-    if (typeof callback === "string" && native.codeAllowed("eval", callback, -1) !== "") {
-      return id;
-    }
     const delay = long(timeout);
     native.setTimer(id, delay);
     MapSet(timers, id, { callback, args, repeat, delay });

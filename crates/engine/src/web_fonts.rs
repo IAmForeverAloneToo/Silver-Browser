@@ -96,6 +96,43 @@ pub(crate) fn answer(
     }
 }
 
+/// Applies what a worker's scripts did to its fonts (D54): a face added
+/// lies over the fonts its creator gave it, as a document's do, and one
+/// deleted is passed over. `faces` holds each face's number by its
+/// place among them.
+pub(crate) fn worker_fonts_changed(
+    fonts: &mut FontCollection,
+    faces: &mut Vec<u32>,
+    changes: Vec<FontChange>,
+) {
+    for change in changes {
+        let id = match &change {
+            FontChange::Add(face) => face.id,
+            FontChange::Delete(id) => *id,
+        };
+        if let Some(document) = fonts.document().filter(|_| !faces.is_empty()) {
+            for (n, _) in faces.iter().enumerate().filter(|(_, kept)| **kept == id) {
+                document.failed(n);
+            }
+        }
+        let FontChange::Add(face) = change else {
+            continue;
+        };
+        // Its own faces, none of a creator's: a worker's first.
+        if faces.is_empty() {
+            *fonts = fonts.with_document(Arc::new(DocumentFaces::new(Vec::new())));
+        }
+        let Some(n) = fonts
+            .document()
+            .and_then(|document| document.push(face.rule))
+        else {
+            continue;
+        };
+        faces.push(face.id);
+        let _ = fonts.face_arrived(n, face.data);
+    }
+}
+
 /// The descriptors of `rule`'s face, as matching takes them.
 fn face_rule(rule: &FontFaceRule) -> FaceRule {
     FaceRule {

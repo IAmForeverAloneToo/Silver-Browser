@@ -85,6 +85,7 @@ impl ScriptingHost for Recorder {
             // A document with no policy compiles any code (M33.1).
             Call::CodeAllowed { .. } => Ok(Answer::String(String::new())),
             Call::CssomStyled(_) => Ok(Answer::Nothing),
+            Call::StyleAllowed(_) => Ok(Answer::Bool(true)),
             Call::WantFrame => {
                 self.frames_wanted += 1;
                 Ok(Answer::Nothing)

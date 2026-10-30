@@ -1286,7 +1286,8 @@
       audioContextId = (ctx) => ctx.#id;
       audioMaxChannels = (ctx) => ctx.#channels;
       // The context is in `state` now: whether that changed it. The
-      // promises waiting for it settle after the change is seen.
+      // promises waiting for it settle before its `statechange`, as the
+      // standard and the reference browser order them.
       audioContextState = (ctx, state) => {
         const changed = ctx.#state !== state;
         ctx.#state = state;
@@ -1612,12 +1613,15 @@
   expose(OfflineAudioCompletionEvent, "OfflineAudioCompletionEvent");
 
   function* audioStateEvent(ctx, state) {
-    if (audioContextState(ctx, state)) {
-      const event = new Event("statechange");
-      eventState(event).trusted = true;
-      yield* dispatching(ctx, event);
-    }
+    const changed = audioContextState(ctx, state);
     audioContextWait(ctx, state);
+    if (changed) yield* audioStateChanged(ctx);
+  }
+
+  function* audioStateChanged(ctx) {
+    const event = new Event("statechange");
+    eventState(event).trusted = true;
+    yield* dispatching(ctx, event);
   }
 
   // What the engine tells the document's Web Audio (`Task::Audio`).
@@ -1658,19 +1662,23 @@
       case "suspended": {
         if (ctx === undefined) return false;
         const settle = offlineSuspended(ctx, told.frame);
-        yield* audioStateEvent(ctx, "suspended");
         if (settle !== undefined) settle.resolve(undefined);
+        yield* audioStateEvent(ctx, "suspended");
         return false;
       }
       case "rendered": {
         if (ctx === undefined) return false;
         const settle = offlineRendered(ctx);
         const buffer = audioBufferFromEngine(told.id, told.rate, told.channels, told.length, bytes);
-        yield* audioStateEvent(ctx, "closed");
+        // Closed, then `complete` and the rendering's promise, and only
+        // then `statechange`, as the reference browser orders them.
+        const changed = audioContextState(ctx, "closed");
+        audioContextWait(ctx, "closed");
         const complete = new OfflineAudioCompletionEvent("complete", { renderedBuffer: buffer });
         eventState(complete).trusted = true;
         yield* dispatching(ctx, complete);
         if (settle !== null) settle.resolve(buffer);
+        if (changed) yield* audioStateChanged(ctx);
         return false;
       }
     }

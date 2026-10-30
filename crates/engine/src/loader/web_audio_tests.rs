@@ -234,12 +234,34 @@ fn an_offline_context_suspends_completes_and_tells_its_states() {
             "statechange suspended",
             "suspended at 256 suspended",
             "statechange running",
-            "statechange closed",
+            // Closed when `complete` comes, `statechange` after it.
             "complete 512 true",
+            "statechange closed",
             "rendered 0.25 0.25 0 closed",
             "InvalidStateError: Failed to execute 'startRendering' on 'OfflineAudioContext': cannot call startRendering more than once",
         ]
     );
+}
+
+#[test]
+fn a_contexts_promises_settle_before_its_statechange() {
+    // As the standard and the reference browser order them: a waiter on
+    // `statechange` sees the rendering's promise settled.
+    let server = server(
+        r#"
+(async () => {
+  const o = new OfflineAudioContext(1, 128, 48000);
+  let finished = false;
+  o.startRendering().then(() => { finished = true; });
+  await new Promise((r) => (o.onstatechange = r));
+  await new Promise((r) => (o.onstatechange = r));
+  log(o.state + ' ' + finished);
+  log('done');
+})().catch(e => log('failed ' + e + ' ' + e.stack));
+"#,
+    );
+    let mut tab = open(&server);
+    assert_eq!(until_done(&mut tab), ["closed true"]);
 }
 
 #[test]

@@ -1,19 +1,21 @@
 //! Text (HTML 4.12.5.1.11): a string shaped by the `text` crate in the
-//! engine's face, at the size the font says, each glyph's outline made
-//! a path in the context's coordinates and filled or stroked as any
-//! path is, so that text turns, scales, clips and takes a gradient as a
-//! path does. Placed by `textAlign` and `textBaseline`, spaced by
-//! `letterSpacing` and `wordSpacing`, squeezed to a `maxWidth`.
+//! face CSS's matching chooses for the context's font (D53), the
+//! document's web fonts among them, at the size the font says, each
+//! glyph's outline made a path in the context's coordinates and filled
+//! or stroked as any path is, so that text turns, scales, clips and
+//! takes a gradient as a path does. Placed by `textAlign` and
+//! `textBaseline`, spaced by `letterSpacing` and `wordSpacing`,
+//! squeezed to a `maxWidth`.
 
-use text::{Curve, FontCollection};
+use text::{Curve, FontCollection, FontRequest, Slant};
 use tiny_skia::FillRule;
 
 use crate::Canvas;
 use crate::path::Path;
 use crate::state::{Matrix, TextAlign, TextBaseline};
 
-/// `measureText()`'s answer: the advance, and the box the glyphs and
-/// the font take, from the point the text is drawn at.
+/// `measureText()`'s answer: the advance, and the box the glyphs, the
+/// font and its em square take, from the point the text is drawn at.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct TextMetrics {
     pub width: f64,
@@ -23,6 +25,8 @@ pub struct TextMetrics {
     pub actual_descent: f64,
     pub font_ascent: f64,
     pub font_descent: f64,
+    pub em_ascent: f64,
+    pub em_descent: f64,
     pub alphabetic: f64,
     pub hanging: f64,
     pub ideographic: f64,
@@ -36,61 +40,84 @@ struct Placed {
     y: f64,
 }
 
-/// A string laid out: its glyphs and its advance.
+/// A string laid out: its glyphs, its advance and the slant made up
+/// for its face.
 struct Laid {
     glyphs: Vec<Placed>,
     width: f64,
+    skew: f64,
 }
 
 /// ASCII white space made spaces, as the standard's text preparation
-/// does.
+/// does; the other control characters dropped, as the reference
+/// browser draws them: of no width.
 fn prepared(text: &str) -> String {
     text.chars()
-        .map(|c| match c {
-            '\t' | '\n' | '\x0c' | '\r' => ' ',
-            c => c,
+        .filter_map(|c| match c {
+            '\t' | '\n' | '\x0c' | '\r' => Some(' '),
+            c if c.is_control() => None,
+            c => Some(c),
         })
         .collect()
 }
 
 impl Canvas {
+    /// The font the state's `font` and `fontStretch` choose (D53).
+    fn chosen(&self, fonts: &FontCollection) -> text::Font {
+        let state = &self.state;
+        let families = state.font.family_list();
+        fonts.font(&FontRequest {
+            families: &families,
+            weight: state.font.weight,
+            slant: if state.font.italic {
+                Slant::Italic
+            } else {
+                Slant::Normal
+            },
+            stretch: state.font_stretch.percentage(),
+        })
+    }
+
     /// `text` shaped at the font's size, spaced as the state says.
     fn lay_out(&self, fonts: &FontCollection, text: &str) -> Laid {
         let state = &self.state;
+        let font = self.chosen(fonts);
         let size = state.font.size as f32;
         let letter = state.letter_spacing.pixels(state.font.size);
         let word = state.word_spacing.pixels(state.font.size);
-        let outline = |script, id| {
-            let font = fonts.font_for(script).glyph_font();
-            text::glyph_outline(font, id, size).unwrap_or_default()
+        let outline = |face, id| {
+            let face = fonts.face(face);
+            text::glyph_outline(face.glyph_font(), id, size).unwrap_or_default()
         };
+        let skew = f64::from(font.skew());
         let mut glyphs = Vec::new();
         if letter == 0.0 && word == 0.0 {
-            for (script, glyph) in fonts.shape(text, size) {
+            for (face, glyph) in fonts.shape_in(font, text, size) {
                 glyphs.push(Placed {
-                    curves: outline(script, glyph.glyph_id),
+                    curves: outline(face, glyph.glyph_id),
                     x: f64::from(glyph.x),
                     y: f64::from(glyph.y),
                 });
             }
             return Laid {
                 glyphs,
-                width: f64::from(fonts.measure(text, size)),
+                width: f64::from(fonts.measure_in(font, text, size)),
+                skew,
             };
         }
         // Spaced, each character shaped alone, as the reference browser
         // does without ligatures once letters are spaced, and put where
         // the run shaped whole puts it, its kerning kept: the run as wide
         // as it is unspaced and the spacing.
-        let stops = fonts.caret_stops(text, size);
+        let stops = fonts.caret_stops_in(font, text, size);
         let stop = |i: usize| stops.get(i).map_or(0.0, |&x| f64::from(x));
         let mut extra = 0.0;
         let mut one = [0u8; 4];
         for (i, c) in text.chars().enumerate() {
             let c_text = c.encode_utf8(&mut one);
-            for (script, glyph) in fonts.shape(c_text, size) {
+            for (face, glyph) in fonts.shape_in(font, c_text, size) {
                 glyphs.push(Placed {
-                    curves: outline(script, glyph.glyph_id),
+                    curves: outline(face, glyph.glyph_id),
                     x: stop(i) + extra + f64::from(glyph.x),
                     y: f64::from(glyph.y),
                 });
@@ -101,13 +128,17 @@ impl Canvas {
             }
         }
         let width = stops.last().map_or(0.0, |&x| f64::from(x)) + extra;
-        Laid { glyphs, width }
+        Laid {
+            glyphs,
+            width,
+            skew,
+        }
     }
 
     /// The font's ascent and descent at its size, and its em box's.
     fn font_box(&self, fonts: &FontCollection) -> (f64, f64, f64, f64) {
         let size = self.state.font.size;
-        let metrics = fonts.primary().metrics(size as f32);
+        let metrics = fonts.face(self.chosen(fonts).face).metrics(size as f32);
         let (ascent, descent) = (f64::from(metrics.ascent), f64::from(metrics.descent));
         let total = ascent + descent;
         let (em_ascent, em_descent) = if total > 0.0 {
@@ -176,8 +207,9 @@ impl Canvas {
         let baseline = y + self.baseline_offset(fonts);
         let m = Matrix::new(squeeze, 0.0, 0.0, 1.0, start, baseline);
         let mut path = Path::new();
+        // A made-up slant leans each glyph about the baseline.
         for glyph in &laid.glyphs {
-            let at = m.then(&Matrix::new(1.0, 0.0, 0.0, 1.0, glyph.x, glyph.y));
+            let at = m.then(&Matrix::new(1.0, 0.0, -laid.skew, 1.0, glyph.x, glyph.y));
             add_outline(&mut path, &glyph.curves, &at);
         }
         self.charge(text.len() as u64);
@@ -193,7 +225,7 @@ impl Canvas {
         let laid = self.lay_out(fonts, &prepared(text));
         let rtl = self.state.direction.is_rtl(rtl);
         let offset = self.baseline_offset(fonts);
-        let (ascent, descent, _, _) = self.font_box(fonts);
+        let (ascent, descent, em_ascent, em_descent) = self.font_box(fonts);
         let start = -self.align_offset(laid.width, rtl);
         // The glyphs' bounds, from their outlines' points.
         let (mut left, mut right) = (f64::INFINITY, f64::NEG_INFINITY);
@@ -201,7 +233,8 @@ impl Canvas {
         for glyph in &laid.glyphs {
             for curve in &glyph.curves {
                 for (px, py) in points(curve) {
-                    let (gx, gy) = (start + glyph.x + f64::from(px), glyph.y + f64::from(py));
+                    let (px, py) = (f64::from(px), f64::from(py));
+                    let (gx, gy) = (start + glyph.x + px - laid.skew * py, glyph.y + py);
                     left = left.min(gx);
                     right = right.max(gx);
                     top = top.min(gy);
@@ -218,6 +251,8 @@ impl Canvas {
             actual_descent: if inked { bottom + offset } else { offset },
             font_ascent: ascent - offset,
             font_descent: descent + offset,
+            em_ascent: em_ascent - offset,
+            em_descent: em_descent + offset,
             alphabetic: -offset,
             hanging: 0.8 * ascent - offset,
             ideographic: -descent - offset,

@@ -1130,6 +1130,85 @@ fn metrics_are_of_the_glyphs_and_the_font_from_the_point() {
     );
 }
 
+/// The test font with a document's face of Ahem over it, as `Square`:
+/// every glyph of Ahem but the space a full em square, its ascent 0.8
+/// em and its descent 0.2.
+fn square_fonts() -> text::FontCollection {
+    const AHEM: &[u8] = include_bytes!("../../engine/tests/wpt/fonts/Ahem.ttf");
+    let faces = std::sync::Arc::new(text::DocumentFaces::new(vec![text::FaceRule {
+        family: "Square".into(),
+        ..text::FaceRule::default()
+    }]));
+    let fonts = fonts().with_document(faces);
+    fonts.face_arrived(0, AHEM.to_vec()).expect("a font");
+    fonts
+}
+
+#[test]
+fn text_is_in_the_face_its_font_chooses() {
+    let fonts = square_fonts();
+    let mut canvas = Canvas::new(100, 60, false);
+    canvas
+        .state_mut()
+        .set_font(parse_font("50px \"Square\", serif", &base()).unwrap());
+    let m = canvas.measure_text(&fonts, "AB", false);
+    assert_eq!(m.width, 100.0);
+    assert_eq!((m.font_ascent, m.font_descent), (40.0, 10.0));
+    assert_eq!((m.em_ascent, m.em_descent), (40.0, 10.0));
+    assert_eq!((m.actual_left, m.actual_right), (0.0, 100.0));
+    // The em heights are from the baseline asked for.
+    canvas.state_mut().text_baseline = TextBaseline::Top;
+    let top = canvas.measure_text(&fonts, "A", false);
+    assert_eq!((top.em_ascent, top.em_descent), (0.0, 50.0));
+    // An em square drawn from the top fills the em box.
+    canvas.state_mut().text_baseline = TextBaseline::Top;
+    canvas.draw_text(&fonts, "A", 10.0, 5.0, None, false, false);
+    assert_eq!(inked(&canvas), Some((10, 5, 59, 54)));
+    // A family the document has not is the next one's.
+    canvas
+        .state_mut()
+        .set_font(parse_font("50px Other, serif", &base()).unwrap());
+    let other = canvas.measure_text(&fonts, "AB", false);
+    assert_ne!(other.width, 100.0);
+}
+
+#[test]
+fn a_made_up_slant_leans_the_glyphs() {
+    let fonts = square_fonts();
+    let ink = |font: &str| {
+        let mut canvas = Canvas::new(100, 60, false);
+        canvas
+            .state_mut()
+            .set_font(parse_font(font, &base()).unwrap());
+        canvas.draw_text(&fonts, "A", 10.0, 50.0, None, false, false);
+        let m = canvas.measure_text(&fonts, "A", false);
+        (inked(&canvas).expect("drawn"), m.actual_right)
+    };
+    let (upright, right) = ink("40px Square");
+    assert_eq!((upright.0, upright.2, right), (10, 49, 40.0));
+    // Ahem has no italic: its top leans right by a quarter of its height.
+    let (slanted, right) = ink("italic 40px Square");
+    assert_eq!((slanted.0, slanted.2, right), (8, 57, 48.0));
+}
+
+#[test]
+fn control_characters_take_no_room() {
+    let fonts = square_fonts();
+    let mut canvas = Canvas::new(10, 10, false);
+    canvas
+        .state_mut()
+        .set_font(parse_font("50px Square", &base()).unwrap());
+    assert_eq!(canvas.measure_text(&fonts, "\0", false).width, 0.0);
+    assert_eq!(
+        canvas
+            .measure_text(&fonts, "A\u{1}\u{7f}\u{85}B", false)
+            .width,
+        100.0
+    );
+    // White space is a space still.
+    assert_eq!(canvas.measure_text(&fonts, "A\tB", false).width, 150.0);
+}
+
 /// The probe's image: two by two, red and magenta over blue and white.
 fn picture(origin_clean: bool) -> Source {
     let pixels: Vec<u8> = [

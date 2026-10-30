@@ -1093,6 +1093,22 @@ impl DocumentHost {
                     let started = self.started.contains(&from);
                     self.made_by_script(to, started);
                 }
+                // A copy's `style` is its original's declarations, which
+                // its policies are not asked about again (M33.1), as the
+                // reference browser copies them.
+                let styled: Vec<(NodeId, NodeId)> = self
+                    .document
+                    .subtree(node)
+                    .zip(self.document.subtree(copy))
+                    .filter(|&(from, _)| self.document.attr(from, "style").is_some())
+                    .collect();
+                for (from, to) in styled {
+                    if self.style_allowed(from)
+                        && let Some(page) = self.page.as_mut()
+                    {
+                        page.set_cssom_style(to, true);
+                    }
+                }
                 Ok(self.give(Some(copy)))
             }
             Call::ElementById(root, id) => {
@@ -2207,12 +2223,22 @@ impl DocumentHost {
                 Ok(Answer::Nothing)
             }
             Call::Hidden => Ok(Answer::Bool(self.window.hidden)),
-            Call::Fonts(op, data) => Ok(crate::web_fonts::answer(
-                &op,
-                data,
-                self.window.fonts_loading,
-                &mut self.outputs.fonts,
-            )),
+            // Loading too while a face a canvas asked for in this run is
+            // wanted or coming.
+            Call::Fonts(op, data) => {
+                let asked = self
+                    .window
+                    .layout_fonts
+                    .as_ref()
+                    .and_then(text::FontCollection::document)
+                    .is_some_and(|faces| faces.is_loading());
+                Ok(crate::web_fonts::answer(
+                    &op,
+                    data,
+                    self.window.fonts_loading || asked,
+                    &mut self.outputs.fonts,
+                ))
+            }
             Call::Focusable(node) => {
                 let node = self.node(node)?;
                 self.styles_now();
@@ -2512,6 +2538,10 @@ impl DocumentHost {
                 }
                 Ok(Answer::Nothing)
             }
+            Call::StyleAllowed(node) => {
+                let node = self.node(node)?;
+                Ok(Answer::Bool(self.style_allowed(node)))
+            }
             // Module scripts (D61): a specifier resolved against its
             // script's base URL, or the document's for code with none (a
             // string `eval` ran); an `import()` that waits for a fetch.
@@ -2687,12 +2717,8 @@ impl DocumentHost {
                 } else {
                     None
                 };
-                let element = offscreen_element(
-                    handle,
-                    self.window.viewport,
-                    self.window.fonts.clone(),
-                    source,
-                );
+                let element =
+                    offscreen_element(handle, self.window.viewport, self.canvas_fonts(), source);
                 let answer = self.canvases.call(call, Some(element));
                 self.work += self.canvases.take_work();
                 return answer;
@@ -2919,7 +2945,7 @@ impl DocumentHost {
     /// a font's relative units are of, the element's computed
     /// `font-size` and the root's (10 pixels each out of the document,
     /// as the reference browser has them) and the viewport's; whether
-    /// its direction is right to left; and the window's fonts.
+    /// its direction is right to left; and the document's fonts.
     fn canvas_text(
         &mut self,
         node: NodeId,
@@ -2928,7 +2954,7 @@ impl DocumentHost {
             f64::from(self.window.viewport.0),
             f64::from(self.window.viewport.1),
         );
-        let fonts = self.window.fonts.clone();
+        let fonts = self.canvas_fonts();
         let mut base = canvas::FontBase {
             viewport,
             ..canvas::FontBase::default()
@@ -2950,6 +2976,24 @@ impl DocumentHost {
             }
         }
         (base, rtl, fonts)
+    }
+
+    /// Whether the policies let element `node`'s `style` attribute be its
+    /// declarations (M33.1): one the CSSOM wrote, or one they allow.
+    fn style_allowed(&self, node: NodeId) -> bool {
+        let value = self.document.attr(node, "style").unwrap_or_default();
+        self.page
+            .as_ref()
+            .is_none_or(|page| style::InlineStyles::allowed(page, node, value))
+    }
+
+    /// The fonts a canvas's text is drawn in: the document's, its web
+    /// fonts over the window's (D54).
+    fn canvas_fonts(&self) -> Option<text::FontCollection> {
+        self.window
+            .layout_fonts
+            .clone()
+            .or_else(|| self.window.fonts.clone())
     }
 
     /// A `canvas` element's `width` or `height` was set or removed: its

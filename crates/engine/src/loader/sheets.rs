@@ -583,10 +583,34 @@ impl Page {
                 && let Some(content) = document.attr(meta, "content")
             {
                 self.metas.push(meta);
+                self.keep_style_checks(document, meta);
                 self.csp.add_meta(content);
             }
         }
         &self.csp
+    }
+
+    /// Decides now, by the policies so far, each `style` attribute before
+    /// `meta` not yet decided: one the parser set before the `<meta>`
+    /// brought a policy keeps what was said of it then, as the reference
+    /// browser checks each when it is set.
+    fn keep_style_checks(&self, document: &Document, meta: NodeId) {
+        for node in document.subtree(document.root()) {
+            if node == meta {
+                break;
+            }
+            let Some(value) = document.attr(node, "style") else {
+                continue;
+            };
+            if self.csp.is_empty() {
+                self.style_checks
+                    .borrow_mut()
+                    .entry(node)
+                    .or_insert_with(|| (value.to_owned(), true));
+            } else {
+                style::InlineStyles::allowed(self, node, value);
+            }
+        }
     }
 
     /// The page, its document in `language` by its response.

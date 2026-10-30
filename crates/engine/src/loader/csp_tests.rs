@@ -505,7 +505,7 @@ fn code_from_strings_needs_unsafe_eval() {
                t(() => (function* () {}).constructor('yield 6')));\
              console.log(eval === window.eval, Function.prototype.constructor === Function,\
                (() => 1) instanceof Function, Function.name, Function.length, eval.name,\
-               typeof setTimeout('window.x = 1'), typeof eval({}));\
+               setTimeout('window.x = 1'), typeof eval({}));\
              try { eval('1') } catch (e) { console.log(e.message) }\
              setTimeout(() => console.log('x', window.x), 20);\
              </script>",
@@ -543,7 +543,9 @@ fn code_from_strings_needs_unsafe_eval() {
             refused,
             "EvalError EvalError EvalError EvalError EvalError EvalError",
             refused,
-            "true true true Function 1 eval number object",
+            // A refused string makes no timer: its id is 0, as the
+            // reference browser gives it.
+            "true true true Function 1 eval 0 object",
             refused,
             "Evaluating a string as JavaScript violates the following Content Security Policy \
              directive because 'unsafe-eval' is not an allowed source of script: script-src \
@@ -1101,5 +1103,60 @@ fn the_implicit_favicon_is_held_to_no_policy_of_the_page() {
     assert_eq!(
         refused("/linked.html", 2, &|| true),
         ["i.png:", "icon.png:"]
+    );
+}
+
+#[test]
+fn a_refused_style_attribute_is_no_declarations_and_a_copy_keeps_its_originals() {
+    // M33.1: the CSSOM reads a `style` its policies refused as empty, as
+    // the reference browser parses none; a copy's is its original's, not
+    // asked about again; one set before a `<meta>` brought the policy
+    // stands.
+    static PAGES: Pages = &[
+        (
+            "/page.html",
+            &[(
+                "Content-Security-Policy",
+                "style-src 'self'; script-src 'nonce-n'",
+            )],
+            "<div id=a style='color: red'></div><div id=b></div>\
+             <script nonce=n>\
+             const a = document.getElementById('a'), b = document.getElementById('b');\
+             b.style.color = 'green';\
+             const c = b.cloneNode(true);\
+             document.body.append(c);\
+             a.style.background = 'blue';\
+             console.log(a.style.color || 'none', a.getAttribute('style'), c.style.color,\
+               getComputedStyle(c).color, getComputedStyle(a).color);\
+             </script>",
+        ),
+        (
+            "/meta.html",
+            &[],
+            "<html style='color: red'><head>\
+             <meta http-equiv=content-security-policy content=\"style-src 'none'\">\
+             </head><body style='color: blue'><script>\
+             console.log(document.documentElement.style.color, document.body.style.length)\
+             </script>",
+        ),
+    ];
+    let server = sites(PAGES);
+    let lines = run_in_order(
+        &server,
+        at(&server, "a.localhost", "/page.html"),
+        "style-src 'self'",
+    );
+    assert_eq!(
+        lines,
+        [
+            "none background: blue; green rgb(0, 128, 0) rgb(0, 0, 0)",
+            "Content-Security-Policy refused a style attribute: style-src 'self'",
+        ]
+    );
+    let lines = run_in_order(&server, at(&server, "a.localhost", "/meta.html"), " 0");
+    assert_eq!(
+        lines.first().map(String::as_str),
+        Some("red 0"),
+        "{lines:?}"
     );
 }

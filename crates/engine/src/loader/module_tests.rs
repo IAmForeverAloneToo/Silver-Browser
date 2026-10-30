@@ -474,3 +474,29 @@ fn a_module_preload_fetches_its_module_once_and_runs_nothing() {
     assert_eq!(lines, ["error", "error as", "load", "m", "module 1"]);
     assert_eq!(asked.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn a_parser_inserted_module_a_modulepreload_fetched_is_allowed_by_strict_dynamic() {
+    // The preload's request, not the parser's, fetched the module: its
+    // `'strict-dynamic'` lets it through, as the reference browser does.
+    let server = serve(move |path| {
+        match path {
+        "/page.html" => Some(Reply::with_fields(
+            200,
+            &[
+                ("Content-Type", "text/html"),
+                ("Content-Security-Policy", "script-src 'strict-dynamic' 'nonce-n'"),
+            ],
+            b"<link rel=modulepreload href=m.js>\
+              <script nonce=n>addEventListener('securitypolicyviolation', e => console.log('violation', e.blockedURI))</script>\
+              <script type=module src=m.js></script>",
+        )),
+        "/m.js" => Some(javascript("console.log('m');")),
+        _ => None,
+    }
+    });
+    let mut tab = scripting();
+    load_all(&mut tab, server.url("/page.html"));
+    let lines = tab.run_until(|lines| !lines.is_empty());
+    assert_eq!(lines, ["m"]);
+}

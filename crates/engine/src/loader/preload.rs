@@ -51,6 +51,7 @@ impl Policies {
                     (&request.url, &request.url),
                     0,
                     &request.nonce,
+                    &request.integrity,
                     request.parser_inserted,
                 )
                 .is_empty()

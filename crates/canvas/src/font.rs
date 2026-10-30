@@ -2,9 +2,9 @@
 //! the reference browser reads it on a canvas, its relative sizes
 //! resolved when it is set, and as it serializes it: the style, the
 //! weight, small caps, the size in pixels and the families; the line
-//! height read and dropped, the stretch given to `fontStretch`. The
-//! engine has one face (G22): every family, weight and style draws with
-//! it.
+//! height read and dropped, the stretch given to `fontStretch`. Text is
+//! drawn in the face CSS's matching chooses for it (D53), the
+//! document's web fonts among them.
 
 use css::Token;
 
@@ -60,6 +60,21 @@ impl Stretch {
             .iter()
             .find(|(n, _)| *n == name)
             .map(|&(_, stretch)| stretch)
+    }
+
+    /// The width it names, as a percentage of the normal one.
+    pub fn percentage(self) -> f32 {
+        match self {
+            Stretch::UltraCondensed => 50.0,
+            Stretch::ExtraCondensed => 62.5,
+            Stretch::Condensed => 75.0,
+            Stretch::SemiCondensed => 87.5,
+            Stretch::Normal => 100.0,
+            Stretch::SemiExpanded => 112.5,
+            Stretch::Expanded => 125.0,
+            Stretch::ExtraExpanded => 150.0,
+            Stretch::UltraExpanded => 200.0,
+        }
     }
 
     pub fn name(self) -> &'static str {
@@ -160,6 +175,32 @@ impl Font {
         out.push_str(&self.families.join(", "));
         out
     }
+
+    /// The families as a face is chosen by: their names unquoted,
+    /// separated by commas.
+    pub fn family_list(&self) -> String {
+        let names: Vec<String> = self.families.iter().map(|f| unquoted(f)).collect();
+        names.join(", ")
+    }
+}
+
+/// A family name as [`quoted`] wrote it, its quotes and escapes gone.
+fn unquoted(name: &str) -> String {
+    let Some(inner) = name
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+    else {
+        return name.to_owned();
+    };
+    let mut out = String::new();
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => out.extend(chars.next()),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// A length's pixels, its unit absolute or relative to `base` (`em` to

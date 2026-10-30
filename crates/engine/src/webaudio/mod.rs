@@ -29,6 +29,13 @@ pub(crate) const MAX_AUDIO_CONTEXTS: usize = 32;
 /// The most bytes `decodeAudioData()` decodes to.
 pub(crate) const MAX_DECODE_AUDIO_BYTES: usize = 512 << 20;
 
+/// Whether `samples` decoded at `from` hertz are within
+/// [`MAX_DECODE_AUDIO_BYTES`] once resampled to `to` hertz.
+fn fits_resampled(samples: usize, from: u32, to: u32) -> bool {
+    let out = (samples as u128 * u128::from(to)).div_ceil(u128::from(from.max(1)));
+    out * 4 <= MAX_DECODE_AUDIO_BYTES as u128
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
@@ -534,9 +541,15 @@ impl WebAudio {
                 let _ = std::thread::Builder::new()
                     .name("decodeAudioData".to_owned())
                     .spawn(move || {
-                        let decoded = media::decode_all(&bytes, MAX_DECODE_AUDIO_BYTES / 4);
+                        // Audio too long once at the context's rate is
+                        // refused as audio that does not decode.
+                        let decoded = media::decode_all(&bytes, MAX_DECODE_AUDIO_BYTES / 4)
+                            .ok()
+                            .filter(|(from, _, samples)| {
+                                fits_resampled(samples.len(), *from, rate as u32)
+                            });
                         match decoded {
-                            Ok((from, count, samples)) => {
+                            Some((from, count, samples)) => {
                                 let count = usize::from(count.max(1));
                                 let resampled = media::resample(&samples, count, from, rate as u32);
                                 let length = resampled.len() / count;
@@ -559,7 +572,7 @@ impl WebAudio {
                                     bytes,
                                 );
                             }
-                            Err(_) => teller.tell(
+                            None => teller.tell(
                                 vec![
                                     ("type", Json::from("decodeError")),
                                     ("promise", Json::from(promise)),
@@ -1059,4 +1072,18 @@ fn response_op(context: &mut Context, op: &Json, bytes: &[u8]) -> Result<(Json, 
     let mut out: Vec<u8> = pairs.iter().flat_map(|(m, _)| m.to_le_bytes()).collect();
     out.extend(pairs.iter().flat_map(|(_, p)| p.to_le_bytes()));
     Ok((Json::Null, out))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audio_too_long_at_the_contexts_rate_does_not_fit() {
+        assert!(fits_resampled(48_000, 48_000, 44_100));
+        assert!(fits_resampled(MAX_DECODE_AUDIO_BYTES / 4, 8000, 8000));
+        // WPT's: 683 blocks of 65535 samples at 8 kHz, made 768 kHz.
+        assert!(!fits_resampled(683 * 65535, 8000, 768_000));
+        assert!(!fits_resampled(usize::MAX, 1, u32::MAX));
+    }
 }

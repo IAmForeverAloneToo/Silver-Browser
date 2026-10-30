@@ -1257,7 +1257,8 @@
   }
   const TEXT_METRICS = ["width", "actualBoundingBoxLeft", "actualBoundingBoxRight",
     "actualBoundingBoxAscent", "actualBoundingBoxDescent", "fontBoundingBoxAscent",
-    "fontBoundingBoxDescent", "alphabeticBaseline", "hangingBaseline", "ideographicBaseline"];
+    "fontBoundingBoxDescent", "alphabeticBaseline", "hangingBaseline", "ideographicBaseline",
+    "emHeightAscent", "emHeightDescent"];
   for (let i = 0; i < TEXT_METRICS.length; i++) {
     defineProperty(TextMetrics.prototype, TEXT_METRICS[i], {
       get() {

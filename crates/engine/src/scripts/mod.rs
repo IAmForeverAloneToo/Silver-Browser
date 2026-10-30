@@ -483,7 +483,7 @@ pub(crate) fn prepare_element(
         // By nonce, hash or 'unsafe-inline' (M33.1).
         let nonce = page.checked_nonce(document, element);
         let csp = page.csp(document);
-        let violations = csp.inline_violations(net::csp::Inline::Script, &nonce, &text);
+        let violations = csp.inline_script_violations(&nonce, &text, parser_inserted);
         csp.record(&violations);
         if net::csp::enforced(violations).is_err() {
             return Prepared::Refused;
@@ -554,7 +554,7 @@ fn prepare_module(
             let text = document.text_content(element);
             let nonce = page.checked_nonce(document, element);
             let policies = page.csp(document);
-            let violations = policies.inline_violations(net::csp::Inline::Script, &nonce, &text);
+            let violations = policies.inline_script_violations(&nonce, &text, parser_inserted);
             policies.record(&violations);
             if net::csp::enforced(violations).is_err() {
                 return Prepared::Refused;
@@ -804,6 +804,10 @@ impl Scripts {
             Prepared::NotYet | Prepared::Nothing | Prepared::Refused => {}
             Prepared::Failed => self.events.push_back((element, "error")),
             Prepared::Module { request, inline } => {
+                // The `<link rel=modulepreload>`s parsed before it start
+                // first, as they did when inserted: the module one
+                // fetched is in the map, its request the preload's.
+                self.preload_modules(lent);
                 let place = module_place(lent.document, element, true);
                 let wanted = ModuleWanted {
                     element,

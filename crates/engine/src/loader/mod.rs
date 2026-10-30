@@ -276,6 +276,7 @@ fn allowed(state: &Preloaded, request: &Request) -> bool {
             (url, url),
             hops,
             &request.nonce,
+            &request.integrity,
             request.parser_inserted,
         )
         .is_empty()

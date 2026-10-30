@@ -325,7 +325,11 @@ choices where it leaves one:
   families), its size resolved against the canvas's computed
   `font-size` (10px off the document), serialized as the reference
   browser does. The engine has one face (G22): every family, weight and
-  style draws with it, at the size asked. `textAlign`, `textBaseline`,
+  style draws with it, at the size asked. *(corrected, gap batch D: the
+  face is the one CSS's matching chooses for the families, weight,
+  style and `fontStretch` (D53), the document's web fonts among them, a
+  worker's its own `FontFace`s; a slant the face has not is made up;
+  control characters take no room.)* `textAlign`, `textBaseline`,
   `direction` (`inherit` the element's), `letterSpacing` and
   `wordSpacing`; `maxWidth` squeezes the text horizontally.
   `TextMetrics` from the shaped glyphs and the face's metrics.
