@@ -84,6 +84,11 @@ pub(crate) struct Outputs {
     /// The import maps scripts inserted that were none (D61): each
     /// exception, to report, and its element's line.
     pub(crate) thrown: Vec<(MapError, u32)>,
+    /// `document.open()` aborted the load's parser: its fetch is to be
+    /// aborted too, and its deferred scripts dropped.
+    pub(crate) parser_aborted: bool,
+    /// `document.open()` stops a navigation under way.
+    pub(crate) stop_navigation: bool,
 }
 
 /// The document's styles as a run's `getComputedStyle` sees them: the
@@ -155,6 +160,17 @@ impl Timers {
         self.queue.keys().next().map(|(due, _)| *due)
     }
 
+    /// When the next timer is due, and its order among those set.
+    pub(crate) fn next_key(&self) -> Option<(Duration, u64)> {
+        self.queue.keys().next().copied()
+    }
+
+    /// The order the next timer set will take: a task queued now runs
+    /// after the timers due with it that were set before.
+    pub(crate) fn mark(&self) -> u64 {
+        self.next
+    }
+
     /// The timer due first, taken: its id and the nesting level of the
     /// task that runs it.
     pub(crate) fn take_next(&mut self) -> Option<(u32, u32)> {
@@ -210,6 +226,15 @@ pub(crate) struct DocumentHost {
     /// The parser `document.open()` made (HTML section 8.4.2.1): what
     /// `write` gives it is parsed at once, `close` ends it.
     opened: Option<html::Parser>,
+    /// The document's readiness when `document.open()` made it loading.
+    before_open: ReadyState,
+    /// That parser is parsing, its scripts running; and what they wrote,
+    /// for its insertion point.
+    writing: bool,
+    nested_writes: String,
+    /// The load's parser was aborted (HTML's "active parser was
+    /// aborted"): `document.open()` does nothing.
+    parser_aborted: bool,
     ready: ReadyState,
     /// The scripts running, innermost last.
     frames: Vec<Frame>,
@@ -850,7 +875,15 @@ impl DocumentHost {
                         format!("The tag name provided ('{name}') is not a valid name."),
                     ));
                 }
-                let element = self.document.create_element(&name).map_err(refused)?;
+                // An XML document's element is HTML's only in XHTML (DOM
+                // section 4.5, `createElement`), its name as given.
+                let element = match self.page.as_ref().and_then(Page::content_type) {
+                    Some(kind) if kind != "application/xhtml+xml" => self
+                        .document
+                        .create_element_ns(Namespace::Other(None), &name, Vec::new()),
+                    _ => self.document.create_element(&name),
+                }
+                .map_err(refused)?;
                 self.detached.push(element);
                 self.made_by_script(element, false);
                 Ok(self.give(Some(element)))
@@ -1143,13 +1176,17 @@ impl DocumentHost {
                 Ok(Answer::String(self.inner_text(node)))
             }
             Call::DocumentOpen => {
-                self.open_document();
-                Ok(Answer::Nothing)
+                self.only_html("open")?;
+                let erased = self.open_document();
+                Ok(Answer::Nodes(erased.into_iter().map(handle).collect()))
             }
             Call::DocumentClose => {
+                self.only_html("close")?;
                 if let Some(mut parser) = self.opened.take() {
                     parser.end();
                     self.parse_opened(&mut parser);
+                    // Its parse over, the document is as ready as before.
+                    self.ready = self.before_open;
                 }
                 Ok(Answer::Nothing)
             }
@@ -1267,15 +1304,17 @@ impl DocumentHost {
             }
             Call::ElementsByTagName(root, name) => {
                 let root = self.node(root)?;
-                // An HTML element's name is matched lowercased, another's
-                // as given (DOM section 4.2.6).
+                // An HTML element's name is matched lowercased in an HTML
+                // document, another's as given (DOM section 4.2.6).
+                let xml = self.document.is_xml_document();
                 let lower = name.to_ascii_lowercase();
                 let found = self
                     .elements_under(root)
                     .into_iter()
                     .filter(|&e| {
                         name == "*"
-                            || self.document.tag(e) == Some(lower.as_str())
+                            || (!xml && self.document.tag(e) == Some(lower.as_str()))
+                            || (xml && self.document.tag(e) == Some(name.as_str()))
                             || self
                                 .document
                                 .element_name(e)
@@ -1326,15 +1365,22 @@ impl DocumentHost {
                     .collect();
                 Ok(Answer::Nodes(found))
             }
+            // An XML document's markup is XML's (DOM Parsing section 3.2).
             Call::InnerHtml(node) => {
                 let node = self.node(node)?;
-                let markup = html::serialize_children(&self.document, node, true);
+                let markup = match self.document.is_xml_document() {
+                    true => html::xml::serialize_xml_children(&self.document, node),
+                    false => html::serialize_children(&self.document, node, true),
+                };
                 self.work += markup.len() as u64 / 64;
                 Ok(Answer::String(markup))
             }
             Call::OuterHtml(node) => {
                 let node = self.node(node)?;
-                let markup = html::serialize_node(&self.document, node, true);
+                let markup = match self.document.is_xml_document() {
+                    true => html::xml::serialize_xml_node(&self.document, node),
+                    false => html::serialize_node(&self.document, node, true),
+                };
                 self.work += markup.len() as u64 / 64;
                 Ok(Answer::String(markup))
             }
@@ -1410,8 +1456,9 @@ impl DocumentHost {
                 Ok(Answer::Nothing)
             }
             Call::Write(text) => {
-                self.write(&text);
-                Ok(Answer::Nothing)
+                self.only_html("write")?;
+                let erased = self.write(&text);
+                Ok(Answer::Nodes(erased.into_iter().map(handle).collect()))
             }
             Call::CurrentScript => {
                 let current = self.frames.last().and_then(|frame| frame.element);
@@ -3566,7 +3613,9 @@ impl DocumentHost {
     /// insertion point, to be parsed when the call has made it in. With
     /// none, a script from a file writes nothing, and anything else would
     /// open the document again, which this version does not do (G48).
-    fn write(&mut self, text: &str) {
+    /// Gives the nodes whose listeners the bindings erase when the write
+    /// opened the document.
+    fn write(&mut self, text: &str) -> Vec<NodeId> {
         self.work += text.len() as u64 / 64;
         let defined = self
             .parser
@@ -3577,38 +3626,83 @@ impl DocumentHost {
             if let Some(parser) = self.parser.as_mut().and_then(html::Load::parser) {
                 parser.write(text);
             }
-            return;
+            return Vec::new();
+        }
+        // A script `document.open()`'s parser runs writes at its
+        // insertion point, just after the script's end tag.
+        if self.writing {
+            self.nested_writes.push_str(text);
+            return Vec::new();
         }
         // No insertion point: a script from a file writes nothing (the
         // ignore-destructive-writes counter); another opens the document
         // first, which replaces it.
         if self.frames.iter().any(|frame| frame.external) {
-            return;
+            return Vec::new();
         }
+        let mut erased = Vec::new();
         if self.opened.is_none() {
-            self.open_document();
+            erased = self.open_document();
         }
         if let Some(mut parser) = self.opened.take() {
             parser.feed(text);
             self.parse_opened(&mut parser);
             self.opened = Some(parser);
         }
+        erased
     }
 
-    /// `document.open()` (HTML section 8.4.2.1): nothing while the
-    /// parser runs a script (a write goes to its insertion point); else
-    /// the document's children removed and a new parser made for what is
-    /// written, the URL left as it is.
-    fn open_document(&mut self) {
+    /// An `InvalidStateError` for `method` (`write`, `open`, `close`)
+    /// in an XML document, which has no HTML parser to write to (HTML
+    /// section 8.4.2).
+    fn only_html(&self, method: &str) -> Result<(), DomError> {
+        if self.document.is_xml_document() {
+            return Err(DomError::new(
+                "InvalidStateError",
+                format!("Only HTML documents support {method}()."),
+            ));
+        }
+        Ok(())
+    }
+
+    /// `document.open()`, HTML section 8.4.2.1's "document open steps":
+    /// nothing while the parser runs a script (a write goes to its
+    /// insertion point), nor while `document.open()`'s parser runs one,
+    /// nor once the load's parser was aborted (`window.stop()`). Else a
+    /// navigation under way stops; the load's parser, if it still runs,
+    /// is aborted with its fetch, so that it builds no more; the
+    /// document's children are removed; and a new parser is made for
+    /// what is written, the document loading again. The URL becomes the
+    /// entry document's, which with one realm a document is this one: it
+    /// stays. Gives the nodes whose event listeners and handlers the
+    /// bindings erase, the document and the descendants scripts hold
+    /// (the window's with them); none when it opened nothing.
+    fn open_document(&mut self) -> Vec<NodeId> {
         let nested = self
             .parser
             .as_mut()
             .and_then(html::Load::parser)
             .is_some_and(|parser| parser.has_insertion_point());
-        if nested {
-            return;
+        if nested || self.writing || self.parser_aborted {
+            return Vec::new();
+        }
+        self.outputs.stop_navigation = true;
+        self.outputs.navigation = None;
+        if let Some(load) = self.parser.as_mut()
+            && !load.is_done()
+        {
+            load.abort();
+            self.outputs.parser_aborted = true;
         }
         let root = self.document.root();
+        let mut erased = vec![root];
+        erased.extend(
+            self.document
+                .subtree(root)
+                .skip(1)
+                .filter(|node| self.exposed.contains(node)),
+        );
+        self.work += erased.len() as u64;
         while let Some(child) = self.document.first_child(root) {
             self.work += 1;
             if self.document.remove_child(root, child).is_err() {
@@ -3617,19 +3711,44 @@ impl DocumentHost {
             self.taken_out(child);
         }
         self.opened = Some(html::Parser::new(true));
+        self.before_open = self.ready;
+        self.ready = ReadyState::Loading;
+        erased
+    }
+
+    /// Whether `document.open()` left the document open: its parser has
+    /// not been closed and ended yet, and the document is loading.
+    pub(crate) fn is_open(&self) -> bool {
+        self.opened.is_some()
+    }
+
+    /// The document's parser was aborted (`window.stop()`): a later
+    /// `document.open()` does nothing.
+    pub(crate) fn parser_was_aborted(&mut self) {
+        self.parser_aborted = true;
     }
 
     /// Parses what `parser`, `document.open()`'s, has been given: its
     /// scripts are the parser's, run as scripts' scripts are.
     fn parse_opened(&mut self, parser: &mut html::Parser) {
         let before = self.document.len();
+        self.writing = true;
         loop {
             match parser.parse(&mut self.document, usize::MAX) {
-                html::Stop::Script { element, .. } => self.made_by_script(element, false),
+                html::Stop::Script { element, .. } => {
+                    self.made_by_script(element, false);
+                    let written = std::mem::take(&mut self.nested_writes);
+                    if !written.is_empty() {
+                        parser.push_insertion_point();
+                        parser.write(&written);
+                        parser.pop_insertion_point();
+                    }
+                }
                 html::Stop::Slice => {}
                 html::Stop::Input | html::Stop::Done => break,
             }
         }
+        self.writing = false;
         self.work += self.document.len().saturating_sub(before) as u64;
     }
 
@@ -4551,14 +4670,35 @@ impl DocumentHost {
             .filter(|&node| self.document.is_element(node))
             .count();
         let before = self.document.len();
-        html::parse_fragment(
-            &mut self.document,
-            container,
-            (&context.0, &context.1),
-            true,
-            (dom::MAX_DEPTH + 1).saturating_sub(depth),
-            markup,
-        );
+        let max_depth = (dom::MAX_DEPTH + 1).saturating_sub(depth);
+        // An XML document's fragment is the XML parser's, in the context
+        // of the element it goes under (DOM Parsing section 2.4).
+        if self.document.is_xml_document() {
+            let parsed = html::xml::parse_xml_fragment(
+                &mut self.document,
+                container,
+                under,
+                markup,
+                max_depth,
+            );
+            if parsed.is_err() {
+                self.taken_out(container);
+                return Err(DomError::new(
+                    "SyntaxError",
+                    "The provided markup is invalid XML, and therefore cannot be inserted into \
+                     an XML document.",
+                ));
+            }
+        } else {
+            html::parse_fragment(
+                &mut self.document,
+                container,
+                (&context.0, &context.1),
+                true,
+                max_depth,
+                markup,
+            );
+        }
         self.work += self.document.len().saturating_sub(before) as u64;
         // A fragment's scripts are already started: they never run.
         let scripts: Vec<NodeId> = self

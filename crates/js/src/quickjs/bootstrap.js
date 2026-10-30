@@ -723,6 +723,34 @@
     }
   }
 
+  // HTML's "erase all event listeners and handlers": the target's event
+  // handlers deactivated and every listener removed.
+  function eraseListeners(target) {
+    MapForEach(handlersOf(target), (handler) => {
+      handler.value = null;
+      handler.element = null;
+      handler.listener = null;
+    });
+    const listeners = listenersOf(target);
+    for (let i = 0; i < listeners.length; i++) {
+      listeners[i].removed = true;
+    }
+    ArraySplice(listeners, 0, listeners.length);
+  }
+
+  // `document.open()`'s erasing (HTML section 8.4.2.1): the window's
+  // listeners, and those of the nodes `handles` names, the document and
+  // its descendants a script holds; none when it opened nothing.
+  function eraseOpened(handles) {
+    if (handles === null || handles === undefined || handles.length === 0) {
+      return;
+    }
+    eraseListeners(global);
+    for (let i = 0; i < handles.length; i++) {
+      eraseListeners(wrap(handles[i]));
+    }
+  }
+
   // The DOM's "default passive value".
   function defaultPassive(target, type) {
     if (type !== "touchstart" && type !== "touchmove" && type !== "wheel" && type !== "mousewheel") {
@@ -7706,17 +7734,32 @@
     return true;
   }
 
-  // An element's `tagName`: an HTML element's name in upper case,
-  // another's as it is (DOM section 4.9).
+  // Whether the document is an HTML document, of type text/html, and
+  // not an XML one, whose names keep their case; asked once.
+  let htmlDocument;
+  function isHtmlDocument() {
+    if (htmlDocument === undefined) {
+      // A host that says nothing of its document has an HTML one.
+      try {
+        htmlDocument = native.documentInfo()[2] === "text/html";
+      } catch {
+        htmlDocument = true;
+      }
+    }
+    return htmlDocument;
+  }
+
+  // An element's `tagName`: an HTML element's name in upper case in an
+  // HTML document, another's as it is (DOM section 4.9).
   function qualifiedTag(element) {
     const name = nameOf(element);
-    return nsOf(element) === HTML_NS ? ToUpperCase(name) : name;
+    return nsOf(element) === HTML_NS && isHtmlDocument() ? ToUpperCase(name) : name;
   }
 
   // An attribute's name as an element keeps it: lowercased on an HTML
-  // element, as given on another.
+  // element of an HTML document, as given on another.
   function attrKey(element, name) {
-    return nsOf(element) === HTML_NS ? ToLowerCase(name) : name;
+    return nsOf(element) === HTML_NS && isHtmlDocument() ? ToLowerCase(name) : name;
   }
 
   // A nullable namespace argument: null, undefined and the empty string
@@ -8427,11 +8470,13 @@
       markup += str(text[i]);
     }
     markup += end;
+    let erased;
     try {
-      native.write(markup);
+      erased = native.write(markup);
     } catch (error) {
       throw failed(error, method, "Document");
     }
+    eraseOpened(erased);
   }
 
   // The document's element: its first element child.
@@ -8615,13 +8660,23 @@
         if (args.length >= 3) {
           return global.open(args[0], args[1], args[2]);
         }
-        native.documentOpen();
+        let erased;
+        try {
+          erased = native.documentOpen();
+        } catch (error) {
+          throw failed(error, "open", "Document");
+        }
+        eraseOpened(erased);
         return this;
       },
 
       close() {
         self(this);
-        native.documentClose();
+        try {
+          native.documentClose();
+        } catch (error) {
+          throw failed(error, "close", "Document");
+        }
       },
 
       get implementation() {
@@ -16844,6 +16899,40 @@
     },
     [madeInterfaces.HTMLFormElement.prototype],
   );
+
+  // A form's indexed and named properties (HTML section 4.10.3): its
+  // controls by index (`form[0]`) and by name or ID (`form.user`),
+  // found through an object between HTMLFormElement.prototype and
+  // HTMLElement.prototype, which a property neither has reaches with
+  // the form as its receiver; what HTMLElement's chain has wins.
+  if (!WORKER) {
+    const formPrototype = madeInterfaces.HTMLFormElement.prototype;
+    const above = ReflectGetPrototypeOf(formPrototype);
+    const control = (form, key) => {
+      if (typeof key !== "string" || !isNode(form) || ReflectHas(above, key)) {
+        return undefined;
+      }
+      const i = arrayIndex(key);
+      if (i >= 0) {
+        const controls = native.formControls(handleOf(form));
+        return i < controls.length ? wrap(controls[i]) : undefined;
+      }
+      const found = ReflectGet(formPrototype, "elements", form).namedItem(key);
+      return found === null ? undefined : found;
+    };
+    setPrototypeOf(
+      formPrototype,
+      new $Proxy(above, {
+        get(target, key, receiver) {
+          const found = control(receiver, key);
+          return found === undefined ? ReflectGet(target, key, receiver) : found;
+        },
+        getPrototypeOf() {
+          return above;
+        },
+      }),
+    );
+  }
 
   // ---- Focus (HTML section 6.6, M26.6) ------------------------------------
 

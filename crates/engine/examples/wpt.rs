@@ -36,8 +36,8 @@
 //!   images it and its page's stylesheets name, by `url()` or
 //!   `image-set()`, are copied with it where they are on the checkout;
 //!   no compressed SVG image and no AVIF one (G34); an `.svg` test is
-//!   read as an SVG document, and an XHTML one needs no namespace the
-//!   HTML parser does not give (M32);
+//!   read as an SVG document (M32), and an XHTML one by the XML parser
+//!   too, as the engine reads it, so it must be well formed;
 //! - every stylesheet only qualified rules whose selectors the matcher
 //!   parses, and every declaration one the cascade accepts, as
 //!   `style::supports` says, custom properties and declarations with
@@ -53,9 +53,6 @@
 //!   style rule;
 //! - no Ahem font, no `dir=rtl`, and only the `data-*` expectations the
 //!   runner checks;
-//! - in an XHTML file, which this engine reads with its HTML parser (M15),
-//!   nothing that parser reads otherwise than an XML parser does: no
-//!   CDATA section and no self-closing element that is not void.
 //! - no `.sub` file, a template wptserve fills in before it is served,
 //!   which the runner's server does not (M23).
 //!
@@ -421,12 +418,6 @@ const CHECKED: &[&str] = &[
     "data-total-x",
     "data-total-y",
     "data-expected-display",
-];
-
-/// HTML's void elements, the ones a self-closing tag may close.
-const VOID: &[&str] = &[
-    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track",
-    "wbr",
 ];
 
 fn main() -> ExitCode {
@@ -879,6 +870,24 @@ fn take_testharness(
             }
             kind => vec![format!("{}{kind}.html", stem.0)],
         };
+        // Each `// META: variant=` a test of each page, with its query.
+        let variants: Vec<&str> = metas
+            .iter()
+            .filter(|(name, _)| name == "variant")
+            .map(|(_, value)| value.as_str())
+            .collect();
+        let pages = if variants.is_empty() {
+            pages
+        } else {
+            pages
+                .iter()
+                .flat_map(|page| {
+                    variants
+                        .iter()
+                        .map(move |v| format!("{page}{}", variant_query(v)))
+                })
+                .collect()
+        };
         for (name, value) in &metas {
             if name == "script" {
                 scripts.push(resolve(rel, value)?);
@@ -889,10 +898,19 @@ fn take_testharness(
             .any(|(name, value)| name == "timeout" && value == "long");
         (pages, long)
     } else {
-        let node = html::parse_document(&source).map_err(|e| format!("unparsed page: {e:?}"))?;
-        let document = Document::from_node(&node);
+        // An XHTML page is the XML parser's, as the engine reads it.
+        let document = if is_xml_page(rel) {
+            html::xml::parse_xml_text(&source).map_err(|e| format!("not well-formed XML: {e}"))?
+        } else {
+            let node =
+                html::parse_document(&source).map_err(|e| format!("unparsed page: {e:?}"))?;
+            Document::from_node(&node)
+        };
         let mut harness = false;
         let mut long = false;
+        // Each `<meta name=variant>` is a test of its own, loaded with its
+        // query, as wptrunner runs it.
+        let mut variants = Vec::new();
         for id in document.subtree(document.root()) {
             match document.tag(id).map(str::to_ascii_lowercase).as_deref() {
                 Some("script") => {
@@ -906,10 +924,18 @@ fn take_testharness(
                     }
                 }
                 Some("meta") => {
-                    long |= document
-                        .attr(id, "name")
-                        .is_some_and(|n| n.eq_ignore_ascii_case("timeout"))
-                        && document.attr(id, "content") == Some("long");
+                    let named = |name: &str| {
+                        document
+                            .attr(id, "name")
+                            .is_some_and(|n| n.eq_ignore_ascii_case(name))
+                    };
+                    long |= named("timeout") && document.attr(id, "content") == Some("long");
+                    if named("variant")
+                        && let Some(variant) = document.attr(id, "content")
+                        && (variant.is_empty() || variant.starts_with(['?', '#']))
+                    {
+                        variants.push(format!("{rel}{}", variant_query(variant)));
+                    }
                 }
                 Some("frame" | "object" | "embed") => {
                     return Err("a frame of another kind than iframe".to_string());
@@ -920,7 +946,10 @@ fn take_testharness(
         if !harness {
             return Err("not a testharness test".to_string());
         }
-        (vec![rel.to_string()], long)
+        if variants.is_empty() {
+            variants.push(rel.to_string());
+        }
+        (variants, long)
     };
     for script in &scripts {
         if let Some((_, functions)) = HOST_HELPERS.iter().find(|(helper, _)| helper == script) {
@@ -1022,14 +1051,12 @@ fn take(checkout: &Path, rel: &str) -> Result<(Kind, Vec<String>), String> {
 /// Reads the page at `rel` and checks it against the rule.
 fn read_page(checkout: &Path, rel: &str) -> Result<Page, String> {
     let bytes = fs::read(checkout.join(rel)).map_err(|_| format!("missing file {rel}"))?;
-    // An SVG document is the XML parser's (M32), as the engine reads one.
-    let document = if rel.ends_with(".svg") {
+    // An SVG or XHTML document is the XML parser's (M32), as the engine
+    // reads one.
+    let document = if is_xml_page(rel) {
         html::xml::parse_xml(&bytes).map_err(|e| format!("not well-formed XML: {e}"))?
     } else {
         let source = String::from_utf8_lossy(&bytes);
-        if rel.ends_with(".xht") || rel.ends_with(".xhtml") {
-            xml_only(&source)?;
-        }
         let node = html::parse_document(&source).map_err(|e| format!("unparsed page: {e:?}"))?;
         Document::from_node(&node)
     };
@@ -1206,53 +1233,22 @@ fn element(
     }
 }
 
-/// Fails on what an XML parser reads one way and the HTML parser
-/// another: a CDATA section, whose markers stay in an HTML element's
-/// text (in a stylesheet, swallowing its rules), and a self-closing tag
-/// of an element that is not void, which the HTML parser leaves open.
-fn xml_only(source: &str) -> Result<(), String> {
-    if source.contains("<![CDATA[") {
-        return Err("CDATA section in XHTML".to_string());
-    }
-    // The engine reads XHTML with the HTML parser (the XML parser is an
-    // SVG document's, M32): an element named with a prefix, or put in a
-    // namespace other than the ones HTML gives, is not namespaced there.
-    for (at, _) in source.match_indices('<') {
-        let name: String = source[at + 1..]
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '-' | '_' | '.'))
-            .collect();
-        if name.starts_with(|c: char| c.is_ascii_alphabetic()) && name.contains(':') {
-            return Err("namespaces in XHTML".to_string());
-        }
-    }
-    for (at, _) in source.match_indices("xmlns=") {
-        let value = source[at + 6..].trim_start_matches(['"', '\'']);
-        let known = [
-            "http://www.w3.org/1999/xhtml",
-            "http://www.w3.org/2000/svg",
-            "http://www.w3.org/1998/Math/MathML",
-        ];
-        if !known.iter().any(|ns| value.starts_with(ns)) {
-            return Err("namespaces in XHTML".to_string());
-        }
-    }
-    let mut rest = source;
-    while let Some(at) = rest.find("/>") {
-        let before = &rest[..at];
-        if let Some(open) = before.rfind('<') {
-            let tag: String = before[open + 1..]
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric())
-                .collect::<String>()
-                .to_ascii_lowercase();
-            if !tag.is_empty() && !VOID.contains(&tag.as_str()) {
-                return Err(format!("self-closing <{tag}/> in XHTML"));
-            }
-        }
-        rest = &rest[at + 2..];
-    }
-    Ok(())
+/// A variant's query (`<meta name=variant>`, `// META: variant=`) as
+/// the URL the browser loads has it: its white space percent-encoded,
+/// so that a test's name holds none.
+fn variant_query(variant: &str) -> String {
+    variant
+        .replace(' ', "%20")
+        .replace('\t', "%09")
+        .replace('\n', "%0A")
+}
+
+/// Whether the page at `rel` is an XML document as the runner serves
+/// it: SVG (M32), and XHTML, which the engine reads with its XML parser.
+fn is_xml_page(rel: &str) -> bool {
+    [".svg", ".xht", ".xhtml"]
+        .iter()
+        .any(|ext| rel.ends_with(ext))
 }
 
 /// The selectors of a script made of nothing but `checkLayout` calls,
@@ -2487,6 +2483,55 @@ mod tests {
     }
 
     #[test]
+    fn a_variant_test_is_a_test_of_each_query_and_xhtml_is_read_as_xml() {
+        let harness = "<script src=/resources/testharness.js></script>\
+                       <script src=/resources/testharnessreport.js></script>";
+        let checkout = Checkout::new(
+            "variants",
+            &[
+                (
+                    "fetch/a/v.html",
+                    &format!(
+                        "<meta name=variant content='?file=a'>\
+                         <meta name=variant content='?x=two words'>{harness}"
+                    ),
+                ),
+                (
+                    "fetch/a/v.any.js",
+                    "// META: global=window\n// META: variant=?1-10\n// META: variant=?11-last\n\
+                     test(() => {});",
+                ),
+                (
+                    "fetch/a/x.xhtml",
+                    "<html xmlns='http://www.w3.org/1999/xhtml'>\
+                     <script src='/resources/testharness.js'/><p/></html>",
+                ),
+                ("fetch/a/bad.xhtml", &format!("<html>{harness}<p></html>")),
+            ],
+        );
+        let take = |rel: &str| take_testharness(&checkout.0, rel).map(|(pages, ..)| pages);
+        assert_eq!(
+            take("fetch/a/v.html"),
+            Ok(vec![
+                "fetch/a/v.html?file=a".to_string(),
+                "fetch/a/v.html?x=two%20words".to_string()
+            ])
+        );
+        assert_eq!(
+            take("fetch/a/v.any.js"),
+            Ok(vec![
+                "fetch/a/v.any.html?1-10".to_string(),
+                "fetch/a/v.any.html?11-last".to_string()
+            ])
+        );
+        assert_eq!(
+            take("fetch/a/x.xhtml"),
+            Ok(vec!["fetch/a/x.xhtml".to_string()])
+        );
+        assert!(take("fetch/a/bad.xhtml").is_err_and(|e| e.starts_with("not well-formed XML")));
+    }
+
+    #[test]
     fn a_testharness_test_is_taken_when_the_runners_server_can_serve_it() {
         let harness = "<script src=/resources/testharness.js></script>\
                        <script src=/resources/testharnessreport.js></script>";
@@ -2853,17 +2898,24 @@ mod tests {
             "css/x/bad.css".to_string(),
             ".a { writing-mode: vertical-rl }".to_string(),
         ));
+        // XHTML is the XML parser's: self-closing tags, CDATA sections
+        // and namespaces are taken, a page not well formed is not.
         files.push((
             "css/x/x.xht".to_string(),
             "<html><link rel=match href=r.html/><div/></html>".to_string(),
         ));
         files.push((
             "css/x/y.xht".to_string(),
-            "<html><style><![CDATA[ .a {} ]]></style></html>".to_string(),
+            "<html xmlns='http://www.w3.org/1999/xhtml'><link rel='match' href='r.html'/>\
+             <style><![CDATA[ .a {} ]]></style><div/></html>"
+                .to_string(),
         ));
         files.push((
             "css/x/z.xht".to_string(),
-            "<html><link rel=match href=r.html></link><p xmlns='urn:x'>a</p></html>".to_string(),
+            "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"x.dtd\">\
+             <html xmlns='http://www.w3.org/1999/xhtml'><link rel='match' href='r.html'></link>\
+             <p xmlns='urn:x'>a&nbsp;</p></html>"
+                .to_string(),
         ));
         // Taken since M32: an inline svg, an SVG image and an SVG
         // document, its reference linked from the XHTML namespace.
@@ -2889,18 +2941,13 @@ mod tests {
                 "{page}"
             );
         }
-        assert_eq!(
-            checkout.take("css/x/x.xht").err().as_deref(),
-            Some("self-closing <div/> in XHTML")
+        assert!(
+            checkout
+                .take("css/x/x.xht")
+                .is_err_and(|e| e.starts_with("not well-formed XML"))
         );
-        assert_eq!(
-            checkout.take("css/x/y.xht").err().as_deref(),
-            Some("CDATA section in XHTML")
-        );
-        assert_eq!(
-            checkout.take("css/x/z.xht").err().as_deref(),
-            Some("namespaces in XHTML")
-        );
+        assert!(checkout.take("css/x/y.xht").is_ok());
+        assert!(checkout.take("css/x/z.xht").is_ok());
         assert!(checkout.take("css/x/s.html").is_ok());
         assert!(checkout.take("css/x/d.svg").is_ok());
     }

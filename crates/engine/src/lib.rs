@@ -943,6 +943,10 @@ fn parsed_page(
 ) -> Page {
     let address_space = head.address_space.unwrap_or(net::AddressSpace::Public);
     let encoding = load.encoding().unwrap_or(encoding::UTF_8);
+    // An XML document's type is its response's (DOM's content type).
+    let content_type = load
+        .is_xml()
+        .then(|| loader::computed_type(head).essence().to_owned());
     let page = Page::fetched(
         id,
         head.url().clone(),
@@ -951,6 +955,7 @@ fn parsed_page(
         address_space,
     )
     .with_language(loader::content_language(head))
+    .with_content_type(content_type)
     .with_csp(net::csp::Csp::from_headers(&head.headers, head.url()))
     .with_referrer_policy(net::ReferrerPolicy::from_headers(&head.headers));
     match creator {
@@ -3321,6 +3326,7 @@ impl Engine {
             || self.shown.made
             || self.shown.parsing.is_some()
             || self.shown.unreached.is_some()
+            || self.shown.scripts.document_open()
         {
             return;
         }
@@ -3329,13 +3335,14 @@ impl Engine {
             self.shown.lifecycle.interactive = true;
             self.fire(document, js::EventInit::new("Event", "readystatechange"));
         }
+        // `DOMContentLoaded` is a task queued once the deferred scripts
+        // have run: the timers they set run first.
         if !self.shown.lifecycle.content_loaded && self.shown.scripts.deferred_settled() {
-            self.shown.lifecycle.content_loaded = true;
-            self.fire(
-                document,
-                js::EventInit::new("Event", "DOMContentLoaded")
-                    .with("bubbles", js::Field::Bool(true)),
-            );
+            let now = self.now();
+            self.shown.scripts.queue_content_loaded(now);
+            if self.shown.scripts.content_loaded_due(now) {
+                self.content_loaded();
+            }
         }
         if !self.shown.lifecycle.loaded
             && self.shown.lifecycle.content_loaded
@@ -3366,6 +3373,22 @@ impl Engine {
                     .with("persisted", js::Field::Bool(false)),
             );
         }
+    }
+
+    /// Runs `DOMContentLoaded`'s task: the event at the document, and
+    /// the load's events after it if the load is over.
+    fn content_loaded(&mut self) {
+        self.shown.scripts.take_content_loaded();
+        if self.shown.lifecycle.content_loaded {
+            return;
+        }
+        self.shown.lifecycle.content_loaded = true;
+        let document = self.document_target();
+        self.fire(
+            document,
+            js::EventInit::new("Event", "DOMContentLoaded").with("bubbles", js::Field::Bool(true)),
+        );
+        self.lifecycle();
     }
 
     /// Says whether the window is hidden, minimized or covered (HTML
@@ -3525,6 +3548,10 @@ impl Engine {
             self.queue_storage_events();
             if let Some((page, task)) = self.storage_events.pop_front() {
                 self.fire_storage_event(page, task);
+                continue;
+            }
+            if self.shown.scripts.content_loaded_due(now) {
+                self.content_loaded();
                 continue;
             }
             let shown = self.shown_task_at().filter(|due| *due <= now);
@@ -4115,7 +4142,11 @@ impl Engine {
     /// while it is parsed, `interactive` until its load event, then
     /// `complete` (M26: as its lifecycle events have it).
     fn ready_state(&self) -> scripts::ReadyState {
-        if self.shown.parsing.is_some() || self.shown.unreached.is_some() {
+        // A document `document.open()` opened is loading until closed.
+        if self.shown.parsing.is_some()
+            || self.shown.unreached.is_some()
+            || self.shown.scripts.document_open()
+        {
             scripts::ReadyState::Loading
         } else if self.shown.lifecycle.loaded
             || (!self.scripts_run() && self.load_state == LoadState::Loaded)
@@ -5453,7 +5484,7 @@ impl Engine {
         };
         let mut response = (**head).clone();
         response.body = std::mem::take(body);
-        let Some(transport) = loader::streams_as_html(&response) else {
+        let Some(streamed) = loader::streams(&response, ended) else {
             *body = response.body;
             *sniffed = true;
             return;
@@ -5470,7 +5501,10 @@ impl Engine {
                 response.url(),
             )));
         let scripting = self.scripting && !sandbox.has(sandbox::Sandbox::SCRIPTS);
-        let mut load = html::Load::new(transport, scripting);
+        let mut load = match streamed {
+            loader::Streamed::Html(transport) => html::Load::new(transport, scripting),
+            loader::Streamed::Xml(transport) => html::Load::xml(transport),
+        };
         load.set_scanning(self.preload_scanner);
         load.push(&response.body);
         if ended {
@@ -5850,6 +5884,11 @@ impl Engine {
         }
         if let Some(notice) = self.shown.scripts.take_notice() {
             self.notice = Some(notice);
+        }
+        // `document.open()` stops a navigation under way (HTML section
+        // 8.4.2.1); one its scripts ask for after it goes on.
+        if self.shown.scripts.take_stop_navigation() {
+            self.cancel_navigation();
         }
         if let Some(navigation) = self.shown.scripts.take_navigation() {
             self.script_navigation(navigation);

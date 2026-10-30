@@ -7,7 +7,9 @@
 //! instructions too, and a template's contents under a `content` line
 //! (D58). What fails, by a gap of the tree builder's or of the DOM's, is named
 //! in `expectations.txt` beside the files with its reason; a test named
-//! there that passes is a failure too.
+//! there that passes is a failure too. The `scripted_*` files, whose
+//! scripts run as the parser meets them, need a script engine: the
+//! engine's `loader::html5lib_tests` runs them.
 
 #![forbid(unsafe_code)]
 
@@ -213,6 +215,11 @@ fn html5libs_tree_construction_tests_pass() {
         .expect("the tests are vendored")
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
         .filter(|path| path.extension().is_some_and(|ext| ext == "dat"))
+        .filter(|path| {
+            !path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("scripted_"))
+        })
         .collect();
     files.sort();
     let mut unexpected = Vec::new();

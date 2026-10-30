@@ -411,7 +411,7 @@ pub struct Document {
     /// boxed, to keep the document small.
     named: Box<Named>,
     /// What fewer documents use, boxed: template contents (D58), live
-    /// ranges and node iterators (D59).
+    /// ranges and node iterators (D59), and whether it is an XML document.
     rare: Box<live::Live>,
 }
 
@@ -473,6 +473,17 @@ impl Document {
         };
         document.root = document.allocate(NodeData::Document);
         document
+    }
+
+    /// Whether it is an XML document rather than an HTML one.
+    #[inline]
+    pub fn is_xml_document(&self) -> bool {
+        self.rare.xml
+    }
+
+    /// Makes it an XML document, or an HTML one, as its parser decides.
+    pub fn set_xml_document(&mut self, xml: bool) {
+        self.rare.xml = xml;
     }
 
     /// The document `node` describes: a [`Node::Document`]'s children
@@ -1004,8 +1015,13 @@ impl Document {
     pub fn create_element(&mut self, tag: &str) -> Result<NodeId, MutationError> {
         self.check_room()?;
         self.check_data(tag.len())?;
+        let tag = if self.rare.xml {
+            tag.to_owned()
+        } else {
+            tag.to_ascii_lowercase()
+        };
         Ok(self.allocate(NodeData::Element {
-            tag: tag.to_ascii_lowercase(),
+            tag,
             attrs: Vec::new(),
             ns: Namespace::Html,
         }))
@@ -1044,7 +1060,7 @@ impl Document {
         self.check_data(
             qualified.len() + attrs.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>(),
         )?;
-        let tag = if ns == Namespace::Html {
+        let tag = if ns == Namespace::Html && !self.rare.xml {
             qualified.to_ascii_lowercase()
         } else {
             qualified.to_owned()
@@ -1342,9 +1358,9 @@ impl Document {
     }
 
     /// An attribute's name as `element` keeps it: lowercased on an HTML
-    /// element, as given on another.
+    /// element of an HTML document, as given on another.
     fn attribute_name(&self, element: NodeId, name: &str) -> String {
-        if self.is_html(element) {
+        if self.is_html(element) && !self.rare.xml {
             name.to_ascii_lowercase()
         } else {
             name.to_owned()
@@ -2417,6 +2433,19 @@ mod tests {
         document.set_attribute(div, "ClassName", "x").unwrap();
         assert_eq!(document.tag(div), Some("div"));
         assert_eq!(document.attr(div, "classname"), Some("x"));
+        // An XML document's HTML elements keep their names' case.
+        let mut xml = Document::new();
+        xml.set_xml_document(true);
+        assert!(xml.is_xml_document() && !document.is_xml_document());
+        let upper = xml
+            .create_element_ns(Namespace::Html, "DIV", Vec::new())
+            .unwrap();
+        let made = xml.create_element("Span").unwrap();
+        xml.set_attribute(upper, "ClassName", "x").unwrap();
+        assert_eq!(xml.tag(upper), Some("DIV"));
+        assert_eq!(xml.tag(made), Some("Span"));
+        assert_eq!(xml.attr(upper, "ClassName"), Some("x"));
+        assert_eq!(xml.attr(upper, "classname"), None);
         // A prefixed name's local part.
         let other = document
             .create_element_ns(Namespace::from_uri(Some("urn:x")), "x:item", Vec::new())

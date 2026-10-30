@@ -801,6 +801,13 @@ pub(crate) struct Scripts {
     /// The `javascript:` URLs its scripts navigated it to while it was
     /// loading, each to run as a task of its own.
     javascript_urls: VecDeque<Url>,
+    /// `DOMContentLoaded`'s task, once queued ("the end", step 4): when,
+    /// and the order the next timer set would take, so that the timers
+    /// set before it run first and those set after it after.
+    content_loaded: Option<(Duration, u64)>,
+    /// `document.open()` stopped the navigation under way, for the
+    /// engine to cancel.
+    stop_navigation: bool,
 }
 
 /// The most `javascript:` URLs a loading document keeps to run.
@@ -845,7 +852,34 @@ impl Scripts {
             module_links: std::collections::HashSet::new(),
             preloading: Vec::new(),
             javascript_urls: VecDeque::new(),
+            content_loaded: None,
+            stop_navigation: false,
         }
+    }
+
+    /// Queues `DOMContentLoaded`'s task at `now`, once.
+    pub(crate) fn queue_content_loaded(&mut self, now: Duration) {
+        if self.content_loaded.is_none() {
+            self.content_loaded = Some((now, self.host.timers.mark()));
+        }
+    }
+
+    /// Whether `DOMContentLoaded`'s task is the next to run at `now`: it
+    /// is queued and due, and no timer set before it is due before it.
+    pub(crate) fn content_loaded_due(&self, now: Duration) -> bool {
+        self.content_loaded.is_some_and(|queued| {
+            queued.0 <= now
+                && self
+                    .host
+                    .timers
+                    .next_key()
+                    .is_none_or(|timer| queued <= timer)
+        })
+    }
+
+    /// Takes `DOMContentLoaded`'s task, to run it.
+    pub(crate) fn take_content_loaded(&mut self) {
+        self.content_loaded = None;
     }
 
     /// The navigation the document's scripts asked for since this was
@@ -1421,6 +1455,35 @@ impl Scripts {
         self.soon.clear();
         self.in_order.clear();
         self.aborted = true;
+        self.host.parser_was_aborted();
+    }
+
+    /// What `document.open()` did in a run (HTML section 8.4.2.1): the
+    /// load's parser it replaced runs no deferred script and fetches no
+    /// more of the document; a navigation under way stops, and one the
+    /// scripts asked for before it is dropped.
+    fn opened_document(&mut self, lent: &mut Lent<'_>, parser_aborted: bool, stop: bool) {
+        if parser_aborted {
+            self.blocking = None;
+            self.deferred.clear();
+            lent.network.cancel_document(lent.page.id());
+        }
+        if stop {
+            self.navigation = None;
+            self.stop_navigation = true;
+        }
+    }
+
+    /// Whether `document.open()` stopped the navigation under way since
+    /// this was last asked.
+    pub(crate) fn take_stop_navigation(&mut self) -> bool {
+        std::mem::take(&mut self.stop_navigation)
+    }
+
+    /// Whether `document.open()` left the document open, loading until
+    /// `document.close()`.
+    pub(crate) fn document_open(&self) -> bool {
+        self.host.is_open()
     }
 
     /// Says what the document's policies refused, or would have (M24.6,
@@ -1868,6 +1931,7 @@ impl Scripts {
         if outputs.notice.is_some() {
             self.notice = outputs.notice;
         }
+        self.opened_document(lent, outputs.parser_aborted, outputs.stop_navigation);
         if outputs.navigation.is_some() {
             self.navigation = outputs.navigation;
         }
@@ -1987,6 +2051,7 @@ impl Scripts {
         if outputs.notice.is_some() {
             self.notice = outputs.notice;
         }
+        self.opened_document(lent, outputs.parser_aborted, outputs.stop_navigation);
         if outputs.navigation.is_some() {
             self.navigation = outputs.navigation;
         }
@@ -2158,7 +2223,8 @@ impl Scripts {
         }
         let answer = self.answers.front().map(|(came, ..)| *came);
         let posted = self.posted.front().map(|(at, _)| *at);
-        [self.host.timers.next_due(), answer, posted]
+        let content_loaded = self.content_loaded.map(|(at, _)| at);
+        [self.host.timers.next_due(), answer, posted, content_loaded]
             .into_iter()
             .flatten()
             .min()

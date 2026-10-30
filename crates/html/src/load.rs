@@ -12,6 +12,7 @@ use encoding::{DecoderMode, Encoding, UTF_8};
 
 use crate::encoding_sniffing::{self, Confidence, PRESCAN_LENGTH};
 use crate::preload::{Hint, Scanner};
+use crate::xml::{self, XmlError, XmlParser, XmlStop};
 use crate::{Parser, Stop};
 
 /// What a step of [`Load::parse`] did.
@@ -51,6 +52,21 @@ pub struct Load {
     /// found and not taken, from every start.
     scanning: bool,
     hints: Vec<Hint>,
+    /// An XML document's parse, for a load made by [`Load::xml`].
+    xml: Option<Box<XmlLoad>>,
+    /// The parse was aborted: it is done, and takes nothing more.
+    aborted: bool,
+}
+
+/// An XML document's parse: its bytes taken whole, then parsed a slice
+/// at a time by the XML parser, its scripts run as it closes them.
+struct XmlLoad {
+    /// Made once the bytes have all come.
+    parser: Option<XmlParser>,
+    /// What the bytes were decoded with.
+    encoding: Encoding,
+    /// The error the parse stopped at, if one.
+    error: Option<XmlError>,
 }
 
 impl Load {
@@ -66,7 +82,33 @@ impl Load {
             decoding: None,
             scanning: false,
             hints: Vec::new(),
+            xml: None,
+            aborted: false,
         }
+    }
+
+    /// A load of an XML document (XHTML and the other XML types), its
+    /// transport layer naming `transport` as the encoding: parsed by the
+    /// XML parser once its bytes have all come, into an XML document.
+    pub fn xml(transport: Option<Encoding>) -> Load {
+        Load {
+            xml: Some(Box::new(XmlLoad {
+                parser: None,
+                encoding: encoding::UTF_8,
+                error: None,
+            })),
+            ..Load::new(transport, true)
+        }
+    }
+
+    /// Whether it parses an XML document.
+    pub fn is_xml(&self) -> bool {
+        self.xml.is_some()
+    }
+
+    /// The error an XML document's parse stopped at, if one.
+    pub fn xml_error(&self) -> Option<&XmlError> {
+        self.xml.as_ref().and_then(|xml| xml.error.as_ref())
     }
 
     /// Scans the text for hints too (M38), from now on; asked before
@@ -99,14 +141,37 @@ impl Load {
         self.feed();
     }
 
+    /// Aborts the parse (HTML's "abort a parser", as `document.open()`
+    /// replaces it): what has not been parsed is thrown away, and so is
+    /// what arrives after; the parse is done, its open elements left as
+    /// they are.
+    pub fn abort(&mut self) {
+        self.ended = true;
+        self.aborted = true;
+        self.bytes = Vec::new();
+        self.decoding = None;
+        self.xml = None;
+    }
+
+    /// Whether the parse was aborted.
+    pub fn is_aborted(&self) -> bool {
+        self.aborted
+    }
+
     /// The encoding the document is decoded with, once it is known.
     pub fn encoding(&self) -> Option<Encoding> {
+        if let Some(xml) = &self.xml {
+            return xml.parser.as_ref().map(|_| xml.encoding);
+        }
         self.decoding.as_ref().map(|d| d.decoded_with)
     }
 
     /// The encoding the document is in when this engine cannot decode
     /// it yet (a legacy CJK encoding), which it is read as UTF-8 for.
     pub fn undecodable(&self) -> Option<Encoding> {
+        if let Some(xml) = &self.xml {
+            return (!xml.encoding.can_decode()).then_some(xml.encoding);
+        }
         self.decoding
             .as_ref()
             .filter(|d| !d.encoding.can_decode())
@@ -115,11 +180,20 @@ impl Load {
 
     /// How sure the encoding is.
     pub fn confidence(&self) -> Option<Confidence> {
+        if self.xml.is_some() {
+            return self.encoding().map(|_| Confidence::Certain);
+        }
         self.decoding.as_ref().map(|d| d.confidence)
     }
 
     /// Whether the parse is done.
     pub fn is_done(&self) -> bool {
+        if self.aborted {
+            return true;
+        }
+        if let Some(xml) = &self.xml {
+            return xml.parser.as_ref().is_some_and(XmlParser::is_done);
+        }
         self.decoding.as_ref().is_some_and(|d| d.parser.is_done())
     }
 
@@ -150,6 +224,15 @@ impl Load {
     /// Gives the parser what has arrived and not been given, decoded,
     /// once the encoding can be sniffed.
     fn feed(&mut self) {
+        if let Some(xml) = &mut self.xml {
+            if self.ended && xml.parser.is_none() {
+                let (text, encoding) = xml::decode_xml_with(&self.bytes, self.transport);
+                xml.encoding = encoding;
+                xml.parser = Some(XmlParser::new(&text));
+                self.bytes = Vec::new();
+            }
+            return;
+        }
         if self.decoding.is_none() {
             if self.bytes.len() < PRESCAN_LENGTH && !self.ended {
                 return;
@@ -187,6 +270,24 @@ impl Load {
     /// Parses at most `slice` tokens into `document`, which must be the
     /// one this load has built into since it began or last restarted.
     pub fn parse(&mut self, document: &mut Document, slice: usize) -> Progress {
+        if self.aborted {
+            return Progress::Parsed(Stop::Done);
+        }
+        if let Some(xml) = &mut self.xml {
+            let Some(parser) = &mut xml.parser else {
+                return Progress::Parsed(Stop::Input);
+            };
+            return Progress::Parsed(match parser.parse(document, slice) {
+                Ok(XmlStop::Slice) => Stop::Slice,
+                Ok(XmlStop::Script { element, line }) => Stop::Script { element, line },
+                Ok(XmlStop::Done) => Stop::Done,
+                Err(error) => {
+                    xml::insert_error_block(document, &error);
+                    xml.error = Some(error);
+                    Stop::Done
+                }
+            });
+        }
         let Some(decoding) = &mut self.decoding else {
             return Progress::Parsed(Stop::Input);
         };
@@ -293,6 +394,60 @@ mod tests {
         assert_eq!(node.text_content(), "a");
         assert_eq!(load.encoding(), Some(UTF_8));
         assert_eq!(load.confidence(), Some(Confidence::Certain));
+    }
+
+    #[test]
+    fn an_xml_load_parses_once_its_bytes_have_all_come_and_stops_at_scripts() {
+        let mut load = Load::xml(None);
+        let mut document = Document::new();
+        load.push(b"<html xmlns='http://www.w3.org/1999/xhtml'><script>a</script>");
+        assert_eq!(
+            load.parse(&mut document, 100),
+            Progress::Parsed(Stop::Input)
+        );
+        assert_eq!(load.encoding(), None);
+        load.push(b"<p>&#233;</p></html>");
+        load.end();
+        assert!(load.is_xml());
+        assert_eq!(load.encoding(), Some(UTF_8));
+        assert!(load.parser().is_none(), "no HTML parser to write to");
+        assert!(matches!(
+            load.parse(&mut document, 100),
+            Progress::Parsed(Stop::Script { .. })
+        ));
+        assert_eq!(document.text_content(document.root()), "a");
+        assert_eq!(load.parse(&mut document, 100), Progress::Parsed(Stop::Done));
+        assert!(load.is_done());
+        assert_eq!(document.text_content(document.root()), "a\u{e9}");
+        // An error is shown above what came before it.
+        let mut load = Load::xml(None);
+        let mut document = Document::new();
+        load.push(b"<html xmlns='http://www.w3.org/1999/xhtml'><p>a</q></html>");
+        load.end();
+        assert_eq!(load.parse(&mut document, 100), Progress::Parsed(Stop::Done));
+        assert!(load.xml_error().is_some());
+        assert!(
+            document
+                .text_content(document.root())
+                .starts_with("This page contains the following errors:")
+        );
+    }
+
+    #[test]
+    fn an_aborted_load_parses_nothing_more() {
+        let mut load = Load::new(Some(UTF_8), true);
+        let mut document = Document::new();
+        load.push(b"<p>a");
+        load.push(&vec![b' '; PRESCAN_LENGTH]);
+        assert_eq!(
+            load.parse(&mut document, 100),
+            Progress::Parsed(Stop::Input)
+        );
+        load.abort();
+        load.push(b"<p>b");
+        assert!(load.is_aborted() && load.is_done());
+        assert_eq!(load.parse(&mut document, 100), Progress::Parsed(Stop::Done));
+        assert_eq!(document.text_content(document.root()).trim(), "a");
     }
 
     #[test]

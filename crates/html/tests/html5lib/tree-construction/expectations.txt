@@ -1,20 +1,3 @@
 # The tests of these files that fail, each with its reason. One named
-# here that passes fails the run (tests/html5lib_tree.rs).
-
-# Scripted tests: a script run at its end tag changes the document
-# (document.write, DOM calls) before the parse goes on; the harness runs
-# no scripts.
-scripted_adoption01.dat#0 scripted: runs a script
-scripted_ark.dat#0 scripted: runs a script
-scripted_foster01.dat#0 scripted: runs a script
-scripted_foster01.dat#1 scripted: runs a script
-scripted_webkit01.dat#0 document.write
-scripted_webkit01.dat#1 document.write
-
-# selectedcontent: an option popped off the stack has its content cloned
-# into its select's selectedcontent (customizable select), which the DOM
-# does not do yet.
-webkit02.dat#44 selectedcontent cloning
-webkit02.dat#45 selectedcontent cloning
-webkit02.dat#46 selectedcontent cloning
-webkit02.dat#47 selectedcontent cloning
+# here that passes fails the run (tests/html5lib_tree.rs). None fails:
+# the scripted_* files are the engine's (loader::html5lib_tests).

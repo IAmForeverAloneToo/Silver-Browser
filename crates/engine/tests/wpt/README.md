@@ -35,10 +35,10 @@ subtest they fail is named in `expectations.txt`, and why.
 | Kind | Tests |
 | --- | ---: |
 | checklayout | 75 |
-| crashtest | 121 |
-| reftest | 3689 |
-| testharness | 7310 |
-| all | 11195 |
+| crashtest | 126 |
+| reftest | 4149 |
+| testharness | 7672 |
+| all | 12022 |
 
 ## Left out
 
@@ -49,64 +49,54 @@ the tests taken, of some directories):
 | Reason | Tests |
 | --- | ---: |
 | not a testharness test | 4453 |
-| @font-face | 1451 |
-| script | 1131 |
-| CDATA section in XHTML | 470 |
+| @font-face | 1458 |
+| script | 1158 |
 | Python handler | 334 |
-| not a reftest, a check-layout test or a crashtest | 151 |
+| declaration of display | 262 |
+| not a reftest, a check-layout test or a crashtest | 166 |
 | wptserve pipe | 150 |
 | the legacy CJK encodings (M42) | 141 |
-| declaration of display | 134 |
 | SVG <filter> (G87) | 113 |
 | https: | 109 |
 | a frame of another kind than iframe | 106 |
 | declaration of backdrop-filter | 85 |
 | a shared or service worker | 82 |
+| dir=rtl | 51 |
 | wptserve substitution (.sub) | 51 |
 | element <object> | 49 |
-| declaration of hyphens | 47 |
-| dir=rtl | 47 |
 | element <video> | 47 |
+| declaration of filter | 46 |
 | element <embed> | 46 |
-| declaration of filter | 45 |
 | declaration of background-image | 39 |
 | element <iframe> | 38 |
 | declaration of background-clip | 37 |
-| declaration of columns | 35 |
-| declaration of writing-mode | 32 |
-| declaration of word-space-transform | 28 |
-| declaration of text-autospace | 19 |
+| declaration of columns | 36 |
+| declaration of writing-mode | 35 |
 | declaration of background-color | 18 |
-| declaration of tab-size | 18 |
 | declaration of overflow-y | 17 |
-| declaration of text-indent | 17 |
 | @property | 16 |
-| declaration of inline-size | 15 |
-| declaration of line-break | 15 |
 | declaration of width | 15 |
 | declaration of contain | 14 |
-| declaration of font-kerning | 14 |
 | declaration of object-view-box | 14 |
 | element <canvas> | 14 |
-| declaration of word-break | 13 |
+| element <hr> | 13 |
 | declaration of direction | 12 |
 | missing file resources/WebIDLParser.js | 12 |
 | a module worker (G41) | 11 |
 | declaration of background | 11 |
+| declaration of color | 11 |
 | a window | 10 |
 | declaration of height | 10 |
-| declaration of text-transform | 10 |
 | not for a window or a dedicated worker | 10 |
 | declaration of font-synthesis | 9 |
-| declaration of text-wrap-style | 8 |
+| declaration of line-clamp | 8 |
 | unchecked attribute data-foo | 8 |
 | declaration of zoom | 7 |
-| declaration of color | 6 |
+| declaration of font-size-adjust | 6 |
 | declaration of min-width | 6 |
+| declaration of all | 5 |
 | declaration of font-size | 5 |
-| declaration of font-size-adjust | 5 |
 | declaration of font-variation-settings | 5 |
-| declaration of hanging-punctuation | 5 |
 | declaration of mask-image | 5 |
 | missing file service-workers/service-worker/resources/test-helpers.sub.js | 5 |
 | selector | 5 |
@@ -115,7 +105,8 @@ the tests taken, of some directories):
 | declaration of min-height | 4 |
 | declaration of overflow-x | 4 |
 | declaration of scrollbar-gutter | 4 |
-| element <hr> | 4 |
+| declaration of text-orientation | 4 |
+| element <fieldset> | 4 |
 | @font-feature-values | 3 |
 | SVG <foreignobject> (G87) | 3 |
 | SVG <image> (G87) | 3 |
@@ -126,30 +117,27 @@ the tests taken, of some directories):
 | declaration of content | 3 |
 | declaration of mask | 3 |
 | declaration of scrollbar-width | 3 |
-| declaration of text-fit | 3 |
-| declaration of text-orientation | 3 |
-| element <fieldset> | 3 |
+| declaration of unicode-bidi | 3 |
 | missing file css/css-conditional/container-queries/support/cq-testcommon.js | 3 |
 | unchecked attribute data-color | 3 |
 | @font-palette-values | 2 |
+| @namespace | 2 |
 | SVG <mask> (G87) | 2 |
 | SharedArrayBuffer (G83) | 2 |
-| declaration of all | 2 |
+| declaration of caret-animation | 2 |
+| declaration of font-family | 2 |
 | declaration of image-rendering | 2 |
-| declaration of letter-spacing | 2 |
 | declaration of line-height | 2 |
 | declaration of text-overflow | 2 |
-| declaration of unicode-bidi | 2 |
-| declaration of word-spacing | 2 |
 | declaration of z-index | 2 |
 | img srcset | 2 |
 | link to http://{{domains[www2]}}:{{ports[http][0]}}/html/semantics/scripting-1/the-script-element/module/crossorigin-scripterror.js | 2 |
 | missing file css/mediaqueries/resources/matchmedia-utils.js | 2 |
+| not well-formed XML: error on line 1 at column 1: Start tag expected, '<' not found | 2 |
 | unchecked attribute data-expected | 2 |
 | @color-profile | 1 |
 | @container | 1 |
 | @counter-style | 1 |
-| @namespace | 1 |
 | @page | 1 |
 | SVG <pattern> (G87) | 1 |
 | declaration of --prop | 1 |
@@ -160,30 +148,27 @@ the tests taken, of some directories):
 | declaration of -webkit-text-stroke-width | 1 |
 | declaration of background-blend-mode | 1 |
 | declaration of background-origin | 1 |
-| declaration of block-size | 1 |
+| declaration of border-bottom-left-radius | 1 |
+| declaration of border-bottom-right-radius | 1 |
 | declaration of border-shape | 1 |
+| declaration of border-top-left-radius | 1 |
+| declaration of border-top-right-radius | 1 |
 | declaration of box-decoration-break | 1 |
 | declaration of column-rule-color | 1 |
 | declaration of contain-intrinsic-size | 1 |
 | declaration of fill | 1 |
 | declaration of float | 1 |
-| declaration of font-family | 1 |
 | declaration of font-style | 1 |
-| declaration of font-variant | 1 |
-| declaration of font-variant-caps | 1 |
-| declaration of font-variant-emoji | 1 |
-| declaration of font-variant-ligatures | 1 |
 | declaration of font-weight | 1 |
 | declaration of grid-column-start | 1 |
-| declaration of hyphenate-character | 1 |
+| declaration of initial-letter | 1 |
+| declaration of inline-size | 1 |
 | declaration of inset | 1 |
 | declaration of isolation | 1 |
-| declaration of line-clamp | 1 |
 | declaration of list-style-image | 1 |
 | declaration of margin | 1 |
-| declaration of margin-inline | 1 |
-| declaration of margin-inline-start | 1 |
-| declaration of max-inline-size | 1 |
+| declaration of margin-left | 1 |
+| declaration of margin-right | 1 |
 | declaration of max-width | 1 |
 | declaration of mix-blend-mode | 1 |
 | declaration of object-fit | 1 |
@@ -194,7 +179,9 @@ the tests taken, of some directories):
 | declaration of rotate | 1 |
 | declaration of scale | 1 |
 | declaration of stroke-dasharray | 1 |
+| declaration of tab-size | 1 |
 | declaration of text-align | 1 |
+| declaration of text-box | 1 |
 | declaration of text-emphasis | 1 |
 | declaration of text-size-adjust | 1 |
 | declaration of top | 1 |
@@ -203,6 +190,8 @@ the tests taken, of some directories):
 | declaration of translate | 1 |
 | declaration of view-transition-name | 1 |
 | declaration of white-space | 1 |
+| declaration of white-space-collapse | 1 |
+| declaration of white-space-trim | 1 |
 | declaration of word-space-transfor | 1 |
 | element <audio> | 1 |
 | element <details> | 1 |
@@ -221,9 +210,7 @@ the tests taken, of some directories):
 | missing file media-source/mediasource-util.js | 1 |
 | missing file wai-aria/scripts/aria-utils.js | 1 |
 | missing file web-animations/testcommon.js | 1 |
-| namespaces in XHTML | 1 |
 | nested rule | 1 |
-| not well-formed XML: error on line 1 at column 1: Start tag expected, '<' not found | 1 |
 | unchecked attribute data-bar | 1 |
 | unchecked attribute data-crash | 1 |
 | unchecked attribute data-name | 1 |

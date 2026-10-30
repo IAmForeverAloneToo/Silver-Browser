@@ -19,6 +19,8 @@ mod cookie_tests;
 #[cfg(test)]
 mod csp_tests;
 #[cfg(test)]
+mod document_open_tests;
+#[cfg(test)]
 mod dom_tests;
 #[cfg(test)]
 mod editing_tests;
@@ -36,6 +38,8 @@ mod frame_script_tests;
 mod frame_tests;
 #[cfg(test)]
 mod hsts_tests;
+#[cfg(test)]
+mod html5lib_tests;
 #[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]
@@ -103,6 +107,8 @@ mod webgpu_work_tests;
 mod worker_tests;
 #[cfg(test)]
 mod xhr_tests;
+#[cfg(test)]
+mod xhtml_tests;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -930,6 +936,20 @@ impl Network {
         self.flights.len() != before
     }
 
+    /// Aborts and forgets the fetch of `page`'s document, if its body is
+    /// still arriving: `document.open()` replaced its parser.
+    pub(crate) fn cancel_document(&mut self, page: PageId) {
+        self.flights.retain(|_, flight| {
+            let document = flight.page == page && flight.target == Target::Document;
+            if document {
+                flight.abort.abort();
+            }
+            !document
+        });
+        self.ready
+            .retain(|arrived| !(arrived.page == page && arrived.target == Target::Document));
+    }
+
     /// Aborts and forgets fetch `id`, if it is in flight.
     pub(crate) fn abort(&mut self, id: FetchId) {
         if let Some(flight) = self.flights.remove(&id) {
@@ -1062,9 +1082,10 @@ pub(crate) enum Outcome {
 /// - a 204 or a 205 shows nothing;
 /// - an error status with an empty body has nothing to show;
 /// - otherwise its computed MIME type (MIME Sniffing §7) decides, as
-///   HTML's "load a document" does: HTML, and XHTML through the HTML
-///   parser, is parsed; text, JavaScript, JSON and the other XML types
-///   are a text document; images, audio and video cannot be shown yet;
+///   HTML's "load a document" does: HTML is parsed, XHTML and SVG by the
+///   XML parser; text, JavaScript, JSON and the other XML types are a
+///   text document (unless [`streams`] took them); images, audio and
+///   video cannot be shown yet;
 ///   anything else is handed to external software, a download.
 pub(crate) fn outcome(response: &Response) -> Outcome {
     if is_attachment(response) {
@@ -1079,7 +1100,30 @@ pub(crate) fn outcome(response: &Response) -> Outcome {
     let computed = computed_type(response);
     let transport = transport_encoding(response);
     let essence = computed.essence();
-    if computed.is_html() || essence == "application/xhtml+xml" {
+    if essence == "application/xhtml+xml" {
+        // Taken whole (the navigation's streams it): the XML parser's,
+        // its error shown over what came before it.
+        let (text, encoding) = html::xml::decode_xml_with(&response.body, transport);
+        let mut parser = html::xml::XmlParser::new(&text);
+        let mut document = Document::new();
+        loop {
+            match parser.parse(&mut document, usize::MAX) {
+                Ok(html::xml::XmlStop::Done) => break,
+                Ok(_) => {}
+                Err(error) => {
+                    html::xml::insert_error_block(&mut document, &error);
+                    break;
+                }
+            }
+        }
+        Outcome::Document(Parsed {
+            document,
+            encoding,
+            undecodable: (!encoding.can_decode()).then_some(encoding),
+            language: content_language(response),
+            content_type: Some(essence.to_owned()),
+        })
+    } else if computed.is_html() {
         let decoded = html::parse_document_from_bytes(&response.body, transport);
         Outcome::Document(Parsed {
             document: decoded.document,
@@ -1143,10 +1187,25 @@ pub(crate) fn transport_encoding(response: &Response) -> Option<Encoding> {
         .and_then(Encoding::for_label)
 }
 
+/// How a document is parsed as its response arrives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Streamed {
+    /// By the HTML parser, as its bytes come.
+    Html(Option<Encoding>),
+    /// By the XML parser into an XML document, once its bytes have all
+    /// come, its scripts run as the parser meets them.
+    Xml(Option<Encoding>),
+}
+
 /// Whether `response`, its body what has arrived of it, its resource
-/// header at least or the whole, is a document [`outcome`] would parse as
-/// HTML: then it is parsed as it arrives, with the transport's encoding.
-pub(crate) fn streams_as_html(response: &Response) -> Option<Option<Encoding>> {
+/// header at least or the whole if `ended`, is a document to parse as it
+/// arrives, and how, with the transport's encoding: HTML by the HTML
+/// parser; XHTML by the XML parser; and another XML type by it too, once
+/// it has all come, when it shows as a document rather than as its
+/// source (an element of a namespace the engine renders, or a style
+/// sheet), as the reference browser decides. An SVG document is
+/// [`outcome`]'s.
+pub(crate) fn streams(response: &Response, ended: bool) -> Option<Streamed> {
     if is_attachment(response)
         || matches!(response.status, 204 | 205)
         || (!response.ok() && response.body.is_empty())
@@ -1154,8 +1213,24 @@ pub(crate) fn streams_as_html(response: &Response) -> Option<Option<Encoding>> {
         return None;
     }
     let computed = computed_type(response);
-    (computed.is_html() || computed.essence() == "application/xhtml+xml")
-        .then(|| transport_encoding(response))
+    let transport = transport_encoding(response);
+    if computed.is_html() {
+        return Some(Streamed::Html(transport));
+    }
+    let essence = computed.essence();
+    if essence == "application/xhtml+xml" {
+        return Some(Streamed::Xml(transport));
+    }
+    if !computed.is_xml() || essence == "image/svg+xml" || !ended {
+        return None;
+    }
+    let (text, _) = html::xml::decode_xml_with(&response.body, transport);
+    let shown = match html::xml::parse_xml_text(&text) {
+        Ok(document) => html::xml::has_style_information(&document),
+        // The error is shown, over what came before it.
+        Err(_) => true,
+    };
+    shown.then_some(Streamed::Xml(transport))
 }
 
 /// A document parsed as its body arrives (M24.8): its load, and its

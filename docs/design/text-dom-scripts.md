@@ -535,3 +535,30 @@ step:
   `hanging-punctuation`, `text-wrap: pretty`, `hyphenate-limit-lines`,
   `word-space-transform`, `text-fit` and `text-group-align` are parsed,
   computed, serialized and animated, but lay nothing out.
+- *The parser and the document* (D57, D58, D59), after the batch: XHTML
+  (`application/xhtml+xml`) is the XML parser's, and so is another XML
+  type with an element of the XHTML, SVG or MathML namespace or a
+  `xml-stylesheet` instruction (one without shows as its source). The
+  parser takes the body whole, then builds a slice at a time and stops
+  after each script element it closes, which runs then. The document
+  is an XML document (`dom::Document::is_xml_document`): names keep
+  their case, `document.write`, `open` and `close` throw, `innerHTML`
+  is XML's both ways. An XHTML DTD's public identifier gives HTML's
+  named references, as the reference browser's built-in DTD does: the
+  reftests that failed whole when XHTML first went to the XML parser
+  had `&nbsp;`, undefined without it, and drew their error. An error
+  is shown as the reference browser shows it, a `parsererror` block
+  above what came before. A popped `option` its `select` has selected
+  is cloned into the `select`'s `selectedcontent`. The `scripted_*`
+  html5lib files run in the
+  engine (`loader::html5lib_tests`). `document.open()` aborts a load's
+  parser and its fetch, stops a navigation under way, erases the
+  listeners of the window and of the nodes scripts hold, and leaves the
+  document loading until `close`; the URL stays, the entry document
+  being the document itself. `DOMContentLoaded` is a task queued after
+  the deferred scripts, after the timers they set. A form's controls
+  are its indexed and named properties, found through an object between
+  its prototype and `HTMLElement.prototype`, so that the builtins win.
+  Not done: selectors in an XML document still match names without
+  regard to case, and template contents have no owner document of their
+  own (G47, G51).

@@ -444,10 +444,12 @@ fn form_decoded(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// The content type a vendored file is served with.
+/// The content type a vendored file is served with, as wptserve guesses
+/// it from the file's extension: a page with no charset, so that its
+/// own `<meta>` decides its encoding.
 fn content_type(path: &str) -> &'static str {
     match path.rsplit('.').next() {
-        Some("html" | "htm") => "text/html; charset=utf-8",
+        Some("html" | "htm") => "text/html",
         Some("xht" | "xhtml") => "application/xhtml+xml",
         Some("css") => "text/css",
         Some("js" | "mjs") => "text/javascript",
@@ -539,7 +541,8 @@ fn read_lossy(path: &Path) -> std::io::Result<String> {
 }
 
 /// The page wptserve makes of a test for a dedicated worker (M31): the
-/// harness, which takes the tests the worker `script` runs and reports.
+/// harness, which takes the tests the worker `script` runs and reports,
+/// the worker loaded with the page's query, a variant's.
 fn worker_page(script: &str, source: &str) -> String {
     let mut head = String::new();
     for line in source.lines().map(str::trim) {
@@ -561,7 +564,7 @@ fn worker_page(script: &str, source: &str) -> String {
          <script src=\"/resources/testharness.js\"></script>\n\
          <script src=\"/resources/testharnessreport.js\"></script>\n\
          <div id=log></div>\n\
-         <script>\nfetch_tests_from_worker(new Worker(\"{}\"));\n</script>\n",
+         <script>\nfetch_tests_from_worker(new Worker(\"{}\" + location.search));\n</script>\n",
         escape(script)
     )
 }

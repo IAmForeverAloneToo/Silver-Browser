@@ -27,9 +27,9 @@
 //! [`MAX_ENTITY_NESTING`] deep; an entity that refers to itself is an
 //! error.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
-use dom::{Document, Namespace, NodeId, XML_NAMESPACE, XMLNS_NAMESPACE};
+use dom::{Document, Namespace, NodeData, NodeId, XML_NAMESPACE, XMLNS_NAMESPACE};
 use encoding::Encoding;
 
 /// The most elements open at once.
@@ -69,11 +69,129 @@ impl std::fmt::Display for XmlError {
 /// else by the encoding the XML declaration names, else as UTF-8; an
 /// encoding this engine cannot decode is UTF-8 too.
 pub fn decode_xml(bytes: &[u8]) -> String {
+    decode_xml_with(bytes, None).0
+}
+
+/// The text of an XML document's `bytes` and the encoding it was read
+/// in: a byte order mark's, else `transport`'s (the `Content-Type`
+/// charset), else the XML declaration's, else UTF-8; one this engine
+/// cannot decode is decoded as UTF-8 and named as it is.
+pub fn decode_xml_with(bytes: &[u8], transport: Option<Encoding>) -> (String, Encoding) {
     if let Some((encoding, _)) = encoding::bom_sniff(bytes) {
-        return encoding::decode(bytes, encoding).0;
+        return (encoding::decode(bytes, encoding).0, encoding);
     }
-    let declared = declared_encoding(bytes).unwrap_or(encoding::UTF_8);
-    encoding::decode(bytes, declared).0
+    let named = transport
+        .or_else(|| declared_encoding(bytes))
+        .unwrap_or(encoding::UTF_8);
+    let with = if named.can_decode() {
+        named
+    } else {
+        encoding::UTF_8
+    };
+    (encoding::decode(bytes, with).0, named)
+}
+
+/// Whether an XML document shows as a document rather than as its
+/// source: it has an element of the XHTML, SVG or MathML namespace, or a
+/// `xml-stylesheet` processing instruction, as the reference browser
+/// decides.
+pub fn has_style_information(document: &Document) -> bool {
+    document
+        .subtree(document.root())
+        .any(|node| match document.data(node) {
+            Some(dom::NodeData::Element { ns, .. }) => !matches!(ns, Namespace::Other(_)),
+            Some(dom::NodeData::ProcessingInstruction { target, .. }) => {
+                &**target == "xml-stylesheet"
+            }
+            _ => false,
+        })
+}
+
+/// The reference browser's report of the error an XML document's parse
+/// stopped at, put first in its root element: a `parsererror` element
+/// saying so above what was parsed before it. A document with no root
+/// element is given an HTML one; an SVG root is moved into the body of
+/// an HTML one.
+pub fn insert_error_block(document: &mut Document, error: &XmlError) {
+    let _ = error_block(document, error);
+}
+
+fn error_block(document: &mut Document, error: &XmlError) -> Result<(), dom::MutationError> {
+    let root = document.root();
+    let html = |document: &mut Document, tag: &str| {
+        document.create_element_ns(Namespace::Html, tag, Vec::new())
+    };
+    let text = |document: &mut Document, parent: NodeId, data: &str| {
+        let node = document.create_text(data)?;
+        document.append_new(parent, node)
+    };
+    let mut parent = document.document_element();
+    let svg = parent.filter(|&node| document.namespace(node) == Some(&Namespace::Svg));
+    if parent.is_none() || svg.is_some() {
+        if let Some(svg) = svg {
+            document.remove_child(root, svg)?;
+        }
+        let root_element = html(document, "html")?;
+        document.append_new(root, root_element)?;
+        if svg.is_some() {
+            let head = html(document, "head")?;
+            document.append_new(root_element, head)?;
+            let style = html(document, "style")?;
+            document.append_new(head, style)?;
+            text(
+                document,
+                style,
+                "html, body { height: 100% } parsererror + svg { width: 100%; height: 100% }",
+            )?;
+        }
+        let body = html(document, "body")?;
+        document.append_new(root_element, body)?;
+        if let Some(svg) = svg {
+            document.append_child(body, svg)?;
+        }
+        parent = Some(body);
+    }
+    let Some(parent) = parent else {
+        return Ok(());
+    };
+    let report = document.create_element_ns(
+        Namespace::Html,
+        "parsererror",
+        vec![(
+            "style".to_owned(),
+            "display: block; white-space: pre; border: 2px solid #c77; padding: 0 1em 0 1em; \
+             margin: 1em; background-color: #fdd; color: black"
+                .to_owned(),
+        )],
+    )?;
+    let heading = html(document, "h3")?;
+    document.append_new(report, heading)?;
+    text(
+        document,
+        heading,
+        "This page contains the following errors:",
+    )?;
+    let fixed = document.create_element_ns(
+        Namespace::Html,
+        "div",
+        vec![(
+            "style".to_owned(),
+            "font-family:monospace;font-size:12px".to_owned(),
+        )],
+    )?;
+    document.append_new(report, fixed)?;
+    text(document, fixed, &format!("{error}\n"))?;
+    let heading = html(document, "h3")?;
+    document.append_new(report, heading)?;
+    text(
+        document,
+        heading,
+        "Below is a rendering of the page up to the first error.",
+    )?;
+    match document.first_child(parent) {
+        Some(first) => document.insert_before(parent, report, Some(first)),
+        None => document.append_child(parent, report),
+    }
 }
 
 /// The encoding an XML declaration at the start of `bytes` names.
@@ -101,38 +219,375 @@ pub fn parse_xml(bytes: &[u8]) -> Result<Document, XmlError> {
 
 /// Parses an XML document's decoded `text`.
 pub fn parse_xml_text(text: &str) -> Result<Document, XmlError> {
-    let text = text
-        .strip_prefix('\u{feff}')
-        .unwrap_or(text)
-        .replace("\r\n", "\n")
-        .replace('\r', "\n");
+    let mut parser = XmlParser::new(text);
+    let mut document = Document::new();
+    while parser.parse(&mut document, usize::MAX)? != XmlStop::Done {}
+    Ok(document)
+}
+
+/// The name the container of a fragment's parse goes by: no end tag can
+/// name it.
+const FRAGMENT_ROOT: &str = "\u{0}fragment";
+
+/// Parses `markup` as an XML fragment (DOM Parsing's "fragment parsing
+/// algorithm" for an XML document, `innerHTML` and its kin) into the
+/// children of `container`, a detached element its caller made, in the
+/// context of element `context`: its namespace the default one, and the
+/// prefixes its and its ancestors' `xmlns` attributes declare bound; at
+/// most `max_depth` elements open, the container counted. Not well
+/// formed, it is an error, and `container` may hold part of it.
+pub fn parse_xml_fragment(
+    document: &mut Document,
+    container: NodeId,
+    context: NodeId,
+    markup: &str,
+    max_depth: usize,
+) -> Result<(), XmlError> {
+    let mut bindings = vec![Binding {
+        prefix: Some("xml".to_owned()),
+        uri: Some(XML_NAMESPACE.to_owned()),
+    }];
+    // Outermost first, so that the innermost declaration wins.
+    let mut scope: Vec<NodeId> = document.ancestors(context).collect();
+    scope.reverse();
+    scope.push(context);
+    for element in scope {
+        for (name, value) in document.attrs(element).unwrap_or_default() {
+            let prefix = match name.as_str() {
+                "xmlns" => None,
+                name => match name.strip_prefix("xmlns:") {
+                    Some(prefix) => Some(prefix.to_owned()),
+                    None => continue,
+                },
+            };
+            bindings.push(Binding {
+                prefix,
+                uri: (!value.is_empty()).then(|| value.clone()),
+            });
+        }
+    }
+    // The context's own namespace is the default, unless it declares
+    // another.
+    if let Some((ns, tag)) = document.element_name(context)
+        && !tag.contains(':')
+        && document.attr(context, "xmlns").is_none()
+    {
+        bindings.push(Binding {
+            prefix: None,
+            uri: ns.uri().map(str::to_owned),
+        });
+    }
+    let text = markup.replace("\r\n", "\n").replace('\r', "\n");
     let mut parser = Parser {
-        document: Document::new(),
+        document: std::mem::take(document),
         entities: HashMap::new(),
         expanded: 0,
         budget: (text.len() * MAX_ENTITY_FACTOR + EXPANSION_SLACK).min(MAX_ENTITY_EXPANSION),
         entity_stack: Vec::new(),
-        open: Vec::new(),
-        bindings: vec![Binding {
-            prefix: Some("xml".to_owned()),
-            uri: Some(XML_NAMESPACE.to_owned()),
+        open: vec![Open {
+            node: container,
+            name: FRAGMENT_ROOT.to_owned(),
+            bindings: bindings.len(),
+            line: 1,
         }],
-        root: Root::Before,
+        bindings,
+        root: Root::Inside,
         reference: None,
+        scripts: VecDeque::new(),
+        xhtml_entities: false,
+        max_depth,
     };
-    let mut cursor = Cursor::new(&text);
-    parser.prolog(&mut cursor)?;
-    parser.content(&mut cursor)?;
-    if let Some(open) = parser.open.last() {
-        return Err(cursor.error(
-            &parser,
-            format!("Premature end of data in tag {}", open.name),
-        ));
+    let mut c = Cursor::new(&text);
+    let result = parser
+        .content(&mut c)
+        .and_then(|()| match parser.open.len() {
+            1 => Ok(()),
+            _ => parser.finished(&c),
+        });
+    *document = parser.document;
+    result
+}
+
+/// The XML serialization of `node`'s children (DOM Parsing section 3.2,
+/// what `innerHTML` reads in an XML document): each element by its
+/// qualified name, a default namespace declared where an element's
+/// differs from its parent's (the context's for `node`'s children), an
+/// empty element closed as XML closes it (`<br />` for HTML's void ones,
+/// `<p></p>` for HTML's others, `<g/>` for another namespace's), text and
+/// attribute values escaped. A template's contents stand for its
+/// children.
+pub fn serialize_xml_children(document: &Document, node: NodeId) -> String {
+    let mut out = String::new();
+    let inherited = document
+        .namespace(node)
+        .and_then(Namespace::uri)
+        .map(str::to_owned);
+    let node = document.template_content(node).unwrap_or(node);
+    for child in document.children(node) {
+        write_xml(document, child, inherited.as_deref(), &mut out);
     }
-    if parser.root == Root::Before {
-        return Err(cursor.error(&parser, "Start tag expected, '<' not found".to_owned()));
+    out
+}
+
+/// The XML serialization of `node` itself (what `outerHTML` reads in an
+/// XML document), in the namespace its parent's is.
+pub fn serialize_xml_node(document: &Document, node: NodeId) -> String {
+    let mut out = String::new();
+    let inherited = document
+        .parent(node)
+        .and_then(|parent| document.namespace(parent))
+        .and_then(Namespace::uri)
+        .map(str::to_owned);
+    write_xml(document, node, inherited.as_deref(), &mut out);
+    out
+}
+
+/// HTML's void elements, which XML writes as `<br />` when empty.
+const XML_VOID: [&str; 18] = [
+    "area", "base", "basefont", "bgsound", "br", "col", "embed", "frame", "hr", "img", "input",
+    "keygen", "link", "meta", "param", "source", "track", "wbr",
+];
+
+/// Writes `node` and what is under it, iteratively; `inherited` is the
+/// default namespace in scope where it goes.
+fn write_xml(document: &Document, node: NodeId, inherited: Option<&str>, out: &mut String) {
+    // Each entry: a node to write and the namespace in scope there, or
+    // an end tag to close.
+    enum Step<'a> {
+        Node(NodeId, Option<String>),
+        End(&'a str),
     }
-    Ok(parser.document)
+    let mut steps = vec![Step::Node(node, inherited.map(str::to_owned))];
+    while let Some(step) = steps.pop() {
+        let (at, inherited) = match step {
+            Step::End(tag) => {
+                out.push_str("</");
+                out.push_str(tag);
+                out.push('>');
+                continue;
+            }
+            Step::Node(at, inherited) => (at, inherited),
+        };
+        match document.data(at) {
+            Some(NodeData::Element { tag, attrs, ns }) => {
+                out.push('<');
+                out.push_str(tag);
+                let mut scope = inherited.clone();
+                if !tag.contains(':') && ns.uri() != inherited.as_deref() {
+                    scope = ns.uri().map(str::to_owned);
+                    if !attrs.iter().any(|(name, _)| name == "xmlns") {
+                        out.push_str(" xmlns=\"");
+                        escape_xml(ns.uri().unwrap_or(""), true, out);
+                        out.push('"');
+                    }
+                }
+                for (name, value) in attrs {
+                    out.push(' ');
+                    out.push_str(name);
+                    out.push_str("=\"");
+                    escape_xml(value, true, out);
+                    out.push('"');
+                }
+                let inner = document.template_content(at).unwrap_or(at);
+                let children: Vec<NodeId> = document.children(inner).collect();
+                if children.is_empty() {
+                    match ns {
+                        Namespace::Html if XML_VOID.contains(&tag.as_str()) => {
+                            out.push_str(" />");
+                        }
+                        Namespace::Html => {
+                            out.push_str("></");
+                            out.push_str(tag);
+                            out.push('>');
+                        }
+                        _ => out.push_str("/>"),
+                    }
+                    continue;
+                }
+                out.push('>');
+                steps.push(Step::End(tag));
+                for child in children.into_iter().rev() {
+                    steps.push(Step::Node(child, scope.clone()));
+                }
+            }
+            Some(NodeData::Text(text)) => escape_xml(text, false, out),
+            Some(NodeData::Comment(text)) => {
+                out.push_str("<!--");
+                out.push_str(text);
+                out.push_str("-->");
+            }
+            Some(NodeData::ProcessingInstruction { target, data }) => {
+                out.push_str("<?");
+                out.push_str(target);
+                out.push(' ');
+                out.push_str(data);
+                out.push_str("?>");
+            }
+            Some(NodeData::DocumentType {
+                name,
+                public_id,
+                system_id,
+            }) => {
+                out.push_str("<!DOCTYPE ");
+                out.push_str(name);
+                if !public_id.is_empty() {
+                    out.push_str(" PUBLIC \"");
+                    out.push_str(public_id);
+                    out.push('"');
+                } else if !system_id.is_empty() {
+                    out.push_str(" SYSTEM");
+                }
+                if !system_id.is_empty() {
+                    out.push_str(" \"");
+                    out.push_str(system_id);
+                    out.push('"');
+                }
+                out.push('>');
+            }
+            Some(NodeData::Document | NodeData::DocumentFragment) => {
+                for child in document.children(at).collect::<Vec<_>>().into_iter().rev() {
+                    steps.push(Step::Node(child, inherited.clone()));
+                }
+            }
+            None => {}
+        }
+    }
+}
+
+/// XML's escaping: `&`, `<` and `>`, and in an attribute value `"` and
+/// the white space a parser would normalize away.
+fn escape_xml(text: &str, attribute: bool, out: &mut String) {
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' if attribute => out.push_str("&quot;"),
+            '\t' if attribute => out.push_str("&#x9;"),
+            '\n' if attribute => out.push_str("&#xA;"),
+            '\r' if attribute => out.push_str("&#xD;"),
+            c => out.push(c),
+        }
+    }
+}
+
+/// Why [`XmlParser::parse`] stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum XmlStop {
+    /// It parsed the items it was allowed.
+    Slice,
+    /// An HTML or SVG `script` element was just closed: the caller
+    /// prepares it before the parse goes on, as XML's parser runs a
+    /// script it inserts. `line` is the line its start tag ended on.
+    Script { element: NodeId, line: u32 },
+    /// The document is parsed to its end.
+    Done,
+}
+
+/// An XML parser over a whole document's text that builds into a
+/// [`Document`] a slice at a time, stopping after each script element
+/// it closes: an XML document's scripts run as its parser meets them.
+pub struct XmlParser {
+    text: String,
+    /// Where the parse stands in `text`.
+    pos: usize,
+    line: u32,
+    column: u32,
+    started: bool,
+    done: bool,
+    parser: Parser,
+}
+
+impl XmlParser {
+    /// A parser of the decoded `text`, a byte order mark and carriage
+    /// returns taken away.
+    pub fn new(text: &str) -> XmlParser {
+        let text = text
+            .strip_prefix('\u{feff}')
+            .unwrap_or(text)
+            .replace("\r\n", "\n")
+            .replace('\r', "\n");
+        let budget = (text.len() * MAX_ENTITY_FACTOR + EXPANSION_SLACK).min(MAX_ENTITY_EXPANSION);
+        XmlParser {
+            text,
+            pos: 0,
+            line: 1,
+            column: 1,
+            started: false,
+            done: false,
+            parser: Parser {
+                document: Document::new(),
+                entities: HashMap::new(),
+                expanded: 0,
+                budget,
+                entity_stack: Vec::new(),
+                open: Vec::new(),
+                bindings: vec![Binding {
+                    prefix: Some("xml".to_owned()),
+                    uri: Some(XML_NAMESPACE.to_owned()),
+                }],
+                root: Root::Before,
+                reference: None,
+                scripts: VecDeque::new(),
+                xhtml_entities: false,
+                max_depth: MAX_XML_DEPTH,
+            },
+        }
+    }
+
+    /// Whether the parse is over, at the end or at an error.
+    pub fn is_done(&self) -> bool {
+        self.done
+    }
+
+    /// Parses at most `slice` items of content (a tag, a run of text, a
+    /// comment...) into `document`, which must be the one this parser
+    /// has built into from the start; the first error ends the parse,
+    /// what was built before it left in the document.
+    pub fn parse(&mut self, document: &mut Document, slice: usize) -> Result<XmlStop, XmlError> {
+        if self.done {
+            return Ok(XmlStop::Done);
+        }
+        std::mem::swap(&mut self.parser.document, document);
+        let mut c = Cursor {
+            text: &self.text,
+            pos: self.pos,
+            line: self.line,
+            column: self.column,
+        };
+        let parser = &mut self.parser;
+        let mut result = if self.started {
+            Ok(())
+        } else {
+            self.started = true;
+            parser.document.set_xml_document(true);
+            parser.prolog(&mut c)
+        };
+        let mut stop = XmlStop::Slice;
+        if result.is_ok() {
+            match parser.content_slice(&mut c, slice) {
+                Ok(Some(found)) => stop = found,
+                Ok(None) => {}
+                Err(error) => result = Err(error),
+            }
+        }
+        if result.is_ok() && stop == XmlStop::Slice && c.at_end() {
+            result = parser.finished(&c);
+            stop = XmlStop::Done;
+        }
+        (self.pos, self.line, self.column) = (c.pos, c.line, c.column);
+        std::mem::swap(&mut self.parser.document, document);
+        match result {
+            Ok(()) => {
+                self.done = stop == XmlStop::Done;
+                Ok(stop)
+            }
+            Err(error) => {
+                self.done = true;
+                Err(error)
+            }
+        }
+    }
 }
 
 /// An entity the internal subset declares.
@@ -159,6 +614,8 @@ struct Open {
     node: NodeId,
     name: String,
     bindings: usize,
+    /// The line its start tag ended on.
+    line: u32,
 }
 
 /// Where the root element stands.
@@ -183,6 +640,40 @@ struct Parser {
     /// Where in the document the entity being expanded was referenced:
     /// what an error inside it reports.
     reference: Option<(u32, u32)>,
+    /// The script elements closed and not yet reported, with the line
+    /// each start tag ended on.
+    scripts: VecDeque<(NodeId, u32)>,
+    /// The doctype names one of XHTML's DTDs: HTML's named character
+    /// references stand for what they do in HTML.
+    xhtml_entities: bool,
+    /// The most elements open at once: [`MAX_XML_DEPTH`], or fewer for a
+    /// fragment going deep in its document.
+    max_depth: usize,
+}
+
+/// The public identifiers of the DTDs whose entities the reference
+/// browser knows without fetching them: HTML's named references.
+const XHTML_DTDS: [&str; 11] = [
+    "-//W3C//DTD XHTML 1.0 Transitional//EN",
+    "-//W3C//DTD XHTML 1.1//EN",
+    "-//W3C//DTD XHTML 1.0 Strict//EN",
+    "-//W3C//DTD XHTML 1.0 Frameset//EN",
+    "-//W3C//DTD XHTML Basic 1.0//EN",
+    "-//W3C//DTD XHTML 1.1 plus MathML 2.0//EN",
+    "-//W3C//DTD XHTML 1.1 plus MathML 2.0 plus SVG 1.1//EN",
+    "-//W3C//DTD MathML 2.0//EN",
+    "-//WAPFORUM//DTD XHTML Mobile 1.0//EN",
+    "-//WAPFORUM//DTD XHTML Mobile 1.1//EN",
+    "-//WAPFORUM//DTD XHTML Mobile 1.2//EN",
+];
+
+/// What HTML's named character reference `name;` stands for.
+fn html_entity(name: &str) -> Option<&'static str> {
+    let key = format!("{name};");
+    crate::named_references::NAMED_REFERENCES
+        .binary_search_by(|(n, _)| (*n).cmp(key.as_str()))
+        .ok()
+        .map(|at| crate::named_references::NAMED_REFERENCES[at].1)
 }
 
 /// A place in a text: its byte offset, and its line and column.
@@ -401,6 +892,7 @@ impl Parser {
             (public_id, system_id) = self.external_id(c)?;
             c.space();
         }
+        self.xhtml_entities = XHTML_DTDS.contains(&public_id);
         let node = self.document.create_doctype(name, public_id, system_id);
         if c.skip("[") {
             self.internal_subset(c)?;
@@ -562,29 +1054,66 @@ impl Parser {
     /// replacement text where it is referenced.
     fn content(&mut self, c: &mut Cursor) -> Result<(), XmlError> {
         while !c.at_end() {
-            if c.starts_with("</") {
-                self.end_tag(c)?;
-            } else if c.starts_with("<!--") {
-                self.comment(c, true)?;
-            } else if c.starts_with("<![CDATA[") {
-                if self.open.is_empty() {
-                    return Err(c.error(self, "Start tag expected, '<' not found".to_owned()));
-                }
-                c.skip("<![CDATA[");
-                let text = c.until(self, "]]>", "CData section")?;
-                self.check_chars(c, text)?;
-                self.text(c, text)?;
-            } else if c.starts_with("<?") {
-                self.processing_instruction(c, true)?;
-            } else if c.starts_with("<!") {
-                return Err(c.error(self, "StartTag: invalid element name".to_owned()));
-            } else if c.starts_with("<") {
-                self.start_tag(c)?;
-            } else if c.starts_with("&") {
-                self.reference(c)?;
-            } else {
-                self.char_data(c)?;
+            self.item(c)?;
+        }
+        Ok(())
+    }
+
+    /// One item of content: a tag, a comment, a CDATA section, a
+    /// processing instruction, a reference or a run of character data.
+    fn item(&mut self, c: &mut Cursor) -> Result<(), XmlError> {
+        if c.starts_with("</") {
+            self.end_tag(c)
+        } else if c.starts_with("<!--") {
+            self.comment(c, true)
+        } else if c.starts_with("<![CDATA[") {
+            if self.open.is_empty() {
+                return Err(c.error(self, "Start tag expected, '<' not found".to_owned()));
             }
+            c.skip("<![CDATA[");
+            let text = c.until(self, "]]>", "CData section")?;
+            self.check_chars(c, text)?;
+            self.text(c, text)
+        } else if c.starts_with("<?") {
+            self.processing_instruction(c, true)
+        } else if c.starts_with("<!") {
+            Err(c.error(self, "StartTag: invalid element name".to_owned()))
+        } else if c.starts_with("<") {
+            self.start_tag(c)
+        } else if c.starts_with("&") {
+            self.reference(c)
+        } else {
+            self.char_data(c)
+        }
+    }
+
+    /// Content at the document's level, at most `slice` items, stopping
+    /// after a script element is closed: one an entity's text held, once
+    /// the entity is expanded.
+    fn content_slice(&mut self, c: &mut Cursor, slice: usize) -> Result<Option<XmlStop>, XmlError> {
+        for _ in 0..slice {
+            if let Some((element, line)) = self.scripts.pop_front() {
+                return Ok(Some(XmlStop::Script { element, line }));
+            }
+            if c.at_end() {
+                return Ok(None);
+            }
+            self.item(c)?;
+        }
+        Ok(self
+            .scripts
+            .pop_front()
+            .map(|(element, line)| XmlStop::Script { element, line }))
+    }
+
+    /// The checks at the document's end: no element left open, and a
+    /// root element met.
+    fn finished(&self, c: &Cursor) -> Result<(), XmlError> {
+        if let Some(open) = self.open.last() {
+            return Err(c.error(self, format!("Premature end of data in tag {}", open.name)));
+        }
+        if self.root == Root::Before {
+            return Err(c.error(self, "Start tag expected, '<' not found".to_owned()));
         }
         Ok(())
     }
@@ -682,7 +1211,10 @@ impl Parser {
         let replacement = match self.entities.get(&name) {
             Some(Entity::Internal(text)) => text.clone(),
             Some(Entity::External) => return Ok(()),
-            None => return Err(c.error(self, format!("Entity '{name}' not defined"))),
+            None => match html_entity(&name).filter(|_| self.xhtml_entities) {
+                Some(text) => return self.text(c, text),
+                None => return Err(c.error(self, format!("Entity '{name}' not defined"))),
+            },
         };
         let (text, outer) = self.enter_entity(c, &name, replacement, at)?;
         let depth = self.open.len();
@@ -845,7 +1377,13 @@ impl Parser {
                     format!("Attribute references external entity '{name}'"),
                 ));
             }
-            None => return Err(c.error(self, format!("Entity '{name}' not defined"))),
+            None => match html_entity(&name).filter(|_| self.xhtml_entities) {
+                Some(text) => {
+                    out.push_str(text);
+                    return Ok(());
+                }
+                None => return Err(c.error(self, format!("Entity '{name}' not defined"))),
+            },
         };
         let (text, outer) = self.enter_entity(c, &name, replacement, at)?;
         let mut inner = Cursor::new(&text);
@@ -888,10 +1426,10 @@ impl Parser {
         name: String,
         attrs: Vec<(String, String)>,
     ) -> Result<(), XmlError> {
-        if self.open.len() >= MAX_XML_DEPTH {
+        if self.open.len() >= self.max_depth {
             return Err(c.error(
                 self,
-                format!("Excessive depth in document: {MAX_XML_DEPTH}"),
+                format!("Excessive depth in document: {}", self.max_depth),
             ));
         }
         let bindings = self.bindings.len();
@@ -976,6 +1514,7 @@ impl Parser {
             node,
             name,
             bindings,
+            line: c.line,
         });
         Ok(())
     }
@@ -997,6 +1536,14 @@ impl Parser {
         self.bindings.truncate(open.bindings);
         if self.open.is_empty() {
             self.root = Root::After;
+        }
+        let script = match self.document.element_name(open.node) {
+            Some((Namespace::Html, name)) => name == "script",
+            Some((Namespace::Svg, name)) => local(name) == "script",
+            _ => false,
+        };
+        if script {
+            self.scripts.push_back((open.node, open.line));
         }
         Ok(())
     }
@@ -1349,5 +1896,182 @@ mod tests {
             "</g>".repeat(MAX_XML_DEPTH - 1)
         );
         assert!(parse_xml_text(&fits).is_ok());
+    }
+
+    const XHTML: &str = " xmlns=\"http://www.w3.org/1999/xhtml\"";
+
+    #[test]
+    fn the_parser_stops_after_each_script_with_the_tree_as_it_stands() {
+        let source = format!(
+            "<html{XHTML}><body><p>a</p>\n<script>x()</script><p>b</p>\
+             <svg xmlns='http://www.w3.org/2000/svg'><script/></svg></body></html>"
+        );
+        let mut parser = XmlParser::new(&source);
+        let mut document = Document::new();
+        let Ok(XmlStop::Script { element, line }) = parser.parse(&mut document, usize::MAX) else {
+            panic!("the script's end tag");
+        };
+        assert_eq!(document.tag(element), Some("script"));
+        assert_eq!(line, 2);
+        assert!(document.is_xml_document());
+        // Nothing after the script is in the tree yet.
+        assert_eq!(document.text_content(document.root()), "a\nx()");
+        let Ok(XmlStop::Script { element, .. }) = parser.parse(&mut document, usize::MAX) else {
+            panic!("the SVG script");
+        };
+        assert_eq!(document.svg_tag(element), Some("script"));
+        assert_eq!(parser.parse(&mut document, usize::MAX), Ok(XmlStop::Done));
+        assert!(parser.is_done());
+        assert_eq!(document.text_content(document.root()), "a\nx()b");
+        // A slice at a time.
+        let mut parser = XmlParser::new(&format!("<html{XHTML}><p>a</p><p>b</p></html>"));
+        let mut document = Document::new();
+        assert_eq!(parser.parse(&mut document, 2), Ok(XmlStop::Slice));
+        assert_eq!(document.text_content(document.root()), "");
+        while parser.parse(&mut document, 1) != Ok(XmlStop::Done) {}
+        assert_eq!(document.text_content(document.root()), "ab");
+    }
+
+    #[test]
+    fn an_xhtml_dtd_gives_htmls_named_references() {
+        let doctype = "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"x.dtd\">";
+        let document = parse_xml_text(&format!(
+            "{doctype}<html{XHTML} title='&eacute;'>&nbsp;&copy;&amp;</html>"
+        ))
+        .unwrap();
+        assert_eq!(
+            document.text_content(document.root()),
+            "\u{a0}\u{a9}&",
+            "in content"
+        );
+        let html = document.document_element().unwrap();
+        assert_eq!(document.attr(html, "title"), Some("\u{e9}"));
+        // Without one, or with another, they are not defined.
+        assert!(
+            error(&format!("<html{XHTML}>&nbsp;</html>")).ends_with("Entity 'nbsp' not defined")
+        );
+        assert!(
+            error(&format!(
+                "<!DOCTYPE html PUBLIC \"-//W3C//DTD HTML 4.01//EN\" \"x\"><html{XHTML}>&nbsp;</html>"
+            ))
+            .ends_with("Entity 'nbsp' not defined")
+        );
+        // A name HTML has only without its semicolon is none.
+        assert!(
+            error(&format!("{doctype}<html{XHTML}>&nbspx;</html>"))
+                .ends_with("Entity 'nbspx' not defined")
+        );
+    }
+
+    #[test]
+    fn an_error_is_reported_above_what_came_before_it() {
+        let mut parser =
+            XmlParser::new(&format!("<html{XHTML}><body><p>a</p><i></b></body></html>"));
+        let mut document = Document::new();
+        let error = parser.parse(&mut document, usize::MAX).unwrap_err();
+        insert_error_block(&mut document, &error);
+        let html = document.document_element().unwrap();
+        let report = document.first_child(html).unwrap();
+        assert_eq!(document.tag(report), Some("parsererror"));
+        assert_eq!(
+            document.text_content(report),
+            "This page contains the following errors:error on line 1 at column 65: \
+             Opening and ending tag mismatch: i and b\nBelow is a rendering of the page up \
+             to the first error."
+        );
+        // What was parsed stays after it.
+        assert_eq!(document.text_content(html).rsplit('.').next(), Some("a"));
+        // No root element: one is made; an SVG root goes in its body.
+        let mut document = Document::new();
+        insert_error_block(&mut document, &error);
+        let html = document.document_element().unwrap();
+        assert_eq!(document.tag(html), Some("html"));
+        let mut document = parse_xml_text(&format!("<svg{SVG}/>")).unwrap();
+        insert_error_block(&mut document, &error);
+        let html = document.document_element().unwrap();
+        let body = document.last_child(html).unwrap();
+        let tags: Vec<_> = document
+            .children(body)
+            .map(|n| document.local_name(n).unwrap_or("").to_owned())
+            .collect();
+        assert_eq!(tags, ["parsererror", "svg"]);
+    }
+
+    #[test]
+    fn a_fragment_is_parsed_in_its_contexts_namespaces_and_written_back_as_xml() {
+        let mut document = parse_xml_text(&format!(
+            "<html{XHTML} xmlns:s='http://www.w3.org/2000/svg'><body/></html>"
+        ))
+        .unwrap();
+        let body = document
+            .subtree(document.root())
+            .find(|&n| document.tag(n) == Some("body"))
+            .unwrap();
+        let container = document.create_element("html").unwrap();
+        parse_xml_fragment(
+            &mut document,
+            container,
+            body,
+            "<P class='a'>x &amp; &lt;</P><br/><s:rect/><q xmlns=''>t</q><!--c-->",
+            MAX_XML_DEPTH,
+        )
+        .unwrap();
+        let children: Vec<_> = document.children(container).collect();
+        assert_eq!(
+            document.element_name(children[0]),
+            Some((&Namespace::Html, "P"))
+        );
+        assert_eq!(document.svg_tag(children[2]), Some("rect"));
+        assert_eq!(
+            document.namespace(children[3]),
+            Some(&Namespace::Other(None))
+        );
+        while let Some(child) = document.first_child(container) {
+            document.remove_child(container, child).unwrap();
+            document.append_child(body, child).unwrap();
+        }
+        assert_eq!(
+            serialize_xml_children(&document, body),
+            "<P class=\"a\">x &amp; &lt;</P><br /><s:rect/><q xmlns=\"\">t</q><!--c-->"
+        );
+        let html = document.document_element().unwrap();
+        assert!(serialize_xml_node(&document, html).starts_with(
+            "<html xmlns=\"http://www.w3.org/1999/xhtml\" \
+             xmlns:s=\"http://www.w3.org/2000/svg\"><body><P"
+        ));
+        // Not well formed, or with a prefix bound nowhere, it is refused.
+        for markup in ["<p>", "</body>", "<x:y/>", "a&nbsp;b"] {
+            let container = document.create_element("html").unwrap();
+            assert!(
+                parse_xml_fragment(&mut document, container, body, markup, MAX_XML_DEPTH).is_err(),
+                "{markup}"
+            );
+        }
+        // An empty element of another namespace closes itself, an HTML one
+        // does not; an attribute's white space is kept by a reference.
+        let div = document.create_element("div").unwrap();
+        document.set_attribute(div, "title", "a\nb\"").unwrap();
+        assert_eq!(
+            serialize_xml_node(&document, div),
+            "<div xmlns=\"http://www.w3.org/1999/xhtml\" title=\"a&#xA;b&quot;\"></div>"
+        );
+    }
+
+    #[test]
+    fn an_xml_document_shows_as_one_with_elements_it_renders_or_a_style_sheet() {
+        let shown = |source: &str| has_style_information(&parse_xml_text(source).unwrap());
+        assert!(!shown("<root><a/></root>"));
+        assert!(shown(&format!("<root><p{XHTML}/></root>")));
+        assert!(shown(&format!("<svg{SVG}/>")));
+        assert!(shown("<?xml-stylesheet href='a.css'?><root/>"));
+        // The transport's encoding comes after a byte order mark.
+        let (text, encoding) = decode_xml_with(
+            b"<?xml version='1.0' encoding='utf-8'?><r>\xE9</r>",
+            Some(encoding::WINDOWS_1252),
+        );
+        assert_eq!(encoding, encoding::WINDOWS_1252);
+        assert!(text.contains('\u{e9}'));
+        let (_, encoding) = decode_xml_with(b"\xEF\xBB\xBF<r/>", Some(encoding::WINDOWS_1252));
+        assert_eq!(encoding, encoding::UTF_8);
     }
 }

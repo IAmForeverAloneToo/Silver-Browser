@@ -545,6 +545,13 @@ pub struct TreeBuilder {
     moves: u64,
     /// How many times the token in hand was processed.
     steps: u32,
+    /// The `option` elements popped off the stack while the token in
+    /// hand was processed, whose content may go into their `select`'s
+    /// `selectedcontent`.
+    popped_options: Vec<NodeId>,
+    /// A `selectedcontent` was parsed: before one, no option is looked
+    /// at, so that a long `select` stays linear.
+    selectedcontent: bool,
 }
 
 impl Default for TreeBuilder {
@@ -579,6 +586,8 @@ impl TreeBuilder {
             max_depth: MAX_DEPTH,
             moves: 0,
             steps: 0,
+            popped_options: Vec::new(),
+            selectedcontent: false,
         }
     }
 
@@ -672,10 +681,13 @@ impl TreeBuilder {
                 token
             }
         };
-        if self.foreign_rules_apply(&token) {
-            return self.foreign_token(document, token, line);
-        }
-        self.html_token(document, token, line)
+        let state = if self.foreign_rules_apply(&token) {
+            self.foreign_token(document, token, line)
+        } else {
+            self.html_token(document, token, line)
+        };
+        self.clone_popped_options(document);
+        state
     }
 
     /// Finishes the document: the end-of-file token, which implies what
@@ -690,6 +702,15 @@ impl TreeBuilder {
                 break;
             }
         }
+        // "The end" pops every node off the stack.
+        self.popped_options.extend(
+            self.open
+                .iter()
+                .rev()
+                .filter(|open| open.is("option"))
+                .map(|open| open.id),
+        );
+        self.clone_popped_options(document);
         self.open.clear();
         self.on_stack.clear();
         self.active.clear();
@@ -2313,6 +2334,7 @@ impl TreeBuilder {
 
     fn insert_element(&mut self, document: &mut Document, tag: Tag, push: bool) -> Option<NodeId> {
         let (place, depth) = self.place_for_element(document)?;
+        self.selectedcontent |= tag.name == "selectedcontent";
         let id = document.create_element_with(&tag.name, tag.attrs).ok()?;
         if !put(document, place, id) {
             return None;
@@ -2442,7 +2464,22 @@ impl TreeBuilder {
         }
         let open = self.open.pop()?;
         self.on_stack.remove(&open.id);
+        if open.is("option") {
+            self.popped_options.push(open.id);
+        }
         Some(open)
+    }
+
+    /// The option elements' popped steps for those popped: "maybe clone
+    /// an option into selectedcontent" (the customizable `select`).
+    fn clone_popped_options(&mut self, document: &mut Document) {
+        let popped = std::mem::take(&mut self.popped_options);
+        if !self.selectedcontent {
+            return;
+        }
+        for option in popped {
+            maybe_clone_into_selectedcontent(document, option);
+        }
     }
 
     /// Pops elements until `len` are open, the root never.
@@ -2858,6 +2895,130 @@ impl TreeBuilder {
 enum Note<'a> {
     Comment(&'a str),
     Instruction(&'a str, &'a str),
+}
+
+/// The `select` whose option `option` is (HTML's "option element nearest
+/// ancestor select"): none past a `datalist`, an `hr`, an `option` or a
+/// second `optgroup`.
+pub fn option_select(document: &Document, option: NodeId) -> Option<NodeId> {
+    let mut optgroup = false;
+    for ancestor in document.ancestors(option) {
+        match document.tag(ancestor) {
+            Some("datalist" | "hr" | "option") => return None,
+            Some("optgroup") if optgroup => return None,
+            Some("optgroup") => optgroup = true,
+            Some("select") => return Some(ancestor),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// A `select`'s enabled `selectedcontent`: its first `selectedcontent`
+/// descendant, none for a `select` of many.
+pub fn enabled_selectedcontent(document: &Document, select: NodeId) -> Option<NodeId> {
+    if document.attr(select, "multiple").is_some() {
+        return None;
+    }
+    document
+        .subtree(select)
+        .skip(1)
+        .find(|&node| document.tag(node) == Some("selectedcontent"))
+}
+
+/// The option a parsed `select` has selected, as the selectedness
+/// setting algorithm leaves it while the parser inserts its options:
+/// the last with a `selected` attribute, else the first not disabled.
+fn parsed_selection(document: &Document, select: NodeId) -> Option<NodeId> {
+    let options: Vec<NodeId> = document
+        .subtree(select)
+        .skip(1)
+        .filter(|&node| {
+            document.tag(node) == Some("option") && option_select(document, node) == Some(select)
+        })
+        .collect();
+    let disabled = |option: NodeId| {
+        document.attr(option, "disabled").is_some()
+            || document.parent(option).is_some_and(|parent| {
+                document.tag(parent) == Some("optgroup")
+                    && document.attr(parent, "disabled").is_some()
+            })
+    };
+    options
+        .iter()
+        .rev()
+        .find(|&&option| document.attr(option, "selected").is_some())
+        .or_else(|| options.iter().find(|&&option| !disabled(option)))
+        .copied()
+}
+
+/// HTML's "maybe clone an option into selectedcontent", run as the
+/// parser pops `option`: when its `select` has it selected and has an
+/// enabled `selectedcontent`, that element's children become copies
+/// of the option's.
+fn maybe_clone_into_selectedcontent(document: &mut Document, option: NodeId) {
+    let Some(select) = option_select(document, option) else {
+        return;
+    };
+    let Some(selectedcontent) = enabled_selectedcontent(document, select) else {
+        return;
+    };
+    if parsed_selection(document, select) == Some(option) {
+        clone_option_into(document, option, selectedcontent);
+    }
+}
+
+/// HTML's "clone an option into a selectedcontent": `selectedcontent`'s
+/// children replaced by deep copies of `option`'s.
+pub fn clone_option_into(document: &mut Document, option: NodeId, selectedcontent: NodeId) {
+    if document.subtree(option).any(|node| node == selectedcontent)
+        || document.subtree(selectedcontent).any(|node| node == option)
+    {
+        return;
+    }
+    while let Some(child) = document.first_child(selectedcontent) {
+        if document.remove_child(selectedcontent, child).is_err() {
+            return;
+        }
+    }
+    let children: Vec<NodeId> = document.children(option).collect();
+    for child in children {
+        let Some(copy) = deep_copy(document, child) else {
+            return;
+        };
+        if document.append_child(selectedcontent, copy).is_err() {
+            let _ = document.free(copy);
+            return;
+        }
+    }
+}
+
+/// A detached deep copy of `node` (its descendants' kinds the parser
+/// makes: elements, text and comments); none when the document is full.
+fn deep_copy(document: &mut Document, node: NodeId) -> Option<NodeId> {
+    let copy_one = |document: &mut Document, from: NodeId| match document.data(from)?.clone() {
+        NodeData::Element { tag, attrs, ns } => document.create_element_ns(ns, &tag, attrs).ok(),
+        NodeData::Text(text) => document.create_text(&text).ok(),
+        NodeData::Comment(text) => document.create_comment(&text).ok(),
+        _ => None,
+    };
+    let top = copy_one(document, node)?;
+    // Each pair: a node whose children are still to copy, and its copy.
+    let mut pending = vec![(node, top)];
+    while let Some((from, to)) = pending.pop() {
+        let children: Vec<NodeId> = document.children(from).collect();
+        for child in children {
+            let Some(copy) = copy_one(document, child) else {
+                continue;
+            };
+            if document.append_child(to, copy).is_err() {
+                let _ = document.free(copy);
+                continue;
+            }
+            pending.push((child, copy));
+        }
+    }
+    Some(top)
 }
 
 /// Puts the new node `node` at `place`, freeing it when the document
@@ -3428,6 +3589,48 @@ mod tests {
             let inner = expect_element(&a.children, 1);
             assert_eq!(tags(&inner.children), vec!["li", "li"], "{list}");
         }
+    }
+
+    #[test]
+    fn a_popped_option_selected_is_cloned_into_its_selects_selectedcontent() {
+        let selected = |source: &str| {
+            let (_, document) = parsed(source);
+            let content = document
+                .subtree(document.root())
+                .find(|&n| document.tag(n) == Some("selectedcontent"))
+                .expect("a selectedcontent");
+            crate::serialize_children(&document, content, true)
+        };
+        assert_eq!(
+            selected(
+                "<select><button><selectedcontent></button><option>a<b>c</b></option><option>d</select>"
+            ),
+            "a<b>c</b>"
+        );
+        // The last with `selected` wins; a disabled first is passed over.
+        assert_eq!(
+            selected(
+                "<select><button><selectedcontent></button><option selected>a<option selected>b<option>c</select>"
+            ),
+            "b"
+        );
+        assert_eq!(
+            selected(
+                "<select><button><selectedcontent></button><option disabled>a<option>b</select>"
+            ),
+            "b"
+        );
+        // A select of many has none, nor does an option past a datalist.
+        assert_eq!(
+            selected("<select multiple><button><selectedcontent></button><option>a</select>"),
+            ""
+        );
+        assert_eq!(
+            selected(
+                "<select><button><selectedcontent></button><datalist><option>a</datalist></select>"
+            ),
+            ""
+        );
     }
 
     #[test]

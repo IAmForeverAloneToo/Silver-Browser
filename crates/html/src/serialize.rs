@@ -89,10 +89,17 @@ fn write_other(data: &NodeData, out: &mut String) {
 /// template's contents stand for its children.
 fn write_children(document: &Document, node: NodeId, scripting: bool, out: &mut String) {
     let node = document.template_content(node).unwrap_or(node);
+    // A noscript in a template's contents is not scripted: its document,
+    // the template contents owner document, has no browsing context.
     let raw = |parent: NodeId| {
-        document
-            .tag(parent)
-            .is_some_and(|tag| RAW_TEXT.contains(&tag) || (tag == "noscript" && scripting))
+        document.tag(parent).is_some_and(|tag| {
+            RAW_TEXT.contains(&tag)
+                || (tag == "noscript"
+                    && scripting
+                    && !document
+                        .ancestors(parent)
+                        .any(|up| document.template_host(up).is_some()))
+        })
     };
     let inner = |n: NodeId| document.template_content(n).unwrap_or(n);
     let Some(mut at) = document.first_child(node) else {
@@ -231,6 +238,23 @@ mod tests {
         assert_eq!(
             serialize_node(&document, noscript, false),
             "<noscript><b>a&amp;b</b></noscript>"
+        );
+    }
+
+    #[test]
+    fn a_noscript_in_a_templates_contents_is_escaped_as_unscripted() {
+        let mut parser = crate::Parser::new(true);
+        parser.feed("<template><noscript><b></noscript></template><noscript><i></noscript>");
+        parser.end();
+        let mut document = Document::new();
+        while parser.parse(&mut document, usize::MAX) != crate::Stop::Done {}
+        let head = document
+            .subtree(document.root())
+            .find(|&n| document.tag(n) == Some("head"))
+            .unwrap();
+        assert_eq!(
+            serialize_children(&document, head, true),
+            "<template><noscript>&lt;b&gt;</noscript></template><noscript><i></noscript>"
         );
     }
 

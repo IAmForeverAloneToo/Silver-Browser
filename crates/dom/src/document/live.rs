@@ -53,6 +53,9 @@ pub(super) struct Live {
     /// focus.
     pub(super) moving: bool,
     pub(super) templates: super::Templates,
+    /// An XML document (DOM's type "xml"), an XML parser's: its HTML
+    /// elements' names and attributes keep their case.
+    pub(super) xml: bool,
 }
 
 impl Live {
