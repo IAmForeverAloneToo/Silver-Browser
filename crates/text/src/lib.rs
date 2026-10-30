@@ -1188,6 +1188,23 @@ impl FontCollection {
         })
     }
 
+    /// [`FontCollection::from_bytes`] with `monospace`'s face data the
+    /// face of the `monospace` generic family: the tests' collection, its
+    /// fixed-width text in a fixed-width font as a browser's is.
+    #[doc(hidden)]
+    pub fn from_bytes_with_monospace(
+        data: Vec<u8>,
+        index: u32,
+        monospace: Vec<u8>,
+    ) -> Result<Self, FontError> {
+        let mut collection = Self::from_bytes(data, index)?;
+        let face = FontStore::from_bytes(monospace, 0)?;
+        Arc::get_mut(&mut collection.faces)
+            .expect("a new collection's faces are its own")
+            .keep_monospace(face);
+        Ok(collection)
+    }
+
     /// The files its fonts are in, for another process to read rather
     /// than scan the system's fonts (M35.6): `None` for a collection made
     /// from bytes, or one whose files are not named in Unicode.
@@ -1471,6 +1488,25 @@ impl FontCollection {
         self.primary().zero_advance(font_size_px)
     }
 
+    /// The advance of the digit zero at `font_size_px` in the font CSS's
+    /// matching chooses for `families` (CSS Values 4's `ch`); the
+    /// primary font's for none.
+    pub fn zero_advance_in(&self, font_size_px: f32, families: &str) -> f32 {
+        if families.is_empty() {
+            return self.zero_advance(font_size_px);
+        }
+        let font = self.font(&FontRequest {
+            families,
+            ..FontRequest::default()
+        });
+        let advance = self.measure_in(font, "0", font_size_px);
+        if advance > 0.0 {
+            advance
+        } else {
+            font_size_px * 0.5
+        }
+    }
+
     /// The line-height-relevant metrics across *every* script actually
     /// present in `text` at `font_size_px` (M8.1) — the max
     /// ascent/descent/line-gap over each per-script font `text`'s
@@ -1684,6 +1720,11 @@ fn by_paragraphs(text: &str, base_direction: Option<Direction>) -> String {
 #[doc(hidden)]
 pub const TEST_FONT: &[u8] = include_bytes!("../fonts/DejaVuSans.ttf");
 
+/// The face data of DejaVu Sans Mono, bundled beside [`TEST_FONT`]: the
+/// tests' `monospace` ([`FontCollection::from_bytes_with_monospace`]).
+#[doc(hidden)]
+pub const TEST_MONO_FONT: &[u8] = include_bytes!("../fonts/DejaVuSansMono.ttf");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1829,6 +1870,29 @@ mod tests {
 
     fn test_fonts() -> FontCollection {
         FontCollection::from_bytes(TEST_FONT.to_vec(), 0).expect("the bundled test font parses")
+    }
+
+    #[test]
+    fn the_tests_monospace_is_the_bundled_fixed_width_face() {
+        let fonts = FontCollection::from_bytes_with_monospace(
+            TEST_FONT.to_vec(),
+            0,
+            TEST_MONO_FONT.to_vec(),
+        )
+        .expect("the bundled fonts parse");
+        let request = |families| FontRequest {
+            families,
+            ..FontRequest::default()
+        };
+        let width = |families, text| fonts.measure_in(fonts.font(&request(families)), text, 16.0);
+        for mono in ["monospace", "ui-monospace"] {
+            assert_eq!(width(mono, " "), width(mono, "m"));
+            assert_eq!(width(mono, "i"), width(mono, "m"));
+        }
+        assert!(width("sans-serif", "i") < width("sans-serif", "m"));
+        // A collection of one font has no other.
+        let one = test_fonts();
+        assert_eq!(one.font(&request("monospace")), Font::default());
     }
 
     #[test]

@@ -29,8 +29,8 @@
 //! none, as in `a<b>b</b>`, the words are set flush and never broken
 //! apart: when the second does not fit, both move to the next line
 //! together, back to the last wrap opportunity on the line, as one
-//! unbreakable piece (CSS2 §9.4.2). An atomic inline is a wrap
-//! opportunity on both sides regardless. Collapsible white space at
+//! unbreakable piece (CSS2 section 9.4.2). Where lines wrap, an atomic
+//! inline is a wrap opportunity on both sides. Collapsible white space at
 //! the start or end of a line is discarded.
 //!
 //! Inline elements (CSS2 §10.8, M11.6): an inline element gets a
@@ -409,7 +409,10 @@ pub(crate) struct InlineLayout<'a> {
 /// [`MAX_BALANCED_LINES`] lines, are made as alike in length as they can
 /// be without making more of them: each is broken as if the line were
 /// the narrowest that keeps the paragraph's count of lines, found by
-/// trying, and aligned in its own room.
+/// trying, and aligned in its own room. Under `pretty` (section 6.1) a
+/// paragraph whose last line is a word alone has the last word of the
+/// line before join it, where that keeps the count, the reference
+/// browser's avoidance of a short last line, approximated.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn layout_inline<'a>(
     items: &'a [LayoutBox],
@@ -422,19 +425,44 @@ pub(crate) fn layout_inline<'a>(
     pass: &Pass<'a>,
     indented: bool,
 ) -> InlineLayout<'a> {
-    let run = |caps: &[f32], floats: &mut FloatContext| {
+    let run = |caps: &[Cap], floats: &mut FloatContext| {
         layout_run(
             items, cb_width, cb_height, container, first_line, floats, at, pass, indented, caps,
         )
     };
-    let balance = container.text().text_wrap_style == style::computed::TextWrapStyle::Balance
-        && container.white_space.wrap;
-    if !balance {
+    use style::computed::TextWrapStyle;
+    let wrap_style = container.text().text_wrap_style;
+    if !container.white_space.wrap
+        || !matches!(wrap_style, TextWrapStyle::Balance | TextWrapStyle::Pretty)
+    {
         return run(&[], floats).0;
     }
-    let (_, counts) = run(&[], &mut floats.clone());
-    let mut caps: Vec<f32> = vec![f32::INFINITY; counts.len()];
-    for (paragraph, &count) in counts.iter().enumerate() {
+    let (_, paragraphs) = run(&[], &mut floats.clone());
+    let mut caps: Vec<Cap> = vec![(f32::INFINITY, 0); paragraphs.len()];
+    if wrap_style == TextWrapStyle::Pretty {
+        // A paragraph whose last line is one piece, a word alone, takes
+        // the last piece of the line before with it, where that keeps its
+        // count of lines: the lines before those two are as they were.
+        let mut changed = false;
+        for (n, paragraph) in paragraphs.iter().enumerate() {
+            if paragraph.lines < 2 || paragraph.last_pieces != 1 || paragraph.before_pieces < 2 {
+                continue;
+            }
+            caps[n] = (paragraph.before - 0.5, paragraph.lines - 2);
+            let (_, tried) = run(&caps, &mut floats.clone());
+            if tried.get(n).map(|p| p.lines) == Some(paragraph.lines) {
+                changed = true;
+            } else {
+                caps[n] = (f32::INFINITY, 0);
+            }
+        }
+        return if changed {
+            run(&caps, floats).0
+        } else {
+            run(&[], floats).0
+        };
+    }
+    for (paragraph, count) in paragraphs.iter().map(|p| p.lines).enumerate() {
         if !(2..=MAX_BALANCED_LINES).contains(&count) {
             continue;
         }
@@ -442,15 +470,15 @@ pub(crate) fn layout_inline<'a>(
         let (mut low, mut high) = (0.0f32, cb_width);
         while high - low > 0.5 {
             let middle = (low + high) / 2.0;
-            caps[paragraph] = middle;
+            caps[paragraph] = (middle, 0);
             let (_, tried) = run(&caps, &mut floats.clone());
-            if tried.get(paragraph) == Some(&count) {
+            if tried.get(paragraph).map(|p| p.lines) == Some(count) {
                 high = middle;
             } else {
                 low = middle;
             }
         }
-        caps[paragraph] = high;
+        caps[paragraph] = (high, 0);
     }
     run(&caps, floats).0
 }
@@ -459,9 +487,25 @@ pub(crate) fn layout_inline<'a>(
 /// reference browser has it: a longer one wraps as `wrap` does.
 const MAX_BALANCED_LINES: usize = 6;
 
+/// The room for a paragraph's lines from its line of that number on.
+type Cap = (f32, usize);
+
+/// What `text-wrap: balance` and `pretty` read of a paragraph's lines:
+/// how many there are, the width of the line before the last, and the
+/// pieces (words, or what no wrap opportunity parts) of the last two.
+#[derive(Debug, Clone, Copy, Default)]
+struct Paragraph {
+    lines: usize,
+    before: f32,
+    before_pieces: usize,
+    last: f32,
+    last_pieces: usize,
+}
+
 /// [`layout_inline`]'s lines, each paragraph's broken in at most its
-/// cap in `caps` where it has one; with the count of lines of each
-/// paragraph.
+/// cap in `caps` from its line there where it has one; with what each
+/// paragraph's lines
+/// were.
 #[allow(clippy::too_many_arguments)]
 fn layout_run<'a>(
     items: &'a [LayoutBox],
@@ -473,8 +517,8 @@ fn layout_run<'a>(
     at: At,
     pass: &Pass<'a>,
     indented: bool,
-    caps: &[f32],
-) -> (InlineLayout<'a>, Vec<usize>) {
+    caps: &[Cap],
+) -> (InlineLayout<'a>, Vec<Paragraph>) {
     let flat = collect_inline_items(items, pass.fonts);
     let strut = font::line(pass.fonts, " ", container);
     // The items as on the first line, as far as it can reach; the run's
@@ -504,7 +548,7 @@ fn layout_run<'a>(
         line_indent: 0.0,
         caps,
         paragraph: 0,
-        counts: vec![0],
+        counts: vec![Paragraph::default()],
         alignment: Alignment::of(container),
         strut: match (&first, first_line) {
             (Some(_), Some(line)) => font::line(pass.fonts, " ", &line.style),
@@ -547,6 +591,7 @@ fn layout_run<'a>(
                 node,
                 generated,
                 decorations,
+                gap_style,
                 ..
             } => {
                 let word = LineWord {
@@ -562,15 +607,21 @@ fn layout_run<'a>(
                     generated: *generated,
                     decorations: *decorations,
                 };
-                let can_break =
-                    !no_wrap && (*gap_before || *break_before || after_atomic) && !after_marker;
+                let can_break = breaks_before(
+                    *no_wrap,
+                    *gap_before,
+                    *gap_style,
+                    *break_before || after_atomic,
+                ) && !after_marker;
                 lines.place(LineItem::Word(word), index, *gap_before, can_break);
                 after_atomic = false;
                 after_marker = false;
             }
             InlineItem::Atomic { b, gap_before, .. } => {
                 let atomic = layout_inline_block(b, cb_width, cb_height, pass);
-                let can_break = !after_marker;
+                // Under `nowrap` not even beside an atomic inline (CSS Text 3
+                // section 5.1): its own style is the one it inherits there.
+                let can_break = !after_marker && b.style.white_space.wrap;
                 lines.place(
                     LineItem::Atomic(Box::new(atomic)),
                     index,
@@ -632,7 +683,7 @@ fn layout_run<'a>(
                 // break as the first; a paragraph begins after it.
                 lines.indent_next = lines.indent.each_line;
                 lines.paragraph += 1;
-                lines.counts.push(0);
+                lines.counts.push(Paragraph::default());
                 after_atomic = false;
             }
         }
@@ -697,11 +748,11 @@ struct Lines<'a, 'i, 'f, 'c> {
     indent: Indent,
     indent_next: bool,
     line_indent: f32,
-    /// `text-wrap: balance`'s room for each paragraph's lines, the
-    /// paragraph in progress, and the lines of each so far.
-    caps: &'c [f32],
+    /// `text-wrap: balance`'s and `pretty`'s room for each paragraph's
+    /// lines, the paragraph in progress, and the lines of each so far.
+    caps: &'c [Cap],
     paragraph: usize,
-    counts: Vec<usize>,
+    counts: Vec<Paragraph>,
     /// How the lines are aligned (M7.5, M21.7).
     alignment: Alignment,
     /// The containing block's own font metrics, the least any line is:
@@ -841,11 +892,13 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
     }
 
     /// How wide the line in progress may be for its breaks: its room,
-    /// or less where `text-wrap: balance` says.
+    /// or less where `text-wrap: balance` or `pretty` says.
     fn room(&self) -> f32 {
-        self.caps
-            .get(self.paragraph)
-            .map_or(self.available_width, |cap| self.available_width.min(*cap))
+        let line = self.counts.get(self.paragraph).map_or(0, |p| p.lines);
+        match self.caps.get(self.paragraph) {
+            Some(&(cap, from)) if line >= from => self.available_width.min(cap),
+            _ => self.available_width,
+        }
     }
 
     /// Takes the room beside the floats for the line in progress.
@@ -932,10 +985,22 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
         // `overflow-wrap` lets it or at its first: the head ends the
         // line, the rest goes on.
         let room = self.room() - self.line_width - gap;
+        // White space that hangs whole, other space separators after
+        // collapsible spaces say, goes on the line however full: at its
+        // end it hangs, the spaces before it with it. So does an end edge
+        // of no width after it.
+        let hangs_whole = item.width() - item.hang() <= 0.0
+            && (item.hang() > 0.0 || matches!(item, LineItem::Close(..)));
+        // The word is alone where it starts the line, or is glued to
+        // what is before it on a line with no opportunity to break: the
+        // piece they make is the line's (`12345<span>67890</span>`).
+        let alone =
+            self.line.is_empty() || (!can_break && !self.line.iter().skip(1).any(|p| p.can_break));
         if let LineItem::Word(word) = &item
+            && !hangs_whole
             && item.width() - item.hang() > room
             && word.style.white_space.wrap
-            && let Some((head, tail)) = cut_word(word, room, self.line.is_empty(), self.pass.fonts)
+            && let Some((head, tail)) = cut_word(word, room, alone, self.pass.fonts)
         {
             self.place(LineItem::Word(head), index, gap_before, can_break);
             let was_first = self.first.is_some();
@@ -948,7 +1013,9 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
         // this item doesn't fit, start a new line — unless the line is
         // still empty (a solo word wider than `available_width` just
         // overflows; see the module doc's overflow-wrap note).
-        if !self.line.is_empty() && self.line_width + gap + item.width() - item.hang() > self.room()
+        if !self.line.is_empty()
+            && !hangs_whole
+            && self.line_width + gap + item.width() - item.hang() > self.room()
         {
             let was_first = self.first.is_some();
             if can_break {
@@ -1068,11 +1135,18 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
     fn flush(&mut self, ends: bool) -> bool {
         let first_line = self.first.as_ref().map(|first| first.chain);
         let top = self.y;
-        let placement = self.alignment.place(
-            &self.line,
-            (self.available_width - self.line_width).max(0.0),
-            ends,
+        let (width, pieces) = (
+            self.line_width,
+            1 + self
+                .line
+                .iter()
+                .skip(1)
+                .filter(|p| p.can_break && p.item.is_content())
+                .count(),
         );
+        let placement =
+            self.alignment
+                .place(&self.line, self.available_width - self.line_width, ends);
         let reach = decoration_reach(
             &self.line,
             |index| match self.item(index) {
@@ -1115,8 +1189,14 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
         if baseline.is_some() {
             self.end_first_line();
             self.indent_next = false;
-            if let Some(count) = self.counts.get_mut(self.paragraph) {
-                *count += 1;
+            if let Some(p) = self.counts.get_mut(self.paragraph) {
+                *p = Paragraph {
+                    lines: p.lines + 1,
+                    before: p.last,
+                    before_pieces: p.last_pieces,
+                    last: width,
+                    last_pieces: pieces,
+                };
             }
         }
         self.place_deferred();
@@ -1249,6 +1329,7 @@ fn collect<'a>(
         gap_placed: false,
         at_word_start: true,
         glued: String::new(),
+        glued_style: None,
     };
     collector.collect(boxes);
     collector.out
@@ -1315,8 +1396,10 @@ struct Collector<'a, 'f> {
     at_word_start: bool,
     /// The end of the last word's text, while nothing but the edges of
     /// inline elements came after it: what the next word's text is
-    /// glued to, where UAX #14 may still break between the two.
+    /// glued to, where UAX #14 may still break between the two; and
+    /// that text's style.
     glued: String,
+    glued_style: Option<&'a Arc<ComputedStyle>>,
 }
 
 impl<'a> Collector<'a, '_> {
@@ -1515,16 +1598,18 @@ impl<'a> Collector<'a, '_> {
                 text::line_breaks(&reordered, break_rules(style))
             };
             hyphenation(&reordered, style, &mut breaks);
-            // Under `break-spaces` after every space too (CSS Text 3
-            // section 5.1).
+            // Under `break-spaces` after every space too, and every other
+            // space separator (CSS Text 3 section 5.1).
             if !no_wrap
                 && style.white_space.collapse == style::computed::WhiteSpaceCollapse::BreakSpaces
             {
                 breaks.extend(
                     reordered
                         .char_indices()
-                        .filter(|&(i, c)| c == ' ' && i + 1 < reordered.len())
-                        .map(|(i, _)| i + 1),
+                        .filter(|&(i, c)| {
+                            (c == ' ' || is_other_space(c)) && i + c.len_utf8() < reordered.len()
+                        })
+                        .map(|(i, c)| i + c.len_utf8()),
                 );
                 breaks.sort_unstable();
                 breaks.dedup();
@@ -1708,6 +1793,7 @@ impl<'a> Collector<'a, '_> {
         self.glued.clear();
         let tail = text.char_indices().rev().nth(7).map_or(0, |(i, _)| i);
         self.glued.push_str(&text[tail..]);
+        self.glued_style = Some(style);
         self.push(InlineItem::Word {
             text: text.to_string(),
             width: measure_word(text, style, self.fonts),
@@ -1729,7 +1815,9 @@ impl<'a> Collector<'a, '_> {
 
     /// Whether a line may break between the text the next word is glued
     /// to, before it in another box, and `text`, the word's, by UAX #14
-    /// under `style`'s rules. Where it may, the inline elements opened
+    /// under `style`'s rules, or the glued text's (a `break-all` box's
+    /// last letter breaks from what follows it, as the reference browser
+    /// has it). Where it may, the inline elements opened
     /// between the two take the opportunity, before their start edges,
     /// and the word is glued to them.
     fn breaks_after_glued(&mut self, text: &str, style: &ComputedStyle) -> bool {
@@ -1738,7 +1826,18 @@ impl<'a> Collector<'a, '_> {
         }
         let head = text.char_indices().nth(8).map_or(text.len(), |(i, _)| i);
         let joined = format!("{}{}", self.glued, &text[..head]);
-        if !text::line_breaks(&joined, break_rules(style)).contains(&self.glued.len()) {
+        // Under `break-spaces` after any preserved space too.
+        let after_space = style.white_space.collapse
+            == style::computed::WhiteSpaceCollapse::BreakSpaces
+            && self.glued.ends_with(|c| c == ' ' || is_other_space(c));
+        let at = self.glued.len();
+        let breaks = |rules| text::line_breaks(&joined, rules).contains(&at);
+        let rules = break_rules(style);
+        let glued_rules = self
+            .glued_style
+            .map(|glued| break_rules(glued))
+            .filter(|glued| *glued != rules);
+        if !after_space && !breaks(rules) && !glued_rules.is_some_and(breaks) {
             return false;
         }
         let opened = self
@@ -1837,9 +1936,18 @@ pub(crate) fn run_intrinsic_widths_indented<'a>(
             InlineItem::Word {
                 no_wrap,
                 gap_before,
+                gap_style,
                 break_before,
                 ..
-            } => !no_wrap && !line_empty && (*gap_before || *break_before || after_atomic),
+            } => {
+                !line_empty
+                    && breaks_before(
+                        *no_wrap,
+                        *gap_before,
+                        *gap_style,
+                        *break_before || after_atomic,
+                    )
+            }
             InlineItem::Open {
                 style,
                 gap_before,
@@ -1850,7 +1958,7 @@ pub(crate) fn run_intrinsic_widths_indented<'a>(
                     && !line_empty
                     && (*gap_before || *break_before || after_atomic)
             }
-            InlineItem::Atomic { .. } => !line_empty,
+            InlineItem::Atomic { b, .. } => !line_empty && b.style.white_space.wrap,
             InlineItem::Marker { b, .. } => {
                 !line_empty && matches!(b.kind, BoxKind::Marker { outside: false, .. })
             }
@@ -2042,21 +2150,7 @@ fn autospaced(text: &str, style: &ComputedStyle) -> Vec<usize> {
             ..
         } => (ideograph_alpha, ideograph_numeric),
     };
-    let ideograph = |c: char| {
-        matches!(c,
-            '\u{2e80}'..='\u{2fdf}'
-            | '\u{3005}'..='\u{3007}'
-            | '\u{3021}'..='\u{3029}'
-            | '\u{3031}'..='\u{3035}'
-            | '\u{3038}'..='\u{303c}'
-            | '\u{3040}'..='\u{30ff}'
-            | '\u{3100}'..='\u{312f}'
-            | '\u{31a0}'..='\u{31ff}'
-            | '\u{3400}'..='\u{4dbf}'
-            | '\u{4e00}'..='\u{9fff}'
-            | '\u{f900}'..='\u{faff}'
-            | '\u{20000}'..='\u{3ffff}')
-    };
+    let ideograph = is_ideograph;
     // A letter or a digit of no ideographic script, and not fullwidth.
     let other = |c: char| {
         !ideograph(c)
@@ -2076,6 +2170,45 @@ fn autospaced(text: &str, style: &ComputedStyle) -> Vec<usize> {
     out
 }
 
+/// Whether a line may break before a word: at the white space before
+/// it, as that white space's own `white-space` says (CSS Text 3 section
+/// 5.1), else at an `opportunity` without white space where the word's
+/// lines wrap (not `no_wrap`).
+fn breaks_before(
+    no_wrap: bool,
+    gap_before: bool,
+    gap_style: Option<&Arc<ComputedStyle>>,
+    opportunity: bool,
+) -> bool {
+    (gap_before && gap_style.map_or(!no_wrap, |gap| gap.white_space.wrap))
+        || (!no_wrap && opportunity)
+}
+
+/// Whether `c` is an ideograph, a kana or a bopomofo letter: the
+/// characters of the scripts that set no spaces between words.
+fn is_ideograph(c: char) -> bool {
+    matches!(c,
+        '\u{2e80}'..='\u{2fdf}'
+        | '\u{3005}'..='\u{3007}'
+        | '\u{3021}'..='\u{3029}'
+        | '\u{3031}'..='\u{3035}'
+        | '\u{3038}'..='\u{303c}'
+        | '\u{3040}'..='\u{30ff}'
+        | '\u{3100}'..='\u{312f}'
+        | '\u{31a0}'..='\u{31ff}'
+        | '\u{3400}'..='\u{4dbf}'
+        | '\u{4e00}'..='\u{9fff}'
+        | '\u{f900}'..='\u{faff}'
+        | '\u{20000}'..='\u{3ffff}')
+}
+
+/// Whether `text` is ideographs, format characters aside: a word that
+/// `text-justify: auto` spreads between its characters.
+fn of_ideographs(text: &str) -> bool {
+    text.chars()
+        .all(|c| is_ideograph(c) || is_zero_width(c) || is_bidi_control(c))
+}
+
 /// Whether `c` is a bidi formatting character: the marks, embeddings,
 /// overrides and isolates, which take no room.
 fn is_bidi_control(c: char) -> bool {
@@ -2086,10 +2219,11 @@ fn is_bidi_control(c: char) -> bool {
 }
 
 /// css-text-3 §4.1's collapsible white space: space, tab, line feed,
-/// carriage return, form feed — not Unicode's `White_Space`, which
-/// would make a no-break space breakable and collapsible.
+/// carriage return; not Unicode's `White_Space`, which would make a
+/// no-break space breakable and collapsible. A form feed is a control
+/// character, drawn as one, as the reference browser has it.
 pub(crate) fn is_css_space(c: char) -> bool {
-    matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{c}')
+    matches!(c, ' ' | '\t' | '\n' | '\r')
 }
 
 /// `style::computed::Direction` → `text::Direction` (M8.3): `text` sits
@@ -2272,18 +2406,34 @@ fn hyphen_of(style: &ComputedStyle) -> &str {
         .unwrap_or("\u{2010}")
 }
 
-/// How much of `text`'s width is preserved spaces at its end, which hang
-/// past a line's end (CSS Text 3 section 4.1.3): none under
-/// `break-spaces`, where they wrap, or where spaces collapse.
+/// How much of `text`'s width is white space at its end, which hangs
+/// past a line's end (CSS Text 3 section 4.1.3): preserved spaces and
+/// tabs, and the other space separators whether preserved or not; none
+/// under `break-spaces`, where they wrap.
 fn hang_of(text: &str, style: &ComputedStyle, fonts: &FontCollection) -> f32 {
-    let kept = text.trim_end_matches([' ', '\t']);
-    if kept.len() == text.len()
-        || !style.white_space.preserves_spaces()
-        || style.white_space.collapse == style::computed::WhiteSpaceCollapse::BreakSpaces
-    {
+    if style.white_space.collapse == style::computed::WhiteSpaceCollapse::BreakSpaces {
+        return 0.0;
+    }
+    let kept = if style.white_space.preserves_spaces() {
+        text.trim_end_matches(|c| c == ' ' || c == '\t' || is_other_space(c))
+    } else {
+        text.trim_end_matches(is_other_space)
+    };
+    if kept.len() == text.len() {
         return 0.0;
     }
     measure_word(text, style, fonts) - measure_word(kept, style, fonts)
+}
+
+/// Whether `c` is one of the other space separators a line may break
+/// after (CSS Text 3 section 4.1.3; UAX #14's class BA): the ogham space
+/// mark, the en and em spaces and their kin, and the ideographic space.
+/// Unlike the space they never collapse; at a line's end they hang.
+fn is_other_space(c: char) -> bool {
+    matches!(
+        c,
+        '\u{1680}' | '\u{2000}'..='\u{2006}' | '\u{2008}'..='\u{200a}' | '\u{205f}' | '\u{3000}'
+    )
 }
 
 /// `word` cut for a line with `room` left (D55): at its last opportunity
@@ -2310,7 +2460,10 @@ fn cut_word<'i>(
         } else {
             0.0
         };
-        measure_word(head, word.style, fonts) + hyphen - hang_of(head, word.style, fonts) <= room
+        // A head that hangs whole fits a line however full.
+        let width =
+            measure_word(head, word.style, fonts) + hyphen - hang_of(head, word.style, fonts);
+        width <= room || width <= 0.0
     });
     let at = match fits {
         Some(at) => at,
@@ -2364,10 +2517,67 @@ fn split_to_fit<'i>(
     Some(split_at(word, cut.unwrap_or(first), fonts))
 }
 
-/// A space's width plus `word-spacing` (M8.4) — the gap between two
-/// words on the same line.
+/// A space's width plus `word-spacing` (M8.4), the gap between two
+/// words on the same line, and `letter-spacing`, which the space takes
+/// as any character does.
 pub(crate) fn space_width(style: &ComputedStyle, fonts: &FontCollection) -> f32 {
-    font::measure(fonts, " ", style) + style.word_spacing
+    font::measure(fonts, " ", style) + style.word_spacing + style.letter_spacing
+}
+
+/// The units `letter-spacing` spaces in `text` (CSS Text 3 section 8.2),
+/// as the reference browser has them: its grapheme clusters, the letters
+/// of a cursive script kept joined in one, each with whether spacing
+/// follows it: none after a cursive script's letters, nor after a
+/// zero-width format character.
+fn letter_units(text: &str) -> Vec<(std::ops::Range<usize>, bool)> {
+    if text.is_ascii() {
+        return (0..text.len()).map(|i| (i..i + 1, true)).collect();
+    }
+    let mut units: Vec<(std::ops::Range<usize>, bool)> = Vec::new();
+    let mut start = 0;
+    for end in text::grapheme_boundaries(text)
+        .into_iter()
+        .chain([text.len()])
+    {
+        let unit = &text[start..end];
+        let first = unit.chars().next().unwrap_or(' ');
+        let cursive = is_cursive(first);
+        match units.last_mut() {
+            // Joined to the cursive letter before it.
+            Some((range, false))
+                if cursive && text[range.clone()].chars().next().is_some_and(is_cursive) =>
+            {
+                range.end = end;
+            }
+            _ => units.push((start..end, !cursive && !unit.chars().all(is_zero_width))),
+        }
+        start = end;
+    }
+    units
+}
+
+/// Whether `c` is a letter of a script whose letters join (Arabic,
+/// Syriac, N'Ko, Mandaic, Mongolian, Phags-pa, Adlam and their kin),
+/// which `letter-spacing` leaves joined.
+fn is_cursive(c: char) -> bool {
+    matches!(c,
+        '\u{600}'..='\u{8ff}'
+        | '\u{1800}'..='\u{18af}'
+        | '\u{a840}'..='\u{a87f}'
+        | '\u{fb50}'..='\u{fdff}'
+        | '\u{fe70}'..='\u{fefe}'
+        | '\u{10d00}'..='\u{10d3f}'
+        | '\u{10f30}'..='\u{10fff}'
+        | '\u{1e900}'..='\u{1e95f}')
+}
+
+/// Whether `c` is a format character of no width, which takes no
+/// `letter-spacing`: the zero-width space, joiners, marks and the like.
+fn is_zero_width(c: char) -> bool {
+    matches!(
+        c,
+        '\u{ad}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}'
+    )
 }
 
 /// `word`'s width, including `letter-spacing`'s contribution (M8.4).
@@ -2384,14 +2594,13 @@ fn measure_word(word: &str, style: &ComputedStyle, fonts: &FontCollection) -> f3
     if style.letter_spacing == 0.0 {
         return fonts.measure_in(font, word, style.font_size_px);
     }
-    let mut buf = [0u8; 4];
-    let mut total = 0.0;
-    let mut count = 0u32;
-    for ch in word.chars() {
-        total += fonts.measure_in(font, ch.encode_utf8(&mut buf), style.font_size_px);
-        count += 1;
-    }
-    total + style.letter_spacing * count as f32
+    letter_units(word)
+        .into_iter()
+        .map(|(range, spaced)| {
+            fonts.measure_in(font, &word[range], style.font_size_px)
+                + if spaced { style.letter_spacing } else { 0.0 }
+        })
+        .sum()
 }
 
 /// Positions one line's items (M7.4: baseline-aligned — the shared
@@ -2536,6 +2745,7 @@ fn flush_line<'a>(
     stack.extend(continued);
     let mut next_open = open.clone();
     let mut drawn = DrawnLines::default();
+    let last_content = line.iter().rposition(|p| p.item.is_content());
     for (i, placed) in line.drain(..).enumerate() {
         if i > 0 && placed.gap_before {
             x += placed.gap(fonts) + placement.gap;
@@ -2548,8 +2758,13 @@ fn flush_line<'a>(
             LineItem::Word(word) => {
                 let lines = word.decorations.map(|d| drawn.of(d, fonts));
                 let into = innermost(&mut stack, fragments);
+                let between = if placement.ideographs_only && !of_ideographs(word.text) {
+                    0.0
+                } else {
+                    placement.between
+                };
                 if word.style.letter_spacing != 0.0
-                    || (placement.between > 0.0 && word.text.chars().nth(1).is_some())
+                    || (between > 0.0 && word.text.chars().nth(1).is_some())
                 {
                     // Per-character fragments (M8.4) — see
                     // `measure_word`'s doc for why this has to shape
@@ -2561,7 +2776,22 @@ fn flush_line<'a>(
                         &word,
                         &mut x,
                         (baseline_y, max_ascent, max_descent),
-                        placement.between,
+                        between,
+                        lines.map(|lines| (lines, reach[i])),
+                        fonts,
+                    );
+                    continue;
+                }
+                let spaced = kept_spaces(word.text, Some(i) == last_content);
+                if placement.gap > 0.0 && spaced > 0 {
+                    // Kept spaces justified (CSS Text 3 section 7.3): the
+                    // word in pieces, each after a space widened.
+                    emit_justified(
+                        into,
+                        &word,
+                        &mut x,
+                        (baseline_y, max_ascent, max_descent),
+                        (placement.gap, spaced),
                         lines.map(|lines| (lines, reach[i])),
                         fonts,
                     );
@@ -2805,6 +3035,8 @@ struct Placement {
     offset: f32,
     gap: f32,
     between: f32,
+    /// `between` is only between the characters of words of ideographs.
+    ideographs_only: bool,
 }
 
 impl Alignment {
@@ -2817,18 +3049,22 @@ impl Alignment {
         }
     }
 
-    /// How `line`, `slack` short of its room, is placed: the last line,
-    /// or one ending at a forced break, when `ends`, by `text-align-last`
+    /// How `line`, `room` short of its room (less than nothing when it
+    /// overflows), is placed: the last line, or one ending at a forced
+    /// break, when `ends`, by `text-align-last`
     /// — `auto` being `text-align-all`'s value, or `start` where that is
     /// `justify` — and any other by `text-align-all`; `start` and `end`
     /// by the direction. A justified line's slack is shared equally among
-    /// its justification opportunities: the gaps between its items, and
-    /// with `inter-character` the places between two characters of a
+    /// its justification opportunities: the gaps between its items, the
+    /// spaces kept in its words but those that hang at its end (whose
+    /// width is slack then), and with `inter-character` the places
+    /// between two characters of a
     /// word as well. A line with none, with `text-justify: none`, or with
     /// no slack is aligned to its start; one too long for its room is
     /// too, whatever the alignment, never pushed back past its start
     /// (css-text-3 §7.1).
-    fn place(&self, line: &[Placed<'_, '_>], slack: f32, ends: bool) -> Placement {
+    fn place(&self, line: &[Placed<'_, '_>], room: f32, ends: bool) -> Placement {
+        let slack = room.max(0.0);
         let align = match (ends, self.last) {
             (true, TextAlignLast::Align(align)) => align,
             (true, TextAlignLast::Auto) if self.all == TextAlign::Justify => TextAlign::Start,
@@ -2845,22 +3081,56 @@ impl Alignment {
         if align != TextAlign::Justify {
             return at(align);
         }
-        let gaps = line
+        let last_content = line.iter().rposition(|p| p.item.is_content());
+        // Kept spaces between words are opportunities too, but those
+        // that hang at the line's end, which the line is not justified
+        // over.
+        let kept: usize = line
             .iter()
             .enumerate()
-            .filter(|(i, p)| *i > 0 && p.gap_before)
-            .count();
-        let between: usize = line
-            .iter()
-            .map(|p| match &p.item {
-                LineItem::Word(word) => word.text.chars().count().saturating_sub(1),
+            .map(|(i, p)| match &p.item {
+                LineItem::Word(word) if !word.tab => {
+                    kept_spaces(word.text, Some(i) == last_content)
+                }
                 _ => 0,
             })
             .sum();
-        let opportunities = match self.justify {
-            TextJustify::None => 0,
-            TextJustify::InterCharacter => gaps + between,
-            TextJustify::Auto | TextJustify::InterWord => gaps,
+        let slack = if kept > 0 {
+            (room + last_content.map_or(0.0, |i| line[i].item.hang())).max(0.0)
+        } else {
+            slack
+        };
+        let gaps = kept
+            + line
+                .iter()
+                .enumerate()
+                .filter(|(i, p)| *i > 0 && p.gap_before)
+                .count();
+        // Between the characters of words, every word's with
+        // `inter-character`; with `auto` those of words of ideographs, as
+        // the reference browser spreads them.
+        let between = |only_ideographs: bool| -> usize {
+            line.iter()
+                .map(|p| match &p.item {
+                    LineItem::Word(word) if !only_ideographs || of_ideographs(word.text) => {
+                        letter_units(word.text)
+                            .iter()
+                            .filter(|(_, spaced)| *spaced)
+                            .count()
+                            .saturating_sub(1)
+                    }
+                    _ => 0,
+                })
+                .sum()
+        };
+        let (opportunities, spread) = match self.justify {
+            TextJustify::None => (0, false),
+            TextJustify::InterCharacter => (gaps + between(false), true),
+            TextJustify::Auto => {
+                let between = between(true);
+                (gaps + between, between > 0)
+            }
+            TextJustify::InterWord => (gaps, false),
         };
         if slack <= 0.0 || opportunities == 0 {
             return at(TextAlign::Start);
@@ -2869,11 +3139,8 @@ impl Alignment {
         Placement {
             offset: 0.0,
             gap: share,
-            between: if self.justify == TextJustify::InterCharacter {
-                share
-            } else {
-                0.0
-            },
+            between: if spread { share } else { 0.0 },
+            ideographs_only: self.justify == TextJustify::Auto,
         }
     }
 }
@@ -3010,16 +3277,19 @@ fn emit_letter_spaced(
     decorations: Option<(Arc<[DrawnLine]>, Spread)>,
     fonts: &FontCollection,
 ) {
-    let mut buf = [0u8; 4];
     let shown = if word.hyphen {
         Cow::Owned(format!("{}{}", word.text, hyphen_of(word.style)))
     } else {
         Cow::Borrowed(word.text)
     };
-    let last = shown.chars().count().saturating_sub(1);
+    let units = letter_units(&shown);
+    let last = units.len().saturating_sub(1);
+    // Justification widens the places after the spaced units but the
+    // last: none after a format character or within a cursive word.
+    let last_spaced = units.iter().rposition(|(_, spaced)| *spaced);
     let font = font::font_of(fonts, word.style);
-    for (i, ch) in shown.chars().enumerate() {
-        let ch_str = ch.encode_utf8(&mut buf);
+    for (i, (range, spaced)) in units.into_iter().enumerate() {
+        let ch_str = &shown[range];
         let w = fonts.measure_in(font, ch_str, word.style.font_size_px);
         let one = LineWord {
             text: ch_str,
@@ -3034,7 +3304,13 @@ fn emit_letter_spaced(
             generated: word.generated,
             decorations: word.decorations,
         };
-        let spacing = word.style.letter_spacing + if i == last { 0.0 } else { between };
+        let letter = if spaced {
+            word.style.letter_spacing
+        } else {
+            0.0
+        };
+        let widened = spaced && Some(i) != last_spaced;
+        let spacing = letter + if widened { between } else { 0.0 };
         let decorated = decorations.as_ref().map(|(lines, (left, right))| {
             Box::new(Decorated {
                 lines: Arc::clone(lines),
@@ -3046,6 +3322,82 @@ fn emit_letter_spaced(
             *x, baseline_y, &one, ascent, descent, decorated, font,
         ));
         *x += w + spacing;
+    }
+}
+
+/// How many kept spaces in `text` a justified line widens: every space
+/// and no-break space, as the reference browser has it, but the spaces
+/// at its end when it ends the line (`last`), which hang.
+fn kept_spaces(text: &str, last: bool) -> usize {
+    let text = if last {
+        text.trim_end_matches(' ')
+    } else {
+        text
+    };
+    text.chars().filter(|&c| is_justified_space(c)).count()
+}
+
+/// Whether justification widens `c` where it is kept in a word: a space
+/// or a no-break space.
+fn is_justified_space(c: char) -> bool {
+    c == ' ' || c == '\u{a0}'
+}
+
+/// Pushes `word` in pieces, each ending after one of its first `spaced`
+/// spaces, which justification widens by `gap` (M21.7): the kept spaces
+/// of `white-space: pre-wrap` text are its opportunities. As
+/// [`emit_letter_spaced`] does otherwise.
+fn emit_justified(
+    fragments: &mut Vec<Fragment>,
+    word: &LineWord<'_>,
+    x: &mut f32,
+    (baseline_y, ascent, descent): (f32, f32, f32),
+    (gap, spaced): (f32, usize),
+    decorations: Option<(Arc<[DrawnLine]>, Spread)>,
+    fonts: &FontCollection,
+) {
+    let font = font::font_of(fonts, word.style);
+    let mut cuts: Vec<usize> = word
+        .text
+        .char_indices()
+        .filter(|&(_, c)| is_justified_space(c))
+        .take(spaced)
+        .map(|(at, c)| at + c.len_utf8())
+        .collect();
+    if cuts.last() != Some(&word.text.len()) {
+        cuts.push(word.text.len());
+    }
+    let pieces = cuts.len();
+    let mut start = 0;
+    for (n, end) in cuts.into_iter().enumerate() {
+        let text = &word.text[start..end];
+        let last = n + 1 == pieces;
+        let piece = LineWord {
+            text,
+            width: measure_word(text, word.style, fonts)
+                + if word.hyphen && last {
+                    measure_word(hyphen_of(word.style), word.style, fonts)
+                } else {
+                    0.0
+                },
+            hang: 0.0,
+            offset: word.offset + start,
+            hyphen: word.hyphen && last,
+            ..*word
+        };
+        let widened = if n < spaced { gap } else { 0.0 };
+        let decorated = decorations.as_ref().map(|(lines, (left, right))| {
+            Box::new(Decorated {
+                lines: Arc::clone(lines),
+                left: if n == 0 { *left } else { 0.0 },
+                right: widened + if last { *right } else { 0.0 },
+            })
+        });
+        fragments.push(text_fragment(
+            *x, baseline_y, &piece, ascent, descent, decorated, font,
+        ));
+        *x += piece.width + widened;
+        start = end;
     }
 }
 
@@ -3382,13 +3734,13 @@ mod tests {
     }
 
     #[test]
-    fn text_wrap_balance_evens_the_lines_out_keeping_their_count() {
+    fn text_wrap_balance_evens_the_lines_out_and_pretty_leaves_no_word_alone() {
         let fonts = test_fonts();
         let width = fonts.measure("aa aa aa aa", 16.0) + 2.0;
-        let rows = |wrap_style| {
+        let rows = |text: &str, wrap_style| {
             let mut container = ComputedStyle::default();
             container.text_mut().text_wrap_style = wrap_style;
-            let fragments = lay_styled("aa aa aa aa aa", width, container);
+            let fragments = lay_styled(text, width, container);
             let mut rows: Vec<usize> = Vec::new();
             let mut last_y = None;
             for f in &fragments {
@@ -3401,9 +3753,15 @@ mod tests {
             rows
         };
         use style::computed::TextWrapStyle;
-        assert_eq!(rows(TextWrapStyle::Auto), [4, 1]);
-        assert_eq!(rows(TextWrapStyle::Balance), [3, 2]);
-        assert_eq!(rows(TextWrapStyle::Pretty), [4, 1]);
+        let five = "aa aa aa aa aa";
+        assert_eq!(rows(five, TextWrapStyle::Auto), [4, 1]);
+        assert_eq!(rows(five, TextWrapStyle::Balance), [3, 2]);
+        assert_eq!(rows(five, TextWrapStyle::Pretty), [3, 2]);
+        // `pretty` moves one word down; `balance` evens every line out.
+        let nine = "aa aa aa aa aa aa aa aa aa";
+        assert_eq!(rows(nine, TextWrapStyle::Auto), [4, 4, 1]);
+        assert_eq!(rows(nine, TextWrapStyle::Balance), [3, 3, 3]);
+        assert_eq!(rows(nine, TextWrapStyle::Pretty), [4, 3, 2]);
     }
 
     #[test]
@@ -3428,6 +3786,72 @@ mod tests {
         assert_eq!(at(TextAlign::Start, Direction::Rtl), 100.0 - width);
         assert_eq!(at(TextAlign::End, Direction::Ltr), 100.0 - width);
         assert_eq!(at(TextAlign::End, Direction::Rtl), 0.0);
+    }
+
+    #[test]
+    fn auto_justification_spreads_ideographs_but_not_letters() {
+        let container = ComputedStyle {
+            text_align: TextAlign::Justify,
+            text_align_last: TextAlignLast::Align(TextAlign::Justify),
+            ..ComputedStyle::default()
+        };
+        let xs = |text: &str| -> Vec<(String, f32)> {
+            lay_styled(text, 200.0, container.clone())
+                .iter()
+                .map(|f| match &f.kind {
+                    FragmentKind::Text(t) => (t.clone(), f.x + f.w),
+                    _ => unreachable!("texts"),
+                })
+                .collect()
+        };
+        // Two ideographs, a bidi isolate between them taking no share.
+        let wide = xs("\u{6771}\u{2066}\u{4eac}\u{2069}");
+        let last = wide.iter().rfind(|(t, _)| t == "\u{4eac}").expect("drawn");
+        assert!((last.1 - 200.0).abs() < 0.01, "{wide:?}");
+        // A word of letters stays one fragment, at the start.
+        assert_eq!(xs("ab").len(), 1);
+    }
+
+    #[test]
+    fn kept_spaces_are_justified_but_those_that_hang() {
+        let fonts = test_fonts();
+        let w = |s: &str| fonts.measure(s, 16.0);
+        let pre_wrap = ComputedStyle {
+            font_size_px: 16.0,
+            white_space: WhiteSpace::PRE_WRAP,
+            ..ComputedStyle::default()
+        };
+        let container = ComputedStyle {
+            text_align: TextAlign::Justify,
+            ..ComputedStyle::default()
+        };
+        let width = w("aa bb c");
+        let items = [styled_text_box("aa bb cc", pre_wrap)];
+        let mut floats = FloatContext::default();
+        let l = layout_inline(
+            &items,
+            width,
+            None,
+            &container,
+            None,
+            &mut floats,
+            At::root(),
+            &Pass::new(&fonts),
+            true,
+        );
+        let shown: Vec<(String, f32)> = texts(&l.fragments)
+            .iter()
+            .map(|f| match &f.kind {
+                FragmentKind::Text(t) => (t.clone(), f.x),
+                _ => unreachable!("texts"),
+            })
+            .collect();
+        // The line's one kept space between words takes the slack and the
+        // hanging space's width: "bb" ends at the line's end.
+        assert_eq!(shown[0], ("aa ".to_owned(), 0.0));
+        assert_eq!(shown[1].0, "bb ");
+        assert!((shown[1].1 + w("bb") - width).abs() < 0.01, "{shown:?}");
+        assert_eq!(shown[2], ("cc".to_owned(), 0.0));
     }
 
     #[test]
@@ -3691,6 +4115,73 @@ mod tests {
     }
 
     #[test]
+    fn overflow_wrap_cuts_a_word_glued_to_the_text_before_it() {
+        let fonts = test_fonts();
+        let anywhere = ComputedStyle {
+            overflow_wrap: style::computed::OverflowWrap::Anywhere,
+            ..ComputedStyle::default()
+        };
+        let (fragments, _) = lay(
+            &[
+                text_box("12345", 16.0),
+                inline_box(vec![styled_text_box("67890", anywhere)]),
+            ],
+            fonts.measure("12345678", 16.0) + 0.5,
+            TextAlign::Left,
+            &fonts,
+        );
+        let shown: Vec<(String, f32)> = texts(&fragments)
+            .iter()
+            .map(|f| match &f.kind {
+                FragmentKind::Text(t) => (t.clone(), f.y),
+                _ => unreachable!("texts"),
+            })
+            .collect();
+        let texts: Vec<&str> = shown.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(texts, ["12345", "678", "90"]);
+        assert_eq!(shown[0].1, shown[1].1);
+        assert!(shown[2].1 > shown[1].1);
+    }
+
+    #[test]
+    fn nowrap_text_does_not_break_beside_an_atomic_inline() {
+        let fonts = test_fonts();
+        let nowrap = ComputedStyle {
+            white_space: WhiteSpace::NOWRAP,
+            ..ComputedStyle::default()
+        };
+        let atomic = |white_space| LayoutBox {
+            style: ComputedStyle {
+                display: style::computed::Display::InlineBlock,
+                width: style::computed::Size::Px(30.0),
+                height: style::computed::Size::Px(10.0),
+                white_space,
+                ..ComputedStyle::default()
+            }
+            .into(),
+            kind: BoxKind::InlineBlock,
+            ..inline_box(Vec::new())
+        };
+        let ys = |white_space, text: ComputedStyle| {
+            let (fragments, _) = lay(
+                &[
+                    styled_text_box("aaa", text.clone()),
+                    atomic(white_space),
+                    styled_text_box("\u{a0}bbb", text),
+                ],
+                1.0,
+                TextAlign::Left,
+                &fonts,
+            );
+            let mut ys: Vec<f32> = texts(&fragments).iter().map(|f| f.y).collect();
+            ys.dedup();
+            ys.len()
+        };
+        assert_eq!(ys(WhiteSpace::NOWRAP, nowrap), 1, "one line");
+        assert_eq!(ys(WhiteSpace::NORMAL, ComputedStyle::default()), 2);
+    }
+
+    #[test]
     fn white_space_pre_line_preserves_newlines_as_forced_breaks() {
         let fonts = test_fonts();
         let style = ComputedStyle {
@@ -3911,6 +4402,59 @@ mod tests {
         );
         let ys: Vec<f32> = fragments.iter().map(|f| f.y).collect();
         assert!(ys.iter().all(|&y| y == ys[0]), "one line: {ys:?}");
+    }
+
+    #[test]
+    fn a_form_feed_is_a_character_not_white_space() {
+        assert_eq!(
+            lines_of("a\u{c}b c", ComputedStyle::default(), 400.0),
+            ["a\u{c}b|c"]
+        );
+    }
+
+    #[test]
+    fn other_space_separators_hang_or_under_break_spaces_wrap() {
+        let fonts = test_fonts();
+        let w = |s: &str| fonts.measure(s, 16.0);
+        let space = "\u{3000}";
+        // Ideographic spaces at a line's end hang past it, collapsible
+        // spaces between them with them, an inline's end edge after.
+        let text = format!("x ab{space}{space}cd");
+        assert_eq!(
+            lines_of(&text, ComputedStyle::default(), w("x ab") + 1.0),
+            [format!("x|ab{space}{space}"), "cd".to_owned()]
+        );
+        let boxes = [
+            text_box("ab", 16.0),
+            inline_box(vec![text_box(&format!("{space} {space}"), 16.0)]),
+            text_box("cd", 16.0),
+        ];
+        let (fragments, _) = lay(&boxes, w("ab") + 1.0, TextAlign::Left, &fonts);
+        let all = texts(&fragments);
+        let y_of = |t: &str| {
+            all.iter()
+                .find(|f| matches!(&f.kind, FragmentKind::Text(s) if s == t))
+                .map(|f| f.y)
+        };
+        let spaces: Vec<f32> = all
+            .iter()
+            .filter(|f| matches!(&f.kind, FragmentKind::Text(s) if s == space))
+            .map(|f| f.y)
+            .collect();
+        assert_eq!(spaces.len(), 2);
+        assert!(spaces.iter().all(|&y| Some(y) == y_of("ab")), "one line");
+        assert!(y_of("cd") > y_of("ab"));
+        // Under `break-spaces` a line breaks after each, which do not hang.
+        let break_spaces = ComputedStyle {
+            white_space: WhiteSpace::BREAK_SPACES,
+            ..ComputedStyle::default()
+        };
+        let text = format!("ab{space}{space}{space}cd");
+        let width = w(&format!("ab{space}")) + 1.0;
+        assert_eq!(
+            lines_of(&text, break_spaces, width),
+            [format!("ab{space}"), space.repeat(2), "cd".to_owned()]
+        );
     }
 
     #[test]
@@ -4218,6 +4762,44 @@ mod tests {
         assert_eq!(texts_of(&fragments), vec!["a", "b"]);
         let gap = fragments[1].x - (fragments[0].x + fragments[0].w);
         assert_eq!(gap, 5.0);
+    }
+
+    #[test]
+    fn letter_spacing_spaces_clusters_and_the_space_but_not_joined_letters() {
+        // A grapheme cluster is one unit; a cursive script's letters stay
+        // joined and take none, nor does a zero-width format character.
+        fn units(text: &str) -> Vec<(&str, bool)> {
+            letter_units(text)
+                .into_iter()
+                .map(|(range, spaced)| (&text[range], spaced))
+                .collect()
+        }
+        assert_eq!(units("ab"), [("a", true), ("b", true)]);
+        assert_eq!(units("e\u{301}x"), [("e\u{301}", true), ("x", true)]);
+        assert_eq!(
+            units("a\u{200b}b"),
+            [("a", true), ("\u{200b}", false), ("b", true)]
+        );
+        assert_eq!(
+            units("\u{645}\u{631}\u{62d}a"),
+            [("\u{645}\u{631}\u{62d}", false), ("a", true)]
+        );
+        // The gap between two words takes it as a space would.
+        let fonts = test_fonts();
+        let style = ComputedStyle {
+            font_size_px: 16.0,
+            letter_spacing: 5.0,
+            ..ComputedStyle::default()
+        };
+        let (fragments, _) = lay(
+            &[styled_text_box("a b", style)],
+            10_000.0,
+            TextAlign::Left,
+            &fonts,
+        );
+        let space = font::measure(&fonts, " ", &ComputedStyle::default());
+        let gap = fragments[1].x - (fragments[0].x + fragments[0].w);
+        assert!((gap - (5.0 + space + 5.0)).abs() < 1e-3, "{gap}");
     }
 
     #[test]

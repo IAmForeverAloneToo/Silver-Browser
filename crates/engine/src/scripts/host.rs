@@ -209,6 +209,10 @@ impl FontMeasure for Measure<'_> {
     fn zero_advance(&self, font_size_px: f32) -> f32 {
         self.0.zero_advance(font_size_px)
     }
+
+    fn zero_advance_in(&self, font_size_px: f32, families: &str) -> f32 {
+        self.0.zero_advance_in(font_size_px, families)
+    }
 }
 
 /// The host a document's scripts reach it through.
@@ -1190,6 +1194,17 @@ impl DocumentHost {
             Call::InnerText(node) => {
                 let node = self.node(node)?;
                 Ok(Answer::String(self.inner_text(node)))
+            }
+            Call::SelectedText(start, start_offset, end, end_offset) => {
+                let start = dom::Boundary {
+                    node: self.node(start)?,
+                    offset: start_offset,
+                };
+                let end = dom::Boundary {
+                    node: self.node(end)?,
+                    offset: end_offset,
+                };
+                Ok(Answer::MaybeString(self.selected_text(start, end)))
             }
             Call::DocumentOpen => {
                 self.only_html("open")?;
@@ -4554,13 +4569,38 @@ impl DocumentHost {
     /// cells and a line break after a row; the text content for an
     /// element not rendered.
     fn inner_text(&mut self, node: NodeId) -> String {
-        use style::computed::{Display, Visibility, WhiteSpaceCollapse};
-        if self.styles_now().is_none() {
-            return self.document.text_content(node);
+        self.rendered_text(node, None)
+            .unwrap_or_else(|| self.document.text_content(node))
+    }
+
+    /// The rendered text between `start` and `end`, as
+    /// [`Self::inner_text`] collects it, which the reference browser's
+    /// `Selection.toString()` gives (text-transform applied, white space
+    /// collapsed, hidden content left out); `None` where the range is in
+    /// nothing rendered.
+    fn selected_text(&mut self, start: dom::Boundary, end: dom::Boundary) -> Option<String> {
+        let mut root = start.node;
+        while !self.document.is_inclusive_ancestor(root, end.node) {
+            root = self.document.parent(root)?;
         }
-        let Some(computed) = self.computed.as_ref() else {
-            return self.document.text_content(node);
-        };
+        // The walk starts at an element: a text node's parent.
+        if self.document.text(root).is_some() {
+            root = self.document.parent(root)?;
+        }
+        self.rendered_text(root, Some((start, end)))
+    }
+
+    /// [`Self::inner_text`] of `node`, only the text within `range` where
+    /// one is given; `None` where styles are not had or `node` is not
+    /// rendered.
+    fn rendered_text(
+        &mut self,
+        node: NodeId,
+        range: Option<(dom::Boundary, dom::Boundary)>,
+    ) -> Option<String> {
+        use style::computed::{Display, Visibility, WhiteSpaceCollapse};
+        self.styles_now()?;
+        let computed = self.computed.as_ref()?;
         let styles = &computed.styles;
         let document = &self.document;
         let mut work = 0u64;
@@ -4568,8 +4608,26 @@ impl DocumentHost {
         let connected =
             node == document.root() || document.ancestors(node).last() == Some(document.root());
         if !connected || !rendered(node) {
-            return document.text_content(node);
+            return None;
         }
+        // The part of a text node within the range, in UTF-16 units.
+        let within = |n: NodeId, length: u32| -> Option<(u32, u32)> {
+            let Some((start, end)) = range else {
+                return Some((0, length));
+            };
+            let at = |offset| dom::Boundary { node: n, offset };
+            let from = match document.compare_boundaries(start, at(0))? {
+                std::cmp::Ordering::Greater if start.node == n => start.offset.min(length),
+                std::cmp::Ordering::Greater => return None,
+                _ => 0,
+            };
+            let to = match document.compare_boundaries(end, at(length))? {
+                std::cmp::Ordering::Less if end.node == n => end.offset.min(length),
+                std::cmp::Ordering::Less => return None,
+                _ => length,
+            };
+            (from < to).then_some((from, to))
+        };
         // The text, and line breaks still to come (a count, or none).
         let mut out = String::new();
         let mut pending: usize = 0;
@@ -4601,6 +4659,17 @@ impl DocumentHost {
                 if style.visibility != Visibility::Visible {
                     continue;
                 }
+                let part;
+                let text = if range.is_none() {
+                    text
+                } else {
+                    let units: Vec<u16> = text.encode_utf16().collect();
+                    let Some((from, to)) = within(n, units.len() as u32) else {
+                        continue;
+                    };
+                    part = String::from_utf16_lossy(&units[from as usize..to as usize]);
+                    part.as_str()
+                };
                 let collapse = style.white_space.collapse;
                 let piece = match collapse {
                     WhiteSpaceCollapse::Collapse => {
@@ -4695,7 +4764,7 @@ impl DocumentHost {
             }
         }
         self.work += work;
-        out
+        Some(out)
     }
 
     /// `moveBefore` (DOM section 4.2.3's "move"): its checks with the

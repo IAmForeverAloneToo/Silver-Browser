@@ -586,6 +586,12 @@ pub trait FontMeasure {
     fn x_height(&self, font_size_px: f32) -> f32;
     /// The advance, in CSS pixels, of the digit zero at `font_size_px`.
     fn zero_advance(&self, font_size_px: f32) -> f32;
+    /// The advance of the digit zero in the first of `families` had, the
+    /// list as `font-family` computes it; the primary font's for none.
+    fn zero_advance_in(&self, font_size_px: f32, families: &str) -> f32 {
+        let _ = families;
+        self.zero_advance(font_size_px)
+    }
 }
 
 /// Whether an element's `style` attribute styles it (M33.1): a document's
@@ -813,6 +819,7 @@ impl Stylesheets {
         };
         let bases = LengthBases {
             em: rem,
+            family: "",
             resolution: &resolution,
             color: Color::BLACK,
             dark: false,
@@ -2019,8 +2026,10 @@ impl<'a> Cascader<'a> {
                     return None;
                 }
                 let mut style = base.clone();
+                let family = style.font().family.clone();
                 let bases = LengthBases {
                     em: style.font_size_px,
+                    family: &family,
                     resolution: &resolution,
                     color: style.color,
                     dark: style.dark,
@@ -2471,6 +2480,9 @@ struct Resolution<'a> {
 #[derive(Clone, Copy)]
 struct LengthBases<'a> {
     em: f32,
+    /// The element's `font-family`, which `ch` is measured in; empty for
+    /// the primary font.
+    family: &'a str,
     resolution: &'a Resolution<'a>,
     /// The element's computed `color`, which `currentcolor` is in the
     /// other properties (gap batch E).
@@ -2869,6 +2881,43 @@ fn compute_style(
     {
         animated.font_size(&mut style, parent, resolution);
     }
+    // The element's own `font-family` next, which `ch` is measured in,
+    // from the longhand or the `font` shorthand; the parent's where it
+    // declares none.
+    let mut family = style.font().family.clone();
+    let font_bases = LengthBases {
+        em: style.font_size_px,
+        family: "",
+        resolution,
+        color: style.color,
+        dark: style.dark,
+    };
+    for a in &sorted {
+        let shorthand = match &*a.decl.name {
+            "font-family" => false,
+            "font" => true,
+            _ => continue,
+        };
+        if !target.applies("font-family") {
+            continue;
+        }
+        let of = |value: &[Token]| {
+            if shorthand {
+                fonts::parse_font(value, parent.font().weight, &font_bases)
+                    .map(|font| font.props.family)
+            } else {
+                parse_font_family(value).map(Into::into)
+            }
+        };
+        let declared = match specified(a, style.custom.as_ref(), resolution) {
+            Specified::Written(value) => of(value),
+            Specified::Substituted(value) => of(&value),
+            Specified::Invalid | Specified::Ignored => None,
+        };
+        if let Some(declared) = declared {
+            family = declared;
+        }
+    }
     for transition in transitioned {
         if let (Property::Longhand(Longhand::FontSize), Value::Style(start), Value::Style(end)) =
             (&transition.property, &transition.start, &transition.end)
@@ -2961,6 +3010,7 @@ fn compute_style(
     let apply_all = |style: &mut ComputedStyle, border_color_set: &mut [bool; 4], color| {
         let bases = LengthBases {
             em: style.font_size_px,
+            family: &family,
             resolution,
             color,
             dark: style.dark,
@@ -3174,6 +3224,7 @@ fn declared_font_size(
 ) -> Option<f32> {
     let parent_bases = LengthBases {
         em: parent.font_size_px,
+        family: &parent.font().family,
         resolution,
         color: parent.color,
         dark: parent.dark,
@@ -3323,6 +3374,7 @@ fn with_default_bases<R>(f: impl FnOnce(&LengthBases<'_>) -> R) -> R {
     };
     f(&LengthBases {
         em: 16.0,
+        family: "",
         resolution: &resolution,
         color: Color::BLACK,
         dark: false,
@@ -5644,9 +5696,9 @@ fn unit_px(value: f64, unit: LengthUnit, bases: &LengthBases<'_>) -> f64 {
         }
         LengthUnit::Ch => {
             value
-                * r.context
-                    .fonts
-                    .map_or(em * 0.5, |f| f64::from(f.zero_advance(bases.em)))
+                * r.context.fonts.map_or(em * 0.5, |f| {
+                    f64::from(f.zero_advance_in(bases.em, bases.family))
+                })
         }
         LengthUnit::Vw => viewport(vw),
         LengthUnit::Vh => viewport(vh),
@@ -6563,6 +6615,7 @@ pub(crate) fn keyframe_easing(tokens: &[Token]) -> Option<crate::easing::Easing>
     };
     let bases = LengthBases {
         em: initial,
+        family: "",
         resolution: &resolution,
         color: Color::BLACK,
         dark: false,
@@ -8024,6 +8077,7 @@ mod tests {
         };
         f(&LengthBases {
             em: 16.0,
+            family: "",
             resolution: &resolution,
             color: Color::BLACK,
             dark: false,
@@ -8934,6 +8988,14 @@ mod tests {
         fn zero_advance(&self, font_size_px: f32) -> f32 {
             font_size_px * 0.6
         }
+
+        fn zero_advance_in(&self, font_size_px: f32, families: &str) -> f32 {
+            if families == "monospace" {
+                font_size_px * 0.5
+            } else {
+                self.zero_advance(font_size_px)
+            }
+        }
     }
 
     /// [`style_of`] with a cascade context.
@@ -9002,6 +9064,27 @@ mod tests {
             };
             assert!((got - px).abs() < 1e-3, "{value}: {got} != {px}");
         }
+    }
+
+    #[test]
+    fn ch_is_the_zero_of_the_elements_own_font_family() {
+        let context = CascadeContext {
+            fonts: Some(&StubFont),
+            ..CascadeContext::default()
+        };
+        let sheets = [sheet(
+            "p { font-size: 10px; width: 10ch }              .mono { font-family: monospace } span { width: 10ch } \
+             .short { font: 10px monospace }",
+        )];
+        let html = "<p>x</p><p class=mono><span>y</span></p><p class=short>z</p>";
+        let px = |selector| match style_of_in(html, &sheets, selector, &context).width {
+            Size::Px(px) => px,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(px("p"), 60.0, "the primary font's zero");
+        assert_eq!(px(".mono"), 50.0, "the family the element declares");
+        assert_eq!(px("span"), 50.0, "the family it inherits");
+        assert_eq!(px(".short"), 50.0, "the family the shorthand sets");
     }
 
     #[test]

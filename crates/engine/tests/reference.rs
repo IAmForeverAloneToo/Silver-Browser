@@ -367,8 +367,12 @@ fn serve_directory(page: &Path) -> TestServer {
 /// engine needs a font to exist.
 fn engine() -> Engine {
     Engine::with_fonts(
-        text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
-            .expect("the bundled font parses"),
+        text::FontCollection::from_bytes_with_monospace(
+            text::TEST_FONT.to_vec(),
+            0,
+            text::TEST_MONO_FONT.to_vec(),
+        )
+        .expect("the bundled font parses"),
     )
 }
 

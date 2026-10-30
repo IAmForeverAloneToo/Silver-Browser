@@ -34,11 +34,11 @@ subtest they fail is named in `expectations.txt`, and why.
 
 | Kind | Tests |
 | --- | ---: |
-| checklayout | 75 |
+| checklayout | 76 |
 | crashtest | 126 |
 | reftest | 4149 |
-| testharness | 7724 |
-| all | 12074 |
+| testharness | 7718 |
+| all | 12069 |
 
 ## Left out
 
@@ -48,13 +48,13 @@ the tests taken, of some directories):
 
 | Reason | Tests |
 | --- | ---: |
-| not a testharness test | 4454 |
+| not a testharness test | 2722 |
 | @font-face | 1458 |
-| script | 1158 |
+| script | 1157 |
 | Python handler | 360 |
 | declaration of display | 262 |
 | not a reftest, a check-layout test or a crashtest | 166 |
-| wptserve pipe | 152 |
+| wptserve pipe | 151 |
 | the legacy CJK encodings (M42) | 141 |
 | SVG <filter> (G87) | 113 |
 | a frame of another kind than iframe | 106 |
@@ -84,8 +84,8 @@ the tests taken, of some directories):
 | declaration of direction | 12 |
 | a module worker (G41) | 11 |
 | a window | 11 |
-| declaration of background | 11 |
 | declaration of color | 11 |
+| declaration of background | 10 |
 | declaration of height | 10 |
 | not for a window or a dedicated worker | 10 |
 | declaration of font-synthesis | 9 |

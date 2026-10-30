@@ -2151,6 +2151,36 @@ fn layout_queries_lay_the_page_out_as_it_stands() {
 }
 
 #[test]
+fn a_selections_string_is_its_rendered_text() {
+    // As the reference browser gives it: transformed, white space
+    // collapsed, hidden text left out, cut at the range's ends.
+    let page = "<p id=p style='text-transform: uppercase'>stra\u{df}e  one\
+                <span style='display: none'>gone</span> two</p>\
+                <script>\
+                var t = document.getElementById('p').firstChild; \
+                getSelection().setBaseAndExtent(t, 4, t, 5); \
+                console.log(getSelection().toString()); \
+                getSelection().setBaseAndExtent(t, 2, document.getElementById('p'), 3); \
+                console.log(JSON.stringify(getSelection().toString()));\
+                </script>";
+    let server = serve(move |path| match path {
+        "/page.html" => Some(Reply::ok("text/html", page.as_bytes())),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.frame(800, 600);
+    load_all(&mut tab, server.url("/page.html"));
+    let console: Vec<String> = tab
+        .engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .collect();
+    assert_eq!(console, ["SS", "\"RASSE ONE TWO\""]);
+}
+
+#[test]
 fn style_sheets_and_their_rules_as_the_reference_browser_has_them() {
     // D66: document.styleSheets, a sheet's rules read and changed, the
     // cascade following; a new text a new sheet.

@@ -10367,7 +10367,13 @@
 
     toString() {
       selectionOf(this);
-      return selectionRange === null ? "" : selectionRange.toString();
+      if (selectionRange === null) {
+        return "";
+      }
+      // The rendered text, as the reference browser gives it.
+      const b = boundsOf(selectionRange);
+      const text = native.selectedText(b[0], b[1], b[2], b[3]);
+      return text === null ? selectionRange.toString() : text;
     }
   }
 

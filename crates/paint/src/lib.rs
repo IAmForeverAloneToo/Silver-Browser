@@ -1257,7 +1257,12 @@ pub fn paint_fragments_with(
                         }
                         push_decorations(&mut items, decorated, rect, baseline, false, None);
                     }
-                    if !text.trim().is_empty() {
+                    // White space draws nothing; a control character is
+                    // drawn, visibly (CSS Text 3 section 4.1.4).
+                    let blank = |c: char| {
+                        c.is_whitespace() && (!c.is_control() || matches!(c, '\t' | '\n' | '\r'))
+                    };
+                    if !text.chars().all(blank) {
                         // Its shadows under it, the first on top (D56).
                         for shadow in fragment.style.decoration().text_shadow.iter().rev() {
                             items.push(DisplayItem::TextShadow {
@@ -4065,6 +4070,24 @@ mod fragment_tests {
             fonts,
             [("x", true, 0.0), ("y", false, text::SYNTHETIC_SKEW)]
         );
+    }
+
+    #[test]
+    fn a_control_character_is_drawn_and_white_space_is_not() {
+        // CSS Text 3 section 4.1.4: a control character is visible.
+        let root = Element::new("div")
+            .push(Element::new("span").text("\u{b}"))
+            .push(Element::new("pre").text("a \u{3000}\u{a0} "));
+        let list = display_list_for(root, "", Viewport::new(VIEWPORT, 600.0));
+        let texts: Vec<&str> = list
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                DisplayItem::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, ["\u{b}", "a \u{3000}\u{a0} "]);
     }
 
     #[test]

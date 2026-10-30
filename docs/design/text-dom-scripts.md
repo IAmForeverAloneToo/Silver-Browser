@@ -634,3 +634,34 @@ step:
   and the scrollbar across, `all`, `overflow-x`/`-y` and
   `background-position-x`/`-y` as longhands, colors in canonical forms,
   and vertical writing modes' and `direction`'s scroll offsets.
+- *Text*, the rest (D55): the tests' collection has DejaVu Sans Mono
+  as `monospace` (`text::TEST_MONO_FONT`,
+  `FontCollection::from_bytes_with_monospace`; the system collection is
+  unchanged), and `ch` is the zero of the element's own `font-family`,
+  longhand or shorthand (`FontMeasure::zero_advance_in`), not the
+  primary font's. Between two printable ASCII characters line breaking
+  is the reference browser's table as measured from Chrome 156
+  (`ascii_pair_breaks`, in the fast path and over the segmenter alike):
+  after a hyphen or question mark before most, after closing
+  punctuation before an opening one, never after `|` between letters.
+  `letter-spacing` spaces grapheme clusters, the space between words
+  too, but not a cursive script's letters, which stay joined, nor a
+  format character. The other space separators hang at a line's end
+  (but under `break-spaces`, where a line breaks after each), across
+  inline boxes too, and white space that hangs whole fits any line.
+  Justification widens kept spaces and no-break spaces, not those that
+  hang, and with `text-justify: auto` spreads the letters of words of
+  ideographs. A control character (a form feed among them) is drawn.
+  `nowrap` holds beside atomic inlines; the white space before a word
+  breaks as its own `white-space` says; a `break-all` box's last letter
+  breaks from what follows; a word glued to the text before it on a
+  line with no other opportunity is cut where `overflow-wrap` says.
+  `text-wrap: pretty` has the last word of the line before join a last
+  line that is one word alone, the lines before unchanged (the
+  reference browser's results for two to five lines). A selection's
+  string is its rendered text, as `innerText` collects it. Not done:
+  `text-spacing-trim` (the reference browser applies the font's `halt`
+  feature, which shaping here does not take), `text-fit` (shipped by
+  Chrome 156; no text is scaled), segment break transformation (Chrome
+  156 keeps the spaces too); Chrome 156 ships no `hanging-punctuation`,
+  `hyphenate-limit-lines`, `word-space-transform` or `text-group-align`.

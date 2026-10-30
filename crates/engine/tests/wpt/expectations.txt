@@ -2441,7 +2441,6 @@ intersection-observer/remove-element.html	root.insertBefore(target, trailingSpac
 intersection-observer/remove-element.html	root.scrollTop = 150 after reinserting target.	IntersectionObserver's edges: scrolled roots, root margins' rounding and root bounds (G219)
 intersection-observer/root-margin-in-same-origin-iframe.html	Intersection Observer: root margin is applied when observer is in a same-origin iframe	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
 intersection-observer/root-margin-rounding.html	IntersectionObserver root margin cannot end up with negative rect (and thus non-intersecting) due to rounding	IntersectionObserver's edges: scrolled roots, root margins' rounding and root bounds (G219)
-intersection-observer/root-margin.html	First rAF.	IntersectionObserver's edges: scrolled roots, root margins' rounding and root bounds (G219)
 intersection-observer/root-vertical-rl.html	First rAF.	IntersectionObserver's edges: scrolled roots, root margins' rounding and root bounds (G219)
 intersection-observer/root-vertical-rl.html	Set transform=translateX(50px) on target.	IntersectionObserver's edges: scrolled roots, root margins' rounding and root bounds (G219)
 intersection-observer/rtl-clipped-root.html	First rAF	IntersectionObserver's edges: scrolled roots, root margins' rounding and root bounds (G219)
@@ -20615,6 +20614,9 @@ css/css-fonts/inheritance.html	Property font-synthesis has initial value weight 
 css/css-fonts/inheritance.html	Property font-synthesis inherits	font-synthesis, which the engine does not have
 css/css-fonts/inheritance.html	Property font-variation-settings has initial value normal	font-variation-settings, which the engine does not have
 css/css-fonts/inheritance.html	Property font-variation-settings inherits	font-variation-settings, which the engine does not have
+css/css-fonts/matching/font-unicode-PUA.html	PUA character U+F000 is rendered with a non-generic font.	the tests' collection has a monospace face (DejaVu Sans Mono), which matching should pass over for a private-use code point as a generic family's (CSS Fonts 4 section 5.4): families are matched for a run of text here, not for each code point
+css/css-fonts/matching/font-unicode-PUA.html	PUA character U+F001 is rendered with a non-generic font.	the tests' collection has a monospace face (DejaVu Sans Mono), which matching should pass over for a private-use code point as a generic family's (CSS Fonts 4 section 5.4): families are matched for a run of text here, not for each code point
+css/css-fonts/matching/font-unicode-PUA.html	PUA character U+F002 is rendered with a non-generic font.	the tests' collection has a monospace face (DejaVu Sans Mono), which matching should pass over for a private-use code point as a generic family's (CSS Fonts 4 section 5.4): families are matched for a run of text here, not for each code point
 css/css-fonts/matching/font-unicode-PUA-primary-font.html                                a private-use code point Arial lacks is drawn as the mismatch reference draws it; not diagnosed further
 css/css-fonts/math-script-level-and-math-style/math-script-level-001.tentative.html	Inherited values of math-depth	a tentative feature no milestone holds
 css/css-fonts/math-script-level-and-math-style/math-script-level-001.tentative.html	Initial value of math-depth	a tentative feature no milestone holds
@@ -21745,36 +21747,25 @@ css/css-text/animations/word-spacing-interpolation.html	Web Animations: property
 css/css-text/animations/word-spacing-interpolation.html	Web Animations: property <word-spacing> from neutral to [20px] at (0.6) should be [16px]	Element.animate() and the rest of the Web Animations API, and animation-composition (G26)
 css/css-text/animations/word-spacing-interpolation.html	Web Animations: property <word-spacing> from neutral to [20px] at (1) should be [20px]	Element.animate() and the rest of the Web Animations API, and animation-composition (G26)
 css/css-text/animations/word-spacing-interpolation.html	Web Animations: property <word-spacing> from neutral to [20px] at (1.5) should be [25px]	Element.animate() and the rest of the Web Animations API, and animation-composition (G26)
-css/css-text/hyphens/hyphenate-limit-lines-dynamic-001.html	Changing 'hyphenate-limit-lines' via CSSOM triggers a layout	not diagnosed in the batch: FAIL: assert_greater_than: the element should now span 3 lines after style change expected a number greater than 34 but got 34
+css/css-text/hyphens/hyphenate-limit-lines-dynamic-001.html	Changing 'hyphenate-limit-lines' via CSSOM triggers a layout	the reference browser (Chrome 156) does not support hyphenate-limit-lines (CSS.supports is false), nor lays it out here
 css/css-text/i18n/css3-text-line-break-baspglwj-026.html	white-space:break-spaces	line-break's strict and loose rules for CJK, which line breaking does not apply (D55)
 css/css-text/i18n/css3-text-line-break-baspglwj-026.html	white-space:normal	line-break's strict and loose rules for CJK, which line breaking does not apply (D55)
 css/css-text/i18n/css3-text-line-break-baspglwj-026.html	white-space:pre-line	line-break's strict and loose rules for CJK, which line breaking does not apply (D55)
 css/css-text/i18n/css3-text-line-break-baspglwj-026.html	white-space:pre-wrap	line-break's strict and loose rules for CJK, which line breaking does not apply (D55)
-css/css-text/letter-spacing/letter-spacing-bengali-yaphala-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/letter-spacing/letter-spacing-bidi-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/letter-spacing/letter-spacing-end-of-line-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/letter-spacing/letter-spacing-ligatures-003.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/letter-spacing/letter-spacing-ligatures-005.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/letter-spacing/letter-spacing-nesting-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/letter-spacing/letter-spacing-nesting-002.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/line-breaking/line-breaking-atomic-nowrap-001.html	CSS Text Test: Check atomic inline+NBSP quirk does not apply if nowrap	not diagnosed in the batch: FAIL: assert_equals: expected 1 but got 2
-css/css-text/line-breaking/line-breaking-atomic-nowrap-001.html	CSS Text Test: Check atomic inline+NBSP quirk does not apply if nowrap 1	not diagnosed in the batch: FAIL: assert_equals: expected 1 but got 2
-css/css-text/line-breaking/line-breaking-atomic-nowrap-001.html	CSS Text Test: Check atomic inline+NBSP quirk does not apply if nowrap 2	not diagnosed in the batch: FAIL: assert_equals: expected 1 but got 2
-css/css-text/line-breaking/line-breaking-atomic-nowrap-001.html	CSS Text Test: Check atomic inline+NBSP quirk does not apply if nowrap 3	not diagnosed in the batch: FAIL: assert_equals: expected 1 but got 2
-css/css-text/line-breaking/line-breaking-atomic-nowrap-002.html not diagnosed in the batch: TIMEOUT: nothing left to wait for; finished: []; said: ["Failed to load script http://web-platform.localhost:57922/resources/check-layout-th
-css/css-text/line-breaking/line-breaking-replaced-002.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/line-breaking/line-breaking-replaced-003.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/line-breaking/segment-break-transformation-currency-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/line-breaking/segment-break-transformation-ignorable-1.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/line-breaking/segment-break-transformation-punctuation-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/line-breaking/segment-break-transformation-punctuation-002.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/line-breaking/segment-break-transformation-punctuation-003.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/overflow-wrap/overflow-wrap-anywhere-002.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/overflow-wrap/overflow-wrap-anywhere-003.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/overflow-wrap/overflow-wrap-anywhere-span-002.html not diagnosed in the batch: <div id="container"> data-expected-height: 10 where 20 was expected
-css/css-text/overflow-wrap/overflow-wrap-break-word-002.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/overflow-wrap/overflow-wrap-break-word-003.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/overflow-wrap/overflow-wrap-break-word-span-002.html not diagnosed in the batch: <div id="container"> data-expected-height: 10 where 20 was expected
+css/css-text/letter-spacing/letter-spacing-bengali-yaphala-001.html the runner's one face has no Bengali: each cluster is a .notdef box, which letter-spacing moves where the reference's joined glyphs do not
+css/css-text/letter-spacing/letter-spacing-bidi-001.html the reference browser (Chrome 156) draws it otherwise than its reference too: it puts letter-spacing after an element's last letter too, as here
+css/css-text/letter-spacing/letter-spacing-end-of-line-001.html the reference browser (Chrome 156) draws it otherwise than its reference too: it keeps the letter-spacing after a line's last letter, as here
+css/css-text/letter-spacing/letter-spacing-ligatures-005.html the reference browser (Chrome 156) draws it otherwise than its reference too
+css/css-text/letter-spacing/letter-spacing-nesting-001.html the reference browser (Chrome 156) draws it otherwise than its reference too: it puts letter-spacing after an element's last letter too, as here
+css/css-text/letter-spacing/letter-spacing-nesting-002.html the reference browser (Chrome 156) draws it otherwise than its reference too: it puts letter-spacing after an element's last letter too, as here
+css/css-text/line-breaking/line-breaking-atomic-nowrap-002.html the span's client width is its line's, 50px, where the reference browser's min-content width of a nowrap inline-block keeps both images, 100px: an inline-block's intrinsic width does not see its own white-space here
+css/css-text/line-breaking/line-breaking-replaced-002.html the reference browser (Chrome 156) draws it otherwise than its reference too
+css/css-text/line-breaking/line-breaking-replaced-003.html the reference browser (Chrome 156) draws it otherwise than its reference too
+css/css-text/line-breaking/segment-break-transformation-currency-001.html the reference browser (Chrome 156) keeps each segment break between CJK characters as a space, as here: no segment break transformation (a "should" of CSS Text 3 section 4.1.3)
+css/css-text/line-breaking/segment-break-transformation-ignorable-1.html the reference browser (Chrome 156) keeps each segment break between CJK characters as a space, as here: no segment break transformation (a "should" of CSS Text 3 section 4.1.3)
+css/css-text/line-breaking/segment-break-transformation-punctuation-001.html the reference browser (Chrome 156) keeps each segment break between CJK characters as a space, as here: no segment break transformation (a "should" of CSS Text 3 section 4.1.3)
+css/css-text/line-breaking/segment-break-transformation-punctuation-002.html the reference browser (Chrome 156) keeps each segment break between CJK characters as a space, as here: no segment break transformation (a "should" of CSS Text 3 section 4.1.3)
+css/css-text/line-breaking/segment-break-transformation-punctuation-003.html the reference browser (Chrome 156) keeps each segment break between CJK characters as a space, as here: no segment break transformation (a "should" of CSS Text 3 section 4.1.3)
 css/css-text/parsing/hyphenate-limit-chars-valid.html	e.style['hyphenate-limit-chars'] = "5 2 2" should set the property value	the CSSOM's style sheets and rule objects, constructed and adopted sheets, and values and shorthands serialized as the standard has them (G50)
 css/css-text/parsing/hyphenate-limit-chars-valid.html	e.style['hyphenate-limit-chars'] = "auto 2 2" should set the property value	the CSSOM's style sheets and rule objects, constructed and adopted sheets, and values and shorthands serialized as the standard has them (G50)
 css/css-text/parsing/hyphenate-limit-chars-valid.html	e.style['hyphenate-limit-chars'] = "auto auto auto" should set the property value	the CSSOM's style sheets and rule objects, constructed and adopted sheets, and values and shorthands serialized as the standard has them (G50)
@@ -21783,7 +21774,7 @@ css/css-text/parsing/letter-spacing-valid.html	e.style['letter-spacing'] = "0" s
 css/css-text/parsing/letter-spacing-valid.html	e.style['letter-spacing'] = "calc(2ch - 30%)" should set the property value	a value of letter-spacing the engine does not parse as the test writes it
 css/css-text/parsing/tab-size-computed.html	Property tab-size value 'calc(10 + (sign(2cqw - 10px) * 5))'	tab-size, which the engine does not have
 css/css-text/parsing/tab-size-computed.html	Property tab-size value 'calc(10px + (sign(2cqw - 10px) * 5px))'	tab-size, which the engine does not have
-css/css-text/parsing/text-align-last-computed.html	Property text-align-last value 'match-parent'	not diagnosed in the batch: FAIL: assert_equals: expected "match-parent" but got "auto"
+css/css-text/parsing/text-align-last-computed.html	Property text-align-last value 'match-parent'	text-align-last: match-parent is parsed as auto here (style, not layout)
 css/css-text/parsing/text-autospace-valid.html	e.style['text-autospace'] = "insert ideograph-alpha ideograph-numeric" should set the property value	a value of text-autospace the engine does not parse as the test writes it
 css/css-text/parsing/text-autospace-valid.html	e.style['text-autospace'] = "insert ideograph-alpha" should set the property value	a value of text-autospace the engine does not parse as the test writes it
 css/css-text/parsing/text-autospace-valid.html	e.style['text-autospace'] = "insert ideograph-numeric" should set the property value	a value of text-autospace the engine does not parse as the test writes it
@@ -21892,7 +21883,7 @@ css/css-text/text-fit/text-autospace.html	"text-autospace" and "consistent" work
 css/css-text/text-fit/text-autospace.html	"text-autospace" and "per-line-all" work fine	text-fit is parsed and computed but lays out as none here: no text is scaled to fill its line
 css/css-text/text-fit/text-spacing-trim-fit-width.html	[consistent] Check that text-spacing-trim: trim-start scales larger than none because of trimmed start margin	text-fit is parsed and computed but lays out as none here: no text is scaled to fill its line
 css/css-text/text-fit/text-spacing-trim-fit-width.html	[per-line-all] Check that text-spacing-trim: trim-start scales larger than none because of trimmed start margin	text-fit is parsed and computed but lays out as none here: no text is scaled to fill its line
-css/css-text/text-indent/percentage-value-intrinsic-size.html not diagnosed in the batch: ERROR: Uncaught ReferenceError: checkLayout is not defined
+css/css-text/text-indent/percentage-value-intrinsic-size.html a testharness page whose script changes text-indent before calling checkLayout, which needs check-layout-th.js, not vendored: the runner checks only pages made of checkLayout calls natively
 css/css-text/text-justify/distribute-alias.tentative.html	text-justify: distribute is a parse-time alias of inter-character	the CSSOM's style sheets and rule objects, constructed and adopted sheets, and values and shorthands serialized as the standard has them (G50)
 css/css-text/text-justify/text-justify-cjk-ideograph-extensions.html a range's rectangles, getBoundingClientRect and getClientRects, which need text positions layout does not give scripts (D65)
 css/css-text/text-justify/text-justify-interpolation.html	Web Animations: property <text-justify> from [auto] to [inter-character] at (-0.3) should be [auto]	Element.animate() and the rest of the Web Animations API, and animation-composition (G26)
@@ -21930,73 +21921,9 @@ css/css-text/text-justify/text-justify-interpolation.html	Web Animations: proper
 css/css-text/text-justify/text-justify-interpolation.html	Web Animations: property <text-justify> from [inter-word] to [distribute] at (0.6) should be [distribute]	Element.animate() and the rest of the Web Animations API, and animation-composition (G26)
 css/css-text/text-justify/text-justify-interpolation.html	Web Animations: property <text-justify> from [inter-word] to [distribute] at (1) should be [distribute]	Element.animate() and the rest of the Web Animations API, and animation-composition (G26)
 css/css-text/text-justify/text-justify-interpolation.html	Web Animations: property <text-justify> from [inter-word] to [distribute] at (1.5) should be [distribute]	Element.animate() and the rest of the Web Animations API, and animation-composition (G26)
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{1B132}' (U+1B132) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{1B150}' (U+1B150) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{1B151}' (U+1B151) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{1B152}' (U+1B152) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{1B155}' (U+1B155) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{1B164}' (U+1B164) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{1B165}' (U+1B165) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{1B166}' (U+1B166) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{1B167}' (U+1B167) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{3041}' (U+3041) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{3043}' (U+3043) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{3045}' (U+3045) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{3047}' (U+3047) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{3049}' (U+3049) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{3063}' (U+3063) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{3083}' (U+3083) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{3085}' (U+3085) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{3087}' (U+3087) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{308E}' (U+308E) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{3095}' (U+3095) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{3096}' (U+3096) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{30A1}' (U+30A1) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{30A3}' (U+30A3) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{30A5}' (U+30A5) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{30A7}' (U+30A7) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{30A9}' (U+30A9) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{30C3}' (U+30C3) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{30E3}' (U+30E3) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{30E5}' (U+30E5) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{30E7}' (U+30E7) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{30EE}' (U+30EE) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{30F5}' (U+30F5) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{30F6}' (U+30F6) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{31F0}' (U+31F0) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{31F1}' (U+31F1) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{31F2}' (U+31F2) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{31F3}' (U+31F3) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{31F4}' (U+31F4) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{31F5}' (U+31F5) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{31F6}' (U+31F6) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{31F7}' (U+31F7) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{31F8}' (U+31F8) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{31F9}' (U+31F9) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{31FA}' (U+31FA) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{31FB}' (U+31FB) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{31FC}' (U+31FC) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{31FD}' (U+31FD) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{31FE}' (U+31FE) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{31FF}' (U+31FF) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{FF67}' (U+FF67) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{FF68}' (U+FF68) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{FF69}' (U+FF69) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{FF6A}' (U+FF6A) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{FF6B}' (U+FF6B) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{FF6C}' (U+FF6C) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{FF6D}' (U+FF6D) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{FF6E}' (U+FF6E) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-full-size-kana-009.html	Selection.toString() for full-size-kana '\u{FF6F}' (U+FF6F) returns the transformed character.	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/text-transform/text-transform-upperlower-107.html	Selection.toString() for '\u{DF}' with text-transform: uppercase	Selection.toString() gives the range's text content here (DOM Ranges), where the reference browser gives the text as rendered, text-transform applied
-css/css-text/white-space/control-chars-00B.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/control-chars-00C.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/control-chars-00D.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/control-chars-085.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/line-edge-white-space-collapse-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/object-replacement-1.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/object-replacement-2.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/pre-wrap-018.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/line-edge-white-space-collapse-001.html collapsible spaces in empty inline elements at a line's end are kept inside those elements' boxes here (their borders drawn after them), where the reference browser removes them
+css/css-text/white-space/object-replacement-1.html the runner's face draws U+FFFC with no advance, where the reference browser's font fallback gives it an em
+css/css-text/white-space/object-replacement-2.html the runner's face draws U+FFFC with no advance, where the reference browser's font fallback gives it an em
 css/css-text/white-space/seg-break-transformation-001.tentative.html	linebreak only	a tentative feature no milestone holds
 css/css-text/white-space/seg-break-transformation-001.tentative.html	linebreak spaces	a tentative feature no milestone holds
 css/css-text/white-space/seg-break-transformation-001.tentative.html	multiple linebreaks	a tentative feature no milestone holds
@@ -22052,27 +21979,10 @@ css/css-text/white-space/seg-break-transformation-017.tentative.html	multiple li
 css/css-text/white-space/seg-break-transformation-017.tentative.html	spaces linebreak	a tentative feature no milestone holds
 css/css-text/white-space/seg-break-transformation-017.tentative.html	spaces linebreak spaces	a tentative feature no milestone holds
 css/css-text/white-space/textarea-always-preserves-spaces-001.tentative.html a tentative feature no milestone holds
-css/css-text/white-space/trailing-space-position-001.html	CSS Test: Positions of trailing collapsible spaces 1	not diagnosed in the batch: FAIL: assert_equals: expected 0 but got 1
-css/css-text/white-space/trailing-space-position-001.html	CSS Test: Positions of trailing collapsible spaces 3	not diagnosed in the batch: FAIL: assert_equals: expected 0 but got 1
-css/css-text/white-space/white-space-intrinsic-size-004.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/white-space-intrinsic-size-021.html not diagnosed in the batch: TIMEOUT: nothing left to wait for; finished: []; said: ["Failed to load script http://web-platform.localhost:57922/resources/check-layout-th
-css/css-text/white-space/white-space-pre-wrap-justify-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/white-space-pre-wrap-justify-002.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/white-space-pre-wrap-trailing-spaces-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/ws-break-spaces-applies-to-001.html the test's monospace font is the runner's one face, DejaVu Sans, a proportional one whose space is half a digit: the spaces that fill the 4ch box under break-spaces fall elsewhere than the reference's columns
-css/css-text/white-space/ws-break-spaces-applies-to-002.html the test's monospace font is the runner's one face, DejaVu Sans, a proportional one whose space is half a digit: the spaces that fill the 4ch box under break-spaces fall elsewhere than the reference's columns
-css/css-text/white-space/ws-break-spaces-applies-to-003.html the test's monospace font is the runner's one face, DejaVu Sans, a proportional one whose space is half a digit: the spaces that fill the 4ch box under break-spaces fall elsewhere than the reference's columns
-css/css-text/white-space/ws-break-spaces-applies-to-005.html the test's monospace font is the runner's one face, DejaVu Sans, a proportional one whose space is half a digit: the spaces that fill the 4ch box under break-spaces fall elsewhere than the reference's columns
-css/css-text/white-space/ws-break-spaces-applies-to-006.html the test's monospace font is the runner's one face, DejaVu Sans, a proportional one whose space is half a digit: the spaces that fill the 4ch box under break-spaces fall elsewhere than the reference's columns
-css/css-text/white-space/ws-break-spaces-applies-to-007.html the test's monospace font is the runner's one face, DejaVu Sans, a proportional one whose space is half a digit: the spaces that fill the 4ch box under break-spaces fall elsewhere than the reference's columns
-css/css-text/white-space/ws-break-spaces-applies-to-008.html the test's monospace font is the runner's one face, DejaVu Sans, a proportional one whose space is half a digit: the spaces that fill the 4ch box under break-spaces fall elsewhere than the reference's columns
-css/css-text/white-space/ws-break-spaces-applies-to-009.html the test's monospace font is the runner's one face, DejaVu Sans, a proportional one whose space is half a digit: the spaces that fill the 4ch box under break-spaces fall elsewhere than the reference's columns
-css/css-text/white-space/ws-break-spaces-applies-to-010.html the test's monospace font is the runner's one face, DejaVu Sans, a proportional one whose space is half a digit: the spaces that fill the 4ch box under break-spaces fall elsewhere than the reference's columns
-css/css-text/white-space/ws-break-spaces-applies-to-011.html the test's monospace font is the runner's one face, DejaVu Sans, a proportional one whose space is half a digit: the spaces that fill the 4ch box under break-spaces fall elsewhere than the reference's columns
-css/css-text/white-space/ws-break-spaces-applies-to-014.html the test's monospace font is the runner's one face, DejaVu Sans, a proportional one whose space is half a digit: the spaces that fill the 4ch box under break-spaces fall elsewhere than the reference's columns
-css/css-text/white-space/ws-break-spaces-applies-to-015.html the test's monospace font is the runner's one face, DejaVu Sans, a proportional one whose space is half a digit: the spaces that fill the 4ch box under break-spaces fall elsewhere than the reference's columns
-css/css-text/word-break/word-break-keep-all-u002d.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/writing-system/writing-system-segment-break-001.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/trailing-space-position-001.html	CSS Test: Positions of trailing collapsible spaces 1	a range's rectangles for collapsed trailing spaces (D65): the caret offsets of removed white space are not given to scripts
+css/css-text/white-space/trailing-space-position-001.html	CSS Test: Positions of trailing collapsible spaces 3	a range's rectangles for collapsed trailing spaces (D65): the caret offsets of removed white space are not given to scripts
+css/css-text/white-space/white-space-intrinsic-size-021.html intrinsic sizes of kept spaces before an inline element: their client widths and heights are 0 here where the test wants 10 (preserved trailing spaces, CSS Text 3 section 4.1.3, under nowrap and break-spaces)
+css/css-text/writing-system/writing-system-segment-break-001.html the reference browser (Chrome 156) keeps each segment break between CJK characters as a space, as here: no segment break transformation (a "should" of CSS Text 3 section 4.1.3)
 css/css-values/animations/calc-interpolation.html	CSS Animations: property <left> from [0px] to [calc(infinity * 1px)] at (-0.25) should be [-33554432px]	left does not transition or animate as the test has it: list repetition, keywords, composition and mixed values are not interpolated here
 css/css-values/animations/calc-interpolation.html	CSS Animations: property <left> from [0px] to [calc(infinity * 1px)] at (0.25) should be [33554432px]	left does not transition or animate as the test has it: list repetition, keywords, composition and mixed values are not interpolated here
 css/css-values/animations/calc-interpolation.html	CSS Animations: property <left> from [0px] to [calc(infinity * 1px)] at (0.5) should be [33554432px]	left does not transition or animate as the test has it: list repetition, keywords, composition and mixed values are not interpolated here
@@ -24416,9 +24326,6 @@ intersection-observer/root-margin-root-element.html	document.scrollingElement.sc
 intersection-observer/root-margin-root-element.html	root.scrollTop = 0	IntersectionObserver's edges: scrolled roots, root margins' rounding and root bounds (G219)
 intersection-observer/root-margin-root-element.html	root.scrollTop = 50 with root scrolled out of view.	IntersectionObserver's edges: scrolled roots, root margins' rounding and root bounds (G219)
 intersection-observer/root-margin-root-element.html	root.scrollTop = 50, putting target into root margin	IntersectionObserver's edges: scrolled roots, root margins' rounding and root bounds (G219)
-intersection-observer/root-margin.html	document.scrollingElement.scrollLeft = 100	horizontal scrolling and smooth scroll behaviour: the viewport and scroll containers scroll down only, a script's scroll at once (D65; horizontal scrolling is M26's)
-intersection-observer/root-margin.html	document.scrollingElement.scrollTop = document.documentElement.clientHeight + 200	IntersectionObserver's edges: scrolled roots, root margins' rounding and root bounds (G219)
-intersection-observer/root-margin.html	document.scrollingElement.scrollTop = document.documentElement.clientHeight + 300	IntersectionObserver's edges: scrolled roots, root margins' rounding and root bounds (G219)
 intersection-observer/same-document-root.html	document.scrollingElement.scrollTop = 0.	IntersectionObserver's edges: scrolled roots, root margins' rounding and root bounds (G219)
 intersection-observer/same-document-root.html	root.scrollTop = 0	IntersectionObserver's edges: scrolled roots, root margins' rounding and root bounds (G219)
 intersection-observer/same-document-root.html	root.scrollTop = 150 with root scrolled into view.	IntersectionObserver's edges: scrolled roots, root margins' rounding and root bounds (G219)
@@ -24931,62 +24838,33 @@ css/css-backgrounds/border-image-repeat-round-003.html the reference's inline ta
 css/css-backgrounds/box-shadow-outset-without-border-radius-001.html shadow trees (attachShadow), which no milestone holds
 css/css-images/image-orientation/image-orientation-from-image-content-images.html 251 pixels at the colour seams in the middle of the JPEGs differ: the JPEG decoder's chroma upsampling, not the orientation
 css/css-sizing/aspect-ratio/select-element-001.html a select's automatic minimum width, its content's, where aspect-ratio gives a smaller one: a ratio past blocks and inline-blocks (G36)
-css/css-text/letter-spacing/letter-spacing-bidi-002.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/letter-spacing/letter-spacing-control-chars-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/letter-spacing/letter-spacing-cursive-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/letter-spacing/letter-spacing-cursive-002.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/letter-spacing/letter-spacing-trim-start-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/line-breaking/line-breaking-018.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/line-breaking/line-breaking-019.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/line-breaking/line-breaking-ic-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/line-breaking/line-breaking-ic-002.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/line-breaking/line-breaking-ic-003.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/overflow-wrap/overflow-wrap-anywhere-span-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/overflow-wrap/overflow-wrap-break-word-span-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/overflow-wrap/overflow-wrap-normal-keep-all-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/text-align/text-align-last-justify-br.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/text-justify/text-justify-and-trailing-spaces-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/text-justify/text-justify-and-trailing-spaces-002.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/text-wrap-balance-float-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/text-wrap-balance-float-002.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/text-wrap-balance-float-003.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/text-wrap-balance-float-004.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/text-wrap-balance-float-005.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/trailing-ideographic-space-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/trailing-ideographic-space-002.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/trailing-ideographic-space-005.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/trailing-ideographic-space-010.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/trailing-ideographic-space-break-spaces-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/trailing-ideographic-space-break-spaces-002.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/trailing-ideographic-space-break-spaces-003.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/trailing-ideographic-space-break-spaces-004.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/trailing-ideographic-space-break-spaces-005.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/trailing-ideographic-space-break-spaces-006.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/trailing-ogham-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/trailing-ogham-002.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/trailing-ogham-003.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/trailing-other-space-separators-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/trailing-other-space-separators-003.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/trailing-other-space-separators-004.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/trailing-space-align-start.tentative.html a tentative feature no milestone holds
-css/css-text/white-space/white-space-letter-spacing-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/white-space-normal-011.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/white-space-pre-031.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/white-space-pre-032.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/white-space-pre-034.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/white-space-pre-035.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/white-space-pre-wrap-justify-003.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/white-space-pre-wrap-trailing-spaces-021.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/white-space-wrap-after-nowrap-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/word-break/break-boundary-2-chars-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/word-break/word-break-break-all-020.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/word-break/word-break-break-all-062.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/word-break/word-break-break-all-inline-006.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/word-break/word-break-keep-all-005.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/word-break/word-break-keep-all-006.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/word-break/word-break-keep-all-007.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/word-break/word-break-keep-all-008.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/word-break/word-break-keep-all-063.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/letter-spacing/letter-spacing-bidi-002.html the reference browser (Chrome 156) draws it otherwise than its reference too: it puts letter-spacing after an element's last letter too, as here
+css/css-text/letter-spacing/letter-spacing-cursive-002.html white-space: pre right-to-left text with a space is shaped as one run here, its words in logical order, where the test's normal text is reordered word by word (bidi of kept spaces, D55)
+css/css-text/line-breaking/line-breaking-019.html the reference browser (Chrome 156) draws it otherwise than its reference too
+css/css-text/line-breaking/line-breaking-ic-001.html the runner's one face has no CJK glyphs: its ideographs are the .notdef, 0.6em wide, where the test's widths are made for ideographs an em wide (the .notdef reaches below the 1em line)
+css/css-text/line-breaking/line-breaking-ic-002.html the runner's one face has no CJK glyphs: its ideographs are the .notdef, 0.6em wide, where the test's widths are made for ideographs an em wide (the .notdef reaches below the 1em line)
+css/css-text/line-breaking/line-breaking-ic-003.html the runner's one face has no CJK glyphs: its ideographs are the .notdef, 0.6em wide, where the test's widths are made for ideographs an em wide (the .notdef reaches below the 1em line)
+css/css-text/overflow-wrap/overflow-wrap-normal-keep-all-001.html the reference browser (Chrome 156) draws it otherwise than its reference too
+css/css-text/white-space/text-wrap-balance-float-001.html text-wrap: balance tries narrower lines in the room the floats leave at the paragraph's top, where the reference browser balances each line in its own room beside the float
+css/css-text/white-space/text-wrap-balance-float-002.html text-wrap: balance tries narrower lines in the room the floats leave at the paragraph's top, where the reference browser balances each line in its own room beside the float
+css/css-text/white-space/text-wrap-balance-float-003.html the reference browser (Chrome 156) draws it otherwise than its reference too
+css/css-text/white-space/text-wrap-balance-float-004.html the reference browser (Chrome 156) draws it otherwise than its reference too
+css/css-text/white-space/trailing-ideographic-space-001.html the reference browser (Chrome 156) draws it otherwise than its reference too: the hanging spaces count toward the max-content width there, as here
+css/css-text/white-space/trailing-ideographic-space-002.html the reference browser (Chrome 156) draws it otherwise than its reference too: the hanging spaces count toward the max-content width there, as here
+css/css-text/white-space/trailing-ogham-001.html the reference browser (Chrome 156) draws it otherwise than its reference too: the hanging spaces count toward the intrinsic widths there, as here
+css/css-text/white-space/trailing-ogham-002.html the reference browser (Chrome 156) draws it otherwise than its reference too: the hanging spaces count toward the intrinsic widths there, as here
+css/css-text/white-space/trailing-ogham-003.html the reference browser (Chrome 156) draws it otherwise than its reference too: the hanging spaces count toward the intrinsic widths there, as here
+css/css-text/white-space/trailing-other-space-separators-001.html the reference browser (Chrome 156) draws it otherwise than its reference too: the hanging spaces count toward the max-content width there, as here
+css/css-text/white-space/trailing-other-space-separators-003.html the reference browser (Chrome 156) draws it otherwise than its reference too: the hanging spaces count toward the max-content width there, as here
+css/css-text/white-space/trailing-other-space-separators-004.html the reference browser (Chrome 156) draws it otherwise than its reference too: the hanging spaces count toward the max-content width there, as here
+css/css-text/white-space/white-space-wrap-after-nowrap-001.html a collapsed run of white space breaks as its first space's white-space says (the sixth box), where the reference browser breaks where any of them may; and the runner's one face has no CJK glyphs: its ideographs are the .notdef, 0.6em wide, where the test's widths are made for ideographs an em wide
+css/css-text/word-break/break-boundary-2-chars-001.html the runner's one face has no CJK glyphs: its ideographs are the .notdef, 0.6em wide, where the test's widths are made for ideographs an em wide
+css/css-text/word-break/word-break-break-all-020.html the runner's one face has no CJK glyphs: its ideographs are the .notdef, 0.6em wide, where the test's widths are made for ideographs an em wide
+css/css-text/word-break/word-break-keep-all-005.html the runner's one face has no CJK glyphs: its ideographs are the .notdef, 0.6em wide, where the test's widths are made for ideographs an em wide
+css/css-text/word-break/word-break-keep-all-006.html the runner's one face has no CJK glyphs: its ideographs are the .notdef, 0.6em wide, where the test's widths are made for ideographs an em wide
+css/css-text/word-break/word-break-keep-all-007.html the runner's one face has no CJK glyphs: its ideographs are the .notdef, 0.6em wide, where the test's widths are made for ideographs an em wide
+css/css-text/word-break/word-break-keep-all-008.html the runner's one face has no CJK glyphs: its ideographs are the .notdef, 0.6em wide, where the test's widths are made for ideographs an em wide
+css/css-text/word-break/word-break-break-all-inline-007.tentative.html the reference browser (Chrome 156) breaks between a break-all box's last letter and the letters after it, as here, where this tentative test keeps them together
 
 # Tests taken in gap batch D (docs/design/text-dom-scripts.md, step 15): the
 # reftests of css-text and css-fonts, and the testharness.js tests of
@@ -25092,7 +24970,6 @@ css/cssom/getComputedStyle-insets-fixed.html	vertical-rl rtl inside vertical-rl 
 # serialization, layout queries and fonts let run. These fail by a gap the
 # roadmap names, the design note's section 2, what the runner cannot do, or
 # for a cause not diagnosed in the batch, said so.
-css/css-text/white-space/white-space-pre-011.html draws otherwise than its reference: not diagnosed in the batch
 css/css-values/calc-rounding-003.html draws otherwise than its reference: not diagnosed in the batch (taken since XHTML is the XML parser's)
 css/css-text/white-space/white-space-collapse-preserve-breaks-001.xht draws otherwise than its reference: not diagnosed in the batch (taken since XHTML is the XML parser's)
 css/css-fonts/font-variant-ligatures-11.optional.html draws otherwise than its reference: not diagnosed in the batch (taken since XHTML is the XML parser's)
@@ -30764,27 +30641,14 @@ selection/contenteditable/modifying-selection-with-non-primary-mouse-button.tent
 selection/contenteditable/modifying-selection-with-non-primary-mouse-button.tentative.html?secondary	secondary mouse button down should move caret, but its button up shouldn't move caret	a tentative feature no milestone holds
 
 # Tests taken in gap batch D (docs/design/text-dom-scripts.md, step 15): the
-# reftests of css-text and css-fonts, and the testharness.js tests of
-# html/syntax/parsing, dom/ranges, dom/traversal, selection,
-# html/semantics/scripting-1, subresource-integrity, css-fonts, css-text and
-# cssom-view; and the subtests of earlier directories the batch's
-# serialization, layout queries and fonts let run. These fail by a gap the
-# roadmap names, the design note's section 2, what the runner cannot do, or
-# for a cause not diagnosed in the batch, said so.
 css/css-text/hanging-punctuation/hanging-punctuation-allow-end-001.xht draws otherwise than its reference: not diagnosed in the batch
 css/css-text/hanging-punctuation/hanging-punctuation-block-bound-001.html draws otherwise than its reference: not diagnosed in the batch
 css/css-text/hanging-punctuation/hanging-punctuation-first-002.html draws otherwise than its reference: not diagnosed in the batch
 css/css-text/hanging-punctuation/hanging-punctuation-force-end-001.xht draws otherwise than its reference: not diagnosed in the batch
 css/css-text/hanging-punctuation/hanging-punctuation-inline-bound-001.html draws otherwise than its reference: not diagnosed in the batch
 css/css-text/hanging-punctuation/hanging-punctuation-last-001.xht draws otherwise than its reference: not diagnosed in the batch
-css/css-text/hyphens/hyphenate-character-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/hyphens/hyphenate-character-002.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/hyphens/hyphenate-character-003.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/hyphens/hyphenate-character-004.html draws otherwise than its reference: not diagnosed in the batch
 css/css-text/hyphens/hyphenate-limit-lines-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/hyphens/hyphens-auto-010.html draws otherwise than its reference: not diagnosed in the batch
 css/css-text/hyphens/hyphens-auto-control.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/hyphens/hyphens-auto-inline-010.html draws otherwise than its reference: not diagnosed in the batch
 css/css-text/hyphens/hyphens-out-of-flow-001.html draws otherwise than its reference: not diagnosed in the batch
 css/css-text/hyphens/hyphens-out-of-flow-002.html draws otherwise than its reference: not diagnosed in the batch
 css/css-text/hyphens/hyphens-span-001.html draws otherwise than its reference: not diagnosed in the batch
@@ -30793,27 +30657,17 @@ css/css-text/hyphens/hyphens-vs-float-clearance-001.html draws otherwise than it
 css/css-text/hyphens/hyphens-vs-float-clearance-002.html draws otherwise than its reference: not diagnosed in the batch
 css/css-text/hyphens/shy-styling-001.html draws otherwise than its reference: not diagnosed in the batch
 css/css-text/letter-spacing/letter-spacing-bidi-005.xht draws otherwise than its reference: not diagnosed in the batch
-css/css-text/letter-spacing/letter-spacing-ligatures-004.html draws otherwise than its reference: not diagnosed in the batch
 css/css-text/letter-spacing/letter-spacing-nesting-003.xht draws otherwise than its reference: not diagnosed in the batch
 css/css-text/line-break/line-break-loose-hyphens-001.html draws otherwise than its reference: not diagnosed in the batch
 css/css-text/line-break/line-break-normal-hyphens-001.html draws otherwise than its reference: not diagnosed in the batch
 css/css-text/line-break/line-break-strict-hyphens-001.html draws otherwise than its reference: not diagnosed in the batch
 css/css-text/tab-size/tab-size-block-ancestor.html tab-size, which the engine does not have (tabs go to stops of 8, D55)
 css/css-text/tab-size/tab-size-integer-004.html tab-size, which the engine does not have (tabs go to stops of 8, D55)
-css/css-text/tab-size/tab-size-spacing-001.html tab-size, which the engine does not have (tabs go to stops of 8, D55)
-css/css-text/tab-size/tab-size-spacing-002.html tab-size, which the engine does not have (tabs go to stops of 8, D55)
 css/css-text/tab-size/tab-size-spacing-003.html tab-size, which the engine does not have (tabs go to stops of 8, D55)
 css/css-text/text-autospace/text-autospace-combining-marks.html draws otherwise than its reference: not diagnosed in the batch
 css/css-text/text-autospace/text-autospace-supplementary-ideograph.html draws otherwise than its reference: not diagnosed in the batch
 css/css-text/text-indent/text-indent-overflow.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/text-indent/text-indent-tab-positions-001.html draws otherwise than its reference: not diagnosed in the batch
 css/css-text/text-transform/text-transform-fullwidth-010.html text-transform's full-size-kana, full-width and language tailoring, which the engine does not apply
-css/css-text/white-space/tab-stop-threshold-001.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/tab-stop-threshold-002.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/tab-stop-threshold-003.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/tab-stop-threshold-004.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/tab-stop-threshold-005.html draws otherwise than its reference: not diagnosed in the batch
-css/css-text/white-space/tab-stop-threshold-006.html draws otherwise than its reference: not diagnosed in the batch
 css/css-text/white-space/text-wrap-balance-overflow-001.html draws otherwise than its reference: not diagnosed in the batch
 css/css-text/word-break/auto-phrase/word-break-auto-phrase-001.html draws otherwise than its reference: not diagnosed in the batch
 css/css-text/word-break/auto-phrase/word-break-auto-phrase-003.html draws otherwise than its reference: not diagnosed in the batch
@@ -30856,15 +30710,6 @@ xhr/xmlhttprequest-timeout-worker-overridesexpires.html?timeout%20set%20to%20non
 xhr/xmlhttprequest-timeout-worker-simple.html?timeout%20hit%20before%20load	Timeout test: timeout hit before load, timeout scheduled at 2000	not diagnosed in the batch: FAIL: assert_equals: expected "timeout" but got "load"
 xhr/xmlhttprequest-timeout-worker-synconworker.html?timeout%20hit%20before%20load	Timeout test: timeout hit before load, timeout scheduled at 2000	not diagnosed in the batch: FAIL: assert_equals: expected "timeout" but got "load"
 xhr/xmlhttprequest-timeout-worker-twice.html?timeout%20fires%20normally%20with%20same%20timeout%20set%20twice	Timeout test: timeout fires normally with same timeout set twice, original timeout at 2000, reset at 1000 to 2000	not diagnosed in the batch: FAIL: assert_equals: expected "timeout" but got "load"
-
-# Tests taken in gap batch D (docs/design/text-dom-scripts.md, step 15): the
-# reftests of css-text and css-fonts, and the testharness.js tests of
-# html/syntax/parsing, dom/ranges, dom/traversal, selection,
-# html/semantics/scripting-1, subresource-integrity, css-fonts, css-text and
-# cssom-view; and the subtests of earlier directories the batch's
-# serialization, layout queries and fonts let run. These fail by a gap the
-# roadmap names, the design note's section 2, what the runner cannot do, or
-# for a cause not diagnosed in the batch, said so.
 css/cssom-view/cssom-geometryutils-cross-origin-path.https.html	GeometryUtils does not expose geometry across an A-B-A frame path	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
 encoding/sharedarraybuffer.https.html	decoding SharedArrayBuffer	not diagnosed in the batch: FAIL: SharedArrayBuffer is not defined
 html/infrastructure/safe-passing-of-structured-data/shared-array-buffers/nested-worker-success.https.html	Bonus: self.crossOriginIsolated	not diagnosed in the batch: FAIL: assert_true: expected true got false
@@ -31035,24 +30880,15 @@ webaudio/the-audio-api/the-mediastreamaudiosourcenode-interface/mediastreamaudio
 webaudio/the-audio-api/the-offlineaudiocontext-interface/offlineaudiocontext-suspend-rendersizehint.https.html	Offline suspend quantizes to custom render quantum size	not diagnosed in the batch: FAIL: assert_equals: Suspend should occur at exactly the quantum boundary expected 0.0091875 but got 0.010666666666666666
 workers/WorkerNavigator_userAgentData.https.html	Platform version and wow64-ness on Linux and Fuchsia should contain fixed values	not diagnosed in the batch: FAIL: promise_test: Unhandled rejection with value: object "TypeError: cannot read property 'getHighEntropyValues' of undefined"
 workers/WorkerNavigator_userAgentData.https.html	Test that userAgentData is available in workers in secure contexts	not diagnosed in the batch: FAIL: promise_test: Unhandled rejection with value: object "TypeError: cannot read property 'length' of undefined"
-
-# Tests taken in gap batch D (docs/design/text-dom-scripts.md, step 15): the
-# reftests of css-text and css-fonts, and the testharness.js tests of
-# html/syntax/parsing, dom/ranges, dom/traversal, selection,
-# html/semantics/scripting-1, subresource-integrity, css-fonts, css-text and
-# cssom-view; and the subtests of earlier directories the batch's
-# serialization, layout queries and fonts let run. These fail by a gap the
-# roadmap names, the design note's section 2, what the runner cannot do, or
-# for a cause not diagnosed in the batch, said so.
-
-# Tests taken in gap batch D (docs/design/text-dom-scripts.md, step 15): the
-# reftests of css-text and css-fonts, and the testharness.js tests of
-# html/syntax/parsing, dom/ranges, dom/traversal, selection,
-# html/semantics/scripting-1, subresource-integrity, css-fonts, css-text and
-# cssom-view; and the subtests of earlier directories the batch's
-# serialization, layout queries and fonts let run. These fail by a gap the
-# roadmap names, the design note's section 2, what the runner cannot do, or
-# for a cause not diagnosed in the batch, said so.
 css/css-text/white-space/trailing-space-in-inline-box.html	Preserved trailing spaces in inline boxes should hang	not diagnosed in the batch: FAIL: assert_less_than_equal: expected a number less than or equal to 67 but got 71
 css/css-text/white-space/trailing-space-in-inline-box.html	Preserved trailing spaces in inline boxes should hang 1	not diagnosed in the batch: FAIL: assert_less_than_equal: expected a number less than or equal to 67 but got 71
 css/css-text/white-space/trailing-space-in-inline-box.html	Preserved trailing spaces in inline boxes should hang 2	not diagnosed in the batch: FAIL: assert_less_than_equal: expected a number less than or equal to 67 but got 71
+
+# Tests taken in gap batch D (docs/design/text-dom-scripts.md, step 15): the
+# reftests of css-text and css-fonts, and the testharness.js tests of
+# html/syntax/parsing, dom/ranges, dom/traversal, selection,
+# html/semantics/scripting-1, subresource-integrity, css-fonts, css-text and
+# cssom-view; and the subtests of earlier directories the batch's
+# serialization, layout queries and fonts let run. These fail by a gap the
+# roadmap names, the design note's section 2, what the runner cannot do, or
+# for a cause not diagnosed in the batch, said so.

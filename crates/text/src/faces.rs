@@ -214,6 +214,9 @@ pub(crate) struct Faces {
     /// The shaping options handed out ([`Font::shaping`]), as chains
     /// are, by the request's kerning, features and language.
     shapings: RwLock<Shapings>,
+    /// The face `monospace` is, in a collection of bundled faces with
+    /// no system's: the tests' fixed-width font.
+    monospace: Option<FaceId>,
 }
 
 /// The shaping options handed out, in order, and each one's number by
@@ -351,6 +354,7 @@ impl Faces {
             chosen: Choices::new(),
             chains: RwLock::new((Vec::new(), HashMap::new())),
             shapings: RwLock::new((Vec::new(), HashMap::new())),
+            monospace: None,
         }
     }
 
@@ -390,6 +394,18 @@ impl Faces {
     pub(crate) fn shaping_options(&self, n: u16) -> Option<Arc<ShapeOptions>> {
         let i = n.checked_sub(1)? as usize;
         self.shapings.read().ok()?.0.get(i).cloned()
+    }
+
+    /// Keeps `face` as the face of `monospace` and `ui-monospace`, where
+    /// the collection has no system's faces.
+    pub(crate) fn keep_monospace(&mut self, face: super::FontStore) {
+        let slots = self.loaded.get_mut().unwrap_or_else(|e| e.into_inner());
+        slots.push(Slot::Kept(Arc::new(Fallback {
+            path: PathBuf::new(),
+            index: 0,
+            font: std::sync::OnceLock::from(Some(face)),
+        })));
+        self.monospace = Some(FaceId(slots.len() as u32));
     }
 
     /// The number of the chain `links` shaped by the options numbered
@@ -523,6 +539,11 @@ impl Faces {
         family: &Family<'_>,
         request: &FontRequest<'_>,
     ) -> Option<Font> {
+        if let (Family::Generic("monospace" | "ui-monospace"), Some(face), None) =
+            (family, self.monospace, &self.db)
+        {
+            return Some(synthesized(face, request, 400, false));
+        }
         let db = self.db.as_ref()?;
         let id = match family {
             Family::Generic("sans-serif" | "system-ui" | "ui-sans-serif") => {

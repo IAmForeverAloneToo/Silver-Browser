@@ -2115,6 +2115,7 @@ reftest	css/css-text/line-breaking/line-breaking-025.html	!=css/css-text/line-br
 reftest	css/css-text/line-breaking/line-breaking-026.html	!=css/css-text/line-breaking/reference/line-breaking-026-ref.html
 reftest	css/css-text/line-breaking/line-breaking-027.html	!=css/css-text/line-breaking/reference/line-breaking-027-ref.html
 reftest	css/css-text/line-breaking/line-breaking-atomic-009.html	==css/css-text/line-breaking/reference/line-breaking-atomic-009-ref.html
+checklayout	css/css-text/line-breaking/line-breaking-atomic-nowrap-002.html	#test
 reftest	css/css-text/line-breaking/line-breaking-ic-001.html	==css/css-text/line-breaking/reference/line-breaking-ic-001-ref.html
 reftest	css/css-text/line-breaking/line-breaking-ic-002.html	==css/css-text/line-breaking/reference/line-breaking-ic-001-ref.html
 reftest	css/css-text/line-breaking/line-breaking-ic-003.html	==css/css-text/line-breaking/reference/line-breaking-ic-001-ref.html
@@ -2810,6 +2811,7 @@ reftest	css/css-images/conic-gradient-angle.html	==css/css-images/reference/200x
 reftest	css/css-images/conic-gradient-center.html	==css/css-images/conic-gradient-center-ref.html	fuzzy=:0-1;0-40000
 crashtest	css/css-images/empty-radial-gradient-crash.html
 reftest	css/css-images/gradient/color-scheme-dependent-color-stops.html	==css/css-images/gradient/color-scheme-dependent-color-stops-ref.html
+reftest	css/css-images/gradient/conic-gradient-001.html	==css/css-images/gradient/conic-gradient-001-ref.html	fuzzy=:0-1;0-40000
 reftest	css/css-images/gradient/css-color-4-colors-default-to-oklab-gradient.html	==css/css-images/gradient/oklab-gradient-ref.html	fuzzy=:1-12;0-24000
 reftest	css/css-images/gradient/display-p3-linear-gradient.html	==css/css-images/gradient/display-p3-linear-gradient-ref.html	fuzzy=:1-10;0-24000
 reftest	css/css-images/gradient/gradient-analogous-missing-components-001.html	==css/css-images/gradient/gradient-analogous-missing-components-001-ref.html	fuzzy=:0-2;0-17000
@@ -4151,7 +4153,6 @@ reftest	css/selectors/focus-within-008.html	==css/selectors/focus-within-007-ref
 reftest	css/selectors/focus-within-010.html	==css/selectors/focus-within-shadow-001-ref.html
 reftest	css/selectors/focus-within-011.html	==css/selectors/focus-within-011-ref.html
 reftest	css/selectors/focus-within-012.html	==css/selectors/focus-within-012-ref.html
-reftest	css/selectors/invalidation/any-link-attribute-removal.html	==css/selectors/invalidation/any-link-attribute-removal-ref.html
 crashtest	css/selectors/is-where-error-crash.html
 reftest	css/selectors/not-links.html	==css/selectors/not-links-ref.html
 reftest	css/selectors/nth-child-of-classname.html	==css/selectors/nth-child-of-classname-ref.html
@@ -10484,9 +10485,6 @@ testharness	css/css-display/textarea-display.html
 testharness	css/css-sizing/aspect-ratio/abspos-aspect-ratio-border.html
 testharness	css/css-sizing/aspect-ratio/aspect-ratio-minimum-size-single-axis-scroll-container.html
 testharness	css/css-sizing/aspect-ratio/box-sizing-aspect-ratio-positioned.html
-testharness	css/css-sizing/aspect-ratio/box-sizing-dimensions.html
-testharness	css/css-sizing/aspect-ratio/box-sizing-squashed.html
-testharness	css/css-sizing/aspect-ratio/fractional-aspect-ratio.html
 testharness	css/css-sizing/aspect-ratio/inheritance.html
 testharness	css/css-sizing/aspect-ratio/parsing/aspect-ratio-computed.html
 testharness	css/css-sizing/aspect-ratio/parsing/aspect-ratio-invalid.html
@@ -11692,11 +11690,8 @@ testharness	css/css-text/line-breaking/line-breaking-020.html
 testharness	css/css-text/line-breaking/line-breaking-028.html
 testharness	css/css-text/line-breaking/line-breaking-029.html
 testharness	css/css-text/line-breaking/line-breaking-atomic-nowrap-001.html
-testharness	css/css-text/line-breaking/line-breaking-atomic-nowrap-002.html
-testharness	css/css-text/overflow-wrap/overflow-wrap-anywhere-span-002.html
 testharness	css/css-text/overflow-wrap/overflow-wrap-break-word-keep-all-001.html
 testharness	css/css-text/overflow-wrap/overflow-wrap-break-word-long-crash.html
-testharness	css/css-text/overflow-wrap/overflow-wrap-break-word-span-002.html
 testharness	css/css-text/overflow-wrap/overflow-wrap-break-word-white-space-crash-002.html
 testharness	css/css-text/overflow-wrap/overflow-wrap-break-word-white-space-crash.html
 testharness	css/css-text/overflow-wrap/word-wrap-alias.html

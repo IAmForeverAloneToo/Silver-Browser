@@ -243,6 +243,10 @@ pub enum Call {
     },
     /// An element's `innerText`.
     InnerText(Handle),
+    /// The rendered text between two boundary points, as `innerText`
+    /// collects it, or `null` where nothing there is rendered: what
+    /// `Selection.toString()` gives.
+    SelectedText(Handle, u32, Handle, u32),
     /// The CSSOM's sheets and rules (D66): `op` on the sheet of `owner`
     /// (none for the document's list), `path` its imports' count, the
     /// imports, then the rule path; `text` and `index` what the op

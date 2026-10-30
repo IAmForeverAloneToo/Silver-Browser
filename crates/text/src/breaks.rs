@@ -57,9 +57,8 @@ impl From<WordBreaking> for BreakRules {
 /// character there: none at its start or its end, nor before a line
 /// feed, whose break is forced. Between two printable ASCII characters
 /// the reference browser keeps a table of its own (Blink's ASCII line
-/// break table) rather than UAX #14's: there a break is only after a
-/// hyphen that follows a letter or digit and comes before a letter, so
-/// that `width/margin` or `a.b` stay whole, as `well-known` does not.
+/// break table, [`ascii_pair_breaks`]) rather than UAX #14's, so that
+/// `width/margin`, `a|b` or `a.b` stay whole, as `well-known` does not.
 /// The strictness does not change where ASCII breaks, but `anywhere`.
 pub fn line_breaks(text: &str, rules: impl Into<BreakRules>) -> Vec<usize> {
     let rules = rules.into();
@@ -84,11 +83,37 @@ pub fn grapheme_boundaries(text: &str) -> Vec<usize> {
         .collect()
 }
 
+/// Whether the reference browser breaks between the printable ASCII
+/// characters `before` and `after`, `earlier` the one before `before`,
+/// as its table has it (measured from Chrome 156): after a hyphen but
+/// before what closes, ends or joins, and before a digit only where the
+/// hyphen follows a letter or digit; after a question mark the same
+/// way, but before quotes; after other punctuation that ends, only
+/// before what opens.
+pub(crate) fn ascii_pair_breaks(earlier: Option<u8>, before: u8, after: u8) -> bool {
+    match before {
+        b'-' if after.is_ascii_digit() => earlier.is_some_and(|e| e.is_ascii_alphanumeric()),
+        b'-' => !matches!(
+            after,
+            b'!' | b'$' | b')' | b',' | b'.' | b'/' | b':' | b';' | b'?' | b']' | b'}'
+        ),
+        b'?' => !matches!(
+            after,
+            b'!' | b'"' | b'\'' | b')' | b',' | b'.' | b'/' | b':' | b';' | b'?' | b']' | b'}'
+        ),
+        b'!' | b'"' | b'#' | b'%' | b'&' | b')' | b'*' | b'+' | b',' | b'.' | b':' | b';'
+        | b'=' | b'>' | b'\\' | b']' | b'|' | b'}' | b'~' => {
+            matches!(after, b'(' | b'<' | b'[' | b'{')
+        }
+        _ => false,
+    }
+}
+
 /// [`line_breaks`] for text of spaces and printable ASCII, as UAX #14
 /// and the table give it, without the segmenter: after spaces, unless
 /// what follows closes, ends or joins (classes CL, CP, EX, IS and SY,
 /// rule LB13), or what the spaces follow opens (OP, rule LB14); and
-/// after a hyphen between a letter or digit and a letter.
+/// between two other characters where [`ascii_pair_breaks`] says.
 fn ascii_breaks(bytes: &[u8]) -> Vec<usize> {
     let mut breaks = Vec::new();
     // The last character that is not a space.
@@ -106,10 +131,7 @@ fn ascii_breaks(bytes: &[u8]) -> Vec<usize> {
                 )
                 && !matches!(last, Some(b'(' | b'[' | b'{'))
         } else {
-            before == b'-'
-                && after.is_ascii_alphabetic()
-                && at >= 2
-                && bytes[at - 2].is_ascii_alphanumeric()
+            after != b' ' && ascii_pair_breaks(at.checked_sub(2).map(|e| bytes[e]), before, after)
         };
         if allowed {
             breaks.push(at);
@@ -150,24 +172,29 @@ fn by_segmenter(text: &str, rules: impl Into<BreakRules>) -> Vec<usize> {
     let anywhere = rules.strictness == Strictness::Anywhere;
     let bytes = text.as_bytes();
     let printable = |b: u8| (b'!'..=b'~').contains(&b);
-    let breaks: Vec<usize> = segmenter
+    let by_table = words != WordBreaking::BreakAll && !anywhere;
+    // Between two printable ASCII characters the table decides, the
+    // segmenter elsewhere.
+    let pair = |at: usize| by_table && printable(bytes[at - 1]) && printable(bytes[at]);
+    let mut breaks: Vec<usize> = segmenter
         .segment_str(text)
         .filter(|&at| at > 0 && at < text.len() && !text[..at].ends_with('\n'))
-        .filter(|&at| {
-            let (before, after) = (bytes[at - 1], bytes[at]);
-            if words == WordBreaking::BreakAll
-                || anywhere
-                || !printable(before)
-                || !printable(after)
-            {
-                return true;
-            }
-            before == b'-'
-                && after.is_ascii_alphabetic()
-                && at >= 2
-                && bytes[at - 2].is_ascii_alphanumeric()
-        })
+        .filter(|&at| !pair(at))
         .collect();
+    if by_table {
+        let from = breaks.len();
+        breaks.extend((1..bytes.len()).filter(|&at| {
+            pair(at)
+                && ascii_pair_breaks(
+                    at.checked_sub(2).map(|e| bytes[e]),
+                    bytes[at - 1],
+                    bytes[at],
+                )
+        }));
+        if breaks.len() > from {
+            breaks.sort_unstable();
+        }
+    }
     tailored(text, rules, breaks)
 }
 
@@ -239,8 +266,29 @@ mod tests {
             ["well-", "known"]
         );
         // ASCII as the reference browser breaks it.
-        for whole in ["width/margin", "a.b,c", "-1", "x--y", "50%-off"] {
+        for whole in ["width/margin", "a.b,c", "-1", "a|b", "a'(b", "a$(b"] {
             assert_eq!(pieces(whole, WordBreaking::Normal), [whole], "{whole}");
+        }
+        let chrome: [(&str, &[&str]); 9] = [
+            ("x--y", &["x-", "-", "y"]),
+            ("50%-off", &["50%-", "off"]),
+            ("a-1", &["a-", "1"]),
+            ("a--1", &["a-", "-1"]),
+            ("-x", &["-", "x"]),
+            ("a!(b", &["a!", "(b"]),
+            ("a?1", &["a?", "1"]),
+            ("a?-b", &["a?", "-", "b"]),
+            ("a-?b", &["a-?", "b"]),
+        ];
+        for (text, expected) in chrome {
+            assert_eq!(pieces(text, WordBreaking::Normal), expected, "{text}");
+            // So in text the segmenter breaks too.
+            let wide = format!("\u{5b57} {text}");
+            assert_eq!(
+                pieces(&wide, WordBreaking::Normal)[1..],
+                *expected,
+                "{wide}"
+            );
         }
         assert_eq!(
             pieces("\u{65e5}\u{672c}\u{8a9e}", WordBreaking::Normal),

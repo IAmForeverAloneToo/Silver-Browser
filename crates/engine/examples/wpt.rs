@@ -480,6 +480,9 @@ fn pull(checkout: &Path) -> Result<(), String> {
     let (commit, date) = upstream(checkout)?;
     let mut manifest = Vec::new();
     let mut files = BTreeSet::new();
+    // Each test once: a directory inside another, or a page the
+    // testharness directories hold too, is taken by its first kind.
+    let mut taken: BTreeSet<String> = BTreeSet::new();
     let mut left_out: BTreeMap<String, usize> = BTreeMap::new();
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     for directory in DIRECTORIES {
@@ -488,7 +491,7 @@ fn pull(checkout: &Path) -> Result<(), String> {
         tests.sort();
         for path in tests {
             let rel = relative(checkout, &path)?;
-            if !is_test(&rel) {
+            if !is_test(&rel) || taken.contains(&rel) {
                 continue;
             }
             match take(checkout, &rel) {
@@ -496,6 +499,7 @@ fn pull(checkout: &Path) -> Result<(), String> {
                     let (name, line) = manifest_line(&rel, &kind);
                     *counts.entry(name).or_default() += 1;
                     manifest.push(line);
+                    taken.insert(rel.clone());
                     files.insert(rel);
                     files.extend(needs);
                 }
@@ -510,7 +514,7 @@ fn pull(checkout: &Path) -> Result<(), String> {
         for path in tests {
             let rel = relative(checkout, &path)?;
             let name = rel.rsplit('/').next().unwrap_or(&rel);
-            if !name.starts_with(start) || !is_testharness_test(name) {
+            if !name.starts_with(start) || !is_testharness_test(name) || taken.contains(&rel) {
                 continue;
             }
             if let Some((_, why)) = CANVAS_LEFT_OUT
@@ -1254,11 +1258,23 @@ fn is_xml_page(rel: &str) -> bool {
 
 /// The selectors of a script made of nothing but `checkLayout` calls,
 /// `checkLayout('selector')` or `window.checkLayout("selector", true)`,
-/// each perhaps followed by `;`.
+/// each perhaps followed by `;`, or one made once the fonts are ready,
+/// `document.fonts.ready.then(() => checkLayout("selector"))`, which the
+/// runner's fonts, bundled, always are.
 fn check_layout_calls(script: &str) -> Result<Vec<String>, String> {
     let not = || Err("script".to_string());
     let mut selectors = Vec::new();
     let mut rest = strip_comments(script);
+    let once_ready = rest
+        .trim()
+        .trim_end_matches(';')
+        .strip_prefix("document.fonts.ready.then(")
+        .and_then(|s| s.trim_start().strip_prefix("() =>"))
+        .and_then(|s| s.trim_end().strip_suffix(')'))
+        .map(str::to_string);
+    if let Some(inner) = once_ready {
+        rest = inner;
+    }
     loop {
         let s = rest.trim_start();
         if s.is_empty() {
@@ -2382,6 +2398,12 @@ mod tests {
                      /* and again */ checkLayout('div');</script>\
                      <script src=../../resources/check-layout-th.js></script>",
                 ),
+                (
+                    "css/x/f.html",
+                    "<div class=a data-expected-height=0></div>\
+                     <script src=/resources/check-layout-th.js></script><script>\
+                     document.fonts.ready.then(() => checkLayout(\".a > b\"));</script>",
+                ),
                 ("css/x/crashtests/k.html", "<div></div>"),
                 ("css/x/w-crash.html", "<div></div>"),
             ],
@@ -2400,6 +2422,10 @@ mod tests {
         assert_eq!(
             checkout.take("css/x/s.html").map(|(line, _)| line),
             Ok("checklayout\tcss/x/s.html\t.a\tdiv".to_string())
+        );
+        assert_eq!(
+            checkout.take("css/x/f.html").map(|(line, _)| line),
+            Ok("checklayout\tcss/x/f.html\t.a > b".to_string())
         );
         for crash in ["css/x/crashtests/k.html", "css/x/w-crash.html"] {
             assert_eq!(

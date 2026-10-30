@@ -334,6 +334,14 @@ const NATIVES: &[(&str, Decode)] = &[
         })
     }),
     ("innerText", |a| Ok(Call::InnerText(a.handle(0)?))),
+    ("selectedText", |a| {
+        Ok(Call::SelectedText(
+            a.handle(0)?,
+            a.integer(1) as u32,
+            a.handle(2)?,
+            a.integer(3) as u32,
+        ))
+    }),
     ("cssom", |a| {
         Ok(Call::Cssom {
             op: a.string(0)?,

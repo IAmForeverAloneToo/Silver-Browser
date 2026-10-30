@@ -1235,6 +1235,10 @@ impl FontMeasure for FontMeasurer<'_> {
     fn zero_advance(&self, font_size_px: f32) -> f32 {
         self.0.zero_advance(font_size_px)
     }
+
+    fn zero_advance_in(&self, font_size_px: f32, families: &str) -> f32 {
+        self.0.zero_advance_in(font_size_px, families)
+    }
 }
 
 /// The scrollbar's geometry for the last frame (M9.2), in viewport

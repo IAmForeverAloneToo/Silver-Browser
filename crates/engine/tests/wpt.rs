@@ -935,8 +935,12 @@ struct Loaded {
 /// `path` from `server`; or why it could not.
 fn load_waking(server: &TestServer, path: &str) -> Result<Loaded, String> {
     let mut engine = Engine::with_fonts(
-        text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
-            .expect("the bundled font parses"),
+        text::FontCollection::from_bytes_with_monospace(
+            text::TEST_FONT.to_vec(),
+            0,
+            text::TEST_MONO_FONT.to_vec(),
+        )
+        .expect("the bundled font parses"),
     );
     engine.set_scripting(true);
     // Sound starts without a user's activation, as the reference
