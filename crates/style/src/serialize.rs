@@ -120,7 +120,13 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "font-size",
     "font-stretch",
     "font-style",
+    "font-variant-alternates",
     "font-variant-caps",
+    "font-variant-east-asian",
+    "font-variant-emoji",
+    "font-variant-ligatures",
+    "font-variant-numeric",
+    "font-variant-position",
     "font-weight",
     "grid-auto-columns",
     "grid-auto-flow",
@@ -354,20 +360,21 @@ fn longhand(style: &ComputedStyle, name: &str, url: longhands::Url<'_>) -> Optio
         }
         "font-size" => px(style.font_size_px),
         "font-family" => style.font().family.to_string(),
-        "font-weight" => style.font().weight.to_string(),
+        "font-weight" => number(style.font().weight),
         "font-style" => match style.font().style {
             FontStyle::Normal => "normal".to_owned(),
             FontStyle::Italic => "italic".to_owned(),
-            FontStyle::Oblique(14.0) => "oblique".to_owned(),
+            FontStyle::DefaultOblique => "oblique".to_owned(),
             FontStyle::Oblique(a) => format!("oblique {}deg", number(a)),
         },
         "font-stretch" => format!("{}%", number(style.font().stretch)),
-        "font-variant-caps" => if style.font().small_caps {
-            "small-caps"
-        } else {
-            "normal"
-        }
-        .to_owned(),
+        "font-variant-ligatures" => style.font().variant.ligatures.clone(),
+        "font-variant-caps" => style.font().variant.caps.clone(),
+        "font-variant-alternates" => style.font().variant.alternates.clone(),
+        "font-variant-numeric" => style.font().variant.numeric.clone(),
+        "font-variant-east-asian" => style.font().variant.east_asian.clone(),
+        "font-variant-position" => style.font().variant.position.clone(),
+        "font-variant-emoji" => style.font().variant.emoji.clone(),
         "font-feature-settings" => {
             let features = &style.font().features;
             if features.is_empty() {

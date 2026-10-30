@@ -1,10 +1,9 @@
 //! The font properties past `font-size` and `font-family` (CSS Fonts 4
 //! sections 2 to 6, CSS 2 section 10.8; gap batch D, D53):
-//! `font-weight`, `font-style`, `font-stretch`, `font-variant` and
-//! `font-variant-caps` (small capitals alone), `font-feature-settings`,
-//! `line-height`, and the `font` shorthand. Each parser takes a
-//! declaration's value as the cascade has it and says `None` for one the
-//! property does not take.
+//! `font-weight`, `font-style`, `font-stretch`, the `font-variant`
+//! longhands and shorthand, `font-feature-settings`, `line-height`, and
+//! the `font` shorthand. Each parser takes a declaration's value as the
+//! cascade has it and says `None` for one the property does not take.
 
 use std::sync::Arc;
 
@@ -12,47 +11,58 @@ use css::Token;
 
 use super::{LengthBases, Range, math, single_ident, single_token, trim};
 use crate::calc::{Computed, Want};
-use crate::computed::{FontFeatures, FontProps, FontStyle, LineHeight};
+use crate::computed::{FontFeatures, FontProps, FontStyle, FontVariant, LineHeight};
 
 /// The most features a `font-feature-settings` may list: a longer list
 /// is invalid.
 pub const MAX_FONT_FEATURES: usize = 64;
 
-/// `font-weight`: a number 1 to 1000, `normal`, `bold`, or `bolder` and
-/// `lighter` by the parent's weight (section 2.2.1's table).
+/// `font-weight`: a number 1 to 1000 (a calculation clamped to them),
+/// `normal`, `bold`, or `bolder` and `lighter` by the parent's weight
+/// (section 2.2.1's table).
 pub(super) fn parse_font_weight(
     tokens: &[Token],
-    parent: u16,
+    parent: f32,
     bases: &LengthBases<'_>,
-) -> Option<u16> {
+) -> Option<f32> {
     if let Some(word) = single_ident(tokens) {
         return Some(match word.to_ascii_lowercase().as_str() {
-            "normal" => 400,
-            "bold" => 700,
+            "normal" => 400.0,
+            "bold" => 700.0,
             "bolder" => bolder(parent),
             "lighter" => lighter(parent),
             _ => return None,
         });
     }
-    let n = number(tokens, bases)?;
-    (1.0..=1000.0).contains(&n).then_some(n.round() as u16)
+    if let Some(Token::Number { value, .. }) = single_token(tokens) {
+        return (1.0..=1000.0).contains(value).then_some(*value as f32);
+    }
+    Some(number(tokens, bases)?.clamp(1.0, 1000.0))
 }
 
-/// The weight `bolder` gives over `parent`.
-pub fn bolder(parent: u16) -> u16 {
-    match parent {
-        0..350 => 400,
-        350..550 => 700,
-        _ => 900,
+/// The weight `bolder` gives over `parent` (CSS Fonts 4 section 2.2.1).
+pub fn bolder(parent: f32) -> f32 {
+    if parent < 350.0 {
+        400.0_f32.max(parent)
+    } else if parent < 550.0 {
+        700.0
+    } else if parent < 900.0 {
+        900.0
+    } else {
+        parent
     }
 }
 
 /// The weight `lighter` gives under `parent`.
-pub fn lighter(parent: u16) -> u16 {
-    match parent {
-        0..550 => 100,
-        550..750 => 400,
-        _ => 700,
+pub fn lighter(parent: f32) -> f32 {
+    if parent < 100.0 {
+        parent
+    } else if parent < 550.0 {
+        100.0
+    } else if parent < 750.0 {
+        400.0
+    } else {
+        700.0
     }
 }
 
@@ -68,7 +78,8 @@ fn number(tokens: &[Token], bases: &LengthBases<'_>) -> Option<f32> {
 }
 
 /// `font-style`: `normal`, `italic`, or `oblique` with an angle from -90
-/// to 90 degrees, 14 when none is given.
+/// to 90 degrees (a calculation clamped to them), 14 when none is
+/// given; `oblique 0deg` is `normal`.
 pub(super) fn parse_font_style(tokens: &[Token], bases: &LengthBases<'_>) -> Option<FontStyle> {
     let parts: Vec<&[Token]> = super::components(tokens);
     let word = |part: &[Token]| single_ident(part).map(str::to_ascii_lowercase);
@@ -76,31 +87,39 @@ pub(super) fn parse_font_style(tokens: &[Token], bases: &LengthBases<'_>) -> Opt
         [one] => match word(one)?.as_str() {
             "normal" => Some(FontStyle::Normal),
             "italic" => Some(FontStyle::Italic),
-            "oblique" => Some(FontStyle::Oblique(14.0)),
+            "oblique" => Some(FontStyle::DefaultOblique),
             _ => None,
         },
         [first, angle] if word(first)?.as_str() == "oblique" => {
-            let a = super::effects::angle(angle, true, bases)?;
-            (-90.0..=90.0).contains(&a).then_some(FontStyle::Oblique(a))
+            let a = super::effects::angle(angle, false, bases)?;
+            let a = if matches!(angle, [Token::Dimension { .. }]) {
+                (-90.0..=90.0).contains(&a).then_some(a)?
+            } else {
+                a.clamp(-90.0, 90.0)
+            };
+            Some(if a == 0.0 {
+                FontStyle::Normal
+            } else {
+                FontStyle::Oblique(a)
+            })
         }
         _ => None,
     }
 }
 
 /// `font-stretch`: a keyword or a percentage, as a percentage of the
-/// normal width.
+/// normal width; a calculation below 0 is 0.
 pub(super) fn parse_font_stretch(tokens: &[Token], bases: &LengthBases<'_>) -> Option<f32> {
     if let Some(word) = single_ident(tokens) {
         return stretch_keyword(&word.to_ascii_lowercase());
     }
-    let p = match math(tokens, Want::Percentage, bases, None) {
-        Some(Computed::Percent(p)) => p as f32,
-        _ => match single_token(tokens)? {
-            Token::Percentage { value } => *value as f32,
-            _ => return None,
-        },
-    };
-    (p.is_finite() && p >= 0.0).then_some(p)
+    if let Some(Token::Percentage { value }) = single_token(tokens) {
+        return (value.is_finite() && *value >= 0.0).then_some(*value as f32);
+    }
+    match math(tokens, Want::Percentage, bases, None) {
+        Some(Computed::Percent(p)) if p.is_finite() => Some((p as f32).max(0.0)),
+        _ => None,
+    }
 }
 
 /// A `font-stretch` keyword's percentage (section 2.3).
@@ -119,15 +138,201 @@ fn stretch_keyword(word: &str) -> Option<f32> {
     })
 }
 
-/// `font-variant-caps` and the `font-variant` shorthand, of which only
-/// `normal` and `small-caps` (and `font-variant: none`) are taken:
-/// whether the text is in small capitals.
-pub(super) fn parse_small_caps(tokens: &[Token], shorthand: bool) -> Option<bool> {
-    match single_ident(tokens)?.to_ascii_lowercase().as_str() {
-        "normal" => Some(false),
-        "none" if shorthand => Some(false),
-        "small-caps" => Some(true),
-        _ => None,
+/// The keyword of a `font-stretch` percentage that has one.
+pub fn stretch_name(percentage: f32) -> Option<&'static str> {
+    Some(match percentage {
+        50.0 => "ultra-condensed",
+        62.5 => "extra-condensed",
+        75.0 => "condensed",
+        87.5 => "semi-condensed",
+        100.0 => "normal",
+        112.5 => "semi-expanded",
+        125.0 => "expanded",
+        150.0 => "extra-expanded",
+        200.0 => "ultra-expanded",
+        _ => return None,
+    })
+}
+
+/// The `font-variant` longhands, by name, each with its groups of
+/// keywords: a value takes at most one of a group, and is written in
+/// the groups' order (section 6).
+const VARIANTS: [(&str, &[&[&str]]); 6] = [
+    (
+        "font-variant-ligatures",
+        &[
+            &["common-ligatures", "no-common-ligatures"],
+            &["discretionary-ligatures", "no-discretionary-ligatures"],
+            &["historical-ligatures", "no-historical-ligatures"],
+            &["contextual", "no-contextual"],
+        ],
+    ),
+    (
+        "font-variant-caps",
+        &[&[
+            "small-caps",
+            "all-small-caps",
+            "petite-caps",
+            "all-petite-caps",
+            "unicase",
+            "titling-caps",
+        ]],
+    ),
+    ("font-variant-alternates", &[&["historical-forms"]]),
+    (
+        "font-variant-numeric",
+        &[
+            &["lining-nums", "oldstyle-nums"],
+            &["proportional-nums", "tabular-nums"],
+            &["diagonal-fractions", "stacked-fractions"],
+            &["ordinal"],
+            &["slashed-zero"],
+        ],
+    ),
+    (
+        "font-variant-east-asian",
+        &[
+            &[
+                "jis78",
+                "jis83",
+                "jis90",
+                "jis04",
+                "simplified",
+                "traditional",
+            ],
+            &["full-width", "proportional-width"],
+            &["ruby"],
+        ],
+    ),
+    ("font-variant-position", &[&["sub", "super"]]),
+];
+
+/// The keywords of `font-variant-emoji`.
+const EMOJI: [&str; 3] = ["text", "emoji", "unicode"];
+
+/// A `font-variant` longhand's value written as its computed value is,
+/// its keywords in their groups' order; `None` when it is not one.
+/// `font-variant-ligatures` takes `none` too.
+pub fn parse_variant(name: &str, tokens: &[Token]) -> Option<String> {
+    let words: Option<Vec<String>> = tokens
+        .iter()
+        .filter(|t| **t != Token::Whitespace)
+        .map(|t| match t {
+            Token::Ident(word) => Some(word.to_ascii_lowercase()),
+            _ => None,
+        })
+        .collect();
+    let words = words?;
+    match words.as_slice() {
+        [one] if one == "normal" => return Some("normal".into()),
+        [one] if one == "none" && name == "font-variant-ligatures" => {
+            return Some("none".into());
+        }
+        [one] if name == "font-variant-emoji" => {
+            return EMOJI.contains(&one.as_str()).then(|| one.clone());
+        }
+        [] => return None,
+        _ => {}
+    }
+    let groups = VARIANTS.iter().find(|(n, _)| *n == name)?.1;
+    let mut chosen: Vec<Option<&str>> = vec![None; groups.len()];
+    for word in &words {
+        let g = groups.iter().position(|g| g.contains(&word.as_str()))?;
+        if chosen[g].is_some() {
+            return None;
+        }
+        chosen[g] = Some(word.as_str());
+    }
+    Some(chosen.into_iter().flatten().collect::<Vec<_>>().join(" "))
+}
+
+/// The `font-variant` shorthand's longhands: `normal` all of them
+/// normal, `none` the ligatures none and the rest normal, else each
+/// keyword its longhand's; `None` when it is not one.
+pub fn parse_font_variant(tokens: &[Token]) -> Option<FontVariant> {
+    let words: Option<Vec<String>> = tokens
+        .iter()
+        .filter(|t| **t != Token::Whitespace)
+        .map(|t| match t {
+            Token::Ident(word) => Some(word.to_ascii_lowercase()),
+            _ => None,
+        })
+        .collect();
+    let words = words?;
+    let mut variant = FontVariant::default();
+    match words.as_slice() {
+        [] => return None,
+        [one] if one == "normal" => return Some(variant),
+        [one] if one == "none" => {
+            variant.ligatures = "none".into();
+            return Some(variant);
+        }
+        _ => {}
+    }
+    let mut parts: Vec<(&str, Vec<String>)> = Vec::new();
+    for word in words {
+        let name = if EMOJI.contains(&word.as_str()) {
+            "font-variant-emoji"
+        } else {
+            VARIANTS
+                .iter()
+                .find(|(_, groups)| groups.iter().any(|g| g.contains(&word.as_str())))?
+                .0
+        };
+        match parts.iter_mut().find(|(n, _)| *n == name) {
+            Some((_, list)) => list.push(word),
+            None => parts.push((name, vec![word])),
+        }
+    }
+    for (name, list) in parts {
+        let tokens: Vec<Token> = list.into_iter().map(Token::Ident).collect();
+        let tokens: Vec<Token> = tokens
+            .into_iter()
+            .flat_map(|t| [t, Token::Whitespace])
+            .collect();
+        let value = parse_variant(name, &tokens)?;
+        *variant_field(&mut variant, name)? = value;
+    }
+    Some(variant)
+}
+
+/// The field of `variant` that holds the longhand `name`.
+pub fn variant_field<'v>(variant: &'v mut FontVariant, name: &str) -> Option<&'v mut String> {
+    Some(match name {
+        "font-variant-ligatures" => &mut variant.ligatures,
+        "font-variant-caps" => &mut variant.caps,
+        "font-variant-alternates" => &mut variant.alternates,
+        "font-variant-numeric" => &mut variant.numeric,
+        "font-variant-east-asian" => &mut variant.east_asian,
+        "font-variant-position" => &mut variant.position,
+        "font-variant-emoji" => &mut variant.emoji,
+        _ => return None,
+    })
+}
+
+/// The `font-variant` longhands, in the order the reference browser
+/// lists them.
+pub const VARIANT_LONGHANDS: [&str; 7] = [
+    "font-variant-ligatures",
+    "font-variant-caps",
+    "font-variant-alternates",
+    "font-variant-numeric",
+    "font-variant-east-asian",
+    "font-variant-position",
+    "font-variant-emoji",
+];
+
+/// The `font-variant` shorthand written from its longhands' values in
+/// [`VARIANT_LONGHANDS`]' order: `normal` or `none`, else each value but
+/// `normal`; `None` when it cannot say them (the ligatures `none` with
+/// another longhand not `normal`).
+pub fn write_font_variant(values: &[&str]) -> Option<String> {
+    let set: Vec<&str> = values.iter().copied().filter(|v| *v != "normal").collect();
+    match set.as_slice() {
+        [] => Some("normal".into()),
+        ["none"] if values[0] == "none" => Some("none".into()),
+        _ if values[0] == "none" => None,
+        _ => Some(set.join(" ")),
     }
 }
 
@@ -183,7 +388,17 @@ pub(super) fn parse_font_feature_settings(
             return None;
         }
     }
-    (!out.is_empty()).then(|| out.into())
+    if out.is_empty() {
+        return None;
+    }
+    // A tag's last value stands; the computed value lists them by tag.
+    let mut kept: Vec<([u8; 4], u32)> = Vec::with_capacity(out.len());
+    for (tag, value) in out {
+        kept.retain(|(t, _)| *t != tag);
+        kept.push((tag, value));
+    }
+    kept.sort_by_key(|(tag, _)| *tag);
+    Some(kept.into())
 }
 
 /// `line-height`: `normal`, a non-negative number, length or percentage
@@ -315,6 +530,44 @@ pub(super) fn split_font(tokens: &[Token]) -> Option<FontShorthand<'_>> {
     Some(out)
 }
 
+/// A number, or with `percentage` a percentage, written or calculated
+/// with nothing in it that depends on an element: what an `@font-face`
+/// descriptor's range takes.
+pub(crate) fn plain_number(tokens: &[Token], percentage: bool) -> Option<f64> {
+    super::with_default_bases(|bases| {
+        let want = if percentage {
+            Want::Percentage
+        } else {
+            Want::Number
+        };
+        match math(tokens, want, bases, None)? {
+            Computed::Value(v) if !percentage => Some(v),
+            Computed::Percent(p) if percentage => Some(p),
+            _ => None,
+        }
+    })
+    .filter(|v| v.is_finite())
+}
+
+/// An angle in degrees, written or calculated with nothing in it that
+/// depends on an element.
+pub(crate) fn plain_angle(tokens: &[Token]) -> Option<f32> {
+    super::with_default_bases(|bases| super::effects::angle(tokens, false, bases))
+}
+
+/// The families a `font` shorthand names (CSS Font Loading 3's
+/// `load()` and `check()` read them); a system font's are `system-ui`.
+/// `None` when it is not one.
+pub fn font_shorthand_families(tokens: &[Token]) -> Option<Vec<crate::font_family::Family>> {
+    let split = split_font(tokens)?;
+    if split.system {
+        return Some(vec![crate::font_family::Family::Generic(
+            "system-ui".into(),
+        )]);
+    }
+    crate::font_family::parse_list(split.families?)
+}
+
 /// The `font` shorthand's values: the size (by `bases`, which the first
 /// pass of the cascade gives the parent's) and the rest, each longhand
 /// it does not name at its initial value.
@@ -327,7 +580,7 @@ pub(super) struct Font {
 const SYSTEM_FONT_PX: f32 = 13.0;
 
 /// Parses the `font` shorthand; `None` when any part of it is invalid.
-pub(super) fn parse_font(tokens: &[Token], parent: u16, bases: &LengthBases<'_>) -> Option<Font> {
+pub(super) fn parse_font(tokens: &[Token], parent: f32, bases: &LengthBases<'_>) -> Option<Font> {
     let split = split_font(tokens)?;
     if split.system {
         return Some(Font {
@@ -340,9 +593,14 @@ pub(super) fn parse_font(tokens: &[Token], parent: u16, bases: &LengthBases<'_>)
     }
     let mut props = FontProps {
         family: super::parse_font_family(split.families?)?.into(),
-        small_caps: split.small_caps,
         ..FontProps::default()
     };
+    if split.small_caps {
+        props.variant = Arc::new(FontVariant {
+            caps: "small-caps".into(),
+            ..FontVariant::default()
+        });
+    }
     if let Some(style) = split.style {
         props.style = parse_font_style(style, bases)?;
     }
@@ -359,6 +617,46 @@ pub(super) fn parse_font(tokens: &[Token], parent: u16, bases: &LengthBases<'_>)
         size: super::parse_font_size(split.size?, bases)?,
         props,
     })
+}
+
+/// The longhands of a `font` shorthand as written, each its value's
+/// text, those it leaves out at their initial values, in the order the
+/// reference browser lists them: what a declaration block keeps of it.
+/// `None` for one that is invalid or a system font, which is kept
+/// whole.
+pub fn font_longhands(tokens: &[Token]) -> Option<Vec<(&'static str, String)>> {
+    let split = split_font(tokens)?;
+    if split.system {
+        return None;
+    }
+    let text = |part: Option<&[Token]>| {
+        part.map_or_else(
+            || "normal".to_owned(),
+            |p| crate::serialize::tokens(p).trim().to_ascii_lowercase(),
+        )
+    };
+    let families = crate::font_family::parse_list(split.families?)?;
+    let mut out = vec![("font-style", text(split.style))];
+    for name in VARIANT_LONGHANDS {
+        let value = if name == "font-variant-caps" && split.small_caps {
+            "small-caps"
+        } else {
+            "normal"
+        };
+        out.push((name, value.to_owned()));
+    }
+    out.extend([
+        ("font-weight", text(split.weight)),
+        ("font-stretch", text(split.stretch)),
+        (
+            "font-size",
+            crate::serialize::tokens(split.size?).trim().to_owned(),
+        ),
+        ("line-height", text(split.line_height)),
+        ("font-family", crate::font_family::write_list(&families)),
+        ("font-feature-settings", "normal".to_owned()),
+    ]);
+    Some(out)
 }
 
 /// The tokens of `tokens` from the first of `parts` to the last.
@@ -379,12 +677,12 @@ mod tests {
     use crate::serialize::computed_value;
     use dom::Document;
 
-    fn weight(css: &str) -> Option<u16> {
-        with_bases(|bases| parse_font_weight(&css::tokenize(css), 400, bases))
+    fn weight(css: &str) -> Option<f32> {
+        with_bases(|bases| parse_font_weight(&css::tokenize(css), 400.0, bases))
     }
 
     fn font(css: &str) -> Option<(f32, String, FontProps)> {
-        with_bases(|bases| parse_font(&css::tokenize(css), 400, bases))
+        with_bases(|bases| parse_font(&css::tokenize(css), 400.0, bases))
             .map(|f| (f.size, f.props.family.to_string(), f.props))
     }
 
@@ -401,31 +699,42 @@ mod tests {
 
     #[test]
     fn weights_are_numbers_and_bolder_and_lighter_step_by_the_table() {
-        assert_eq!(weight("normal"), Some(400));
-        assert_eq!(weight("BOLD"), Some(700));
-        assert_eq!(weight("450"), Some(450));
-        assert_eq!(weight("calc(100 * 3)"), Some(300));
-        assert_eq!(weight("1000"), Some(1000));
+        assert_eq!(weight("normal"), Some(400.0));
+        assert_eq!(weight("BOLD"), Some(700.0));
+        assert_eq!(weight("450"), Some(450.0));
+        assert_eq!(weight("150.25"), Some(150.25));
+        assert_eq!(weight("calc(100 * 3)"), Some(300.0));
+        assert_eq!(
+            weight("calc(1001)"),
+            Some(1000.0),
+            "a calculation is clamped"
+        );
+        assert_eq!(weight("1000"), Some(1000.0));
         assert_eq!(weight("1001"), None);
         assert_eq!(weight("0"), None);
         assert_eq!(weight("400px"), None);
-        assert_eq!(weight("bolder"), Some(700));
-        assert_eq!(weight("lighter"), Some(100));
-        let steps: Vec<_> = [100, 349, 350, 549, 550, 749, 750, 900]
-            .into_iter()
-            .map(|w| (bolder(w), lighter(w)))
-            .collect();
+        assert_eq!(weight("bolder"), Some(700.0));
+        assert_eq!(weight("lighter"), Some(100.0));
+        let steps: Vec<_> = [
+            1.0, 50.0, 100.0, 349.0, 350.0, 549.0, 550.0, 749.0, 750.0, 899.0, 950.0,
+        ]
+        .into_iter()
+        .map(|w| (bolder(w), lighter(w)))
+        .collect();
         assert_eq!(
             steps,
             [
-                (400, 100),
-                (400, 100),
-                (700, 100),
-                (700, 100),
-                (900, 400),
-                (900, 400),
-                (900, 700),
-                (900, 700)
+                (400.0, 1.0),
+                (400.0, 50.0),
+                (400.0, 100.0),
+                (400.0, 100.0),
+                (700.0, 100.0),
+                (700.0, 100.0),
+                (900.0, 400.0),
+                (900.0, 400.0),
+                (900.0, 700.0),
+                (900.0, 700.0),
+                (950.0, 700.0)
             ]
         );
     }
@@ -434,9 +743,19 @@ mod tests {
     fn styles_stretches_and_variants_parse_as_written() {
         let style = |css: &str| with_bases(|b| parse_font_style(&css::tokenize(css), b));
         assert_eq!(style("italic"), Some(FontStyle::Italic));
-        assert_eq!(style("oblique"), Some(FontStyle::Oblique(14.0)));
+        assert_eq!(style("oblique"), Some(FontStyle::DefaultOblique));
+        assert_eq!(style("oblique 14deg"), Some(FontStyle::Oblique(14.0)));
         assert_eq!(style("oblique -10deg"), Some(FontStyle::Oblique(-10.0)));
         assert_eq!(style("oblique 0.25turn"), Some(FontStyle::Oblique(90.0)));
+        assert_eq!(style("oblique 0deg"), Some(FontStyle::Normal));
+        assert_eq!(
+            style("oblique calc(10deg - 10deg)"),
+            Some(FontStyle::Normal)
+        );
+        assert_eq!(
+            style("oblique calc(100deg)"),
+            Some(FontStyle::Oblique(90.0))
+        );
         assert_eq!(style("oblique 91deg"), None);
         assert_eq!(style("italic 10deg"), None);
         let stretch = |css: &str| with_bases(|b| parse_font_stretch(&css::tokenize(css), b));
@@ -444,13 +763,77 @@ mod tests {
         assert_eq!(stretch("ultra-expanded"), Some(200.0));
         assert_eq!(stretch("50%"), Some(50.0));
         assert_eq!(stretch("calc(10% + 5%)"), Some(15.0));
+        assert_eq!(stretch("calc(-10%)"), Some(0.0));
         assert_eq!(stretch("-1%"), None);
         assert_eq!(stretch("50"), None);
-        let caps = |css: &str, shorthand| parse_small_caps(&css::tokenize(css), shorthand);
-        assert_eq!(caps("small-caps", false), Some(true));
-        assert_eq!(caps("none", true), Some(false));
-        assert_eq!(caps("none", false), None);
-        assert_eq!(caps("all-small-caps", false), None);
+        let variant = |name: &str, css: &str| parse_variant(name, &css::tokenize(css));
+        assert_eq!(
+            variant("font-variant-caps", "Small-Caps").as_deref(),
+            Some("small-caps")
+        );
+        assert_eq!(
+            variant("font-variant-caps", "all-small-caps").as_deref(),
+            Some("all-small-caps")
+        );
+        assert_eq!(variant("font-variant-caps", "none"), None);
+        assert_eq!(
+            variant(
+                "font-variant-numeric",
+                "slashed-zero tabular-nums oldstyle-nums"
+            )
+            .as_deref(),
+            Some("oldstyle-nums tabular-nums slashed-zero")
+        );
+        assert_eq!(
+            variant("font-variant-numeric", "tabular-nums proportional-nums"),
+            None
+        );
+        assert_eq!(
+            variant("font-variant-ligatures", "none").as_deref(),
+            Some("none")
+        );
+        assert_eq!(
+            variant("font-variant-ligatures", "none common-ligatures"),
+            None
+        );
+        assert_eq!(
+            variant("font-variant-alternates", "HISTORICAL-FORMS").as_deref(),
+            Some("historical-forms")
+        );
+        assert_eq!(
+            variant("font-variant-emoji", "text").as_deref(),
+            Some("text")
+        );
+        assert_eq!(variant("font-variant-position", "sub super"), None);
+        let shorthand = |css: &str| parse_font_variant(&css::tokenize(css));
+        let none = shorthand("none").unwrap();
+        assert_eq!(
+            (none.ligatures.as_str(), none.caps.as_str()),
+            ("none", "normal")
+        );
+        let mixed = shorthand("tabular-nums small-caps ruby emoji").unwrap();
+        assert_eq!(
+            (
+                mixed.numeric.as_str(),
+                mixed.caps.as_str(),
+                mixed.east_asian.as_str(),
+                mixed.emoji.as_str()
+            ),
+            ("tabular-nums", "small-caps", "ruby", "emoji")
+        );
+        assert!(shorthand("small-caps none").is_none());
+        assert!(shorthand("small-caps petite-caps").is_none());
+        assert_eq!(
+            write_font_variant(&["normal"; 7]).as_deref(),
+            Some("normal")
+        );
+        let mut values = ["normal"; 7];
+        values[0] = "none";
+        assert_eq!(write_font_variant(&values).as_deref(), Some("none"));
+        values[3] = "ordinal";
+        assert_eq!(write_font_variant(&values), None);
+        values[0] = "normal";
+        assert_eq!(write_font_variant(&values).as_deref(), Some("ordinal"));
     }
 
     #[test]
@@ -462,13 +845,18 @@ mod tests {
         assert_eq!(
             features("\"liga\" 0, \"kern\", \"smcp\" on, \"ss01\" 3"),
             Some(vec![
-                (*b"liga", 0),
                 (*b"kern", 1),
+                (*b"liga", 0),
                 (*b"smcp", 1),
                 (*b"ss01", 3)
             ])
         );
         assert_eq!(features("\"liga\" off"), Some(vec![(*b"liga", 0)]));
+        // A tag given again has its last value.
+        assert_eq!(
+            features("\"dlig\", \"smcp\", \"dlig\" 0"),
+            Some(vec![(*b"dlig", 0), (*b"smcp", 1)])
+        );
         assert_eq!(features("\"lig\" 1"), None);
         assert_eq!(features("\"ligat\""), None);
         assert_eq!(features("liga"), None);
@@ -505,12 +893,12 @@ mod tests {
         let (size, family, props) = font("italic bold 12px/30px Georgia, serif").unwrap();
         assert_eq!((size, family.as_str()), (12.0, "Georgia, serif"));
         assert_eq!(props.style, FontStyle::Italic);
-        assert_eq!(props.weight, 700);
+        assert_eq!(props.weight, 700.0);
         assert_eq!(props.line_height, LineHeight::Px(30.0));
         let (_, _, props) = font("condensed 500 small-caps oblique 10deg 1em/1.2 a").unwrap();
         assert_eq!(
-            (props.stretch, props.weight, props.small_caps, props.style),
-            (75.0, 500, true, FontStyle::Oblique(10.0))
+            (props.stretch, props.weight, props.small_caps(), props.style),
+            (75.0, 500.0, true, FontStyle::Oblique(10.0))
         );
         assert_eq!(props.line_height, LineHeight::Number(1.2));
         assert_eq!(font("12px sans-serif").unwrap().2, FontProps::default());
@@ -526,7 +914,7 @@ mod tests {
         assert!(font("1001 12px a").is_none());
         let (size, family, props) = font("menu").unwrap();
         assert_eq!((size, family.as_str()), (13.0, "system-ui"));
-        assert_eq!(props.weight, 400);
+        assert_eq!(props.weight, 400.0);
         assert!(font("menu 12px a").is_none());
     }
 
@@ -562,7 +950,7 @@ mod tests {
         // Elements that set none have their parent's.
         let shared = "<div id=p style=\"font-weight: 300\"><span id=c></span></div>";
         let (p, c) = (style(shared, "p"), style(shared, "c"));
-        assert_eq!(c.font().weight, 300);
+        assert_eq!(c.font().weight, 300.0);
         assert_eq!(p.font, c.font);
     }
 
@@ -574,7 +962,7 @@ mod tests {
                     <i id=b style=\"font-style: oblique -20deg\"></i>";
         let value = |id: &str, name: &str| computed_value(&style(html, id), name).unwrap();
         assert_eq!(value("a", "font-style"), "oblique");
-        assert_eq!(value("a", "font-feature-settings"), "\"liga\" 0, \"kern\"");
+        assert_eq!(value("a", "font-feature-settings"), "\"kern\", \"liga\" 0");
         assert_eq!(value("a", "font-variant-caps"), "small-caps");
         assert_eq!(value("a", "font-stretch"), "125%");
         assert_eq!(value("b", "font-style"), "oblique -20deg");

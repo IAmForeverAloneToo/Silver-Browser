@@ -1062,6 +1062,53 @@ pub(crate) struct SheetView<'a> {
 }
 
 impl Page {
+    /// [`Page::sheets`] as they stand in `document` now, in tree order:
+    /// with the sheets of the `<style>` elements the page has not scanned
+    /// yet, those a script put in the run going on, and without those of
+    /// the elements a script took out. What `document.fonts` reads of the
+    /// rules before the run ends, as the reference browser's style update
+    /// before `load()` has them; a style its media leaves out, or the
+    /// page's policies refuse, gives none.
+    pub(crate) fn sheets_now(&self, document: &Document, media: &Media) -> Vec<css::Stylesheet> {
+        let preferred = self
+            .owners
+            .iter()
+            .find(|owner| !owner.title.is_empty() && matches!(owner.sheet, Slot::Ready(_)))
+            .map(|owner| owner.title.as_str());
+        let csp = self.policies();
+        let mut sheets = Vec::new();
+        for node in document.subtree(document.root()) {
+            match self.owners.iter().find(|owner| owner.node == node) {
+                Some(owner) => {
+                    if let Slot::Ready(sheet) = &owner.sheet
+                        && (owner.title.is_empty() || Some(owner.title.as_str()) == preferred)
+                    {
+                        sheets.push(css::Stylesheet {
+                            rules: rules::wrap_in_media(owner.media.as_deref(), sheet.rules()),
+                        });
+                    }
+                }
+                None if document.tag(node) == Some("style")
+                    && document.attr(node, "type").is_none_or(|kind| {
+                        kind.is_empty() || kind.eq_ignore_ascii_case("text/css")
+                    })
+                    && rules::media_attribute_holds(document.attr(node, "media"), media) =>
+                {
+                    let text = document.text_content(node);
+                    let nonce = self.nonce(document, node);
+                    let violations = csp.inline_violations(Inline::Style, &nonce, &text);
+                    if net::csp::enforced(violations).is_ok()
+                        && let Ok(sheet) = css::parse_stylesheet(&text)
+                    {
+                        sheets.push(sheet);
+                    }
+                }
+                None => {}
+            }
+        }
+        sheets
+    }
+
     /// The CSSOM's `document.styleSheets` (D66): each element whose
     /// sheet is there, in tree order, with its sheet's serial number.
     pub(crate) fn cssom_sheets(&self) -> Vec<(NodeId, u64)> {

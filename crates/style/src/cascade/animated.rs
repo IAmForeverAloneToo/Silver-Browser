@@ -1104,6 +1104,22 @@ mod tests {
     }
 
     #[test]
+    fn the_font_properties_animate() {
+        let page = Page::new(
+            "@keyframes s { from { font-stretch: 100% } to { font-stretch: 200% } }
+             @keyframes f { from { font-family: serif } to { font-family: monospace } }
+             @keyframes v { from { font-variant-caps: normal } to { font-variant-caps: small-caps } }
+             #a { animation: s 1s linear -0.5s paused }
+             #b { animation: f 1s linear -0.6s paused }
+             #c { animation: v 1s linear -0.6s paused }",
+            "<div id=a></div><div id=b></div><div id=c></div>",
+        );
+        assert_eq!(page.style("a").font().stretch, 150.0);
+        assert_eq!(&*page.style("b").font().family, "monospace");
+        assert!(page.style("c").font().small_caps());
+    }
+
+    #[test]
     fn animations_outrank_normal_declarations_and_yield_to_important_ones() {
         let page = Page::new(
             "@keyframes s { from { margin-left: 0px } to { margin-left: 100px } }

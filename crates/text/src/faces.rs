@@ -62,7 +62,33 @@ pub struct Font {
     /// Slanted by [`SYNTHETIC_SKEW`]: a slant was asked for with an
     /// upright face.
     pub slanted: bool,
+    /// The faces a document's `unicode-range`s put before `face` for
+    /// the code points they cover, by the number the collection's
+    /// registry gave their list; 0 for none.
+    pub chain: u16,
 }
+
+/// One face of a chain ([`Font::chain`]): a document's face for the
+/// code points in its ranges, or the number of one of its faces not had
+/// yet, which a text needing those code points asks for.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct Link {
+    pub(crate) font: Option<Font>,
+    pub(crate) pending: usize,
+    pub(crate) ranges: Arc<[(u32, u32)]>,
+}
+
+impl Link {
+    /// Whether the link's ranges hold `c`.
+    pub(crate) fn covers(&self, c: char) -> bool {
+        let c = u32::from(c);
+        self.ranges.iter().any(|&(lo, hi)| (lo..=hi).contains(&c))
+    }
+}
+
+/// The most chains a registry keeps; past it a font has none, its
+/// ranged faces passed over.
+pub const MAX_CHAINS: usize = 4096;
 
 impl Font {
     /// The horizontal skew drawing makes up: x moves right by this much
@@ -116,7 +142,13 @@ pub(crate) struct Faces {
     loaded: RwLock<Vec<Slot>>,
     /// The fonts chosen, by what they were asked for.
     chosen: Choices,
+    /// The chains handed out ([`Font::chain`]): chain `n` is the
+    /// `n - 1`th, each kept once.
+    chains: RwLock<Chains>,
 }
+
+/// The chains handed out, in order, and each one's number by its links.
+type Chains = (Vec<Arc<[Link]>>, HashMap<Arc<[Link]>, u16>);
 
 /// What a choice is kept by: the families, weight, slant and stretch.
 type Key = (Box<str>, u16, u32, u32);
@@ -240,7 +272,43 @@ impl Faces {
             primary_style,
             loaded: RwLock::new(Vec::new()),
             chosen: Choices::new(),
+            chains: RwLock::new((Vec::new(), HashMap::new())),
         }
+    }
+
+    /// The number of the chain `links`, handed out once; 0 past
+    /// [`MAX_CHAINS`].
+    pub(crate) fn chain(&self, links: Vec<Link>) -> u16 {
+        let links: Arc<[Link]> = links.into();
+        if let Ok(chains) = self.chains.read()
+            && let Some(&n) = chains.1.get(&links)
+        {
+            return n;
+        }
+        let Ok(mut chains) = self.chains.write() else {
+            return 0;
+        };
+        if let Some(&n) = chains.1.get(&links) {
+            return n;
+        }
+        if chains.0.len() >= MAX_CHAINS {
+            return 0;
+        }
+        chains.0.push(links.clone());
+        let n = chains.0.len() as u16;
+        chains.1.insert(links, n);
+        n
+    }
+
+    /// The system's faces, when the collection has them.
+    pub(crate) fn database(&self) -> Option<&fontdb::Database> {
+        self.db.as_ref()
+    }
+
+    /// The links of chain `n`, none for 0 or a number never handed out.
+    pub(crate) fn links(&self, n: u16) -> Option<Arc<[Link]>> {
+        let i = n.checked_sub(1)? as usize;
+        self.chains.read().ok()?.0.get(i).cloned()
     }
 
     /// The faces of the system's fonts in `records`, read as asked for.
@@ -310,26 +378,32 @@ impl Faces {
     /// families the system has, else the primary font's family.
     fn matched(&self, request: &FontRequest<'_>) -> Font {
         families(request.families)
-            .find_map(|family| self.family_font(family, request))
+            .find_map(|family| self.family_font(&family, request))
             .unwrap_or_else(|| self.fallback_font(request))
     }
 
     /// The system's face of `family` that best matches `request`, when
     /// it has the family.
-    pub(crate) fn family_font(&self, family: &str, request: &FontRequest<'_>) -> Option<Font> {
+    pub(crate) fn family_font(
+        &self,
+        family: &Family<'_>,
+        request: &FontRequest<'_>,
+    ) -> Option<Font> {
         let db = self.db.as_ref()?;
-        let id = match family.to_ascii_lowercase().as_str() {
-            "" => None,
-            "sans-serif" | "system-ui" | "ui-sans-serif" | "-apple-system" => {
+        let id = match family {
+            Family::Generic("sans-serif" | "system-ui" | "ui-sans-serif") => {
                 query(db, &primary_families(), request)
             }
-            "serif" | "ui-serif" => query(db, &[fontdb::Family::Serif], request),
-            "monospace" | "ui-monospace" => query(db, &[fontdb::Family::Monospace], request),
-            "cursive" => query(db, &[fontdb::Family::Cursive], request),
-            "fantasy" => query(db, &[fontdb::Family::Fantasy], request),
-            _ => self
+            Family::Generic("serif" | "ui-serif") => query(db, &[fontdb::Family::Serif], request),
+            Family::Generic("monospace" | "ui-monospace") => {
+                query(db, &[fontdb::Family::Monospace], request)
+            }
+            Family::Generic("cursive") => query(db, &[fontdb::Family::Cursive], request),
+            Family::Generic("fantasy") => query(db, &[fontdb::Family::Fantasy], request),
+            Family::Generic(_) => None,
+            Family::Name(name) => self
                 .names
-                .get(&family.to_lowercase())
+                .get(&name.to_lowercase())
                 .and_then(|name| query(db, &[fontdb::Family::Name(name)], request)),
         }?;
         Some(self.font_of_id(db, id, request))
@@ -433,11 +507,104 @@ enum Slot {
     Lent(std::sync::Weak<Fallback>),
 }
 
-/// The names in a family list, in order.
-pub(crate) fn families(list: &str) -> impl Iterator<Item = &str> {
-    list.split(',')
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
+/// One entry of a family list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Family<'a> {
+    /// A generic family's keyword, lowercase.
+    Generic(&'a str),
+    /// A family's name, unquoted.
+    Name(std::borrow::Cow<'a, str>),
+}
+
+/// The generic families' keywords: a name written as one unquoted is
+/// the generic family, quoted it is a name.
+const GENERIC: [&str; 11] = [
+    "serif",
+    "sans-serif",
+    "cursive",
+    "fantasy",
+    "monospace",
+    "system-ui",
+    "math",
+    "ui-serif",
+    "ui-sans-serif",
+    "ui-monospace",
+    "ui-rounded",
+];
+
+/// The entries of a family list as the style crate writes it, in
+/// order: names separated by commas, each a generic keyword, words, or
+/// a string in double quotes with backslash escapes.
+pub(crate) fn families(list: &str) -> impl Iterator<Item = Family<'_>> {
+    let mut rest = list;
+    std::iter::from_fn(move || {
+        loop {
+            rest = rest.trim_start();
+            if rest.is_empty() {
+                return None;
+            }
+            if let Some(quoted) = rest.strip_prefix('"') {
+                let (name, after) = unquote(quoted);
+                rest = after
+                    .trim_start()
+                    .strip_prefix(',')
+                    .unwrap_or_else(|| after.trim_start());
+                return Some(Family::Name(name.into()));
+            }
+            let end = rest.find(',').unwrap_or(rest.len());
+            let word = rest[..end].trim();
+            rest = rest.get(end + 1..).unwrap_or("");
+            if word.is_empty() {
+                continue;
+            }
+            let lower = word.to_ascii_lowercase();
+            if GENERIC.contains(&lower.as_str()) || lower.starts_with("generic(") {
+                return Some(Family::Generic(
+                    GENERIC.iter().find(|g| **g == lower).copied().unwrap_or(""),
+                ));
+            }
+            return Some(Family::Name(word.into()));
+        }
+    })
+}
+
+/// A string's text after its opening quote, unescaped, and what is
+/// after its closing quote.
+fn unquote(text: &str) -> (String, &str) {
+    let mut out = String::new();
+    let mut chars = text.char_indices();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '"' => return (out, &text[i + 1..]),
+            '\\' => {
+                let mut hex = String::new();
+                let mut next = None;
+                for (_, d) in chars.by_ref() {
+                    if d.is_ascii_hexdigit() && hex.len() < 6 {
+                        hex.push(d);
+                        continue;
+                    }
+                    next = Some(d);
+                    break;
+                }
+                if hex.is_empty() {
+                    if let Some(d) = next {
+                        out.push(d);
+                    }
+                } else {
+                    let code = u32::from_str_radix(&hex, 16).unwrap_or(0xFFFD);
+                    out.push(char::from_u32(code).unwrap_or('\u{FFFD}'));
+                    match next {
+                        Some(' ') | None => {}
+                        Some('"') => return (out, chars.as_str()),
+                        Some(d) => out.push(d),
+                    }
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    (out, "")
 }
 
 /// The primary font's families.
@@ -478,6 +645,7 @@ pub(crate) fn synthesized(
         face,
         bold: request.weight >= BOLD && weight < BOLD,
         slanted: request.slant != Slant::Normal && !italic,
+        chain: 0,
     }
 }
 
@@ -555,7 +723,8 @@ mod tests {
             Font {
                 face: FaceId(0),
                 bold: true,
-                slanted: true
+                slanted: true,
+                chain: 0
             }
         );
         assert!(!faces.choose(&request("a", 599, Slant::Normal)).bold);

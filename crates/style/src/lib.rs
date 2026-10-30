@@ -75,6 +75,7 @@ pub mod custom;
 /// of transitions and animations, and the progress each gives.
 pub mod easing;
 pub mod font_face;
+pub mod font_family;
 
 /// Style invalidation (M13.1): which elements a change to a document
 /// can restyle.
@@ -121,7 +122,8 @@ pub use selector_matching::{matches_selector, matches_selector_list, parse_selec
 pub use cascade::{
     CascadeContext, Composited, FontMeasure, FrameMargins, InlineStyles, MatchedDeclaration,
     MatchedRule, PseudoStyles, Recascade, Recascader, Restyle, RuleOrigin, Styles, Stylesheets,
-    cascade_document, parse_color_text, property_name, supports,
+    VARIANT_LONGHANDS, cascade_document, font_longhands, font_shorthand_families, parse_color_text,
+    parse_variant, property_name, stretch_name, supports, write_font_variant,
 };
 pub use computed::ComputedStyle;
 pub use conditions::supports_condition;

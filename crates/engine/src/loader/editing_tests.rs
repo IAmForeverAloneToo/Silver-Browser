@@ -820,3 +820,26 @@ fn a_click_on_a_field_in_its_label_is_one_click() {
         "{log:?}"
     );
 }
+
+#[test]
+fn a_controls_caret_is_placed_by_its_own_font() {
+    // Gap batch D: the control's style's font and line height, not the
+    // primary font's.
+    let mut tab =
+        page("<textarea id=t style='font-size: 20px; line-height: 40px'>ab\ncd</textarea>");
+    run(&mut tab, "document.getElementById('t').focus();");
+    tab.engine.key_down(&key("End"));
+    let (_, _, w, h) = tab.engine.caret_area().expect("a caret");
+    assert_eq!((w, h), (1.0, 40.0));
+    let mut tab = page("<input id=t style='font-size: 20px; font-weight: bold' value=ab>");
+    run(&mut tab, "document.getElementById('t').focus();");
+    tab.engine.key_down(&key("Home"));
+    let (start, ..) = tab.engine.caret_area().expect("a caret");
+    tab.engine.key_down(&key("End"));
+    let (end, ..) = tab.engine.caret_area().expect("a caret");
+    let fonts = text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0).expect("parses");
+    assert!(
+        (end - start - fonts.measure("ab", 20.0)).abs() < 0.01,
+        "{start} {end}"
+    );
+}

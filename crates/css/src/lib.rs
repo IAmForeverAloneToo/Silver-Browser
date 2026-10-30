@@ -18,6 +18,7 @@
 pub mod decode;
 pub mod parser;
 pub mod tokenizer;
+pub mod unicode_range;
 
 pub use decode::{decode_stylesheet, determine_fallback_encoding};
 

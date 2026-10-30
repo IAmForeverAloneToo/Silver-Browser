@@ -93,7 +93,7 @@ pub(super) fn value(
         )),
         "flex-flow" => Some(format!("{} {}", get("flex-direction")?, get("flex-wrap")?)),
         "font" => font(style, &get),
-        "font-variant" => get("font-variant-caps"),
+        "font-variant" => font_variant(&get),
         "text-wrap" => get("text-wrap-mode"),
         "list-style" => Some(format!(
             "{} {} {}",
@@ -203,30 +203,36 @@ fn border_image(style: &ComputedStyle, resolver: &Resolver<'_>) -> Option<String
 /// `font`, as the reference browser writes it: the style, the small
 /// capitals, the weight and the width where they are not `normal`, the
 /// size, a `/` and the line height where it is not `normal`, then the
-/// family; the empty string for a width no keyword names.
+/// family; the empty string where a longhand has a value the shorthand
+/// cannot say (a width no keyword names, features, variants past small
+/// capitals).
 fn font(style: &ComputedStyle, get: &dyn Fn(&str) -> Option<String>) -> Option<String> {
     let font = style.font();
+    let variant = &font.variant;
+    let caps = matches!(variant.caps.as_str(), "normal" | "small-caps");
+    let others = [
+        &variant.ligatures,
+        &variant.alternates,
+        &variant.numeric,
+        &variant.east_asian,
+        &variant.position,
+        &variant.emoji,
+    ];
+    if !font.features.is_empty() || !caps || others.iter().any(|v| *v != "normal") {
+        return Some(String::new());
+    }
     let mut parts: Vec<String> = Vec::new();
     if font.style != FontStyle::Normal {
         parts.push(get("font-style")?);
     }
-    if font.small_caps {
+    if font.small_caps() {
         parts.push("small-caps".to_owned());
     }
-    if font.weight != 400 {
-        parts.push(font.weight.to_string());
+    if font.weight != 400.0 {
+        parts.push(get("font-weight")?);
     }
-    let stretch = match font.stretch {
-        50.0 => "ultra-condensed",
-        62.5 => "extra-condensed",
-        75.0 => "condensed",
-        87.5 => "semi-condensed",
-        100.0 => "normal",
-        112.5 => "semi-expanded",
-        125.0 => "expanded",
-        150.0 => "extra-expanded",
-        200.0 => "ultra-expanded",
-        _ => return Some(String::new()),
+    let Some(stretch) = crate::cascade::stretch_name(font.stretch) else {
+        return Some(String::new());
     };
     if stretch != "normal" {
         parts.push(stretch.to_owned());
@@ -238,6 +244,18 @@ fn font(style: &ComputedStyle, get: &dyn Fn(&str) -> Option<String>) -> Option<S
     });
     parts.push(get("font-family")?);
     Some(parts.join(" "))
+}
+
+/// `font-variant` from its longhands; the empty string where they say
+/// what it cannot.
+fn font_variant(get: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    let values: Option<Vec<String>> = crate::cascade::VARIANT_LONGHANDS
+        .iter()
+        .map(|name| get(name))
+        .collect();
+    let values = values?;
+    let values: Vec<&str> = values.iter().map(String::as_str).collect();
+    Some(crate::cascade::write_font_variant(&values).unwrap_or_default())
 }
 
 /// `background`: each layer's image, repeat, attachment, position, `/`,

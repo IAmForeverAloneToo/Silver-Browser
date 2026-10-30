@@ -58,6 +58,9 @@ pub struct FetchCall {
     pub target_address_space: String,
     /// Its integrity metadata (D62), empty for none.
     pub integrity: String,
+    /// Its destination: empty for a script's own fetch, `font` for a
+    /// `FontFace`'s source (CSS Font Loading 3), which `font-src` rules.
+    pub destination: String,
 }
 
 /// A call of a canvas's 2D context, or of an object scripts make for
@@ -336,6 +339,13 @@ pub enum Call {
     CssCanonical(String),
     /// Whether a value is valid for a property.
     CssValid(String, String),
+    /// A shorthand's value from a declaration block's declarations, as
+    /// `ParseDeclarations` gives them: the empty string where it cannot
+    /// be said.
+    CssShorthand(String, Vec<String>),
+    /// A declaration block's text from its declarations, as
+    /// `ParseDeclarations` gives them, shorthands said where they can be.
+    CssBlockText(Vec<String>),
     /// A URL parsed against the document's base URL, or `None` when it
     /// does not parse (a URL-reflecting attribute's getter).
     ResolveUrl(String),

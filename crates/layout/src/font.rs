@@ -10,10 +10,11 @@ use text::{Font, FontCollection, FontMetrics, FontRequest, Slant};
 pub fn font_request(props: &FontProps) -> FontRequest<'_> {
     FontRequest {
         families: &props.family,
-        weight: props.weight,
+        weight: props.weight.round().clamp(1.0, 1000.0) as u16,
         slant: match props.style {
             FontStyle::Normal => Slant::Normal,
             FontStyle::Italic => Slant::Italic,
+            FontStyle::DefaultOblique => Slant::Oblique(14.0),
             FontStyle::Oblique(angle) => Slant::Oblique(angle),
         },
         stretch: props.stretch,
@@ -99,7 +100,7 @@ mod tests {
         let style = ComputedStyle::default();
         assert_eq!(font_of(&fonts, &style), Font::default());
         let mut bold = style.clone();
-        bold.font_mut().weight = 700;
+        bold.font_mut().weight = 700.0;
         assert!(font_of(&fonts, &bold).bold, "the test font has no bold");
         assert_eq!(measure(&fonts, "ab", &bold), fonts.measure("ab", 16.0));
     }

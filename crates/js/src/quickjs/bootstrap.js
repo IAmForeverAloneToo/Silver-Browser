@@ -232,7 +232,8 @@
     AbortController: true, AbortSignal: true, Blob: true, CanvasGradient: true,
     CanvasPattern: true, CustomEvent: true, DOMMatrix: true, DOMMatrixReadOnly: true,
     DOMPoint: true, DOMPointReadOnly: true, DedicatedWorkerGlobalScope: "dedicated",
-    ErrorEvent: true, Event: true, EventTarget: true, File: true, FormData: true,
+    ErrorEvent: true, Event: true, EventTarget: true, File: true, FontFace: true,
+    FontFaceSet: true, FontFaceSetLoadEvent: true, FormData: true,
     Headers: true, ImageBitmap: true, ImageData: true, MessageEvent: true,
     OffscreenCanvas: true, OffscreenCanvasRenderingContext2D: true, Path2D: true,
     Performance: true, ProgressEvent: "notservice", QuotaExceededError: true, Request: true,
@@ -11396,7 +11397,9 @@
   // The block's declarations: name, value, priority, three in a row.
   function declarationsOf(state) {
     if (state.rule !== undefined) {
-      return native.parseDeclarations(ruleData(state.rule)[3]);
+      const data = ruleData(state.rule);
+      // An `@font-face` rule's are descriptors, not properties.
+      return data[0] === "font-face" ? native.fonts("parse " + data[3], null) : native.parseDeclarations(data[3]);
     }
     const text = native.attribute(state.handle, "style");
     // One the policies refuse is no declarations (M33.1).
@@ -11404,12 +11407,24 @@
     return native.parseDeclarations(text);
   }
 
+  // The shorthands a block keeps as their longhands (gap batch D).
+  const SHORTHANDS = {
+    __proto__: null,
+    font: [
+      "font-style", "font-variant-ligatures", "font-variant-caps", "font-variant-alternates",
+      "font-variant-numeric", "font-variant-east-asian", "font-variant-position",
+      "font-variant-emoji", "font-weight", "font-stretch", "font-size", "line-height",
+      "font-family", "font-feature-settings",
+    ],
+    "font-variant": [
+      "font-variant-ligatures", "font-variant-caps", "font-variant-alternates",
+      "font-variant-numeric", "font-variant-east-asian", "font-variant-position",
+      "font-variant-emoji",
+    ],
+  };
+
   function writeDeclarations(state, flat, method) {
-    let text = "";
-    for (let i = 0; i < flat.length; i += 3) {
-      text += (i === 0 ? "" : " ") + flat[i] + ": " + flat[i + 1];
-      text += (flat[i + 2] === "" ? "" : " !important") + ";";
-    }
+    const text = native.cssBlockText(flat);
     if (state.rule !== undefined) {
       setRule(state.rule, text, false);
       return;
@@ -11445,13 +11460,7 @@
       if (state.computed) {
         return "";
       }
-      const flat = declarationsOf(state);
-      let text = "";
-      for (let i = 0; i < flat.length; i += 3) {
-        text += (i === 0 ? "" : " ") + flat[i] + ": " + flat[i + 1];
-        text += (flat[i + 2] === "" ? "" : " !important") + ";";
-      }
-      return text;
+      return native.cssBlockText(declarationsOf(state));
     }
 
     set cssText(value) {
@@ -11494,8 +11503,11 @@
         return computedValue(state, lookupName(str(property)));
       }
       const flat = declarationsOf(state);
-      const at = findDeclaration(flat, lookupName(str(property)));
-      return at < 0 ? "" : flat[at + 1];
+      const name = lookupName(str(property));
+      const at = findDeclaration(flat, name);
+      if (at >= 0) return flat[at + 1];
+      // A shorthand kept as its longhands is said from them.
+      return SHORTHANDS[name] === undefined ? "" : native.cssShorthand(name, flat);
     }
 
     getPropertyPriority(property) {
@@ -12395,7 +12407,20 @@
     const flat = declarationsOf(state);
     const at = findDeclaration(flat, name);
     if (at < 0) {
-      return "";
+      // A shorthand kept as its longhands: they go.
+      const longhands = SHORTHANDS[name];
+      if (longhands === undefined) return "";
+      const old = native.cssShorthand(name, flat);
+      let removed = false;
+      for (let i = 0; i < longhands.length; i++) {
+        const found = findDeclaration(flat, longhands[i]);
+        if (found >= 0) {
+          ArraySplice(flat, found, 3);
+          removed = true;
+        }
+      }
+      if (removed) writeDeclarations(state, flat, "removeProperty");
+      return old;
     }
     const old = flat[at + 1];
     ArraySplice(flat, at, 3);
@@ -12484,7 +12509,8 @@
       }
       const flat = declarationsOf(state);
       const at = findDeclaration(flat, name);
-      return at < 0 ? "" : flat[at + 1];
+      if (at >= 0) return flat[at + 1];
+      return SHORTHANDS[name] === undefined ? "" : native.cssShorthand(name, flat);
     },
     set(target, key, value, receiver) {
       if (typeof key === "string" && !ReflectHas(target, key) && arrayIndex(key) < 0) {
@@ -14654,8 +14680,8 @@
       return workerNavigator;
     }
 
-    // Its own face set (CSS Font Loading 3, D54), which its canvases'
-    // text is drawn in.
+    // The worker's own face set (CSS Font Loading 3, D54), which its
+    // canvases' text is drawn in.
     get fonts() {
       return fontSetOf(global);
     }
@@ -20531,7 +20557,10 @@
   // ---- fonts (CSS Font Loading 3, gap batch D, D54) ----------------------
 
   // Each FontFace's state: its descriptors as strings, its status, its
-  // data once had, and its `loaded` promise with what settles it.
+  // sources and data once had, the sets it is in, and its `loaded`
+  // promise with what settles it. A CSS-connected face (one of the
+  // document's `@font-face` rules) knows its rule's number, `css`.
+  const ArrayJoin = uncurry(Array.prototype.join);
   const fontFaces = new $WeakMap();
   let nextFontFace = 1;
 
@@ -20541,37 +20570,97 @@
     return state;
   }
 
+  // A descriptor's value as an `@font-face` rule would have it written
+  // back, or null where it does not parse.
+  function descriptorText(name, value) {
+    const text = native.fonts("descriptor " + name + " " + value, null);
+    return text === undefined ? null : text;
+  }
+
+  // The face's status set, its promise settled, and its sets told.
+  function settleFace(face, state, status, error) {
+    if (state.status === "loaded" || state.status === "error") return;
+    state.status = status;
+    if (status === "loaded") {
+      state.resolve(face);
+    } else if (status === "error") {
+      state.reject(error || new $DOMException("A network error occurred.", "NetworkError"));
+    }
+    for (let i = 0; i < state.sets.length; i++) {
+      const set = state.sets[i];
+      const s = setOf(set);
+      if (status === "loaded") ArrayPush(s.loaded, face);
+      if (status === "error") ArrayPush(s.failed, face);
+      queueTask(() => fontsChanged(set, true));
+    }
+  }
+
   // The face's data had: a font, loaded; else an error.
   function faceData(face, state, bytes) {
     if (bytes !== null && native.fonts("valid", binaryString(bytes))) {
       state.bytes = bytes;
-      state.status = "loaded";
-      state.resolve(face);
-      if (state.sets.length > 0) addFace(face, state);
+      for (let i = 0; i < state.sets.length; i++) addFace(face, state);
+      settleFace(face, state, "loaded");
     } else {
-      state.status = "error";
-      state.reject(new $DOMException("A network error occurred.", "NetworkError"));
+      settleFace(face, state, "error");
     }
   }
 
-  // The url of a source string's first `url()`, or undefined.
-  function sourceUrl(source) {
-    const at = StringIndexOf(source, "url(");
-    if (at < 0) return undefined;
-    let rest = StringSlice(source, at + 4);
-    const end = StringIndexOf(rest, ")");
-    if (end < 0) return undefined;
-    rest = StringSlice(rest, 0, end);
-    let n = 0;
-    while (n < rest.length && rest[n] === " ") n++;
-    rest = StringSlice(rest, n);
-    let m = rest.length;
-    while (m > 0 && rest[m - 1] === " ") m--;
-    rest = StringSlice(rest, 0, m);
-    if (rest.length >= 2 && (rest[0] === "\"" || rest[0] === "'") && rest[rest.length - 1] === rest[0]) {
-      rest = StringSlice(rest, 1, rest.length - 1);
+  // A FontFace's url fetched as a font is (CSS Font Loading 3 section
+  // 2.2: the font destination, which `font-src` rules, in cors mode):
+  // its bytes, or null.
+  function fetchFont(url) {
+    return new $Promise((resolve) => {
+      const id = nextFetch++;
+      try {
+        native.fetch(
+          id, "GET", url, [], null, "cors", "same-origin", "follow", false, "default",
+          "about:client", "", "", "", "font",
+        );
+      } catch (e) {
+        resolve(null);
+        return;
+      }
+      MapSet(fetches, id, {
+        deliver(answer) {
+          const ok = answer !== null && answer.body !== null && answer.status >= 200 &&
+            answer.status < 300;
+          resolve(ok ? new $Uint8Array(answer.body) : null);
+        },
+      });
+    });
+  }
+
+  // Tries the face's sources from `at` in order: a system face by its
+  // name, then each url fetched; the first that is a font is the face's.
+  function trySources(face, state, at) {
+    if (at >= state.sources.length) {
+      faceData(face, state, null);
+      return;
     }
-    return rest;
+    const kind = state.sources[at];
+    const value = state.sources[at + 1];
+    if (kind === "local") {
+      const data = native.fonts("local " + value, null);
+      if (data !== undefined && native.fonts("valid", binaryString(new $Uint8Array(data)))) {
+        faceData(face, state, new $Uint8Array(data));
+      } else {
+        trySources(face, state, at + 2);
+      }
+      return;
+    }
+    const url = native.resolveUrl(value);
+    if (url === null) {
+      trySources(face, state, at + 2);
+      return;
+    }
+    PromiseThen(fetchFont(url), (bytes) => {
+      if (bytes !== null && native.fonts("valid", binaryString(bytes))) {
+        faceData(face, state, bytes);
+      } else {
+        trySources(face, state, at + 2);
+      }
+    });
   }
 
   // A descriptor's range as the natives take it: two numbers.
@@ -20603,74 +20692,129 @@
     "extra-expanded": 150, "ultra-expanded": 200,
   };
 
+  // A unicode-range as the natives take it: `-` for every code point,
+  // else each range's first and last in hex, parted by commas.
+  function faceRanges(text) {
+    const out = [];
+    const parts = StringSplit(text, ",");
+    for (let i = 0; i < parts.length; i++) {
+      const part = StringTrim(parts[i]);
+      if (StringSlice(part, 0, 2) !== "U+") continue;
+      const range = StringSlice(part, 2);
+      const dash = StringIndexOf(range, "-");
+      const lo = dash < 0 ? range : StringSlice(range, 0, dash);
+      const hi = dash < 0 ? range : StringSlice(range, dash + 1);
+      if (lo === "0" && hi === "10FFFF") return "-";
+      ArrayPush(out, lo + "-" + hi);
+    }
+    return out.length === 0 ? "-" : ArrayJoin(out, ",");
+  }
+
   // Gives the document face `face`, whose data is had.
   function addFace(face, state) {
+    if (state.css >= 0 || state.bytes === null) return;
     const style = ToLowerCase(state.style);
     const slant = StringIncludes(style, "italic") ? "italic" : StringIncludes(style, "oblique") ? "oblique" : "normal";
     native.fonts(
       "add " + state.id + " " + faceRange(state.weight, WEIGHTS, 400) + " " + slant + " " +
-        faceRange(state.stretch, STRETCHES, 100) + " " + state.family,
+        faceRange(state.stretch, STRETCHES, 100) + " " + faceRanges(state.unicodeRange) + " " +
+        state.family,
       binaryString(state.bytes),
     );
   }
+
+  // A face's state, its descriptors given as text, none checked yet.
+  function newFaceState(family, d) {
+    const state = {
+      id: nextFontFace++,
+      family,
+      style: d.style,
+      weight: d.weight,
+      stretch: d.stretch,
+      unicodeRange: d.unicodeRange,
+      featureSettings: d.featureSettings,
+      display: d.display,
+      status: "unloaded",
+      css: -1,
+      // The face sets it is in.
+      sets: [],
+      bytes: null,
+      sources: [],
+      resolve: null,
+      reject: null,
+      loaded: null,
+    };
+    state.loaded = new $Promise((resolve, reject) => {
+      state.resolve = resolve;
+      state.reject = reject;
+    });
+    // A face that fails with nobody listening is not reported.
+    PromiseThen(state.loaded, undefined, () => {});
+    return state;
+  }
+
+  // The descriptors FontFace's attributes are, by their dictionary's
+  // names, with their initial values.
+  const FACE_DESCRIPTORS = [
+    ["style", "font-style", "normal"],
+    ["weight", "font-weight", "normal"],
+    ["stretch", "font-stretch", "normal"],
+    ["unicodeRange", "unicode-range", "U+0-10FFFF"],
+    ["featureSettings", "font-feature-settings", "normal"],
+    ["display", "font-display", "auto"],
+  ];
 
   class FontFace {
     constructor(family, source, descriptors) {
       needToConstruct(arguments.length, 2, "FontFace");
       const d = descriptors === undefined || descriptors === null ? {} : descriptors;
-      const text = (name, initial) => (d[name] === undefined ? initial : $String(d[name]));
-      const state = {
-        id: nextFontFace++,
-        family: $String(family),
-        style: text("style", "normal"),
-        weight: text("weight", "normal"),
-        stretch: text("stretch", "normal"),
-        unicodeRange: text("unicodeRange", "U+0-10FFFF"),
-        featureSettings: text("featureSettings", "normal"),
-        display: text("display", "auto"),
-        status: "unloaded",
-        // The face sets it is in.
-        sets: [],
-        bytes: null,
-        url: undefined,
-        resolve: null,
-        reject: null,
-        loaded: null,
-      };
-      state.loaded = new $Promise((resolve, reject) => {
-        state.resolve = resolve;
-        state.reject = reject;
-      });
-      // A face that fails with nobody listening is not reported.
-      PromiseThen(state.loaded, undefined, () => {});
+      const given = { __proto__: null };
+      let bad = false;
+      for (let i = 0; i < FACE_DESCRIPTORS.length; i++) {
+        const entry = FACE_DESCRIPTORS[i];
+        const value = d[entry[0]] === undefined ? entry[2] : $String(d[entry[0]]);
+        const text = descriptorText(entry[1], value);
+        if (text === null) bad = true;
+        given[entry[0]] = text === null ? "" : text;
+      }
+      const state = newFaceState($String(family), given);
       WeakMapSet(fontFaces, this, state);
+      const syntax = () =>
+        new $DOMException("Failed to construct 'FontFace': The source provided could not be parsed as a value list.", "SyntaxError");
+      if (bad) {
+        state.status = "error";
+        state.reject(syntax());
+        return;
+      }
       const bytes = bufferBytes(source);
       if (bytes !== undefined) {
         state.status = "loading";
         faceData(this, state, bytes);
-      } else {
-        state.url = sourceUrl($String(source));
-        if (state.url === undefined) {
-          state.status = "error";
-          state.reject(new $DOMException("Failed to construct 'FontFace': The source provided could not be parsed as a value list.", "SyntaxError"));
-        }
+        return;
       }
+      const text = $String(source);
+      if (descriptorText("src", text) === null) {
+        state.status = "error";
+        state.reject(syntax());
+        return;
+      }
+      state.sources = native.fonts("sources " + text, null);
     }
 
     get family() { return faceOf(this).family; }
     set family(value) { faceOf(this).family = $String(value); }
     get style() { return faceOf(this).style; }
-    set style(value) { faceOf(this).style = $String(value); }
+    set style(value) { setDescriptor(this, "style", "font-style", value); }
     get weight() { return faceOf(this).weight; }
-    set weight(value) { faceOf(this).weight = $String(value); }
+    set weight(value) { setDescriptor(this, "weight", "font-weight", value); }
     get stretch() { return faceOf(this).stretch; }
-    set stretch(value) { faceOf(this).stretch = $String(value); }
+    set stretch(value) { setDescriptor(this, "stretch", "font-stretch", value); }
     get unicodeRange() { return faceOf(this).unicodeRange; }
-    set unicodeRange(value) { faceOf(this).unicodeRange = $String(value); }
+    set unicodeRange(value) { setDescriptor(this, "unicodeRange", "unicode-range", value); }
     get featureSettings() { return faceOf(this).featureSettings; }
-    set featureSettings(value) { faceOf(this).featureSettings = $String(value); }
+    set featureSettings(value) { setDescriptor(this, "featureSettings", "font-feature-settings", value); }
     get display() { return faceOf(this).display; }
-    set display(value) { faceOf(this).display = $String(value); }
+    set display(value) { setDescriptor(this, "display", "font-display", value); }
     get status() { return faceOf(this).status; }
     get loaded() { return faceOf(this).loaded; }
 
@@ -20678,117 +20822,324 @@
       const state = faceOf(this);
       if (state.status !== "unloaded") return state.loaded;
       state.status = "loading";
-      const face = this;
-      PromiseThen(
-        PromiseThen(fetch(state.url), (response) => (response.ok ? response.arrayBuffer() : null)),
-        (buffer) => faceData(face, state, buffer === null ? null : new $Uint8Array(buffer)),
-        () => faceData(face, state, null),
-      );
+      for (let i = 0; i < state.sets.length; i++) fontsChanged(state.sets[i]);
+      if (state.css >= 0) {
+        native.fonts("load " + state.css, null);
+      } else {
+        trySources(this, state, 0);
+      }
       return state.loaded;
     }
   }
   expose(FontFace, "FontFace");
 
-  // Each face set's faces, in the order they were added.
-  const setFaces = new $WeakMap();
+  // A FontFace attribute set: a value that does not parse throws.
+  function setDescriptor(face, key, name, value) {
+    const state = faceOf(face);
+    const text = descriptorText(name, $String(value));
+    if (text === null) {
+      throw new $DOMException(
+        "Failed to set the '" + key + "' property on 'FontFace': Failed to set '" + $String(value) +
+          "' as a property value.",
+        "SyntaxError",
+      );
+    }
+    state[key] = text;
+  }
 
-  function facesOf(set) {
-    const faces = WeakMapGet(setFaces, set);
-    if (faces === undefined) throw illegalInvocation();
-    return faces;
+  // ---- FontFaceSetLoadEvent ----
+
+  const loadEventFaces = new $WeakMap();
+  class FontFaceSetLoadEvent extends Event {
+    constructor(type, eventInitDict = undefined) {
+      needToConstruct(arguments.length, 1, "FontFaceSetLoadEvent");
+      super(type, eventInitDict);
+      const faces = [];
+      const given = eventInitDict === undefined || eventInitDict === null ? undefined : eventInitDict.fontfaces;
+      if (given !== undefined) {
+        for (const face of given) {
+          faceOf(face);
+          ArrayPush(faces, face);
+        }
+      }
+      WeakMapSet(loadEventFaces, this, ObjectFreeze(faces));
+    }
+
+    get fontfaces() {
+      const faces = WeakMapGet(loadEventFaces, this);
+      if (faces === undefined) throw illegalInvocation();
+      return faces;
+    }
+  }
+  expose(FontFaceSetLoadEvent, "FontFaceSetLoadEvent");
+
+  // ---- FontFaceSet ----
+
+  // Each set's state: the faces scripts added, in order; whether it is
+  // the document's, whose CSS-connected faces come first; whether it
+  // last said it was loading; the faces had and failed since; and its
+  // `ready` promise.
+  const fontSets = new $WeakMap();
+
+  function setOf(set) {
+    const state = WeakMapGet(fontSets, set);
+    if (state === undefined) throw illegalInvocation();
+    return state;
+  }
+
+  // The document's faces of its `@font-face` rules, as the engine last
+  // said: one FontFace each, kept while its rule is the same.
+  let cssFaces = [];
+  let documentSet = null;
+
+  function syncCssFaces() {
+    if (WORKER) return cssFaces;
+    const flat = native.fonts("rules", null);
+    const next = [];
+    for (let i = 0, n = 0; i + 8 <= flat.length; i += 8, n++) {
+      const key = ArrayJoin(ArraySlice(flat, i, i + 7), "\u0000");
+      let face = n < cssFaces.length ? cssFaces[n] : undefined;
+      let state = face === undefined ? undefined : WeakMapGet(fontFaces, face);
+      if (state === undefined || state.key !== key) {
+        face = ObjectCreate(FontFace.prototype);
+        state = newFaceState(flat[i], {
+          style: flat[i + 1], weight: flat[i + 2], stretch: flat[i + 3],
+          unicodeRange: flat[i + 4], featureSettings: flat[i + 5], display: flat[i + 6],
+        });
+        state.key = key;
+        if (documentSet !== null) ArrayPush(state.sets, documentSet);
+        WeakMapSet(fontFaces, face, state);
+      }
+      state.css = n;
+      const status = flat[i + 7];
+      if (status === "loaded" || status === "error") {
+        settleFace(face, state, status);
+      } else if (status === "loading" && state.status === "unloaded") {
+        state.status = "loading";
+      }
+      ArrayPush(next, face);
+    }
+    cssFaces = next;
+    return next;
+  }
+
+  // Every face of the set: the CSS-connected ones first.
+  function allFaces(set) {
+    const own = setOf(set).faces;
+    if (set !== documentSet) return ArraySlice(own);
+    const all = ArraySlice(syncCssFaces());
+    for (let i = 0; i < own.length; i++) ArrayPush(all, own[i]);
+    return all;
+  }
+
+  // Whether the set is loading: a face of it is, or one the document's
+  // layout asked for.
+  function setLoading(set, faceOnly) {
+    const faces = allFaces(set);
+    for (let i = 0; i < faces.length; i++) {
+      if (WeakMapGet(fontFaces, faces[i]).status === "loading") return true;
+    }
+    return !faceOnly && set === documentSet && native.fonts("status", null) === "loading";
+  }
+
+  // A set's event, fired in a task of its own.
+  function fireSoon(set, event) {
+    queueTask(() => fireAt(set, event));
+  }
+
+  // The set's status changed, perhaps: `loading` fired when it began to
+  // load, `loadingdone` (and `loadingerror` for faces that failed) when
+  // it is done, and `ready` settled then (section 2.4).
+  function fontsChanged(set, faceOnly) {
+    const s = setOf(set);
+    const loading = setLoading(set, faceOnly);
+    if (loading && !s.loading) {
+      s.loading = true;
+      if (s.readyDone) {
+        s.readyDone = false;
+        s.ready = new $Promise((resolve) => { s.readyResolve = resolve; });
+      }
+      fireSoon(set, new FontFaceSetLoadEvent("loading"));
+    } else if (!loading && s.loading) {
+      s.loading = false;
+      const loaded = s.loaded;
+      const failed = s.failed;
+      s.loaded = [];
+      s.failed = [];
+      fireSoon(set, new FontFaceSetLoadEvent("loadingdone", { fontfaces: loaded }));
+      if (failed.length > 0) {
+        fireSoon(set, new FontFaceSetLoadEvent("loadingerror", { fontfaces: failed }));
+      }
+    }
+    if (!loading && !s.readyDone) {
+      s.readyDone = true;
+      s.readyResolve(set);
+    }
+  }
+
+  // What the engine says of the document's faces: loading began, or
+  // ended with the rules' faces of those numbers had and failed.
+  function fontsTold(type, init) {
+    if (documentSet === null) return;
+    const s = setOf(documentSet);
+    const faces = syncCssFaces();
+    const numbers = (text) => (text === undefined || text === "" ? [] : StringSplit(text, ","));
+    if (type === "loadingdone" && s.loading) {
+      const loaded = numbers(init.loaded);
+      for (let i = 0; i < loaded.length; i++) {
+        const face = faces[$Number(loaded[i])];
+        if (face !== undefined && ArrayIndexOf(s.loaded, face) < 0) ArrayPush(s.loaded, face);
+      }
+      const failed = numbers(init.failed);
+      for (let i = 0; i < failed.length; i++) {
+        const face = faces[$Number(failed[i])];
+        if (face !== undefined && ArrayIndexOf(s.failed, face) < 0) ArrayPush(s.failed, face);
+      }
+    }
+    if (type === "loading" && !s.loading) {
+      s.loading = true;
+      if (s.readyDone) {
+        s.readyDone = false;
+        s.ready = new $Promise((resolve) => { s.readyResolve = resolve; });
+      }
+      fireAt(documentSet, new FontFaceSetLoadEvent("loading"));
+      return;
+    }
+    fontsChanged(documentSet, type === "loadingdone");
+  }
+
+  // `fontsTold` as an engine's task steps it.
+  function* fontsToldSteps(type, init) {
+    fontsTold(type, init);
+    return false;
   }
 
   class FontFaceSet extends EventTarget {
     constructor(key) {
       if (key !== KEY) throw illegalConstructor("FontFaceSet");
       super();
-      WeakMapSet(setFaces, this, []);
+      const state = {
+        faces: [], loading: false, loaded: [], failed: [], ready: null, readyResolve: null,
+        readyDone: false,
+      };
+      state.ready = new $Promise((resolve) => { state.readyResolve = resolve; });
+      WeakMapSet(fontSets, this, state);
     }
 
     add(face) {
-      const faces = facesOf(this);
+      const faces = setOf(this).faces;
       const state = faceOf(face);
+      if (state.css >= 0) {
+        if (this === documentSet) return this;
+        throw new $DOMException(
+          "Failed to execute 'add' on 'FontFaceSet': Cannot add a CSS-connected FontFace.",
+          "InvalidModificationError",
+        );
+      }
       if (ArrayIndexOf(faces, face) < 0) {
         ArrayPush(faces, face);
         ArrayPush(state.sets, this);
         if (state.status === "loaded") addFace(face, state);
+        fontsChanged(this);
       }
       return this;
     }
 
     delete(face) {
-      const faces = facesOf(this);
+      const faces = setOf(this).faces;
       const state = faceOf(face);
       const at = ArrayIndexOf(faces, face);
       if (at < 0) return false;
       ArraySplice(faces, at, 1);
       ArraySplice(state.sets, ArrayIndexOf(state.sets, this), 1);
-      native.fonts("delete " + state.id, "");
+      native.fonts("delete " + state.id, null);
       return true;
     }
 
     clear() {
-      const faces = facesOf(this);
+      const faces = setOf(this).faces;
       while (faces.length > 0) this.delete(faces[0]);
     }
 
     has(face) {
-      return ArrayIndexOf(facesOf(this), face) >= 0;
+      return ArrayIndexOf(allFaces(this), face) >= 0;
     }
 
     get size() {
-      return facesOf(this).length;
+      return allFaces(this).length;
     }
 
     forEach(callback, thisArg) {
-      const faces = ArraySlice(facesOf(this));
+      const faces = allFaces(this);
       for (let i = 0; i < faces.length; i++) ReflectApply(callback, thisArg, [faces[i], faces[i], this]);
     }
 
     values() {
-      return ReflectApply(ArrayValues, ArraySlice(facesOf(this)), []);
+      return ReflectApply(ArrayValues, allFaces(this), []);
     }
 
     keys() {
-      return ReflectApply(ArrayValues, ArraySlice(facesOf(this)), []);
+      return ReflectApply(ArrayValues, allFaces(this), []);
     }
 
     entries() {
-      const faces = facesOf(this);
+      const faces = allFaces(this);
       const pairs = [];
       for (let i = 0; i < faces.length; i++) ArrayPush(pairs, [faces[i], faces[i]]);
       return ReflectApply(ArrayValues, pairs, []);
     }
 
-    // Loading while a face of its own is, or one the document's sheets
-    // name is asked for or coming.
     get status() {
-      const faces = facesOf(this);
-      for (let i = 0; i < faces.length; i++) {
-        if (WeakMapGet(fontFaces, faces[i]).status === "loading") return "loading";
-      }
-      return native.fonts("status", "");
+      return setLoading(this) ? "loading" : "loaded";
     }
 
+    // Settled when the set is done loading. What the task asking did to
+    // the document (a sheet with faces, an element needing one) its
+    // layout sees later, so the document's set looks again in a later
+    // task, and each frame while it loads.
     get ready() {
       const set = this;
-      return new $Promise((resolve) => {
+      const s = setOf(set);
+      if (s.readyDone && set === documentSet) {
+        s.readyDone = false;
+        s.ready = new $Promise((resolve) => { s.readyResolve = resolve; });
+      }
+      if (!s.readyDone && !s.polling) {
+        s.polling = true;
         const check = () => {
-          if (set.status === "loaded") resolve(set);
-          else startTimer(check, 16, [], false);
+          if (setLoading(set)) {
+            queueTask(check, 16);
+            return;
+          }
+          s.polling = false;
+          fontsChanged(set);
         };
-        check();
-      });
+        if (set === documentSet) queueTask(check, 16);
+        else check();
+      }
+      return s.ready;
     }
 
     check(font, text) {
       need(arguments.length, 1, "check", "FontFaceSet");
-      return this.status === "loaded";
+      const faces = matchingFaces(this, $String(font), "check");
+      for (let i = 0; i < faces.length; i++) {
+        if (WeakMapGet(fontFaces, faces[i]).status !== "loaded") return false;
+      }
+      return true;
     }
 
     load(font, text) {
       need(arguments.length, 1, "load", "FontFaceSet");
-      return PromiseThen(this.ready, () => []);
+      let faces;
+      try {
+        faces = matchingFaces(this, $String(font), "load");
+      } catch (e) {
+        return PromiseReject(e);
+      }
+      const promises = [];
+      for (let i = 0; i < faces.length; i++) ArrayPush(promises, faces[i].load());
+      return PromiseThen(ReflectApply($Promise.all, $Promise, [promises]), () => faces);
     }
   }
   defineProperty(FontFaceSet.prototype, iteratorSymbol, {
@@ -20796,19 +21147,52 @@
     writable: true,
     configurable: true,
   });
+  defineHandlers(FontFaceSet.prototype, ["loading", "loadingdone", "loadingerror"], false);
   expose(FontFaceSet, "FontFaceSet");
 
-  // The document's face set, made when first asked for.
+  // The faces of `set` whose family `font` (a `font` shorthand) names:
+  // what `load()` and `check()` look at. A font that does not parse
+  // throws.
+  function matchingFaces(set, font, method) {
+    const names = native.fonts("families " + font, null);
+    if (names.length === 0) {
+      throw new $DOMException(
+        "Failed to execute '" + method + "' on 'FontFaceSet': Could not resolve '" + font +
+          "' as a font.",
+        "SyntaxError",
+      );
+    }
+    const wanted = [];
+    for (let i = 1; i < names.length; i++) ArrayPush(wanted, ToLowerCase(names[i]));
+    const out = [];
+    const faces = allFaces(set);
+    for (let i = 0; i < faces.length; i++) {
+      if (ArrayIndexOf(wanted, ToLowerCase(WeakMapGet(fontFaces, faces[i]).family)) >= 0) {
+        ArrayPush(out, faces[i]);
+      }
+    }
+    return out;
+  }
+
+  // The document's face set, made when first asked for; a worker's
+  // (`self.fonts`), its own.
   const documentFonts = new $WeakMap();
   function fontSetOf(document) {
     let set = WeakMapGet(documentFonts, document);
     if (set === undefined) {
       set = new FontFaceSet(KEY);
       WeakMapSet(documentFonts, document, set);
+      if (!WORKER && document === theDocument()) {
+        documentSet = set;
+        const faces = syncCssFaces();
+        for (let i = 0; i < faces.length; i++) {
+          const state = WeakMapGet(fontFaces, faces[i]);
+          if (ArrayIndexOf(state.sets, set) < 0) ArrayPush(state.sets, set);
+        }
+      }
     }
     return set;
   }
-
   // ---- performance (High Resolution Time) --------------------------------
 
   // The document's clock: milliseconds since its time origin, rounded
@@ -21581,6 +21965,11 @@
   return {
     timer: runTimer,
     dispatch(handle, iface, type, init) {
+      // What the engine says of the document's web fonts is for its
+      // `document.fonts` (D54), which fires its own events.
+      if (iface === "FontFaceSetLoadEvent") {
+        return fontsToldSteps(type, init);
+      }
       const known = MapGet(eventInterfaces, iface);
       if (typeof init.relatedTarget === "number") {
         init.relatedTarget = wrap(init.relatedTarget);

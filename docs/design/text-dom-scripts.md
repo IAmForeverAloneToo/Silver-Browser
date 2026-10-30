@@ -337,3 +337,23 @@ where it is used, in paint, the canvas and serialization; a
 
 What the work found that this note did not say, or said otherwise, by
 step:
+
+- *Fonts and web fonts* (D53, D54, closed after the batch): a
+  `unicode-range` is read from its declaration's source text, which the
+  parser keeps the spans of (CSS Syntax 3 section 7.1), and kept as
+  `U+X-Y` identifiers; the faces of a family's best match that cover
+  some code points make a chain the font carries (`Font::chain`, kept
+  in the collection's registry beside the faces lent), and a run is
+  split by the chain's face for each code point, a face not had yet
+  asked for only when a text needs it. `local()` is a system face by
+  its full or PostScript name, read from its name table. `font-family`
+  is kept as the reference browser writes it, a quoted generic name a
+  name, which the text crate reads back. The `font-variant` longhands
+  are computed; `font` and `font-variant` are kept as their longhands in
+  a `style` object and said from them. An `@font-face` rule's `style`
+  holds its descriptors, checked and written back
+  (`style::font_face::descriptor`). `document.fonts` holds the rules'
+  faces (CSS-connected), loads them through the engine, and hears from
+  it when its faces start and stop loading (a `FontFaceSetLoadEvent`
+  task); a `FontFace`'s urls are fetched in turn as fonts; workers have
+  `self.fonts`. A text control's caret is measured in its own font.

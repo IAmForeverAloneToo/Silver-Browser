@@ -29,7 +29,7 @@
 
 use std::collections::VecDeque;
 
-use crate::tokenizer::{Token, tokenize};
+use crate::tokenizer::{Token, tokenize_with_spans};
 
 /// A parsed stylesheet.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -90,32 +90,59 @@ pub struct Declaration {
     pub important: bool,
 }
 
-/// Token stream with one-token reconsumption.
+/// Token stream with one-token reconsumption, which knows where each
+/// token was in the source.
 struct TokenStream {
-    iter: std::vec::IntoIter<Token>,
-    pending: VecDeque<Token>,
+    iter: std::iter::Enumerate<std::vec::IntoIter<Token>>,
+    pending: VecDeque<(Token, usize)>,
+    /// The number of the token last read.
+    last: usize,
+    /// Each token's start and end in `source`.
+    spans: Vec<(usize, usize)>,
+    source: Vec<char>,
 }
 
 impl TokenStream {
-    fn new(tokens: Vec<Token>) -> Self {
+    fn new(input: &str) -> Self {
+        let spanned = tokenize_with_spans(input);
         TokenStream {
-            iter: tokens.into_iter(),
+            iter: spanned.tokens.into_iter().enumerate(),
             pending: VecDeque::new(),
+            last: 0,
+            spans: spanned.spans,
+            source: spanned.source,
         }
     }
 
     fn next(&mut self) -> Option<Token> {
-        self.pending.pop_front().or_else(|| self.iter.next())
+        let (n, token) = match self.pending.pop_front() {
+            Some((token, n)) => (n, token),
+            None => self.iter.next()?,
+        };
+        self.last = n;
+        Some(token)
     }
 
+    /// Puts back the token last read.
     fn reconsume(&mut self, token: Token) {
-        self.pending.push_front(token);
+        self.pending.push_front((token, self.last));
+    }
+
+    /// The source text of tokens `first` to `last`.
+    fn text(&self, first: usize, last: usize) -> String {
+        let (Some(&(start, _)), Some(&(_, end))) = (self.spans.get(first), self.spans.get(last))
+        else {
+            return String::new();
+        };
+        self.source
+            .get(start..end)
+            .map_or_else(String::new, |chars| chars.iter().collect())
     }
 }
 
 /// Parses a stylesheet. Always recovers; see the module docs.
 pub fn parse_stylesheet(input: &str) -> Result<Stylesheet, crate::ParseError> {
-    let mut stream = TokenStream::new(tokenize(input));
+    let mut stream = TokenStream::new(input);
     Ok(Stylesheet {
         rules: parse_rules(&mut stream, true, 0),
     })
@@ -123,7 +150,7 @@ pub fn parse_stylesheet(input: &str) -> Result<Stylesheet, crate::ParseError> {
 
 /// Parses a `style` attribute's contents (declaration list only).
 pub fn parse_style_attribute(input: &str) -> Result<Vec<Declaration>, crate::ParseError> {
-    let mut stream = TokenStream::new(tokenize(input));
+    let mut stream = TokenStream::new(input);
     Ok(parse_declarations(&mut stream, 0))
 }
 
@@ -344,6 +371,8 @@ fn parse_declaration(stream: &mut TokenStream, name: String) -> Option<Declarati
     }
     let custom = name.starts_with("--");
     let mut value = Vec::new();
+    // The number of each token of the value.
+    let mut numbers = Vec::new();
     // The closer of each block open around the token being read,
     // innermost last.
     let mut open = Vec::new();
@@ -374,9 +403,24 @@ fn parse_declaration(stream: &mut TokenStream, name: String) -> Option<Declarati
             _ => {}
         }
         value.push(token);
+        numbers.push(stream.last);
     }
+    let leading = value
+        .iter()
+        .take_while(|t| matches!(t, Token::Whitespace))
+        .count();
     let important = strip_important(&mut value);
     trim_ws(&mut value);
+    // A `unicode-range` is read from its text (CSS Syntax 3 section
+    // 7.1): its tokens have lost what the text said.
+    if name.eq_ignore_ascii_case("unicode-range")
+        && !value.is_empty()
+        && let (Some(&first), Some(&last)) =
+            (numbers.get(leading), numbers.get(leading + value.len() - 1))
+        && let Some(ranges) = crate::unicode_range::read_list(&stream.text(first, last))
+    {
+        value = crate::unicode_range::tokens(&ranges);
+    }
     Some(Declaration {
         name: if custom {
             name
@@ -504,6 +548,7 @@ fn trim_ws(tokens: &mut Vec<Token>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tokenizer::tokenize;
 
     #[test]
     fn simple_qualified_rule() {

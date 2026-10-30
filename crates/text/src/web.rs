@@ -7,7 +7,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use super::faces::{self, FaceId, Font, FontRequest, Slant};
+use super::faces::{self, FaceId, Family, Font, FontRequest, Link, Slant};
 use super::{Fallback, FontError, FontStore};
 
 /// The most faces a document may have.
@@ -26,6 +26,9 @@ pub struct FaceRule {
     pub slant: Slant,
     /// The widths, the least and the most, as percentages.
     pub stretch: (f32, f32),
+    /// The code points it is for (`unicode-range`), each range's first
+    /// and last; none for all of them.
+    pub ranges: Vec<(u32, u32)>,
 }
 
 impl Default for FaceRule {
@@ -35,7 +38,16 @@ impl Default for FaceRule {
             weight: (400, 400),
             slant: Slant::Normal,
             stretch: (100.0, 100.0),
+            ranges: Vec::new(),
         }
+    }
+}
+
+impl FaceRule {
+    /// Whether it has the same weights, slant and widths as `other`: a
+    /// face of the same composite, which `unicode-range` parts.
+    fn same_style(&self, other: &FaceRule) -> bool {
+        self.weight == other.weight && self.slant == other.slant && self.stretch == other.stretch
     }
 }
 
@@ -173,11 +185,30 @@ impl DocumentFaces {
         self.chosen.forget();
     }
 
+    /// Face `index` is needed for a code point its range covers: it is
+    /// asked for, if not yet.
+    pub fn want(&self, index: usize) {
+        if let Some(face) = self.lock().get_mut(index)
+            && face.state == FaceState::Unloaded
+        {
+            face.state = FaceState::Wanted;
+        }
+    }
+
     /// The document's face of `family` for `request`: `Some(Some(font))`
-    /// for a face had, `Some(None)` when the family is the document's
-    /// but its face is not had yet (asked for), `None` for a family the
-    /// document has no face of.
-    fn family_font(&self, family: &str, request: &FontRequest<'_>) -> Option<Option<Font>> {
+    /// for a face had that covers every code point, `Some(None)` when
+    /// the family is the document's but has no such face had (one not
+    /// had yet is asked for), `None` for a family the document has no
+    /// face of. The faces of the family's best match that cover some
+    /// code points (`unicode-range`) are added to `links`, the later
+    /// rules' first (CSS Fonts 4 section 5.2's composite faces), down to
+    /// one that covers all.
+    fn family_font(
+        &self,
+        family: &str,
+        request: &FontRequest<'_>,
+        links: &mut Vec<Link>,
+    ) -> Option<Option<Font>> {
         let mut faces = self.lock();
         let of_family: Vec<usize> = (0..faces.len())
             .filter(|&n| {
@@ -189,25 +220,35 @@ impl DocumentFaces {
             return None;
         }
         let best = best_match(&of_family, |n| &faces[n].rule, request)?;
-        let face = &mut faces[best];
-        match &face.data {
-            Some((_, id)) => {
-                let rule = &face.rule;
-                let italic = rule.slant != Slant::Normal;
-                Some(Some(faces::synthesized(
-                    *id,
-                    request,
-                    rule.weight.1,
-                    italic,
-                )))
+        let best_rule = faces[best].rule.clone();
+        let font_of = |face: &WebFace, id: FaceId| {
+            let rule = &face.rule;
+            faces::synthesized(id, request, rule.weight.1, rule.slant != Slant::Normal)
+        };
+        for &n in of_family.iter().rev() {
+            if !faces[n].rule.same_style(&best_rule) {
+                continue;
             }
-            None => {
-                if face.state == FaceState::Unloaded {
-                    face.state = FaceState::Wanted;
-                }
-                Some(None)
+            let face = &mut faces[n];
+            let font = face.data.as_ref().map(|(_, id)| *id);
+            if face.rule.ranges.is_empty() {
+                return Some(match font {
+                    Some(id) => Some(font_of(face, id)),
+                    None => {
+                        if face.state == FaceState::Unloaded {
+                            face.state = FaceState::Wanted;
+                        }
+                        None
+                    }
+                });
             }
+            links.push(Link {
+                font: font.map(|id| font_of(face, id)),
+                pending: n,
+                ranges: face.rule.ranges.clone().into(),
+            });
         }
+        Some(None)
     }
 }
 
@@ -314,10 +355,22 @@ impl super::FontCollection {
     /// a WOFF 1 one. Says whether it is a font; a face that is not is
     /// failed.
     pub fn face_arrived(&self, index: usize, data: Vec<u8>) -> Result<(), FontError> {
+        self.face_arrived_at(index, data, 0)
+    }
+
+    /// [`FontCollection::face_arrived`] with the face at `face_index` of
+    /// a collection file.
+    pub fn face_arrived_at(
+        &self,
+        index: usize,
+        data: Vec<u8>,
+        face_index: u32,
+    ) -> Result<(), FontError> {
         let Some(document) = &self.document else {
             return Err(FontError::NoFontFound);
         };
-        let store = super::woff::sfnt(data).and_then(|data| FontStore::from_bytes(data, 0));
+        let store =
+            super::woff::sfnt(data).and_then(|data| FontStore::from_bytes(data, face_index));
         let store = match store {
             Ok(store) => store,
             Err(error) => {
@@ -349,20 +402,75 @@ impl super::FontCollection {
             return font;
         }
         let mut font = None;
+        let mut links = Vec::new();
         for family in faces::families(request.families) {
-            font = match document.family_font(family, request) {
+            // A generic family is never a document's: only a name, the
+            // generic's keyword quoted among them, is.
+            let found = match &family {
+                Family::Name(name) => document.family_font(name, request, &mut links),
+                Family::Generic(_) => None,
+            };
+            font = match found {
                 Some(Some(font)) => Some(font),
-                // Not had yet: the next family stands in.
+                // Not had yet, or for some code points only: the next
+                // family stands in.
                 Some(None) => None,
-                None => self.faces.family_font(family, request),
+                None => self.faces.family_font(&family, request),
             };
             if font.is_some() {
                 break;
             }
         }
-        let font = font.unwrap_or_else(|| self.faces.fallback_font(request));
+        let mut font = font.unwrap_or_else(|| self.faces.fallback_font(request));
+        if !links.is_empty() {
+            font.chain = self.faces.chain(links);
+        }
         document.chosen.keep(request, font);
         font
+    }
+
+    /// The data of the system's face whose full name or PostScript name
+    /// is `name` (any case), and its index in its file: what `local()`
+    /// names (CSS Fonts 4 section 4.3). `None` for a name no face has.
+    pub fn local_face(&self, name: &str) -> Option<(Vec<u8>, u32)> {
+        let db = self.faces.database()?;
+        let wanted = name.to_lowercase();
+        // A face's full name starts with its family's name, its
+        // PostScript name with that name without spaces; its names are
+        // read only for those that could be it.
+        let candidates = db.faces().filter(|face| {
+            face.post_script_name.to_lowercase() == wanted
+                || face.families.iter().any(|(family, _)| {
+                    let family = family.to_lowercase();
+                    wanted.starts_with(&family) || wanted.starts_with(&family.replace(' ', ""))
+                })
+        });
+        for face in candidates {
+            let found = db.with_face_data(face.id, |data, index| {
+                let parsed = ttf_parser::Face::parse(data, index).ok()?;
+                let named = parsed.names().into_iter().any(|entry| {
+                    matches!(
+                        entry.name_id,
+                        ttf_parser::name_id::FULL_NAME | ttf_parser::name_id::POST_SCRIPT_NAME
+                    ) && entry
+                        .to_string()
+                        .is_some_and(|text| text.to_lowercase() == wanted)
+                });
+                named.then(|| (data.to_vec(), index))
+            });
+            if let Some(Some(found)) = found {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// The links of `font`'s chain, when it has one.
+    pub(crate) fn chain_of(&self, font: Font) -> Option<Arc<[Link]>> {
+        if font.chain == 0 {
+            return None;
+        }
+        self.faces.links(font.chain)
     }
 }
 
@@ -496,6 +604,117 @@ mod tests {
             fonts.font(&request("Shared", 400, Slant::Normal)).face,
             FaceId(0)
         );
+    }
+
+    #[test]
+    fn a_ranged_face_draws_only_the_code_points_it_covers() {
+        let fonts = FontCollection::from_bytes(crate::TEST_FONT.to_vec(), 0).expect("parses");
+        let ranged = |ranges: Vec<(u32, u32)>| FaceRule {
+            ranges,
+            ..rule("Web", (400, 400), Slant::Normal)
+        };
+        let document = Arc::new(DocumentFaces::new(vec![
+            ranged(vec![(0x41, 0x41)]),
+            ranged(vec![(0x42, 0x42)]),
+        ]));
+        let fonts = fonts.with_document(document.clone());
+        let regular = request("Web, serif", 400, Slant::Normal);
+        let font = fonts.font(&regular);
+        assert_ne!(font.chain, 0, "the faces are a chain before the fallback");
+        assert_eq!(font.face, FaceId(0));
+        // Nothing is asked for until a text needs it: "B" asks for the
+        // second face alone.
+        assert_eq!(document.wanted(), Vec::<usize>::new());
+        assert!(fonts.measure_in(font, "xB", 16.0) > 0.0);
+        assert_eq!(document.wanted(), [1]);
+        fonts
+            .face_arrived(1, crate::TEST_FONT.to_vec())
+            .expect("a font");
+        let font = fonts.font(&regular);
+        let faces: Vec<FaceId> = fonts
+            .shape_in(font, "aBc", 16.0)
+            .into_iter()
+            .map(|(face, _)| face)
+            .collect();
+        assert_eq!(faces[0], FaceId(0));
+        assert_ne!(faces[1], FaceId(0), "B is in the web face");
+        assert_eq!(faces[2], FaceId(0));
+        // The stops and the width are the runs', in order.
+        let stops = fonts.caret_stops_in(font, "aBc", 16.0);
+        assert_eq!(stops.len(), 4);
+        assert!((stops[3] - fonts.measure_in(font, "aBc", 16.0)).abs() < 0.01);
+        // A face for every code point ends the chain: what comes after
+        // it in the family is not reached.
+        let document = Arc::new(DocumentFaces::new(vec![
+            ranged(vec![(0x41, 0x41)]),
+            rule("Web", (400, 400), Slant::Normal),
+        ]));
+        let fonts = fonts.with_document(document);
+        fonts
+            .face_arrived(1, crate::TEST_FONT.to_vec())
+            .expect("a font");
+        let font = fonts.font(&regular);
+        assert_eq!(font.chain, 0);
+        assert_ne!(font.face, FaceId(0));
+    }
+
+    #[test]
+    fn a_generic_family_is_never_the_documents_but_its_name_quoted_is() {
+        let fonts = FontCollection::from_bytes(crate::TEST_FONT.to_vec(), 0).expect("parses");
+        let document = Arc::new(DocumentFaces::new(vec![rule(
+            "serif",
+            (400, 400),
+            Slant::Normal,
+        )]));
+        let fonts = fonts.with_document(document.clone());
+        fonts
+            .face_arrived(0, crate::TEST_FONT.to_vec())
+            .expect("a font");
+        assert_eq!(
+            fonts.font(&request("serif", 400, Slant::Normal)).face,
+            FaceId(0)
+        );
+        assert_ne!(
+            fonts.font(&request("\"serif\"", 400, Slant::Normal)).face,
+            FaceId(0)
+        );
+        let names: Vec<faces::Family<'_>> =
+            faces::families("\"a\\\"b\", Times New Roman, MONOSPACE, \"x\\a y\"").collect();
+        assert_eq!(
+            names,
+            [
+                Family::Name("a\"b".into()),
+                Family::Name("Times New Roman".into()),
+                Family::Generic("monospace"),
+                Family::Name("x\ny".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_local_face_is_found_by_its_full_name() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/fonts/DejaVuSans.ttf");
+        let files = crate::FontFiles {
+            primary: (path.to_owned(), 0),
+            fallbacks: Vec::new(),
+            faces: vec![crate::FaceRecord {
+                families: vec!["DejaVu Sans".into()],
+                path: path.into(),
+                index: 0,
+                weight: 400,
+                style: 0,
+                stretch: 5,
+            }],
+        };
+        let system = FontCollection::from_files(&files).expect("read");
+        let (data, index) = system.local_face("dejavu sans").expect("its full name");
+        assert_eq!((data.len(), index), (crate::TEST_FONT.len(), 0));
+        assert!(
+            system.local_face("DejaVuSans").is_some(),
+            "its PostScript name"
+        );
+        assert!(system.local_face("DejaVu Sans Bold").is_none());
+        assert!(system.local_face("Nothing").is_none());
     }
 
     #[test]

@@ -23,7 +23,7 @@ mod media_lists;
 pub(crate) mod modules;
 mod mutations;
 pub(crate) mod ports;
-mod rules;
+pub(crate) mod rules;
 pub(crate) mod service_workers;
 #[cfg(test)]
 mod service_workers_tests;

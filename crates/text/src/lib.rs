@@ -344,6 +344,11 @@ impl FontStore {
         &self.glyph_font
     }
 
+    /// Whether the font has a glyph for `c`.
+    pub fn has_glyph(&self, c: char) -> bool {
+        self.glyph_font.glyph_id(c).0 != 0
+    }
+
     /// The font's underline at `font_size_px` (M21.7): where its top is
     /// below the baseline, and how thick it is, unrounded; `None` when
     /// the font says nothing of it.
@@ -982,9 +987,15 @@ fn no_measures() -> Arc<[Mutex<Measures>]> {
         .collect()
 }
 
-/// A width's key beside its text: the face and the font size.
-fn measure_key(face: FaceId, size: u32) -> u64 {
-    u64::from(face.0) << 32 | u64::from(size)
+/// A width's key beside its text: the face, or the chain of faces with
+/// its top bit set, and the font size.
+fn measure_key(font: Font, size: u32) -> u64 {
+    let face = if font.chain == 0 {
+        font.face.0
+    } else {
+        0x8000_0000 | u32::from(font.chain)
+    };
+    u64::from(face) << 32 | u64::from(size)
 }
 
 /// The shard `text` at `size` is kept in: an FNV-1a hash of both.
@@ -1203,6 +1214,64 @@ impl FontCollection {
         (font.face, self.face(font.face))
     }
 
+    /// Calls `run` with each run of `text` in one face, in order, and
+    /// the face: a code point a face of `font`'s chain covers and has
+    /// is in that face (`unicode-range`, CSS Fonts 4 section 5.2), the
+    /// rest in [`FontCollection::face_for`]'s by script. A chain's face
+    /// not had yet is asked for when a code point needs it.
+    fn for_each_face_run(
+        &self,
+        font: Font,
+        text: &str,
+        mut run: impl FnMut(Range<usize>, FaceId, FaceRef<'_>),
+    ) {
+        let Some(links) = self.chain_of(font) else {
+            for_each_run(text, |range, script| {
+                let (id, face) = self.face_for(font, script);
+                run(range, id, face);
+            });
+            return;
+        };
+        let pick = |c: char| -> Option<Font> {
+            for link in links.iter().filter(|link| link.covers(c)) {
+                match link.font {
+                    Some(face) if self.face(face.face).has_glyph(c) => return Some(face),
+                    Some(_) => {}
+                    None => {
+                        if let Some(document) = &self.document {
+                            document.want(link.pending);
+                        }
+                    }
+                }
+            }
+            None
+        };
+        let mut flush = |range: Range<usize>, chosen: Option<Font>| match chosen {
+            Some(face) => run(range, face.face, self.face(face.face)),
+            None => for_each_run(&text[range.clone()], |sub, script| {
+                let (id, face) = self.face_for(font, script);
+                run(sub.start + range.start..sub.end + range.start, id, face);
+            }),
+        };
+        let mut start = 0;
+        let mut current = None;
+        for (i, c) in text.char_indices() {
+            let chosen = pick(c);
+            match current {
+                Some(previous) if previous == chosen => {}
+                Some(previous) => {
+                    flush(start..i, previous);
+                    start = i;
+                    current = Some(chosen);
+                }
+                None => current = Some(chosen),
+            }
+        }
+        if let Some(previous) = current {
+            flush(start..text.len(), previous);
+        }
+    }
+
     /// `text`'s total advance width at `font_size_px`, itemizing it
     /// into per-script runs (M8.1) and measuring each with
     /// [`FontCollection::font_for`]'s pick rather than always the
@@ -1220,7 +1289,7 @@ impl FontCollection {
     /// slant leaves the advances as they are.
     pub fn measure_in(&self, font: Font, text: &str, font_size_px: f32) -> f32 {
         let size = font_size_px.to_bits();
-        let key = measure_key(font.face, size);
+        let key = measure_key(font, size);
         let shard = &self.measures[shard_of(size, text)];
         let kept = shard
             .lock()
@@ -1230,11 +1299,8 @@ impl FontCollection {
             return width;
         }
         let mut width = 0.0;
-        for_each_run(text, |range, script| {
-            width += self
-                .face_for(font, script)
-                .1
-                .measure(&text[range], font_size_px);
+        self.for_each_face_run(font, text, |range, _, face| {
+            width += face.measure(&text[range], font_size_px);
         });
         if let Ok(mut measures) = shard.lock() {
             measures.keep(key, text, width);
@@ -1287,8 +1353,8 @@ impl FontCollection {
             descent: 0.0,
             line_gap: 0.0,
         };
-        for_each_run(text, |_, script| {
-            let m = self.face_for(font, script).1.metrics(font_size_px);
+        self.for_each_face_run(font, text, |_, _, face| {
+            let m = face.metrics(font_size_px);
             metrics = FontMetrics {
                 ascent: metrics.ascent.max(m.ascent),
                 descent: metrics.descent.max(m.descent),
@@ -1341,8 +1407,7 @@ impl FontCollection {
     ) -> Vec<(FaceId, ShapedGlyph)> {
         let mut out = Vec::new();
         let mut pen_x = 0.0f32;
-        for (range, script) in itemize(text) {
-            let (id, face) = self.face_for(font, script);
+        self.for_each_face_run(font, text, |range, id, face| {
             let run_text = &text[range];
             for g in face.shape(run_text, font_size_px) {
                 out.push((
@@ -1355,7 +1420,7 @@ impl FontCollection {
                 ));
             }
             pen_x += face.measure(run_text, font_size_px);
-        }
+        });
         out
     }
 
@@ -1372,13 +1437,12 @@ impl FontCollection {
     pub fn caret_stops_in(&self, font: Font, text: &str, font_size_px: f32) -> Vec<f32> {
         let mut stops = vec![0.0];
         let mut pen_x = 0.0f32;
-        for (range, script) in itemize(text) {
-            let face = self.face_for(font, script).1;
+        self.for_each_face_run(font, text, |range, _, face| {
             let run_text = &text[range];
             let run = face.caret_stops(run_text, font_size_px);
             stops.extend(run.iter().skip(1).map(|x| x + pen_x));
             pen_x += face.measure(run_text, font_size_px);
-        }
+        });
         stops
     }
 }
@@ -1643,13 +1707,40 @@ mod tests {
         let shard = fonts.measures[shard_of(size, "cell")]
             .lock()
             .expect("not poisoned");
-        let key = measure_key(FaceId(0), size);
+        let key = measure_key(
+            Font {
+                face: FaceId(0),
+                ..Font::default()
+            },
+            size,
+        );
         assert_eq!(shard.get(key, "cell"), Some(store.measure("cell", 16.0)));
         assert_eq!(
-            shard.get(measure_key(FaceId(0), 15.0f32.to_bits()), "cell"),
+            shard.get(
+                measure_key(
+                    Font {
+                        face: FaceId(0),
+                        ..Font::default()
+                    },
+                    15.0f32.to_bits()
+                ),
+                "cell"
+            ),
             None
         );
-        assert_eq!(shard.get(measure_key(FaceId(1), size), "cell"), None);
+        assert_eq!(
+            shard.get(
+                measure_key(
+                    Font {
+                        face: FaceId(1),
+                        ..Font::default()
+                    },
+                    size
+                ),
+                "cell"
+            ),
+            None
+        );
     }
 
     /// The widths are spread over the shards, so that threads measuring

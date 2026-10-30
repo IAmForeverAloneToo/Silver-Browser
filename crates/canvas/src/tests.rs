@@ -952,6 +952,19 @@ fn fonts_parse_and_serialize_as_the_reference_browser_has_them() {
     }
     let font = parse_font("condensed 12px serif", &base()).unwrap();
     assert_eq!(font.stretch, Stretch::Condensed);
+    // A generic keyword quoted is a family's name, and stays quoted for
+    // the face to be chosen by.
+    let font = parse_font("10px \"sans-serif\", 'Inherit', sans-serif", &base()).unwrap();
+    assert_eq!(
+        font.family_list(),
+        "\"sans-serif\", \"Inherit\", sans-serif"
+    );
+    assert_eq!(
+        parse_font("10px 'Two Words', One", &base())
+            .unwrap()
+            .family_list(),
+        "\"Two Words\", One"
+    );
     // Relative to a canvas in a 20px element, the root at 16px.
     let inside = FontBase {
         em: 20.0,

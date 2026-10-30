@@ -130,7 +130,12 @@ pub(crate) fn request(
         }),
     };
     let referrer_policy = net::ReferrerPolicy::parse(&call.referrer_policy);
-    let mut request = net::Request::get(url, Destination::Empty).initiated_by(initiator);
+    // A `FontFace`'s source is a font's fetch, which `font-src` rules.
+    let destination = match call.destination.as_str() {
+        "font" => Destination::Font,
+        _ => Destination::Empty,
+    };
+    let mut request = net::Request::get(url, destination).initiated_by(initiator);
     request.referrer = referrer;
     request.referrer_policy = referrer_policy;
     // The space it names (M33.4); `public` asks nothing of it.
@@ -204,6 +209,7 @@ mod tests {
             referrer_policy: String::new(),
             target_address_space: String::new(),
             integrity: String::new(),
+            destination: String::new(),
         };
         change(&mut call);
         call
@@ -314,5 +320,12 @@ mod tests {
         assert!(made.preflight);
         assert_eq!(made.origin, Some(page().origin().clone()));
         assert!(made.initiator.is_some());
+        // A FontFace's source is a font's fetch.
+        let font = request(
+            page().initiator(),
+            &call(|c| c.destination = "font".to_owned()),
+        )
+        .unwrap();
+        assert_eq!(font.destination, Destination::Font);
     }
 }

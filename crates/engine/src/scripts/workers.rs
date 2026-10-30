@@ -1467,10 +1467,15 @@ impl ScriptingHost for WorkerHost {
                 Ok(Answer::Nothing)
             }
             Call::Hidden => Ok(Answer::Bool(false)),
-            // A worker's faces are its own, none loading (D54).
+            // A worker's faces are its own, none loading (D54), which its
+            // canvases' text is drawn in.
             Call::Fonts(op, data) => {
                 let mut changes = Vec::new();
-                let answer = crate::web_fonts::answer(&op, data, false, &mut changes);
+                let env = crate::web_fonts::FontsEnv {
+                    fonts: self.fonts.as_ref(),
+                    ..crate::web_fonts::FontsEnv::default()
+                };
+                let answer = crate::web_fonts::answer(&op, data, &env, &mut changes);
                 if let Some(fonts) = &mut self.fonts {
                     crate::web_fonts::worker_fonts_changed(fonts, &mut self.font_faces, changes);
                 }

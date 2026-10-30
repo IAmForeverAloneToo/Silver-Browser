@@ -148,6 +148,7 @@ fn parts(rule: &Rule, kind: Kind) -> (String, String) {
         }
         (Rule::At(at), Kind::FontFace | Kind::Page) => {
             let block = match &at.block {
+                Some(Block::Declarations(list)) if kind == Kind::FontFace => descriptors(list),
                 Some(Block::Declarations(list)) => declarations(list),
                 _ => String::new(),
             };
@@ -240,11 +241,41 @@ pub(crate) fn declarations(list: &[Declaration]) -> String {
     out
 }
 
+/// An `@font-face` rule's descriptors' text (CSS Fonts 4 section 4):
+/// `name: value;` each, those the rule takes written back as the
+/// reference browser does, a descriptor given again in its later place.
+pub(crate) fn descriptors(list: &[Declaration]) -> String {
+    descriptor_list(list)
+        .iter()
+        .map(|(name, value)| format!("{name}: {value};"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// An `@font-face` rule's descriptors as [`descriptors`] writes them,
+/// each its name and value.
+pub(crate) fn descriptor_list(list: &[Declaration]) -> Vec<(&'static str, String)> {
+    let mut kept: Vec<(&str, String)> = Vec::new();
+    for declaration in list.iter().filter(|d| !d.important) {
+        if let Some((name, value)) =
+            style::font_face::descriptor(&declaration.name, &declaration.value)
+        {
+            kept.retain(|(was, _)| *was != name);
+            kept.push((name, value));
+        }
+    }
+    kept
+}
+
 /// A rule's `cssText`, each nested line after the first indented by
 /// `indent` more.
 fn css_text(rule: &Rule, kind: Kind, indent: &str) -> String {
     let block = |head: String, list: &[Declaration]| {
-        let body = declarations(list);
+        let body = if kind == Kind::FontFace {
+            descriptors(list)
+        } else {
+            declarations(list)
+        };
         if body.is_empty() {
             format!("{head} {{ }}")
         } else {

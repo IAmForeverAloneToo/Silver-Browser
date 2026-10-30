@@ -6224,7 +6224,7 @@ impl Engine {
     /// Takes the stylesheets that apply as they now stand: when they
     /// differ from those the cascade has, the next frame cascades the
     /// whole document.
-    fn sheets_changed(&mut self) {
+    pub(crate) fn sheets_changed(&mut self) {
         let sheets = self.shown.page.sheets();
         if sheets != self.shown.stylesheets.sheets() {
             self.shown.stylesheets = Stylesheets::new(sheets);

@@ -99,6 +99,12 @@ longhands! {
     FontStyle = "font-style": Discrete,
     FontStretch = "font-stretch": ByComputedValue,
     FontVariantCaps = "font-variant-caps": Discrete,
+    FontVariantLigatures = "font-variant-ligatures": Discrete,
+    FontVariantAlternates = "font-variant-alternates": Discrete,
+    FontVariantNumeric = "font-variant-numeric": Discrete,
+    FontVariantEastAsian = "font-variant-east-asian": Discrete,
+    FontVariantPosition = "font-variant-position": Discrete,
+    FontVariantEmoji = "font-variant-emoji": Discrete,
     FontFeatureSettings = "font-feature-settings": Discrete,
     LineHeight = "line-height": ByComputedValue,
     Display = "display": Discrete,
@@ -313,7 +319,13 @@ pub fn longhands_of(name: &str) -> Vec<Longhand> {
         "margin" => &[MarginTop, MarginRight, MarginBottom, MarginLeft],
         "font" => &[
             FontStyle,
+            FontVariantLigatures,
             FontVariantCaps,
+            FontVariantAlternates,
+            FontVariantNumeric,
+            FontVariantEastAsian,
+            FontVariantPosition,
+            FontVariantEmoji,
             FontWeight,
             FontStretch,
             FontSize,
@@ -321,7 +333,15 @@ pub fn longhands_of(name: &str) -> Vec<Longhand> {
             FontFamily,
             FontFeatureSettings,
         ],
-        "font-variant" => &[FontVariantCaps],
+        "font-variant" => &[
+            FontVariantLigatures,
+            FontVariantCaps,
+            FontVariantAlternates,
+            FontVariantNumeric,
+            FontVariantEastAsian,
+            FontVariantPosition,
+            FontVariantEmoji,
+        ],
         "white-space" => &[WhiteSpaceCollapse, TextWrapMode],
         "text-wrap" => &[TextWrapMode],
         "padding" => &[PaddingTop, PaddingRight, PaddingBottom, PaddingLeft],
@@ -463,7 +483,24 @@ pub fn copy(property: Longhand, from: &ComputedStyle, to: &mut ComputedStyle) {
         FontWeight => to.font_mut().weight = from.font().weight,
         FontStyle => to.font_mut().style = from.font().style,
         FontStretch => to.font_mut().stretch = from.font().stretch,
-        FontVariantCaps => to.font_mut().small_caps = from.font().small_caps,
+        FontVariantCaps
+        | FontVariantLigatures
+        | FontVariantAlternates
+        | FontVariantNumeric
+        | FontVariantEastAsian
+        | FontVariantPosition
+        | FontVariantEmoji => {
+            let mut from = (*from.font().variant).clone();
+            let name = property.name();
+            let value = crate::cascade::variant_field(&mut from, name).map(|v| v.clone());
+            let font = to.font_mut();
+            if let (Some(value), Some(field)) = (
+                value,
+                crate::cascade::variant_field(Arc::make_mut(&mut font.variant), name),
+            ) {
+                *field = value;
+            }
+        }
         FontFeatureSettings => to.font_mut().features = from.font().features.clone(),
         LineHeight => to.font_mut().line_height = from.font().line_height,
         Display => {
@@ -840,7 +877,18 @@ pub fn same(property: Longhand, a: &ComputedStyle, b: &ComputedStyle) -> bool {
         FontWeight => a.font().weight == b.font().weight,
         FontStyle => a.font().style == b.font().style,
         FontStretch => a.font().stretch == b.font().stretch,
-        FontVariantCaps => a.font().small_caps == b.font().small_caps,
+        FontVariantCaps
+        | FontVariantLigatures
+        | FontVariantAlternates
+        | FontVariantNumeric
+        | FontVariantEastAsian
+        | FontVariantPosition
+        | FontVariantEmoji => {
+            let (mut a, mut b) = ((*a.font().variant).clone(), (*b.font().variant).clone());
+            let name = property.name();
+            crate::cascade::variant_field(&mut a, name)
+                == crate::cascade::variant_field(&mut b, name)
+        }
         FontFeatureSettings => a.font().features == b.font().features,
         LineHeight => a.font().line_height == b.font().line_height,
         Display => a.display == b.display && a.flow_root == b.flow_root,
@@ -1503,14 +1551,8 @@ pub fn interpolate(
         }
         // A number, 1 to 1000 (CSS Fonts 4 section 2.2).
         FontWeight => {
-            let w = number(
-                f32::from(a.font().weight),
-                f32::from(b.font().weight),
-                p,
-                1.0,
-                1000.0,
-            );
-            to.font_mut().weight = w.round() as u16;
+            let w = number(a.font().weight, b.font().weight, p, 1.0, 1000.0);
+            to.font_mut().weight = w.round();
             true
         }
         FontStretch => {
@@ -2535,14 +2577,14 @@ mod tests {
             ]
         );
         assert!(longhands_of("unknown").is_empty());
-        assert_eq!(longhands_of("font").len(), 8);
+        assert_eq!(longhands_of("font").len(), 14);
         assert_eq!(
             longhands_of("white-space"),
             vec![Longhand::WhiteSpaceCollapse, Longhand::TextWrapMode]
         );
         assert_eq!(
-            longhands_of("font-variant"),
-            vec![Longhand::FontVariantCaps]
+            longhands_of("font-variant").len(),
+            crate::cascade::VARIANT_LONGHANDS.len()
         );
         assert_eq!(
             Longhand::WillChange.animation_type(),
@@ -2660,7 +2702,7 @@ mod tests {
             "font-weight: 200",
             0.555,
         );
-        assert_eq!(w.font().weight, 156);
+        assert_eq!(w.font().weight, 156.0);
         let s = blended(
             Longhand::FontStretch,
             "font-stretch: 50%",

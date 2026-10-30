@@ -139,6 +139,12 @@ mod border_image;
 mod decoration;
 mod effects;
 mod fonts;
+pub use fonts::font_shorthand_families;
+pub use fonts::{
+    VARIANT_LONGHANDS, font_longhands, parse_variant, stretch_name, variant_field,
+    write_font_variant,
+};
+pub(crate) use fonts::{plain_angle, plain_number};
 mod fragmentation;
 mod gradients;
 mod grid;
@@ -491,6 +497,12 @@ impl Target {
                 | "font-stretch"
                 | "font-variant"
                 | "font-variant-caps"
+                | "font-variant-ligatures"
+                | "font-variant-alternates"
+                | "font-variant-numeric"
+                | "font-variant-east-asian"
+                | "font-variant-position"
+                | "font-variant-emoji"
                 | "font-feature-settings"
                 | "line-height"
                 | "color"
@@ -532,6 +544,12 @@ impl Target {
                         | "font-stretch"
                         | "font-variant"
                         | "font-variant-caps"
+                        | "font-variant-ligatures"
+                        | "font-variant-alternates"
+                        | "font-variant-numeric"
+                        | "font-variant-east-asian"
+                        | "font-variant-position"
+                        | "font-variant-emoji"
                         | "font-feature-settings"
                         | "color"
                         | "text-transform"
@@ -3475,11 +3493,20 @@ fn apply_declaration(
         "font-stretch" => set_font(style, fonts::parse_font_stretch(value, bases), |f, v| {
             f.stretch = v
         }),
-        "font-variant" | "font-variant-caps" => set_font(
-            style,
-            fonts::parse_small_caps(value, name == "font-variant"),
-            |f, v| f.small_caps = v,
-        ),
+        "font-variant" => set_font(style, fonts::parse_font_variant(value), |f, v| {
+            f.variant = Arc::new(v)
+        }),
+        "font-variant-ligatures"
+        | "font-variant-caps"
+        | "font-variant-alternates"
+        | "font-variant-numeric"
+        | "font-variant-east-asian"
+        | "font-variant-position"
+        | "font-variant-emoji" => set_font(style, fonts::parse_variant(name, value), |f, v| {
+            if let Some(field) = fonts::variant_field(Arc::make_mut(&mut f.variant), name) {
+                *field = v;
+            }
+        }),
         "font-feature-settings" => set_font(
             style,
             fonts::parse_font_feature_settings(value, bases),
@@ -4491,6 +4518,12 @@ fn is_inherited(name: &str) -> bool {
             | "font-stretch"
             | "font-variant"
             | "font-variant-caps"
+            | "font-variant-ligatures"
+            | "font-variant-alternates"
+            | "font-variant-numeric"
+            | "font-variant-east-asian"
+            | "font-variant-position"
+            | "font-variant-emoji"
             | "font-feature-settings"
             | "line-height"
             | "text-align"
@@ -4609,7 +4642,24 @@ fn apply_css_wide(
         "font-weight" => style.font_mut().weight = src.font().weight,
         "font-style" => style.font_mut().style = src.font().style,
         "font-stretch" => style.font_mut().stretch = src.font().stretch,
-        "font-variant" | "font-variant-caps" => style.font_mut().small_caps = src.font().small_caps,
+        "font-variant" => style.font_mut().variant = src.font().variant.clone(),
+        "font-variant-ligatures"
+        | "font-variant-caps"
+        | "font-variant-alternates"
+        | "font-variant-numeric"
+        | "font-variant-east-asian"
+        | "font-variant-position"
+        | "font-variant-emoji" => {
+            let mut from = (*src.font().variant).clone();
+            let value = fonts::variant_field(&mut from, name).map(|v| v.clone());
+            let font = style.font_mut();
+            if let (Some(value), Some(field)) = (
+                value,
+                fonts::variant_field(Arc::make_mut(&mut font.variant), name),
+            ) {
+                *field = value;
+            }
+        }
         "font-feature-settings" => style.font_mut().features = src.font().features.clone(),
         "line-height" => style.font_mut().line_height = src.font().line_height,
         "display" => {
@@ -6490,50 +6540,11 @@ fn parse_border_style(tokens: &[Token]) -> Option<BorderStyle> {
     }
 }
 
-/// A comma-joined font-family list, kept as declared — still not
-/// consumed for real font *selection*. M8.1 landed per-*script*
-/// fallback (`text::FontCollection`: Latin primary + resolved CJK
-/// fallbacks), which is what that milestone's own wording asked for,
-/// but it's driven entirely by Unicode script detection on the text
-/// itself, never by this property: an author's `font-family: "Noto
-/// Sans CJK SC", sans-serif` declaration is parsed and stored here and
-/// then simply never read by `text`. Properly honoring it needs more
-/// than M8.1 did — `FontCollection` is one primary font per `Engine`,
-/// not one per declared family list, so per-element family selection
-/// would need its own query-and-cache mechanism alongside the
-/// per-script one, plus a fallback-order decision when both a declared
-/// family *and* a script-appropriate one could apply to the same run.
-/// Not scheduled under a specific milestone yet — flagged here instead
-/// of silently staying unread.
+/// A `font-family` list (CSS Fonts 4 section 2.1), written as the
+/// reference browser writes it (`crate::font_family`): what the text
+/// crate chooses faces by.
 fn parse_font_family(tokens: &[Token]) -> Option<String> {
-    let mut families = Vec::new();
-    let mut current = String::new();
-    for t in tokens {
-        match t {
-            Token::Whitespace => {
-                if !current.is_empty() {
-                    current.push(' ');
-                }
-            }
-            Token::Comma => {
-                let name = current.trim().to_string();
-                if name.is_empty() {
-                    return None;
-                }
-                families.push(name);
-                current.clear();
-            }
-            Token::Ident(s) => current.push_str(s),
-            Token::String { value, bad: false } => current.push_str(value),
-            _ => return None,
-        }
-    }
-    let name = current.trim().to_string();
-    if name.is_empty() {
-        return None;
-    }
-    families.push(name);
-    Some(families.join(", "))
+    crate::font_family::parse_list(tokens).map(|list| crate::font_family::write_list(&list))
 }
 
 /// `color-scheme`'s value (Color Adjust 1 section 2.1): `normal`, or

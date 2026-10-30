@@ -571,6 +571,38 @@ pub fn tokenize(source: &str) -> Vec<Token> {
     out
 }
 
+/// The source as tokens, each with where it starts and ends in the
+/// source as preprocessed (a number of characters), and that source:
+/// what a value read back from its text needs (a `unicode-range`).
+pub(crate) fn tokenize_with_spans(source: &str) -> Spanned {
+    let mut tokenizer = Tokenizer::new(source);
+    let mut tokens = Vec::new();
+    let mut spans = Vec::new();
+    loop {
+        while tokenizer.matches_at(tokenizer.pos, "/*") {
+            tokenizer.skip_comment();
+        }
+        let start = tokenizer.pos;
+        let Some(token) = tokenizer.next_token() else {
+            break;
+        };
+        tokens.push(token);
+        spans.push((start, tokenizer.pos));
+    }
+    Spanned {
+        tokens,
+        spans,
+        source: tokenizer.input,
+    }
+}
+
+/// Tokens with their places in their source ([`tokenize_with_spans`]).
+pub(crate) struct Spanned {
+    pub(crate) tokens: Vec<Token>,
+    pub(crate) spans: Vec<(usize, usize)>,
+    pub(crate) source: Vec<char>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

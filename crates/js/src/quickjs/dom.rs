@@ -457,6 +457,10 @@ const NATIVES: &[(&str, Decode)] = &[
     ("cssValid", |a| {
         Ok(Call::CssValid(a.string(0)?, a.string(1)?))
     }),
+    ("cssShorthand", |a| {
+        Ok(Call::CssShorthand(a.string(0)?, a.strings(1)?))
+    }),
+    ("cssBlockText", |a| Ok(Call::CssBlockText(a.strings(0)?))),
     ("resolveUrl", |a| Ok(Call::ResolveUrl(a.string(0)?))),
     ("resolveUrlFromDocument", |a| {
         Ok(Call::ResolveUrlFromDocument(a.string(0)?))
@@ -481,6 +485,7 @@ const NATIVES: &[(&str, Decode)] = &[
             referrer_policy: a.string(11)?,
             target_address_space: a.string(12)?,
             integrity: a.string(13).unwrap_or_default(),
+            destination: a.string(14).unwrap_or_default(),
         })))
     }),
     ("fetchNow", |a| {
@@ -499,6 +504,7 @@ const NATIVES: &[(&str, Decode)] = &[
             referrer_policy: String::new(),
             target_address_space: String::new(),
             integrity: String::new(),
+            destination: String::new(),
         })))
     }),
     ("decode", |a| {

@@ -2538,6 +2538,79 @@ fn a_workers_font_faces_are_its_own_and_its_canvases_draw_in_them() {
 }
 
 #[test]
+fn a_rule_a_script_just_added_is_in_document_fonts_in_its_run() {
+    // A `<style>` put in by the script running is read for its faces
+    // before the run ends, in tree order, its media and the policies
+    // held to; one taken out is gone.
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<style id=old>@font-face { font-family: Old; src: url(o.ttf) }</style><script>\
+             const add = (css, media) => { const s = document.createElement('style'); \
+               if (media) s.media = media; s.textContent = css; \
+               document.head.prepend(s); return s; };\
+             add('@font-face { font-family: Web; src: url(f.ttf) }');\
+             add('@font-face { font-family: Print; src: url(p.ttf) }', 'print');\
+             document.getElementById('old').remove();\
+             console.log([...document.fonts].map(f => f.family).join());\
+             document.fonts.load('12px Web').then(fs => console.log('loaded', fs.length, \
+               fs[0].status));\
+             </script>",
+        )),
+        "/f.ttf" => Some(Reply::ok("font/ttf", text::TEST_FONT)),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, server.url("/page.html"));
+    let lines = tab.run_until(|lines| lines.len() >= 2);
+    assert_eq!(lines, ["Web", "loaded 1 loaded"]);
+}
+
+#[test]
+fn the_rules_faces_are_in_document_fonts_and_load_through_it() {
+    // CSS Font Loading 3 (gap batch D): a rule's face is a CSS-connected
+    // FontFace with its descriptors as written; load() fetches it, its
+    // sources tried in turn (a local() the system lacks passed over), and
+    // the set hears when loading starts and is done.
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<style>@font-face { font-family: Web; src: local(No Such Face), url(gone.ttf), \
+             url(f.ttf); font-weight: 900 100; font-stretch: 200% 50% }</style><script>\
+             document.fonts.addEventListener('loading', () => console.log('loading'));\
+             document.fonts.onloadingdone = e => console.log('done', e.fontfaces.length);\
+             const all = [...document.fonts];\
+             console.log(document.fonts.size, all[0].weight, all[0].stretch, all[0].status);\
+             document.fonts.load('12px Web, serif').then(\
+               fs => console.log('loaded', fs.length, fs[0] === all[0], fs[0].status));\
+             </script>",
+        )),
+        "/f.ttf" => Some(Reply::ok("font/ttf", text::TEST_FONT)),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, server.url("/page.html"));
+    let mut lines = tab.run_until(|lines| lines.len() >= 4);
+    lines.sort();
+    assert_eq!(
+        lines,
+        [
+            "1 900 100 200% 50% unloaded",
+            "done 1",
+            "loaded 1 true loaded",
+            "loading",
+        ]
+    );
+    let fonts: Vec<_> = server
+        .requests()
+        .iter()
+        .filter(|r| r.header("sec-fetch-dest") == Some("font"))
+        .map(|r| r.target.clone())
+        .collect();
+    assert_eq!(fonts, ["/gone.ttf", "/f.ttf"]);
+}
+
+#[test]
 fn integrity_lets_through_only_what_matches_its_metadata() {
     // Subresource Integrity (D62): a script and a sheet that match run
     // and apply; ones that do not, or another origin's read without CORS,

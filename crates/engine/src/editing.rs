@@ -31,6 +31,8 @@ const SELECTION_COLOUR: paint::Rgba8 = paint::Rgba8 {
 /// set: its content box, its font size, its line height, its colour.
 struct Placed {
     content: Rect,
+    /// The font its text is in: the control's style's (gap batch D).
+    font: text::Font,
     size: f32,
     line_height: f32,
     color: paint::Rgba8,
@@ -357,8 +359,14 @@ impl Engine {
         let text = field.text().to_owned();
         let caret = field.caret();
         let line = field.line_around(caret);
-        let size = self.placed(control).map_or(13.3333, |placed| placed.size);
-        let x = self.layout_fonts.measure(&text[line.start..caret], size);
+        let (font, size) = self
+            .placed(control)
+            .map_or((text::Font::default(), 13.3333), |placed| {
+                (placed.font, placed.size)
+            });
+        let x = self
+            .document_fonts()
+            .measure_in(font, &text[line.start..caret], size);
         let target = if up {
             match line.start.checked_sub(1) {
                 Some(end) => field.line_around(end),
@@ -376,14 +384,15 @@ impl Engine {
             }
             field.line_around(line.end + 1)
         };
-        let at = target.start + self.index_at(&text[target.clone()], size, x);
+        let at = target.start + self.index_at(&text[target.clone()], font, size, x);
         field.place(at, extend);
         self.select_in(control, &field);
     }
 
-    /// The byte of `text` whose caret stop is nearest `x` at `size`.
-    fn index_at(&self, text: &str, size: f32, x: f32) -> usize {
-        let stops = self.layout_fonts.caret_stops(text, size);
+    /// The byte of `text` whose caret stop is nearest `x` in `font` at
+    /// `size`.
+    fn index_at(&self, text: &str, font: text::Font, size: f32, x: f32) -> usize {
+        let stops = self.document_fonts().caret_stops_in(font, text, size);
         let boundaries: Vec<usize> = text
             .char_indices()
             .map(|(at, _)| at)
@@ -419,6 +428,7 @@ impl Engine {
         }
         let (_, offsets) = self.drawn_offsets();
         let scroll_y = self.shown.scroll_y;
+        let fonts = self.document_fonts().clone();
         let layout = self.layout(width as f32);
         let whole = Viewport {
             width: width as f32,
@@ -446,10 +456,22 @@ impl Engine {
                 };
                 let size = fragment.style.font_size_px;
                 let color = fragment.style.color;
+                let fonts = &fonts;
+                let font = layout::font::font_of_props(fonts, fragment.style.font.as_deref());
+                // A line is as tall as its `line-height` says, `normal`
+                // the font's own.
+                let line_height = match fragment.style.font().line_height {
+                    style::computed::LineHeight::Normal => {
+                        fonts.metrics_in(font, " ", size).line_height()
+                    }
+                    style::computed::LineHeight::Number(n) => n * size,
+                    style::computed::LineHeight::Px(px) => px,
+                };
                 return Some(Placed {
                     content,
+                    font,
                     size,
-                    line_height: self.layout_fonts.primary().metrics(size).line_height(),
+                    line_height,
                     color: paint::Rgba8 {
                         r: (color.r * 255.0).round() as u8,
                         g: (color.g * 255.0).round() as u8,
@@ -477,9 +499,11 @@ impl Engine {
         let shown_line_end = shown[shown_start..]
             .find('\n')
             .map_or(shown.len(), |i| shown_start + i);
-        let stops = self
-            .layout_fonts
-            .caret_stops(&shown[shown_start..shown_line_end], placed.size);
+        let stops = self.document_fonts().caret_stops_in(
+            placed.font,
+            &shown[shown_start..shown_line_end],
+            placed.size,
+        );
         let x = stops.get(chars).copied().unwrap_or(0.0);
         let scroll = self
             .shown
@@ -514,7 +538,9 @@ impl Engine {
             Direction::Backward => caret.start,
             _ => caret.end,
         };
-        let stops = self.layout_fonts.caret_stops(&shown, placed.size);
+        let stops = self
+            .document_fonts()
+            .caret_stops_in(placed.font, &shown, placed.size);
         let x = stops
             .get(value[..at].chars().count())
             .copied()
@@ -617,7 +643,7 @@ impl Engine {
         let shown_lines: Vec<&str> = shown.split('\n').collect();
         let shown_line = shown_lines.get(line).copied().unwrap_or("");
         let local_x = x - placed.content.x + scroll;
-        let index = self.index_at(shown_line, placed.size, local_x);
+        let index = self.index_at(shown_line, placed.font, placed.size, local_x);
         // From the shown line's bytes to the value's, by characters.
         let chars = shown_line[..index].chars().count();
         start

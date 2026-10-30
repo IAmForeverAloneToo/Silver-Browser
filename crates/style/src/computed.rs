@@ -3053,18 +3053,18 @@ static INITIAL_LISTS: LazyLock<Lists> = LazyLock::new(Lists::default);
 /// parent's, and the initial style has none.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FontProps {
-    /// `font-family`, as declared (the family list, kept as one
-    /// string).
+    /// `font-family`, the list as the reference browser writes it
+    /// (`crate::font_family`).
     pub family: Arc<str>,
-    /// `font-weight`, 1 to 1000.
-    pub weight: u16,
+    /// `font-weight`, 1 to 1000, as written or calculated.
+    pub weight: f32,
     /// `font-style`.
     pub style: FontStyle,
     /// `font-stretch`, a percentage of the normal width.
     pub stretch: f32,
-    /// `font-variant-caps: small-caps` (and `font-variant`'s).
-    pub small_caps: bool,
-    /// `font-feature-settings`: each feature's tag and value, in order.
+    /// The `font-variant` longhands.
+    pub variant: Arc<FontVariant>,
+    /// `font-feature-settings`: each feature's tag and value, by tag.
     pub features: FontFeatures,
     /// `line-height` (CSS 2 section 10.8).
     pub line_height: LineHeight,
@@ -3074,17 +3074,55 @@ impl Default for FontProps {
     fn default() -> Self {
         FontProps {
             family: Arc::clone(&SANS_SERIF),
-            weight: 400,
+            weight: 400.0,
             style: FontStyle::Normal,
             stretch: 100.0,
-            small_caps: false,
+            variant: Arc::clone(&NORMAL_VARIANT),
             features: Arc::from([]),
             line_height: LineHeight::Normal,
         }
     }
 }
 
-/// `font-feature-settings`: each feature's tag and value, in order.
+impl FontProps {
+    /// Whether the text is in small capitals.
+    pub fn small_caps(&self) -> bool {
+        self.variant.caps == "small-caps"
+    }
+}
+
+/// The `font-variant` longhands (CSS Fonts 4 section 6), each as the
+/// reference browser writes its computed value, `normal` for none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FontVariant {
+    pub ligatures: String,
+    pub caps: String,
+    pub alternates: String,
+    pub numeric: String,
+    pub east_asian: String,
+    pub position: String,
+    pub emoji: String,
+}
+
+impl Default for FontVariant {
+    fn default() -> Self {
+        let normal = || "normal".to_owned();
+        FontVariant {
+            ligatures: normal(),
+            caps: normal(),
+            alternates: normal(),
+            numeric: normal(),
+            east_asian: normal(),
+            position: normal(),
+            emoji: normal(),
+        }
+    }
+}
+
+/// Every `font-variant` longhand `normal`, shared.
+static NORMAL_VARIANT: LazyLock<Arc<FontVariant>> = LazyLock::new(Arc::default);
+
+/// `font-feature-settings`: each feature's tag and value, by tag.
 pub type FontFeatures = Arc<[([u8; 4], u32)]>;
 
 /// `font-style`.
@@ -3093,8 +3131,21 @@ pub enum FontStyle {
     #[default]
     Normal,
     Italic,
+    /// `oblique` with no angle: 14 degrees, written as `oblique`.
+    DefaultOblique,
     /// Slanted by the angle, in degrees, -90 to 90.
     Oblique(f32),
+}
+
+impl FontStyle {
+    /// The angle it slants text by, in degrees: 0 upright.
+    pub fn angle(self) -> Option<f32> {
+        match self {
+            FontStyle::Normal | FontStyle::Italic => None,
+            FontStyle::DefaultOblique => Some(14.0),
+            FontStyle::Oblique(a) => Some(a),
+        }
+    }
 }
 
 /// `line-height`'s computed value: `normal`, a number (inherited as a

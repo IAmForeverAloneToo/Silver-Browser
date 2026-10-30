@@ -1349,6 +1349,13 @@ impl DocumentHost {
                 let name = cssom::canonical(&name);
                 Ok(Answer::MaybeString(cssom::known(&name).then_some(name)))
             }
+            Call::CssShorthand(name, flat) => Ok(Answer::String(cssom::shorthand_value(
+                &name,
+                &cssom::from_flat(&flat),
+            ))),
+            Call::CssBlockText(flat) => {
+                Ok(Answer::String(cssom::block_text(&cssom::from_flat(&flat))))
+            }
             Call::CssValid(name, value) => {
                 Ok(Answer::Bool(cssom::valid(&cssom::canonical(&name), &value)))
             }
@@ -2223,19 +2230,34 @@ impl DocumentHost {
                 Ok(Answer::Nothing)
             }
             Call::Hidden => Ok(Answer::Bool(self.window.hidden)),
-            // Loading too while a face a canvas asked for in this run is
-            // wanted or coming.
             Call::Fonts(op, data) => {
+                // The `@font-face` rules of the sheets as they stand now,
+                // which the engine's faces are made from.
+                let rules = match (op.as_str(), &self.page) {
+                    ("rules", Some(page)) => {
+                        self.work += 1;
+                        let sheets = page.sheets_now(&self.document, &self.window.media);
+                        style::Stylesheets::new(sheets).font_faces(&self.window.media)
+                    }
+                    _ => Vec::new(),
+                };
+                // Loading too while a face a canvas asked for in this run
+                // is wanted or coming.
                 let asked = self
                     .window
                     .layout_fonts
                     .as_ref()
                     .and_then(text::FontCollection::document)
                     .is_some_and(|faces| faces.is_loading());
+                let env = crate::web_fonts::FontsEnv {
+                    loading: self.window.fonts_loading || asked,
+                    rules: &rules,
+                    fonts: self.window.layout_fonts.as_ref(),
+                };
                 Ok(crate::web_fonts::answer(
                     &op,
                     data,
-                    self.window.fonts_loading || asked,
+                    &env,
                     &mut self.outputs.fonts,
                 ))
             }

@@ -176,31 +176,11 @@ impl Font {
         out
     }
 
-    /// The families as a face is chosen by: their names unquoted,
-    /// separated by commas.
+    /// The families as a face is chosen by: as written, separated by
+    /// commas, so that a quoted generic name stays a name.
     pub fn family_list(&self) -> String {
-        let names: Vec<String> = self.families.iter().map(|f| unquoted(f)).collect();
-        names.join(", ")
+        self.families.join(", ")
     }
-}
-
-/// A family name as [`quoted`] wrote it, its quotes and escapes gone.
-fn unquoted(name: &str) -> String {
-    let Some(inner) = name
-        .strip_prefix('"')
-        .and_then(|rest| rest.strip_suffix('"'))
-    else {
-        return name.to_owned();
-    };
-    let mut out = String::new();
-    let mut chars = inner.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '\\' => out.extend(chars.next()),
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 /// A length's pixels, its unit absolute or relative to `base` (`em` to
@@ -402,7 +382,14 @@ pub fn parse_font(text: &str, base: &FontBase) -> Option<Font> {
 /// A family name as it serializes: bare when it is one word, else in
 /// double quotes.
 fn quoted(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    let keyword = GENERIC.contains(&lower.as_str())
+        || matches!(
+            lower.as_str(),
+            "inherit" | "initial" | "unset" | "revert" | "revert-layer" | "default"
+        );
     if !name.is_empty()
+        && !keyword
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || !c.is_ascii())
