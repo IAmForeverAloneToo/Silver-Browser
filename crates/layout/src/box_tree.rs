@@ -2012,6 +2012,34 @@ impl BlockContainer<'_> {
             return;
         }
         self.flush_misplaced(parent, misplaced);
+        // A `br` is a forced line break (HTML section 15.3.6: as `\A` with
+        // `white-space: pre`), a newline its line keeps.
+        if let Item::Node(node) = child
+            && styled.document.tag(node) == Some("br")
+            && !style.position.is_out_of_flow()
+        {
+            let mut style = style.clone();
+            style.white_space.collapse = style::computed::WhiteSpaceCollapse::PreserveBreaks;
+            self.add_inline_level(LayoutBox {
+                style: style.into(),
+                kind: BoxKind::Text("\n".to_owned()),
+                children: Default::default(),
+                node,
+                anonymous: true,
+                generated: None,
+                generated_text: 0,
+                decorations: styled.decorations(parent),
+                styled_by_ancestor: false,
+                first_line: None,
+                tree_order: 0,
+                item: false,
+                parent: None,
+                in_3d: false,
+                replaced: None,
+                control_size: None,
+            });
+            return;
+        }
         if let Item::Generated(element, Side::Marker) = child {
             self.add_marker(child, element, style);
             return;
@@ -4139,8 +4167,16 @@ mod tests {
                     "{tag}::before, {tag}::after, span::after {{ content: 'r'; display: block }}"
                 ),
             );
-            // The span's alone.
-            assert_eq!(tree.texts(&tree.body().children), ["r"], "{tag}");
+            // The span's alone (a `br`'s line break is a newline).
+            let texts: Vec<String> = tree
+                .texts(&tree.body().children)
+                .into_iter()
+                .filter(|t| {
+                    t != "
+"
+                })
+                .collect();
+            assert_eq!(texts, ["r"], "{tag}");
         }
     }
 
@@ -5535,5 +5571,47 @@ mod tests {
         let shape = tree.shape_of(&tree.body().children);
         assert_eq!(shape.iter().filter(|(k, _)| k == "^text T").count(), 1);
         assert!(!first_line_styles(&tree, &tree.body().children).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod br_tests {
+    use crate::FragmentKind;
+
+    /// The texts of `html` laid out, each with the line it is on.
+    fn lines(html: &str) -> Vec<(String, f32)> {
+        let doc = html::parse_document(html).expect("parses");
+        let document = dom::Document::from_node(&doc);
+        let sheet = css::parse_stylesheet("p { display: block }").expect("parses");
+        let sheets = style::Stylesheets::new(vec![sheet]);
+        let context = style::CascadeContext::default();
+        let styles = sheets.cascade(&document, &context);
+        let recascade = sheets.recascader(&document, &styles, &context);
+        let boxes = crate::build_box_tree(&document, &styles, &recascade);
+        let fonts = text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0).unwrap();
+        let layout = crate::layout_document(&boxes, 800.0, &fonts);
+        layout
+            .placed()
+            .filter_map(|p| match &p.fragment.kind {
+                FragmentKind::Text(t) if t.trim() != "" => Some((t.clone(), p.y)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_br_breaks_the_line_and_a_last_one_makes_none() {
+        let found = lines("<p>a<br>b <b>c<br><br>d</b></p><p>e<br></p><p>f</p>");
+        let y = |t: &str| found.iter().find(|(x, _)| x == t).expect(t).1;
+        assert!(y("a") < y("b"));
+        assert_eq!(y("b"), y("c"));
+        // Two in a row leave an empty line between.
+        let line = y("b") - y("a");
+        assert_eq!(y("d") - y("c"), 2.0 * line);
+        // A last one in its block adds no line: `f` is as far below `e`
+        // as with no `br` at all.
+        let plain = lines("<p>e</p><p>f</p>");
+        let y2 = |t: &str| plain.iter().find(|(x, _)| x == t).expect(t).1;
+        assert_eq!(y("f") - y("e"), y2("f") - y2("e"));
     }
 }

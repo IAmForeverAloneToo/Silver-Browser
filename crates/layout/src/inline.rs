@@ -1236,12 +1236,15 @@ impl<'a> Collector<'a, '_> {
         if let Some(last) = text.chars().next_back() {
             self.at_word_start = last.is_whitespace();
         }
-        let no_wrap = !style.white_space.wrap;
+        // `white-space` is the box's own: `::first-line` does not apply it
+        // (css-pseudo-4 section 2.3.1), and a `br`'s newline stays a break.
+        let white_space = b.style.white_space;
+        let no_wrap = !white_space.wrap;
         // Where newlines are kept they are forced breaks; elsewhere they
         // collapse away like any other white space.
-        let preserves_newlines = style.white_space.preserves_breaks();
+        let preserves_newlines = white_space.preserves_breaks();
         // Where spaces are kept they are text, each a space wide (D55).
-        let preserves_spaces = style.white_space.preserves_spaces();
+        let preserves_spaces = white_space.preserves_spaces();
         // Always split on literal newlines, even under `normal` (where
         // they're not a forced break — just whitespace like any other,
         // a gap). This is also what keeps `\n` from ever reaching
