@@ -105,8 +105,9 @@ const DIRECTORIES: &[&str] = &[
     "css/css-counter-styles",
     "css/css-content",
     "css/css-text-decor",
-    "css/css-text/text-align",
-    "css/css-text/text-justify",
+    // Text, the DOM and scripts (gap batch D): fonts and text whole.
+    "css/css-text",
+    "css/css-fonts",
     "css/CSS2/lists",
     "css/CSS2/generated-content",
     "css/css-animations",
@@ -210,6 +211,18 @@ const TESTHARNESS_DIRECTORIES: &[(&str, &str)] = &[
     ("css/css-images", ""),
     ("css/css-display", ""),
     ("css/css-sizing/aspect-ratio", ""),
+    // Text, the DOM and scripts (gap batch D): the parser, ranges and
+    // traversal, the selection, script loading, integrity, fonts and
+    // text by their scripts, the CSSOM's view.
+    ("html/syntax/parsing", ""),
+    ("dom/ranges", ""),
+    ("dom/traversal", ""),
+    ("selection", ""),
+    ("html/semantics/scripting-1", ""),
+    ("subresource-integrity", ""),
+    ("css/css-fonts", ""),
+    ("css/css-text", ""),
+    ("css/cssom-view", ""),
 ];
 
 /// Tests the rule would take that are left out by name, and why: what the
@@ -277,6 +290,9 @@ const HOST_HELPERS: &[(&str, &[&str])] = &[(
 /// The directories of files the testharness tests read, copied whole
 /// but for wptserve's Python handlers and templates.
 const SUPPORT_DIRECTORIES: &[&str] = &[
+    // The fonts tests load by their style sheets (gap batch D), those of
+    // the checkout's that were fetched.
+    "fonts",
     "fetch/api/resources",
     "fetch/api/cors/resources",
     "fetch/api/request/resources",

@@ -1767,6 +1767,52 @@ fn escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// `s` in printable ASCII, as `expectations.txt` writes a subtest's
+/// name: any other character as `\u{HEX}`.
+fn ascii(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        if (' '..='~').contains(&c) {
+            out.push(c);
+        } else {
+            out.push_str(&format!("\\u{{{:X}}}", u32::from(c)));
+        }
+    }
+    out
+}
+
+/// Writes `target/wpt/results.tsv`: a line for each test, and for each
+/// subtest of a testharness test, its status, path, name (empty for the
+/// test) and message, tab-separated and in ASCII: what the expectations
+/// are written from.
+fn write_results(results: &[(Test, Outcome)]) {
+    let mut out = String::new();
+    for (test, outcome) in results {
+        let path = test.path();
+        match &outcome.harness {
+            Some(harness) => {
+                let status = status_name(&HARNESS_STATUSES, harness.status);
+                let message = ascii(&harness.message);
+                out.push_str(&format!("{status}\t{path}\t\t{message}\n"));
+                for (name, status, message) in &harness.tests {
+                    let status = status_name(&SUBTEST_STATUSES, *status);
+                    out.push_str(&format!(
+                        "{status}\t{path}\t{}\t{}\n",
+                        ascii(name),
+                        ascii(message)
+                    ));
+                }
+            }
+            None => {
+                let status = if outcome.passed { "PASS" } else { "FAIL" };
+                let message = ascii(&outcome.message);
+                out.push_str(&format!("{status}\t{path}\t\t{message}\n"));
+            }
+        }
+    }
+    let _ = fs::write(out_dir().join("results.tsv"), out);
+}
+
 /// Writes `target/wpt/report.html` and a failing reftest's images.
 fn report(results: &[(Test, Outcome)], expected: &BTreeMap<String, String>) {
     let out = out_dir();
@@ -1905,6 +1951,7 @@ fn the_web_platform_tests_subset_runs_as_expected() {
         .map(|(test, outcome)| (test, outcome.expect("every test ran")))
         .collect();
     report(&results, &expected);
+    write_results(&results);
     let mut unexpected = Vec::new();
     let mut subtests = (0, 0);
     for (test, outcome) in &results {
