@@ -17,6 +17,13 @@ use crate::cascade::MAX_LENGTH_PX;
 use crate::custom::CustomProperties;
 use crate::easing::Easing;
 
+mod text;
+pub use text::{
+    AutospaceMode, HangingEnd, HangingPunctuation, Hyphens, LineBreak, TabSize, TextAutospace,
+    TextFit, TextFitKind, TextFitMethod, TextGroupAlign, TextIndent, TextProps, TextSpacingTrim,
+    TextWrapStyle, TransformExtra, WordSpaceTransform,
+};
+
 /// An RGBA color, 0.0–1.0 channels (see `paint::Rgba8` for the 8-bit
 /// form `render` actually blits — `style` owns its own color type per
 /// the layering contract: `paint` sits *above* `style` and converts at
@@ -647,6 +654,11 @@ pub enum WordBreak {
     KeepAll,
     /// `normal` with `overflow-wrap: anywhere`.
     BreakWord,
+    /// `normal` but in Japanese, where the reference browser keeps
+    /// phrases whole; `normal` here.
+    AutoPhrase,
+    /// `manual`, taken as `normal`.
+    Manual,
 }
 
 /// `visibility` (CSS 2 section 11.2).
@@ -3048,6 +3060,8 @@ static INITIAL_FRAGMENTATION: LazyLock<Fragmentation> = LazyLock::new(Fragmentat
 
 static INITIAL_LISTS: LazyLock<Lists> = LazyLock::new(Lists::default);
 
+static INITIAL_TEXT: LazyLock<TextProps> = LazyLock::new(TextProps::default);
+
 /// The font properties past the size (CSS Fonts 4, gap batch D, D53),
 /// inherited together: a box that sets none of them shares its
 /// parent's, and the initial style has none.
@@ -3545,6 +3559,10 @@ pub struct ComputedStyle {
     /// values. Read through [`ComputedStyle::svg`] and
     /// [`ComputedStyle::svg_own`].
     pub svg: Option<Arc<Svg>>,
+    /// The text properties past the common ones (gap batch D): `None`
+    /// while all are their initial values. Read through
+    /// [`ComputedStyle::text`].
+    pub text: Option<Arc<TextProps>>,
 }
 
 /// `font-family`'s initial value, one for every style that has it.
@@ -3633,6 +3651,7 @@ impl Default for ComputedStyle {
             border_image: None,
             radii: None,
             svg: None,
+            text: None,
         }
     }
 }
@@ -3855,6 +3874,18 @@ impl ComputedStyle {
         Arc::make_mut(self.lists.get_or_insert_with(Default::default))
     }
 
+    /// The text properties past the common ones, the initial values
+    /// when the style has none of its own.
+    pub fn text(&self) -> &TextProps {
+        self.text.as_deref().unwrap_or(&INITIAL_TEXT)
+    }
+
+    /// The text properties to change, this style's own copy made first
+    /// if it shares them or has none.
+    pub fn text_mut(&mut self) -> &mut TextProps {
+        Arc::make_mut(self.text.get_or_insert_with(Default::default))
+    }
+
     /// The text decoration properties (M21.7), the initial values when
     /// the style has none of its own.
     pub fn decoration(&self) -> &Decoration {
@@ -4025,6 +4056,7 @@ impl ComputedStyle {
             decoration: inherited_decoration(from),
             image: inherited_image(from),
             svg: inherited_svg(from),
+            text: inherited_text(from),
             custom: from.custom.clone(),
             inert: from.inert,
             ..self
@@ -4075,6 +4107,17 @@ fn inherited_decoration(from: &ComputedStyle) -> Option<Arc<Decoration>> {
     } else {
         Some(Arc::new(inherited))
     }
+}
+
+/// The text properties a child of `from` inherits, as
+/// [`inherited_fragmentation`] gives the fragmentation properties.
+fn inherited_text(from: &ComputedStyle) -> Option<Arc<TextProps>> {
+    let own = from.text.as_ref()?;
+    if own.text_group_align == TextGroupAlign::None {
+        return Some(Arc::clone(own));
+    }
+    let inherited = own.inherited();
+    (inherited != TextProps::default()).then(|| Arc::new(inherited))
 }
 
 /// The image properties a child of `from` inherits, as
@@ -4199,9 +4242,11 @@ mod tests {
         // places the box (D60), two bytes past the padding: 808 before
         // them. `currentcolor` kept as a colour's keyword (D66) took the
         // byte of which border colours are it into the colours, which
-        // left the size as it was. Growing this is a decision, not an
-        // accident; say why where the number changes.
-        assert_eq!(std::mem::size_of::<ComputedStyle>(), 816);
+        // left the size as it was. The text properties past the common
+        // ones (gap batch D's text gaps) a pointer: 816 before them.
+        // Growing this is a decision, not an accident; say why where the
+        // number changes.
+        assert_eq!(std::mem::size_of::<ComputedStyle>(), 824);
         assert_eq!(ComputedStyle::default().grid, None);
         assert_eq!(*ComputedStyle::default().grid(), GridStyle::default());
         assert_eq!(ComputedStyle::default().effects, None);

@@ -4091,6 +4091,10 @@ impl DocumentHost {
         // A walk with each element's end visited: (node, leaving).
         let mut stack = vec![(node, false)];
         let mut space = false;
+        // Whether the next text starts a word, for `capitalize`: as the
+        // text before the element, in its block, leaves it.
+        let mut word_start =
+            text_before(document, styles, node).is_none_or(|text| text::ends_word(&text, true));
         while let Some((n, leaving)) = stack.pop() {
             work += 1;
             if let Some(text) = document.text(n) {
@@ -4121,6 +4125,14 @@ impl DocumentHost {
                         space = false;
                         text.to_owned()
                     }
+                };
+                // As `text-transform` renders it (CSS Text 3 section 2.1).
+                let how = text_transform_of(style);
+                let piece = if how.is_none() {
+                    word_start = text::ends_word(&piece, word_start);
+                    piece
+                } else {
+                    text::transform(&piece, how, &mut word_start)
                 };
                 push(&mut out, &mut pending, &mut started, &piece);
                 continue;
@@ -4157,6 +4169,7 @@ impl DocumentHost {
                 }
                 if block || tag == Some("p") {
                     space = false;
+                    word_start = true;
                 }
                 continue;
             }
@@ -4175,6 +4188,7 @@ impl DocumentHost {
                 }
                 if block {
                     space = false;
+                    word_start = true;
                 }
             }
             stack.push((n, true));
@@ -5474,5 +5488,53 @@ pub(crate) fn code_refusal(kind: &str, violation: &net::csp::Violation) -> Strin
             "Evaluating a string as JavaScript violates the following Content Security Policy \
              directive because 'unsafe-eval' is not an allowed source of script: {violation}\".\n"
         ),
+    }
+}
+
+/// `style`'s `text-transform` as `innerText` applies it, tailored by the
+/// content language.
+fn text_transform_of(style: &style::computed::ComputedStyle) -> text::Transform<'_> {
+    use style::computed::TextTransform;
+    let props = style.text();
+    text::Transform {
+        case: match style.text_transform {
+            TextTransform::None => text::Case::None,
+            TextTransform::Uppercase => text::Case::Upper,
+            TextTransform::Lowercase => text::Case::Lower,
+            TextTransform::Capitalize => text::Case::Capitalize,
+        },
+        full_width: props.transform_extra.full_width,
+        full_size_kana: props.transform_extra.full_size_kana,
+        language: props.lang.as_deref().unwrap_or_default(),
+    }
+}
+
+/// The text before `node` in its block, inline elements and all: the
+/// last text node before it whose parent is rendered inline.
+fn text_before(document: &Document, styles: &Styles, node: NodeId) -> Option<String> {
+    use style::computed::Display;
+    let inline = |n: NodeId| styles.get(n).is_some_and(|s| s.display == Display::Inline);
+    let mut at = node;
+    loop {
+        let Some(prev) = document.prev_sibling(at) else {
+            let parent = document.parent(at)?;
+            if !inline(parent) {
+                return None;
+            }
+            at = parent;
+            continue;
+        };
+        // The last text in it, its last child's first.
+        let mut last = Some(prev);
+        while let Some(n) = last {
+            if let Some(text) = document.text(n) {
+                return Some(text.to_owned());
+            }
+            if !inline(n) {
+                return None;
+            }
+            last = document.children(n).last();
+        }
+        at = prev;
     }
 }

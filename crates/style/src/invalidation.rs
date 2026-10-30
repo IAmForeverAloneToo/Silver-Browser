@@ -626,6 +626,7 @@ pub(crate) fn invalidate(
             out.mark(document, element, Reach::Subtree);
         } else if name == "style"
             || name == "dir"
+            || name == "lang"
             || tag.is_some_and(|tag| {
                 crate::cascade::is_list_hint(tag, name)
                     || crate::cascade::is_img_hint(tag, name)
@@ -1498,9 +1499,14 @@ mod tests {
         });
         assert_eq!(r.changed, [x], "its ::after's content");
         let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(x, "data-q", "fr").unwrap();
+        });
+        assert!(r.changed.is_empty(), "nothing reads `data-q`");
+        let r = change(&mut d, &sheets, &mut styles, |d| {
             d.set_attribute(x, "lang", "fr").unwrap();
         });
-        assert!(r.changed.is_empty(), "nothing reads `lang`");
+        assert_eq!(r.changed, [x], "its content language");
+        assert_eq!(styles.get(x).unwrap().text().lang.as_deref(), Some("fr"));
     }
     #[test]
     fn selectors_inside_media_supports_and_layers_are_read_whatever_the_media() {

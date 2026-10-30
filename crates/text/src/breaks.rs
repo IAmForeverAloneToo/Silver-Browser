@@ -4,7 +4,7 @@
 use std::sync::OnceLock;
 
 use icu_segmenter::LineSegmenter;
-use icu_segmenter::options::{LineBreakOptions, LineBreakWordOption};
+use icu_segmenter::options::{LineBreakOptions, LineBreakStrictness, LineBreakWordOption};
 
 /// How words break (`word-break`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -18,6 +18,41 @@ pub enum WordBreaking {
     KeepAll,
 }
 
+/// How strict the rules are (`line-break`, CSS Text 3 section 5.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Strictness {
+    /// UAX #14's own rules, small kana and the prolonged sound mark kept
+    /// off a line's start: `strict`, and `auto` here.
+    #[default]
+    Strict,
+    /// Small kana and the prolonged sound mark may start a line.
+    Normal,
+    /// More breaks besides: before iteration marks, between leaders,
+    /// and in Chinese and Japanese around some punctuation.
+    Loose,
+    /// Between any two typographic character units.
+    Anywhere,
+}
+
+/// The rules [`line_breaks`] follows: `word-break`'s, `line-break`'s,
+/// and whether the text's language is Chinese or Japanese, which
+/// `normal` and `loose` tailor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BreakRules {
+    pub words: WordBreaking,
+    pub strictness: Strictness,
+    pub chinese_or_japanese: bool,
+}
+
+impl From<WordBreaking> for BreakRules {
+    fn from(words: WordBreaking) -> Self {
+        BreakRules {
+            words,
+            ..BreakRules::default()
+        }
+    }
+}
+
 /// The byte offsets in `text` where a line may break, before the
 /// character there: none at its start or its end, nor before a line
 /// feed, whose break is forced. Between two printable ASCII characters
@@ -25,11 +60,28 @@ pub enum WordBreaking {
 /// break table) rather than UAX #14's: there a break is only after a
 /// hyphen that follows a letter or digit and comes before a letter, so
 /// that `width/margin` or `a.b` stay whole, as `well-known` does not.
-pub fn line_breaks(text: &str, words: WordBreaking) -> Vec<usize> {
-    if words == WordBreaking::Normal && text.bytes().all(|b| (b' '..=b'~').contains(&b)) {
+/// The strictness does not change where ASCII breaks, but `anywhere`.
+pub fn line_breaks(text: &str, rules: impl Into<BreakRules>) -> Vec<usize> {
+    let rules = rules.into();
+    if rules.words == WordBreaking::Normal
+        && rules.strictness != Strictness::Anywhere
+        && text.bytes().all(|b| (b' '..=b'~').contains(&b))
+    {
         return ascii_breaks(text.as_bytes());
     }
-    by_segmenter(text, words)
+    by_segmenter(text, rules)
+}
+
+/// The byte offsets in `text` between its grapheme clusters (UAX #29),
+/// its typographic character units: none at its start or its end.
+pub fn grapheme_boundaries(text: &str) -> Vec<usize> {
+    if text.is_ascii() && !text.contains('\r') {
+        return (1..text.len()).collect();
+    }
+    icu_segmenter::GraphemeClusterSegmenter::new()
+        .segment_str(text)
+        .filter(|&at| at > 0 && at < text.len())
+        .collect()
 }
 
 /// [`line_breaks`] for text of spaces and printable ASCII, as UAX #14
@@ -67,27 +119,47 @@ fn ascii_breaks(bytes: &[u8]) -> Vec<usize> {
 }
 
 /// [`line_breaks`] by ICU4X's segmenter, whatever the text.
-fn by_segmenter(text: &str, words: WordBreaking) -> Vec<usize> {
-    static SEGMENTERS: [OnceLock<icu_segmenter::LineSegmenterBorrowed<'static>>; 3] =
-        [OnceLock::new(), OnceLock::new(), OnceLock::new()];
-    let (slot, option) = match words {
+fn by_segmenter(text: &str, rules: impl Into<BreakRules>) -> Vec<usize> {
+    /// One segmenter for each set of rules, made when first asked for.
+    static SEGMENTERS: [OnceLock<icu_segmenter::LineSegmenterBorrowed<'static>>; 24] =
+        [const { OnceLock::new() }; 24];
+    let rules = rules.into();
+    let words = rules.words;
+    let (word_slot, option) = match words {
         WordBreaking::Normal => (0, LineBreakWordOption::Normal),
         WordBreaking::BreakAll => (1, LineBreakWordOption::BreakAll),
         WordBreaking::KeepAll => (2, LineBreakWordOption::KeepAll),
     };
+    let (strict_slot, strictness) = match rules.strictness {
+        Strictness::Strict => (0, LineBreakStrictness::Strict),
+        Strictness::Normal => (1, LineBreakStrictness::Normal),
+        Strictness::Loose => (2, LineBreakStrictness::Loose),
+        Strictness::Anywhere => (3, LineBreakStrictness::Anywhere),
+    };
+    let slot = (word_slot * 4 + strict_slot) * 2 + usize::from(rules.chinese_or_japanese);
     let segmenter = SEGMENTERS[slot].get_or_init(|| {
+        // The language matters to the segmenter only as Chinese or
+        // Japanese or neither, and only while it is made.
+        let japanese = "ja".parse().ok();
         let mut options = LineBreakOptions::default();
         options.word_option = Some(option);
+        options.strictness = Some(strictness);
+        options.content_locale = japanese.as_ref().filter(|_| rules.chinese_or_japanese);
         LineSegmenter::new_auto(options)
     });
+    let anywhere = rules.strictness == Strictness::Anywhere;
     let bytes = text.as_bytes();
     let printable = |b: u8| (b'!'..=b'~').contains(&b);
-    segmenter
+    let breaks: Vec<usize> = segmenter
         .segment_str(text)
         .filter(|&at| at > 0 && at < text.len() && !text[..at].ends_with('\n'))
         .filter(|&at| {
             let (before, after) = (bytes[at - 1], bytes[at]);
-            if words == WordBreaking::BreakAll || !printable(before) || !printable(after) {
+            if words == WordBreaking::BreakAll
+                || anywhere
+                || !printable(before)
+                || !printable(after)
+            {
                 return true;
             }
             before == b'-'
@@ -95,7 +167,54 @@ fn by_segmenter(text: &str, words: WordBreaking) -> Vec<usize> {
                 && at >= 2
                 && bytes[at - 2].is_ascii_alphanumeric()
         })
-        .collect()
+        .collect();
+    tailored(text, rules, breaks)
+}
+
+/// `breaks` as the reference browser's ICU tailors them for CSS: under
+/// `loose`, before an inseparable character (a leader or an ellipsis)
+/// that follows a letter too; in Chinese and Japanese under `normal` and
+/// `strict`, never before a wide prefix (a currency or a plus-minus
+/// sign), which stays with what it follows.
+fn tailored(text: &str, rules: BreakRules, mut breaks: Vec<usize>) -> Vec<usize> {
+    let inseparable = |c: char| matches!(c, '\u{2024}'..='\u{2026}' | '\u{22ef}' | '\u{fe19}');
+    let wide_prefix = |c: char| {
+        matches!(
+            c,
+            '\u{a4}'
+                | '\u{b1}'
+                | '\u{20ac}'
+                | '\u{2116}'
+                | '\u{fe69}'
+                | '\u{ff04}'
+                | '\u{ffe1}'
+                | '\u{ffe5}'
+                | '\u{ffe6}'
+        )
+    };
+    match rules.strictness {
+        Strictness::Loose
+            if rules.words != WordBreaking::KeepAll && text.chars().any(inseparable) =>
+        {
+            let mut chars = text.char_indices().peekable();
+            while let Some((_, c)) = chars.next() {
+                if let Some(&(at, next)) = chars.peek()
+                    && inseparable(next)
+                    && !c.is_whitespace()
+                    && !inseparable(c)
+                {
+                    breaks.push(at);
+                }
+            }
+            breaks.sort_unstable();
+            breaks.dedup();
+        }
+        Strictness::Normal | Strictness::Strict if rules.chinese_or_japanese => {
+            breaks.retain(|&at| !text[at..].chars().next().is_some_and(wide_prefix));
+        }
+        _ => {}
+    }
+    breaks
 }
 
 #[cfg(test)]
@@ -138,6 +257,80 @@ mod tests {
             ["\u{65e5}\u{672c}"]
         );
         assert!(line_breaks("", WordBreaking::Normal).is_empty());
+    }
+
+    fn with(text: &str, strictness: Strictness, chinese_or_japanese: bool) -> Vec<&str> {
+        let rules = BreakRules {
+            strictness,
+            chinese_or_japanese,
+            ..BreakRules::default()
+        };
+        let mut out = Vec::new();
+        let mut start = 0;
+        for at in line_breaks(text, rules).into_iter().chain([text.len()]) {
+            out.push(&text[start..at]);
+            start = at;
+        }
+        out
+    }
+
+    #[test]
+    fn grapheme_clusters_keep_their_marks() {
+        assert_eq!(grapheme_boundaries("ab"), [1]);
+        // A Tamil letter and its vowel signs are one cluster.
+        let tamil = "\u{0ba8}\u{0bbf}\u{0ba8}";
+        assert_eq!(grapheme_boundaries(tamil), [6]);
+        assert_eq!(grapheme_boundaries("a\r\nb"), [1, 3]);
+    }
+
+    #[test]
+    fn line_break_is_as_strict_as_it_says() {
+        // A small kana starts a line only under `normal` and `loose`.
+        let kana = "\u{6587}\u{3041}";
+        assert_eq!(with(kana, Strictness::Strict, false), [kana]);
+        assert_eq!(
+            with(kana, Strictness::Normal, false),
+            ["\u{6587}", "\u{3041}"]
+        );
+        // An iteration mark only under `loose`.
+        let mark = "\u{6587}\u{3005}";
+        assert_eq!(with(mark, Strictness::Normal, false), [mark]);
+        assert_eq!(
+            with(mark, Strictness::Loose, false),
+            ["\u{6587}", "\u{3005}"]
+        );
+        // A wave dash under `normal` in Chinese or Japanese alone.
+        let dash = "\u{6587}\u{301c}";
+        assert_eq!(with(dash, Strictness::Normal, false), [dash]);
+        assert_eq!(
+            with(dash, Strictness::Normal, true),
+            ["\u{6587}", "\u{301c}"]
+        );
+        // A leader may start a line under `loose`.
+        let leader = "\u{6587}\u{2026}";
+        assert_eq!(with(leader, Strictness::Normal, false), [leader]);
+        assert_eq!(
+            with(leader, Strictness::Loose, false),
+            ["\u{6587}", "\u{2026}"]
+        );
+        // A wide prefix may not, in Chinese or Japanese, but under `loose`.
+        let euro = "\u{6587}\u{20ac}";
+        assert_eq!(
+            with(euro, Strictness::Normal, false),
+            ["\u{6587}", "\u{20ac}"]
+        );
+        assert_eq!(with(euro, Strictness::Normal, true), [euro]);
+        assert_eq!(with(euro, Strictness::Strict, true), [euro]);
+        assert_eq!(
+            with(euro, Strictness::Loose, true),
+            ["\u{6587}", "\u{20ac}"]
+        );
+        // `anywhere` between any two characters, ASCII ones too.
+        assert_eq!(
+            with("ab c", Strictness::Anywhere, false),
+            ["a", "b", " ", "c"]
+        );
+        assert_eq!(with("ab c", Strictness::Loose, false), ["ab ", "c"]);
     }
 
     #[test]

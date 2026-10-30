@@ -1035,6 +1035,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypher"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45f2b4f6b5da34d400d4c112eadcc14512cc5d04307a8eee182586d9bebd7ce6"
+
+[[package]]
 name = "icu_calendar"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3279,6 +3285,7 @@ dependencies = [
  "ab_glyph",
  "flate2",
  "fontdb",
+ "hypher",
  "icu_segmenter",
  "rustybuzz",
  "self_cell",

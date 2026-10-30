@@ -3095,6 +3095,8 @@ fn layout_children<'a>(
                     _ => (std::slice::from_ref(child), None),
                 };
                 let root_top = at.position();
+                // The first formatted line is the block's own, which
+                // `text-indent` indents, while nothing came before it.
                 let lines = layout_inline(
                     run,
                     cb_width,
@@ -3104,6 +3106,7 @@ fn layout_children<'a>(
                     floats,
                     at,
                     pass,
+                    still_leading,
                 );
                 if lines.last_baseline.is_none() {
                     // No line box at all (an empty inline element, or

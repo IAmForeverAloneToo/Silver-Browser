@@ -120,6 +120,20 @@ longhands! {
     TextShadow = "text-shadow": ByComputedValue,
     LetterSpacing = "letter-spacing": ByComputedValue,
     WordSpacing = "word-spacing": ByComputedValue,
+    TextIndent = "text-indent": ByComputedValue,
+    TabSize = "tab-size": ByComputedValue,
+    LineBreak = "line-break": Discrete,
+    Hyphens = "hyphens": Discrete,
+    HyphenateCharacter = "hyphenate-character": Discrete,
+    HyphenateLimitChars = "hyphenate-limit-chars": ByComputedValue,
+    HyphenateLimitLines = "hyphenate-limit-lines": ByComputedValue,
+    TextAutospace = "text-autospace": Discrete,
+    TextSpacingTrim = "text-spacing-trim": Discrete,
+    HangingPunctuation = "hanging-punctuation": Discrete,
+    TextWrapStyle = "text-wrap-style": Discrete,
+    WordSpaceTransform = "word-space-transform": Discrete,
+    TextFit = "text-fit": Discrete,
+    TextGroupAlign = "text-group-align": Discrete,
     Width = "width": ByComputedValue,
     Height = "height": ByComputedValue,
     MinWidth = "min-width": ByComputedValue,
@@ -343,7 +357,8 @@ pub fn longhands_of(name: &str) -> Vec<Longhand> {
             FontVariantEmoji,
         ],
         "white-space" => &[WhiteSpaceCollapse, TextWrapMode],
-        "text-wrap" => &[TextWrapMode],
+        "text-wrap" => &[TextWrapMode, TextWrapStyle],
+        "text-spacing" => &[TextSpacingTrim, TextAutospace],
         "padding" => &[PaddingTop, PaddingRight, PaddingBottom, PaddingLeft],
         "border-width" => &[
             BorderTopWidth,
@@ -510,15 +525,38 @@ pub fn copy(property: Longhand, from: &ComputedStyle, to: &mut ComputedStyle) {
         TextAlignAll => to.text_align = from.text_align,
         TextAlignLast => to.text_align_last = from.text_align_last,
         TextJustify => to.text_justify = from.text_justify,
-        TextTransform => to.text_transform = from.text_transform,
+        TextTransform => {
+            to.text_transform = from.text_transform;
+            copy_group!(to, from, text, text, text_mut, transform_extra);
+        }
         WhiteSpaceCollapse => to.white_space.collapse = from.white_space.collapse,
         TextWrapMode => to.white_space.wrap = from.white_space.wrap,
         OverflowWrap => to.overflow_wrap = from.overflow_wrap,
         WordBreak => to.word_break = from.word_break,
         Visibility => to.visibility = from.visibility,
         TextShadow => to.decoration_mut().text_shadow = from.decoration().text_shadow.clone(),
-        LetterSpacing => to.letter_spacing = from.letter_spacing,
-        WordSpacing => to.word_spacing = from.word_spacing,
+        LetterSpacing => {
+            to.letter_spacing = from.letter_spacing;
+            copy_group!(to, from, text, text, text_mut, letter_spacing);
+        }
+        WordSpacing => {
+            to.word_spacing = from.word_spacing;
+            copy_group!(to, from, text, text, text_mut, word_spacing);
+        }
+        TextIndent => copy_group!(to, from, text, text, text_mut, text_indent),
+        TabSize => copy_group!(to, from, text, text, text_mut, tab_size),
+        LineBreak => copy_group!(to, from, text, text, text_mut, line_break),
+        Hyphens => copy_group!(to, from, text, text, text_mut, hyphens),
+        HyphenateCharacter => copy_group!(to, from, text, text, text_mut, hyphenate_character),
+        HyphenateLimitChars => copy_group!(to, from, text, text, text_mut, hyphenate_limit_chars),
+        HyphenateLimitLines => copy_group!(to, from, text, text, text_mut, hyphenate_limit_lines),
+        TextAutospace => copy_group!(to, from, text, text, text_mut, text_autospace),
+        TextSpacingTrim => copy_group!(to, from, text, text, text_mut, text_spacing_trim),
+        HangingPunctuation => copy_group!(to, from, text, text, text_mut, hanging_punctuation),
+        TextWrapStyle => copy_group!(to, from, text, text, text_mut, text_wrap_style),
+        WordSpaceTransform => copy_group!(to, from, text, text, text_mut, word_space_transform),
+        TextFit => copy_group!(to, from, text, text, text_mut, text_fit),
+        TextGroupAlign => copy_group!(to, from, text, text, text_mut, text_group_align),
         Width => to.width = from.width.clone(),
         Height => to.height = from.height.clone(),
         MinWidth => to.min_width = from.min_width.clone(),
@@ -902,8 +940,27 @@ pub fn same(property: Longhand, a: &ComputedStyle, b: &ComputedStyle) -> bool {
         WordBreak => a.word_break == b.word_break,
         Visibility => a.visibility == b.visibility,
         TextShadow => a.decoration().text_shadow == b.decoration().text_shadow,
-        LetterSpacing => a.letter_spacing == b.letter_spacing,
-        WordSpacing => a.word_spacing == b.word_spacing,
+        LetterSpacing => {
+            a.letter_spacing == b.letter_spacing
+                && a.text().letter_spacing == b.text().letter_spacing
+        }
+        WordSpacing => {
+            a.word_spacing == b.word_spacing && a.text().word_spacing == b.text().word_spacing
+        }
+        TextIndent => a.text().text_indent == b.text().text_indent,
+        TabSize => a.text().tab_size == b.text().tab_size,
+        LineBreak => a.text().line_break == b.text().line_break,
+        Hyphens => a.text().hyphens == b.text().hyphens,
+        HyphenateCharacter => a.text().hyphenate_character == b.text().hyphenate_character,
+        HyphenateLimitChars => a.text().hyphenate_limit_chars == b.text().hyphenate_limit_chars,
+        HyphenateLimitLines => a.text().hyphenate_limit_lines == b.text().hyphenate_limit_lines,
+        TextAutospace => a.text().text_autospace == b.text().text_autospace,
+        TextSpacingTrim => a.text().text_spacing_trim == b.text().text_spacing_trim,
+        HangingPunctuation => a.text().hanging_punctuation == b.text().hanging_punctuation,
+        TextWrapStyle => a.text().text_wrap_style == b.text().text_wrap_style,
+        WordSpaceTransform => a.text().word_space_transform == b.text().word_space_transform,
+        TextFit => a.text().text_fit == b.text().text_fit,
+        TextGroupAlign => a.text().text_group_align == b.text().text_group_align,
         Width => a.width == b.width,
         Height => a.height == b.height,
         MinWidth => a.min_width == b.min_width,
@@ -1215,6 +1272,29 @@ fn integer(a: i64, b: i64, p: f64, min: i64, max: i64) -> i64 {
         return a;
     }
     (v.clamp(min as f64, max as f64)) as i64
+}
+
+/// A hyphenation limit interpolated, an integer that may go below zero
+/// on the way.
+fn limit(a: i32, b: i32, p: f64) -> i32 {
+    integer(
+        i64::from(a),
+        i64::from(b),
+        p,
+        i64::from(i32::MIN),
+        i64::from(i32::MAX),
+    ) as i32
+}
+
+/// `letter-spacing`'s computed value in `style` (`word-spacing`'s when
+/// not `letter`): its percentage kept, a length otherwise.
+fn spacing_of(style: &ComputedStyle, letter: bool) -> LengthPercentage {
+    let (kept, px) = if letter {
+        (&style.text().letter_spacing, style.letter_spacing)
+    } else {
+        (&style.text().word_spacing, style.word_spacing)
+    };
+    kept.clone().unwrap_or(LengthPercentage::Px(px))
 }
 
 /// A colour interpolated (Color 4 section 12): in sRGB with
@@ -1546,7 +1626,77 @@ pub fn interpolate(
             true
         }
         LetterSpacing => {
-            to.letter_spacing = length(a.letter_spacing, b.letter_spacing, p, false);
+            let (x, y) = (spacing_of(a, true), spacing_of(b, true));
+            let Some(value) = length_percentage(&x, &y, p, false) else {
+                return false;
+            };
+            to.letter_spacing = value.resolve(to.font_size_px);
+            let kept = value.has_percent().then_some(value);
+            if kept != to.text().letter_spacing {
+                to.text_mut().letter_spacing = kept;
+            }
+            true
+        }
+        TextIndent => {
+            let (x, y) = (&a.text().text_indent, &b.text().text_indent);
+            if (x.hanging, x.each_line) != (y.hanging, y.each_line) {
+                return false;
+            }
+            let Some(length) = length_percentage(&x.length, &y.length, p, false) else {
+                return false;
+            };
+            let indent = computed::TextIndent {
+                length,
+                ..x.clone()
+            };
+            if indent != to.text().text_indent {
+                to.text_mut().text_indent = indent;
+            }
+            true
+        }
+        // A number of spaces with a number, a length with a length.
+        TabSize => {
+            use computed::TabSize as T;
+            let value = match (a.text().tab_size, b.text().tab_size) {
+                (T::Spaces(x), T::Spaces(y)) => T::Spaces(number(x, y, p, 0.0, f32::MAX)),
+                (T::Length(x), T::Length(y)) => T::Length(length(x, y, p, true)),
+                _ => return false,
+            };
+            if value != to.text().tab_size {
+                to.text_mut().tab_size = value;
+            }
+            true
+        }
+        // Each integer with an integer, `auto` with `auto`.
+        HyphenateLimitChars => {
+            let (x, y) = (
+                a.text().hyphenate_limit_chars,
+                b.text().hyphenate_limit_chars,
+            );
+            let mut value = [None; 3];
+            for (i, slot) in value.iter_mut().enumerate() {
+                *slot = match (x[i], y[i]) {
+                    (Some(m), Some(n)) => Some(limit(m, n, p)),
+                    (None, None) => None,
+                    _ => return false,
+                };
+            }
+            if value != to.text().hyphenate_limit_chars {
+                to.text_mut().hyphenate_limit_chars = value;
+            }
+            true
+        }
+        HyphenateLimitLines => {
+            let value = match (
+                a.text().hyphenate_limit_lines,
+                b.text().hyphenate_limit_lines,
+            ) {
+                (Some(m), Some(n)) => Some(limit(m, n, p).max(0)),
+                _ => return false,
+            };
+            if value != to.text().hyphenate_limit_lines {
+                to.text_mut().hyphenate_limit_lines = value;
+            }
             true
         }
         // A number, 1 to 1000 (CSS Fonts 4 section 2.2).
@@ -1572,7 +1722,15 @@ pub fn interpolate(
             true
         }
         WordSpacing => {
-            to.word_spacing = length(a.word_spacing, b.word_spacing, p, false);
+            let (x, y) = (spacing_of(a, false), spacing_of(b, false));
+            let Some(value) = length_percentage(&x, &y, p, false) else {
+                return false;
+            };
+            to.word_spacing = value.resolve(to.font_size_px);
+            let kept = value.has_percent().then_some(value);
+            if kept != to.text().word_spacing {
+                to.text_mut().word_spacing = kept;
+            }
             true
         }
         Width => set!(to.width, size(&a.width, &b.width, p)),

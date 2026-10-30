@@ -145,6 +145,34 @@ pub(crate) fn layout_table_contents<'a>(
         (widths, content_width)
     };
 
+    // A column of `visibility: collapse`, or in a column group of it,
+    // takes no room, nor its spacing, and the cells wholly in such
+    // columns are not drawn (CSS 2 section 17.5.5, D56): the table is
+    // that much narrower.
+    let collapsed_columns: Vec<bool> = (0..columns)
+        .map(|c| {
+            grid.column_boxes.get(c).is_some_and(|r| {
+                [r.column, r.group]
+                    .into_iter()
+                    .flatten()
+                    .any(|b| b.style.visibility == style::computed::Visibility::Collapse)
+            })
+        })
+        .collect();
+    let (widths, content_width) = if collapsed_columns.contains(&true) {
+        let mut widths = widths;
+        let mut taken = 0.0;
+        for (w, collapsed) in widths.iter_mut().zip(&collapsed_columns) {
+            if *collapsed {
+                taken += *w + hspacing;
+                *w = 0.0;
+            }
+        }
+        (widths, (content_width - taken).max(0.0))
+    } else {
+        (widths, content_width)
+    };
+
     // Every cell's content, laid out at its columns' width.
     // On the pool when there are many cells (M35.3).
     let numbered: Vec<_> = grid.cells.iter().enumerate().collect();
@@ -318,9 +346,11 @@ pub(crate) fn layout_table_contents<'a>(
     let Edges { border, padding } = edges;
     let mut col_x = Vec::with_capacity(columns);
     let mut x = border[LEFT] + padding[LEFT] + hspacing;
-    for w in &widths {
+    for (w, collapsed) in widths.iter().zip(&collapsed_columns) {
         col_x.push(x);
-        x += w + hspacing;
+        if !collapsed {
+            x += w + hspacing;
+        }
     }
     let mut row_y = Vec::with_capacity(heights.len());
     let mut y = border[TOP] + padding[TOP] + vspacing;
@@ -334,10 +364,11 @@ pub(crate) fn layout_table_contents<'a>(
         .first()
         .copied()
         .unwrap_or(border[LEFT] + padding[LEFT]);
-    let grid_width = if columns == 0 {
+    let shown_columns = collapsed_columns.iter().filter(|c| !**c).count();
+    let grid_width = if shown_columns == 0 {
         0.0
     } else {
-        widths.iter().sum::<f32>() + (columns - 1) as f32 * hspacing
+        widths.iter().sum::<f32>() + (shown_columns - 1) as f32 * hspacing
     };
     let row_rect = |r: usize| Rect {
         x: grid_left,
@@ -405,7 +436,16 @@ pub(crate) fn layout_table_contents<'a>(
     // table box, and in the captions, relative to the wrapper.
     let mut cell_absolutes: Vec<Deferred<'a>> = Vec::new();
     let mut caption_absolutes: Vec<Deferred<'a>> = Vec::new();
-    let mut cells: Vec<Option<CellLayout<'a>>> = cells.into_iter().map(Some).collect();
+    let mut cells: Vec<Option<CellLayout<'a>>> = cells
+        .into_iter()
+        .zip(&grid.cells)
+        .map(|(layout, cell)| {
+            let hidden = collapsed_columns[cell.col..cell.col + cell.colspan]
+                .iter()
+                .all(|c| *c);
+            (!hidden).then_some(layout)
+        })
+        .collect();
 
     // Column groups and columns: a fragment of no size each, holding its
     // background under the cells of its columns — the cells whose first
@@ -3005,6 +3045,29 @@ mod tests {
             &format!("{css} tr:nth-child(2) {{ visibility: hidden }}"),
         );
         assert_eq!(fragment_of(&kept, 11).y, fragment_of(&shown, 11).y);
+    }
+
+    #[test]
+    fn a_collapsed_column_takes_no_room() {
+        // D56, CSS 2 section 17.5.5. Nodes: table 4, colgroup 5, col 6,
+        // col 7, col 8, tbody 9, tr 10, td 11, td 12, td 13.
+        let html = "<table><col><col><col><tr><td>a</td><td>b</td><td>c</td></tr></table>";
+        let css = "table { border-spacing: 2px } td { width: 20px; padding: 0 }";
+        let shown = document_of(html, css);
+        let hidden = document_of(
+            html,
+            &format!("{css} col:nth-child(2) {{ visibility: collapse }}"),
+        );
+        assert_eq!(
+            fragment_of(&hidden, 13).x,
+            fragment_of(&shown, 12).x,
+            "the third column where the second was"
+        );
+        assert_eq!(fragment_of(&hidden, 4).w, fragment_of(&shown, 4).w - 22.0);
+        assert!(
+            fragments_of(&hidden, 12).is_empty(),
+            "the cell in it is not drawn"
+        );
     }
 
     #[test]

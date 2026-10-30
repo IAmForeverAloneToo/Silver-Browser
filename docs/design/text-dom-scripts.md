@@ -490,3 +490,26 @@ step:
   scripts and module preloads. A parser-inserted script left empty is
   one a script may still run, and the scripts one insertion connects
   run one at a time, in its order.
+- *Text* (D55, D56), the gaps closed after the batch: `line-break`
+  (`strict`, `normal`, `loose`, `anywhere`; `auto` as `strict`) through
+  the segmenter's strictness, tailored for Chinese and Japanese by the
+  content language, which the cascade now keeps from `lang` (with the
+  reference browser's ICU tailorings: a leader may start a line under
+  `loose`, a wide prefix may not under `normal` and `strict`); soft wrap
+  opportunities across inline boxes where UAX #14 has one, the start
+  edge of the box going with its text; grapheme clusters for
+  `overflow-wrap: anywhere`, which `word-break: break-word` counts for
+  the min-content width too; `hyphens` (soft hyphens, and `auto` by the
+  `hypher` crate's patterns for the languages it has) with
+  `hyphenate-character` and `hyphenate-limit-chars`; `tab-size`, a tab
+  an item as wide as takes the line to its next stop from the line's
+  start; `text-indent` with `hanging` and `each-line`; `text-transform`'s
+  `full-width`, `full-size-kana`, titlecase and its Turkish, Greek and
+  Dutch tailoring (`text::transform`, which `innerText` applies too);
+  `text-wrap: balance` by trying narrower lines; `text-autospace`'s
+  eighth of an em between ideographs and letters or digits, `normal`
+  being the reference browser's default; `text-shadow` on decorations;
+  `visibility: collapse` on columns. `text-spacing-trim`,
+  `hanging-punctuation`, `text-wrap: pretty`, `hyphenate-limit-lines`,
+  `word-space-transform`, `text-fit` and `text-group-align` are parsed,
+  computed, serialized and animated, but lay nothing out.

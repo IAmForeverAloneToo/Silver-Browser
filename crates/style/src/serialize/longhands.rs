@@ -20,6 +20,79 @@ use crate::computed::{
 use crate::easing::{Easing, StepPosition};
 
 use super::{color, length_percentage, number, px, self_alignment, string, text_align};
+use crate::computed::{
+    AutospaceMode, HangingEnd, Hyphens, LineBreak, TabSize, TextAutospace, TextFitKind,
+    TextFitMethod, TextSpacingTrim, TextWrapStyle, WordSpaceTransform,
+};
+
+/// `hyphenate-limit-chars`, at its shortest: the third left out where it
+/// is the second, then the second where it is `auto`.
+fn hyphenate_limit_chars(limits: [Option<i32>; 3]) -> String {
+    let word = |v: Option<i32>| v.map_or("auto".to_owned(), |n| n.to_string());
+    let mut parts: Vec<String> = limits.iter().map(|&v| word(v)).collect();
+    if limits[2] == limits[1] {
+        parts.pop();
+        if limits[1].is_none() {
+            parts.pop();
+        }
+    }
+    parts.join(" ")
+}
+
+/// `text-autospace`, its keywords in the grammar's order.
+pub(super) fn text_autospace(value: TextAutospace) -> String {
+    match value {
+        TextAutospace::Normal => "normal".to_owned(),
+        TextAutospace::NoAutospace => "no-autospace".to_owned(),
+        TextAutospace::Auto => "auto".to_owned(),
+        TextAutospace::Spaces {
+            ideograph_alpha,
+            ideograph_numeric,
+            punctuation,
+            mode,
+        } => {
+            let mut parts = Vec::new();
+            if ideograph_alpha {
+                parts.push("ideograph-alpha");
+            }
+            if ideograph_numeric {
+                parts.push("ideograph-numeric");
+            }
+            if punctuation {
+                parts.push("punctuation");
+            }
+            match mode {
+                AutospaceMode::Unset => {}
+                AutospaceMode::Insert => parts.push("insert"),
+                AutospaceMode::Replace => parts.push("replace"),
+            }
+            parts.join(" ")
+        }
+    }
+}
+
+/// `text-spacing-trim`.
+pub(super) fn text_spacing_trim(value: TextSpacingTrim) -> &'static str {
+    match value {
+        TextSpacingTrim::Normal => "normal",
+        TextSpacingTrim::SpaceAll => "space-all",
+        TextSpacingTrim::SpaceFirst => "space-first",
+        TextSpacingTrim::TrimStart => "trim-start",
+        TextSpacingTrim::TrimBoth => "trim-both",
+        TextSpacingTrim::TrimAll => "trim-all",
+        TextSpacingTrim::Auto => "auto",
+    }
+}
+
+/// `text-wrap-style`.
+pub(super) fn text_wrap_style(value: TextWrapStyle) -> &'static str {
+    match value {
+        TextWrapStyle::Auto => "auto",
+        TextWrapStyle::Balance => "balance",
+        TextWrapStyle::Stable => "stable",
+        TextWrapStyle::Pretty => "pretty",
+    }
+}
 
 /// What makes a `url()`'s URL absolute, where the caller knows how.
 pub(super) type Url<'a> = &'a dyn Fn(&str) -> Option<String>;
@@ -33,6 +106,103 @@ pub(super) fn value(style: &ComputedStyle, name: &str, url: Url<'_>) -> Option<S
             TextAlignLast::Auto => "auto".to_owned(),
             TextAlignLast::Align(a) => text_align(a).to_owned(),
         },
+        "text-align-all" => text_align(style.text_align).to_owned(),
+        "text-indent" => {
+            let indent = &style.text().text_indent;
+            let mut out = lp(&indent.length);
+            if indent.hanging {
+                out.push_str(" hanging");
+            }
+            if indent.each_line {
+                out.push_str(" each-line");
+            }
+            out
+        }
+        "tab-size" => match style.text().tab_size {
+            TabSize::Spaces(n) => number(n),
+            TabSize::Length(v) => px(v),
+        },
+        "line-break" => match style.text().line_break {
+            LineBreak::Auto => "auto",
+            LineBreak::Loose => "loose",
+            LineBreak::Normal => "normal",
+            LineBreak::Strict => "strict",
+            LineBreak::Anywhere => "anywhere",
+        }
+        .to_owned(),
+        "hyphens" => match style.text().hyphens {
+            Hyphens::None => "none",
+            Hyphens::Manual => "manual",
+            Hyphens::Auto => "auto",
+        }
+        .to_owned(),
+        "hyphenate-character" => match &style.text().hyphenate_character {
+            None => "auto".to_owned(),
+            Some(text) => string(text),
+        },
+        "hyphenate-limit-chars" => hyphenate_limit_chars(style.text().hyphenate_limit_chars),
+        "hyphenate-limit-lines" => match style.text().hyphenate_limit_lines {
+            None => "no-limit".to_owned(),
+            Some(n) => n.to_string(),
+        },
+        "text-autospace" => text_autospace(style.text().text_autospace),
+        "text-spacing-trim" => text_spacing_trim(style.text().text_spacing_trim).to_owned(),
+        "hanging-punctuation" => {
+            let hanging = style.text().hanging_punctuation;
+            let mut parts = Vec::new();
+            if hanging.first {
+                parts.push("first");
+            }
+            match hanging.end {
+                HangingEnd::None => {}
+                HangingEnd::ForceEnd => parts.push("force-end"),
+                HangingEnd::AllowEnd => parts.push("allow-end"),
+            }
+            if hanging.last {
+                parts.push("last");
+            }
+            if parts.is_empty() {
+                "none".to_owned()
+            } else {
+                parts.join(" ")
+            }
+        }
+        "text-wrap-style" => text_wrap_style(style.text().text_wrap_style).to_owned(),
+        "word-space-transform" => match style.text().word_space_transform {
+            WordSpaceTransform::None => "none".to_owned(),
+            WordSpaceTransform::Space {
+                ideographic,
+                auto_phrase,
+            } => {
+                let space = if ideographic {
+                    "ideographic-space"
+                } else {
+                    "space"
+                };
+                if auto_phrase {
+                    format!("{space} auto-phrase")
+                } else {
+                    space.to_owned()
+                }
+            }
+        },
+        "text-fit" => {
+            let fit = style.text().text_fit;
+            let mut parts = vec![match fit.kind {
+                TextFitKind::None => return Some("none".to_owned()),
+                TextFitKind::Grow => "grow".to_owned(),
+                TextFitKind::Shrink => "shrink".to_owned(),
+            }];
+            match fit.method {
+                TextFitMethod::Consistent => {}
+                TextFitMethod::PerLine => parts.push("per-line".to_owned()),
+                TextFitMethod::PerLineAll => parts.push("per-line-all".to_owned()),
+            }
+            if let Some(limit) = fit.limit {
+                parts.push(format!("{}%", number(limit)));
+            }
+            parts.join(" ")
+        }
         "text-justify" => match style.text_justify {
             TextJustify::Auto => "auto",
             TextJustify::None => "none",

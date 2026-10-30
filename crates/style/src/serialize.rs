@@ -138,7 +138,12 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "grid-template-areas",
     "grid-template-columns",
     "grid-template-rows",
+    "hanging-punctuation",
     "height",
+    "hyphenate-character",
+    "hyphenate-limit-chars",
+    "hyphenate-limit-lines",
+    "hyphens",
     "image-orientation",
     "image-rendering",
     "justify-content",
@@ -146,6 +151,7 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "justify-self",
     "left",
     "letter-spacing",
+    "line-break",
     "line-height",
     "list-style-image",
     "list-style-position",
@@ -198,20 +204,27 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "stroke-miterlimit",
     "stroke-opacity",
     "stroke-width",
+    "tab-size",
     "table-layout",
     "text-align",
+    "text-align-all",
     "text-align-last",
     "text-anchor",
+    "text-autospace",
     "text-decoration-color",
     "text-decoration-line",
     "text-decoration-style",
     "text-decoration-thickness",
+    "text-fit",
+    "text-indent",
     "text-justify",
     "text-shadow",
+    "text-spacing-trim",
     "text-transform",
     "text-underline-offset",
     "text-underline-position",
     "text-wrap-mode",
+    "text-wrap-style",
     "top",
     "transform",
     "transform-box",
@@ -230,6 +243,7 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "widows",
     "width",
     "word-break",
+    "word-space-transform",
     "word-spacing",
     "x",
     "y",
@@ -406,13 +420,29 @@ fn longhand(style: &ComputedStyle, name: &str, url: longhands::Url<'_>) -> Optio
             crate::computed::LegacyAlign::Center => "-webkit-center".to_owned(),
             crate::computed::LegacyAlign::None => text_align(style.text_align).to_owned(),
         },
-        "text-transform" => match style.text_transform {
-            TextTransform::None => "none",
-            TextTransform::Uppercase => "uppercase",
-            TextTransform::Lowercase => "lowercase",
-            TextTransform::Capitalize => "capitalize",
+        "text-transform" => {
+            let extra = style.text().transform_extra;
+            let mut parts = match style.text_transform {
+                TextTransform::None => Vec::new(),
+                TextTransform::Uppercase => vec!["uppercase"],
+                TextTransform::Lowercase => vec!["lowercase"],
+                TextTransform::Capitalize => vec!["capitalize"],
+            };
+            if extra.full_width {
+                parts.push("full-width");
+            }
+            if extra.full_size_kana {
+                parts.push("full-size-kana");
+            }
+            if extra.math_auto {
+                parts.push("math-auto");
+            }
+            if parts.is_empty() {
+                "none".to_owned()
+            } else {
+                parts.join(" ")
+            }
         }
-        .to_owned(),
         "white-space" => match style.white_space {
             WhiteSpace::NORMAL => "normal".to_owned(),
             WhiteSpace::PRE => "pre".to_owned(),
@@ -444,6 +474,8 @@ fn longhand(style: &ComputedStyle, name: &str, url: longhands::Url<'_>) -> Optio
             crate::computed::WordBreak::BreakAll => "break-all",
             crate::computed::WordBreak::KeepAll => "keep-all",
             crate::computed::WordBreak::BreakWord => "break-word",
+            crate::computed::WordBreak::AutoPhrase => "auto-phrase",
+            crate::computed::WordBreak::Manual => "manual",
         }
         .to_owned(),
         "visibility" => match style.visibility {
@@ -465,8 +497,14 @@ fn longhand(style: &ComputedStyle, name: &str, url: longhands::Url<'_>) -> Optio
             }
         }
         .to_owned(),
-        "letter-spacing" => spacing(style.letter_spacing),
-        "word-spacing" => px(style.word_spacing),
+        "letter-spacing" => match &style.text().letter_spacing {
+            Some(spacing) => length_percentage(spacing)?,
+            None => spacing(style.letter_spacing),
+        },
+        "word-spacing" => match &style.text().word_spacing {
+            Some(spacing) => length_percentage(spacing)?,
+            None => px(style.word_spacing),
+        },
         "direction" => match style.direction {
             Direction::Ltr => "ltr",
             Direction::Rtl => "rtl",

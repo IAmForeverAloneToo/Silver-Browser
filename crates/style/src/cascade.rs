@@ -119,8 +119,7 @@ use crate::computed::{
     Direction, Display, Edges, EmptyCells, FlexBasis, FlexDirection, FlexWrap, Float, LEFT,
     LengthPercentage, LengthPercentageAuto, MarginEdges, MaxSize, Outline, OutlineStyle, Overflow,
     OverflowAlign, PaddingEdges, Position, Quotes, RIGHT, SelfAlignment, Size, TOP, TableLayout,
-    TextAlign, TextAlignLast, TextJustify, TextTransform, VerticalAlign, WhiteSpace,
-    WhiteSpaceCollapse,
+    TextAlign, TextAlignLast, TextJustify, VerticalAlign, WhiteSpace, WhiteSpaceCollapse,
 };
 use crate::computed::{
     AnimationPlayState, Backgrounds, BorderImage, Calc, Decoration, Effects, Filter, FontProps,
@@ -154,6 +153,7 @@ mod motion;
 mod page;
 mod presentational;
 mod svg;
+mod text;
 
 use animated::Animated;
 pub(crate) use images::{is_frame_hint, is_img_hint};
@@ -1564,7 +1564,21 @@ fn element_style(
         Some("fieldset") => style.fieldset = true,
         _ => {}
     }
+    if let Some(lang) = document.attr(element, "lang") {
+        set_language(&mut style, lang);
+    }
     style
+}
+
+/// Takes `lang`, an element's `lang` attribute, as its content language,
+/// which its descendants inherit: an empty one is unknown.
+fn set_language(style: &mut ComputedStyle, lang: &str) {
+    let lang = lang.trim().to_ascii_lowercase();
+    let now = style.text().lang.as_deref();
+    if now == Some(lang.as_str()) || (now.is_none() && lang.is_empty()) {
+        return;
+    }
+    style.text_mut().lang = Some(Arc::from(lang));
 }
 
 /// The animations `motion` asks for (Animations 1 §2): an item of its
@@ -1826,6 +1840,7 @@ struct StyleKey {
     parent: u32,
     root: bool,
     dir: Option<Box<str>>,
+    lang: Option<Box<str>>,
     rem: u32,
     declarations: Vec<(usize, u8, u32, [u32; 3], u32)>,
 }
@@ -2161,6 +2176,7 @@ impl<'a> Cascader<'a> {
             parent,
             root: self.document.document_element() == Some(element),
             dir: self.document.attr(element, "dir").map(Box::from),
+            lang: self.document.attr(element, "lang").map(Box::from),
             rem: rem.to_bits(),
             declarations,
         })
@@ -3050,6 +3066,26 @@ fn compute_style(
     {
         style.display = style.display.blockified();
     }
+    // A spacing of a percentage is of the element's own font size, which
+    // an inherited one is resolved against again.
+    if let Some(text) = style.text.as_deref() {
+        let em = style.font_size_px;
+        let letter = text.letter_spacing.as_ref().map(|s| s.resolve(em));
+        let word = text.word_spacing.as_ref().map(|s| s.resolve(em));
+        if let Some(px) = letter {
+            style.letter_spacing = px;
+        }
+        if let Some(px) = word {
+            style.word_spacing = px;
+        }
+    }
+    if style
+        .text
+        .as_deref()
+        .is_some_and(|t| *t == crate::computed::TextProps::default())
+    {
+        style.text = None;
+    }
     // Grid and effects properties set back to their initial values leave
     // no copy of them behind, so that two styles alike compare equal. The
     // initial values are made only for a style that holds a copy: most
@@ -3574,22 +3610,108 @@ fn apply_declaration(
             },
         },
         "text-justify" => set(&mut style.text_justify, parse_text_justify(value)),
-        "text-transform" => set(&mut style.text_transform, parse_text_transform(value)),
+        "text-transform" => match text::parse_text_transform(value) {
+            Some((case, extra)) => {
+                style.text_transform = case;
+                if extra != style.text().transform_extra {
+                    style.text_mut().transform_extra = extra;
+                }
+                true
+            }
+            None => false,
+        },
         "white-space" => set(&mut style.white_space, parse_white_space(value)),
         "white-space-collapse" => set(
             &mut style.white_space.collapse,
             parse_white_space_collapse(value),
         ),
         "text-wrap-mode" => set(&mut style.white_space.wrap, parse_text_wrap_mode(value)),
-        "text-wrap" => set(&mut style.white_space.wrap, parse_text_wrap(value)),
+        "text-wrap" => match text::parse_text_wrap(value) {
+            Some((wrap, wrap_style)) => {
+                style.white_space.wrap = wrap;
+                if wrap_style != style.text().text_wrap_style {
+                    style.text_mut().text_wrap_style = wrap_style;
+                }
+                true
+            }
+            None => false,
+        },
+        "text-wrap-style" => set_text(style, text::parse_text_wrap_style(value), |t, v| {
+            t.text_wrap_style = v
+        }),
+        "text-indent" => set_text(style, text::parse_text_indent(value, bases), |t, v| {
+            t.text_indent = v
+        }),
+        "tab-size" => set_text(style, text::parse_tab_size(value, bases), |t, v| {
+            t.tab_size = v
+        }),
+        "line-break" => set_text(style, text::parse_line_break(value), |t, v| {
+            t.line_break = v
+        }),
+        "hyphens" => set_text(style, text::parse_hyphens(value), |t, v| t.hyphens = v),
+        "hyphenate-character" => set_text(style, text::parse_hyphenate_character(value), |t, v| {
+            t.hyphenate_character = v
+        }),
+        "hyphenate-limit-chars" => set_text(
+            style,
+            text::parse_hyphenate_limit_chars(value, bases),
+            |t, v| t.hyphenate_limit_chars = v,
+        ),
+        "hyphenate-limit-lines" => set_text(
+            style,
+            text::parse_hyphenate_limit_lines(value, bases),
+            |t, v| t.hyphenate_limit_lines = v,
+        ),
+        "text-autospace" => set_text(style, text::parse_text_autospace(value), |t, v| {
+            t.text_autospace = v
+        }),
+        "text-spacing-trim" => set_text(style, text::parse_text_spacing_trim(value), |t, v| {
+            t.text_spacing_trim = v
+        }),
+        "text-spacing" => set_text(style, text::parse_text_spacing(value), |t, (trim, auto)| {
+            t.text_spacing_trim = trim;
+            t.text_autospace = auto;
+        }),
+        "hanging-punctuation" => set_text(style, text::parse_hanging_punctuation(value), |t, v| {
+            t.hanging_punctuation = v
+        }),
+        "word-space-transform" => {
+            set_text(style, text::parse_word_space_transform(value), |t, v| {
+                t.word_space_transform = v
+            })
+        }
+        "text-fit" => set_text(style, text::parse_text_fit(value), |t, v| t.text_fit = v),
+        "text-group-align" => set_text(style, text::parse_text_group_align(value), |t, v| {
+            t.text_group_align = v
+        }),
         "overflow-wrap" => set(&mut style.overflow_wrap, parse_overflow_wrap(value)),
         "word-break" => set(&mut style.word_break, parse_word_break(value)),
         "visibility" => set(&mut style.visibility, parse_visibility(value)),
         "text-shadow" => set_decoration(style, parse_shadows(value, bases, true), |d, v| {
             d.text_shadow = v
         }),
-        "letter-spacing" => set(&mut style.letter_spacing, parse_spacing(value, bases)),
-        "word-spacing" => set(&mut style.word_spacing, parse_spacing(value, bases)),
+        "letter-spacing" => match text::parse_spacing(value, bases) {
+            Some(spacing) => {
+                style.letter_spacing = spacing.resolve(bases.em);
+                let kept = spacing.has_percent().then_some(spacing);
+                if kept != style.text().letter_spacing {
+                    style.text_mut().letter_spacing = kept;
+                }
+                true
+            }
+            None => false,
+        },
+        "word-spacing" => match text::parse_spacing(value, bases) {
+            Some(spacing) => {
+                style.word_spacing = spacing.resolve(bases.em);
+                let kept = spacing.has_percent().then_some(spacing);
+                if kept != style.text().word_spacing {
+                    style.text_mut().word_spacing = kept;
+                }
+                true
+            }
+            None => false,
+        },
         "width" => set(&mut style.width, parse_size(value, bases)),
         // A percentage is kept as one (M10.1); layout resolves it against
         // the containing block's height when that is definite, and treats
@@ -4260,6 +4382,28 @@ fn set_decoration<T>(
     v.map(|v| update(style.decoration_mut(), v)).is_some()
 }
 
+/// [`set`] for the text properties behind [`ComputedStyle::text`].
+fn set_text<T>(
+    style: &mut ComputedStyle,
+    v: Option<T>,
+    update: impl FnOnce(&mut crate::computed::TextProps, T),
+) -> bool {
+    v.map(|v| update(style.text_mut(), v)).is_some()
+}
+
+/// [`copy_grid`] for the text properties behind [`ComputedStyle::text`].
+fn copy_text(
+    style: &mut ComputedStyle,
+    src: &ComputedStyle,
+    copy: impl FnOnce(&mut crate::computed::TextProps, &crate::computed::TextProps),
+) {
+    if style.text.is_none() && src.text.is_none() {
+        return;
+    }
+    let src = src.text().clone();
+    copy(style.text_mut(), &src);
+}
+
 /// [`set_grid`] for the transition and animation properties (M22).
 fn set_motion<T>(
     style: &mut ComputedStyle,
@@ -4532,6 +4676,20 @@ fn is_inherited(name: &str) -> bool {
             | "white-space-collapse"
             | "text-wrap-mode"
             | "text-wrap"
+            | "text-wrap-style"
+            | "text-indent"
+            | "tab-size"
+            | "line-break"
+            | "hyphens"
+            | "hyphenate-character"
+            | "hyphenate-limit-chars"
+            | "hyphenate-limit-lines"
+            | "text-autospace"
+            | "text-spacing-trim"
+            | "text-spacing"
+            | "hanging-punctuation"
+            | "word-space-transform"
+            | "text-fit"
             | "overflow-wrap"
             | "word-break"
             | "visibility"
@@ -4674,16 +4832,61 @@ fn apply_css_wide(
         "text-align-all" => style.text_align = src.text_align,
         "text-align-last" => style.text_align_last = src.text_align_last,
         "text-justify" => style.text_justify = src.text_justify,
-        "text-transform" => style.text_transform = src.text_transform,
+        "text-transform" => {
+            style.text_transform = src.text_transform;
+            copy_text(style, src, |t, s| t.transform_extra = s.transform_extra);
+        }
         "white-space" => style.white_space = src.white_space,
         "white-space-collapse" => style.white_space.collapse = src.white_space.collapse,
-        "text-wrap-mode" | "text-wrap" => style.white_space.wrap = src.white_space.wrap,
+        "text-wrap-mode" => style.white_space.wrap = src.white_space.wrap,
+        "text-wrap" => {
+            style.white_space.wrap = src.white_space.wrap;
+            copy_text(style, src, |t, s| t.text_wrap_style = s.text_wrap_style);
+        }
+        "text-wrap-style" => copy_text(style, src, |t, s| t.text_wrap_style = s.text_wrap_style),
+        "text-indent" => copy_text(style, src, |t, s| t.text_indent = s.text_indent.clone()),
+        "tab-size" => copy_text(style, src, |t, s| t.tab_size = s.tab_size),
+        "line-break" => copy_text(style, src, |t, s| t.line_break = s.line_break),
+        "hyphens" => copy_text(style, src, |t, s| t.hyphens = s.hyphens),
+        "hyphenate-character" => copy_text(style, src, |t, s| {
+            t.hyphenate_character = s.hyphenate_character.clone()
+        }),
+        "hyphenate-limit-chars" => copy_text(style, src, |t, s| {
+            t.hyphenate_limit_chars = s.hyphenate_limit_chars
+        }),
+        "hyphenate-limit-lines" => copy_text(style, src, |t, s| {
+            t.hyphenate_limit_lines = s.hyphenate_limit_lines
+        }),
+        "text-autospace" => copy_text(style, src, |t, s| t.text_autospace = s.text_autospace),
+        "text-spacing-trim" => {
+            copy_text(style, src, |t, s| t.text_spacing_trim = s.text_spacing_trim)
+        }
+        "text-spacing" => copy_text(style, src, |t, s| {
+            t.text_spacing_trim = s.text_spacing_trim;
+            t.text_autospace = s.text_autospace;
+        }),
+        "hanging-punctuation" => copy_text(style, src, |t, s| {
+            t.hanging_punctuation = s.hanging_punctuation
+        }),
+        "word-space-transform" => copy_text(style, src, |t, s| {
+            t.word_space_transform = s.word_space_transform
+        }),
+        "text-fit" => copy_text(style, src, |t, s| t.text_fit = s.text_fit),
+        "text-group-align" => copy_text(style, src, |t, s| t.text_group_align = s.text_group_align),
         "overflow-wrap" => style.overflow_wrap = src.overflow_wrap,
         "word-break" => style.word_break = src.word_break,
         "visibility" => style.visibility = src.visibility,
         "text-shadow" => copy_decoration(style, src, |d, s| d.text_shadow = s.text_shadow.clone()),
-        "letter-spacing" => style.letter_spacing = src.letter_spacing,
-        "word-spacing" => style.word_spacing = src.word_spacing,
+        "letter-spacing" => {
+            style.letter_spacing = src.letter_spacing;
+            copy_text(style, src, |t, s| {
+                t.letter_spacing = s.letter_spacing.clone()
+            });
+        }
+        "word-spacing" => {
+            style.word_spacing = src.word_spacing;
+            copy_text(style, src, |t, s| t.word_spacing = s.word_spacing.clone());
+        }
         "width" => style.width = src.width.clone(),
         "height" => style.height = src.height.clone(),
         "margin" => style.margin = src.margin.clone(),
@@ -6401,16 +6604,6 @@ fn parse_text_justify(tokens: &[Token]) -> Option<TextJustify> {
     }
 }
 
-fn parse_text_transform(tokens: &[Token]) -> Option<TextTransform> {
-    match single_ident(tokens)?.to_ascii_lowercase().as_str() {
-        "none" => Some(TextTransform::None),
-        "uppercase" => Some(TextTransform::Uppercase),
-        "lowercase" => Some(TextTransform::Lowercase),
-        "capitalize" => Some(TextTransform::Capitalize),
-        _ => None, // full-width/full-size-kana land later
-    }
-}
-
 /// `white-space` (CSS Text 4 section 3): one of its six keywords, or a
 /// `white-space-collapse` value and a `text-wrap-mode` one, in either
 /// order, each at most once, the one left out initial.
@@ -6467,16 +6660,6 @@ fn parse_text_wrap_mode(tokens: &[Token]) -> Option<bool> {
     }
 }
 
-/// `text-wrap`, of which `text-wrap-mode` is taken: `wrap` and `nowrap`,
-/// and `balance`, `pretty` and `stable`, which wrap as `wrap` does here.
-fn parse_text_wrap(tokens: &[Token]) -> Option<bool> {
-    match single_ident(tokens)?.to_ascii_lowercase().as_str() {
-        "wrap" | "balance" | "pretty" | "stable" | "auto" => Some(true),
-        "nowrap" => Some(false),
-        _ => None,
-    }
-}
-
 /// `overflow-wrap`.
 fn parse_overflow_wrap(tokens: &[Token]) -> Option<crate::computed::OverflowWrap> {
     use crate::computed::OverflowWrap as O;
@@ -6496,6 +6679,8 @@ fn parse_word_break(tokens: &[Token]) -> Option<crate::computed::WordBreak> {
         "break-all" => W::BreakAll,
         "keep-all" => W::KeepAll,
         "break-word" => W::BreakWord,
+        "auto-phrase" => W::AutoPhrase,
+        "manual" => W::Manual,
         _ => return None,
     })
 }
@@ -6509,15 +6694,6 @@ fn parse_visibility(tokens: &[Token]) -> Option<crate::computed::Visibility> {
         "collapse" => V::Collapse,
         _ => return None,
     })
-}
-
-/// `normal` (resets to `0`) or a length — `letter-spacing`/`word-spacing`
-/// share this grammar.
-fn parse_spacing(tokens: &[Token], bases: &LengthBases<'_>) -> Option<f32> {
-    if is_normal(tokens) {
-        return Some(0.0);
-    }
-    parse_length_px(tokens, bases)
 }
 
 fn is_normal(tokens: &[Token]) -> bool {
@@ -7482,7 +7658,8 @@ fn named_color(name: &str) -> Option<Color> {
 mod tests {
     use super::*;
     use crate::computed::{
-        AnimationDirection, AnimationFillMode, AnimationPlayState, TransitionProperty,
+        AnimationDirection, AnimationFillMode, AnimationPlayState, TextTransform,
+        TransitionProperty,
     };
     use crate::selector_matching::{matches_selector, matches_selector_list, parse_selector_list};
 

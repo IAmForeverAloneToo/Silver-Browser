@@ -29,7 +29,8 @@ use style::computed::{
 
 use crate::box_tree::{BoxKind, LayoutBox};
 use crate::inline::{
-    collect_first_line_items, collect_inline_items, restyled_on_first_line, run_intrinsic_widths,
+    Indent, collect_first_line_items, collect_inline_items, restyled_on_first_line,
+    run_intrinsic_widths, run_intrinsic_widths_indented,
 };
 use crate::pass::Pass;
 
@@ -199,7 +200,9 @@ fn measure_content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
                     .as_ref()
                     .filter(|_| restyled_on_first_line(&child.children))
                     .map(|_| collect_first_line_items(&child.children, fonts, None));
-                run_intrinsic_widths(&items, first.as_deref(), pass)
+                // A percentage indent is of a containing block of no width.
+                let indent = Indent::of(&child.style, 0.0);
+                run_intrinsic_widths_indented(&items, first.as_deref(), pass, indent)
             }
             // A hand-built tree's stray inline-level child: a run of one.
             BoxKind::Inline | BoxKind::Text(_) => {

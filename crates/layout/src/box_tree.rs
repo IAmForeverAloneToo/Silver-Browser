@@ -1910,9 +1910,18 @@ impl BlockContainer<'_> {
             // White space at the start of the run (css-text-3 §4.1:
             // space, tab, newline, carriage return, form feed — a
             // no-break space is content) is dropped: a line discards
-            // it. Elsewhere it is kept, as the gap it is; `flush_run`
-            // drops it at the end. An empty text is nothing.
-            if text.is_empty() || (white_space && self.open.is_empty() && self.run.is_empty()) {
+            // it, where it collapses; kept spaces and tabs stay, a tab
+            // that starts a `pre` say. Elsewhere it is kept, as the gap
+            // it is; `flush_run` drops it at the end. An empty text is
+            // nothing.
+            let leading = white_space && self.open.is_empty() && self.run.is_empty();
+            if text.is_empty()
+                || (leading
+                    && !styled
+                        .shared_or_initial(parent)
+                        .white_space
+                        .preserves_spaces())
+            {
                 continue;
             }
             if let Item::ControlText(node) = child {
@@ -3319,6 +3328,16 @@ mod tests {
                 ("inline", 3),
                 ("text b", 3),
             ])
+        );
+        // Where spaces are kept, a tab or a space starting the run is
+        // kept too: `<pre>\t<span>a</span></pre>`.
+        let root = Element::new("pre")
+            .text("\t")
+            .push(Element::new("span").text("a"));
+        let tree = built(root, "pre { white-space: pre }");
+        assert_eq!(
+            tree.shape_of(&tree[0].children),
+            pairs(&[("anon", 1), ("text \t", 1), ("inline", 2), ("text a", 2)])
         );
         // Inside an inline element white space is kept wherever it is:
         // `<span> </span>` between two inline-blocks is their gap.

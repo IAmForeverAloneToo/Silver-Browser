@@ -1198,8 +1198,29 @@ pub fn paint_fragments_with(
                     // the line-throughs over it.
                     let baseline = snap(baseline);
                     let decorated = fragment.decorated.as_deref();
+                    // The shadows of its decorations under it all, the
+                    // text's shadow being its decorations' too (Text
+                    // Decoration 3 section 4).
                     if let Some(decorated) = decorated {
-                        push_decorations(&mut items, decorated, rect, baseline, false);
+                        for shadow in fragment.style.decoration().text_shadow.iter().rev() {
+                            let cast = Cast {
+                                dx: shadow.x,
+                                dy: shadow.y,
+                                sigma: shadow.blur / 2.0,
+                                color: to_rgba8(shadow.color),
+                            };
+                            for through in [false, true] {
+                                push_decorations(
+                                    &mut items,
+                                    decorated,
+                                    rect,
+                                    baseline,
+                                    through,
+                                    Some(cast),
+                                );
+                            }
+                        }
+                        push_decorations(&mut items, decorated, rect, baseline, false, None);
                     }
                     if !text.trim().is_empty() {
                         // Its shadows under it, the first on top (D56).
@@ -1224,7 +1245,7 @@ pub fn paint_fragments_with(
                         });
                     }
                     if let Some(decorated) = decorated {
-                        push_decorations(&mut items, decorated, rect, baseline, true);
+                        push_decorations(&mut items, decorated, rect, baseline, true, None);
                     }
                 }
                 FragmentKind::Marker(shape) => {
@@ -1411,12 +1432,14 @@ fn push_decorations(
     rect: Rect,
     baseline: f32,
     through: bool,
+    cast: Option<Cast>,
 ) {
     use layout::decoration::LineKind;
     use style::computed::DecorationStyle;
+    let (dx, dy) = cast.map_or((0.0, 0.0), |c| (c.dx, c.dy));
     let (x0, x1) = (
-        snap(rect.x - decorated.left),
-        snap(rect.x + rect.w + decorated.right),
+        snap(rect.x - decorated.left + dx),
+        snap(rect.x + rect.w + decorated.right + dx),
     );
     if x1 <= x0 {
         return;
@@ -1425,13 +1448,36 @@ fn push_decorations(
         if (line.kind == LineKind::LineThrough) != through {
             continue;
         }
-        let color = to_rgba8(line.color);
+        let color = cast.map_or(to_rgba8(line.color), |c| c.color);
         let t = line.thickness;
+        let baseline = baseline + dy;
         let top = baseline + line.top;
+        // A bar of the line, or its shadow, blurred where the shadow is.
         let bar = |items: &mut Vec<DisplayItem>, x: f32, w: f32, y: f32, h: f32| {
             let w = w.min(x1 - x);
-            if w > 0.0 {
-                items.push(DisplayItem::Rect { x, y, w, h, color });
+            if w <= 0.0 {
+                return;
+            }
+            match cast {
+                Some(cast) if cast.sigma > 0.0 => {
+                    let square = |rect| RoundedRect {
+                        rect,
+                        radii: [(0.0, 0.0); 4],
+                    };
+                    items.push(DisplayItem::Shadow {
+                        shape: Box::new(square(Rect { x, y, w, h })),
+                        sigma: cast.sigma,
+                        inset: false,
+                        boxed: Box::new(square(Rect {
+                            x,
+                            y,
+                            w: 0.0,
+                            h: 0.0,
+                        })),
+                        color,
+                    });
+                }
+                _ => items.push(DisplayItem::Rect { x, y, w, h, color }),
             }
         };
         match line.style {
@@ -1476,6 +1522,16 @@ fn push_decorations(
             }
         }
     }
+}
+
+/// A text shadow cast by a run's decorations: how far it is moved, its
+/// blur's standard deviation, and its colour.
+#[derive(Debug, Clone, Copy)]
+struct Cast {
+    dx: f32,
+    dy: f32,
+    sigma: f32,
+    color: Rgba8,
 }
 
 /// A list item's marker drawn as `shape` in `color` (M21.6), in the
@@ -3825,6 +3881,47 @@ mod fragment_tests {
                 ("x".to_string(), x, y, 0.0, Rgba8::rgb(0, 0, 0)),
             ]
         );
+    }
+
+    #[test]
+    fn a_text_shadow_is_its_decorations_shadow_too() {
+        let list = display_list_of(
+            Element::new("p").text("x"),
+            "p { margin: 0; text-decoration: underline; color: black; \
+             text-shadow: 1px 2px red, 3px 4px 6px blue }",
+        );
+        // The underline, black; its shadows before it, the blurred one
+        // first, then the crisp one, red.
+        let underline = list
+            .items
+            .iter()
+            .position(|item| {
+                matches!(item, DisplayItem::Rect { color, .. } if *color == Rgba8::rgb(0, 0, 0))
+            })
+            .expect("the underline");
+        let DisplayItem::Rect { x, y, .. } = list.items[underline] else {
+            unreachable!()
+        };
+        let blurred = list.items[..underline].iter().find_map(|item| match item {
+            DisplayItem::Shadow {
+                shape,
+                sigma,
+                color,
+                ..
+            } => Some((shape.rect.x, shape.rect.y, *sigma, *color)),
+            _ => None,
+        });
+        assert_eq!(
+            blurred,
+            Some((x + 3.0, y + 4.0, 3.0, Rgba8::rgb(0, 0, 255)))
+        );
+        let crisp = list.items[..underline].iter().find_map(|item| match item {
+            DisplayItem::Rect { x, y, color, .. } if *color == Rgba8::rgb(255, 0, 0) => {
+                Some((*x, *y))
+            }
+            _ => None,
+        });
+        assert_eq!(crisp, Some((x + 1.0, y + 2.0)));
     }
 
     #[test]

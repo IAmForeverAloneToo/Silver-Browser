@@ -24,11 +24,15 @@
 mod breaks;
 pub mod edit;
 mod faces;
+mod hyphenate;
+mod transform;
 mod web;
 mod woff;
 
-pub use breaks::{WordBreaking, line_breaks};
+pub use breaks::{BreakRules, Strictness, WordBreaking, grapheme_boundaries, line_breaks};
 pub use faces::{FaceId, FaceRecord, Font, FontRequest, MAX_CHOICES, SYNTHETIC_SKEW, Slant};
+pub use hyphenate::{HyphenLimits, hyphenates, hyphenation_points};
+pub use transform::{Case, Transform, ends_word, transform};
 pub use web::{DocumentFaces, FaceRule, FaceState, MAX_FONT_BYTES, MAX_FONT_FACES, is_font};
 
 use std::collections::HashMap;

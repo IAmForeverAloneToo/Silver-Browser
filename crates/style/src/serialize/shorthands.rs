@@ -94,7 +94,31 @@ pub(super) fn value(
         "flex-flow" => Some(format!("{} {}", get("flex-direction")?, get("flex-wrap")?)),
         "font" => font(style, &get),
         "font-variant" => font_variant(&get),
-        "text-wrap" => get("text-wrap-mode"),
+        // The mode where the style is `auto`, the style where the mode
+        // is `wrap`, both otherwise.
+        "text-wrap" => {
+            let (mode, wrap_style) = (get("text-wrap-mode")?, get("text-wrap-style")?);
+            Some(if wrap_style == "auto" {
+                mode
+            } else if mode == "wrap" {
+                wrap_style
+            } else {
+                format!("{mode} {wrap_style}")
+            })
+        }
+        // `normal` and `none` where the two say them, else each that is
+        // not `normal`.
+        "text-spacing" => {
+            let (trim, autospace) = (get("text-spacing-trim")?, get("text-autospace")?);
+            Some(match (trim.as_str(), autospace.as_str()) {
+                ("normal", "normal") => "normal".to_owned(),
+                ("space-all", "no-autospace") => "none".to_owned(),
+                ("auto", "auto") => "auto".to_owned(),
+                ("normal", _) => autospace,
+                (_, "normal") => trim,
+                _ => format!("{trim} {autospace}"),
+            })
+        }
         "list-style" => Some(format!(
             "{} {} {}",
             get("list-style-position")?,

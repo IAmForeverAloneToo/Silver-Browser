@@ -87,6 +87,9 @@ unicode-bidi = "0.3"
 # UAX #14 line breaking (gap batch D, D55), the ICU4X major version idna
 # brings already, with its compiled data.
 icu_segmenter = "~2.3.0"
+# Hyphenation by patterns (`hyphens: auto`, gap batch D), no dependencies
+# of its own.
+hypher = "~0.1.8"
 # ECMA-402 Intl (gap batch D, D63): number and date formatting,
 # collation, plural rules and locales, on the same ICU4X minor line with
 # their compiled data.

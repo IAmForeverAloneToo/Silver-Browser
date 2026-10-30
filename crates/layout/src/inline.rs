@@ -133,6 +133,10 @@ pub(crate) enum InlineItem<'a> {
         /// in the boxes before it): a gap of a space's width, and a
         /// soft wrap opportunity unless `no_wrap`.
         gap_before: bool,
+        /// A soft wrap opportunity before it with no white space: where
+        /// UAX #14 breaks between the text before it, in another box,
+        /// and its own, `foo<b>\u{6587}</b>` say.
+        break_before: bool,
         /// The soft wrap opportunities within it (D55), as byte offsets
         /// into `text`: UAX #14's, after a hyphen, between ideographs,
         /// after preserved spaces. It is cut at one only where a line
@@ -142,6 +146,13 @@ pub(crate) enum InlineItem<'a> {
         /// past the line's end rather than wrap it (CSS Text 3 section
         /// 4.1.3); none under `break-spaces`.
         hang: f32,
+        /// A preserved tab, its text `\t`: as wide as takes the line to
+        /// its next tab stop, which only its place on the line says.
+        tab: bool,
+        /// The space `text-autospace` puts before it, after an ideograph
+        /// or before one: a gap but where it starts a line, and no
+        /// opportunity to break.
+        lead: f32,
         /// The element the text belongs to (M9.4), carried into its
         /// fragment.
         node: NodeId,
@@ -193,6 +204,8 @@ pub(crate) enum InlineItem<'a> {
         b: &'a LayoutBox,
         style: &'a Arc<ComputedStyle>,
         gap_before: bool,
+        /// As for a word: the opportunity of the text it starts with.
+        break_before: bool,
         /// As for a word (M21.7).
         gap_decorations: Option<&'a Arc<[Decorating]>>,
         /// As for a word.
@@ -220,6 +233,12 @@ struct LineWord<'i> {
     width: f32,
     /// The preserved spaces at its end, which may hang past the line.
     hang: f32,
+    /// A preserved tab (CSS Text 3 section 4.2), as wide as its place
+    /// makes it.
+    tab: bool,
+    /// The line breaks after it at a hyphenation opportunity (CSS Text 3
+    /// section 5.4): it ends with the hyphen, which `width` counts.
+    hyphen: bool,
     /// The opportunities of the item's text (D55), and where in that
     /// text this word, all of it or a piece of it, begins.
     breaks: &'i [usize],
@@ -306,6 +325,8 @@ struct Placed<'a, 'i> {
     /// is a space of; the item's own when it has none.
     gap_style: Option<&'a Arc<ComputedStyle>>,
     can_break: bool,
+    /// The autospace taken before it.
+    lead: f32,
 }
 
 impl Placed<'_, '_> {
@@ -319,6 +340,14 @@ impl Placed<'_, '_> {
 }
 
 impl<'a> InlineItem<'a> {
+    /// The space `text-autospace` puts before it.
+    fn lead(&self) -> f32 {
+        match self {
+            InlineItem::Word { lead, .. } => *lead,
+            _ => 0.0,
+        }
+    }
+
     /// The style of the white space whose gap is before it, if one is.
     fn gap_style(&self) -> Option<&'a Arc<ComputedStyle>> {
         match self {
@@ -370,6 +399,17 @@ pub(crate) struct InlineLayout<'a> {
 /// with the items in their styles there, its strut is the innermost
 /// `::first-line`'s font, and the items that move on to the next line
 /// take their own styles again.
+///
+/// `indented` says the run's first line is its block container's first
+/// formatted line, which `text-indent` indents (CSS Text 3 section 8.1),
+/// or, with `hanging`, the one line it does not.
+///
+/// Under `text-wrap: balance` (CSS Text 4 section 6.2) the lines of each
+/// paragraph, the run between forced breaks, of at most
+/// [`MAX_BALANCED_LINES`] lines, are made as alike in length as they can
+/// be without making more of them: each is broken as if the line were
+/// the narrowest that keeps the paragraph's count of lines, found by
+/// trying, and aligned in its own room.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn layout_inline<'a>(
     items: &'a [LayoutBox],
@@ -380,7 +420,61 @@ pub(crate) fn layout_inline<'a>(
     floats: &mut FloatContext,
     at: At,
     pass: &Pass<'a>,
+    indented: bool,
 ) -> InlineLayout<'a> {
+    let run = |caps: &[f32], floats: &mut FloatContext| {
+        layout_run(
+            items, cb_width, cb_height, container, first_line, floats, at, pass, indented, caps,
+        )
+    };
+    let balance = container.text().text_wrap_style == style::computed::TextWrapStyle::Balance
+        && container.white_space.wrap;
+    if !balance {
+        return run(&[], floats).0;
+    }
+    let (_, counts) = run(&[], &mut floats.clone());
+    let mut caps: Vec<f32> = vec![f32::INFINITY; counts.len()];
+    for (paragraph, &count) in counts.iter().enumerate() {
+        if !(2..=MAX_BALANCED_LINES).contains(&count) {
+            continue;
+        }
+        // The narrowest room, to half a pixel, that keeps the count.
+        let (mut low, mut high) = (0.0f32, cb_width);
+        while high - low > 0.5 {
+            let middle = (low + high) / 2.0;
+            caps[paragraph] = middle;
+            let (_, tried) = run(&caps, &mut floats.clone());
+            if tried.get(paragraph) == Some(&count) {
+                high = middle;
+            } else {
+                low = middle;
+            }
+        }
+        caps[paragraph] = high;
+    }
+    run(&caps, floats).0
+}
+
+/// The most lines `text-wrap: balance` balances a paragraph of, as the
+/// reference browser has it: a longer one wraps as `wrap` does.
+const MAX_BALANCED_LINES: usize = 6;
+
+/// [`layout_inline`]'s lines, each paragraph's broken in at most its
+/// cap in `caps` where it has one; with the count of lines of each
+/// paragraph.
+#[allow(clippy::too_many_arguments)]
+fn layout_run<'a>(
+    items: &'a [LayoutBox],
+    cb_width: f32,
+    cb_height: Option<f32>,
+    container: &ComputedStyle,
+    first_line: Option<&'a FirstLine>,
+    floats: &mut FloatContext,
+    at: At,
+    pass: &Pass<'a>,
+    indented: bool,
+    caps: &[f32],
+) -> (InlineLayout<'a>, Vec<usize>) {
     let flat = collect_inline_items(items, pass.fonts);
     let strut = font::line(pass.fonts, " ", container);
     // The items as on the first line, as far as it can reach; the run's
@@ -405,6 +499,12 @@ pub(crate) fn layout_inline<'a>(
         floats,
         line_left: 0.0,
         available_width: cb_width,
+        indent: Indent::of(container, cb_width),
+        indent_next: indented,
+        line_indent: 0.0,
+        caps,
+        paragraph: 0,
+        counts: vec![0],
         alignment: Alignment::of(container),
         strut: match (&first, first_line) {
             (Some(_), Some(line)) => font::line(pass.fonts, " ", &line.style),
@@ -440,8 +540,10 @@ pub(crate) fn layout_inline<'a>(
                 style,
                 no_wrap,
                 gap_before,
+                break_before,
                 breaks,
                 hang,
+                tab,
                 node,
                 generated,
                 decorations,
@@ -451,6 +553,8 @@ pub(crate) fn layout_inline<'a>(
                     text: text.as_str(),
                     width: *width,
                     hang: *hang,
+                    tab: *tab,
+                    hyphen: false,
                     breaks,
                     offset: 0,
                     style,
@@ -458,7 +562,8 @@ pub(crate) fn layout_inline<'a>(
                     generated: *generated,
                     decorations: *decorations,
                 };
-                let can_break = !no_wrap && (*gap_before || after_atomic) && !after_marker;
+                let can_break =
+                    !no_wrap && (*gap_before || *break_before || after_atomic) && !after_marker;
                 lines.place(LineItem::Word(word), index, *gap_before, can_break);
                 after_atomic = false;
                 after_marker = false;
@@ -488,11 +593,13 @@ pub(crate) fn layout_inline<'a>(
                 b,
                 style,
                 gap_before,
+                break_before,
                 ..
             } => {
                 let (start, _) = edge_widths(style, cb_width);
-                let can_break =
-                    style.white_space.wrap && (*gap_before || after_atomic) && !after_marker;
+                let can_break = style.white_space.wrap
+                    && (*gap_before || *break_before || after_atomic)
+                    && !after_marker;
                 lines.place(
                     LineItem::Open(b, style, start),
                     index,
@@ -521,20 +628,26 @@ pub(crate) fn layout_inline<'a>(
                     lines.y += m.line_height();
                     lines.end_first_line();
                 }
+                // `text-indent: each-line` indents the line after a forced
+                // break as the first; a paragraph begins after it.
+                lines.indent_next = lines.indent.each_line;
+                lines.paragraph += 1;
+                lines.counts.push(0);
                 after_atomic = false;
             }
         }
     }
     lines.flush(true);
 
-    InlineLayout {
+    let layout = InlineLayout {
         fragments: lines.fragments,
         height: lines.y,
         last_baseline: lines.last_baseline,
         first_baseline: lines.first_baseline,
         first_line: lines.first_line,
         absolutes: lines.absolutes,
-    }
+    };
+    (layout, lines.counts)
 }
 
 /// Whether `first`, a run's items as on the first line, are its `items`
@@ -579,6 +692,16 @@ struct Lines<'a, 'i, 'f, 'c> {
     /// edge, and how wide it may be: the room beside the floats.
     line_left: f32,
     available_width: f32,
+    /// `text-indent`, whether the next line started takes it as a first
+    /// line, and the line in progress's indent.
+    indent: Indent,
+    indent_next: bool,
+    line_indent: f32,
+    /// `text-wrap: balance`'s room for each paragraph's lines, the
+    /// paragraph in progress, and the lines of each so far.
+    caps: &'c [f32],
+    paragraph: usize,
+    counts: Vec<usize>,
     /// How the lines are aligned (M7.5, M21.7).
     alignment: Alignment,
     /// The containing block's own font metrics, the least any line is:
@@ -647,6 +770,7 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
                     text,
                     width,
                     hang,
+                    tab,
                     breaks,
                     style,
                     node,
@@ -671,6 +795,8 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
                     } else {
                         hang_of(text, style, self.pass.fonts)
                     },
+                    tab: *tab,
+                    hyphen: false,
                     breaks,
                     offset: piece.offset,
                     style,
@@ -710,7 +836,16 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
             self.floats.resolve_pending(self.line_top());
             self.resolved = true;
         }
+        self.line_indent = self.indent.of_line(self.indent_next);
         self.measure_room();
+    }
+
+    /// How wide the line in progress may be for its breaks: its room,
+    /// or less where `text-wrap: balance` says.
+    fn room(&self) -> f32 {
+        self.caps
+            .get(self.paragraph)
+            .map_or(self.available_width, |cap| self.available_width.min(*cap))
     }
 
     /// Takes the room beside the floats for the line in progress.
@@ -723,18 +858,30 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
         );
         self.line_left = left - self.cb_left;
         self.available_width = (right - left).max(0.0);
+        // The indent at the line's start: its left, or its right where
+        // the text runs right to left.
+        if self.alignment.direction == Direction::Ltr {
+            self.line_left += self.line_indent;
+        }
+        self.available_width = (self.available_width - self.line_indent).max(0.0);
     }
 
     /// Puts `item`, the run's `index`th, on the line in progress, or on
     /// a new one when it does not fit and a break before it is allowed.
-    fn place(&mut self, item: LineItem<'a, 'i>, index: usize, gap_before: bool, can_break: bool) {
+    fn place(
+        &mut self,
+        mut item: LineItem<'a, 'i>,
+        index: usize,
+        gap_before: bool,
+        can_break: bool,
+    ) {
         if self.line.is_empty() {
             self.start_line();
             // Nothing fits beside the floats: move the line down to
             // where a float ends and try again, until the item fits
             // or no float is beside it, where it overflows as a line
             // too narrow for a word always has (CSS2 §9.5).
-            while item.width() > self.available_width && self.available_width < self.cb_width {
+            while item.width() > self.room() && self.available_width < self.cb_width {
                 match self.floats.next_bottom(self.line_top()) {
                     Some(bottom) if bottom > self.line_top() => {
                         self.y = bottom - self.top;
@@ -761,11 +908,30 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
         } else {
             0.0
         };
+        // `text-autospace`'s space, but at the line's start.
+        let lead = if self.has_content {
+            self.item(index).lead()
+        } else {
+            0.0
+        };
+        let gap = gap + lead;
+        // A tab reaches the next tab stop from the line's start.
+        if let LineItem::Word(word) = &mut item
+            && word.tab
+        {
+            let x = self.line_indent + self.line_width + gap;
+            word.width = tab_advance(word.style, x, self.pass.fonts);
+            word.hang = if hangs_spaces(word.style) {
+                word.width
+            } else {
+                0.0
+            };
+        }
         // A word too wide for the room left is cut at its last
         // opportunity that fits (D55), or, alone on its line, where
         // `overflow-wrap` lets it or at its first: the head ends the
         // line, the rest goes on.
-        let room = self.available_width - self.line_width - gap;
+        let room = self.room() - self.line_width - gap;
         if let LineItem::Word(word) = &item
             && item.width() - item.hang() > room
             && word.style.white_space.wrap
@@ -782,8 +948,7 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
         // this item doesn't fit, start a new line — unless the line is
         // still empty (a solo word wider than `available_width` just
         // overflows; see the module doc's overflow-wrap note).
-        if !self.line.is_empty()
-            && self.line_width + gap + item.width() - item.hang() > self.available_width
+        if !self.line.is_empty() && self.line_width + gap + item.width() - item.hang() > self.room()
         {
             let was_first = self.first.is_some();
             if can_break {
@@ -825,6 +990,7 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
             gap_before,
             gap_style,
             can_break,
+            lead,
         });
     }
 
@@ -948,6 +1114,10 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
         self.has_content = false;
         if baseline.is_some() {
             self.end_first_line();
+            self.indent_next = false;
+            if let Some(count) = self.counts.get_mut(self.paragraph) {
+                *count += 1;
+            }
         }
         self.place_deferred();
         baseline.is_some()
@@ -963,6 +1133,9 @@ fn measure_line(line: &[Placed<'_, '_>], fonts: &FontCollection) -> (f32, bool) 
     for p in line {
         if has_content && p.gap_before {
             width += p.gap(fonts);
+        }
+        if has_content {
+            width += p.lead;
         }
         width += p.item.width();
         has_content |= p.item.is_content();
@@ -981,6 +1154,34 @@ fn edge_widths(style: &ComputedStyle, cb_width: f32) -> (f32, f32) {
         margin(LEFT) + edges.border[LEFT] + edges.padding[LEFT],
         edges.padding[RIGHT] + edges.border[RIGHT] + margin(RIGHT),
     )
+}
+
+/// `text-indent` as a run's lines take it (CSS Text 3 section 8.1).
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Indent {
+    /// How far, a percentage of the containing block's width.
+    by: f32,
+    hanging: bool,
+    each_line: bool,
+}
+
+impl Indent {
+    /// `style`'s `text-indent` in a containing block `basis` wide.
+    pub(crate) fn of(style: &ComputedStyle, basis: f32) -> Indent {
+        let indent = &style.text().text_indent;
+        Indent {
+            by: indent.length.resolve(basis),
+            hanging: indent.hanging,
+            each_line: indent.each_line,
+        }
+    }
+
+    /// The indent of a line, `first` saying it is the first formatted
+    /// line, or one after a forced break under `each-line`: those lines'
+    /// alone, or with `hanging` every other's.
+    fn of_line(self, first: bool) -> f32 {
+        if first != self.hanging { self.by } else { 0.0 }
+    }
 }
 
 /// The larger of two sets of metrics, side by side.
@@ -1047,6 +1248,7 @@ fn collect<'a>(
         space_style: None,
         gap_placed: false,
         at_word_start: true,
+        glued: String::new(),
     };
     collector.collect(boxes);
     collector.out
@@ -1111,6 +1313,10 @@ struct Collector<'a, 'f> {
     /// boxes — by an inline element, or a `::first-letter` (M16) — is
     /// one word to `text-transform: capitalize`.
     at_word_start: bool,
+    /// The end of the last word's text, while nothing but the edges of
+    /// inline elements came after it: what the next word's text is
+    /// glued to, where UAX #14 may still break between the two.
+    glued: String,
 }
 
 impl<'a> Collector<'a, '_> {
@@ -1133,12 +1339,16 @@ impl<'a> Collector<'a, '_> {
                     style,
                     no_wrap,
                     gap_before,
+                    break_before,
                     ..
-                } => reach.take(*width, style, !no_wrap && *gap_before),
+                } => reach.take(*width, style, !no_wrap && (*gap_before || *break_before)),
                 InlineItem::Open {
-                    style, gap_before, ..
+                    style,
+                    gap_before,
+                    break_before,
+                    ..
                 } => reach.room.is_some_and(|room| {
-                    let breaks = style.white_space.wrap && *gap_before;
+                    let breaks = style.white_space.wrap && (*gap_before || *break_before);
                     reach.take(edge_widths(style, room).0, style, breaks)
                 }),
                 InlineItem::Close(style) => reach
@@ -1172,10 +1382,14 @@ impl<'a> Collector<'a, '_> {
                     let gap_before = std::mem::take(&mut self.space_pending);
                     self.gap_placed |= gap_before;
                     let style = self.style_of(b);
+                    if gap_before {
+                        self.glued.clear();
+                    }
                     self.push(InlineItem::Open {
                         b,
                         style,
                         gap_before,
+                        break_before: false,
                         gap_decorations: self.space_decorations.filter(|_| gap_before),
                         gap_style: self.space_style.filter(|_| gap_before),
                     });
@@ -1195,6 +1409,7 @@ impl<'a> Collector<'a, '_> {
                     let gap_before = std::mem::take(&mut self.space_pending);
                     self.gap_placed = false;
                     self.at_word_start = true;
+                    self.glued.clear();
                     self.push(InlineItem::Atomic {
                         b,
                         gap_before,
@@ -1233,10 +1448,13 @@ impl<'a> Collector<'a, '_> {
 
     fn text(&mut self, b: &'a LayoutBox, text: &str) {
         let style = self.style_of(b);
-        let transformed = apply_text_transform(text, style.text_transform, self.at_word_start);
-        if let Some(last) = text.chars().next_back() {
-            self.at_word_start = last.is_whitespace();
-        }
+        let how = text_transform(style);
+        let transformed = if how.is_none() {
+            self.at_word_start = text::ends_word(text, self.at_word_start);
+            Cow::Borrowed(text)
+        } else {
+            Cow::Owned(text::transform(text, how, &mut self.at_word_start))
+        };
         // `white-space` is the box's own: `::first-line` does not apply it
         // (css-pseudo-4 section 2.3.1), and a `br`'s newline stays a break.
         let white_space = b.style.white_space;
@@ -1260,6 +1478,7 @@ impl<'a> Collector<'a, '_> {
             }
             if i > 0 {
                 if preserves_newlines {
+                    self.glued.clear();
                     self.push(InlineItem::ForcedBreak(style));
                     self.space_pending = false;
                     self.gap_placed = false;
@@ -1281,24 +1500,21 @@ impl<'a> Collector<'a, '_> {
             // right-to-left via UAX#9 embedding regardless, but the
             // *paragraph's* own direction only follows content when
             // nothing set it, which this engine doesn't yet do.
-            // Kept tabs go to the next tab stop, every eight columns
-            // (`tab-size`'s initial value), the columns counted from the
-            // line's start in this text.
-            let expanded;
-            let line = if preserves_spaces && line.contains('\t') {
-                expanded = expand_tabs(line, TAB_SIZE);
-                expanded.as_str()
-            } else {
-                line
-            };
+            // Kept tabs are items of their own, each as wide as takes the
+            // line to its next tab stop (CSS Text 3 section 4.2).
+            if preserves_spaces && line.contains('\t') {
+                self.tabbed(b, style, line, no_wrap);
+                continue;
+            }
             let reordered = text::bidi_reorder(line, Some(base_direction));
             // The line's soft wrap opportunities (UAX #14, D55), within
             // what is unbroken by collapsible white space.
             let mut breaks = if no_wrap {
                 Vec::new()
             } else {
-                text::line_breaks(&reordered, word_breaking(style))
+                text::line_breaks(&reordered, break_rules(style))
             };
+            hyphenation(&reordered, style, &mut breaks);
             // Under `break-spaces` after every space too (CSS Text 3
             // section 5.1).
             if !no_wrap
@@ -1341,7 +1557,10 @@ impl<'a> Collector<'a, '_> {
                         }
                     }
                     self.space(b);
-                } else if word.is_none() {
+                } else if word.is_none() && !is_bidi_control(c) {
+                    // A bidi formatting character starts no word: the
+                    // white space around it collapses as if it were not
+                    // there (CSS Text 3 section 4.1.1).
                     word = Some((i, std::mem::take(&mut self.space_pending)));
                 }
             }
@@ -1355,6 +1574,65 @@ impl<'a> Collector<'a, '_> {
                     no_wrap,
                     gap_before,
                 );
+            }
+        }
+    }
+
+    /// `line`, a line of text whose spaces are kept, with the tabs in it:
+    /// the text between them words, each tab an item, a soft wrap
+    /// opportunity after it where lines wrap.
+    fn tabbed(
+        &mut self,
+        b: &'a LayoutBox,
+        style: &'a Arc<ComputedStyle>,
+        line: &str,
+        no_wrap: bool,
+    ) {
+        let base_direction = to_text_direction(style.direction);
+        for (i, part) in line.split('\t').enumerate() {
+            if i > 0 {
+                let gap_before = std::mem::take(&mut self.space_pending);
+                self.gap_placed = false;
+                self.glued.clear();
+                self.push(InlineItem::Word {
+                    text: "\t".to_owned(),
+                    width: 0.0,
+                    hang: 0.0,
+                    tab: true,
+                    lead: 0.0,
+                    style,
+                    no_wrap,
+                    gap_before,
+                    break_before: false,
+                    breaks: Vec::new(),
+                    node: b.node,
+                    generated: b.generated,
+                    decorations: b.decorations.as_ref(),
+                    gap_decorations: self.space_decorations.filter(|_| gap_before),
+                    gap_style: self.space_style.filter(|_| gap_before),
+                });
+                if self.done {
+                    return;
+                }
+            }
+            if part.is_empty() {
+                continue;
+            }
+            let reordered = text::bidi_reorder(part, Some(base_direction));
+            let mut breaks = if no_wrap {
+                Vec::new()
+            } else {
+                text::line_breaks(&reordered, break_rules(style))
+            };
+            hyphenation(&reordered, style, &mut breaks);
+            let gap_before = std::mem::take(&mut self.space_pending);
+            let after_tab = i > 0 && !no_wrap;
+            self.word(b, style, &reordered, no_wrap, gap_before, breaks);
+            if after_tab && let Some(InlineItem::Word { break_before, .. }) = self.out.last_mut() {
+                *break_before = true;
+            }
+            if self.done {
+                return;
             }
         }
     }
@@ -1378,6 +1656,10 @@ impl<'a> Collector<'a, '_> {
         self.word(b, style, &line[range], no_wrap, gap_before, within);
     }
 
+    /// The word `text`, with the opportunities `breaks` in it: in pieces
+    /// where `text-autospace` puts space between an ideograph and a
+    /// letter or digit (CSS Text 4 section 8.1), each but the first led
+    /// by an eighth of an em.
     fn word(
         &mut self,
         b: &'a LayoutBox,
@@ -1387,14 +1669,55 @@ impl<'a> Collector<'a, '_> {
         gap_before: bool,
         breaks: Vec<usize>,
     ) {
+        let spaced = autospaced(text, style);
+        if spaced.is_empty() {
+            self.word_piece(b, style, text, no_wrap, gap_before, breaks, 0.0);
+            return;
+        }
+        let space = style.font_size_px / 8.0;
+        let mut start = 0;
+        for (n, end) in spaced.iter().copied().chain([text.len()]).enumerate() {
+            let within = breaks
+                .iter()
+                .filter(|&&at| at > start && at < end)
+                .map(|at| at - start)
+                .collect();
+            let lead = if n > 0 { space } else { 0.0 };
+            let gap = gap_before && n == 0;
+            self.word_piece(b, style, &text[start..end], no_wrap, gap, within, lead);
+            if self.done {
+                return;
+            }
+            start = end;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn word_piece(
+        &mut self,
+        b: &'a LayoutBox,
+        style: &'a Arc<ComputedStyle>,
+        text: &str,
+        no_wrap: bool,
+        gap_before: bool,
+        breaks: Vec<usize>,
+        lead: f32,
+    ) {
         self.gap_placed = false;
+        let break_before = !gap_before && !no_wrap && self.breaks_after_glued(text, style);
+        self.glued.clear();
+        let tail = text.char_indices().rev().nth(7).map_or(0, |(i, _)| i);
+        self.glued.push_str(&text[tail..]);
         self.push(InlineItem::Word {
             text: text.to_string(),
             width: measure_word(text, style, self.fonts),
             hang: hang_of(text, style, self.fonts),
+            tab: false,
+            lead,
             style,
             no_wrap,
             gap_before,
+            break_before,
             breaks,
             node: b.node,
             generated: b.generated,
@@ -1404,11 +1727,42 @@ impl<'a> Collector<'a, '_> {
         });
     }
 
+    /// Whether a line may break between the text the next word is glued
+    /// to, before it in another box, and `text`, the word's, by UAX #14
+    /// under `style`'s rules. Where it may, the inline elements opened
+    /// between the two take the opportunity, before their start edges,
+    /// and the word is glued to them.
+    fn breaks_after_glued(&mut self, text: &str, style: &ComputedStyle) -> bool {
+        if self.glued.is_empty() || text.is_empty() {
+            return false;
+        }
+        let head = text.char_indices().nth(8).map_or(text.len(), |(i, _)| i);
+        let joined = format!("{}{}", self.glued, &text[..head]);
+        if !text::line_breaks(&joined, break_rules(style)).contains(&self.glued.len()) {
+            return false;
+        }
+        let opened = self
+            .out
+            .iter()
+            .rev()
+            .take_while(|item| matches!(item, InlineItem::Open { .. }))
+            .count();
+        if opened == 0 {
+            return true;
+        }
+        let first = self.out.len() - opened;
+        if let InlineItem::Open { break_before, .. } = &mut self.out[first] {
+            *break_before = true;
+        }
+        false
+    }
+
     /// White space met in the text box `b`: a gap pending unless one is
     /// placed, the first of a collapsed run's spaces being the one kept
     /// and so the one whose element's decorations (M21.7) and style it
     /// has.
     fn space(&mut self, b: &'a LayoutBox) {
+        self.glued.clear();
         let pending = !self.gap_placed;
         if pending && !self.space_pending {
             self.space_decorations = b.decorations.as_ref();
@@ -1439,13 +1793,25 @@ pub(crate) fn run_intrinsic_widths<'a>(
     first: Option<&[InlineItem<'a>]>,
     pass: &Pass<'a>,
 ) -> (f32, f32) {
+    run_intrinsic_widths_indented(items, first, pass, Indent::default())
+}
+
+/// [`run_intrinsic_widths`] of a run whose first line is indented by
+/// `indent`, or whose other lines are (`text-indent`): the line and the
+/// piece it starts with are that much wider.
+pub(crate) fn run_intrinsic_widths_indented<'a>(
+    items: &[InlineItem<'a>],
+    first: Option<&[InlineItem<'a>]>,
+    pass: &Pass<'a>,
+    indent: Indent,
+) -> (f32, f32) {
     let fonts = pass.fonts;
     let first = first.filter(|first| is_prefix(first, items));
     let mut min = 0.0f32;
     let mut max = 0.0f32;
     // The line being measured, and the unbreakable piece at its end.
-    let mut line = 0.0f32;
-    let mut piece = 0.0f32;
+    let mut line = indent.of_line(true);
+    let mut piece = line;
     let mut line_empty = true;
     let mut after_atomic = false;
     // Whether the line, and the piece, are the first: measured in the
@@ -1471,11 +1837,19 @@ pub(crate) fn run_intrinsic_widths<'a>(
             InlineItem::Word {
                 no_wrap,
                 gap_before,
+                break_before,
                 ..
-            } => !no_wrap && !line_empty && (*gap_before || after_atomic),
+            } => !no_wrap && !line_empty && (*gap_before || *break_before || after_atomic),
             InlineItem::Open {
-                style, gap_before, ..
-            } => style.white_space.wrap && !line_empty && (*gap_before || after_atomic),
+                style,
+                gap_before,
+                break_before,
+                ..
+            } => {
+                style.white_space.wrap
+                    && !line_empty
+                    && (*gap_before || *break_before || after_atomic)
+            }
             InlineItem::Atomic { .. } => !line_empty,
             InlineItem::Marker { b, .. } => {
                 !line_empty && matches!(b.kind, BoxKind::Marker { outside: false, .. })
@@ -1499,9 +1873,15 @@ pub(crate) fn run_intrinsic_widths<'a>(
                     width: piece_width,
                     style: piece_style,
                     breaks: piece_breaks,
+                    tab,
                     ..
                 },
             ) => {
+                // A tab is as wide as it takes the line to its next stop.
+                let tab_width = tab.then(|| tab_advance(piece_style, line, fonts));
+                let lead = if line_empty { 0.0 } else { in_line.lead() };
+                let piece_width = &tab_width.unwrap_or(*piece_width);
+                let width = &tab_width.unwrap_or(*width);
                 // A space of the white space's own style.
                 let gap = |item: &InlineItem<'_>, style| {
                     if line_empty || !gap_before {
@@ -1512,14 +1892,18 @@ pub(crate) fn run_intrinsic_widths<'a>(
                 };
                 // `overflow-wrap: anywhere` breaks a word at any letter
                 // for the min-content width too (CSS Text 3 section 5.5):
-                // its widest letter is the piece.
-                if piece_style.overflow_wrap == style::computed::OverflowWrap::Anywhere
-                    && piece_style.white_space.wrap
-                {
-                    let mut buf = [0u8; 4];
-                    let widest = piece_text
-                        .chars()
-                        .map(|c| measure_word(c.encode_utf8(&mut buf), piece_style, fonts))
+                // its widest typographic character unit is the piece.
+                if min_content_anywhere(piece_style) && piece_style.white_space.wrap {
+                    let ends = text::grapheme_boundaries(piece_text);
+                    let mut start = 0;
+                    let widest = ends
+                        .into_iter()
+                        .chain([piece_text.len()])
+                        .map(|end| {
+                            let unit = &piece_text[start..end];
+                            start = end;
+                            measure_word(unit, piece_style, fonts)
+                        })
                         .fold(0.0f32, f32::max);
                     min = min.max(piece);
                     piece = widest;
@@ -1532,10 +1916,17 @@ pub(crate) fn run_intrinsic_widths<'a>(
                     let mut start = 0;
                     for (n, end) in ends.enumerate() {
                         let segment = &piece_text[start..end];
-                        let width = measure_word(segment, piece_style, fonts)
+                        let hyphen = if end < piece_text.len()
+                            && hyphenates_at(piece_text, end, piece_style)
+                        {
+                            measure_word(hyphen_of(piece_style), piece_style, fonts)
+                        } else {
+                            0.0
+                        };
+                        let width = measure_word(segment, piece_style, fonts) + hyphen
                             - hang_of(segment, piece_style, fonts);
                         if n == 0 && !starts_piece {
-                            piece += gap(in_piece, piece_style) + width;
+                            piece += gap(in_piece, piece_style) + lead + width;
                         } else {
                             piece = width;
                         }
@@ -1546,10 +1937,10 @@ pub(crate) fn run_intrinsic_widths<'a>(
                     piece = if starts_piece {
                         *piece_width
                     } else {
-                        piece + gap(in_piece, piece_style) + piece_width
+                        piece + gap(in_piece, piece_style) + lead + piece_width
                     };
                 }
-                line += gap(in_line, style) + width;
+                line += gap(in_line, style) + lead + width;
                 line_empty = false;
                 after_atomic = false;
             }
@@ -1617,8 +2008,8 @@ pub(crate) fn run_intrinsic_widths<'a>(
                 line += edge_widths(style, 0.0).1;
             }
             (InlineItem::ForcedBreak(_), _) => {
-                line = 0.0;
-                piece = 0.0;
+                line = indent.of_line(indent.each_line);
+                piece = line;
                 line_empty = true;
                 after_atomic = false;
             }
@@ -1630,6 +2021,68 @@ pub(crate) fn run_intrinsic_widths<'a>(
         max = max.max(line);
     }
     (min, max)
+}
+
+/// The byte offsets in `text` where `style`'s `text-autospace` puts space
+/// (CSS Text 4 section 8.1): between an ideograph (Han, kana, bopomofo)
+/// and a letter of another script or a digit, either way round, as
+/// `normal`, the initial value, has it, which the reference browser
+/// ships; none for ASCII text, the common case.
+fn autospaced(text: &str, style: &ComputedStyle) -> Vec<usize> {
+    use style::computed::TextAutospace;
+    if text.is_ascii() {
+        return Vec::new();
+    }
+    let (alpha, numeric) = match style.text().text_autospace {
+        TextAutospace::Normal | TextAutospace::Auto => (true, true),
+        TextAutospace::NoAutospace => return Vec::new(),
+        TextAutospace::Spaces {
+            ideograph_alpha,
+            ideograph_numeric,
+            ..
+        } => (ideograph_alpha, ideograph_numeric),
+    };
+    let ideograph = |c: char| {
+        matches!(c,
+            '\u{2e80}'..='\u{2fdf}'
+            | '\u{3005}'..='\u{3007}'
+            | '\u{3021}'..='\u{3029}'
+            | '\u{3031}'..='\u{3035}'
+            | '\u{3038}'..='\u{303c}'
+            | '\u{3040}'..='\u{30ff}'
+            | '\u{3100}'..='\u{312f}'
+            | '\u{31a0}'..='\u{31ff}'
+            | '\u{3400}'..='\u{4dbf}'
+            | '\u{4e00}'..='\u{9fff}'
+            | '\u{f900}'..='\u{faff}'
+            | '\u{20000}'..='\u{3ffff}')
+    };
+    // A letter or a digit of no ideographic script, and not fullwidth.
+    let other = |c: char| {
+        !ideograph(c)
+            && !matches!(c, '\u{1100}'..='\u{11ff}' | '\u{ac00}'..='\u{d7af}' | '\u{ff00}'..='\u{ffef}')
+            && ((alpha && c.is_alphabetic()) || (numeric && c.is_numeric()))
+    };
+    let mut out = Vec::new();
+    let mut previous: Option<char> = None;
+    for (i, c) in text.char_indices() {
+        if let Some(p) = previous
+            && ((ideograph(p) && other(c)) || (other(p) && ideograph(c)))
+        {
+            out.push(i);
+        }
+        previous = Some(c);
+    }
+    out
+}
+
+/// Whether `c` is a bidi formatting character: the marks, embeddings,
+/// overrides and isolates, which take no room.
+fn is_bidi_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200e}' | '\u{200f}' | '\u{61c}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
 }
 
 /// css-text-3 §4.1's collapsible white space: space, tab, line feed,
@@ -1651,64 +2104,89 @@ pub(crate) fn to_text_direction(direction: Direction) -> text::Direction {
     }
 }
 
-/// `text-transform` (M8.4), applied before any whitespace/word
-/// processing, to a text that starts a word when `at_word_start`.
-/// Borrows (no allocation) for the common `None` case.
-fn apply_text_transform(
-    text: &str,
-    transform: TextTransform,
-    mut at_word_start: bool,
-) -> Cow<'_, str> {
-    match transform {
-        TextTransform::None => Cow::Borrowed(text),
-        TextTransform::Uppercase => Cow::Owned(text.to_uppercase()),
-        TextTransform::Lowercase => Cow::Owned(text.to_lowercase()),
-        TextTransform::Capitalize => {
-            let mut out = String::with_capacity(text.len());
-            for c in text.chars() {
-                if c.is_whitespace() {
-                    at_word_start = true;
-                    out.push(c);
-                } else if at_word_start {
-                    out.extend(c.to_uppercase());
-                    at_word_start = false;
-                } else {
-                    out.push(c);
-                }
-            }
-            Cow::Owned(out)
-        }
+/// `style`'s `text-transform` (M8.4, gap batch D), tailored by its
+/// content language.
+fn text_transform(style: &ComputedStyle) -> text::Transform<'_> {
+    let props = style.text();
+    text::Transform {
+        case: match style.text_transform {
+            TextTransform::None => text::Case::None,
+            TextTransform::Uppercase => text::Case::Upper,
+            TextTransform::Lowercase => text::Case::Lower,
+            TextTransform::Capitalize => text::Case::Capitalize,
+        },
+        full_width: props.transform_extra.full_width,
+        full_size_kana: props.transform_extra.full_size_kana,
+        language: props.lang.as_deref().unwrap_or_default(),
     }
 }
 
-/// `tab-size`'s initial value, in spaces.
-const TAB_SIZE: usize = 8;
-
-/// `line` with each tab replaced by the spaces to the next multiple of
-/// `size` columns.
-fn expand_tabs(line: &str, size: usize) -> String {
-    let mut out = String::with_capacity(line.len());
-    let mut column = 0;
-    for c in line.chars() {
-        if c == '\t' {
-            let spaces = size - column % size;
-            out.extend(std::iter::repeat_n(' ', spaces));
-            column += spaces;
-        } else {
-            out.push(c);
-            column += 1;
+/// The width of a tab `x` from the line's start (CSS Text 3 section
+/// 4.2): to the next tab stop, `tab-size` apart, a number of them as
+/// many spaces with their `letter-spacing` and `word-spacing`; to the one
+/// after where the next is nearer than half a space. A tab size of zero
+/// makes a tab of none.
+fn tab_advance(style: &ComputedStyle, x: f32, fonts: &FontCollection) -> f32 {
+    let space = font::measure(fonts, " ", style);
+    let stop = match style.text().tab_size {
+        style::computed::TabSize::Spaces(n) => {
+            n * (space + style.letter_spacing + style.word_spacing)
         }
+        style::computed::TabSize::Length(px) => px,
+    };
+    if stop.is_nan() || stop <= 0.0 {
+        return 0.0;
     }
-    out
+    let mut next = ((x / stop).floor() + 1.0) * stop;
+    if next - x < space / 2.0 {
+        next += stop;
+    }
+    next - x
 }
 
-/// The opportunities `style`'s `word-break` gives (D55).
-fn word_breaking(style: &ComputedStyle) -> text::WordBreaking {
-    match style.word_break {
+/// Whether preserved white space at a line's end hangs past it there:
+/// where spaces are kept but under `break-spaces`.
+fn hangs_spaces(style: &ComputedStyle) -> bool {
+    style.white_space.preserves_spaces()
+        && style.white_space.collapse != style::computed::WhiteSpaceCollapse::BreakSpaces
+}
+
+/// The opportunities `style`'s `word-break` and `line-break` give
+/// (D55), the latter tailored to Chinese and Japanese by the content
+/// language.
+fn break_rules(style: &ComputedStyle) -> text::BreakRules {
+    use style::computed::LineBreak;
+    let props = style.text();
+    let words = match style.word_break {
         style::computed::WordBreak::BreakAll => text::WordBreaking::BreakAll,
         style::computed::WordBreak::KeepAll => text::WordBreaking::KeepAll,
         _ => text::WordBreaking::Normal,
+    };
+    let strictness = match props.line_break {
+        LineBreak::Auto | LineBreak::Strict => text::Strictness::Strict,
+        LineBreak::Normal => text::Strictness::Normal,
+        LineBreak::Loose => text::Strictness::Loose,
+        LineBreak::Anywhere => text::Strictness::Anywhere,
+    };
+    let language = props.lang.as_deref().unwrap_or_default();
+    let chinese_or_japanese = ["ja", "zh"].iter().any(|code| {
+        language
+            .strip_prefix(code)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
+    });
+    text::BreakRules {
+        words,
+        strictness,
+        chinese_or_japanese,
     }
+}
+
+/// Whether `style` breaks a word anywhere for the min-content width too:
+/// `overflow-wrap: anywhere`, or `word-break: break-word`, which is
+/// `normal` with it (CSS Text 3 section 5.2).
+fn min_content_anywhere(style: &ComputedStyle) -> bool {
+    style.overflow_wrap == style::computed::OverflowWrap::Anywhere
+        || style.word_break == style::computed::WordBreak::BreakWord
 }
 
 /// Whether `style` lets a word too long for its line break anywhere:
@@ -1717,6 +2195,81 @@ fn word_breaking(style: &ComputedStyle) -> text::WordBreaking {
 fn breaks_anywhere(style: &ComputedStyle) -> bool {
     style.overflow_wrap != style::computed::OverflowWrap::Normal
         || style.word_break == style::computed::WordBreak::BreakWord
+}
+
+/// `text`'s soft wrap opportunities `breaks` as `hyphens` has them (CSS
+/// Text 3 section 5.4): none after a soft hyphen under `none`; under
+/// `auto`, in a language with patterns, the hyphenation opportunities of
+/// its words too.
+fn hyphenation(text: &str, style: &ComputedStyle, breaks: &mut Vec<usize>) {
+    use style::computed::Hyphens;
+    let props = style.text();
+    match props.hyphens {
+        Hyphens::None if text.contains('\u{ad}') => {
+            breaks.retain(|&at| !text[..at].ends_with('\u{ad}'));
+        }
+        Hyphens::Auto if style.white_space.wrap => {
+            let language = props.lang.as_deref().unwrap_or_default();
+            if !text::hyphenates(language) {
+                return;
+            }
+            let [word, before, after] = props.hyphenate_limit_chars;
+            let limit = |v: Option<i32>| v.map(|n| n.max(0) as u32);
+            let limits = text::HyphenLimits {
+                word: limit(word),
+                before: limit(before),
+                after: limit(after),
+            };
+            let mut start = None;
+            for (i, c) in text.char_indices().chain([(text.len(), ' ')]) {
+                match (is_hyphenable(c), start) {
+                    (true, None) => start = Some(i),
+                    (false, Some(from)) => {
+                        let points = text::hyphenation_points(&text[from..i], language, limits);
+                        breaks.extend(points.into_iter().map(|at| from + at));
+                        start = None;
+                    }
+                    _ => {}
+                }
+            }
+            breaks.sort_unstable();
+            breaks.dedup();
+        }
+        _ => {}
+    }
+}
+
+/// Whether `c` is a letter of a word `hyphens: auto` may hyphenate: a
+/// letter of an alphabet, not an ideograph or a kana.
+fn is_hyphenable(c: char) -> bool {
+    c.is_alphabetic() && (c as u32) < 0x2e80
+}
+
+/// Whether a line broken at byte `at` of `text`, in `style`, ends with a
+/// hyphen: after a soft hyphen, or between two letters where only
+/// `hyphens: auto` breaks.
+fn hyphenates_at(text: &str, at: usize, style: &ComputedStyle) -> bool {
+    use style::computed::Hyphens;
+    let hyphens = style.text().hyphens;
+    let before = text[..at].chars().next_back();
+    if before == Some('\u{ad}') {
+        return hyphens != Hyphens::None;
+    }
+    hyphens == Hyphens::Auto
+        && style.word_break == style::computed::WordBreak::Normal
+        && style.text().line_break != style::computed::LineBreak::Anywhere
+        && before.is_some_and(is_hyphenable)
+        && text[at..].chars().next().is_some_and(is_hyphenable)
+}
+
+/// The hyphen a hyphenated line ends with: `hyphenate-character`'s, or
+/// for `auto` the hyphen, U+2010.
+fn hyphen_of(style: &ComputedStyle) -> &str {
+    style
+        .text()
+        .hyphenate_character
+        .as_deref()
+        .unwrap_or("\u{2010}")
 }
 
 /// How much of `text`'s width is preserved spaces at its end, which hang
@@ -1752,7 +2305,12 @@ fn cut_word<'i>(
         .collect();
     let fits = within.iter().rev().copied().find(|&at| {
         let head = &word.text[..at];
-        measure_word(head, word.style, fonts) - hang_of(head, word.style, fonts) <= room
+        let hyphen = if hyphenates_at(word.text, at, word.style) {
+            measure_word(hyphen_of(word.style), word.style, fonts)
+        } else {
+            0.0
+        };
+        measure_word(head, word.style, fonts) + hyphen - hang_of(head, word.style, fonts) <= room
     });
     let at = match fits {
         Some(at) => at,
@@ -1775,20 +2333,27 @@ fn split_at<'i>(
         width: measure_word(text, word.style, fonts),
         hang: hang_of(text, word.style, fonts),
         offset,
+        hyphen: false,
         ..*word
     };
-    (piece(head, word.offset), piece(tail, word.offset + at))
+    let mut head = piece(head, word.offset);
+    if hyphenates_at(word.text, at, word.style) {
+        head.hyphen = true;
+        head.width += measure_word(hyphen_of(word.style), word.style, fonts);
+    }
+    (head, piece(tail, word.offset + at))
 }
 
-/// `word` cut where it reaches `room`: the characters that fit, at least
-/// one, and the rest; `None` for a word of one character.
+/// `word` cut where it reaches `room`: the typographic character units
+/// (grapheme clusters) that fit, at least one, and the rest; `None` for
+/// a word of one.
 fn split_to_fit<'i>(
     word: &LineWord<'i>,
     room: f32,
     fonts: &FontCollection,
 ) -> Option<(LineWord<'i>, LineWord<'i>)> {
-    let mut ends = word.text.char_indices().map(|(i, _)| i).skip(1).peekable();
-    ends.peek()?;
+    let ends = text::grapheme_boundaries(word.text);
+    let first = *ends.first()?;
     let mut cut = None;
     for end in ends {
         if measure_word(&word.text[..end], word.style, fonts) > room {
@@ -1796,13 +2361,7 @@ fn split_to_fit<'i>(
         }
         cut = Some(end);
     }
-    let cut = cut.unwrap_or_else(|| {
-        word.text
-            .char_indices()
-            .nth(1)
-            .map_or(word.text.len(), |(i, _)| i)
-    });
-    Some(split_at(word, cut, fonts))
+    Some(split_at(word, cut.unwrap_or(first), fonts))
 }
 
 /// A space's width plus `word-spacing` (M8.4) — the gap between two
@@ -1981,7 +2540,11 @@ fn flush_line<'a>(
         if i > 0 && placed.gap_before {
             x += placed.gap(fonts) + placement.gap;
         }
+        if i > 0 {
+            x += placed.lead;
+        }
         match placed.item {
+            LineItem::Word(word) if word.tab => x += word.width,
             LineItem::Word(word) => {
                 let lines = word.decorations.map(|d| drawn.of(d, fonts));
                 let into = innermost(&mut stack, fragments);
@@ -2388,13 +2951,18 @@ fn text_fragment(
     decorated: Option<Box<Decorated>>,
     font: text::Font,
 ) -> Fragment {
+    let shown = if word.hyphen {
+        format!("{}{}", word.text, hyphen_of(word.style))
+    } else {
+        word.text.to_string()
+    };
     Fragment {
         x,
         y: baseline_y,
         w: word.width,
         h: ascent + descent,
         style: word.style.clone(),
-        kind: FragmentKind::Text(word.text.to_string()),
+        kind: FragmentKind::Text(shown),
         node: word.node,
         generated: word.generated,
         ascent,
@@ -2429,15 +2997,22 @@ fn emit_letter_spaced(
     fonts: &FontCollection,
 ) {
     let mut buf = [0u8; 4];
-    let last = word.text.chars().count().saturating_sub(1);
+    let shown = if word.hyphen {
+        Cow::Owned(format!("{}{}", word.text, hyphen_of(word.style)))
+    } else {
+        Cow::Borrowed(word.text)
+    };
+    let last = shown.chars().count().saturating_sub(1);
     let font = font::font_of(fonts, word.style);
-    for (i, ch) in word.text.chars().enumerate() {
+    for (i, ch) in shown.chars().enumerate() {
         let ch_str = ch.encode_utf8(&mut buf);
         let w = fonts.measure_in(font, ch_str, word.style.font_size_px);
         let one = LineWord {
             text: ch_str,
             width: w,
             hang: 0.0,
+            tab: false,
+            hyphen: false,
             breaks: &[],
             offset: 0,
             style: word.style,
@@ -2492,6 +3067,7 @@ mod tests {
             &mut floats,
             At::root(),
             &Pass::new(fonts),
+            true,
         );
         (l.fragments, l.height)
     }
@@ -2680,8 +3256,140 @@ mod tests {
             &mut floats,
             At::root(),
             &Pass::new(&fonts),
+            true,
         );
         texts(&l.fragments)
+    }
+
+    #[test]
+    fn text_indent_indents_the_first_line_or_with_hanging_the_others() {
+        let indented = |length, hanging, each_line| {
+            let mut style = ComputedStyle::default();
+            style.text_mut().text_indent = style::computed::TextIndent {
+                length,
+                hanging,
+                each_line,
+            };
+            style
+        };
+        let fonts = test_fonts();
+        let one_word = fonts.measure("aaaa", 16.0) + 25.0;
+        // Lines of one word each, their x.
+        let xs = |container: ComputedStyle| {
+            lay_styled("aaaa aaaa aaaa", one_word, container)
+                .iter()
+                .map(|f| f.x)
+                .collect::<Vec<_>>()
+        };
+        let px = |v| style::computed::LengthPercentage::Px(v);
+        assert_eq!(xs(indented(px(20.0), false, false)), [20.0, 0.0, 0.0]);
+        assert_eq!(xs(indented(px(20.0), true, false)), [0.0, 20.0, 20.0]);
+        let pct = style::computed::LengthPercentage::Percent(10.0);
+        assert_eq!(xs(indented(pct, false, false)), [one_word / 10.0, 0.0, 0.0]);
+        // `each-line`: after a forced break too.
+        let mut container = indented(px(20.0), false, true);
+        container.white_space = WhiteSpace::PRE_LINE;
+        let run = [styled_text_box(
+            "a a\na",
+            ComputedStyle {
+                white_space: WhiteSpace::PRE_LINE,
+                ..container.clone()
+            },
+        )];
+        let mut floats = FloatContext::default();
+        let l = layout_inline(
+            &run,
+            fonts.measure("a", 16.0) + 25.0,
+            None,
+            &container,
+            None,
+            &mut floats,
+            At::root(),
+            &Pass::new(&fonts),
+            true,
+        );
+        let xs: Vec<f32> = texts(&l.fragments).iter().map(|f| f.x).collect();
+        assert_eq!(xs, [20.0, 0.0, 20.0]);
+        // The max-content width counts the first line's indent.
+        let run = [styled_text_box("aaaa", ComputedStyle::default())];
+        let items = collect_inline_items(&run, &fonts);
+        let indent = Indent::of(&indented(px(20.0), false, false), 0.0);
+        let (min, max) = run_intrinsic_widths_indented(&items, None, &Pass::new(&fonts), indent);
+        assert_eq!(
+            (min, max),
+            (
+                20.0 + fonts.measure("aaaa", 16.0),
+                20.0 + fonts.measure("aaaa", 16.0)
+            )
+        );
+    }
+
+    #[test]
+    fn text_autospace_puts_an_eighth_of_an_em_between_ideographs_and_letters() {
+        let fonts = test_fonts();
+        let spaced = lay_styled("\u{65e5}a1\u{672c}", 400.0, ComputedStyle::default());
+        let xs: Vec<(String, f32)> = spaced
+            .iter()
+            .map(|f| match &f.kind {
+                FragmentKind::Text(t) => (t.clone(), f.x),
+                _ => unreachable!(),
+            })
+            .collect();
+        let ideograph = fonts.measure("\u{65e5}", 16.0);
+        assert_eq!(
+            xs,
+            [
+                ("\u{65e5}".to_string(), 0.0),
+                ("a1".to_string(), ideograph + 2.0),
+                (
+                    "\u{672c}".to_string(),
+                    ideograph + 2.0 + fonts.measure("a1", 16.0) + 2.0
+                ),
+            ]
+        );
+        let mut none = ComputedStyle {
+            font_size_px: 16.0,
+            ..ComputedStyle::default()
+        };
+        none.text_mut().text_autospace = style::computed::TextAutospace::NoAutospace;
+        let run = [styled_text_box("\u{65e5}a1\u{672c}", none)];
+        let (unspaced, _) = lay(&run, 400.0, TextAlign::Left, &fonts);
+        assert_eq!(
+            texts_of(&texts(&unspaced)),
+            ["\u{65e5}a1\u{672c}"],
+            "no space"
+        );
+        assert_eq!(lay_styled("abc", 400.0, ComputedStyle::default()).len(), 1);
+        // An iteration mark is an ideograph's: no space before it.
+        assert_eq!(
+            lay_styled("\u{65e5}\u{3005}", 400.0, ComputedStyle::default()).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn text_wrap_balance_evens_the_lines_out_keeping_their_count() {
+        let fonts = test_fonts();
+        let width = fonts.measure("aa aa aa aa", 16.0) + 2.0;
+        let rows = |wrap_style| {
+            let mut container = ComputedStyle::default();
+            container.text_mut().text_wrap_style = wrap_style;
+            let fragments = lay_styled("aa aa aa aa aa", width, container);
+            let mut rows: Vec<usize> = Vec::new();
+            let mut last_y = None;
+            for f in &fragments {
+                if last_y != Some(f.y) {
+                    rows.push(0);
+                    last_y = Some(f.y);
+                }
+                *rows.last_mut().unwrap() += 1;
+            }
+            rows
+        };
+        use style::computed::TextWrapStyle;
+        assert_eq!(rows(TextWrapStyle::Auto), [4, 1]);
+        assert_eq!(rows(TextWrapStyle::Balance), [3, 2]);
+        assert_eq!(rows(TextWrapStyle::Pretty), [4, 1]);
     }
 
     #[test]
@@ -3192,16 +3900,60 @@ mod tests {
     }
 
     #[test]
-    fn kept_tabs_go_to_the_next_stop_of_eight_columns() {
-        assert_eq!(expand_tabs("\tab", 8), "        ab");
-        assert_eq!(expand_tabs("    \tx", 8), "        x");
-        assert_eq!(expand_tabs("abcdefgh\ti", 8), "abcdefgh        i");
-        assert_eq!(expand_tabs("a\t\tb", 4), "a       b");
-        let pre = ComputedStyle {
-            white_space: WhiteSpace::PRE,
-            ..ComputedStyle::default()
+    fn kept_tabs_go_to_the_next_tab_stop_from_the_lines_start() {
+        let fonts = test_fonts();
+        let space = fonts.measure(" ", 16.0);
+        let pre = |tab_size| {
+            let mut style = ComputedStyle {
+                white_space: WhiteSpace::PRE,
+                font_size_px: 16.0,
+                ..ComputedStyle::default()
+            };
+            style.text_mut().tab_size = tab_size;
+            style
         };
-        assert_eq!(lines_of("a\tb", pre, 400.0), ["a       b"]);
+        use style::computed::TabSize;
+        // `b` after a tab of eight spaces from the line's start.
+        let x_of_b = |run: &[LayoutBox]| {
+            let (fragments, _) = lay(run, 400.0, TextAlign::Left, &fonts);
+            texts(&fragments)
+                .iter()
+                .find(|f| matches!(&f.kind, FragmentKind::Text(t) if t == "b"))
+                .unwrap()
+                .x
+        };
+        let eight = pre(TabSize::Spaces(8.0));
+        assert_eq!(
+            x_of_b(&[styled_text_box("a\tb", eight.clone())]),
+            8.0 * space
+        );
+        // The stop counted from the line's start, not the text's.
+        let run = [
+            styled_text_box("aa", eight.clone()),
+            styled_text_box("\tb", eight.clone()),
+        ];
+        assert_eq!(x_of_b(&run), 8.0 * space);
+        // A length; and the next stop where this one is under half a
+        // space away.
+        let px = pre(TabSize::Length(30.0));
+        assert_eq!(x_of_b(&[styled_text_box("\tb", px.clone())]), 30.0);
+        // A tab alone in its text, an element after it.
+        let run = [
+            styled_text_box("\t", px.clone()),
+            inline_box(vec![styled_text_box("b", px.clone())]),
+        ];
+        assert_eq!(x_of_b(&run), 30.0);
+        let near = 30.0 - fonts.measure("m", 16.0);
+        assert!(near > space / 2.0, "m is far enough from 30px");
+        assert_eq!(x_of_b(&[styled_text_box("m\tb", px)]), 30.0);
+        // A tab size of zero: no tab.
+        let zero = pre(TabSize::Spaces(0.0));
+        assert_eq!(x_of_b(&[styled_text_box("\tb", zero)]), 0.0);
+        // The max-content width counts it.
+        let run = [styled_text_box("\tb", eight)];
+        let items = collect_inline_items(&run, &fonts);
+        let (_, max) = run_intrinsic_widths(&items, None, &Pass::new(&fonts));
+        assert_eq!(max, 8.0 * space + fonts.measure("b", 16.0));
     }
 
     #[test]
@@ -3238,6 +3990,143 @@ mod tests {
         assert_eq!(min(style::computed::OverflowWrap::Normal), w("mmm"));
         assert_eq!(min(style::computed::OverflowWrap::BreakWord), w("mmm"));
         assert_eq!(min(style::computed::OverflowWrap::Anywhere), w("m"));
+    }
+
+    #[test]
+    fn word_break_break_word_breaks_grapheme_clusters_for_the_min_content_width() {
+        let fonts = test_fonts();
+        let min = |word_break, text: &str| {
+            let style = ComputedStyle {
+                word_break,
+                font_size_px: 16.0,
+                ..ComputedStyle::default()
+            };
+            let run = [styled_text_box(text, style)];
+            let items = collect_inline_items(&run, &fonts);
+            run_intrinsic_widths(&items, None, &Pass::new(&fonts)).0
+        };
+        let w = |s: &str| fonts.measure(s, 16.0);
+        assert_eq!(min(style::computed::WordBreak::Normal, "mmm"), w("mmm"));
+        assert_eq!(
+            min(style::computed::WordBreak::BreakWord, "mmm"),
+            w("mmm") / 3.0
+        );
+        // A letter and its combining mark are one unit.
+        assert_eq!(
+            min(style::computed::WordBreak::BreakWord, "ie\u{301}i"),
+            w("e\u{301}")
+        );
+    }
+
+    #[test]
+    fn hyphens_break_words_at_soft_hyphens_and_by_patterns() {
+        use style::computed::Hyphens;
+        let style = |hyphens, lang: &str, character: Option<&str>| {
+            let mut style = ComputedStyle::default();
+            style.text_mut().hyphens = hyphens;
+            style.text_mut().lang = Some(Arc::from(lang));
+            style.text_mut().hyphenate_character = character.map(Arc::from);
+            style
+        };
+        let shy = "a\u{ad}b";
+        assert_eq!(
+            lines_of(shy, style(Hyphens::Manual, "en", None), 1.0),
+            ["a\u{ad}\u{2010}", "b"]
+        );
+        assert_eq!(lines_of(shy, style(Hyphens::None, "en", None), 1.0), [shy]);
+        assert_eq!(
+            lines_of("extensive", style(Hyphens::Auto, "en", Some("=")), 1.0),
+            ["ex=", "ten=", "sive"]
+        );
+        // Not without a language, nor under `manual`.
+        assert_eq!(
+            lines_of("extensive", style(Hyphens::Auto, "", None), 1.0),
+            ["extensive"]
+        );
+        assert_eq!(
+            lines_of("extensive", style(Hyphens::Manual, "en", None), 1.0),
+            ["extensive"]
+        );
+        // Where the line has room, no hyphen.
+        assert_eq!(
+            lines_of("extensive", style(Hyphens::Auto, "en", None), 400.0),
+            ["extensive"]
+        );
+        // The min-content width is the widest part with its hyphen.
+        let fonts = test_fonts();
+        let run = [styled_text_box(
+            "extensive",
+            ComputedStyle {
+                font_size_px: 16.0,
+                ..style(Hyphens::Auto, "en", Some("="))
+            },
+        )];
+        let items = collect_inline_items(&run, &fonts);
+        let (min, _) = run_intrinsic_widths(&items, None, &Pass::new(&fonts));
+        assert_eq!(min, fonts.measure("ten=", 16.0));
+    }
+
+    #[test]
+    fn line_break_says_how_strictly_lines_break() {
+        let style = |line_break, lang: &str| {
+            let mut style = ComputedStyle::default();
+            style.text_mut().line_break = line_break;
+            style.text_mut().lang = Some(Arc::from(lang));
+            style
+        };
+        use style::computed::LineBreak;
+        let kana = "\u{6587}\u{3041}";
+        assert_eq!(lines_of(kana, style(LineBreak::Strict, "ja"), 1.0), [kana]);
+        assert_eq!(lines_of(kana, style(LineBreak::Auto, "ja"), 1.0), [kana]);
+        assert_eq!(
+            lines_of(kana, style(LineBreak::Normal, "ja"), 1.0),
+            ["\u{6587}", "\u{3041}"]
+        );
+        // The wave dash starts a line under `normal` in Japanese alone.
+        let dash = "\u{6587}\u{301c}";
+        assert_eq!(lines_of(dash, style(LineBreak::Normal, "en"), 1.0), [dash]);
+        assert_eq!(
+            lines_of(dash, style(LineBreak::Normal, "ja-JP"), 1.0),
+            ["\u{6587}", "\u{301c}"]
+        );
+        // `anywhere` between letters.
+        assert_eq!(
+            lines_of("ab", style(LineBreak::Anywhere, "en"), 1.0),
+            ["a", "b"]
+        );
+    }
+
+    #[test]
+    fn glued_text_in_two_boxes_breaks_where_uax_14_says() {
+        let fonts = test_fonts();
+        // Two ideographs: an opportunity between them, the inline box's
+        // start edge going with what it holds.
+        let run = [
+            text_box("\u{6587}", 16.0),
+            inline_box(vec![text_box("\u{5b57}", 16.0)]),
+        ];
+        let (fragments, _) = lay(&run, 1.0, TextAlign::Left, &fonts);
+        let words = texts(&fragments);
+        assert_eq!(texts_of(&words), ["\u{6587}", "\u{5b57}"]);
+        assert!(words[1].y > words[0].y, "the second on a line of its own");
+        let inline = fragments
+            .iter()
+            .find(|f| matches!(f.kind, FragmentKind::InlineBox))
+            .unwrap();
+        assert!(inline.y >= words[1].y - words[1].ascent, "with its box");
+        // Two letters: none.
+        let run = [text_box("a", 16.0), inline_box(vec![text_box("b", 16.0)])];
+        let (fragments, _) = lay(&run, 1.0, TextAlign::Left, &fonts);
+        let words = texts(&fragments);
+        assert_eq!(words[0].y, words[1].y);
+        // A hyphen ends a piece: `well-<b>known</b>`.
+        let run = [
+            text_box("well-", 16.0),
+            inline_box(vec![text_box("known", 16.0)]),
+        ];
+        let (fragments, _) = lay(&run, 1.0, TextAlign::Left, &fonts);
+        let words = texts(&fragments);
+        assert!(words[1].y > words[0].y);
     }
 
     #[test]
