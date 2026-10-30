@@ -351,7 +351,7 @@ const MAX_IMPORT_DEPTH: usize = 16;
 const NO_BOX: &[&str] = &[
     "canvas", "iframe", "frame", "frameset", "object", "embed", "video", "audio", "picture",
     "math", "fieldset", "legend", "meter", "progress", "output", "details", "summary", "dialog",
-    "marquee", "br", "hr",
+    "marquee", "hr",
 ];
 
 /// SVG's elements past v1 (M32, G87), by their local names: a test using

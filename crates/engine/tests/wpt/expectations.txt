@@ -31728,3 +31728,94 @@ html/semantics/scripting-1/the-script-element/module/integrity.html	The integrit
 # serialization, layout queries and fonts let run. These fail by a gap the
 # roadmap names, the design note's section 2, what the runner cannot do, or
 # for a cause not diagnosed in the batch, said so.
+
+# Tests taken in gap batch D (docs/design/text-dom-scripts.md, step 15): the
+# reftests of css-text and css-fonts, and the testharness.js tests of
+# html/syntax/parsing, dom/ranges, dom/traversal, selection,
+# html/semantics/scripting-1, subresource-integrity, css-fonts, css-text and
+# cssom-view; and the subtests of earlier directories the batch's
+# serialization, layout queries and fonts let run. These fail by a gap the
+# roadmap names, the design note's section 2, what the runner cannot do, or
+# for a cause not diagnosed in the batch, said so.
+css/css-backgrounds/background-origin/origin-content-box.html draws otherwise than its reference: not diagnosed in the batch
+css/css-backgrounds/background-origin/origin-content-box_with_radius.html draws otherwise than its reference: not diagnosed in the batch
+css/css-backgrounds/background-origin/origin-padding-box.html draws otherwise than its reference: not diagnosed in the batch
+css/css-backgrounds/background-origin/origin-padding-box_with_radius.html draws otherwise than its reference: not diagnosed in the batch
+css/css-backgrounds/border-image-repeat-round-003.html draws otherwise than its reference: not diagnosed in the batch
+css/css-backgrounds/border-radius-012.html draws otherwise than its reference: not diagnosed in the batch
+css/css-backgrounds/box-shadow-outset-without-border-radius-001.html shadow trees (attachShadow), which no milestone holds
+css/css-images/image-orientation/image-orientation-from-image-content-images.html draws otherwise than its reference: not diagnosed in the batch
+css/css-images/object-fit-contain-svg-004i.html draws otherwise than its reference: not diagnosed in the batch
+css/css-images/object-fit-cover-svg-004i.html draws otherwise than its reference: not diagnosed in the batch
+css/css-images/object-fit-none-svg-003i.html draws otherwise than its reference: not diagnosed in the batch
+css/css-images/object-fit-none-svg-004i.html draws otherwise than its reference: not diagnosed in the batch
+css/css-images/object-fit-scale-down-svg-004i.html draws otherwise than its reference: not diagnosed in the batch
+css/css-sizing/aspect-ratio/select-element-001.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/letter-spacing/letter-spacing-bidi-002.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/letter-spacing/letter-spacing-control-chars-001.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/letter-spacing/letter-spacing-cursive-001.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/letter-spacing/letter-spacing-cursive-002.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/letter-spacing/letter-spacing-trim-start-001.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/line-breaking/line-breaking-018.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/line-breaking/line-breaking-019.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/line-breaking/line-breaking-ic-001.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/line-breaking/line-breaking-ic-002.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/line-breaking/line-breaking-ic-003.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/overflow-wrap/overflow-wrap-anywhere-span-001.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/overflow-wrap/overflow-wrap-break-word-span-001.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/overflow-wrap/overflow-wrap-cluster-001.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/overflow-wrap/overflow-wrap-cluster-002.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/overflow-wrap/overflow-wrap-min-content-size-002.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/overflow-wrap/overflow-wrap-normal-keep-all-001.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/text-align/text-align-last-justify-br.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/text-justify/text-justify-and-trailing-spaces-001.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/text-justify/text-justify-and-trailing-spaces-002.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/text-transform/text-transform-letter-spacing-002.html text-transform's full-size-kana, full-width and language tailoring, which the engine does not apply
+css/css-text/white-space/text-wrap-balance-004.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/text-wrap-balance-float-001.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/text-wrap-balance-float-002.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/text-wrap-balance-float-003.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/text-wrap-balance-float-004.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/text-wrap-balance-float-005.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/trailing-ideographic-space-001.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/trailing-ideographic-space-002.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/trailing-ideographic-space-003.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/trailing-ideographic-space-004.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/trailing-ideographic-space-005.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/trailing-ideographic-space-006.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/trailing-ideographic-space-008.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/trailing-ideographic-space-010.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/trailing-ideographic-space-break-spaces-001.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/trailing-ideographic-space-break-spaces-002.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/trailing-ideographic-space-break-spaces-003.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/trailing-ideographic-space-break-spaces-004.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/trailing-ideographic-space-break-spaces-005.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/trailing-ideographic-space-break-spaces-006.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/trailing-ogham-001.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/trailing-ogham-002.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/trailing-ogham-003.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/trailing-other-space-separators-001.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/trailing-other-space-separators-003.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/trailing-other-space-separators-004.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/trailing-space-align-start.tentative.html a tentative feature no milestone holds
+css/css-text/white-space/white-space-letter-spacing-001.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/white-space-normal-011.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/white-space-pre-031.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/white-space-pre-032.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/white-space-pre-034.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/white-space-pre-035.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/white-space-pre-wrap-justify-003.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/white-space-pre-wrap-trailing-spaces-021.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/white-space/white-space-wrap-after-nowrap-001.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/word-break/break-boundary-2-chars-001.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/word-break/word-break-break-all-020.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/word-break/word-break-break-all-062.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/word-break/word-break-break-all-inline-004.tentative.html a tentative feature no milestone holds
+css/css-text/word-break/word-break-break-all-inline-006.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/word-break/word-break-break-all-inline-007.tentative.html a tentative feature no milestone holds
+css/css-text/word-break/word-break-keep-all-005.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/word-break/word-break-keep-all-006.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/word-break/word-break-keep-all-007.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/word-break/word-break-keep-all-008.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/word-break/word-break-keep-all-063.html draws otherwise than its reference: not diagnosed in the batch
+css/css-text/word-break/word-break-min-content-006.html draws otherwise than its reference: not diagnosed in the batch

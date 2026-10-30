@@ -2024,23 +2024,39 @@ crashtest	css/css-text/crashtests/white-space-pre-wrap-chash.html
 crashtest	css/css-text/crashtests/word-spacing-large-value.html
 reftest	css/css-text/letter-spacing/letter-spacing-bengali-yaphala-001.html	==css/css-text/letter-spacing/reference/letter-spacing-bengali-yaphala-001-ref.html
 reftest	css/css-text/letter-spacing/letter-spacing-bidi-001.html	==css/css-text/letter-spacing/reference/letter-spacing-bidi-001-ref.html
+reftest	css/css-text/letter-spacing/letter-spacing-bidi-002.html	==css/css-text/letter-spacing/reference/letter-spacing-bidi-002-ref.html
+reftest	css/css-text/letter-spacing/letter-spacing-control-chars-001.html	==css/css-text/letter-spacing/reference/letter-spacing-control-chars-001.ref.html
+reftest	css/css-text/letter-spacing/letter-spacing-cursive-001.html	==css/css-text/letter-spacing/reference/letter-spacing-cursive-001-ref.html
+reftest	css/css-text/letter-spacing/letter-spacing-cursive-002.html	==css/css-text/letter-spacing/reference/letter-spacing-cursive-002-ref.html
 reftest	css/css-text/letter-spacing/letter-spacing-end-of-line-001.html	==css/css-text/letter-spacing/reference/letter-spacing-end-of-line-001-ref.html
+reftest	css/css-text/letter-spacing/letter-spacing-end-of-line-002.html	==css/css-text/letter-spacing/reference/letter-spacing-end-of-line-002-ref.html
 reftest	css/css-text/letter-spacing/letter-spacing-ligatures-003.html	==css/css-text/letter-spacing/reference/letter-spacing-ligatures-003-ref.html
 reftest	css/css-text/letter-spacing/letter-spacing-ligatures-005.html	==css/css-text/letter-spacing/reference/letter-spacing-ligatures-005-ref.html	fuzzy=:0-4;0-9
 reftest	css/css-text/letter-spacing/letter-spacing-nesting-001.html	==css/css-text/letter-spacing/reference/letter-spacing-nesting-001-ref.html
 reftest	css/css-text/letter-spacing/letter-spacing-nesting-002.html	==css/css-text/letter-spacing/reference/letter-spacing-nesting-002-ref.html
+reftest	css/css-text/letter-spacing/letter-spacing-trim-start-001.html	==css/css-text/letter-spacing/reference/letter-spacing-trim-start-001-ref.html
 reftest	css/css-text/line-breaking/line-breaking-013.html	==css/css-text/line-breaking/reference/line-breaking-013-ref.html
 reftest	css/css-text/line-breaking/line-breaking-014.html	==css/css-text/line-breaking/reference/line-breaking-013-ref.html
 reftest	css/css-text/line-breaking/line-breaking-015.html	==css/css-text/line-breaking/reference/line-breaking-015-ref.html
 reftest	css/css-text/line-breaking/line-breaking-016.html	==css/css-text/line-breaking/reference/line-breaking-016-ref.html
+reftest	css/css-text/line-breaking/line-breaking-017.html	==css/css-text/line-breaking/reference/line-breaking-017-ref.html
+reftest	css/css-text/line-breaking/line-breaking-018.html	==css/css-text/line-breaking/reference/line-breaking-018-ref.html
+reftest	css/css-text/line-breaking/line-breaking-019.html	==css/css-text/line-breaking/reference/line-breaking-019-ref.html
 reftest	css/css-text/line-breaking/line-breaking-021.html	==css/css-text/line-breaking/reference/line-breaking-021-ref.html
 reftest	css/css-text/line-breaking/line-breaking-023.html	!=css/css-text/line-breaking/reference/line-breaking-023-ref.html
 reftest	css/css-text/line-breaking/line-breaking-024.html	!=css/css-text/line-breaking/reference/line-breaking-024-ref.html
 reftest	css/css-text/line-breaking/line-breaking-025.html	!=css/css-text/line-breaking/reference/line-breaking-025-ref.html
 reftest	css/css-text/line-breaking/line-breaking-026.html	!=css/css-text/line-breaking/reference/line-breaking-026-ref.html
 reftest	css/css-text/line-breaking/line-breaking-027.html	!=css/css-text/line-breaking/reference/line-breaking-027-ref.html
+reftest	css/css-text/line-breaking/line-breaking-atomic-009.html	==css/css-text/line-breaking/reference/line-breaking-atomic-009-ref.html
+reftest	css/css-text/line-breaking/line-breaking-ic-001.html	==css/css-text/line-breaking/reference/line-breaking-ic-001-ref.html
+reftest	css/css-text/line-breaking/line-breaking-ic-002.html	==css/css-text/line-breaking/reference/line-breaking-ic-001-ref.html
+reftest	css/css-text/line-breaking/line-breaking-ic-003.html	==css/css-text/line-breaking/reference/line-breaking-ic-001-ref.html
+reftest	css/css-text/line-breaking/line-breaking-replaced-001.html	==css/css-text/line-breaking/reference/line-breaking-replaced-001-ref.html
 reftest	css/css-text/line-breaking/line-breaking-replaced-002.html	==css/css-text/line-breaking/reference/line-breaking-replaced-002-ref.html
 reftest	css/css-text/line-breaking/line-breaking-replaced-003.html	==css/css-text/line-breaking/reference/line-breaking-replaced-003-ref.html
+reftest	css/css-text/line-breaking/line-breaking-replaced-004.html	==css/css-text/line-breaking/reference/line-breaking-replaced-004-ref.html
+reftest	css/css-text/line-breaking/line-breaking-replaced-005.html	==css/css-text/line-breaking/reference/line-breaking-replaced-004-ref.html
 reftest	css/css-text/line-breaking/segment-break-transformation-currency-001.html	==css/css-text/line-breaking/segment-break-transformation-currency-001-ref.html
 reftest	css/css-text/line-breaking/segment-break-transformation-ignorable-1.html	==css/css-text/line-breaking/segment-break-transformation-ignorable-1-ref.html
 reftest	css/css-text/line-breaking/segment-break-transformation-punctuation-001.html	==css/css-text/line-breaking/segment-break-transformation-punctuation-001-ref.html
@@ -2050,17 +2066,27 @@ reftest	css/css-text/overflow-wrap/overflow-wrap-anywhere-002.html	==css/css-tex
 reftest	css/css-text/overflow-wrap/overflow-wrap-anywhere-003.html	==css/css-text/overflow-wrap/reference/overflow-wrap-break-word-003-ref.html
 reftest	css/css-text/overflow-wrap/overflow-wrap-anywhere-011.html	==css/css-text/overflow-wrap/overflow-wrap-anywhere-011-ref.html
 reftest	css/css-text/overflow-wrap/overflow-wrap-anywhere-fit-content-001.html	==css/css-text/overflow-wrap/reference/overflow-wrap-break-word-fit-content-001.html
+reftest	css/css-text/overflow-wrap/overflow-wrap-anywhere-span-001.html	==css/css-text/overflow-wrap/reference/overflow-wrap-break-word-span-001-ref.html
 checklayout	css/css-text/overflow-wrap/overflow-wrap-anywhere-span-002.html	#container
 reftest	css/css-text/overflow-wrap/overflow-wrap-break-word-002.html	==css/css-text/overflow-wrap/reference/overflow-wrap-break-word-002-ref.html
 reftest	css/css-text/overflow-wrap/overflow-wrap-break-word-003.html	==css/css-text/overflow-wrap/reference/overflow-wrap-break-word-003-ref.html
 reftest	css/css-text/overflow-wrap/overflow-wrap-break-word-fit-content-001.html	==css/css-text/overflow-wrap/reference/overflow-wrap-break-word-fit-content-001.html
+reftest	css/css-text/overflow-wrap/overflow-wrap-break-word-span-001.html	==css/css-text/overflow-wrap/reference/overflow-wrap-break-word-span-001-ref.html
 checklayout	css/css-text/overflow-wrap/overflow-wrap-break-word-span-002.html	#container
+reftest	css/css-text/overflow-wrap/overflow-wrap-cluster-001.html	==css/css-text/overflow-wrap/reference/overflow-wrap-cluster-001-ref.html
+reftest	css/css-text/overflow-wrap/overflow-wrap-cluster-002.html	==css/css-text/overflow-wrap/reference/overflow-wrap-cluster-001-ref.html
+reftest	css/css-text/overflow-wrap/overflow-wrap-min-content-size-002.html	==css/css-text/overflow-wrap/reference/overflow-wrap-min-content-size-002-ref.html
+reftest	css/css-text/overflow-wrap/overflow-wrap-normal-keep-all-001.html	==css/css-text/overflow-wrap/reference/overflow-wrap-normal-keep-all-001-ref.html
 reftest	css/css-text/text-align/text-align-006.html	==css/css-text/text-align/text-align-006-ref.html
 reftest	css/css-text/text-align/text-align-justify-bidi-control.html	==css/css-text/text-align/text-align-justify-bidi-control-ref.html
 reftest	css/css-text/text-align/text-align-justify-shy-001.html	==css/css-text/text-align/reference/text-align-justify-shy-ref-001.html
+reftest	css/css-text/text-align/text-align-last-justify-br.html	==css/css-text/text-align/text-align-last-justify-br-ref.html
 reftest	css/css-text/text-align/text-align-last-justify.html	==css/css-text/text-align/text-align-last-justify-ref.html
+reftest	css/css-text/text-align/text-align-last-wins-001.html	==css/css-text/text-align/reference/text-align-last-wins-001-ref.html
 reftest	css/css-text/text-align/text-align-match-parent-root-ltr.html	==css/css-text/text-align/text-align-match-parent-root-ltr-ref.html
 crashtest	css/css-text/text-autospace/crashtests/text-autospace-shape-cache-crash.html
+reftest	css/css-text/text-justify/text-justify-and-trailing-spaces-001.html	==css/css-text/text-justify/reference/text-justify-and-trailing-spaces-001-ref.html	==css/css-text/text-justify/reference/text-justify-and-trailing-spaces-alt-001-ref.html
+reftest	css/css-text/text-justify/text-justify-and-trailing-spaces-002.html	==css/css-text/text-justify/reference/text-justify-and-trailing-spaces-001-ref.html	==css/css-text/text-justify/reference/text-justify-and-trailing-spaces-alt-001-ref.html
 reftest	css/css-text/text-justify/text-justify-distribute-001.html	==css/css-text/text-justify/text-justify-inter-character-001-ref.html
 reftest	css/css-text/text-justify/text-justify-inter-character-001.html	==css/css-text/text-justify/text-justify-inter-character-001-ref.html
 reftest	css/css-text/text-justify/text-justify-inter-character-cursive.html	==css/css-text/text-justify/text-justify-inter-character-cursive-ref.html
@@ -2068,7 +2094,9 @@ reftest	css/css-text/text-justify/text-justify-inter-word-001.html	==css/css-tex
 reftest	css/css-text/text-justify/text-justify-none-001.html	==css/css-text/text-justify/text-justify-none-001-ref.html
 crashtest	css/css-text/text-transform/crashtests/first-line-text-transform-crash.html
 reftest	css/css-text/text-transform/text-transform-capitalize-031.html	==css/css-text/text-transform/reference/text-transform-capitalize-031-ref.html
+reftest	css/css-text/text-transform/text-transform-capitalize-034.html	==css/css-text/text-transform/text-transform-capitalize-034-ref.html
 reftest	css/css-text/text-transform/text-transform-capitalize-035.html	==css/css-text/text-transform/text-transform-capitalize-035-ref.html
+reftest	css/css-text/text-transform/text-transform-letter-spacing-002.html	==css/css-text/text-transform/text-transform-letter-spacing-002-ref.html
 reftest	css/css-text/text-transform/text-transform-lowercase-102.xht	==css/css-text/text-transform/text-transform-lowercase-102-ref.xht
 reftest	css/css-text/text-transform/text-transform-tailoring-001.html	==css/css-text/text-transform/reference/text-transform-tailoring-001-ref.html
 reftest	css/css-text/text-transform/text-transform-tailoring-001a.html	==css/css-text/text-transform/reference/text-transform-tailoring-001-ref.html
@@ -2149,17 +2177,58 @@ reftest	css/css-text/white-space/lone-cr-001.tentative.html	==css/css-text/white
 reftest	css/css-text/white-space/object-replacement-1.html	!=css/css-text/white-space/reference/object-replacement-1-notref.html
 reftest	css/css-text/white-space/object-replacement-2.html	!=css/css-text/white-space/reference/object-replacement-2-notref.html
 reftest	css/css-text/white-space/pre-wrap-018.html	==css/css-text/white-space/reference/pre-wrap-018-ref.html
+reftest	css/css-text/white-space/text-wrap-balance-004.html	==css/css-text/white-space/reference/text-wrap-balance-004-ref.html	!=css/css-text/white-space/reference/text-wrap-balance-004-misref.html
 reftest	css/css-text/white-space/text-wrap-balance-align-001.html	==css/css-text/white-space/reference/text-wrap-balance-align-001-ref.html
 reftest	css/css-text/white-space/text-wrap-balance-before-after-001.html	==css/css-text/white-space/reference/text-wrap-balance-before-after-001-ref.html
+reftest	css/css-text/white-space/text-wrap-balance-float-001.html	==css/css-text/white-space/reference/text-wrap-balance-float-001-ref.html
+reftest	css/css-text/white-space/text-wrap-balance-float-002.html	==css/css-text/white-space/reference/text-wrap-balance-float-002-ref.html
+reftest	css/css-text/white-space/text-wrap-balance-float-003.html	==css/css-text/white-space/reference/text-wrap-balance-float-001-ref.html
+reftest	css/css-text/white-space/text-wrap-balance-float-004.html	==css/css-text/white-space/reference/text-wrap-balance-float-002-ref.html
+reftest	css/css-text/white-space/text-wrap-balance-float-005.html	==css/css-text/white-space/reference/text-wrap-balance-float-005-ref.html
 reftest	css/css-text/white-space/text-wrap-balance-float-006.html	==css/css-text/white-space/reference/text-wrap-balance-float-006-ref.html
 crashtest	css/css-text/white-space/text-wrap-balance-narrow-crash.html
 reftest	css/css-text/white-space/text-wrap-nowrap-001.html	==css/css-text/white-space/reference/text-wrap-nowrap-001-ref.html	!=css/css-text/white-space/reference/text-wrap-nowrap-001-mis-ref.html
 reftest	css/css-text/white-space/textarea-always-preserves-spaces-001.tentative.html	==css/css-text/white-space/textarea-always-preserves-spaces-001-ref.html
+reftest	css/css-text/white-space/trailing-ideographic-space-001.html	==css/css-text/white-space/reference/trailing-ideographic-space-001-ref.html
+reftest	css/css-text/white-space/trailing-ideographic-space-002.html	==css/css-text/white-space/reference/trailing-ideographic-space-002-ref.html
+reftest	css/css-text/white-space/trailing-ideographic-space-003.html	==css/css-text/white-space/reference/trailing-ideographic-space-003-ref.html	==css/css-text/white-space/reference/trailing-ideographic-space-alt-003-ref.html
+reftest	css/css-text/white-space/trailing-ideographic-space-004.html	==css/css-text/white-space/reference/trailing-ideographic-space-004-ref.html	==css/css-text/white-space/reference/trailing-ideographic-space-alt-003-ref.html
+reftest	css/css-text/white-space/trailing-ideographic-space-005.html	==css/css-text/white-space/reference/trailing-ideographic-space-004-ref.html	==css/css-text/white-space/reference/trailing-ideographic-space-alt-003-ref.html
+reftest	css/css-text/white-space/trailing-ideographic-space-006.html	==css/css-text/white-space/reference/trailing-ideographic-space-003-ref.html	==css/css-text/white-space/reference/trailing-ideographic-space-alt-003-ref.html
+reftest	css/css-text/white-space/trailing-ideographic-space-007.html	==css/css-text/white-space/reference/trailing-ideographic-space-003-ref.html	==css/css-text/white-space/reference/trailing-ideographic-space-alt-003-ref.html
+reftest	css/css-text/white-space/trailing-ideographic-space-008.html	==css/css-text/white-space/reference/trailing-ideographic-space-003-ref.html	==css/css-text/white-space/reference/trailing-ideographic-space-alt-003-ref.html
+reftest	css/css-text/white-space/trailing-ideographic-space-009.html	==css/css-text/white-space/reference/trailing-ideographic-space-004-ref.html	==css/css-text/white-space/reference/trailing-ideographic-space-alt-003-ref.html
+reftest	css/css-text/white-space/trailing-ideographic-space-010.html	==css/css-text/white-space/reference/trailing-ideographic-space-004-ref.html	==css/css-text/white-space/reference/trailing-ideographic-space-alt-003-ref.html
+reftest	css/css-text/white-space/trailing-ideographic-space-break-spaces-001.html	==css/css-text/white-space/reference/trailing-ideographic-space-break-spaces-001-ref.html
+reftest	css/css-text/white-space/trailing-ideographic-space-break-spaces-002.html	==css/css-text/white-space/reference/trailing-ideographic-space-break-spaces-001-ref.html
+reftest	css/css-text/white-space/trailing-ideographic-space-break-spaces-003.html	==css/css-text/white-space/reference/trailing-ideographic-space-break-spaces-001-ref.html
+reftest	css/css-text/white-space/trailing-ideographic-space-break-spaces-004.html	==css/css-text/white-space/reference/trailing-ideographic-space-break-spaces-001-ref.html
+reftest	css/css-text/white-space/trailing-ideographic-space-break-spaces-005.html	==css/css-text/white-space/reference/trailing-ideographic-space-break-spaces-001-ref.html
+reftest	css/css-text/white-space/trailing-ideographic-space-break-spaces-006.html	==css/css-text/white-space/reference/trailing-ideographic-space-break-spaces-001-ref.html
+reftest	css/css-text/white-space/trailing-ogham-001.html	==css/css-text/white-space/reference/trailing-ogham-001-ref.html
+reftest	css/css-text/white-space/trailing-ogham-002.html	==css/css-text/white-space/reference/trailing-ogham-001-ref.html
+reftest	css/css-text/white-space/trailing-ogham-003.html	==css/css-text/white-space/reference/trailing-ogham-001-ref.html
+reftest	css/css-text/white-space/trailing-other-space-separators-001.html	==css/css-text/white-space/reference/trailing-other-space-separators-001-ref.html
+reftest	css/css-text/white-space/trailing-other-space-separators-003.html	==css/css-text/white-space/reference/trailing-other-space-separators-001-ref.html
+reftest	css/css-text/white-space/trailing-other-space-separators-004.html	==css/css-text/white-space/reference/trailing-other-space-separators-001-ref.html
+reftest	css/css-text/white-space/trailing-space-align-start.tentative.html	==css/css-text/white-space/reference/trailing-space-align-start-ref.html
 reftest	css/css-text/white-space/white-space-intrinsic-size-004.html	==css/css-text/white-space/reference/white-space-intrinsic-size-004-ref.html
+reftest	css/css-text/white-space/white-space-letter-spacing-001.html	==css/css-text/white-space/reference/white-space-letter-spacing-001-ref.html
+reftest	css/css-text/white-space/white-space-normal-011.html	==css/css-text/white-space/reference/white-space-normal-011-ref.html
+reftest	css/css-text/white-space/white-space-nowrap-011.html	==css/css-text/white-space/reference/white-space-nowrap-011-ref.html
+reftest	css/css-text/white-space/white-space-pre-011.html	==css/css-text/white-space/reference/white-space-pre-011-ref.html
+reftest	css/css-text/white-space/white-space-pre-031.html	==css/css-text/white-space/reference/white-space-pre-031-ref.html
+reftest	css/css-text/white-space/white-space-pre-032.html	==css/css-text/white-space/reference/white-space-pre-031-ref.html
+reftest	css/css-text/white-space/white-space-pre-034.html	==css/css-text/white-space/reference/white-space-pre-034-ref.html
+reftest	css/css-text/white-space/white-space-pre-035.html	==css/css-text/white-space/reference/white-space-pre-031-ref.html
 reftest	css/css-text/white-space/white-space-pre-wrap-justify-001.html	==css/css-text/white-space/reference/white-space-pre-wrap-justify-001-ref.html
 reftest	css/css-text/white-space/white-space-pre-wrap-justify-002.html	==css/css-text/white-space/reference/white-space-pre-wrap-justify-002-ref.html
+reftest	css/css-text/white-space/white-space-pre-wrap-justify-003.html	==css/css-text/white-space/reference/white-space-pre-wrap-justify-003-ref.html
 reftest	css/css-text/white-space/white-space-pre-wrap-trailing-spaces-001.html	==css/css-text/white-space/reference/white-space-pre-wrap-trailing-spaces-001-ref.html
+reftest	css/css-text/white-space/white-space-pre-wrap-trailing-spaces-013.html	==css/css-text/white-space/reference/white-space-pre-wrap-trailing-spaces-013-ref.html	==css/css-text/white-space/reference/white-space-pre-wrap-trailing-spaces-alt-013-ref.html
+reftest	css/css-text/white-space/white-space-pre-wrap-trailing-spaces-021.html	==css/css-text/white-space/reference/white-space-pre-wrap-trailing-spaces-021-ref.html
 reftest	css/css-text/white-space/white-space-vs-joiners-002.html	==css/css-text/white-space/reference/white-space-vs-joiners-002-ref.html
+reftest	css/css-text/white-space/white-space-wrap-after-nowrap-001.html	==css/css-text/white-space/reference/white-space-wrap-after-nowrap-001-ref.html
 reftest	css/css-text/white-space/white-space-zero-fontsize-001.html	==css/css-text/white-space/reference/white-space-zero-fontsize-001-ref.html
 reftest	css/css-text/white-space/ws-break-spaces-applies-to-001.html	==css/css-text/white-space/reference/ws-break-spaces-applies-to-001-ref.html
 reftest	css/css-text/white-space/ws-break-spaces-applies-to-002.html	==css/css-text/white-space/reference/ws-break-spaces-applies-to-001-ref.html
@@ -2175,10 +2244,28 @@ reftest	css/css-text/white-space/ws-break-spaces-applies-to-012.html	==css/css-t
 reftest	css/css-text/white-space/ws-break-spaces-applies-to-013.html	==css/css-text/white-space/reference/ws-break-spaces-applies-to-012-ref.html
 reftest	css/css-text/white-space/ws-break-spaces-applies-to-014.html	==css/css-text/white-space/reference/ws-break-spaces-applies-to-006-ref.html
 reftest	css/css-text/white-space/ws-break-spaces-applies-to-015.html	==css/css-text/white-space/reference/ws-break-spaces-applies-to-001-ref.html
+reftest	css/css-text/word-break/break-boundary-2-chars-001.html	==css/css-text/word-break/reference/break-boundary-2-chars-001-ref.html
 reftest	css/css-text/word-break/break-boundary-2-chars-002.html	==css/css-text/word-break/reference/break-boundary-2-chars-002-ref.html
+reftest	css/css-text/word-break/word-break-break-all-014.html	==css/css-text/word-break/reference/word-break-break-all-014-ref.html
+reftest	css/css-text/word-break/word-break-break-all-020.html	==css/css-text/word-break/reference/word-break-break-all-020-ref.html
+reftest	css/css-text/word-break/word-break-break-all-062.html	==css/css-text/word-break/reference/word-break-break-all-062-ref.html
 reftest	css/css-text/word-break/word-break-break-all-ethiopic.html	==css/css-text/word-break/reference/word-break-break-all-ethiopic-ref.html
+reftest	css/css-text/word-break/word-break-break-all-inline-001.html	==css/css-text/word-break/reference/word-break-break-all-inline-001-ref.html
+reftest	css/css-text/word-break/word-break-break-all-inline-002.html	==css/css-text/word-break/reference/word-break-break-all-inline-002-ref.html
+reftest	css/css-text/word-break/word-break-break-all-inline-003.html	==css/css-text/word-break/reference/word-break-break-all-inline-003-ref.html
+reftest	css/css-text/word-break/word-break-break-all-inline-004.tentative.html	==css/css-text/word-break/reference/word-break-break-all-inline-004-ref.html
+reftest	css/css-text/word-break/word-break-break-all-inline-005.html	==css/css-text/word-break/reference/word-break-break-all-inline-005-ref.html
+reftest	css/css-text/word-break/word-break-break-all-inline-006.html	==css/css-text/word-break/reference/word-break-break-all-inline-006-a-ref.html	==css/css-text/word-break/reference/word-break-break-all-inline-006-b-ref.html
+reftest	css/css-text/word-break/word-break-break-all-inline-007.tentative.html	==css/css-text/word-break/reference/word-break-break-all-inline-007-ref.html
 reftest	css/css-text/word-break/word-break-break-word-overflow-wrap-interactions.html	==css/css-text/word-break/word-break-break-word-overflow-wrap-interactions-ref.html
+reftest	css/css-text/word-break/word-break-keep-all-005.html	==css/css-text/word-break/reference/word-break-keep-all-005-ref.html
+reftest	css/css-text/word-break/word-break-keep-all-006.html	==css/css-text/word-break/reference/word-break-keep-all-005-ref.html
+reftest	css/css-text/word-break/word-break-keep-all-007.html	==css/css-text/word-break/reference/word-break-keep-all-005-ref.html
+reftest	css/css-text/word-break/word-break-keep-all-008.html	==css/css-text/word-break/reference/word-break-keep-all-005-ref.html
+reftest	css/css-text/word-break/word-break-keep-all-011.html	==css/css-text/word-break/reference/word-break-keep-all-011-ref.html
+reftest	css/css-text/word-break/word-break-keep-all-063.html	==css/css-text/word-break/reference/word-break-keep-all-063-ref.html
 reftest	css/css-text/word-break/word-break-keep-all-u002d.html	==css/css-text/word-break/reference/word-break-keep-all-u002d-ref.html
+reftest	css/css-text/word-break/word-break-min-content-006.html	==css/css-text/overflow-wrap/reference/overflow-wrap-min-content-size-002-ref.html
 reftest	css/css-text/word-break/word-break-normal-002.html	!=css/css-text/word-break/reference/word-break-normal-002-ref.html
 reftest	css/css-text/word-break/word-break-normal-003.html	!=css/css-text/word-break/reference/word-break-normal-003-ref.html
 reftest	css/css-text/word-break/word-break-normal-ethiopic.html	==css/css-text/word-break/reference/word-break-normal-ethiopic-ref.html
@@ -2636,19 +2723,27 @@ reftest	css/css-images/gradient-move-stops.html	==css/css-images/gradient-move-s
 crashtest	css/css-images/gradient-nan-crash.html
 reftest	css/css-images/gradient-refcrash.html	==css/reference/blank.html
 reftest	css/css-images/gradients-with-border.html	==css/css-images/gradients-with-border-ref.html	fuzzy=:0-2;0-11000
+reftest	css/css-images/gradients-with-transparent.html	==css/css-images/gradients-with-transparent-ref.html
 crashtest	css/css-images/image-multipart-crash.html
 reftest	css/css-images/image-orientation/image-orientation-background-image.html	==css/css-images/image-orientation/reference/image-orientation-background-image-ref.html	fuzzy=:0-3;0-60
 reftest	css/css-images/image-orientation/image-orientation-background-position.html	==css/css-images/image-orientation/reference/image-orientation-background-position-ref.html	fuzzy=:0-5;0-50
 reftest	css/css-images/image-orientation/image-orientation-background-properties-border-radius.html	==css/css-images/image-orientation/reference/image-orientation-background-properties-border-radius-ref.html	fuzzy=:0-3;0-331
 reftest	css/css-images/image-orientation/image-orientation-background-properties.html	==css/css-images/image-orientation/reference/image-orientation-background-properties-ref.html	fuzzy=:0-100;0-313
 reftest	css/css-images/image-orientation/image-orientation-border-image.html	==css/css-images/image-orientation/reference/image-orientation-border-image-ref.html	fuzzy=:0-16;0-80
+reftest	css/css-images/image-orientation/image-orientation-default.html	==css/css-images/image-orientation/reference/image-orientation-default-ref.html	fuzzy=:0-100;0-236
 reftest	css/css-images/image-orientation/image-orientation-exif-png-2.html	==css/css-images/image-orientation/reference/image-orientation-exif-png-ref.html
 reftest	css/css-images/image-orientation/image-orientation-exif-png-3.html	==css/css-images/image-orientation/reference/image-orientation-exif-png-ref.html
 reftest	css/css-images/image-orientation/image-orientation-exif-png.html	==css/css-images/image-orientation/reference/image-orientation-exif-png-ref.html
+reftest	css/css-images/image-orientation/image-orientation-from-image-composited-dynamic1.html	==css/css-images/image-orientation/reference/image-orientation-from-image-ref.html	fuzzy=:0-100;0-236
 reftest	css/css-images/image-orientation/image-orientation-from-image-composited-dynamic2.html	==css/css-images/image-orientation/reference/image-orientation-none-ref.html	fuzzy=:0-100;0-123
+reftest	css/css-images/image-orientation/image-orientation-from-image-composited.html	==css/css-images/image-orientation/reference/image-orientation-from-image-ref.html	fuzzy=:0-100;0-236
+reftest	css/css-images/image-orientation/image-orientation-from-image-content-images.html	==css/css-images/image-orientation/reference/image-orientation-from-image-content-images-ref.html	fuzzy=:0-5;0-250
+reftest	css/css-images/image-orientation/image-orientation-from-image-dynamic1.html	==css/css-images/image-orientation/reference/image-orientation-from-image-ref.html	fuzzy=:0-100;0-236
 reftest	css/css-images/image-orientation/image-orientation-from-image-dynamic2.html	==css/css-images/image-orientation/reference/image-orientation-none-ref.html	fuzzy=:0-100;0-123
+reftest	css/css-images/image-orientation/image-orientation-from-image.html	==css/css-images/image-orientation/reference/image-orientation-from-image-ref.html	fuzzy=:0-100;0-236
 reftest	css/css-images/image-orientation/image-orientation-img-object-fit.html	==css/css-images/image-orientation/reference/image-orientation-img-object-fit-ref.html	fuzzy=:0-5;0-375
 reftest	css/css-images/image-orientation/image-orientation-list-style-image.html	==css/css-images/image-orientation/reference/image-orientation-list-style-image-ref.html	fuzzy=:0-3;0-60
+reftest	css/css-images/image-orientation/image-orientation-none-content-images.html	==css/css-images/image-orientation/reference/image-orientation-none-content-images-ref.html	fuzzy=:0-5;0-150
 reftest	css/css-images/image-orientation/image-orientation-none.html	==css/css-images/image-orientation/reference/image-orientation-none-ref.html	fuzzy=:0-100;0-123
 reftest	css/css-images/image-rendering-border-image.html	!=css/css-images/image-rendering-border-image-notref.html
 reftest	css/css-images/image-rendering-mixed-scaled.html	!=css/css-images/image-rendering-mixed-scaled-notref.html
@@ -2687,8 +2782,11 @@ reftest	css/css-images/linear-gradient-1.html	==css/css-images/linear-gradient-r
 reftest	css/css-images/linear-gradient-2.html	==css/css-images/linear-gradient-ref.html
 reftest	css/css-images/linear-gradient-calc-em-units.html	==css/css-images/linear-gradient-calc-em-units-ref.html
 reftest	css/css-images/linear-gradient-non-square.html	==css/css-images/reference/linear-gradient-non-square-ref.html
+reftest	css/css-images/multiple-position-color-stop-conic-2.html	==css/css-images/multiple-position-color-stop-conic-2-ref.html
 reftest	css/css-images/multiple-position-color-stop-conic.html	==css/css-images/reference/100x100-blue-green.html	fuzzy=:0-1;0-10000
+reftest	css/css-images/multiple-position-color-stop-linear-2.html	==css/css-images/multiple-position-color-stop-linear-2-ref.html
 reftest	css/css-images/multiple-position-color-stop-linear.html	==css/css-images/reference/100x100-blue-green.html	fuzzy=:0-1;0-4000
+reftest	css/css-images/multiple-position-color-stop-radial-2.html	==css/css-images/multiple-position-color-stop-radial-2-ref.html
 reftest	css/css-images/multiple-position-color-stop-radial.html	==css/css-images/reference/100x100-blue-green.html	fuzzy=:0-1;0-40000
 reftest	css/css-images/normalization-conic-2.html	==css/css-images/reference/100x100-blue.html	fuzzy=:0-1;0-10000
 reftest	css/css-images/normalization-conic-degenerate.html	==css/css-images/reference/100x100-blue.html	fuzzy=:0-1;0-10000
@@ -2701,6 +2799,46 @@ reftest	css/css-images/normalization-radial-3.html	==css/css-images/reference/10
 reftest	css/css-images/normalization-radial-4.html	==css/css-images/reference/100x100-blue.html	fuzzy=:0-1;0-40000
 reftest	css/css-images/normalization-radial-degenerate.html	==css/css-images/reference/100x100-blue.html	fuzzy=:0-1;0-40000
 reftest	css/css-images/normalization-radial.html	==css/css-images/reference/100x100-blue.html	fuzzy=:0-1;0-40000
+reftest	css/css-images/object-fit-contain-png-001i.html	==css/css-images/object-fit-contain-png-001-ref.html
+reftest	css/css-images/object-fit-contain-png-002i.html	==css/css-images/object-fit-contain-png-002-ref.html
+reftest	css/css-images/object-fit-contain-svg-001i.html	==css/css-images/object-fit-contain-svg-001-ref.html
+reftest	css/css-images/object-fit-contain-svg-002i.html	==css/css-images/object-fit-contain-svg-002-ref.html
+reftest	css/css-images/object-fit-contain-svg-003i.html	==css/css-images/object-fit-contain-svg-003-ref.html
+reftest	css/css-images/object-fit-contain-svg-004i.html	==css/css-images/object-fit-contain-svg-004-ref.html
+reftest	css/css-images/object-fit-contain-svg-005i.html	==css/css-images/object-fit-contain-svg-005-ref.html
+reftest	css/css-images/object-fit-contain-svg-006i.html	==css/css-images/object-fit-contain-svg-006-ref.html
+reftest	css/css-images/object-fit-cover-png-001i.html	==css/css-images/object-fit-cover-png-001-ref.html
+reftest	css/css-images/object-fit-cover-png-002i.html	==css/css-images/object-fit-cover-png-002-ref.html
+reftest	css/css-images/object-fit-cover-svg-001i.html	==css/css-images/object-fit-cover-svg-001-ref.html
+reftest	css/css-images/object-fit-cover-svg-002i.html	==css/css-images/object-fit-cover-svg-002-ref.html
+reftest	css/css-images/object-fit-cover-svg-003i.html	==css/css-images/object-fit-cover-svg-003-ref.html
+reftest	css/css-images/object-fit-cover-svg-004i.html	==css/css-images/object-fit-cover-svg-004-ref.html
+reftest	css/css-images/object-fit-cover-svg-005i.html	==css/css-images/object-fit-cover-svg-005-ref.html
+reftest	css/css-images/object-fit-cover-svg-006i.html	==css/css-images/object-fit-cover-svg-006-ref.html
+reftest	css/css-images/object-fit-fill-png-001i.html	==css/css-images/object-fit-fill-png-001-ref.html
+reftest	css/css-images/object-fit-fill-png-002i.html	==css/css-images/object-fit-fill-png-002-ref.html
+reftest	css/css-images/object-fit-fill-svg-001i.html	==css/css-images/object-fit-fill-svg-001-ref.html
+reftest	css/css-images/object-fit-fill-svg-002i.html	==css/css-images/object-fit-fill-svg-002-ref.html
+reftest	css/css-images/object-fit-fill-svg-003i.html	==css/css-images/object-fit-fill-svg-003-ref.html
+reftest	css/css-images/object-fit-fill-svg-004i.html	==css/css-images/object-fit-fill-svg-004-ref.html
+reftest	css/css-images/object-fit-fill-svg-005i.html	==css/css-images/object-fit-fill-svg-005-ref.html
+reftest	css/css-images/object-fit-fill-svg-006i.html	==css/css-images/object-fit-fill-svg-006-ref.html
+reftest	css/css-images/object-fit-none-png-001i.html	==css/css-images/object-fit-none-png-001-ref.html
+reftest	css/css-images/object-fit-none-png-002i.html	==css/css-images/object-fit-none-png-002-ref.html
+reftest	css/css-images/object-fit-none-svg-001i.html	==css/css-images/object-fit-none-svg-001-ref.html
+reftest	css/css-images/object-fit-none-svg-002i.html	==css/css-images/object-fit-none-svg-002-ref.html
+reftest	css/css-images/object-fit-none-svg-003i.html	==css/css-images/object-fit-none-svg-003-ref.html
+reftest	css/css-images/object-fit-none-svg-004i.html	==css/css-images/object-fit-none-svg-004-ref.html
+reftest	css/css-images/object-fit-none-svg-005i.html	==css/css-images/object-fit-none-svg-005-ref.html
+reftest	css/css-images/object-fit-none-svg-006i.html	==css/css-images/object-fit-none-svg-006-ref.html
+reftest	css/css-images/object-fit-scale-down-png-001i.html	==css/css-images/object-fit-scale-down-png-001-ref.html
+reftest	css/css-images/object-fit-scale-down-png-002i.html	==css/css-images/object-fit-scale-down-png-002-ref.html
+reftest	css/css-images/object-fit-scale-down-svg-001i.html	==css/css-images/object-fit-scale-down-svg-001-ref.html
+reftest	css/css-images/object-fit-scale-down-svg-002i.html	==css/css-images/object-fit-scale-down-svg-002-ref.html
+reftest	css/css-images/object-fit-scale-down-svg-003i.html	==css/css-images/object-fit-scale-down-svg-003-ref.html
+reftest	css/css-images/object-fit-scale-down-svg-004i.html	==css/css-images/object-fit-scale-down-svg-004-ref.html
+reftest	css/css-images/object-fit-scale-down-svg-005i.html	==css/css-images/object-fit-scale-down-svg-005-ref.html
+reftest	css/css-images/object-fit-scale-down-svg-006i.html	==css/css-images/object-fit-scale-down-svg-006-ref.html
 reftest	css/css-images/object-position-png-001i.html	==css/css-images/object-position-png-001-ref.html
 reftest	css/css-images/object-position-png-002i.html	==css/css-images/object-position-png-002-ref.html
 reftest	css/css-images/object-position-svg-001i.html	==css/css-images/object-position-svg-001-ref.html	fuzzy=:0-40;0-50
@@ -2725,6 +2863,7 @@ reftest	css/css-backgrounds/animations/background-color-animation-zero-size-elem
 reftest	css/css-backgrounds/animations/background-color-animation-zero-size-element.html	==css/css-backgrounds/animations/background-color-animation-zero-size-element-ref.html
 reftest	css/css-backgrounds/animations/background-color-transparent-animation-in-body.html	==css/css-backgrounds/animations/background-color-transparent-animation-in-body-ref.html
 reftest	css/css-backgrounds/animations/invalidation/background-color-animation-with-zero-alpha.html	==css/css-backgrounds/animations/invalidation/background-color-animation-with-zero-alpha-ref.html
+reftest	css/css-backgrounds/background-attachment-350.html	==css/css-backgrounds/reference/ref-if-there-is-no-red.xht
 reftest	css/css-backgrounds/background-attachment-fixed-inside-transform-1.html	==css/css-backgrounds/background-attachment-fixed-inside-transform-1-ref.html
 reftest	css/css-backgrounds/background-attachment-local-hidden.html	==css/css-backgrounds/reference/background-attachment-local-hidden-ref.html	fuzzy=:0-60;0-394
 reftest	css/css-backgrounds/background-attachment-margin-root-001.html	==css/css-backgrounds/background-attachment-margin-root-001-ref.html
@@ -2776,6 +2915,10 @@ reftest	css/css-backgrounds/background-margin-root.html	==css/css-backgrounds/ba
 reftest	css/css-backgrounds/background-margin-transformed-root.html	==css/css-backgrounds/background-margin-transformed-root-ref.html	fuzzy=:0-1;0-19000
 reftest	css/css-backgrounds/background-margin-will-change-root.html	==css/css-backgrounds/background-margin-will-change-root-ref.html	fuzzy=:0-1;0-19000
 reftest	css/css-backgrounds/background-none-none-and-color.html	==css/css-backgrounds/background-none-none-and-color-ref.html
+reftest	css/css-backgrounds/background-origin/origin-content-box.html	==css/css-backgrounds/reference/origin-content-box-ref.html
+reftest	css/css-backgrounds/background-origin/origin-content-box_with_radius.html	==css/css-backgrounds/reference/origin-content-box_with_radius-ref.html
+reftest	css/css-backgrounds/background-origin/origin-padding-box.html	==css/css-backgrounds/reference/origin-padding-box-ref.html
+reftest	css/css-backgrounds/background-origin/origin-padding-box_with_radius.html	==css/css-backgrounds/reference/origin-padding-box_with_radius-ref.html
 reftest	css/css-backgrounds/background-origin-002.html	==css/css-backgrounds/reference/background-origin-002-ref.html
 reftest	css/css-backgrounds/background-origin-003.html	==css/css-backgrounds/reference/background-origin-002-ref.html
 reftest	css/css-backgrounds/background-origin-004.html	==css/css-backgrounds/reference/background-origin-004-ref.html
@@ -3069,6 +3212,7 @@ reftest	css/css-backgrounds/border-image-repeat-004.htm	==css/css-backgrounds/re
 reftest	css/css-backgrounds/border-image-repeat-005.html	==css/css-backgrounds/reference/border-image-repeat-005-ref.html
 reftest	css/css-backgrounds/border-image-repeat-1.html	==css/css-backgrounds/border-image-repeat-1-ref.html
 reftest	css/css-backgrounds/border-image-repeat-repeat-001.html	==css/css-backgrounds/reference/border-image-repeat-repeat-001-ref.html
+reftest	css/css-backgrounds/border-image-repeat-round-003.html	==css/css-backgrounds/reference/border-image-repeat-round-003-ref.html
 reftest	css/css-backgrounds/border-image-repeat-round-1.html	==css/css-backgrounds/border-image-repeat-round-1-ref.html	fuzzy=:0-10;0-596
 reftest	css/css-backgrounds/border-image-repeat-round-2.html	==css/css-backgrounds/border-image-repeat-round-2-ref.html	fuzzy=:0-55;0-380
 reftest	css/css-backgrounds/border-image-repeat-round-stretch-001.html	==css/css-backgrounds/reference/border-image-repeat-round-stretch-001-ref.html
@@ -3102,7 +3246,17 @@ reftest	css/css-backgrounds/border-image-width-should-extend-to-padding.html	==c
 reftest	css/css-backgrounds/border-left-width-medium.html	==css/css-backgrounds/reference/border-right-width-3px-ref.html
 reftest	css/css-backgrounds/border-left-width-thick.html	==css/css-backgrounds/reference/border-right-width-5px-ref.html
 reftest	css/css-backgrounds/border-left-width-thin.html	==css/css-backgrounds/reference/border-right-width-1px-ref.html
+reftest	css/css-backgrounds/border-radius-001.xht	==css/css-backgrounds/border-radius-001-ref.xht
+reftest	css/css-backgrounds/border-radius-002.xht	==css/css-backgrounds/border-radius-002-ref.xht
+reftest	css/css-backgrounds/border-radius-003.xht	==css/css-backgrounds/border-radius-003-ref.xht
+reftest	css/css-backgrounds/border-radius-004.xht	==css/css-backgrounds/border-radius-004-ref.xht
+reftest	css/css-backgrounds/border-radius-005.xht	==css/css-backgrounds/border-radius-005-ref.xht
+reftest	css/css-backgrounds/border-radius-006.xht	==css/css-backgrounds/border-radius-006-ref.xht
+reftest	css/css-backgrounds/border-radius-007.xht	==css/css-backgrounds/border-radius-007-ref.xht
+reftest	css/css-backgrounds/border-radius-009.xht	==css/css-backgrounds/border-radius-009-ref.xht
+reftest	css/css-backgrounds/border-radius-010.xht	==css/css-backgrounds/border-radius-010-ref.xht
 reftest	css/css-backgrounds/border-radius-011.xht	==css/css-backgrounds/border-radius-011-ref.xht
+reftest	css/css-backgrounds/border-radius-012.html	==css/css-backgrounds/border-radius-012-ref.html
 reftest	css/css-backgrounds/border-radius-clip-002.htm	==css/css-backgrounds/reference/border-radius-clip-002-ref.htm	fuzzy=:0-70;0-50
 reftest	css/css-backgrounds/border-radius-clipping-002.html	==css/reference/ref-nothing-below.xht
 reftest	css/css-backgrounds/border-radius-clipping-with-transform-001.html	==css/css-backgrounds/border-radius-clipping-with-transform-001-ref.html	fuzzy=:0-94;0-6783
@@ -3135,6 +3289,8 @@ reftest	css/css-backgrounds/box-shadow-body.html	==css/css-backgrounds/reference
 reftest	css/css-backgrounds/box-shadow-border-radius-001.html	==css/css-backgrounds/reference/box-shadow-border-radius-001-ref.html	!=css/css-backgrounds/reference/box-shadow-border-radius-001-notref.html	fuzzy=:0-56;0-1192
 reftest	css/css-backgrounds/box-shadow-calc.html	==css/css-backgrounds/box-shadow-calc-ref.html
 reftest	css/css-backgrounds/box-shadow-currentcolor.html	==css/css-backgrounds/box-shadow-currentcolor-ref.html
+reftest	css/css-backgrounds/box-shadow-inset-without-border-radius.html	==css/css-backgrounds/reference/box-shadow-inset-without-border-radius-ref.html
+reftest	css/css-backgrounds/box-shadow-outset-without-border-radius-001.html	==css/css-backgrounds/reference/box-shadow-outset-without-border-radius-001-ref.html
 reftest	css/css-backgrounds/box-shadow-radius-000.html	==css/css-backgrounds/box-shadow-radius-000-ref.html	fuzzy=:0-25;0-90
 reftest	css/css-backgrounds/box-shadow-radius-001.html	==css/css-backgrounds/box-shadow-radius-001-ref.html
 reftest	css/css-backgrounds/box-shadow-radius-002.html	==css/css-backgrounds/box-shadow-radius-002-ref.html	fuzzy=:0-120;0-1500
@@ -3428,12 +3584,14 @@ reftest	css/css-sizing/aspect-ratio/intrinsic-size-018.html	==css/reference/ref-
 reftest	css/css-sizing/aspect-ratio/intrinsic-size-019.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-sizing/aspect-ratio/replaced-element-037.html	==css/css-sizing/aspect-ratio/replaced-element-037-ref.html
 reftest	css/css-sizing/aspect-ratio/replaced-element-041.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-sizing/aspect-ratio/select-element-001.html	==css/css-sizing/aspect-ratio/select-element-001-ref.html
 crashtest	css/css-sizing/aspect-ratio/small-aspect-ratio-crash.html
 reftest	css/filter-effects/background-image-blur-repaint.html	==css/filter-effects/reference/background-image-blur-repaint-ref.html
 reftest	css/filter-effects/blur-clip-stacking-context-001.html	==css/filter-effects/blur-clip-stacking-context-ref.html
 reftest	css/filter-effects/blur-clip-stacking-context-002.html	!=css/filter-effects/blur-clip-stacking-context-ref.html
 reftest	css/filter-effects/clip-under-filter-001.html	==css/filter-effects/reference/clip-under-filter-001-ref.html
 reftest	css/filter-effects/clip-under-filter-002.html	==css/filter-effects/reference/clip-under-filter-002-ref.html
+reftest	css/filter-effects/clip-under-filter-003.html	==css/filter-effects/reference/clip-under-filter-003-ref.html
 crashtest	css/filter-effects/crashtests/filter-change.html
 crashtest	css/filter-effects/crashtests/filter-empty-element.html
 crashtest	css/filter-effects/crashtests/filter-hw-sw-switch.html

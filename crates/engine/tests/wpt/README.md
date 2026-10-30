@@ -36,9 +36,9 @@ subtest they fail is named in `expectations.txt`, and why.
 | --- | ---: |
 | checklayout | 75 |
 | crashtest | 121 |
-| reftest | 3531 |
+| reftest | 3689 |
 | testharness | 7310 |
-| all | 11037 |
+| all | 11195 |
 
 ## Left out
 
@@ -50,19 +50,18 @@ the tests taken, of some directories):
 | --- | ---: |
 | not a testharness test | 4453 |
 | @font-face | 1451 |
-| script | 1098 |
+| script | 1131 |
 | CDATA section in XHTML | 470 |
 | Python handler | 334 |
-| element <br> | 217 |
+| not a reftest, a check-layout test or a crashtest | 151 |
 | wptserve pipe | 150 |
 | the legacy CJK encodings (M42) | 141 |
-| not a reftest, a check-layout test or a crashtest | 138 |
 | declaration of display | 134 |
-| SVG <filter> (G87) | 112 |
+| SVG <filter> (G87) | 113 |
 | https: | 109 |
 | a frame of another kind than iframe | 106 |
+| declaration of backdrop-filter | 85 |
 | a shared or service worker | 82 |
-| declaration of backdrop-filter | 77 |
 | wptserve substitution (.sub) | 51 |
 | element <object> | 49 |
 | declaration of hyphens | 47 |
@@ -116,7 +115,9 @@ the tests taken, of some directories):
 | declaration of min-height | 4 |
 | declaration of overflow-x | 4 |
 | declaration of scrollbar-gutter | 4 |
+| element <hr> | 4 |
 | @font-feature-values | 3 |
+| SVG <foreignobject> (G87) | 3 |
 | SVG <image> (G87) | 3 |
 | declaration of background-size | 3 |
 | declaration of border-radius | 3 |
@@ -128,11 +129,9 @@ the tests taken, of some directories):
 | declaration of text-fit | 3 |
 | declaration of text-orientation | 3 |
 | element <fieldset> | 3 |
-| element <hr> | 3 |
 | missing file css/css-conditional/container-queries/support/cq-testcommon.js | 3 |
 | unchecked attribute data-color | 3 |
 | @font-palette-values | 2 |
-| SVG <foreignobject> (G87) | 2 |
 | SVG <mask> (G87) | 2 |
 | SharedArrayBuffer (G83) | 2 |
 | declaration of all | 2 |
@@ -140,6 +139,7 @@ the tests taken, of some directories):
 | declaration of letter-spacing | 2 |
 | declaration of line-height | 2 |
 | declaration of text-overflow | 2 |
+| declaration of unicode-bidi | 2 |
 | declaration of word-spacing | 2 |
 | declaration of z-index | 2 |
 | img srcset | 2 |
@@ -177,6 +177,7 @@ the tests taken, of some directories):
 | declaration of grid-column-start | 1 |
 | declaration of hyphenate-character | 1 |
 | declaration of inset | 1 |
+| declaration of isolation | 1 |
 | declaration of line-clamp | 1 |
 | declaration of list-style-image | 1 |
 | declaration of margin | 1 |
@@ -200,7 +201,6 @@ the tests taken, of some directories):
 | declaration of transform | 1 |
 | declaration of transition-delay | 1 |
 | declaration of translate | 1 |
-| declaration of unicode-bidi | 1 |
 | declaration of view-transition-name | 1 |
 | declaration of white-space | 1 |
 | declaration of word-space-transfor | 1 |
