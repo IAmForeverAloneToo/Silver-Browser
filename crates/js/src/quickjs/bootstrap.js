@@ -11621,8 +11621,9 @@
       const name = lookupName(str(property));
       const at = findDeclaration(flat, name);
       if (at >= 0) return flat[at + 1];
-      // A shorthand kept as its longhands is said from them.
-      return SHORTHANDS[name] === undefined ? "" : native.cssShorthand(name, flat);
+      // A shorthand kept as its longhands is said from them, a longhand
+      // read from a shorthand kept as written.
+      return flat.length === 0 ? "" : native.cssShorthand(name, flat);
     }
 
     getPropertyPriority(property) {
@@ -12721,7 +12722,7 @@
       const flat = declarationsOf(state);
       const at = findDeclaration(flat, name);
       if (at >= 0) return flat[at + 1];
-      return SHORTHANDS[name] === undefined ? "" : native.cssShorthand(name, flat);
+      return flat.length === 0 ? "" : native.cssShorthand(name, flat);
     },
     set(target, key, value, receiver) {
       if (typeof key === "string" && !ReflectHas(target, key) && arrayIndex(key) < 0) {

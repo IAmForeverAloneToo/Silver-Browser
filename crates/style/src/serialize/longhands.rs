@@ -702,8 +702,8 @@ pub(super) fn repeat([x, y]: [Repeat; 2]) -> String {
     }
 }
 
-/// A layer's `background-size`: a width alone where the height is
-/// `auto`.
+/// A layer's `background-size`: one `auto` where both sides are, else
+/// both sides, as the reference browser writes it (`15px auto`).
 pub(super) fn background_size(size: &BackgroundSize) -> String {
     let side = |v: &Option<LengthPercentage>| {
         v.as_ref().map_or_else(
@@ -714,7 +714,7 @@ pub(super) fn background_size(size: &BackgroundSize) -> String {
     match size {
         BackgroundSize::Cover => "cover".to_owned(),
         BackgroundSize::Contain => "contain".to_owned(),
-        BackgroundSize::Sized(w, None) => side(w),
+        BackgroundSize::Sized(None, None) => "auto".to_owned(),
         BackgroundSize::Sized(w, h) => format!("{} {}", side(w), side(h)),
     }
 }
@@ -765,10 +765,12 @@ fn gradient(gradient: &Gradient) -> String {
                     _ => None,
                 },
                 LineDirection::Angle(degrees) => Some(format!("{}deg", number(degrees))),
+                // The horizontal side first, as the reference browser
+                // writes a corner whichever order it was given in.
                 LineDirection::Corner { right, bottom } => Some(format!(
                     "to {} {}",
-                    if bottom { "bottom" } else { "top" },
-                    if right { "right" } else { "left" }
+                    if right { "right" } else { "left" },
+                    if bottom { "bottom" } else { "top" }
                 )),
             };
             ("linear-gradient", prelude, false)

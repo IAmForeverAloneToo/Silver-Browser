@@ -279,9 +279,14 @@ fn stop_list(
 ) -> Option<Vec<GradientItem>> {
     let mut items: Vec<GradientItem> = Vec::new();
     // A conic gradient's positions are angles, as pixels of degrees, or
-    // percentages of a turn.
+    // percentages of a turn, a calculation of a percentage among them.
     let position = |part: &[Token]| {
         if conic {
+            if let Some(crate::calc::Computed::Percent(p)) =
+                super::math(part, crate::calc::Want::Percentage, bases, None)
+            {
+                return Some(LengthPercentage::Percent(p as f32));
+            }
             match super::single_token(part) {
                 Some(Token::Percentage { value }) => Some(LengthPercentage::Percent(*value as f32)),
                 _ => super::effects::angle(part, true, bases).map(LengthPercentage::Px),
@@ -464,6 +469,17 @@ mod tests {
             parse("repeating-conic-gradient(red 0 10%, blue 10% 20%)").is_some_and(|g| g.repeating)
         );
         assert!(parse("conic-gradient(red, blue)").is_some());
+        // A calculation of a percentage is a position too.
+        let g = parse("conic-gradient(black 0% calc(100% / 5), calc(100% * 3 / 4), white)")
+            .expect("percentages calculated");
+        assert_eq!(
+            g.items[1],
+            GradientItem::Stop(Color::BLACK, Some(LengthPercentage::Percent(20.0)))
+        );
+        assert_eq!(
+            g.items[2],
+            GradientItem::Hint(LengthPercentage::Percent(75.0))
+        );
         assert!(
             parse("conic-gradient(red 10px, blue)").is_none(),
             "no lengths"

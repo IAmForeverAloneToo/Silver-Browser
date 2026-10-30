@@ -6242,6 +6242,26 @@ mod tests {
             0.0,
             "no start edge on the second line"
         );
+        // Rounded, the corners where it is sliced are square.
+        let layout = document_of(
+            Element::new("p").push(Element::new("span").text("aaaa bbbb")),
+            &format!(
+                "p {{ margin: 0; width: {width}px }}
+                 span {{ padding: 0 5px; border: 2px solid #000; border-radius: 4px }}"
+            ),
+        );
+        let boxes = inline_boxes(&layout);
+        let round = style::computed::LengthPercentage::Px(4.0);
+        let square = style::computed::LengthPercentage::Px(0.0);
+        let corners = |b: &Fragment| b.style.radii().0.clone().map(|[h, _]| h);
+        assert_eq!(
+            corners(&boxes[0]),
+            [round.clone(), square.clone(), square.clone(), round.clone()]
+        );
+        assert_eq!(
+            corners(&boxes[1]),
+            [square.clone(), round.clone(), round.clone(), square]
+        );
     }
 
     #[test]

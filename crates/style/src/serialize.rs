@@ -1314,7 +1314,12 @@ mod tests {
                 "repeat-x",
             ),
             ("", "background-size", "auto"),
-            ("background-size: 10px auto", "background-size", "10px"),
+            // Both sides where one is not `auto`, as the reference
+            // browser writes them.
+            ("background-size: 10px auto", "background-size", "10px auto"),
+            ("background-size: 10px", "background-size", "10px auto"),
+            ("background-size: auto 10%", "background-size", "auto 10%"),
+            ("background-size: auto auto", "background-size", "auto"),
             ("", "animation-name", "none"),
             ("", "transition-timing-function", "ease"),
             (
@@ -1371,6 +1376,17 @@ mod tests {
         assert_eq!(
             image("radial-gradient(red, blue)"),
             "radial-gradient(rgb(255, 0, 0), rgb(0, 0, 255))"
+        );
+        // A corner's horizontal side first, whichever order it is in.
+        for corner in ["to bottom left", "to left bottom"] {
+            assert_eq!(
+                image(&format!("linear-gradient({corner}, red, blue)")),
+                "linear-gradient(to left bottom, rgb(255, 0, 0), rgb(0, 0, 255))"
+            );
+        }
+        assert_eq!(
+            image("linear-gradient(to top right in lab, red, blue)"),
+            "linear-gradient(to right top in lab, rgb(255, 0, 0), rgb(0, 0, 255))"
         );
         assert_eq!(
             image("conic-gradient(from 90deg, red, blue)"),

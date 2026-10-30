@@ -9,6 +9,8 @@
 
 use css::Token;
 
+mod longhands;
+
 /// One declaration of a declaration block, as written.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Declared {
@@ -169,11 +171,13 @@ fn written(name: &str, value: &str) -> String {
 /// The value of the shorthand `name` from `block`'s longhands, as CSSOM
 /// serializes one (section 6.7.2): the empty string unless all its
 /// longhands are there with one priority and it can say their values.
+/// A longhand `block` does not declare is read from the shorthand that
+/// sets it last, where one does.
 pub(crate) fn shorthand_value(name: &str, block: &[Declared]) -> String {
     let longhands: &[&str] = match name {
         "font" => &FONT_LONGHANDS,
         "font-variant" => &style::VARIANT_LONGHANDS,
-        _ => return String::new(),
+        _ => return longhands::from_shorthand(name, block).unwrap_or_default(),
     };
     let found: Option<Vec<&Declared>> = longhands
         .iter()
@@ -311,7 +315,8 @@ pub(crate) fn block_text(block: &[Declared]) -> String {
             }
         }
         out.push(format!(
-            "{name}: {value}{};",
+            "{name}: {}{};",
+            closed(&value),
             if declared.important {
                 " !important"
             } else {
@@ -320,6 +325,36 @@ pub(crate) fn block_text(block: &[Declared]) -> String {
         ));
     }
     out.join(" ")
+}
+
+/// `value` with the string, functions and blocks it leaves open closed,
+/// as the end of a value closes them (Syntax 3 section 5.4.8), so that
+/// written into a block it ends where it did and not past the `;`.
+fn closed(value: &str) -> String {
+    let mut closers: Vec<char> = Vec::new();
+    let mut quote: Option<char> = None;
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (_, '\\') => {
+                chars.next();
+            }
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '(') => closers.push(')'),
+            (None, '[') => closers.push(']'),
+            (None, '{') => closers.push('}'),
+            (None, ')' | ']' | '}') if closers.last() == Some(&c) => {
+                closers.pop();
+            }
+            _ => {}
+        }
+    }
+    let mut out = value.to_owned();
+    out.extend(quote);
+    out.extend(closers.iter().rev());
+    out
 }
 
 /// A property's name as a declaration block keeps it: an alias's
@@ -608,6 +643,36 @@ mod tests {
         assert_eq!(
             serialize(&declarations("-webkit-transform: none")),
             "transform: none;"
+        );
+    }
+
+    #[test]
+    fn a_value_left_open_is_written_closed() {
+        let block = |name: &str, value: &str, important| {
+            block_text(&[Declared {
+                name: name.to_owned(),
+                value: value.to_owned(),
+                important,
+            }])
+        };
+        assert_eq!(
+            block("margin-left", "calc(1px * pow(2, sqrt(100))", false),
+            "margin-left: calc(1px * pow(2, sqrt(100)));"
+        );
+        assert_eq!(
+            block("width", "min(1px, 2px", true),
+            "width: min(1px, 2px) !important;"
+        );
+        assert_eq!(block("content", "\"a(\\\"", false), "content: \"a(\\\"\";");
+        assert_eq!(block("grid-area", "[a] (b]", false), "grid-area: [a] (b]);");
+        // Written back, the block reads as it was set.
+        let text = block("margin-left", "calc(1px * 2", false);
+        assert_eq!(
+            read(&format!("{text} color: red")),
+            [
+                ("margin-left".into(), "calc(1px * 2)".into(), false),
+                ("color".into(), "red".into(), false)
+            ]
         );
     }
 

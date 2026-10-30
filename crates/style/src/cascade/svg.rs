@@ -9,8 +9,8 @@ use std::sync::Arc;
 use css::{Declaration, Token};
 
 use super::{
-    LengthBases, MAX_LENGTH_PX, Range, components, effects, length_percentage, math, parse_color,
-    single_ident, single_token, trim,
+    LengthBases, MAX_LENGTH_PX, Range, components, effects, length_percentage, math, single_ident,
+    single_token, trim,
 };
 use crate::calc::{Computed, Want};
 use crate::computed::{
@@ -67,12 +67,12 @@ pub(super) fn apply(
     }
     let length = |range| svg_length(value, bases, range);
     Some(match name {
-        "fill" => inherited(style, parse_paint(value), |s, v| s.fill = v),
+        "fill" => inherited(style, parse_paint(value, bases.dark), |s, v| s.fill = v),
         "fill-opacity" => inherited(style, effects::parse_opacity(value, bases), |s, v| {
             s.fill_opacity = v
         }),
         "fill-rule" => inherited(style, parse_fill_rule(value), |s, v| s.fill_rule = v),
-        "stroke" => inherited(style, parse_paint(value), |s, v| s.stroke = v),
+        "stroke" => inherited(style, parse_paint(value, bases.dark), |s, v| s.stroke = v),
         "stroke-opacity" => inherited(style, effects::parse_opacity(value, bases), |s, v| {
             s.stroke_opacity = v
         }),
@@ -95,7 +95,9 @@ pub(super) fn apply(
         "shape-rendering" => inherited(style, parse_shape_rendering(value), |s, v| {
             s.shape_rendering = v
         }),
-        "stop-color" => own(style, parse_stop_color(value), |s, v| s.stop_color = v),
+        "stop-color" => own(style, parse_stop_color(value, bases.dark), |s, v| {
+            s.stop_color = v
+        }),
         "stop-opacity" => own(style, effects::parse_opacity(value, bases), |s, v| {
             s.stop_opacity = v
         }),
@@ -219,19 +221,20 @@ fn url(tokens: &[Token]) -> Option<Arc<str>> {
     }
 }
 
-/// `none`, a colour or `currentcolor`: what a paint's fallback may be.
-fn color_or_none(tokens: &[Token]) -> Option<SvgPaint> {
+/// `none`, a colour or `currentcolor`: what a paint's fallback may be;
+/// a system colour by the element's scheme, `dark` or light.
+fn color_or_none(tokens: &[Token], dark: bool) -> Option<SvgPaint> {
     match single_ident(tokens).map(str::to_ascii_lowercase).as_deref() {
         Some("none") => Some(SvgPaint::None),
         Some("currentcolor") => Some(SvgPaint::CurrentColor),
-        _ => parse_color(tokens).map(SvgPaint::Color),
+        _ => super::color_with(tokens, None, dark).map(SvgPaint::Color),
     }
 }
 
 /// `<paint>` (SVG 2 section 13.2): `none`, a colour, `currentcolor`,
 /// `url()` and a fallback of `none` or a colour, `context-fill` or
 /// `context-stroke`.
-pub(super) fn parse_paint(tokens: &[Token]) -> Option<SvgPaint> {
+pub(super) fn parse_paint(tokens: &[Token], dark: bool) -> Option<SvgPaint> {
     match components(tokens).as_slice() {
         [one] => {
             if let Some(reference) = url(one) {
@@ -240,20 +243,20 @@ pub(super) fn parse_paint(tokens: &[Token]) -> Option<SvgPaint> {
             match single_ident(one).map(str::to_ascii_lowercase).as_deref() {
                 Some("context-fill") => Some(SvgPaint::ContextFill),
                 Some("context-stroke") => Some(SvgPaint::ContextStroke),
-                _ => color_or_none(one),
+                _ => color_or_none(one, dark),
             }
         }
         [reference, fallback] => Some(SvgPaint::Url(
             url(reference)?,
-            Some(Box::new(color_or_none(fallback)?)),
+            Some(Box::new(color_or_none(fallback, dark)?)),
         )),
         _ => None,
     }
 }
 
 /// `stop-color`: a colour or `currentcolor`.
-fn parse_stop_color(tokens: &[Token]) -> Option<SvgPaint> {
-    color_or_none(tokens).filter(|paint| *paint != SvgPaint::None)
+fn parse_stop_color(tokens: &[Token], dark: bool) -> Option<SvgPaint> {
+    color_or_none(tokens, dark).filter(|paint| *paint != SvgPaint::None)
 }
 
 /// One of `words`, ASCII case-insensitively.
@@ -619,6 +622,7 @@ fn unitless_to_px(tokens: &mut [Token]) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::parse_color;
     use super::super::tests::with_bases;
     use super::*;
 
@@ -629,26 +633,29 @@ mod tests {
     #[test]
     fn a_paint_is_none_a_colour_currentcolor_or_a_reference_with_a_fallback() {
         let red = parse_color(&tokens("red")).unwrap();
-        assert_eq!(parse_paint(&tokens("none")), Some(SvgPaint::None));
-        assert_eq!(parse_paint(&tokens("RED")), Some(SvgPaint::Color(red)));
+        assert_eq!(parse_paint(&tokens("none"), false), Some(SvgPaint::None));
         assert_eq!(
-            parse_paint(&tokens("currentColor")),
+            parse_paint(&tokens("RED"), false),
+            Some(SvgPaint::Color(red))
+        );
+        assert_eq!(
+            parse_paint(&tokens("currentColor"), false),
             Some(SvgPaint::CurrentColor)
         );
         assert_eq!(
-            parse_paint(&tokens("context-fill")),
+            parse_paint(&tokens("context-fill"), false),
             Some(SvgPaint::ContextFill)
         );
         assert_eq!(
-            parse_paint(&tokens("url(#g)")),
+            parse_paint(&tokens("url(#g)"), false),
             Some(SvgPaint::Url("#g".into(), None))
         );
         assert_eq!(
-            parse_paint(&tokens("url(\"#g\") none")),
+            parse_paint(&tokens("url(\"#g\") none"), false),
             Some(SvgPaint::Url("#g".into(), Some(Box::new(SvgPaint::None))))
         );
         assert_eq!(
-            parse_paint(&tokens("url(#g) red")),
+            parse_paint(&tokens("url(#g) red"), false),
             Some(SvgPaint::Url(
                 "#g".into(),
                 Some(Box::new(SvgPaint::Color(red)))
@@ -663,9 +670,18 @@ mod tests {
             "url(#g) red blue",
             "",
         ] {
-            assert_eq!(parse_paint(&tokens(bad)), None, "{bad}");
+            assert_eq!(parse_paint(&tokens(bad), false), None, "{bad}");
         }
-        assert_eq!(parse_stop_color(&tokens("none")), None);
+        assert_eq!(parse_stop_color(&tokens("none"), false), None);
+        // A system colour is the element's scheme's.
+        for (dark, menu) in [(false, [255, 255, 255]), (true, [18, 18, 18])] {
+            let [r, g, b] = menu;
+            assert_eq!(
+                parse_paint(&tokens("Menu"), dark),
+                Some(SvgPaint::Color(crate::computed::Color::rgb8(r, g, b))),
+                "dark: {dark}"
+            );
+        }
     }
 
     #[test]

@@ -2732,13 +2732,27 @@ fn close_inline<'a>(
         + m.descent
         + edges.padding[BOTTOM]
         + edges.border[BOTTOM];
-    // The element's style shared, but where a line break slices it.
+    // The element's style shared, but where a line break slices it: no
+    // border on that side, and its corners square, as the reference
+    // browser draws them.
     let mut style = own.clone();
+    let square = |s: &mut ComputedStyle, corners: [usize; 2]| {
+        if s.radii.is_some() {
+            let zero = style::computed::LengthPercentage::Px(0.0);
+            for corner in corners {
+                s.radii_mut().0[corner] = [zero.clone(), zero.clone()];
+            }
+        }
+    };
     if !inline.starts {
-        Arc::make_mut(&mut style).border_style[LEFT] = BorderStyle::None;
+        let style = Arc::make_mut(&mut style);
+        style.border_style[LEFT] = BorderStyle::None;
+        square(style, [0, 3]);
     }
     if !ends {
-        Arc::make_mut(&mut style).border_style[RIGHT] = BorderStyle::None;
+        let style = Arc::make_mut(&mut style);
+        style.border_style[RIGHT] = BorderStyle::None;
+        square(style, [1, 2]);
     }
     let (dx, dy) = relative_offset(own, cb_width, cb_height);
     let mut children = inline.children;

@@ -1133,13 +1133,22 @@ fn simplify(expr: &Expr, lengths: &dyn Lengths, basis: Option<f64>, fold: bool) 
             let mut percent = None::<f64>;
             let mut rest = Vec::new();
             for child in children {
-                match simplify(child, lengths, basis, fold) {
-                    Folded::Value(v) => *value.get_or_insert(0.0) += v,
-                    Folded::Tree(Expression::Percent(p)) => {
-                        *percent.get_or_insert(0.0) += f64::from(p)
+                // A sum within, a function of one argument's among them,
+                // is its terms, its leaves added to these.
+                let terms = match simplify(child, lengths, basis, fold) {
+                    Folded::Value(v) => {
+                        *value.get_or_insert(0.0) += v;
+                        continue;
                     }
-                    Folded::Tree(Expression::Sum(inner)) => rest.extend(inner.into_vec()),
-                    Folded::Tree(tree) => rest.push(tree),
+                    Folded::Tree(Expression::Sum(inner)) => inner.into_vec(),
+                    Folded::Tree(tree) => vec![tree],
+                };
+                for term in terms {
+                    match term {
+                        Expression::Value(v) => *value.get_or_insert(0.0) += f64::from(v),
+                        Expression::Percent(p) => *percent.get_or_insert(0.0) += f64::from(p),
+                        tree => rest.push(tree),
+                    }
                 }
             }
             if rest.is_empty() && percent.is_none() {
@@ -1192,10 +1201,16 @@ fn simplify(expr: &Expr, lengths: &dyn Lengths, basis: Option<f64>, fold: bool) 
             let is_min = matches!(expr, Expr::Min(_));
             let pick = if is_min { min } else { max };
             let mut value = None::<f64>;
+            // Where the values, folded to one, stand among the rest: at
+            // the first's place, the arguments kept in their order.
+            let mut value_at = None::<usize>;
             let mut rest = Vec::new();
             for child in children {
                 match simplify(child, lengths, basis, fold) {
-                    Folded::Value(v) => value = Some(value.map_or(v, |w| pick(w, v))),
+                    Folded::Value(v) => {
+                        value_at.get_or_insert(rest.len());
+                        value = Some(value.map_or(v, |w| pick(w, v)));
+                    }
                     Folded::Tree(tree) => rest.push(tree),
                 }
             }
@@ -1216,7 +1231,9 @@ fn simplify(expr: &Expr, lengths: &dyn Lengths, basis: Option<f64>, fold: bool) 
                     return Folded::Tree(Expression::Percent(p as f32));
                 }
             }
-            rest.extend(value.map(|v| Expression::Value(v as f32)));
+            if let (Some(v), Some(at)) = (value, value_at) {
+                rest.insert(at, Expression::Value(v as f32));
+            }
             if rest.len() == 1 {
                 return Folded::Tree(rest.pop().expect("one argument"));
             }
@@ -1566,12 +1583,33 @@ mod tests {
         else {
             panic!("an expression");
         };
+        // The lengths folded at the first's place, the arguments in
+        // their order.
         assert_eq!(
             e,
-            Expression::Min(Box::new([Expression::Percent(5.0), Expression::Value(5.0)]))
+            Expression::Min(Box::new([Expression::Value(5.0), Expression::Percent(5.0)]))
         );
         assert_eq!(e.evaluate(784.0), 5.0);
         assert_eq!(e.evaluate(40.0), 2.0);
+        assert_eq!(
+            compute("max(10%, 20px)", Want::LengthPercentage),
+            Some(Computed::Expression(Expression::Max(Box::new([
+                Expression::Percent(10.0),
+                Expression::Value(20.0)
+            ]))))
+        );
+        // A sum within a sum, a one-argument min() or max()'s, adds its
+        // leaves to the outer one's.
+        assert_eq!(
+            compute(
+                "calc(min(10% + 1px) + max(1em + 10%) + min(10% + 20px))",
+                Want::LengthPercentage
+            ),
+            Some(Computed::Expression(Expression::Sum(Box::new([
+                Expression::Percent(30.0),
+                Expression::Value(37.0)
+            ]))))
+        );
         // A product of a sum of leaves and a number distributes.
         let Some(Computed::Expression(e)) =
             compute("calc((10% + 1px) * 2)", Want::LengthPercentage)

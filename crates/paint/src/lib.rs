@@ -1801,6 +1801,13 @@ fn push_replaced(
         Replaced::Image { id, header } => {
             let image = fragment.style.image();
             let (natural, orientation) = oriented(&fragment.style, header);
+            // An SVG image short of a natural size is sized against the
+            // box as the default object size (CSS Images 3 section 5.2):
+            // a ratio alone is contained in it.
+            let natural = match header.vector {
+                Some(vector) => concrete((None, None), vector, (rect.w, rect.h)),
+                None => natural,
+            };
             let (w, h) = fitted(image.object_fit, natural, (rect.w, rect.h));
             let x = rect.x + image.object_position.x.resolve(rect.w - w);
             let y = rect.y + image.object_position.y.resolve(rect.h - h);
@@ -2098,7 +2105,14 @@ fn push_box(
         // (CSS Backgrounds 3 section 2.7).
         if f.style.background_color.a > 0.0 {
             let clip = f.style.background().color_clip();
-            let r = placed.clip_of(clip);
+            // Painted with the bottom layer, as it is attached.
+            let local = f
+                .style
+                .background()
+                .layers()
+                .last()
+                .is_some_and(|l| l.attachment == Attachment::Local);
+            let r = placed.clip_of(clip, local);
             let color = to_rgba8(f.style.background_color);
             // A rounded box's colour fills its clip box's curve (gap
             // batch E, D50).
@@ -2507,8 +2521,14 @@ impl Placed<'_> {
     /// box for the border box of a rounded box whose border is solid and
     /// opaque all round, which hides what it covers, so that the
     /// background does not show at the border's anti-aliased outer edge,
-    /// as the reference browser keeps it from showing (gap batch E).
-    fn clip_of(&self, which: BackgroundBox) -> Rect {
+    /// as the reference browser keeps it from showing (gap batch E); and
+    /// the padding box for the border box of a scroll container's layer
+    /// that is `local`, which the reference browser paints with what the
+    /// box scrolls.
+    fn clip_of(&self, which: BackgroundBox, local: bool) -> Rect {
+        if which == BackgroundBox::BorderBox && local && self.by.clips() {
+            return self.box_of(BackgroundBox::PaddingBox);
+        }
         let style = &self.by.style;
         let hidden = style.radii.is_some()
             && (0..4).all(|side| {
@@ -2597,7 +2617,10 @@ fn push_layers(
             Some(Image::Gradient(_)) => (images::Vector::default(), None),
             None => continue,
         };
-        let area = placed.area.unwrap_or_else(|| placed.clip_of(layer.clip));
+        let local = layer.attachment == Attachment::Local;
+        let area = placed
+            .area
+            .unwrap_or_else(|| placed.clip_of(layer.clip, local));
         let mut positioning = placed.box_of(layer.origin);
         match layer.attachment {
             // Inside a transformed box it is `scroll` (CSS Transforms 1
@@ -3564,10 +3587,14 @@ mod fragment_tests {
     /// `css`, its image 200 by 100 and turned by `orientation` when
     /// `src` is `a.png`, broken otherwise (M23.2).
     fn img_list(src: &str, orientation: images::Orientation, css: &str) -> DisplayList {
-        struct Shown(images::Orientation);
+        // A PNG 200 by 100, or, as `a.svg`, an SVG image of a ratio of 2
+        // alone.
+        struct Shown(images::Orientation, Option<images::Vector>);
         impl layout::Images for Shown {
             fn image(&self, _node: NodeId) -> layout::ImageState {
-                let (width, height) = if self.0.swaps_sides() {
+                let (width, height) = if self.1.is_some() {
+                    (300, 150)
+                } else if self.0.swaps_sides() {
                     (100, 200)
                 } else {
                     (200, 100)
@@ -3579,7 +3606,7 @@ mod fragment_tests {
                         width,
                         height,
                         orientation: self.0,
-                        vector: None,
+                        vector: self.1,
                     },
                 }
             }
@@ -3602,8 +3629,17 @@ mod fragment_tests {
         let context = style::CascadeContext::default();
         let styles = sheets.cascade(&document, &context);
         let recascade = sheets.recascader(&document, &styles, &context);
-        let shown = Shown(orientation);
-        let images: &dyn layout::Images = if src == "a.png" { &shown } else { &Broken };
+        let vector = (src == "a.svg").then_some(images::Vector {
+            width: None,
+            height: None,
+            ratio: Some(2.0),
+        });
+        let shown = Shown(orientation, vector);
+        let images: &dyn layout::Images = if src == "a.png" || vector.is_some() {
+            &shown
+        } else {
+            &Broken
+        };
         let boxes = layout::build_box_tree_showing(&document, &styles, &recascade, images);
         let layout = layout::layout_document(&boxes, VIEWPORT, &fonts);
         paint_fragments(&layout.roots, Viewport::new(VIEWPORT, 600.0))
@@ -3689,6 +3725,22 @@ mod fragment_tests {
         assert_eq!(
             image_at(&applied[0]),
             (0.0, 0.0, 100.0, 200.0, Normal, false)
+        );
+        // An SVG image of a ratio alone is contained in the box, as the
+        // default object size, before it is fitted.
+        let svg = |css: &str| after_canvas(&img_list("a.svg", Normal, &format!("{box_css} {css}")));
+        for fit in ["none", "contain", "scale-down"] {
+            let none = svg(&format!("img {{ object-fit: {fit} }}"));
+            assert_eq!(
+                image_at(&none[0]),
+                (0.0, 25.0, 100.0, 50.0, Normal, false),
+                "{fit}"
+            );
+        }
+        let cover = svg("img { object-fit: cover }");
+        assert_eq!(
+            image_at(&cover[1]),
+            (-50.0, 0.0, 200.0, 100.0, Normal, false)
         );
     }
 
@@ -5190,6 +5242,11 @@ mod fragment_tests {
         assert_eq!(reach("green"), 5.0);
         assert_eq!(reach("rgba(0, 128, 0, 0.5)"), 0.0);
         assert_eq!(reach("green; border-left-style: dashed"), 0.0);
+        // A scroll container's local background is painted with what it
+        // scrolls, in its padding box; not where it does not clip.
+        let local = "rgba(0, 128, 0, 0.5); background-attachment: local !important";
+        assert_eq!(reach(&format!("{local}; overflow: hidden")), 5.0);
+        assert_eq!(reach(local), 0.0);
     }
 
     #[test]

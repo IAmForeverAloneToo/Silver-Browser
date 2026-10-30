@@ -2882,6 +2882,19 @@ fn compute_style(
             );
         }
     }
+    // On the root element `rem` is the initial font size in `font-size`
+    // alone; past it, the size the root computed (Values 4 section
+    // 6.1.1).
+    let root_resolution;
+    let resolution = if resolution.root && target == Target::Element {
+        root_resolution = Resolution {
+            rem: style.font_size_px,
+            ..*resolution
+        };
+        &root_resolution
+    } else {
+        resolution
+    };
 
     // `color-scheme` next (gap batch E, D49): the scheme the element's
     // system colours and `light-dark()` resolve by.
@@ -8999,6 +9012,12 @@ mod tests {
             "a percentage font size is of the parent's, the body's, which \
              it inherits from the root"
         );
+        // The root's other properties take its own font size.
+        let sheets = [sheet(":root { font-size: 50px; margin-left: 2rem }")];
+        assert_eq!(
+            style_of("<p>x</p>", &sheets, "html").margin[LEFT],
+            LengthPercentageAuto::Px(100.0)
+        );
     }
 
     #[test]
@@ -9682,6 +9701,14 @@ mod tests {
             style_of(html, &[], "p").color
         );
         assert_eq!(style_of(html, &[], "#w").color, Color::rgb8(0, 0, 0xEE));
+    }
+
+    #[test]
+    fn the_ua_sheet_colours_marked_text_by_its_system_colours() {
+        let html = "<p style='color: blue'><mark>x</mark></p>";
+        let mark = style_of(html, &[], "mark");
+        assert_eq!(mark.background_color, Color::rgb8(255, 255, 0));
+        assert_eq!(mark.color, Color::rgb8(0, 0, 0));
     }
 
     // ---- M16: pseudo-element styles, `content` and `quotes` ---------------
