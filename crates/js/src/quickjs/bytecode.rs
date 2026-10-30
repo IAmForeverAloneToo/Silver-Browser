@@ -4,9 +4,9 @@
 //! by every realm after, rather than every realm parsing and compiling
 //! its sixteen thousand lines again. The bootstrap is wrapped as a
 //! module whose default export is its function, since rquickjs compiles
-//! without running only a module; the function is the same. WebGPU and
-//! WebGL's bindings (M41) are compiled so too, apart, and read into a
-//! realm only when its page first uses them.
+//! without running only a module; the function is the same. The binding
+//! chunks (D64, M41's WebGPU and WebGL's the first) are compiled so too,
+//! each apart, and read into a realm only when its page first uses them.
 //!
 //! This is the one `unsafe` the crate writes, the exception the roadmap
 //! asked for, reviewed (`docs/security.md`): QuickJS's reader trusts
@@ -40,10 +40,16 @@ static BOOTSTRAP: Bindings = Bindings {
     bytecode: OnceLock::new(),
 };
 
-static GPU: Bindings = Bindings {
-    name: super::dom::GPU_BINDINGS_NAME,
-    source: super::dom::GPU_BINDINGS,
-    bytecode: OnceLock::new(),
+/// The binding chunks (D64), as `dom::CHUNKS` has them.
+static CHUNKS: [Bindings; super::dom::CHUNKS.len()] = {
+    const fn chunk(at: usize) -> Bindings {
+        Bindings {
+            name: super::dom::CHUNKS[at].1,
+            source: super::dom::CHUNKS[at].2,
+            bytecode: OnceLock::new(),
+        }
+    }
+    [chunk(0), chunk(1), chunk(2), chunk(3), chunk(4), chunk(5)]
 };
 
 /// `bindings`' bytecode: compiled the first time it is asked for, in a
@@ -79,7 +85,9 @@ fn compiled(bindings: &'static Bindings) -> Option<&'static [u8]> {
 /// first script does not wait for it.
 pub fn warm() {
     let _ = compiled(&BOOTSTRAP);
-    let _ = compiled(&GPU);
+    for chunk in &CHUNKS {
+        let _ = compiled(chunk);
+    }
 }
 
 /// How many realms read the bindings' bytecode: for the tests.
@@ -109,16 +117,23 @@ pub(super) fn bootstrap<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Function<'js>> 
     read(ctx, &BOOTSTRAP)
 }
 
-/// WebGPU and WebGL's bindings' function in `ctx` (M41).
-pub(super) fn gpu_bindings<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Function<'js>> {
-    read(ctx, &GPU)
+/// Binding chunk `name`'s function in `ctx` (D64), by the name the
+/// bootstrap asks for it by.
+pub(super) fn chunk<'js>(ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<Function<'js>> {
+    let Some(at) = super::dom::CHUNKS
+        .iter()
+        .position(|&(chunk, _, _)| chunk == name)
+    else {
+        return Err(rquickjs::Exception::throw_type(ctx, "no such bindings"));
+    };
+    read(ctx, &CHUNKS[at])
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::Ordering;
 
-    use super::{BOOTSTRAP, GPU, READ, compiled};
+    use super::{BOOTSTRAP, CHUNKS, READ, compiled};
 
     /// The bindings are compiled and written once a process, and each
     /// realm made after reads them rather than compiling them (M35.12).
@@ -127,7 +142,9 @@ mod tests {
         let first = compiled(&BOOTSTRAP).expect("the bootstrap compiles to bytecode");
         let again = compiled(&BOOTSTRAP).expect("and keeps it");
         assert!(std::ptr::eq(first, again), "written once");
-        compiled(&GPU).expect("WebGPU and WebGL's bindings compile to bytecode");
+        for chunk in &CHUNKS {
+            compiled(chunk).expect("each chunk compiles to bytecode");
+        }
         let before = READ.load(Ordering::SeqCst);
         for _ in 0..2 {
             let mut realm = crate::tests::realm();
@@ -167,5 +184,68 @@ mod tests {
             .map(|frame| (frame.url.as_str(), frame.line))
             .collect();
         assert_eq!(places, [("https://example.com/page.html", 3)]);
+    }
+
+    /// A realm's making, timed for each kind, and a chunk's first use
+    /// (D64): the median of many, the bindings compiled before. Run with
+    /// `--release --ignored --nocapture`.
+    #[test]
+    #[ignore = "a measurement"]
+    fn a_realms_making_timed() {
+        use crate::{Limits, QuickJs, RealmKind, ScriptEngine};
+        super::warm();
+        let kinds = [
+            ("window", RealmKind::Window),
+            (
+                "dedicated worker",
+                RealmKind::DedicatedWorker {
+                    name: String::new(),
+                },
+            ),
+            ("service worker", RealmKind::ServiceWorker),
+        ];
+        for (label, kind) in kinds {
+            let mut times = Vec::new();
+            for i in 0..60 {
+                let start = std::time::Instant::now();
+                let realm = QuickJs
+                    .realm_of::<crate::tests::Recorder>(kind.clone(), Limits::default(), None)
+                    .expect("a realm");
+                let took = start.elapsed();
+                drop(realm);
+                if i >= 10 {
+                    times.push(took);
+                }
+            }
+            times.sort();
+            let median = times[times.len() / 2];
+            println!("{label}: median {median:?}, min {:?}", times[0]);
+        }
+        // What a page pays at a chunk's first use, in a window.
+        let touches = [
+            ("nothing", "void 0"),
+            ("gpu", "void GPUBuffer"),
+            ("intl", "void Intl"),
+            ("idb", "void indexedDB"),
+            ("audio", "void AudioContext"),
+            ("wasm", "void WebAssembly"),
+            ("canvas", "void ImageData"),
+        ];
+        for (label, source) in touches {
+            let mut times = Vec::new();
+            for i in 0..40 {
+                let mut realm = crate::tests::realm();
+                let mut host = crate::tests::Recorder::default();
+                let start = std::time::Instant::now();
+                realm
+                    .run(&crate::tests::script(source), &mut host)
+                    .expect("it runs");
+                if i >= 5 {
+                    times.push(start.elapsed());
+                }
+            }
+            times.sort();
+            println!("first use of {label}: median {:?}", times[times.len() / 2]);
+        }
     }
 }

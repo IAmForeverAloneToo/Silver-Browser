@@ -1,9 +1,10 @@
-// WebGPU and WebGL's bindings (M41, docs/design/gpu.md): compiled apart
-// from the bootstrap and read into a realm only when a page first uses
-// them (T4.3: read with the bootstrap, they cost every realm a
-// millisecond more). A function of what of the bootstrap's they use, as
-// the bootstrap names it, giving what the bootstrap calls of them. The
-// bootstrap's rules hold here: nothing looked up on a built-in's
+// WebGPU and WebGL's bindings (M41, docs/design/gpu.md): a binding chunk
+// (D64), compiled apart from the bootstrap and read into a realm only
+// when a page first uses them (T4.3: read with the bootstrap, they cost
+// every realm a millisecond more). A function of what of the bootstrap's
+// they use, as the bootstrap names it, giving what the bootstrap calls of
+// them. The bootstrap's rules hold here: what is kept of the built-ins
+// was kept before any page ran, nothing looked up on a built-in's
 // prototype when a page calls in, no iterator.
 (function (env) {
   "use strict";
@@ -11,16 +12,16 @@
     $ArrayBuffer, $DOMException, $DataView, $Map, $MapForEach, $Number, $NumberIsFinite, $Promise,
     $RangeError, $Set, $TypeError, $Uint8Array, $WeakMap, ArrayBufferIsView, ArrayIsArray,
     ArrayPush, ArraySlice, DataViewBuffer, DataViewLength, DataViewOffset, Event, EventTarget,
-    FromCharCode, JSONParse, JSONStringify, KEY, MapDelete, MapGet, MapSet, MathFloor, MathMax,
-    MathMin, MathTrunc, Navigator, ObjectFreeze, PromiseThen, ReflectApply, STORAGE, SetAdd,
-    SetForEach, SetSize, StringSlice, ToBase64, TypedArrayBuffer, TypedArrayCount,
-    TypedArrayLength, TypedArrayOffset, TypedArrayPrototype, TypedArraySet, TypedArrayTag, WORKER,
-    WeakMapGet, WeakMapSet, binaryString, canvasTargets, constants, defineHandlers, defineProperty,
-    dispatching, domError, entry, eventState, expose, fireAt, getOwnPropertyDescriptor, global,
-    handleOf, illegalConstructor, illegalInvocation, imageDatas, interfaces, isNode, items,
-    iteratorSymbol, kindOf, label, limits, listed, location, made, make, member, native, need,
-    needToConstruct, nullable, objects, prefix, record, rejected, resolved, sequence, startTimer,
-    str, toStringTag, uncurry, viewLength, write,
+    FromCharCode, GpuArrayIndexOf, GpuCharCodeAt, GpuIndexOf, GpuLastIndexOf, GpuSetEntries,
+    GpuSetHas, GpuSetValues, GpuUint32Array, JSONParse, JSONStringify, KEY, MapDelete, MapGet,
+    MapSet, MathFloor, MathMax, MathMin, MathTrunc, Navigator, ObjectFreeze, PromiseThen,
+    ReflectApply, SetAdd, SetForEach, SetSize, StringSlice, ToBase64, TypedArrayBuffer,
+    TypedArrayCount, TypedArrayLength, TypedArrayOffset, TypedArraySet, TypedArraySubarray,
+    TypedArrayTag, WORKER, WeakMapGet, WeakMapSet, binaryString, canvasTargets, defineHandlers,
+    defineProperty, dispatching, domError, eventState, expose, fireAt, getOwnPropertyDescriptor,
+    global, handleOf, illegalConstructor, illegalInvocation, imageDatas, interfaces, isNode,
+    iteratorSymbol, kindOf, listed, native, need, needToConstruct, prefix, record, rejected,
+    resolved, sequence, startTimer, str, toStringTag, viewLength,
   } = env;
 
 
@@ -28,11 +29,6 @@
   // The objects are the engine's numbers for the GPU process's; each call
   // goes through one native, `native.gpu(op, bytes)`, and what the GPU
   // process answers later comes back as a task (`gpuTask`).
-
-  const GpuSetHas = uncurry(Set.prototype.has);
-  const GpuSetValues = uncurry(Set.prototype.values);
-  const GpuSetEntries = uncurry(Set.prototype.entries);
-  const TypedArraySubarray = uncurry(TypedArrayPrototype.subarray);
 
   // An ArrayBufferView's bytes, and the size of its elements.
   function gpuViewBytes(view) {
@@ -1077,10 +1073,6 @@
   expose(GPUQueue, "GPUQueue");
 
   // ---- Shader modules (M41 step 3) ----
-  const GpuCharCodeAt = uncurry(String.prototype.charCodeAt);
-  const GpuLastIndexOf = uncurry(String.prototype.lastIndexOf);
-  const GpuIndexOf = uncurry(String.prototype.indexOf);
-  const GpuUint32Array = Uint32Array;
 
   // The UTF-16 index of UTF-8 byte `at` of `code`.
   function gpuUtf16At(code, at) {
@@ -2462,7 +2454,6 @@
   }
   expose(GPUBuffer, "GPUBuffer");
 
-  const GpuArrayIndexOf = uncurry(Array.prototype.indexOf);
   // ---- The canvas (M41 step 4) ----
   // A configured context has a texture of its canvas's size, the same
   // until its frame presents it: after the frame's callbacks, it is read

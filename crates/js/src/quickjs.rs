@@ -1021,10 +1021,7 @@ pub(crate) fn parse_stack(stack: &str) -> Vec<StackFrame> {
             continue;
         };
         // An `import()`'s stub's (D61) too.
-        if url == dom::BOOTSTRAP_NAME
-            || url == dom::GPU_BINDINGS_NAME
-            || url.starts_with(modules::MARK)
-        {
+        if dom::is_bindings(url) || url.starts_with(modules::MARK) {
             continue;
         }
         frames.push(StackFrame {

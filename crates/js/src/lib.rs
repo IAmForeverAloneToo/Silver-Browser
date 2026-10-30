@@ -20,6 +20,8 @@ mod pattern;
 mod quickjs;
 
 #[cfg(test)]
+mod chunk_tests;
+#[cfg(test)]
 mod clone_tests;
 #[cfg(test)]
 mod dom_tests;

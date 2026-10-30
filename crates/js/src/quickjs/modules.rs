@@ -24,7 +24,7 @@ use std::rc::Rc;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{Coerced, Ctx, Exception, Function, Module, Persistent, Promise, Value};
 
-use super::dom::{BOOTSTRAP_NAME, Budget, GPU_BINDINGS_NAME, throw};
+use super::dom::{Budget, is_bindings, throw};
 use super::{Entries, Slot, with_host};
 use crate::{Answer, Call, MAX_SPECIFIER_BYTES, ModuleSource, ScriptingHost};
 
@@ -226,7 +226,7 @@ fn resolve<H: ScriptingHost>(
     let (answer, work) = with_host(ctx, host, |host| (host.dom(call), host.take_work()))?;
     budget.charge(work);
     match answer {
-        Ok(Answer::String(url)) if url != BOOTSTRAP_NAME && url != GPU_BINDINGS_NAME => Ok(url),
+        Ok(Answer::String(url)) if !is_bindings(&url) => Ok(url),
         Ok(_) => Err(Exception::throw_type(
             ctx,
             &format!("Failed to resolve module specifier \"{specifier}\"."),

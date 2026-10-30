@@ -19,11 +19,34 @@ use crate::{
 pub(super) const BOOTSTRAP: &str = include_str!("bootstrap.js");
 /// The name the bootstrap's frames carry in a stack, as its URL.
 pub(super) const BOOTSTRAP_NAME: &str = "bootstrap";
-/// WebGPU and WebGL's bindings (M41), read into a realm at their first
-/// use: a function of the bootstrap's names they use.
-pub(super) const GPU_BINDINGS: &str = include_str!("bootstrap_gpu.js");
-/// The name their frames carry in a stack.
-pub(super) const GPU_BINDINGS_NAME: &str = "bootstrap-gpu";
+/// The binding chunks (D64), each read into a realm at its first use: a
+/// function of the bootstrap's names it uses. By the name the bootstrap
+/// asks for it by (`native.chunk`), the name its frames carry in a stack,
+/// and its source: WebGPU and WebGL's (M41), `Intl`, IndexedDB and
+/// `navigator.storage`, Web Audio, WebAssembly, and the 2D canvas and
+/// `OffscreenCanvas`.
+pub(super) const CHUNKS: [(&str, &str, &str); 6] = [
+    ("gpu", "bootstrap-gpu", include_str!("bootstrap_gpu.js")),
+    ("intl", "bootstrap-intl", include_str!("bootstrap_intl.js")),
+    ("idb", "bootstrap-idb", include_str!("bootstrap_idb.js")),
+    (
+        "audio",
+        "bootstrap-audio",
+        include_str!("bootstrap_audio.js"),
+    ),
+    ("wasm", "bootstrap-wasm", include_str!("bootstrap_wasm.js")),
+    (
+        "canvas",
+        "bootstrap-canvas",
+        include_str!("bootstrap_canvas.js"),
+    ),
+];
+
+/// Whether `url` names the bootstrap or one of its chunks, whose frames
+/// a stack leaves out and which no page may import.
+pub(super) fn is_bindings(url: &str) -> bool {
+    url == BOOTSTRAP_NAME || CHUNKS.iter().any(|&(_, name, _)| name == url)
+}
 
 /// What the natives charge the work they report to: the run's steps,
 /// the work not yet a whole step, and the budget's end.
@@ -993,13 +1016,13 @@ pub(super) fn install<'js, H: ScriptingHost>(
     super::wasm::install(ctx, &natives, budget)?;
     // ECMA-402's computations (D63), which never reach the host.
     super::intl::install(ctx, &natives)?;
-    // WebGPU and WebGL's bindings' function, read when first asked for.
+    // A binding chunk's function (D64), read when first asked for.
     natives.set(
-        "gpuBindings",
+        "chunk",
         Function::new(
             ctx.clone(),
-            |ctx: Ctx<'js>| -> rquickjs::Result<Function<'js>> {
-                super::bytecode::gpu_bindings(&ctx)
+            |ctx: Ctx<'js>, name: String| -> rquickjs::Result<Function<'js>> {
+                super::bytecode::chunk(&ctx, &name)
             },
         )?,
     )?;
