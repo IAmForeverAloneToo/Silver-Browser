@@ -9157,7 +9157,8 @@
 
   // A node's parent, or the InvalidNodeTypeError of one with none.
   function parentOf(handle, method) {
-    const parent = native.parent(handle);
+    // An Attr (handle -1) has none.
+    const parent = handle === -1 ? null : native.parent(handle);
     if (parent === null) {
       throw domError("InvalidNodeTypeError", "the given Node has no parent.", method, "Range");
     }
@@ -9190,6 +9191,47 @@
     return id;
   }
 
+  // The Attr a range is in, when an Attr is its root: an Attr is in no
+  // tree and has no children, so the range is at (attr, 0) at both ends.
+  const attrRooted = new $WeakMap();
+
+  function attrOf(range) {
+    return WeakMapGet(attrRooted, range);
+  }
+
+  // Puts `range` at (attr, 0), or back in a tree when `attr` is undefined.
+  function rootInAttr(range, attr) {
+    if (attr === undefined) {
+      WeakMapDelete(attrRooted, range);
+    } else {
+      WeakMapSet(attrRooted, range, attr);
+    }
+  }
+
+  // "Set the start or end" of a range to (attr, offset): any other root
+  // moves both ends there.
+  function setInAttr(range, attr, offset, method) {
+    if (unsigned(offset) > 0) {
+      throw domError(
+        "IndexSizeError",
+        "There is no child at offset " + unsigned(offset) + ".",
+        method,
+        "Range",
+      );
+    }
+    rootInAttr(range, attr);
+  }
+
+  // The root of `node`, an Attr being its own; `range`'s, likewise.
+  function rootOfNode(node) {
+    return node instanceof Attr ? node : rootHandle(handleOf(node));
+  }
+
+  function rootOfRange(range) {
+    const attr = attrOf(range);
+    return attr === undefined ? rootHandle(boundsOf(range)[0]) : attr;
+  }
+
   class AbstractRange {
     constructor(key) {
       if (key !== KEY) {
@@ -9198,22 +9240,27 @@
     }
 
     get startContainer() {
-      return wrap(boundsOf(this)[0]);
+      const attr = attrOf(this);
+      return attr === undefined ? wrap(boundsOf(this)[0]) : attr;
     }
 
     get startOffset() {
-      return boundsOf(this)[1];
+      return attrOf(this) === undefined ? boundsOf(this)[1] : 0;
     }
 
     get endContainer() {
-      return wrap(boundsOf(this)[2]);
+      const attr = attrOf(this);
+      return attr === undefined ? wrap(boundsOf(this)[2]) : attr;
     }
 
     get endOffset() {
-      return boundsOf(this)[3];
+      return attrOf(this) === undefined ? boundsOf(this)[3] : 0;
     }
 
     get collapsed() {
+      if (attrOf(this) !== undefined) {
+        return true;
+      }
       const b = boundsOf(this);
       return b[0] === b[2] && b[1] === b[3];
     }
@@ -9278,6 +9325,10 @@
     }
 
     get commonAncestorContainer() {
+      const attr = attrOf(this);
+      if (attr !== undefined) {
+        return attr;
+      }
       const b = boundsOf(this);
       let common = b[0];
       while (!inclusiveAncestor(common, b[2])) {
@@ -9289,6 +9340,9 @@
     setStart(node, offset) {
       rangeId(this);
       need(arguments.length, 2, "setStart", "Range");
+      if (isNode(node) && node instanceof Attr) {
+        return setInAttr(this, node, offset, "setStart");
+      }
       const [handle, at] = checkPoint(node, offset, "setStart", "Range");
       setStart(this, handle, at);
     }
@@ -9296,6 +9350,9 @@
     setEnd(node, offset) {
       rangeId(this);
       need(arguments.length, 2, "setEnd", "Range");
+      if (isNode(node) && node instanceof Attr) {
+        return setInAttr(this, node, offset, "setEnd");
+      }
       const [handle, at] = checkPoint(node, offset, "setEnd", "Range");
       setEnd(this, handle, at);
     }
@@ -9330,6 +9387,9 @@
 
     collapse(toStart = false) {
       const id = rangeId(this);
+      if (attrOf(this) !== undefined) {
+        return;
+      }
       const b = native.rangeOf(id);
       if (toStart) {
         native.setRange(id, b[0], b[1], b[0], b[1]);
@@ -9345,12 +9405,16 @@
       const parent = parentOf(handle, "selectNode");
       const index = native.indexOf(handle);
       native.setRange(id, parent, index, parent, index + 1);
+      rootInAttr(this, undefined);
     }
 
     selectNodeContents(node) {
       const id = rangeId(this);
       need(arguments.length, 1, "selectNodeContents", "Range");
       const handle = nodeArgument(node, 1, "selectNodeContents", "Range");
+      if (node instanceof Attr) {
+        return rootInAttr(this, node);
+      }
       if (native.kind(handle) === 10) {
         throw domError(
           "InvalidNodeTypeError",
@@ -9360,6 +9424,7 @@
         );
       }
       native.setRange(id, handle, 0, handle, native.nodeLength(handle));
+      rootInAttr(this, undefined);
     }
 
     compareBoundaryPoints(how, sourceRange) {
@@ -9379,6 +9444,18 @@
           "compareBoundaryPoints",
           "Range",
         );
+      }
+      if (rootOfRange(this) !== rootOfRange(sourceRange)) {
+        throw domError(
+          "WrongDocumentError",
+          "The two Ranges are not in the same tree.",
+          "compareBoundaryPoints",
+          "Range",
+        );
+      }
+      // Two in one Attr are both at (attr, 0).
+      if (attrOf(this) !== undefined) {
+        return 0;
       }
       const a = boundsOf(this);
       const b = boundsOf(sourceRange);
@@ -9402,8 +9479,12 @@
       const b = boundsOf(this);
       need(arguments.length, 2, "isPointInRange", "Range");
       const handle = nodeArgument(node, 1, "isPointInRange", "Range");
-      if (rootHandle(handle) !== rootHandle(b[0])) {
+      if (rootOfNode(node) !== rootOfRange(this)) {
         return false;
+      }
+      if (node instanceof Attr) {
+        setInAttr(new Range(), node, offset, "isPointInRange");
+        return true;
       }
       const [, at] = checkPoint(node, offset, "isPointInRange", "Range");
       return native.compareBoundaries(handle, at, b[0], b[1]) !== -1 &&
@@ -9414,13 +9495,17 @@
       const b = boundsOf(this);
       need(arguments.length, 2, "comparePoint", "Range");
       const handle = nodeArgument(node, 1, "comparePoint", "Range");
-      if (rootHandle(handle) !== rootHandle(b[0])) {
+      if (rootOfNode(node) !== rootOfRange(this)) {
         throw domError(
           "WrongDocumentError",
           "The node provided and the Range are not in the same tree.",
           "comparePoint",
           "Range",
         );
+      }
+      if (node instanceof Attr) {
+        setInAttr(new Range(), node, offset, "comparePoint");
+        return 0;
       }
       const [, at] = checkPoint(node, offset, "comparePoint", "Range");
       if (native.compareBoundaries(handle, at, b[0], b[1]) === -1) {
@@ -9433,8 +9518,12 @@
       const b = boundsOf(this);
       need(arguments.length, 1, "intersectsNode", "Range");
       const handle = nodeArgument(node, 1, "intersectsNode", "Range");
-      if (rootHandle(handle) !== rootHandle(b[0])) {
+      if (rootOfNode(node) !== rootOfRange(this)) {
         return false;
+      }
+      // An Attr has no parent.
+      if (node instanceof Attr) {
+        return true;
       }
       const parent = native.parent(handle);
       if (parent === null) {
@@ -9449,6 +9538,7 @@
       const b = boundsOf(this);
       const copy = new Range();
       native.setRange(rangeId(copy), b[0], b[1], b[2], b[3]);
+      rootInAttr(copy, attrOf(this));
       return copy;
     }
 
@@ -9458,6 +9548,9 @@
 
     deleteContents() {
       const id = rangeId(this);
+      if (attrOf(this) !== undefined) {
+        return;
+      }
       try {
         deleteBounds(id, native.rangeOf(id));
       } catch (error) {
@@ -9467,6 +9560,9 @@
 
     extractContents() {
       const id = rangeId(this);
+      if (attrOf(this) !== undefined) {
+        return wrap(native.createFragment());
+      }
       try {
         return wrap(extractBounds(native.rangeOf(id), id));
       } catch (error) {
@@ -9476,6 +9572,9 @@
 
     cloneContents() {
       rangeId(this);
+      if (attrOf(this) !== undefined) {
+        return wrap(native.createFragment());
+      }
       try {
         return wrap(cloneBounds(boundsOf(this)));
       } catch (error) {
@@ -9487,6 +9586,15 @@
       const id = rangeId(this);
       need(arguments.length, 1, "insertNode", "Range");
       const handle = nodeArgument(node, 1, "insertNode", "Range");
+      // Nothing goes into an Attr, and an Attr goes nowhere.
+      if (attrOf(this) !== undefined || node instanceof Attr) {
+        throw domError(
+          "HierarchyRequestError",
+          "The node to be inserted is not of a type that may be inserted here.",
+          "insertNode",
+          "Range",
+        );
+      }
       try {
         insertInRange(id, handle);
       } catch (error) {
@@ -9498,6 +9606,14 @@
       const id = rangeId(this);
       need(arguments.length, 1, "surroundContents", "Range");
       const handle = nodeArgument(newParent, 1, "surroundContents", "Range");
+      if (attrOf(this) !== undefined) {
+        throw domError(
+          "HierarchyRequestError",
+          "The node to be inserted is not of a type that may be inserted here.",
+          "surroundContents",
+          "Range",
+        );
+      }
       const b = native.rangeOf(id);
       if (partlyHoldsNonText(b)) {
         throw domError(
@@ -9534,6 +9650,9 @@
 
     toString() {
       const b = boundsOf(this);
+      if (attrOf(this) !== undefined) {
+        return "";
+      }
       if (b[0] === b[2] && native.kind(b[0]) === 3) {
         return StringSlice(native.data(b[0]), b[1], b[3]);
       }
@@ -9567,6 +9686,10 @@
   // point in another tree, or past the other end, moves both ends.
   function setStart(range, handle, offset) {
     const id = rangeId(range);
+    if (attrOf(range) !== undefined) {
+      native.setRange(id, handle, offset, handle, offset);
+      return rootInAttr(range, undefined);
+    }
     const b = native.rangeOf(id);
     const order = native.compareBoundaries(handle, offset, b[2], b[3]);
     if (order === 2 || order === 1) {
@@ -9578,6 +9701,10 @@
 
   function setEnd(range, handle, offset) {
     const id = rangeId(range);
+    if (attrOf(range) !== undefined) {
+      native.setRange(id, handle, offset, handle, offset);
+      return rootInAttr(range, undefined);
+    }
     const b = native.rangeOf(id);
     const order = native.compareBoundaries(handle, offset, b[0], b[1]);
     if (order === 2 || order === -1) {
@@ -9943,7 +10070,7 @@
       if (selectionRange !== null) {
         return;
       }
-      if (rootHandle(boundsOf(range)[0]) !== native.document()) {
+      if (attrOf(range) !== undefined || rootHandle(boundsOf(range)[0]) !== native.document()) {
         return;
       }
       selectionRange = range;

@@ -599,6 +599,58 @@ fn every_kind_of_node_as_the_reference_browser_has_it() {
 }
 
 #[test]
+fn a_range_in_an_attr_is_at_its_start_and_holds_nothing() {
+    // An Attr is in no tree and has no children: a range set in one is
+    // at (attr, 0) at both ends, its own root.
+    probed_in(
+        "<p id=a title=t>one</p>",
+        "var a = document.getElementById('a'), at = a.getAttributeNode('title'), \
+         r = document.createRange(); r.selectNodeContents(a); r.setStart(at, 0); \
+         function name(f) { try { f(); return 'none'; } catch (e) { return e.name; } }",
+        &[
+            (
+                "[r.startContainer === at, r.endContainer === at, r.commonAncestorContainer === at, \
+                 r.collapsed, r.toString(), r.cloneContents().childNodes.length]",
+                "ok [true,true,true,true,\"\",0]",
+            ),
+            (
+                "[name(() => r.setEnd(at, 1)), name(() => r.setStartBefore(at)), \
+                 name(() => r.selectNode(at)), name(() => r.insertNode(document.createElement('i'))), \
+                 name(() => r.surroundContents(document.createElement('i'))), \
+                 name(() => r.comparePoint(a, 0))]",
+                "ok [\"IndexSizeError\",\"InvalidNodeTypeError\",\"InvalidNodeTypeError\",\
+                 \"HierarchyRequestError\",\"HierarchyRequestError\",\"WrongDocumentError\"]",
+            ),
+            (
+                "(function () { var q = r.cloneRange(), d = document.createRange(); \
+                 return [q.startContainer === at, q.compareBoundaryPoints(0, r), \
+                 name(() => d.compareBoundaryPoints(0, r)), r.isPointInRange(a, 0), \
+                 r.intersectsNode(at), d.intersectsNode(at), r.comparePoint(at, 0)]; })()",
+                "ok [true,0,\"WrongDocumentError\",false,true,false,0]",
+            ),
+            (
+                "(function () { r.deleteContents(); r.setEnd(a.firstChild, 2); \
+                 return [r.startContainer === a.firstChild, r.startOffset, r.collapsed]; })()",
+                "ok [true,2,true]",
+            ),
+            (
+                "(function () { var q = document.createRange(); q.selectNodeContents(a); \
+                 var before = q.toString(); q.setEnd(at, 0); q.setStart(a.firstChild, 1); \
+                 return [before, q.startContainer === a.firstChild, q.collapsed, \
+                 name(() => q.insertNode(at))]; })()",
+                "ok [\"one\",true,true,\"HierarchyRequestError\"]",
+            ),
+            (
+                "(function () { var q = document.createRange(); q.selectNodeContents(at); \
+                 getSelection().removeAllRanges(); getSelection().addRange(q); \
+                 return [q.startContainer === at, getSelection().rangeCount]; })()",
+                "ok [true,0]",
+            ),
+        ],
+    );
+}
+
+#[test]
 fn ranges_traversal_and_the_selection_as_the_reference_browser_has_them() {
     // D59: live ranges moved by the tree's changes, their contents
     // taken, cloned and wrapped; the selection; tree walkers and node
