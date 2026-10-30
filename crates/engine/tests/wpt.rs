@@ -57,7 +57,8 @@
 //! with its result, and a failing reftest's render, its reference's and
 //! their difference side by side; and `target/wpt/testharness.txt`,
 //! each testharness test and subtest that failed, for keeping the
-//! expectations.
+//! expectations. `WPT_ONLY=css/css-text/,dom/` runs only the tests under
+//! those prefixes.
 
 #![forbid(unsafe_code)]
 
@@ -1924,6 +1925,18 @@ fn the_web_platform_tests_subset_runs_as_expected() {
             "expectations.txt names {path}, which is not in the manifest"
         );
     }
+    // WPT_ONLY, path prefixes separated by commas, runs only the tests
+    // under them, held to their expectations as in a whole run.
+    let tests: Vec<Test> = match std::env::var("WPT_ONLY") {
+        Ok(only) => tests
+            .into_iter()
+            .filter(|t| {
+                only.split(',')
+                    .any(|prefix| t.path().starts_with(prefix.trim()))
+            })
+            .collect(),
+        Err(_) => tests,
+    };
     let server = serve(root(), false);
     let harness = serve(root(), true);
     let next = AtomicUsize::new(0);
