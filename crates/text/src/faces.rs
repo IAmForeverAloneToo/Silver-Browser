@@ -8,8 +8,10 @@
 //! drawing makes up: an emboldening and a slant, as the reference
 //! browser draws them.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use super::{Fallback, PRIMARY_FAMILIES, file_of};
@@ -113,11 +115,100 @@ pub(crate) struct Faces {
     /// with the document.
     loaded: RwLock<Vec<Slot>>,
     /// The fonts chosen, by what they were asked for.
-    chosen: RwLock<HashMap<Key, Font>>,
+    chosen: Choices,
 }
 
 /// What a choice is kept by: the families, weight, slant and stretch.
-pub(crate) type Key = (Box<str>, u16, u32, u32);
+type Key = (Box<str>, u16, u32, u32);
+
+/// The key of `request`, its families still borrowed.
+fn key_of<'a>(request: &FontRequest<'a>) -> (&'a str, u16, u32, u32) {
+    let slant = match request.slant {
+        Slant::Normal => 0,
+        Slant::Italic => 1,
+        Slant::Oblique(a) => 2 | (a.to_bits() & !3),
+    };
+    (
+        request.families,
+        request.weight,
+        slant,
+        request.stretch.to_bits(),
+    )
+}
+
+/// Fonts chosen, by what they were asked for, up to [`MAX_CHOICES`].
+/// Layout asks for the same font for word after word, so the last
+/// choice each thread was given is kept apart, and asking for it again
+/// is a comparison rather than a lookup; a number each map has, and
+/// one counted up whenever it forgets, say whether that choice is
+/// still the map's.
+pub(crate) struct Choices {
+    id: u64,
+    forgotten: AtomicU64,
+    chosen: RwLock<HashMap<Key, Font>>,
+}
+
+thread_local! {
+    /// The last choice this thread was given: the map's number and how
+    /// often it had forgotten, the key and the font.
+    static LAST: RefCell<Option<(u64, u64, Key, Font)>> = const { RefCell::new(None) };
+}
+
+impl Choices {
+    pub(crate) fn new() -> Self {
+        static IDS: AtomicU64 = AtomicU64::new(0);
+        Choices {
+            id: IDS.fetch_add(1, Ordering::Relaxed),
+            forgotten: AtomicU64::new(0),
+            chosen: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// The font chosen for `request` before, if any.
+    pub(crate) fn get(&self, request: &FontRequest<'_>) -> Option<Font> {
+        let (families, weight, slant, stretch) = key_of(request);
+        let forgotten = self.forgotten.load(Ordering::Acquire);
+        let last = LAST.with_borrow(|last| match last {
+            Some((id, when, (f, w, s, t), font))
+                if *id == self.id
+                    && *when == forgotten
+                    && (*w, *s, *t) == (weight, slant, stretch)
+                    && **f == *families =>
+            {
+                Some(*font)
+            }
+            _ => None,
+        });
+        if last.is_some() {
+            return last;
+        }
+        let key: Key = (families.into(), weight, slant, stretch);
+        let font = *self.chosen.read().ok()?.get(&key)?;
+        LAST.set(Some((self.id, forgotten, key, font)));
+        Some(font)
+    }
+
+    /// Keeps `font` as `request`'s, forgetting all the others first
+    /// when there are [`MAX_CHOICES`]: they would be chosen the same
+    /// again, so the threads' last choices stand.
+    pub(crate) fn keep(&self, request: &FontRequest<'_>, font: Font) {
+        let (families, weight, slant, stretch) = key_of(request);
+        if let Ok(mut chosen) = self.chosen.write() {
+            if chosen.len() >= MAX_CHOICES {
+                chosen.clear();
+            }
+            chosen.insert((families.into(), weight, slant, stretch), font);
+        }
+    }
+
+    /// Forgets every choice.
+    pub(crate) fn forget(&self) {
+        if let Ok(mut chosen) = self.chosen.write() {
+            chosen.clear();
+            self.forgotten.fetch_add(1, Ordering::Release);
+        }
+    }
+}
 
 impl Faces {
     /// The faces of `db`, the primary font in `primary`, whose weight and
@@ -148,7 +239,7 @@ impl Faces {
             primary,
             primary_style,
             loaded: RwLock::new(Vec::new()),
-            chosen: RwLock::new(HashMap::new()),
+            chosen: Choices::new(),
         }
     }
 
@@ -207,29 +298,11 @@ impl Faces {
     /// The font for `request`: the one chosen before, or one chosen and
     /// kept.
     pub(crate) fn choose(&self, request: &FontRequest<'_>) -> Font {
-        let slant = match request.slant {
-            Slant::Normal => 0,
-            Slant::Italic => 1,
-            Slant::Oblique(a) => 2 | (a.to_bits() & !3),
-        };
-        let key: Key = (
-            request.families.into(),
-            request.weight,
-            slant,
-            request.stretch.to_bits(),
-        );
-        if let Ok(chosen) = self.chosen.read()
-            && let Some(font) = chosen.get(&key)
-        {
-            return *font;
+        if let Some(font) = self.chosen.get(request) {
+            return font;
         }
         let font = self.matched(request);
-        if let Ok(mut chosen) = self.chosen.write() {
-            if chosen.len() >= MAX_CHOICES {
-                chosen.clear();
-            }
-            chosen.insert(key, font);
-        }
+        self.chosen.keep(request, font);
         font
     }
 

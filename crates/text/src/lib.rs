@@ -1437,6 +1437,16 @@ pub enum Direction {
 /// each paragraph is reordered on its own; nothing after the first one
 /// is dropped.
 pub fn bidi_reorder(text: &str, base_direction: Option<Direction>) -> String {
+    // ASCII has no right-to-left letters and no embeddings: unless the
+    // paragraph is right to left, it stays in order.
+    if text.is_ascii() && base_direction != Some(Direction::Rtl) {
+        return text.to_string();
+    }
+    by_paragraphs(text, base_direction)
+}
+
+/// [`bidi_reorder`] by the algorithm, whatever the text.
+fn by_paragraphs(text: &str, base_direction: Option<Direction>) -> String {
     if text.is_empty() {
         return String::new();
     }
@@ -2261,6 +2271,26 @@ mod tests {
             );
         }
         assert_eq!(bidi_reorder("one\u{2029}two", None), "one\u{2029}two");
+    }
+
+    #[test]
+    fn ascii_reorders_only_in_a_right_to_left_paragraph() {
+        for text in [
+            "a (1) b-c, 2.5% [x]",
+            "1 a",
+            "one\u{1c}two\tthree\r",
+            " .,;",
+            "",
+        ] {
+            for direction in [None, Some(Direction::Ltr)] {
+                assert_eq!(
+                    bidi_reorder(text, direction),
+                    by_paragraphs(text, direction),
+                    "{text:?} {direction:?}"
+                );
+            }
+        }
+        assert_eq!(bidi_reorder("1 a", Some(Direction::Rtl)), "a 1");
     }
 
     #[test]

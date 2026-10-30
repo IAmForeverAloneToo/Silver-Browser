@@ -26,6 +26,48 @@ pub enum WordBreaking {
 /// hyphen that follows a letter or digit and comes before a letter, so
 /// that `width/margin` or `a.b` stay whole, as `well-known` does not.
 pub fn line_breaks(text: &str, words: WordBreaking) -> Vec<usize> {
+    if words == WordBreaking::Normal && text.bytes().all(|b| (b' '..=b'~').contains(&b)) {
+        return ascii_breaks(text.as_bytes());
+    }
+    by_segmenter(text, words)
+}
+
+/// [`line_breaks`] for text of spaces and printable ASCII, as UAX #14
+/// and the table give it, without the segmenter: after spaces, unless
+/// what follows closes, ends or joins (classes CL, CP, EX, IS and SY,
+/// rule LB13), or what the spaces follow opens (OP, rule LB14); and
+/// after a hyphen between a letter or digit and a letter.
+fn ascii_breaks(bytes: &[u8]) -> Vec<usize> {
+    let mut breaks = Vec::new();
+    // The last character that is not a space.
+    let mut last = None;
+    for at in 1..bytes.len() {
+        let (before, after) = (bytes[at - 1], bytes[at]);
+        if before != b' ' {
+            last = Some(before);
+        }
+        let allowed = if before == b' ' {
+            after != b' '
+                && !matches!(
+                    after,
+                    b')' | b']' | b'}' | b'!' | b'?' | b',' | b'.' | b':' | b';' | b'/'
+                )
+                && !matches!(last, Some(b'(' | b'[' | b'{'))
+        } else {
+            before == b'-'
+                && after.is_ascii_alphabetic()
+                && at >= 2
+                && bytes[at - 2].is_ascii_alphanumeric()
+        };
+        if allowed {
+            breaks.push(at);
+        }
+    }
+    breaks
+}
+
+/// [`line_breaks`] by ICU4X's segmenter, whatever the text.
+fn by_segmenter(text: &str, words: WordBreaking) -> Vec<usize> {
     static SEGMENTERS: [OnceLock<icu_segmenter::LineSegmenterBorrowed<'static>>; 3] =
         [OnceLock::new(), OnceLock::new(), OnceLock::new()];
     let (slot, option) = match words {
@@ -96,5 +138,52 @@ mod tests {
             ["\u{65e5}\u{672c}"]
         );
         assert!(line_breaks("", WordBreaking::Normal).is_empty());
+    }
+
+    #[test]
+    fn ascii_breaks_as_the_segmenter_does() {
+        // Every text of up to five of these, then longer ones made from
+        // them.
+        const ALPHABET: &[u8] = b"a1 -(.\"'/)?%$[!,";
+        let mut texts = vec![Vec::new()];
+        let mut last = vec![Vec::new()];
+        for _ in 0..5 {
+            last = last
+                .iter()
+                .flat_map(|t: &Vec<u8>| {
+                    ALPHABET.iter().map(move |&c| {
+                        let mut t = t.clone();
+                        t.push(c);
+                        t
+                    })
+                })
+                .collect();
+            texts.extend(last.iter().cloned());
+        }
+        let mut seed = 7u32;
+        for _ in 0..20_000 {
+            let len = 6 + seed as usize % 20;
+            let text = (0..len)
+                .map(|_| {
+                    seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                    if seed >> 30 == 0 {
+                        b' '
+                    } else {
+                        b' ' + (seed >> 16) as u8 % 95
+                    }
+                })
+                .collect();
+            texts.push(text);
+        }
+        for text in texts {
+            let text = std::str::from_utf8(&text).unwrap();
+            for words in [WordBreaking::Normal, WordBreaking::KeepAll] {
+                assert_eq!(
+                    line_breaks(text, words),
+                    by_segmenter(text, words),
+                    "{text:?} {words:?}"
+                );
+            }
+        }
     }
 }

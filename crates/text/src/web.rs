@@ -5,8 +5,7 @@
 //! and the next family stands in for it meanwhile (`font-display:
 //! swap`, which `auto` is in the reference browser for most of a load).
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 use super::faces::{self, FaceId, Font, FontRequest, Slant};
 use super::{Fallback, FontError, FontStore};
@@ -67,7 +66,7 @@ pub struct DocumentFaces {
     faces: Mutex<Vec<WebFace>>,
     /// The fonts chosen, by what they were asked for; forgotten when a
     /// face comes or goes.
-    chosen: RwLock<HashMap<faces::Key, Font>>,
+    chosen: faces::Choices,
 }
 
 impl DocumentFaces {
@@ -86,7 +85,7 @@ impl DocumentFaces {
                     })
                     .collect(),
             ),
-            chosen: RwLock::new(HashMap::new()),
+            chosen: faces::Choices::new(),
         }
     }
 
@@ -171,9 +170,7 @@ impl DocumentFaces {
     }
 
     fn forget(&self) {
-        if let Ok(mut chosen) = self.chosen.write() {
-            chosen.clear();
-        }
+        self.chosen.forget();
     }
 
     /// The document's face of `family` for `request`: `Some(Some(font))`
@@ -348,21 +345,8 @@ impl super::FontCollection {
         document: &DocumentFaces,
         request: &FontRequest<'_>,
     ) -> Font {
-        let slant = match request.slant {
-            Slant::Normal => 0,
-            Slant::Italic => 1,
-            Slant::Oblique(a) => 2 | (a.to_bits() & !3),
-        };
-        let key = (
-            Box::<str>::from(request.families),
-            request.weight,
-            slant,
-            request.stretch.to_bits(),
-        );
-        if let Ok(chosen) = document.chosen.read()
-            && let Some(font) = chosen.get(&key)
-        {
-            return *font;
+        if let Some(font) = document.chosen.get(request) {
+            return font;
         }
         let mut font = None;
         for family in faces::families(request.families) {
@@ -377,12 +361,7 @@ impl super::FontCollection {
             }
         }
         let font = font.unwrap_or_else(|| self.faces.fallback_font(request));
-        if let Ok(mut chosen) = document.chosen.write() {
-            if chosen.len() >= faces::MAX_CHOICES {
-                chosen.clear();
-            }
-            chosen.insert(key, font);
-        }
+        document.chosen.keep(request, font);
         font
     }
 }
@@ -447,6 +426,44 @@ mod tests {
         drop(document);
         let base = FontCollection::from_bytes(crate::TEST_FONT.to_vec(), 0).expect("parses");
         assert!(base.faces.loaded(id).is_none());
+    }
+
+    #[test]
+    fn a_choice_asked_for_again_is_still_its_documents() {
+        // Asked for twice, a choice is the thread's last; what changes
+        // after is still seen.
+        let base = FontCollection::from_bytes(crate::TEST_FONT.to_vec(), 0).expect("parses");
+        let faces = || {
+            Arc::new(DocumentFaces::new(vec![rule(
+                "Web",
+                (400, 400),
+                Slant::Normal,
+            )]))
+        };
+        let (one, two) = (base.with_document(faces()), base.with_document(faces()));
+        let regular = request("Web, serif", 400, Slant::Normal);
+        let twice = |fonts: &FontCollection| {
+            fonts.font(&regular);
+            fonts.font(&regular)
+        };
+        assert_eq!(twice(&one), Font::default());
+        for fonts in [&one, &two] {
+            fonts
+                .face_arrived(0, crate::TEST_FONT.to_vec())
+                .expect("a font");
+        }
+        let web = twice(&one);
+        assert_ne!(web.face, FaceId(0));
+        // Another document's face, asked for alike.
+        assert_ne!(two.font(&regular).face, web.face);
+        // Asked for in italic, or for another family as long.
+        twice(&one);
+        assert!(one.font(&request("Web, serif", 400, Slant::Italic)).slanted);
+        twice(&one);
+        assert_eq!(
+            one.font(&request("Wex, serif", 400, Slant::Normal)),
+            Font::default()
+        );
     }
 
     #[test]
