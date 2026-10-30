@@ -69,7 +69,9 @@ pub(crate) struct Outputs {
     pub(crate) terminated: Vec<u32>,
     /// What the document's policies refused, or would have, in the run
     /// (M33.1), each with the element to blame.
-    pub(crate) violations: Vec<(net::csp::Violation, Option<NodeId>)>,
+    /// With the element they are of and the line and column of the
+    /// code that asked, 0 0 for none.
+    pub(crate) violations: Vec<(net::csp::Violation, Option<NodeId>, (u32, u32))>,
     /// The faces scripts added to the document's fonts or took away
     /// (D54).
     pub(crate) fonts: Vec<crate::web_fonts::FontChange>,
@@ -561,10 +563,21 @@ impl DocumentHost {
     /// the run's outputs (M33.1), `element` the one to blame: their
     /// events and reports are made after the run.
     fn say_violations(&mut self, violations: Vec<net::csp::Violation>, element: Option<NodeId>) {
+        self.say_violations_at(violations, element, (0, 0));
+    }
+
+    /// [`Host::say_violations`] of code at `position`, its line and
+    /// column.
+    fn say_violations_at(
+        &mut self,
+        violations: Vec<net::csp::Violation>,
+        element: Option<NodeId>,
+        position: (u32, u32),
+    ) {
         for violation in violations {
             let level = super::violation_level(&violation);
             self.say(level, super::violation_text(&violation));
-            self.outputs.violations.push((violation, element));
+            self.outputs.violations.push((violation, element, position));
         }
     }
 
@@ -777,7 +790,18 @@ impl DocumentHost {
                 Ok(Answer::Nothing)
             }
             Call::Attribute(node, name) => {
-                let value = self.document.attr(self.node(node)?, &name);
+                let node = self.node(node)?;
+                let value = self.document.attr(node, &name);
+                // A `style` the policies refused is empty on an element
+                // of another namespace than HTML's, as the reference
+                // browser keeps such an element's from its declarations.
+                if name == "style"
+                    && !self.document.is_html(node)
+                    && let (Some(value), Some(page)) = (value, &self.page)
+                    && !style::InlineStyles::allowed(page, node, value)
+                {
+                    return Ok(Answer::MaybeString(Some(String::new())));
+                }
                 Ok(Answer::MaybeString(value.map(str::to_owned)))
             }
             Call::SetAttribute(node, name, value) => {
@@ -2324,8 +2348,15 @@ impl DocumentHost {
                     }
                     _ => Vec::new(),
                 };
-                // Loading too while a face a canvas asked for in this run
-                // is wanted or coming.
+                // Laid out first when a layout is to come, so that the
+                // faces it needs are asked for (D54): `ready` and `status`
+                // say loading until one asks for nothing new. A window of
+                // no size lays nothing out, and waits for nothing.
+                if op == "status" && self.window.fonts_unsettled && !self.window.fonts_loading {
+                    self.layout_now();
+                }
+                // Loading too while a face a canvas or that layout asked
+                // for in this run is wanted or coming.
                 let asked = self
                     .window
                     .layout_fonts
@@ -2337,12 +2368,16 @@ impl DocumentHost {
                     rules: &rules,
                     fonts: self.window.layout_fonts.as_ref(),
                 };
-                Ok(crate::web_fonts::answer(
-                    &op,
-                    data,
-                    &env,
-                    &mut self.outputs.fonts,
-                ))
+                let before = self.outputs.fonts.len();
+                let answer = crate::web_fonts::answer(&op, data, &env, &mut self.outputs.fonts);
+                // A face added is laid out with in this run already, as
+                // its `load()` has settled.
+                if let Some(fonts) = &mut self.window.layout_fonts
+                    && crate::web_fonts::lay_over(fonts, &self.outputs.fonts[before..])
+                {
+                    self.laid_out = None;
+                }
+                Ok(answer)
             }
             Call::Focusable(node) => {
                 let node = self.node(node)?;
@@ -2617,6 +2652,7 @@ impl DocumentHost {
                 kind,
                 source,
                 element,
+                position,
             } => {
                 let element = element.and_then(|element| self.node(element).ok());
                 let Some(page) = self.page.as_mut() else {
@@ -2631,7 +2667,7 @@ impl DocumentHost {
                     _ => csp.eval_violations(&source),
                 };
                 let refused = net::csp::enforced(violations.clone()).err();
-                self.say_violations(violations, element);
+                self.say_violations_at(violations, element, position);
                 Ok(Answer::String(
                     refused.map_or_else(String::new, |violation| code_refusal(&kind, &violation)),
                 ))
@@ -2864,6 +2900,11 @@ impl DocumentHost {
             } else {
                 (canvas::FontBase::default(), false, None)
             };
+            let lang = if needs_text(&call.op) {
+                self.language_of(node)
+            } else {
+                String::new()
+            };
             let source = if needs_source(&call.op) {
                 let kind = call.numbers.get(2).copied().unwrap_or(-1.0);
                 let which = call.numbers.get(3).copied().unwrap_or(-1.0);
@@ -2877,6 +2918,7 @@ impl DocumentHost {
                 color,
                 font_base,
                 rtl,
+                lang,
                 fonts,
                 source,
             })
@@ -3060,6 +3102,16 @@ impl DocumentHost {
     /// `font-size` and the root's (10 pixels each out of the document,
     /// as the reference browser has them) and the viewport's; whether
     /// its direction is right to left; and the document's fonts.
+    /// The language of `node`: its `lang`, or its nearest ancestor's;
+    /// empty for none.
+    fn language_of(&self, node: NodeId) -> String {
+        std::iter::once(node)
+            .chain(self.document.ancestors(node))
+            .find_map(|n| self.document.attr(n, "lang"))
+            .map(|lang| lang.trim().to_owned())
+            .unwrap_or_default()
+    }
+
     fn canvas_text(
         &mut self,
         node: NodeId,
@@ -5176,6 +5228,7 @@ pub(crate) fn offscreen_element(
             ..canvas::FontBase::default()
         },
         rtl: false,
+        lang: String::new(),
         fonts,
         source,
     }

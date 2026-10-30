@@ -242,7 +242,11 @@ fn font(style: &ComputedStyle, get: &dyn Fn(&str) -> Option<String>) -> Option<S
         &variant.position,
         &variant.emoji,
     ];
-    if !font.features.is_empty() || !caps || others.iter().any(|v| *v != "normal") {
+    if !font.features.is_empty()
+        || font.kerning != crate::computed::FontKerning::Auto
+        || !caps
+        || others.iter().any(|v| *v != "normal")
+    {
         return Some(String::new());
     }
     let mut parts: Vec<String> = Vec::new();

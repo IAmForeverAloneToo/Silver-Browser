@@ -106,6 +106,7 @@ longhands! {
     FontVariantPosition = "font-variant-position": Discrete,
     FontVariantEmoji = "font-variant-emoji": Discrete,
     FontFeatureSettings = "font-feature-settings": Discrete,
+    FontKerning = "font-kerning": Discrete,
     LineHeight = "line-height": ByComputedValue,
     Display = "display": Discrete,
     TextAlignAll = "text-align-all": Discrete,
@@ -345,6 +346,7 @@ pub fn longhands_of(name: &str) -> Vec<Longhand> {
             FontSize,
             LineHeight,
             FontFamily,
+            FontKerning,
             FontFeatureSettings,
         ],
         "font-variant" => &[
@@ -517,6 +519,7 @@ pub fn copy(property: Longhand, from: &ComputedStyle, to: &mut ComputedStyle) {
             }
         }
         FontFeatureSettings => to.font_mut().features = from.font().features.clone(),
+        FontKerning => to.font_mut().kerning = from.font().kerning,
         LineHeight => to.font_mut().line_height = from.font().line_height,
         Display => {
             to.display = from.display;
@@ -928,6 +931,7 @@ pub fn same(property: Longhand, a: &ComputedStyle, b: &ComputedStyle) -> bool {
                 == crate::cascade::variant_field(&mut b, name)
         }
         FontFeatureSettings => a.font().features == b.font().features,
+        FontKerning => a.font().kerning == b.font().kerning,
         LineHeight => a.font().line_height == b.font().line_height,
         Display => a.display == b.display && a.flow_root == b.flow_root,
         TextAlignAll => a.text_align == b.text_align,
@@ -2735,7 +2739,7 @@ mod tests {
             ]
         );
         assert!(longhands_of("unknown").is_empty());
-        assert_eq!(longhands_of("font").len(), 14);
+        assert_eq!(longhands_of("font").len(), 15);
         assert_eq!(
             longhands_of("white-space"),
             vec![Longhand::WhiteSpaceCollapse, Longhand::TextWrapMode]

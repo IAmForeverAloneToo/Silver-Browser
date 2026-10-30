@@ -1185,6 +1185,78 @@ fn text_is_in_the_face_its_font_chooses() {
     assert_ne!(other.width, 100.0);
 }
 
+/// The test font with a document's face of `data` over it, as `Web`.
+fn web_fonts(data: &[u8]) -> text::FontCollection {
+    let faces = std::sync::Arc::new(text::DocumentFaces::new(vec![text::FaceRule {
+        family: "Web".into(),
+        ..text::FaceRule::default()
+    }]));
+    let fonts = fonts().with_document(faces);
+    fonts.face_arrived(0, data.to_vec()).expect("a font");
+    fonts
+}
+
+#[test]
+fn the_hanging_and_ideographic_baselines_are_the_fonts_base_tables() {
+    // As the reference browser measures WPT's CanvasTest font, whose
+    // BASE table puts them 0.5 and 0.125 em above the alphabetic one.
+    let fonts = web_fonts(include_bytes!(
+        "../../engine/tests/wpt/fonts/CanvasTest.ttf"
+    ));
+    let mut canvas = Canvas::new(10, 10, false);
+    canvas
+        .state_mut()
+        .set_font(parse_font("50px Web", &base()).unwrap());
+    let m = canvas.measure_text(&fonts, "A", false);
+    assert_eq!((m.alphabetic, m.hanging, m.ideographic), (0.0, 25.0, 6.25));
+    canvas.state_mut().text_baseline = TextBaseline::Hanging;
+    let m = canvas.measure_text(&fonts, "A", false);
+    assert_eq!(
+        (m.alphabetic, m.hanging, m.ideographic),
+        (-25.0, 0.0, -18.75)
+    );
+    // A font without one: 0.8 of the ascent, and the descent.
+    let ahem = square_fonts();
+    canvas
+        .state_mut()
+        .set_font(parse_font("50px Square", &base()).unwrap());
+    canvas.state_mut().text_baseline = TextBaseline::Alphabetic;
+    let m = canvas.measure_text(&ahem, "A", false);
+    assert_eq!((m.hanging, m.ideographic), (32.0, -10.0));
+}
+
+#[test]
+fn font_kerning_and_lang_reach_shaping() {
+    let fonts = fonts();
+    let mut canvas = Canvas::new(10, 10, false);
+    canvas
+        .state_mut()
+        .set_font(parse_font("40px serif", &base()).unwrap());
+    let width = |canvas: &Canvas| canvas.measure_text(&fonts, "AVAV", false).width;
+    let kerned = width(&canvas);
+    canvas.state_mut().font_kerning = crate::Kerning::None;
+    assert!(width(&canvas) > kerned);
+    canvas.state_mut().font_kerning = crate::Kerning::Normal;
+    assert_eq!(width(&canvas), kerned);
+    // Lato's "fi" is a ligature but in Turkish, whose i keeps its dot;
+    // `inherit` takes the element's language.
+    let lato = web_fonts(include_bytes!(
+        "../../engine/tests/wpt/fonts/Lato-Medium.ttf"
+    ));
+    canvas
+        .state_mut()
+        .set_font(parse_font("50px Web", &base()).unwrap());
+    let fi = |canvas: &Canvas| canvas.measure_text(&lato, "fi", false).width;
+    canvas.state_mut().lang = "en".into();
+    let english = fi(&canvas);
+    canvas.state_mut().lang = "tr".into();
+    assert!(fi(&canvas) > english);
+    canvas.state_mut().lang = "inherit".into();
+    assert_eq!(fi(&canvas), english);
+    canvas.inherited_lang = "tr".into();
+    assert!(fi(&canvas) > english);
+}
+
 #[test]
 fn a_made_up_slant_leans_the_glyphs() {
     let fonts = square_fonts();

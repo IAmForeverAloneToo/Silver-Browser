@@ -654,6 +654,7 @@ pub fn font_longhands(tokens: &[Token]) -> Option<Vec<(&'static str, String)>> {
         ),
         ("line-height", text(split.line_height)),
         ("font-family", crate::font_family::write_list(&families)),
+        ("font-kerning", "auto".to_owned()),
         ("font-feature-settings", "normal".to_owned()),
     ]);
     Some(out)
@@ -968,5 +969,22 @@ mod tests {
         assert_eq!(value("b", "font-style"), "oblique -20deg");
         assert_eq!(value("b", "font-feature-settings"), "normal");
         assert_eq!(value("b", "font-weight"), "400");
+    }
+
+    #[test]
+    fn font_kerning_is_inherited_and_reset_by_font() {
+        let html = "<div id=a style=\"font-kerning: NONE\"><i id=b></i>\
+                    <i id=c style=\"font-kerning: normal; font: 12px serif\"></i>\
+                    <i id=d style=\"font-kerning: sideways\"></i></div>";
+        let value = |id: &str| computed_value(&style(html, id), "font-kerning").unwrap();
+        assert_eq!(value("a"), "none");
+        assert_eq!(value("b"), "none");
+        assert_eq!(value("c"), "auto");
+        assert_eq!(value("d"), "none", "an invalid value is dropped");
+        assert_eq!(
+            computed_value(&style(html, "c"), "font").unwrap(),
+            "12px serif"
+        );
+        assert_eq!(computed_value(&style(html, "a"), "font").unwrap(), "");
     }
 }

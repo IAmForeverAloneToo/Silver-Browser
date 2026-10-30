@@ -12,7 +12,7 @@ use tiny_skia::FillRule;
 
 use crate::Canvas;
 use crate::path::Path;
-use crate::state::{Matrix, TextAlign, TextBaseline};
+use crate::state::{Kerning, Matrix, TextAlign, TextBaseline};
 
 /// `measureText()`'s answer: the advance, and the box the glyphs, the
 /// font and its em square take, from the point the text is drawn at.
@@ -62,10 +62,16 @@ fn prepared(text: &str) -> String {
 }
 
 impl Canvas {
-    /// The font the state's `font` and `fontStretch` choose (D53).
+    /// The font the state's `font` and `fontStretch` choose (D53),
+    /// shaped by its `fontKerning` and `lang`.
     fn chosen(&self, fonts: &FontCollection) -> text::Font {
         let state = &self.state;
         let families = state.font.family_list();
+        let language = if state.lang == "inherit" {
+            &self.inherited_lang
+        } else {
+            &state.lang
+        };
         fonts.font(&FontRequest {
             families: &families,
             weight: state.font.weight,
@@ -75,6 +81,9 @@ impl Canvas {
                 Slant::Normal
             },
             stretch: state.font_stretch.percentage(),
+            kerning: state.font_kerning != Kerning::None,
+            features: &[],
+            language,
         })
     }
 
@@ -149,16 +158,31 @@ impl Canvas {
         (ascent, descent, em_ascent, em_descent)
     }
 
+    /// The hanging and ideographic baselines' heights above the
+    /// alphabetic one: the font's `BASE` table's, else 0.8 of its ascent
+    /// and its descent below, as the reference browser takes them.
+    fn baselines(&self, fonts: &FontCollection) -> (f64, f64) {
+        let size = self.state.font.size;
+        let face = fonts.face(self.chosen(fonts).face);
+        let (ascent, descent, ..) = self.font_box(fonts);
+        (
+            face.hanging_baseline(size as f32)
+                .map_or(0.8 * ascent, f64::from),
+            face.ideographic_baseline(size as f32)
+                .map_or(-descent, f64::from),
+        )
+    }
+
     /// How far above the alphabetic baseline the baseline `textBaseline`
     /// names is.
     fn baseline_offset(&self, fonts: &FontCollection) -> f64 {
-        let (ascent, descent, em_ascent, em_descent) = self.font_box(fonts);
+        let (_, _, em_ascent, em_descent) = self.font_box(fonts);
         match self.state.text_baseline {
             TextBaseline::Alphabetic => 0.0,
             TextBaseline::Top => em_ascent,
-            TextBaseline::Hanging => 0.8 * ascent,
+            TextBaseline::Hanging => self.baselines(fonts).0,
             TextBaseline::Middle => (em_ascent - em_descent) / 2.0,
-            TextBaseline::Ideographic => -descent,
+            TextBaseline::Ideographic => self.baselines(fonts).1,
             TextBaseline::Bottom => -em_descent,
         }
     }
@@ -226,6 +250,7 @@ impl Canvas {
         let rtl = self.state.direction.is_rtl(rtl);
         let offset = self.baseline_offset(fonts);
         let (ascent, descent, em_ascent, em_descent) = self.font_box(fonts);
+        let (hanging, ideographic) = self.baselines(fonts);
         let start = -self.align_offset(laid.width, rtl);
         // The glyphs' bounds, from their outlines' points.
         let (mut left, mut right) = (f64::INFINITY, f64::NEG_INFINITY);
@@ -254,8 +279,8 @@ impl Canvas {
             em_ascent: em_ascent - offset,
             em_descent: em_descent + offset,
             alphabetic: -offset,
-            hanging: 0.8 * ascent - offset,
-            ideographic: -descent - offset,
+            hanging: hanging - offset,
+            ideographic: ideographic - offset,
         }
     }
 }

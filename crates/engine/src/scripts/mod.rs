@@ -388,6 +388,10 @@ pub(crate) struct WindowEnv {
     /// Whether the document's web fonts are loading (D54): a face asked
     /// for or on its way, or faces to lay out with not laid out yet.
     pub(crate) fonts_loading: bool,
+    /// Whether a style or layout is to come that could ask for a face
+    /// (D54): the document is laid out before its fonts say they are
+    /// done.
+    pub(crate) fonts_unsettled: bool,
     /// Whether the window has the system's focus, and whether the last
     /// input was a key, so that a focus a script gives is shown (M26.6).
     pub(crate) focused: bool,
@@ -1438,7 +1442,7 @@ impl Scripts {
                 violation_level(&violation),
                 violation_text(&violation),
             ));
-            self.announce(page, document, &violation, (element, line));
+            self.announce(page, document, &violation, (element, line, 0));
         }
     }
 
@@ -1449,13 +1453,13 @@ impl Scripts {
         page: &Page,
         document: &Document,
         violation: &Violation,
-        (element, line): (Option<NodeId>, u32),
+        (element, line, column): (Option<NodeId>, u32, u32),
     ) {
         {
             let target = element
                 .filter(|&node| document.is_inclusive_ancestor(document.root(), node))
                 .unwrap_or_else(|| document.root());
-            let event = violation_event(violation, page, line);
+            let event = violation_event(violation, page, (line, column));
             self.post(
                 Duration::ZERO,
                 js::Task::Dispatch {
@@ -1828,8 +1832,13 @@ impl Scripts {
         }
         // What its policies refused while it ran, in order (M33.1).
         // The host said them on the console as they came.
-        for (violation, element) in outputs.violations {
-            self.announce(lent.page, lent.document, &violation, (element, 0));
+        for (violation, element, (line, column)) in outputs.violations {
+            self.announce(
+                lent.page,
+                lent.document,
+                &violation,
+                (element, line, column),
+            );
         }
         let violations = lent.page.take_violations();
         self.report_violations(lent.page, lent.document, violations, (None, 0));
@@ -1942,8 +1951,13 @@ impl Scripts {
         }
         // What its policies refused while it ran, in order (M33.1).
         // The host said them on the console as they came.
-        for (violation, element) in outputs.violations {
-            self.announce(lent.page, lent.document, &violation, (element, 0));
+        for (violation, element, (line, column)) in outputs.violations {
+            self.announce(
+                lent.page,
+                lent.document,
+                &violation,
+                (element, line, column),
+            );
         }
         let violations = lent.page.take_violations();
         self.report_violations(lent.page, lent.document, violations, (None, 0));
@@ -2700,10 +2714,14 @@ fn of_a_request(violation: &Violation) -> bool {
 }
 
 /// The `securitypolicyviolation` event of `violation` in the document
-/// of `page`, at `line` (CSP section 5.3, M33.1): bubbling and composed,
-/// its violated directive the effective one, as the reference browser
-/// has it.
-fn violation_event(violation: &Violation, page: &Page, line: u32) -> js::EventInit {
+/// of `page`, at `line` and `column` (CSP section 5.3, M33.1): bubbling
+/// and composed, its violated directive the effective one, as the
+/// reference browser has it.
+fn violation_event(
+    violation: &Violation,
+    page: &Page,
+    (line, column): (u32, u32),
+) -> js::EventInit {
     let document = page
         .url()
         .map(|url| report_url(url.as_str()))
@@ -2745,6 +2763,7 @@ fn violation_event(violation: &Violation, page: &Page, line: u32) -> js::EventIn
         )
         .with("statusCode", js::Field::Number(status))
         .with("lineNumber", js::Field::Number(f64::from(line)))
+        .with("columnNumber", js::Field::Number(f64::from(column)))
 }
 
 /// `violation`'s report, as `report-uri` sends it (CSP section 5.2,

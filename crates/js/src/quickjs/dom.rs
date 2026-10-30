@@ -922,10 +922,12 @@ const NATIVES: &[(&str, Decode)] = &[
             n if n >= 0.0 => Some(a.handle(2)?),
             _ => None,
         };
+        let at = |i: usize| a.integer(i).clamp(0.0, f64::from(u32::MAX)) as u32;
         Ok(Call::CodeAllowed {
             kind: a.string(0)?,
             source: a.string(1)?,
             element,
+            position: (at(3), at(4)),
         })
     }),
     ("nonce", |a| Ok(Call::Nonce(a.handle(0)?))),

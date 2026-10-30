@@ -30,6 +30,20 @@ pub enum Slant {
     Oblique(f32),
 }
 
+/// The slant a document's face covers (its `font-style` descriptor):
+/// italic, or the oblique angles from the least to the most, in degrees,
+/// upright being 0.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FaceSlant {
+    Italic,
+    Oblique(f32, f32),
+}
+
+impl FaceSlant {
+    /// Upright.
+    pub const NORMAL: FaceSlant = FaceSlant::Oblique(0.0, 0.0);
+}
+
 /// The font properties a face is chosen by.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FontRequest<'a> {
@@ -40,6 +54,13 @@ pub struct FontRequest<'a> {
     pub slant: Slant,
     /// A percentage of the normal width.
     pub stretch: f32,
+    /// Whether the font's kerning is used (`font-kerning` but `none`).
+    pub kerning: bool,
+    /// The features set or cleared (`font-feature-settings`): each
+    /// one's tag and value.
+    pub features: &'a [([u8; 4], u32)],
+    /// The text's language, a BCP 47 tag; empty for none.
+    pub language: &'a str,
 }
 
 impl Default for FontRequest<'_> {
@@ -49,9 +70,53 @@ impl Default for FontRequest<'_> {
             weight: 400,
             slant: Slant::Normal,
             stretch: 100.0,
+            kerning: true,
+            features: &[],
+            language: "",
         }
     }
 }
+
+impl FontRequest<'_> {
+    /// Whether it shapes as the font does by itself.
+    pub(crate) fn plain_shaping(&self) -> bool {
+        self.kerning && self.features.is_empty() && self.language.is_empty()
+    }
+}
+
+/// How a font's text is shaped past the font itself: the features set or
+/// cleared, in order, and the language.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct ShapeOptions {
+    pub(crate) features: Vec<rustybuzz::Feature>,
+    pub(crate) language: Option<rustybuzz::Language>,
+}
+
+impl ShapeOptions {
+    /// The options `request` asks for: `kern` cleared for no kerning,
+    /// then the features it sets, as the reference browser orders them,
+    /// a later one of a tag winning.
+    fn of(request: &FontRequest<'_>) -> Self {
+        let feature = |tag: [u8; 4], value: u32| {
+            rustybuzz::Feature::new(ttf_parser::Tag::from_bytes(&tag), value, ..)
+        };
+        let mut features = Vec::new();
+        if !request.kerning {
+            features.push(feature(*b"kern", 0));
+        }
+        features.extend(request.features.iter().map(|&(tag, v)| feature(tag, v)));
+        ShapeOptions {
+            features,
+            language: Some(request.language)
+                .filter(|l| !l.is_empty())
+                .and_then(|l| l.parse().ok()),
+        }
+    }
+}
+
+/// The most shaping options a registry keeps; past it a font shapes as
+/// the font does by itself.
+pub const MAX_SHAPINGS: usize = 4096;
 
 /// A face chosen, with what drawing makes up for it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -63,8 +128,9 @@ pub struct Font {
     /// upright face.
     pub slanted: bool,
     /// The faces a document's `unicode-range`s put before `face` for
-    /// the code points they cover, by the number the collection's
-    /// registry gave their list; 0 for none.
+    /// the code points they cover, and how its text is shaped past the
+    /// face (its kerning, features and language), by the number the
+    /// collection's registry gave them; 0 for none of either.
     pub chain: u16,
 }
 
@@ -145,10 +211,21 @@ pub(crate) struct Faces {
     /// The chains handed out ([`Font::chain`]): chain `n` is the
     /// `n - 1`th, each kept once.
     chains: RwLock<Chains>,
+    /// The shaping options handed out ([`Font::shaping`]), as chains
+    /// are, by the request's kerning, features and language.
+    shapings: RwLock<Shapings>,
 }
 
-/// The chains handed out, in order, and each one's number by its links.
-type Chains = (Vec<Arc<[Link]>>, HashMap<Arc<[Link]>, u16>);
+/// The shaping options handed out, in order, and each one's number by
+/// what was asked.
+type Shapings = (
+    Vec<Arc<ShapeOptions>>,
+    HashMap<(bool, Vec<([u8; 4], u32)>, String), u16>,
+);
+
+/// The chains handed out, in order, and each one's number by its links
+/// and the number of its shaping options.
+type Chains = (Vec<(Arc<[Link]>, u16)>, HashMap<(Arc<[Link]>, u16), u16>);
 
 /// What a choice is kept by: the families, weight, slant and stretch.
 type Key = (Box<str>, u16, u32, u32);
@@ -273,31 +350,86 @@ impl Faces {
             loaded: RwLock::new(Vec::new()),
             chosen: Choices::new(),
             chains: RwLock::new((Vec::new(), HashMap::new())),
+            shapings: RwLock::new((Vec::new(), HashMap::new())),
         }
     }
 
-    /// The number of the chain `links`, handed out once; 0 past
+    /// The number of the shaping options `request` asks for, handed out
+    /// once; 0 for none, and past [`MAX_SHAPINGS`].
+    pub(crate) fn shaping(&self, request: &FontRequest<'_>) -> u16 {
+        if request.plain_shaping() {
+            return 0;
+        }
+        let key = (
+            request.kerning,
+            request.features.to_vec(),
+            request.language.to_owned(),
+        );
+        if let Ok(kept) = self.shapings.read()
+            && let Some(&n) = kept.1.get(&key)
+        {
+            return n;
+        }
+        let Ok(mut kept) = self.shapings.write() else {
+            return 0;
+        };
+        if let Some(&n) = kept.1.get(&key) {
+            return n;
+        }
+        if kept.0.len() >= MAX_SHAPINGS {
+            return 0;
+        }
+        kept.0.push(Arc::new(ShapeOptions::of(request)));
+        let n = kept.0.len() as u16;
+        kept.1.insert(key, n);
+        n
+    }
+
+    /// The shaping options numbered `n`, none for 0 or a number never
+    /// handed out.
+    pub(crate) fn shaping_options(&self, n: u16) -> Option<Arc<ShapeOptions>> {
+        let i = n.checked_sub(1)? as usize;
+        self.shapings.read().ok()?.0.get(i).cloned()
+    }
+
+    /// The number of the chain `links` shaped by the options numbered
+    /// `shaping`, handed out once; 0 for neither, and past
     /// [`MAX_CHAINS`].
-    pub(crate) fn chain(&self, links: Vec<Link>) -> u16 {
-        let links: Arc<[Link]> = links.into();
+    pub(crate) fn chain(&self, links: Arc<[Link]>, shaping: u16) -> u16 {
+        if links.is_empty() && shaping == 0 {
+            return 0;
+        }
+        let key = (links, shaping);
         if let Ok(chains) = self.chains.read()
-            && let Some(&n) = chains.1.get(&links)
+            && let Some(&n) = chains.1.get(&key)
         {
             return n;
         }
         let Ok(mut chains) = self.chains.write() else {
             return 0;
         };
-        if let Some(&n) = chains.1.get(&links) {
+        if let Some(&n) = chains.1.get(&key) {
             return n;
         }
         if chains.0.len() >= MAX_CHAINS {
             return 0;
         }
-        chains.0.push(links.clone());
+        chains.0.push(key.clone());
         let n = chains.0.len() as u16;
-        chains.1.insert(links, n);
+        chains.1.insert(key, n);
         n
+    }
+
+    /// The number of chain `n`'s shaping options; 0 for none.
+    pub(crate) fn chain_shaping(&self, n: u16) -> u16 {
+        let Some(i) = n.checked_sub(1) else {
+            return 0;
+        };
+        self.chains
+            .read()
+            .ok()
+            .and_then(|chains| chains.0.get(usize::from(i)).map(|(_, s)| *s))
+            .unwrap_or(0)
     }
 
     /// The system's faces, when the collection has them.
@@ -305,10 +437,12 @@ impl Faces {
         self.db.as_ref()
     }
 
-    /// The links of chain `n`, none for 0 or a number never handed out.
+    /// The links of chain `n`, none for 0, a number never handed out
+    /// and a chain of shaping options alone.
     pub(crate) fn links(&self, n: u16) -> Option<Arc<[Link]>> {
         let i = n.checked_sub(1)? as usize;
-        self.chains.read().ok()?.0.get(i).cloned()
+        let links = self.chains.read().ok()?.0.get(i)?.0.clone();
+        (!links.is_empty()).then_some(links)
     }
 
     /// The faces of the system's fonts in `records`, read as asked for.
@@ -706,7 +840,7 @@ mod tests {
             families,
             weight,
             slant,
-            stretch: 100.0,
+            ..FontRequest::default()
         }
     }
 

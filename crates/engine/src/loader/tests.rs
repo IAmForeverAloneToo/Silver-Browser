@@ -2567,6 +2567,80 @@ fn a_rule_a_script_just_added_is_in_document_fonts_in_its_run() {
 }
 
 #[test]
+fn fonts_ready_waits_for_the_faces_the_next_layout_asks_for() {
+    // CSS Font Loading 3's "pending on the environment": text a script
+    // puts in, in a family whose face no layout asked for yet, holds
+    // `ready` until a layout asked for it and it came.
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<style>@font-face { font-family: Web; src: url(f.ttf) } .t { font-family: Web }\
+             </style><body><p>first</p><script>\
+             document.body.offsetWidth;\
+             document.fonts.ready.then(() => {\
+               document.body.insertAdjacentHTML('beforeend', '<p class=t>x</p>');\
+               document.fonts.ready.then(() => console.log([...document.fonts][0].status));\
+             });\
+             </script>",
+        )),
+        "/f.ttf" => Some(Reply::ok("font/ttf", text::TEST_FONT)),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.set_viewport(800, 600);
+    load_all(&mut tab, server.url("/page.html"));
+    let lines = tab.run_until(|lines| !lines.is_empty());
+    assert_eq!(lines, ["loaded"]);
+}
+
+#[test]
+fn a_load_settles_when_rules_come_while_its_faces_load() {
+    // WPT's generic-family-keywords-003: rules put in as the load is
+    // asked for, more put in while it is under way, a face loaded
+    // already asked for again; each load settles, and a canvas then
+    // measures in the face.
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<link rel=stylesheet href=a.css><canvas id=c></canvas><script>\
+             const add = css => document.documentElement.insertAdjacentHTML('beforeend', \
+               '<style>' + css + '</style>');\
+             const ctx = c.getContext('2d');\
+             window.addEventListener('load', async () => {\
+               await document.fonts.load('25px Sq');\
+               console.log('Sq');\
+               for (const name of ['serif', 'cursive']) {\
+                 add('@font-face { font-family: ' + name + '; src: url(f.ttf) }');\
+                 add('@font-face { font-family: \"' + name + '\"; src: url(f.ttf) }');\
+                 await document.fonts.load('25px ' + name);\
+                 const p = document.fonts.load('25px \"' + name + '\"');\
+                 add('@font-face { font-family: Later; src: url(f.ttf) }');\
+                 await p;\
+                 ctx.font = '25px \"' + name + '\"';\
+                 console.log(name, ctx.measureText('AB').width);\
+               }\
+               await document.fonts.load('25px Sq');\
+               console.log('again');\
+             });\
+             </script>",
+        )),
+        "/a.css" => Some(Reply::ok(
+            "text/css",
+            b"@font-face { font-family: 'Sq'; src: url('/f.ttf') }",
+        )),
+        "/f.ttf" => Some(Reply::ok(
+            "font/ttf",
+            include_bytes!("../../tests/wpt/fonts/Ahem.ttf"),
+        )),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, server.url("/page.html"));
+    let lines = tab.run_until(|lines| lines.last().is_some_and(|l| l == "again"));
+    assert_eq!(lines, ["Sq", "serif 50", "cursive 50", "again"]);
+}
+
+#[test]
 fn the_rules_faces_are_in_document_fonts_and_load_through_it() {
     // CSS Font Loading 3 (gap batch D): a rule's face is a CSS-connected
     // FontFace with its descriptors as written; load() fetches it, its

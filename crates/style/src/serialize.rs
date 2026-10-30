@@ -117,6 +117,7 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "float",
     "font-family",
     "font-feature-settings",
+    "font-kerning",
     "font-size",
     "font-stretch",
     "font-style",
@@ -389,6 +390,7 @@ fn longhand(style: &ComputedStyle, name: &str, url: longhands::Url<'_>) -> Optio
         "font-variant-east-asian" => style.font().variant.east_asian.clone(),
         "font-variant-position" => style.font().variant.position.clone(),
         "font-variant-emoji" => style.font().variant.emoji.clone(),
+        "font-kerning" => style.font().kerning.name().to_owned(),
         "font-feature-settings" => {
             let features = &style.font().features;
             if features.is_empty() {

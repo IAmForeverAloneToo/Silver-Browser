@@ -80,7 +80,7 @@ impl Direction {
 }
 
 keywords!(
-    /// `fontKerning`: read back; the engine's shaping kerns as it does.
+    /// `fontKerning`: `none` shapes without the font's kerning.
     Kerning {
         Auto = "auto",
         Normal = "normal",

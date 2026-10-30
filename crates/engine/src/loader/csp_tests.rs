@@ -1018,6 +1018,55 @@ fn code_handlers_and_report_only_violations_are_events_too() {
 }
 
 #[test]
+fn a_refused_style_attribute_of_an_svg_element_reads_empty() {
+    // As the reference browser says it; an HTML element's keeps its text.
+    static PAGES: Pages = &[(
+        "/page.html",
+        &[("Content-Security-Policy", "style-src 'self'")],
+        "<svg id=s style='fill: red'></svg><p id=p style='color: red'>p</p>\
+         <script>\
+         console.log(JSON.stringify([s.getAttribute('style'), p.getAttribute('style')]));\
+         </script>",
+    )];
+    let server = sites(PAGES);
+    let lines = run_to(&server, at(&server, "a.localhost", "/page.html"), "]");
+    assert!(
+        lines.contains(&"[\"\",\"color: red\"]".to_owned()),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn a_handler_is_held_to_the_policies_when_its_attribute_is_set() {
+    // As the reference browser checks it: when a script sets it, at the
+    // script's line and column, the element its target while connected;
+    // once, not again when it would run.
+    static PAGES: Pages = &[(
+        "/page.html",
+        &[("Content-Security-Policy", "script-src 'nonce-n1'")],
+        "<script nonce=n1>\
+         document.addEventListener('securitypolicyviolation', e => console.log([\
+           e.target.nodeName, e.blockedURI, e.lineNumber, e.columnNumber > 0].join(' | ')));\
+         const d = document.createElement('div');\n\
+         d.setAttribute('onclick', 'console.log(1)');\n\
+         document.documentElement.append(d);\
+         const e = document.createElement('i');\n\
+         e.setAttribute('onclick', 'console.log(2)');\
+         d.click(); e.click();\
+         onload = () => setTimeout(() => console.log('loaded'), 50);\
+         </script>",
+    )];
+    let server = sites(PAGES);
+    let lines = run_to(&server, at(&server, "a.localhost", "/page.html"), "loaded");
+    let mut events: Vec<&String> = lines.iter().filter(|line| line.contains(" | ")).collect();
+    events.sort();
+    assert_eq!(
+        events,
+        ["#document | inline | 4 | true", "DIV | inline | 2 | true"]
+    );
+}
+
+#[test]
 fn a_document_sends_a_hundred_reports_at_most() {
     static PAGES: Pages = &[
         (

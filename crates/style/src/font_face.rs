@@ -8,7 +8,6 @@
 
 use css::Token;
 
-use crate::computed::FontStyle;
 use crate::font_family;
 
 /// The most sources a rule's `src` may list.
@@ -25,7 +24,7 @@ pub struct FontFaceRule {
     pub sources: Vec<FontSource>,
     /// The weights, the least and the most, 1 to 1000.
     pub weight: (u16, u16),
-    pub style: FontStyle,
+    pub style: FaceStyle,
     /// The widths, the least and the most, as percentages.
     pub stretch: (f32, f32),
     /// The code points the face is for, each range's first and last;
@@ -33,6 +32,19 @@ pub struct FontFaceRule {
     pub ranges: Vec<(u32, u32)>,
     /// The descriptors as written back, a `FontFace`'s attributes.
     pub text: FaceText,
+}
+
+/// The slant a face covers (`font-style`): italic, or the oblique
+/// angles from the least to the most, in degrees, `normal` being 0.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FaceStyle {
+    Italic,
+    Oblique(f32, f32),
+}
+
+impl FaceStyle {
+    /// `normal`: upright.
+    pub const NORMAL: FaceStyle = FaceStyle::Oblique(0.0, 0.0);
 }
 
 /// A face's descriptors as written back (CSS Font Loading 3's
@@ -78,7 +90,7 @@ pub fn read(declarations: &[css::Declaration]) -> Option<FontFaceRule> {
         family: String::new(),
         sources: Vec::new(),
         weight: (400, 400),
-        style: FontStyle::Normal,
+        style: FaceStyle::NORMAL,
         stretch: (100.0, 100.0),
         ranges: Vec::new(),
         text: FaceText::default(),
@@ -101,7 +113,7 @@ pub fn read(declarations: &[css::Declaration]) -> Option<FontFaceRule> {
                 rule.text.stretch = text;
             }
             "font-style" => {
-                rule.style = read_style(value).unwrap_or(FontStyle::Normal);
+                rule.style = read_style(value).unwrap_or(FaceStyle::NORMAL);
                 rule.text.style = text;
             }
             "unicode-range" => {
@@ -607,8 +619,8 @@ fn angle(part: &[Token]) -> Option<f32> {
 }
 
 /// `font-style`: `auto`, `normal`, `italic`, or `oblique` with up to two
-/// angles, the face's slant taken as their middle.
-fn read_style(tokens: &[Token]) -> Option<FontStyle> {
+/// angles, 14 degrees when none is given, the range from the least.
+fn read_style(tokens: &[Token]) -> Option<FaceStyle> {
     let parts = parts(tokens);
     let word = |t: &[Token]| match t {
         [Token::Ident(w)] => Some(w.to_ascii_lowercase()),
@@ -616,20 +628,15 @@ fn read_style(tokens: &[Token]) -> Option<FontStyle> {
     };
     match parts.as_slice() {
         [one] => match word(one)?.as_str() {
-            "normal" | "auto" => Some(FontStyle::Normal),
-            "italic" => Some(FontStyle::Italic),
-            "oblique" => Some(FontStyle::Oblique(14.0)),
+            "normal" | "auto" => Some(FaceStyle::NORMAL),
+            "italic" => Some(FaceStyle::Italic),
+            "oblique" => Some(FaceStyle::Oblique(14.0, 14.0)),
             _ => None,
         },
-        [first, a] if word(first)? == "oblique" => angle(a).map(|a| {
-            if a == 0.0 {
-                FontStyle::Normal
-            } else {
-                FontStyle::Oblique(a)
-            }
-        }),
+        [first, a] if word(first)? == "oblique" => angle(a).map(|a| FaceStyle::Oblique(a, a)),
         [first, a, b] if word(first)? == "oblique" => {
-            Some(FontStyle::Oblique((angle(a)? + angle(b)?) / 2.0))
+            let (a, b) = (angle(a)?, angle(b)?);
+            Some(FaceStyle::Oblique(a.min(b), a.max(b)))
         }
         _ => None,
     }
@@ -779,7 +786,7 @@ mod tests {
         );
         assert_eq!(
             (f.weight, f.style, f.stretch),
-            ((400, 400), FontStyle::Normal, (100.0, 100.0))
+            ((400, 400), FaceStyle::NORMAL, (100.0, 100.0))
         );
         assert_eq!(f.text, FaceText::default());
         assert_eq!(
@@ -985,7 +992,7 @@ mod tests {
         .unwrap();
         assert_eq!(f.weight, (300, 700));
         assert_eq!(f.stretch, (75.0, 150.0));
-        assert_eq!(f.style, FontStyle::Oblique(15.0));
+        assert_eq!(f.style, FaceStyle::Oblique(10.0, 20.0));
         assert_eq!(
             (f.text.weight.as_str(), f.text.stretch.as_str()),
             ("700 300", "condensed 150%")
@@ -997,7 +1004,18 @@ mod tests {
             face("font-family: a; src: url(a); font-style: italic")
                 .unwrap()
                 .style,
-            FontStyle::Italic
+            FaceStyle::Italic
         );
+        let slant = |css: &str| {
+            face(&format!("font-family: a; src: url(a); font-style: {css}"))
+                .unwrap()
+                .style
+        };
+        assert_eq!(
+            slant("oblique 40deg -10deg"),
+            FaceStyle::Oblique(-10.0, 40.0)
+        );
+        assert_eq!(slant("oblique"), FaceStyle::Oblique(14.0, 14.0));
+        assert_eq!(slant("oblique 0deg"), FaceStyle::NORMAL);
     }
 }

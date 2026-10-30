@@ -122,8 +122,9 @@ use crate::computed::{
     TextAlign, TextAlignLast, TextJustify, VerticalAlign, WhiteSpace, WhiteSpaceCollapse,
 };
 use crate::computed::{
-    AnimationPlayState, Backgrounds, BorderImage, Calc, Decoration, Effects, Filter, FontProps,
-    Fragmentation, GridStyle, ImageStyle, JustifyItems, Lists, Motion, Radii, Svg, WillChange,
+    AnimationPlayState, Backgrounds, BorderImage, Calc, Decoration, Effects, Filter, FontKerning,
+    FontProps, Fragmentation, GridStyle, ImageStyle, JustifyItems, Lists, Motion, Radii, Svg,
+    WillChange,
 };
 use crate::custom::{self, CustomProperties, DataType, Substituted, Substitutions};
 use crate::invalidation::{Reach, SelectorFeatures, invalidate};
@@ -504,6 +505,7 @@ impl Target {
                 | "font-variant-position"
                 | "font-variant-emoji"
                 | "font-feature-settings"
+                | "font-kerning"
                 | "line-height"
                 | "color"
                 | "background-color"
@@ -551,6 +553,7 @@ impl Target {
                         | "font-variant-position"
                         | "font-variant-emoji"
                         | "font-feature-settings"
+                        | "font-kerning"
                         | "color"
                         | "text-transform"
                         | "white-space"
@@ -3548,6 +3551,11 @@ fn apply_declaration(
             fonts::parse_font_feature_settings(value, bases),
             |f, v| f.features = v,
         ),
+        "font-kerning" => set_font(
+            style,
+            single_ident(value).and_then(FontKerning::from_name),
+            |f, v| f.kerning = v,
+        ),
         "line-height" => set_font(style, fonts::parse_line_height(value, bases), |f, v| {
             f.line_height = v
         }),
@@ -4669,6 +4677,7 @@ fn is_inherited(name: &str) -> bool {
             | "font-variant-position"
             | "font-variant-emoji"
             | "font-feature-settings"
+            | "font-kerning"
             | "line-height"
             | "text-align"
             | "text-transform"
@@ -4819,6 +4828,7 @@ fn apply_css_wide(
             }
         }
         "font-feature-settings" => style.font_mut().features = src.font().features.clone(),
+        "font-kerning" => style.font_mut().kerning = src.font().kerning,
         "line-height" => style.font_mut().line_height = src.font().line_height,
         "display" => {
             style.display = src.display;

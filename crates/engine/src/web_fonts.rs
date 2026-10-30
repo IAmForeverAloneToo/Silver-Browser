@@ -6,9 +6,8 @@
 
 use std::sync::Arc;
 
-use style::computed::FontStyle;
-use style::font_face::{FontFaceRule, FontSource};
-use text::{DocumentFaces, FaceRule, FaceState, FontCollection, Slant};
+use style::font_face::{FaceStyle, FontFaceRule, FontSource};
+use text::{DocumentFaces, FaceRule, FaceSlant, FaceState, FontCollection};
 
 use crate::Engine;
 use crate::loader::{LoadError, Target};
@@ -33,6 +32,11 @@ pub(crate) struct WebFonts {
     loading: bool,
     /// The rules' faces had, and failed, since it was.
     period: (Vec<usize>, Vec<usize>),
+    /// Whether a script asked for a rule's face since `document.fonts`
+    /// was last told: it is told once the face is had or failed, even
+    /// when nothing began loading (a face had already, or found at once
+    /// by `local()`), so that its `load()` settles.
+    due: bool,
 }
 
 /// A face a script added to `document.fonts` (CSS Font Loading 3): its
@@ -87,9 +91,9 @@ pub(crate) fn answer(
                 return js::Answer::Bool(false);
             };
             let slant = match words.next() {
-                Some("italic") => Slant::Italic,
-                Some("oblique") => Slant::Oblique(14.0),
-                _ => Slant::Normal,
+                Some("italic") => FaceSlant::Italic,
+                Some("oblique") => FaceSlant::Oblique(14.0, 14.0),
+                _ => FaceSlant::NORMAL,
             };
             let mut number = || words.next().and_then(|w| w.parse::<f32>().ok());
             let (Some(s0), Some(s1)) = (number(), number()) else {
@@ -234,6 +238,29 @@ pub(crate) fn worker_fonts_changed(
     }
 }
 
+/// Lays the faces `changes` add over `fonts`, the window's for a script
+/// run, until the engine makes its faces anew after the run; says
+/// whether there were any.
+pub(crate) fn lay_over(fonts: &mut FontCollection, changes: &[FontChange]) -> bool {
+    let mut any = false;
+    for change in changes {
+        let FontChange::Add(face) = change else {
+            continue;
+        };
+        if fonts.document().is_none() {
+            *fonts = fonts.with_document(Arc::new(DocumentFaces::new(Vec::new())));
+        }
+        let Some(n) = fonts
+            .document()
+            .and_then(|document| document.push(face.rule.clone()))
+        else {
+            continue;
+        };
+        any |= fonts.face_arrived(n, face.data.clone()).is_ok();
+    }
+    any
+}
+
 /// `value` of the descriptor `name` written back as an `@font-face`
 /// rule's would be; `None` for one the descriptor does not take.
 fn descriptor(name: &str, value: &str) -> Option<String> {
@@ -279,10 +306,8 @@ fn face_rule(rule: &FontFaceRule) -> FaceRule {
         family: rule.family.clone(),
         weight: rule.weight,
         slant: match rule.style {
-            FontStyle::Normal => Slant::Normal,
-            FontStyle::Italic => Slant::Italic,
-            FontStyle::DefaultOblique => Slant::Oblique(14.0),
-            FontStyle::Oblique(angle) => Slant::Oblique(angle),
+            FaceStyle::Italic => FaceSlant::Italic,
+            FaceStyle::Oblique(lo, hi) => FaceSlant::Oblique(lo, hi),
         },
         stretch: rule.stretch,
         ranges: rule.ranges.clone(),
@@ -324,6 +349,7 @@ impl Engine {
     /// is had still.
     fn remake_web_fonts(&mut self, rules: Vec<FontFaceRule>) {
         let old = self.shown.web_fonts.take();
+        let mut refetch = Vec::new();
         let scripts = &self.shown.script_fonts;
         self.shown.web_fonts = (!rules.is_empty() || !scripts.is_empty()).then(|| {
             self.next_font_set += 1;
@@ -337,15 +363,21 @@ impl Engine {
                 .with_document(Arc::new(DocumentFaces::new(faces)));
             let mut data = vec![None; rules.len()];
             if let Some(old) = &old {
+                let old_faces = old.fonts.document();
                 for (n, rule) in rules.iter().enumerate() {
-                    let had =
-                        old.rules.iter().zip(&old.data).find_map(|(was, data)| {
-                            (was == rule).then_some(data.as_ref()).flatten()
-                        });
+                    let was = old.rules.iter().position(|was| was == rule);
+                    let had = was.and_then(|w| old.data[w].as_ref());
                     if let Some((bytes, index)) = had
                         && fonts.face_arrived_at(n, bytes.to_vec(), *index).is_ok()
                     {
                         data[n] = Some((bytes.clone(), *index));
+                        continue;
+                    }
+                    // One coming for the old set is fetched again for
+                    // this one, whose number the answer must carry.
+                    let state = was.and_then(|w| old_faces.and_then(|faces| faces.state(w)));
+                    if matches!(state, Some(FaceState::Wanted | FaceState::Loading)) {
+                        refetch.push(n);
                     }
                 }
             }
@@ -360,9 +392,21 @@ impl Engine {
                 data,
                 fonts,
                 loading: old.as_ref().is_some_and(|old| old.loading),
+                due: old.as_ref().is_some_and(|old| old.due),
                 period: old.map(|old| old.period).unwrap_or_default(),
             }
         });
+        for n in refetch {
+            let faces = self
+                .shown
+                .web_fonts
+                .as_ref()
+                .and_then(|web| web.fonts.document().cloned());
+            if let Some(faces) = faces {
+                faces.loading(n);
+                self.fetch_font(n);
+            }
+        }
         self.shown.layout_cache.clear();
         self.shown.layout = None;
         self.changed = true;
@@ -410,29 +454,53 @@ impl Engine {
                     .flatten()
             });
             if let Some(faces) = faces
-                && faces.state(n) == Some(FaceState::Unloaded)
+                && matches!(
+                    faces.state(n),
+                    Some(FaceState::Unloaded | FaceState::Wanted)
+                )
             {
                 faces.loading(n);
                 self.fetch_font(n);
+            }
+            if let Some(web) = &mut self.shown.web_fonts {
+                web.due = true;
             }
         }
         self.tell_fonts();
     }
 
-    /// Whether the shown document's web fonts are loading: a face asked
-    /// for or coming, or `@font-face` rules not yet laid out with.
+    /// Whether the shown document's web fonts are loading (CSS Font
+    /// Loading 3's "pending on the environment"): a face asked for or
+    /// coming, or `@font-face` rules its faces are not yet made from.
     pub(crate) fn fonts_loading(&self) -> bool {
-        match &self.shown.web_fonts {
-            Some(web) => {
-                self.shown.layout.is_none() && !web.rules.is_empty()
-                    || web.fonts.document().is_some_and(|faces| faces.is_loading())
-            }
-            None => !self
-                .shown
+        let rules = || {
+            self.shown
                 .stylesheets
                 .font_faces(&self.media(self.viewport))
-                .is_empty(),
+        };
+        match &self.shown.web_fonts {
+            Some(web) => {
+                web.fonts.document().is_some_and(|faces| faces.is_loading())
+                    || self.shown.recascade && *web.rules != rules()
+            }
+            None => !rules().is_empty(),
         }
+    }
+
+    /// Whether a style or layout is still to come that could ask for a
+    /// face of the document's `@font-face` rules: `document.fonts`
+    /// lays the document out for itself before it says it is done,
+    /// so that `ready` waits until a layout asked for nothing new and
+    /// its faces came.
+    pub(crate) fn fonts_unsettled(&self) -> bool {
+        self.shown
+            .web_fonts
+            .as_ref()
+            .is_some_and(|web| !web.rules.is_empty())
+            && (self.shown.layout.is_none()
+                || self.shown.recascade
+                || self.shown.styled.is_none()
+                || !self.shown.pending.is_empty())
     }
 
     /// Fetches the faces the last layout asked for.
@@ -464,10 +532,14 @@ impl Engine {
         let Some(web) = &mut self.shown.web_fonts else {
             return;
         };
-        if loading == web.loading {
+        let settled = !web.period.0.is_empty() || !web.period.1.is_empty() || web.due;
+        if loading == web.loading && (loading || !settled) {
             return;
         }
         web.loading = loading;
+        if !loading {
+            web.due = false;
+        }
         let event = if loading {
             js::EventInit::new("FontFaceSetLoadEvent", "loading")
         } else {
@@ -619,7 +691,7 @@ mod tests {
             FaceRule {
                 family: "My Font".into(),
                 weight: (300, 700),
-                slant: Slant::Italic,
+                slant: FaceSlant::Italic,
                 stretch: (75.0, 125.0),
                 ranges: vec![(0x41, 0x5A), (0xE9, 0xE9)],
             }
@@ -651,6 +723,26 @@ mod tests {
         ));
         ask("load 3", b"", &env, &mut changes);
         assert!(matches!(changes.as_slice(), [FontChange::Load(3)]));
+    }
+
+    #[test]
+    fn a_face_added_is_laid_over_the_runs_fonts() {
+        let mut changes = Vec::new();
+        ask(
+            "add 1 400 400 normal 100 100 - Web",
+            text::TEST_FONT,
+            &FontsEnv::default(),
+            &mut changes,
+        );
+        let mut fonts = FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0).unwrap();
+        let request = text::FontRequest {
+            families: "Web, serif",
+            ..text::FontRequest::default()
+        };
+        assert_eq!(fonts.font(&request).face, text::FaceId(0));
+        assert!(!lay_over(&mut fonts, &[]));
+        assert!(lay_over(&mut fonts, &changes));
+        assert_ne!(fonts.font(&request).face, text::FaceId(0));
     }
 
     #[test]

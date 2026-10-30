@@ -2,7 +2,7 @@
 //! D, D53): the face its font properties choose, and `line-height`'s
 //! leading (CSS 2 section 10.8.1).
 
-use style::computed::{ComputedStyle, FontProps, FontStyle, LineHeight};
+use style::computed::{ComputedStyle, FontKerning, FontProps, FontStyle, LineHeight};
 use text::{Font, FontCollection, FontMetrics, FontRequest, Slant};
 
 /// What `props` asks a collection for; paint's display list carries the
@@ -18,6 +18,9 @@ pub fn font_request(props: &FontProps) -> FontRequest<'_> {
             FontStyle::Oblique(angle) => Slant::Oblique(angle),
         },
         stretch: props.stretch,
+        kerning: props.kerning != FontKerning::None,
+        features: &props.features,
+        language: "",
     }
 }
 

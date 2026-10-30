@@ -90,6 +90,9 @@ pub struct Canvas {
     work: u64,
     /// The image a `drawImage()` paints with, while it does.
     pub(crate) drawing: Option<image::ImagePaint>,
+    /// The language of the element it draws for, which `lang: inherit`
+    /// takes; empty for none.
+    pub inherited_lang: String,
 }
 
 impl Canvas {
@@ -108,6 +111,7 @@ impl Canvas {
             opaque,
             work: 0,
             drawing: None,
+            inherited_lang: String::new(),
         };
         canvas.reset_bitmap();
         canvas

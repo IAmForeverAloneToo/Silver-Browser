@@ -509,7 +509,10 @@ compiles grown by 2,700 lines: M35.12's.)*
   proposed members, `fillTextCluster` and the colour objects a style
   may be given, proposals past the standard, and pixel formats past 8
   bits: G81. The system colours: G6. `color-mix()` and relative
-  colours: G16. `font-kerning`, small capitals and `lh`: G22.
+  colours: G16. Small capitals and `lh`: G22. *(corrected after gap
+  batch D: `fontKerning` and `lang` reach shaping, `lang: inherit` the
+  element's, and the hanging and ideographic baselines are the font's
+  `BASE` table's where it has one.)*
 - *`captureStream()`* and video as a `drawImage` source: with media.
 
 ## 3. Order of work

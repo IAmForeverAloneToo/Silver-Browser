@@ -204,6 +204,8 @@ pub(crate) struct Element {
     pub(crate) color: Rgba,
     pub(crate) font_base: FontBase,
     pub(crate) rtl: bool,
+    /// The element's language, its `lang` or its nearest ancestor's.
+    pub(crate) lang: String,
     pub(crate) fonts: Option<text::FontCollection>,
     /// The image a `drawImage()` or a `createPattern()` names, when it
     /// has pixels to draw.
@@ -1507,6 +1509,7 @@ impl Canvases {
                     let max = (n.len() > 2).then(|| at(n, 2));
                     let stroke = call.op == "strokeText";
                     let text = text.unwrap_or_default();
+                    canvas.inherited_lang.clone_from(&element.lang);
                     canvas.draw_text(fonts, text, value, at(n, 1), max, stroke, element.rtl);
                 }
                 Answer::Nothing
@@ -1514,6 +1517,7 @@ impl Canvases {
             "measureText" => {
                 let m = match &element.fonts {
                     Some(fonts) => {
+                        canvas.inherited_lang.clone_from(&element.lang);
                         canvas.measure_text(fonts, text.unwrap_or_default(), element.rtl)
                     }
                     None => canvas::TextMetrics::default(),

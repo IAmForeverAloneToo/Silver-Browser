@@ -1,21 +1,21 @@
 //! WOFF 1 (W3C WOFF File Format 1.0): a font file whose tables are each
-//! compressed by zlib, unpacked to the sfnt they came from (D54). Other
-//! data is taken as an sfnt as it is; WOFF 2 is refused (a later gap:
-//! its Brotli and transforms need a decoder).
+//! compressed by zlib, unpacked to the sfnt they came from (D54); WOFF 2
+//! is unpacked by [`super::woff2`]. Other data is taken as an sfnt as it
+//! is.
 
 use std::io::Read as _;
 
 use super::FontError;
 use super::web::MAX_FONT_BYTES;
 
-/// `data` as an sfnt: unpacked when it is WOFF 1.
+/// `data` as an sfnt: unpacked when it is WOFF 1 or 2.
 pub(crate) fn sfnt(data: Vec<u8>) -> Result<Vec<u8>, FontError> {
     if data.len() > MAX_FONT_BYTES {
         return Err(FontError::InvalidFont);
     }
     match data.get(..4) {
         Some(b"wOFF") => unpack(&data),
-        Some(b"wOF2") => Err(FontError::InvalidFont),
+        Some(b"wOF2") => super::woff2::unpacked(&data).ok_or(FontError::InvalidFont),
         _ => Ok(data),
     }
 }
@@ -168,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn what_is_broken_or_too_large_or_woff2_is_refused() {
+    fn what_is_broken_or_too_large_is_refused() {
         let woff = woff_of(crate::TEST_FONT);
         for cut in [8, 44, 60, woff.len() / 2] {
             assert!(sfnt(woff[..cut].to_vec()).is_err(), "cut at {cut}");

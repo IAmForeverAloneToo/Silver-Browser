@@ -110,8 +110,8 @@ content (CSS 2 section 10.8.1), `normal` by the face's metrics as now.
 `MAX_FONT_FACES` a document. A face is fetched when a box first needs
 its family, by the loader with the font destination and `cors`
 anonymous mode, at most `MAX_FONT_BYTES`; its bytes are checked by
-`ttf-parser` (WOFF2 is a later gap: its Brotli and transform need a
-decoder; WOFF 1's zlib is in hand and taken). A document's faces lie
+`ttf-parser` (WOFF 1 by zlib; WOFF2 by `brotli-decompressor`, its
+`glyf`, `loca` and `hmtx` transforms undone, after the batch). A document's faces lie
 over the system collection in a `DocumentFonts` the cascade's families
 resolve against first. Until a face arrives the fallback is drawn
 (`font-display: swap`, the behaviour `auto` gets), and its arrival lays
@@ -296,8 +296,7 @@ where it is used, in paint, the canvas and serialization; a
 
 ## 2. Not in this batch, said rather than hidden
 
-- WOFF2 web fonts (a Brotli decoder and its glyph transforms), variable
-  fonts' axes past weight, width and slant (`font-variation-settings`),
+- Variable fonts' axes past weight, width and slant (`font-variation-settings`),
   color fonts, `size-adjust` and the other metric descriptors.
 - Hyphenation (`hyphens: auto`), `text-justify`'s inter-character mode,
   `text-wrap: balance` and `pretty`, and vertical writing modes.
@@ -477,6 +476,29 @@ step:
   it when its faces start and stop loading (a `FontFaceSetLoadEvent`
   task); a `FontFace`'s urls are fetched in turn as fonts; workers have
   `self.fonts`. A text control's caret is measured in its own font.
+- *Fonts closed after the batch* (D53, D54): a face's `font-style` is
+  an oblique range (`text::FaceSlant`), matched in the reference
+  browser's order: italic faces first for italic, then obliques as 20
+  degrees; from 11 degrees up, the steeper first, then the rest by
+  nearness; below, those between the angle and upright, then the
+  steeper, then the rest; an italic face last for anything else.
+  `font-kerning` is a property (`auto` kerns, as the reference browser
+  does; `none` clears `kern`), and it, `font-feature-settings` and a
+  canvas's `lang` reach shaping: a font's shaping options are kept in
+  the registry with its chain (`Font::chain`), so that a fragment stays
+  136 bytes. `font` resets and serializes `font-kerning`. WOFF2 is read
+  (`text::woff2`, every size bounded before it is allocated). A face a
+  script adds is laid over the run's fonts at once, so that a layout
+  query after its `load()` measures in it. The scripts' font changes
+  are taken after their DOM changes, so that a `load()` of a rule a
+  script just put in finds it; a load asked of a face already had, or
+  had at once, is told to `document.fonts`, and a face loading when the
+  faces are made anew is fetched again; CSS-connected `FontFace`s are
+  kept by their descriptors, wherever rules come or go before them.
+  `document.fonts.ready` and `status` wait while a style or layout is
+  to come: the bindings lay the document out first, so that the faces
+  it needs are asked for. The reference browser has no `font-width`
+  and refuses `-webkit-generic()`, so neither is taken.
 - *Module scripts* (D61), after the batch: an `import()` in code a
   string compiled (`eval`, `Function`, a timer's string) resolves
   against, and fetches with the options of, the script that made it,

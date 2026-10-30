@@ -28,9 +28,12 @@ mod hyphenate;
 mod transform;
 mod web;
 mod woff;
+mod woff2;
 
 pub use breaks::{BreakRules, Strictness, WordBreaking, grapheme_boundaries, line_breaks};
-pub use faces::{FaceId, FaceRecord, Font, FontRequest, MAX_CHOICES, SYNTHETIC_SKEW, Slant};
+pub use faces::{
+    FaceId, FaceRecord, FaceSlant, Font, FontRequest, MAX_CHOICES, SYNTHETIC_SKEW, Slant,
+};
 pub use hyphenate::{HyphenLimits, hyphenates, hyphenation_points};
 pub use transform::{Case, Transform, ends_word, transform};
 pub use web::{DocumentFaces, FaceRule, FaceState, MAX_FONT_BYTES, MAX_FONT_FACES, is_font};
@@ -162,12 +165,35 @@ struct Shaping {
     plans: RwLock<Vec<(PlanKey, Arc<rustybuzz::ShapePlan>)>>,
 }
 
-/// What a shaping plan is made for.
+/// What a shaping plan is made for: the direction, script and language,
+/// and the number of the shaping options.
 type PlanKey = (
     rustybuzz::Direction,
     Option<rustybuzz::Script>,
     Option<rustybuzz::Language>,
+    u16,
 );
+
+/// Shaping options and their number in the registry: how a font's text
+/// is shaped past the face ([`Font::shaping`]).
+#[derive(Clone, Copy)]
+pub(crate) struct Options<'a> {
+    number: u16,
+    options: &'a faces::ShapeOptions,
+}
+
+/// The face's own shaping.
+static PLAIN: std::sync::LazyLock<faces::ShapeOptions> =
+    std::sync::LazyLock::new(faces::ShapeOptions::default);
+
+impl Options<'_> {
+    fn plain() -> Options<'static> {
+        Options {
+            number: 0,
+            options: &PLAIN,
+        }
+    }
+}
 
 /// A loaded font, ready for shaping and rasterization. Cloning shares
 /// the face data (an `Arc`) rather than copying it.
@@ -196,6 +222,9 @@ pub struct FontStore {
     /// all of the scaler's arithmetic (bit 3), which FreeType honours
     /// when it hints an advance (see [`FontStore::advance`]).
     integer_ppem: bool,
+    /// The `BASE` table's hanging and ideographic baselines, above the
+    /// alphabetic one, in font units, when it gives them.
+    baselines: (Option<f32>, Option<f32>),
     /// ab_glyph handle for outline rasterization.
     glyph_font: ab_glyph::FontArc,
 }
@@ -274,6 +303,15 @@ impl FontStore {
             .underline_metrics()
             .map(|line| (f32::from(line.position), f32::from(line.thickness)))
             .filter(|(_, thickness)| *thickness > 0.0);
+        let baselines = ttf
+            .raw_face()
+            .table(ttf_parser::Tag::from_bytes(b"BASE"))
+            .map_or((None, None), |base| {
+                (
+                    base_coordinate(base, *b"hang"),
+                    base_coordinate(base, *b"ideo"),
+                )
+            });
         let integer_ppem = ttf
             .raw_face()
             .table(ttf_parser::Tag::from_bytes(b"head"))
@@ -304,6 +342,7 @@ impl FontStore {
             x_height_units,
             underline_units,
             integer_ppem,
+            baselines,
             glyph_font,
         })
     }
@@ -341,6 +380,19 @@ impl FontStore {
         } else {
             font_size_px * 0.5
         }
+    }
+
+    /// The hanging baseline's height above the alphabetic one at
+    /// `font_size_px`, by the font's `BASE` table; `None` when it gives
+    /// none.
+    pub fn hanging_baseline(&self, font_size_px: f32) -> Option<f32> {
+        Some(self.baselines.0? * font_size_px / self.units_per_em)
+    }
+
+    /// The ideographic baseline's height above the alphabetic one at
+    /// `font_size_px`, as [`FontStore::hanging_baseline`].
+    pub fn ideographic_baseline(&self, font_size_px: f32) -> Option<f32> {
+        Some(self.baselines.1? * font_size_px / self.units_per_em)
     }
 
     /// The ab_glyph handle, for glyph rasterization.
@@ -382,6 +434,11 @@ impl FontStore {
     /// Returns an empty vector if the face cannot be constructed — never
     /// panics on untrusted input.
     pub fn shape(&self, text: &str, font_size_px: f32) -> Vec<ShapedGlyph> {
+        self.shape_with(text, font_size_px, Options::plain())
+    }
+
+    /// [`FontStore::shape`] with shaping options.
+    fn shape_with(&self, text: &str, font_size_px: f32, options: Options<'_>) -> Vec<ShapedGlyph> {
         // The white space at the ends of a run in visual order stays at
         // its end whichever way the rest reads (D55: kept spaces after a
         // right-to-left word): each part shaped apart, side by side.
@@ -393,23 +450,23 @@ impl FontStore {
             let mut pen_x = 0.0f32;
             for part in parts.into_iter().filter(|part| !part.is_empty()) {
                 out.extend(
-                    self.shape_run(part, font_size_px)
+                    self.shape_run(part, font_size_px, options)
                         .into_iter()
                         .map(|g| ShapedGlyph {
                             x: g.x + pen_x,
                             ..g
                         }),
                 );
-                pen_x += self.measure(part, font_size_px);
+                pen_x += self.measure_with(part, font_size_px, options);
             }
             return out;
         }
-        self.shape_run(text, font_size_px)
+        self.shape_run(text, font_size_px, options)
     }
 
     /// [`FontStore::shape`] of one run, shaped whole.
-    fn shape_run(&self, text: &str, font_size_px: f32) -> Vec<ShapedGlyph> {
-        let Some((face, shaped)) = self.shape_raw(text) else {
+    fn shape_run(&self, text: &str, font_size_px: f32, options: Options<'_>) -> Vec<ShapedGlyph> {
+        let Some((face, shaped)) = self.shape_raw(text, options) else {
             return Vec::new();
         };
         let mut pen_x = 0.0_f32;
@@ -431,7 +488,12 @@ impl FontStore {
     /// positions `layout`'s word-measurement doesn't need. `0.0` if the
     /// face can't be constructed, same never-panics guarantee as `shape`.
     pub fn measure(&self, text: &str, font_size_px: f32) -> f32 {
-        let Some((face, shaped)) = self.shape_raw(text) else {
+        self.measure_with(text, font_size_px, Options::plain())
+    }
+
+    /// [`FontStore::measure`] with shaping options.
+    fn measure_with(&self, text: &str, font_size_px: f32, options: Options<'_>) -> f32 {
+        let Some((face, shaped)) = self.shape_raw(text, options) else {
             return 0.0;
         };
         shaped
@@ -453,10 +515,15 @@ impl FontStore {
     /// editing (M42). All zeros past the first if the face cannot be
     /// constructed.
     pub fn caret_stops(&self, text: &str, font_size_px: f32) -> Vec<f32> {
+        self.caret_stops_with(text, font_size_px, Options::plain())
+    }
+
+    /// [`FontStore::caret_stops`] with shaping options.
+    fn caret_stops_with(&self, text: &str, font_size_px: f32, options: Options<'_>) -> Vec<f32> {
         let count = text.chars().count();
         let mut stops = Vec::with_capacity(count + 1);
         stops.push(0.0);
-        if let Some((face, shaped)) = self.shape_raw(text) {
+        if let Some((face, shaped)) = self.shape_raw(text, options) {
             let mut advances: std::collections::BTreeMap<usize, f32> =
                 std::collections::BTreeMap::new();
             for (info, pos) in shaped.glyph_infos().iter().zip(shaped.glyph_positions()) {
@@ -491,11 +558,18 @@ impl FontStore {
     /// [`FontStore::advance`] reads. The face is the font's own, parsed
     /// once, and the plan the one kept for the text's direction, script
     /// and language (M35.8).
-    fn shape_raw(&self, text: &str) -> Option<(&rustybuzz::Face<'_>, rustybuzz::GlyphBuffer)> {
+    fn shape_raw(
+        &self,
+        text: &str,
+        options: Options<'_>,
+    ) -> Option<(&rustybuzz::Face<'_>, rustybuzz::GlyphBuffer)> {
         let face = self.shaping.face.borrow_dependent();
         let mut buffer = rustybuzz::UnicodeBuffer::new();
         buffer.push_str(text);
         buffer.guess_segment_properties();
+        if let Some(language) = &options.options.language {
+            buffer.set_language(language.clone());
+        }
         // The text is in visual order already; a run with no letter that
         // reads right to left, digits of an Arabic script among them, is
         // shaped left to right, so that its spaces stay where they are.
@@ -509,7 +583,7 @@ impl FontStore {
         {
             buffer.set_direction(rustybuzz::Direction::LeftToRight);
         }
-        let plan = self.plan(face, &buffer);
+        let plan = self.plan(face, &buffer, options);
         let shaped = rustybuzz::shape_with_plan(face, &plan, buffer);
         Some((face, shaped))
     }
@@ -520,11 +594,17 @@ impl FontStore {
         &self,
         face: &rustybuzz::Face<'_>,
         buffer: &rustybuzz::UnicodeBuffer,
+        options: Options<'_>,
     ) -> Arc<rustybuzz::ShapePlan> {
         // The buffer says a script it could not guess is the unknown
         // one; the plan `rustybuzz::shape` makes then is made for none.
         let script = Some(buffer.script()).filter(|script| *script != rustybuzz::script::UNKNOWN);
-        let key: PlanKey = (buffer.direction(), script, buffer.language());
+        let key: PlanKey = (
+            buffer.direction(),
+            script,
+            buffer.language(),
+            options.number,
+        );
         let plans = &self.shaping.plans;
         if let Ok(kept) = plans.read()
             && let Some((_, plan)) = kept.iter().find(|(made, _)| *made == key)
@@ -536,7 +616,7 @@ impl FontStore {
             key.0,
             key.1,
             key.2.as_ref(),
-            &[],
+            &options.options.features,
         ));
         if let Ok(mut kept) = plans.write()
             && kept.len() < MAX_SHAPE_PLANS
@@ -591,6 +671,49 @@ impl FontStore {
         let scaled = product.signum() * ((product.abs() + 0x8000) >> 16);
         ((scaled + 32) >> 6) as f32
     }
+}
+
+/// The horizontal coordinate of the baseline `tag` in a `BASE` table
+/// (OpenType's), in font units: the Latin script's, else the default
+/// script's, else the first script's. `None` for a table that does not
+/// give it or does not parse.
+fn base_coordinate(base: &[u8], tag: [u8; 4]) -> Option<f32> {
+    let word = |at: usize| -> Option<usize> {
+        Some(usize::from(u16::from_be_bytes(
+            base.get(at..at + 2)?.try_into().ok()?,
+        )))
+    };
+    let axis = word(4)?;
+    if axis == 0 {
+        return None;
+    }
+    let (tags, scripts) = (axis + word(axis)?, axis + word(axis + 2)?);
+    if tags == axis || scripts == axis {
+        return None;
+    }
+    let index = (0..word(tags)?)
+        .find(|&n| base.get(tags + 2 + n * 4..tags + 6 + n * 4) == Some(&tag[..]))?;
+    let count = word(scripts)?;
+    let record = |n: usize| -> Option<(&[u8], usize)> {
+        let at = scripts + 2 + n * 6;
+        Some((base.get(at..at + 4)?, word(at + 4)?))
+    };
+    let script = [b"latn", b"DFLT"]
+        .iter()
+        .find_map(|want| (0..count).find_map(|n| record(n).filter(|(t, _)| t == *want)))
+        .or_else(|| record(0).filter(|_| count > 0))?;
+    let script = scripts + script.1;
+    let values = word(script)?;
+    if values == 0 {
+        return None;
+    }
+    let values = script + values;
+    if index >= word(values + 2)? {
+        return None;
+    }
+    let coordinate = values + word(values + 4 + index * 2)?;
+    let coordinate = base.get(coordinate + 2..coordinate + 4)?;
+    Some(f32::from(i16::from_be_bytes(coordinate.try_into().ok()?)))
 }
 
 /// `units` of a font scaled to `font_size_px` and rounded to a whole
@@ -991,15 +1114,10 @@ fn no_measures() -> Arc<[Mutex<Measures>]> {
         .collect()
 }
 
-/// A width's key beside its text: the face, or the chain of faces with
-/// its top bit set, and the font size.
-fn measure_key(font: Font, size: u32) -> u64 {
-    let face = if font.chain == 0 {
-        font.face.0
-    } else {
-        0x8000_0000 | u32::from(font.chain)
-    };
-    u64::from(face) << 32 | u64::from(size)
+/// A width's key beside its text: the chain, the face and the font
+/// size.
+fn measure_key(font: Font, size: u32) -> u128 {
+    u128::from(font.chain) << 64 | u128::from(font.face.0) << 32 | u128::from(size)
 }
 
 /// The shard `text` at `size` is kept in: an FNV-1a hash of both.
@@ -1016,19 +1134,19 @@ fn shard_of(size: u32, text: &str) -> usize {
 /// asks for every word it lays out, the same words at every pass).
 #[derive(Default)]
 struct Measures {
-    by_size: HashMap<u64, HashMap<Box<str>, f32>>,
+    by_size: HashMap<u128, HashMap<Box<str>, f32>>,
     count: usize,
 }
 
 impl Measures {
     /// The width of `text` by `size`, a [`measure_key`].
-    fn get(&self, size: u64, text: &str) -> Option<f32> {
+    fn get(&self, size: u128, text: &str) -> Option<f32> {
         self.by_size.get(&size)?.get(text).copied()
     }
 
     /// Keeps `width`, all of the shard's dropped first when it has as
     /// many as a shard keeps.
-    fn keep(&mut self, size: u64, text: &str, width: f32) {
+    fn keep(&mut self, size: u128, text: &str, width: f32) {
         if self.count >= MAX_MEASURES / MEASURE_SHARDS {
             *self = Measures::default();
         }
@@ -1185,9 +1303,30 @@ impl FontCollection {
 
     /// The font CSS's matching chooses for `request` (D53).
     pub fn font(&self, request: &FontRequest<'_>) -> Font {
-        match &self.document {
+        let mut font = match &self.document {
             Some(document) => self.document_font(document, request),
             None => self.faces.choose(request),
+        };
+        let shaping = self.faces.shaping(request);
+        if shaping != 0 {
+            let links = self
+                .faces
+                .links(font.chain)
+                .unwrap_or_else(|| Arc::from([]));
+            font.chain = self.faces.chain(links, shaping);
+        }
+        font
+    }
+
+    /// Calls `with` with `font`'s shaping options.
+    fn with_options<R>(&self, font: Font, with: impl FnOnce(Options<'_>) -> R) -> R {
+        let number = self.faces.chain_shaping(font.chain);
+        match self.faces.shaping_options(number) {
+            Some(options) => with(Options {
+                number,
+                options: &options,
+            }),
+            None => with(Options::plain()),
         }
     }
 
@@ -1303,8 +1442,10 @@ impl FontCollection {
             return width;
         }
         let mut width = 0.0;
-        self.for_each_face_run(font, text, |range, _, face| {
-            width += face.measure(&text[range], font_size_px);
+        self.with_options(font, |options| {
+            self.for_each_face_run(font, text, |range, _, face| {
+                width += face.measure_with(&text[range], font_size_px, options);
+            });
         });
         if let Ok(mut measures) = shard.lock() {
             measures.keep(key, text, width);
@@ -1411,19 +1552,21 @@ impl FontCollection {
     ) -> Vec<(FaceId, ShapedGlyph)> {
         let mut out = Vec::new();
         let mut pen_x = 0.0f32;
-        self.for_each_face_run(font, text, |range, id, face| {
-            let run_text = &text[range];
-            for g in face.shape(run_text, font_size_px) {
-                out.push((
-                    id,
-                    ShapedGlyph {
-                        glyph_id: g.glyph_id,
-                        x: g.x + pen_x,
-                        y: g.y,
-                    },
-                ));
-            }
-            pen_x += face.measure(run_text, font_size_px);
+        self.with_options(font, |options| {
+            self.for_each_face_run(font, text, |range, id, face| {
+                let run_text = &text[range];
+                for g in face.shape_with(run_text, font_size_px, options) {
+                    out.push((
+                        id,
+                        ShapedGlyph {
+                            glyph_id: g.glyph_id,
+                            x: g.x + pen_x,
+                            y: g.y,
+                        },
+                    ));
+                }
+                pen_x += face.measure_with(run_text, font_size_px, options);
+            });
         });
         out
     }
@@ -1441,11 +1584,13 @@ impl FontCollection {
     pub fn caret_stops_in(&self, font: Font, text: &str, font_size_px: f32) -> Vec<f32> {
         let mut stops = vec![0.0];
         let mut pen_x = 0.0f32;
-        self.for_each_face_run(font, text, |range, _, face| {
-            let run_text = &text[range];
-            let run = face.caret_stops(run_text, font_size_px);
-            stops.extend(run.iter().skip(1).map(|x| x + pen_x));
-            pen_x += face.measure(run_text, font_size_px);
+        self.with_options(font, |options| {
+            self.for_each_face_run(font, text, |range, _, face| {
+                let run_text = &text[range];
+                let run = face.caret_stops_with(run_text, font_size_px, options);
+                stops.extend(run.iter().skip(1).map(|x| x + pen_x));
+                pen_x += face.measure_with(run_text, font_size_px, options);
+            });
         });
         stops
     }
@@ -1575,7 +1720,7 @@ mod tests {
                 let mut buffer = rustybuzz::UnicodeBuffer::new();
                 buffer.push_str(text);
                 let fresh = rustybuzz::shape(&fresh_face, &[], buffer);
-                let (_, kept) = store.shape_raw(text).expect("shaped");
+                let (_, kept) = store.shape_raw(text, Options::plain()).expect("shaped");
                 let glyphs =
                     |shaped: &rustybuzz::GlyphBuffer| -> Vec<(u32, u32, i32, i32, i32, i32)> {
                         shaped
@@ -1630,7 +1775,7 @@ mod tests {
             for n in 0..MAX_SHAPE_PLANS {
                 let language: rustybuzz::Language = format!("x-{n}").parse().expect("a language");
                 kept.push((
-                    (rustybuzz::Direction::LeftToRight, None, Some(language)),
+                    (rustybuzz::Direction::LeftToRight, None, Some(language), 0),
                     plan.clone(),
                 ));
             }
@@ -1840,6 +1985,64 @@ mod tests {
                 stops[n]
             );
         }
+    }
+
+    #[test]
+    fn the_base_tables_baselines_are_read() {
+        // OpenType's BASE: a horizontal axis of two baselines for the
+        // default script, hanging 512 and ideographic -128 units.
+        let mut base = vec![0, 1, 0, 0, 0, 8, 0, 0];
+        base.extend([0, 4, 0, 14]);
+        base.extend([0, 2]);
+        base.extend(b"hang");
+        base.extend(b"ideo");
+        base.extend([0, 1]);
+        base.extend(b"DFLT");
+        base.extend([0, 8]);
+        base.extend([0, 6, 0, 0, 0, 0]);
+        base.extend([0, 0, 0, 2, 0, 8, 0, 12]);
+        base.extend([0, 1, 2, 0]);
+        base.extend([0, 1, 0xFF, 0x80]);
+        assert_eq!(base_coordinate(&base, *b"hang"), Some(512.0));
+        assert_eq!(base_coordinate(&base, *b"ideo"), Some(-128.0));
+        assert_eq!(base_coordinate(&base, *b"romn"), None);
+        for cut in 0..base.len() {
+            assert_eq!(base_coordinate(&base[..cut], *b"ideo"), None);
+        }
+        // A font with none.
+        let font = FontStore::from_bytes(TEST_FONT.to_vec(), 0).expect("parses");
+        assert_eq!(font.hanging_baseline(20.0), None);
+    }
+
+    #[test]
+    fn kerning_and_features_are_shaped_as_the_font_asks() {
+        let fonts = FontCollection::from_bytes(TEST_FONT.to_vec(), 0).expect("parses");
+        let font = |kerning: bool, features: &[([u8; 4], u32)]| {
+            fonts.font(&FontRequest {
+                kerning,
+                features,
+                ..FontRequest::default()
+            })
+        };
+        let plain = font(true, &[]);
+        assert_eq!(plain.chain, 0);
+        let unkerned = font(false, &[]);
+        assert_ne!(unkerned.chain, 0);
+        assert_eq!(font(false, &[]).chain, unkerned.chain, "handed out once");
+        // DejaVu Sans kerns "AV" closer.
+        let (kerned, apart) = (
+            fonts.measure_in(plain, "AVAV", 40.0),
+            fonts.measure_in(unkerned, "AVAV", 40.0),
+        );
+        assert!(kerned < apart, "{kerned} {apart}");
+        // A feature set after `font-kerning: none` wins.
+        let back = font(false, &[(*b"kern", 1)]);
+        assert_eq!(fonts.measure_in(back, "AVAV", 40.0), kerned);
+        // The glyphs are placed alike.
+        let last = |font| fonts.shape_in(font, "AVAV", 40.0)[3].1.x;
+        assert!(last(plain) < last(unkerned));
+        let stops = fonts.caret_stops_in(unkerned, "AVAV", 40.0);
+        assert_eq!(stops[4], apart);
     }
 
     #[test]

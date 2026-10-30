@@ -3080,6 +3080,8 @@ pub struct FontProps {
     pub variant: Arc<FontVariant>,
     /// `font-feature-settings`: each feature's tag and value, by tag.
     pub features: FontFeatures,
+    /// `font-kerning`.
+    pub kerning: FontKerning,
     /// `line-height` (CSS 2 section 10.8).
     pub line_height: LineHeight,
 }
@@ -3093,6 +3095,7 @@ impl Default for FontProps {
             stretch: 100.0,
             variant: Arc::clone(&NORMAL_VARIANT),
             features: Arc::from([]),
+            kerning: FontKerning::Auto,
             line_height: LineHeight::Normal,
         }
     }
@@ -3102,6 +3105,37 @@ impl FontProps {
     /// Whether the text is in small capitals.
     pub fn small_caps(&self) -> bool {
         self.variant.caps == "small-caps"
+    }
+}
+
+/// `font-kerning` (CSS Fonts 4 section 6.1): whether the font's kerning
+/// is used. `auto` uses it, as the reference browser does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FontKerning {
+    #[default]
+    Auto,
+    Normal,
+    None,
+}
+
+impl FontKerning {
+    /// The keyword.
+    pub fn name(self) -> &'static str {
+        match self {
+            FontKerning::Auto => "auto",
+            FontKerning::Normal => "normal",
+            FontKerning::None => "none",
+        }
+    }
+
+    /// The keyword `word` names, any case.
+    pub fn from_name(word: &str) -> Option<FontKerning> {
+        Some(match word.to_ascii_lowercase().as_str() {
+            "auto" => FontKerning::Auto,
+            "normal" => FontKerning::Normal,
+            "none" => FontKerning::None,
+            _ => return None,
+        })
     }
 }
 

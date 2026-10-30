@@ -7,7 +7,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use super::faces::{self, FaceId, Family, Font, FontRequest, Link, Slant};
+use super::faces::{self, FaceId, FaceSlant, Family, Font, FontRequest, Link, Slant};
 use super::{Fallback, FontError, FontStore};
 
 /// The most faces a document may have.
@@ -23,7 +23,7 @@ pub struct FaceRule {
     pub family: String,
     /// The weights, the least and the most, 1 to 1000.
     pub weight: (u16, u16),
-    pub slant: Slant,
+    pub slant: FaceSlant,
     /// The widths, the least and the most, as percentages.
     pub stretch: (f32, f32),
     /// The code points it is for (`unicode-range`), each range's first
@@ -36,7 +36,7 @@ impl Default for FaceRule {
         FaceRule {
             family: String::new(),
             weight: (400, 400),
-            slant: Slant::Normal,
+            slant: FaceSlant::NORMAL,
             stretch: (100.0, 100.0),
             ranges: Vec::new(),
         }
@@ -223,7 +223,7 @@ impl DocumentFaces {
         let best_rule = faces[best].rule.clone();
         let font_of = |face: &WebFace, id: FaceId| {
             let rule = &face.rule;
-            faces::synthesized(id, request, rule.weight.1, rule.slant != Slant::Normal)
+            faces::synthesized(id, request, rule.weight.1, rule.slant != FaceSlant::NORMAL)
         };
         for &n in of_family.iter().rev() {
             if !faces[n].rule.same_style(&best_rule) {
@@ -272,26 +272,14 @@ fn best_match<'r>(
         .copied()
         .filter(|&n| stretch(n) == best_stretch)
         .collect();
-    // The slants in the order each asks them.
-    let order: [u8; 3] = match request.slant {
-        Slant::Italic => [1, 2, 0],
-        Slant::Oblique(_) => [2, 1, 0],
-        Slant::Normal => [0, 2, 1],
-    };
-    let kind = |slant: Slant| match slant {
-        Slant::Normal => 0,
-        Slant::Italic => 1,
-        Slant::Oblique(_) => 2,
-    };
-    let left: Vec<usize> = order
+    let best_slant = left
         .iter()
-        .map(|&k| {
-            left.iter()
-                .copied()
-                .filter(|&n| kind(rule(n).slant) == k)
-                .collect::<Vec<_>>()
-        })
-        .find(|found| !found.is_empty())?;
+        .map(|&n| slant_distance(request.slant, rule(n).slant))
+        .min_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)))?;
+    let left: Vec<usize> = left
+        .into_iter()
+        .filter(|&n| slant_distance(request.slant, rule(n).slant) == best_slant)
+        .collect();
     let w = f32::from(request.weight);
     let weight = |n: usize| {
         let (lo, hi) = rule(n).weight;
@@ -317,6 +305,61 @@ fn best_match<'r>(
     left.iter()
         .copied()
         .min_by(|&a, &b| weight(a).total_cmp(&weight(b)))
+}
+
+/// The angle from which an oblique slant is steep: CSS Fonts 4's 11
+/// degrees.
+const STEEP: f32 = 11.0;
+
+/// The slant an italic request takes obliques as: the reference
+/// browser's italic, 20 degrees.
+const ITALIC_ANGLE: f32 = 20.0;
+
+/// How far a face's slant is from the one asked for (CSS Fonts 4
+/// section 5.2, step 4b, as the reference browser orders them): a group,
+/// the lesser first, and a distance within it. Italic asks for italic
+/// faces first, then for obliques as 20 degrees; normal is 0 degrees.
+/// From a steep angle, the steeper are taken first, nearest first, then
+/// the rest by how near; from a shallow one, those between it and
+/// upright, then the steeper, then the rest. An italic face comes last
+/// for anything but italic.
+fn slant_distance(request: Slant, face: FaceSlant) -> (u8, f32) {
+    let (r, base) = match request {
+        Slant::Italic => (ITALIC_ANGLE, 1),
+        Slant::Normal => (0.0, 0),
+        Slant::Oblique(a) => (a, 0),
+    };
+    let (lo, hi) = match face {
+        FaceSlant::Italic => return if base == 1 { (0, 0.0) } else { (9, 0.0) },
+        FaceSlant::Oblique(lo, hi) => (lo.min(hi), lo.max(hi)),
+    };
+    if (lo..=hi).contains(&r) {
+        return (base, 0.0);
+    }
+    let (group, distance) = if r >= STEEP {
+        if lo > r { (1, lo - r) } else { (2, r - hi) }
+    } else if r <= -STEEP {
+        if hi < r { (1, r - hi) } else { (2, lo - r) }
+    } else if r >= 0.0 {
+        let p = if hi < r { hi } else { lo };
+        if p > 0.0 && p < r {
+            (1, r - p)
+        } else if p > r {
+            (2, p - r)
+        } else {
+            (3, r - p)
+        }
+    } else {
+        let p = if lo > r { lo } else { hi };
+        if p < 0.0 && p > r {
+            (1, p - r)
+        } else if p < r {
+            (2, r - p)
+        } else {
+            (3, p - r)
+        }
+    };
+    (base + group, distance)
 }
 
 /// How far `value` is from the range `lo` to `hi`, those below it first
@@ -423,7 +466,7 @@ impl super::FontCollection {
         }
         let mut font = font.unwrap_or_else(|| self.faces.fallback_font(request));
         if !links.is_empty() {
-            font.chain = self.faces.chain(links);
+            font.chain = self.faces.chain(links.into(), 0);
         }
         document.chosen.keep(request, font);
         font
@@ -483,7 +526,11 @@ mod tests {
         FaceRule {
             family: family.into(),
             weight,
-            slant,
+            slant: match slant {
+                Slant::Normal => FaceSlant::NORMAL,
+                Slant::Italic => FaceSlant::Italic,
+                Slant::Oblique(a) => FaceSlant::Oblique(a, a),
+            },
             ..FaceRule::default()
         }
     }
@@ -493,7 +540,7 @@ mod tests {
             families,
             weight,
             slant,
-            stretch: 100.0,
+            ..FontRequest::default()
         }
     }
 
@@ -761,5 +808,170 @@ mod tests {
         };
         assert_eq!(width(100.0), Some(0), "narrower first at normal");
         assert_eq!(width(110.0), Some(1), "wider first past normal");
+    }
+
+    #[test]
+    fn slants_match_in_the_reference_browsers_order() {
+        // The descriptors each style prefers, best first (WPT's
+        // css-fonts/variations/at-font-face-font-matching.html).
+        let face = |text: &str| -> FaceSlant {
+            let angles: Vec<f32> = text
+                .split(' ')
+                .skip(1)
+                .map(|a| a.trim_end_matches("deg").parse().unwrap())
+                .collect();
+            match (text, angles.as_slice()) {
+                ("normal", _) => FaceSlant::NORMAL,
+                ("italic", _) => FaceSlant::Italic,
+                (_, [a]) => FaceSlant::Oblique(*a, *a),
+                (_, [a, b]) => FaceSlant::Oblique(*a, *b),
+                _ => unreachable!(),
+            }
+        };
+        let cases: [(Slant, &[&str]); 9] = [
+            (
+                Slant::Normal,
+                &[
+                    "normal",
+                    "oblique 10deg 40deg",
+                    "oblique 20deg 30deg",
+                    "oblique -50deg -20deg",
+                    "oblique -40deg -30deg",
+                ],
+            ),
+            (
+                Slant::Italic,
+                &[
+                    "italic",
+                    "oblique 20deg",
+                    "oblique 30deg 60deg",
+                    "oblique 40deg 50deg",
+                    "oblique 5deg 10deg",
+                    "oblique 5deg",
+                    "normal",
+                    "oblique -60deg -30deg",
+                    "oblique -50deg -40deg",
+                ],
+            ),
+            (
+                Slant::Oblique(20.0),
+                &[
+                    "oblique 20deg",
+                    "oblique 30deg 60deg",
+                    "oblique 40deg 50deg",
+                    "oblique 10deg",
+                    "oblique 0deg",
+                    "oblique -50deg -20deg",
+                    "oblique -40deg -30deg",
+                    "italic",
+                ],
+            ),
+            (
+                Slant::Oblique(21.0),
+                &[
+                    "oblique 21deg",
+                    "oblique 30deg 60deg",
+                    "oblique 40deg 50deg",
+                    "oblique 20deg",
+                    "oblique 10deg",
+                    "oblique 0deg",
+                    "oblique -50deg -20deg",
+                    "oblique -40deg -30deg",
+                    "italic",
+                ],
+            ),
+            (
+                Slant::Oblique(10.0),
+                &[
+                    "oblique 10deg",
+                    "oblique 5deg",
+                    "oblique 15deg 20deg",
+                    "oblique 30deg 60deg",
+                    "oblique 40deg 50deg",
+                    "oblique 0deg",
+                    "oblique -50deg -20deg",
+                    "oblique -40deg -30deg",
+                    "italic",
+                ],
+            ),
+            (
+                Slant::Normal,
+                &[
+                    "oblique 0deg",
+                    "oblique 5deg",
+                    "oblique 15deg 20deg",
+                    "oblique 30deg 60deg",
+                    "oblique 40deg 50deg",
+                    "oblique -50deg -20deg",
+                    "oblique -40deg -30deg",
+                    "italic",
+                ],
+            ),
+            (
+                Slant::Oblique(-10.0),
+                &[
+                    "oblique -10deg",
+                    "oblique -5deg",
+                    "oblique -1deg 0deg",
+                    "oblique -20deg -15deg",
+                    "oblique -60deg -30deg",
+                    "oblique -50deg -40deg",
+                    "oblique 0deg 10deg",
+                    "oblique 40deg 50deg",
+                    "italic",
+                ],
+            ),
+            (
+                Slant::Oblique(-20.0),
+                &[
+                    "oblique -20deg",
+                    "oblique -60deg -40deg",
+                    "oblique -10deg",
+                    "oblique 0deg",
+                    "oblique 30deg 60deg",
+                    "oblique 40deg 50deg",
+                    "italic",
+                ],
+            ),
+            (
+                Slant::Oblique(-21.0),
+                &[
+                    "oblique -21deg",
+                    "oblique -60deg -40deg",
+                    "oblique -10deg",
+                    "oblique 0deg",
+                    "oblique 30deg 60deg",
+                    "oblique 40deg 50deg",
+                    "italic",
+                ],
+            ),
+        ];
+        for (asked, order) in cases {
+            for pair in order.windows(2) {
+                let rules = [
+                    FaceRule {
+                        slant: face(pair[0]),
+                        ..FaceRule::default()
+                    },
+                    FaceRule {
+                        slant: face(pair[1]),
+                        ..FaceRule::default()
+                    },
+                ];
+                let request = FontRequest {
+                    slant: asked,
+                    ..FontRequest::default()
+                };
+                for candidates in [[0, 1], [1, 0]] {
+                    assert_eq!(
+                        best_match(&candidates, |n| &rules[n], &request),
+                        Some(0),
+                        "{asked:?} prefers {} over {}",
+                        pair[0],
+                        pair[1]
+                    );
+                }
+            }
+        }
     }
 }

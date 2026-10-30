@@ -878,10 +878,13 @@ pub enum Call {
     /// `wasm` (a WebAssembly module) or `handler` (an event handler
     /// attribute of `element`, its text `source`). The answer is empty
     /// when it may, else what refuses it, as the exception says it.
+    /// `position` is the line and column of the page's code that asked,
+    /// 0 0 for none (a handler the parser set).
     CodeAllowed {
         kind: String,
         source: String,
         element: Option<Handle>,
+        position: (u32, u32),
     },
     /// An element's nonce (M33.1, HTML's `[[CryptographicNonce]]`), which
     /// its `nonce` attribute no longer shows once hidden.

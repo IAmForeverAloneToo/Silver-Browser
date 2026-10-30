@@ -1345,8 +1345,9 @@ pub struct GlyphCache {
     /// the same runs frame after frame, and shaping them anew was most
     /// of a frame — the text stack of today parses the face on every
     /// call (decision D7). Bounded by [`SHAPE_CACHE_GLYPHS`]; emptied
-    /// with the mask cache.
-    shaped: HashMap<(Drawn, u32), HashMap<String, Run>>,
+    /// with the mask cache. Keyed too by the font's chain and shaping
+    /// options, which place other glyphs.
+    shaped: HashMap<(Drawn, u16, u32), HashMap<String, Run>>,
     /// Glyphs held in `shaped`, against [`SHAPE_CACHE_GLYPHS`].
     cached_glyphs: usize,
 }
@@ -1374,6 +1375,12 @@ impl Drawn {
     fn synthesis(self) -> (bool, f32) {
         (self.bold, f32::from_bits(self.skew))
     }
+}
+
+/// What a shaped run is kept by: the face and its synthesis, the chain
+/// with its shaping options, and the size.
+fn run_key(font: Font, size: f32) -> (Drawn, u16, u32) {
+    (Drawn::of(font, font.face), font.chain, size.to_bits())
 }
 
 /// A shaped run, and how far its ink reaches.
@@ -1429,7 +1436,7 @@ impl GlyphCache {
     /// The shaped glyphs of `text` in `font` at `size`, from the run
     /// cache or shaped now and kept.
     fn shaped(&mut self, font: Font, text: &str, size: f32) -> Vec<(Drawn, ShapedGlyph)> {
-        let key = (Drawn::of(font, font.face), size.to_bits());
+        let key = run_key(font, size);
         if let Some(run) = self.shaped.get(&key).and_then(|runs| runs.get(text)) {
             return run.glyphs.clone();
         }
@@ -1461,7 +1468,7 @@ impl GlyphCache {
     /// [`SoftwareBackend::draw_text`] puts them, before the origin's
     /// rounding.
     fn ink(&mut self, font: Font, text: &str, size: f32) -> Option<Ink> {
-        let key = (Drawn::of(font, font.face), size.to_bits());
+        let key = run_key(font, size);
         if let Some(ink) = self
             .shaped
             .get(&key)

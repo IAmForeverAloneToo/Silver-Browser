@@ -83,6 +83,8 @@ self_cell = "1.3"
 rayon = "1.12"
 ab_glyph = "0.2"
 ttf-parser = "0.25"
+# WOFF 2 web fonts' Brotli (gap batch D, D54).
+brotli-decompressor = "~6.2.0"
 unicode-bidi = "0.3"
 # UAX #14 line breaking (gap batch D, D55), the ICU4X major version idna
 # brings already, with its compiled data.

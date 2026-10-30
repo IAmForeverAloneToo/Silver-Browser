@@ -2063,6 +2063,7 @@ impl Engine {
             clock: Some(self.clock.clone()),
             hidden: self.hidden,
             fonts_loading: self.fonts_loading(),
+            fonts_unsettled: self.fonts_unsettled(),
             focused: self.window_focused,
             keyboard: self.keyboard,
             storage: Some(self.storage.clone()),
@@ -5806,12 +5807,6 @@ impl Engine {
     fn scripts_ran(&mut self) {
         // What the parser and the scripts inserted hides its nonces.
         self.shown.page.hide_nonces(&mut self.shown.document);
-        let fonts = std::mem::take(&mut self.shown.scripts.font_changes);
-        if !fonts.is_empty() {
-            self.script_fonts_changed(fonts);
-        }
-        // The faces a canvas's text asked for are fetched (D54).
-        self.request_fonts();
         // A `<style>` its policies refused hears `error` (M33.1), as a
         // task, after what runs now.
         let now = self.now();
@@ -5833,6 +5828,19 @@ impl Engine {
         if self.shown.page.take_cssom_edited() {
             self.sheets_changed();
         }
+        // What the scripts did to the fonts, after the sheets they put
+        // in are found: a face a `load()` asks for is a rule's of those.
+        let fonts = std::mem::take(&mut self.shown.scripts.font_changes);
+        if !fonts.is_empty() {
+            self.script_fonts_changed(fonts);
+        }
+        // The faces of the sheets the scripts put in are made now, for
+        // `document.fonts` to see without waiting for a frame.
+        if self.shown.recascade || self.shown.web_fonts.is_none() {
+            self.update_web_fonts();
+        }
+        // The faces a canvas's text asked for are fetched (D54).
+        self.request_fonts();
         // A script's scroll is at once (CSSOM View's "auto" behavior).
         for (node, y) in self.shown.scripts.take_scrolls() {
             match node {

@@ -56,7 +56,7 @@ pub(crate) fn declarations(text: &str) -> Vec<Declared> {
 
 /// The longhands `font` sets, in the order the reference browser lists
 /// them.
-const FONT_LONGHANDS: [&str; 14] = [
+const FONT_LONGHANDS: [&str; 15] = [
     "font-style",
     "font-variant-ligatures",
     "font-variant-caps",
@@ -70,6 +70,7 @@ const FONT_LONGHANDS: [&str; 14] = [
     "font-size",
     "line-height",
     "font-family",
+    "font-kerning",
     "font-feature-settings",
 ];
 
@@ -219,6 +220,7 @@ fn font_value(values: &[&str]) -> Option<String> {
         size,
         line_height,
         family,
+        kerning,
         features,
     ] = values
     else {
@@ -226,6 +228,7 @@ fn font_value(values: &[&str]) -> Option<String> {
     };
     let others = [ligatures, alternates, numeric, east_asian, position, emoji];
     if *features != "normal"
+        || *kerning != "auto"
         || others.iter().any(|v| **v != "normal")
         || !matches!(*caps, "normal" | "small-caps")
     {

@@ -8102,7 +8102,7 @@
     } catch (error) {
       throw failed(error, method, "Element");
     }
-    attributeHandler(wrap(handle), name, true);
+    attributeHandler(wrap(handle), name, true, true);
   }
 
   function removeAttribute(handle, name) {
@@ -15900,8 +15900,10 @@
     const params = type === "error" && target === global
       ? "event, source, lineno, colno, error"
       : "event";
-    // The document's policies may refuse it (M33.1): no handler then.
-    if (native.codeAllowed("handler", body, handle) !== "") {
+    // The document's policies refused it when it was set (M33.1): no
+    // handler then.
+    const refused = WeakMapGet(refusedHandlers, element);
+    if (refused !== undefined && RefusedHas(refused, type)) {
       return null;
     }
     const owner = native.formOwner(handle);
@@ -15924,10 +15926,53 @@
     }
   }
 
+  // The types of each element's handlers its document's policies
+  // refused as their attributes were set.
+  const refusedHandlers = new $WeakMap();
+  const RefusedSet = Set;
+  const RefusedHas = uncurry(Set.prototype.has);
+  const RefusedAdd = uncurry(Set.prototype.add);
+  const RefusedDelete = uncurry(Set.prototype.delete);
+
+  // The line and column of the page's code that called in: the first
+  // frame of a stack here, the bindings' own left out; 0 0 for none.
+  function callerPosition() {
+    const limit = ReflectApply(stackLimit.get, $Error, []);
+    const prepare = ReflectApply(prepareStack.get, $Error, []);
+    let stack = "";
+    try {
+      ReflectApply(prepareStack.set, $Error, [undefined]);
+      ReflectApply(stackLimit.set, $Error, [STACK_PLACE]);
+      stack = stackOf(new $Error());
+    } catch (e) {
+      stack = "";
+    } finally {
+      ReflectApply(stackLimit.set, $Error, [limit]);
+      ReflectApply(prepareStack.set, $Error, [prepare]);
+    }
+    const lines = StringSplit(stack, "\n");
+    for (let i = 0; i < lines.length; i++) {
+      let line = StringTrim(lines[i]);
+      if (line === "") continue;
+      if (StringEndsWith(line, ")")) line = StringSlice(line, 0, line.length - 1);
+      const parts = StringSplit(line, ":");
+      if (parts.length < 3) continue;
+      // The bindings' frames, by their file's name.
+      const file = parts[parts.length - 3];
+      if (StringEndsWith(file, "bootstrap") || StringIncludes(file, "bootstrap-")) continue;
+      const row = $Number(parts[parts.length - 2]);
+      const column = $Number(parts[parts.length - 1]);
+      return [row === row ? row : 0, column === column ? column : 0];
+    }
+    return [0, 0];
+  }
+
   // An attribute named `name` of `element` was set (`present`) or
   // removed: an `on...` one is the text of the element's handler, or,
-  // on a body or frameset, of its window's.
-  function attributeHandler(element, name, present) {
+  // on a body or frameset, of its window's. One set is held to the
+  // document's policies then (HTML's attribute change steps), at the
+  // place of the script that set it (`scripted`), else at none.
+  function attributeHandler(element, name, present, scripted) {
     if (CharCodeAt(name, 0) !== 111 || CharCodeAt(name, 1) !== 110) {
       return;
     }
@@ -15939,9 +15984,24 @@
     } else if (MapHas(elementHandlers, type)) {
       target = element;
     }
-    if (target !== null) {
-      setHandler(target, type, null, present ? element : null);
+    if (target === null) {
+      return;
     }
+    let refused = WeakMapGet(refusedHandlers, element);
+    if (refused !== undefined) RefusedDelete(refused, type);
+    if (present) {
+      const handle = handleOf(element);
+      const body = native.attribute(handle, name);
+      const at = scripted ? callerPosition() : [0, 0];
+      if (body !== null && native.codeAllowed("handler", body, handle, at[0], at[1]) !== "") {
+        if (refused === undefined) {
+          refused = new RefusedSet();
+          WeakMapSet(refusedHandlers, element, refused);
+        }
+        RefusedAdd(refused, type);
+      }
+    }
+    setHandler(target, type, null, present ? element : null);
   }
 
   // The IDL attributes of `types`' handlers on `prototype`: the
@@ -21028,7 +21088,9 @@
   }
 
   // The document's faces of its `@font-face` rules, as the engine last
-  // said: one FontFace each, kept while its rule is the same.
+  // said: one FontFace each, kept while its rule is the same, wherever
+  // rules come or go before it. A face whose rule went while it loaded
+  // fails, so that a `load()` waiting for it settles.
   let cssFaces = [];
   let documentSet = null;
 
@@ -21036,11 +21098,19 @@
     if (WORKER) return cssFaces;
     const flat = native.fonts("rules", null);
     const next = [];
+    const unused = ArraySlice(cssFaces);
     for (let i = 0, n = 0; i + 8 <= flat.length; i += 8, n++) {
       const key = ArrayJoin(ArraySlice(flat, i, i + 7), "\u0000");
-      let face = n < cssFaces.length ? cssFaces[n] : undefined;
+      let face;
+      for (let k = 0; k < unused.length; k++) {
+        if (WeakMapGet(fontFaces, unused[k]).key === key) {
+          face = unused[k];
+          ArraySplice(unused, k, 1);
+          break;
+        }
+      }
       let state = face === undefined ? undefined : WeakMapGet(fontFaces, face);
-      if (state === undefined || state.key !== key) {
+      if (state === undefined) {
         face = ObjectCreate(FontFace.prototype);
         state = newFaceState(flat[i], {
           style: flat[i + 1], weight: flat[i + 2], stretch: flat[i + 3],
@@ -21060,6 +21130,11 @@
       ArrayPush(next, face);
     }
     cssFaces = next;
+    for (let k = 0; k < unused.length; k++) {
+      const state = WeakMapGet(fontFaces, unused[k]);
+      state.css = -1;
+      if (state.status === "loading") settleFace(unused[k], state, "error");
+    }
     return next;
   }
 
