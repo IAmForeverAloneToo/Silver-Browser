@@ -323,6 +323,25 @@ const SUPPORT_DIRECTORIES: &[&str] = &[
     "webaudio/js",
     // Gap batch A's: the URL tests' data, which they fetch.
     "url/resources",
+    // Gap batch D's: the modules and scripts the scripting tests import
+    // or load by name, and the helpers the DOM, selection and CSSOM tests
+    // read.
+    "html/semantics/scripting-1",
+    "html/syntax/parsing",
+    "subresource-integrity",
+    "dom/ranges",
+    "dom/traversal",
+    "selection",
+    "css/cssom/support",
+    "css/cssom/resources",
+    "css/cssom-view/support",
+    "css/cssom-view/resources",
+    "css/css-text/support",
+    "css/css-text/i18n/support",
+    "css/css-text/boundary-shaping/resources",
+    "css/css-fonts/resources",
+    "css/css-fonts/matching/resources",
+    "css/css-fonts/variations/resources",
 ];
 
 /// How deep `@import`s may go; the engine fetches no deeper.
