@@ -2,7 +2,8 @@
 //! given the document's text as it is decoded, which reads ahead of the
 //! parser, past a script that blocks it, and gives back hints of what
 //! the document will ask for: its stylesheets, scripts and images, its
-//! `<link rel=preload>`s, and its first `<base href>`. It builds no tree
+//! `<link rel=preload>`s and `<link rel=modulepreload>`s, and its first
+//! `<base href>`. It builds no tree
 //! and fetches nothing; the engine decides what each hint is worth.
 //!
 //! It tokenizes as the parser would where that is simple: an element
@@ -27,6 +28,8 @@ pub enum HintKind {
     Image,
     /// A `<link rel=preload>`, its `as` among its attributes.
     Preload,
+    /// A `<link rel=modulepreload>` (D61): a module script's root.
+    ModulePreload,
     /// The first `<base href>`: what the URLs after it are resolved
     /// against.
     Base,
@@ -188,6 +191,8 @@ impl Scanner {
                     HintKind::Stylesheet
                 } else if has_token(rel, "preload") {
                     HintKind::Preload
+                } else if has_token(rel, "modulepreload") {
+                    HintKind::ModulePreload
                 } else {
                     return;
                 };
@@ -245,7 +250,8 @@ mod tests {
             <link rel='Stylesheet' href=a.css><link rel='alternate stylesheet' href=no.css>\
             <link rel=preload href=f.woff as=font crossorigin>\
             <script src=s.js></script><script>document.write('<img src=w.png>')</script>\
-            <img src=' i.png '><img src=''><img><link rel=icon href=i.ico>";
+            <img src=' i.png '><img src=''><img><link rel=icon href=i.ico>\
+            <link rel=modulepreload href=m.js><script type=module src=n.js></script>";
         assert_eq!(
             scan(html, true),
             of(&[
@@ -254,6 +260,8 @@ mod tests {
                 (Preload, "f.woff"),
                 (Script, "s.js"),
                 (Image, "i.png"),
+                (ModulePreload, "m.js"),
+                (Script, "n.js"),
             ])
         );
     }

@@ -729,6 +729,8 @@ fn run(setup: Setup) {
         url: url.as_str(),
         line: 1,
         muted: false,
+        base: "",
+        options: 0,
     };
     // Its policies may refuse or report code from strings (M33.1).
     if host
@@ -748,6 +750,7 @@ fn run(setup: Setup) {
                 url: &run.url,
                 inline: None,
                 modules: &run.modules,
+                options: 0,
             };
             realm.run_module(&script, &mut host).map(|()| false)
         }
@@ -767,6 +770,9 @@ fn run(setup: Setup) {
 pub(crate) struct ServiceSetup {
     pub(crate) script: Url,
     pub(crate) source: Arc<[u8]>,
+    /// Whether its script is a module script (D61): its graph fetched
+    /// before it runs, its static imports by its client.
+    pub(crate) module: bool,
     pub(crate) address_space: net::AddressSpace,
     pub(crate) partition: Option<net::Partition>,
     pub(crate) client: Arc<dyn Fetcher>,
@@ -788,6 +794,7 @@ pub(crate) fn run_service(setup: ServiceSetup) {
     let ServiceSetup {
         script,
         source,
+        module,
         address_space,
         partition,
         client,
@@ -852,8 +859,13 @@ pub(crate) fn run_service(setup: ServiceSetup) {
         url: script.as_str(),
         line: 1,
         muted: false,
+        base: "",
+        options: 0,
     };
-    let result = realm.run(&run, &mut host).map(|_| false);
+    let result = match module {
+        true => host.service_module(&mut *realm, &script, &source, &stop),
+        false => realm.run(&run, &mut host).map(|_| false),
+    };
     let threw = result.is_err();
     host.finish(&mut *realm, result, &stop);
     if threw || realm.dead().is_some() {
@@ -1091,7 +1103,7 @@ fn fetch_graph(
             return;
         }
         let fetches = modules.take_fetches();
-        if fetches.is_empty() {
+        if fetches.is_empty() && !modules.has_arrivals() {
             return;
         }
         for (url, request) in fetches {
@@ -1432,11 +1444,19 @@ impl ScriptingHost for WorkerHost {
                 "TypeError",
                 "import() is disallowed on ServiceWorkerGlobalScope by the HTML specification.",
             )),
-            Call::ImportModule { id, url } => self
-                .modules
-                .want(id, url)
-                .map(|()| Answer::Nothing)
-                .map_err(|message| DomError::new("TypeError", message)),
+            // A `blob:` URL's blob is the one it stands for now (D61).
+            Call::ImportModule { id, url, options } => {
+                if let Ok(parsed) = Url::parse(js::module_of_name(&url).0)
+                    && parsed.scheme() == "blob"
+                    && let Some(blob) = crate::blob_urls::entry_of(&parsed, &self.origin)
+                {
+                    self.modules.pin(&parsed, blob);
+                }
+                self.modules
+                    .want(id, url, options)
+                    .map(|()| Answer::Nothing)
+                    .map_err(|message| DomError::new("TypeError", message))
+            }
             // A dedicated worker's animation frames (HTML section 8.10).
             Call::CodeAllowed { kind, source, .. } => {
                 let Some(csp) = &self.csp else {
@@ -1737,7 +1757,7 @@ impl WorkerHost {
                 if wanted.is_empty() || self.closing || stop.load(Ordering::SeqCst) {
                     break;
                 }
-                for (id, url) in wanted {
+                for (id, url, _) in wanted {
                     let task = self.import_task(realm, id, url, stop);
                     let result = realm.enter(&task, self);
                     self.finish(realm, result, stop);
@@ -1776,14 +1796,76 @@ impl WorkerHost {
         self.modules.arrived_at(key.to_string(), Ok(response));
         let mut scan = |url: &str, text: &str| realm.module_requests(url, text).ok();
         self.modules.advance(&mut scan);
-        let graph = self
-            .modules
-            .start(Purpose::Element, Root::Url(key), template, &mut scan);
+        let graph = self.modules.start(
+            Purpose::Element,
+            Root::Module(key.to_string()),
+            template,
+            &mut scan,
+        );
         fetch_graph(&mut self.modules, graph, &*start.client, realm, stop);
         match self.modules.progress(graph) {
             Progress::Ready => self.modules.take_run(graph),
             Progress::Waiting | Progress::Failed => None,
         }
+    }
+
+    /// A module service worker's script (D61): its graph fetched from
+    /// its root's `source`, the worker waiting, then run; an error if a
+    /// module of it could not be fetched.
+    fn service_module(
+        &mut self,
+        realm: &mut dyn Realm<WorkerHost>,
+        url: &Url,
+        source: &[u8],
+        stop: &AtomicBool,
+    ) -> Result<bool, js::ScriptError> {
+        let failed = || js::ScriptError {
+            kind: js::ErrorKind::Exception,
+            message: format!("TypeError: Failed to load module script: {url}"),
+            url: url.to_string(),
+            line: 0,
+            column: 0,
+            stack: Vec::new(),
+        };
+        let (Some(client), Some(template)) = (
+            self.client.clone(),
+            self.module_request(url.clone(), Credentials::Omit),
+        ) else {
+            return Err(failed());
+        };
+        let response = net::Response {
+            url_list: vec![url.clone()],
+            status: 200,
+            status_message: b"OK".to_vec(),
+            headers: net::HeaderList::new(),
+            body: source.to_vec(),
+            mime_type: net::MimeType::parse("text/javascript"),
+            address_space: None,
+            response_type: net::ResponseType::Basic,
+            cors_exposed: Vec::new(),
+        };
+        self.modules.arrived_at(url.to_string(), Ok(response));
+        let mut scan = |url: &str, text: &str| realm.module_requests(url, text).ok();
+        self.modules.advance(&mut scan);
+        let root = Root::Module(url.to_string());
+        let graph = self
+            .modules
+            .start(Purpose::Element, root, template, &mut scan);
+        fetch_graph(&mut self.modules, graph, &*client, realm, stop);
+        let run = match self.modules.progress(graph) {
+            Progress::Ready => self.modules.take_run(graph),
+            Progress::Waiting | Progress::Failed => None,
+        };
+        let Some(run) = run else {
+            return Err(failed());
+        };
+        let script = js::ModuleScript {
+            url: &run.url,
+            inline: None,
+            modules: &run.modules,
+            options: 0,
+        };
+        realm.run_module(&script, self).map(|()| false)
     }
 
     /// The task that settles `import()` `id` of `url` (D61): its graph
@@ -1803,16 +1885,18 @@ impl WorkerHost {
             url,
             modules: Vec::new(),
         };
-        let (Ok(parsed), Some(client)) = (Url::parse(&url), self.client.clone()) else {
+        let parsed = Url::parse(js::module_of_name(&url).0);
+        let (Ok(parsed), Some(client)) = (parsed, self.client.clone()) else {
             return failed(url);
         };
-        let Some(template) = self.module_request(parsed.clone(), Credentials::SameOrigin) else {
+        let Some(template) = self.module_request(parsed, Credentials::SameOrigin) else {
             return failed(url);
         };
         let mut scan = |url: &str, text: &str| realm.module_requests(url, text).ok();
+        let root = Root::Module(url.clone());
         let graph = self
             .modules
-            .start(Purpose::Import(id), Root::Url(parsed), template, &mut scan);
+            .start(Purpose::Import(id), root, template, &mut scan);
         fetch_graph(&mut self.modules, graph, &*client, realm, stop);
         let _ = self.modules.imports_done();
         match self.modules.take_import(id) {

@@ -75,6 +75,7 @@ fn register(context: &Context, server: &TestServer, script: &str) -> Receiver<Ou
             update_via_cache: UpdateViaCache::Imports,
             force_bypass: false,
             partition: None,
+            module: false,
         },
         Box::new(move |settled: crate::service_worker::Settled| {
             let _ = sender.send(settled.outcome);

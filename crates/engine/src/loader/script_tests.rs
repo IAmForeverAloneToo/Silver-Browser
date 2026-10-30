@@ -1146,3 +1146,59 @@ fn device_pixel_ratio_is_the_displays_scale() {
         .collect();
     assert_eq!(console, ["frame 640"]);
 }
+
+#[test]
+fn an_empty_parser_script_runs_when_given_text_and_a_started_ones_clone_does_not() {
+    let page = "<script id=empty></script><script id=held></script>\
+                <script id=ran>console.log('ran')</script>\
+                <script>\n\
+                const empty = document.getElementById('empty');\n\
+                console.log('async', empty.async);\n\
+                const b = document.createElement('b');\n\
+                b.textContent = \"console.log('no')\";\n\
+                document.getElementById('held').append(b);\n\
+                empty.append(document.createTextNode(\"console.log('given')\"));\n\
+                empty.append(document.createTextNode(\"console.log('again')\"));\n\
+                document.head.append(document.getElementById('ran').cloneNode(true));\n\
+                console.log('end');\n\
+                </script>";
+    let (_, console) = scripted(page, true);
+    // Its parser document gone (HTML's "prepare the script element"), it
+    // is as a script's: forced async, run once given text, its child
+    // text alone; a clone of one that ran never runs.
+    assert_eq!(console, ["ran", "async true", "given", "end"]);
+}
+
+#[test]
+fn the_scripts_an_insertion_connects_run_one_by_one_in_its_order() {
+    let page = "<div id=c></div><script>\n\
+                const frag = document.createDocumentFragment();\n\
+                const made = (text, id) => {\n\
+                  const s = document.createElement('script');\n\
+                  s.textContent = text; if (id) s.id = id; frag.append(s); };\n\
+                made(\"console.log(1); document.getElementById('gone').remove();\\n\
+                  const m = document.getElementById('moved'); m.parentNode.append(m);\");\n\
+                made(\"console.log('removed')\", 'gone');\n\
+                made(\"console.log(2)\", 'moved');\n\
+                made(\"console.log(3)\");\n\
+                document.getElementById('c').append(frag);\n\
+                const range = document.createRange();\n\
+                range.selectNodeContents(document.body);\n\
+                const parsed = range.createContextualFragment(\"<script>console.log('fragment')</scr\" + \"ipt>\");\n\
+                console.log('parsed');\n\
+                document.body.append(parsed);\n\
+                </script>";
+    let (_, console) = scripted(page, true);
+    assert_eq!(console, ["1", "2", "3", "parsed", "fragment"]);
+}
+
+#[test]
+fn a_javascript_url_a_loading_documents_script_navigates_to_runs_in_it() {
+    let page = "<script>console.log('one'); location.replace(\"javascript:console.log('url')\");\
+                console.log('end one')</script><script>console.log('two')</script>";
+    let (tab, console) = scripted(page, true);
+    assert_eq!(console[..2], ["one", "end one"]);
+    assert!(console.contains(&"url".to_owned()), "{console:?}");
+    assert!(console.contains(&"two".to_owned()), "{console:?}");
+    assert_eq!(tab.engine.load_state(), &crate::LoadState::Loaded);
+}

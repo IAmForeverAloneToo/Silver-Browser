@@ -281,6 +281,7 @@ fn an_install_event_crossing_its_versions_idle_stop_is_sent_again() {
             update_via_cache: crate::service_worker::UpdateViaCache::Imports,
             force_bypass: false,
             partition: None,
+            module: false,
         },
         Box::new(move |settled: crate::service_worker::Settled| {
             let _ = sender.send(settled.outcome);
@@ -324,6 +325,7 @@ fn a_worker_renderer_that_answers_for_another_version_is_cut_off() {
             update_via_cache: crate::service_worker::UpdateViaCache::Imports,
             force_bypass: false,
             partition: None,
+            module: false,
         },
         Box::new(move |settled: crate::service_worker::Settled| {
             let _ = sender.send(settled.outcome);

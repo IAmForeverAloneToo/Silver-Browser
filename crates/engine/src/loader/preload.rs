@@ -161,10 +161,26 @@ impl Hints {
                     (Destination::Style, false)
                 }
                 HintKind::Script => {
-                    let classic =
-                        crate::scripts::script_type_of(hint.attr("type"), hint.attr("language"))
-                            == Some(crate::scripts::ScriptType::Classic);
-                    if !scripting || !classic || hint.attr("nomodule").is_some() {
+                    let kind =
+                        crate::scripts::script_type_of(hint.attr("type"), hint.attr("language"));
+                    let wanted = match kind {
+                        Some(crate::scripts::ScriptType::Classic) => {
+                            hint.attr("nomodule").is_none()
+                        }
+                        Some(crate::scripts::ScriptType::Module) => true,
+                        _ => false,
+                    };
+                    if !scripting || !wanted {
+                        continue;
+                    }
+                    (Destination::Script, false)
+                }
+                // A module preload's `as` is a script's, or none (D61).
+                HintKind::ModulePreload => {
+                    let script = hint
+                        .attr("as")
+                        .is_none_or(|kind| kind.is_empty() || kind.eq_ignore_ascii_case("script"));
+                    if !scripting || !script {
                         continue;
                     }
                     (Destination::Script, false)
@@ -191,6 +207,17 @@ impl Hints {
                 request.nonce = nonce(&hint.attrs);
                 request.parser_inserted = hint.kind == HintKind::Script;
                 request.integrity = hint.attr("integrity").unwrap_or_default().to_owned();
+                // A module script's root and a module preload are fetched
+                // in `cors` mode, same-origin by default, as the module
+                // graph's own request is (D61).
+                let module = hint.kind == HintKind::ModulePreload
+                    || crate::scripts::script_type_of(hint.attr("type"), hint.attr("language"))
+                        == Some(crate::scripts::ScriptType::Module);
+                if module {
+                    let credentials = super::cors_settings(hint.attr("crossorigin"))
+                        .unwrap_or(net::Credentials::SameOrigin);
+                    request = request.with_cors(credentials);
+                }
                 if hint.kind == HintKind::Stylesheet
                     && hint.attr("rel").is_some_and(|rel| {
                         rel.split(|c: char| c.is_ascii_whitespace())

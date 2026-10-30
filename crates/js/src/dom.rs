@@ -28,6 +28,9 @@ pub struct NestedScript {
     pub url: String,
     /// The line its text starts on.
     pub line: u32,
+    /// Its base URL and fetch options, as [`crate::Script`]'s.
+    pub base: String,
+    pub options: u32,
 }
 
 /// A request a script's `fetch()` asks for (M27.1), as the bindings
@@ -156,6 +159,10 @@ pub enum Call {
     CreateProcessingInstruction(String, String),
     /// A new, empty document fragment.
     CreateFragment,
+    /// `markup` parsed as a fragment in the context of the node's element
+    /// (DOM Parsing's `createContextualFragment`, a range's start): a
+    /// new document fragment, whose scripts run once inserted.
+    ContextualFragment(Handle, String),
     /// A new doctype: its name, which the bindings checked, and public
     /// and system identifiers.
     CreateDoctype(String, String, String),
@@ -898,6 +905,9 @@ pub enum Call {
     ImportModule {
         id: u32,
         url: String,
+        /// The fetch options of the script or module that called it, by
+        /// the host's number ([`crate::Script::options`]).
+        options: u32,
     },
     /// A canvas's operation (M30): one variant for them all.
     Canvas(Box<CanvasCall>),

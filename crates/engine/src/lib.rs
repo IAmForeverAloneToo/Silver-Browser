@@ -1557,6 +1557,8 @@ impl Engine {
             ready,
             js::Target::Window,
             js::EventInit::new("PageTransitionEvent", "pagehide")
+                .with("bubbles", js::Field::Bool(true))
+                .with("cancelable", js::Field::Bool(true))
                 .with("persisted", js::Field::Bool(kept)),
         );
         if !kept {
@@ -1858,7 +1860,15 @@ impl Engine {
         };
         let handling = current.handling;
         let source = current.url.scheme().to_owned();
+        // The document on its way runs it, in a task of its own.
         if url.scheme() == "javascript" {
+            if let Some(Navigation {
+                incoming: Incoming::Parsing { parsing, .. },
+                ..
+            }) = &mut self.navigation
+            {
+                parsing.scripts.queue_javascript_url(url);
+            }
             return;
         }
         let from = NavigationSource {
@@ -2017,6 +2027,8 @@ impl Engine {
             url: &document,
             line: 1,
             muted: false,
+            base: "",
+            options: 0,
         };
         let ready = self.ready_state();
         let window = self.window_env();
@@ -3348,6 +3360,8 @@ impl Engine {
             self.fire(
                 js::Target::Window,
                 js::EventInit::new("PageTransitionEvent", "pageshow")
+                    .with("bubbles", js::Field::Bool(true))
+                    .with("cancelable", js::Field::Bool(true))
                     .with("persisted", js::Field::Bool(false)),
             );
         }
@@ -4586,6 +4600,8 @@ impl Engine {
             self.fire(
                 js::Target::Window,
                 js::EventInit::new("PageTransitionEvent", "pageshow")
+                    .with("bubbles", js::Field::Bool(true))
+                    .with("cancelable", js::Field::Bool(true))
                     .with("persisted", js::Field::Bool(true)),
             );
         } else if let Some(url) = url {

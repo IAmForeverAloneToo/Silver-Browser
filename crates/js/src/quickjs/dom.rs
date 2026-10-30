@@ -9,6 +9,7 @@ use std::rc::Rc;
 use rquickjs::function::Rest;
 use rquickjs::{Array, CaughtError, Coerced, Ctx, Exception, Function, Object, Value};
 
+use super::modules::{self, Referrer};
 use super::{Entries, Slot, evaluate, report, thrown, with_host};
 use crate::{
     Answer, Call, DomError, ErrorKind, Handle, MAX_HANDLE, RealmKind, ScriptError, ScriptingHost,
@@ -434,6 +435,9 @@ const NATIVES: &[(&str, Decode)] = &[
     }),
     ("setOuterHTML", |a| {
         Ok(Call::SetOuterHtml(a.handle(0)?, a.string(1)?))
+    }),
+    ("contextualFragment", |a| {
+        Ok(Call::ContextualFragment(a.handle(0)?, a.string(1)?))
     }),
     ("insertAdjacentHTML", |a| {
         Ok(Call::InsertAdjacentHtml {
@@ -934,14 +938,15 @@ const NATIVES: &[(&str, Decode)] = &[
 
 /// Runs the bootstrap with the natives, which nothing else then holds;
 /// gives its entry points, the functions the realm's tasks call (M26),
-/// which a nested script's error reaches through `entries`.
+/// which a nested script's error reaches through `entries`; the module
+/// loader's `state` gives the active script.
 pub(super) fn install<'js, H: ScriptingHost>(
     ctx: &Ctx<'js>,
     kind: &RealmKind,
     secure: bool,
-    host: &Slot<H>,
-    budget: &Budget,
+    (host, budget): (&Slot<H>, &Budget),
     entries: &Entries,
+    state: &Rc<modules::State>,
     console: Function<'js>,
 ) -> rquickjs::Result<Object<'js>> {
     let natives = Object::new(ctx.clone())?;
@@ -960,6 +965,7 @@ pub(super) fn install<'js, H: ScriptingHost>(
     }
     for &(name, decode) in NATIVES {
         let (host, budget, entries) = (host.clone(), budget.clone(), entries.clone());
+        let state = state.clone();
         let runs_scripts = RUN_SCRIPTS.contains(&name);
         let native = Function::new(
             ctx.clone(),
@@ -990,7 +996,7 @@ pub(super) fn install<'js, H: ScriptingHost>(
                     Err(error) => return Err(throw(&ctx, &error)),
                 };
                 if runs_scripts {
-                    run_nested(&ctx, &host, &budget, &entries)?;
+                    run_nested(&ctx, &host, &budget, &entries, &state)?;
                 }
                 value(&ctx, answer)
             },
@@ -1020,6 +1026,15 @@ pub(super) fn install<'js, H: ScriptingHost>(
         )?,
     )?;
     install_errors(ctx, host, &natives)?;
+    // The active script (HTML's GetActiveScriptOrModule), whose name a
+    // timer's string is compiled with: empty for none.
+    let active = state.clone();
+    natives.set(
+        "activeScript",
+        Function::new(ctx.clone(), move |ctx: Ctx<'js>| -> String {
+            modules::active(&ctx, 0).unwrap_or_else(|| active.current())
+        })?,
+    )?;
     super::wasm::install(ctx, &natives, budget)?;
     // ECMA-402's computations (D63), which never reach the host.
     super::intl::install(ctx, &natives)?;
@@ -1161,9 +1176,24 @@ fn run_nested<'js, H: ScriptingHost>(
     host: &Slot<H>,
     budget: &Budget,
     entries: &Entries,
+    state: &modules::State,
 ) -> rquickjs::Result<()> {
     while let Some(script) = with_host(ctx, host, |host| host.take_script())? {
+        // The script it runs in is the active one again after it, an
+        // inline one's record with it.
+        let outer = state.current();
+        let base = match script.base.is_empty() {
+            true => script.url.clone(),
+            false => script.base.clone(),
+        };
+        let options = script.options;
+        let replaced = state.note(&script.url, Referrer { base, options });
+        state.ran(&script.url);
         let result = evaluate(ctx, &script.source, &script.url, script.line);
+        state.ran(&outer);
+        if let Some(replaced) = replaced {
+            state.note(&script.url, replaced);
+        }
         let caught = match result {
             Ok(_) => None,
             // A script stopped by the budget is no error of its own: the

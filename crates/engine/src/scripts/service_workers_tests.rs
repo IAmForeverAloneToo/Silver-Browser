@@ -52,6 +52,7 @@ fn an_idle_version_stops_and_starts_again_from_its_scripts_for_an_event() {
             update_via_cache: UpdateViaCache::Imports,
             force_bypass: false,
             partition: None,
+            module: false,
         },
         Box::new(move |settled: Settled| {
             let _ = sender.send(settled.outcome);
@@ -111,6 +112,7 @@ fn an_event_past_its_limit_fails_and_stops_its_version() {
             update_via_cache: UpdateViaCache::Imports,
             force_bypass: false,
             partition: None,
+            module: false,
         },
         Box::new(move |settled: Settled| {
             let _ = sender.send(settled);
@@ -135,4 +137,62 @@ fn an_event_past_its_limit_fails_and_stops_its_version() {
             .is_none()
     });
     wait_for(|| !host.runs(version));
+}
+
+#[test]
+fn a_module_service_worker_runs_its_graph_and_a_failed_import_fails_it() {
+    let server = serve(|path| match path {
+        "/sw.mjs" => Some(js("import { lib } from './lib.mjs';\n\
+             self.onactivate = (e) => e.waitUntil(caches.open('c')\n\
+               .then(c => c.put('/x', new Response(lib))));")),
+        "/lib.mjs" => Some(js("export const lib = 'from module';")),
+        "/bad.mjs" => Some(js("import './gone.mjs';")),
+        _ => None,
+    });
+    let storage = Arc::new(Mutex::new(crate::storage::Storage::new()));
+    let (workers, _host) = in_process_with_host(storage, Arc::new(net::Client::default()));
+    let key = server.url("/").origin().serialization();
+    let register = |scope: &str, script: &str| {
+        let (sender, receiver) = channel();
+        workers.schedule(
+            Job {
+                kind: JobKind::Register,
+                key: key.clone(),
+                scope: server.url(scope),
+                script: server.url(script),
+                update_via_cache: UpdateViaCache::Imports,
+                force_bypass: false,
+                partition: None,
+                module: true,
+            },
+            Box::new(move |settled: Settled| {
+                let _ = sender.send(settled.outcome);
+            }),
+        );
+        receiver
+            .recv_timeout(Duration::from_secs(20))
+            .expect("settled")
+    };
+    // Its static import fetched, it evaluates and activates as a module
+    // script, kept as one.
+    assert!(matches!(
+        register("/", "/sw.mjs"),
+        crate::service_worker::Outcome::Registration(_)
+    ));
+    let active = || {
+        workers.query(&key, |registry| {
+            let reg = registry.registration(registry.get(&key, server.url("/").as_str())?)?;
+            let v = registry.version(reg.active?)?;
+            Some((v.state, v.module))
+        })
+    };
+    wait_for(|| active().is_some_and(|(state, _)| state == State::Activated));
+    assert_eq!(active(), Some((State::Activated, true)));
+    // A graph that cannot be fetched is a script that failed to evaluate.
+    let failed = register("/bad/", "/bad.mjs");
+    assert!(
+        matches!(&failed, crate::service_worker::Outcome::Failed(error)
+            if error.message.ends_with("ServiceWorker script evaluation failed")),
+        "{failed:?}"
+    );
 }

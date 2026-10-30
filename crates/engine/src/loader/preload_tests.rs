@@ -109,6 +109,39 @@ fn what_follows_a_blocking_script_is_asked_for_before_it_comes_and_once() {
 }
 
 #[test]
+fn module_scripts_and_module_preloads_past_a_blocking_script_are_preloaded() {
+    let gate = Gate::new();
+    let page = "<script src=slow.js></script>\
+        <script type=module src=mod.js></script><link rel=modulepreload href=pre.js>";
+    let server = gated(page, &gate);
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(server.url("/page.html"));
+    let deadline = Instant::now() + WAIT;
+    while ["/mod.js", "/pre.js"]
+        .iter()
+        .any(|path| reached(&server, path) == 0)
+    {
+        assert!(Instant::now() < deadline, "preloaded: {:?}", paths(&server));
+        tab.engine.poll_network();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    gate.open();
+    finish(&mut tab, &server.url("/page.html"));
+    // The module graph's own requests took them: each asked for once.
+    for path in ["/slow.js", "/mod.js", "/pre.js"] {
+        assert_eq!(reached(&server, path), 1, "{path}");
+    }
+    let lines: Vec<String> = tab
+        .engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .collect();
+    assert_eq!(lines, ["slow", "/mod.js"]);
+}
+
+#[test]
 fn without_the_scanner_nothing_past_the_script_is_asked_for() {
     let gate = Gate::new();
     let server = gated(BLOCKED, &gate);

@@ -1,7 +1,8 @@
 //! A registration as the profile keeps it (M39): its scope, its
-//! `updateViaCache`, its last check and its active version's scripts
-//! and events. Versioned, every length checked against what is left on
-//! reading, a record refused whole when anything is out of place.
+//! `updateViaCache`, its last check and its active version's scripts,
+//! events and worker type. Versioned, every length checked against what
+//! is left on reading, a record refused whole when anything is out of
+//! place; a record of the first layout is a classic script's.
 
 use std::sync::Arc;
 
@@ -10,8 +11,9 @@ use net::Url;
 use super::{MAX_IMPORTED_SCRIPTS, Registration, UpdateViaCache, Version};
 use crate::caches::record::{Reader, put_text, put_u32};
 
-/// The layout this code writes and reads.
-const VERSION: u8 = 1;
+/// The layout this code writes, and reads with the one before it, which
+/// had no worker type.
+const VERSION: u8 = 2;
 
 /// A registration's record read back.
 pub(super) struct Read {
@@ -21,6 +23,7 @@ pub(super) struct Read {
     pub(super) script: Url,
     pub(super) events: Vec<String>,
     pub(super) resources: Vec<(Url, Arc<[u8]>)>,
+    pub(super) module: bool,
 }
 
 pub(super) fn encode(registration: &Registration, active: &Version) -> Vec<u8> {
@@ -39,6 +42,7 @@ pub(super) fn encode(registration: &Registration, active: &Version) -> Vec<u8> {
         None => out.push(0),
     }
     put_text(&mut out, active.script.as_str());
+    out.push(u8::from(active.module));
     put_u32(&mut out, active.events.len());
     for event in &active.events {
         put_text(&mut out, event);
@@ -54,7 +58,8 @@ pub(super) fn encode(registration: &Registration, active: &Version) -> Vec<u8> {
 
 pub(super) fn decode(bytes: &[u8]) -> Option<Read> {
     let mut read = Reader(bytes);
-    if read.u8()? != VERSION {
+    let layout = read.u8()?;
+    if layout != VERSION && layout != 1 {
         return None;
     }
     let scope = Url::parse(&read.text()?).ok()?;
@@ -70,6 +75,14 @@ pub(super) fn decode(bytes: &[u8]) -> Option<Read> {
         _ => return None,
     };
     let script = Url::parse(&read.text()?).ok()?;
+    let module = match layout {
+        1 => false,
+        _ => match read.u8()? {
+            0 => false,
+            1 => true,
+            _ => return None,
+        },
+    };
     let mut events = Vec::new();
     for _ in 0..read.count()? {
         events.push(read.text()?);
@@ -94,5 +107,6 @@ pub(super) fn decode(bytes: &[u8]) -> Option<Read> {
         script,
         events,
         resources,
+        module,
     })
 }

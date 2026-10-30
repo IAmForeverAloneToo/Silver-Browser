@@ -469,6 +469,7 @@ impl Versions {
         let setup = super::workers::ServiceSetup {
             script: start.script.clone(),
             source: start.source.clone(),
+            module: start.module,
             address_space: space_of(&start.script),
             partition: start.partition.clone(),
             client,
@@ -603,6 +604,7 @@ pub(crate) fn restart_of(
             script: v.script.clone(),
             source: source.clone(),
             partition: reg.partition.clone(),
+            module: v.module,
         },
         v.resources[1..].to_vec(),
     ))

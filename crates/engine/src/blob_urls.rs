@@ -122,6 +122,15 @@ impl BlobOwner {
     }
 }
 
+/// The blob `url` names now, its bytes and type, if the store holds one
+/// for `origin` (URL's "blob URL entry", resolved as the URL is parsed):
+/// what a fetch made later, the URL revoked by then, still takes.
+pub(crate) fn entry_of(url: &Url, origin: &Origin) -> Option<(Arc<[u8]>, String)> {
+    let store = store();
+    let entry = store.entries.get(url.without_fragment())?;
+    (entry.origin == *origin).then(|| (entry.bytes.clone(), entry.kind.clone()))
+}
+
 /// The blob of `request`'s URL, its bytes and type, if the store holds
 /// one for the request's origin.
 fn resolve(request: &Request) -> Option<(Arc<[u8]>, String)> {

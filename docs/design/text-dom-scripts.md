@@ -120,7 +120,10 @@ the page out again.
 `FontFace` (from a url or an `ArrayBuffer`), `FontFaceSet`
 (`document.fonts`: `add`, `delete`, `load`, `check`, `ready`,
 `status`, the loading events) and `self.fonts` in workers as an empty
-set.
+set. *(corrected: a worker has `FontFace` and its own `self.fonts`,
+whose faces its canvases draw in; a canvas's text is drawn in the
+document's faces, and a face only a canvas asks for is fetched after
+its script runs.)*
 
 ### D55: line breaking by ICU4X
 
@@ -338,6 +341,123 @@ where it is used, in paint, the canvas and serialization; a
 What the work found that this note did not say, or said otherwise, by
 step:
 
+- **Fonts (step 1, D53).** The family moved into `FontProps` with the
+  other font properties and `line-height`, behind one pointer:
+  `ComputedStyle` went from 816 to 808 bytes. Generic `sans-serif` and
+  `system-ui` are the primary font's families (Segoe UI first), not the
+  reference browser's Arial, so that pages in the initial font draw as
+  before. Synthesis as Blink and Skia do it: bold when 600 or more is
+  asked of a face under 600, a slant of a quarter for italic.
+  Half-leading as Blink's `AddLeading`, floored above. Renderers get the
+  system's faces as a manifest in the `Fonts` message (IPC version 2).
+- **Web fonts (step 2, D54).** Layout keeps each text fragment's face
+  (`Fragment::font`, 8 bytes; a fragment 128 to 136) and render draws
+  it. A document's faces are `text::DocumentFaces` laid over the
+  collection. `unicode-range` is not read (the tokenizer keeps a
+  number's value, not its text), `local()` is not looked up, and a
+  `FontFace`'s url loads through the bootstrap's `fetch`. No font
+  loading events, and the rules' faces are not in `document.fonts`.
+- **Text (step 3, D55, D56).** `white-space` is a pair of longhands.
+  `icu_segmenter` is pinned `~2.3.0`: 2.4 moved idna's ICU crates and
+  failed IdnaTestV2. Between printable ASCII the reference browser does
+  not follow UAX #14 (no break after `/`), tailored so. A word stays one
+  item with its opportunities, cut only where a line breaks. A run with
+  no right-to-left letter is shaped left to right, and white space at a
+  run's ends apart. A text shadow is blurred over the whole ink,
+  whatever the clip, so that a partial redraw matches the whole.
+  Collapsed columns, `line-break`, `tab-size` and breaks across text
+  boxes are not done.
+- **The tree builder (step 4, D57).** A subagent wrote it in a worktree.
+  html5lib's tree tests went from 1,285 to 1,949 of 1,959; the ten left
+  run scripts mid-parse or need `selectedcontent`. The implied `tbody`,
+  `colgroup` and foster parenting changed 41 of layout's table tests,
+  whose shapes were renumbered or built by hand. XHTML is still read by
+  the HTML parser: `flexbox-table-fixup-001.xhtml` now fails ("XHTML
+  parsed as HTML").
+- **Node kinds (step 5, D58).** The doctype's fields are `Box<str>`, so
+  `NodeData` stays 64 bytes. `insert_before` does the whole of "ensure
+  pre-insertion validity" (one doctype, then one element, no text under
+  the document) and moves a fragment's children. Template contents are
+  a fragment `allocate` makes with each HTML `template`; depth counts
+  across contents to their template. `to_node` leaves the new kinds out.
+  The XML parser keeps comments, processing instructions and the
+  doctype. `:empty` passes over comments and empty text, as the
+  reference browser does. `DOMImplementation` makes doctypes only.
+- **Ranges and the rest (step 6, D59).** Live ranges and node iterators
+  are kept in the document and moved directly by its operations, not by
+  the journal. Character data's mutators go through `replace_data`, by
+  UTF-16 offsets. `moveBefore` journals `Moved` after its removal and
+  insertion, so that frames, animations and media keep their state; the
+  focus stays. `document.open` gives the host a parser of its own, which
+  `write` feeds and `close` ends. A write with no insertion point opens
+  the document, as the reference browser does; the URL stays, and a
+  load still running is not aborted. Template contents, live state and
+  the move flag share one boxed field: two boxes and a flag made
+  clippy's `large_enum_variant` fire on `loader::Outcome`. The selection
+  is not painted, and the mouse does not make one yet.
+- **Presentational hints (step 7, D60).** Not done: `rules`, `frame`,
+  `pre width`, body margins. The legacy alignments are kept beside
+  `text-align` with the parent's (`legacy_align`, `placed_by`): the
+  style 808 to 816 bytes. The font-size keywords were missing
+  altogether and came with it.
+- **Binding chunks (step 8, D64).** A subagent wrote it. Six chunks,
+  each a script of its own (`js/src/quickjs/bootstrap_<name>.js`) that
+  `native.chunk(name)` reads: `gpu`, `intl`, `idb` (with
+  `StorageManager`), `audio`, `wasm` and `canvas` (the 2D context,
+  `Path2D`, `ImageData`, `OffscreenCanvas` and `ImageBitmap`). A
+  chunk's name that was a data property of the global is an accessor
+  until the chunk is made, as the realm's kind exposes it; a property
+  the bootstrap keeps calls the chunk, its descriptor and function
+  unchanged (the locale methods, `createImageBitmap`, `indexedDB`,
+  `navigator.storage`, a canvas's `getContext("2d")`). What a page put
+  in place of an accessor stays. The built-ins a chunk keeps are read
+  by the bootstrap before any page runs: M41's chunk had read
+  `Set.prototype` and others when it was made. A window's realm is made
+  in 6.2 ms, from 7.5; a chunk's first use costs 0.3 to 0.7 ms
+  (WebGPU's 3.3).
+- **Module scripts (step 9, D61).** A subagent wrote it. The graph's
+  imports are found by declaring each module in a throwaway context
+  (compiled twice), and modules are handed over dependencies first:
+  nested declaring overflowed the debug stack at 64 deep. One import
+  map a document (the reference browser merges several). Before this
+  step `import('bootstrap')` gave any page the bootstrap's module; it is
+  refused now. Not done: module service workers, an `import()`'s nonce,
+  and the preload scanner's modules.
+- **Subresource Integrity (step 10, D62).** It is checked on a body
+  taken whole, `NetworkError::Integrity` (wire tag 30).
+- **`Intl` (step 11, D63).** A subagent wrote it. ICU4X 2.3's
+  `GroupingStrategy::Always` keeps the locale's minimum grouping digits,
+  so `useGrouping: "always"` is grouped by hand. Windows' system time
+  zone has no IANA name here (`timeZone` reports the offset), and other
+  IANA zones than UTC throw. Currency writes its ISO code, units their
+  identifiers, and compact notation formats as standard.
+  `formatRange` is not done.
+- **The flush (step 12, D65).** Not the borrow this note describes: the
+  host lays out a copy from its own cascade, at most once a document
+  version, with the shown page's images lent and its fonts and scroll
+  offsets in the window's environment. `getComputedStyle` therefore
+  still samples no transitions or animations (G46). `Engine::measure`
+  and `hit` became free functions in `engine::geometry`, which both
+  use. The viewport never scrolls across (`scrollX`, `scrollLeft` are
+  0), a range's rectangles are not done, and `auto` margins answer 0.
+- **Computed values (step 13, D66).** A subagent wrote it.
+  `currentcolor` is a spare bit of `Color::missing`; the cascade keeps
+  it and `ComputedStyle::resolve_current_color` resolves each flagged
+  colour against the element's final `color`, so the channels always
+  hold the used colour and paint reads them unchanged; the style stays
+  816 bytes. `getComputedStyle` lists 193 longhands and serializes
+  their shorthands, gradients with their defaults left out and
+  calculations by Values 4 section 10.13. Not serialized: `will-change`
+  (the engine keeps bits), a `transform` with a percentage
+  translation; `rotate(90deg)`'s cosine is snapped to 0 where the
+  reference prints `6.12323e-17`.
+- **The CSSOM (step 14, D66).** The rules a script sees are a view of
+  the parsed sheet the cascade reads, edited in place. An import's
+  fetched sheet follows its rule, each sheet has a serial number (a new
+  text, a new object), and the engine takes the sheets after a run that
+  changed one. Not done: `disabled`, MediaList's setters, and `style`
+  and `cssText` in canonical forms with shorthands through their
+  longhands (G50 stays open).
 - *Fonts and web fonts* (D53, D54, closed after the batch): a
   `unicode-range` is read from its declaration's source text, which the
   parser keeps the spans of (CSS Syntax 3 section 7.1), and kept as
@@ -357,3 +477,16 @@ step:
   it when its faces start and stop loading (a `FontFaceSetLoadEvent`
   task); a `FontFace`'s urls are fetched in turn as fonts; workers have
   `self.fonts`. A text control's caret is measured in its own font.
+- *Module scripts* (D61), after the batch: an `import()` in code a
+  string compiled (`eval`, `Function`, a timer's string) resolves
+  against, and fetches with the options of, the script that made it,
+  found from QuickJS-ng's stack when the promise is made; a handler's
+  against the document's base URL. JSON, CSS and text modules by their
+  `type` (the reference browser takes `text`), the module map keyed by
+  URL and type, a CSS module's sheet a constructed `CSSStyleSheet`,
+  which `document.adoptedStyleSheets` takes. Import maps after the
+  first are merged (HTML's "merge existing and new import maps"), not
+  refused; module service workers run; the preload scanner sees module
+  scripts and module preloads. A parser-inserted script left empty is
+  one a script may still run, and the scripts one insertion connects
+  run one at a time, in its order.

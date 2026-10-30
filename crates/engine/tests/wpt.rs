@@ -450,7 +450,7 @@ fn content_type(path: &str) -> &'static str {
         Some("html" | "htm") => "text/html; charset=utf-8",
         Some("xht" | "xhtml") => "application/xhtml+xml",
         Some("css") => "text/css",
-        Some("js") => "text/javascript",
+        Some("js" | "mjs") => "text/javascript",
         Some("png" | "apng") => "image/png",
         Some("jpg" | "jpeg") => "image/jpeg",
         Some("gif") => "image/gif",

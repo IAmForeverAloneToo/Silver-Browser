@@ -9325,6 +9325,19 @@
       Register(rangesGone, this, id);
     }
 
+    // DOM Parsing's `createContextualFragment()`: `fragment` parsed in
+    // the context of the start's element, its scripts not started.
+    createContextualFragment(fragment) {
+      need(arguments.length, 1, "createContextualFragment", "Range");
+      const b = boundsOf(this);
+      const markup = str(fragment);
+      try {
+        return wrap(native.contextualFragment(b[0], markup));
+      } catch (error) {
+        throw failed(error, "createContextualFragment", "Range");
+      }
+    }
+
     get commonAncestorContainer() {
       const attr = attrOf(this);
       if (attr !== undefined) {
@@ -11566,9 +11579,9 @@
   }
 
   // The native path of a rule list: the imports' count, the imports, the
-  // rule path.
+  // rule path; a constructed sheet's serial number first.
   function cssomPath(state, rulePath) {
-    const out = [state.imports.length];
+    const out = state.constructed ? [state.serial, 0] : [state.imports.length];
     for (let i = 0; i < state.imports.length; i++) {
       ArrayPush(out, state.imports[i]);
     }
@@ -12196,7 +12209,34 @@
     }
   }
 
+  // A constructed sheet (CSSOM 6.1.2's constructed flag), empty, whose
+  // rules' URLs resolve against `base` (the document's base URL when
+  // empty): its state.
+  function constructSheet(sheet, base) {
+    const serial = native.cssom("construct", null, [], base, 0)[0];
+    const state = {
+      owner: null,
+      handle: null,
+      imports: [],
+      serial,
+      parent: null,
+      ownerRule: null,
+      list: null,
+      constructed: true,
+    };
+    state.list = ruleList(state, [], null);
+    WeakMapSet(sheetStates, sheet, state);
+    return state;
+  }
+
   class CSSStyleSheet extends StyleSheet {
+    constructor(options) {
+      super(KEY);
+      if (options !== KEY) {
+        constructSheet(this, "");
+      }
+    }
+
     get ownerRule() {
       return sheetState(this).ownerRule;
     }
@@ -12222,7 +12262,11 @@
     }
 
     replace(text) {
-      sheetState(this);
+      const state = sheetState(this);
+      if (state.constructed) {
+        native.cssom("replace", null, cssomPath(state, []), str(text), 0);
+        return ReflectApply(Promise.resolve, Promise, [this]);
+      }
       return PromiseReject(
         domError(
           "NotAllowedError",
@@ -12234,7 +12278,11 @@
     }
 
     replaceSync(text) {
-      sheetState(this);
+      const state = sheetState(this);
+      if (state.constructed) {
+        native.cssom("replace", null, cssomPath(state, []), str(text), 0);
+        return;
+      }
       throw domError(
         "NotAllowedError",
         "Can't call replaceSync on non-constructed CSSStyleSheets.",
@@ -12306,6 +12354,67 @@
     },
     [Document.prototype],
   );
+
+  // `document.adoptedStyleSheets` (CSSOM 6.2): the constructed sheets
+  // the document's styles take after its own, by document; an array the
+  // page sets whole.
+  const adoptedSheets = new $WeakMap();
+  include(
+    {
+      get adoptedStyleSheets() {
+        self(this);
+        let sheets = WeakMapGet(adoptedSheets, this);
+        if (sheets === undefined) {
+          sheets = [];
+          WeakMapSet(adoptedSheets, this, sheets);
+        }
+        return sheets;
+      },
+      set adoptedStyleSheets(value) {
+        self(this);
+        const sheets = [];
+        const serials = [];
+        if (value === null || (typeof value !== "object" && typeof value !== "function")) {
+          throw new $TypeError(
+            "Failed to set the 'adoptedStyleSheets' property on 'Document': The provided " +
+              "value cannot be converted to a sequence.",
+          );
+        }
+        for (const sheet of value) {
+          const state = WeakMapGet(sheetStates, sheet);
+          if (state === undefined) {
+            throw new $TypeError(
+              "Failed to set the 'adoptedStyleSheets' property on 'Document': Failed to " +
+                "convert value to 'CSSStyleSheet'.",
+            );
+          }
+          if (!state.constructed) {
+            throw new $DOMException(
+              "Failed to set the 'adoptedStyleSheets' property on 'Document': Can't adopt " +
+                "non-constructed stylesheets.",
+              "NotAllowedError",
+            );
+          }
+          ArrayPush(sheets, sheet);
+          ArrayPush(serials, state.serial);
+        }
+        if (this === theDocument()) {
+          native.cssom("adopt", null, serials, "", 0);
+        }
+        WeakMapSet(adoptedSheets, this, sheets);
+      },
+    },
+    [Document.prototype],
+  );
+
+  // A CSS module script's style sheet (HTML's "create a CSS module
+  // script"): constructed of `text`, its URLs resolving against `base`.
+  function cssModule(text, base) {
+    const sheet = new CSSStyleSheet(KEY);
+    const state = constructSheet(sheet, base);
+    native.cssom("replace", null, cssomPath(state, []), text, 0);
+    return sheet;
+  }
 
   // `<style>.sheet` and `<link>.sheet`: the element's sheet, or null.
   const elementSheet = {
@@ -13006,6 +13115,21 @@
     MapGet(interfaces, "style").prototype,
     MapGet(interfaces, "link").prototype,
   ]);
+  // `HTMLScriptElement.supports()` (HTML section 4.12.1): the script
+  // types the engine runs, speculation rules not among them.
+  defineProperty(MapGet(interfaces, "script"), "supports", {
+    value: {
+      supports(type) {
+        need(arguments.length, 1, "supports", "HTMLScriptElement");
+        const kind = str(type);
+        return kind === "classic" || kind === "module" || kind === "importmap";
+      },
+    }.supports,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+
   // A script element's members (HTML section 4.12.1): its text, and
   // `async`, which reads its "force async" flag as well as the attribute
   // and clears the flag when set.
@@ -13119,6 +13243,11 @@
               return null;
             }
             return ToLowerCase(value) === "use-credentials" ? "use-credentials" : "anonymous";
+          // A referrer policy attribute: a policy's name, else empty.
+          case "referrer": {
+            const lower = value === null ? "" : ToLowerCase(value);
+            return ArrayIncludes(REFERRER_POLICIES, lower) ? lower : "";
+          }
           default:
             return value === null ? "" : value;
         }
@@ -13215,6 +13344,9 @@
       ["charset", "charset", "string"],
       ["defer", "defer", "boolean"],
       ["noModule", "nomodule", "boolean"],
+      ["crossOrigin", "crossorigin", "cors"],
+      ["referrerPolicy", "referrerpolicy", "referrer"],
+      ["integrity", "integrity", "string"],
     ]],
     ["HTMLIFrameElement", [
       ["src", "src", "url"],
@@ -13611,6 +13743,9 @@
   for (let i = 0; i < SVG_ELEMENTS.length; i++) {
     svgElement(SVG_ELEMENTS[i][0], SVG_ELEMENTS[i][1], SVG_ELEMENTS[i][2]);
   }
+  // An SVG script's `type` and `crossOrigin` (SVG 2's SVGScriptElement).
+  reflect(MapGet(svgInterfaces, "script").prototype, "type", "type", "string");
+  reflect(MapGet(svgInterfaces, "script").prototype, "crossOrigin", "crossorigin", "cors");
 
   // MathML's elements are all MathMLElements (MathML Core).
   class MathMLElement extends Element {
@@ -15775,7 +15910,9 @@
       "with (arguments[2]) return function on" + type + "(" + params + ") {\n" + body +
       "\n}; })";
     try {
-      const scope = native.evaluate(source, url === null ? "" : url);
+      // Named apart from the document's scripts: its `import()`s resolve
+      // against the document's base URL, with the default options.
+      const scope = native.evaluate(source, (url === null ? "" : url) + "\u0001handler");
       return ReflectApply(scope, undefined, [
         theDocument(),
         owner === null ? ObjectCreate(null) : wrap(owner),
@@ -20454,6 +20591,9 @@
     if (typeof callback === "string" && native.codeAllowed("eval", callback, -1) !== "") {
       return 0;
     }
+    // A string runs as the script that set it, which its `import()`s
+    // resolve against (HTML's timer initialization steps).
+    const script = typeof callback === "string" ? native.activeScript() : "";
     let id = lastTimer;
     do {
       id = id >= 2147483647 ? 1 : id + 1;
@@ -20461,7 +20601,7 @@
     lastTimer = id;
     const delay = long(timeout);
     native.setTimer(id, delay);
-    MapSet(timers, id, { callback, args, repeat, delay });
+    MapSet(timers, id, { callback, args, repeat, delay, script });
     return id;
   }
 
@@ -20515,7 +20655,7 @@
       } else if (typeof timer.callback === "function") {
         ReflectApply(timer.callback, global, timer.args);
       } else {
-        const url = native.documentUrl();
+        const url = timer.script !== "" ? timer.script : native.documentUrl();
         native.evaluate(timer.callback, url === null ? "" : url);
       }
     } catch (error) {
@@ -21993,8 +22133,10 @@
         s.offset = [init.offsetX, init.offsetY];
       }
       if (handle === null) {
-        // The window's `load` names the document its target.
-        return dispatching(global, event, type === "load" ? theDocument() : undefined);
+        // The window's `load`, `pageshow` and `pagehide` name the document
+        // their target.
+        const named = type === "load" || type === "pageshow" || type === "pagehide";
+        return dispatching(global, event, named ? theDocument() : undefined);
       }
       return dispatching(wrap(handle), event);
     },
@@ -22044,6 +22186,12 @@
     },
     moduleSettle(promise, resolve, reject) {
       PromiseThen(promise, resolve, reject);
+    },
+    cssModule,
+    // A JSON, CSS or text module the engine gave an `import()`, imported
+    // by its name with its type.
+    importWith(name, type) {
+      return import(name, { with: { type } });
     },
     reset() {
       native.wasmReset();

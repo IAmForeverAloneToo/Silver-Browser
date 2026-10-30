@@ -72,6 +72,22 @@ pub(crate) struct Page {
     /// Whether a script changed a sheet through the CSSOM (D66) since
     /// the engine last took the sheets.
     cssom_edited: bool,
+    /// The sheets scripts constructed (`new CSSStyleSheet()`, CSS module
+    /// scripts), and the serial numbers of those the document adopted,
+    /// in order.
+    constructed: Vec<Constructed>,
+    adopted: Vec<u64>,
+}
+
+/// The most sheets a document's scripts may construct.
+pub(crate) const MAX_CONSTRUCTED_SHEETS: usize = 4096;
+
+/// A constructed sheet (CSSOM's constructed flag): its serial number,
+/// its rules, and the URL they resolve against.
+struct Constructed {
+    serial: u64,
+    rules: css::Stylesheet,
+    base: Option<Url>,
 }
 
 /// What a page's fetches are made with.
@@ -287,6 +303,8 @@ impl Page {
             referrer: String::new(),
             panel: false,
             cssom_edited: false,
+            constructed: Vec::new(),
+            adopted: Vec::new(),
         }
     }
 
@@ -330,6 +348,8 @@ impl Page {
             referrer: String::new(),
             panel: false,
             cssom_edited: false,
+            constructed: Vec::new(),
+            adopted: Vec::new(),
         }
     }
 
@@ -1042,6 +1062,13 @@ impl Page {
                 });
             }
         }
+        // The adopted sheets after the document's (CSSOM's document or
+        // shadow root CSS style sheets).
+        for serial in &self.adopted {
+            if let Some(sheet) = self.constructed.iter().find(|c| c.serial == *serial) {
+                sheets.push(sheet.rules.clone());
+            }
+        }
         sheets
     }
 }
@@ -1189,6 +1216,76 @@ impl Page {
     /// Whether a script changed a sheet since this was last asked.
     pub(crate) fn take_cssom_edited(&mut self) -> bool {
         std::mem::take(&mut self.cssom_edited)
+    }
+
+    /// A new constructed sheet, empty, whose rules' URLs resolve against
+    /// `base`: its serial number; none past [`MAX_CONSTRUCTED_SHEETS`].
+    pub(crate) fn construct_sheet(&mut self, base: Option<Url>) -> Option<u64> {
+        if self.constructed.len() >= MAX_CONSTRUCTED_SHEETS {
+            return None;
+        }
+        let serial = next_serial();
+        self.constructed.push(Constructed {
+            serial,
+            rules: css::Stylesheet::default(),
+            base,
+        });
+        Some(serial)
+    }
+
+    /// `replaceSync` of the constructed sheet `serial` (CSSOM 6.1.2): its
+    /// rules those of `text`, its `@import` rules left out; whether it is
+    /// there.
+    pub(crate) fn replace_sheet(&mut self, serial: u64, text: &str) -> bool {
+        let Some(sheet) = self.constructed.iter_mut().find(|c| c.serial == serial) else {
+            return false;
+        };
+        let mut rules = css::parse_stylesheet(text).unwrap_or_default();
+        rules.rules.retain(
+            |rule| !matches!(rule, css::Rule::At(at) if at.name.eq_ignore_ascii_case("import")),
+        );
+        if let Some(base) = &sheet.base {
+            rules::absolute_urls(&mut rules.rules, base);
+        }
+        sheet.rules = rules;
+        self.cssom_edited |= self.adopted.contains(&serial);
+        true
+    }
+
+    /// The constructed sheet `serial`, as the CSSOM reads it.
+    pub(crate) fn constructed_sheet(&self, serial: u64) -> Option<SheetView<'_>> {
+        let sheet = self.constructed.iter().find(|c| c.serial == serial)?;
+        Some(SheetView {
+            rules: &sheet.rules,
+            location: None,
+            serial,
+        })
+    }
+
+    /// Changes the rules of the constructed sheet `serial` by `edit`, as
+    /// [`Page::cssom_edit`] does an element's.
+    pub(crate) fn constructed_edit<R>(
+        &mut self,
+        serial: u64,
+        edit: impl FnOnce(&mut css::Stylesheet) -> Option<(R, Vec<Option<usize>>)>,
+    ) -> Option<R> {
+        let sheet = self.constructed.iter_mut().find(|c| c.serial == serial)?;
+        let (result, _) = edit(&mut sheet.rules)?;
+        self.cssom_edited |= self.adopted.contains(&serial);
+        Some(result)
+    }
+
+    /// `document.adoptedStyleSheets` set to the constructed sheets
+    /// `serials`, in order; those not constructed left out.
+    pub(crate) fn adopt_sheets(&mut self, serials: Vec<u64>) {
+        let serials: Vec<u64> = serials
+            .into_iter()
+            .filter(|serial| self.constructed.iter().any(|c| c.serial == *serial))
+            .collect();
+        if serials != self.adopted {
+            self.adopted = serials;
+            self.cssom_edited = true;
+        }
     }
 }
 

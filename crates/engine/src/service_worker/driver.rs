@@ -54,6 +54,8 @@ pub struct Start {
     pub script: Url,
     pub source: Arc<[u8]>,
     pub partition: Option<net::Partition>,
+    /// Whether its script is a module script (D61).
+    pub module: bool,
 }
 
 /// What runs versions and dispatches their events: the engine's threads
@@ -376,6 +378,7 @@ fn perform(
                         script: v.script.clone(),
                         source: v.resources.first()?.1.clone(),
                         partition: reg.partition.clone(),
+                        module: v.module,
                     })
                 })
             };

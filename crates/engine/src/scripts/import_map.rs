@@ -1,8 +1,10 @@
-//! Import maps (HTML section 8.1.5.3, D61): one a document, parsed from
-//! its `<script type=importmap>` before its first module, which maps the
-//! specifiers module scripts import, by prefix and by the importing
-//! script's scope, and gives the integrity metadata of the modules they
-//! fetch.
+//! Import maps (HTML section 8.1.5.3, D61): a document's, parsed from its
+//! `<script type=importmap>`s, which maps the specifiers module scripts
+//! import, by prefix and by the importing script's scope, and gives the
+//! integrity metadata of the modules they fetch. A later map is merged
+//! into the document's (HTML's "merge existing and new import maps"):
+//! what the document's has, and what would change how a specifier
+//! already resolved resolves, is left out of it.
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -23,6 +25,27 @@ pub(crate) const MAX_IMPORT_MAP_ENTRIES: usize = 10_000;
 /// blocks; sorted with the longest of shared prefixes first (code unit
 /// order, descending).
 type SpecifierMap = Vec<(String, Option<Url>)>;
+
+/// A specifier resolved (HTML's resolved module set's records): the
+/// base URL it was resolved against, the specifier as normalized, and
+/// whether it was a URL or a path.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct Resolved {
+    pub(crate) base: String,
+    pub(crate) specifier: String,
+    pub(crate) as_url: Option<bool>,
+}
+
+impl Resolved {
+    /// Whether a specifier map's `key` would map this specifier: it is
+    /// the key, or under it as a prefix (a URL's only if special).
+    fn under(&self, key: &str) -> bool {
+        key == self.specifier
+            || (key.ends_with('/')
+                && self.specifier.starts_with(key)
+                && self.as_url.is_none_or(|special| special))
+    }
+}
 
 /// A parsed import map.
 #[derive(Debug, Clone, Default)]
@@ -197,32 +220,123 @@ impl ImportMap {
         Ok((map, warnings))
     }
 
+    /// The entries it holds: its imports', its scopes' and its
+    /// integrity's.
+    fn entries(&self) -> usize {
+        self.imports.len()
+            + self.integrity.len()
+            + self
+                .scopes
+                .iter()
+                .map(|(_, scope)| scope.len() + 1)
+                .sum::<usize>()
+    }
+
+    /// HTML's "merge existing and new import maps": `new` merged into
+    /// this map, the document's, given the specifiers `resolved` so
+    /// far. An entry this map has keeps its own; one of `new` that would
+    /// map a specifier resolved is left out; each left out is a warning.
+    /// Past [`MAX_IMPORT_MAP_ENTRIES`] the merge is refused whole.
+    pub(crate) fn merge(
+        &mut self,
+        new: ImportMap,
+        resolved: &[Resolved],
+        warnings: &mut Vec<String>,
+    ) -> Result<(), MapError> {
+        if self.entries() + new.entries() > MAX_IMPORT_MAP_ENTRIES {
+            return Err(type_error(format!(
+                "Import maps are limited to {MAX_IMPORT_MAP_ENTRIES} entries."
+            )));
+        }
+        let mut ignored = |key: &str| {
+            warnings.push(format!(
+                "An import map rule for specifier \"{key}\" was ignored as it conflicts with \
+                 an existing rule or an already resolved module."
+            ));
+        };
+        for (prefix, mut scope) in new.scopes {
+            let scoped = |record: &&Resolved| {
+                prefix == record.base
+                    || (prefix.ends_with('/') && record.base.starts_with(prefix.as_str()))
+            };
+            for record in resolved.iter().filter(scoped) {
+                scope.retain(|(key, _)| {
+                    let kept = !record.under(key);
+                    if !kept {
+                        ignored(key);
+                    }
+                    kept
+                });
+            }
+            match self.scopes.iter_mut().find(|(have, _)| *have == prefix) {
+                Some((_, old)) => merge_maps(old, scope, &mut ignored),
+                None => self.scopes.push((prefix, scope)),
+            }
+        }
+        self.scopes.sort_by(|a, b| descending(&a.0, &b.0));
+        for (url, metadata) in new.integrity {
+            if self.integrity.iter().any(|(have, _)| *have == url) {
+                ignored(&url);
+                continue;
+            }
+            self.integrity.push((url, metadata));
+        }
+        let mut imports = new.imports;
+        for record in resolved {
+            imports.retain(|(key, _)| {
+                let kept = !record.under(key);
+                if !kept {
+                    ignored(key);
+                }
+                kept
+            });
+        }
+        merge_maps(&mut self.imports, imports, &mut ignored);
+        Ok(())
+    }
+
     /// HTML's "resolve a module specifier": `specifier`, of a script or
     /// module whose base URL is `base`, by the map's scopes for `base`,
     /// then its imports, then as a URL; or the `TypeError`'s message.
     pub(crate) fn resolve(&self, specifier: &str, base: &Url) -> Result<Url, String> {
+        self.resolve_noting(specifier, base).map(|(url, _)| url)
+    }
+
+    /// [`ImportMap::resolve`], with the record of the specifier resolved
+    /// for the resolved module set.
+    pub(crate) fn resolve_noting(
+        &self,
+        specifier: &str,
+        base: &Url,
+    ) -> Result<(Url, Resolved), String> {
         let as_url = url_like(specifier, base);
         let normalized = as_url
             .as_ref()
             .map_or_else(|| specifier.to_owned(), Url::to_string);
         let base = base.as_str();
+        let record = Resolved {
+            base: base.to_owned(),
+            specifier: normalized.clone(),
+            as_url: as_url.as_ref().map(Url::is_special),
+        };
         for (prefix, imports) in &self.scopes {
             let scoped =
                 prefix == base || (prefix.ends_with('/') && base.starts_with(prefix.as_str()));
             if scoped && let Some(url) = matched(&normalized, as_url.as_ref(), imports, specifier)?
             {
-                return Ok(url);
+                return Ok((url, record));
             }
         }
         if let Some(url) = matched(&normalized, as_url.as_ref(), &self.imports, specifier)? {
-            return Ok(url);
+            return Ok((url, record));
         }
-        as_url.ok_or_else(|| {
+        let url = as_url.clone().ok_or_else(|| {
             format!(
                 "Failed to resolve module specifier \"{specifier}\". Relative references must \
                  start with either \"/\", \"./\", or \"../\"."
             )
-        })
+        })?;
+        Ok((url, record))
     }
 
     /// The integrity metadata the map gives the module at `url`, empty
@@ -234,6 +348,19 @@ impl ImportMap {
             .map(|(_, metadata)| metadata.clone())
             .unwrap_or_default()
     }
+}
+
+/// HTML's "merge module specifier maps": `new`'s entries put in `old`,
+/// one whose key `old` has left out and `ignored`, sorted again.
+fn merge_maps(old: &mut SpecifierMap, new: SpecifierMap, ignored: &mut impl FnMut(&str)) {
+    for (key, address) in new {
+        if old.iter().any(|(have, _)| *have == key) {
+            ignored(&key);
+            continue;
+        }
+        old.push((key, address));
+    }
+    old.sort_by(|a, b| descending(&a.0, &b.0));
 }
 
 /// HTML's "sort and normalize a module specifier map".
@@ -408,5 +535,43 @@ mod tests {
             .collect();
         let many = format!("{{\"imports\":{{{}}}}}", many.join(","));
         assert!(ImportMap::parse(&many, &base()).is_err());
+    }
+
+    #[test]
+    fn a_later_map_merges_keeping_the_first_maps_and_what_was_resolved() {
+        let page = base();
+        let (mut map, _) = ImportMap::parse(
+            r#"{"imports": {"a": "/a.js", "p/": "/p/"}, "integrity": {"/a.js": "sha256-1"}}"#,
+            &page,
+        )
+        .expect("it parses");
+        let (_, record) = map.resolve_noting("p/x.js", &page).expect("it resolves");
+        let (new, _) = ImportMap::parse(
+            r#"{
+              "imports": {"a": "/a2.js", "b": "/b.js", "p/x.js": "/px.js", "p/y/": "/py/"},
+              "scopes": {"/app/": {"p/x.js": "/scoped.js", "c": "/c.js"}},
+              "integrity": {"/a.js": "sha256-2", "/b.js": "sha256-3"}
+            }"#,
+            &page,
+        )
+        .expect("it parses");
+        let mut warnings = Vec::new();
+        map.merge(new, &[record], &mut warnings).expect("it merges");
+        let at = page.as_str();
+        assert_eq!(resolved(&map, "a", at).unwrap(), "https://example.com/a.js");
+        assert_eq!(resolved(&map, "b", at).unwrap(), "https://example.com/b.js");
+        assert_eq!(
+            resolved(&map, "p/x.js", at).unwrap(),
+            "https://example.com/p/x.js"
+        );
+        assert_eq!(
+            resolved(&map, "p/y/z.js", at).unwrap(),
+            "https://example.com/py/z.js"
+        );
+        assert_eq!(resolved(&map, "c", at).unwrap(), "https://example.com/c.js");
+        let integrity = |url: &str| map.integrity(&Url::parse(url).unwrap());
+        assert_eq!(integrity("https://example.com/a.js"), "sha256-1");
+        assert_eq!(integrity("https://example.com/b.js"), "sha256-3");
+        assert_eq!(warnings.len(), 4, "{warnings:?}");
     }
 }

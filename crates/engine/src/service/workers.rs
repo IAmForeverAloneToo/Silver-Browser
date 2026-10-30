@@ -261,6 +261,7 @@ impl Inner {
             own,
             partition: start.partition.clone(),
             evaluate,
+            module: start.module,
         };
         state
             .sites

@@ -76,6 +76,9 @@ pub(crate) struct Outputs {
     /// The module scripts scripts inserted or wrote (D61), whose graphs
     /// the engine fetches after the run.
     pub(crate) modules: Vec<ModuleWanted>,
+    /// Whether each script wanted, classic or module, in the order found,
+    /// is a module: those to run in order keep it across both kinds.
+    pub(crate) order: Vec<bool>,
     /// The import maps scripts inserted that were none (D61): each
     /// exception, to report, and its element's line.
     pub(crate) thrown: Vec<(MapError, u32)>,
@@ -223,6 +226,10 @@ pub(crate) struct DocumentHost {
     /// and those of them not started yet.
     made: HashSet<NodeId>,
     pending: Vec<NodeId>,
+    /// The scripts an insertion made ready, in the order it found them,
+    /// waiting while the one before them runs (DOM's post-connection
+    /// steps, one at a time): it may remove or move them.
+    batch: VecDeque<NodeId>,
     /// Script elements already started: prepared, or parsed in a
     /// fragment.
     started: HashSet<NodeId>,
@@ -291,6 +298,40 @@ pub(crate) struct DocumentHost {
     scopes: u32,
     /// Its module map, module scripts' graphs and import map (D61).
     pub(crate) modules: Modules,
+    /// The fetch options its scripts ran with, each once, by their
+    /// numbers less one: what their `import()`s fetch with.
+    script_options: Vec<super::ScriptOptions>,
+}
+
+/// The most sets of script fetch options a document numbers: past them
+/// a script's `import()`s fetch with the defaults.
+const MAX_SCRIPT_OPTIONS: usize = 1024;
+
+impl DocumentHost {
+    /// The number the realm knows `options` by: 0 for the defaults.
+    pub(crate) fn options_number(&mut self, options: super::ScriptOptions) -> u32 {
+        if options == super::ScriptOptions::default() {
+            return 0;
+        }
+        let at = match self.script_options.iter().position(|o| *o == options) {
+            Some(at) => at,
+            None if self.script_options.len() < MAX_SCRIPT_OPTIONS => {
+                self.script_options.push(options);
+                self.script_options.len() - 1
+            }
+            None => return 0,
+        };
+        u32::try_from(at + 1).unwrap_or(0)
+    }
+
+    /// The options numbered `number`: the defaults for 0 or one unknown.
+    pub(crate) fn script_options(&self, number: u32) -> super::ScriptOptions {
+        (number as usize)
+            .checked_sub(1)
+            .and_then(|at| self.script_options.get(at))
+            .cloned()
+            .unwrap_or_default()
+    }
 }
 
 impl ScriptingHost for DocumentHost {
@@ -376,11 +417,19 @@ impl ScriptingHost for DocumentHost {
                     external: false,
                     written,
                 });
+                let options = self.options_number(source.options);
                 return Some(NestedScript {
                     source: source.text,
                     url: source.url,
                     line: source.line,
+                    base: source.base,
+                    options,
                 });
+            }
+            // The next script an insertion made ready, if still there.
+            if !self.batch.is_empty() {
+                self.prepare_made();
+                continue;
             }
             if self.blocked {
                 return None;
@@ -816,6 +865,40 @@ impl DocumentHost {
             Call::CreateFragment => {
                 let made = self.document.create_fragment().map_err(refused)?;
                 self.detached.push(made);
+                Ok(self.give(Some(made)))
+            }
+            Call::ContextualFragment(node, markup) => {
+                let node = self.node(node)?;
+                // The start's element, or its parent's; a body for none,
+                // and for an `html` element.
+                let element = Some(node)
+                    .filter(|&node| self.document.is_element(node))
+                    .or_else(|| {
+                        self.document
+                            .parent(node)
+                            .filter(|&parent| self.document.is_element(parent))
+                    });
+                let context = match element {
+                    Some(element) if self.document.tag(element) != Some("html") => {
+                        self.fragment_context(element)
+                    }
+                    _ => (Namespace::Html, "body".to_owned()),
+                };
+                let under = element.unwrap_or(node);
+                let container = self.parse_fragment(&context, under, &markup)?;
+                // Its scripts are not started: they run once inserted.
+                let scripts: Vec<NodeId> = self
+                    .document
+                    .subtree(container)
+                    .filter(|&node| is_script(&self.document, node))
+                    .collect();
+                for script in scripts {
+                    self.started.remove(&script);
+                    self.made_by_script(script, false);
+                }
+                let made = self.document.create_fragment().map_err(refused)?;
+                self.detached.push(made);
+                self.adopt(container, made, None)?;
                 Ok(self.give(Some(made)))
             }
             Call::CreateDoctype(name, public_id, system_id) => {
@@ -2584,11 +2667,20 @@ impl DocumentHost {
                     .map(|url| Answer::String(url.to_string()))
                     .map_err(|message| DomError::new("TypeError", message))
             }
-            Call::ImportModule { id, url } => self
-                .modules
-                .want(id, url)
-                .map(|()| Answer::Nothing)
-                .map_err(|message| DomError::new("TypeError", message)),
+            // A `blob:` URL's blob is the one it stands for now, though
+            // revoked before its fetch.
+            Call::ImportModule { id, url, options } => {
+                if let Ok(parsed) = net::Url::parse(js::module_of_name(&url).0)
+                    && parsed.scheme() == "blob"
+                    && let Some(blob) = crate::blob_urls::entry_of(&parsed, &self.blob_origin())
+                {
+                    self.modules.pin(&parsed, blob);
+                }
+                self.modules
+                    .want(id, url, options)
+                    .map(|()| Answer::Nothing)
+                    .map_err(|message| DomError::new("TypeError", message))
+            }
             Call::Nonce(node) => {
                 let node = self.node(node)?;
                 let nonce = self
@@ -3504,6 +3596,9 @@ impl DocumentHost {
         index: f64,
     ) -> Result<Answer, DomError> {
         let gone = || DomError::new("NotFoundError", "The style sheet is gone.");
+        if owner.is_none() && op != "sheets" {
+            return self.constructed_cssom(op, path, text, index);
+        }
         let Some(page) = self.page.as_mut() else {
             return Err(gone());
         };
@@ -3593,6 +3688,133 @@ impl DocumentHost {
                 }
                 let done = done.ok_or_else(gone)?;
                 // The cascade and layout of the run are of the old rules.
+                self.computed = None;
+                self.laid_out = None;
+                Ok(Answer::Number(done as f64))
+            }
+            _ => Err(gone()),
+        }
+    }
+
+    /// The CSSOM's ops on constructed sheets (`new CSSStyleSheet()`, CSS
+    /// module scripts): `construct`, a new sheet whose URLs resolve
+    /// against `text` (the document's base URL when empty), its serial
+    /// number; `adopt`, `document.adoptedStyleSheets` set to the sheets
+    /// `path` numbers; and on the sheet `path[0]` (its rule path after an
+    /// empty import count), `replace` its rules by `text`, and `info`,
+    /// `sheet`, `rules`, `insert`, `delete` and `set` as an element's
+    /// sheet has them.
+    fn constructed_cssom(
+        &mut self,
+        op: &str,
+        path: &[f64],
+        text: &str,
+        index: f64,
+    ) -> Result<Answer, DomError> {
+        let gone = || DomError::new("NotFoundError", "The style sheet is gone.");
+        let base = (op == "construct").then(|| {
+            net::Url::parse(text).ok().or_else(|| {
+                self.page
+                    .as_ref()
+                    .and_then(|page| page.base_url(&self.document))
+            })
+        });
+        let Some(page) = self.page.as_mut() else {
+            return Err(gone());
+        };
+        let number = |n: f64| {
+            if n.is_finite() && n >= 0.0 {
+                n as u64
+            } else {
+                u64::MAX
+            }
+        };
+        match op {
+            "construct" => {
+                let serial = page.construct_sheet(base.flatten()).ok_or_else(|| {
+                    DomError::new(
+                        "NotSupportedError",
+                        "Too many style sheets were constructed.",
+                    )
+                })?;
+                return Ok(Answer::Numbers(vec![serial as f64]));
+            }
+            "adopt" => {
+                self.work += path.len() as u64;
+                page.adopt_sheets(path.iter().take(1 << 12).map(|&n| number(n)).collect());
+                self.computed = None;
+                self.laid_out = None;
+                return Ok(Answer::Nothing);
+            }
+            _ => {}
+        }
+        let serial = number(path.first().copied().unwrap_or(-1.0));
+        let rule_path: Vec<usize> = path
+            .iter()
+            .skip(2)
+            .take(1 << 10)
+            .map(|&n| number(n).min(usize::MAX as u64) as usize)
+            .collect();
+        let index = if index.is_finite() && index >= 0.0 {
+            index.min(u32::MAX as f64) as usize
+        } else {
+            usize::MAX
+        };
+        match op {
+            "replace" => {
+                self.work += text.len() as u64 / 64;
+                if !page.replace_sheet(serial, text) {
+                    return Err(gone());
+                }
+                self.computed = None;
+                self.laid_out = None;
+                Ok(Answer::Nothing)
+            }
+            "sheet" => Ok(Answer::Numbers(
+                page.constructed_sheet(serial)
+                    .map(|view| vec![view.serial as f64])
+                    .unwrap_or_default(),
+            )),
+            "info" => {
+                page.constructed_sheet(serial).ok_or_else(gone)?;
+                Ok(Answer::Strings(vec![
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                ]))
+            }
+            "rules" => {
+                let view = page.constructed_sheet(serial).ok_or_else(gone)?;
+                let flat = super::rules::rules(view.rules, &rule_path);
+                self.work += flat.len() as u64;
+                Ok(Answer::Strings(flat))
+            }
+            "insert" | "delete" | "set" => {
+                let mut failure = None;
+                let done = page.constructed_edit(serial, |sheet| {
+                    let same: Vec<Option<usize>> = (0..sheet.rules.len()).map(Some).collect();
+                    let result = match op {
+                        "insert" => super::rules::insert(sheet, &rule_path, text, index),
+                        "delete" => {
+                            super::rules::delete(sheet, &rule_path, index).map(|kept| (0, kept))
+                        }
+                        _ => Ok((
+                            usize::from(super::rules::set(sheet, &rule_path, text, index == 1)),
+                            same,
+                        )),
+                    };
+                    match result {
+                        Ok(done) => Some(done),
+                        Err(error) => {
+                            failure = Some(error);
+                            None
+                        }
+                    }
+                });
+                if let Some(error) = failure {
+                    return Err(error);
+                }
+                let done = done.ok_or_else(gone)?;
                 self.computed = None;
                 self.laid_out = None;
                 Ok(Answer::Number(done as f64))
@@ -4029,11 +4251,13 @@ impl DocumentHost {
         let prepared = prepare_element(page, &self.document, element, line, true);
         let violations = page.take_violations();
         self.say_violations(violations, Some(element));
+        self.parser_prepared(element, !matches!(prepared, Prepared::NotYet));
         match prepared {
             Prepared::NotYet | Prepared::Nothing | Prepared::Refused => {}
             Prepared::Failed => self.outputs.events.push((element, "error")),
             Prepared::Module { request, inline } => {
                 let place = module_place(&self.document, element, true);
+                self.outputs.order.push(true);
                 self.outputs.modules.push(ModuleWanted {
                     element,
                     request,
@@ -4041,7 +4265,7 @@ impl DocumentHost {
                     place,
                 });
             }
-            Prepared::ImportMap(text) => self.register_map(element, &text, line),
+            Prepared::ImportMap(text) => self.register_map(&text, line),
             Prepared::Inline(source) => {
                 if self.may_nest()
                     && let Some(parser) = self.parser.as_mut().and_then(html::Load::parser)
@@ -4057,6 +4281,7 @@ impl DocumentHost {
             } => {
                 let place = parser_place(&self.document, element);
                 self.blocked |= place == Place::Blocking;
+                self.outputs.order.push(false);
                 self.outputs.wanted.push(Wanted {
                     request,
                     url,
@@ -4075,18 +4300,24 @@ impl DocumentHost {
     /// or in order with the others whose `async` was set false.
     fn prepare_made(&mut self) {
         let root = self.document.root();
+        // Only those that would start: a script's type, and a `src` or
+        // text (a page's templates in `script` elements wait unasked);
+        // those an earlier insertion found wait in its order.
         let mut ready: Vec<NodeId> = self
             .pending
             .iter()
             .copied()
             .filter(|&script| {
                 self.document.contains(script)
+                    && !self.batch.contains(&script)
+                    && super::script_type(&self.document, script).is_some()
+                    && (self.document.attr(script, "src").is_some()
+                        || self.document.attr(script, "href").is_some()
+                        || self.document.attr(script, "xlink:href").is_some()
+                        || !super::child_text(&self.document, script).is_empty())
                     && self.document.ancestors(script).last() == Some(root)
             })
             .collect();
-        if ready.is_empty() {
-            return;
-        }
         if ready.len() > 1 {
             let order: Vec<NodeId> = self
                 .document
@@ -4095,7 +4326,16 @@ impl DocumentHost {
                 .collect();
             ready = order;
         }
-        for script in ready {
+        // The new ones first: they run within the insertion that made
+        // them ready, which a script of the batch made.
+        let mut queue: VecDeque<NodeId> = ready.into();
+        queue.extend(std::mem::take(&mut self.batch));
+        while let Some(script) = queue.pop_front() {
+            let connected = self.document.contains(script)
+                && self.document.ancestors(script).last() == Some(root);
+            if !connected || !self.pending.contains(&script) {
+                continue;
+            }
             let Some(page) = self.page.as_mut() else {
                 return;
             };
@@ -4116,6 +4356,7 @@ impl DocumentHost {
                         true => Place::Soon,
                         false => module_place(&self.document, script, false),
                     };
+                    self.outputs.order.push(true);
                     self.outputs.modules.push(ModuleWanted {
                         element: script,
                         request,
@@ -4123,10 +4364,13 @@ impl DocumentHost {
                         place,
                     });
                 }
-                Prepared::ImportMap(text) => self.register_map(script, &text, 1),
+                Prepared::ImportMap(text) => self.register_map(&text, 1),
                 Prepared::Inline(source) => {
                     if self.may_nest() {
                         self.now.push_back(source);
+                        // It runs before the others are prepared.
+                        self.batch = queue;
+                        return;
                     }
                 }
                 Prepared::Fetch {
@@ -4140,6 +4384,7 @@ impl DocumentHost {
                     } else {
                         Place::InOrder
                     };
+                    self.outputs.order.push(false);
                     self.outputs.wanted.push(Wanted {
                         request,
                         url,
@@ -4152,11 +4397,10 @@ impl DocumentHost {
         }
     }
 
-    /// HTML's "register an import map" for `element`, a script's or one
-    /// a write put in, of `text` (D61): its warnings on the console; one
-    /// too late an `error` event at its element; one that is none an
-    /// exception reported after the run, at `line`.
-    fn register_map(&mut self, element: NodeId, text: &str, line: u32) {
+    /// HTML's "register an import map" for a script's element or one a
+    /// write put in, of `text` (D61): its warnings on the console; one
+    /// that is none an exception reported after the run, at `line`.
+    fn register_map(&mut self, text: &str, line: u32) {
         let Some(base) = self
             .page
             .as_ref()
@@ -4170,11 +4414,21 @@ impl DocumentHost {
                     self.say(ConsoleLevel::Warn, warning);
                 }
             }
-            Registered::Late(why) => {
-                self.say(ConsoleLevel::Error, why.to_owned());
-                self.outputs.events.push((element, "error"));
-            }
             Registered::Error(error) => self.outputs.thrown.push((error, line)),
+        }
+    }
+
+    /// Notes that the parser prepared the script `element` (HTML's
+    /// "prepare the script element"): it started, or, its type not a
+    /// script's or it with neither text nor a `src`, it is left to run
+    /// when a script gives it them, as one a script made, its "force
+    /// async" flag set (its parser document is null now).
+    pub(crate) fn parser_prepared(&mut self, element: NodeId, started: bool) {
+        if started {
+            self.started.insert(element);
+        } else {
+            self.made.insert(element);
+            self.pending.push(element);
         }
     }
 

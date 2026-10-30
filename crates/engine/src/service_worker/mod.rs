@@ -128,6 +128,8 @@ pub struct Version {
     pub events: Vec<String>,
     pub state: State,
     pub skip_waiting: bool,
+    /// Whether its script is a module script (D61).
+    pub module: bool,
 }
 
 impl Version {
@@ -197,6 +199,9 @@ pub struct Job {
     /// Where the storage key's documents are (M33.2), which its scripts
     /// are fetched in.
     pub partition: Option<net::Partition>,
+    /// Its worker type (D61): a module script's rather than a classic
+    /// one's. An update job takes its newest version's.
+    pub module: bool,
 }
 
 impl Job {
@@ -205,7 +210,9 @@ impl Job {
         self.kind == other.kind
             && self.scope == other.scope
             && (self.kind == JobKind::Unregister
-                || (self.script == other.script && self.update_via_cache == other.update_via_cache))
+                || (self.script == other.script
+                    && self.update_via_cache == other.update_via_cache
+                    && self.module == other.module))
     }
 
     /// What its errors begin with, as the reference browser words them.
@@ -526,6 +533,7 @@ impl Registry {
             update_via_cache: reg.update_via_cache,
             force_bypass: true,
             partition: reg.partition.clone(),
+            module: newest.module,
         };
         self.schedule(job);
     }
@@ -635,7 +643,7 @@ impl Registry {
             let same = reg
                 .newest()
                 .and_then(|v| self.versions.get(&v))
-                .is_some_and(|newest| newest.script == job.script)
+                .is_some_and(|newest| newest.script == job.script && newest.module == job.module)
                 && reg.update_via_cache == job.update_via_cache;
             if same {
                 let reg = reg.id;
@@ -699,6 +707,13 @@ impl Registry {
             self.reject(id, "TypeError", "The script URL changed.");
             self.finish(id);
             return;
+        }
+        // An update keeps its newest version's worker type.
+        if job.kind == JobKind::Update
+            && let Some(newest) = newest
+        {
+            let module = newest.module;
+            self.jobs.get_mut(&id).expect("running").job.module = module;
         }
         let stale = reg
             .last_check
@@ -787,7 +802,9 @@ impl Registry {
             .get(&registration)
             .and_then(Registration::newest)
             .and_then(|v| self.versions.get(&v));
+        // Another worker type is a new version, whatever its bytes.
         if let Some(newest) = newest
+            && newest.module == job.module
             && newest
                 .resources
                 .first()
@@ -903,6 +920,7 @@ impl Registry {
                 events: Vec::new(),
                 state: State::Parsed,
                 skip_waiting: false,
+                module: job.module,
             },
         );
         self.jobs.get_mut(&id).expect("running").stage = Stage::Evaluating {
@@ -1273,6 +1291,7 @@ impl Registry {
                     events: read.events,
                     state: State::Activated,
                     skip_waiting: false,
+                    module: read.module,
                 },
             );
             self.map

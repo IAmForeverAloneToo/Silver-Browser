@@ -31,8 +31,10 @@ pub(crate) struct Recorder {
     pub(crate) hidden: bool,
     /// The messages posted to the window (M31), by target origin.
     pub(crate) posted: Vec<(String, String)>,
-    /// The `import()`s that wanted a module fetched (D61), by id.
+    /// The `import()`s that wanted a module fetched (D61), by id, and
+    /// the fetch options each asked with.
     pub(crate) imports: Vec<(u32, String)>,
+    pub(crate) import_options: Vec<u32>,
 }
 
 impl ScriptingHost for Recorder {
@@ -111,8 +113,9 @@ impl ScriptingHost for Recorder {
                 Ok(Answer::Nothing)
             }
             Call::ResolveModule { base, specifier } => resolve_module(&base, &specifier),
-            Call::ImportModule { id, url } => {
+            Call::ImportModule { id, url, options } => {
                 self.imports.push((id, url));
+                self.import_options.push(options);
                 Ok(Answer::Nothing)
             }
             call => self.tree.dom(call),
@@ -129,8 +132,13 @@ impl ScriptingHost for Recorder {
 }
 
 /// A module specifier resolved as these tests need it (D61): a URL as it
-/// is, a path against `base`'s directory, a bare name refused.
+/// is, a path against `base`'s directory (the page's when empty), a bare
+/// name refused.
 fn resolve_module(base: &str, specifier: &str) -> Result<Answer, DomError> {
+    let base = match base {
+        "" => "https://example.com/page.html",
+        base => base,
+    };
     if specifier.starts_with("https:") {
         return Ok(Answer::String(specifier.to_owned()));
     }
@@ -163,6 +171,8 @@ pub(crate) fn script(source: &str) -> Script<'_> {
         url: "https://example.com/page.html",
         line: 1,
         muted: false,
+        base: "",
+        options: 0,
     }
 }
 
@@ -352,6 +362,8 @@ fn errors_name_their_kind_message_and_place() {
         url: "https://example.com/page.html",
         line: 10,
         muted: false,
+        base: "",
+        options: 0,
     };
     let error = realm.run(&inline, &mut host).expect_err("it throws");
     assert_eq!(error.kind, ErrorKind::Exception);
@@ -373,6 +385,8 @@ fn errors_name_their_kind_message_and_place() {
         url: "data:text/javascript,throw new Error('x') (a)",
         line: 1,
         muted: false,
+        base: "",
+        options: 0,
     };
     let error = realm.run(&data, &mut host).expect_err("it throws");
     assert_eq!(error.url, data.url);
@@ -396,6 +410,8 @@ fn a_muted_scripts_errors_say_nothing_of_it() {
         url: "https://other.example/data.js",
         line: 1,
         muted: true,
+        base: "",
+        options: 0,
     };
     let error = realm.run(&muted, &mut host).expect_err("it throws");
     assert_eq!(error.message, "Script error.");

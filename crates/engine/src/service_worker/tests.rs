@@ -19,6 +19,7 @@ fn job(kind: JobKind, scope: &str, script: &str) -> Job {
         update_via_cache: UpdateViaCache::Imports,
         force_bypass: false,
         partition: None,
+        module: false,
     }
 }
 
@@ -846,4 +847,49 @@ fn the_fuzz_driver_runs_over_many_sequences() {
             .collect();
         fuzz_registry(&data);
     }
+}
+
+#[test]
+fn a_module_versions_type_is_kept_and_another_type_makes_a_new_version() {
+    let mut registry = Registry::default();
+    registry.set_writing(true);
+    let mut register = job(JobKind::Register, "https://a.test/", "https://a.test/sw.js");
+    register.module = true;
+    registry.schedule(register);
+    run(&mut registry, b"same", &[]);
+    let first = active(&registry, "https://a.test/").expect("active");
+    let (first, module) = (first.id, first.module);
+    assert!(module);
+    // The profile keeps its worker type.
+    let reg = registry.get(KEY, "https://a.test/").expect("listed");
+    let record = registry
+        .take_written()
+        .into_iter()
+        .find_map(|written| written.record)
+        .expect("kept");
+    let mut again = Registry::default();
+    again.load(KEY, vec![(reg, record)]);
+    assert!(active(&again, "https://a.test/").expect("read").module);
+    // An update keeps its type: the same bytes, nothing new.
+    registry.schedule(job(
+        JobKind::Update,
+        "https://a.test/",
+        "https://a.test/sw.js",
+    ));
+    run(&mut registry, b"same", &[]);
+    assert_eq!(
+        active(&registry, "https://a.test/").map(|v| v.id),
+        Some(first)
+    );
+    // Registered again as a classic script, the same bytes are a new
+    // version of that type.
+    registry.schedule(job(
+        JobKind::Register,
+        "https://a.test/",
+        "https://a.test/sw.js",
+    ));
+    run(&mut registry, b"same", &[]);
+    let now = active(&registry, "https://a.test/").expect("active");
+    assert_ne!(now.id, first);
+    assert!(!now.module);
 }

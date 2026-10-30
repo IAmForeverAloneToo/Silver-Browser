@@ -378,6 +378,7 @@ pub fn fuzz_registry(data: &[u8]) {
             events: read.events.clone(),
             state: State::Activated,
             skip_waiting: false,
+            module: false,
         };
         let again = record::decode(&record::encode(&reg, &version)).expect("written, it reads");
         assert_eq!(again.scope, read.scope);
@@ -406,6 +407,7 @@ pub fn fuzz_registry(data: &[u8]) {
                     update_via_cache: mode,
                     force_bypass: false,
                     partition: None,
+                    module: false,
                 };
                 let first = registry.schedule(job.clone());
                 let second = (op == 3).then(|| registry.schedule(job));
@@ -430,6 +432,7 @@ pub fn fuzz_registry(data: &[u8]) {
                     update_via_cache: mode,
                     force_bypass: false,
                     partition: None,
+                    module: false,
                 });
                 let mut trace = Trace::default();
                 let settled = drive(&mut registry, &mut input, &mut trace);
@@ -445,6 +448,7 @@ pub fn fuzz_registry(data: &[u8]) {
                     update_via_cache: UpdateViaCache::Imports,
                     force_bypass: false,
                     partition: None,
+                    module: false,
                 });
                 let settled = drive(&mut registry, &mut input, &mut Trace::default());
                 let had = model.remove(scope).is_some();

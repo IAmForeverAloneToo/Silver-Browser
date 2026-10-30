@@ -289,7 +289,7 @@ fn import_fetches_its_graph_and_settles_in_a_task() {
 }
 
 #[test]
-fn an_import_map_maps_bare_specifiers_before_the_first_module() {
+fn import_maps_map_bare_specifiers_and_a_later_one_is_merged() {
     let server = serve(|path| match path {
         "/page.html" => Some(html(
             "<script type=importmap>{\n\
@@ -298,39 +298,64 @@ fn an_import_map_maps_bare_specifiers_before_the_first_module() {
                \"integrity\": { \"./lib/checked.js\": \"sha256-AAAA\" },\n\
                \"extra\": true\n\
              }</script>\
-             <script type=importmap onerror=\"console.log('error second')\">{}</script>\
+             <script type=importmap onerror=\"console.log('error second')\">\
+             { \"imports\": { \"lib\": \"./lib/other.js\", \"two\": \"./lib/two.js\" } }</script>\
              <script type=module>\n\
              import { x } from 'lib'; import 'lib/more.js';\n\
              console.log('x', x, import.meta.resolve('lib'));\n\
              import('lib/checked.js').catch(e => console.log(e.name));\n\
+             import('two').then(() => import('late')).then(() => import('lib/more.js'))\n\
+               .then(() => console.log('late done'));\n\
              </script>\
-             <script type=importmap onerror=\"console.log('error late')\">{}</script>",
+             <script type=importmap onerror=\"console.log('error late')\">\
+             { \"imports\": { \"lib/more.js\": \"./lib/other.js\", \"late\": \"./lib/late.js\" } }\
+             </script>",
         )),
         "/lib/index.js" => Some(javascript("import { s } from 'lib'; export const x = s;")),
         "/lib/scoped.js" => Some(javascript("export const s = 'scoped';")),
         "/lib/more.js" => Some(javascript("console.log('more')")),
         "/lib/checked.js" => Some(javascript("console.log('checked')")),
+        "/lib/two.js" => Some(javascript("console.log('two')")),
+        "/lib/late.js" => Some(javascript("console.log('late')")),
+        "/lib/other.js" => Some(javascript("console.log('other')")),
         _ => None,
     });
     let mut tab = scripting();
     load_all(&mut tab, server.url("/page.html"));
-    let lines = tab.run_until(|lines| lines.len() >= 9);
+    let lines = tab.run_until(|lines| lines.iter().any(|line| line == "late done"));
+    let ignored = |key: &str| {
+        format!(
+            "An import map rule for specifier \"{key}\" was ignored as it conflicts with an \
+             existing rule or an already resolved module."
+        )
+    };
+    // The second map's `lib` is the first's; the late one may not change
+    // `lib/more.js`, which the module script resolved; neither is an
+    // error. What the module script then imports takes their merge.
     assert_eq!(
-        lines,
+        lines[..3],
         [
             "An invalid top-level key \"extra\" was present in the import map.".to_owned(),
-            "Only one import map is supported.".to_owned(),
-            "error second".to_owned(),
-            "An import map is added after module script load was triggered.".to_owned(),
-            "error late".to_owned(),
-            "more".to_owned(),
-            format!("x scoped {}", server.url("/lib/index.js")),
+            ignored("lib"),
+            ignored("lib/more.js"),
+        ]
+    );
+    let mut rest = lines[3..].to_vec();
+    rest.sort();
+    assert_eq!(
+        rest,
+        [
             format!(
                 "Failed to load module script {}: the response did not match the integrity \
                  metadata",
                 server.url("/lib/checked.js")
             ),
             "TypeError".to_owned(),
+            "late".to_owned(),
+            "late done".to_owned(),
+            "more".to_owned(),
+            "two".to_owned(),
+            format!("x scoped {}", server.url("/lib/index.js")),
         ]
     );
 }
@@ -499,4 +524,119 @@ fn a_parser_inserted_module_a_modulepreload_fetched_is_allowed_by_strict_dynamic
     load_all(&mut tab, server.url("/page.html"));
     let lines = tab.run_until(|lines| !lines.is_empty());
     assert_eq!(lines, ["m"]);
+}
+
+#[test]
+fn import_in_a_string_compiled_takes_its_scripts_base_url_and_nonce() {
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<meta http-equiv=content-security-policy \
+               content=\"script-src 'nonce-n' 'unsafe-eval'\">\
+             <base href=/dir/>\
+             <script nonce=n>\n\
+             document.querySelector('base').href = '/elsewhere/';\n\
+             eval(\"import('./a.js').then(m => console.log('eval', m.a))\");\n\
+             setTimeout(\"import('./t.js').then(m => console.log('timer', m.t))\");\n\
+             </script>\
+             <script nonce=n src=/lib/s.js></script>",
+        )),
+        "/lib/s.js" => Some(javascript(
+            "Function(\"return import('./b.js')\")().then(m => console.log('function', m.b));",
+        )),
+        "/dir/a.js" => Some(javascript("export const a = 'dir';")),
+        "/dir/t.js" => Some(javascript("export const t = 'dir';")),
+        "/lib/b.js" => Some(javascript("export const b = 'lib';")),
+        _ => None,
+    });
+    let mut tab = scripting();
+    load_all(&mut tab, server.url("/page.html"));
+    let mut lines = tab.run_until(|lines| lines.len() >= 3);
+    lines.sort();
+    // Each resolved against its script's base URL (the inline one's when
+    // it was prepared), and fetched with its nonce, which the policy
+    // asks of every script.
+    assert_eq!(lines, ["eval dir", "function lib", "timer dir"]);
+}
+
+#[test]
+fn json_css_and_text_modules_are_fetched_by_their_type() {
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<p id=p>x</p>\
+             <script type=module>\n\
+             import data from './data.json' with { type: 'json' };\n\
+             import sheet from './sheet.css' with { type: 'css' };\n\
+             import words from './words.txt' with { type: 'text' };\n\
+             document.adoptedStyleSheets = [sheet];\n\
+             console.log(data.n, sheet.cssRules.length, words.trim(),\n\
+               getComputedStyle(document.getElementById('p')).color);\n\
+             import('./data.js', { with: { type: 'json' } })\n\
+               .catch(e => console.log('mime', e.name));\n\
+             import('./data.json').catch(e => console.log('as js', e.name));\n\
+             </script>",
+        )),
+        "/data.json" => Some(Reply::ok("application/json", b"{\"n\": 5}")),
+        "/data.js" => Some(javascript("{\"n\": 6}")),
+        "/sheet.css" => Some(Reply::ok("text/css", b"p { color: rgb(0, 128, 0) }")),
+        "/words.txt" => Some(Reply::ok("text/plain", b"some words\n")),
+        _ => None,
+    });
+    let mut tab = scripting();
+    load_all(&mut tab, server.url("/page.html"));
+    let lines = tab.run_until(|lines| lines.len() >= 5);
+    assert!(
+        lines.contains(&"5 1 some words rgb(0, 128, 0)".to_owned()),
+        "{lines:?}"
+    );
+    assert!(lines.contains(&"mime TypeError".to_owned()), "{lines:?}");
+    assert!(lines.contains(&"as js TypeError".to_owned()), "{lines:?}");
+}
+
+#[test]
+fn a_module_scripts_integrity_holds_for_its_root_and_a_blob_revoked_after_import_resolves() {
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<script type=module src=root.js integrity=sha384-nope \
+               onerror=\"console.log('refused')\"></script>\
+             <script type=module>\n\
+             const url = URL.createObjectURL(new Blob(['export default 7'], \
+               { type: 'text/javascript' }));\n\
+             const imported = import(url);\n\
+             // Revoked once its import() resolved it, before the fetch.\n\
+             Promise.resolve().then(() => URL.revokeObjectURL(url));\n\
+             imported.then(m => console.log('blob', m.default));\n\
+             </script>",
+        )),
+        "/root.js" => Some(javascript("console.log('ran')")),
+        _ => None,
+    });
+    let mut tab = scripting();
+    load_all(&mut tab, server.url("/page.html"));
+    let mut lines = tab.run_until(|lines| lines.iter().any(|line| line.starts_with("blob")));
+    lines.retain(|line| !line.starts_with("Failed to load module script"));
+    lines.sort();
+    assert_eq!(lines, ["blob 7", "refused"]);
+}
+
+#[test]
+fn inserted_classic_and_module_scripts_not_async_run_in_insertion_order() {
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<script>\n\
+             for (const [src, module] of [['c1.js', false], ['m.js', true], ['c2.js', false]]) {\n\
+               const s = document.createElement('script');\n\
+               s.src = src; s.async = false; if (module) s.type = 'module';\n\
+               document.head.append(s);\n\
+             }\n\
+             </script>",
+        )),
+        "/c1.js" => Some(later("console.log('c1')", 200)),
+        "/m.js" => Some(javascript("console.log('m')")),
+        "/c2.js" => Some(javascript("console.log('c2')")),
+        _ => None,
+    });
+    let mut tab = scripting();
+    load_all(&mut tab, server.url("/page.html"));
+    let lines = tab.run_until(|lines| lines.len() >= 3);
+    assert_eq!(lines, ["c1", "m", "c2"]);
 }

@@ -59,6 +59,8 @@ fn script(source: &str) -> Script<'_> {
         url: "https://example.com/bench.js",
         line: 1,
         muted: false,
+        base: "",
+        options: 0,
     }
 }
 

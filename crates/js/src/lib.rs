@@ -135,6 +135,14 @@ pub struct Script<'a> {
     /// Whether its errors are muted (section 8.1.4.6): it came from
     /// another origin, whose details a page may not learn.
     pub muted: bool,
+    /// The base URL its `import()`s resolve against (HTML's script's base
+    /// URL): an inline script's document's when it was prepared; empty
+    /// for `url`.
+    pub base: &'a str,
+    /// Its fetch options by the host's number for them (HTML's script
+    /// fetch options), which its `import()`s fetch with: 0 for the
+    /// defaults.
+    pub options: u32,
 }
 
 /// The longest module specifier a realm resolves, in bytes (D61): the
@@ -147,12 +155,81 @@ pub const MAX_SPECIFIER_BYTES: usize = 2 << 20;
 /// release build, measured; QuickJS's linking is recursive.
 pub const MAX_MODULE_DEPTH: usize = 256;
 
+/// What a module is (HTML's module type, an import's `type` attribute):
+/// JavaScript, JSON, a CSS style sheet or text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ModuleKind {
+    #[default]
+    Js,
+    Json,
+    Css,
+    Text,
+}
+
+impl ModuleKind {
+    /// The kind a `type` attribute names: none for one the reference
+    /// browser does not take (`javascript` among them, which the
+    /// standard leaves out).
+    pub fn of_type(kind: &str) -> Option<ModuleKind> {
+        match kind {
+            "json" => Some(ModuleKind::Json),
+            "css" => Some(ModuleKind::Css),
+            "text" => Some(ModuleKind::Text),
+            _ => None,
+        }
+    }
+
+    /// Its `type` attribute; empty for JavaScript, which has none.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ModuleKind::Js => "",
+            ModuleKind::Json => "json",
+            ModuleKind::Css => "css",
+            ModuleKind::Text => "text",
+        }
+    }
+}
+
+/// What separates a module's URL from its kind in its name, and an
+/// inline module script's base URL from its number: a character no
+/// serialized URL holds.
+pub const MODULE_MARK: char = '\u{1}';
+
+/// The name a realm and the engine know the module at `url` of `kind` by
+/// (HTML's module map, keyed by URL and type): its URL for JavaScript,
+/// else its URL, the mark and its type.
+pub fn module_name(url: &str, kind: ModuleKind) -> String {
+    match kind {
+        ModuleKind::Js => url.to_owned(),
+        _ => format!("{url}{MODULE_MARK}{}", kind.as_str()),
+    }
+}
+
+/// A module's name split into its URL and its kind.
+pub fn module_of_name(name: &str) -> (&str, ModuleKind) {
+    match name.split_once(MODULE_MARK) {
+        Some((url, kind)) => (url, ModuleKind::of_type(kind).unwrap_or_default()),
+        None => (name, ModuleKind::Js),
+    }
+}
+
+/// A static import a module names (D61): its specifier and the kind its
+/// attributes ask for; `None` for attributes the reference browser does
+/// not take (a key other than `type`, or a type unknown), which fail
+/// its module when it is linked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleRequest {
+    pub specifier: String,
+    pub kind: Option<ModuleKind>,
+}
+
 /// A module the engine fetched for a realm (D61): what its loader
 /// serves, and serves nothing else.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleSource {
-    /// The URL it was asked for, by which the realm's module map knows
-    /// it, so that it is evaluated once a realm.
+    /// Its name ([`module_name`]): the URL it was asked for and its
+    /// kind, by which the realm's module map knows it, so that it is
+    /// evaluated once a realm.
     pub url: String,
     /// Its base URL, its response's: what its imports resolve against
     /// and what `import.meta.url` is.
@@ -173,6 +250,9 @@ pub struct ModuleScript<'a> {
     pub inline: Option<(&'a str, u32)>,
     /// The modules of its graph the realm was not given yet.
     pub modules: &'a [ModuleSource],
+    /// Its fetch options by the host's number, as [`Script::options`]:
+    /// its graph's modules' `import()`s fetch with them.
+    pub options: u32,
 }
 
 /// The value a script ends with, kept as far as a `javascript:` URL
@@ -558,10 +638,14 @@ pub trait Realm<H: ScriptingHost> {
     /// of its own; what it ended with, or why it failed. The caller
     /// performs the microtask checkpoint that follows.
     fn run(&mut self, script: &Script<'_>, host: &mut H) -> Result<Completion, ScriptError>;
-    /// The specifiers of the static imports of the module `source` at
-    /// `url` (D61), found by declaring it apart, its imports none of the
-    /// realm's; a syntax error's report if it does not parse.
-    fn module_requests(&mut self, url: &str, source: &str) -> Result<Vec<String>, ScriptError>;
+    /// The static imports of the module `source` at `url` (D61), found by
+    /// declaring it apart, its imports none of the realm's; a syntax
+    /// error's report if it does not parse.
+    fn module_requests(
+        &mut self,
+        url: &str,
+        source: &str,
+    ) -> Result<Vec<ModuleRequest>, ScriptError>;
     /// Links and evaluates a module script (HTML's "run a module
     /// script", D61) with `host` and a step budget of its own, as
     /// [`Realm::run`] runs a classic one: an error linking it reported

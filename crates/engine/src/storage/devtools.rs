@@ -193,6 +193,7 @@ pub(crate) fn answer(
                     update_via_cache: crate::service_worker::UpdateViaCache::Imports,
                     force_bypass: false,
                     partition: None,
+                    module: false,
                 });
             storage.wake_registry();
             Json::Null

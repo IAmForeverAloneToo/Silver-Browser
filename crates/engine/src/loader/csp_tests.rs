@@ -755,10 +755,12 @@ fn base_uri_and_form_action_hold() {
     assert_eq!(
         lines,
         [
-            // A run's lines first, then what its policies refused in it.
-            "http://a.localhost:PORT/rel",
+            // The base URL, the script's own as it is prepared (D61),
+            // refused before it runs; then a run's lines, then what its
+            // policies refused in it.
             "Content-Security-Policy refused the base URL http://b.localhost:PORT/elsewhere/: \
              base-uri 'self'",
+            "http://a.localhost:PORT/rel",
             "Content-Security-Policy refused the form submission to http://b.localhost:PORT/x?: \
              form-action 'self'",
             "landed ?q=1",

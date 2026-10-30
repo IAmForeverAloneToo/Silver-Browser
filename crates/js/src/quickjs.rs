@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use rquickjs::context::EvalOptions;
 use rquickjs::function::Rest;
+use rquickjs::promise::PromiseHookType;
 use rquickjs::{
     CatchResultExt, CaughtError, Coerced, Context, Ctx, Exception, Function, Module, Object,
     Persistent, Promise, Runtime, Value,
@@ -29,8 +30,8 @@ use rquickjs::{
 
 use crate::{
     Completion, ConsoleKind, ConsoleLevel, ConsoleRecord, Death, ErrorKind, FetchAnswer, Field,
-    Limits, MAX_PREVIEW_BYTES, MAX_STACK_FRAMES, ModuleScript, Realm, RealmKind, Script,
-    ScriptEngine, ScriptError, ScriptingHost, StackFrame, Target, Task,
+    Limits, MAX_PREVIEW_BYTES, MAX_STACK_FRAMES, ModuleRequest, ModuleScript, Realm, RealmKind,
+    Script, ScriptEngine, ScriptError, ScriptingHost, StackFrame, Target, Task,
 };
 
 /// QuickJS-ng 0.16, which `rquickjs` builds from its source.
@@ -160,8 +161,21 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
         };
         let work = budget.work.clone();
         let entries: Entries = Rc::default();
-        // Module scripts (D61): the realm's resolver and loader.
+        // Module scripts (D61): the realm's resolver and loader; CSS
+        // modules a window's only; and the promises code a string
+        // compiled makes, which find its active script.
         let module_state: Rc<modules::State> = Rc::default();
+        module_state
+            .css
+            .set(matches!(kind, RealmKind::Window | RealmKind::DevTools));
+        let made = module_state.clone();
+        runtime.set_promise_hook(Some(Box::new(
+            move |ctx: Ctx<'_>, hook: PromiseHookType, _: Value<'_>, _: Value<'_>| {
+                if matches!(hook, PromiseHookType::Init) {
+                    modules::promise_made(&ctx, &made);
+                }
+            },
+        )));
         runtime.set_loader(
             modules::ModuleResolver {
                 state: module_state.clone(),
@@ -177,10 +191,18 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
         );
         let saved = context
             .with(|ctx| {
-                install(&ctx, kind, limits.secure, &host, &budget, &entries)
-                    .map(|entries| Persistent::save(&ctx, entries))
-                    .catch(&ctx)
-                    .map_err(|e| e.to_string())
+                install(
+                    &ctx,
+                    kind,
+                    limits.secure,
+                    &host,
+                    &budget,
+                    &entries,
+                    &module_state,
+                )
+                .map(|entries| Persistent::save(&ctx, entries))
+                .catch(&ctx)
+                .map_err(|e| e.to_string())
             })
             .map_err(|message| ScriptError {
                 kind: ErrorKind::Exception,
@@ -338,6 +360,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
 impl<H: ScriptingHost> Drop for QuickJsRealm<H> {
     fn drop(&mut self) {
         self.runtime.set_host_promise_rejection_tracker(None);
+        self.runtime.set_promise_hook(None);
         self.rejections.borrow_mut().clear();
         self.modules.clear();
         *self.entries.borrow_mut() = None;
@@ -350,6 +373,18 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
             return Err(dead(death));
         }
         self.begin(host, script.muted);
+        // Its `import()`s' referrer (HTML's script record).
+        let base = if script.base.is_empty() {
+            script.url
+        } else {
+            script.base
+        };
+        let referrer = modules::Referrer {
+            base: base.to_owned(),
+            options: script.options,
+        };
+        self.modules.note(script.url, referrer);
+        self.modules.ran(script.url);
         let (entries, exhausted) = (self.entries.clone(), self.exhausted.clone());
         let result =
             self.context.with(
@@ -382,7 +417,11 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
         result.map_err(|error| self.failure(error))
     }
 
-    fn module_requests(&mut self, url: &str, source: &str) -> Result<Vec<String>, ScriptError> {
+    fn module_requests(
+        &mut self,
+        url: &str,
+        source: &str,
+    ) -> Result<Vec<ModuleRequest>, ScriptError> {
         if let Some(death) = self.dead {
             return Err(dead(death));
         }
@@ -415,32 +454,53 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
         }
         self.begin(host, false);
         self.modules.give(script.modules);
+        self.modules.set_giving(script.options);
         let (entries, exhausted) = (self.entries.clone(), self.exhausted.clone());
         let (state, slot, budget) = (self.modules.clone(), self.host.clone(), self.budget.clone());
         let url = script.url;
         let result = self.context.with(|ctx| {
             let given = script.modules.iter().filter(|module| module.url != url);
-            modules::declare_given(&ctx, &state, &slot, &budget, given);
+            modules::declare_given(&ctx, &state, &slot, &budget, &entries, given);
             let evaluation = match script.inline {
                 Some((text, line)) => {
                     let name = state.inline_name(url);
+                    let referrer = modules::Referrer {
+                        base: url.to_owned(),
+                        options: script.options,
+                    };
+                    state.note(&name, referrer);
+                    state.ran(&name);
                     let skip = line.saturating_sub(1) as usize;
                     let mut padded = String::with_capacity(skip + text.len());
                     padded.extend(std::iter::repeat_n('\n', skip));
                     padded.push_str(text);
                     state.set_fixed(true);
-                    let declared = modules::declare(&ctx, &slot, &budget, &name, url, &padded);
+                    let declared =
+                        modules::declare(&ctx, &slot, &budget, &entries, &name, url, &padded);
                     state.set_fixed(false);
                     declared.and_then(|module| module.eval()).map(|(_, p)| p)
                 }
                 None if !state.declared(url) => match state.take(url) {
                     Some((base, text)) => {
+                        state.ran(url);
                         state.set_fixed(true);
-                        let declared = modules::declare(&ctx, &slot, &budget, url, &base, &text);
+                        let declared = modules::declare_kept(
+                            &ctx,
+                            &state,
+                            (&slot, &budget, &entries),
+                            url,
+                            &base,
+                            &text,
+                        );
                         state.set_fixed(false);
                         match declared {
                             Ok(module) => {
                                 state.mark_declared(url);
+                                let referrer = modules::Referrer {
+                                    base,
+                                    options: script.options,
+                                };
+                                state.note(url, referrer);
                                 module.eval().map(|(_, p)| p)
                             }
                             Err(error) => {
@@ -457,6 +517,7 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                 // Declared already, by another's graph: its evaluation,
                 // which it has had or has now, once.
                 None => {
+                    state.ran(url);
                     state.set_direct(Some(url.to_owned()));
                     let promise = Module::import(&ctx, url);
                     state.set_direct(None);
@@ -647,12 +708,19 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                 error,
             } => {
                 self.modules.give(modules);
+                self.modules.set_giving(self.modules.imported(*id));
                 let (state, slots) = (self.modules.clone(), self.entries.clone());
                 let (slot, budget) = (self.host.clone(), self.budget.clone());
                 self.context.with(|ctx| {
-                    modules::declare_given(&ctx, &state, &slot, &budget, modules);
+                    modules::declare_given(&ctx, &state, &slot, &budget, &slots, modules);
+                    let kind = crate::module_of_name(url).1;
                     let promise = match error {
                         Some(message) => modules::rejected(&ctx, message),
+                        // A JSON, CSS or text module is imported with its
+                        // type, as QuickJS-ng keys it.
+                        None if kind != crate::ModuleKind::Js => {
+                            modules::import_with(&ctx, &slots, url, kind)
+                        }
                         None => {
                             state.set_direct(Some(url.clone()));
                             let promise = Module::import(&ctx, url.as_str());
@@ -705,6 +773,9 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
         self.begin(host, false);
         let mut errors = std::mem::take(&mut self.deferred);
         errors.extend(self.jobs());
+        if !self.runtime.is_job_pending() {
+            self.modules.jobs_ran();
+        }
         self.end(host);
         let errors: Vec<ScriptError> = errors.into_iter().map(|e| self.failure(e)).collect();
         let mut reported: Vec<ScriptError> = errors;
@@ -1062,6 +1133,7 @@ fn install<'js, H: ScriptingHost>(
     host: &Slot<H>,
     budget: &dom::Budget,
     entries: &Entries,
+    modules: &Rc<modules::State>,
 ) -> rquickjs::Result<Object<'js>> {
     let global = ctx.globals();
     global.remove("performance")?;
@@ -1145,7 +1217,7 @@ fn install<'js, H: ScriptingHost>(
         },
     )?
     .with_name("consoleMessage")?;
-    dom::install(ctx, kind, secure, host, budget, entries, console)
+    dom::install(ctx, kind, secure, (host, budget), entries, modules, console)
 }
 
 /// Calls `f` with the host, which is there only while a run the engine

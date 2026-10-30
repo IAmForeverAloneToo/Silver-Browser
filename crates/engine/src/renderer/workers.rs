@@ -63,6 +63,7 @@ impl ServiceWorkerSide {
                 own,
                 partition,
                 evaluate,
+                module,
             } => {
                 let link = self.link.clone();
                 let evaluated = evaluate.then(|| {
@@ -109,6 +110,7 @@ impl ServiceWorkerSide {
                         script: *script,
                         source: Arc::from(source.0),
                         partition,
+                        module,
                     },
                     stored: stored
                         .into_iter()

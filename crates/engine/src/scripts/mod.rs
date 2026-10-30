@@ -199,6 +199,7 @@ enum Pending {
         url: Url,
         fallback: Encoding,
         element: NodeId,
+        options: ScriptOptions,
     },
     /// Ready to run; `None` when its fetch failed (HTML: its result is
     /// null), which runs nothing.
@@ -212,12 +213,72 @@ enum Pending {
     },
 }
 
+/// A script's fetch options (HTML's script fetch options), which its
+/// `import()`s fetch with: its nonce, the credentials of its CORS
+/// setting, its referrer policy and whether the parser inserted it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ScriptOptions {
+    pub(crate) nonce: String,
+    pub(crate) credentials: Option<net::Credentials>,
+    pub(crate) referrer_policy: Option<net::ReferrerPolicy>,
+    pub(crate) parser_inserted: bool,
+}
+
+impl ScriptOptions {
+    /// The options a script's or a module graph's `request` was made
+    /// with: a request not in `cors` mode (a classic script without
+    /// `crossorigin`) has the same-origin credentials.
+    pub(crate) fn of_request(request: &Request) -> ScriptOptions {
+        let credentials = match request.mode {
+            net::Mode::Cors => request.credentials,
+            _ => net::Credentials::SameOrigin,
+        };
+        ScriptOptions {
+            nonce: request.nonce.clone(),
+            credentials: Some(credentials),
+            referrer_policy: request.referrer_policy,
+            parser_inserted: request.parser_inserted,
+        }
+    }
+
+    /// An inline script `element`'s options.
+    fn of_element(
+        page: &Page,
+        document: &Document,
+        element: NodeId,
+        parser_inserted: bool,
+    ) -> ScriptOptions {
+        ScriptOptions {
+            nonce: page.checked_nonce(document, element),
+            credentials: crate::loader::cors_settings(document.attr(element, "crossorigin")),
+            referrer_policy: document
+                .attr(element, "referrerpolicy")
+                .and_then(net::ReferrerPolicy::parse),
+            parser_inserted,
+        }
+    }
+
+    /// `request`, an `import()`'s graph's, made with these options:
+    /// `cors` mode, of their credentials (same-origin by default).
+    pub(crate) fn apply(&self, mut request: Request) -> Request {
+        request.nonce = self.nonce.clone();
+        request.referrer_policy = self.referrer_policy;
+        request.parser_inserted = self.parser_inserted;
+        request.with_cors(self.credentials.unwrap_or(net::Credentials::SameOrigin))
+    }
+}
+
 /// A classic script, ready to run.
 pub(crate) struct Source {
     text: String,
     /// The URL its errors name: the document's for an inline script, the
     /// response's for a fetched one.
     url: String,
+    /// The base URL its `import()`s resolve against: an inline script's
+    /// document's when it was prepared, empty for `url`.
+    base: String,
+    /// Its fetch options, which its `import()`s fetch with.
+    options: ScriptOptions,
     line: u32,
     muted: bool,
     /// Its element: `document.currentScript` while it runs (M25).
@@ -240,6 +301,8 @@ impl Source {
         Source {
             text: String::new(),
             url: String::new(),
+            base: String::new(),
+            options: ScriptOptions::default(),
             line: 1,
             muted: false,
             element: Some(element),
@@ -254,6 +317,8 @@ impl Source {
         Source {
             text: String::new(),
             url: String::new(),
+            base: String::new(),
+            options: ScriptOptions::default(),
             line: 1,
             muted: false,
             element: Some(element),
@@ -446,6 +511,15 @@ pub(crate) fn is_script(document: &Document, node: NodeId) -> bool {
     document.tag(node) == Some("script") || document.svg_tag(node) == Some("script")
 }
 
+/// A script's child text content (HTML's script source text): its Text
+/// children's data, in order, its other descendants' left out.
+pub(crate) fn child_text(document: &Document, element: NodeId) -> String {
+    document
+        .children(element)
+        .filter_map(|child| document.text(child))
+        .collect()
+}
+
 pub(crate) fn prepare_element(
     page: &mut Page,
     document: &Document,
@@ -464,7 +538,7 @@ pub(crate) fn prepare_element(
     } else {
         document.attr(element, "src")
     };
-    let text = document.text_content(element);
+    let text = child_text(document, element);
     if src.is_none() && text.is_empty() {
         return Prepared::NotYet;
     }
@@ -488,9 +562,15 @@ pub(crate) fn prepare_element(
         if net::csp::enforced(violations).is_err() {
             return Prepared::Refused;
         }
+        let options = ScriptOptions::of_element(page, document, element, parser_inserted);
         return Prepared::Inline(Source {
             text,
             url: page.url().map(Url::to_string).unwrap_or_default(),
+            base: page
+                .base_url(document)
+                .map(|base| base.to_string())
+                .unwrap_or_default(),
+            options,
             line,
             muted: false,
             element: Some(element),
@@ -551,7 +631,7 @@ fn prepare_module(
     let src = document.attr(element, "src");
     let (url, inline) = match src {
         None => {
-            let text = document.text_content(element);
+            let text = child_text(document, element);
             let nonce = page.checked_nonce(document, element);
             let policies = page.csp(document);
             let violations = policies.inline_script_violations(&nonce, &text, parser_inserted);
@@ -601,7 +681,7 @@ fn prepare_import_map(page: &mut Page, document: &Document, element: NodeId) -> 
     if document.attr(element, "src").is_some() {
         return Prepared::Failed;
     }
-    let text = document.text_content(element);
+    let text = child_text(document, element);
     let nonce = page.checked_nonce(document, element);
     let csp = page.csp(document);
     let violations = csp.inline_violations(net::csp::Inline::Script, &nonce, &text);
@@ -714,7 +794,13 @@ pub(crate) struct Scripts {
     /// those on their way.
     module_links: std::collections::HashSet<NodeId>,
     preloading: Vec<(u32, NodeId)>,
+    /// The `javascript:` URLs its scripts navigated it to while it was
+    /// loading, each to run as a task of its own.
+    javascript_urls: VecDeque<Url>,
 }
+
+/// The most `javascript:` URLs a loading document keeps to run.
+const MAX_JAVASCRIPT_URLS: usize = 64;
 
 impl Default for Scripts {
     fn default() -> Scripts {
@@ -754,6 +840,7 @@ impl Scripts {
             reports_queued: 0,
             module_links: std::collections::HashSet::new(),
             preloading: Vec::new(),
+            javascript_urls: VecDeque::new(),
         }
     }
 
@@ -800,6 +887,8 @@ impl Scripts {
         let prepared = prepare_element(lent.page, lent.document, element, line, true);
         let violations = lent.page.take_violations();
         self.report_violations(lent.page, lent.document, violations, (Some(element), line));
+        self.host
+            .parser_prepared(element, !matches!(prepared, Prepared::NotYet));
         match prepared {
             Prepared::NotYet | Prepared::Nothing | Prepared::Refused => {}
             Prepared::Failed => self.events.push_back((element, "error")),
@@ -817,7 +906,7 @@ impl Scripts {
                 };
                 self.start_module(lent, wanted);
             }
-            Prepared::ImportMap(text) => self.register_map(lent, element, &text, line),
+            Prepared::ImportMap(text) => self.register_map(lent, &text, line),
             Prepared::Inline(source) => {
                 if lent.page.blocks_scripts() {
                     self.blocking = Some(Pending::Ready(Some(source)));
@@ -847,6 +936,7 @@ impl Scripts {
 
     /// Starts `wanted`'s fetch, and puts the script where it waits.
     fn fetch(&mut self, lent: &mut Lent<'_>, wanted: Wanted) {
+        let options = ScriptOptions::of_request(&wanted.request);
         let id = lent
             .network
             .fetch(lent.page.id(), Target::Script, *wanted.request);
@@ -855,6 +945,7 @@ impl Scripts {
             url: wanted.url,
             fallback: wanted.fallback,
             element: wanted.element,
+            options,
         };
         match wanted.place {
             Place::Blocking => self.blocking = Some(pending),
@@ -879,8 +970,12 @@ impl Scripts {
         } = wanted;
         let external = inline.is_none();
         let root = match inline {
-            Some((text, line, base)) => modules::Root::Inline { text, line, base },
-            None => modules::Root::Url(request.url.clone()),
+            Some((text, line, base)) => modules::Root::Inline {
+                text,
+                line,
+                base: Box::new(base),
+            },
+            None => modules::Root::Module(request.url.to_string()),
         };
         let graph = self.start_graph(modules::Purpose::Element, root, *request);
         let pending = Pending::Module {
@@ -916,15 +1011,18 @@ impl Scripts {
     /// imports fetched; a graph fetched for an `import()` settles its
     /// promise in a task.
     fn advance_modules(&mut self, lent: &mut Lent<'_>) {
-        for (id, url) in self.host.modules.take_wanted() {
-            let request = Url::parse(&url).ok().and_then(|url| {
+        for (id, name, options) in self.host.modules.take_wanted() {
+            let url = js::module_of_name(&name).0;
+            let request = Url::parse(url).ok().and_then(|url| {
                 let csp = lent.page.csp(lent.document).clone();
                 script_request(lent.page, url, csp)
             });
             match request {
+                // With the options of the script that asked (HTML's
+                // "fetch an import() module script graph").
                 Some(request) => {
-                    let root = modules::Root::Url(request.url.clone());
-                    let request = request.with_cors(net::Credentials::SameOrigin);
+                    let request = self.host.script_options(options).apply(request);
+                    let root = modules::Root::Module(name);
                     self.start_graph(modules::Purpose::Import(id), root, request);
                 }
                 None => self.posted.push_back((
@@ -934,25 +1032,32 @@ impl Scripts {
                         error: Some(format!(
                             "Failed to fetch dynamically imported module: {url}"
                         )),
-                        url,
+                        url: name,
                         modules: Vec::new(),
                     },
                 )),
             }
         }
-        let Scripts { realm, host, .. } = self;
-        host.modules
-            .advance(&mut |url, text| scan(realm, url, text));
-        for text in self.host.modules.take_said() {
-            self.push(ConsoleEntry::of(
-                ConsoleSource::Network,
-                ConsoleLevel::Error,
-                cut(text),
-            ));
-        }
-        for (url, request) in self.host.modules.take_fetches() {
-            let id = lent.network.fetch(lent.page.id(), Target::Script, request);
-            self.host.modules.fetch_started(id, url);
+        // A pinned `blob:` URL's module comes with its fetch: taken in
+        // at once.
+        loop {
+            let Scripts { realm, host, .. } = self;
+            host.modules
+                .advance(&mut |url, text| scan(realm, url, text));
+            for text in self.host.modules.take_said() {
+                self.push(ConsoleEntry::of(
+                    ConsoleSource::Network,
+                    ConsoleLevel::Error,
+                    cut(text),
+                ));
+            }
+            for (url, request) in self.host.modules.take_fetches() {
+                let id = lent.network.fetch(lent.page.id(), Target::Script, request);
+                self.host.modules.fetch_started(id, url);
+            }
+            if !self.host.modules.has_arrivals() {
+                break;
+            }
         }
         for id in self.host.modules.imports_done() {
             let task = js::Task::Imported {
@@ -1059,7 +1164,7 @@ impl Scripts {
                 .and_then(net::ReferrerPolicy::parse);
             let credentials = crate::loader::cors_settings(document.attr(link, "crossorigin"))
                 .unwrap_or(net::Credentials::SameOrigin);
-            let root = modules::Root::Url(request.url.clone());
+            let root = modules::Root::Module(request.url.to_string());
             let request = request.with_cors(credentials);
             let graph = self.start_graph(modules::Purpose::Preload, root, request);
             self.preloading.push((graph, link));
@@ -1069,17 +1174,57 @@ impl Scripts {
         }
     }
 
+    /// A script navigated the loading document to `url`, a `javascript:`
+    /// URL: it runs in a task of the document's (HTML's "navigate to a
+    /// javascript: URL"), the parser going on after it.
+    pub(crate) fn queue_javascript_url(&mut self, url: Url) {
+        if self.javascript_urls.len() < MAX_JAVASCRIPT_URLS {
+            self.javascript_urls.push_back(url);
+        }
+    }
+
+    /// Runs `url`, a `javascript:` URL, in the loading document, held to
+    /// its policies as the engine's own runs one: what it ends with is
+    /// not a new document while this one loads.
+    fn run_javascript_url(&mut self, lent: &mut Lent<'_>, url: &Url) {
+        if self.stopped || lent.page.sandbox().has(crate::sandbox::Sandbox::SCRIPTS) {
+            return;
+        }
+        let violations = lent.page.csp(lent.document).inline_violations(
+            net::csp::Inline::Navigation,
+            "",
+            url.as_str(),
+        );
+        let refused = net::csp::enforced(violations.clone()).is_err();
+        self.report_violations(lent.page, lent.document, violations, (None, 0));
+        if refused {
+            return;
+        }
+        let encoded = url.as_str().get("javascript:".len()..).unwrap_or_default();
+        let source =
+            String::from_utf8_lossy(&net::url::percent_decode(encoded.as_bytes())).into_owned();
+        let page_url = lent.page.url().map(Url::to_string).unwrap_or_default();
+        let script = Script {
+            source: &source,
+            url: &page_url,
+            line: 1,
+            muted: false,
+            base: "",
+            options: 0,
+        };
+        self.run(lent, &script, How::default());
+    }
+
     /// Whether the document's module graphs have work on their way, which
     /// the engine goes on with though its scripts are otherwise settled.
     pub(crate) fn modules_busy(&self) -> bool {
         !self.stopped && self.host.modules.busy()
     }
 
-    /// HTML's "register an import map" for the parser's `element`, at
-    /// `line`, of `text` (D61): its warnings on the console; one too late
-    /// an `error` event at its element; one that is none an exception
-    /// reported.
-    fn register_map(&mut self, lent: &mut Lent<'_>, element: NodeId, text: &str, line: u32) {
+    /// HTML's "register an import map" for the parser's element, at
+    /// `line`, of `text` (D61): its warnings on the console; one that is
+    /// none an exception reported.
+    fn register_map(&mut self, lent: &mut Lent<'_>, text: &str, line: u32) {
         let Some(base) = lent.page.base_url(lent.document) else {
             return;
         };
@@ -1092,14 +1237,6 @@ impl Scripts {
                         cut(warning),
                     ));
                 }
-            }
-            modules::Registered::Late(why) => {
-                self.push(ConsoleEntry::of(
-                    ConsoleSource::Engine,
-                    ConsoleLevel::Error,
-                    why.to_owned(),
-                ));
-                self.events.push_back((element, "error"));
             }
             modules::Registered::Error(error) => self.throw(lent, &error, line),
         }
@@ -1115,6 +1252,8 @@ impl Scripts {
             url: &url,
             line,
             muted: false,
+            base: "",
+            options: 0,
         };
         self.run(lent, &script, How::default());
     }
@@ -1143,12 +1282,13 @@ impl Scripts {
             url,
             fallback,
             element,
+            options,
             ..
         } = &*pending
         else {
             unreachable!("found fetching");
         };
-        let element = *element;
+        let (element, options) = (*element, options.clone());
         // A refusal by the policies says so itself (M33.1).
         let refused = matches!(result, Err(LoadError::Network(net::NetworkError::Csp(_))));
         let failed = match result
@@ -1157,6 +1297,7 @@ impl Scripts {
         {
             Ok(mut source) => {
                 source.element = Some(element);
+                source.options = options;
                 *pending = Pending::Ready(Some(source));
                 None
             }
@@ -1188,6 +1329,10 @@ impl Scripts {
         // batch A).
         if self.mutations_waiting(lent.document) {
             self.enter(lent, &js::Task::Mutations, 0);
+        }
+        // The `javascript:` URLs its scripts navigated it to.
+        while let Some(url) = self.javascript_urls.pop_front() {
+            self.run_javascript_url(lent, &url);
         }
         // The module graphs gone on with (D61), a module preload's
         // event queued.
@@ -1253,12 +1398,14 @@ impl Scripts {
         self.blocking.is_some()
     }
 
-    /// Whether no script is on its way: the load waits for them.
+    /// Whether no script, nor `javascript:` URL, is on its way: the load
+    /// waits for them.
     pub(crate) fn settled(&self) -> bool {
         self.blocking.is_none()
             && self.deferred.is_empty()
             && self.soon.is_empty()
             && self.in_order.is_empty()
+            && self.javascript_urls.is_empty()
     }
 
     /// The document's parser was stopped (HTML's "abort a parser"): the
@@ -1362,6 +1509,7 @@ impl Scripts {
         // modules the realm was not given.
         if let Some(graph) = source.module {
             if let Some(run) = self.host.modules.take_run(graph) {
+                let options = ScriptOptions::of_request(&run.template);
                 let script = js::ModuleScript {
                     url: &run.url,
                     inline: run
@@ -1369,6 +1517,7 @@ impl Scripts {
                         .as_ref()
                         .map(|(text, line)| (text.as_str(), *line)),
                     modules: &run.modules,
+                    options: self.host.options_number(options),
                 };
                 let how = How {
                     external: source.external,
@@ -1394,6 +1543,8 @@ impl Scripts {
             url: &source.url,
             line: source.line,
             muted: source.muted,
+            base: &source.base,
+            options: self.host.options_number(source.options.clone()),
         };
         let how = How {
             element: source.element,
@@ -1693,10 +1844,8 @@ impl Scripts {
         for error in &errors {
             self.report(error);
         }
-        for wanted in outputs.wanted {
-            self.fetch(lent, wanted);
-        }
-        self.after_modules(lent, outputs.modules, outputs.thrown);
+        self.start_wanted(lent, outputs.wanted, outputs.modules, &outputs.order);
+        self.after_modules(lent, outputs.thrown);
         self.start_fetches(lent, outputs.fetches, outputs.aborted);
         self.start_media(lent);
         self.font_changes.extend(outputs.fonts);
@@ -1719,18 +1868,42 @@ impl Scripts {
         completion
     }
 
-    /// What a run left for the module graphs (D61): the module scripts
-    /// it inserted started, the import maps that were none reported, and
-    /// the `import()`s it made fetched.
-    fn after_modules(
+    /// Starts the scripts a run wanted, classic `wanted` and `modules`,
+    /// in the order the run found them (`order`, true for a module):
+    /// those to run in order as soon as possible keep it.
+    fn start_wanted(
         &mut self,
         lent: &mut Lent<'_>,
-        wanted: Vec<ModuleWanted>,
-        thrown: Vec<(import_map::MapError, u32)>,
+        wanted: Vec<Wanted>,
+        modules: Vec<ModuleWanted>,
+        order: &[bool],
     ) {
-        for wanted in wanted {
-            self.start_module(lent, wanted);
+        let (mut wanted, mut modules) = (wanted.into_iter(), modules.into_iter());
+        for &module in order {
+            match module {
+                true => {
+                    if let Some(module) = modules.next() {
+                        self.start_module(lent, module);
+                    }
+                }
+                false => {
+                    if let Some(classic) = wanted.next() {
+                        self.fetch(lent, classic);
+                    }
+                }
+            }
         }
+        for classic in wanted {
+            self.fetch(lent, classic);
+        }
+        for module in modules {
+            self.start_module(lent, module);
+        }
+    }
+
+    /// What a run left for the module graphs (D61): the import maps that
+    /// were none reported, and the `import()`s it made fetched.
+    fn after_modules(&mut self, lent: &mut Lent<'_>, thrown: Vec<(import_map::MapError, u32)>) {
         for (error, line) in thrown {
             self.throw(lent, &error, line);
         }
@@ -1785,10 +1958,8 @@ impl Scripts {
         for error in &errors {
             self.report(error);
         }
-        for wanted in outputs.wanted {
-            self.fetch(lent, wanted);
-        }
-        self.after_modules(lent, outputs.modules, outputs.thrown);
+        self.start_wanted(lent, outputs.wanted, outputs.modules, &outputs.order);
+        self.after_modules(lent, outputs.thrown);
         self.start_fetches(lent, outputs.fetches, outputs.aborted);
         self.start_media(lent);
         self.font_changes.extend(outputs.fonts);
@@ -2410,7 +2581,7 @@ fn scan(
     realm: &mut Option<Box<dyn Realm<DocumentHost>>>,
     url: &str,
     text: &str,
-) -> Option<Vec<String>> {
+) -> Option<Vec<js::ModuleRequest>> {
     realm.as_mut()?.module_requests(url, text).ok()
 }
 
@@ -2710,6 +2881,8 @@ fn script_source(response: &Response, fallback: Encoding) -> Result<Source, Stri
     Ok(Source {
         text,
         url: response.url().to_string(),
+        base: String::new(),
+        options: ScriptOptions::default(),
         line: 1,
         muted,
         element: None,
@@ -2812,6 +2985,8 @@ mod tests {
             url: "https://example.com/",
             line: 1,
             muted: false,
+            base: "",
+            options: 0,
         }
     }
 
@@ -2922,6 +3097,8 @@ mod tests {
             url: "https://example.com/page.html",
             line: 4,
             muted: false,
+            base: "",
+            options: 0,
         };
         assert_eq!(run(&mut scripts, &mut document, &inline), None);
         run(

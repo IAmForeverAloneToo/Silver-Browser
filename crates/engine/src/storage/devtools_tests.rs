@@ -252,6 +252,7 @@ fn a_sites_service_workers_are_listed_and_unregistered() {
             update_via_cache: crate::service_worker::UpdateViaCache::Imports,
             force_bypass: false,
             partition: None,
+            module: false,
         },
         Box::new(move |settled: crate::service_worker::Settled| {
             let _ = sender.send(settled.outcome);

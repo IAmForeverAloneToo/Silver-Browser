@@ -4,7 +4,7 @@
 //! bootstrap's modules out of reach.
 
 use crate::tests::{Recorder, realm, script};
-use crate::{ErrorKind, MAX_MODULE_DEPTH, ModuleScript, ModuleSource, Task};
+use crate::{ErrorKind, MAX_MODULE_DEPTH, ModuleKind, ModuleScript, ModuleSource, Script, Task};
 
 const PAGE: &str = "https://example.com/page.html";
 
@@ -21,6 +21,7 @@ fn inline<'a>(text: &'a str, modules: &'a [ModuleSource]) -> ModuleScript<'a> {
         url: PAGE,
         inline: Some((text, 1)),
         modules,
+        options: 0,
     }
 }
 
@@ -42,7 +43,9 @@ fn a_modules_static_imports_are_found_by_declaring_it_apart() {
              import('./dynamic.js'); export { z } from './z.js';",
         )
         .expect("it parses");
-    assert_eq!(found, ["./x.js", "./y.js", "./z.js"]);
+    let specifiers: Vec<&str> = found.iter().map(|r| r.specifier.as_str()).collect();
+    assert_eq!(specifiers, ["./x.js", "./y.js", "./z.js"]);
+    assert!(found.iter().all(|r| r.kind == Some(ModuleKind::Js)));
     let error = realm
         .module_requests("https://example.com/b.js", "import {")
         .expect_err("a syntax error");
@@ -91,6 +94,7 @@ fn a_module_script_links_its_graph_and_each_module_runs_once() {
         url: "https://example.com/lib/b.js",
         inline: None,
         modules: &[],
+        options: 0,
     };
     realm.run_module(&external, &mut host).expect("it runs");
     assert!(realm.checkpoint(&mut host).is_empty());
@@ -259,4 +263,199 @@ fn the_bootstraps_modules_are_none_a_page_may_import() {
     assert!(realm.checkpoint(&mut host).is_empty());
     assert_eq!(lines(&mut host), ["TypeError", "TypeError"]);
     assert!(host.imports.is_empty());
+}
+
+/// A classic script at `url` whose base URL is `base` and whose fetch
+/// options are numbered `options`.
+fn script_at<'a>(source: &'a str, url: &'a str, base: &'a str, options: u32) -> Script<'a> {
+    Script {
+        source,
+        url,
+        line: 1,
+        muted: false,
+        base,
+        options,
+    }
+}
+
+#[test]
+fn import_in_code_a_string_compiled_resolves_against_the_script_that_made_it() {
+    let mut realm = realm();
+    let mut host = Recorder::default();
+    // An external script: `eval`, an indirect `eval`, `Function` and a
+    // timer's string resolve against its URL and fetch with its options;
+    // a function it made keeps them when another script calls it later.
+    let external = "eval(\"import('./a.js')\");\n\
+                    (0, eval)(\"import('./b.js')\");\n\
+                    Function(\"return import('./c.js')\")();\n\
+                    setTimeout(\"import('./d.js')\");\n\
+                    var later = () => eval(\"import('./e.js')\");";
+    let url = "https://example.com/lib/s.js";
+    realm
+        .run(&script_at(external, url, "", 5), &mut host)
+        .expect("it runs");
+    assert!(realm.checkpoint(&mut host).is_empty());
+    realm.enter(&Task::Timer(1), &mut host).expect("it runs");
+    assert!(realm.checkpoint(&mut host).is_empty());
+    // An inline script whose base URL was another when it was prepared:
+    // its own code resolves against that, and calls the other's function.
+    let inline = "eval(\"import('./f.js')\"); later();";
+    let base = "https://example.com/dir/x";
+    realm
+        .run(&script_at(inline, PAGE, base, 7), &mut host)
+        .expect("it runs");
+    assert!(realm.checkpoint(&mut host).is_empty());
+    let urls: Vec<&str> = host.imports.iter().map(|(_, url)| url.as_str()).collect();
+    assert_eq!(
+        urls,
+        [
+            "https://example.com/lib/a.js",
+            "https://example.com/lib/b.js",
+            "https://example.com/lib/c.js",
+            "https://example.com/lib/d.js",
+            "https://example.com/dir/f.js",
+            "https://example.com/lib/e.js",
+        ]
+    );
+    assert_eq!(host.import_options, [5, 5, 5, 5, 7, 5]);
+}
+
+#[test]
+fn json_css_and_text_modules_are_their_values_and_attributes_are_checked() {
+    let mut realm = realm();
+    let mut host = Recorder::default();
+    // The imports a module names, with the kinds they ask for.
+    let found = realm
+        .module_requests(
+            "https://example.com/a.js",
+            "import a from './a.json' with { type: 'json' };\n\
+             import b from './b.txt' with { type: 'text' };\n\
+             import c from './c.js' with { type: 'nope' };\n\
+             import d from './d.js' with { other: 'x' };",
+        )
+        .expect("it parses");
+    let kinds: Vec<Option<ModuleKind>> = found.iter().map(|r| r.kind).collect();
+    assert_eq!(
+        kinds,
+        [Some(ModuleKind::Json), Some(ModuleKind::Text), None, None]
+    );
+    // A JSON module and a text module given by their names: each module
+    // is its value, once.
+    let json = crate::module_name("https://example.com/a.json", ModuleKind::Json);
+    let text = crate::module_name("https://example.com/b.txt", ModuleKind::Text);
+    let modules = [
+        module(&json, "{\"n\": [1, 2], \"__proto__\": 3}"),
+        module(&text, "plain \"text\""),
+    ];
+    let first = "import a from './a.json' with { type: 'json' };\n\
+                 import b from './b.txt' with { type: 'text' };\n\
+                 import again from './a.json' with { type: 'json' };\n\
+                 console.log(a.n.join(), Object.getOwnPropertyNames(a).join(), a === again, b);";
+    realm
+        .run_module(&inline(first, &modules), &mut host)
+        .expect("it runs");
+    assert!(realm.checkpoint(&mut host).is_empty());
+    assert_eq!(lines(&mut host), ["1,2 n,__proto__ true plain \"text\""]);
+    // A JSON module that does not parse fails linking with its syntax
+    // error; a static import with a key other than `type` is a syntax
+    // error, a type unknown a type error.
+    let bad = crate::module_name("https://example.com/bad.json", ModuleKind::Json);
+    let error = realm
+        .run_module(
+            &inline(
+                "import x from './bad.json' with { type: 'json' }",
+                &[module(&bad, "{x")],
+            ),
+            &mut host,
+        )
+        .expect_err("it does not parse");
+    assert!(error.message.starts_with("SyntaxError"), "{error:?}");
+    let error = realm
+        .run_module(
+            &inline("import './a.js' with { other: 'x' }", &[]),
+            &mut host,
+        )
+        .expect_err("a key refused");
+    assert_eq!(
+        error.message,
+        "SyntaxError: Invalid attribute key \"other\"."
+    );
+    let error = realm
+        .run_module(
+            &inline("import './a.js' with { type: 'nope' }", &[]),
+            &mut host,
+        )
+        .expect_err("a type unknown");
+    assert_eq!(
+        error.message,
+        "TypeError: \"nope\" is not a valid module type."
+    );
+    // `import()` rejects both with type errors before any fetch, and asks
+    // for a JSON module by its name.
+    let source = "import('./x.js', { with: { other: 'x' } }).catch(e => console.log(String(e)));\n\
+                  import('./x.js', { with: { type: 'nope' } }).catch(e => console.log(String(e)));\n\
+                  import('./y.json', { with: { type: 'json' } }).then(m => console.log(m.default));";
+    realm.run(&script(source), &mut host).expect("it runs");
+    assert!(realm.checkpoint(&mut host).is_empty());
+    assert_eq!(
+        lines(&mut host),
+        [
+            "TypeError: Invalid attribute key \"other\".",
+            "TypeError: \"nope\" is not a valid module type.",
+        ]
+    );
+    let json = crate::module_name("https://example.com/y.json", ModuleKind::Json);
+    let urls: Vec<&str> = host.imports.iter().map(|(_, url)| url.as_str()).collect();
+    assert_eq!(urls, [json.as_str()]);
+    // Its graph come, the promise settles with the module of its type.
+    let came = Task::Imported {
+        id: host.imports[0].0,
+        url: json.clone(),
+        modules: vec![module(&json, "\"given\"")],
+        error: None,
+    };
+    realm.enter(&came, &mut host).expect("it runs");
+    assert!(realm.checkpoint(&mut host).is_empty());
+    assert_eq!(lines(&mut host), ["given"]);
+}
+
+#[test]
+fn import_meta_resolve_converts_its_argument_to_a_string() {
+    let mut realm = realm();
+    let mut host = Recorder::default();
+    let source = "try { import.meta.resolve(); } catch (e) { console.log(e.message) }\n\
+                  console.log(import.meta.resolve({ toString() { return './t.js'; } }))";
+    realm
+        .run_module(&inline(source, &[]), &mut host)
+        .expect("it runs");
+    assert!(realm.checkpoint(&mut host).is_empty());
+    assert_eq!(
+        lines(&mut host),
+        [
+            "Failed to resolve module specifier \"undefined\". Relative references must start \
+             with either \"/\", \"./\", or \"../\".",
+            "https://example.com/t.js",
+        ]
+    );
+}
+
+#[test]
+fn a_module_that_fails_to_parse_throws_one_error_object_each_time() {
+    let mut realm = realm();
+    let mut host = Recorder::default();
+    let source = "import('./bad.js').catch(e => { globalThis.first = e; \
+                  return import('./bad.js'); }).catch(e => console.log(e.name, e === first));";
+    realm.run(&script(source), &mut host).expect("it runs");
+    assert!(realm.checkpoint(&mut host).is_empty());
+    let came = Task::Imported {
+        id: 1,
+        url: "https://example.com/bad.js".to_owned(),
+        modules: vec![module("https://example.com/bad.js", "export const = ;")],
+        error: None,
+    };
+    realm.enter(&came, &mut host).expect("it runs");
+    assert!(realm.checkpoint(&mut host).is_empty());
+    assert_eq!(lines(&mut host), ["SyntaxError true"]);
+    // The second asked the engine for nothing.
+    assert_eq!(host.imports.len(), 1);
 }

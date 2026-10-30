@@ -128,7 +128,8 @@ wire_enum! {
         /// A worker renderer runs `version` (M39, D35) as frame `frame`:
         /// evaluated for its job if `evaluate`, else started again from
         /// its scripts kept (`stored`); `own` is its registration's view
-        /// and its own, as the bindings read them.
+        /// and its own, as the bindings read them; `module` for a module
+        /// script's (D61).
         31 => StartServiceWorker {
             version: u64,
             frame: u32,
@@ -141,6 +142,7 @@ wire_enum! {
             own: String,
             partition: Option<Partition>,
             evaluate: bool,
+            module: bool,
         },
         /// The browser's extendable event `event` of type `kind` for
         /// `version`, a message's with `data`.

@@ -283,6 +283,7 @@ pub(crate) fn serve(workers: &ServiceWorkers, client: &Client, request: &str) ->
                     update_via_cache,
                     force_bypass: false,
                     partition: client.partition.clone(),
+                    module: false,
                 },
             )
         }
@@ -460,15 +461,21 @@ fn register(workers: &ServiceWorkers, client: &Client, request: &Json) -> String
         Ok(urls) => urls,
         Err((name, message)) => return error(name, &message),
     };
-    // Module scripts wait for G41: a module worker does not evaluate.
-    if text("type").as_deref() == Some("module") {
-        return error(
-            "TypeError",
-            &format!(
-                "Failed to register a ServiceWorker for scope ('{scope}') with script ('{script}'): ServiceWorker script evaluation failed"
-            ),
-        );
-    }
+    // Its worker type (D61), a WorkerType enum's value.
+    let module = match text("type").as_deref() {
+        None | Some("classic") => false,
+        Some("module") => true,
+        Some(other) => {
+            return error(
+                "TypeError",
+                &format!(
+                    "Failed to execute 'register' on 'ServiceWorkerContainer': Failed to read the \
+                     'type' property from 'RegistrationOptions': The provided value '{other}' is \
+                     not a valid enum value of type WorkerType."
+                ),
+            );
+        }
+    };
     let update_via_cache = text("updateViaCache")
         .as_deref()
         .and_then(UpdateViaCache::parse)
@@ -485,6 +492,7 @@ fn register(workers: &ServiceWorkers, client: &Client, request: &Json) -> String
             update_via_cache,
             force_bypass: false,
             partition: client.partition.clone(),
+            module,
         },
     )
 }
