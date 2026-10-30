@@ -34,9 +34,29 @@ pub(crate) fn font_of(fonts: &FontCollection, style: &ComputedStyle) -> Font {
     font_of_props(fonts, style.font.as_deref())
 }
 
+/// The font `style`'s `text` is in: for text of private-use code points
+/// alone, the first of its families that is no generic family (CSS Fonts
+/// 4 section 5.4), else the font of its style.
+pub(crate) fn font_for(fonts: &FontCollection, style: &ComputedStyle, text: &str) -> Font {
+    let Some(props) = style.font.as_deref() else {
+        return Font::default();
+    };
+    if text.is_empty() || !text.chars().all(text::is_private_use) {
+        return fonts.font(&font_request(props));
+    }
+    match text::named_families(&props.family) {
+        Some(named) => {
+            let mut request = font_request(props);
+            request.families = &named;
+            fonts.font(&request)
+        }
+        None => fonts.font(&font_request(props)),
+    }
+}
+
 /// The metrics of `text` in `style`'s font, unleaded: its content area.
 pub(crate) fn content(fonts: &FontCollection, text: &str, style: &ComputedStyle) -> FontMetrics {
-    fonts.metrics_in(font_of(fonts, style), text, style.font_size_px)
+    fonts.metrics_in(font_for(fonts, style, text), text, style.font_size_px)
 }
 
 /// The metrics of `text` in `style`'s font, with the leading of its
@@ -65,7 +85,7 @@ pub(crate) fn leaded(m: FontMetrics, style: &ComputedStyle) -> FontMetrics {
 
 /// `text`'s width in `style`'s font.
 pub(crate) fn measure(fonts: &FontCollection, text: &str, style: &ComputedStyle) -> f32 {
-    fonts.measure_in(font_of(fonts, style), text, style.font_size_px)
+    fonts.measure_in(font_for(fonts, style, text), text, style.font_size_px)
 }
 
 #[cfg(test)]
@@ -106,5 +126,37 @@ mod tests {
         bold.font_mut().weight = 700.0;
         assert!(font_of(&fonts, &bold).bold, "the test font has no bold");
         assert_eq!(measure(&fonts, "ab", &bold), fonts.measure("ab", 16.0));
+    }
+
+    #[test]
+    fn private_use_text_passes_over_the_generic_families() {
+        // CSS Fonts 4 section 5.4: a private-use code point matches only
+        // the families named; the test collection's monospace is not.
+        let fonts = FontCollection::from_bytes_with_monospace(
+            text::TEST_FONT.to_vec(),
+            0,
+            text::TEST_MONO_FONT.to_vec(),
+        )
+        .expect("parses");
+        let mut style = ComputedStyle::default();
+        style.font_mut().family = "monospace, \"Not Had\"".into();
+        let mono = font_of(&fonts, &style);
+        assert_ne!(mono, Font::default(), "the monospace face");
+        assert_eq!(font_for(&fonts, &style, "ab"), mono);
+        assert_eq!(
+            font_for(&fonts, &style, "\u{F000}\u{F001}"),
+            Font::default()
+        );
+        assert_eq!(
+            font_for(&fonts, &style, "a\u{F000}"),
+            mono,
+            "not private use alone"
+        );
+        style.font_mut().family = "monospace".into();
+        assert_eq!(
+            font_for(&fonts, &style, "\u{F000}"),
+            mono,
+            "no family named"
+        );
     }
 }

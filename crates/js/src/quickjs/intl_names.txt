@@ -1,0 +1,1019 @@
+# What Intl.DisplayNames needs of the reference browser's ICU (Chrome 156,
+# ICU 78, CLDR 48) that ICU4X does not give, by language: P, its locale
+# display pattern and separator; C, the names of the calendars and F,
+# of the date fields, by style, in the orders of `CALENDARS` and
+# `FIELDS` (empty for none, = for the long style's); N, a name that
+# differs from ICU4X's: type, style (* both), code and name (empty for
+# none). * U: the codes of a type that have names at all. Non-ASCII as
+# \uXXXX. Made by silver-work's tooling/intl-gen/icu/gen_names.py and
+# chrome/dn_overrides.py.
+af	P	{0} ({1})	{0}, {1}
+ak	P	{0} ({1})	{0}, {1}
+am	P	{0} ({1})	{0}\u1363 {1}
+ar	P	{0} ({1})	{0}\u060c {1}
+az	P	{0} ({1})	{0}, {1}
+bg	P	{0} ({1})	{0}, {1}
+bn	P	{0} ({1})	{0}, {1}
+bs	P	{0} ({1})	{0}, {1}
+ca	P	{0} ({1})	{0}, {1}
+cs	P	{0} ({1})	{0}, {1}
+da	P	{0} ({1})	{0}, {1}
+de	P	{0} ({1})	{0}, {1}
+el	P	{0} ({1})	{0}, {1}
+en	P	{0} ({1})	{0}, {1}
+es	P	{0} ({1})	{0}, {1}
+et	P	{0} ({1})	{0}, {1}
+fa	P	{0} ({1})	{0}\u060c {1}
+fi	P	{0} ({1})	{0}, {1}
+fil	P	{0} ({1})	{0}, {1}
+fr	P	{0} ({1})	{0}, {1}
+gu	P	{0} ({1})	{0}, {1}
+he	P	{0} ({1})	{0}, {1}
+hi	P	{0} ({1})	{0}, {1}
+hr	P	{0} ({1})	{0}, {1}
+hu	P	{0} ({1})	{0}, {1}
+id	P	{0} ({1})	{0}, {1}
+it	P	{0} ({1})	{0}, {1}
+ja	P	{0} ({1})	{0}\u3001{1}
+kk	P	{0} ({1})	{0}, {1}
+kn	P	{0} ({1})	{0}, {1}
+ko	P	{0}({1})	{0}, {1}
+kok	P	{0} ({1})	{0}, {1}
+lt	P	{0} ({1})	{0}, {1}
+lv	P	{0} ({1})	{0}, {1}
+ml	P	{0} ({1})	{0}, {1}
+mr	P	{0} ({1})	{0}, {1}
+ms	P	{0} ({1})	{0}, {1}
+nb	P	{0} ({1})	{0}, {1}
+nl	P	{0} ({1})	{0}, {1}
+no	P	{0} ({1})	{0}, {1}
+pa	P	{0} ({1})	{0}, {1}
+pl	P	{0} ({1})	{0}, {1}
+pt	P	{0} ({1})	{0}, {1}
+ro	P	{0} ({1})	{0}, {1}
+ru	P	{0} ({1})	{0}, {1}
+sd	P	{0} ({1})	{0}, {1}
+sk	P	{0} ({1})	{0}, {1}
+sl	P	{0} ({1})	{0}, {1}
+sr	P	{0} ({1})	{0}, {1}
+sv	P	{0} ({1})	{0}, {1}
+sw	P	{0} ({1})	{0}, {1}
+ta	P	{0} ({1})	{0}, {1}
+te	P	{0} ({1})	{0}, {1}
+th	P	{0} ({1})	{0}, {1}
+tr	P	{0} ({1})	{0}, {1}
+uk	P	{0} ({1})	{0}, {1}
+ur	P	{0} ({1})	{0}\u060c{1}
+uz	P	{0} ({1})	{0}, {1}
+vi	P	{0} ({1})	{0}, {1}
+zh	P	{0}\uff08{1}\uff09	{0}\uff0c{1}
+en-GB	P	{0} ({1})	{0}, {1}
+en-AU	P	{0} ({1})	{0}, {1}
+en-CA	P	{0} ({1})	{0}, {1}
+en-IN	P	{0} ({1})	{0}, {1}
+es-419	P	{0} ({1})	{0}, {1}
+es-MX	P	{0} ({1})	{0}, {1}
+fr-CA	P	{0} ({1})	{0}, {1}
+fr-CH	P	{0} ({1})	{0}, {1}
+de-AT	P	{0} ({1})	{0}, {1}
+de-CH	P	{0} ({1})	{0}, {1}
+pt-PT	P	{0} ({1})	{0}, {1}
+zh-Hant	P	{0}\uff08{1}\uff09	{0}\uff0c{1}
+sr-Latn	P	{0} ({1})	{0}, {1}
+nl-BE	P	{0} ({1})	{0}, {1}
+it-CH	P	{0} ({1})	{0}, {1}
+af	C	long	Boeddhistiese kalender	Chinese kalender	Koptiese kalender	Dangi-kalender	Etiopiese Amete Alem-kalender	Etiopiese kalender	Gregoriaanse kalender	Hebreeuse kalender	Indiese nasionale kalender	Islamitiese kalender	Islamitiese siviele kalender			Islamitiese kalender (Umm al-Qura)	ISO-8601-kalender	Japannese kalender	Persiese kalender	Minguo-kalender
+af	F	long	era	jaar	kwartaal	maand	week	dag van die week	dag	vm./nm.	uur	minuut	sekonde	tydsone
+af	C	short	=
+af	F	short	era	j.	kw.	md.	wk.	dag van wk.	d.	vm./nm.	u.	min.	s.	sone
+af	C	narrow	=
+af	F	narrow	era	j.	kw.	md.	wk.	dag van wk.	d.	vm./nm.	u.	m.	s.	sone
+ak	C	long																		
+ak	F	long	ber\u025b	Afe	k\u0254ta	Bosome	Nnaw\u0254twe	nnaw\u0254twe mu da	Da	an\u0254pa/anwummer\u025b	d\u0254nhwere	sima	Simasin	ber\u025b mu wiase nkyeky\u025bmu
+ak	C	short	=
+ak	F	short	ber\u025b	Afe	k\u0254ta	Bosome	Nnaw\u0254twe	nnaw\u0254twe mu da	Da	an\u0254pa/anwummer\u025b	d\u0254nhwere	sima	Simasin	nkyeky\u025bmu
+ak	C	narrow	=
+ak	F	narrow	ber\u025b	Afe	k\u0254ta	Bosome	Nnaw\u0254twe	nnaw\u0254twe mu da	Da	an\u0254pa/anwummer\u025b	d\u0254nhwere	sima	Simasin	nkyeky\u025bmu
+am	C	long	\u12e8\u1261\u12f2\u1235\u1275 \u1240\u1295 \u12a0\u1246\u1323\u1320\u122d	\u12e8\u127b\u12ed\u1293 \u12e8\u1240\u1295 \u12a0\u1246\u1323\u1320\u122d	\u12e8\u12ae\u1355\u1272\u12ad \u12e8\u1240\u1295 \u12a0\u1246\u1323\u1320\u122d	\u12e8\u12f3\u1295\u130a \u12e8\u1240\u1295 \u12a0\u1246\u1323\u1320\u122d	\u12e8\u12a2\u1275\u12ee\u1352\u12ad \u12a0\u1218\u1270 \u12a0\u1208\u121d \u12e8\u1240\u1295 \u12a0\u1246\u1323\u1320\u122d	\u12e8\u12a2\u1275\u12ee\u1335\u12eb \u12e8\u1240\u1295 \u12a0\u1246\u1323\u1320\u122d	\u12e8\u130d\u122a\u130e\u122a\u12eb\u1295 \u12e8\u1240\u1295 \u12a0\u1246\u1323\u1320\u122d	\u12e8\u12a5\u1265\u122b\u12ca\u12eb\u1295 \u12e8\u1240\u1295 \u12a0\u1246\u1323\u1320\u122d	\u12e8\u1205\u1295\u12f5 \u1265\u1214\u122b\u12ca \u12e8\u1240\u1295 \u12a0\u1246\u1323\u1320\u122d	\u12e8\u1202\u1305\u122b \u12e8\u1240\u1295 \u12a0\u1246\u1323\u1320\u122d	\u12e8\u1202\u1305\u122b \u12e8\u1240\u1295 \u12a0\u1246\u1323\u1320\u122d (\u1273\u1261\u120b\u122d\u1363 \u1232\u126a\u120d \u12a0\u1356\u127d)			\u12e8\u1202\u1305\u122b \u12e8\u1240\u1295 \u12a0\u1246\u1323\u1320\u122d (\u12a1\u121d \u12a0\u120d-\u1241\u122b)	ISO-8601 \u12e8\u1240\u1295 \u12a0\u1246\u1323\u1320\u122d	\u12e8\u1303\u1353\u1295 \u12e8\u1240\u1295 \u12a0\u1246\u1323\u1320\u122d	\u12e8\u1350\u122d\u123d\u12eb \u12e8\u1240\u1295 \u12a0\u1246\u1323\u1320\u122d	\u12e8\u121a\u1295\u1309 \u12e8\u1240\u1295 \u12a0\u1246\u1323\u1320\u122d
+am	F	long	\u12d8\u1218\u1295	\u12d3\u1218\u1275	\u1229\u1265	\u12c8\u122d	\u1233\u121d\u1295\u1275	\u12a0\u12d8\u1266\u1275	\u1240\u1295	\u1325\u12cb\u1275/\u12a8\u1230\u12d3\u1275	\u1230\u12d3\u1275	\u12f0\u1242\u1243	\u1230\u12a8\u1295\u12f5	\u12e8\u1230\u12d3\u1275 \u1230\u1245
+am	C	short	=
+am	F	short	=
+am	C	narrow	=
+am	F	narrow	=
+ar	C	long	\u0627\u0644\u062a\u0642\u0648\u064a\u0645 \u0627\u0644\u0628\u0648\u0630\u064a	\u0627\u0644\u062a\u0642\u0648\u064a\u0645 \u0627\u0644\u0635\u064a\u0646\u064a	\u0627\u0644\u062a\u0642\u0648\u064a\u0645 \u0627\u0644\u0642\u0628\u0637\u064a	\u062a\u0642\u0648\u064a\u0645 \u062f\u0627\u0646\u062c\u064a	\u062a\u0642\u0648\u064a\u0645 \u0623\u0645\u064a\u062a\u064a \u0623\u0644\u064a\u0645 \u0627\u0644\u0625\u062b\u064a\u0648\u0628\u064a	\u0627\u0644\u062a\u0642\u0648\u064a\u0645 \u0627\u0644\u0625\u062b\u064a\u0648\u0628\u064a	\u0627\u0644\u062a\u0642\u0648\u064a\u0645 \u0627\u0644\u0645\u064a\u0644\u0627\u062f\u064a	\u0627\u0644\u062a\u0642\u0648\u064a\u0645 \u0627\u0644\u0639\u0628\u0631\u064a	\u0627\u0644\u062a\u0642\u0648\u064a\u0645 \u0627\u0644\u0642\u0648\u0645\u064a \u0627\u0644\u0647\u0646\u062f\u064a	\u0627\u0644\u062a\u0642\u0648\u064a\u0645 \u0627\u0644\u0647\u062c\u0631\u064a	\u0627\u0644\u062a\u0642\u0648\u064a\u0645 \u0627\u0644\u0647\u062c\u0631\u064a \u0627\u0644\u0645\u062f\u0646\u064a	\u0627\u0644\u062a\u0642\u0648\u064a\u0645 \u0627\u0644\u0647\u062c\u0631\u064a (\u0627\u0644\u0633\u0639\u0648\u062f\u064a\u0629 - \u0627\u0644\u0631\u0624\u064a\u0629)	\u0627\u0644\u062a\u0642\u0648\u064a\u0645 \u0627\u0644\u0647\u062c\u0631\u064a (\u0627\u0644\u062d\u0633\u0627\u0628\u0627\u062a \u0627\u0644\u0641\u0644\u0643\u064a\u0629)	\u0627\u0644\u062a\u0642\u0648\u064a\u0645 \u0627\u0644\u0647\u062c\u0631\u064a (\u0623\u0645 \u0627\u0644\u0642\u0631\u0649)	\u062a\u0642\u0648\u064a\u0645 ISO-8601	\u0627\u0644\u062a\u0642\u0648\u064a\u0645 \u0627\u0644\u064a\u0627\u0628\u0627\u0646\u064a	\u0627\u0644\u062a\u0642\u0648\u064a\u0645 \u0627\u0644\u0641\u0627\u0631\u0633\u064a	\u062a\u0642\u0648\u064a\u0645 \u0645\u064a\u0646\u062c\u0648
+ar	F	long	\u0627\u0644\u0639\u0635\u0631	\u0627\u0644\u0633\u0646\u0629	\u0631\u0628\u0639 \u0627\u0644\u0633\u0646\u0629	\u0627\u0644\u0634\u0647\u0631	\u0627\u0644\u0623\u0633\u0628\u0648\u0639	\u0627\u0644\u064a\u0648\u0645	\u064a\u0648\u0645	\u0635/\u0645	\u0627\u0644\u0633\u0627\u0639\u0627\u062a	\u0627\u0644\u062f\u0642\u0627\u0626\u0642	\u0627\u0644\u062b\u0648\u0627\u0646\u064a	\u0627\u0644\u062a\u0648\u0642\u064a\u062a
+ar	C	short	=
+ar	F	short	\u0627\u0644\u0639\u0635\u0631	\u0627\u0644\u0633\u0646\u0629	\u0631\u0628\u0639 \u0627\u0644\u0633\u0646\u0629	\u0627\u0644\u0634\u0647\u0631	\u0627\u0644\u0623\u0633\u0628\u0648\u0639	\u0627\u0644\u064a\u0648\u0645	\u064a\u0648\u0645	\u0635/\u0645	\u0627\u0644\u0633\u0627\u0639\u0627\u062a	\u0627\u0644\u062f\u0642\u0627\u0626\u0642	\u0627\u0644\u062b\u0648\u0627\u0646\u064a	\u062a\u0648\u0642\u064a\u062a
+ar	C	narrow	=
+ar	F	narrow	\u0627\u0644\u0639\u0635\u0631	\u0627\u0644\u0633\u0646\u0629	\u0631\u0628\u0639 \u0627\u0644\u0633\u0646\u0629	\u0627\u0644\u0634\u0647\u0631	\u0627\u0644\u0623\u0633\u0628\u0648\u0639	\u0627\u0644\u064a\u0648\u0645	\u064a\u0648\u0645	\u0635/\u0645	\u0627\u0644\u0633\u0627\u0639\u0627\u062a	\u0627\u0644\u062f\u0642\u0627\u0626\u0642	\u0627\u0644\u062b\u0648\u0627\u0646\u064a	\u062a\u0648\u0642\u064a\u062a
+az	C	long																		
+az	F	long	Era	Year	Quarter	Month	Week	Day of the Week	Day	Dayperiod	Hour	Minute	Second	Zone
+az	C	short	=
+az	F	short	=
+az	C	narrow	=
+az	F	narrow	=
+bg	C	long	\u0431\u0443\u0434\u0438\u0441\u0442\u043a\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u043a\u0438\u0442\u0430\u0439\u0441\u043a\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u043a\u043e\u043f\u0442\u0441\u043a\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u043a\u043e\u0440\u0435\u0439\u0441\u043a\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u0435\u0442\u0438\u043e\u043f\u0441\u043a\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440 \u0410\u043c\u0438\u0442 \u0410\u043b\u0435\u043c	\u0435\u0442\u0438\u043e\u043f\u0441\u043a\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u0433\u0440\u0438\u0433\u043e\u0440\u0438\u0430\u043d\u0441\u043a\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u0435\u0432\u0440\u0435\u0439\u0441\u043a\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u0418\u043d\u0434\u0438\u0439\u0441\u043a\u0438 \u0433\u0440\u0430\u0436\u0434\u0430\u043d\u0441\u043a\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u0438\u0441\u043b\u044f\u043c\u0441\u043a\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u0438\u0441\u043b\u044f\u043c\u0441\u043a\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440 \u0425\u0438\u0434\u0436\u0440\u0430			\u0438\u0441\u043b\u044f\u043c\u0441\u043a\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440 \u0425\u0438\u0434\u0436\u0440\u0430 (\u0423\u043c \u0430\u043b-\u041a\u0443\u0440\u0430)	\u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440 \u0441\u044a\u0433\u043b\u0430\u0441\u043d\u043e ISO 8601	\u044f\u043f\u043e\u043d\u0441\u043a\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u043f\u0435\u0440\u0441\u0438\u0439\u0441\u043a\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440 \u043d\u0430 \u0420\u0435\u043f\u0443\u0431\u043b\u0438\u043a\u0430 \u041a\u0438\u0442\u0430\u0439
+bg	F	long	\u0435\u0440\u0430	\u0433\u043e\u0434\u0438\u043d\u0430	\u0442\u0440\u0438\u043c\u0435\u0441\u0435\u0447\u0438\u0435	\u043c\u0435\u0441\u0435\u0446	\u0441\u0435\u0434\u043c\u0438\u0446\u0430	\u0434\u0435\u043d \u043e\u0442 \u0441\u0435\u0434\u043c\u0438\u0446\u0430\u0442\u0430	\u0434\u0435\u043d	\u043f\u0440.\u043e\u0431./\u0441\u043b.\u043e\u0431.	\u0447\u0430\u0441	\u043c\u0438\u043d\u0443\u0442\u0430	\u0441\u0435\u043a\u0443\u043d\u0434\u0430	\u0447\u0430\u0441\u043e\u0432\u0430 \u0437\u043e\u043d\u0430
+bg	C	short	=
+bg	F	short	\u0435\u0440\u0430	\u0433\u043e\u0434.	\u0442\u0440\u0438\u043c.	\u043c\u0435\u0441.	\u0441\u0435\u0434\u043c.	\u0434\u0435\u043d \u043e\u0442 \u0441\u0435\u0434\u043c.	\u0434	\u043f\u0440.\u043e\u0431./\u0441\u043b.\u043e\u0431.	\u0447	\u043c\u0438\u043d	\u0441\u0435\u043a	\u0447\u0430\u0441. \u0437\u043e\u043d\u0430
+bg	C	narrow	=
+bg	F	narrow	\u0435\u0440\u0430	\u0433.	\u0442\u0440\u0438\u043c.	\u043c\u0435\u0441.	\u0441\u0435\u0434\u043c.	\u0434\u0435\u043d \u043e\u0442 \u0441\u0435\u0434\u043c.	\u0434	\u043f\u0440.\u043e\u0431./\u0441\u043b.\u043e\u0431.	\u0447	\u043c\u0438\u043d	\u0441\u0435\u043a	\u0447\u0430\u0441. \u0437\u043e\u043d\u0430
+bn	C	long	\u09ac\u09cc\u09a6\u09cd\u09a7 \u0995\u09cd\u09af\u09be\u09b2\u09c7\u09a8\u09cd\u09a1\u09be\u09b0	\u099a\u09c0\u09a8\u09be \u0995\u09cd\u09af\u09be\u09b2\u09c7\u09a8\u09cd\u09a1\u09be\u09b0	\u0995\u09aa\u099f\u09bf\u0995 \u0995\u09cd\u09af\u09be\u09b2\u09c7\u09a8\u09cd\u09a1\u09be\u09b0	\u09a6\u09be\u0999\u09cd\u0997\u09bf \u0995\u09cd\u09af\u09be\u09b2\u09c7\u09a8\u09cd\u09a1\u09be\u09b0	\u0987\u09a5\u09bf\u0993\u09aa\u09bf\u0993 \u0986\u09ae\u09c7\u09a4\u09c7 \u0986\u09b2\u09c7\u09ae \u0995\u09cd\u09af\u09be\u09b2\u09c7\u09a8\u09cd\u09a1\u09be\u09b0	\u0987\u09a5\u09bf\u0993\u09aa\u09bf\u0995 \u0995\u09cd\u09af\u09be\u09b2\u09c7\u09a8\u09cd\u09a1\u09be\u09b0	\u0997\u09cd\u09b0\u09bf\u0997\u09cb\u09b0\u09bf\u09af\u09bc\u09be\u09a8 \u0995\u09cd\u09af\u09be\u09b2\u09c7\u09a8\u09cd\u09a1\u09be\u09b0	\u09b9\u09bf\u09ac\u09cd\u09b0\u09c1 \u0995\u09cd\u09af\u09be\u09b2\u09c7\u09a8\u09cd\u09a1\u09be\u09b0	\u09ad\u09be\u09b0\u09a4\u09c0\u09af\u09bc \u099c\u09be\u09a4\u09c0\u09af\u09bc \u09ac\u09b0\u09cd\u09b7\u09aa\u099e\u09cd\u099c\u09c0	\u0987\u09b8\u09b2\u09be\u09ae\u09bf\u0995 \u0995\u09cd\u09af\u09be\u09b2\u09c7\u09a8\u09cd\u09a1\u09be\u09b0	\u0987\u09b8\u09b2\u09be\u09ae\u09bf\u0995 \u0995\u09cd\u09af\u09be\u09b2\u09c7\u09a8\u09cd\u09a1\u09be\u09b0 (\u099b\u0995\u09ac\u09a6\u09cd\u09a7, \u09a8\u09be\u0997\u09b0\u09bf\u0995 \u09ac\u09b0\u09cd\u09b7\u09aa\u099e\u09cd\u099c\u09bf)	\u0987\u09b8\u09b2\u09be\u09ae\u09bf\u0995 \u09ac\u09b0\u09cd\u09b7\u09aa\u099e\u09cd\u099c\u09c0 (\u09b8\u09cc\u09a6\u09bf \u0986\u09b0\u09ac, \u09a6\u09c3\u09b6\u09cd\u09af\u09ae\u09be\u09a8)	\u0987\u09b8\u09b2\u09be\u09ae\u09bf\u0995 \u09ac\u09b0\u09cd\u09b7\u09aa\u099e\u09cd\u099c\u09c0 (\u099b\u0995\u09ac\u09a6\u09cd\u09a7, \u099c\u09cd\u09af\u09cb\u09a4\u09bf\u09b0\u09cd\u09ac\u09bf\u09a6\u09cd\u09af\u09c0\u09af\u09bc \u09af\u09c1\u0997)	\u0987\u09b8\u09b2\u09be\u09ae\u09bf\u0995 \u09ac\u09b0\u09cd\u09b7\u09aa\u099e\u09cd\u099c\u09c0 (\u0989\u09ae\u09cd\u09ae\u09be \u0986\u09b2-\u0995\u09c1\u09b0\u0986)	\u0997\u09cd\u09b0\u09c7\u0997\u09b0\u09c0\u09af\u09bc \u0995\u09cd\u09af\u09be\u09b2\u09c7\u09a8\u09cd\u09a1\u09be\u09b0 (\u09aa\u09cd\u09b0\u09a5\u09ae \u09ac\u09b0\u09cd\u09b7)	\u099c\u09be\u09aa\u09be\u09a8\u09bf \u0995\u09cd\u09af\u09be\u09b2\u09c7\u09a8\u09cd\u09a1\u09be\u09b0	\u09ab\u09be\u09b0\u09b8\u09bf \u0995\u09cd\u09af\u09be\u09b2\u09c7\u09a8\u09cd\u09a1\u09be\u09b0	\u09ae\u09bf\u0999\u09cd\u0997\u09c1\u0993 \u0995\u09cd\u09af\u09be\u09b2\u09c7\u09a8\u09cd\u09a1\u09be\u09b0
+bn	F	long	\u09af\u09c1\u0997	\u09ac\u099b\u09b0	\u09a4\u09cd\u09b0\u09c8\u09ae\u09be\u09b8\u09bf\u0995	\u09ae\u09be\u09b8	\u09b8\u09aa\u09cd\u09a4\u09be\u09b9	\u09b8\u09aa\u09cd\u09a4\u09be\u09b9\u09c7\u09b0 \u09a6\u09bf\u09a8	\u09a6\u09bf\u09a8	AM/PM	\u0998\u09a3\u09cd\u099f\u09be	\u09ae\u09bf\u09a8\u09bf\u099f	\u09b8\u09c7\u0995\u09c7\u09a8\u09cd\u09a1	\u09b8\u09ae\u09af\u09bc \u0985\u099e\u09cd\u099a\u09b2
+bn	C	short	=
+bn	F	short	\u09af\u09c1\u0997	\u09ac\u099b\u09b0	\u09a4\u09cd\u09b0\u09c8\u09ae\u09be\u09b8\u09bf\u0995	\u09ae\u09be\u09b8	\u09b8\u09aa\u09cd\u09a4\u09be\u09b9	\u09b8\u09aa\u09cd\u09a4\u09be\u09b9\u09c7\u09b0 \u09a6\u09bf\u09a8	\u09a6\u09bf\u09a8	AM/PM	\u0998\u09a3\u09cd\u099f\u09be	\u09ae\u09bf\u09a8\u09bf\u099f	\u09b8\u09c7\u0995\u09c7\u09a8\u09cd\u09a1	\u0985\u099e\u09cd\u099a\u09b2
+bn	C	narrow	=
+bn	F	narrow	\u09af\u09c1\u0997	\u09ac\u099b\u09b0	\u09a4\u09cd\u09b0\u09c8\u09ae\u09be\u09b8\u09bf\u0995	\u09ae\u09be\u09b8	\u09b8\u09aa\u09cd\u09a4\u09be\u09b9	\u09b8\u09aa\u09cd\u09a4\u09be\u09b9\u09c7\u09b0 \u09a6\u09bf\u09a8	\u09a6\u09bf\u09a8	AM/PM	\u0998\u09a3\u09cd\u099f\u09be	\u09ae\u09bf\u09a8\u09bf\u099f	\u09b8\u09c7\u0995\u09c7\u09a8\u09cd\u09a1	\u0985\u099e\u09cd\u099a\u09b2
+bs	C	long																		
+bs	F	long	Era	Year	Quarter	Month	Week	Day of the Week	Day	Dayperiod	Hour	Minute	Second	Zone
+bs	C	short	=
+bs	F	short	=
+bs	C	narrow	=
+bs	F	narrow	=
+ca	C	long	calendari budista	calendari xin\u00e8s	calendari copte	calendari dangi	calendari et\u00edop amete-alem	calendari et\u00edop	calendari gregori\u00e0	calendari hebreu	calendari hind\u00fa	calendari isl\u00e0mic	calendari civil isl\u00e0mic			calendari isl\u00e0mic (Umm al-Qura)	calendari ISO-8601	calendari japon\u00e8s	calendari persa	calendari de la Rep\u00fablica de Xina
+ca	F	long	era	any	trimestre	mes	setmana	dia de la setmana	dia	a.\u00a0m./p.\u00a0m.	hora	minut	segon	fus horari
+ca	C	short	=
+ca	F	short	era	any	trim.	mes	setm.	dia de la setm.	dia	a.\u00a0m./p.\u00a0m.	h	min	s	fus horari
+ca	C	narrow	=
+ca	F	narrow	era	any	trim.	mes	setm.	dia de la setm.	dia	a.\u00a0m./p.\u00a0m.	h	min	s	fus horari
+cs	C	long	Buddhistick\u00fd kalend\u00e1\u0159	\u010c\u00ednsk\u00fd kalend\u00e1\u0159	Koptsk\u00fd kalend\u00e1\u0159	Korejsk\u00fd kalend\u00e1\u0159 Dangi	Etiopsk\u00fd kalend\u00e1\u0159 (amete alem)	Etiopsk\u00fd kalend\u00e1\u0159	Gregori\u00e1nsk\u00fd kalend\u00e1\u0159	Hebrejsk\u00fd kalend\u00e1\u0159	Indick\u00fd n\u00e1rodn\u00ed kalend\u00e1\u0159	Kalend\u00e1\u0159 podle hid\u017ery	Kalend\u00e1\u0159 podle hid\u017ery (ob\u010dansk\u00fd)			Kalend\u00e1\u0159 podle hid\u017ery (Umm al-Qura)	Kalend\u00e1\u0159 ISO-8601	Japonsk\u00fd kalend\u00e1\u0159	Persk\u00fd kalend\u00e1\u0159	Kalend\u00e1\u0159 \u010c\u00ednsk\u00e9 republiky
+cs	F	long	letopo\u010det	rok	\u010dtvrtlet\u00ed	m\u011bs\u00edc	t\u00fdden	den v t\u00fddnu	den	\u010d\u00e1st dne	hodina	minuta	sekunda	\u010dasov\u00e9 p\u00e1smo
+cs	C	short	=
+cs	F	short	letop.	r.	Q	m\u011bs.	t\u00fdd.	den v t\u00fdd.	den	\u010d\u00e1st dne	h	min	s	\u010das. p\u00e1smo
+cs	C	narrow	=
+cs	F	narrow	let.	r.	Q	m\u011bs.	t\u00fdd.	d. v t\u00fdd.	den	\u010d\u00e1st d.	h	min	s	p\u00e1smo
+da	C	long	buddhistisk kalender	kinesisk kalender	koptisk kalender	dangi-kalender	etiopisk amete-alem-kalender	etiopisk kalender	gregoriansk kalender	j\u00f8disk kalender	indisk nationalkalender	hijri-kalender	verdslig hijri-kalender			hijri-kalender (Umm al-Qura)	ISO-8601-kalender	japansk kalender	persisk kalender	kalender for Republikken Kina
+da	F	long	\u00e6ra	\u00e5r	kvartal	m\u00e5ned	uge	ugedag	dag	AM/PM	time	minut	sekund	tidszone
+da	C	short	=
+da	F	short	\u00e6ra	\u00e5r	kvt.	md.	uge	ugedag	dag	AM/PM	t.	min.	sek.	zone
+da	C	narrow	=
+da	F	narrow	\u00e6ra	\u00e5r	kvt.	md.	uge	ugedag	dag	AM/PM	t.	min.	s	zone
+de	C	long	Buddhistischer Kalender	Chinesischer Kalender	Koptischer Kalender	Dangi-Kalender	\u00c4thiopischer Am\u00e4t\u00e4-Al\u00e4m-Kalender	\u00c4thiopischer Kalender	Gregorianischer Kalender	J\u00fcdischer Kalender	Indischer Nationalkalender	Hidschra-Kalender	Hidschra-Kalender (tabellarisch, nicht-astronomisch)			Hidschra-Kalender (Umm al-Qura)	ISO-8601-Kalender	Japanischer Kalender	Persischer Kalender	Minguo-Kalender
+de	F	long	Epoche	Jahr	Quartal	Monat	Woche	Wochentag	Tag	Tagesh\u00e4lfte	Stunde	Minute	Sekunde	Zeitzone
+de	C	short	=
+de	F	short	Ep.	Jahr	Quart.	Mon.	Woche	Wochentag	Tag	Tagesh\u00e4lfte	Std.	Min.	Sek.	Zeitzone
+de	C	narrow	=
+de	F	narrow	E	J	Q	M	W	Wochent.	Tag	Tagesh.	Std.	Min.	Sek.	Zeitz.
+el	C	long	\u0392\u03bf\u03c5\u03b4\u03b9\u03c3\u03c4\u03b9\u03ba\u03cc \u03b7\u03bc\u03b5\u03c1\u03bf\u03bb\u03cc\u03b3\u03b9\u03bf	\u039a\u03b9\u03bd\u03b5\u03b6\u03b9\u03ba\u03cc \u03b7\u03bc\u03b5\u03c1\u03bf\u03bb\u03cc\u03b3\u03b9\u03bf	\u039a\u03bf\u03c0\u03c4\u03b9\u03ba\u03cc \u03b7\u03bc\u03b5\u03c1\u03bf\u03bb\u03cc\u03b3\u03b9\u03bf	\u039a\u03bf\u03c1\u03b5\u03b1\u03c4\u03b9\u03ba\u03cc \u03b7\u03bc\u03b5\u03c1\u03bf\u03bb\u03cc\u03b3\u03b9\u03bf \u03bd\u03c4\u03ac\u03bd\u03b3\u03ba\u03b9	\u0391\u03b9\u03b8\u03b9\u03bf\u03c0\u03b9\u03ba\u03cc \u03b7\u03bc\u03b5\u03c1\u03bf\u03bb\u03cc\u03b3\u03b9\u03bf \u0386\u03bc\u03b5\u03c4 \u0386\u03bb\u03b5\u03bc	\u0391\u03b9\u03b8\u03b9\u03bf\u03c0\u03b9\u03ba\u03cc \u03b7\u03bc\u03b5\u03c1\u03bf\u03bb\u03cc\u03b3\u03b9\u03bf	\u0393\u03c1\u03b7\u03b3\u03bf\u03c1\u03b9\u03b1\u03bd\u03cc \u03b7\u03bc\u03b5\u03c1\u03bf\u03bb\u03cc\u03b3\u03b9\u03bf	\u0395\u03b2\u03c1\u03b1\u03ca\u03ba\u03cc \u03b7\u03bc\u03b5\u03c1\u03bf\u03bb\u03cc\u03b3\u03b9\u03bf	\u0399\u03bd\u03b4\u03b9\u03ba\u03cc \u03b5\u03b8\u03bd\u03b9\u03ba\u03cc \u03b7\u03bc\u03b5\u03c1\u03bf\u03bb\u03cc\u03b3\u03b9\u03bf	\u0397\u03bc\u03b5\u03c1\u03bf\u03bb\u03cc\u03b3\u03b9\u03bf \u0395\u03b3\u03af\u03c1\u03b1\u03c2	\u0397\u03bc\u03b5\u03c1\u03bf\u03bb\u03cc\u03b3\u03b9\u03bf \u0395\u03b3\u03af\u03c1\u03b1\u03c2 (\u03c3\u03b5 \u03bc\u03bf\u03c1\u03c6\u03ae \u03c0\u03af\u03bd\u03b1\u03ba\u03b1, \u03b1\u03c3\u03c4\u03b9\u03ba\u03cc \u03b5\u03c0\u03bf\u03c7\u03ae\u03c2)			\u0397\u03bc\u03b5\u03c1\u03bf\u03bb\u03cc\u03b3\u03b9\u03bf \u0395\u03b3\u03af\u03c1\u03b1\u03c2 (Umm al-Qura)	\u0397\u03bc\u03b5\u03c1\u03bf\u03bb\u03cc\u03b3\u03b9\u03bf ISO-8601	\u0399\u03b1\u03c0\u03c9\u03bd\u03b9\u03ba\u03cc \u03b7\u03bc\u03b5\u03c1\u03bf\u03bb\u03cc\u03b3\u03b9\u03bf	\u03a0\u03b5\u03c1\u03c3\u03b9\u03ba\u03cc \u03b7\u03bc\u03b5\u03c1\u03bf\u03bb\u03cc\u03b3\u03b9\u03bf	\u0397\u03bc\u03b5\u03c1\u03bf\u03bb\u03cc\u03b3\u03b9\u03bf \u03c4\u03b7\u03c2 \u0394\u03b7\u03bc\u03bf\u03ba\u03c1\u03b1\u03c4\u03af\u03b1\u03c2 \u03c4\u03b7\u03c2 \u039a\u03af\u03bd\u03b1\u03c2
+el	F	long	\u03c0\u03b5\u03c1\u03af\u03bf\u03b4\u03bf\u03c2	\u03ad\u03c4\u03bf\u03c2	\u03c4\u03c1\u03af\u03bc\u03b7\u03bd\u03bf	\u03bc\u03ae\u03bd\u03b1\u03c2	\u03b5\u03b2\u03b4\u03bf\u03bc\u03ac\u03b4\u03b1	\u03ba\u03b1\u03b8\u03b7\u03bc\u03b5\u03c1\u03b9\u03bd\u03ae	\u03b7\u03bc\u03ad\u03c1\u03b1	\u03c0.\u03bc./\u03bc.\u03bc.	\u03ce\u03c1\u03b1	\u03bb\u03b5\u03c0\u03c4\u03cc	\u03b4\u03b5\u03c5\u03c4\u03b5\u03c1\u03cc\u03bb\u03b5\u03c0\u03c4\u03bf	\u03b6\u03ce\u03bd\u03b7 \u03ce\u03c1\u03b1\u03c2
+el	C	short	=
+el	F	short	\u03c0\u03b5\u03c1.	\u03ad\u03c4.	\u03c4\u03c1\u03af\u03bc.	\u03bc\u03ae\u03bd.	\u03b5\u03b2\u03b4.	\u03ba\u03b1\u03b8\u03b7\u03bc\u03b5\u03c1.	\u03b7\u03bc.	\u03c0\u03bc/\u03bc\u03bc	\u03ce.	\u03bb\u03b5\u03c0.	\u03b4\u03b5\u03c5\u03c4.	\u03b6\u03ce\u03bd\u03b7
+el	C	narrow	=
+el	F	narrow	\u03c0\u03b5\u03c1.	\u03ad\u03c4.	\u03c4\u03c1\u03af\u03bc.	\u03bc\u03ae\u03bd.	\u03b5\u03b2\u03b4.	\u03ba\u03b1\u03b8\u03b7\u03bc\u03b5\u03c1.	\u03b7\u03bc.	\u03c0\u03bc/\u03bc\u03bc	\u03ce.	\u03bb.	\u03b4.	\u03b6\u03ce\u03bd\u03b7
+en	C	long	Buddhist Calendar	Chinese Calendar	Coptic Calendar	Dangi Calendar	Ethiopic Amete Alem Calendar	Ethiopic Calendar	Gregorian Calendar	Hebrew Calendar	Indian National Calendar	Hijri Calendar	Hijri Calendar (tabular, civil epoch)	Hijri Calendar (Saudi Arabia, sighting)	Hijri Calendar (tabular, astronomical epoch)	Hijri Calendar (Umm al-Qura)	Gregorian Calendar (ISO 8601 Weeks)	Japanese Calendar	Persian Calendar	Minguo Calendar
+en	F	long	era	year	quarter	month	week	day of the week	day	AM/PM	hour	minute	second	time zone
+en	C	short	=
+en	F	short	era	yr.	qtr.	mo.	wk.	day of wk.	day	AM/PM	hr.	min.	sec.	zone
+en	C	narrow	=
+en	F	narrow	era	yr	qtr	mo	wk	day of wk.	day	AM/PM	hr	min	sec	zone
+es	C	long	calendario budista	calendario chino	calendario c\u00f3ptico	calendario dangi	calendario et\u00edope Amete Alem	calendario et\u00edope	calendario gregoriano	calendario hebreo	calendario nacional hind\u00fa	calendario hijri	calendario hijri tabular			calendario hijri Umm al-Qura	calendario ISO-8601	calendario japon\u00e9s	calendario persa	calendario de la Rep\u00fablica de China
+es	F	long	era	a\u00f1o	trimestre	mes	semana	d\u00eda de la semana	d\u00eda	a.\u00a0m./p.\u00a0m.	hora	minuto	segundo	zona horaria
+es	C	short	=
+es	F	short	era	a	trim.	m	sem.	d\u00eda de sem.	d	a.\u00a0m./p.\u00a0m.	h	min	s	zona
+es	C	narrow	=
+es	F	narrow	era	a	trim.	m	sem.	d\u00eda de sem.	d	a.\u00a0m./p.\u00a0m.	h	min	s	zona
+et	C	long	budistlik kalender	Hiina kalender	kopti kalender	dangi kalender	Etioopia amete alemi kalender	Etioopia kalender	Gregoriuse kalender	juudi kalender	India rahvuslik kalender	hid\u017era kalender	hid\u017era kalender (tabelkalender, ilmalik)	hid\u017era kalender (Saudi Araabia, vaatlusp\u00f5hine)	hid\u017era kalender (tabelkalender, astronoomiline ajastu)	hid\u017era kalender (Umm al-Qur\u00e1)	ISO-8601 kalender	Jaapani kalender	P\u00e4rsia kalender	Hiina Vabariigi kalender
+et	F	long	ajastu	aasta	kvartal	kuu	n\u00e4dal	n\u00e4dalap\u00e4ev	p\u00e4ev	enne/p\u00e4rast l\u00f5unat	tund	minut	sekund	ajav\u00f6\u00f6nd
+et	C	short	=
+et	F	short	ajastu	a	kv	k	n\u00e4d	n\u00e4dalap.	p	enne/p\u00e4rast l\u00f5unat	t	min	sek	v\u00f6\u00f6nd
+et	C	narrow	=
+et	F	narrow	ajastu	a	kv	k	n\u00e4d	n\u00e4dalap.	p	enne/p\u00e4rast l\u00f5unat	t	min	s	v\u00f6\u00f6nd
+fa	C	long	\u062a\u0642\u0648\u06cc\u0645 \u0628\u0648\u062f\u0627\u06cc\u06cc	\u062a\u0642\u0648\u06cc\u0645 \u0686\u06cc\u0646\u06cc	\u062a\u0642\u0648\u06cc\u0645 \u0642\u0628\u0637\u06cc	\u062a\u0642\u0648\u06cc\u0645 \u062f\u0627\u0646\u06af\u06cc	\u062a\u0642\u0648\u06cc\u0645 \u0627\u062a\u06cc\u0648\u067e\u06cc\u0627\u06cc\u06cc \u0639\u0627\u0645\u062a \u0639\u0627\u0644\u0645	\u062a\u0642\u0648\u06cc\u0645 \u0627\u062a\u06cc\u0648\u067e\u06cc\u0627\u06cc\u06cc	\u062a\u0642\u0648\u06cc\u0645 \u0645\u06cc\u0644\u0627\u062f\u06cc	\u062a\u0642\u0648\u06cc\u0645 \u0639\u0628\u0631\u06cc	\u062a\u0642\u0648\u06cc\u0645 \u0645\u0644\u06cc \u0647\u0646\u062f	\u062a\u0642\u0648\u06cc\u0645 \u0647\u062c\u0631\u06cc \u0642\u0645\u0631\u06cc	\u062a\u0642\u0648\u06cc\u0645 \u0647\u062c\u0631\u06cc \u0642\u0645\u0631\u06cc \u062c\u062f\u0648\u0644\u06cc \u0645\u062f\u0646\u06cc	\u0642\u0648\u06cc\u0645 \u0647\u062c\u0631\u06cc \u0642\u0645\u0631\u06cc \u0647\u0644\u0627\u0644\u06cc \u0639\u0631\u0628\u0633\u062a\u0627\u0646 \u0633\u0639\u0648\u062f\u06cc	\u062a\u0642\u0648\u06cc\u0645 \u0647\u062c\u0631\u06cc \u0642\u0645\u0631\u06cc \u062c\u062f\u0648\u0644\u06cc \u0646\u062c\u0648\u0645\u06cc	\u062a\u0642\u0648\u06cc\u0645 \u0647\u062c\u0631\u06cc \u0642\u0645\u0631\u06cc \u0627\u0645\u200c\u0627\u0644\u0642\u0631\u06cc	\u062a\u0642\u0648\u06cc\u0645 \u0627\u06cc\u0632\u0648 \u06f8\u06f6\u06f0\u06f1	\u062a\u0642\u0648\u06cc\u0645 \u0698\u0627\u067e\u0646\u06cc	\u062a\u0642\u0648\u06cc\u0645 \u0647\u062c\u0631\u06cc \u0634\u0645\u0633\u06cc	\u062a\u0642\u0648\u06cc\u0645 \u062c\u0645\u0647\u0648\u0631\u06cc \u0686\u06cc\u0646 (\u062a\u0627\u06cc\u0648\u0627\u0646)
+fa	F	long	\u062f\u0648\u0631\u0647	\u0633\u0627\u0644	\u0633\u0647\u200c\u0645\u0627\u0647\u0647	\u0645\u0627\u0647	\u0647\u0641\u062a\u0647	\u0631\u0648\u0632 \u0647\u0641\u062a\u0647	\u0631\u0648\u0632	\u0642.\u0638/\u0628.\u0638	\u0633\u0627\u0639\u062a	\u062f\u0642\u06cc\u0642\u0647	\u062b\u0627\u0646\u06cc\u0647	\u0645\u0646\u0637\u0642\u0647\u0654 \u0632\u0645\u0627\u0646\u06cc
+fa	C	short	=
+fa	F	short	=
+fa	C	narrow	=
+fa	F	narrow	=
+fi	C	long	buddhalainen kalenteri	kiinalainen kalenteri	koptilainen kalenteri	dangilainen kalenteri	etiopialainen amete alem -kalenteri	etiopialainen kalenteri	gregoriaaninen kalenteri	juutalainen kalenteri	intialainen kalenteri	hid\u017era-kalenteri	hid\u017era-siviilikalenteri (tabulaarinen, perjantaiepookki)	hid\u017era-kalenteri (saudiarabialainen)	hid\u017era-matemaattinen kalenteri (tabulaarinen, torstaiepookki)	hid\u017era-kalenteri, Umm al-Qura	ISO 8601 -kalenteri	japanilainen kalenteri	persialainen kalenteri	Kiinan tasavallan kalenteri
+fi	F	long	aikakausi	vuosi	nelj\u00e4nnesvuosi	kuukausi	viikko	viikonp\u00e4iv\u00e4	p\u00e4iv\u00e4	vuorokaudenaika	tunti	minuutti	sekunti	aikavy\u00f6hyke
+fi	C	short	=
+fi	F	short	aikakausi	v	nelj\u00e4nnes	kk	vk	viikonp\u00e4iv\u00e4	pv	vuorokaudenaika	t	min	s	aikavy\u00f6hyke
+fi	C	narrow	=
+fi	F	narrow	aikakausi	v	nelj.	kk	vk	viikonp\u00e4iv\u00e4	pv	vuorokaudenaika	t	min	s	aikavy\u00f6hyke
+fil	C	long	Kalendaryo ng Buddhist	Kalendaryong Chinese	Kalendaryong Coptic	Dangi na Kalendaryo	Kalendaryong Ethiopic Amete Alem	Kalendaryo ng Ethiopia	Gregorian na Kalendaryo	Hebrew na Kalendaryo	Pambansang Kalendaryong Indian	Kalendaryong Hijiri	Kalendaryong Hijri (tabular, Civil epoch)	Kalendaryong Islamiko (Saudi Arabia, sighting)	Kalendaryong Islamiko (tabular, astronomikal na epoch)	Kalendaryong Hijri (Umm al-Qura)	Kalendaryong Gregorian (Unang Taon)	Kalendaryong Japanese	Kalendaryong Persian	Kalendaryong Minguo
+fil	F	long	panahon	taon	quarter	buwan	linggo	araw ng linggo	araw	AM/PM	oras	minuto	segundo	time zone
+fil	C	short	=
+fil	F	short	panahon	taon	qtr.	buwan	linggo	araw ng linggo	araw	AM/PM	oras	min.	seg.	zone
+fil	C	narrow	=
+fil	F	narrow	panahon	taon	qtr.	buwan	linggo	araw ng linggo	araw	AM/PM	oras	min.	seg.	zone
+fr	C	long	calendrier bouddhiste	calendrier chinois	calendrier copte	calendrier dangi	calendrier \u00e9thiopien Amete Alem	calendrier \u00e9thiopien	calendrier gr\u00e9gorien	calendrier h\u00e9bra\u00efque	calendrier indien	calendrier h\u00e9girien	calendrier h\u00e9girien (tabulaire, \u00e9poque civile)		calendrier h\u00e9girien (tabulaire, \u00e9poque astronomique)	calendrier h\u00e9girien (Umm al-Qura)	calendrier ISO 8601	calendrier japonais	calendrier persan	calendrier r\u00e9publicain chinois
+fr	F	long	\u00e8re	ann\u00e9e	trimestre	mois	semaine	jour de la semaine	jour	cadran	heure	minute	seconde	fuseau horaire
+fr	C	short	=
+fr	F	short	\u00e8re	an	trim.	m.	sem.	j (sem.)	j	cadran	h	min	s	fuseau horaire
+fr	C	narrow	=
+fr	F	narrow	\u00e8re	a	trim.	m.	sem.	j (sem.)	j	cadran	h	min	s	fuseau horaire
+gu	C	long	\u0aac\u0ac1\u0aa6\u0acd\u0aa7\u0abf\u0ab8\u0acd\u0a9f \u0a95\u0ac7\u0ab2\u0ac7\u0aa8\u0acd\u0aa1\u0ab0	\u0a9a\u0abe\u0a87\u0aa8\u0ac0\u0a9d \u0a95\u0ac7\u0ab2\u0ac7\u0aa8\u0acd\u0aa1\u0ab0	\u0a95\u0acb\u0aaa\u0acd\u0a9f\u0abf\u0a95 \u0a95\u0ac7\u0ab2\u0ac7\u0aa8\u0acd\u0aa1\u0ab0	\u0aa1\u0abe\u0a82\u0a97\u0ac0 \u0a95\u0ac7\u0ab2\u0ac7\u0aa8\u0acd\u0aa1\u0ab0	\u0a87\u0aa5\u0abf\u0a93\u0aaa\u0abf\u0a95 \u0a8f\u0aae\u0ac7\u0a9f \u0a8f\u0ab2\u0ac7\u0aae \u0a95\u0ac7\u0ab2\u0ac7\u0aa8\u0acd\u0aa1\u0ab0	\u0a87\u0aa5\u0abf\u0a93\u0aaa\u0abf\u0a95 \u0a95\u0ac7\u0ab2\u0ac7\u0aa8\u0acd\u0aa1\u0ab0	\u0a97\u0acd\u0ab0\u0ac7\u0a97\u0acb\u0ab0\u0abf\u0a85\u0aa8 \u0a95\u0ac7\u0ab2\u0ac7\u0aa8\u0acd\u0aa1\u0ab0	\u0ab9\u0abf\u0aac\u0acd\u0ab0\u0ac1 \u0a95\u0ac7\u0ab2\u0ac7\u0aa8\u0acd\u0aa1\u0ab0	\u0aad\u0abe\u0ab0\u0aa4\u0ac0\u0aaf \u0ab0\u0abe\u0ab7\u0acd\u0a9f\u0acd\u0ab0\u0ac0\u0aaf \u0a95\u0ac7\u0ab2\u0ac7\u0aa8\u0acd\u0aa1\u0ab0	\u0ab9\u0abf\u0a9c\u0ab0\u0ac0 \u0a95\u0ac7\u0ab2\u0ac7\u0aa8\u0acd\u0aa1\u0ab0	\u0ab9\u0abf\u0a9c\u0ab0\u0ac0-\u0aa8\u0abe\u0a97\u0ab0\u0abf\u0a95 \u0a95\u0ac7\u0ab2\u0ac7\u0aa8\u0acd\u0aa1\u0ab0	\u0a87\u0ab8\u0acd\u0ab2\u0abe\u0aae\u0abf\u0a95 \u0a95\u0ac7\u0ab2\u0ac7\u0aa8\u0acd\u0aa1\u0ab0 (\u0ab8\u0abe\u0a89\u0aa6\u0ac0 \u0a85\u0ab0\u0ac7\u0aac\u0abf\u0aaf\u0abe, \u0aa8\u0abf\u0ab0\u0ac0\u0a95\u0acd\u0ab7\u0aa3)	\u0a87\u0ab8\u0acd\u0ab2\u0abe\u0aae\u0abf\u0a95 \u0a95\u0ac7\u0ab2\u0ac7\u0aa8\u0acd\u0aa1\u0ab0 (\u0a9f\u0ac7\u0aac\u0acd\u0aaf\u0ac1\u0ab2\u0ab0, \u0a96\u0a97\u0acb\u0ab3\u0ab6\u0abe\u0ab8\u0acd\u0aa4\u0acd\u0ab0\u0ac0\u0aaf \u0aaf\u0ac1\u0a97)	\u0ab9\u0abf\u0a9c\u0ab0\u0ac0 \u0a95\u0ac7\u0ab2\u0ac7\u0aa8\u0acd\u0aa1\u0ab0 (\u0a89\u0aae \u0a85\u0ab2-\u0a95\u0ac1\u0ab0\u0abe)	ISO-8601 \u0a95\u0ac7\u0ab2\u0ac7\u0aa8\u0acd\u0aa1\u0ab0	\u0a9c\u0abe\u0aaa\u0abe\u0aa8\u0ac0\u0a9d \u0a95\u0ac7\u0ab2\u0ac7\u0aa8\u0acd\u0aa1\u0ab0	\u0aaa\u0ab0\u0acd\u0ab6\u0abf\u0aaf\u0aa8 \u0a95\u0ac7\u0ab2\u0ac7\u0aa8\u0acd\u0aa1\u0ab0	\u0aae\u0abf\u0a82\u0a97\u0ac1\u0a93 \u0a95\u0ac7\u0ab2\u0ac7\u0aa8\u0acd\u0aa1\u0ab0
+gu	F	long	\u0aaf\u0ac1\u0a97	\u0ab5\u0ab0\u0acd\u0ab7	\u0aa4\u0acd\u0ab0\u0abf\u0aae\u0abe\u0ab8\u0abf\u0a95	\u0aae\u0ab9\u0abf\u0aa8\u0acb	\u0a85\u0aa0\u0ab5\u0abe\u0aa1\u0abf\u0aaf\u0ac1\u0a82	\u0a85\u0aa0\u0ab5\u0abe\u0aa1\u0abf\u0aaf\u0abe\u0aa8\u0acb \u0aa6\u0abf\u0ab5\u0ab8	\u0aa6\u0abf\u0ab5\u0ab8	AM/PM	\u0a95\u0ab2\u0abe\u0a95	\u0aae\u0abf\u0aa8\u0abf\u0a9f	\u0ab8\u0ac7\u0a95\u0a82\u0aa1	\u0ab8\u0aae\u0aaf \u0a9d\u0acb\u0aa8
+gu	C	short	=
+gu	F	short	\u0aaf\u0ac1\u0a97	\u0ab5.	\u0aa4\u0acd\u0ab0\u0abf\u0aae\u0abe\u0ab8.	\u0aae.	\u0a85\u0aa0.	\u0a85\u0aa0\u0ab5\u0abe\u0aa1\u0abf\u0aaf\u0abe\u0aa8\u0acb \u0aa6\u0abf\u0ab5\u0ab8	\u0aa6\u0abf\u0ab5\u0ab8	AM/PM	\u0a95\u0af0	\u0aae\u0abf\u0af0	\u0ab8\u0ac7.	\u0ab8\u0aae\u0aaf \u0a9d\u0acb\u0aa8
+gu	C	narrow	=
+gu	F	narrow	\u0aaf\u0ac1\u0a97	\u0ab5.	\u0aa4\u0acd\u0ab0\u0abf\u0aae\u0abe\u0ab8.	\u0aae.	\u0a85\u0aa0.	\u0a85\u0aa0\u0ab5\u0abe\u0aa1\u0abf\u0aaf\u0abe\u0aa8\u0acb \u0aa6\u0abf\u0ab5\u0ab8	\u0aa6\u0abf\u0ab5\u0ab8	AM/PM	\u0a95\u0af0	\u0aae\u0abf\u0af0	\u0ab8\u0ac7.	\u0ab8\u0aae\u0aaf \u0a9d\u0acb\u0aa8
+he	C	long	\u05dc\u05d5\u05d7 \u05d4\u05e9\u05e0\u05d4 \u05d4\u05d1\u05d5\u05d3\u05d4\u05d9\u05e1\u05d8\u05d9	\u05dc\u05d5\u05d7 \u05d4\u05e9\u05e0\u05d4 \u05d4\u05e1\u05d9\u05e0\u05d9	\u05dc\u05d5\u05d7 \u05d4\u05e9\u05e0\u05d4 \u05d4\u05e7\u05d5\u05e4\u05d8\u05d9	\u05dc\u05d5\u05d7 \u05d4\u05e9\u05e0\u05d4 \u05d4\u05e7\u05d5\u05e8\u05d9\u05d0\u05e0\u05d9	\u05dc\u05d5\u05d7 \u05d4\u05e9\u05e0\u05d4 \u05d0\u05de\u05d8\u05d4 \u05d0\u05dc\u05dd \u05d4\u05d0\u05ea\u05d9\u05d5\u05e4\u05d9	\u05dc\u05d5\u05d7 \u05d4\u05e9\u05e0\u05d4 \u05d4\u05d0\u05ea\u05d9\u05d5\u05e4\u05d9	\u05dc\u05d5\u05d7 \u05d4\u05e9\u05e0\u05d4 \u05d4\u05d2\u05e8\u05d2\u05d5\u05e8\u05d9\u05d0\u05e0\u05d9	\u05dc\u05d5\u05d7 \u05d4\u05e9\u05e0\u05d4 \u05d4\u05e2\u05d1\u05e8\u05d9	\u05dc\u05d5\u05d7 \u05d4\u05e9\u05e0\u05d4 \u05d4\u05d4\u05d5\u05d3\u05d9 \u05d4\u05dc\u05d0\u05d5\u05de\u05d9	\u05dc\u05d5\u05d7 \u05e9\u05e0\u05d4 \u05d4\u05d4\u05d9\u05d2\u05f3\u05e8\u05d9	\u05dc\u05d5\u05d7 \u05d4\u05e9\u05e0\u05d4 \u05d4\u05de\u05d5\u05e1\u05dc\u05de\u05d9 \u05d4\u05d0\u05d6\u05e8\u05d7\u05d9	\u05dc\u05d5\u05d7 \u05d4\u05e9\u05e0\u05d4 \u05d4\u05de\u05d5\u05e1\u05dc\u05de\u05d9 (\u05e2\u05e8\u05d1 \u05d4\u05e1\u05e2\u05d5\u05d3\u05d9\u05ea)	\u05dc\u05d5\u05d7 \u05d4\u05e9\u05e0\u05d4 \u05d4\u05de\u05d5\u05e1\u05dc\u05de\u05d9 \u05d4\u05d0\u05e1\u05d8\u05e8\u05d5\u05e0\u05d5\u05de\u05d9	\u05dc\u05d5\u05d7 \u05d4\u05e9\u05e0\u05d4 \u05d4\u05de\u05d5\u05e1\u05dc\u05de\u05d9 \u05d0\u05d5\u05dd \u05d0\u05dc-\u05e7\u05d5\u05e8\u05d0	\u05dc\u05d5\u05d7 \u05e9\u05e0\u05d4 ISO-8601	\u05dc\u05d5\u05d7 \u05d4\u05e9\u05e0\u05d4 \u05d4\u05d9\u05e4\u05e0\u05d9	\u05dc\u05d5\u05d7 \u05d4\u05e9\u05e0\u05d4 \u05d4\u05e4\u05e8\u05e1\u05d9	\u05dc\u05d5\u05d7 \u05d4\u05e9\u05e0\u05d4 \u05d4\u05d8\u05d9\u05d9\u05d5\u05d5\u05d0\u05e0\u05d9
+he	F	long	\u05ea\u05e7\u05d5\u05e4\u05d4	\u05e9\u05e0\u05d4	\u05e8\u05d1\u05e2\u05d5\u05df	\u05d7\u05d5\u05d3\u05e9	\u05e9\u05d1\u05d5\u05e2	\u05d9\u05d5\u05dd \u05d1\u05e9\u05d1\u05d5\u05e2	\u05d9\u05d5\u05dd	\u05dc\u05e4\u05e0\u05d4\u05f4\u05e6/\u05d0\u05d7\u05d4\u05f4\u05e6	\u05e9\u05e2\u05d4	\u05d3\u05e7\u05d4	\u05e9\u05e0\u05d9\u05d9\u05d4	\u05d0\u05d6\u05d5\u05e8 \u05d6\u05de\u05df
+he	C	short	=
+he	F	short	\u05ea\u05e7\u05d5\u05e4\u05d4	\u05e9\u05e0\u05f3	\u05e8\u05d1\u05e2\u05f3	\u05d7\u05d5\u05f3	\u05e9\u05d1\u05f3	\u05d9\u05d5\u05dd \u05d1\u05e9\u05d1\u05d5\u05e2	\u05d9\u05d5\u05dd	AM/PM	\u05e9\u05e2\u05d4	\u05d3\u05e7\u05f3	\u05e9\u05e0\u05f3	\u05d0\u05d6\u05d5\u05e8
+he	C	narrow	=
+he	F	narrow	\u05ea\u05e7\u05d5\u05e4\u05d4	\u05e9\u05e0\u05f3	\u05e8\u05d1\u05e2\u05f3	\u05d7\u05d5\u05f3	\u05e9\u05d1\u05f3	\u05d9\u05d5\u05dd \u05d1\u05e9\u05d1\u05d5\u05e2	\u05d9\u05d5\u05dd	AM/PM	\u05e9\u05e2\u05f3	\u05d3\u05e7\u05f3	\u05e9\u05e0\u05f3	\u05d0\u05d6\u05d5\u05e8
+hi	C	long	\u092c\u094c\u0926\u094d\u0927 \u092a\u0902\u091a\u093e\u0902\u0917	\u091a\u0940\u0928\u0940 \u092a\u0902\u091a\u093e\u0902\u0917	\u0915\u0949\u092a\u094d\u091f\u093f\u0915 \u0915\u0948\u0932\u0947\u0902\u0921\u0930	\u0926\u093e\u0902\u0917\u0940 \u0915\u0948\u0932\u0947\u0902\u0921\u0930	\u0907\u0925\u093f\u092f\u094b\u092a\u093f\u0915 \u0905\u092e\u0947\u0924\u0947 \u0905\u0932\u0947\u092e \u0915\u0948\u0932\u0947\u0902\u0921\u0930	\u0907\u0925\u093f\u092f\u094b\u092a\u093f\u0915 \u0915\u0948\u0932\u0947\u0902\u0921\u0930	\u0917\u094d\u0930\u0947\u0917\u094b\u0930\u093f\u092f\u0928 \u0915\u0948\u0932\u0947\u0902\u0921\u0930	\u0939\u093f\u092c\u094d\u0930\u0942 \u092a\u0902\u091a\u093e\u0902\u0917	\u092d\u093e\u0930\u0924\u0940\u092f \u0930\u093e\u0937\u094d\u091f\u094d\u0930\u0940\u092f \u0915\u0948\u0932\u0947\u0902\u0921\u0930	\u0939\u093f\u091c\u0930\u0940 \u0915\u0948\u0932\u0947\u0902\u0921\u0930	\u0939\u093f\u091c\u0930\u0940 \u0928\u093e\u0917\u0930\u093f\u0915 \u0915\u0948\u0932\u0947\u0902\u0921\u0930			\u0939\u093f\u091c\u0930\u0940 \u0915\u0948\u0932\u0947\u0902\u0921\u0930 (\u0909\u092e\u094d\u092e \u0905\u0932-\u0915\u093c\u0941\u0930\u093e)	\u0906\u0908\u090f\u0938\u0913-8601 \u0915\u0948\u0932\u0947\u0902\u0921\u0930	\u091c\u093e\u092a\u093e\u0928\u0940 \u092a\u0902\u091a\u093e\u0902\u0917	\u092b\u093c\u093e\u0930\u0938\u0940 \u0915\u0948\u0932\u0947\u0902\u0921\u0930	\u091a\u0940\u0928\u0940 \u0917\u0923\u0924\u0902\u0924\u094d\u0930 \u092a\u0902\u091a\u093e\u0902\u0917
+hi	F	long	\u092f\u0941\u0917	\u0935\u0930\u094d\u0937	\u0924\u093f\u092e\u093e\u0939\u0940	\u092e\u093e\u0939	\u0938\u092a\u094d\u0924\u093e\u0939	\u0938\u092a\u094d\u0924\u093e\u0939 \u0915\u093e \u0926\u093f\u0928	\u0926\u093f\u0928	\u092a\u0942\u0930\u094d\u0935\u093e\u0939\u094d\u0928/\u0905\u092a\u0930\u093e\u0939\u094d\u0928	\u0918\u0902\u091f\u093e	\u092e\u093f\u0928\u091f	\u0938\u0947\u0915\u0902\u0921	\u0938\u092e\u092f \u0915\u094d\u0937\u0947\u0924\u094d\u0930
+hi	C	short	=
+hi	F	short	\u092f\u0941\u0917	\u0935\u0930\u094d\u0937	\u0924\u093f\u092e\u093e\u0939\u0940	\u092e\u093e\u0939	\u0938\u092a\u094d\u0924\u093e\u0939	\u0938\u092a\u094d\u0924\u093e\u0939 \u0915\u093e \u0926\u093f\u0928	\u0926\u093f\u0928	\u092a\u0942/\u0905	\u0918\u0902\u0970	\u092e\u093f\u0970	\u0938\u0947\u0970	\u0915\u094d\u0937\u0947\u0924\u094d\u0930
+hi	C	narrow	=
+hi	F	narrow	\u092f\u0941\u0917	\u0935\u0930\u094d\u0937	\u0924\u093f\u092e\u093e\u0939\u0940	\u092e\u093e\u0939	\u0938\u092a\u094d\u0924\u093e\u0939	\u0938\u092a\u094d\u0924\u093e\u0939 \u0915\u093e \u0926\u093f\u0928	\u0926\u093f\u0928	\u092a\u0942/\u0905	\u0918\u0902\u0970	\u092e\u093f\u0970	\u0938\u0947\u0970	\u0915\u094d\u0937\u0947\u0924\u094d\u0930
+hr	C	long	budisti\u010dki kalendar	kineski kalendar	koptski kalendar	dangi kalendar	etiopski kalendar "Amete Alem"	etiopski kalendar	gregorijanski kalendar	hebrejski kalendar	indijski nacionalni kalendar	hijri kalendar	hijri kalendar (tabularni, civilna epoha)			hijri kalendar (Umm al-Qura)	ISO-8601 kalendar	japanski kalendar	perzijski kalendar	kalendar Republike Kine
+hr	F	long	era	godina	kvartal	mjesec	tjedan	dan u tjednu	dan	AM/PM	sat	minuta	sekunda	vremenska zona
+hr	C	short	=
+hr	F	short	era	g.	kv.	mj.	tj.	dan u tjed.	d.	AM/PM	h	min	s	zona
+hr	C	narrow	=
+hr	F	narrow	era	g.	kv.	m.	tj.	dan u tj.	d.	AM/PM	h	min	s	zona
+hu	C	long	Buddhista napt\u00e1r	K\u00ednai napt\u00e1r	Kopt napt\u00e1r	Dangi napt\u00e1r	Eti\u00f3p amete alem napt\u00e1r	Eti\u00f3p napt\u00e1r	Gergely-napt\u00e1r	H\u00e9ber napt\u00e1r	Indiai nemzeti napt\u00e1r	Hidzsra napt\u00e1r	Hidzsra napt\u00e1r (t\u00e1bl\u00e1zatos, polg\u00e1ri)			Hidzsra napt\u00e1r (Umm al-Qura)	ISO-8601 napt\u00e1r	Jap\u00e1n napt\u00e1r	Perzsa napt\u00e1r	K\u00ednai k\u00f6zt\u00e1rsas\u00e1gi napt\u00e1r
+hu	F	long	\u00e9ra	\u00e9v	negyed\u00e9v	h\u00f3nap	h\u00e9t	h\u00e9t napja	nap	napszak	\u00f3ra	perc	m\u00e1sodperc	id\u0151z\u00f3na
+hu	C	short	=
+hu	F	short	\u00e9ra	\u00e9v	n.\u00e9v	h\u00f3nap	h\u00e9t	h\u00e9t napja	nap	napszak	\u00f3ra	perc	m\u00e1sodperc	id\u0151z\u00f3na
+hu	C	narrow	=
+hu	F	narrow	\u00e9ra	\u00e9v	n.\u00e9v	h\u00f3nap	h\u00e9t	h\u00e9t napja	nap	napszak	\u00f3	p	mp	id\u0151z\u00f3na
+id	C	long	Kalender Buddha	Kalender Tionghoa	Kalender Koptik	Kalender Dangi	Kalender Amete Alem Etiopia	Kalender Etiopia	Kalender Gregorian	Kalender Ibrani	Kalender Nasional India	Kalender Islam	Kalender Sipil Islam	Kalender Islam (Arab Saudi, penglihatan)	Kalender Astronomi Islam	Kalender Islam (Umm al-Qura)	Kalender ISO-8601	Kalender Jepang	Kalender Persia	Kalender Min-guo
+id	F	long	era	tahun	kuartal	bulan	minggu	hari dalam seminggu	hari	AM/PM	jam	menit	detik	zona waktu
+id	C	short	=
+id	F	short	era	thn.	krtl.	bln.	mgg.	hari dlm seminggu	hr	AM/PM	jam	mnt.	dtk.	zona wkt
+id	C	narrow	=
+id	F	narrow	era	thn.	krtl.	bln.	mgg.	hari dlm seminggu	h	AM/PM	j	m	d	zona wkt
+it	C	long	Calendario buddista	Calendario cinese	Calendario copto	Calendario dangi	Calendario etiope Amete Alem	Calendario etiope	Calendario gregoriano	Calendario ebraico	calendario nazionale indiano	Calendario Hijri	Calendario Hijri (tabulare, epoca civile)			Calendario Hijri (Umm al-Qura)	Calendario ISO-8601	Calendario giapponese	Calendario persiano	Calendario minguo
+it	F	long	era	anno	trimestre	mese	settimana	giorno della settimana	giorno	AM/PM	ora	minuto	secondo	fuso orario
+it	C	short	=
+it	F	short	era	anno	trim.	mese	sett.	giorno settimana	g.	AM/PM	h	min	s	fuso
+it	C	narrow	=
+it	F	narrow	era	anno	trim.	mese	sett.	giorno sett.	g.	AM/PM	h	min	s	fuso
+ja	C	long	\u4ecf\u66a6	\u4e2d\u56fd\u66a6	\u30b3\u30d7\u30c8\u66a6	\u30c0\u30f3\u30ae\u66a6	\u30a8\u30c1\u30aa\u30d4\u30a2\u5275\u4e16\u7d00\u5143\u66a6	\u30a8\u30c1\u30aa\u30d4\u30a2\u66a6	\u897f\u66a6(\u30b0\u30ec\u30b4\u30ea\u30aa\u66a6)	\u30e6\u30c0\u30e4\u66a6	\u30a4\u30f3\u30c9\u56fd\u5b9a\u66a6	\u30a4\u30b9\u30e9\u30e0\u66a6	\u30a4\u30b9\u30e9\u30e0\u66a6(\u5b9a\u5468\u671f\u3001\u516c\u6c11\u7d00\u5143)			\u30a4\u30b9\u30e9\u30e0\u66a6(\u30a6\u30f3\u30e0\u30fb\u30a2\u30eb\u30af\u30e9\u30fc)	ISO-8601	\u548c\u66a6	\u30da\u30eb\u30b7\u30a2\u66a6	\u4e2d\u83ef\u6c11\u56fd\u66a6
+ja	F	long	\u6642\u4ee3	\u5e74	\u56db\u534a\u671f	\u6708	\u9031	\u66dc\u65e5	\u65e5	\u5348\u524d/\u5348\u5f8c	\u6642	\u5206	\u79d2	\u30bf\u30a4\u30e0\u30be\u30fc\u30f3
+ja	C	short	=
+ja	F	short	=
+ja	C	narrow	=
+ja	F	narrow	=
+kk	C	long																		
+kk	F	long	Era	Year	Quarter	Month	Week	Day of the Week	Day	Dayperiod	Hour	Minute	Second	Zone
+kk	C	short	=
+kk	F	short	=
+kk	C	narrow	=
+kk	F	narrow	=
+kn	C	long	\u0cac\u0ccc\u0ca6\u0ccd\u0ca7\u0cb0 \u0c95\u0ccd\u0caf\u0cbe\u0cb2\u0cc6\u0c82\u0ca1\u0cb0\u0ccd	\u0c9a\u0cc8\u0ca8\u0cc0\u0cb8\u0ccd \u0c95\u0ccd\u0caf\u0cbe\u0cb2\u0cc6\u0c82\u0ca1\u0cb0\u0ccd	\u0c95\u0ccb\u0caa\u0ccd\u0c9f\u0cbf\u0c95\u0ccd \u0c95\u0ccd\u0caf\u0cbe\u0cb2\u0cc6\u0c82\u0ca1\u0cb0\u0ccd	\u0ca1\u0cbe\u0c82\u0c97\u0cbf \u0c95\u0ccd\u0caf\u0cbe\u0cb2\u0cc6\u0c82\u0ca1\u0cb0\u0ccd	\u0c87\u0ca5\u0cbf\u0caf\u0ccb\u0caa\u0cbf\u0c95\u0ccd \u0c85\u0cae\u0cc6\u0c9f\u0cc6 \u0c85\u0cb2\u0cc6\u0cae\u0ccd \u0c95\u0ccd\u0caf\u0cbe\u0cb2\u0cc6\u0c82\u0ca1\u0cb0\u0ccd	\u0c87\u0ca5\u0cbf\u0caf\u0ccb\u0caa\u0cbf\u0c95\u0ccd \u0c95\u0ccd\u0caf\u0cbe\u0cb2\u0cc6\u0c82\u0ca1\u0cb0\u0ccd	\u0c97\u0ccd\u0cb0\u0cc6\u0c97\u0ccb\u0cb0\u0cbf\u0caf\u0ca8\u0ccd \u0c95\u0ccd\u0caf\u0cbe\u0cb2\u0cc6\u0c82\u0ca1\u0cb0\u0ccd	\u0cb9\u0cc0\u0cac\u0ccd\u0cb0\u0cc2 \u0c95\u0ccd\u0caf\u0cbe\u0cb2\u0cc6\u0c82\u0ca1\u0cb0\u0ccd	\u0cad\u0cbe\u0cb0\u0ca4\u0cc0\u0caf \u0cb0\u0cbe\u0cb7\u0ccd\u0c9f\u0ccd\u0cb0\u0cc0\u0caf \u0c95\u0ccd\u0caf\u0cbe\u0cb2\u0cc6\u0c82\u0ca1\u0cb0\u0ccd	\u0c87\u0cb8\u0ccd\u0cb2\u0cbe\u0cae\u0cbf\u0c95\u0ccd \u0c95\u0ccd\u0caf\u0cbe\u0cb2\u0cc6\u0c82\u0ca1\u0cb0\u0ccd	\u0c87\u0cb8\u0ccd\u0cb2\u0cbe\u0cae\u0cbf\u0c95\u0ccd-\u0cb8\u0cbf\u0cb5\u0cbf\u0cb2\u0ccd \u0c95\u0ccd\u0caf\u0cbe\u0cb2\u0cc6\u0c82\u0ca1\u0cb0\u0ccd	\u0c87\u0cb8\u0ccd\u0cb2\u0cbe\u0cae\u0cbf\u0c95\u0ccd\u200c \u0c95\u0ccd\u0caf\u0cbe\u0cb2\u0cc6\u0c82\u0ca1\u0cb0\u0ccd\u200c (\u0cb8\u0ccc\u0ca6\u0cbf \u0c85\u0cb0\u0cc7\u0cac\u0cbf\u0caf\u0cbe, \u0cb8\u0cc8\u0c9f\u0cbf\u0c82\u0c97\u0ccd\u200c)bia, sighting)		\u0c87\u0cb8\u0ccd\u0cb2\u0cbe\u0cae\u0cbf\u0c95\u0ccd \u0c95\u0ccd\u0caf\u0cbe\u0cb2\u0cc6\u0c82\u0ca1\u0cb0\u0ccd (\u0c89\u0cae\u0ccd \u0c85\u0cb2\u0ccd-\u0c96\u0cc1\u0cb0\u0cbe)	ISO-8601 \u0c95\u0ccd\u0caf\u0cbe\u0cb2\u0cc6\u0c82\u0ca1\u0cb0\u0ccd	\u0c9c\u0caa\u0cbe\u0ca8\u0cc0\u0cb8\u0ccd \u0c95\u0ccd\u0caf\u0cbe\u0cb2\u0cc6\u0c82\u0ca1\u0cb0\u0ccd	\u0caa\u0cb0\u0ccd\u0cb7\u0cbf\u0caf\u0ca8\u0ccd \u0c95\u0ccd\u0caf\u0cbe\u0cb2\u0cc6\u0c82\u0ca1\u0cb0\u0ccd	\u0cae\u0cbf\u0c82\u0c97\u0ccb \u0c95\u0ccd\u0caf\u0cbe\u0cb2\u0cc6\u0c82\u0ca1\u0cb0\u0ccd
+kn	F	long	\u0caf\u0cc1\u0c97	\u0cb5\u0cb0\u0ccd\u0cb7	\u0ca4\u0ccd\u0cb0\u0cc8\u0cae\u0cbe\u0cb8\u0cbf\u0c95	\u0ca4\u0cbf\u0c82\u0c97\u0cb3\u0cc1	\u0cb5\u0cbe\u0cb0	\u0cb5\u0cbe\u0cb0\u0ca6 \u0ca6\u0cbf\u0ca8	\u0ca6\u0cbf\u0ca8	AM/PM	\u0c97\u0c82\u0c9f\u0cc6	\u0ca8\u0cbf\u0cae\u0cbf\u0cb7	\u0cb8\u0cc6\u0c95\u0cc6\u0c82\u0ca1\u0ccd	\u0cb8\u0cae\u0caf \u0cb5\u0cb2\u0caf
+kn	C	short	=
+kn	F	short	\u0caf\u0cc1\u0c97	\u0cb5\u0cb0\u0ccd\u0cb7	\u0ca4\u0ccd\u0cb0\u0cc8\u0cae\u0cbe\u0cb8\u0cbf\u0c95	\u0ca4\u0cbf\u0c82.	\u0cb5\u0cbe\u0cb0	\u0cb5\u0cbe\u0cb0\u0ca6 \u0ca6\u0cbf\u0ca8	\u0ca6\u0cbf\u0ca8	AM/PM	\u0c97\u0c82\u0c9f\u0cc6	\u0ca8\u0cbf\u0cae\u0cbf\u0cb7	\u0cb8\u0cc6\u0c95\u0cc6\u0c82\u0ca1\u0ccd	\u0cb5\u0cb2\u0caf
+kn	C	narrow	=
+kn	F	narrow	\u0caf\u0cc1\u0c97	\u0cb5\u0cb0\u0ccd\u0cb7	\u0ca4\u0ccd\u0cb0\u0cc8\u0cae\u0cbe\u0cb8\u0cbf\u0c95	\u0ca4\u0cbf\u0c82	\u0cb5\u0cbe\u0cb0	\u0cb5\u0cbe\u0cb0\u0ca6 \u0ca6\u0cbf\u0ca8	\u0ca6\u0cbf\u0ca8	AM/PM	\u0c97\u0c82\u0c9f\u0cc6	\u0ca8\u0cbf\u0cae\u0cbf\u0cb7	\u0cb8\u0cc6\u0c95\u0cc6\u0c82\u0ca1\u0ccd	\u0cb5\u0cb2\u0caf
+ko	C	long	\ubd88\uad50\ub825	\uc74c\ub825	\ucf65\ud2b8\ub825	\ub2e8\uae30\ub825	\uc5d0\ud2f0\uc624\ud53c\uc544 \uc544\uba54\ud14c \uc54c\ub818\ub825	\uc5d0\ud2f0\uc624\ud53c\uc544\ub825	\uc591\ub825	\ud788\ube0c\ub9ac\ub825	\uc778\ub3c4\ub825	\ud788\uc988\ub77c\ub825	\ud788\uc988\ub77c \uc0c1\uc6a9\ub825			\ud788\uc988\ub77c\ub825(\uc6c0 \uc54c \ucfe0\ub77c)	ISO-8601 \ub2ec\ub825	\uc77c\ubcf8\ub825	\ud398\ub974\uc2dc\uc548\ub825	\ub300\ub9cc\ub825
+ko	F	long	\uc5f0\ud638	\ub144	\ubd84\uae30	\uc6d4	\uc8fc	\uc694\uc77c	\uc77c	\uc624\uc804/\uc624\ud6c4	\uc2dc	\ubd84	\ucd08	\uc2dc\uac04\ub300
+ko	C	short	=
+ko	F	short	=
+ko	C	narrow	=
+ko	F	narrow	=
+kok	C	long																		
+kok	F	long	Era	Year	Quarter	Month	Week	Day of the Week	Day	Dayperiod	Hour	Minute	Second	Zone
+kok	C	short	=
+kok	F	short	=
+kok	C	narrow	=
+kok	F	narrow	=
+lt	C	long	budist\u0173 kalendorius	kin\u0173 kalendorius	kopt\u0173 kalendorius	dangi kalendorius	Etiopijos \u201eAmete Alem\u201c kalendorius	Etiopijos kalendorius	Grigaliaus kalendorius	hebraj\u0173 kalendorius	nacionalinis ind\u0173 kalendorius	musulmon\u0173 kalendorius	musulmon\u0173 kalendorius (lentelinis, pilietin\u0117 era)	Islamo kalendorius (Saudo Arabija)	Islamo kalendorius (lentelinis, astronomin\u0117 era)	musulmon\u0173 kalendorius (Umm al-Qura)	ISO 8601 kalendorius	japon\u0173 kalendorius	pers\u0173 kalendorius	Kinijos Respublikos kalendorius
+lt	F	long	era	metai	ketvirtis	m\u0117nuo	savait\u0117	savait\u0117s diena	diena	iki piet\u0173 / po piet\u0173	valanda	minut\u0117	sekund\u0117	laiko juosta
+lt	C	short	=
+lt	F	short	era	m.	ketv.	m\u0117n.	sav.	savait\u0117s diena	d.	iki piet\u0173 / po piet\u0173	val.	min.	sek.	laiko juosta
+lt	C	narrow	=
+lt	F	narrow	era	m.	ketv.	m\u0117n.	sav.	savait\u0117s diena	d.	iki piet\u0173 / po piet\u0173	h	min.	s	laiko juosta
+lv	C	long	budistu kalend\u0101rs	\u0137\u012bnie\u0161u kalend\u0101rs	Koptu kalend\u0101rs	dangi kalend\u0101rs	etiopie\u0161u Amete Alem kalend\u0101rs	etiopie\u0161u kalend\u0101rs	Gregora kalend\u0101rs	ebreju kalend\u0101rs	Indijas nacion\u0101lais kalend\u0101rs	Hid\u017er\u012b kalend\u0101rs	Hid\u017er\u012b kalend\u0101rs (pilso\u0146u)			Hid\u017er\u012b kalend\u0101rs (Umm al-kura)	ISO 8601 kalend\u0101rs	jap\u0101\u0146u kalend\u0101rs	persie\u0161u kalend\u0101rs	\u0136\u012bnas Republikas kalend\u0101rs
+lv	F	long	\u0113ra	gads	ceturksnis	m\u0113nesis	ned\u0113\u013ca	ned\u0113\u013cas diena	diena	priek\u0161pusdien\u0101/p\u0113cpusdien\u0101	stundas	min\u016btes	sekundes	laika josla
+lv	C	short	=
+lv	F	short	\u0113ra	g.	cet.	m\u0113n.	ned.	ned\u0113\u013cas diena	d.	priek\u0161pusd./p\u0113cpusd.	st.	min	sek.	laika josla
+lv	C	narrow	=
+lv	F	narrow	\u0113ra	g.	cet.	m\u0113n.	ned.	ned\u0113\u013cas diena	d.	priek\u0161pusd./p\u0113cpusd.	h	min	s	laika josla
+ml	C	long	\u0d2c\u0d41\u0d26\u0d4d\u0d27\u0d3f\u0d38\u0d4d\u0d31\u0d4d\u0d31\u0d4d \u0d15\u0d32\u0d23\u0d4d\u0d1f\u0d7c	\u0d1a\u0d48\u0d28\u0d40\u0d38\u0d4d \u0d15\u0d32\u0d23\u0d4d\u0d1f\u0d7c	\u0d15\u0d4b\u0d2a\u0d4d\u0d31\u0d4d\u0d31\u0d3f\u0d15\u0d4d \u0d15\u0d32\u0d23\u0d4d\u0d1f\u0d7c	\u0d21\u0d3e\u0d02\u0d17\u0d3f \u0d15\u0d32\u0d23\u0d4d\u0d1f\u0d7c	\u0d0e\u0d24\u0d4d\u0d2f\u0d4b\u0d2a\u0d3f\u0d15\u0d4d \u0d05\u0d2e\u0d46\u0d24\u0d46 \u0d05\u0d32\u0d46\u0d02 \u0d15\u0d32\u0d23\u0d4d\u0d1f\u0d7c	\u0d0e\u0d24\u0d4d\u0d2f\u0d4b\u0d2a\u0d3f\u0d15\u0d4d \u0d15\u0d32\u0d23\u0d4d\u0d1f\u0d7c	\u0d07\u0d02\u0d17\u0d4d\u0d32\u0d40\u0d37\u0d4d \u0d15\u0d32\u0d23\u0d4d\u0d1f\u0d7c	\u0d39\u0d40\u0d2c\u0d4d\u0d30\u0d42 \u0d15\u0d32\u0d23\u0d4d\u0d1f\u0d7c	\u0d36\u0d15\u0d35\u0d7c\u0d37 \u0d15\u0d32\u0d23\u0d4d\u0d1f\u0d7c	\u0d07\u0d38\u0d4d\u0d32\u0d3e\u0d2e\u0d3f\u0d15\u0d4d \u0d15\u0d32\u0d23\u0d4d\u0d1f\u0d7c	\u0d07\u0d38\u0d4d\u0d32\u0d3e\u0d2e\u0d3f\u0d15\u0d4d \u0d15\u0d32\u0d23\u0d4d\u0d1f\u0d7c (\u0d1f\u0d3e\u0d2c\u0d41\u0d32\u0d7c, \u0d38\u0d3f\u0d35\u0d3f\u0d7d \u0d07\u0d2a\u0d4b\u0d15\u0d4d\u0d15\u0d4d)	\u0d07\u0d38\u0d4d\u0d32\u0d3e\u0d02-\u0d05\u0d31\u0d2c\u0d3f\u0d15\u0d4d \u0d15\u0d32\u0d23\u0d4d\u0d1f\u0d7c	\u0d07\u0d38\u0d4d\u0d32\u0d3e\u0d02-\u0d1c\u0d4d\u0d2f\u0d4b\u0d24\u0d3f\u0d37 \u0d15\u0d32\u0d23\u0d4d\u0d1f\u0d7c	\u0d07\u0d38\u0d4d\u0d32\u0d3e\u0d2e\u0d3f\u0d15\u0d4d \u0d15\u0d32\u0d23\u0d4d\u0d1f\u0d7c (\u0d09\u0d02 \u0d05\u0d7d \u0d16\u0d41\u0d31)	\u0d10\u0d0e\u0d38\u0d4d\u0d13 8601 \u0d15\u0d32\u0d23\u0d4d\u0d1f\u0d7c	\u0d1c\u0d3e\u0d2a\u0d4d\u0d2a\u0d28\u0d40\u0d38\u0d4d \u0d15\u0d32\u0d23\u0d4d\u0d1f\u0d7c	\u0d2a\u0d47\u0d7c\u0d37\u0d4d\u0d2f\u0d7b \u0d15\u0d32\u0d23\u0d4d\u0d1f\u0d7c	\u0d2e\u0d3f\u0d02\u0d17\u0d4d\u0d35\u0d4b \u0d15\u0d32\u0d23\u0d4d\u0d1f\u0d7c
+ml	F	long	\u0d15\u0d3e\u0d32\u0d18\u0d1f\u0d4d\u0d1f\u0d02	\u0d35\u0d7c\u0d37\u0d02	\u0d2a\u0d3e\u0d26\u0d02	\u0d2e\u0d3e\u0d38\u0d02	\u0d06\u0d34\u0d4d\u0d1a	\u0d06\u0d34\u0d4d\u0d1a\u0d2f\u0d3f\u0d32\u0d46 \u0d26\u0d3f\u0d35\u0d38\u0d02	\u0d26\u0d3f\u0d35\u0d38\u0d02	AM/PM	\u0d2e\u0d23\u0d3f\u0d15\u0d4d\u0d15\u0d42\u0d7c	\u0d2e\u0d3f\u0d28\u0d3f\u0d31\u0d4d\u0d31\u0d4d	\u0d38\u0d46\u0d15\u0d4d\u0d15\u0d7b\u0d21\u0d4d	\u0d38\u0d2e\u0d2f \u0d2e\u0d47\u0d16\u0d32
+ml	C	short	=
+ml	F	short	\u0d15\u0d3e\u0d32\u0d18\u0d1f\u0d4d\u0d1f\u0d02	\u0d35.	\u0d2a\u0d3e\u0d26\u0d02	\u0d2e\u0d3e.	\u0d06.	\u0d06\u0d34\u0d4d\u200c\u0d1a. \u0d26\u0d3f\u0d35\u0d38\u0d02	\u0d26\u0d3f\u0d35\u0d38\u0d02	AM/PM	\u0d2e.	\u0d2e\u0d3f.	\u0d38\u0d46.	\u0d2e\u0d47\u0d16\u0d32
+ml	C	narrow	=
+ml	F	narrow	\u0d15\u0d3e\u0d32.	\u0d35.	\u0d2a\u0d3e\u0d26\u0d02	\u0d2e\u0d3e.	\u0d06.	\u0d06\u0d34\u0d4d\u200c\u0d1a. \u0d26\u0d3f\u0d35\u0d38\u0d02	\u0d26\u0d3f\u0d35\u0d38\u0d02	AM/PM	\u0d2e.	\u0d2e\u0d3f.	\u0d38\u0d46.	\u0d2e\u0d47\u0d16\u0d32
+mr	C	long	\u092c\u094c\u0926\u094d\u0927 \u0926\u093f\u0928\u0926\u0930\u094d\u0936\u093f\u0915\u093e	\u091a\u0940\u0928\u0940 \u0926\u093f\u0928\u0926\u0930\u094d\u0936\u093f\u0915\u093e	\u0915\u0949\u092a\u094d\u091f\u093f\u0915 \u0926\u093f\u0928\u0926\u0930\u094d\u0936\u093f\u0915\u093e	\u0921\u093e\u0902\u0917\u0940 \u0926\u093f\u0928\u0926\u0930\u094d\u0936\u093f\u0915\u093e	\u0907\u0925\u093f\u092f\u094b\u092a\u093f\u0915 \u0905\u092e\u0947\u0924\u0947 \u0905\u0932\u0947\u092e \u0926\u093f\u0928\u0926\u0930\u094d\u0936\u093f\u0915\u093e	\u0907\u0925\u093f\u0913\u092a\u093f\u0915 \u0926\u093f\u0928\u0926\u0930\u094d\u0936\u093f\u0915\u093e	\u0917\u094d\u0930\u0947\u0917\u094b\u0930\u093f\u092f\u0928 \u0926\u093f\u0928\u0926\u0930\u094d\u0936\u093f\u0915\u093e	\u092f\u0939\u0942\u0926\u0940 \u0926\u093f\u0928\u0926\u0930\u094d\u0936\u093f\u0915\u093e	\u092d\u093e\u0930\u0924\u0940\u092f \u0930\u093e\u0937\u094d\u091f\u094d\u0930\u0940\u092f \u0926\u093f\u0928\u0926\u0930\u094d\u0936\u093f\u0915\u093e	\u0939\u093f\u091c\u0930\u0940 \u0926\u093f\u0928\u0926\u0930\u094d\u0936\u093f\u0915\u093e	\u0939\u093f\u091c\u0930\u0940 \u0926\u093f\u0928\u0926\u0930\u094d\u0936\u093f\u0915\u093e (\u091f\u0945\u092c\u094d\u092f\u0941\u0932\u0930, \u0938\u093f\u0935\u094d\u0939\u0940\u0932 \u0908\u092a\u0949\u0915\u094d)			\u0939\u093f\u091c\u0930\u0940 \u0926\u093f\u0928\u0926\u0930\u094d\u0936\u093f\u0915\u093e (\u0909\u092e-\u0905\u0932-\u0915\u0941\u0930\u093e)	\u0917\u094d\u0930\u0947\u0917\u094b\u0930\u093f\u092f\u0928 \u0926\u093f\u0928\u0926\u0930\u094d\u0936\u093f\u0915\u093e (\u092a\u094d\u0930\u0925\u092e \u0935\u0930\u094d\u0937)	\u091c\u092a\u093e\u0928\u0940 \u0926\u093f\u0928\u0926\u0930\u094d\u0936\u093f\u0915\u093e	\u092b\u093e\u0930\u0938\u0940 \u0926\u093f\u0928\u0926\u0930\u094d\u0936\u093f\u0915\u093e	\u092e\u093f\u0928\u0917\u0941\u0913 \u0935\u0930\u094d\u0937
+mr	F	long	\u092f\u0941\u0917	\u0935\u0930\u094d\u0937	\u0924\u093f\u092e\u093e\u0939\u0940	\u092e\u0939\u093f\u0928\u093e	\u0906\u0920\u0935\u0921\u093e	\u0906\u0920\u0935\u0921\u094d\u092f\u093e\u091a\u093e \u0926\u093f\u0935\u0938	\u0926\u093f\u0935\u0938	AM/PM	\u0924\u093e\u0938	\u092e\u093f\u0928\u093f\u091f	\u0938\u0947\u0915\u0902\u0926	\u091f\u093e\u0907\u092e \u091d\u094b\u0928
+mr	C	short	=
+mr	F	short	\u092f\u0941\u0917	\u0935\u0930\u094d\u0937	\u0924\u093f\u092e\u093e\u0939\u0940	\u092e.	\u0906\u0920.	\u0906\u0920\u0935\u0921\u094d\u092f\u093e\u091a\u093e \u0926\u093f\u0935\u0938	\u0926\u093f.	AM/PM	\u0924\u093e.	\u092e\u093f.	\u0938\u0947.	\u0915\u094d\u0937\u0947\u0924\u094d\u0930
+mr	C	narrow	=
+mr	F	narrow	\u092f\u0941\u0917	\u0935\u0930\u094d\u0937	\u0924\u093f\u092e\u093e\u0939\u0940	\u092e.	\u0906\u0920.	\u0906\u0920\u0935\u0921\u094d\u092f\u093e\u091a\u093e \u0926\u093f\u0935\u0938	\u0926\u093f\u0935\u0938	AM/PM	\u0924\u093e.	\u092e\u093f.	\u0938\u0947.	\u0915\u094d\u0937\u0947\u0924\u094d\u0930
+ms	C	long	Kalendar Buddha	Kalendar Cina	Kalendar Qibti	Kalendar Dangi	Kalendar Amete Alem Ethiopia	Kalendar Ethiopia	Kalendar Gregory	Kalendar Ibrani	Kalendar Kebangsaan India	Kalendar Hijrah	Kalendar Hijrah (jadual, zaman sivil)	Kalendar Islam (Arab Saudi, cerapan)	Kalendar Hijrah (jadual, zaman astronomi)	Kalendar Islam (Umm Al-Quran)	Kalendar Gregorian (Tahun Pertama)	Kalendar Jepun	Kalendar Parsi	Kalendar Minguo
+ms	F	long	era	tahun	suku tahun	bulan	minggu	Hari dalam Minggu	hari	PG/PTG	jam	minit	saat	zon waktu
+ms	C	short	=
+ms	F	short	era	thn	suku	bln	mgu	Hari dalam Minggu	hari	PG/PTG	jam	min	saat	zon
+ms	C	narrow	=
+ms	F	narrow	era	thn	suku	bln	mgu	Hari dalam Minggu	hari	PG/PTG	jam	min	saat	zon
+nb	C	long	buddhistisk kalender	kinesisk kalender	koptisk kalender	dangisk kalender	etiopisk amete-alem-kalender	etiopisk kalender	gregoriansk kalender	hebraisk kalender	indisk nasjonalkalender	hijrikalender	hijrikalender (tabell, sivil)	islamsk kalender (Saudi-Arabia, observasjon)	islamsk kalender (tabell, astronomisk)	hijrikalender (Umm al-Qura)	ISO 8601-kalender	japansk kalender	persisk kalender	minguo-kalender
+nb	F	long	tidsalder	\u00e5r	kvartal	m\u00e5ned	uke	ukedag	dag	a.m./p.m.	time	minutt	sekund	tidssone
+nb	C	short	=
+nb	F	short	tidsalder	\u00e5r	kv.	mnd.	uke	ukedag	dag	am/pm	t	min	sek	tidssone
+nb	C	narrow	=
+nb	F	narrow	tidsalder	\u00e5r	kv.	md.	u.	uked.	d.	am/pm	t	m	s	tidssone
+nl	C	long	Boeddhistische kalender	Chinese kalender	Koptische kalender	Dangi-kalender	Ethiopische Amete Alem-kalender	Ethiopische kalender	Gregoriaanse kalender	Hebreeuwse kalender	Indiase nationale kalender	Islamitische kalender	Islamitische kalender (cyclisch)	Islamitische kalender (Saudi\u2013Arabi\u00eb)	Islamitische kalender (epoche)	Islamitische kalender (Umm al-Qura)	ISO-8601-kalender	Japanse kalender	Perzische kalender	Kalender van de Chinese Republiek
+nl	F	long	tijdperk	jaar	kwartaal	maand	week	dag van de week	dag	a.m./p.m.	uur	minuut	seconde	tijdzone
+nl	C	short	=
+nl	F	short	tijdperk	jr	kwartaal	mnd	wk	dag van de wk	dag	a.m./p.m.	uur	min	sec	zone
+nl	C	narrow	=
+nl	F	narrow	tijdperk	jr	kwartaal	mnd	wk	dag v.d. wk	dag	a.m./p.m.	u	min	s	zone
+no	C	long	buddhistisk kalender	kinesisk kalender	koptisk kalender	dangisk kalender	etiopisk amete-alem-kalender	etiopisk kalender	gregoriansk kalender	hebraisk kalender	indisk nasjonalkalender	hijrikalender	hijrikalender (tabell, sivil)	islamsk kalender (Saudi-Arabia, observasjon)	islamsk kalender (tabell, astronomisk)	hijrikalender (Umm al-Qura)	ISO 8601-kalender	japansk kalender	persisk kalender	minguo-kalender
+no	F	long	tidsalder	\u00e5r	kvartal	m\u00e5ned	uke	ukedag	dag	a.m./p.m.	time	minutt	sekund	tidssone
+no	C	short	=
+no	F	short	tidsalder	\u00e5r	kv.	mnd.	uke	ukedag	dag	am/pm	t	min	sek	tidssone
+no	C	narrow	=
+no	F	narrow	tidsalder	\u00e5r	kv.	md.	u.	uked.	d.	am/pm	t	m	s	tidssone
+pa	C	long																		
+pa	F	long	Era	Year	Quarter	Month	Week	Day of the Week	Day	Dayperiod	Hour	Minute	Second	Zone
+pa	C	short	=
+pa	F	short	=
+pa	C	narrow	=
+pa	F	narrow	=
+pl	C	long	kalendarz buddyjski	kalendarz chi\u0144ski	kalendarz koptyjski	kalendarz korea\u0144ski	kalendarz etiopski Amete Alem	kalendarz etiopski	kalendarz gregoria\u0144ski	kalendarz hebrajski	narodowy kalendarz hinduski	kalendarz muzu\u0142ma\u0144ski	kalendarz muzu\u0142ma\u0144ski (metoda obliczeniowa)	kalendarz islamski (Arabia Saudyjska, metoda wzrokowa)	kalendarz islamski (metoda obliczeniowa, epoka astronomiczna)	kalendarz muzu\u0142ma\u0144ski (Umm al-Kura)	kalendarz ISO-8601	kalendarz japo\u0144ski	kalendarz perski	kalendarz Republiki Chi\u0144skiej
+pl	F	long	era	rok	kwarta\u0142	miesi\u0105c	tydzie\u0144	dzie\u0144 tygodnia	dzie\u0144	rano / po po\u0142udniu / wieczorem	godzina	minuta	sekunda	strefa czasowa
+pl	C	short	=
+pl	F	short	era	r.	kw.	mies.	tydz.	dzie\u0144 tyg.	dz.	rano / po po\u0142udniu / wieczorem	godz.	min	sek.	str. czasowa
+pl	C	narrow	=
+pl	F	narrow	era	r.	kw.	mc	tydz.	dz. tyg.	d.	rano / po po\u0142. / wiecz.	g.	min	s	str. czas.
+pt	C	long	Calend\u00e1rio Budista	Calend\u00e1rio Chin\u00eas	Calend\u00e1rio Copta	Calend\u00e1rio Dangi	Calend\u00e1rio Amete Alem Et\u00edope	Calend\u00e1rio Et\u00edope	Calend\u00e1rio Gregoriano	Calend\u00e1rio Hebraico	Calend\u00e1rio Nacional Indiano	Calend\u00e1rio Heg\u00edrico	Calend\u00e1rio Heg\u00edrico (tabular, \u00e9poca civil)			Calend\u00e1rio Heg\u00edrico (Umm al\u2011Qura)	Calend\u00e1rio ISO-8601	Calend\u00e1rio Japon\u00eas	Calend\u00e1rio Persa	Calend\u00e1rio da Rep\u00fablica da China
+pt	F	long	era	ano	trimestre	m\u00eas	semana	dia da semana	dia	AM/PM	hora	minuto	segundo	fuso hor\u00e1rio
+pt	C	short	=
+pt	F	short	era	ano	trim.	m\u00eas	sem.	dia da sem.	dia	AM/PM	h	min.	seg.	fuso
+pt	C	narrow	=
+pt	F	narrow	era	ano	trim.	m\u00eas	sem.	dia da sem.	dia	AM/PM	h	min	seg.	fuso
+ro	C	long	calendar budist	calendar chinezesc	calendar copt	calendar dangi	calendar etiopian amete alem	calendar etiopian	calendar gregorian	calendar ebraic	calendar na\u021bional indian	calendarul hegirei	calendarul hegirei (tabular, civil)			calendarul hegirei (Umm al-Qura)	calendar ISO-8601	calendar japonez	calendar persan	calendarul Republicii Chineze
+ro	F	long	er\u0103	an	trimestru	lun\u0103	s\u0103pt\u0103m\u00e2n\u0103	ziua din s\u0103pt\u0103m\u00e2n\u0103	zi	a.m./p.m.	or\u0103	minut	secund\u0103	fus orar
+ro	C	short	=
+ro	F	short	er\u0103	an	trim.	lun\u0103	s\u0103pt.	ziua din s\u0103pt.	zi	a.m./p.m.	h	min.	sec.	fus
+ro	C	narrow	=
+ro	F	narrow	er\u0103	an	trim.	lun\u0103	s\u0103pt.	ziua din s\u0103pt.	zi	a.m./p.m.	h	m	s	fus
+ru	C	long	\u0431\u0443\u0434\u0434\u0438\u0439\u0441\u043a\u0438\u0439 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u044c	\u043a\u0438\u0442\u0430\u0439\u0441\u043a\u0438\u0439 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u044c	\u043a\u043e\u043f\u0442\u0441\u043a\u0438\u0439 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u044c	\u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u044c \u0434\u0430\u043d\u0433\u0438	\u044d\u0444\u0438\u043e\u043f\u0441\u043a\u0438\u0439 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u044c \u0430\u043c\u0435\u0442\u0435-\u0430\u043b\u0435\u043c	\u044d\u0444\u0438\u043e\u043f\u0441\u043a\u0438\u0439 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u044c	\u0433\u0440\u0438\u0433\u043e\u0440\u0438\u0430\u043d\u0441\u043a\u0438\u0439 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u044c	\u0435\u0432\u0440\u0435\u0439\u0441\u043a\u0438\u0439 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u044c	\u041d\u0430\u0446\u0438\u043e\u043d\u0430\u043b\u044c\u043d\u044b\u0439 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u044c \u0418\u043d\u0434\u0438\u0438	\u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u044c \u0445\u0438\u0434\u0436\u0440\u044b	\u0433\u0440\u0430\u0436\u0434\u0430\u043d\u0441\u043a\u0438\u0439 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u044c \u0445\u0438\u0434\u0436\u0440\u044b (\u0442\u0430\u0431\u043b\u0438\u0447\u043d\u044b\u0439)	\u0438\u0441\u043b\u0430\u043c\u0441\u043a\u0438\u0439 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u044c (\u0421\u0430\u0443\u0434\u043e\u0432\u0441\u043a\u0430\u044f \u0410\u0440\u0430\u0432\u0438\u044f)	\u0438\u0441\u043b\u0430\u043c\u0441\u043a\u0438\u0439 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u044c (\u0442\u0430\u0431\u043b\u0438\u0447\u043d\u044b\u0439, \u0430\u0441\u0442\u0440\u043e\u043d\u043e\u043c\u0438\u0447\u0435\u0441\u043a\u0430\u044f \u044d\u043f\u043e\u0445\u0430)	\u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u044c \u0445\u0438\u0434\u0436\u0440\u044b (\u0423\u043c\u043c \u0430\u043b\u044c-\u041a\u0443\u0440\u0430)	\u0433\u0440\u0438\u0433\u043e\u0440\u0438\u0430\u043d\u0441\u043a\u0438\u0439 (\u0441\u043d\u0430\u0447\u0430\u043b\u0430 \u0433\u043e\u0434)	\u044f\u043f\u043e\u043d\u0441\u043a\u0438\u0439 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u044c	\u043f\u0435\u0440\u0441\u0438\u0434\u0441\u043a\u0438\u0439 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u044c	\u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u044c \u041c\u0438\u043d\u044c\u0433\u043e
+ru	F	long	\u044d\u0440\u0430	\u0433\u043e\u0434	\u043a\u0432\u0430\u0440\u0442\u0430\u043b	\u043c\u0435\u0441\u044f\u0446	\u043d\u0435\u0434\u0435\u043b\u044f	\u0434\u0435\u043d\u044c \u043d\u0435\u0434\u0435\u043b\u0438	\u0434\u0435\u043d\u044c	AM/PM	\u0447\u0430\u0441	\u043c\u0438\u043d\u0443\u0442\u0430	\u0441\u0435\u043a\u0443\u043d\u0434\u0430	\u0447\u0430\u0441\u043e\u0432\u043e\u0439 \u043f\u043e\u044f\u0441
+ru	C	short	=
+ru	F	short	\u044d\u0440\u0430	\u0433.	\u043a\u0432.	\u043c\u0435\u0441.	\u043d\u0435\u0434.	\u0434\u043d. \u043d\u0435\u0434\u0435\u043b\u0438	\u0434\u043d.	AM/PM	\u0447	\u043c\u0438\u043d.	\u0441\u0435\u043a.	\u0447\u0430\u0441. \u043f\u043e\u044f\u0441
+ru	C	narrow	=
+ru	F	narrow	\u044d\u0440\u0430	\u0433.	\u043a\u0432.	\u043c\u0435\u0441.	\u043d\u0435\u0434.	\u0434\u043d. \u043d\u0435\u0434.	\u0434\u043d.	AM/PM	\u0447	\u043c\u0438\u043d	\u0441	\u0447\u0430\u0441. \u043f\u043e\u044f\u0441
+sd	C	long																		
+sd	F	long	Era	Year	Quarter	Month	Week	Day of the Week	Day	Dayperiod	Hour	Minute	Second	Zone
+sd	C	short	=
+sd	F	short	=
+sd	C	narrow	=
+sd	F	narrow	=
+sk	C	long	budhistick\u00fd kalend\u00e1r	\u010d\u00ednsky kalend\u00e1r	koptsk\u00fd kalend\u00e1r	k\u00f3rejsk\u00fd kalend\u00e1r	eti\u00f3psky kalend\u00e1r Amete Alem	eti\u00f3psky kalend\u00e1r	gregori\u00e1nsky kalend\u00e1r	\u017eidovsk\u00fd kalend\u00e1r	Indick\u00fd n\u00e1rodn\u00fd kalend\u00e1r	kalend\u00e1r pod\u013ea hid\u017ery	kalend\u00e1r pod\u013ea hid\u017ery (ob\u010diansky)			kalend\u00e1r pod\u013ea hid\u017ery (Umm al-Qura)	kalend\u00e1r ISO 8601	japonsk\u00fd kalend\u00e1r	perzsk\u00fd kalend\u00e1r	\u010d\u00ednsky republik\u00e1nsky kalend\u00e1r
+sk	F	long	letopo\u010det	rok	\u0161tvr\u0165rok	mesiac	t\u00fd\u017ede\u0148	de\u0148 t\u00fd\u017ed\u0148a	de\u0148	AM/PM	hodina	min\u00fata	sekunda	\u010dasov\u00e9 p\u00e1smo
+sk	C	short	=
+sk	F	short	letop.	r.	Q	mes.	t\u00fd\u017e.	de\u0148 t\u00fd\u017e.	d.	AM/PM	h	min	s	p\u00e1smo
+sk	C	narrow	=
+sk	F	narrow	letop.	r.	Q	mes.	t\u00fd\u017e.	de\u0148 t\u00fd\u017e.	d.	AM/PM	h	min	s	p\u00e1smo
+sl	C	long	budisti\u010dni koledar	kitajski koledar	koptski koledar	stari korejski koledar	etiopsko ametsko alemski koledar	etiopski koledar	gregorijanski koledar	hebrejski koledar	indijanski koledar	islamski koledar	islamski civilni koledar	islamski koledar ( Saudova Arabija, opazovalni)	islamski koledar (tabelarni, astronomska epoha)	islamski koledar Umm al-Qura	koledar ISO-8601	japonski koledar	perzijski koledar	koledar Minguo
+sl	F	long	doba	leto	\u010detrtletje	mesec	teden	dan v tednu	dan	dop/pop	ura	minuta	sekunda	\u010dasovni pas
+sl	C	short	=
+sl	F	short	doba	leto	\u010detrtl.	mes.	ted.	dan v tednu	dan	dop/pop	ura	min.	sek.	\u010dasovni pas
+sl	C	narrow	=
+sl	F	narrow	doba	leto	\u010detr.	mes.	ted.	dan v tednu	dan	dop/pop	h	min	s	\u010dasovni pas
+sr	C	long	\u0431\u0443\u0434\u0438\u0441\u0442\u0438\u0447\u043a\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u043a\u0438\u043d\u0435\u0441\u043a\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u043a\u043e\u043f\u0442\u0441\u043a\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u0434\u0430\u043d\u0433\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u0435\u0442\u0438\u043e\u043f\u0441\u043a\u0438 \u0430\u043c\u0435\u0442 \u0430\u043b\u0435\u043c \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u0435\u0442\u0438\u043e\u043f\u0441\u043a\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u0433\u0440\u0435\u0433\u043e\u0440\u0438\u0458\u0430\u043d\u0441\u043a\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u0445\u0435\u0431\u0440\u0435\u0458\u0441\u043a\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u0418\u043d\u0434\u0438\u0458\u0441\u043a\u0438 \u043d\u0430\u0446\u0438\u043e\u043d\u0430\u043b\u043d\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u0438\u0441\u043b\u0430\u043c\u0441\u043a\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u0438\u0441\u043b\u0430\u043c\u0441\u043a\u0438 \u0446\u0438\u0432\u0438\u043b\u043d\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440		\u0438\u0441\u043b\u0430\u043c\u0441\u043a\u0438 \u0430\u0441\u0442\u0440\u043e\u043d\u043e\u043c\u0441\u043a\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u0438\u0441\u043b\u0430\u043c\u0441\u043a\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440 (Umm al-Qura)	ISO-8601 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u0458\u0430\u043f\u0430\u043d\u0441\u043a\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u043f\u0435\u0440\u0441\u0438\u0458\u0441\u043a\u0438 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440 \u0420\u0435\u043f\u0443\u0431\u043b\u0438\u043a\u0435 \u041a\u0438\u043d\u0435
+sr	F	long	\u0435\u0440\u0430	\u0433\u043e\u0434\u0438\u043d\u0430	\u043a\u0432\u0430\u0440\u0442\u0430\u043b	\u043c\u0435\u0441\u0435\u0446	\u043d\u0435\u0434\u0435\u0459\u0430	\u0434\u0430\u043d \u0443 \u043d\u0435\u0434\u0435\u0459\u0438	\u0434\u0430\u043d	AM/PM	\u0441\u0430\u0442	\u043c\u0438\u043d\u0443\u0442	\u0441\u0435\u043a\u0443\u043d\u0434	\u0432\u0440\u0435\u043c\u0435\u043d\u0441\u043a\u0430 \u0437\u043e\u043d\u0430
+sr	C	short	=
+sr	F	short	\u0435\u0440\u0430	\u0433\u043e\u0434.	\u043a\u0432.	\u043c\u0435\u0441.	\u043d\u0435\u0434.	\u0434\u0430\u043d \u0443 \u043d\u0435\u0434\u0435\u0459\u0438	\u0434.	\u043f\u0440\u0435 \u043f\u043e\u0434\u043d\u0435/\u043f\u043e \u043f\u043e\u0434\u043d\u0435	\u0447.	\u043c\u0438\u043d.	\u0441\u0435\u043a.	\u0432\u0440\u0435\u043c\u0435\u043d\u0441\u043a\u0430 \u0437\u043e\u043d\u0430
+sr	C	narrow	=
+sr	F	narrow	\u0435\u0440\u0430	\u0433.	\u043a\u0432.	\u043c\u0435\u0441.	\u043d\u0435\u0434.	\u0434\u0430\u043d \u0443 \u043d\u0435\u0434\u0435\u0459\u0438	\u0434.	\u043f\u0440\u0435 \u043f\u043e\u0434\u043d\u0435/\u043f\u043e \u043f\u043e\u0434\u043d\u0435	\u0447.	\u043c\u0438\u043d.	\u0441	\u0432\u0440\u0435\u043c\u0435\u043d\u0441\u043a\u0430 \u0437\u043e\u043d\u0430
+sv	C	long	buddistisk kalender	kinesisk kalender	koptisk kalender	koreansk kalender	etiopisk amete-alem-kalender	etiopisk kalender	gregoriansk kalender	hebreisk kalender	indisk kalender	islamisk kalender	islamisk civil kalender	islamisk kalender, Saudi-Arabien	islamisk kalender, astronomisk	islamisk kalender, Umm al-Qura	ISO 8601-kalender	japansk kalender	persisk kalender	kinesiska republikens kalender
+sv	F	long	era	\u00e5r	kvartal	m\u00e5nad	vecka	veckodag	dag	fm/em	timme	minut	sekund	tidszon
+sv	C	short	=
+sv	F	short	era	\u00e5r	kv.	m\u00e5n	v.	veckod.	d.	fm/em	tim	min	sek	tidszon
+sv	C	narrow	=
+sv	F	narrow	era	\u00e5r	kv.	m	v	vd	d	fm/em	h	m	s	tidszon
+sw	C	long	Kalenda ya Kibuddha	Kalenda ya Kichina	Kalenda ya Koptiki	Kalenda ya Dangi	Kalenda ya Kiethiopia ya Amete Alem	Kalenda ya Kiethiopia	Kalenda ya Kigregori	Kalenda ya Kiebrania	Kalenda ya Taifa ya India	Kalenda ya Hijra	Kalenda ya Hijra (inayoanza usiku wa manane)			Kalenda ya Hijra (Umm ul-Qura)	Kalenda ya ISO-8601	Kalenda ya Kijapani	Kalenda ya Kiajemi	Kalenda ya Jamhuri ya Uchina
+sw	F	long	enzi	mwaka	robo	mwezi	wiki	siku ya wiki	siku	AM/PM	saa	dakika	sekunde	saa za eneo
+sw	C	short	=
+sw	F	short	enzi	mwaka	robo	mwezi	wiki	siku ya wiki	siku	AM/PM	saa	dak	sek	eneo
+sw	C	narrow	=
+sw	F	narrow	enzi	mwaka	robo	mwezi	wiki	siku ya wiki	siku	AM/PM	saa	dak	sek	eneo
+ta	C	long	\u0baa\u0bc1\u0ba4\u0bcd\u0ba4 \u0ba8\u0bbe\u0bb3\u0bcd\u0b95\u0bbe\u0b9f\u0bcd\u0b9f\u0bbf	\u0b9a\u0bc0\u0ba9 \u0ba8\u0bbe\u0bb3\u0bcd\u0b95\u0bbe\u0b9f\u0bcd\u0b9f\u0bbf	\u0b95\u0bbe\u0baa\u0bcd\u0b9f\u0bbf\u0b95\u0bcd \u0ba8\u0bbe\u0bb3\u0bcd\u0b95\u0bbe\u0b9f\u0bcd\u0b9f\u0bbf	\u0b9f\u0bc7\u0b99\u0bcd\u0b95\u0bbf \u0ba8\u0bbe\u0bb3\u0bcd\u0b95\u0bbe\u0b9f\u0bcd\u0b9f\u0bbf	\u0b8e\u0ba4\u0bcd\u0ba4\u0bbf\u0baf\u0bcb\u0baa\u0bbf\u0b95\u0bcd \u0b85\u0bae\u0bc7\u0ba4\u0bc7 \u0b86\u0bb2\u0bc6\u0bae\u0bcd \u0ba8\u0bbe\u0bb3\u0bcd\u0b95\u0bbe\u0b9f\u0bcd\u0b9f\u0bbf	\u0b8e\u0ba4\u0bcd\u0ba4\u0bbf\u0baf\u0bcb\u0baa\u0bcd\u0baa\u0bbf\u0baf \u0ba8\u0bbe\u0bb3\u0bcd\u0b95\u0bbe\u0b9f\u0bcd\u0b9f\u0bbf	\u0b95\u0bbf\u0bb0\u0bbf\u0b95\u0bcb\u0bb0\u0bbf\u0baf\u0ba9\u0bcd \u0ba8\u0bbe\u0bb3\u0bcd\u0b95\u0bbe\u0b9f\u0bcd\u0b9f\u0bbf	\u0bb9\u0bc0\u0baa\u0bcd\u0bb0\u0bc1 \u0ba8\u0bbe\u0bb3\u0bcd\u0b95\u0bbe\u0b9f\u0bcd\u0b9f\u0bbf	\u0b87\u0ba8\u0bcd\u0ba4\u0bbf\u0baf \u0ba4\u0bc7\u0b9a\u0bbf\u0baf \u0ba8\u0bbe\u0bb3\u0bcd\u0b95\u0bbe\u0b9f\u0bcd\u0b9f\u0bbf	\u0b87\u0bb8\u0bcd\u0bb2\u0bbe\u0bae\u0bbf\u0baf \u0ba8\u0bbe\u0bb3\u0bcd\u0b95\u0bbe\u0b9f\u0bcd\u0b9f\u0bbf	\u0b87\u0bb8\u0bcd\u0bb2\u0bbe\u0bae\u0bbf\u0baf \u0b9a\u0bbf\u0bb5\u0bbf\u0bb2\u0bcd \u0ba8\u0bbe\u0bb3\u0bcd\u0b95\u0bbe\u0b9f\u0bcd\u0b9f\u0bbf		\u0b87\u0bb8\u0bcd\u0bb2\u0bbe\u0bae\u0bbf\u0baf \u0bb5\u0bbe\u0ba9\u0bbf\u0baf\u0bb2\u0bcd \u0ba8\u0bbe\u0bb3\u0bcd\u0b95\u0bbe\u0b9f\u0bcd\u0b9f\u0bbf	\u0b87\u0bb8\u0bcd\u0bb2\u0bbe\u0bae\u0bbf\u0baf \u0ba8\u0bbe\u0bb3\u0bcd\u0b95\u0bbe\u0b9f\u0bcd\u0b9f\u0bbf (\u0b89\u0bae\u0bcd-\u0b85\u0bb2\u0bcd-\u0b95\u0bc1\u0bb0\u0bbe)	\u0b95\u0bbf\u0bb0\u0bbf\u0b95\u0bcb\u0bb0\u0bbf\u0baf \u0ba8\u0bbe\u0bb3\u0bcd\u0b95\u0bbe\u0b9f\u0bcd\u0b9f\u0bbf	\u0b9c\u0baa\u0bcd\u0baa\u0bbe\u0ba9\u0bbf\u0baf \u0ba8\u0bbe\u0bb3\u0bcd\u0b95\u0bbe\u0b9f\u0bcd\u0b9f\u0bbf	\u0baa\u0bbe\u0bb0\u0b9a\u0bc0\u0b95 \u0ba8\u0bbe\u0bb3\u0bcd\u0b95\u0bbe\u0b9f\u0bcd\u0b9f\u0bbf	\u0bae\u0bbf\u0ba9\u0bcd\u0b95\u0bcb \u0ba8\u0bbe\u0bb3\u0bcd\u0b95\u0bbe\u0b9f\u0bcd\u0b9f\u0bbf
+ta	F	long	\u0b95\u0bbe\u0bb2\u0bae\u0bcd	\u0b86\u0ba3\u0bcd\u0b9f\u0bc1	\u0b95\u0bbe\u0bb2\u0bbe\u0ba3\u0bcd\u0b9f\u0bc1	\u0bae\u0bbe\u0ba4\u0bae\u0bcd	\u0bb5\u0bbe\u0bb0\u0bae\u0bcd	\u0bb5\u0bbe\u0bb0\u0ba4\u0bcd\u0ba4\u0bbf\u0ba9\u0bcd \u0ba8\u0bbe\u0bb3\u0bcd	\u0ba8\u0bbe\u0bb3\u0bcd	AM/PM	\u0bae\u0ba3\u0bbf\u0ba8\u0bc7\u0bb0\u0bae\u0bcd	\u0ba8\u0bbf\u0bae\u0bbf\u0b9f\u0bae\u0bcd	\u0bb5\u0bbf\u0ba8\u0bbe\u0b9f\u0bbf	\u0ba8\u0bc7\u0bb0 \u0bae\u0ba3\u0bcd\u0b9f\u0bb2\u0bae\u0bcd
+ta	C	short	=
+ta	F	short	\u0b95\u0bbe\u0bb2\u0bae\u0bcd	\u0b86\u0ba3\u0bcd\u0b9f\u0bc1	\u0b95\u0bbe.	\u0bae\u0bbe\u0ba4.	\u0bb5\u0bbe\u0bb0\u0bae\u0bcd	\u0bb5\u0bbe\u0bb0. \u0ba8\u0bbe\u0bb3\u0bcd	\u0ba8\u0bbe\u0bb3\u0bcd	AM/PM	\u0bae.	\u0ba8\u0bbf\u0bae\u0bbf.	\u0bb5\u0bbf.	\u0bae\u0ba3\u0bcd\u0b9f\u0bb2\u0bae\u0bcd
+ta	C	narrow	=
+ta	F	narrow	\u0b95\u0bbe\u0bb2\u0bae\u0bcd	\u0b86.	\u0b95\u0bbe.	\u0bae\u0bbe.	\u0bb5\u0bbe.	\u0bb5\u0bbe\u0bb0. \u0ba8\u0bbe\u0bb3\u0bcd	\u0ba8\u0bbe.	AM/PM	\u0bae.	\u0ba8\u0bbf\u0bae\u0bbf.	\u0bb5\u0bbf.	\u0bae\u0ba3\u0bcd\u0b9f\u0bb2\u0bae\u0bcd
+te	C	long	\u0c2c\u0c41\u0c26\u0c4d\u0c27\u0c41\u0c32 \u0c15\u0c4d\u0c2f\u0c3e\u0c32\u0c46\u0c02\u0c21\u0c30\u0c4d\u200c	\u0c1a\u0c48\u0c28\u0c40\u0c38\u0c4d \u0c15\u0c4d\u0c2f\u0c3e\u0c32\u0c46\u0c02\u0c21\u0c30\u0c4d	\u0c15\u0c3e\u0c2a\u0c4d\u0c1f\u0c3f\u0c15\u0c4d \u0c15\u0c4d\u0c2f\u0c3e\u0c32\u0c46\u0c02\u0c21\u0c30\u0c4d	\u0c26\u0c3e\u0c02\u0c17\u0c40 \u0c15\u0c4d\u0c2f\u0c3e\u0c32\u0c46\u0c02\u0c21\u0c30\u0c4d	\u0c07\u0c25\u0c3f\u0c2f\u0c4b\u0c2a\u0c3f\u0c2f\u0c28\u0c4d \u0c05\u0c2e\u0c46\u0c1f\u0c46 \u0c06\u0c32\u0c46\u0c2e\u0c4d \u0c15\u0c4d\u0c2f\u0c3e\u0c32\u0c46\u0c02\u0c21\u0c30\u0c4d	\u0c07\u0c25\u0c3f\u0c2f\u0c4b\u0c2a\u0c3f\u0c2f\u0c28\u0c4d \u0c15\u0c4d\u0c2f\u0c3e\u0c32\u0c46\u0c02\u0c21\u0c30\u0c4d	\u0c17\u0c4d\u0c30\u0c47\u0c17\u0c4b\u0c30\u0c3f\u0c2f\u0c28\u0c4d \u0c15\u0c4d\u0c2f\u0c3e\u0c32\u0c46\u0c02\u0c21\u0c30\u0c4d	\u0c39\u0c40\u0c2c\u0c4d\u0c30\u0c42 \u0c15\u0c4d\u0c2f\u0c3e\u0c32\u0c46\u0c02\u0c21\u0c30\u0c4d	\u0c2d\u0c3e\u0c30\u0c24\u0c26\u0c47\u0c36 \u0c1c\u0c3e\u0c24\u0c40\u0c2f \u0c15\u0c4d\u0c2f\u0c3e\u0c32\u0c46\u0c02\u0c21\u0c30\u0c4d	\u0c07\u0c38\u0c4d\u0c32\u0c3e\u0c2e\u0c3f\u0c15\u0c4d \u0c15\u0c4d\u0c2f\u0c3e\u0c32\u0c46\u0c02\u0c21\u0c30\u0c4d	\u0c07\u0c38\u0c4d\u0c32\u0c3e\u0c2e\u0c3f\u0c15\u0c4d-\u0c38\u0c3f\u0c35\u0c3f\u0c32\u0c4d \u0c15\u0c4d\u0c2f\u0c3e\u0c32\u0c46\u0c02\u0c21\u0c30\u0c4d	\u0c07\u0c38\u0c4d\u0c32\u0c3e\u0c2e\u0c3f\u0c15\u0c4d \u0c15\u0c4d\u0c2f\u0c3e\u0c32\u0c46\u0c02\u0c21\u0c30\u0c4d (\u0c38\u0c4c\u0c26\u0c40 \u0c05\u0c30\u0c47\u0c2c\u0c3f\u0c2f\u0c3e)	\u0c07\u0c38\u0c4d\u0c32\u0c3e\u0c2e\u0c3f\u0c15\u0c4d \u0c15\u0c4d\u0c2f\u0c3e\u0c32\u0c46\u0c02\u0c21\u0c30\u0c4d	\u0c07\u0c38\u0c4d\u0c32\u0c3e\u0c2e\u0c3f\u0c15\u0c4d \u0c15\u0c4d\u0c2f\u0c3e\u0c32\u0c46\u0c02\u0c21\u0c30\u0c4d (\u0c09\u0c2e\u0c4d \u0c05\u0c32\u0c4d-\u0c16\u0c41\u0c30\u0c3e)	ISO-8601 \u0c15\u0c4d\u0c2f\u0c3e\u0c32\u0c46\u0c02\u0c21\u0c30\u0c4d	\u0c1c\u0c2a\u0c28\u0c40\u0c38\u0c4d \u0c15\u0c4d\u0c2f\u0c3e\u0c32\u0c46\u0c02\u0c21\u0c30\u0c4d	\u0c2a\u0c30\u0c4d\u0c37\u0c3f\u0c2f\u0c28\u0c4d \u0c15\u0c4d\u0c2f\u0c3e\u0c32\u0c46\u0c02\u0c21\u0c30\u0c4d	\u0c2e\u0c3f\u0c02\u0c17\u0c4d\u0c2f\u0c42 \u0c15\u0c4d\u0c2f\u0c3e\u0c32\u0c46\u0c02\u0c21\u0c30\u0c4d
+te	F	long	\u0c2f\u0c41\u0c17\u0c02	\u0c38\u0c02\u0c35\u0c24\u0c4d\u0c38\u0c30\u0c02	\u0c24\u0c4d\u0c30\u0c48\u0c2e\u0c3e\u0c38\u0c3f\u0c15\u0c02	\u0c28\u0c46\u0c32	\u0c35\u0c3e\u0c30\u0c2e\u0c41	\u0c35\u0c3e\u0c30\u0c02\u0c32\u0c4b \u0c30\u0c4b\u0c1c\u0c41	\u0c30\u0c4b\u0c1c\u0c41	AM/PM	\u0c17\u0c02\u0c1f	\u0c28\u0c3f\u0c2e\u0c3f\u0c37\u0c2e\u0c41	\u0c38\u0c46\u0c15\u0c28\u0c41	\u0c38\u0c2e\u0c2f \u0c2e\u0c02\u0c21\u0c32\u0c3f
+te	C	short	=
+te	F	short	\u0c2f\u0c41\u0c17\u0c02	\u0c38\u0c02.	\u0c24\u0c4d\u0c30\u0c48.	\u0c28\u0c46\u0c32	\u0c35\u0c3e	\u0c35\u0c3e\u0c30\u0c02\u0c32\u0c4b \u0c30\u0c4b\u0c1c\u0c41	\u0c30\u0c4b\u0c1c\u0c41	AM/PM	\u0c17\u0c02.	\u0c28\u0c3f\u0c2e\u0c3f.	\u0c38\u0c46\u0c15.	\u0c38\u0c2e\u0c2f \u0c2e\u0c02\u0c21\u0c32\u0c3f
+te	C	narrow	=
+te	F	narrow	\u0c2f\u0c41\u0c17\u0c02	\u0c38\u0c02.	\u0c24\u0c4d\u0c30\u0c48.	\u0c28\u0c46	\u0c35\u0c3e	\u0c35\u0c3e\u0c30\u0c02\u0c32\u0c4b \u0c30\u0c4b\u0c1c\u0c41	\u0c30\u0c4b\u0c1c\u0c41	AM/PM	\u0c17\u0c02	\u0c28\u0c3f\u0c2e\u0c3f.	\u0c38\u0c46\u0c15.	\u0c38\u0c2e\u0c2f \u0c2e\u0c02\u0c21\u0c32\u0c3f
+th	C	long	\u0e1b\u0e0f\u0e34\u0e17\u0e34\u0e19\u0e1e\u0e38\u0e17\u0e18	\u0e1b\u0e0f\u0e34\u0e17\u0e34\u0e19\u0e08\u0e35\u0e19	\u0e1b\u0e0f\u0e34\u0e17\u0e34\u0e19\u0e04\u0e2d\u0e1b\u0e15\u0e34\u0e01	\u0e1b\u0e0f\u0e34\u0e17\u0e34\u0e19\u0e40\u0e01\u0e32\u0e2b\u0e25\u0e35	\u0e1b\u0e0f\u0e34\u0e17\u0e34\u0e19\u0e1b\u0e35\u0e42\u0e25\u0e01\u0e40\u0e2d\u0e18\u0e34\u0e42\u0e2d\u0e40\u0e1b\u0e35\u0e22	\u0e1b\u0e0f\u0e34\u0e17\u0e34\u0e19\u0e40\u0e2d\u0e18\u0e34\u0e42\u0e2d\u0e40\u0e1b\u0e35\u0e22	\u0e1b\u0e0f\u0e34\u0e17\u0e34\u0e19\u0e40\u0e01\u0e23\u0e01\u0e2d\u0e40\u0e23\u0e35\u0e22\u0e19	\u0e1b\u0e0f\u0e34\u0e17\u0e34\u0e19\u0e2e\u0e34\u0e1a\u0e23\u0e39	\u0e1b\u0e0f\u0e34\u0e17\u0e34\u0e19\u0e41\u0e2b\u0e48\u0e07\u0e0a\u0e32\u0e15\u0e34\u0e2d\u0e34\u0e19\u0e40\u0e14\u0e35\u0e22	\u0e1b\u0e0f\u0e34\u0e17\u0e34\u0e19\u0e2d\u0e34\u0e2a\u0e25\u0e32\u0e21	\u0e1b\u0e0f\u0e34\u0e17\u0e34\u0e19\u0e2d\u0e34\u0e2a\u0e25\u0e32\u0e21\u0e0b\u0e35\u0e27\u0e34\u0e25			\u0e1b\u0e0f\u0e34\u0e17\u0e34\u0e19\u0e2d\u0e34\u0e2a\u0e25\u0e32\u0e21 (\u0e2d\u0e38\u0e21\u0e21\u0e4c\u0e2d\u0e31\u0e25\u0e01\u0e38\u0e23\u0e32)	\u0e1b\u0e0f\u0e34\u0e17\u0e34\u0e19 ISO-8601	\u0e1b\u0e0f\u0e34\u0e17\u0e34\u0e19\u0e0d\u0e35\u0e48\u0e1b\u0e38\u0e48\u0e19	\u0e1b\u0e0f\u0e34\u0e17\u0e34\u0e19\u0e40\u0e1b\u0e2d\u0e23\u0e4c\u0e40\u0e0a\u0e35\u0e22	\u0e1b\u0e0f\u0e34\u0e17\u0e34\u0e19\u0e44\u0e15\u0e49\u0e2b\u0e27\u0e31\u0e19
+th	F	long	\u0e2a\u0e21\u0e31\u0e22	\u0e1b\u0e35	\u0e44\u0e15\u0e23\u0e21\u0e32\u0e2a	\u0e40\u0e14\u0e37\u0e2d\u0e19	\u0e2a\u0e31\u0e1b\u0e14\u0e32\u0e2b\u0e4c	\u0e27\u0e31\u0e19\u0e02\u0e2d\u0e07\u0e2a\u0e31\u0e1b\u0e14\u0e32\u0e2b\u0e4c	\u0e27\u0e31\u0e19	\u0e0a\u0e48\u0e27\u0e07\u0e27\u0e31\u0e19	\u0e0a\u0e31\u0e48\u0e27\u0e42\u0e21\u0e07	\u0e19\u0e32\u0e17\u0e35	\u0e27\u0e34\u0e19\u0e32\u0e17\u0e35	\u0e40\u0e02\u0e15\u0e40\u0e27\u0e25\u0e32
+th	C	short	=
+th	F	short	\u0e2a\u0e21\u0e31\u0e22	\u0e1b\u0e35	\u0e44\u0e15\u0e23\u0e21\u0e32\u0e2a	\u0e40\u0e14\u0e37\u0e2d\u0e19	\u0e2a\u0e31\u0e1b\u0e14\u0e32\u0e2b\u0e4c	\u0e27\u0e31\u0e19\u0e02\u0e2d\u0e07\u0e2a\u0e31\u0e1b\u0e14\u0e32\u0e2b\u0e4c	\u0e27\u0e31\u0e19	\u0e0a\u0e48\u0e27\u0e07\u0e27\u0e31\u0e19	\u0e0a\u0e21.	\u0e19\u0e32\u0e17\u0e35	\u0e27\u0e34	\u0e42\u0e0b\u0e19
+th	C	narrow	=
+th	F	narrow	\u0e2a\u0e21\u0e31\u0e22	\u0e1b\u0e35	\u0e44\u0e15\u0e23\u0e21\u0e32\u0e2a	\u0e40\u0e14\u0e37\u0e2d\u0e19	\u0e2a\u0e31\u0e1b\u0e14\u0e32\u0e2b\u0e4c	\u0e27\u0e31\u0e19\u0e02\u0e2d\u0e07\u0e2a\u0e31\u0e1b\u0e14\u0e32\u0e2b\u0e4c	\u0e27\u0e31\u0e19	\u0e0a\u0e48\u0e27\u0e07\u0e27\u0e31\u0e19	\u0e0a\u0e21.	\u0e19\u0e32\u0e17\u0e35	\u0e27\u0e34	\u0e40\u0e02\u0e15\u0e40\u0e27\u0e25\u0e32
+tr	C	long	Budist Takvimi	\u00c7in Takvimi	K\u0131pti Takvim	Dangi Takvimi	Etiyopik Amete Alem Takvimi	Etiyopik Takvim	Miladi Takvim	\u0130brani Takvimi	Ulusal Hint Takvimi	Hicri Takvim	Hicri Takvim (16 Temmuz 622)	Hicri Takvim (Suudi)	Hicri Takvim (15 Temmuz 622)	Hicri Takvim (\u00dcmm\u00fc-l Kurra Takvimi)	ISO-8601 Takvimi	Japon Takvimi	\u0130ran Takvimi	\u00c7in Cumhuriyeti Takvimi
+tr	F	long	\u00e7a\u011f	y\u0131l	\u00e7eyrek	ay	hafta	haftan\u0131n g\u00fcn\u00fc	g\u00fcn	\u00d6\u00d6/\u00d6S	saat	dakika	saniye	saat dilimi
+tr	C	short	=
+tr	F	short	\u00e7a\u011f	y\u0131l	\u00e7yr.	ay	hf.	haftan\u0131n g\u00fcn\u00fc	g\u00fcn	\u00d6\u00d6/\u00d6S	sa.	dk.	sn.	dilim
+tr	C	narrow	=
+tr	F	narrow	\u00e7a\u011f	y\u0131l	\u00e7yr.	ay	hf.	haftan\u0131n g\u00fcn\u00fc	g\u00fcn	\u00d6\u00d6/\u00d6S	sa.	dk.	sn.	dilim
+uk	C	long	\u0431\u0443\u0434\u0434\u0456\u0439\u0441\u044c\u043a\u0438\u0439 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u043a\u0438\u0442\u0430\u0439\u0441\u044c\u043a\u0438\u0439 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u043a\u043e\u043f\u0442\u0441\u044c\u043a\u0438\u0439 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u043a\u043e\u0440\u0435\u0439\u0441\u044c\u043a\u0438\u0439 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u0435\u0444\u0456\u043e\u043f\u0441\u044c\u043a\u0438\u0439 \u0430\u043c\u0435\u0442\u0435 \u0430\u043b\u0435\u043c \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u0435\u0444\u0456\u043e\u043f\u0441\u044c\u043a\u0438\u0439 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u0433\u0440\u0438\u0433\u043e\u0440\u0456\u0430\u043d\u0441\u044c\u043a\u0438\u0439 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u0454\u0432\u0440\u0435\u0439\u0441\u044c\u043a\u0438\u0439 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u0456\u043d\u0434\u0456\u0439\u0441\u044c\u043a\u0438\u0439 \u0441\u0432\u0456\u0442\u0441\u044c\u043a\u0438\u0439 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440 \u0425\u0456\u0434\u0436\u0440\u0430	\u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440 \u0425\u0456\u0434\u0436\u0440\u0430, \u0441\u0432\u0456\u0442\u0441\u044c\u043a\u0438\u0439	\u0456\u0441\u043b\u0430\u043c\u0441\u044c\u043a\u0438\u0439 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440 \u0421\u0430\u0443\u0434\u0456\u0432\u0441\u044c\u043a\u043e\u0457 \u0410\u0440\u0430\u0432\u0456\u0457	\u0456\u0441\u043b\u0430\u043c\u0441\u044c\u043a\u0438\u0439 \u0430\u0441\u0442\u0440\u043e\u043d\u043e\u043c\u0456\u0447\u043d\u0438\u0439 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440 \u0425\u0456\u0434\u0436\u0440\u0430 (\u0423\u043c\u043c \u0430\u043b\u044c-\u041a\u0443\u0440\u0430)	\u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440 ISO-8601	\u044f\u043f\u043e\u043d\u0441\u044c\u043a\u0438\u0439 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u043f\u0435\u0440\u0441\u044c\u043a\u0438\u0439 \u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440	\u043a\u0430\u043b\u0435\u043d\u0434\u0430\u0440 \u041a\u0438\u0442\u0430\u0439\u0441\u044c\u043a\u043e\u0457 \u0420\u0435\u0441\u043f\u0443\u0431\u043b\u0456\u043a\u0438
+uk	F	long	\u0435\u0440\u0430	\u0440\u0456\u043a	\u043a\u0432\u0430\u0440\u0442\u0430\u043b	\u043c\u0456\u0441\u044f\u0446\u044c	\u0442\u0438\u0436\u0434\u0435\u043d\u044c	\u0434\u0435\u043d\u044c \u0442\u0438\u0436\u043d\u044f	\u0434\u0435\u043d\u044c	\u0434\u043f/\u043f\u043f	\u0433\u043e\u0434\u0438\u043d\u0430	\u0445\u0432\u0438\u043b\u0438\u043d\u0430	\u0441\u0435\u043a\u0443\u043d\u0434\u0430	\u0447\u0430\u0441\u043e\u0432\u0438\u0439 \u043f\u043e\u044f\u0441
+uk	C	short	=
+uk	F	short	\u0435.	\u0440.	\u043a\u0432.	\u043c\u0456\u0441.	\u0442\u0438\u0436.	\u0434. \u0442\u0438\u0436\u043d\u044f	\u0434.	\u0434\u043f/\u043f\u043f	\u0433\u043e\u0434.	\u0445\u0432.	\u0441	\u0447\u0430\u0441. \u043f\u043e\u044f\u0441
+uk	C	narrow	=
+uk	F	narrow	\u0435	\u0440	\u043a\u0432	\u043c	\u0442	\u0434. \u0442\u0438\u0436.	\u0434	\u0434\u043f/\u043f\u043f	\u0433\u043e\u0434	\u0445\u0432	\u0441	\u0447\u0430\u0441. \u043f.
+ur	C	long	\u0628\u0648\u062f\u06be \u06a9\u0644\u06cc\u0646\u0688\u0631	\u0686\u06cc\u0646\u06cc \u06a9\u06cc\u0644\u0646\u0688\u0631	\u06a9\u0627\u067e\u0679\u06a9 \u06a9\u06cc\u0644\u0646\u0688\u0631	\u0688\u0627\u0646\u06af\u06cc \u06a9\u06cc\u0644\u0646\u0688\u0631	\u0627\u06cc\u062a\u06be\u0648\u067e\u06a9 \u0627\u0645\u06cc\u0679 \u0627\u0644\u06cc\u0645 \u06a9\u06cc\u0644\u0646\u0688\u0631	\u0627\u06cc\u062a\u06be\u0648\u067e\u06cc\u0627\u0626\u06cc \u06a9\u06cc\u0644\u0646\u0688\u0631	\u06af\u0631\u06cc\u06af\u0648\u0631\u06cc\u0646 \u06a9\u06cc\u0644\u0646\u0688\u0631	\u0639\u0628\u0631\u0627\u0646\u06cc \u06a9\u06cc\u0644\u0646\u0688\u0631	\u0628\u06be\u0627\u0631\u062a\u06cc \u0642\u0648\u0645\u06cc \u06a9\u06cc\u0644\u0646\u0688\u0631	\u06c1\u062c\u0631\u06cc \u06a9\u06cc\u0644\u0646\u0688\u0631	\u0627\u0633\u0644\u0627\u0645\u06cc \u0634\u06c1\u0631\u06cc \u06a9\u06cc\u0644\u0646\u0688\u0631 (\u0679\u06cc\u0628\u06cc\u0648\u0644\u0631\u060c \u0645\u062f\u0646\u06cc \u062f\u0648\u0631)		\u06c1\u062c\u0631\u06cc \u06a9\u06cc\u0644\u0646\u0688\u0631 (\u0644\u0648\u062d\u06cc\u060c \u0627\u06cc\u0633\u0679\u0631\u0648\u0646\u0648\u0645\u06cc\u06a9\u0644 \u0627\u06cc\u067e\u0648\u06a9)	\u06c1\u062c\u0631\u06cc \u06a9\u06cc\u0644\u0646\u0688\u0631 (\u0627\u0645 \u0627\u0644\u0642\u0631\u06cc\u0670)	ISO-8601 \u06a9\u06cc\u0644\u0646\u0688\u0631	\u062c\u0627\u067e\u0627\u0646\u06cc \u06a9\u06cc\u0644\u0646\u0688\u0631	\u0641\u0627\u0631\u0633\u06cc \u06a9\u06cc\u0644\u0646\u0688\u0631	\u0645\u0646\u06af\u0648\u0648 \u06a9\u06cc\u0644\u0646\u0688\u0631
+ur	F	long	\u0639\u06c1\u062f	\u0633\u0627\u0644	\u0633\u06c1 \u0645\u0627\u06c1\u06cc	\u0645\u06c1\u06cc\u0646\u06c1	\u06c1\u0641\u062a\u06c1	\u06c1\u0641\u062a\u06d2 \u06a9\u0627 \u062f\u0646	\u062f\u0646	\u0642\u0628\u0644 \u062f\u0648\u067e\u06c1\u0631/\u0628\u0639\u062f \u062f\u0648\u067e\u06c1\u0631	\u06af\u06be\u0646\u0679\u06c1	\u0645\u0646\u0679	\u0633\u06cc\u06a9\u0646\u0688	\u0645\u0646\u0637\u0642\u06c2 \u0648\u0642\u062a
+ur	C	short	=
+ur	F	short	\u0639\u06c1\u062f	\u0633\u0627\u0644	\u0633\u06c1 \u0645\u0627\u06c1\u06cc	\u0645\u0627\u06c1	\u06c1\u0641\u062a\u06c1	\u06c1\u0641\u062a\u06d2 \u06a9\u0627 \u062f\u0646	\u062f\u0646	\u0642\u0628\u0644 \u062f\u0648\u067e\u06c1\u0631/\u0628\u0639\u062f \u062f\u0648\u067e\u06c1\u0631	\u06af\u06be\u0646\u0679\u06c1	\u0645\u0646\u0679	\u0633\u06cc\u06a9\u0646\u0688	\u0645\u0646\u0637\u0642\u06c2 \u0648\u0642\u062a
+ur	C	narrow	=
+ur	F	narrow	\u0639\u06c1\u062f	\u0633\u0627\u0644	\u0633\u06c1 \u0645\u0627\u06c1\u06cc	\u0645\u0627\u06c1	\u06c1\u0641\u062a\u06c1	\u06c1\u0641\u062a\u06d2 \u06a9\u0627 \u062f\u0646	\u062f\u0646	\u0642\u0628\u0644 \u062f\u0648\u067e\u06c1\u0631/\u0628\u0639\u062f \u062f\u0648\u067e\u06c1\u0631	\u06af\u06be\u0646\u0679\u06c1	\u0645\u0646\u0679	\u0633\u06cc\u06a9\u0646\u0688	\u0645\u0646\u0637\u0642\u06c2 \u0648\u0642\u062a
+uz	C	long																		
+uz	F	long	Era	Year	Quarter	Month	Week	Day of the Week	Day	Dayperiod	Hour	Minute	Second	Zone
+uz	C	short	=
+uz	F	short	=
+uz	C	narrow	=
+uz	F	narrow	=
+vi	C	long	L\u1ecbch Ph\u1eadt Gi\u00e1o	L\u1ecbch Trung Qu\u1ed1c	L\u1ecbch Copts	L\u1ecbch Dangi	L\u1ecbch Ethiopic Amete Alem	L\u1ecbch Ethiopia	L\u1ecbch Gregory	L\u1ecbch Do Th\u00e1i	L\u1ecbch Qu\u1ed1c gia \u1ea4n \u0110\u1ed9	L\u1ecbch H\u1ed3i Gi\u00e1o	L\u1ecbch H\u1ed3i Gi\u00e1o (d\u1ea1ng b\u1ea3ng, k\u1ef7 nguy\u00ean d\u00e2n s\u1ef1)			L\u1ecbch H\u1ed3i Gi\u00e1o (Umm al-Qura)	L\u1ecbch ISO-8601	L\u1ecbch Nh\u1eadt B\u1ea3n	L\u1ecbch Ba T\u01b0	L\u1ecbch Trung Hoa D\u00e2n Qu\u1ed1c
+vi	F	long	th\u1eddi \u0111\u1ea1i	N\u0103m	Qu\u00fd	Th\u00e1ng	Tu\u1ea7n	ng\u00e0y trong tu\u1ea7n	Ng\u00e0y	SA/CH	Gi\u1edd	Ph\u00fat	Gi\u00e2y	M\u00fai gi\u1edd
+vi	C	short	=
+vi	F	short	=
+vi	C	narrow	=
+vi	F	narrow	=
+zh	C	long	\u4f5b\u5386	\u519c\u5386	\u79d1\u666e\u7279\u5386	\u6a80\u7eaa\u5386	\u57c3\u585e\u4fc4\u6bd4\u4e9a\u963f\u7c73\u7279\u963f\u83b1\u59c6\u65e5\u5386	\u57c3\u585e\u4fc4\u6bd4\u4e9a\u5386	\u516c\u5386	\u5e0c\u4f2f\u6765\u5386	\u5370\u5ea6\u56fd\u5b9a\u5386	\u4f0a\u65af\u5170\u5386	\u8868\u683c\u5f0f\u4f0a\u65af\u5170\u5386\uff08\u6c11\u7528\u7eaa\u5143\uff09		\u8868\u683c\u5f0f\u4f0a\u65af\u5170\u5386\uff08\u5929\u6587\u7eaa\u5143\uff09	\u4f0a\u65af\u5170\u5386\uff08\u4e4c\u59c6\u5e93\u62c9\uff09	\u56fd\u9645\u6807\u51c6\u5386\u6cd5	\u548c\u5386	\u6ce2\u65af\u5386	\u6c11\u56fd\u7eaa\u5e74
+zh	F	long	\u7eaa\u5143	\u5e74	\u5b63\u5ea6	\u6708	\u5468	\u661f\u671f	\u65e5	\u4e0a\u5348/\u4e0b\u5348	\u5c0f\u65f6	\u5206\u949f	\u79d2	\u65f6\u533a
+zh	C	short	=
+zh	F	short	\u7eaa\u5143	\u5e74	\u5b63	\u6708	\u5468	\u661f\u671f	\u65e5	\u4e0a\u5348/\u4e0b\u5348	\u5c0f\u65f6	\u5206	\u79d2	\u65f6\u533a
+zh	C	narrow	=
+zh	F	narrow	\u7eaa\u5143	\u5e74	\u5b63	\u6708	\u5468	\u661f\u671f	\u65e5	\u4e0a\u5348/\u4e0b\u5348	\u5c0f\u65f6	\u5206	\u79d2	\u65f6\u533a
+en-GB	C	long	Buddhist Calendar	Chinese Calendar	Coptic Calendar	Dangi Calendar	Ethiopic Amete Alem Calendar	Ethiopic Calendar	Gregorian Calendar	Hebrew Calendar	Indian National Calendar	Hijri Calendar	Hijri Calendar (tabular, civil epoch)	Hijri Calendar (Saudi Arabia, sighting)	Hijri Calendar (tabular, astronomical epoch)	Hijri Calendar (Umm al-Qura)	Gregorian Calendar (ISO 8601 Weeks)	Japanese Calendar	Persian Calendar	Minguo Calendar
+en-GB	F	long	era	year	quarter	month	week	day of the week	day	am/pm	hour	minute	second	time zone
+en-GB	C	short	=
+en-GB	F	short	era	yr	qtr	mo	wk	day of wk	day	am/pm	hr	min	sec	zone
+en-GB	C	narrow	=
+en-GB	F	narrow	era	yr	qtr	mo	wk	day of wk	day	am/pm	hr	min	sec	zone
+en-AU	C	long	Buddhist Calendar	Chinese Calendar	Coptic Calendar	Korean Calendar	Ethiopic Amete Alem Calendar	Ethiopian Calendar	Gregorian Calendar	Hebrew Calendar	Indian National Calendar	Hijri Calendar	Hijri Calendar (tabular, civil epoch)	Hijri Calendar (Saudi Arabia, sighting)	Hijri Calendar (tabular, astronomical epoch)	Hijri Calendar (Umm al-Qura)	Gregorian Calendar (ISO 8601 Weeks)	Japanese Calendar	Persian Calendar	Minguo Calendar
+en-AU	F	long	era	year	quarter	month	week	day of the week	day	am/pm	hour	minute	second	time zone
+en-AU	C	short	=
+en-AU	F	short	era	yr	qtr	mo	wk	day of wk	day	am/pm	hr	min	sec	zone
+en-AU	C	narrow	=
+en-AU	F	narrow	era	yr	qtr	mo	wk	day of wk	day	am/pm	hr	min	sec	zone
+en-CA	C	long	Buddhist calendar	Chinese calendar	Coptic calendar	Dangi calendar	Ethiopic Amete Alem calendar	Ethiopic calendar	Gregorian calendar	Hebrew calendar	Indian national calendar	Hijri calendar	Hijri calendar (tabular, civil epoch)	Hijri Calendar (Saudi Arabia, sighting)	Hijri calendar (tabular, astronomical epoch)	Hijri calendar (Umm al-Qura)	ISO-8601 calendar	Japanese calendar	Persian calendar	Minguo calendar
+en-CA	F	long	era	year	quarter	month	week	day of the week	day	a.m./p.m.	hour	minute	second	time zone
+en-CA	C	short	=
+en-CA	F	short	era	yr	qtr	mo	wk	day of wk	day	a.m./p.m.	hr	min	sec	zone
+en-CA	C	narrow	=
+en-CA	F	narrow	era	yr	qtr	mo	wk	day of wk	day	a.m./p.m.	hr	min	sec	zone
+en-IN	C	long	Buddhist Calendar	Chinese Calendar	Coptic Calendar	Dangi Calendar	Ethiopic Amete Alem Calendar	Ethiopic Calendar	Gregorian Calendar	Hebrew Calendar	Indian National Calendar	Hijri Calendar	Hijri Calendar (tabular, civil epoch)	Hijri Calendar (Saudi Arabia, sighting)	Hijri Calendar (tabular, astronomical epoch)	Hijri Calendar (Umm al-Qura)	Gregorian Calendar (ISO 8601 Weeks)	Japanese Calendar	Persian Calendar	Minguo Calendar
+en-IN	F	long	era	year	quarter	month	week	day of the week	day	am/pm	hour	minute	second	time zone
+en-IN	C	short	=
+en-IN	F	short	era	yr	qtr	mo	wk	day of wk	day	am/pm	hr	min	sec	zone
+en-IN	C	narrow	=
+en-IN	F	narrow	era	yr	qtr	mo	wk	day of wk	day	am/pm	hr	min	sec	zone
+es-419	C	long	calendario budista	calendario chino	calendario c\u00f3ptico	calendario dangi	calendario et\u00edope Amete Alem	calendario et\u00edope	calendario gregoriano	calendario hebreo	calendario nacional hind\u00fa	calendario hijri	calendario hijri tabular	calendario isl\u00e1mico (Arabia Saudita)	calendario isl\u00e1mico tabular	calendario hijri Umm al-Qura	calendario ISO-8601	calendario japon\u00e9s	calendario persa	calendario de la Rep\u00fablica de China
+es-419	F	long	era	a\u00f1o	trimestre	mes	semana	d\u00eda de la semana	d\u00eda	a.m./p.m.	hora	minuto	segundo	zona horaria
+es-419	C	short	=
+es-419	F	short	era	a	trim.	m	sem.	d\u00eda de sem.	d	a.m./p.m.	h	min	s	zona
+es-419	C	narrow	=
+es-419	F	narrow	era	a	trim.	m	sem.	d\u00eda de sem.	d	a.m./p.m.	h	min	s	zona
+es-MX	C	long	calendario budista	calendario chino	calendario c\u00f3ptico	calendario dangi	calendario et\u00edope Amete Alem	calendario et\u00edope	calendario gregoriano	calendario hebreo	calendario nacional hind\u00fa	calendario hijri	calendario hijri tabular	calendario isl\u00e1mico (Arabia Saudita)	calendario isl\u00e1mico tabular	calendario hijri Umm al-Qura	calendario ISO-8601	calendario japon\u00e9s	calendario persa	calendario minguo
+es-MX	F	long	era	a\u00f1o	trimestre	mes	semana	d\u00eda de la semana	d\u00eda	a.m./p.m.	hora	minuto	segundo	zona horaria
+es-MX	C	short	=
+es-MX	F	short	era	a	trim.	m	sem.	d\u00eda de sem.	d	a.m./p.m.	h	min	s	zona
+es-MX	C	narrow	=
+es-MX	F	narrow	era	a	trim.	m	sem.	d\u00eda de sem.	d	a.m./p.m.	h	min	s	zona
+fr-CA	C	long	calendrier bouddhiste	calendrier chinois	calendrier copte	calendrier dangi	calendrier \u00e9thiopien Amete Alem	calendrier \u00e9thiopien	calendrier gr\u00e9gorien	calendrier h\u00e9bra\u00efque	calendrier indien	calendrier h\u00e9girien	calendrier h\u00e9girien (tabulaire, \u00e9poque civile)		calendrier h\u00e9girien (tabulaire, \u00e9poque astronomique)	calendrier h\u00e9girien (Umm al-Qura)	calendrier ISO 8601	calendrier japonais	calendrier persan	calendrier r\u00e9publicain chinois
+fr-CA	F	long	\u00e8re	ann\u00e9e	trimestre	mois	semaine	jour de la semaine	jour	cadran	heure	minute	seconde	fuseau horaire
+fr-CA	C	short	=
+fr-CA	F	short	\u00e8re	a	trim.	m.	sem.	j de la semaine	j	cadran	h	min	s	fuseau horaire
+fr-CA	C	narrow	=
+fr-CA	F	narrow	\u00e8re	a	trim.	m.	sem.	j de la semaine	j	cadran	h	min	s	fuseau horaire
+fr-CH	C	long	calendrier bouddhiste	calendrier chinois	calendrier copte	calendrier dangi	calendrier \u00e9thiopien Amete Alem	calendrier \u00e9thiopien	calendrier gr\u00e9gorien	calendrier h\u00e9bra\u00efque	calendrier indien	calendrier h\u00e9girien	calendrier h\u00e9girien (tabulaire, \u00e9poque civile)		calendrier h\u00e9girien (tabulaire, \u00e9poque astronomique)	calendrier h\u00e9girien (Umm al-Qura)	calendrier ISO 8601	calendrier japonais	calendrier persan	calendrier r\u00e9publicain chinois
+fr-CH	F	long	\u00e8re	ann\u00e9e	trimestre	mois	semaine	jour de la semaine	jour	cadran	heure	minute	seconde	fuseau horaire
+fr-CH	C	short	=
+fr-CH	F	short	\u00e8re	an	trim.	m.	sem.	j (sem.)	j	cadran	h	min	s	fuseau horaire
+fr-CH	C	narrow	=
+fr-CH	F	narrow	\u00e8re	a	trim.	m.	sem.	j (sem.)	j	cadran	h	min	s	fuseau horaire
+de-AT	C	long	Buddhistischer Kalender	Chinesischer Kalender	Koptischer Kalender	Dangi-Kalender	\u00c4thiopischer Am\u00e4t\u00e4-Al\u00e4m-Kalender	\u00c4thiopischer Kalender	Gregorianischer Kalender	J\u00fcdischer Kalender	Indischer Nationalkalender	Hidschra-Kalender	Hidschra-Kalender (tabellarisch, nicht-astronomisch)			Hidschra-Kalender (Umm al-Qura)	ISO-8601-Kalender	Japanischer Kalender	Persischer Kalender	Minguo-Kalender
+de-AT	F	long	Epoche	Jahr	Quartal	Monat	Woche	Wochentag	Tag	Tagesh\u00e4lfte	Stunde	Minute	Sekunde	Zeitzone
+de-AT	C	short	=
+de-AT	F	short	Ep.	Jahr	Quart.	Mon.	Woche	Wochentag	Tag	Tagesh\u00e4lfte	Std.	Min.	Sek.	Zeitzone
+de-AT	C	narrow	=
+de-AT	F	narrow	E	J	Q	M	W	Wochent.	Tag	Tagesh.	Std.	Min.	Sek.	Zeitz.
+de-CH	C	long	Buddhistischer Kalender	Chinesischer Kalender	Koptischer Kalender	Dangi-Kalender	\u00c4thiopischer Am\u00e4t\u00e4-Al\u00e4m-Kalender	\u00c4thiopischer Kalender	Gregorianischer Kalender	J\u00fcdischer Kalender	Indischer Nationalkalender	Hidschra-Kalender	Hidschra-Kalender (tabellarisch, nicht-astronomisch)			Hidschra-Kalender (Umm al-Qura)	ISO-8601-Kalender	Japanischer Kalender	Persischer Kalender	Minguo-Kalender
+de-CH	F	long	Epoche	Jahr	Quartal	Monat	Woche	Wochentag	Tag	Tagesh\u00e4lfte	Stunde	Minute	Sekunde	Zeitzone
+de-CH	C	short	=
+de-CH	F	short	Ep.	Jahr	Quart.	Mon.	Woche	Wochentag	Tag	Tagesh\u00e4lfte	Std.	Min.	Sek.	Zeitzone
+de-CH	C	narrow	=
+de-CH	F	narrow	Epoche	J	Q	M	W	Wochentag	Tag	Tagesh.	Std.	Min.	Sek.	Zeitz.
+pt-PT	C	long	Calend\u00e1rio budista	Calend\u00e1rio chin\u00eas	Calend\u00e1rio copta	Calend\u00e1rio dangi	Calend\u00e1rio et\u00edope Amete Alem	Calend\u00e1rio et\u00edope	Calend\u00e1rio gregoriano	Calend\u00e1rio hebraico	Calend\u00e1rio nacional indiano	Calend\u00e1rio heg\u00edrico	Calend\u00e1rio heg\u00edrico (civil)			Calend\u00e1rio heg\u00edrico (Umm al-Qura)	Calend\u00e1rio ISO-8601	Calend\u00e1rio japon\u00eas	Calend\u00e1rio persa	Calend\u00e1rio da Rep\u00fablica da China
+pt-PT	F	long	era	ano	trimestre	m\u00eas	semana	dia da semana	dia	am/pm	hora	minuto	segundo	fuso hor\u00e1rio
+pt-PT	C	short	=
+pt-PT	F	short	era	ano	trim.	m\u00eas	sem.	dia da sem.	dia	am/pm	h	min	s	fuso hor\u00e1rio
+pt-PT	C	narrow	=
+pt-PT	F	narrow	era	ano	trim.	m\u00eas	sem.	dia da sem.	dia	am/pm	h	min	s	fuso hor\u00e1rio
+zh-Hant	C	long	\u4f5b\u66c6	\u8fb2\u66c6	\u79d1\u666e\u7279\u66c6	\u6a80\u7d00\u66c6	\u8863\u7d22\u6bd4\u4e9e\u66c6 (Amete Alem)	\u8863\u7d22\u6bd4\u4e9e\u66c6	\u516c\u66c6	\u5e0c\u4f2f\u4f86\u66c6	\u5370\u5ea6\u570b\u66c6	\u4f0a\u65af\u862d\u66c6	\u4f0a\u65af\u862d\u6c11\u7528\u66c6	\u4f0a\u65af\u862d\u65b0\u6708\u66c6	\u4f0a\u65af\u862d\u5929\u6587\u66c6	\u4f0a\u65af\u862d\u66c6\uff08\u70cf\u59c6\u5eab\u62c9\uff09	ISO 8601 \u570b\u969b\u66c6\u6cd5	\u548c\u66c6	\u6ce2\u65af\u66c6	\u570b\u66c6
+zh-Hant	F	long	\u7d00\u5143	\u5e74	\u5b63\u5ea6	\u6708	\u9031	\u661f\u671f	\u65e5	\u6642\u6bb5	\u5c0f\u6642	\u5206\u9418	\u79d2	\u6642\u5340
+zh-Hant	C	short	=
+zh-Hant	F	short	\u7d00\u5143	\u5e74	\u5b63\u5ea6	\u6708	\u9031	\u661f\u671f	\u65e5	\u6642\u6bb5	\u6642	\u5206	\u79d2	\u6642\u5340
+zh-Hant	C	narrow	=
+zh-Hant	F	narrow	\u7d00\u5143	\u5e74	\u5b63\u5ea6	\u6708	\u9031	\u661f\u671f	\u65e5	\u6642\u6bb5	\u6642	\u5206	\u79d2	\u6642\u5340
+sr-Latn	C	long	budisti\u010dki kalendar	kineski kalendar	koptski kalendar	dangi kalendar	etiopski amet alem kalendar	etiopski kalendar	gregorijanski kalendar	hebrejski kalendar	Indijski nacionalni kalendar	islamski kalendar	islamski civilni kalendar		islamski astronomski kalendar	islamski kalendar (Umm al-Qura)	ISO-8601 kalendar	japanski kalendar	persijski kalendar	kalendar Republike Kine
+sr-Latn	F	long	era	godina	kvartal	mesec	nedelja	dan u nedelji	dan	AM/PM	sat	minut	sekund	vremenska zona
+sr-Latn	C	short	=
+sr-Latn	F	short	era	god.	kv.	mes.	ned.	dan u nedelji	d.	pre podne/po podne	\u010d.	min.	sek.	vremenska zona
+sr-Latn	C	narrow	=
+sr-Latn	F	narrow	era	g.	kv.	mes.	ned.	dan u nedelji	d.	pre podne/po podne	\u010d.	min.	s	vremenska zona
+nl-BE	C	long	Boeddhistische kalender	Chinese kalender	Koptische kalender	Dangi-kalender	Ethiopische Amete Alem-kalender	Ethiopische kalender	Gregoriaanse kalender	Hebreeuwse kalender	Indiase nationale kalender	Islamitische kalender	Islamitische kalender (cyclisch)	Islamitische kalender (Saudi\u2013Arabi\u00eb)	Islamitische kalender (epoche)	Islamitische kalender (Umm al-Qura)	ISO-8601-kalender	Japanse kalender	Perzische kalender	Kalender van de Chinese Republiek
+nl-BE	F	long	tijdperk	jaar	kwartaal	maand	week	dag van de week	dag	a.m./p.m.	uur	minuut	seconde	tijdzone
+nl-BE	C	short	=
+nl-BE	F	short	tijdperk	jr	kwartaal	mnd	wk	dag van de wk	dag	a.m./p.m.	uur	min	sec	zone
+nl-BE	C	narrow	=
+nl-BE	F	narrow	tijdperk	jr	kwartaal	mnd	wk	dag v.d. wk	dag	a.m./p.m.	u	min	s	zone
+it-CH	C	long	Calendario buddista	Calendario cinese	Calendario copto	Calendario dangi	Calendario etiope Amete Alem	Calendario etiope	Calendario gregoriano	Calendario ebraico	calendario nazionale indiano	Calendario Hijri	Calendario Hijri (tabulare, epoca civile)			Calendario Hijri (Umm al-Qura)	Calendario ISO-8601	Calendario giapponese	Calendario persiano	Calendario minguo
+it-CH	F	long	era	anno	trimestre	mese	settimana	giorno della settimana	giorno	AM/PM	ora	minuto	secondo	fuso orario
+it-CH	C	short	=
+it-CH	F	short	era	anno	trim.	mese	sett.	giorno settimana	g.	AM/PM	h	min	s	fuso
+it-CH	C	narrow	=
+it-CH	F	narrow	era	anno	trim.	mese	sett.	giorno sett.	g.	AM/PM	h	min	s	fuso
+*	U	language	af ak am an ar ar-001 as ast ay az az-Arab be bg bho bm bn br bs ca ceb chr ckb co cs cy da de de-AT de-CH doi dv ee el en en-AU en-CA en-GB en-US eo es es-419 es-ES es-MX et eu fa fa-AF fi fil fo fr fr-CA fr-CH fy ga gd gl gn gu ha haw he hi hmn hr ht hu hy ia id ig ilo is it ja jv ka kk km kn ko kok kri ku ky la lb lg ln lo lt lus lv mai mg mi mk ml mn mni mr ms mt my nb ne nl nl-BE nn no nso ny oc om or pa pl ps pt pt-BR pt-PT qu rm ro ro-MD ru rw sa sd sh si sk sl sm sn so sq sr sr-ME st su sv sw sw-CD ta te tg th ti tk tl tn to tr ts tt tw ug uk ur uz vi wa wo xh yi yo yue zh zh-Hans zh-Hant zu
+*	U	script	Adlm Afak Aghb Ahom Arab Aran Armi Armn Avst Bali Bamu Bass Batk Beng Berf Bhks Blis Bopo Brah Brai Bugi Buhd Cakm Cans Cari Cham Cher Chrs Cirt Copt Cpmn Cprt Cyrl Cyrs Deva Diak Dogr Dsrt Dupl Egyd Egyh Egyp Elba Elym Ethi Gara Geok Geor Glag Gong Gonm Goth Gran Grek Gujr Gukh Guru Hanb Hang Hani Hano Hans Hant Hatr Hebr Hira Hluw Hmng Hmnp Hrkt Hung Inds Ital Jamo Java Jpan Jurc Kali Kana Kawi Khar Khmr Khoj Kits Knda Kore Kpel Krai Kthi Lana Laoo Latf Latg Latn Lepc Limb Lina Linb Lisu Loma Lyci Lydi Mahj Maka Mand Mani Marc Maya Medf Mend Merc Mero Mlym Modi Mong Moon Mroo Mtei Mult Mymr Nagm Nand Narb Nbat Newa Nkgb Nkoo Nshu Ogam Olck Onao Orkh Orya Osge Osma Ougr Palm Pauc Perm Phag Phli Phlp Phlv Phnx Plrd Prti Qaag Rjng Rohg Roro Runr Samr Sara Sarb Saur Sgnw Shaw Shrd Sidd Sidt Sind Sinh Sogd Sogo Sora Soyo Sund Sunu Sylo Syrc Syre Syrj Syrn Tagb Takr Tale Talu Taml Tang Tavt Tayo Telu Teng Tfng Tglg Thaa Thai Tibt Tirh Tnsa Todr Tols Toto Tutg Ugar Vaii Visp Vith Wara Wcho Wole Xpeo Xsux Yezi Yiii Zanb Zinh Zmth Zsye Zsym Zxxx Zyyy Zzzz
+*	U	region	419 AC AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CP CQ CR CU CV CW CX CY CZ DE DG DJ DK DM DO DZ EA EC EE EG EH ER ES ET EU EZ FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU IC ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA QO RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TA TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM UN US UY UZ VA VC VE VG VI VN VU WF WS XA XB XK YE YT ZA ZM ZW ZZ
+*	U	variant	OXENDICT
+*	U	currency	AED AFN ALL AMD ANG AOA ARS AUD AWG AZN BAM BBD BDT BGN BHD BIF BMD BND BOB BRL BSD BTN BWP BYN BZD CAD CDF CHF CLP CNY COP CRC CUC CUP CVE CZK DJF DKK DOP DZD EGP ERN ETB EUR FJD FKP GBP GEL GHS GIP GMD GNF GTQ GYD HKD HNL HRK HTG HUF IDR ILS INR IQD IRR ISK JMD JOD JPY KES KGS KHR KMF KPW KRW KWD KYD KZT LAK LBP LKR LRD LSL LYD MAD MDL MGA MKD MMK MNT MOP MRU MUR MVR MWK MXN MYR MZN NAD NGN NIO NOK NPR NZD OMR PAB PEN PGK PHP PKR PLN PYG QAR RON RSD RUB RWF SAR SBD SCR SDG SEK SGD SHP SLL SOS SRD SSP STN SVC SYP SZL THB TJS TMT TND TOP TRY TTD TWD TZS UAH UGX USD UYU UZS VES VND VUV WST XAF XCD XDR XOF XPF XSU YER ZAR ZMW ZWL
+af	N	region	*	FK	Falklandeilande (Malvinas)
+af	N	region	long	HK	Hongkong
+af	N	region	long	MO	Macau
+af	N	region	long	PS	Palestina
+af	N	standard	long	ar-001	
+ak	N	region	*	FK	Falkland Islands (Islas Malvinas)
+ak	N	region	long	HK	Hong Kong
+ak	N	region	long	MO	Macao
+ak	N	region	long	PS	Palestine
+ak	N	region	short	UN	UN
+ak	N	region	short	US	US
+am	N	region	*	FK	\u134e\u12ad\u120b\u1295\u12f5 \u12f0\u1234\u1276\u127d (\u12a2\u1235\u120b\u1235 \u121b\u120d\u126a\u1293\u1235)
+am	N	region	long	HK	\u1206\u1295\u130d \u12ae\u1295\u130d
+am	N	region	long	MO	\u121b\u12ab\u12a6
+am	N	region	long	PS	\u134d\u120d\u1235\u1325\u12a4\u121d
+am	N	standard	long	ar-001	
+ar	N	region	*	FK	\u062c\u0632\u0631 \u0641\u0648\u0643\u0644\u0627\u0646\u062f - \u062c\u0632\u0631 \u0645\u0627\u0644\u0641\u064a\u0646\u0627\u0633
+ar	N	region	long	HK	\u0647\u0648\u0646\u063a \u0643\u0648\u0646\u063a
+ar	N	region	long	MO	\u0645\u0643\u0627\u0648
+ar	N	region	long	PS	\u0641\u0644\u0633\u0637\u064a\u0646
+ar	N	standard	long	ar-001	
+az	N	language	short	az	az\u0259rbaycan
+az	N	region	*	FK	Falkland Islands (Islas Malvinas)
+az	N	region	long	HK	Hong Kong
+az	N	region	long	MO	Macao
+az	N	region	long	PS	Palestine
+az	N	region	short	UN	UN
+az	N	region	short	US	US
+bg	N	region	*	FK	\u0424\u043e\u043b\u043a\u043b\u0430\u043d\u0434\u0441\u043a\u0438 \u043e\u0441\u0442\u0440\u043e\u0432\u0438 (\u041c\u0430\u043b\u0432\u0438\u043d\u0441\u043a\u0438 \u043e\u0441\u0442\u0440\u043e\u0432\u0438)
+bg	N	region	long	HK	\u0425\u043e\u043d\u043a\u043e\u043d\u0433
+bg	N	region	long	MO	\u041c\u0430\u043a\u0430\u043e
+bg	N	region	long	PS	\u041f\u0430\u043b\u0435\u0441\u0442\u0438\u043d\u0430
+bg	N	standard	long	ar-001	
+bg	N	standard	long	sw-CD	\u0441\u0443\u0430\u0445\u0438\u043b\u0438 (\u041a\u043e\u043d\u0433\u043e [\u041a\u0438\u043d\u0448\u0430\u0441\u0430])
+bn	N	region	*	FK	\u09ab\u0995\u09b2\u09cd\u09af\u09be\u09a8\u09cd\u09a1 \u0986\u0987\u09b2\u09cd\u09af\u09be\u09a8\u09cd\u09a1 ( \u0987\u09b8\u09b2\u09cd\u09af\u09be\u09b8 \u09ae\u09be\u09b8\u09ad\u09c7\u09a8\u09bf\u09b8)
+bn	N	region	long	HK	\u09b9\u0982\u0995\u0982
+bn	N	region	long	MO	\u09ae\u09cd\u09af\u09be\u0995\u09be\u0993
+bn	N	region	long	PS	\u09ab\u09bf\u09b2\u09bf\u09b8\u09cd\u09a4\u09bf\u09a8
+bn	N	standard	long	ar-001	
+bs	N	region	*	FK	Falkland Islands (Islas Malvinas)
+bs	N	region	long	HK	Hong Kong
+bs	N	region	long	MO	Macao
+bs	N	region	long	PS	Palestine
+bs	N	region	short	UN	UN
+bs	N	region	short	US	US
+ca	N	region	*	FK	Illes Falkland (Illes Malvines)
+ca	N	region	long	HK	Hong Kong
+ca	N	region	long	MO	Macau
+ca	N	region	long	PS	Palestina
+ca	N	standard	long	ar-001	
+cs	N	region	*	FK	Falklandsk\u00e9 ostrovy (Malv\u00edny)
+cs	N	region	long	HK	Hongkong
+cs	N	region	long	MO	Macao
+cs	N	region	long	PS	Palestina
+cs	N	region	short	GB	GB
+cs	N	standard	long	ar-001	
+da	N	region	*	FK	Falklands\u00f8erne (Islas Malvinas)
+da	N	region	long	HK	Hongkong
+da	N	region	long	MO	Macao
+da	N	region	long	PS	Pal\u00e6stina
+da	N	standard	long	ar-001	
+de	N	region	*	FK	Falklandinseln (Malwinen)
+de	N	region	long	HK	Hongkong
+de	N	region	long	MO	Macau
+de	N	region	long	PS	Pal\u00e4stina
+de	N	region	short	UN	UN
+de	N	script	*	Loma	Loma
+de	N	script	*	Moon	Moon
+de	N	standard	long	ar-001	
+de-AT	N	region	*	FK	Falklandinseln (Malwinen)
+de-AT	N	region	long	HK	Hongkong
+de-AT	N	region	long	MO	Macau
+de-AT	N	region	long	PS	Pal\u00e4stina
+de-AT	N	region	short	UN	UN
+de-AT	N	script	*	Loma	Loma
+de-AT	N	script	*	Moon	Moon
+de-CH	N	region	*	FK	Falklandinseln (Malwinen)
+de-CH	N	region	long	HK	Hongkong
+de-CH	N	region	long	MO	Macau
+de-CH	N	region	long	PS	Pal\u00e4stina
+de-CH	N	region	short	UN	UN
+de-CH	N	script	*	Loma	Loma
+de-CH	N	script	*	Moon	Moon
+el	N	region	*	FK	\u039d\u03ae\u03c3\u03bf\u03b9 \u03a6\u03cc\u03ba\u03bb\u03b1\u03bd\u03c4 (\u039d\u03ae\u03c3\u03bf\u03b9 \u039c\u03b1\u03bb\u03b2\u03af\u03bd\u03b1\u03c2)
+el	N	region	long	HK	\u03a7\u03bf\u03bd\u03b3\u03ba \u039a\u03bf\u03bd\u03b3\u03ba
+el	N	region	long	MO	\u039c\u03b1\u03ba\u03ac\u03bf
+el	N	region	long	PS	\u03a0\u03b1\u03bb\u03b1\u03b9\u03c3\u03c4\u03af\u03bd\u03b7
+el	N	standard	long	ar-001	
+en	N	language	long	zh	Chinese
+en	N	region	*	FK	Falkland Islands (Islas Malvinas)
+en	N	region	long	HK	Hong Kong
+en	N	region	long	MO	Macao
+en	N	region	long	PS	Palestine
+en	N	region	short	UN	UN
+en	N	region	short	US	US
+en	N	script	*	Ahom	Ahom
+en	N	script	*	Cham	Cham
+en	N	script	*	Jamo	Jamo
+en	N	script	*	Kawi	Kawi
+en	N	script	*	Loma	Loma
+en	N	script	*	Modi	Modi
+en	N	script	*	Moon	Moon
+en	N	script	*	Newa	Newa
+en	N	script	*	Saur	Saurashtra
+en	N	script	*	Thai	Thai
+en	N	script	*	Toto	Toto
+en	N	standard	long	ar-001	
+en	N	standard	long	zh-Hans	Chinese (Simplified)
+en	N	standard	long	zh-Hant	Chinese (Traditional)
+en-AU	N	language	long	zh	Chinese
+en-AU	N	region	*	FK	Falkland Islands (Islas Malvinas)
+en-AU	N	region	long	HK	Hong Kong
+en-AU	N	region	long	MO	Macao
+en-AU	N	region	long	PS	Palestine
+en-AU	N	region	short	UN	UN
+en-AU	N	region	short	US	US
+en-AU	N	script	*	Ahom	Ahom
+en-AU	N	script	*	Cham	Cham
+en-AU	N	script	*	Jamo	Jamo
+en-AU	N	script	*	Kawi	Kawi
+en-AU	N	script	*	Loma	Loma
+en-AU	N	script	*	Modi	Modi
+en-AU	N	script	*	Moon	Moon
+en-AU	N	script	*	Newa	Newa
+en-AU	N	script	*	Saur	Saurashtra
+en-AU	N	script	*	Thai	Thai
+en-AU	N	script	*	Toto	Toto
+en-AU	N	standard	long	zh-Hans	Chinese (Simplified)
+en-AU	N	standard	long	zh-Hant	Chinese (Traditional)
+en-CA	N	language	long	zh	Chinese
+en-CA	N	region	*	FK	Falkland Islands (Islas Malvinas)
+en-CA	N	region	*	MO	Macao
+en-CA	N	region	long	HK	Hong Kong
+en-CA	N	region	long	PS	Palestine
+en-CA	N	region	short	UN	UN
+en-CA	N	region	short	US	US
+en-CA	N	script	*	Ahom	Ahom
+en-CA	N	script	*	Cham	Cham
+en-CA	N	script	*	Jamo	Jamo
+en-CA	N	script	*	Kawi	Kawi
+en-CA	N	script	*	Loma	Loma
+en-CA	N	script	*	Modi	Modi
+en-CA	N	script	*	Moon	Moon
+en-CA	N	script	*	Newa	Newa
+en-CA	N	script	*	Saur	Saurashtra
+en-CA	N	script	*	Thai	Thai
+en-CA	N	script	*	Toto	Toto
+en-CA	N	standard	long	zh-Hans	Chinese (Simplified)
+en-CA	N	standard	long	zh-Hant	Chinese (Traditional)
+en-GB	N	language	long	zh	Chinese
+en-GB	N	region	*	FK	Falkland Islands (Islas Malvinas)
+en-GB	N	region	long	HK	Hong Kong
+en-GB	N	region	long	MO	Macao
+en-GB	N	region	long	PS	Palestine
+en-GB	N	region	short	UN	UN
+en-GB	N	region	short	US	US
+en-GB	N	script	*	Ahom	Ahom
+en-GB	N	script	*	Cham	Cham
+en-GB	N	script	*	Jamo	Jamo
+en-GB	N	script	*	Kawi	Kawi
+en-GB	N	script	*	Loma	Loma
+en-GB	N	script	*	Modi	Modi
+en-GB	N	script	*	Moon	Moon
+en-GB	N	script	*	Newa	Newa
+en-GB	N	script	*	Saur	Saurashtra
+en-GB	N	script	*	Thai	Thai
+en-GB	N	script	*	Toto	Toto
+en-GB	N	standard	long	zh-Hans	Chinese (Simplified)
+en-GB	N	standard	long	zh-Hant	Chinese (Traditional)
+en-IN	N	language	long	zh	Chinese
+en-IN	N	region	*	FK	Falkland Islands (Islas Malvinas)
+en-IN	N	region	long	HK	Hong Kong
+en-IN	N	region	long	MO	Macao
+en-IN	N	region	long	PS	Palestine
+en-IN	N	region	short	UN	UN
+en-IN	N	region	short	US	US
+en-IN	N	script	*	Ahom	Ahom
+en-IN	N	script	*	Cham	Cham
+en-IN	N	script	*	Jamo	Jamo
+en-IN	N	script	*	Kawi	Kawi
+en-IN	N	script	*	Loma	Loma
+en-IN	N	script	*	Modi	Modi
+en-IN	N	script	*	Moon	Moon
+en-IN	N	script	*	Newa	Newa
+en-IN	N	script	*	Saur	Saurashtra
+en-IN	N	script	*	Thai	Thai
+en-IN	N	script	*	Toto	Toto
+en-IN	N	standard	long	zh-Hans	Chinese (Simplified)
+en-IN	N	standard	long	zh-Hant	Chinese (Traditional)
+es	N	region	*	FK	Islas Malvinas (Islas Falkland)
+es	N	region	long	HK	Hong Kong
+es	N	region	long	MO	Macao
+es	N	region	long	PS	Palestina
+es	N	standard	long	ar-001	
+es-419	N	region	*	FK	Islas Malvinas (Islas Falkland)
+es-419	N	region	long	HK	Hong Kong
+es-419	N	region	long	MO	Macao
+es-419	N	region	long	PS	Palestina
+es-MX	N	region	*	FK	Islas Malvinas (Islas Falkland)
+es-MX	N	region	long	HK	Hong Kong
+es-MX	N	region	long	MO	Macao
+es-MX	N	region	long	PS	Palestina
+et	N	region	*	FK	Falklandi saared (Malviini saared)
+et	N	region	long	HK	Hongkong
+et	N	region	long	MO	Macau
+et	N	region	long	PS	Palestiina
+et	N	standard	long	ar-001	
+fa	N	region	*	FK	\u062c\u0632\u0627\u06cc\u0631 \u0641\u0627\u0644\u06a9\u0644\u0646\u062f (\u0627\u06cc\u0633\u0644\u0627\u0633 \u0645\u0627\u0644\u0648\u06cc\u0646\u0627\u0633)
+fa	N	region	long	HK	\u0647\u0646\u06af\u200c\u06a9\u0646\u06af
+fa	N	region	long	MO	\u0645\u0627\u06a9\u0627\u0626\u0648
+fa	N	region	long	PS	\u0641\u0644\u0633\u0637\u06cc\u0646
+fa	N	standard	long	ar-001	
+fi	N	region	*	FK	Falklandinsaaret (Malvinassaaret)
+fi	N	region	long	HK	Hongkong
+fi	N	region	long	MO	Macao
+fi	N	region	long	PS	Palestiina
+fi	N	standard	long	ar-001	
+fil	N	region	*	FK	Falkland Islands (Islas Malvinas)
+fil	N	region	long	HK	Hong Kong
+fil	N	region	long	MO	Macau
+fil	N	region	long	PS	Palestine
+fil	N	region	short	UN	UN
+fil	N	standard	long	ar-001	
+fr	N	region	*	FK	\u00celes Malouines (\u00celes Falkland)
+fr	N	region	long	HK	Hong Kong
+fr	N	region	long	MO	Macao
+fr	N	region	long	PS	Palestine
+fr	N	standard	long	ar-001	
+fr-CA	N	region	*	FK	\u00eeles Falkland (Malouines)
+fr-CA	N	region	long	HK	Hong Kong
+fr-CA	N	region	long	MO	Macao
+fr-CA	N	region	long	PS	Palestine
+fr-CH	N	region	*	FK	\u00celes Malouines (\u00celes Falkland)
+fr-CH	N	region	long	HK	Hong Kong
+fr-CH	N	region	long	MO	Macao
+fr-CH	N	region	long	PS	Palestine
+gu	N	region	*	FK	\u0aab\u0ac9\u0a95\u0ab2\u0ac5\u0aa8\u0acd\u0aa1 \u0a86\u0a87\u0ab2\u0ac5\u0aa8\u0acd\u0aa1\u0acd\u0ab8 (\u0a86\u0a87\u0ab2\u0abe\u0ab8 \u0aae\u0abe\u0ab2\u0ab5\u0abf\u0aa8\u0abe\u0ab8)
+gu	N	region	long	HK	\u0ab9\u0acb\u0a82\u0a97\u0a95\u0acb\u0a82\u0a97
+gu	N	region	long	MO	\u0aae\u0a95\u0abe\u0a89
+gu	N	region	long	PS	\u0aaa\u0ac7\u0ab2\u0ac7\u0ab8\u0acd\u0a9f\u0abe\u0a87\u0aa8
+gu	N	standard	long	ar-001	
+he	N	region	*	FK	\u05d0\u05d9\u05d9 \u05e4\u05d5\u05e7\u05dc\u05e0\u05d3 (\u05d0\u05d9\u05d9 \u05de\u05dc\u05d5\u05d5\u05d9\u05e0\u05e1)
+he	N	region	long	HK	\u05d4\u05d5\u05e0\u05d2 \u05e7\u05d5\u05e0\u05d2
+he	N	region	long	MO	\u05de\u05e7\u05d0\u05d5
+he	N	region	long	PS	\u05e4\u05dc\u05e1\u05d8\u05d9\u05df
+he	N	standard	long	ar-001	
+hi	N	region	*	FK	\u092b\u093c\u0949\u0915\u0932\u0948\u0902\u0921 \u0926\u094d\u0935\u0940\u092a\u0938\u092e\u0942\u0939 (\u0907\u091c\u093c\u094d\u0932\u093e\u0938 \u092e\u093e\u0932\u094d\u0935\u093f\u0928\u093e\u0938)
+hi	N	region	long	HK	\u0939\u093e\u0901\u0917 \u0915\u093e\u0901\u0917
+hi	N	region	long	MO	\u092e\u0915\u093e\u090a
+hi	N	region	long	PS	\u092b\u093c\u093f\u0932\u093f\u0938\u094d\u0924\u0940\u0928
+hi	N	standard	long	ar-001	
+hr	N	region	*	FK	Falklandski Otoci (Malvini)
+hr	N	region	long	HK	Hong Kong
+hr	N	region	long	MO	Makao
+hr	N	region	long	PS	Palestina
+hr	N	region	short	UN	UN
+hr	N	standard	long	ar-001	
+hu	N	region	*	FK	Falkland-szigetek (Malvin-szigetek)
+hu	N	region	long	HK	Hongkong
+hu	N	region	long	MO	Maka\u00f3
+hu	N	region	long	PS	Palesztina
+hu	N	script	*	Moon	Moon
+hu	N	standard	long	ar-001	
+id	N	region	*	FK	Kepulauan Falkland (Malvinas)
+id	N	region	long	HK	Hong Kong
+id	N	region	long	MO	Makau
+id	N	region	long	PS	Palestina
+id	N	script	*	Loma	Loma
+id	N	script	*	Moon	Moon
+id	N	standard	long	ar-001	
+it	N	region	*	FK	Isole Falkland (Isole Malvine)
+it	N	region	long	HK	Hong Kong
+it	N	region	long	MO	Macao
+it	N	region	long	PS	Palestina
+it	N	standard	long	ar-001	
+it-CH	N	region	*	FK	Isole Falkland (Isole Malvine)
+it-CH	N	region	long	HK	Hong Kong
+it-CH	N	region	long	MO	Macao
+it-CH	N	region	long	PS	Palestina
+ja	N	region	*	FK	\u30d5\u30a9\u30fc\u30af\u30e9\u30f3\u30c9\u8af8\u5cf6 (\u30de\u30eb\u30d3\u30fc\u30ca\u30b9\u8af8\u5cf6)
+ja	N	region	long	HK	\u9999\u6e2f
+ja	N	region	long	MO	\u30de\u30ab\u30aa
+ja	N	region	long	PS	\u30d1\u30ec\u30b9\u30c1\u30ca
+ja	N	standard	long	ar-001	
+ja	N	standard	long	sw-CD	\u30b9\u30ef\u30d2\u30ea\u8a9e (\u30b3\u30f3\u30b4\u6c11\u4e3b\u5171\u548c\u56fd[\u30ad\u30f3\u30b7\u30e3\u30b5])
+kk	N	region	*	FK	Falkland Islands (Islas Malvinas)
+kk	N	region	long	HK	Hong Kong
+kk	N	region	long	MO	Macao
+kk	N	region	long	PS	Palestine
+kk	N	region	short	UN	UN
+kk	N	region	short	US	US
+kn	N	region	*	FK	\u0cab\u0cbe\u0c95\u0ccd\u200c\u0cb2\u0ccd\u0caf\u0cbe\u0c82\u0ca1\u0ccd \u0ca6\u0ccd\u0cb5\u0cc0\u0caa\u0c97\u0cb3\u0cc1 (\u0c87\u0cb8\u0ccd\u0cb2\u0cbe\u0cb8\u0ccd \u0cae\u0cbe\u0cb2\u0ccd\u0cb5\u0cbf\u0ca8\u0cb8\u0ccd)
+kn	N	region	long	HK	\u0cb9\u0cbe\u0c82\u0c97\u0ccd \u0c95\u0cbe\u0c82\u0c97\u0ccd
+kn	N	region	long	MO	\u0cae\u0c95\u0cbe\u0cb5\u0cc1
+kn	N	region	long	PS	\u0caa\u0ccd\u0caf\u0cbe\u0cb2\u0cc6\u0cb8\u0ccd\u0c9f\u0cc8\u0ca8\u0ccd
+kn	N	standard	long	ar-001	
+ko	N	region	*	FK	\ud3ec\ud074\ub79c\ub4dc \uc81c\ub3c4(\ub9d0\ube44\ub098\uc2a4 \uad70\ub3c4)
+ko	N	region	long	HK	\ud64d\ucf69
+ko	N	region	long	MO	\ub9c8\uce74\uc624
+ko	N	region	long	PS	\ud314\ub808\uc2a4\ud0c0\uc778
+ko	N	standard	long	ar-001	
+kok	N	region	*	FK	Falkland Islands (Islas Malvinas)
+kok	N	region	long	HK	Hong Kong
+kok	N	region	long	MO	Macao
+kok	N	region	long	PS	Palestine
+kok	N	region	short	UN	UN
+kok	N	region	short	US	US
+lt	N	region	*	FK	Folklando (Malvin\u0173) salos
+lt	N	region	long	HK	Honkongas
+lt	N	region	long	MO	Makao
+lt	N	region	long	PS	Palestina
+lt	N	script	*	Loma	Loma
+lt	N	standard	long	ar-001	
+lv	N	region	*	FK	Folklenda (Malvinu) salas
+lv	N	region	long	HK	Honkonga
+lv	N	region	long	MO	Makao
+lv	N	region	long	PS	Palest\u012bna
+lv	N	standard	long	ar-001	
+lv	N	standard	long	sw-CD	svahili (Kongo [Kin\u0161asa])
+ml	N	region	*	FK	\u0d2b\u0d4b\u0d15\u0d4d\u0d15\u0d4d\u200c\u0d32\u0d7b\u0d21\u0d4d \u0d26\u0d4d\u0d35\u0d40\u0d2a\u0d41\u0d15\u0d7e (\u0d07\u0d38\u0d4d\u200c\u0d32\u0d3e\u0d38\u0d4d \u0d2e\u0d3e\u0d7d\u0d35\u0d40\u0d28\u0d3e\u0d38\u0d4d)
+ml	N	region	long	HK	\u0d39\u0d4b\u0d19\u0d4d\u0d15\u0d4b\u0d19\u0d4d
+ml	N	region	long	MO	\u0d2e\u0d15\u0d4d\u0d15\u0d3e\u0d35\u0d41
+ml	N	region	long	PS	\u0d2a\u0d32\u0d38\u0d4d\u200c\u0d24\u0d40\u0d7b
+ml	N	standard	long	ar-001	
+mr	N	region	*	FK	\u092b\u0949\u0915\u0932\u0902\u0921 \u092c\u0947\u091f\u0947 (\u0907\u0938\u094d\u0932\u093e\u0938 \u092e\u093e\u0932\u0935\u093f\u0928\u093e\u0938)
+mr	N	region	long	HK	\u0939\u093e\u0901\u0917\u0915\u093e\u0901\u0917
+mr	N	region	long	MO	\u092e\u0915\u093e\u0913
+mr	N	region	long	PS	\u092a\u0945\u0932\u0947\u0938\u094d\u091f\u093e\u0908\u0928
+mr	N	standard	long	ar-001	
+ms	N	region	*	FK	Kepulauan Falkland (Islas Malvinas)
+ms	N	region	long	HK	Hong Kong
+ms	N	region	long	MO	Macau
+ms	N	region	long	PS	Palestin
+ms	N	script	*	Bali	Bali
+ms	N	script	*	Cham	Cham
+ms	N	script	*	Modi	Modi
+ms	N	standard	long	ar-001	
+nb	N	region	*	FK	Falklands\u00f8yene (Islas Malvinas)
+nb	N	region	long	HK	Hongkong
+nb	N	region	long	MO	Macao
+nb	N	region	long	PS	Palestina
+nb	N	standard	long	ar-001	
+nl	N	region	*	FK	Falklandeilanden (Islas Malvinas)
+nl	N	region	long	HK	Hongkong
+nl	N	region	long	MO	Macau
+nl	N	region	long	PS	Palestina
+nl	N	script	*	Loma	Loma
+nl	N	script	*	Moon	Moon
+nl	N	standard	long	ar-001	
+nl-BE	N	region	*	FK	Falklandeilanden (Islas Malvinas)
+nl-BE	N	region	long	HK	Hongkong
+nl-BE	N	region	long	MO	Macau
+nl-BE	N	region	long	PS	Palestina
+nl-BE	N	script	*	Loma	Loma
+nl-BE	N	script	*	Moon	Moon
+no	N	region	*	FK	Falklands\u00f8yene (Islas Malvinas)
+no	N	region	long	HK	Hongkong
+no	N	region	long	MO	Macao
+no	N	region	long	PS	Palestina
+no	N	standard	long	ar-001	
+pa	N	region	*	FK	Falkland Islands (Islas Malvinas)
+pa	N	region	long	HK	Hong Kong
+pa	N	region	long	MO	Macao
+pa	N	region	long	PS	Palestine
+pa	N	region	short	UN	UN
+pa	N	region	short	US	US
+pl	N	region	*	FK	Falklandy (Malwiny)
+pl	N	region	long	HK	Hongkong
+pl	N	region	long	MO	Makau
+pl	N	region	long	PS	Palestyna
+pl	N	standard	long	ar-001	
+pt	N	region	*	FK	Ilhas Malvinas (Ilhas Falkland)
+pt	N	region	long	HK	Hong Kong
+pt	N	region	long	MO	Macau
+pt	N	region	long	PS	Palestina
+pt	N	standard	long	ar-001	
+pt-PT	N	region	*	FK	Ilhas Falkland (Malvinas)
+pt-PT	N	region	long	HK	Hong Kong
+pt-PT	N	region	long	MO	Macau
+pt-PT	N	region	long	PS	Palestina
+pt-PT	N	region	short	GB	GB
+ro	N	region	*	FK	Insulele Falkland (Insulele Malvine)
+ro	N	region	long	HK	Hong Kong
+ro	N	region	long	MO	Macao
+ro	N	region	long	PS	Palestina
+ro	N	standard	long	ar-001	
+ru	N	region	*	FK	\u0424\u043e\u043b\u043a\u043b\u0435\u043d\u0434\u0441\u043a\u0438\u0435 (\u041c\u0430\u043b\u044c\u0432\u0438\u043d\u0441\u043a\u0438\u0435) \u043e-\u0432\u0430
+ru	N	region	long	HK	\u0413\u043e\u043d\u043a\u043e\u043d\u0433
+ru	N	region	long	MO	\u041c\u0430\u043a\u0430\u043e
+ru	N	region	long	PS	\u041f\u0430\u043b\u0435\u0441\u0442\u0438\u043d\u0430
+ru	N	standard	long	ar-001	
+sd	N	region	*	FK	Falkland Islands (Islas Malvinas)
+sd	N	region	long	HK	Hong Kong
+sd	N	region	long	MO	Macao
+sd	N	region	long	PS	Palestine
+sd	N	region	short	UN	UN
+sd	N	region	short	US	US
+sk	N	region	*	FK	Falklandy (Malv\u00edny)
+sk	N	region	long	HK	Hongkong
+sk	N	region	long	MO	Macao
+sk	N	region	long	PS	Palest\u00ednska samospr\u00e1va
+sk	N	standard	long	ar-001	
+sl	N	region	*	FK	Falklandski otoki (Malvini)
+sl	N	region	long	HK	Hongkong
+sl	N	region	long	MO	Makav
+sl	N	region	long	PS	Palestina
+sl	N	standard	long	ar-001	
+sr	N	region	*	FK	\u0424\u043e\u043a\u043b\u0430\u043d\u0434\u0441\u043a\u0430 (\u041c\u0430\u043b\u0432\u0438\u043d\u0441\u043a\u0430) \u043e\u0441\u0442\u0440\u0432\u0430
+sr	N	region	long	HK	\u0425\u043e\u043d\u0433\u043a\u043e\u043d\u0433
+sr	N	region	long	MO	\u041c\u0430\u043a\u0430\u043e
+sr	N	region	long	PS	\u041f\u0430\u043b\u0435\u0441\u0442\u0438\u043d\u0430
+sr	N	standard	long	ar-001	
+sr-Latn	N	region	*	FK	Foklandska (Malvinska) ostrva
+sr-Latn	N	region	long	HK	Hongkong
+sr-Latn	N	region	long	MO	Makao
+sr-Latn	N	region	long	PS	Palestina
+sr-Latn	N	region	short	UN	UN
+sv	N	region	long	HK	Hongkong
+sv	N	region	long	MO	Macao
+sv	N	region	long	PS	Palestina
+sv	N	standard	long	ar-001	
+sw	N	region	*	FK	Visiwa vya Falkland (Islas Malvinas)
+sw	N	region	long	HK	Hong Kong
+sw	N	region	long	MO	Makau
+sw	N	region	long	PS	Palestina
+sw	N	standard	long	ar-001	
+ta	N	region	*	FK	\u0b83\u0baa\u0bbe\u0b95\u0bcd\u0bb2\u0bbe\u0ba8\u0bcd\u0ba4\u0bc1 \u0ba4\u0bc0\u0bb5\u0bc1\u0b95\u0bb3\u0bcd (\u0b87\u0bb8\u0bcd\u0bb2\u0bbe\u0bb8\u0bcd \u0bae\u0bbe\u0bb2\u0bcd\u0bb5\u0bbf\u0ba9\u0bb8\u0bcd)
+ta	N	region	long	HK	\u0bb9\u0bbe\u0b99\u0bcd\u0b95\u0bbe\u0b99\u0bcd
+ta	N	region	long	MO	\u0bae\u0b95\u0bbe\u0bb5\u0bcd
+ta	N	region	long	PS	\u0baa\u0bbe\u0bb2\u0bb8\u0bcd\u0ba4\u0bc0\u0ba9\u0bae\u0bcd
+ta	N	standard	long	ar-001	
+te	N	region	*	FK	\u0c2b\u0c3e\u0c15\u0c4d\u200c\u0c32\u0c4d\u0c2f\u0c3e\u0c02\u0c21\u0c4d \u0c26\u0c40\u0c35\u0c41\u0c32\u0c41 (\u0c07\u0c38\u0c4d\u0c32\u0c3e\u0c38\u0c4d \u0c2e\u0c3e\u0c32\u0c4d\u0c35\u0c3f\u0c28\u0c3e\u0c38\u0c4d)
+te	N	region	long	HK	\u0c39\u0c3e\u0c02\u0c15\u0c3e\u0c02\u0c17\u0c4d
+te	N	region	long	MO	\u0c2e\u0c15\u0c3e\u0c35\u0c4d
+te	N	region	long	PS	\u0c2a\u0c3e\u0c32\u0c38\u0c4d\u0c24\u0c40\u0c28\u0c3e
+te	N	standard	long	ar-001	
+th	N	region	*	FK	\u0e2b\u0e21\u0e39\u0e48\u0e40\u0e01\u0e32\u0e30\u0e1f\u0e2d\u0e25\u0e4c\u0e01\u0e41\u0e25\u0e19\u0e14\u0e4c (\u0e2d\u0e34\u0e2a\u0e25\u0e32\u0e2a \u0e21\u0e32\u0e25\u0e27\u0e34\u0e19\u0e32\u0e2a)
+th	N	region	long	HK	\u0e2e\u0e48\u0e2d\u0e07\u0e01\u0e07
+th	N	region	long	MO	\u0e21\u0e32\u0e40\u0e01\u0e4a\u0e32
+th	N	region	long	PS	\u0e1b\u0e32\u0e40\u0e25\u0e2a\u0e44\u0e15\u0e19\u0e4c
+th	N	standard	long	ar-001	
+tr	N	region	*	FK	Falkland Adalar\u0131 (Malvinas Adalar\u0131)
+tr	N	region	long	HK	Hong Kong
+tr	N	region	long	MO	Makao
+tr	N	region	long	PS	Filistin
+tr	N	script	*	Loma	Loma
+tr	N	script	*	Moon	Moon
+tr	N	standard	long	ar-001	
+uk	N	region	*	FK	\u0424\u043e\u043b\u043a\u043b\u0435\u043d\u0434\u0441\u044c\u043a\u0456 (\u041c\u0430\u043b\u044c\u0432\u0456\u043d\u0441\u044c\u043a\u0456) \u041e\u0441\u0442\u0440\u043e\u0432\u0438
+uk	N	region	long	HK	\u0413\u043e\u043d\u043a\u043e\u043d\u0433
+uk	N	region	long	MO	\u041c\u0430\u043a\u0430\u043e
+uk	N	region	long	PS	\u041f\u0430\u043b\u0435\u0441\u0442\u0438\u043d\u0430
+uk	N	standard	long	ar-001	
+ur	N	region	*	FK	\u0641\u0627\u06a9\u0644\u06cc\u0646\u0688 \u062c\u0632\u0627\u0626\u0631 (\u0645\u0627\u0644\u0648\u06cc\u0646\u0627\u0633)
+ur	N	region	long	HK	\u06c1\u0627\u0646\u06af \u06a9\u0627\u0646\u06af
+ur	N	region	long	MO	\u0645\u06a9\u0627\u0624
+ur	N	region	long	PS	\u0641\u0644\u0633\u0637\u06cc\u0646
+ur	N	standard	long	ar-001	
+uz	N	region	*	FK	Falkland Islands (Islas Malvinas)
+uz	N	region	long	HK	Hong Kong
+uz	N	region	long	MO	Macao
+uz	N	region	long	PS	Palestine
+uz	N	region	short	UN	UN
+uz	N	region	short	US	US
+vi	N	region	*	FK	Qu\u1ea7n \u0111\u1ea3o Falkland (Islas Malvinas)
+vi	N	region	long	HK	H\u1ed3ng K\u00f4ng
+vi	N	region	long	MO	Macao
+vi	N	region	long	PS	Palestine
+vi	N	standard	long	ar-001	
+zh	N	region	*	FK	\u798f\u514b\u5170\u7fa4\u5c9b\uff08\u9a6c\u5c14\u7ef4\u7eb3\u65af\u7fa4\u5c9b\uff09
+zh	N	region	long	HK	\u9999\u6e2f
+zh	N	region	long	MO	\u6fb3\u95e8
+zh	N	region	long	PS	\u5df4\u52d2\u65af\u5766
+zh	N	standard	long	ar-001	
+zh	N	standard	long	sw-CD	\u65af\u74e6\u5e0c\u91cc\u8bed\uff08\u521a\u679c\uff3b\u91d1\uff3d\uff09
+zh-Hant	N	region	*	FK	\u798f\u514b\u862d\u7fa4\u5cf6\uff08\u99ac\u723e\u7dad\u7d0d\u65af\u7fa4\u5cf6\uff09
+zh-Hant	N	region	long	HK	\u9999\u6e2f
+zh-Hant	N	region	long	MO	\u6fb3\u9580
+zh-Hant	N	region	long	PS	\u5df4\u52d2\u65af\u5766
+zh-Hant	N	standard	long	sw-CD	\u53f2\u74e6\u5e0c\u91cc\u6587\uff08\u525b\u679c\uff3b\u91d1\u590f\u6c99\uff3d\uff09

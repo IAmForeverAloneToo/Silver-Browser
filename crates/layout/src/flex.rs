@@ -350,7 +350,7 @@ impl<'a> Item<'a> {
         // is definite and smaller; never more than the maximum.
         // `overflow: clip` clips but makes no scroll container (M26.11).
         let automatic = || {
-            if style.overflow.scrolls() {
+            if style.overflow().scrolls() {
                 return 0.0;
             }
             let content = min_content();
@@ -902,7 +902,7 @@ pub(crate) fn layout_flex_contents<'a>(
         }
     }
     let absolutes = settle_absolutes(b, &mut root, border, absolutes, pass);
-    if style.overflow.clips() {
+    if style.overflow().clips() {
         // The scrollable overflow area (M10.5), from the padding box's
         // top: the items' margin boxes where the algorithm put them, with
         // the bottom padding after them, or anything reaching lower by
@@ -1316,7 +1316,7 @@ fn main_contribution<'a>(
         }
         let max = limit(&style.max_width, max_content);
         let min = match &style.min_width {
-            Size::Auto if style.overflow.scrolls() => 0.0,
+            Size::Auto if style.overflow().scrolls() => 0.0,
             Size::Auto => size(&style.width, max_content)
                 .map_or(own().0, |specified| specified.min(own().0))
                 .min(max.unwrap_or(f32::INFINITY)),

@@ -342,6 +342,14 @@ const NATIVES: &[(&str, Decode)] = &[
             a.integer(3) as u32,
         ))
     }),
+    ("rangeRects", |a| {
+        Ok(Call::RangeRects(
+            a.handle(0)?,
+            a.integer(1) as u32,
+            a.handle(2)?,
+            a.integer(3) as u32,
+        ))
+    }),
     ("cssom", |a| {
         Ok(Call::Cssom {
             op: a.string(0)?,
@@ -476,6 +484,9 @@ const NATIVES: &[(&str, Decode)] = &[
     }),
     ("parseDeclarations", |a| {
         Ok(Call::ParseDeclarations(a.string(0)?))
+    }),
+    ("parsePageDescriptors", |a| {
+        Ok(Call::ParsePageDescriptors(a.string(0)?))
     }),
     ("cssCanonical", |a| Ok(Call::CssCanonical(a.string(0)?))),
     ("cssValid", |a| {
@@ -1049,7 +1060,7 @@ pub(super) fn install<'js, H: ScriptingHost>(
             },
         )?,
     )?;
-    install_errors(ctx, host, &natives)?;
+    install_errors(ctx, host, state, &natives)?;
     // The active script (HTML's GetActiveScriptOrModule), whose name a
     // timer's string is compiled with: empty for none.
     let active = state.clone();
@@ -1091,10 +1102,12 @@ pub(super) fn install<'js, H: ScriptingHost>(
 /// (its message, URL, line and column); `reportError`, such a report
 /// given to the host; and `evaluate`, a string run as a classic script
 /// naming a URL, what it throws thrown on (a timer's string, an event
-/// handler's text).
+/// handler's text, a script `importScripts` took), with the base URL its
+/// `import()`s resolve against when it is not the URL.
 fn install_errors<'js, H: ScriptingHost>(
     ctx: &Ctx<'js>,
     host: &Slot<H>,
+    state: &Rc<modules::State>,
     natives: &Object<'js>,
 ) -> rquickjs::Result<()> {
     // What a structured clone cannot tell of an object by script (M31):
@@ -1154,12 +1167,29 @@ fn install_errors<'js, H: ScriptingHost>(
             },
         )?,
     )?;
+    let state = state.clone();
     natives.set(
         "evaluate",
         Function::new(
             ctx.clone(),
-            |ctx: Ctx<'js>, source: String, url: String| -> rquickjs::Result<Value<'js>> {
-                evaluate(&ctx, &source, &url, 1).map_err(|caught| rethrow(&ctx, caught))
+            move |ctx: Ctx<'js>,
+                  source: String,
+                  url: String,
+                  base: rquickjs::function::Opt<String>|
+                  -> rquickjs::Result<Value<'js>> {
+                let Some(base) = base.0 else {
+                    return evaluate(&ctx, &source, &url, 1)
+                        .map_err(|caught| rethrow(&ctx, caught));
+                };
+                let outer = state.current();
+                let replaced = state.note(&url, Referrer { base, options: 0 });
+                state.ran(&url);
+                let result = evaluate(&ctx, &source, &url, 1);
+                state.ran(&outer);
+                if let Some(replaced) = replaced {
+                    state.note(&url, replaced);
+                }
+                result.map_err(|caught| rethrow(&ctx, caught))
             },
         )?,
     )?;

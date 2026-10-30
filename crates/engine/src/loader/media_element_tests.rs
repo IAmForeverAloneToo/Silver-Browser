@@ -14,6 +14,7 @@ const CLIP_VIDEO: &[u8] = include_bytes!("../../../media/fixtures/clip-video.web
 const CLIP_AUDIO: &[u8] = include_bytes!("../../../media/fixtures/clip-audio.webm");
 const CLIP_OGG: &[u8] = include_bytes!("../../../media/fixtures/clip.opus.ogg");
 const TONE: &[u8] = include_bytes!("../../../media/fixtures/tone.wav");
+const SINE: &[u8] = include_bytes!("../../tests/wpt/webaudio/resources/sin_440Hz_-6dBFS_1s.wav");
 
 /// `data` as a server answering ranges answers `request`.
 fn ranged(request: &ServerRequest, kind: &str, data: &[u8]) -> Reply {
@@ -58,6 +59,7 @@ fn server(script: &str) -> TestServer {
         "/media/clip-audio.webm" => ranged(request, "audio/webm", CLIP_AUDIO),
         "/media/clip.opus.ogg" => ranged(request, "audio/ogg", CLIP_OGG),
         "/media/tone.wav" => ranged(request, "audio/wav", TONE),
+        "/media/sine.wav" => ranged(request, "audio/wav", SINE),
         "/media/page.txt" => Reply::ok("text/plain", b"not media at all"),
         _ => Reply::with_fields(404, &[], b""),
     })
@@ -1027,4 +1029,45 @@ fn media_src_blocks_a_load_a_script_asks_for() {
     let mut lines = run(&page, false);
     lines.retain(|l| !l.starts_with("Content-Security-Policy refused media from"));
     assert_eq!(lines, ["error 4"]);
+}
+
+#[test]
+fn an_elements_sound_at_the_graphs_rate_reaches_it_sample_for_sample() {
+    // WPT's mediaElementAudioSourceToScriptProcessorTest: a 44.1 kHz file
+    // through a 44.1 kHz context's ScriptProcessorNode is the decoded
+    // file, every sample, as the reference browser takes it.
+    let _turn = audio_turn();
+    let _sink = Sink::set(std::sync::Arc::new(Capture::paced()));
+    let page = server(
+        r#"
+addEventListener('keydown', async () => {
+  const ctx = new AudioContext({ sampleRate: 44100 });
+  const a = new Audio('/media/sine.wav');
+  const source = ctx.createMediaElementSource(a);
+  const sp = ctx.createScriptProcessor(2048);
+  const got = [];
+  sp.onaudioprocess = (e) => got.push(new Float32Array(e.inputBuffer.getChannelData(1)));
+  source.connect(sp);
+  sp.connect(ctx.destination);
+  await a.play();
+  await new Promise(r => a.addEventListener('ended', r, { once: true }));
+  await new Promise(r => setTimeout(r, 300));
+  sp.onaudioprocess = null;
+  const bytes = await (await fetch('/media/sine.wav')).arrayBuffer();
+  const want = (await ctx.decodeAudioData(bytes)).getChannelData(0);
+  const all = [];
+  for (const b of got) for (const s of b) all.push(s);
+  const trim = (a) => { let i = 0, j = a.length; while (i < j && a[i] === 0) i++; while (j > i && a[j - 1] === 0) j--; return Array.prototype.slice.call(a, i, j); };
+  const x = trim(all), y = trim(want);
+  let first = -1;
+  for (let i = 0; i < Math.min(x.length, y.length); i++) if (Math.abs(x[i] - y[i]) > 1e-4) { first = i; break; }
+  log((x.length === y.length) + ' ' + first);
+  ctx.close();
+  log('done');
+}, { once: true });
+log('ready');
+"#,
+    );
+    let lines = run(&page, true);
+    assert_eq!(lines, ["true -1"]);
 }

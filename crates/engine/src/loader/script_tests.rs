@@ -420,6 +420,32 @@ fn a_deferred_script_waits_for_the_end_of_a_shown_documents_parse() {
 }
 
 #[test]
+fn deferred_scripts_give_back_the_animations_they_were_lent() {
+    // Each deferred script is lent the engine's animations and gives
+    // them back, so that they run on in the frames after.
+    let read = "console.log(getComputedStyle(document.getElementById('a')).marginLeft)";
+    let server = serve(move |path| match path {
+        "/page.html" => Some(html(
+            "<style>@keyframes move { from { margin-left: 0px } to { margin-left: 100px } }             #a { animation: move 1s linear }</style><div id=a>x</div>             <script defer src=d0.js></script><script defer src=d1.js></script>",
+        )),
+        "/d0.js" | "/d1.js" => Some(javascript(read)),
+        _ => None,
+    });
+    let mut tab = scripting();
+    load_all(&mut tab, server.url("/page.html"));
+    assert_eq!(lines(&mut tab).len(), 2);
+    for ms in [1000, 1500] {
+        tab.engine
+            .frame_at(200, 100, crate::FrameTime::at(Duration::from_millis(ms)));
+    }
+    tab.engine.run_classic(read);
+    tab.engine
+        .frame_at(200, 100, crate::FrameTime::at(Duration::from_millis(1750)));
+    tab.engine.run_classic(read);
+    assert_eq!(lines(&mut tab), ["50px", "75px"]);
+}
+
+#[test]
 fn deferred_scripts_run_in_order_once_parsed_and_async_ones_as_they_come() {
     let script = |name: &str, wait: u64| {
         later(
@@ -625,6 +651,73 @@ fn errors_of_a_script_from_another_origin_are_muted() {
         lines[3]
     );
     assert_eq!(lines.len(), 4);
+}
+
+#[test]
+fn deferred_scripts_run_together_see_the_same_window() {
+    // WPT's xhr/xmlhttprequest-sync-block-defer-scripts: the second of
+    // two deferred scripts run in one go saw no window (its frame's
+    // relatives, its viewport) and its parent.postMessage went nowhere.
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<script defer src=a.js></script><script defer src=b.js></script>",
+        )),
+        "/a.js" => Some(later(
+            "text/javascript",
+            b"console.log('a ' + innerWidth + ' ' + (parent === self))",
+            Duration::from_millis(300),
+        )),
+        "/b.js" => Some(javascript(
+            "console.log('b ' + innerWidth + ' ' + (parent === self))",
+        )),
+        _ => None,
+    });
+    let mut tab = scripting();
+    tab.engine.set_viewport(800, 600);
+    load_all(&mut tab, server.url("/page.html"));
+    let lines = lines(&mut tab);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(
+        lines[0].starts_with("a ") && !lines[0].starts_with("a 0 "),
+        "{lines:?}"
+    );
+    assert_eq!(lines[0][1..], lines[1][1..], "{lines:?}");
+}
+
+#[test]
+fn a_script_from_another_origin_imports_against_about_blank() {
+    // HTML's "create a classic script" with muted errors (WPT's
+    // dynamic-import/alpha/base-url): its relative import() fails.
+    let other = serve(|path| match path {
+        "/d/imp.js" => Some(javascript(
+            "import('./m.js').then(() => console.log('there loaded'),               (e) => console.log('there ' + e.name));",
+        )),
+        // Open to any origin, so that only the base keeps it out.
+        "/d/m.js" => Some(Reply::with_fields(
+            200,
+            &[
+                ("Content-Type", "text/javascript"),
+                ("Access-Control-Allow-Origin", "*"),
+            ],
+            b"export {};",
+        )),
+        _ => None,
+    });
+    let elsewhere = other.url("/d/imp.js").to_string();
+    let page = format!("<script src=d/imp.js></script><script src={elsewhere}></script>");
+    let server = serve(move |path| match path {
+        "/page.html" => Some(html(&page)),
+        "/d/imp.js" => Some(javascript(
+            "import('./m.js').then(() => console.log('here loaded'));",
+        )),
+        "/d/m.js" => Some(javascript("export {};")),
+        _ => None,
+    });
+    let mut tab = scripting();
+    load_all(&mut tab, server.url("/page.html"));
+    let mut lines = tab.run_until(|lines| lines.len() >= 2);
+    lines.sort();
+    assert_eq!(lines, ["here loaded", "there TypeError"]);
 }
 
 #[test]

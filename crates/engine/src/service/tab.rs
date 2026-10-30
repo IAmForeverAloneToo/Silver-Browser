@@ -2239,6 +2239,13 @@ impl View for RemoteTab {
         self.send_settings();
     }
 
+    fn set_scrollbar_across(&mut self, on: bool) {
+        if self.settings.scrollbar_across != on {
+            self.settings.scrollbar_across = on;
+            self.send_settings();
+        }
+    }
+
     fn set_waker(&mut self, waker: Arc<dyn Fn() + Send + Sync>) {
         self.permissions.set_waker(waker.clone());
         self.context.downloads().set_waker(waker.clone());
@@ -2520,6 +2527,28 @@ impl View for RemoteTab {
         self.send(|view| ToRenderer::Input {
             view,
             input: Input::ScrollToFraction { fraction },
+        });
+    }
+
+    fn wheel_across(&mut self, x: f32, y: f32, dx: f32) {
+        self.pointer(x, y, |x, y| Input::WheelAcross { x, y, dx });
+    }
+
+    fn scrollbar_across(&mut self) -> Option<crate::ScrollbarAcross> {
+        self.state().scrollbar_across
+    }
+
+    fn scroll_across_by(&mut self, dx: f32) {
+        self.send(|view| ToRenderer::Input {
+            view,
+            input: Input::ScrollAcrossBy { dx },
+        });
+    }
+
+    fn scroll_x_to_fraction(&mut self, fraction: f32) {
+        self.send(|view| ToRenderer::Input {
+            view,
+            input: Input::ScrollXToFraction { fraction },
         });
     }
 

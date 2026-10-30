@@ -595,6 +595,7 @@ fn apply(engine: &mut Engine, settings: &Settings) {
         engine.set_layer_budget(usize::try_from(bytes).unwrap_or(usize::MAX));
     }
     engine.set_languages(settings.languages.clone());
+    engine.set_scrollbar_across(settings.scrollbar_across);
 }
 
 /// Gives `input` to `view`'s engine; what the browser is to be told of
@@ -640,6 +641,9 @@ fn give(view: &mut View, input: Input) -> Option<fn(u32) -> ToBrowser> {
         }
         Input::ScrollBy { dy } => engine.scroll_by(dy),
         Input::ScrollToFraction { fraction } => engine.scroll_to_fraction(fraction),
+        Input::WheelAcross { x, y, dx } => engine.wheel_across(x, y, dx),
+        Input::ScrollAcrossBy { dx } => engine.scroll_across_by(dx),
+        Input::ScrollXToFraction { fraction } => engine.scroll_x_to_fraction(fraction),
     }
     None
 }
@@ -665,6 +669,7 @@ fn state_of(view: &mut View) -> ViewState {
         can_paste: engine.can_paste(),
         caret: engine.caret_area(),
         scrollbar: engine.scrollbar(),
+        scrollbar_across: engine.scrollbar_across(),
         cursor,
         hover,
     }

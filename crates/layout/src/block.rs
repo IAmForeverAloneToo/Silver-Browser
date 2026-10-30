@@ -251,7 +251,7 @@ impl Fragment {
     /// `overflow` is given to block containers, which they are not).
     pub fn clips(&self) -> bool {
         matches!(self.kind, FragmentKind::Box)
-            && self.style.overflow.clips()
+            && self.style.overflow().clips()
             && !matches!(
                 self.style.display,
                 Display::Table
@@ -1300,7 +1300,7 @@ pub(crate) fn establishes_bfc(style: &ComputedStyle) -> bool {
     style.flow_root
         || style.root
         || style.fieldset
-        || style.overflow.scrolls()
+        || style.overflow().scrolls()
         || style.display.is_atomic_inline()
         || matches!(
             style.display,
@@ -1637,7 +1637,7 @@ pub(crate) fn layout_inline_block<'a>(
     } else {
         layout
             .inline_block_baseline
-            .filter(|_| !b.style.overflow.scrolls())
+            .filter(|_| !b.style.overflow().scrolls())
     };
     let ascent = match baseline {
         Some(baseline) => margin_top + baseline,
@@ -2014,7 +2014,7 @@ pub(crate) fn layout_flow<'a>(
     // content's, which it scrolls or clips.
     let natural_height = b.control_size.and_then(|size| size.height);
     let specified_height = match (ratio, specified_height) {
-        (Some(r), Some(h)) if h == r && !b.style.overflow.scrolls() => {
+        (Some(r), Some(h)) if h == r && !b.style.overflow().scrolls() => {
             Some(h.max(auto_content_height))
         }
         (_, h) => h,
@@ -2148,7 +2148,7 @@ pub(crate) fn layout_flow<'a>(
     // The absolutely positioned boxes met inside: laid out here when
     // this box is their containing block, carried up otherwise (M11).
     let absolutes = settle_absolutes(b, &mut root, border, inside, pass);
-    if b.style.overflow.clips() {
+    if b.style.overflow().clips() {
         // The scrollable overflow area (M10.5, see `Fragment::
         // scroll_height`), from the padding box's top: the content as if
         // the height were auto with the bottom padding after it, or a

@@ -296,6 +296,11 @@ pub(crate) struct DocumentHost {
     window: WindowEnv,
     /// The styles a run's `getComputedStyle` computed, kept for the run.
     computed: Option<ComputedStyles>,
+    /// The shown document's animations and transitions, lent for a run
+    /// (G46), or the run's own for a document not shown; and whether
+    /// they were lent.
+    animations: RefCell<Animations>,
+    animations_lent: bool,
     /// The tree the last SVG geometry question was answered from (M32):
     /// its outer `<svg>`, the document's version it was built at, kept
     /// for the run, so that a script asking of many elements builds it
@@ -1205,6 +1210,17 @@ impl DocumentHost {
                 let node = self.node(node)?;
                 Ok(Answer::String(self.inner_text(node)))
             }
+            Call::RangeRects(start, start_offset, end, end_offset) => {
+                let start = dom::Boundary {
+                    node: self.node(start)?,
+                    offset: start_offset,
+                };
+                let end = dom::Boundary {
+                    node: self.node(end)?,
+                    offset: end_offset,
+                };
+                Ok(Answer::Numbers(self.range_rects(start, end)))
+            }
             Call::SelectedText(start, start_offset, end, end_offset) => {
                 let start = dom::Boundary {
                     node: self.node(start)?,
@@ -1534,6 +1550,16 @@ impl DocumentHost {
                 self.work += text.len() as u64 / 64 + 1;
                 let mut flat = Vec::new();
                 for declared in cssom::declarations(&text) {
+                    flat.push(declared.name);
+                    flat.push(declared.value);
+                    flat.push(if declared.important { "important" } else { "" }.to_owned());
+                }
+                Ok(Answer::Strings(flat))
+            }
+            Call::ParsePageDescriptors(text) => {
+                self.work += text.len() as u64 / 64 + 1;
+                let mut flat = Vec::new();
+                for declared in cssom::page_descriptors(&text) {
                     flat.push(declared.name);
                     flat.push(declared.value);
                     flat.push(if declared.important { "important" } else { "" }.to_owned());
@@ -3667,7 +3693,15 @@ impl DocumentHost {
         self.ready = lent.ready;
         self.blocked = blocked;
         self.too_deep = false;
-        self.window = std::mem::take(&mut lent.window);
+        // A copy: the lent things serve every script one call runs (the
+        // deferred ones in turn), and each sees the same window.
+        self.window = lent.window.clone();
+        self.animations_lent = lent.animations.is_some();
+        *self.animations.get_mut() = lent
+            .animations
+            .as_deref_mut()
+            .map(std::mem::take)
+            .unwrap_or_default();
         self.computed = None;
         self.svg_questions = None;
         self.laid_out = None;
@@ -3695,6 +3729,13 @@ impl DocumentHost {
         if let Some(images) = lent.images.as_deref_mut() {
             *images = std::mem::take(&mut self.images);
         }
+        let animations = std::mem::take(self.animations.get_mut());
+        if let Some(lent) = lent.animations.as_deref_mut()
+            && self.animations_lent
+        {
+            *lent = animations;
+        }
+        self.animations_lent = false;
         self.frames.clear();
         self.now.clear();
         self.computed = None;
@@ -3963,6 +4004,14 @@ impl DocumentHost {
                 let attached = if attached { "1" } else { "" }.to_owned();
                 Ok(Answer::Strings(vec![href, title, media, attached]))
             }
+            // A script's `disabled`, 1 to set it.
+            "disable" => {
+                let serial = page.cssom_sheet(owner, imports).ok_or_else(gone)?.serial;
+                page.set_sheet_disabled(serial, index == 1);
+                self.computed = None;
+                self.laid_out = None;
+                Ok(Answer::Nothing)
+            }
             "rules" => {
                 let view = page.cssom_sheet(owner, imports).ok_or_else(gone)?;
                 let flat = super::rules::rules(view.rules, rule_path);
@@ -4073,6 +4122,16 @@ impl DocumentHost {
             usize::MAX
         };
         match op {
+            "disable" | "constructedMedia" => {
+                if op == "disable" {
+                    page.set_sheet_disabled(serial, index == 1);
+                } else {
+                    page.set_constructed_media(serial, text);
+                }
+                self.computed = None;
+                self.laid_out = None;
+                Ok(Answer::Nothing)
+            }
             "replace" => {
                 self.work += text.len() as u64 / 64;
                 if !page.replace_sheet(serial, text) {
@@ -4160,14 +4219,13 @@ impl DocumentHost {
             .as_ref()
             .or(self.window.fonts.as_ref())?;
         let measure = Measure(fonts);
-        let animations = RefCell::new(Animations::new());
         let context = CascadeContext {
             viewport_width: width as f32,
             viewport_height: height as f32,
             fonts: Some(&measure as &dyn FontMeasure),
             language: page.language(),
             media: self.window.media,
-            animations: Some(&animations),
+            animations: Some(&self.animations),
             inline_styles: Some(page),
             frame_margins: self.window.frame_margins,
         };
@@ -4254,6 +4312,44 @@ impl DocumentHost {
         out
     }
 
+    /// The boxes of the range from `start` to `end` in viewport
+    /// coordinates, four numbers each ([`super::range_rects`]).
+    fn range_rects(&mut self, start: dom::Boundary, end: dom::Boundary) -> Vec<f64> {
+        let (scroll_y, offsets) = self.scroll_state();
+        let (width, height) = self.window.viewport;
+        if self.layout_now().is_none() {
+            return Vec::new();
+        }
+        let (Some((_, layout)), Some(fonts)) = (
+            self.laid_out.as_ref(),
+            self.window
+                .layout_fonts
+                .as_ref()
+                .or(self.window.fonts.as_ref()),
+        ) else {
+            return Vec::new();
+        };
+        let viewport = paint::Viewport {
+            width: width as f32,
+            height: height as f32,
+            scroll_y,
+        };
+        self.work += layout.iter().count() as u64 / 16;
+        super::range_rects::range_rects(
+            &self.document,
+            layout,
+            viewport,
+            &offsets,
+            fonts,
+            start,
+            end,
+        )
+        .into_iter()
+        .flatten()
+        .map(f64::from)
+        .collect()
+    }
+
     /// The resolved values of `node`'s `top`, `right`, `bottom` and
     /// `left` where they are used values (CSSOM section 9, as the
     /// reference browser has them, D65); `None` for one that is its
@@ -4330,7 +4426,7 @@ impl DocumentHost {
                     self.computed
                         .as_ref()
                         .and_then(|c| c.styles.get(a))
-                        .is_some_and(|s| s.overflow.clips())
+                        .is_some_and(|s| s.overflow().clips())
                 });
                 let size = scroller
                     .and_then(|a| self.content_size(a))
@@ -4493,9 +4589,16 @@ impl DocumentHost {
         if g.len() < 4 {
             return;
         }
-        // The target's box in viewport coordinates, moved as each scroll
-        // moves it.
-        let mut target = [g[0], g[1], g[2], g[3]];
+        // The target's box in viewport coordinates, grown by its
+        // `scroll-margin` (Scroll Snap 1 section 6.1), moved as each
+        // scroll moves it.
+        let margin = self.scroll_sides(node).0;
+        let mut target = [
+            g[0] - margin[3],
+            g[1] - margin[0],
+            g[2] + margin[1] + margin[3],
+            g[3] + margin[0] + margin[2],
+        ];
         let containers: Vec<NodeId> = self
             .document
             .ancestors(node)
@@ -4530,8 +4633,21 @@ impl DocumentHost {
             at + delta
         };
         let mut ports: Vec<(Option<NodeId>, [f64; 4])> = Vec::new();
+        // The root's overflow is the viewport's (css-overflow-3 section
+        // 3.3), and so is the body's when the root's is `visible`.
+        let root = self.document.document_element();
+        let body = root.and_then(|r| {
+            self.document
+                .element_children(r)
+                .find(|&c| self.document.tag(c) == Some("body"))
+        });
+        let root_visible = root.is_some_and(|r| {
+            self.styles_now()
+                .and_then(|styles| styles.get(r))
+                .is_some_and(|s| s.overflow() == style::computed::Overflow::Visible)
+        });
         for a in containers {
-            if !clips(self, a) {
+            if Some(a) == root || (root_visible && Some(a) == body) || !clips(self, a) {
                 continue;
             }
             let c = self.geometry(a, true);
@@ -4552,6 +4668,40 @@ impl DocumentHost {
         let (width, height) = self.window.viewport;
         ports.push((None, [0.0, 0.0, f64::from(width), f64::from(height)]));
         for (container, port) in ports {
+            // The scrollport less its `scroll-padding` (section 6.2), the
+            // root's for the viewport.
+            // A sticky box's own place is where it sticks: no padding
+            // moves it (the reference browser's, as Gecko's).
+            let owner = container.or_else(|| self.document.document_element());
+            let between: Vec<NodeId> = std::iter::once(node)
+                .chain(self.document.ancestors(node))
+                .take_while(|&a| Some(a) != container)
+                .collect();
+            let stuck = between.into_iter().any(|a| {
+                self.styles_now()
+                    .and_then(|styles| styles.get(a))
+                    .is_some_and(|s| s.position == style::computed::Position::Sticky)
+            });
+            let padding = owner
+                .filter(|_| !stuck)
+                .map(|owner| self.scroll_sides(owner).1);
+            let side = |i: usize, size: f64| {
+                padding
+                    .as_ref()
+                    .map_or(0.0, |p| f64::from(p[i].resolve(size as f32, 0.0)))
+            };
+            let padding = [
+                side(0, port[3]),
+                side(1, port[2]),
+                side(2, port[3]),
+                side(3, port[2]),
+            ];
+            let port = [
+                port[0] + padding[3],
+                port[1] + padding[0],
+                (port[2] - padding[1] - padding[3]).max(0.0),
+                (port[3] - padding[0] - padding[2]).max(0.0),
+            ];
             let now = self.scroll_offset(container);
             let y = wanted(block, now[0], (target[1], target[3]), (port[1], port[3]))
                 .clamp(0.0, now[1]);
@@ -4568,6 +4718,27 @@ impl DocumentHost {
                     smooth,
                 });
             }
+        }
+    }
+
+    /// `node`'s `scroll-margin` in px and its `scroll-padding`, each
+    /// top, right, bottom, left.
+    fn scroll_sides(
+        &mut self,
+        node: NodeId,
+    ) -> ([f64; 4], [style::computed::LengthPercentageAuto; 4]) {
+        match self.styles_now().and_then(|styles| styles.get(node)) {
+            Some(style) => {
+                let effects = style.effects();
+                (
+                    effects.scroll_margin.map(f64::from),
+                    effects.scroll_padding.clone(),
+                )
+            }
+            None => (
+                [0.0; 4],
+                std::array::from_fn(|_| style::computed::LengthPercentageAuto::Auto),
+            ),
         }
     }
 
@@ -5333,14 +5504,13 @@ impl DocumentHost {
         let page = self.page.as_ref()?;
         let computed = self.computed.as_ref()?;
         let measure = self.window.fonts.as_ref().map(Measure);
-        let animations = RefCell::new(Animations::new());
         let context = CascadeContext {
             viewport_width: self.window.viewport.0 as f32,
             viewport_height: self.window.viewport.1 as f32,
             fonts: measure.as_ref().map(|measure| measure as &dyn FontMeasure),
             language: page.language(),
             media: self.window.media,
-            animations: Some(&animations),
+            animations: Some(&self.animations),
             inline_styles: Some(page),
             frame_margins: self.window.frame_margins,
         };
@@ -5394,14 +5564,13 @@ impl DocumentHost {
             self.computed = None;
         }
         let measure = fonts.map(Measure);
-        let animations = RefCell::new(Animations::new());
         let context = CascadeContext {
             viewport_width: self.window.viewport.0 as f32,
             viewport_height: self.window.viewport.1 as f32,
             fonts: measure.as_ref().map(|measure| measure as &dyn FontMeasure),
             language: page.language(),
             media: self.window.media,
-            animations: Some(&animations),
+            animations: Some(&self.animations),
             inline_styles: Some(page),
             frame_margins: self.window.frame_margins,
         };

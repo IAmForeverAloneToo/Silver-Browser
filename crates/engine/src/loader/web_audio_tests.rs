@@ -767,3 +767,46 @@ fn a_stream_destinations_track_is_heard_by_a_stream_source_until_it_stops() {
         ]
     );
 }
+
+#[test]
+fn a_canvas_captures_a_stream_of_one_video_track() {
+    // WPT's mediastreamaudiosourcenode-ctor: a canvas's stream has a video
+    // track and no audio one, which a stream source refuses. Its shape and
+    // errors are the reference browser's (Chrome 156).
+    let server = server(
+        r#"
+const c = document.createElement('canvas');
+const s = c.captureStream();
+const t = s.getTracks()[0];
+log([s.getTracks().length, s.getVideoTracks().length, t.kind, t.label.length, t.label.slice(-2), t.constructor.name, t.readyState, t.canvas === c, s.active, s.getTrackById(t.id) === t].join());
+log(JSON.stringify(c.captureStream(5).getVideoTracks()[0].getSettings(), (k, v) => k === 'deviceId' ? v.length : v));
+for (const rate of [-1, NaN]) {
+  try { c.captureStream(rate); } catch (e) { log(e.name + ': ' + e.message); }
+}
+const u = t.clone();
+t.stop();
+log([t.readyState, u.readyState, u.constructor.name, u.canvas === c, s.active].join());
+try { new CanvasCaptureMediaStreamTrack(); } catch (e) { log(e.name + ': ' + e.message); }
+const ac = new AudioContext();
+try { ac.createMediaStreamSource(c.captureStream()); } catch (e) { log(e.name + ': ' + e.message); }
+try { new MediaStreamAudioSourceNode(ac, { mediaStream: c.captureStream() }); } catch (e) { log(e.name + ': ' + e.message); }
+ac.close();
+log('done');
+"#,
+    );
+    let mut tab = open(&server);
+    let lines = until_done(&mut tab);
+    assert_eq!(
+        lines,
+        [
+            "1,1,video,88,==,CanvasCaptureMediaStreamTrack,live,true,true,true",
+            "{\"aspectRatio\":2,\"deviceId\":88,\"frameRate\":5,\"height\":150,\"resizeMode\":\"none\",\"width\":300}",
+            "NotSupportedError: Failed to execute 'captureStream' on 'HTMLCanvasElement': Given frame rate is not supported.",
+            "TypeError: Failed to execute 'captureStream' on 'HTMLCanvasElement': The provided double value is non-finite.",
+            "ended,live,CanvasCaptureMediaStreamTrack,true,false",
+            "TypeError: Failed to construct 'CanvasCaptureMediaStreamTrack': Illegal constructor",
+            "InvalidStateError: Failed to execute 'createMediaStreamSource' on 'AudioContext': MediaStream has no audio track",
+            "InvalidStateError: Failed to construct 'MediaStreamAudioSourceNode': MediaStream has no audio track",
+        ]
+    );
+}

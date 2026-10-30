@@ -843,21 +843,16 @@ fn new_node(
             let Some(element) = element else {
                 return fail("TypeError", "no media element");
             };
-            let mut feed = element
-                .feed
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if feed.is_some() {
+            let external = nodes::external::External {
+                rate: context.rate,
+                ..Default::default()
+            };
+            if !element.take_by(external.clone()) {
                 return fail(
                     "InvalidStateError",
                     "HTMLMediaElement already connected previously to a different MediaElementSourceNode.",
                 );
             }
-            let external = nodes::external::External {
-                rate: context.rate,
-                ..Default::default()
-            };
-            *feed = Some(external.clone());
             nodes::external(external)
         }
         "destination" => {

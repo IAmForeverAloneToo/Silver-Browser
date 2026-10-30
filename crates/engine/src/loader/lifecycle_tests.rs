@@ -298,6 +298,74 @@ fn a_frame_fires_resize_and_scroll_when_they_changed() {
 }
 
 #[test]
+fn a_smooth_script_scroll_moves_over_frames_and_ends_with_scrollend() {
+    let (mut tab, _) = scripted(
+        "<div style='height: 3000px; width: 3000px'></div><script>\
+         document.addEventListener('scrollend', function () { \
+           console.log('scrollend', scrollX, scrollY); });\
+         requestAnimationFrame(function () { \
+           scrollTo({ left: 100, top: 200, behavior: 'smooth' }); \
+           console.log('asked', scrollX, scrollY); });\
+         </script>",
+        true,
+    );
+    frame_at(&mut tab, 1000);
+    assert_eq!(lines(&mut tab), ["asked 0 0"]);
+    let mut said = Vec::new();
+    for n in 1..200 {
+        assert!(tab.engine.needs_frame(), "a frame for the scroll");
+        frame_at(&mut tab, 1000 + n * 16);
+        said.extend(lines(&mut tab));
+        if !said.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(said, ["scrollend 100 200"]);
+}
+
+#[test]
+fn get_computed_style_reads_the_running_animations_and_transitions() {
+    let (mut tab, _) = scripted(
+        "<style>@keyframes move { from { margin-left: 0px } to { margin-left: 100px } }\
+         #a { animation: move 1s linear }\
+         #b { transition: margin-left 1s linear }</style>\
+         <div id=a>x</div><div id=b>y</div><div id=c>z</div><script>\
+         var cs = function (id) { \
+           return getComputedStyle(document.getElementById(id)).marginLeft; };\
+         requestAnimationFrame(function () { requestAnimationFrame(function () { \
+           console.log('a', cs('a'));\
+           document.getElementById('b').style.marginLeft = '200px';\
+           console.log('b', cs('b'));\
+           var s = document.createElement('style');\
+           s.textContent = \
+             '@keyframes late { from { margin-left: 10px } to { margin-left: 30px } }';\
+           document.head.appendChild(s);\
+           var c = document.getElementById('c');\
+           c.style.animation = 'late 10s linear -5s';\
+           console.log('c', cs('c'));\
+           requestAnimationFrame(function () { \
+             console.log('later', cs('a'), cs('b')); });\
+         }); });\
+         </script>",
+        true,
+    );
+    frame_at(&mut tab, 1000);
+    frame_at(&mut tab, 1500);
+    assert_eq!(lines(&mut tab), ["a 50px", "b 0px", "c 20px"]);
+    frame_at(&mut tab, 1750);
+    let said = lines(&mut tab);
+    assert_eq!(said.len(), 1, "{said:?}");
+    let parts: Vec<f32> = said[0]
+        .split(' ')
+        .skip(1)
+        .map(|v| v.trim_end_matches("px").parse().expect("a length"))
+        .collect();
+    // A quarter of a second on: the animation at three quarters, the
+    // transition at a quarter.
+    assert_eq!(parts, [75.0, 50.0], "{said:?}");
+}
+
+#[test]
 fn css_animation_events_reach_their_listeners_in_the_next_frame() {
     let (mut tab, _) = scripted(
         "<style>@keyframes fade { from { opacity: 0 } to { opacity: 1 } }\

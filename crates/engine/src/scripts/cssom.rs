@@ -56,6 +56,75 @@ pub(crate) fn declarations(text: &str) -> Vec<Declared> {
     found
 }
 
+/// The descriptors of an `@page` rule's block (CSS Paged Media 3
+/// section 7) that the reference browser takes: the margins, as the
+/// properties take them, `size` and `page-orientation`; others left out.
+pub(crate) fn page_descriptors(text: &str) -> Vec<Declared> {
+    let text = without_comments(text);
+    let mut found: Vec<Declared> = Vec::new();
+    for piece in split_top_level(&text, ';') {
+        let Some((name, value)) = split_once_top_level(piece, ':') else {
+            continue;
+        };
+        let name = name.trim_matches(is_space).to_ascii_lowercase();
+        let (value, important) = strip_important(value.trim_matches(is_space));
+        let longhands = match name.as_str() {
+            "margin" | "margin-top" | "margin-right" | "margin-bottom" | "margin-left"
+                if valid(&name, value) =>
+            {
+                expand(&name, value).unwrap_or_else(|| vec![(name.clone(), written(&name, value))])
+            }
+            "size" | "page-orientation" if page_value(&name, value) => {
+                let value = css_wide(value).unwrap_or_else(|| {
+                    style::serialize::specified(&css::tokenize(value)).to_ascii_lowercase()
+                });
+                vec![(name.clone(), value)]
+            }
+            _ => continue,
+        };
+        for (name, value) in longhands {
+            found.retain(|declared| declared.name != name);
+            found.push(Declared {
+                name,
+                value,
+                important,
+            });
+        }
+    }
+    found
+}
+
+/// Whether `value` is valid for the page descriptor `name`: `size`'s
+/// `auto`, one or two lengths, or a page size and an orientation in
+/// either order; `page-orientation`'s three keywords.
+fn page_value(name: &str, value: &str) -> bool {
+    if css_wide(value).is_some() {
+        return true;
+    }
+    let parts = components(value);
+    let words: Vec<String> = parts.iter().map(|p| p.to_ascii_lowercase()).collect();
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
+    if name == "page-orientation" {
+        return matches!(words[..], ["upright" | "rotate-left" | "rotate-right"]);
+    }
+    let size = |w: &str| {
+        matches!(
+            w,
+            "a5" | "a4" | "a3" | "b5" | "b4" | "jis-b5" | "jis-b4" | "letter" | "legal" | "ledger"
+        )
+    };
+    let orientation = |w: &str| matches!(w, "portrait" | "landscape");
+    let length = |w: &str| w != "auto" && valid("width", w) && !w.ends_with('%');
+    match words[..] {
+        ["auto"] => true,
+        [one] => size(one) || orientation(one) || length(one),
+        [a, b] => {
+            (size(a) && orientation(b)) || (orientation(a) && size(b)) || (length(a) && length(b))
+        }
+        _ => false,
+    }
+}
+
 /// The longhands `font` sets, in the order the reference browser lists
 /// them.
 const FONT_LONGHANDS: [&str; 15] = [
@@ -171,7 +240,7 @@ const LIST_STYLE: [&str; 3] = ["list-style-position", "list-style-image", "list-
 
 /// The shorthands a declaration block keeps as their longhands (G50),
 /// each with its longhands in their canonical order.
-const SHORTHANDS: [(&str, &[&str]); 17] = [
+const SHORTHANDS: [(&str, &[&str]); 18] = [
     ("font", &FONT_LONGHANDS),
     ("font-variant", &style::VARIANT_LONGHANDS),
     ("margin", &MARGIN),
@@ -189,11 +258,17 @@ const SHORTHANDS: [(&str, &[&str]); 17] = [
     ("outline", &OUTLINE),
     ("list-style", &LIST_STYLE),
     ("gap", &["row-gap", "column-gap"]),
+    ("overflow", &["overflow-x", "overflow-y"]),
 ];
 
 /// The longhands of the shorthand `name`, if it is one a block keeps as
 /// them.
 pub(crate) fn longhands(name: &str) -> Option<&'static [&'static str]> {
+    static ALL: std::sync::LazyLock<Vec<&'static str>> =
+        std::sync::LazyLock::new(|| style::all_longhands().collect());
+    if name == "all" {
+        return Some(ALL.as_slice());
+    }
     SHORTHANDS
         .iter()
         .find(|(shorthand, _)| *shorthand == name)
@@ -296,6 +371,13 @@ fn expand(name: &str, value: &str) -> Option<Vec<(String, String)>> {
     match name {
         "margin" | "padding" | "inset" | "border-width" | "border-style" | "border-color" => {
             return pair(four_sides(value)?.to_vec());
+        }
+        "overflow" => {
+            let mut parts = components(value);
+            if parts.len() == 1 {
+                parts.push(parts[0].clone());
+            }
+            return pair(parts);
         }
         "border-top" | "border-right" | "border-bottom" | "border-left" => {
             return pair(border_side(value)?);
@@ -443,9 +525,36 @@ fn written(name: &str, value: &str) -> String {
         "font-stretch" | "font-weight" | "font-style" => {
             Some(style::serialize::tokens(&tokens).to_ascii_lowercase())
         }
+        // A colour's keyword, named, a system colour's or `currentcolor`,
+        // in lowercase (CSSOM section 6.7.2).
+        _ if takes_color(name)
+            && matches!(
+                tokens
+                    .iter()
+                    .filter(|t| !matches!(t, Token::Whitespace))
+                    .collect::<Vec<_>>()[..],
+                [Token::Ident(_)]
+            )
+            && (style::parse_color_text(value).is_some()
+                || value
+                    .trim_matches(is_space)
+                    .eq_ignore_ascii_case("currentcolor")) =>
+        {
+            Some(value.trim_matches(is_space).to_ascii_lowercase())
+        }
         _ => None,
     };
     text.unwrap_or_else(|| style::serialize::specified(&tokens))
+}
+
+/// Whether `name` is a property whose value may be a colour alone.
+fn takes_color(name: &str) -> bool {
+    name.ends_with("color")
+        || matches!(
+            name,
+            "fill" | "stroke" | "background" | "outline" | "text-decoration" | "column-rule"
+        )
+        || (name.starts_with("border") && !name.ends_with("radius") && !name.contains("image"))
 }
 
 /// The value of the shorthand `name` from `block`'s longhands, as CSSOM
@@ -503,7 +612,7 @@ pub(crate) fn shorthand_value(name: &str, block: &[Declared]) -> String {
         }
         "outline" => initials_left_out(&values, &["currentcolor", "none", "medium"], "none"),
         "list-style" => initials_left_out(&values, &["outside", "none", "disc"], "outside"),
-        "gap" => {
+        "gap" | "overflow" => {
             if values[0] == values[1] {
                 values[0].to_owned()
             } else {
@@ -641,8 +750,9 @@ pub(crate) fn block_text(block: &[Declared]) -> String {
         let mut value = declared.value.clone();
         let mut candidates: Vec<(&str, &[&str])> = SHORTHANDS
             .iter()
-            .filter(|(_, longhands)| longhands.contains(&name))
             .copied()
+            .chain(longhands("all").map(|all| ("all", all)))
+            .filter(|(_, longhands)| longhands.contains(&name))
             .collect();
         candidates.sort_by_key(|(_, longhands)| std::cmp::Reverse(longhands.len()));
         for (shorthand, longhands) in candidates {
@@ -958,7 +1068,7 @@ mod tests {
             read("COLOR: red; bogus: 1; width: banana; width: 2px !IMPORTANT ; color: RED"),
             [
                 ("width".into(), "2px".into(), true),
-                ("color".into(), "RED".into(), false)
+                ("color".into(), "red".into(), false)
             ]
         );
         // Separators inside strings, comments and brackets are not.
@@ -1140,5 +1250,54 @@ mod tests {
             value(&declarations("font-family: Arial,Arial"), "font-family").as_deref(),
             Some("Arial, Arial")
         );
+    }
+
+    #[test]
+    fn all_is_kept_as_every_longhand_but_direction_and_unicode_bidi() {
+        let text = |css: &str| block_text(&declarations(css));
+        assert_eq!(text("all: inherit"), "all: inherit;");
+        assert_eq!(
+            text("width: 100px; all: inherit; height: inherit"),
+            "all: inherit;"
+        );
+        assert_eq!(
+            text("width: 1px; --a: a; all: unset; --b: b"),
+            "--a: a; all: unset; --b: b;"
+        );
+        let block = declarations("margin: 1px; all: revert");
+        assert_eq!(shorthand_value("margin", &block), "revert");
+        assert_eq!(shorthand_value("all", &block), "revert");
+        assert!(longhands("all").is_some_and(|all| !all.contains(&"direction")));
+        assert_eq!(
+            text("overflow-x: scroll; overflow-y: hidden"),
+            "overflow: scroll hidden;"
+        );
+        assert_eq!(text("overflow: clip"), "overflow: clip;");
+        assert_eq!(text("overflow-y: auto"), "overflow-y: auto;");
+        assert_eq!(text("color: CanvasText"), "color: canvastext;");
+        assert_eq!(
+            text("border-color: currentColor"),
+            "border-color: currentcolor;"
+        );
+        assert_eq!(text("animation-name: Red"), "animation-name: Red;");
+    }
+
+    #[test]
+    fn a_page_rules_block_keeps_its_descriptors() {
+        let text = |css: &str| block_text(&page_descriptors(css));
+        assert_eq!(
+            text("size: A3; page-orientation: rotate-right; margin: 1em 24px; float: left"),
+            "size: a3; page-orientation: rotate-right; margin: 1em 24px;"
+        );
+        assert_eq!(text("size: jis-b5 landscape"), "size: jis-b5 landscape;");
+        assert_eq!(text("size: 216mm"), "size: 216mm;");
+        assert_eq!(text("size: notarealsize; page-orientation: sideways"), "");
+        assert_eq!(text("size: 10% 5px"), "");
+        let rule = super::super::rules::page_selector;
+        assert_eq!(rule("named:First").as_deref(), Some("named:first"));
+        assert_eq!(rule(" :left ").as_deref(), Some(":left"));
+        assert_eq!(rule("named :first"), None);
+        assert_eq!(rule(":first :left"), None);
+        assert_eq!(rule(":nope"), None);
     }
 }

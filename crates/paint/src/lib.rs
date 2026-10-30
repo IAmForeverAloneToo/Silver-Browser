@@ -2734,14 +2734,14 @@ fn push_layers(
         };
         let (x, gap_x, repeat_x) = place(
             layer.repeat[0],
-            &layer.position[0],
+            layer.position[0],
             positioning.x,
             positioning.w,
             tile_w,
         );
         let (y, gap_y, repeat_y) = place(
             layer.repeat[1],
-            &layer.position[1],
+            layer.position[1],
             positioning.y,
             positioning.h,
             tile_h,

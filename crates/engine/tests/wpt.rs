@@ -553,6 +553,43 @@ add_completion_callback(function (tests, status) {
 });
 "#;
 
+/// The runner's `testdriver-vendor.js`: `test_driver.bless` made by a
+/// click of the runner's (see [`bless`]), which gives the page the user's
+/// activation as a real one does. The button is placed as testdriver's
+/// own `bless` places it, and its centre asked for on the console.
+const VENDOR: &str = r#"(function () {
+  if (!window.test_driver) {
+    return;
+  }
+  var own = test_driver.bless;
+  var count = 0;
+  test_driver.bless = function (intent, action, context) {
+    if (context) {
+      return own.apply(this, arguments);
+    }
+    var button = document.createElement("button");
+    button.innerHTML = "This test requires user interaction.<br />" +
+      "Please click here to allow " + intent + ".";
+    button.id = "wpt-test-driver-bless-" + (count += 1);
+    (document.body || document.documentElement).appendChild(button);
+    var clicked = new Promise(function (resolve) {
+      button.addEventListener("click", resolve);
+    });
+    var rect = button.getBoundingClientRect();
+    if (rect.bottom > innerHeight || rect.right > innerWidth) {
+      button.scrollIntoView({behavior: "instant", block: "end", inline: "nearest"});
+      rect = button.getBoundingClientRect();
+    }
+    console.log("wpt-bless\t" + (rect.left + rect.width / 2) + "\t" +
+      (rect.top + rect.height / 2));
+    return clicked.then(function () {
+      button.remove();
+      return typeof action === "function" ? action() : null;
+    });
+  };
+})();
+"#;
+
 /// The page wptserve makes of the `.any.js` or `.window.js` test whose
 /// source is `source`, served beside it as `name`, for a window: its
 /// title and the scripts its `// META:` lines name, `self.GLOBAL` for an
@@ -706,6 +743,9 @@ fn answer(root: &Path, harness: bool, request: &net::test_server::ServerRequest)
     match (harness, file) {
         (true, "resources/testharnessreport.js") => {
             return Reply::ok("text/javascript", REPORT.as_bytes());
+        }
+        (true, "resources/testdriver-vendor.js") => {
+            return Reply::ok("text/javascript", VENDOR.as_bytes());
         }
         (false, "resources/testharness.js" | "resources/testharnessreport.js") => {
             return not_found();
@@ -1154,6 +1194,44 @@ fn a_test_named_https_is_loaded_over_tls() {
 }
 
 #[test]
+fn test_drivers_bless_is_a_users_click() {
+    // The runner's `test_driver.bless` (see `VENDOR`): a trusted click on
+    // its button, then the action, the button gone.
+    let dir = out_dir().join("bless-test");
+    fs::create_dir_all(dir.join("resources")).expect("a directory");
+    for file in ["testharness.js", "testdriver.js"] {
+        fs::copy(
+            root().join("resources").join(file),
+            dir.join("resources").join(file),
+        )
+        .expect("a copy");
+    }
+    fs::write(
+        dir.join("t.html"),
+        "<!doctype html><body>\
+         <script src=/resources/testharness.js></script>\
+         <script src=/resources/testharnessreport.js></script>\
+         <script src=/resources/testdriver.js></script>\
+         <script src=/resources/testdriver-vendor.js></script>\
+         <script>\
+         promise_test(async () => {\
+           let trusted = null;\
+           addEventListener('click', (e) => { trusted = e.isTrusted; }, true);\
+           const value = await test_driver.bless('a test', () => 7);\
+           assert_equals(value, 7);\
+           assert_true(trusted, 'a trusted click');\
+           assert_equals(document.querySelector('button'), null);\
+         }, 'bless');\
+         </script>",
+    )
+    .expect("a page");
+    let server = serve(dir.clone(), true);
+    let outcome = run_testharness(&server, "t.html", false);
+    let _ = fs::remove_dir_all(&dir);
+    assert!(outcome.passed, "{}", outcome.message);
+}
+
+#[test]
 fn the_python_handlers_answer_as_wptserve_does() {
     let get = |target: &str, headers: &[(&str, &str)]| net::test_server::ServerRequest {
         method: "GET".to_string(),
@@ -1542,10 +1620,13 @@ fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
     let deadline = Instant::now() + LOAD;
     // When the page's clock last moved, in real time.
     let mut moved = Instant::now();
+    // What the console said, but for the runner.
+    let mut said = Vec::new();
     loop {
         let now = clock.now();
         engine.poll_network();
         engine.run_tasks();
+        bless(engine, now, &mut said);
         if engine.needs_frame() {
             engine.frame_at(WIDTH, HEIGHT, FrameTime::at(now));
         }
@@ -1570,12 +1651,17 @@ fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
         if now > wait {
             return unfinished(
                 engine,
+                said,
                 format!("TIMEOUT: still running after {wait:?} of its time"),
             );
         }
         let left = deadline.checked_duration_since(Instant::now());
         let Some(left) = left else {
-            return unfinished(engine, format!("TIMEOUT: still running after {LOAD:?}"));
+            return unfinished(
+                engine,
+                said,
+                format!("TIMEOUT: still running after {LOAD:?}"),
+            );
         };
         if engine.fetching() {
             let _ = woken.recv_timeout(left.min(Duration::from_millis(100)));
@@ -1616,21 +1702,45 @@ fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
                     left.min(Duration::from_secs(1))
                 };
                 if woken.recv_timeout(quiet).is_err() {
-                    return unfinished(engine, "TIMEOUT: nothing left to wait for".to_string());
+                    return unfinished(
+                        engine,
+                        said,
+                        "TIMEOUT: nothing left to wait for".to_string(),
+                    );
                 }
             }
         }
     }
 }
 
+/// Makes the clicks the runner's `test_driver.bless` asks for on the
+/// console (see [`VENDOR`]), at the page's time `now`, as a user's press
+/// and release of the primary button at the point it names: the user's
+/// activation for the page. What else the console said is kept in `said`.
+fn bless(engine: &mut Engine, now: Duration, said: &mut Vec<String>) {
+    for entry in engine.take_console() {
+        let point = entry.text.strip_prefix("wpt-bless\t").and_then(|point| {
+            let (x, y) = point.split_once('\t')?;
+            Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?))
+        });
+        let Some((x, y)) = point else {
+            said.push(entry.text);
+            continue;
+        };
+        // Laid out as it is now, so that the press finds the button.
+        engine.frame_at(WIDTH, HEIGHT, FrameTime::at(now));
+        engine.pointer_down(x, y, engine::Button::Primary, 1);
+        engine.pointer_up(x, y, engine::Button::Primary, 1);
+    }
+}
+
 /// A testharness test that did not finish, `why`, with the subtests that
 /// did, as the report logged them, and the last of what else its
-/// console said.
-fn unfinished(engine: &mut Engine, why: String) -> Outcome {
-    let (done, said): (Vec<String>, Vec<String>) = engine
-        .take_console()
+/// console said (`said`, then what is left on it).
+fn unfinished(engine: &mut Engine, mut said: Vec<String>, why: String) -> Outcome {
+    said.extend(engine.take_console().into_iter().map(|entry| entry.text));
+    let (done, said): (Vec<String>, Vec<String>) = said
         .into_iter()
-        .map(|entry| entry.text)
         .partition(|text| text.starts_with("wpt-done\t"));
     let done: Vec<&str> = done
         .iter()

@@ -4,7 +4,7 @@
 
 use crate::{
     Button, ColorScheme, ConsoleEntry, ConsoleKind, ConsoleLevel, ConsoleSource, Cursor, Key,
-    LoadError, LoadState, Modifiers, Preferences, Scrollbar, StackFrame,
+    LoadError, LoadState, Modifiers, Preferences, Scrollbar, ScrollbarAcross, StackFrame,
 };
 
 use super::codec::{Decoder, Encoder, Malformed, Wire, wire_enum, wire_struct, wire_unit_enum};
@@ -135,6 +135,23 @@ impl Wire for Scrollbar {
     }
 }
 
+impl Wire for ScrollbarAcross {
+    fn encode(&self, out: &mut Encoder) {
+        for value in [self.y, self.h, self.w, self.thumb_x, self.thumb_w] {
+            value.encode(out);
+        }
+    }
+    fn decode(input: &mut Decoder<'_>) -> Result<Self, Malformed> {
+        Ok(ScrollbarAcross {
+            y: f32::decode(input)?,
+            h: f32::decode(input)?,
+            w: f32::decode(input)?,
+            thumb_x: f32::decode(input)?,
+            thumb_w: f32::decode(input)?,
+        })
+    }
+}
+
 impl Wire for LoadState {
     fn encode(&self, out: &mut Encoder) {
         match self {
@@ -241,6 +258,8 @@ wire_struct! {
         pub layer_budget: Option<u64>,
         /// The user's languages (M37).
         pub languages: Vec<String>,
+        /// Whether the viewport's scrollbar across is drawn.
+        pub scrollbar_across: bool,
     }
 }
 
@@ -256,6 +275,7 @@ impl Default for Settings {
             modifiers: Modifiers::default(),
             layer_budget: None,
             languages: Vec::new(),
+            scrollbar_across: false,
         }
     }
 }
@@ -276,6 +296,9 @@ wire_enum! {
         9 => Paste { text: String },
         10 => ScrollBy { dy: f32 },
         11 => ScrollToFraction { fraction: f32 },
+        12 => WheelAcross { x: f32, y: f32, dx: f32 },
+        13 => ScrollAcrossBy { dx: f32 },
+        14 => ScrollXToFraction { fraction: f32 },
     }
 }
 
@@ -296,6 +319,7 @@ wire_struct! {
         pub can_paste: bool,
         pub caret: Option<(f32, f32, f32, f32)>,
         pub scrollbar: Option<Scrollbar>,
+        pub scrollbar_across: Option<ScrollbarAcross>,
         /// The cursor and the link at the pointer's last place.
         pub cursor: Cursor,
         pub hover: Option<net::Url>,
@@ -315,6 +339,7 @@ impl Default for ViewState {
             can_paste: false,
             caret: None,
             scrollbar: None,
+            scrollbar_across: None,
             cursor: Cursor::Default,
             hover: None,
         }

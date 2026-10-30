@@ -1228,8 +1228,8 @@ mod tests {
                 // Each a pixel below its parent (M35.9: the offsets are
                 // from the parent's).
                 let mut leaf = boxed(1.0, 50.0, Vec::new());
-                std::sync::Arc::make_mut(&mut leaf.style).overflow =
-                    style::computed::Overflow::Hidden;
+                std::sync::Arc::make_mut(&mut leaf.style)
+                    .set_overflow(style::computed::Overflow::Hidden);
                 let mut chain = leaf;
                 for level in (0..depth).rev() {
                     let y = if level == 0 { 0.0 } else { 1.0 };

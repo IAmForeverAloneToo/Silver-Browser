@@ -2081,7 +2081,7 @@ fn segment_fragment(table: &LayoutBox, border: Candidate, side: usize, rect: Rec
     fragment.y = rect.y;
     fragment.style = inner_style(&table.style).into();
     Arc::make_mut(&mut fragment.style).background_color = Color::TRANSPARENT;
-    Arc::make_mut(&mut fragment.style).overflow = Overflow::Visible;
+    Arc::make_mut(&mut fragment.style).set_overflow(Overflow::Visible);
     Arc::make_mut(&mut fragment.style).border_style = [BorderStyle::None; 4];
     Arc::make_mut(&mut fragment.style).border_style[side] = match border.style {
         BorderStyle::Inset => BorderStyle::Ridge,

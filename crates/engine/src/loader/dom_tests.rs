@@ -1448,15 +1448,15 @@ fn style_reads_and_writes_the_style_attribute() {
                 "ok [\"color: red;\",\"red\"]",
             ),
             ("document.body.style === document.body.style", "ok true"),
-            // A keyword kept as written, a shorthand kept as its longhands
-            // and said from them (G50).
+            // A colour's keyword in lowercase, a shorthand kept as its
+            // longhands and said from them (G50).
             (
                 "(function () { var x = document.createElement('i'); x.style.color = 'RED'; \
                  x.style.margin = '1px'; x.style.width = 'banana'; \
                  return [x.style.color, x.style.length, x.style[1], x.style.marginTop, \
                  x.style.cssText, x.getAttribute('style')]; })()",
-                "ok [\"RED\",5,\"margin-top\",\"1px\",\"color: RED; margin: 1px;\",\
-                 \"color: RED; margin: 1px;\"]",
+                "ok [\"red\",5,\"margin-top\",\"1px\",\"color: red; margin: 1px;\",\
+                 \"color: red; margin: 1px;\"]",
             ),
             (
                 "(function () { var x = document.createElement('i'); x.style = 'width: 3px'; \
@@ -2383,6 +2383,86 @@ fn declarations_are_written_in_their_canonical_forms_and_shorthands() {
             "1px \"\" border-width: 1px; border-style: solid; \
              border-color: red currentcolor currentcolor; border-image: none;",
             "\"\"",
+        ]
+    );
+}
+
+#[test]
+fn scroll_into_view_reads_scroll_margin_and_scroll_padding() {
+    // The target's box grown by its margin, in the scrollport less the
+    // container's padding; the root's padding for the viewport.
+    let (_, console) = laid_out(
+        "<style>body { margin: 0 } html { scroll-padding: 10px 0 0 } \
+         #s { height: 100px; overflow: auto; scroll-padding-top: 20px } \
+         #t { margin-top: 300px; height: 10px; scroll-margin: 5px } \
+         #f { height: 50px }</style>\
+         <div id=s><div id=t></div><div style='height: 500px'></div></div>\
+         <div style='height: 2000px'></div><div id=f></div>         <div style='height: 2000px'></div><script>\
+         var s = document.getElementById('s'); \
+         document.getElementById('t').scrollIntoView(); \
+         console.log(s.scrollTop); \
+         document.getElementById('t').scrollIntoView({ block: 'end' }); \
+         console.log(s.scrollTop); \
+         document.getElementById('f').scrollIntoView(); \
+         console.log(scrollY);</script>",
+    );
+    // 300 less 5 less 20; 315 past a port of 100 is 215; the viewport
+    // stops 10px above #f's top at 2100.
+    assert_eq!(console, ["275", "215", "2090"]);
+}
+
+#[test]
+fn a_ranges_rects_are_its_characters_boxes() {
+    // Each character's box from the text's fragment, collapsed white
+    // space taking none, an element held whole giving its own box.
+    let (_, console) = laid_out(
+        "<style>body { margin: 0 } p { margin: 0; font: 20px monospace }</style>\
+         <p id=p>abc   def<span id=s>gh</span></p><p id=q>ab&shy;cd</p><script>\
+         var t = document.getElementById('p').firstChild; \
+         var r = document.createRange(); \
+         var box = function (a, b) { r.setStart(t, a); r.setEnd(t, b); \
+           return r.getBoundingClientRect(); }; \
+         var one = box(0, 1), three = box(0, 3), spaces = box(3, 6), caret = box(5, 5); \
+         console.log(one.left, one.width > 0, three.width === 3 * one.width); \
+         console.log(spaces.width > 0, spaces.left === three.right); \
+         console.log(caret.width, caret.left === spaces.right, caret.height > 0); \
+         r.setStart(t, 0); r.setEndAfter(document.getElementById('s')); \
+         console.log(r.getClientRects().length, r.getBoundingClientRect().width > 7 * one.width); \
+         t = document.getElementById('q').firstChild; \
+         console.log(box(0, 4).width === 3 * one.width);</script>",
+    );
+    assert_eq!(
+        console,
+        ["0 true true", "true true", "0 true true", "2 true", "true"]
+    );
+}
+
+#[test]
+fn a_disabled_sheet_and_a_constructed_sheets_media_reach_the_cascade() {
+    let (_, console) = laid_out(
+        "<style id=s>p { color: rgb(255, 0, 0) }</style><p id=p>x</p><script>\
+         var p = document.getElementById('p'); \
+         var color = function () { console.log(getComputedStyle(p).color); }; \
+         var sheet = document.getElementById('s').sheet; \
+         sheet.disabled = true; color(); \
+         sheet.disabled = false; color(); \
+         var c = new CSSStyleSheet({ media: 'print' }); \
+         c.replaceSync('p { color: rgb(0, 0, 255) }'); \
+         document.adoptedStyleSheets = [c]; color(); \
+         c.media.mediaText = 'screen'; color(); \
+         c.disabled = true; color(); \
+         try { new CSSStyleSheet({ baseURL: 'https://test:test/' }); } \
+         catch (e) { console.log(e.name); }</script>",
+    );
+    assert_eq!(
+        console,
+        [
+            "rgb(0, 0, 0)",
+            "rgb(255, 0, 0)",
+            "rgb(255, 0, 0)",
+            "rgb(0, 0, 255)",
+            "rgb(255, 0, 0)",
+            "NotAllowedError"
         ]
     );
 }

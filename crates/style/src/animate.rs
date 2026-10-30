@@ -161,7 +161,8 @@ longhands! {
     BorderRightStyle = "border-right-style": Discrete,
     BorderBottomStyle = "border-bottom-style": Discrete,
     BorderLeftStyle = "border-left-style": Discrete,
-    Overflow = "overflow": Discrete,
+    OverflowX = "overflow-x": Discrete,
+    OverflowY = "overflow-y": Discrete,
     BoxSizing = "box-sizing": Discrete,
     Float = "float": Discrete,
     Clear = "clear": Discrete,
@@ -282,7 +283,8 @@ longhands! {
     Ry = "ry": ByComputedValue,
     BackgroundImage = "background-image": Discrete,
     BackgroundRepeat = "background-repeat": Discrete,
-    BackgroundPosition = "background-position": ByComputedValue,
+    BackgroundPositionX = "background-position-x": ByComputedValue,
+    BackgroundPositionY = "background-position-y": ByComputedValue,
     BackgroundSize = "background-size": ByComputedValue,
     BackgroundOrigin = "background-origin": Discrete,
     BackgroundClip = "background-clip": Discrete,
@@ -325,12 +327,14 @@ pub fn longhands_of(name: &str) -> Vec<Longhand> {
             BackgroundColor,
             BackgroundImage,
             BackgroundRepeat,
-            BackgroundPosition,
+            BackgroundPositionX,
+            BackgroundPositionY,
             BackgroundSize,
             BackgroundOrigin,
             BackgroundClip,
             BackgroundAttachment,
         ],
+        "background-position" => &[BackgroundPositionX, BackgroundPositionY],
         "margin" => &[MarginTop, MarginRight, MarginBottom, MarginLeft],
         "font" => &[
             FontStyle,
@@ -586,7 +590,8 @@ pub fn copy(property: Longhand, from: &ComputedStyle, to: &mut ComputedStyle) {
         BorderRightStyle => to.border_style[RIGHT] = from.border_style[RIGHT],
         BorderBottomStyle => to.border_style[BOTTOM] = from.border_style[BOTTOM],
         BorderLeftStyle => to.border_style[LEFT] = from.border_style[LEFT],
-        Overflow => to.overflow = from.overflow,
+        OverflowX => to.overflow_x = from.overflow_x,
+        OverflowY => to.overflow_y = from.overflow_y,
         BoxSizing => to.box_sizing = from.box_sizing,
         Float => to.float = from.float,
         Clear => to.clear = from.clear,
@@ -765,8 +770,11 @@ pub fn copy(property: Longhand, from: &ComputedStyle, to: &mut ComputedStyle) {
         BackgroundRepeat => {
             copy_group!(to, from, background, background, background_mut, repeat)
         }
-        BackgroundPosition => {
-            copy_group!(to, from, background, background, background_mut, position)
+        BackgroundPositionX => {
+            copy_group!(to, from, background, background, background_mut, position_x)
+        }
+        BackgroundPositionY => {
+            copy_group!(to, from, background, background, background_mut, position_y)
         }
         BackgroundSize => copy_group!(to, from, background, background, background_mut, size),
         BackgroundOrigin => {
@@ -991,7 +999,8 @@ pub fn same(property: Longhand, a: &ComputedStyle, b: &ComputedStyle) -> bool {
         BorderRightStyle => a.border_style[RIGHT] == b.border_style[RIGHT],
         BorderBottomStyle => a.border_style[BOTTOM] == b.border_style[BOTTOM],
         BorderLeftStyle => a.border_style[LEFT] == b.border_style[LEFT],
-        Overflow => a.overflow == b.overflow,
+        OverflowX => a.overflow_x == b.overflow_x,
+        OverflowY => a.overflow_y == b.overflow_y,
         BoxSizing => a.box_sizing == b.box_sizing,
         Float => a.float == b.float,
         Clear => a.clear == b.clear,
@@ -1081,7 +1090,8 @@ pub fn same(property: Longhand, a: &ComputedStyle, b: &ComputedStyle) -> bool {
         }
         BackgroundImage => a.background().image == b.background().image,
         BackgroundRepeat => a.background().repeat == b.background().repeat,
-        BackgroundPosition => a.background().position == b.background().position,
+        BackgroundPositionX => a.background().position_x == b.background().position_x,
+        BackgroundPositionY => a.background().position_y == b.background().position_y,
         BackgroundSize => a.background().size == b.background().size,
         BackgroundOrigin => a.background().origin == b.background().origin,
         BackgroundClip => a.background().clip == b.background().clip,
@@ -1588,6 +1598,15 @@ fn track_list(a: &Option<TrackList>, b: &Option<TrackList>, p: f64) -> Option<Op
     }))
 }
 
+/// The least common multiple of two list lengths, at least one.
+fn lcm(a: usize, b: usize) -> usize {
+    let (mut x, mut y) = (a.max(1), b.max(1));
+    while y != 0 {
+        (x, y) = (y, x % y);
+    }
+    a.max(1) / x * b.max(1)
+}
+
 /// Interpolates `property` from `a` to `b` at `p` into `to`; says
 /// whether it could, a pair it cannot being left for a discrete step.
 pub fn interpolate(
@@ -2082,22 +2101,36 @@ pub fn interpolate(
         }
         // Lists of one length interpolate item by item (M23.3); others
         // step.
-        BackgroundPosition => {
-            let (x, y) = (&a.background().position, &b.background().position);
-            if x.len() != y.len() {
-                return false;
-            }
-            let blended: Option<Vec<[LengthPercentage; 2]>> = x
-                .iter()
-                .zip(y)
-                .map(|(x, y)| {
-                    Some([
-                        length_percentage(&x[0], &y[0], p, false)?,
-                        length_percentage(&x[1], &y[1], p, false)?,
-                    ])
+        // Repeatable lists (Backgrounds 4): each repeated to the least
+        // common multiple of their lengths.
+        BackgroundPositionX | BackgroundPositionY => {
+            let y_axis = property == BackgroundPositionY;
+            let list = |s: &'_ ComputedStyle| -> Vec<LengthPercentage> {
+                let b = s.background();
+                if y_axis {
+                    b.position_y.clone()
+                } else {
+                    b.position_x.clone()
+                }
+            };
+            let (x, y) = (list(a), list(b));
+            let n = lcm(x.len(), y.len());
+            // At 0 the start's values as they are, as the reference
+            // browser keeps a percentage there.
+            let blended: Option<Vec<LengthPercentage>> = (0..n)
+                .map(|i| {
+                    if p == 0.0 {
+                        Some(x[i % x.len()].clone())
+                    } else {
+                        length_percentage(&x[i % x.len()], &y[i % y.len()], p, false)
+                    }
                 })
                 .collect();
-            set!(to.background_mut().position, blended)
+            if y_axis {
+                set!(to.background_mut().position_y, blended)
+            } else {
+                set!(to.background_mut().position_x, blended)
+            }
         }
         BackgroundSize => {
             use crate::computed::BackgroundSize as S;
@@ -2550,14 +2583,25 @@ mod tests {
         );
         let mut to = a.clone();
         assert!(interpolate(
-            Longhand::BackgroundPosition,
+            Longhand::BackgroundPositionX,
             &a,
             &b,
             0.25,
             &mut to
         ));
-        assert_eq!(to.background().position[0][0], LengthPercentage::Px(25.0));
-        assert_eq!(to.background().position[1][0], LengthPercentage::Px(15.0));
+        assert_eq!(to.background().position_x[0], LengthPercentage::Px(25.0));
+        assert_eq!(to.background().position_x[1], LengthPercentage::Px(15.0));
+        // Lists of other lengths repeat to their least common multiple.
+        let c = style("background-position-y: 10px, 20px, 30px");
+        assert!(interpolate(
+            Longhand::BackgroundPositionY,
+            &c,
+            &style("background-position-y: 50px, 0px"),
+            0.5,
+            &mut to
+        ));
+        assert_eq!(to.background().position_y.len(), 6);
+        assert_eq!(to.background().position_y[3], LengthPercentage::Px(5.0));
         assert!(interpolate(Longhand::BackgroundSize, &a, &b, 0.5, &mut to));
         assert_eq!(
             to.background().size[0],
@@ -2565,13 +2609,6 @@ mod tests {
         );
         // Lists of other lengths, and sizes of other kinds, step.
         let c = style("background-position: 0 0; background-size: cover");
-        assert!(!interpolate(
-            Longhand::BackgroundPosition,
-            &a,
-            &c,
-            0.5,
-            &mut to
-        ));
         assert!(!interpolate(Longhand::BackgroundSize, &a, &c, 0.5, &mut to));
         let d = style("background-size: auto 10px");
         assert!(!interpolate(Longhand::BackgroundSize, &a, &d, 0.5, &mut to));

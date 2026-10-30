@@ -1704,18 +1704,89 @@
     stop() {
       if (this.#state === "ended") return;
       this.#state = "ended";
+      if (this.#number === 0) return;
       audioCall({ op: "stopTrack", track: this.#number }, null, "stop", "MediaStreamTrack");
     }
 
     clone() {
-      const copy = new MediaStreamTrack(KEY, this.#kind, this.#label, this.#number, this.#rate);
+      const copy = this.#copy();
       copy.#state = this.#state;
       copy.#enabled = this.#enabled;
       return copy;
     }
+
+    #copy() {
+      if (this instanceof CanvasCaptureMediaStreamTrack) return canvasTrackCopy(this);
+      return new MediaStreamTrack(KEY, this.#kind, this.#label, this.#number, this.#rate);
+    }
   }
   expose(MediaStreamTrack, "MediaStreamTrack");
   defineHandlers(MediaStreamTrack.prototype, ["ended", "mute", "unmute"], false);
+
+  // ---- A canvas's capture (Media Capture from DOM Elements) -------------
+  // As far as the reference browser's: a stream of one live video track,
+  // its label a random 64 bytes in base64, as its settings' device; no
+  // frames are made, and no audio node takes it.
+
+  const BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+  function captureDevice() {
+    let text = "";
+    for (let i = 0; i < 86; i++) text += BASE64[MathFloor(MathRandom() * 64)];
+    return text + "==";
+  }
+
+  let canvasTrackCopy;
+
+  class CanvasCaptureMediaStreamTrack extends MediaStreamTrack {
+    #canvas; #settings;
+
+    constructor(key, canvas, label, settings) {
+      if (key !== KEY) throw illegalConstructor("CanvasCaptureMediaStreamTrack");
+      super(KEY, "video", label, 0, 0);
+      this.#canvas = canvas;
+      this.#settings = settings;
+    }
+
+    static {
+      canvasTrackCopy = (track) =>
+        new CanvasCaptureMediaStreamTrack(KEY, track.#canvas, track.label, track.#settings);
+    }
+
+    get canvas() { return this.#canvas; }
+
+    requestFrame() {}
+
+    getSettings() {
+      const s = this.#settings;
+      return {
+        aspectRatio: s.width / s.height, deviceId: s.deviceId, frameRate: s.frameRate,
+        height: s.height, resizeMode: "none", width: s.width,
+      };
+    }
+  }
+  expose(CanvasCaptureMediaStreamTrack, "CanvasCaptureMediaStreamTrack");
+
+  // HTMLCanvasElement's captureStream(frameRate), the canvas `this`.
+  function captureStream(frameRate) {
+    const where = prefix("captureStream", "HTMLCanvasElement");
+    let rate = 60;
+    if (arguments.length > 0 && frameRate !== undefined) {
+      rate = +frameRate;
+      if (!$NumberIsFinite(rate)) {
+        throw new $TypeError(where + "The provided double value is non-finite.");
+      }
+      if (rate < 0) {
+        throw new $DOMException(where + "Given frame rate is not supported.", "NotSupportedError");
+      }
+    }
+    const label = captureDevice();
+    const settings = {
+      deviceId: label, frameRate: rate, width: this.width, height: this.height,
+    };
+    const track = new CanvasCaptureMediaStreamTrack(KEY, this, label, settings);
+    return new MediaStream([track]);
+  }
 
   class MediaStream extends EventTarget {
     #id = audioUuid(); #tracks = [];
@@ -1771,9 +1842,9 @@
     getAudioTracks() { return this.#of("audio"); }
     getVideoTracks() { return this.#of("video"); }
 
-    getTrackById(trackId) {
+    getTrackById(wanted) {
       need(arguments.length, 1, "getTrackById", "MediaStream");
-      const id = str(trackId);
+      const id = str(wanted);
       for (let i = 0; i < this.#tracks.length; i++) {
         if (trackId(this.#tracks[i]) === id) return this.#tracks[i];
       }
@@ -2084,5 +2155,5 @@
     return false;
   }
 
-  return { audioTask };
+  return { audioTask, captureStream };
 })

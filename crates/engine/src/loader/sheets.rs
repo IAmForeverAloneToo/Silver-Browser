@@ -77,6 +77,9 @@ pub(crate) struct Page {
     /// in order.
     constructed: Vec<Constructed>,
     adopted: Vec<u64>,
+    /// The serial numbers of the sheets a script disabled (CSSOM's
+    /// disabled flag): a sheet made again is a new one, enabled.
+    disabled: HashSet<u64>,
     /// The sheets of the elements taken out of the document (or whose
     /// sheet was made again), the latest last, kept for the CSSOM objects
     /// scripts still hold (CSSOM section 6.1: a sheet outlives its owner);
@@ -96,6 +99,8 @@ struct Constructed {
     serial: u64,
     rules: css::Stylesheet,
     base: Option<Url>,
+    /// Its `media`, where its rules apply; none for every medium.
+    media: Option<String>,
 }
 
 /// What a page's fetches are made with.
@@ -316,6 +321,7 @@ impl Page {
             cssom_edited: false,
             constructed: Vec::new(),
             adopted: Vec::new(),
+            disabled: HashSet::new(),
             detached: Vec::new(),
         }
     }
@@ -362,6 +368,7 @@ impl Page {
             cssom_edited: false,
             constructed: Vec::new(),
             adopted: Vec::new(),
+            disabled: HashSet::new(),
             detached: Vec::new(),
         }
     }
@@ -1171,6 +1178,7 @@ impl Page {
         for owner in &self.owners {
             if let Slot::Ready(sheet) = &owner.sheet
                 && (owner.title.is_empty() || Some(owner.title.as_str()) == preferred)
+                && !self.disabled.contains(&sheet.serial)
             {
                 sheets.push(css::Stylesheet {
                     rules: rules::wrap_in_media(owner.media.as_deref(), sheet.rules()),
@@ -1179,12 +1187,21 @@ impl Page {
         }
         // The adopted sheets after the document's (CSSOM's document or
         // shadow root CSS style sheets).
+        self.adopted_sheets(&mut sheets);
+        sheets
+    }
+
+    /// The adopted sheets that apply, each in its `media`, after `sheets`.
+    fn adopted_sheets(&self, sheets: &mut Vec<css::Stylesheet>) {
         for serial in &self.adopted {
-            if let Some(sheet) = self.constructed.iter().find(|c| c.serial == *serial) {
-                sheets.push(sheet.rules.clone());
+            if let Some(sheet) = self.constructed.iter().find(|c| c.serial == *serial)
+                && !self.disabled.contains(serial)
+            {
+                sheets.push(css::Stylesheet {
+                    rules: rules::wrap_in_media(sheet.media.as_deref(), sheet.rules.rules.clone()),
+                });
             }
         }
-        sheets
     }
 }
 
@@ -1220,6 +1237,7 @@ impl Page {
                 Some(owner) => {
                     if let Slot::Ready(sheet) = &owner.sheet
                         && (owner.title.is_empty() || Some(owner.title.as_str()) == preferred)
+                        && !self.disabled.contains(&sheet.serial)
                     {
                         sheets.push(css::Stylesheet {
                             rules: rules::wrap_in_media(owner.media.as_deref(), sheet.rules()),
@@ -1244,12 +1262,32 @@ impl Page {
                 None => {}
             }
         }
-        for serial in &self.adopted {
-            if let Some(sheet) = self.constructed.iter().find(|c| c.serial == *serial) {
-                sheets.push(sheet.rules.clone());
-            }
-        }
+        self.adopted_sheets(&mut sheets);
         sheets
+    }
+
+    /// Sets the disabled flag of the sheet `serial` (CSSOM's `disabled`):
+    /// the cascade leaves it out while it is set.
+    pub(crate) fn set_sheet_disabled(&mut self, serial: u64, disabled: bool) {
+        let changed = if disabled {
+            self.disabled.len() < MAX_CONSTRUCTED_SHEETS && self.disabled.insert(serial)
+        } else {
+            self.disabled.remove(&serial)
+        };
+        self.cssom_edited |= changed;
+    }
+
+    /// Sets the `media` of the constructed sheet `serial`: its rules apply
+    /// where the list holds, none for every medium.
+    pub(crate) fn set_constructed_media(&mut self, serial: u64, media: &str) {
+        let Some(sheet) = self.constructed.iter_mut().find(|c| c.serial == serial) else {
+            return;
+        };
+        let media = (!media.trim().is_empty()).then(|| media.to_owned());
+        if sheet.media != media {
+            sheet.media = media;
+            self.cssom_edited |= self.adopted.contains(&serial);
+        }
     }
 
     /// The CSSOM's `document.styleSheets` (D66): each element whose
@@ -1349,6 +1387,7 @@ impl Page {
             serial,
             rules: css::Stylesheet::default(),
             base,
+            media: None,
         });
         Some(serial)
     }

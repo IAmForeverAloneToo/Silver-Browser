@@ -29,7 +29,7 @@ pub use view_wire::{Input, Settings, ViewState};
 /// The schema's version: a message's layout never changes without it.
 /// The hello of each side carries it, and a renderer of another version
 /// is refused.
-pub const IPC_VERSION: u32 = 2;
+pub const IPC_VERSION: u32 = 3;
 
 /// The longest message, in bytes. A body or a picture longer goes in
 /// pieces of at most [`MAX_CHUNK`].

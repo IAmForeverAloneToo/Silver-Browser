@@ -1706,6 +1706,14 @@ pub struct Effects {
     /// scroll of the box, or of the viewport for the root's, is smooth
     /// unless it asks otherwise.
     pub scroll_behavior_smooth: bool,
+    /// `scroll-margin-{top,right,bottom,left}` (Scroll Snap 1 section
+    /// 6.1), in px: how far past its border box a box is brought into
+    /// view.
+    pub scroll_margin: [f32; 4],
+    /// `scroll-padding-{top,right,bottom,left}` (section 6.2): the
+    /// scrollport's sides a box is brought into view within; `auto` is
+    /// none.
+    pub scroll_padding: [LengthPercentageAuto; 4],
     /// Not a property: what the element's animations current or in
     /// effect animate, which the engine acts as if `will-change` named
     /// (Web Animations §5.6, M22.2), so that an animated transform or
@@ -1800,6 +1808,8 @@ impl Default for Effects {
             opacity: 1.0,
             will_change: WillChange::AUTO,
             scroll_behavior_smooth: false,
+            scroll_margin: [0.0; 4],
+            scroll_padding: std::array::from_fn(|_| LengthPercentageAuto::Auto),
             animated: WillChange::AUTO,
             box_shadow: Vec::new(),
             filter: Vec::new(),
@@ -2651,8 +2661,10 @@ pub struct Backgrounds {
     pub image: Vec<Option<Image>>,
     /// `background-repeat`, along x and along y.
     pub repeat: Vec<[Repeat; 2]>,
-    /// `background-position`, each from the left and the top edge.
-    pub position: Vec<[LengthPercentage; 2]>,
+    /// `background-position-x` and `-y` (gap batch D, G40), lists of
+    /// their own: from the left and from the top edge.
+    pub position_x: Vec<LengthPercentage>,
+    pub position_y: Vec<LengthPercentage>,
     pub size: Vec<BackgroundSize>,
     pub origin: Vec<BackgroundBox>,
     pub clip: Vec<BackgroundBox>,
@@ -2668,10 +2680,8 @@ impl Default for Backgrounds {
         Backgrounds {
             image: vec![None],
             repeat: vec![[Repeat::Repeat; 2]],
-            position: vec![[
-                LengthPercentage::Percent(0.0),
-                LengthPercentage::Percent(0.0),
-            ]],
+            position_x: vec![LengthPercentage::Percent(0.0)],
+            position_y: vec![LengthPercentage::Percent(0.0)],
             size: vec![BackgroundSize::default()],
             origin: vec![BackgroundBox::PaddingBox],
             clip: vec![BackgroundBox::BorderBox],
@@ -2686,7 +2696,7 @@ impl Default for Backgrounds {
 pub struct BackgroundLayer<'a> {
     pub image: Option<&'a Image>,
     pub repeat: [Repeat; 2],
-    pub position: &'a [LengthPercentage; 2],
+    pub position: [&'a LengthPercentage; 2],
     pub size: &'a BackgroundSize,
     pub origin: BackgroundBox,
     pub clip: BackgroundBox,
@@ -2702,12 +2712,17 @@ impl Backgrounds {
         (0..self.image.len()).map(move |i| BackgroundLayer {
             image: self.image[i].as_ref(),
             repeat: *at(&self.repeat, i),
-            position: at(&self.position, i),
+            position: [at(&self.position_x, i), at(&self.position_y, i)],
             size: at(&self.size, i),
             origin: *at(&self.origin, i),
             clip: *at(&self.clip, i),
             attachment: *at(&self.attachment, i),
         })
+    }
+
+    /// Sets `background-position`: its pairs' values along each axis.
+    pub fn set_positions(&mut self, pairs: Vec<[LengthPercentage; 2]>) {
+        (self.position_x, self.position_y) = pairs.into_iter().map(|[x, y]| (x, y)).unzip();
     }
 
     /// The box the colour is painted in: the bottom layer's
@@ -3455,8 +3470,10 @@ pub struct ComputedStyle {
     /// `border-{top,right,bottom,left}-style` (per side since M10) —
     /// not inherited.
     pub border_style: [BorderStyle; 4],
-    /// `overflow` (M9.3) — not inherited.
-    pub overflow: Overflow,
+    /// `overflow-x` and `overflow-y` (M9.3; longhands since gap batch D),
+    /// not inherited. [`ComputedStyle::overflow`] is them as one.
+    pub overflow_x: Overflow,
+    pub overflow_y: Overflow,
     /// `box-sizing` (M10.2) — not inherited.
     pub box_sizing: BoxSizing,
     /// `min-width` (M10.3) — not inherited; a percentage of the
@@ -3653,7 +3670,8 @@ impl Default for ComputedStyle {
             border_width: [3.0; 4], // `medium`
             border_color: [Color::CURRENT; 4],
             border_style: [BorderStyle::None; 4],
-            overflow: Overflow::Visible,
+            overflow_x: Overflow::Visible,
+            overflow_y: Overflow::Visible,
             box_sizing: BoxSizing::ContentBox,
             min_width: Size::Auto,
             max_width: MaxSize::None,
@@ -3714,6 +3732,46 @@ impl Default for ComputedStyle {
 }
 
 impl ComputedStyle {
+    /// `overflow` as one value, what layout and paint act on: the axes'
+    /// when they agree, else the one that does most, so that a box one
+    /// axis of which scrolls is a scroll container.
+    pub fn overflow(&self) -> Overflow {
+        let rank = |o: Overflow| match o {
+            Overflow::Visible => 0,
+            Overflow::Clip => 1,
+            Overflow::Hidden => 2,
+            Overflow::Auto => 3,
+            Overflow::Scroll => 4,
+        };
+        if rank(self.overflow_x) >= rank(self.overflow_y) {
+            self.overflow_x
+        } else {
+            self.overflow_y
+        }
+    }
+
+    /// Sets both axes' overflow to `overflow`.
+    pub fn set_overflow(&mut self, overflow: Overflow) {
+        (self.overflow_x, self.overflow_y) = (overflow, overflow);
+    }
+
+    /// The axes' computed values (css-overflow-3 section 3.1): beside an
+    /// axis that is neither `visible` nor `clip`, `visible` is `auto` and
+    /// `clip` is `hidden`.
+    pub(crate) fn fix_overflow(&mut self) {
+        let plain = |o: Overflow| matches!(o, Overflow::Visible | Overflow::Clip);
+        if plain(self.overflow_x) == plain(self.overflow_y) {
+            return;
+        }
+        for axis in [&mut self.overflow_x, &mut self.overflow_y] {
+            *axis = match *axis {
+                Overflow::Visible => Overflow::Auto,
+                Overflow::Clip => Overflow::Hidden,
+                other => other,
+            };
+        }
+    }
+
     /// Whether side `side`'s `border-*-color` is `currentcolor` (M33):
     /// the reference browser draws an `inset`, `outset`, `groove` or
     /// `ridge` side of that colour in rgb(238, 238, 238) whatever
@@ -4235,8 +4293,8 @@ mod tests {
         assert_eq!(s.border_width, [3.0; 4], "medium");
         assert_eq!(s.used_border_width(), [0.0; 4], "none paints nothing");
         assert!(!BorderStyle::Hidden.paints() && BorderStyle::Dotted.paints());
-        assert_eq!(s.overflow, Overflow::Visible);
-        assert!(!s.overflow.clips());
+        assert_eq!(s.overflow(), Overflow::Visible);
+        assert!(!s.overflow().clips());
         assert_eq!(s.box_sizing, BoxSizing::ContentBox);
         assert_eq!(s.min_width, Size::Auto);
         assert_eq!(s.max_width, MaxSize::None);

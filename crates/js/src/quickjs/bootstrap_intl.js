@@ -11,10 +11,11 @@
   const {
     $Date, $Number, $Object, $RangeError, $String, $TypeError, $WeakMap, ArrayIndexOf, ArrayPush,
     ArraySlice, ArraySort, BigIntToString, BigIntValueOf, CharCodeAt, DateGetTime,
-    DateGetTimezoneOffset, DateNow, MathAbs, MathFloor, MathMax, MathMin, MathTrunc, NumberValueOf,
-    ObjectCreate, ObjectPrototype, StringIndexOf, StringSlice, ToUpperCase, WeakMapGet, WeakMapSet,
-    defineProperty, getOwnPropertyDescriptor, getOwnPropertyNames, global, languageList, native,
-    toString, toStringTag,
+    DateGetTimezoneOffset, DateNow, IteratorPrototype, MathAbs, MathFloor, MathMax, MathMin,
+    MathTrunc, NumberValueOf, ObjectCreate, ObjectPrototype, StringIndexOf, StringSlice,
+    ToLowerCase, ToUpperCase, ToWellFormed, WeakMapGet, WeakMapSet, defineProperty,
+    getOwnPropertyDescriptor, getOwnPropertyNames, global, iteratorSymbol, languageList,
+    native, toString, toStringTag,
   } = env;
 
   // ---- Intl (ECMA-402, gap batch D, D63) ------------------------------------
@@ -22,8 +23,8 @@
   // The namespace (ECMA-402 section 8): an ordinary object, not a
   // constructor, its members not enumerable, as the language's own
   // built-ins are. What it computes is the natives' (`intl...`), by
-  // ICU4X with its compiled data; RelativeTimeFormat, ListFormat,
-  // Segmenter and DisplayNames are not here.
+  // ICU4X with its compiled data; RelativeTimeFormat and ListFormat are
+  // not here.
   const IntlNamespace = ObjectCreate(ObjectPrototype);
   defineProperty(IntlNamespace, toStringTag, { value: "Intl", configurable: true });
   defineProperty(global, "Intl", {
@@ -1120,6 +1121,656 @@
     getTimeZones() { return localeInfo(this, "getTimeZones"); },
     getTextInfo() { return localeInfo(this, "getTextInfo"); },
     getWeekInfo() { return localeInfo(this, "getWeekInfo"); },
+  });
+
+  // ---- Segmenter (section 18) ----
+
+  // Section 9.2.11, GetOptionsObject, in the reference browser's words.
+  function optionsObject(options) {
+    if (options === undefined) return ObjectCreate(null);
+    if ((typeof options === "object" && options !== null) || typeof options === "function") {
+      return options;
+    }
+    throw new $TypeError("invalid_argument");
+  }
+
+  // Section 18.1.1, Intl.Segmenter.
+  function Segmenter() {
+    if (new.target === undefined) {
+      throw new $TypeError("Constructor Intl.Segmenter requires 'new'");
+    }
+    const requested = canonicalLocales(arguments[0]);
+    const options = optionsObject(arguments[1]);
+    const where = "Segmenter";
+    getOption(options, "localeMatcher", "string", MATCHERS, "best fit", where);
+    const r = resolveLocale(requested, [], {});
+    const granularity = getOption(options, "granularity", "string",
+      ["grapheme", "word", "sentence"], "grapheme", where);
+    WeakMapSet(intlSlots, this, { kind: "Segmenter", locale: r.locale, granularity });
+  }
+
+  // %SegmentsPrototype% and %SegmentIteratorPrototype% (sections 18.5
+  // and 18.6), and their objects' slots: the string, the granularity and
+  // its boundaries, found at the first use (the natives' marks, each
+  // twice a boundary, plus one after a word-like segment).
+  const segmentsSlots = new $WeakMap();
+  const segmentIteratorSlots = new $WeakMap();
+
+  function segmentMarks(state) {
+    if (state.marks === null) {
+      state.marks = native.intlSegment(state.granularity, ToWellFormed(state.string));
+    }
+    return state.marks;
+  }
+
+  // Section 18.7.1, CreateSegmentDataObject: the segment from mark `i`.
+  function segmentData(state, i) {
+    const marks = segmentMarks(state);
+    const start = MathFloor(marks[i] / 2);
+    const end = MathFloor(marks[i + 1] / 2);
+    const data = { segment: StringSlice(state.string, start, end), index: start, input: state.string };
+    if (state.granularity === "word") data.isWordLike = marks[i + 1] % 2 === 1;
+    return data;
+  }
+
+  const SegmentsPrototype = ObjectCreate(ObjectPrototype);
+  intlDefine(SegmentsPrototype, "containing", {
+    containing(index) {
+      const state = (typeof this === "object" || typeof this === "function") && this !== null
+        ? WeakMapGet(segmentsSlots, this)
+        : undefined;
+      if (state === undefined) {
+        throw new $TypeError("Method %Segments.prototype%.containing called on incompatible receiver " +
+          toDisplay(this));
+      }
+      let n = $Number(index);
+      n = n !== n ? 0 : MathTrunc(n);
+      if (n < 0 || n >= state.string.length) return undefined;
+      const marks = segmentMarks(state);
+      // The last boundary at or before `n`, by halves.
+      let low = 0;
+      let high = marks.length - 1;
+      while (high - low > 1) {
+        const middle = MathFloor((low + high) / 2);
+        if (MathFloor(marks[middle] / 2) <= n) low = middle;
+        else high = middle;
+      }
+      return segmentData(state, low);
+    },
+  }.containing);
+
+  const SegmentIteratorPrototype = ObjectCreate(IteratorPrototype);
+  intlDefine(SegmentIteratorPrototype, "next", {
+    next() {
+      const state = (typeof this === "object" || typeof this === "function") && this !== null
+        ? WeakMapGet(segmentIteratorSlots, this)
+        : undefined;
+      if (state === undefined) {
+        throw new $TypeError("Method %SegmentIterator.prototype%.next called on incompatible receiver " +
+          toDisplay(this));
+      }
+      const marks = segmentMarks(state.segments);
+      if (state.at + 1 >= marks.length) return { value: undefined, done: true };
+      const value = segmentData(state.segments, state.at);
+      state.at++;
+      return { value, done: false };
+    },
+  }.next);
+  defineProperty(SegmentIteratorPrototype, toStringTag, {
+    value: "Segmenter String Iterator",
+    configurable: true,
+  });
+
+  defineProperty(SegmentsPrototype, iteratorSymbol, {
+    value: {
+      [iteratorSymbol]() {
+        const segments = (typeof this === "object" || typeof this === "function") && this !== null
+          ? WeakMapGet(segmentsSlots, this)
+          : undefined;
+        if (segments === undefined) {
+          throw new $TypeError("Method %Segments.prototype%[@@iterator] called on incompatible receiver " +
+            toDisplay(this));
+        }
+        const iterator = ObjectCreate(SegmentIteratorPrototype);
+        WeakMapSet(segmentIteratorSlots, iterator, { segments, at: 0 });
+        return iterator;
+      },
+    }[iteratorSymbol],
+    writable: true,
+    configurable: true,
+  });
+
+  intlClass(Segmenter, "Segmenter", {
+    resolvedOptions() {
+      const slot = intlSlot(this, "Segmenter", "resolvedOptions");
+      return { locale: slot.locale, granularity: slot.granularity };
+    },
+    // Section 18.3.3, Intl.Segmenter.prototype.segment.
+    segment(string) {
+      const slot = intlSlot(this, "Segmenter", "segment");
+      const segments = ObjectCreate(SegmentsPrototype);
+      WeakMapSet(segmentsSlots, segments, {
+        string: toString(string),
+        granularity: slot.granularity,
+        marks: null,
+      });
+      return segments;
+    },
+  });
+
+  // ---- DisplayNames (section 12) ----
+
+  const DISPLAY_TYPES = ["language", "region", "script", "currency", "calendar", "dateTimeField"];
+  const DATE_TIME_FIELDS = [
+    "era", "year", "quarter", "month", "weekOfYear", "weekday", "day", "dayPeriod", "hour",
+    "minute", "second", "timeZoneName",
+  ];
+
+  // Section 12.1.1, Intl.DisplayNames.
+  function DisplayNames(locales, options) {
+    if (new.target === undefined) {
+      throw new $TypeError("Constructor Intl.DisplayNames requires 'new'");
+    }
+    const requested = canonicalLocales(locales);
+    options = optionsObject(options);
+    const where = "DisplayNames";
+    getOption(options, "localeMatcher", "string", MATCHERS, "best fit", where);
+    const r = resolveLocale(requested, [], {});
+    const style = getOption(options, "style", "string", ["narrow", "short", "long"], "long", where);
+    const type = getOption(options, "type", "string", DISPLAY_TYPES, undefined, where);
+    if (type === undefined) throw new $TypeError("invalid_argument");
+    const fallback = getOption(options, "fallback", "string", ["code", "none"], "code", where);
+    const languageDisplay = getOption(options, "languageDisplay", "string",
+      ["dialect", "standard"], "dialect", where);
+    WeakMapSet(intlSlots, this, {
+      kind: "DisplayNames", locale: r.locale, dataLocale: r.dataLocale, style, type, fallback,
+      languageDisplay,
+    });
+  }
+
+  // Whether `text` is `count` (a [low, high] range) characters, each
+  // one `test` takes.
+  function codeOf(text, low, high, test) {
+    if (text.length < low || text.length > high) return false;
+    for (let i = 0; i < text.length; i++) {
+      if (!test(CharCodeAt(text, i))) return false;
+    }
+    return true;
+  }
+  const isAlpha = (c) => (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+  const isDigit = (c) => c >= 48 && c <= 57;
+  const isAlphanum = (c) => isAlpha(c) || isDigit(c);
+
+  // Whether `code` is a unicode_language_id (UTS #35), as section 12.5.1
+  // takes a language's code.
+  function isLanguageId(code) {
+    const subtags = [];
+    let start = 0;
+    for (let i = 0; i <= code.length; i++) {
+      if (i === code.length || code[i] === "-") {
+        ArrayPush(subtags, StringSlice(code, start, i));
+        start = i + 1;
+      }
+    }
+    let i = 0;
+    if (!codeOf(subtags[0], 2, 3, isAlpha) && !codeOf(subtags[0], 5, 8, isAlpha)) return false;
+    i++;
+    if (i < subtags.length && codeOf(subtags[i], 4, 4, isAlpha)) i++;
+    if (i < subtags.length && (codeOf(subtags[i], 2, 2, isAlpha) || codeOf(subtags[i], 3, 3, isDigit))) i++;
+    const seen = [];
+    for (; i < subtags.length; i++) {
+      const v = subtags[i];
+      const variant = codeOf(v, 5, 8, isAlphanum) ||
+        (v.length === 4 && isDigit(CharCodeAt(v, 0)) && codeOf(v, 4, 4, isAlphanum));
+      if (!variant) return false;
+      const lower = ToLowerCase(v);
+      if (ArrayIndexOf(seen, lower) >= 0) return false;
+      ArrayPush(seen, lower);
+    }
+    return true;
+  }
+
+  intlClass(DisplayNames, "DisplayNames", {
+    resolvedOptions() {
+      const slot = intlSlot(this, "DisplayNames", "resolvedOptions");
+      const options = { locale: slot.locale, style: slot.style, type: slot.type, fallback: slot.fallback };
+      if (slot.type === "language") options.languageDisplay = slot.languageDisplay;
+      return options;
+    },
+    // Section 12.3.3, Intl.DisplayNames.prototype.of.
+    of(code) {
+      const slot = intlSlot(this, "DisplayNames", "of");
+      code = toString(code);
+      let valid;
+      let canonical = code;
+      switch (slot.type) {
+        case "language":
+          valid = isLanguageId(code);
+          if (valid) canonical = native.intlCanonical([code])[0];
+          break;
+        case "region":
+          valid = codeOf(code, 2, 2, isAlpha) || codeOf(code, 3, 3, isDigit);
+          // A deprecated region by the one that replaced it (DD, DE).
+          if (valid && codeOf(code, 2, 2, (c) => c >= 65 && c <= 90)) {
+            const replaced = native.intlCanonical(["und-" + code])[0];
+            if (StringIndexOf(replaced, "und-") === 0) canonical = StringSlice(replaced, 4);
+          }
+          break;
+        case "script":
+          valid = codeOf(code, 4, 4, isAlpha);
+          break;
+        case "currency":
+          valid = codeOf(code, 3, 3, isAlpha);
+          break;
+        case "calendar":
+          valid = isTypeSequence(code);
+          break;
+        default:
+          valid = ArrayIndexOf(DATE_TIME_FIELDS, code) >= 0;
+      }
+      if (!valid) throw new $RangeError("invalid_argument");
+      const name = native.intlDisplayName(slot.dataLocale, slot.type, slot.style,
+        slot.languageDisplay === "standard", slot.fallback === "code", canonical);
+      if (name !== "") return name;
+      if (slot.fallback !== "code") return undefined;
+      // ICU's own keys for the two calendars BCP 47 names otherwise.
+      if (slot.type === "calendar" && code === "gregory") return "gregorian";
+      if (slot.type === "calendar" && code === "ethioaa") return "ethiopic-amete-alem";
+      return code;
+    },
+  });
+
+  // ---- DurationFormat (ECMA-402 2025 section 13) ----
+  // As the reference browser formats, where its V8 departs from the
+  // text: a numeric minute or second joins the list's last element by
+  // the time separator once the hours were numeric or the minutes came,
+  // shown or not.
+
+  const DURATION_UNITS = [
+    "years", "months", "weeks", "days", "hours", "minutes", "seconds", "milliseconds",
+    "microseconds", "nanoseconds",
+  ];
+  const DURATION_SINGULAR = [
+    "year", "month", "week", "day", "hour", "minute", "second", "millisecond", "microsecond",
+    "nanosecond",
+  ];
+  // Temporal's order of reading a duration's fields: alphabetical.
+  const DURATION_READ = [3, 4, 8, 7, 5, 1, 9, 6, 2, 0];
+
+  // Section 13.1.1, Intl.DurationFormat, with GetDurationUnitOptions
+  // (section 13.5.6) for each unit.
+  function DurationFormat() {
+    if (new.target === undefined) {
+      throw new $TypeError("Constructor Intl.DurationFormat requires 'new'");
+    }
+    const requested = canonicalLocales(arguments[0]);
+    const options = optionsObject(arguments[1]);
+    const where = "DurationFormat";
+    getOption(options, "localeMatcher", "string", MATCHERS, "best fit", where);
+    const nu = getOption(options, "numberingSystem", "string", undefined, undefined, where);
+    if (nu !== undefined && !isTypeSequence(nu)) {
+      throw new $RangeError("Invalid numberingSystem : " + nu);
+    }
+    const r = resolveLocale(requested, ["nu"], { nu });
+    const tag = formatterTag(r.dataLocale, ["nu", r.values.nu]);
+    const style = getOption(options, "style", "string",
+      ["long", "short", "narrow", "digital"], "short", where);
+    const slot = {
+      kind: "DurationFormat",
+      locale: r.locale,
+      tag,
+      numberingSystem: native.intlNumberingSystem(tag),
+      style,
+      styles: [],
+      displays: [],
+      fractionalDigits: undefined,
+      formats: { __proto__: null },
+      separator: undefined,
+    };
+    let previous = "";
+    for (let i = 0; i < 10; i++) {
+      const unit = DURATION_UNITS[i];
+      const allowed = i < 4 ? ["long", "short", "narrow"]
+        : i < 7 ? ["long", "short", "narrow", "numeric", "2-digit"]
+          : ["long", "short", "narrow", "numeric"];
+      let unitStyle = getOption(options, unit, "string", allowed, undefined, where);
+      let displayDefault = "always";
+      if (unitStyle === undefined) {
+        if (style === "digital") {
+          if (i < 4 || i > 6) displayDefault = "auto";
+          unitStyle = i < 4 ? "short" : "numeric";
+        } else if (previous === "fractional" || previous === "numeric" || previous === "2-digit") {
+          if (unit !== "minutes" && unit !== "seconds") displayDefault = "auto";
+          unitStyle = "numeric";
+        } else {
+          displayDefault = "auto";
+          unitStyle = style;
+        }
+      }
+      if (unitStyle === "numeric" && i > 6) {
+        unitStyle = "fractional";
+        displayDefault = "auto";
+      }
+      const display = getOption(options, unit + "Display", "string", ["auto", "always"],
+        displayDefault, where);
+      const invalid = () => new $RangeError("Invalid object : " + toDisplay(options));
+      if (display === "always" && unitStyle === "fractional") throw invalid();
+      if (previous === "numeric" || previous === "2-digit" || previous === "fractional") {
+        if (unitStyle !== "fractional" && unitStyle !== "numeric" && unitStyle !== "2-digit") {
+          throw invalid();
+        }
+        if (unit === "minutes" || unit === "seconds") unitStyle = "2-digit";
+      }
+      ArrayPush(slot.styles, unitStyle);
+      ArrayPush(slot.displays, display);
+      previous = unitStyle;
+    }
+    slot.fractionalDigits = getNumberOption(options, "fractionalDigits", 0, 9, undefined);
+    WeakMapSet(intlSlots, this, slot);
+  }
+
+  // Temporal's ParseTemporalDurationString, for a duration given as a
+  // string: the fields, or undefined where the string has none.
+  function parseDuration(text) {
+    const fail = () => new $RangeError("Temporal error: Invalid duration string.");
+    let i = 0;
+    let sign = 1;
+    const c0 = text[0];
+    if (c0 === "+" || c0 === "-" || c0 === "\u2212") {
+      if (c0 !== "+") sign = -1;
+      i = 1;
+    }
+    if (text[i] !== "P" && text[i] !== "p") throw fail();
+    i++;
+    const fields = [undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined];
+    const dateUnits = "YMWD";
+    const timeUnits = "HMS";
+    let inTime = false;
+    let order = -1;
+    let any = false;
+    let fractioned = false;
+    while (i < text.length) {
+      let c = text[i];
+      if (c === "T" || c === "t") {
+        if (inTime) throw fail();
+        inTime = true;
+        order = -1;
+        i++;
+        if (i >= text.length) throw fail();
+        continue;
+      }
+      if (fractioned) throw fail();
+      let digits = "";
+      while (i < text.length && CharCodeAt(text, i) >= 48 && CharCodeAt(text, i) <= 57) digits += text[i++];
+      if (digits === "") throw fail();
+      let fraction = "";
+      if (text[i] === "." || text[i] === ",") {
+        if (!inTime) throw fail();
+        i++;
+        while (i < text.length && CharCodeAt(text, i) >= 48 && CharCodeAt(text, i) <= 57) fraction += text[i++];
+        if (fraction === "" || fraction.length > 9) throw fail();
+        fractioned = true;
+      }
+      c = ToUpperCase(text[i] === undefined ? "" : text[i]);
+      i++;
+      const at = StringIndexOf(inTime ? timeUnits : dateUnits, c);
+      if (c === "" || at < 0 || at <= order) throw fail();
+      order = at;
+      any = true;
+      const index = inTime ? 4 + at : at;
+      fields[index] = $Number(digits);
+      if (fraction !== "") {
+        // The fraction in nanoseconds, spread over the smaller units.
+        while (fraction.length < 9) fraction += "0";
+        const scale = [3600, 60, 1][at];
+        let nanos = $Number(fraction) * scale;
+        const whole = MathFloor(nanos / 1e9);
+        nanos -= whole * 1e9;
+        if (at === 0) {
+          const minutes = whole / 60;
+          fields[5] = MathFloor(minutes);
+          fields[6] = whole - MathFloor(minutes) * 60;
+        } else if (at === 1) {
+          fields[6] = whole;
+        } else {
+          fields[6] += whole;
+        }
+        fields[7] = MathFloor(nanos / 1e6);
+        fields[8] = MathFloor(nanos / 1e3) % 1000;
+        fields[9] = nanos % 1000;
+      }
+    }
+    if (!any || (inTime && order < 0)) throw fail();
+    for (let k = 0; k < 10; k++) {
+      if (fields[k] === undefined) fields[k] = 0;
+      else if (sign < 0) fields[k] = -fields[k];
+    }
+    return fields;
+  }
+
+  // Section 13.5.1, ToDurationRecord, as Temporal reads one: the ten
+  // fields, each an integral number, of one sign and in range.
+  function durationRecord(input) {
+    let fields;
+    if (typeof input === "string") {
+      fields = parseDuration(input);
+    } else {
+      if (typeof input !== "object" || input === null) {
+        throw new $TypeError("Temporal error: Duration argument must be Duration or string.");
+      }
+      fields = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+      let any = false;
+      for (let k = 0; k < 10; k++) {
+        const i = DURATION_READ[k];
+        const value = input[DURATION_UNITS[i]];
+        if (value === undefined) continue;
+        any = true;
+        const n = $Number(value);
+        if (n !== n || n === Infinity || n === -Infinity || MathTrunc(n) !== n) {
+          throw new $RangeError("Temporal error: Expected finite integer.");
+        }
+        fields[i] = n;
+      }
+      if (!any) throw new $TypeError("Temporal error: Did not provide any valid Duration fields.");
+    }
+    // IsValidDuration.
+    const invalid = () => new $RangeError("Temporal error: Duration was not valid.");
+    let sign = 0;
+    for (let i = 0; i < 10; i++) {
+      const v = fields[i];
+      if (v < 0) {
+        if (sign > 0) throw invalid();
+        sign = -1;
+      } else if (v > 0) {
+        if (sign < 0) throw invalid();
+        sign = 1;
+      }
+    }
+    for (let i = 0; i < 3; i++) {
+      if (MathAbs(fields[i]) >= 4294967296) throw invalid();
+    }
+    const seconds = MathAbs(fields[3]) * 86400 + MathAbs(fields[4]) * 3600 + MathAbs(fields[5]) * 60 +
+      MathAbs(fields[6]) + MathAbs(fields[7]) / 1e3 + MathAbs(fields[8]) / 1e6 + MathAbs(fields[9]) / 1e9;
+    if (seconds >= 9007199254740992) throw invalid();
+    return { fields, sign };
+  }
+
+  // The digits of a sum of non-negative integers' digits.
+  function addDigits(a, b) {
+    let out = "";
+    let carry = 0;
+    for (let i = a.length - 1, j = b.length - 1; i >= 0 || j >= 0 || carry; i--, j--) {
+      const d = (i >= 0 ? CharCodeAt(a, i) - 48 : 0) + (j >= 0 ? CharCodeAt(b, j) - 48 : 0) + carry;
+      carry = d >= 10 ? 1 : 0;
+      out = (d % 10) + out;
+    }
+    return out;
+  }
+
+  // The exact decimal of unit `from` with the smaller ones as its
+  // fraction (seconds and milliseconds with what follows them).
+  function durationDecimal(fields, from) {
+    let total = "0";
+    for (let i = from; i < 10; i++) {
+      let digits = $String(MathAbs(fields[i]));
+      for (let k = i; k < 9; k++) digits += "000";
+      total = addDigits(total, digits);
+    }
+    const point = (9 - from) * 3;
+    while (total.length <= point) total = "0" + total;
+    const text = StringSlice(total, 0, total.length - point) + "." + StringSlice(total, total.length - point);
+    return text;
+  }
+
+  // The locale's time separator, as its hours and minutes are written.
+  function durationSeparator(slot) {
+    if (slot.separator === undefined) {
+      const formatter = createDateTimeFormat(ObjectCreate(null), slot.tag,
+        { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: "UTC" }, "any", "date");
+      const parts = formatDateParts(formatter, 0);
+      slot.separator = ":";
+      for (let i = 0; i + 1 < parts.length; i += 2) {
+        if (parts[i] === "hour" && parts[i + 2] === "literal") {
+          slot.separator = parts[i + 3];
+          break;
+        }
+      }
+    }
+    return slot.separator;
+  }
+
+  // A number formatter for a unit at a style, kept by the slot.
+  function durationNumberFormat(slot, i, style, fraction, signed) {
+    const key = i + " " + style + " " + fraction + " " + signed;
+    let nf = slot.formats[key];
+    if (nf === undefined) {
+      const options = { numberingSystem: slot.numberingSystem };
+      if (style === "numeric" || style === "2-digit") {
+        options.useGrouping = false;
+        if (style === "2-digit") options.minimumIntegerDigits = 2;
+      } else {
+        options.style = "unit";
+        options.unit = DURATION_SINGULAR[i];
+        options.unitDisplay = style;
+      }
+      if (fraction) {
+        const digits = slot.fractionalDigits;
+        options.maximumFractionDigits = digits === undefined ? 9 : digits;
+        options.minimumFractionDigits = digits === undefined ? 0 : digits;
+        options.roundingMode = "trunc";
+      }
+      if (!signed) options.signDisplay = "never";
+      nf = WeakMapGet(intlSlots, new NumberFormat(slot.locale, options));
+      slot.formats[key] = nf;
+    }
+    return nf;
+  }
+
+  // Section 13.5.7, PartitionDurationFormatPattern: the list's elements,
+  // each a list of parts [type, text, unit, ...] (unit "" for none), then
+  // joined by the locale's list of units.
+  function durationParts(slot, input) {
+    const record = durationRecord(input);
+    const fields = record.fields;
+    const elements = [];
+    let joinNext = false;
+    let signShown = false;
+    for (let i = 0; i < 10; i++) {
+      const style = slot.styles[i];
+      if (style === "fractional") break;
+      const display = slot.displays[i];
+      const fraction = i >= 6 && i < 9 && slot.styles[i + 1] === "fractional";
+      let value = fields[i];
+      let zero = value === 0;
+      if (fraction) {
+        value = durationDecimal(fields, i);
+        for (let k = i + 1; k < 10; k++) zero = zero && fields[k] === 0;
+      }
+      const numeric = style === "numeric" || style === "2-digit";
+      if (!zero || display === "always") {
+        let signed = false;
+        if (!signShown) {
+          signShown = true;
+          signed = true;
+        }
+        let x = value;
+        if (fraction) {
+          x = (record.sign < 0 && signed ? "-" : "") + value;
+        } else if (signed && record.sign < 0) {
+          x = value === 0 ? -0 : value;
+        } else {
+          x = MathAbs(value);
+        }
+        const nf = durationNumberFormat(slot, i, style, fraction, signed);
+        const flat = formatNumberParts(nf, x);
+        const parts = [];
+        for (let k = 0; k + 1 < flat.length; k += 2) {
+          ArrayPush(parts, flat[k], flat[k + 1], DURATION_SINGULAR[i]);
+        }
+        if (numeric && joinNext && elements.length > 0) {
+          const last = elements[elements.length - 1];
+          ArrayPush(last, "literal", durationSeparator(slot), "");
+          for (let k = 0; k < parts.length; k++) ArrayPush(last, parts[k]);
+        } else {
+          ArrayPush(elements, parts);
+        }
+      }
+      if ((i === 4 && numeric) || i === 5) joinNext = true;
+      if (fraction) break;
+    }
+    // The elements as the list of units joins them.
+    const texts = [];
+    for (let k = 0; k < elements.length; k++) {
+      let text = "";
+      for (let j = 1; j < elements[k].length; j += 3) text += elements[k][j];
+      ArrayPush(texts, text);
+    }
+    const width = slot.style === "digital" ? "short" : slot.style;
+    const listed = native.intlUnitList(slot.tag, width, texts);
+    const out = [];
+    let next = 0;
+    for (let k = 0; k + 1 < listed.length; k += 2) {
+      if (listed[k] === "element") {
+        const parts = elements[next++];
+        for (let j = 0; j < parts.length; j++) ArrayPush(out, parts[j]);
+      } else {
+        ArrayPush(out, "literal", listed[k + 1], "");
+      }
+    }
+    return out;
+  }
+
+  intlClass(DurationFormat, "DurationFormat", {
+    resolvedOptions() {
+      const slot = intlSlot(this, "DurationFormat", "resolvedOptions");
+      const options = { locale: slot.locale, numberingSystem: slot.numberingSystem, style: slot.style };
+      for (let i = 0; i < 10; i++) {
+        const style = slot.styles[i];
+        options[DURATION_UNITS[i]] = style === "fractional" ? "numeric" : style;
+        options[DURATION_UNITS[i] + "Display"] = slot.displays[i];
+      }
+      if (slot.fractionalDigits !== undefined) options.fractionalDigits = slot.fractionalDigits;
+      return options;
+    },
+    format(duration) {
+      const slot = intlSlot(this, "DurationFormat", "format");
+      const parts = durationParts(slot, duration);
+      let text = "";
+      for (let i = 1; i < parts.length; i += 3) text += parts[i];
+      return text;
+    },
+    formatToParts(duration) {
+      const slot = intlSlot(this, "DurationFormat", "formatToParts");
+      const parts = durationParts(slot, duration);
+      const out = [];
+      for (let i = 0; i + 2 < parts.length; i += 3) {
+        const part = { type: parts[i], value: parts[i + 1] };
+        if (parts[i + 2] !== "") part.unit = parts[i + 2];
+        ArrayPush(out, part);
+      }
+      return out;
+    },
   });
 
   // ---- The namespace's functions (section 8.3) ----

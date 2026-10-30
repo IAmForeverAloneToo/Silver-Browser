@@ -697,3 +697,94 @@ step:
   URL is parsed as UTF-8. Not done: `font-variant-emoji` and the
   variation selectors (no colour fonts), `url()`'s request modifiers,
   and animations of `line-height` in `lh`.
+- *The CSSOM, scrolling and text, the leftovers* (D65, D66, G46, G50):
+  a scroll whose last step a frame drew wants the frame after it, whose
+  rendering steps fire its `scroll` and `scrollend`
+  (`Engine::scroll_events_due`): the smooth scrolls by script had
+  stopped short of their `scrollend` since the scrolling across. A run
+  borrows the shown page's animations and transitions
+  (`scripts::Lent::animations`), so `getComputedStyle` and the layout
+  queries sample them at the frame's time, the keyframes a script added
+  and the transitions its changes start among them; the timeline moves
+  before a frame's callbacks run. `all` is every longhand
+  `getComputedStyle` lists but `direction` and `unicode-bidi`, in the
+  cascade and in a declaration block. `overflow-x` and `overflow-y`, and
+  `background-position-x` and `-y`, are longhands of their own
+  (`ComputedStyle::overflow` the two axes as one, what layout reads, an
+  axis left `visible` beside `clip` not clipped along in paint; the
+  positions a list each, interpolated as repeatable lists). A
+  specified value writes a hash or a colour function as its canonical
+  colour, one with a calculation or a missing component as written.
+  `scroll-margin` and `scroll-padding` are properties `scrollIntoView`
+  reads (a sticky box's container's padding aside). `@page` rules have
+  `CSSPageDescriptors` (the margins, `size`, `page-orientation`) and a
+  `selectorText` setter; `@container`, `@counter-style` and
+  `@font-feature-values` have their rule objects, the last its maps,
+  which write the rule back. A script's `disabled` on any sheet and a
+  constructed sheet's `media` and `disabled` reach the cascade, and
+  `new CSSStyleSheet({ baseURL })` resolves its rules' URLs against it.
+  `Range.getClientRects` and `getBoundingClientRect` give each
+  character's box from its text fragment, matched to the text node by
+  its characters (`scripts::range_rects`): collapsed white space takes
+  none, a space laid out as the room between two words that room. The
+  wheel and the arrow keys scroll across; the viewport has a scrollbar
+  across where `Engine::set_scrollbar_across` asks for one, as the
+  shell does (a test's capture has none, as the reference browser's
+  have no scrollbars, nor does a page the browser made), which the shell
+  drags, and a wheel's turn across, or Shift with a turn down, scrolls
+  across (IPC version 3). Text of private-use code points alone passes
+  over the generic families (`layout::font::font_for`), and atomic
+  inlines no line may break between are one piece of the min-content
+  width. `text-wrap: balance` takes the same room off each line, beside
+  a float or not, and no balancing that pushes a line down past a
+  float. Not
+  done: `direction` as a property (the `dir` attribute alone sets it)
+  and with it right-to-left scroll offsets; the insets of a box
+  positioned in a grid area or a relatively positioned inline (layout
+  places it against the block); `text-spacing-trim` and `text-fit`;
+  bidi reordering across inline boxes (the
+  right-to-left `pre` run); collapsible spaces at a line's end inside
+  an empty inline; a collapsed run of spaces breaking where any of them
+  may.
+- *`Intl`* (D63), the leftovers closed after the batch: a calendar a
+  `-u-ca-` asks for is written by the reference browser's patterns of
+  it, each language's `lang@CAL` in `intl_dates.txt` over its chain
+  (dangi over chinese, the islamic variants over islamic, every
+  calendar over generic, generic over the gregorian ones;
+  `gen_calendars.py`), its names ICU4X's; the Chinese calendars' `y` is
+  the year of the cycle and `r` the related year; the astronomical
+  islamic calendar is ICU's by a table of its months from 1800 to 2199
+  read from the reference browser (`intl_islamic.txt`), ICU4X's
+  simulated one being a day off at times. `Intl.Segmenter` by
+  `icu_segmenter` (dictionaries for the languages without spaces), with
+  Chromium's word rules that break around `.` and `:` between letters;
+  `Intl.DurationFormat` as V8 writes it, over `NumberFormat` and
+  `icu_list`'s lists of units, a numeric minute or second joining the
+  list's last element by the time separator; `Intl.DisplayNames` by
+  ICU4X's names composed as ICU's LocaleDisplayNames composes them, the
+  codes the reference browser names at all and the names where it
+  differs in `intl_names.txt` (with its calendars' and date fields'
+  names), compared over 111,075 names of 75 locales. A zone's offsets
+  run through its whole history in zoneinfo64 (local mean time with its
+  seconds, `GMT-04:56:02`); before 1970 a zone has no metazone, as ICU's
+  mappings start then, and only UTC, London and Dublin names of their
+  own. A sign's direction mark is a literal part, and a unit written in
+  words (Arabic's two days) has no sign. Not done: the Japanese
+  calendar's Meiji 1 to 5 (ICU4X's starts in 1873), the patterns'
+  numbering overrides (`d=hanidec`, `y=jpanyear`), and the ranges of the
+  Chinese, Hebrew and Indian calendars.
+- *Workers, Web Audio and the runner* (D61, D37), after the batch: a
+  classic script with muted errors (another origin's, without CORS),
+  from a `script` element or `importScripts`, has `about:blank` as the
+  base of its `import()`s. The scripts one call runs (the deferred ones
+  in turn) each see the window, which a run's host now copies rather
+  than takes: the second of two deferred scripts had none, its
+  `parent.postMessage` going nowhere. An element's sound reaches a graph
+  at the graph's rate when that is the sound's own, decoded for it
+  again from where it is when a graph takes it, and the mixer gives the
+  elements' sound before the graphs render, the graph first given a
+  lead of four quanta. `canvas.captureStream()` gives a stream of one
+  `CanvasCaptureMediaStreamTrack`, as far as the reference browser's
+  shape; it makes no frames. The WPT runner serves its own
+  `testdriver-vendor.js`, whose `test_driver.bless` the runner clicks
+  natively, the user's activation a real click's.

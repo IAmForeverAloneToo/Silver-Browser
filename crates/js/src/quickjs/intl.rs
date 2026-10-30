@@ -20,7 +20,15 @@ use std::rc::Rc;
 use std::sync::OnceLock;
 
 use fixed_decimal::{Decimal, RoundingIncrement, Sign, SignedRoundingMode, UnsignedRoundingMode};
-use icu_calendar::cal::{Buddhist, Persian};
+#[allow(deprecated)]
+use icu_calendar::cal::hijri::AstronomicalSimulation;
+use icu_calendar::cal::hijri::{
+    TabularAlgorithm, TabularAlgorithmEpoch, TabularAlgorithmLeapYears, UmmAlQura,
+};
+use icu_calendar::cal::{
+    Buddhist, ChineseTraditional, Coptic, Ethiopian, EthiopianEraStyle, Hebrew, Hijri, Indian,
+    Japanese, KoreanTraditional, Persian, Roc,
+};
 use icu_calendar::{AnyCalendarKind, AsCalendar, Gregorian, Iso};
 use icu_collator::options::{AlternateHandling, CaseLevel, CollatorOptions, Strength};
 use icu_collator::{CollatorBorrowed, CollatorPreferences};
@@ -1103,12 +1111,10 @@ fn affix_parts(parts: &mut Parts, text: &str, kind: &'static str) {
             c if spacing(c) => "literal",
             _ => kind,
         };
-        let last = runs.last().map_or("", |(kind, _)| *kind);
-        // A direction mark next to a sign belongs to it.
-        if matches!(c, '\u{200e}' | '\u{200f}' | '\u{61c}')
-            && matches!(last, "minusSign" | "plusSign")
-        {
-            this = last;
+        // A direction mark is a literal of its own, as ICU's fields leave
+        // it out of a sign's.
+        if matches!(c, '\u{200e}' | '\u{200f}' | '\u{61c}') {
+            this = "literal";
         }
         match runs.last_mut() {
             Some((kind, run)) if *kind == this => run.push(c),
@@ -1171,6 +1177,22 @@ fn sign_kind(sign: Sign) -> &'static str {
     }
 }
 
+/// The sign's parts: its direction marks literals of their own.
+fn sign_parts(parts: &mut Parts, sign: &str, kind: &'static str) {
+    let mut run = String::new();
+    let mut marks = false;
+    for c in sign.chars() {
+        let mark = matches!(c, '\u{200e}' | '\u{200f}' | '\u{61c}');
+        if mark != marks && !run.is_empty() {
+            parts.push(if marks { "literal" } else { kind }, &run);
+            run.clear();
+        }
+        marks = mark;
+        run.push(c);
+    }
+    parts.push(if marks { "literal" } else { kind }, &run);
+}
+
 /// `intlNumber(locale, codes, unit, x)`: ECMA-402 section 15.5.4's
 /// parts of `x` formatted, as pairs of type and text. The codes are
 /// [`Digits`]' and the style (0 decimal, 1 percent, 2 currency, 3
@@ -1212,11 +1234,13 @@ fn format_number(
         3 => {
             let value = written.value.clone().unwrap_or_default();
             let (before, after) = unit_affixes(cache, tag, unit, code(codes, UNIT_DISPLAY), &value);
-            let sign = sign_text(cache, tag, written.sign);
-            parts.push(sign_kind(written.sign), &sign);
-            affix_parts(&mut parts, &before, "unit");
             // A locale that writes the amount in words (Arabic's two
-            // hours) leaves the number out.
+            // hours) leaves the number, and its sign, out.
+            if after.is_some() {
+                let sign = sign_text(cache, tag, written.sign);
+                sign_parts(&mut parts, &sign, sign_kind(written.sign));
+            }
+            affix_parts(&mut parts, &before, "unit");
             if let Some(after) = after {
                 parts.0.extend(written.parts.0);
                 affix_parts(&mut parts, &after, "unit");
@@ -1231,7 +1255,7 @@ fn format_number(
                 affix_parts(&mut parts, after, "percentSign");
             } else {
                 let sign = sign_text(cache, tag, written.sign);
-                parts.push(sign_kind(written.sign), &sign);
+                sign_parts(&mut parts, &sign, sign_kind(written.sign));
                 parts.0.extend(written.parts.0);
             }
         }
@@ -2541,9 +2565,14 @@ fn format_date_time(
 /// and the hour cycle its pattern writes hours in ("" if it writes
 /// none), for `resolvedOptions()` (section 11.3.5).
 fn date_time_info(cache: &mut Cache, tag: &str, codes: &[i32]) -> Vec<String> {
-    let calendar = date_time_formatter(cache, tag, codes)
-        .map(|formatter| calendar_name(formatter.calendar().kind()))
-        .unwrap_or("gregory");
+    let calendar = match calendar_of(cache, tag) {
+        // ICU's astronomical islamic calendar, which ICU4X takes as another.
+        Some("islamic") => asked_calendar(tag).unwrap_or_else(|| "islamic".to_owned()),
+        _ => date_time_formatter(cache, tag, codes)
+            .map(|formatter| calendar_name(formatter.calendar().kind()))
+            .unwrap_or("gregory")
+            .to_owned(),
+    };
     // An afternoon, which every hour cycle writes apart.
     let parts = format_date_time(cache, tag, codes, "UTC", 46_800_000.0, 0.0).unwrap_or_default();
     let pattern = parts.last().cloned().unwrap_or_default();
@@ -2557,7 +2586,7 @@ fn date_time_info(cache: &mut Cache, tag: &str, codes: &[i32]) -> Vec<String> {
             _ => None,
         })
         .unwrap_or("");
-    let mut answer = vec![calendar.to_owned(), cycle.to_owned()];
+    let mut answer = vec![calendar, cycle.to_owned()];
     if code(codes, DATE_STYLE) == 0
         && code(codes, TIME_STYLE) == 0
         && generator_of(cache, tag).is_some()
@@ -2610,18 +2639,49 @@ fn generator_of(cache: &mut Cache, tag: &str) -> Option<Rc<intl_dates::Generator
     })
 }
 
-/// The calendar the locale formats dates in, of those the reference
-/// browser's patterns can be in the data for: the gregorian one (or the
-/// ISO one, written alike), the Buddhist one and the Persian one.
+/// The calendar a tag's `-u-ca-` asks for.
+fn asked_calendar(tag: &str) -> Option<String> {
+    let key = Key::try_from_str("ca").ok()?;
+    locale_of(tag)
+        .extensions
+        .unicode
+        .keywords
+        .get(&key)
+        .map(|value| value.to_string())
+}
+
+/// The calendar the locale formats dates in, by the data's name of its
+/// patterns: the gregorian one (or the ISO one, written alike), or
+/// another a `-u-ca-` asks for.
 fn calendar_of(cache: &mut Cache, tag: &str) -> Option<&'static str> {
+    // ICU's astronomical islamic calendar, which ICU4X takes as another.
+    if matches!(
+        asked_calendar(tag).as_deref(),
+        Some("islamic" | "islamic-rgsa")
+    ) {
+        return Some("islamic");
+    }
     // A day's formatter has the locale's calendar.
     let formatter = date_time_formatter(cache, tag, &[0, 0, 0, 0, 1])?;
-    match formatter.calendar().kind() {
-        AnyCalendarKind::Gregorian | AnyCalendarKind::Iso => Some("gregorian"),
-        AnyCalendarKind::Buddhist => Some("buddhist"),
-        AnyCalendarKind::Persian => Some("persian"),
-        _ => None,
-    }
+    Some(match formatter.calendar().kind() {
+        AnyCalendarKind::Gregorian | AnyCalendarKind::Iso => "gregorian",
+        AnyCalendarKind::Buddhist => "buddhist",
+        AnyCalendarKind::Persian => "persian",
+        AnyCalendarKind::Japanese => "japanese",
+        AnyCalendarKind::Chinese => "chinese",
+        AnyCalendarKind::Dangi => "dangi",
+        AnyCalendarKind::Coptic => "coptic",
+        AnyCalendarKind::Ethiopian => "ethiopic",
+        AnyCalendarKind::EthiopianAmeteAlem => "ethiopic-amete-alem",
+        AnyCalendarKind::Hebrew => "hebrew",
+        AnyCalendarKind::Indian => "indian",
+        AnyCalendarKind::Roc => "roc",
+        AnyCalendarKind::HijriSimulatedMecca => "islamic",
+        AnyCalendarKind::HijriTabularTypeIIFriday => "islamic-civil",
+        AnyCalendarKind::HijriTabularTypeIIThursday => "islamic-tbla",
+        AnyCalendarKind::HijriUmmAlQura => "islamic-umalqura",
+        _ => return None,
+    })
 }
 
 /// A date in a calendar: its era's index, extended year, month from 0
@@ -2706,7 +2766,22 @@ fn format_with_pattern(
     let zero = number_context(cache, tag, 1).map_or('0', |context| context.symbols.zero);
     let calendar = calendar_of(cache, tag)?;
     let (era, _, month, _) = calendar_fields(date, calendar);
+    // The year in its cycle, which ICU's Chinese calendars write as `y`.
+    let cyclic = match calendar {
+        "chinese" => date.to_calendar(ChineseTraditional::new()).year().cyclic(),
+        "dangi" => date.to_calendar(KoreanTraditional::new()).year().cyclic(),
+        _ => None,
+    };
+    // ICU's islamic calendar where ICU4X's simulated one is a day off: the
+    // month by its first day, written by ICU4X, the day and the weekday
+    // written here.
+    let local_day = zoned.local.div_euclid(MS_PER_DAY);
+    let islamic = (calendar == "islamic")
+        .then(|| islamic_date(local_day))
+        .flatten();
     let at = intl_dates::Instant {
+        own_day: islamic.is_some(),
+        cyclic: cyclic.map(|cyclic| (i64::from(cyclic.year), i64::from(cyclic.related_iso))),
         era,
         month,
         weekday: (zoned.local.div_euclid(MS_PER_DAY) + 4).rem_euclid(7) as usize,
@@ -2723,10 +2798,23 @@ fn format_with_pattern(
         intl_dates::ZoneNames::English => Locale::try_from_str("en").ok()?,
         _ => date_locale(tag),
     };
-    let mut zone_name = |letter: char, count: usize| -> Option<String> {
-        zone_name(cache, &generator, &zone_locale, zoned, letter, count, zero)
+    let digits = |value: u8, count: usize| -> String {
+        format!("{value:0count$}")
+            .chars()
+            .map(|c| {
+                c.to_digit(10)
+                    .map_or(c, |d| char::from_u32(zero as u32 + d).unwrap_or(c))
+            })
+            .collect()
     };
-    let named = generator.with_names(pattern, &at, &mut zone_name);
+    let mut outside = |letter: char, count: usize| -> Option<String> {
+        match (letter, islamic) {
+            ('d', Some((_, _, day))) => Some(digits(day, count.min(2))),
+            ('E' | 'c', Some(_)) => weekday_text(tag, &zoned.zoned, letter, count),
+            _ => zone_name(cache, &generator, &zone_locale, zoned, letter, count, zero),
+        }
+    };
+    let named = generator.with_names(pattern, &at, &mut outside);
     let parsed = DateTimePattern::try_from_pattern_str(&named).ok()?;
     let preferences = DateTimeFormatterPreferences::from(&date_locale(tag));
     // The pattern's fields in the calendar, by ICU4X's names for it.
@@ -2745,11 +2833,141 @@ fn format_with_pattern(
             formatted.try_write_to_string().ok()?.into_owned()
         }};
     }
+    let tabular = |epoch| Hijri::new_tabular(TabularAlgorithmLeapYears::TypeII, epoch);
+    if let Some((year, month, _)) = islamic {
+        // The month's first day in a calendar of the same months.
+        let calendar = tabular(TabularAlgorithmEpoch::Friday);
+        let first = Date::try_new(
+            year.into(),
+            icu_calendar::types::Month::new(month),
+            1,
+            calendar,
+        )
+        .ok()?;
+        let mut names =
+            FixedCalendarDateTimeNames::<Hijri<TabularAlgorithm>, CompositeFieldSet>::try_new(
+                preferences,
+            )
+            .ok()?;
+        let formatter = names.include_for_pattern(&parsed).ok()?;
+        let input = ZonedDateTime {
+            date: first,
+            time: zoned.zoned.time,
+            zone: zoned.zoned.zone,
+        };
+        return formatter
+            .format(&input)
+            .try_write_to_string()
+            .ok()
+            .map(|text| text.into_owned());
+    }
     Some(match calendar {
         "buddhist" => written_in!(Buddhist, Buddhist),
         "persian" => written_in!(Persian, Persian),
+        "japanese" => written_in!(Japanese::new(), Japanese),
+        "chinese" => written_in!(ChineseTraditional::new(), ChineseTraditional),
+        "dangi" => written_in!(KoreanTraditional::new(), KoreanTraditional),
+        "coptic" => written_in!(Coptic, Coptic),
+        "ethiopic" => written_in!(Ethiopian::new(), Ethiopian),
+        "ethiopic-amete-alem" => written_in!(
+            Ethiopian::new_with_era_style(EthiopianEraStyle::AmeteAlem),
+            Ethiopian
+        ),
+        "hebrew" => written_in!(Hebrew, Hebrew),
+        "indian" => written_in!(Indian, Indian),
+        "roc" => written_in!(Roc, Roc),
+        #[allow(deprecated)]
+        "islamic" => written_in!(Hijri::new_simulated_mecca(), Hijri<AstronomicalSimulation>),
+        "islamic-civil" => written_in!(
+            tabular(TabularAlgorithmEpoch::Friday),
+            Hijri<TabularAlgorithm>
+        ),
+        "islamic-tbla" => written_in!(
+            tabular(TabularAlgorithmEpoch::Thursday),
+            Hijri<TabularAlgorithm>
+        ),
+        "islamic-umalqura" => written_in!(Hijri::new_umm_al_qura(), Hijri<UmmAlQura>),
         _ => written_in!(Gregorian, Gregorian),
     })
+}
+
+/// The reference browser's islamic (astronomical) calendar's months,
+/// ICU's (`intl_islamic.txt`, from Chrome 156): the first's year, month
+/// and first day, and each one's length.
+const ISLAMIC: &str = include_str!("intl_islamic.txt");
+
+/// [`ISLAMIC`] read: the first month's year, month and first day, and
+/// whether each month has 30 days.
+type IslamicMonths = (i32, u8, i64, Vec<bool>);
+
+/// The islamic (ICU's astronomical) year, month and day of a day (days
+/// since 1970-01-01), where the table has it.
+fn islamic_date(day: i64) -> Option<(i32, u8, u8)> {
+    static READ: OnceLock<Option<IslamicMonths>> = OnceLock::new();
+    let (year, month, first, lengths) = READ
+        .get_or_init(|| {
+            let mut lines = ISLAMIC.lines().filter(|line| !line.starts_with('#'));
+            let numbers: Vec<i64> = lines
+                .next()?
+                .split(' ')
+                .filter_map(|n| n.parse().ok())
+                .collect();
+            let [year, month, first, count] = numbers.as_slice() else {
+                return None;
+            };
+            let lengths: Vec<bool> = lines
+                .next()?
+                .chars()
+                .filter_map(|c| c.to_digit(16))
+                .flat_map(|nibble| (0..4).rev().map(move |bit| nibble >> bit & 1 == 1))
+                .take(*count as usize)
+                .collect();
+            Some((*year as i32, *month as u8, *first, lengths))
+        })
+        .as_ref()?;
+    if day < *first {
+        return None;
+    }
+    let (mut year, mut month, mut start) = (*year, *month, *first);
+    for thirty in lengths {
+        let length = if *thirty { 30 } else { 29 };
+        if day < start + length {
+            return Some((year, month, (day - start + 1) as u8));
+        }
+        start += length;
+        month += 1;
+        if month > 12 {
+            month = 1;
+            year += 1;
+        }
+    }
+    None
+}
+
+/// A weekday's name in a locale as a pattern's field writes it (`EEEE`),
+/// of a date, by ICU4X's names, which are any calendar's.
+fn weekday_text(
+    tag: &str,
+    zoned: &ZonedDateTime<Iso, TimeZoneInfo<AtTime>>,
+    letter: char,
+    count: usize,
+) -> Option<String> {
+    let pattern: String = std::iter::repeat_n(letter, count).collect();
+    let parsed = DateTimePattern::try_from_pattern_str(&pattern).ok()?;
+    let preferences = DateTimeFormatterPreferences::from(&date_locale(tag));
+    let mut names =
+        FixedCalendarDateTimeNames::<Gregorian, CompositeFieldSet>::try_new(preferences).ok()?;
+    let formatter = names.include_for_pattern(&parsed).ok()?;
+    let input = ZonedDateTime {
+        date: zoned.date.to_calendar(Gregorian),
+        time: zoned.time,
+        zone: zoned.zone,
+    };
+    formatter
+        .format(&input)
+        .try_write_to_string()
+        .ok()
+        .map(|text| text.into_owned())
 }
 
 /// A zone field alone as ICU4X writes it in a locale for a zone at time
@@ -2857,8 +3075,20 @@ fn zone_name(
         if root {
             return None;
         }
-        let name = zone_field(cache, locale, zone, t, specific)?;
-        (name != zone_field(cache, locale, zone, t, offset_field)?).then_some(name)
+        // No metazone then (ICU's mappings start in 1970): the offset,
+        // but for the zones with names of their own (UTC's, and London's
+        // and Dublin's daylight time), as ICU4X names them later.
+        let at = if intl_dates::metazone_of(reported, t).is_some() {
+            t
+        } else {
+            match reported {
+                "UTC" | "Etc/UTC" => t,
+                "Europe/London" | "Europe/Dublin" if kind.ends_with('d') => 962_409_600_000,
+                _ => return None,
+            }
+        };
+        let name = zone_field(cache, locale, zone, at, specific)?;
+        (name != zone_field(cache, locale, zone, at, offset_field)?).then_some(name)
     };
     if letter == 'z' {
         return Some(named(cache, &zoned.name).unwrap_or(gmt));
@@ -3969,7 +4199,7 @@ pub(super) fn install<'js>(ctx: &Ctx<'js>, natives: &Object<'js>) -> rquickjs::R
         "intlTimeZones",
         Function::new(ctx.clone(), |region: String| intl_zone::zones_of(&region))?,
     )?;
-    Ok(())
+    super::intl_text::install(ctx, natives)
 }
 
 #[cfg(test)]

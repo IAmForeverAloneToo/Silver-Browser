@@ -437,8 +437,9 @@ pub(crate) fn layout_inline<'a>(
     {
         return run(&[], floats).0;
     }
-    let (_, paragraphs) = run(&[], &mut floats.clone());
-    let mut caps: Vec<Cap> = vec![(f32::INFINITY, 0); paragraphs.len()];
+    let (unbalanced, paragraphs) = run(&[], &mut floats.clone());
+    let height = unbalanced.height;
+    let mut caps: Vec<Cap> = vec![(f32::INFINITY, 0, false); paragraphs.len()];
     if wrap_style == TextWrapStyle::Pretty {
         // A paragraph whose last line is one piece, a word alone, takes
         // the last piece of the line before with it, where that keeps its
@@ -448,12 +449,12 @@ pub(crate) fn layout_inline<'a>(
             if paragraph.lines < 2 || paragraph.last_pieces != 1 || paragraph.before_pieces < 2 {
                 continue;
             }
-            caps[n] = (paragraph.before - 0.5, paragraph.lines - 2);
+            caps[n] = (paragraph.before - 0.5, paragraph.lines - 2, false);
             let (_, tried) = run(&caps, &mut floats.clone());
             if tried.get(n).map(|p| p.lines) == Some(paragraph.lines) {
                 changed = true;
             } else {
-                caps[n] = (f32::INFINITY, 0);
+                caps[n] = (f32::INFINITY, 0, false);
             }
         }
         return if changed {
@@ -470,15 +471,17 @@ pub(crate) fn layout_inline<'a>(
         let (mut low, mut high) = (0.0f32, cb_width);
         while high - low > 0.5 {
             let middle = (low + high) / 2.0;
-            caps[paragraph] = (middle, 0);
-            let (_, tried) = run(&caps, &mut floats.clone());
-            if tried.get(paragraph).map(|p| p.lines) == Some(count) {
+            caps[paragraph] = (middle, 0, true);
+            let (laid, tried) = run(&caps, &mut floats.clone());
+            // Its lines as many, and none of them pushed down past a
+            // float for want of room.
+            if tried.get(paragraph).map(|p| p.lines) == Some(count) && laid.height <= height + 0.5 {
                 high = middle;
             } else {
                 low = middle;
             }
         }
-        caps[paragraph] = (high, 0);
+        caps[paragraph] = (high, 0, true);
     }
     run(&caps, floats).0
 }
@@ -487,8 +490,11 @@ pub(crate) fn layout_inline<'a>(
 /// reference browser has it: a longer one wraps as `wrap` does.
 const MAX_BALANCED_LINES: usize = 6;
 
-/// The room for a paragraph's lines from its line of that number on.
-type Cap = (f32, usize);
+/// The room for a paragraph's lines from its line of that number on;
+/// with `true`, the room each line has beside the floats less what the
+/// containing block's width is past it, so that a line beside a float
+/// is balanced in its own room (as the reference browser does).
+type Cap = (f32, usize, bool);
 
 /// What `text-wrap: balance` and `pretty` read of a paragraph's lines:
 /// how many there are, the width of the line before the last, and the
@@ -896,7 +902,10 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
     fn room(&self) -> f32 {
         let line = self.counts.get(self.paragraph).map_or(0, |p| p.lines);
         match self.caps.get(self.paragraph) {
-            Some(&(cap, from)) if line >= from => self.available_width.min(cap),
+            Some(&(cap, from, true)) if line >= from => {
+                (self.available_width - (self.cb_width - cap).max(0.0)).max(0.0)
+            }
+            Some(&(cap, from, false)) if line >= from => self.available_width.min(cap),
             _ => self.available_width,
         }
     }
@@ -2060,7 +2069,13 @@ pub(crate) fn run_intrinsic_widths_indented<'a>(
                 } else {
                     space_width(in_line.gap_style().unwrap_or(&b.style), fonts)
                 };
-                piece = piece_min;
+                // Where no line may break before it (`nowrap`), it goes on
+                // the piece before.
+                piece = if starts_piece || line_empty {
+                    piece_min
+                } else {
+                    piece + gap + piece_min
+                };
                 line += gap + piece_max;
                 line_empty = false;
                 after_atomic = true;
@@ -2590,7 +2605,7 @@ fn is_zero_width(c: char) -> bool {
 /// consistent with what actually gets drawn, instead of drifting apart
 /// by whatever a given font's kerning happens to be).
 fn measure_word(word: &str, style: &ComputedStyle, fonts: &FontCollection) -> f32 {
-    let font = font::font_of(fonts, style);
+    let font = font::font_for(fonts, style, word);
     if style.letter_spacing == 0.0 {
         return fonts.measure_in(font, word, style.font_size_px);
     }
@@ -2811,7 +2826,7 @@ fn flush_line<'a>(
                     max_ascent,
                     max_descent,
                     decorated,
-                    font::font_of(fonts, word.style),
+                    font::font_for(fonts, word.style, word.text),
                 ));
                 x += word.width;
             }
@@ -4179,6 +4194,15 @@ mod tests {
         };
         assert_eq!(ys(WhiteSpace::NOWRAP, nowrap), 1, "one line");
         assert_eq!(ys(WhiteSpace::NORMAL, ComputedStyle::default()), 2);
+        // Two atomics with no break between them are one piece of the
+        // min-content width.
+        let min = |white_space| {
+            let run = [atomic(white_space), atomic(white_space)];
+            let items = collect_inline_items(&run, &fonts);
+            run_intrinsic_widths(&items, None, &Pass::new(&fonts)).0
+        };
+        assert_eq!(min(WhiteSpace::NOWRAP), 60.0);
+        assert_eq!(min(WhiteSpace::NORMAL), 30.0);
     }
 
     #[test]

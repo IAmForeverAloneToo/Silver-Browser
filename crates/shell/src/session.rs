@@ -93,6 +93,9 @@ enum Held {
     Toolbar,
     /// The scrollbar's thumb, grabbed this far below its top.
     Thumb(f32),
+    /// The scrollbar across's thumb, grabbed this far right of its left
+    /// edge.
+    ThumbAcross(f32),
     /// The scrollbar's track, which the press scrolled by a page.
     Track,
     /// The page, which was given the press (M26.5).
@@ -1280,6 +1283,9 @@ impl<V: View> Session<V> {
         if let Some(Held::Thumb(grab)) = self.held {
             self.drag_thumb(grab);
         }
+        if let Some(Held::ThumbAcross(grab)) = self.held {
+            self.drag_thumb_across(grab);
+        }
         // The strip, while the pointer is over it or a tab is held there
         // (M37): a tab dragged moves.
         if y < STRIP || matches!(self.held, Some(Held::Strip)) {
@@ -1371,7 +1377,7 @@ impl<V: View> Session<V> {
                 self.release_panel(engine::Button::Primary, count);
                 return;
             }
-            Some(Held::Thumb(_) | Held::Track) | None => {}
+            Some(Held::Thumb(_) | Held::ThumbAcross(_) | Held::Track) | None => {}
         }
         self.sync();
         self.refresh_hover();
@@ -1412,6 +1418,28 @@ impl<V: View> Session<V> {
         self.engine.pointer_up(x, (y - TOP).max(0.0), button, count);
         self.sync();
         self.refresh_hover();
+    }
+
+    /// The wheel turned by `dx` pixels across, positive right, and `dy`
+    /// down; with Shift held, a turn down scrolls across, as in the
+    /// reference browser.
+    pub(crate) fn wheel_both(&mut self, dx: f32, dy: f32) {
+        let (dx, dy) = if self.mods.shift && dx == 0.0 {
+            (dy, 0.0)
+        } else {
+            (dx, dy)
+        };
+        if dy != 0.0 {
+            self.wheel(dy);
+        }
+        if dx != 0.0 {
+            self.notice = None;
+            let (x, y) = self.pointer;
+            if y >= TOP && !self.in_panel(y) {
+                self.engine.wheel_across(x, y - TOP, dx);
+            }
+            self.refresh_hover();
+        }
     }
 
     /// The wheel turned by `dy` pixels, positive down: the page scrolls
@@ -1797,6 +1825,19 @@ impl<V: View> Session<V> {
         self.sync_window_focus();
         let y = y - TOP;
         let page = self.page_step();
+        if let Some(bar) = self.engine.scrollbar_across()
+            && bar.contains(x, y)
+        {
+            self.held = Some(if bar.thumb_contains(x, y) {
+                Held::ThumbAcross(x - bar.thumb_x)
+            } else {
+                let across = (bar.w - LINE_PX).max(LINE_PX);
+                self.engine
+                    .scroll_across_by(if x < bar.thumb_x { -across } else { across });
+                Held::Track
+            });
+            return;
+        }
         if let Some(bar) = self.engine.scrollbar()
             && bar.contains(x, y)
         {
@@ -1826,13 +1867,24 @@ impl<V: View> Session<V> {
         }
     }
 
+    /// The pointer moved with the thumb across held: it follows.
+    fn drag_thumb_across(&mut self, grab: f32) {
+        let x = self.pointer.0;
+        if let Some(bar) = self.engine.scrollbar_across() {
+            let travel = bar.w - bar.thumb_w;
+            if travel > 0.0 {
+                self.engine.scroll_x_to_fraction((x - grab) / travel);
+            }
+        }
+    }
+
     /// Finds the link under the pointer, if it is over the page and not
     /// over the scrollbar, nor dragging on the toolbar or the thumb.
     fn refresh_hover(&mut self) {
         let (x, y) = self.pointer;
         let free = !matches!(
             self.held,
-            Some(Held::Strip | Held::Toolbar | Held::Thumb(_))
+            Some(Held::Strip | Held::Toolbar | Held::Thumb(_) | Held::ThumbAcross(_))
         );
         self.hover = None;
         self.cursor = engine::Cursor::Default;
@@ -1861,7 +1913,11 @@ impl<V: View> Session<V> {
             let on_bar = self
                 .engine
                 .scrollbar()
-                .is_some_and(|bar| bar.contains(x, y));
+                .is_some_and(|bar| bar.contains(x, y))
+                || self
+                    .engine
+                    .scrollbar_across()
+                    .is_some_and(|bar| bar.contains(x, y));
             if !on_bar {
                 // The page hovers what is under the pointer and says
                 // what cursor it is over (M26.4).

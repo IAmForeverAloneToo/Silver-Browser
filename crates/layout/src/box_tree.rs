@@ -805,7 +805,7 @@ fn number(
             in_3d && parent.is_some_and(|(node, _)| node == b.node)
         } else {
             let holds_3d = b.is_transformable()
-                && b.style.effects().used_transform_style(b.style.overflow)
+                && b.style.effects().used_transform_style(b.style.overflow())
                     == TransformStyle::Preserve3d;
             // An element's later box, a table's beside its wrapper's,
             // says for the boxes after it.

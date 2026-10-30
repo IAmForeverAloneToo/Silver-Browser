@@ -476,6 +476,8 @@ pub struct Engine {
     own_scripting: Option<bool>,
     /// The user's languages, the most wanted first (M37).
     languages: Vec<String>,
+    /// Whether the viewport's scrollbar across is drawn and taken.
+    scrollbar_across: bool,
     /// Where the tab's downloads are saved (M37): its context's.
     downloads: downloads::Downloads,
     /// The context the engine joined (M37), whose settings a profile
@@ -801,6 +803,7 @@ impl Shown {
         let mut lent = scripts::Lent {
             document: &mut self.document,
             images: None,
+            animations: None,
             page: &mut self.page,
             parser: self.parsing.as_mut().map(|parsing| &mut parsing.load),
             network,
@@ -823,6 +826,7 @@ impl Shown {
         let mut lent = scripts::Lent {
             document: &mut self.document,
             images: None,
+            animations: None,
             page: &mut self.page,
             parser: self.parsing.as_mut().map(|parsing| &mut parsing.load),
             network,
@@ -1278,6 +1282,32 @@ pub struct Scrollbar {
     pub thumb_h: f32,
 }
 
+/// The scrollbar across, at the bottom edge, for the last frame, in
+/// viewport pixels: the track from the left edge, as wide as the
+/// viewport less the scrollbar down when there is one, and the thumb.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScrollbarAcross {
+    /// The track: `y` is its top edge, `h` its height, `w` its width.
+    pub y: f32,
+    pub h: f32,
+    pub w: f32,
+    /// The thumb's left edge and width within the track.
+    pub thumb_x: f32,
+    pub thumb_w: f32,
+}
+
+impl ScrollbarAcross {
+    /// Whether a viewport point is on the track (thumb included).
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        y >= self.y && y < self.y + self.h && x >= 0.0 && x < self.w
+    }
+
+    /// Whether a viewport point is on the thumb.
+    pub fn thumb_contains(&self, x: f32, y: f32) -> bool {
+        self.contains(x, y) && x >= self.thumb_x && x < self.thumb_x + self.thumb_w
+    }
+}
+
 impl Scrollbar {
     /// Whether a viewport point is on the track (thumb included).
     pub fn contains(&self, x: f32, y: f32) -> bool {
@@ -1413,6 +1443,7 @@ impl Engine {
             opened_by_script: false,
             own_scripting: None,
             languages: vec!["en-US".to_owned(), "en".to_owned()],
+            scrollbar_across: false,
             downloads: downloads::Downloads::new(),
             context: None,
             own_service_workers,
@@ -2092,6 +2123,7 @@ impl Engine {
         let mut lent = scripts::Lent {
             document: &mut shown.document,
             images: Some(&mut shown.images),
+            animations: Some(shown.animations.get_mut()),
             page: &mut shown.page,
             parser: shown.parsing.as_mut().map(|parsing| &mut parsing.load),
             network: &mut self.network,
@@ -2672,6 +2704,16 @@ impl Engine {
                 KeyOutcome::Taken
             }
             _ if text_control => KeyOutcome::Ignored,
+            "ArrowLeft" | "ArrowRight" if plain && scrolls => {
+                let step = if key.key == "ArrowLeft" {
+                    -SCROLL_STEP
+                } else {
+                    SCROLL_STEP
+                };
+                let target = self.shown.scroll_target_x + step;
+                self.scroll_to_x(target, false);
+                KeyOutcome::Taken
+            }
             "ArrowDown" | "ArrowUp" | "PageDown" | "PageUp" | " " | "Home" | "End"
                 if (plain || m.shift) && scrolls =>
             {
@@ -3562,6 +3604,7 @@ impl Engine {
             let mut lent = scripts::Lent {
                 document: &mut shown.document,
                 images: Some(&mut shown.images),
+                animations: Some(shown.animations.get_mut()),
                 page: &mut shown.page,
                 parser: shown.parsing.as_mut().map(|parsing| &mut parsing.load),
                 network: &mut self.network,
@@ -3847,6 +3890,7 @@ impl Engine {
             let mut lent = scripts::Lent {
                 document: &mut shown.document,
                 images: Some(&mut shown.images),
+                animations: Some(shown.animations.get_mut()),
                 page: &mut shown.page,
                 parser: shown.parsing.as_mut().map(|parsing| &mut parsing.load),
                 network: &mut self.network,
@@ -3881,6 +3925,7 @@ impl Engine {
         let mut lent = scripts::Lent {
             document,
             images: None,
+            animations: None,
             page: incoming,
             parser: Some(load),
             network: &mut self.network,
@@ -4161,6 +4206,7 @@ impl Engine {
         let mut lent = scripts::Lent {
             document: &mut shown.document,
             images: Some(&mut shown.images),
+            animations: Some(shown.animations.get_mut()),
             page: &mut shown.page,
             parser: shown.parsing.as_mut().map(|parsing| &mut parsing.load),
             network: &mut self.network,
@@ -4196,6 +4242,7 @@ impl Engine {
         let mut lent = scripts::Lent {
             document,
             images: None,
+            animations: None,
             page,
             parser: Some(load),
             network: &mut self.network,
@@ -5469,6 +5516,7 @@ impl Engine {
                     let mut lent = scripts::Lent {
                         document,
                         images: None,
+                        animations: None,
                         page: incoming,
                         parser: Some(load),
                         network: &mut self.network,
@@ -5674,6 +5722,7 @@ impl Engine {
         let mut lent = scripts::Lent {
             document,
             images: None,
+            animations: None,
             page,
             parser: Some(load),
             network: &mut self.network,
@@ -5760,6 +5809,7 @@ impl Engine {
                     let mut lent = scripts::Lent {
                         document,
                         images: None,
+                        animations: None,
                         page,
                         parser: Some(load),
                         network: &mut self.network,
@@ -5784,6 +5834,7 @@ impl Engine {
                         let mut lent = scripts::Lent {
                             document,
                             images: None,
+                            animations: None,
                             page,
                             parser: Some(load),
                             network: &mut self.network,
@@ -5827,6 +5878,7 @@ impl Engine {
             parsing: Some(parsing),
             scripts: queue,
             images,
+            animations,
             ..
         } = &mut self.shown
         else {
@@ -5838,6 +5890,7 @@ impl Engine {
         let mut lent = scripts::Lent {
             document,
             images: Some(images),
+            animations: Some(animations.get_mut()),
             page,
             parser: Some(&mut parsing.load),
             network: &mut self.network,
@@ -5902,12 +5955,14 @@ impl Engine {
                         parsing: Some(parsing),
                         scripts: queue,
                         images,
+                        animations,
                         ..
                     } = &mut self.shown
                 {
                     let mut lent = scripts::Lent {
                         document,
                         images: Some(images),
+                        animations: Some(animations.get_mut()),
                         page,
                         parser: Some(&mut parsing.load),
                         network: &mut self.network,
@@ -5945,6 +6000,7 @@ impl Engine {
         let mut lent = scripts::Lent {
             document: &mut shown.document,
             images: Some(&mut shown.images),
+            animations: Some(shown.animations.get_mut()),
             page: &mut shown.page,
             parser: None,
             network: &mut self.network,
@@ -6306,6 +6362,7 @@ impl Engine {
             let mut lent = scripts::Lent {
                 document: &mut shown.document,
                 images: Some(&mut shown.images),
+                animations: Some(shown.animations.get_mut()),
                 page: &mut shown.page,
                 parser: None,
                 network: &mut self.network,
@@ -6674,6 +6731,7 @@ impl Engine {
                 let mut lent = scripts::Lent {
                     document: &mut shown.document,
                     images: Some(&mut shown.images),
+                    animations: Some(shown.animations.get_mut()),
                     page: &mut shown.page,
                     parser: shown.parsing.as_mut().map(|parsing| &mut parsing.load),
                     network: &mut self.network,
@@ -6759,6 +6817,7 @@ impl Engine {
             || self.shown.scripts.canvases_changed()
             || self.shown.scripts.media_wants_frame()
             || self.animating()
+            || self.scroll_events_due()
             || self.shown.animations.borrow().needs_frame()
             || (self.scripts_run()
                 && !self.hidden
@@ -6800,6 +6859,23 @@ impl Engine {
         if self.shown.animations.get_mut().finish_transitions() {
             self.changed = true;
         }
+    }
+
+    /// Whether an offset moved since the last frame's rendering steps,
+    /// whose `scroll` and `scrollend` the next frame's fire: the last
+    /// step of a smooth scroll is drawn in the frame that takes it.
+    fn scroll_events_due(&self) -> bool {
+        if !self.scripts_run() || self.hidden {
+            return false;
+        }
+        let Some(last) = self.shown.rendered.as_ref() else {
+            return false;
+        };
+        last.scroll_y != self.shown.scroll_y
+            || last.scroll_x != self.shown.scroll_x
+            || self.shown.element_scroll.iter().any(|(node, scroll)| {
+                last.element_scroll.get(node).copied().unwrap_or_default() != (scroll.y, scroll.x)
+            })
     }
 
     /// Whether a scroll offset is on its way to its target.
@@ -7416,6 +7492,12 @@ impl Engine {
         if self.pointer.is_some() && (self.changed || self.animating()) {
             self.update_hover();
         }
+        // The timeline moves before the frame's callbacks run, so that
+        // what they read of the animations is at the frame's time (HTML's
+        // "update animations and send events" comes first).
+        let origin = *self.shown.timeline_origin.get_or_insert(time.now);
+        let timeline = time.now.saturating_sub(origin).as_secs_f64();
+        self.shown.animations.get_mut().set_time(timeline);
         self.update_the_rendering(width, height, time.now);
         if self.animating() {
             let elapsed = self
@@ -7424,9 +7506,6 @@ impl Engine {
             self.advance(elapsed);
         }
         self.animation_clock = self.animating().then_some(time.now);
-        let origin = *self.shown.timeline_origin.get_or_insert(time.now);
-        let timeline = time.now.saturating_sub(origin).as_secs_f64();
-        self.shown.animations.get_mut().set_time(timeline);
         // The frames drawn into it are drawn for its time (M33.2).
         self.drawing_at = Some(time);
         let budget = time.deadline.saturating_sub(time.now);
@@ -7558,6 +7637,7 @@ impl Engine {
             scroll_y,
         };
         let scrollbar = self.scrollbar();
+        let across = self.scrollbar_across();
         self.layout(width as f32);
         let layout = &self.shown.layout.as_ref().expect("just laid out").layout;
         let mut list = paint_fragments_with(&layout.roots, viewport, &offsets, &self.shown.images);
@@ -7571,6 +7651,22 @@ impl Engine {
         list.items.extend(caret);
         let popup = self.popup_items();
         list.items.extend(popup);
+        if let Some(bar) = across {
+            list.items.push(DisplayItem::Rect {
+                x: 0.0,
+                y: bar.y,
+                w: bar.w,
+                h: bar.h,
+                color: SCROLLBAR_TRACK,
+            });
+            list.items.push(DisplayItem::Rect {
+                x: bar.thumb_x,
+                y: bar.y + 2.0,
+                w: bar.thumb_w,
+                h: bar.h - 4.0,
+                color: SCROLLBAR_THUMB,
+            });
+        }
         if let Some(bar) = scrollbar {
             list.items.push(DisplayItem::Rect {
                 x: bar.x,
@@ -7795,6 +7891,52 @@ impl Engine {
         })
     }
 
+    /// The scrollbar across for the last frame's viewport, or `None` when
+    /// the document is no wider than it, or the user does not scroll it,
+    /// or it is a page the browser made, which is not meant to be.
+    pub fn scrollbar_across(&mut self) -> Option<ScrollbarAcross> {
+        let (width, height) = self.viewport;
+        if self.shown.made || !self.scrollbar_across {
+            return None;
+        }
+        let max = self.max_scroll_x();
+        if max <= 0.0 || !self.viewport_takes_user_scrolls() {
+            return None;
+        }
+        let down = self.scrollbar().map_or(0.0, |bar| bar.w);
+        let track = (width as f32 - down).max(0.0);
+        let (thumb_x, thumb_w) = scrollbar_thumb(track, max, self.shown.scroll_x);
+        Some(ScrollbarAcross {
+            y: height as f32 - SCROLLBAR_WIDTH,
+            h: SCROLLBAR_WIDTH,
+            w: track,
+            thumb_x,
+            thumb_w,
+        })
+    }
+
+    /// Whether the viewport's scrollbar across is drawn and taken: a
+    /// window's is (the shell's), a test's capture has none, as the
+    /// reference browser's captures have no scrollbars.
+    pub fn set_scrollbar_across(&mut self, on: bool) {
+        self.changed |= self.scrollbar_across != on;
+        self.scrollbar_across = on;
+    }
+
+    /// Scrolls across by `dx` px (right when positive), animated as
+    /// [`Engine::scroll_by`] is.
+    pub fn scroll_across_by(&mut self, dx: f32) {
+        let target = self.shown.scroll_target_x + dx;
+        self.scroll_to_x(target, false);
+    }
+
+    /// Jumps across to the fraction `f` of the range (0 the left edge, 1
+    /// the right), as a drag of the thumb across asks.
+    pub fn scroll_x_to_fraction(&mut self, f: f32) {
+        let max = self.max_scroll_x();
+        self.scroll_to_x(f.clamp(0.0, 1.0) * max, true);
+    }
+
     /// Whether the user scrolls the viewport (M33.2): not when the
     /// overflow it takes, the root element's, or the body's when the
     /// root's is `visible` (css-overflow-3 section 3.3), is `hidden` or
@@ -7809,7 +7951,7 @@ impl Engine {
             .element_children(root)
             .find(|&child| document.tag(child) == Some("body"));
         let styles = self.cached_styles();
-        let overflow = |node: NodeId| styles.get(node).map(|style| style.overflow);
+        let overflow = |node: NodeId| styles.get(node).map(|style| style.overflow());
         let taken = match overflow(root) {
             Some(Overflow::Visible) | None => body.and_then(overflow),
             own => own,
@@ -7918,6 +8060,47 @@ impl Engine {
         self.wheel_taken(x, y, dy);
     }
 
+    /// A wheel turn of `dx` px across (right when positive) at the
+    /// viewport point `(x, y)`, chained as [`Engine::wheel`] chains one
+    /// down: the innermost scroll container under the pointer that can
+    /// still move that way, else the viewport.
+    pub fn wheel_across(&mut self, x: f32, y: f32, dx: f32) {
+        if !dx.is_finite() || dx == 0.0 {
+            return;
+        }
+        self.close_popup();
+        if let Some((node, fx, fy)) = self.frame_under(x, y) {
+            if let Some(child) = self.frame_engine(node) {
+                child.wheel_across(fx, fy, dx);
+            }
+            return;
+        }
+        if let Some(target) = self.pointer_at(x, y) {
+            let event = self
+                .mouse_event("WheelEvent", "wheel", target, 0, 0, None)
+                .with("deltaX", js::Field::Number(f64::from(dx)));
+            if self.fire(js::Target::Node(scripts::handle(target)), event) == Some(true) {
+                return;
+            }
+        }
+        for node in self.scroll_chain_at(x, y).into_iter().rev() {
+            let max = self.element_max_scroll_x(node);
+            let target = self
+                .shown
+                .element_scroll
+                .get(&node)
+                .map_or(0.0, |s| s.target_x);
+            if (dx > 0.0 && target < max) || (dx < 0.0 && target > 0.0) {
+                self.scroll_element_to_x(node, target + dx, false);
+                return;
+            }
+        }
+        if self.viewport_takes_user_scrolls() {
+            let target = self.shown.scroll_target_x + dx;
+            self.scroll_to_x(target, false);
+        }
+    }
+
     /// [`Engine::wheel`], saying whether the wheel was taken: its event
     /// canceled, or something scrolled. Over a frame (M33.2), the frame
     /// takes it first, and what it cannot take goes to the scroll chain
@@ -7970,8 +8153,9 @@ impl Engine {
         chain
             .into_iter()
             .filter(|node| {
-                fragment_of(&layout.roots, *node)
-                    .is_some_and(|f| matches!(f.style.overflow, Overflow::Auto | Overflow::Scroll))
+                fragment_of(&layout.roots, *node).is_some_and(|f| {
+                    matches!(f.style.overflow(), Overflow::Auto | Overflow::Scroll)
+                })
             })
             .collect()
     }
@@ -8001,6 +8185,7 @@ impl Engine {
         let mut lent = scripts::Lent {
             document: &mut shown.document,
             images: Some(&mut shown.images),
+            animations: Some(shown.animations.get_mut()),
             page: &mut shown.page,
             parser: shown.parsing.as_mut().map(|parsing| &mut parsing.load),
             network: &mut self.network,
@@ -12999,6 +13184,60 @@ mod tests {
     const SCROLLERS: &str = "<style>body { margin: 0 } .s { overflow: auto; height: 50px }
          .tall { height: 200px }</style>\
          <div class=s id=s><div class=tall></div></div><div class=tall></div>";
+
+    #[test]
+    fn the_wheel_the_arrows_and_a_scrollbar_scroll_across() {
+        // A turn across goes to the scroll container under the pointer
+        // that can still move, then the viewport; ArrowRight and
+        // ArrowLeft move the viewport; its scrollbar across is drawn at
+        // the bottom and its thumb follows a drag.
+        let mut engine = test_engine();
+        engine.set_preferences(REDUCED);
+        engine.set_scrollbar_across(true);
+        engine.load_document(
+            "<style>body { margin: 0 } #s { width: 100px; height: 50px; overflow: auto }\
+             #s div { width: 300px; height: 10px } #w { width: 1000px; height: 10px }</style>\
+             <div id=s><div></div></div><div id=w></div>",
+        );
+        engine.frame(200, 100);
+        let s = node_by_id(&engine, "s");
+        engine.wheel_across(10.0, 5.0, 150.0);
+        assert_eq!(engine.element_scroll_x(s), 150.0);
+        engine.wheel_across(10.0, 5.0, 150.0);
+        assert_eq!(
+            (engine.element_scroll_x(s), engine.scroll_x()),
+            (200.0, 0.0)
+        );
+        engine.wheel_across(10.0, 5.0, 40.0);
+        assert_eq!(engine.scroll_x(), 40.0, "the viewport takes what is left");
+        engine.wheel_across(10.0, 80.0, -100.0);
+        assert_eq!(engine.scroll_x(), 0.0);
+        let right = Key::new("ArrowRight", "");
+        assert_eq!(engine.key_down(&right), KeyOutcome::Taken);
+        assert_eq!(engine.scroll_x(), SCROLL_STEP);
+        assert_eq!(
+            engine.key_down(&Key::new("ArrowLeft", "")),
+            KeyOutcome::Taken
+        );
+        assert_eq!(engine.scroll_x(), 0.0);
+        engine.frame(200, 100);
+        let bar = engine.scrollbar_across().expect("the document is wider");
+        assert_eq!(
+            (bar.y, bar.h, bar.thumb_x),
+            (100.0 - SCROLLBAR_WIDTH, SCROLLBAR_WIDTH, 0.0)
+        );
+        assert!(bar.w <= 200.0 && bar.thumb_w < bar.w);
+        engine.scroll_x_to_fraction(1.0);
+        assert_eq!(engine.scroll_x(), engine.max_scroll_x());
+        assert!(
+            engine
+                .scrollbar_across()
+                .is_some_and(|b| b.thumb_x + b.thumb_w >= b.w - 0.5)
+        );
+        // Off, as a test's capture has it: none is drawn or taken.
+        engine.set_scrollbar_across(false);
+        assert!(engine.scrollbar_across().is_none());
+    }
 
     #[test]
     fn under_reduced_motion_a_scroll_jumps_to_its_target() {

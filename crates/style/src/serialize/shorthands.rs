@@ -51,6 +51,8 @@ pub(super) fn value(
     Some(match name {
         "margin" => box_sides("margin-", ""),
         "padding" => box_sides("padding-", ""),
+        "scroll-margin" => box_sides("scroll-margin-", ""),
+        "scroll-padding" => box_sides("scroll-padding-", ""),
         "inset" => box_sides("", ""),
         "border-width" => box_sides("border-", "-width"),
         "border-style" => box_sides("border-", "-style"),

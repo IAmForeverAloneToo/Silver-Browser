@@ -27,6 +27,12 @@ pub(crate) enum Kind {
     /// `@layer` without a block (`CSSLayerStatementRule`).
     LayerStatement,
     Namespace,
+    /// `@container` (Conditional 5 section 7.1).
+    Container,
+    /// `@counter-style` (Counter Styles 3 section 9).
+    CounterStyle,
+    /// `@font-feature-values` (Fonts 4 section 6.10).
+    FontFeatureValues,
 }
 
 impl Kind {
@@ -44,6 +50,9 @@ impl Kind {
             Kind::Layer => "layer",
             Kind::LayerStatement => "layer-statement",
             Kind::Namespace => "namespace",
+            Kind::Container => "container",
+            Kind::CounterStyle => "counter-style",
+            Kind::FontFeatureValues => "font-feature-values",
         }
     }
 }
@@ -81,6 +90,11 @@ fn kind(rule: &Rule, keyframes: bool, nested: bool, ns: &Namespaces) -> Option<K
                 "keyframes" | "-webkit-keyframes" if rules => Some(Kind::Keyframes),
                 "font-face" if declarations => Some(Kind::FontFace),
                 "page" if declarations => Some(Kind::Page),
+                "container" if rules => Some(Kind::Container),
+                "counter-style" if declarations && counter_style_name(&at.prelude).is_some() => {
+                    Some(Kind::CounterStyle)
+                }
+                "font-feature-values" if rules => Some(Kind::FontFeatureValues),
                 _ => None,
             }
         }
@@ -194,6 +208,26 @@ fn parts(rule: &Rule, kind: Kind, ns: &Namespaces) -> (String, String) {
             )
         }
         (Rule::At(at), Kind::Media) => (media_text(&at.prelude), String::new()),
+        // The condition, then the container's name.
+        (Rule::At(at), Kind::Container) => {
+            let (name, query) = container_parts(&at.prelude);
+            let condition = if name.is_empty() {
+                query
+            } else {
+                format!("{name} {query}")
+            };
+            (condition, name)
+        }
+        (Rule::At(at), Kind::CounterStyle) => (
+            counter_style_name(&at.prelude).unwrap_or_default(),
+            match &at.block {
+                Some(Block::Declarations(list)) => raw_declarations(list),
+                _ => String::new(),
+            },
+        ),
+        (Rule::At(at), Kind::FontFeatureValues) => {
+            (selector(&at.prelude), feature_values(&at.block))
+        }
         (Rule::At(at), Kind::FontFace | Kind::Page) => {
             let block = match &at.block {
                 Some(Block::Declarations(list)) if kind == Kind::FontFace => descriptors(list),
@@ -883,7 +917,11 @@ fn css_text(rule: &Rule, kind: Kind, indent: &str, ns: &Namespaces) -> String {
             }
         }
         (Rule::At(at), Kind::LayerStatement) => format!("@layer {};", layer_names(&at.prelude)),
-        (Rule::At(at), Kind::FontFace | Kind::Page) => {
+        (Rule::At(at), Kind::FontFeatureValues) => {
+            let body = feature_values_text(&feature_values(&at.block));
+            format!("@font-feature-values {} {{ {body}}}", selector(&at.prelude))
+        }
+        (Rule::At(at), Kind::FontFace | Kind::Page | Kind::CounterStyle) => {
             let prelude = selector(&at.prelude);
             let head = if prelude.is_empty() {
                 format!("@{}", at.name)
@@ -1065,6 +1103,25 @@ pub(crate) fn set(sheet: &mut Stylesheet, path: &[usize], text: &str, selector: 
         return false;
     };
     if selector {
+        if kind == Kind::Page
+            && let Rule::At(at) = rule
+        {
+            let Some(text) = page_selector(text) else {
+                return false;
+            };
+            at.prelude = css::tokenize(&text);
+            return true;
+        }
+        if kind == Kind::FontFeatureValues
+            && let Rule::At(at) = rule
+        {
+            let tokens = css::tokenize(text);
+            if tokens.iter().all(|t| matches!(t, Token::Whitespace)) {
+                return false;
+            }
+            at.prelude = tokens;
+            return true;
+        }
         let Rule::Qualified(rule) = rule else {
             return false;
         };
@@ -1073,6 +1130,17 @@ pub(crate) fn set(sheet: &mut Stylesheet, path: &[usize], text: &str, selector: 
             return false;
         }
         rule.prelude = tokens;
+        return true;
+    }
+    // A feature values rule's entries, one a line (see
+    // [`feature_values`]).
+    if kind == Kind::FontFeatureValues
+        && let Rule::At(at) = rule
+    {
+        let body = feature_values_text(text);
+        at.block = Some(Block::Rules(
+            css::parse_stylesheet(&body).unwrap_or_default().rules,
+        ));
         return true;
     }
     let parsed = css::parse_style_attribute(text).unwrap_or_default();
@@ -1084,6 +1152,180 @@ pub(crate) fn set(sheet: &mut Stylesheet, path: &[usize], text: &str, selector: 
         },
     }
     true
+}
+
+/// An `@page` rule's selector list (CSS Paged Media 3 section 4.2) as
+/// the reference browser writes it: each a page name and pseudo-classes
+/// with nothing between them, their names lowercased; `None` for text
+/// that is not one.
+pub(crate) fn page_selector(text: &str) -> Option<String> {
+    let mut out = Vec::new();
+    for part in text.split(',') {
+        let part = part.trim_matches(|c: char| c.is_ascii_whitespace());
+        let (name, pseudo) = part.split_at(part.find(':').unwrap_or(part.len()));
+        let ident =
+            name.is_empty()
+                || (name.chars().next().is_some_and(|c| {
+                    c.is_ascii_alphabetic() || c == '_' || c == '-' || !c.is_ascii()
+                }) && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || !c.is_ascii()));
+        if !ident {
+            return None;
+        }
+        let mut written = name.to_owned();
+        for class in pseudo.split(':').skip(1) {
+            let class = class.to_ascii_lowercase();
+            if !matches!(class.as_str(), "first" | "left" | "right" | "blank") {
+                return None;
+            }
+            written.push(':');
+            written.push_str(&class);
+        }
+        if written.is_empty() && text.contains(',') {
+            return None;
+        }
+        out.push(written);
+    }
+    Some(out.join(", "))
+}
+
+/// A `@container` prelude's name and query: the name an identifier
+/// before the condition (Conditional 5 section 7.1), empty for none.
+fn container_parts(prelude: &[Token]) -> (String, String) {
+    let words: Vec<&Token> = prelude
+        .iter()
+        .skip_while(|t| matches!(t, Token::Whitespace))
+        .collect();
+    match words.first() {
+        Some(Token::Ident(name))
+            if !matches!(
+                name.to_ascii_lowercase().as_str(),
+                "not" | "and" | "or" | "none"
+            ) =>
+        {
+            let rest: Vec<Token> = words[1..].iter().map(|t| (*t).clone()).collect();
+            (name.clone(), selector(&rest))
+        }
+        _ => (String::new(), selector(prelude)),
+    }
+}
+
+/// A `@counter-style` rule's name: one identifier, not `none` nor
+/// `decimal` and the like a counter style may not take.
+fn counter_style_name(prelude: &[Token]) -> Option<String> {
+    let words: Vec<&Token> = prelude
+        .iter()
+        .filter(|t| !matches!(t, Token::Whitespace))
+        .collect();
+    match words[..] {
+        [Token::Ident(name)]
+            if !matches!(
+                name.to_ascii_lowercase().as_str(),
+                "none"
+                    | "decimal"
+                    | "disc"
+                    | "square"
+                    | "circle"
+                    | "disclosure-open"
+                    | "disclosure-closed"
+                    | "inherit"
+                    | "initial"
+                    | "unset"
+                    | "default"
+            ) =>
+        {
+            Some(name.clone())
+        }
+        _ => None,
+    }
+}
+
+/// The feature types of `@font-feature-values` (Fonts 4 section
+/// 6.10.1), in the order the reference browser writes them.
+const FEATURE_TYPES: [&str; 7] = [
+    "stylistic",
+    "historical-forms",
+    "styleset",
+    "character-variant",
+    "swash",
+    "ornaments",
+    "annotation",
+];
+
+/// A feature values rule's entries, one a line: its feature type, a
+/// tab, the name, a tab and its numbers parted by spaces; those of a
+/// type it declares again after the first, the later's value kept.
+fn feature_values(block: &Option<Block>) -> String {
+    let Some(Block::Rules(inner)) = block else {
+        return String::new();
+    };
+    let mut entries: Vec<(usize, String, String)> = Vec::new();
+    for rule in inner {
+        let Rule::At(at) = rule else {
+            continue;
+        };
+        let feature = at.name.to_ascii_lowercase();
+        let Some(order) = FEATURE_TYPES.iter().position(|f| *f == feature) else {
+            continue;
+        };
+        let Some(Block::Declarations(list)) = &at.block else {
+            continue;
+        };
+        for declaration in list {
+            let numbers: Option<Vec<String>> = declaration
+                .value
+                .iter()
+                .filter(|t| !matches!(t, Token::Whitespace))
+                .map(|t| match t {
+                    Token::Number {
+                        value,
+                        is_integer: true,
+                    } if *value >= 0.0 => Some(format!("{value}")),
+                    _ => None,
+                })
+                .collect();
+            let Some(numbers) = numbers.filter(|n| !n.is_empty()) else {
+                continue;
+            };
+            entries.retain(|(o, name, _)| !(*o == order && *name == declaration.name));
+            entries.push((order, declaration.name.clone(), numbers.join(" ")));
+        }
+    }
+    entries.sort_by_key(|(order, _, _)| *order);
+    entries
+        .iter()
+        .map(|(order, name, numbers)| format!("{}\t{name}\t{numbers}\n", FEATURE_TYPES[*order]))
+        .collect()
+}
+
+/// The entries [`feature_values`] writes as the blocks of a feature
+/// values rule, each type's in its order.
+fn feature_values_text(entries: &str) -> String {
+    let mut out = String::new();
+    let mut open: Option<&str> = None;
+    for line in entries.lines() {
+        let mut parts = line.splitn(3, '\t');
+        let (Some(feature), Some(name), Some(numbers)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        if !FEATURE_TYPES.contains(&feature) || numbers.trim().is_empty() {
+            continue;
+        }
+        if open != Some(feature) {
+            if open.is_some() {
+                out.push_str("} ");
+            }
+            out.push_str(&format!("@{feature} {{ "));
+            open = Some(feature);
+        }
+        out.push_str(&format!("{}: {}; ", ident(name), numbers.trim()));
+    }
+    if open.is_some() {
+        out.push_str("} ");
+    }
+    out
 }
 
 /// A media or import rule's media set to the list `text` holds (its

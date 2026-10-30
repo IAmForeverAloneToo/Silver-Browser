@@ -215,12 +215,14 @@ fn chain(locale: &Locale) -> Vec<String> {
     out
 }
 
-/// The value of a key of a kind in the locale's data, by its chain.
+/// The value of a key of a kind in the locale's data, by its chain; an
+/// empty one (a calendar's pattern its chain has and it has not) is none.
 fn lookup(chain: &[String], kind: &str, key: &str) -> Option<String> {
     let data = data();
     chain
         .iter()
         .find_map(|name| data.entries.get(&(name.as_str(), kind, key)))
+        .filter(|value| !value.is_empty())
         .map(|value| unescape(value))
 }
 
@@ -238,6 +240,7 @@ fn all(chain: &[String], kind: &str) -> Vec<(String, String)> {
     }
     let mut out: Vec<(String, String)> = found
         .into_iter()
+        .filter(|(_, value)| !value.is_empty())
         .map(|(key, value)| (key.to_owned(), unescape(value)))
         .collect();
     out.sort();
@@ -534,6 +537,8 @@ fn distance(want: &Skeleton, other: &Skeleton, mask: u32) -> (i32, u32) {
 /// and its default hour letter.
 pub(super) struct Generator {
     chain: Vec<String>,
+    /// Where eras, months and weekdays are named.
+    names_chain: Vec<String>,
     patterns: Vec<(Skeleton, String, bool)>,
     hour: char,
     language: String,
@@ -555,8 +560,13 @@ pub(super) enum ZoneNames {
 /// A time as the fields [`Generator::with_names`] writes need it: its
 /// era's index, its month (from 0) and weekday (from Sunday, 0) in the
 /// calendar, its minutes and milliseconds into the day, its offset
-/// from UTC, and the zero of the digits it is written in.
+/// from UTC, the zero of the digits it is written in, and the year in
+/// its cycle and the related gregorian year for a calendar of cycles
+/// (ICU's `y` and `r` of the Chinese one).
 pub(super) struct Instant {
+    pub(super) cyclic: Option<(i64, i64)>,
+    /// Whether its day and weekday are the caller's to write.
+    pub(super) own_day: bool,
     pub(super) era: i32,
     pub(super) month: usize,
     pub(super) weekday: usize,
@@ -567,14 +577,29 @@ pub(super) struct Instant {
 }
 
 /// Whether the data has a calendar's patterns for the locale's language
-/// (the gregorian calendar's for every locale).
+/// (the gregorian calendar's for every locale, the generic one's for
+/// each language over them).
 pub(super) fn has_calendar(locale: &Locale, calendar: &str) -> bool {
-    calendar == "gregorian" || lookup(&[calendar_name(locale, calendar)], "P", "0").is_some()
+    calendar == "gregorian" || lookup(&[calendar_name(locale, "generic")], "P", "4").is_some()
 }
 
 /// The data's name of a language's calendar not the gregorian one.
 fn calendar_name(locale: &Locale, calendar: &str) -> String {
     format!("{}@{calendar}", locale.id.language)
+}
+
+/// The calendars a calendar's patterns fall back to in the data, after
+/// its own and before the gregorian ones (ICU's aliases).
+fn calendar_parents(calendar: &str) -> &'static [&'static str] {
+    match calendar {
+        "dangi" => &["chinese", "generic"],
+        "islamic-civil" | "islamic-rgsa" | "islamic-tbla" | "islamic-umalqura" => {
+            &["islamic", "generic"]
+        }
+        "ethiopic-amete-alem" => &["ethiopic", "generic"],
+        "generic" => &[],
+        _ => &["generic"],
+    }
 }
 
 impl Generator {
@@ -583,13 +608,20 @@ impl Generator {
         Generator::in_calendar(locale, hours_of, "gregorian")
     }
 
-    /// The generator of a calendar's patterns, resolved whole in the data
-    /// for one not the gregorian one.
+    /// The generator of a calendar's patterns: one not the gregorian one
+    /// by its own, its parents' and then the gregorian ones; its names
+    /// (eras, months, weekdays) only its own, the rest ICU4X's.
     pub(super) fn in_calendar(locale: &Locale, hours_of: &Locale, calendar: &str) -> Generator {
-        let chain = if calendar == "gregorian" {
-            chain(locale)
+        let (chain, names_chain) = if calendar == "gregorian" {
+            (chain(locale), chain(locale))
         } else {
-            vec![calendar_name(locale, calendar)]
+            let own: Vec<String> = std::iter::once(calendar)
+                .chain(calendar_parents(calendar).iter().copied())
+                .map(|calendar| calendar_name(locale, calendar))
+                .collect();
+            let mut chain = own.clone();
+            chain.extend(self::chain(locale));
+            (chain, own)
         };
         let mut patterns: Vec<(Skeleton, String, bool)> = Vec::new();
         // ICU's canonical items first: a pattern of each field alone.
@@ -646,6 +678,7 @@ impl Generator {
             zone_chain,
             decimal: ".".to_owned(),
             chain,
+            names_chain,
             patterns,
         }
     }
@@ -666,7 +699,7 @@ impl Generator {
         &self,
         pattern: &str,
         at: &Instant,
-        zone_name: &mut dyn FnMut(char, usize) -> Option<String>,
+        outside: &mut dyn FnMut(char, usize) -> Option<String>,
     ) -> String {
         let width = |n: usize| match n {
             1..=3 => "abbreviated",
@@ -685,30 +718,45 @@ impl Generator {
         let mut out: Vec<Piece> = Vec::new();
         for piece in pieces(pattern) {
             let name = match piece {
+                // A day and a weekday the caller writes itself (a calendar
+                // ICU4X has another day of).
+                Piece::Field(c @ ('d' | 'E' | 'c'), n) if at.own_day => outside(c, n),
+                Piece::Field('y', n) if at.cyclic.is_some() => at
+                    .cyclic
+                    .map(|(year, _)| digits(year, if n == 2 { 2 } else { 1 })),
+                Piece::Field('r', n) if at.cyclic.is_some() => {
+                    at.cyclic.map(|(_, related)| digits(related, n))
+                }
                 Piece::Field('G', n) => {
-                    lookup(&self.chain, "E", &format!("{}/{}", width(n), at.era))
+                    lookup(&self.names_chain, "E", &format!("{}/{}", width(n), at.era))
                 }
                 // Weekdays' and months' names where the data has them.
                 Piece::Field(c @ ('E' | 'c'), n) if c == 'E' || n >= 3 => {
                     let context = if c == 'c' { "stand-alone" } else { "format" };
                     let width = if n == 6 { "short" } else { width(n) };
                     lookup(
-                        &self.chain,
+                        &self.names_chain,
                         "W",
                         &format!("{context}/{width}/{}", at.weekday),
                     )
-                    .or_else(|| lookup(&self.chain, "W", &format!("format/{width}/{}", at.weekday)))
+                    .or_else(|| {
+                        lookup(
+                            &self.names_chain,
+                            "W",
+                            &format!("format/{width}/{}", at.weekday),
+                        )
+                    })
                 }
                 Piece::Field(c @ ('M' | 'L'), n) if n >= 3 => {
                     let context = if c == 'L' { "stand-alone" } else { "format" };
                     lookup(
-                        &self.chain,
+                        &self.names_chain,
                         "O",
                         &format!("{context}/{}/{}", width(n), at.month),
                     )
                     .or_else(|| {
                         lookup(
-                            &self.chain,
+                            &self.names_chain,
                             "O",
                             &format!("format/{}/{}", width(n), at.month),
                         )
@@ -735,7 +783,7 @@ impl Generator {
                     Some(text.chars().take(n).collect())
                 }
                 Piece::Field('O', n) => Some(self.gmt(at.offset_seconds, n >= 4, at.zero)),
-                Piece::Field(c @ ('z' | 'v'), n) => zone_name(c, n),
+                Piece::Field(c @ ('z' | 'v'), n) => outside(c, n),
                 _ => None,
             };
             match name {
@@ -801,9 +849,13 @@ impl Generator {
         let pattern = if seconds < 0 { negative } else { positive };
         let total = seconds.unsigned_abs() / 60;
         let (h, m) = (i64::from(total / 60), i64::from(total % 60));
+        let s = i64::from(seconds.unsigned_abs() % 60);
         let mut text = String::new();
         // ICU's short pattern of whole hours: the pattern up to its hours.
-        let hours_only = !long && m == 0;
+        let hours_only = !long && m == 0 && s == 0;
+        // The separator before the minutes, which seconds take too (ICU's
+        // pattern of hours, minutes and seconds).
+        let mut separator = String::new();
         for piece in pieces(pattern) {
             match piece {
                 Piece::Field('H', _) => {
@@ -812,9 +864,18 @@ impl Generator {
                         break;
                     }
                 }
-                Piece::Field('m', _) => text.push_str(&digits(m, 2)),
+                Piece::Field('m', _) => {
+                    text.push_str(&digits(m, 2));
+                    if s != 0 {
+                        text.push_str(&separator);
+                        text.push_str(&digits(s, 2));
+                    }
+                }
                 Piece::Field(c, n) => text.extend(std::iter::repeat_n(c, n)),
-                Piece::Text(literal) => text.push_str(&literal),
+                Piece::Text(literal) => {
+                    separator.clone_from(&literal);
+                    text.push_str(&literal);
+                }
             }
         }
         format.replace("{0}", &text)

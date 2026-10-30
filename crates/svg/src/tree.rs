@@ -499,7 +499,7 @@ impl<'a> Builder<'a> {
                 children,
             })],
         );
-        outer.clip = style.overflow.clips().then_some(Clip::Rect([x, y, w, h]));
+        outer.clip = style.overflow().clips().then_some(Clip::Rect([x, y, w, h]));
         Some(Item::Group(outer))
     }
 

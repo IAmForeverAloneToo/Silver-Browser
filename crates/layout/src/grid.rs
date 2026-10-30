@@ -674,7 +674,7 @@ fn known_widths(
 /// spans a track whose minimum is `auto`, and when it spans more than
 /// one, none of them is flexible.
 fn has_automatic_minimum(style: &ComputedStyle, tracks: &[Track], span: &Range<usize>) -> bool {
-    !style.overflow.scrolls()
+    !style.overflow().scrolls()
         && span.clone().any(|t| tracks[t].min == Sizing::Auto)
         && (span.len() == 1
             || !span
@@ -1417,7 +1417,7 @@ pub(crate) fn layout_grid_contents<'a>(
         }
     }
     let absolutes = settle_absolutes_in(b, &mut root, border, absolutes, pass, &area);
-    if style.overflow.clips() {
+    if style.overflow().clips() {
         // The scrollable overflow area (§5.3): the items' margin boxes and
         // the grid's tracks, with the end padding after them, or anything
         // reaching lower by its own border box; never less than the

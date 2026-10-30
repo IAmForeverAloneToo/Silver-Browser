@@ -189,7 +189,7 @@ step("matrixLengths", () => ["translate", "scale", "rotate", "multiply", "fromMa
             // transferControlToOffscreen came with M31.4.
             (
                 "canvasProto",
-                "\"constructor getContext height toBlob toDataURL transferControlToOffscreen width\"",
+                "\"captureStream constructor getContext height toBlob toDataURL transferControlToOffscreen width\"",
             ),
             (
                 "attrs",

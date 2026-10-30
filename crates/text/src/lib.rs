@@ -33,6 +33,7 @@ mod woff2;
 pub use breaks::{BreakRules, Strictness, WordBreaking, grapheme_boundaries, line_breaks};
 pub use faces::{
     FaceId, FaceRecord, FaceSlant, Font, FontRequest, MAX_CHOICES, SYNTHETIC_SKEW, Slant,
+    is_private_use, named_families,
 };
 pub use hyphenate::{HyphenLimits, hyphenates, hyphenation_points};
 pub use transform::{Case, Transform, ends_word, transform};

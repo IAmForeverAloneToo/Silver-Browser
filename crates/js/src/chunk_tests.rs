@@ -90,6 +90,7 @@ fn each_chunks_names_are_the_same_before_and_after_it_is_made() {
                 "global.OfflineAudioCompletionEvent",
                 "global.ScriptProcessorNode",
                 "global.MediaStream",
+                "global.CanvasCaptureMediaStreamTrack",
                 "global.IDBFactory",
                 "global.DOMStringList",
                 "global.StorageManager",
@@ -99,7 +100,7 @@ fn each_chunks_names_are_the_same_before_and_after_it_is_made() {
                 "global.GPUBufferUsage",
             ]
             .as_slice(),
-            114,
+            115,
         ),
         (
             RealmKind::DedicatedWorker {

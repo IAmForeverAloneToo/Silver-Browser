@@ -271,24 +271,6 @@ pub(super) fn parse_background_position_axis(
     })
 }
 
-/// `positions` with one axis's values `axis` (0 along x) taken from
-/// `values`, each list repeated to the longer's length as layers repeat
-/// their lists (Backgrounds 3 section 2.2).
-pub(super) fn with_axis(
-    positions: &[[LengthPercentage; 2]],
-    values: Vec<LengthPercentage>,
-    axis: usize,
-) -> Vec<[LengthPercentage; 2]> {
-    let n = positions.len().max(values.len());
-    (0..n)
-        .map(|i| {
-            let mut pair = positions[i % positions.len().max(1)].clone();
-            pair[axis] = values[i % values.len()].clone();
-            pair
-        })
-        .collect()
-}
-
 /// `background-size`.
 pub(super) fn parse_background_size(
     tokens: &[Token],
@@ -330,7 +312,8 @@ pub(super) fn parse_background(
         color_mix: None,
         image: Vec::new(),
         repeat: Vec::new(),
-        position: Vec::new(),
+        position_x: Vec::new(),
+        position_y: Vec::new(),
         size: Vec::new(),
         origin: Vec::new(),
         clip: Vec::new(),
@@ -414,8 +397,10 @@ pub(super) fn parse_background(
         }
         out.image.push(image_of.unwrap_or(None));
         out.repeat.push(repeat_of.unwrap_or(initial.repeat[0]));
-        out.position
-            .push(position_of.unwrap_or_else(|| initial.position[0].clone()));
+        let [x, y] = position_of
+            .unwrap_or_else(|| [initial.position_x[0].clone(), initial.position_y[0].clone()]);
+        out.position_x.push(x);
+        out.position_y.push(y);
         out.size
             .push(size_of.unwrap_or_else(|| initial.size[0].clone()));
         out.attachment
@@ -537,15 +522,6 @@ mod tests {
         assert_eq!(axis("left", true), Some(vec![p(0.0)]));
         assert_eq!(axis("top", true), None);
         assert_eq!(axis("left 10px 5px", true), None);
-        let pair = |x: f32, y: f32| [p(x), p(y)];
-        assert_eq!(
-            with_axis(&[pair(1.0, 2.0)], vec![p(7.0), p(8.0)], 0),
-            vec![pair(7.0, 2.0), pair(8.0, 2.0)]
-        );
-        assert_eq!(
-            with_axis(&[pair(1.0, 2.0), pair(3.0, 4.0)], vec![p(9.0)], 1),
-            vec![pair(1.0, 9.0), pair(3.0, 9.0)]
-        );
         assert_eq!(position("10px 20px 30px"), None);
         let size = |css: &str| with_bases(|bases| parse_background_size(&tokens(css), bases));
         assert_eq!(
@@ -577,7 +553,10 @@ mod tests {
         assert_eq!(b.image, vec![url("a.png", 1.0)]);
         assert_eq!(b.repeat, vec![[Repeat::NoRepeat; 2]]);
         let p = LengthPercentage::Percent;
-        assert_eq!(b.position, vec![[p(50.0), p(50.0)]]);
+        assert_eq!(
+            (&b.position_x, &b.position_y),
+            (&vec![p(50.0)], &vec![p(50.0)])
+        );
         assert_eq!(b.size, vec![BackgroundSize::Sized(Some(p(50.0)), None)]);
         assert_eq!(b.origin, vec![BackgroundBox::ContentBox]);
         assert_eq!(b.clip, vec![BackgroundBox::ContentBox]);
@@ -590,8 +569,8 @@ mod tests {
         assert_eq!(b.clip[0], BackgroundBox::ContentBox);
         assert_eq!(b.image, vec![None, url("b.png", 1.0)]);
         assert_eq!(
-            b.position[1],
-            [LengthPercentage::Px(10.0), LengthPercentage::Px(20.0)]
+            [&b.position_x[1], &b.position_y[1]],
+            [&LengthPercentage::Px(10.0), &LengthPercentage::Px(20.0)]
         );
         let (color, b) = background("left top green").expect("valid");
         assert_eq!((color, b.image.len()), (Color::rgb8(0, 128, 0), 1));

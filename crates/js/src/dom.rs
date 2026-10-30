@@ -247,6 +247,9 @@ pub enum Call {
     /// collects it, or `null` where nothing there is rendered: what
     /// `Selection.toString()` gives.
     SelectedText(Handle, u32, Handle, u32),
+    /// The boxes of the range between two boundary points in viewport
+    /// coordinates (CSSOM View section 6.2), four numbers each.
+    RangeRects(Handle, u32, Handle, u32),
     /// The CSSOM's sheets and rules (D66): `op` on the sheet of `owner`
     /// (none for the document's list), `path` its imports' count, the
     /// imports, then the rule path; `text` and `index` what the op
@@ -347,6 +350,10 @@ pub enum Call {
     /// would take, as name, value and `important` or empty, each three in
     /// a row: what a `style` object reads.
     ParseDeclarations(String),
+    /// The descriptors of an `@page` rule's block (CSS Paged Media 3
+    /// section 7): its margins, `size` and `page-orientation`, as
+    /// `ParseDeclarations` gives them.
+    ParsePageDescriptors(String),
     /// The name the cascade knows a property by: an alias's property, a
     /// name in any case lowercased, a custom property's as it is; `None`
     /// for one it does not know.

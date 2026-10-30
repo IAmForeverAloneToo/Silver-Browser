@@ -8,6 +8,8 @@ pub(crate) mod console;
 mod dom;
 mod intl;
 mod intl_dates;
+mod intl_names;
+mod intl_text;
 mod intl_zone;
 mod modules;
 mod wasm;

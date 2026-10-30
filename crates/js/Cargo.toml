@@ -20,6 +20,9 @@ icu_time.workspace = true
 fixed_decimal.workspace = true
 icu_experimental.workspace = true
 icu_provider.workspace = true
+# Intl.Segmenter and Intl.DurationFormat's lists.
+icu_segmenter.workspace = true
+icu_list.workspace = true
 writeable.workspace = true
 
 [dev-dependencies]

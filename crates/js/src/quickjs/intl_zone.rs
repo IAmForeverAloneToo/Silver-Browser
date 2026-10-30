@@ -1,9 +1,10 @@
 //! The time zones of `Intl` (D63, `docs/design/text-dom-scripts.md`):
 //! IANA names canonicalized as the reference browser's ICU does, the
 //! system's zone (on Windows its zone's name mapped by CLDR's
-//! windowsZones), and a zone's offset from UTC at an instant from 1970
-//! on as the reference browser's ICU has it (`intl_zones.txt`, from its
-//! zoneinfo64): each zone's changes, then its final rule.
+//! windowsZones), and a zone's offset from UTC at an instant as the
+//! reference browser's ICU has it (`intl_zones.txt`, from its
+//! zoneinfo64): each zone's changes through its history, then its final
+//! rule.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -155,7 +156,14 @@ pub(super) fn keeps_daylight(name: &str) -> bool {
     zone_named(name)
         .and_then(|(_, reported)| read().zones.get(reported))
         .is_some_and(|offsets| {
-            offsets.rule.is_some() || offsets.changes.iter().any(|(_, _, daylight)| *daylight)
+            let at_1970 = offsets
+                .changes
+                .partition_point(|(when, _, _)| *when <= 0)
+                .saturating_sub(1);
+            offsets.rule.is_some()
+                || offsets.changes[at_1970..]
+                    .iter()
+                    .any(|(_, _, daylight)| *daylight)
         })
 }
 
@@ -242,14 +250,14 @@ fn windows_zone(name: &str, region: &str) -> Option<&'static str> {
 
 // ---- Offsets -------------------------------------------------------------
 
-/// The zones' offsets from 1970 on, as the reference browser's ICU has
-/// them (`intl_zones.txt`).
+/// The zones' offsets through their history, as the reference browser's
+/// ICU has them (`intl_zones.txt`).
 const OFFSETS: &str = include_str!("intl_zones.txt");
 
-/// A zone's offsets read: at 1970, and each change after as the UTC
-/// second it takes effect, the offset from then in seconds and whether
-/// it is daylight time; then its final rule, the offset it keeps that
-/// rule from and the year it does from.
+/// A zone's offsets read: its first, from the beginning of time, and
+/// each change after as the UTC second it takes effect, the offset from
+/// then in seconds and whether it is daylight time; then its final rule,
+/// the offset it keeps that rule from and the year it does from.
 struct Offsets {
     changes: Vec<(i64, i32, bool)>,
     rule: Option<(&'static str, i32, i64)>,
@@ -304,7 +312,7 @@ fn read() -> &'static Read {
                 [zone, items, rest @ ..] => {
                     let mut changes = Vec::new();
                     let mut at = 0;
-                    for item in items.split(' ') {
+                    for (i, item) in items.split(' ').enumerate() {
                         let daylight = item.ends_with('+');
                         let item = item.trim_end_matches('+');
                         let offset = match item.split_once('/') {
@@ -314,7 +322,9 @@ fn read() -> &'static Read {
                             }
                             None => base36(item),
                         };
-                        changes.push((at, offset as i32, daylight));
+                        // The first state holds from the beginning of time.
+                        let when = if i == 0 { i64::MIN } else { at };
+                        changes.push((when, offset as i32, daylight));
                     }
                     let rule = rest.first().and_then(|rule| {
                         let parts: Vec<&str> = rule.split(' ').collect();

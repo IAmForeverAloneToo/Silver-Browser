@@ -864,3 +864,44 @@ fn another_origins_imported_script_throws_a_network_error_for_its_error() {
         "{lines:?}"
     );
 }
+
+#[test]
+fn another_origins_imported_script_imports_against_about_blank() {
+    // HTML's "create a classic script" with muted errors (WPT's
+    // base-url-worker-importScripts): a relative import() from a script
+    // importScripts() took from another origin without CORS fails; one
+    // of the worker's own origin resolves against the script's URL.
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<script>new Worker('w.js').onmessage = (e) => console.log(e.data);</script>",
+        )),
+        "/w.js" => Some(script(
+            "const port = location.port;             self.out = [];             self.pending = [];             for (const host of ['a.localhost', 'b.localhost']) {               self.host = host;               importScripts('http://' + host + ':' + port + '/d/imp.js');             }             Promise.all(self.pending).then(() => postMessage(self.out.sort().join(', ')));",
+        )),
+        "/d/imp.js" => Some(script(
+            "{ const h = self.host;               self.pending.push(import('./m.js').then(                 (m) => self.out.push(h + ' ' + m.v), (e) => self.out.push(h + ' ' + e.name))); }",
+        )),
+        // Open to any origin, so that only the base keeps it out.
+        "/d/m.js" => Some(Reply::with_fields(
+            200,
+            &[
+                ("Content-Type", "text/javascript"),
+                ("Access-Control-Allow-Origin", "*"),
+            ],
+            b"export const v = 'loaded';",
+        )),
+        _ => None,
+    });
+    let port = server.url("/").port().expect("a port");
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine
+        .navigate(net::Url::parse(&format!("http://a.localhost:{port}/page.html")).expect("a URL"));
+    let lines = tab.run_until(|lines| lines.iter().any(|l| l.contains("b.localhost")));
+    assert!(
+        lines
+            .iter()
+            .any(|l| l == "a.localhost loaded, b.localhost TypeError"),
+        "{lines:?}"
+    );
+}

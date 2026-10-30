@@ -726,6 +726,27 @@ pub(crate) fn families(list: &str) -> impl Iterator<Item = Family<'_>> {
     })
 }
 
+/// Whether `c` is a private-use code point (Unicode section 23.5).
+pub fn is_private_use(c: char) -> bool {
+    matches!(c as u32, 0xE000..=0xF8FF | 0xF0000..=0xFFFFD | 0x100000..=0x10FFFD)
+}
+
+/// The family list `list` without its generic families, as the style
+/// crate writes one: what a private-use code point matches against (CSS
+/// Fonts 4 section 5.4); `None` when it names none but generics.
+pub fn named_families(list: &str) -> Option<String> {
+    let names: Vec<String> = families(list)
+        .filter_map(|family| match family {
+            Family::Name(name) => Some(format!(
+                "\"{}\"",
+                name.replace('\\', "\\\\").replace('"', "\\\"")
+            )),
+            Family::Generic(_) => None,
+        })
+        .collect();
+    (!names.is_empty()).then(|| names.join(", "))
+}
+
 /// A string's text after its opening quote, unescaped, and what is
 /// after its closing quote.
 fn unquote(text: &str) -> (String, &str) {

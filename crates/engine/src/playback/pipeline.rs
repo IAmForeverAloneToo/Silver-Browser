@@ -15,6 +15,8 @@ use std::time::{Duration, Instant};
 
 use media::{Demuxer, Hint, Picture, PictureDecoder, SoundDecoder};
 
+use audio::nodes::external::PRIME;
+
 use crate::audio_output::{OUTPUT_CHANNELS, OUTPUT_RATE};
 use crate::loader::media::{MediaError, MediaResource};
 use crate::webaudio::mixer;
@@ -77,24 +79,35 @@ fn format_error() -> Failure {
     }
 }
 
-/// An element's sound as the mixer takes it: frames of the output's,
-/// interleaved, queued; whether it plays; its gain (volume, muted); and
-/// the frames taken since the clock was last set.
+/// An element's sound as the mixer takes it: frames interleaved in
+/// stereo, queued; whether it plays; its gain (volume, muted); and the
+/// frames taken since the clock was last set.
 ///
 /// A `MediaElementAudioSourceNode` takes it into its graph (`feed`)
 /// rather than the output; a resource of another origin without CORS
-/// (`tainted`) gives it silence there.
+/// (`tainted`) gives it silence there. The queue is at the output's rate,
+/// or at that graph's once the pipeline decodes for it, so that a sound
+/// at the graph's own rate reaches it as it was.
 #[derive(Default)]
 pub(crate) struct ElementSound {
     pub(crate) queue: Mutex<VecDeque<f32>>,
     pub(crate) playing: AtomicBool,
     pub(crate) gain: AtomicU32,
     pub(crate) taken: AtomicU64,
-    pub(crate) feed: Mutex<Option<audio::nodes::external::External>>,
+    feed: Mutex<Option<audio::nodes::external::External>>,
     pub(crate) tainted: AtomicBool,
     /// What takes the sound from the output's rate to that of a graph
     /// that took it, and that rate.
     to_graph: Mutex<Option<(f32, media::Resampler)>>,
+    /// The queue's rate (`f32` bits; 0 for the output's), kept with it.
+    queue_rate: AtomicU32,
+    /// A graph took the sound since the pipeline last decoded.
+    retarget: AtomicBool,
+    /// The part of a frame owed to the graph by the takes so far (`f64`
+    /// bits).
+    owed: AtomicU64,
+    /// Whether the graph was given its lead since the queue restarted.
+    led: AtomicBool,
 }
 
 impl ElementSound {
@@ -104,6 +117,53 @@ impl ElementSound {
 
     pub(crate) fn gain(&self) -> f32 {
         f32::from_bits(self.gain.load(Ordering::Relaxed))
+    }
+
+    /// The graph that took the sound, if one did.
+    pub(crate) fn feed(&self) -> Option<audio::nodes::external::External> {
+        self.feed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Gives the sound to `external`'s graph, for good; false when one
+    /// had it already. The pipeline decodes again for its rate.
+    pub(crate) fn take_by(&self, external: audio::nodes::external::External) -> bool {
+        let mut feed = self.feed.lock().unwrap_or_else(PoisonError::into_inner);
+        if feed.is_some() {
+            return false;
+        }
+        *feed = Some(external);
+        self.retarget.store(true, Ordering::Relaxed);
+        true
+    }
+
+    /// The rate the queue is to be at: the graph's that took the sound,
+    /// else the output's.
+    fn wanted_rate(&self) -> f32 {
+        self.feed()
+            .map(|external| external.rate)
+            .filter(|rate| *rate > 0.0)
+            .unwrap_or(OUTPUT_RATE as f32)
+    }
+
+    /// The queue's rate.
+    fn queue_rate(&self) -> f32 {
+        match f32::from_bits(self.queue_rate.load(Ordering::Relaxed)) {
+            0.0 => OUTPUT_RATE as f32,
+            rate => rate,
+        }
+    }
+
+    /// Empties the queue, which is at the wanted rate from now.
+    fn restart_queue(&self) {
+        let mut queue = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
+        queue.clear();
+        self.queue_rate
+            .store(self.wanted_rate().to_bits(), Ordering::Relaxed);
+        self.owed.store(0, Ordering::Relaxed);
+        self.led.store(false, Ordering::Relaxed);
     }
 
     /// `samples`, interleaved at the output's rate, at `rate`: a graph's
@@ -125,18 +185,51 @@ impl ElementSound {
     }
 
     /// Takes up to `into.len()` samples, adding them at its gain to
-    /// `into`, or giving them to the graph that took the sound; the
-    /// frames it took.
+    /// `into`, or giving them to the graph that took the sound (as many
+    /// frames as the graph's rate makes of that time, with a queue at
+    /// it); the frames it took. A graph is first given a lead of
+    /// [`PRIME`] frames more, which it keeps while it renders each wake's
+    /// frames: a wake that renders a quantum past what it was given then
+    /// finds it, rather than a gap.
     pub(crate) fn take_into(&self, into: &mut [f32]) -> usize {
         let gain = self.gain();
         let mut queue = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
-        let n = queue.len().min(into.len()) / OUTPUT_CHANNELS * OUTPUT_CHANNELS;
-        let feed = self
-            .feed
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
+        let feed = self.feed();
+        let lead = if feed.is_some() && !self.led.swap(true, Ordering::Relaxed) {
+            PRIME
+        } else {
+            0
+        };
+        let mut n = queue.len().min(into.len() + lead * OUTPUT_CHANNELS) / OUTPUT_CHANNELS
+            * OUTPUT_CHANNELS;
+        let rate = self.queue_rate();
         match feed {
+            Some(external) if rate == external.rate && rate != OUTPUT_RATE as f32 => {
+                let silent = self.tainted.load(Ordering::Relaxed);
+                let owed = f64::from_bits(self.owed.load(Ordering::Relaxed));
+                let want = owed
+                    + lead as f64
+                    + (into.len() / OUTPUT_CHANNELS) as f64 * f64::from(rate)
+                        / f64::from(OUTPUT_RATE);
+                let whole = want.floor();
+                let frames = (whole as usize).min(queue.len() / OUTPUT_CHANNELS);
+                let owed = if frames == whole as usize {
+                    want - whole
+                } else {
+                    0.0
+                };
+                self.owed.store(owed.to_bits(), Ordering::Relaxed);
+                n = frames * OUTPUT_CHANNELS;
+                let samples: Vec<f32> = queue
+                    .drain(..n)
+                    .map(|s| if silent { 0.0 } else { s * gain })
+                    .collect();
+                external
+                    .feed
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(&samples, OUTPUT_CHANNELS);
+            }
             Some(external) => {
                 let silent = self.tainted.load(Ordering::Relaxed);
                 let samples: Vec<f32> = queue
@@ -151,6 +244,7 @@ impl ElementSound {
                     .push(&samples, OUTPUT_CHANNELS);
             }
             None => {
+                n = n.min(into.len());
                 for (o, s) in into.iter_mut().zip(queue.drain(..n)) {
                     *o += s * gain;
                 }
@@ -202,7 +296,7 @@ impl Shared {
         let has_sound = state.meta.as_ref().is_some_and(|m| m.sound) && !state.dry;
         let at = if has_sound {
             let taken = self.sound.taken.load(Ordering::Relaxed);
-            state.base + taken as f64 / f64::from(OUTPUT_RATE) * state.rate
+            state.base + taken as f64 / f64::from(self.sound.queue_rate()) * state.rate
         } else {
             match state.since {
                 Some(since) if state.playing && state.ready => {
@@ -240,11 +334,8 @@ impl Pipeline {
         tell: Box<dyn Fn(Report) + Send>,
         sound: Arc<ElementSound>,
     ) -> Pipeline {
-        sound
-            .queue
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clear();
+        sound.restart_queue();
+        sound.retarget.store(false, Ordering::Relaxed);
         sound.taken.store(0, Ordering::Relaxed);
         sound.tainted.store(false, Ordering::Relaxed);
         let shared = Arc::new(Shared {
@@ -376,12 +467,12 @@ impl Decoders {
     }
 }
 
-/// The sound's samples as the output's: stereo (the first two
-/// channels, or one on both), at its rate scaled by `rate`.
+/// The sound's samples as the queue's: stereo (the first two channels,
+/// or one on both), at its rate scaled by `rate`, resampled to `to`.
 fn to_output(
     sound: &media::Sound,
     from: f64,
-    rate: f64,
+    (rate, to): (f64, f64),
     resampler: &mut Option<media::Resampler>,
 ) -> Vec<f32> {
     let channels = usize::from(sound.channels.max(1));
@@ -397,16 +488,12 @@ fn to_output(
         stereo.push(left);
         stereo.push(right);
     }
-    // At the output's rate already: as it is.
-    if f64::from(sound.rate) * rate == f64::from(OUTPUT_RATE) {
+    // At the queue's rate already: as it is.
+    if f64::from(sound.rate) * rate == to {
         return stereo;
     }
     let resampler = resampler.get_or_insert_with(|| {
-        media::Resampler::new(
-            f64::from(sound.rate) * rate,
-            f64::from(OUTPUT_RATE),
-            OUTPUT_CHANNELS,
-        )
+        media::Resampler::new(f64::from(sound.rate) * rate, to, OUTPUT_CHANNELS)
     });
     resampler.process(&stereo)
 }
@@ -486,6 +573,11 @@ fn run(shared: &Shared, resource: &MediaResource, hint: &Hint, tell: &dyn Fn(Rep
         if state.stopped {
             return;
         }
+        // A graph took the sound: decoded again for its rate from where
+        // it is, unheard.
+        if shared.sound.retarget.swap(false, Ordering::Relaxed) && state.seek.is_none() {
+            state.seek = Some((0, shared.position(&state)));
+        }
         // A seek: the demuxer to its packet, the queues emptied, the
         // decoders made again, and decoding forward to its time.
         if let Some((id, time)) = state.seek.take() {
@@ -493,12 +585,7 @@ fn run(shared: &Shared, resource: &MediaResource, hint: &Hint, tell: &dyn Fn(Rep
             state.drained = false;
             state.ended = false;
             state.dry = false;
-            shared
-                .sound
-                .queue
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .clear();
+            shared.sound.restart_queue();
             shared.set_clock(&mut state, time);
             drop(state);
             let track = decoders
@@ -658,7 +745,8 @@ fn fill(shared: &Shared, demuxer: &mut Demuxer, decoders: &mut Decoders, to: Opt
             && let Ok(sound) = decoder.decode(&packet)
         {
             let rate = lock(shared).rate;
-            let samples = to_output(&sound, decoders.from, rate, &mut decoders.resampler);
+            let to = f64::from(shared.sound.queue_rate());
+            let samples = to_output(&sound, decoders.from, (rate, to), &mut decoders.resampler);
             if !samples.is_empty() {
                 have_sound = true;
             }
@@ -754,5 +842,45 @@ impl Report {
             }),
             _ => return None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_graph_at_the_sounds_rate_takes_it_as_it_was() {
+        // WPT's mediaElementAudioSourceToScriptProcessorTest: a sound at
+        // 44.1 kHz reaches a graph at 44.1 kHz unresampled, every frame
+        // of it in order, as many a second as the graph's rate.
+        let sound = ElementSound::default();
+        let external = audio::nodes::external::External {
+            rate: 44_100.0,
+            ..Default::default()
+        };
+        assert!(sound.take_by(external.clone()));
+        assert!(!sound.take_by(external.clone()));
+        sound.restart_queue();
+        let decoded = media::Sound {
+            time: 0.0,
+            rate: 44_100,
+            channels: 1,
+            samples: (0..44_100).map(|i| i as f32 / 44_100.0).collect(),
+        };
+        let to = f64::from(sound.queue_rate());
+        let samples = to_output(&decoded, 0.0, (1.0, to), &mut None);
+        assert_eq!(samples.len(), 2 * 44_100);
+        sound.queue.lock().unwrap().extend(samples);
+        sound.set_gain(1.0);
+        // A second of the output's, 480 frames a wake.
+        let mut taken = 0;
+        for _ in 0..100 {
+            taken += sound.take_into(&mut [0.0; 960]);
+        }
+        assert_eq!(taken, 44_100);
+        let feed = external.feed.lock().unwrap();
+        let left: Vec<f32> = feed.channels[0].iter().copied().collect();
+        assert_eq!(left, decoded.samples);
     }
 }

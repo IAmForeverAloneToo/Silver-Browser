@@ -113,6 +113,9 @@ icu_experimental = "~0.6.0"
 # writes through, for dates formatted by the reference browser's
 # patterns (both in the tree already).
 icu_provider = "~2.3.0"
+# Lists of units for Intl.DurationFormat, the version icu_experimental
+# brings already.
+icu_list = "~2.3.0"
 writeable = "~0.6.4"
 unicode-script = "0.5"
 # The Unicode general category, for the first-letter pattern (M16,

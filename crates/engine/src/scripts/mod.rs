@@ -23,6 +23,7 @@ mod media_lists;
 pub(crate) mod modules;
 mod mutations;
 pub(crate) mod ports;
+mod range_rects;
 pub(crate) mod rules;
 pub(crate) mod service_workers;
 #[cfg(test)]
@@ -355,6 +356,9 @@ pub(crate) struct Lent<'a> {
     pub(crate) document: &'a mut Document,
     /// The shown document's images, for the layout scripts ask of (D65).
     pub(crate) images: Option<&'a mut crate::image_store::ImageStore>,
+    /// The shown document's animations and transitions, which its
+    /// `getComputedStyle` and layout queries sample (G46).
+    pub(crate) animations: Option<&'a mut style::animation::Animations>,
     pub(crate) page: &'a mut Page,
     pub(crate) parser: Option<&'a mut html::Load>,
     pub(crate) network: &'a mut Network,
@@ -3215,7 +3219,9 @@ fn script_source(response: &Response, fallback: Encoding) -> Result<Source, Stri
     Ok(Source {
         text,
         url: response.url().to_string(),
-        base: String::new(),
+        // A muted script's `import()`s resolve against about:blank (HTML's
+        // "create a classic script").
+        base: if muted { "about:blank" } else { "" }.to_owned(),
         options: ScriptOptions::default(),
         line: 1,
         muted,
@@ -3304,6 +3310,7 @@ mod tests {
         let mut lent = Lent {
             document,
             images: None,
+            animations: None,
             page: &mut page,
             parser: None,
             network: &mut network,

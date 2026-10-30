@@ -1064,14 +1064,23 @@ impl<'a> Walk<'a, '_> {
             self.inside(f, |w| body(w, padding_box));
             return;
         }
+        // An axis left `visible` beside one that clips (`overflow: clip`)
+        // is not clipped along.
+        let mut clip_box = padding_box;
+        if f.style.overflow_x == Overflow::Visible {
+            (clip_box.x, clip_box.w) = (-UNCLIPPED, 2.0 * UNCLIPPED);
+        }
+        if f.style.overflow_y == Overflow::Visible {
+            (clip_box.y, clip_box.h) = (-UNCLIPPED, 2.0 * UNCLIPPED);
+        }
         let effective = match self.clip() {
-            Some(outer) => outer.intersect(&padding_box),
-            None => padding_box,
+            Some(outer) => outer.intersect(&clip_box),
+            None => clip_box,
         };
         let mark = self.steps.len();
         // A clip that is no scroll container (`overflow: clip`, M26.7)
         // names no node: nothing scrolls it, as a generated box's.
-        let node = (f.generated.is_none() && f.style.overflow.scrolls()).then_some(f.node);
+        let node = (f.generated.is_none() && f.style.overflow().scrolls()).then_some(f.node);
         let rounded =
             RoundedRect::of(&f.style, rect).map(|r| (f.node, r.inset(f.style.used_border_width())));
         if emit != Emit::Nothing {
@@ -1203,7 +1212,7 @@ impl<'a> Walk<'a, '_> {
             // (§9): its children take part, with its full matrix ahead
             // of theirs, under its perspective.
             let preserve = transformable(f)
-                && f.style.effects().used_transform_style(f.style.overflow)
+                && f.style.effects().used_transform_style(f.style.overflow())
                     == TransformStyle::Preserve3d;
             let root_3d = preserve && !space.in_3d;
             // A hidden backface turned away (§12) hides the box's own
@@ -1457,7 +1466,8 @@ impl<'a> Walk<'a, '_> {
         out: &mut Vec<Positioned<'a>>,
         space: Space,
     ) {
-        if f.style.effects().used_transform_style(f.style.overflow) != TransformStyle::Preserve3d {
+        if f.style.effects().used_transform_style(f.style.overflow()) != TransformStyle::Preserve3d
+        {
             return;
         }
         let rect = self.rect_of(f);
@@ -1732,10 +1742,13 @@ impl<'a> Walk<'a, '_> {
     }
 }
 
+/// How far an axis that is not clipped reaches either way.
+const UNCLIPPED: f32 = 1.0e7;
+
 /// Whether a clipping box shows a scrollbar (M10.5): `overflow:
 /// scroll` always, `auto` when there is something to scroll.
 fn shows_scrollbar(f: &Fragment) -> bool {
-    match f.style.overflow {
+    match f.style.overflow() {
         Overflow::Scroll => true,
         Overflow::Auto => f.max_scroll() > 0.0,
         Overflow::Hidden | Overflow::Visible | Overflow::Clip => false,
@@ -2101,6 +2114,26 @@ mod tests {
             Step::PushGroup { matrix, .. }
                 if matrix.scale_and_translation() == Some((1.0, 1.0, -15.0, 0.0))
         ));
+    }
+
+    #[test]
+    fn an_axis_left_visible_beside_clip_is_not_clipped() {
+        // `overflow-x: visible; overflow-y: clip`: the clip reaches past
+        // the box across, not down.
+        let layout = layout_of(
+            Element::new("div").push(Element::new("div").attr("class", "c").text("x")),
+            "div { margin: 0 } .c { width: 50px; height: 20px; overflow-x: visible;              overflow-y: clip }",
+        );
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        let clip = steps
+            .iter()
+            .find_map(|s| match s {
+                Step::PushClip { rect, .. } => Some(*rect),
+                _ => None,
+            })
+            .expect("a clip");
+        assert_eq!((clip.y, clip.h), (0.0, 20.0));
+        assert!(clip.x < -1000.0 && clip.w > 2000.0, "{clip:?}");
     }
 
     #[test]

@@ -165,6 +165,49 @@ fn render(entry: &mut Live, graph: &mut Graph, frames: usize, into: &mut [f32]) 
     }
 }
 
+/// Adds `frames` frames of every running context's sound into `out`, in
+/// the order they started running: a context that gives its sound to
+/// another's stream source before the one that took the stream renders
+/// it, which then reads this wake's sound, not a gap.
+fn render_all(live: &mut HashMap<u64, Live>, frames: usize, out: &mut [f32]) {
+    let mut keys: Vec<u64> = live.keys().copied().collect();
+    keys.sort_unstable();
+    for key in keys {
+        let Some(entry) = live.get_mut(&key) else {
+            continue;
+        };
+        let Some(graph) = entry.graph.upgrade() else {
+            continue;
+        };
+        let mut graph = lock(&graph);
+        render(entry, &mut graph, frames, out);
+        let ended = graph.take_ended();
+        let filled = graph.take_filled();
+        drop(graph);
+        if !ended.is_empty() || !filled.is_empty() {
+            (entry.ended)(ended, filled);
+        }
+    }
+}
+
+/// Adds a wake's `frames` frames of the elements' and the contexts' sound
+/// into `out`: the elements' first, so that a graph that took one's
+/// sound renders this wake's, however many frames the wake has, rather
+/// than running dry on the last wake's.
+fn mix_wake(
+    live: &mut HashMap<u64, Live>,
+    elements: &[Arc<crate::playback::ElementSound>],
+    frames: usize,
+    out: &mut [f32],
+) {
+    for sound in elements {
+        if sound.playing.load(Ordering::Relaxed) {
+            sound.take_into(out);
+        }
+    }
+    render_all(live, frames, out);
+}
+
 /// What the mixer wrote so far, and what its sink said it played last,
 /// in frames.
 #[derive(Default)]
@@ -214,33 +257,105 @@ fn mix_once(written: &mut Written) {
     }
     let frames = quanta as usize * QUANTUM;
     let mut out = vec![0.0f32; frames * OUTPUT_CHANNELS];
-    // In the order they started running: a context that gives its sound
-    // to another's stream source before the one that took the stream
-    // renders it, which then reads this wake's sound, not a gap.
-    let mut keys: Vec<u64> = live.keys().copied().collect();
-    keys.sort_unstable();
-    for key in keys {
-        let Some(entry) = live.get_mut(&key) else {
-            continue;
-        };
-        let Some(graph) = entry.graph.upgrade() else {
-            continue;
-        };
-        let mut graph = lock(&graph);
-        render(entry, &mut graph, frames, &mut out);
-        let ended = graph.take_ended();
-        let filled = graph.take_filled();
-        drop(graph);
-        if !ended.is_empty() || !filled.is_empty() {
-            (entry.ended)(ended, filled);
-        }
-    }
-    for sound in &elements {
-        if sound.playing.load(Ordering::Relaxed) {
-            sound.take_into(&mut out);
-        }
-    }
+    mix_wake(&mut live, &elements, frames, &mut out);
     crate::audio_output::clamp_samples(&mut out);
     sink.write(&out);
     written.written += frames as u64;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use audio::nodes::{self, external::Tap};
+
+    #[test]
+    fn a_streams_writer_renders_before_its_reader() {
+        // Pairs of contexts at the output's rate, each writer started
+        // before its reader: the writer's constant 0.25 goes to its tap,
+        // which the reader plays. Rendered in the order they started,
+        // every reader hears the wake's sound in that same wake.
+        const PAIRS: usize = 16;
+        let mut graphs = Vec::new();
+        let mut live = HashMap::new();
+        let mut add = |live: &mut HashMap<u64, Live>, key: u64, graph: Graph| {
+            let graph = Arc::new(Mutex::new(graph));
+            live.insert(
+                key,
+                Live {
+                    graph: Arc::downgrade(&graph),
+                    ended: Box::new(|_, _| {}),
+                    resampler: None,
+                    made: VecDeque::new(),
+                },
+            );
+            graphs.push(graph);
+        };
+        for pair in 0..PAIRS as u64 {
+            let tap = Tap::default();
+            let mut writer = Graph::new(OUTPUT_RATE_F32, 1);
+            let c = writer.add(nodes::constant()).expect("a node");
+            let node = writer.node_mut(c).expect("the node");
+            node.params[0].value = 0.25;
+            if let audio::Kind::Constant(schedule) = &mut node.kind {
+                schedule.start = Some(0.0);
+            }
+            let t = writer.add(nodes::tap(tap.clone())).expect("a node");
+            writer.connect(c, 0, t, 0);
+            let mut reader = Graph::new(OUTPUT_RATE_F32, 1);
+            let source = reader.add(nodes::external(tap.reader())).expect("a node");
+            reader.connect(source, 0, 0, 0);
+            // The writer's key the lower, as it started first.
+            add(&mut live, 2 * pair + 1, writer);
+            add(&mut live, 2 * pair + 2, reader);
+        }
+        let frames = 8 * QUANTUM;
+        let mut out = vec![0.0; frames * OUTPUT_CHANNELS];
+        render_all(&mut live, frames, &mut out);
+        let want = 0.25 * PAIRS as f32;
+        assert!(
+            out.iter().all(|s| (s - want).abs() < 1e-5),
+            "{:?}",
+            &out[..8]
+        );
+    }
+
+    #[test]
+    fn an_elements_sound_reaches_its_graph_in_the_same_wake() {
+        // A wake longer than the feed holds: the element's frames are
+        // given before the graph renders, so the graph plays all of them.
+        let sound = Arc::new(crate::playback::ElementSound::default());
+        let external = nodes::external::External {
+            rate: OUTPUT_RATE_F32,
+            ..Default::default()
+        };
+        assert!(sound.take_by(external.clone()));
+        sound.set_gain(1.0);
+        sound.playing.store(true, Ordering::Relaxed);
+        let frames = 16 * QUANTUM;
+        sound
+            .queue
+            .lock()
+            .unwrap()
+            .extend(std::iter::repeat_n(0.5, frames * OUTPUT_CHANNELS));
+        let mut graph = Graph::new(OUTPUT_RATE_F32, 2);
+        let source = graph.add(nodes::external(external)).expect("a node");
+        graph.connect(source, 0, 0, 0);
+        let graph = Arc::new(Mutex::new(graph));
+        let mut live = HashMap::from([(
+            1,
+            Live {
+                graph: Arc::downgrade(&graph),
+                ended: Box::new(|_, _| {}),
+                resampler: None,
+                made: VecDeque::new(),
+            },
+        )]);
+        let mut out = vec![0.0; frames * OUTPUT_CHANNELS];
+        mix_wake(&mut live, &[sound], frames, &mut out);
+        assert!(
+            out.iter().all(|s| (s - 0.5).abs() < 1e-6),
+            "{:?}",
+            &out[..8]
+        );
+    }
 }

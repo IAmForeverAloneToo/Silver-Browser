@@ -1789,7 +1789,7 @@ fn composited_style(
     // does; and an opacity can flatten its 3D content.
     let same_to_layout = a.has_transform() == b.has_transform()
         && a.is_stacking_context_of(false) == b.is_stacking_context_of(false)
-        && a.used_transform_style(old.overflow) == b.used_transform_style(new.overflow);
+        && a.used_transform_style(old.overflow()) == b.used_transform_style(new.overflow());
     if !same_to_layout {
         return None;
     }
@@ -2959,7 +2959,7 @@ fn compute_style(
         }
         // The `font` shorthand sets the size too (D53).
         let shorthand = match &*a.decl.name {
-            "font-size" => false,
+            "font-size" | "all" => false,
             "font" => true,
             _ => continue,
         };
@@ -3102,7 +3102,7 @@ fn compute_style(
     let mut declared: Vec<(usize, Color)> = Vec::new();
     let dark = style.dark;
     for (n, a) in sorted.iter().enumerate() {
-        if a.decl.name != "color" || !target.applies("color") {
+        if !matches!(&*a.decl.name, "color" | "all") || !target.applies("color") {
             continue;
         }
         let color = match specified(a, style.custom.as_ref(), resolution) {
@@ -3160,11 +3160,13 @@ fn compute_style(
             if custom::is_custom_property_name(name) || !target.applies(name) {
                 continue;
             }
-            if name == "color" {
+            if name == "color" || name == "all" {
                 if let Some(&(_, c)) = declared.iter().find(|(at, _)| *at == n) {
                     style.color = c;
                 }
-                continue;
+                if name == "color" {
+                    continue;
+                }
             }
             apply_specified(
                 style,
@@ -3322,6 +3324,7 @@ fn compute_style(
     {
         style.motion = None;
     }
+    style.fix_overflow();
     if style.svg.as_deref().is_some_and(|s| *s == Svg::default()) {
         style.svg = None;
     }
@@ -3688,15 +3691,21 @@ fn apply_declaration(
         "background-position" => set_background(
             style,
             backgrounds::parse_background_position(value, bases),
-            |b, v| b.position = v,
+            |b, v| b.set_positions(v),
         ),
         // Its longhands (Backgrounds 4, gap batch E; G40).
         "background-position-x" | "background-position-y" => {
-            let axis = usize::from(name == "background-position-y");
+            let x = name == "background-position-x";
             set_background(
                 style,
-                backgrounds::parse_background_position_axis(value, bases, axis == 0),
-                |b, v| b.position = backgrounds::with_axis(&b.position, v, axis),
+                backgrounds::parse_background_position_axis(value, bases, x),
+                |b, v| {
+                    if x {
+                        b.position_x = v;
+                    } else {
+                        b.position_y = v;
+                    }
+                },
             )
         }
         "background-size" => set_background(
@@ -4052,7 +4061,15 @@ fn apply_declaration(
         "border-right" => apply_border_shorthand(style, &[RIGHT], value, bases, border_color_set),
         "border-bottom" => apply_border_shorthand(style, &[BOTTOM], value, bases, border_color_set),
         "border-left" => apply_border_shorthand(style, &[LEFT], value, bases, border_color_set),
-        "overflow" => set(&mut style.overflow, parse_overflow(value)),
+        "overflow" => match parse_overflow_pair(value) {
+            Some((x, y)) => {
+                (style.overflow_x, style.overflow_y) = (x, y);
+                true
+            }
+            None => false,
+        },
+        "overflow-x" => set(&mut style.overflow_x, parse_overflow(value)),
+        "overflow-y" => set(&mut style.overflow_y, parse_overflow(value)),
         "float" => set(&mut style.float, parse_float(value)),
         "clear" => set(&mut style.clear, parse_clear(value)),
         "position" => set(&mut style.position, parse_position(value)),
@@ -4298,6 +4315,44 @@ fn apply_declaration(
                 _ => None,
             };
             set_effects(style, smooth, |e, v| e.scroll_behavior_smooth = v)
+        }
+        // Scroll Snap 1 section 6: lengths, and `auto` or lengths and
+        // percentages not below zero.
+        "scroll-margin" => {
+            let values: Option<Vec<f32>> = split_components(value)
+                .iter()
+                .map(|g| parse_length_px(g, bases))
+                .collect();
+            set_effects(style, expand_1_to_4(&values.unwrap_or_default()), |e, v| {
+                e.scroll_margin = v
+            })
+        }
+        "scroll-padding" => {
+            let values: Option<Vec<LengthPercentageAuto>> = split_components(value)
+                .iter()
+                .map(|g| parse_scroll_padding(g, bases))
+                .collect();
+            set_effects(style, expand_1_to_4(&values.unwrap_or_default()), |e, v| {
+                e.scroll_padding = v
+            })
+        }
+        "scroll-margin-top"
+        | "scroll-margin-right"
+        | "scroll-margin-bottom"
+        | "scroll-margin-left" => {
+            let side = side_of(name);
+            set_effects(style, parse_length_px(value, bases), |e, v| {
+                e.scroll_margin[side] = v
+            })
+        }
+        "scroll-padding-top"
+        | "scroll-padding-right"
+        | "scroll-padding-bottom"
+        | "scroll-padding-left" => {
+            let side = side_of(name);
+            set_effects(style, parse_scroll_padding(value, bases), |e, v| {
+                e.scroll_padding[side] = v
+            })
         }
         "box-shadow" => set_effects(style, parse_shadows(value, bases, false), |e, v| {
             e.box_shadow = v
@@ -4937,6 +4992,15 @@ pub(crate) fn css_wide_keyword(tokens: &[Token]) -> Option<CssWide> {
     }
 }
 
+/// The longhands `all` sets: every one the engine computes but
+/// `direction` and `unicode-bidi` (Cascade 5 section 3.1).
+pub fn all_longhands() -> impl Iterator<Item = &'static str> {
+    crate::serialize::COMPUTED_PROPERTIES
+        .iter()
+        .copied()
+        .filter(|name| !matches!(*name, "direction" | "unicode-bidi"))
+}
+
 /// Whether `name` is an inherited property (css-cascade-5 §7.1 and
 /// each property's own definition): what `unset` means for it.
 fn is_inherited(name: &str) -> bool {
@@ -5040,6 +5104,14 @@ fn apply_css_wide(
     }
     let name = physical_longhand(name, style.direction).unwrap_or(name);
     match name {
+        // Every longhand but `direction` and `unicode-bidi` (Cascade 5
+        // section 3.1).
+        // `color` and `font-size` are the cascade's first passes'.
+        "all" => {
+            for longhand in all_longhands().filter(|l| !matches!(*l, "color" | "font-size")) {
+                apply_css_wide(style, longhand, keyword, parent, border_color_set);
+            }
+        }
         "color" => style.color = src.color,
         "color-scheme" => style.color_scheme = src.color_scheme.clone(),
         "background-color" => {
@@ -5052,15 +5124,15 @@ fn apply_css_wide(
         }
         "background-image" => copy_background(style, src, |b, s| b.image = s.image.clone()),
         "background-repeat" => copy_background(style, src, |b, s| b.repeat = s.repeat.clone()),
-        "background-position" => {
-            copy_background(style, src, |b, s| b.position = s.position.clone())
+        "background-position" => copy_background(style, src, |b, s| {
+            b.position_x = s.position_x.clone();
+            b.position_y = s.position_y.clone();
+        }),
+        "background-position-x" => {
+            copy_background(style, src, |b, s| b.position_x = s.position_x.clone())
         }
-        "background-position-x" | "background-position-y" => {
-            let axis = usize::from(name == "background-position-y");
-            copy_background(style, src, |b, s| {
-                let values = s.position.iter().map(|p| p[axis].clone()).collect();
-                b.position = backgrounds::with_axis(&b.position, values, axis);
-            })
+        "background-position-y" => {
+            copy_background(style, src, |b, s| b.position_y = s.position_y.clone())
         }
         "background-size" => copy_background(style, src, |b, s| b.size = s.size.clone()),
         "background-origin" => copy_background(style, src, |b, s| b.origin = s.origin.clone()),
@@ -5230,7 +5302,9 @@ fn apply_css_wide(
             }
             border_color_set[side] = from_parent;
         }
-        "overflow" => style.overflow = src.overflow,
+        "overflow" => (style.overflow_x, style.overflow_y) = (src.overflow_x, src.overflow_y),
+        "overflow-x" => style.overflow_x = src.overflow_x,
+        "overflow-y" => style.overflow_y = src.overflow_y,
         "box-sizing" => style.box_sizing = src.box_sizing,
         "min-width" => style.min_width = src.min_width.clone(),
         "max-width" => style.max_width = src.max_width.clone(),
@@ -5378,6 +5452,28 @@ fn apply_css_wide(
         "scroll-behavior" => copy_effects(style, src, |e, s| {
             e.scroll_behavior_smooth = s.scroll_behavior_smooth
         }),
+        "scroll-margin" => copy_effects(style, src, |e, s| e.scroll_margin = s.scroll_margin),
+        "scroll-padding" => copy_effects(style, src, |e, s| {
+            e.scroll_padding = s.scroll_padding.clone()
+        }),
+        "scroll-margin-top"
+        | "scroll-margin-right"
+        | "scroll-margin-bottom"
+        | "scroll-margin-left" => {
+            let side = side_of(name);
+            copy_effects(style, src, |e, s| {
+                e.scroll_margin[side] = s.scroll_margin[side]
+            })
+        }
+        "scroll-padding-top"
+        | "scroll-padding-right"
+        | "scroll-padding-bottom"
+        | "scroll-padding-left" => {
+            let side = side_of(name);
+            copy_effects(style, src, |e, s| {
+                e.scroll_padding[side] = s.scroll_padding[side].clone()
+            })
+        }
         "opacity" => copy_effects(style, src, |e, s| e.opacity = s.opacity),
         "box-shadow" => copy_effects(style, src, |e, s| e.box_shadow = s.box_shadow.clone()),
         "filter" => copy_effects(style, src, |e, s| e.filter = s.filter.clone()),
@@ -5685,6 +5781,32 @@ fn parse_padding_shorthand(tokens: &[Token], bases: &LengthBases<'_>) -> Option<
         .map(|g| parse_non_negative_length_percentage(g, bases))
         .collect();
     expand_1_to_4(&values?)
+}
+
+/// A `scroll-padding` side: `auto`, or a length or percentage not
+/// below zero.
+fn parse_scroll_padding(tokens: &[Token], bases: &LengthBases<'_>) -> Option<LengthPercentageAuto> {
+    if is_auto(tokens) {
+        return Some(LengthPercentageAuto::Auto);
+    }
+    parse_non_negative_length_percentage(tokens, bases).map(|v| match v {
+        LengthPercentage::Px(px) => LengthPercentageAuto::Px(px),
+        LengthPercentage::Percent(p) => LengthPercentageAuto::Percent(p),
+        LengthPercentage::Calc(c) => LengthPercentageAuto::Calc(c),
+    })
+}
+
+/// The side a `-top`, `-right`, `-bottom` or `-left` property names.
+pub(crate) fn side_of(name: &str) -> usize {
+    if name.ends_with("-top") {
+        TOP
+    } else if name.ends_with("-right") {
+        RIGHT
+    } else if name.ends_with("-bottom") {
+        BOTTOM
+    } else {
+        LEFT
+    }
 }
 
 /// Expands the `margin` box shorthand — like [`parse_box_shorthand`],
@@ -6899,6 +7021,20 @@ pub(crate) fn keyframe_easing(tokens: &[Token]) -> Option<crate::easing::Easing>
 /// `overflow` (M9.3): the four keywords, one value for both axes. The
 /// two-value form of css-overflow-3 (`overflow: hidden visible`) and
 /// `clip` are not accepted yet.
+/// The `overflow` shorthand's one or two keywords: across, then down.
+fn parse_overflow_pair(tokens: &[Token]) -> Option<(Overflow, Overflow)> {
+    let words: Vec<&Token> = tokens
+        .iter()
+        .filter(|t| !matches!(t, Token::Whitespace))
+        .collect();
+    let one = |t: &Token| parse_overflow(std::slice::from_ref(t));
+    match words[..] {
+        [x] => one(x).map(|x| (x, x)),
+        [x, y] => Some((one(x)?, one(y)?)),
+        _ => None,
+    }
+}
+
 fn parse_overflow(tokens: &[Token]) -> Option<Overflow> {
     match single_ident(tokens)?.to_ascii_lowercase().as_str() {
         "visible" => Some(Overflow::Visible),
@@ -8996,40 +9132,56 @@ mod tests {
         ] {
             let sheets = [sheet(&format!("div {{ overflow: {value}; }}"))];
             assert_eq!(
-                style_of("<div><p>x</p></div>", &sheets, "div").overflow,
+                style_of("<div><p>x</p></div>", &sheets, "div").overflow(),
                 expected,
                 "{value}"
             );
             assert_eq!(
-                style_of("<div><p>x</p></div>", &sheets, "p").overflow,
+                style_of("<div><p>x</p></div>", &sheets, "p").overflow(),
                 Overflow::Visible,
                 "overflow is not inherited ({value})"
             );
         }
-        // An unknown keyword (and the two-value form, not accepted yet)
-        // leaves the initial value.
+        // An unknown keyword leaves the initial value; two are the axes',
+        // `visible` beside a scrolling axis computing to `auto` and
+        // `clip` to `hidden`.
         let sheets = [sheet(
             "div { overflow: clipped; } p { overflow: hidden visible; }",
         )];
         assert_eq!(
-            style_of("<div><p>x</p></div>", &sheets, "div").overflow,
+            style_of("<div><p>x</p></div>", &sheets, "div").overflow(),
             Overflow::Visible
         );
+        let p = style_of("<div><p>x</p></div>", &sheets, "p");
         assert_eq!(
-            style_of("<div><p>x</p></div>", &sheets, "p").overflow,
-            Overflow::Visible
+            (p.overflow_x, p.overflow_y),
+            (Overflow::Hidden, Overflow::Auto)
         );
+        assert_eq!(p.overflow(), Overflow::Auto);
+        let sheets = [sheet("p { overflow-y: scroll; overflow-x: clip }")];
+        let p = style_of("<div><p>x</p></div>", &sheets, "p");
+        assert_eq!(
+            (p.overflow_x, p.overflow_y),
+            (Overflow::Hidden, Overflow::Scroll)
+        );
+        let sheets = [sheet("p { overflow-y: clip }")];
+        let p = style_of("<div><p>x</p></div>", &sheets, "p");
+        assert_eq!(
+            (p.overflow_x, p.overflow_y),
+            (Overflow::Visible, Overflow::Clip)
+        );
+        assert_eq!(p.overflow(), Overflow::Clip);
         // `inherit` reads the parent, `initial`/`unset` the initial value.
         let sheets = [sheet("div { overflow: hidden; } p { overflow: inherit; }")];
         assert_eq!(
-            style_of("<div><p>x</p></div>", &sheets, "p").overflow,
+            style_of("<div><p>x</p></div>", &sheets, "p").overflow(),
             Overflow::Hidden
         );
         let sheets = [sheet(
             "div { overflow: hidden; } p { overflow: hidden; } p { overflow: unset; }",
         )];
         assert_eq!(
-            style_of("<div><p>x</p></div>", &sheets, "p").overflow,
+            style_of("<div><p>x</p></div>", &sheets, "p").overflow(),
             Overflow::Visible
         );
     }
@@ -9590,7 +9742,7 @@ mod tests {
         let sheets = [sheet("p { background-position: min(0%, 100%) 0 }")];
         let p = style_of(html, &sheets, "p");
         assert!(matches!(
-            p.background().position[0][0],
+            p.background().position_x[0],
             LengthPercentage::Calc(_)
         ));
     }
@@ -10553,7 +10705,7 @@ mod tests {
         assert_eq!(s.position, Position::Static);
         assert_eq!(s.content, Content::Normal);
         assert_eq!(s.white_space, WhiteSpace::PRE_WRAP);
-        assert_eq!(s.overflow, Overflow::Visible);
+        assert_eq!(s.overflow(), Overflow::Visible);
         assert_eq!(s.border_collapse, BorderCollapse::Separate);
         assert_eq!(
             (s.border_spacing.horizontal, s.border_spacing.vertical),
@@ -11909,7 +12061,7 @@ mod tests {
         );
         assert_eq!(&*textarea.font().family, "monospace");
         assert_eq!(textarea.white_space, WhiteSpace::PRE_WRAP);
-        assert_eq!(textarea.overflow, Overflow::Auto);
+        assert_eq!(textarea.overflow(), Overflow::Auto);
     }
 
     #[test]
@@ -13505,6 +13657,52 @@ mod tests {
     /// The style of the first `p` in `html` with `css` as its one sheet.
     fn p_with(html: &str, css: &str) -> ComputedStyle {
         style_of(html, &[sheet(css)], "p")
+    }
+
+    #[test]
+    fn scroll_margin_and_scroll_padding_are_four_sides_each() {
+        let p = p_with(
+            "<p>x</p>",
+            "p { font-size: 10px; scroll-margin: 1px 2em; scroll-padding: 5% auto 3px;              scroll-margin-left: 4px }",
+        );
+        assert_eq!(p.effects().scroll_margin, [1.0, 20.0, 1.0, 4.0]);
+        assert_eq!(
+            p.effects().scroll_padding,
+            [
+                LengthPercentageAuto::Percent(5.0),
+                LengthPercentageAuto::Auto,
+                LengthPercentageAuto::Px(3.0),
+                LengthPercentageAuto::Auto
+            ]
+        );
+        assert!(!supports("scroll-padding", &css::tokenize("-1px")));
+        assert!(!supports("scroll-margin", &css::tokenize("10%")));
+        let value = |name: &str| crate::serialize::computed_value(&p, name);
+        assert_eq!(value("scroll-margin-right").as_deref(), Some("20px"));
+        assert_eq!(value("scroll-padding-top").as_deref(), Some("5%"));
+    }
+
+    #[test]
+    fn all_sets_every_longhand_but_direction_and_unicode_bidi() {
+        let p = p_with(
+            "<div style='color: blue; width: 10px; font-size: 20px'><p dir=rtl>x</p></div>",
+            "p { color: red; width: 5px; font-size: 8px; all: inherit; height: 3px }",
+        );
+        assert_eq!(p.color, Color::rgb8(0, 0, 255));
+        assert_eq!(p.width, Size::Px(10.0));
+        assert_eq!(p.font_size_px, 20.0);
+        assert_eq!(p.height, Size::Px(3.0));
+        assert_eq!(p.direction, Direction::Rtl);
+        let p = p_with(
+            "<p>x</p>",
+            "p { all: initial; color: green; display: block }",
+        );
+        assert_eq!(p.color, Color::rgb8(0, 128, 0));
+        assert_eq!(p.display, Display::Block);
+        let p = p_with("<p>x</p>", "p { margin: 3px; all: initial }");
+        assert_eq!(p.margin[LEFT], LengthPercentageAuto::Px(0.0));
+        assert!(supports("all", &css::tokenize("unset")));
+        assert!(!supports("all", &css::tokenize("red")));
     }
 
     #[test]

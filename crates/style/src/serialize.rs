@@ -195,6 +195,14 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "ry",
     "scale",
     "scroll-behavior",
+    "scroll-margin-bottom",
+    "scroll-margin-left",
+    "scroll-margin-right",
+    "scroll-margin-top",
+    "scroll-padding-bottom",
+    "scroll-padding-left",
+    "scroll-padding-right",
+    "scroll-padding-top",
     "shape-rendering",
     "stop-color",
     "stop-opacity",
@@ -355,13 +363,13 @@ fn longhand(style: &ComputedStyle, name: &str, url: longhands::Url<'_>) -> Optio
         "background-color" => color(style.background_color),
         // Gap batch E: each layer's position along one axis (G40).
         "background-position-x" | "background-position-y" => {
-            let axis = usize::from(name.ends_with('y'));
-            let parts: Option<Vec<String>> = style
-                .background()
-                .position
-                .iter()
-                .map(|p| length_percentage(&p[axis]))
-                .collect();
+            let background = style.background();
+            let list = if name.ends_with('y') {
+                &background.position_y
+            } else {
+                &background.position_x
+            };
+            let parts: Option<Vec<String>> = list.iter().map(length_percentage).collect();
             parts?.join(", ")
         }
         // `auto`, a ratio, or both (G36).
@@ -519,7 +527,25 @@ fn longhand(style: &ComputedStyle, name: &str, url: longhands::Url<'_>) -> Optio
         "min-height" => size(&style.min_height)?,
         "max-width" => max_size(&style.max_width)?,
         "max-height" => max_size(&style.max_height)?,
-        "overflow-x" | "overflow-y" => match style.overflow {
+        "scroll-margin-top"
+        | "scroll-margin-right"
+        | "scroll-margin-bottom"
+        | "scroll-margin-left" => {
+            let side = crate::cascade::side_of(name);
+            px(style.effects().scroll_margin[side])
+        }
+        "scroll-padding-top"
+        | "scroll-padding-right"
+        | "scroll-padding-bottom"
+        | "scroll-padding-left" => {
+            let side = crate::cascade::side_of(name);
+            auto_length(&style.effects().scroll_padding[side])
+        }
+        "overflow-x" | "overflow-y" => match if name == "overflow-x" {
+            style.overflow_x
+        } else {
+            style.overflow_y
+        } {
             Overflow::Visible => "visible",
             Overflow::Hidden => "hidden",
             Overflow::Scroll => "scroll",
@@ -1080,16 +1106,87 @@ pub fn tokens(value: &[Token]) -> String {
 }
 
 /// A property's specified value as CSSOM serializes it (section 6.7.2,
-/// G50): [`tokens`], with each number at its shortest and each URL
-/// quoted, as the reference browser writes them.
+/// G50): [`tokens`], with each number at its shortest, each URL quoted
+/// and each colour written as a hash or a colour function in its
+/// canonical form (Color 4 section 15), as the reference browser writes
+/// them.
 pub fn specified(value: &[Token]) -> String {
     write_tokens(value, true)
+}
+
+/// The colour functions a specified value's colour is written from.
+fn color_function(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "rgb" | "rgba" | "hsl" | "hsla" | "hwb" | "lab" | "lch" | "oklab" | "oklch" | "color"
+    )
+}
+
+/// The colour a hash or a colour function at `value[at]` writes, and
+/// where it ends; `None` for anything else, or one with a substitution,
+/// a relative colour or a keyword that waits for the element in it.
+fn color_at(value: &[Token], at: usize) -> Option<(usize, String)> {
+    let end = match &value[at] {
+        Token::Hash { .. } => at + 1,
+        Token::Function(name) if color_function(name) => {
+            let mut depth = 0usize;
+            let mut end = None;
+            for (i, token) in value.iter().enumerate().skip(at) {
+                match token {
+                    Token::Function(_) | Token::OpenParen => depth += 1,
+                    Token::CloseParen => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = Some(i + 1);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            end?
+        }
+        _ => return None,
+    };
+    let run = &value[at..end];
+    // A legacy function (`rgb()`, `hsl()`, `hwb()`) is written as its
+    // `rgb()`, a calculation in it worked out, but `hsl()` and `hwb()`
+    // with a missing component are kept; in the others a calculation is
+    // kept as written, as the reference browser keeps them.
+    let name = match &value[at] {
+        Token::Function(f) => f.to_ascii_lowercase(),
+        _ => String::new(),
+    };
+    let legacy = matches!(name.as_str(), "rgb" | "rgba" | "hsl" | "hsla" | "hwb");
+    let hue = matches!(name.as_str(), "hsl" | "hsla" | "hwb");
+    let waits = run.iter().skip(1).any(|t| match t {
+        Token::Function(f) => !(legacy && f.eq_ignore_ascii_case("calc")),
+        Token::Ident(word) => {
+            word.eq_ignore_ascii_case("from")
+                || word.eq_ignore_ascii_case("currentcolor")
+                || (hue && word.eq_ignore_ascii_case("none"))
+        }
+        _ => false,
+    });
+    if waits {
+        return None;
+    }
+    let parsed = crate::cascade::parse_color(run)?;
+    Some((end, color(parsed)))
 }
 
 /// [`tokens`], with `url()`s quoted when `quote_urls`.
 fn write_tokens(value: &[Token], quote_urls: bool) -> String {
     let mut out = String::new();
-    for token in value {
+    let mut at = 0;
+    while at < value.len() {
+        if quote_urls && let Some((end, color)) = color_at(value, at) {
+            out.push_str(&color);
+            at = end;
+            continue;
+        }
+        let token = &value[at];
+        at += 1;
         match token {
             // Canonical: no space just inside brackets, and a comma
             // followed by one space.
@@ -1177,6 +1274,23 @@ mod tests {
         assert_eq!(written("url(http://a/)"), "url(\"http://a/\")");
         assert_eq!(written("'a\"b'"), "\"a\\\"b\"");
         assert_eq!(written("rgb( 1,2 , 3 )"), "rgb(1, 2, 3)");
+        assert_eq!(written("#FF0000"), "rgb(255, 0, 0)");
+        assert_eq!(
+            written("hsla(120, 100%, 50%, 0.25)"),
+            "rgba(0, 255, 0, 0.25)"
+        );
+        assert_eq!(
+            written("1px 2px #00F, inset 0 0 3px rgb(0 0 0 / 50%)"),
+            "1px 2px rgb(0, 0, 255), inset 0 0 3px rgba(0, 0, 0, 0.5)"
+        );
+        assert_eq!(
+            written("linear-gradient(#fff,red 10%)"),
+            "linear-gradient(rgb(255, 255, 255), red 10%)"
+        );
+        assert_eq!(written("rgb(from red r g b)"), "rgb(from red r g b)");
+        assert_eq!(written("lab(none 20 calc(0.5))"), "lab(none 20 calc(0.5))");
+        assert_eq!(written("hsl(none 100% 50%)"), "hsl(none 100% 50%)");
+        assert_eq!(written("rgb(calc(infinity), 0, 0)"), "rgb(255, 0, 0)");
         assert_eq!(tokens(&css::tokenize("url(x)")), "url(x)");
     }
 

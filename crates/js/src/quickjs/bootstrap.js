@@ -91,6 +91,8 @@
   const NumberToString = uncurry(Number.prototype.toString);
   const iteratorSymbol = Symbol.iterator;
   const toStringTag = Symbol.toStringTag;
+  // %IteratorPrototype%, which the built-ins' iterators inherit from.
+  const IteratorPrototype = Object.getPrototypeOf(Object.getPrototypeOf([][iteratorSymbol]()));
 
   // A key only the bindings have: a class's constructor run without it
   // is a script's `new`, which the DOM's interfaces refuse.
@@ -9441,6 +9443,48 @@
       }
     }
 
+    // CSSOM View's: the boxes of what the range holds, in viewport
+    // coordinates.
+    getClientRects() {
+      const b = boundsOf(this);
+      const g = native.rangeRects(b[0], b[1], b[2], b[3]);
+      const rects = [];
+      for (let i = 0; i + 3 < g.length; i += 4) {
+        ArrayPush(rects, new DOMRect(g[i], g[i + 1], g[i + 2], g[i + 3]));
+      }
+      return new DOMRectList(KEY, rects);
+    }
+
+    // Their union, those of no size left out unless all are; the first
+    // of them then.
+    getBoundingClientRect() {
+      const b = boundsOf(this);
+      const g = native.rangeRects(b[0], b[1], b[2], b[3]);
+      if (g.length < 4) {
+        return new DOMRect(0, 0, 0, 0);
+      }
+      let found = false;
+      let [left, top, right, bottom] = [0, 0, 0, 0];
+      for (let i = 0; i + 3 < g.length; i += 4) {
+        if (g[i + 2] === 0 && g[i + 3] === 0) {
+          continue;
+        }
+        if (!found) {
+          [left, top, right, bottom] = [g[i], g[i + 1], g[i] + g[i + 2], g[i + 1] + g[i + 3]];
+          found = true;
+        } else {
+          left = MathMin(left, g[i]);
+          top = MathMin(top, g[i + 1]);
+          right = MathMax(right, g[i] + g[i + 2]);
+          bottom = MathMax(bottom, g[i + 1] + g[i + 3]);
+        }
+      }
+      if (!found) {
+        return new DOMRect(g[0], g[1], g[2], g[3]);
+      }
+      return new DOMRect(left, top, right - left, bottom - top);
+    }
+
     get commonAncestorContainer() {
       const attr = attrOf(this);
       if (attr !== undefined) {
@@ -11521,6 +11565,9 @@
     if (state.rule !== undefined) {
       const data = ruleData(state.rule);
       // An `@font-face` rule's are descriptors, not properties.
+      if (data[0] === "page") {
+        return native.parsePageDescriptors(data[3]);
+      }
       return data[0] === "font-face" ? native.fonts("parse " + data[3], null) : native.parseDeclarations(data[3]);
     }
     const text = native.attribute(state.handle, "style");
@@ -11672,6 +11719,12 @@
     }
   }
   expose(CSSStyleDeclaration, "CSSStyleDeclaration");
+  // Iterable by its indexed properties, as WebIDL makes it.
+  defineProperty(CSSStyleDeclaration.prototype, iteratorSymbol, {
+    value: ArrayValues,
+    writable: true,
+    configurable: true,
+  });
 
   // ---- Style sheets and their rules (CSSOM sections 6.1 to 6.4, D66) ----
 
@@ -12007,6 +12060,9 @@
     layer: 0,
     "layer-statement": 0,
     namespace: 10,
+    container: 0,
+    "counter-style": 11,
+    "font-feature-values": 14,
   };
   const CSSRULE_CONSTANTS = [
     "STYLE_RULE", 1, "CHARSET_RULE", 2, "IMPORT_RULE", 3, "MEDIA_RULE", 4, "FONT_FACE_RULE", 5,
@@ -12034,8 +12090,9 @@
   function ruleStyle(rule) {
     const state = ruleState(rule);
     if (state.style === undefined) {
-      const target = new CSSStyleDeclaration(KEY);
-      const block = { owner: rule, rule: state };
+      const page = state.kind === "page";
+      const target = page ? new CSSPageDescriptors(KEY) : new CSSStyleDeclaration(KEY);
+      const block = { owner: rule, rule: state, page };
       const proxy = new $Proxy(target, styleHandlers);
       WeakMapSet(declarationBlocks, proxy, block);
       WeakMapSet(declarationBlocks, target, block);
@@ -12160,6 +12217,263 @@
 
   class CSSSupportsRule extends CSSConditionRule {}
 
+  // `@container` (Conditional 5 section 7.1): its condition is its name
+  // and its query.
+  class CSSContainerRule extends CSSConditionRule {
+    get containerName() {
+      return ruleData(ruleState(this))[3];
+    }
+
+    get containerQuery() {
+      const data = ruleData(ruleState(this));
+      return data[3] === "" ? data[2] : StringSlice(data[2], data[3].length + 1);
+    }
+  }
+
+  // `@counter-style` (Counter Styles 3 section 9): its name and its
+  // descriptors as written.
+  class CSSCounterStyleRule extends CSSRule {
+    get name() {
+      return ruleData(ruleState(this))[2];
+    }
+  }
+  const COUNTER_DESCRIPTORS = [
+    "system", "symbols", "additive-symbols", "negative", "prefix", "suffix", "range", "pad",
+    "speak-as", "fallback",
+  ];
+  for (let i = 0; i < COUNTER_DESCRIPTORS.length; i++) {
+    const name = COUNTER_DESCRIPTORS[i];
+    const dash = StringIndexOf(name, "-");
+    const key = dash < 0
+      ? name
+      : StringSlice(name, 0, dash) + ToUpperCase(name[dash + 1]) + StringSlice(name, dash + 2);
+    defineProperty(CSSCounterStyleRule.prototype, key, {
+      get() {
+        const parts = StringSplit(ruleData(ruleState(this))[3], ";");
+        for (let j = 0; j < parts.length; j++) {
+          const colon = StringIndexOf(parts[j], ":");
+          if (colon >= 0 && trimSpace(StringSlice(parts[j], 0, colon)) === name) {
+            return trimSpace(StringSlice(parts[j], colon + 1));
+          }
+        }
+        return "";
+      },
+      configurable: true,
+      enumerable: true,
+    });
+  }
+
+  // `@font-feature-values` (Fonts 4 section 6.10): its families and a
+  // map of names to numbers for each feature type, which writes the
+  // rule back.
+  class CSSFontFeatureValuesRule extends CSSRule {
+    get fontFamily() {
+      return ruleData(ruleState(this))[2];
+    }
+
+    set fontFamily(value) {
+      setRule(ruleState(this), str(value), true);
+    }
+
+    get stylistic() {
+      return featureMap(this, "stylistic");
+    }
+
+    get historicalForms() {
+      return featureMap(this, "historical-forms");
+    }
+
+    get styleset() {
+      return featureMap(this, "styleset");
+    }
+
+    get characterVariant() {
+      return featureMap(this, "character-variant");
+    }
+
+    get swash() {
+      return featureMap(this, "swash");
+    }
+
+    get ornaments() {
+      return featureMap(this, "ornaments");
+    }
+
+    get annotation() {
+      return featureMap(this, "annotation");
+    }
+  }
+
+  const featureMaps = new $WeakMap();
+
+  // The rule's entries, each its type, name and numbers.
+  function featureEntries(rule) {
+    const lines = StringSplit(ruleData(ruleState(rule))[3], "\n");
+    const out = [];
+    for (let i = 0; i < lines.length; i++) {
+      const parts = StringSplit(lines[i], "\t");
+      if (parts.length === 3) {
+        const numbers = [];
+        const words = StringSplit(parts[2], " ");
+        for (let j = 0; j < words.length; j++) {
+          ArrayPush(numbers, +words[j]);
+        }
+        ArrayPush(out, [parts[0], parts[1], numbers]);
+      }
+    }
+    return out;
+  }
+
+  function writeFeatureEntries(rule, entries) {
+    let text = "";
+    for (let i = 0; i < entries.length; i++) {
+      let numbers = "";
+      for (let j = 0; j < entries[i][2].length; j++) {
+        numbers += (j === 0 ? "" : " ") + entries[i][2][j];
+      }
+      text += entries[i][0] + "\t" + entries[i][1] + "\t" + numbers + "\n";
+    }
+    setRule(ruleState(rule), text, false);
+  }
+
+  function featureMap(rule, feature) {
+    let maps = WeakMapGet(featureMaps, rule);
+    if (maps === undefined) {
+      maps = { __proto__: null };
+      WeakMapSet(featureMaps, rule, maps);
+    }
+    if (maps[feature] === undefined) {
+      const map = new CSSFontFeatureValuesMap(KEY);
+      WeakMapSet(featureMaps, map, { rule, feature });
+      maps[feature] = map;
+    }
+    return maps[feature];
+  }
+
+  function mapState(map) {
+    const state = WeakMapGet(featureMaps, map);
+    if (state === undefined || state.feature === undefined) {
+      throw illegalInvocation();
+    }
+    return state;
+  }
+
+  // This map's entries, as [name, numbers] pairs.
+  function featurePairs(map) {
+    const state = mapState(map);
+    const all = featureEntries(state.rule);
+    const out = [];
+    for (let i = 0; i < all.length; i++) {
+      if (all[i][0] === state.feature) {
+        ArrayPush(out, [all[i][1], all[i][2]]);
+      }
+    }
+    return out;
+  }
+
+  class CSSFontFeatureValuesMap {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("CSSFontFeatureValuesMap");
+      }
+    }
+
+    get size() {
+      return featurePairs(this).length;
+    }
+
+    get(name) {
+      const pairs = featurePairs(this);
+      const key = str(name);
+      for (let i = 0; i < pairs.length; i++) {
+        if (pairs[i][0] === key) return pairs[i][1];
+      }
+      return undefined;
+    }
+
+    has(name) {
+      return this.get(name) !== undefined;
+    }
+
+    set(name, value) {
+      const state = mapState(this);
+      const numbers = [];
+      if (typeof value === "object" && value !== null) {
+        for (const n of value) {
+          ArrayPush(numbers, unsigned(n));
+        }
+      } else {
+        ArrayPush(numbers, unsigned(value));
+      }
+      const all = featureEntries(state.rule);
+      const key = str(name);
+      let found = false;
+      for (let i = 0; i < all.length; i++) {
+        if (all[i][0] === state.feature && all[i][1] === key) {
+          all[i][2] = numbers;
+          found = true;
+        }
+      }
+      if (!found) {
+        ArrayPush(all, [state.feature, key, numbers]);
+      }
+      writeFeatureEntries(state.rule, all);
+      return this;
+    }
+
+    delete(name) {
+      const state = mapState(this);
+      const all = featureEntries(state.rule);
+      const key = str(name);
+      const kept = [];
+      for (let i = 0; i < all.length; i++) {
+        if (!(all[i][0] === state.feature && all[i][1] === key)) ArrayPush(kept, all[i]);
+      }
+      if (kept.length === all.length) return false;
+      writeFeatureEntries(state.rule, kept);
+      return true;
+    }
+
+    clear() {
+      const state = mapState(this);
+      const all = featureEntries(state.rule);
+      const kept = [];
+      for (let i = 0; i < all.length; i++) {
+        if (all[i][0] !== state.feature) ArrayPush(kept, all[i]);
+      }
+      writeFeatureEntries(state.rule, kept);
+    }
+
+    forEach(callback, thisArg) {
+      const pairs = featurePairs(this);
+      for (let i = 0; i < pairs.length; i++) {
+        callback.call(thisArg, pairs[i][1], pairs[i][0], this);
+      }
+    }
+
+    entries() {
+      return featurePairs(this)[iteratorSymbol]();
+    }
+
+    keys() {
+      const pairs = featurePairs(this);
+      const names = [];
+      for (let i = 0; i < pairs.length; i++) ArrayPush(names, pairs[i][0]);
+      return names[iteratorSymbol]();
+    }
+
+    values() {
+      const pairs = featurePairs(this);
+      const values = [];
+      for (let i = 0; i < pairs.length; i++) ArrayPush(values, pairs[i][1]);
+      return values[iteratorSymbol]();
+    }
+
+    [iteratorSymbol]() {
+      return this.entries();
+    }
+  }
+
   class CSSLayerBlockRule extends CSSGroupingRule {
     get name() {
       return ruleData(ruleState(this))[2];
@@ -12192,9 +12506,53 @@
     }
   }
 
+  // An `@page` rule's block (CSS Paged Media 3 section 7): its
+  // descriptors only, each by its name and in camel case.
+  const PAGE_DESCRIPTORS = [
+    "margin",
+    "margin-top",
+    "margin-right",
+    "margin-bottom",
+    "margin-left",
+    "size",
+    "page-orientation",
+  ];
+
+  function pageDescriptor(name) {
+    const lower = ToLowerCase(str(name));
+    return ArrayIncludes(PAGE_DESCRIPTORS, lower) ? lower : null;
+  }
+
+  class CSSPageDescriptors extends CSSStyleDeclaration {}
+  for (let i = 0; i < PAGE_DESCRIPTORS.length; i++) {
+    const name = PAGE_DESCRIPTORS[i];
+    const accessor = {
+      get() {
+        return this.getPropertyValue(name);
+      },
+      set(value) {
+        this.setProperty(name, value);
+      },
+      configurable: true,
+      enumerable: true,
+    };
+    defineProperty(CSSPageDescriptors.prototype, name, accessor);
+    const dash = StringIndexOf(name, "-");
+    if (dash >= 0) {
+      const camel = StringSlice(name, 0, dash) + ToUpperCase(name[dash + 1]) +
+        StringSlice(name, dash + 2);
+      defineProperty(CSSPageDescriptors.prototype, camel, accessor);
+    }
+  }
+  expose(CSSPageDescriptors, "CSSPageDescriptors");
+
   class CSSPageRule extends CSSGroupingRule {
     get selectorText() {
       return ruleData(ruleState(this))[2];
+    }
+
+    set selectorText(value) {
+      setRule(ruleState(this), str(value), true);
     }
 
     get style() {
@@ -12281,6 +12639,9 @@
   RULE_CLASSES.layer = CSSLayerBlockRule;
   RULE_CLASSES["layer-statement"] = CSSLayerStatementRule;
   RULE_CLASSES.namespace = CSSNamespaceRule;
+  RULE_CLASSES.container = CSSContainerRule;
+  RULE_CLASSES["counter-style"] = CSSCounterStyleRule;
+  RULE_CLASSES["font-feature-values"] = CSSFontFeatureValuesRule;
 
   // A media list (CSSOM section 4.1) over where its queries are kept:
   // `get` reads their text and `set` writes it, the element's `media`
@@ -12446,6 +12807,7 @@
               () => (state.mediaText === undefined ? "" : state.mediaText),
               (text) => {
                 state.mediaText = text;
+                native.cssom("constructedMedia", null, cssomPath(state, []), text, 0);
               },
             )
           : mediaList(
@@ -12468,8 +12830,17 @@
       return sheetState(this).disabled === true;
     }
 
+    // The cascade leaves a disabled sheet out (CSSOM section 6.1).
     set disabled(value) {
-      sheetState(this).disabled = !!value;
+      const state = sheetState(this);
+      state.disabled = !!value;
+      if (state.imports.length === 0 && (state.constructed || state.owner !== null)) {
+        try {
+          native.cssom("disable", state.handle, cssomPath(state, []), "", state.disabled ? 1 : 0);
+        } catch (error) {
+          // A sheet gone: its flag is the object's alone.
+        }
+      }
     }
   }
 
@@ -12507,7 +12878,22 @@
     constructor(options) {
       super(KEY);
       if (options !== KEY) {
-        const state = constructSheet(this, "");
+        // Its `baseURL`, against the document's base URL (CSSOM 6.1.2).
+        let base = "";
+        if (options !== undefined && options !== null && typeof options === "object" &&
+          options.baseURL !== undefined) {
+          const url = native.resolveUrl(str(options.baseURL));
+          if (url === null) {
+            throw domError(
+              "NotAllowedError",
+              "The base URL is not valid.",
+              "constructor",
+              "CSSStyleSheet",
+            );
+          }
+          base = url;
+        }
+        const state = constructSheet(this, base);
         if (options !== undefined && options !== null && typeof options === "object") {
           const media = options.media;
           if (media !== undefined) {
@@ -12516,8 +12902,14 @@
                 ? media.mediaText
                 : joinMedia(mediaQueries(str(media)));
           }
+          if (state.mediaText !== undefined) {
+            native.cssom("constructedMedia", null, cssomPath(state, []), state.mediaText, 0);
+          }
           if (options.disabled !== undefined) {
             state.disabled = !!options.disabled;
+            if (state.disabled) {
+              native.cssom("disable", null, cssomPath(state, []), "", 1);
+            }
           }
         }
       }
@@ -12743,6 +13135,10 @@
   expose(CSSLayerBlockRule, "CSSLayerBlockRule");
   expose(CSSLayerStatementRule, "CSSLayerStatementRule");
   expose(CSSNamespaceRule, "CSSNamespaceRule");
+  expose(CSSContainerRule, "CSSContainerRule");
+  expose(CSSCounterStyleRule, "CSSCounterStyleRule");
+  expose(CSSFontFeatureValuesRule, "CSSFontFeatureValuesRule");
+  expose(CSSFontFeatureValuesMap, "CSSFontFeatureValuesMap");
   expose(CSSPageRule, "CSSPageRule");
   expose(CSSFontFaceRule, "CSSFontFaceRule");
   expose(CSSKeyframeRule, "CSSKeyframeRule");
@@ -12787,7 +13183,7 @@
   // CSSOM's setProperty: an unknown property, a bad priority or an
   // invalid value changes nothing; the empty value removes it.
   function setProperty(state, property, value, priority, method) {
-    const name = canonicalProperty(property);
+    const name = state.page ? pageDescriptor(property) : canonicalProperty(property);
     if (name === null) {
       return;
     }
@@ -12799,7 +13195,9 @@
     if (wanted !== "" && wanted !== "important") {
       return;
     }
-    if (!native.cssValid(name, value)) {
+    if (state.page
+      ? native.parsePageDescriptors(name + ": " + value).length === 0
+      : !native.cssValid(name, value)) {
       return;
     }
     const flat = declarationsOf(state);
@@ -15154,8 +15552,10 @@
           native.evaluate(script[0], script[1]);
           continue;
         }
+        // Its `import()`s resolve against about:blank (HTML's "create a
+        // classic script" with muted errors).
         try {
-          native.evaluate(script[0], script[1]);
+          native.evaluate(script[0], script[1], "about:blank");
         } catch (_) {
           throw new $DOMException(where + "The script at '" + urls[i] + "' failed to load.",
             "NetworkError");
@@ -19116,6 +19516,13 @@
         WeakMapSet(canvasContexts, this, context);
         return context;
       },
+
+      // A stream of the canvas's video (Media Capture from DOM Elements),
+      // made by the audio chunk, which keeps the streams.
+      captureStream() {
+        self(this);
+        return ReflectApply(chunkInstall("audio").captureStream, this, arguments);
+      },
     },
     [MapGet(interfaces, "canvas").prototype],
   );
@@ -21971,7 +22378,7 @@
     "ConvolverNode", "AnalyserNode", "PeriodicWave", "BaseAudioContext", "AudioContext",
     "MediaElementAudioSourceNode", "OfflineAudioContext", "OfflineAudioCompletionEvent",
     "ScriptProcessorNode", "AudioProcessingEvent", "MediaStreamAudioDestinationNode",
-    "MediaStreamAudioSourceNode", "MediaStream", "MediaStreamTrack",
+    "MediaStreamAudioSourceNode", "MediaStream", "MediaStreamTrack", "CanvasCaptureMediaStreamTrack",
   ]);
 
   // What the chunk keeps of the built-ins, kept before any page ran.
@@ -22581,10 +22988,11 @@
     intl: () => ({
       $Date, $Number, $Object, $RangeError, $String, $TypeError, $WeakMap, ArrayIndexOf, ArrayPush,
       ArraySlice, ArraySort, BigIntToString, BigIntValueOf, CharCodeAt, DateGetTime,
-      DateGetTimezoneOffset, DateNow, MathAbs, MathFloor, MathMax, MathMin, MathTrunc,
-      NumberValueOf, ObjectCreate, ObjectPrototype, StringIndexOf, StringSlice, ToUpperCase,
-      WeakMapGet, WeakMapSet, defineProperty, getOwnPropertyDescriptor, getOwnPropertyNames, global,
-      languageList, native, toString, toStringTag,
+      DateGetTimezoneOffset, DateNow, IteratorPrototype, MathAbs, MathFloor, MathMax, MathMin,
+      MathTrunc, NumberValueOf, ObjectCreate, ObjectPrototype, StringIndexOf, StringSlice,
+      ToLowerCase, ToUpperCase, ToWellFormed, WeakMapGet, WeakMapSet, defineProperty,
+      getOwnPropertyDescriptor, getOwnPropertyNames, global, iteratorSymbol, languageList,
+      native, toString, toStringTag,
     }),
     wasm: () => ({
       $Error, $Map, $RangeError, $TypeError, $Uint8Array, $WeakMap, ArrayPush, BigIntAsIntN,

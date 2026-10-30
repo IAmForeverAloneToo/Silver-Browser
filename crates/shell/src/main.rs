@@ -553,13 +553,19 @@ impl<V: View> ApplicationHandler<NetworkWake> for Browser<V> {
             },
             WindowEvent::MouseWheel { delta, .. } => {
                 // Positive deltas reveal content above (the content
-                // moves down), so the scroll offset decreases.
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, lines) => -lines * session::LINE_PX,
+                // moves down), so the scroll offset decreases; and to
+                // the left likewise.
+                let (dx, dy) = match delta {
+                    MouseScrollDelta::LineDelta(columns, lines) => {
+                        (-columns * session::LINE_PX, -lines * session::LINE_PX)
+                    }
                     // Device pixels, taken as CSS pixels by the scale.
-                    MouseScrollDelta::PixelDelta(p) => -p.y as f32 / slot.session.scale(),
+                    MouseScrollDelta::PixelDelta(p) => {
+                        let scale = slot.session.scale();
+                        (-p.x as f32 / scale, -p.y as f32 / scale)
+                    }
                 };
-                slot.session.wheel(dy);
+                slot.session.wheel_both(dx, dy);
             }
             WindowEvent::CursorMoved { position, .. } => {
                 slot.session
@@ -1301,6 +1307,7 @@ fn run<V: View + 'static>(
         if let Some(bytes) = layer_budget {
             view.set_layer_budget(bytes);
         }
+        view.set_scrollbar_across(true);
         view.set_preferences(preferences(asked, None, platform::reduced_motion()));
         if compat {
             view.set_compat_user_agent(true);

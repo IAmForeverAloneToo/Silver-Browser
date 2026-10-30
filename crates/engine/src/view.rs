@@ -56,6 +56,9 @@ pub trait View {
     fn scale_factor(&self) -> f32;
     fn set_viewport(&mut self, width: u32, height: u32);
     fn set_layer_budget(&mut self, bytes: usize);
+    /// Whether the viewport's scrollbar across is drawn and taken
+    /// ([`Engine::set_scrollbar_across`]).
+    fn set_scrollbar_across(&mut self, on: bool);
     fn set_waker(&mut self, waker: Arc<dyn Fn() + Send + Sync>);
     fn set_clock(&mut self, clock: Clock);
 
@@ -89,6 +92,12 @@ pub trait View {
     fn scrollbar(&mut self) -> Option<Scrollbar>;
     fn scroll_by(&mut self, dy: f32);
     fn scroll_to_fraction(&mut self, fraction: f32);
+    /// Across: a wheel's turn at a point, the scrollbar, a scroll by
+    /// `dx` px and a drag of the thumb (gap batch D).
+    fn wheel_across(&mut self, x: f32, y: f32, dx: f32);
+    fn scrollbar_across(&mut self) -> Option<crate::ScrollbarAcross>;
+    fn scroll_across_by(&mut self, dx: f32);
+    fn scroll_x_to_fraction(&mut self, fraction: f32);
 
     fn flush_profile(&mut self) -> Result<(), profile::Error>;
     /// Keeps what the browsing keeps in `profile` from now on (M28).
@@ -289,6 +298,9 @@ impl View for Engine {
     fn set_layer_budget(&mut self, bytes: usize) {
         Engine::set_layer_budget(self, bytes)
     }
+    fn set_scrollbar_across(&mut self, on: bool) {
+        Engine::set_scrollbar_across(self, on)
+    }
     fn set_waker(&mut self, waker: Arc<dyn Fn() + Send + Sync>) {
         Engine::set_waker(self, move || waker())
     }
@@ -375,6 +387,18 @@ impl View for Engine {
     }
     fn scroll_to_fraction(&mut self, fraction: f32) {
         Engine::scroll_to_fraction(self, fraction)
+    }
+    fn wheel_across(&mut self, x: f32, y: f32, dx: f32) {
+        Engine::wheel_across(self, x, y, dx)
+    }
+    fn scrollbar_across(&mut self) -> Option<crate::ScrollbarAcross> {
+        Engine::scrollbar_across(self)
+    }
+    fn scroll_across_by(&mut self, dx: f32) {
+        Engine::scroll_across_by(self, dx)
+    }
+    fn scroll_x_to_fraction(&mut self, fraction: f32) {
+        Engine::scroll_x_to_fraction(self, fraction)
     }
     fn flush_profile(&mut self) -> Result<(), profile::Error> {
         Engine::flush_profile(self)
