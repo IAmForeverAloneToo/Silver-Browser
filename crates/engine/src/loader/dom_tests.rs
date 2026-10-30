@@ -1448,13 +1448,14 @@ fn style_reads_and_writes_the_style_attribute() {
                 "ok [\"color: red;\",\"red\"]",
             ),
             ("document.body.style === document.body.style", "ok true"),
-            // Kept as written, and a shorthand unexpanded (G50).
+            // A keyword kept as written, a shorthand kept as its longhands
+            // and said from them (G50).
             (
                 "(function () { var x = document.createElement('i'); x.style.color = 'RED'; \
                  x.style.margin = '1px'; x.style.width = 'banana'; \
                  return [x.style.color, x.style.length, x.style[1], x.style.marginTop, \
                  x.style.cssText, x.getAttribute('style')]; })()",
-                "ok [\"RED\",2,\"margin\",\"\",\"color: RED; margin: 1px;\",\
+                "ok [\"RED\",5,\"margin-top\",\"1px\",\"color: RED; margin: 1px;\",\
                  \"color: RED; margin: 1px;\"]",
             ),
             (
@@ -1938,8 +1939,8 @@ fn svgs_properties_reach_scripts_through_computed_styles_and_style() {
         console,
         [
             "rgb(255, 0, 0) 2px 4",
-            // The specified value as written (G50).
-            "url(#g) blue url(\"#g\") rgb(0, 0, 255) 5px",
+            // The specified value in its canonical form (G50).
+            "url(\"#g\") blue url(\"#g\") rgb(0, 0, 255) 5px",
             "true 2"
         ]
     );
@@ -2221,4 +2222,180 @@ fn a_rule_a_script_changed_is_the_cascades() {
         styles.get(p).expect("styled").color,
         style::computed::Color::rgb8(0, 0, 255)
     );
+}
+
+/// `page` loaded with scripts on in an 800 by 600 window; the tab and
+/// the console's lines.
+fn laid_out(page: &'static str) -> (Tab, Vec<String>) {
+    let server = serve(move |path| match path {
+        "/page.html" => Some(Reply::ok("text/html", page.as_bytes())),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.frame(800, 600);
+    load_all(&mut tab, server.url("/page.html"));
+    let console = tab
+        .engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .collect();
+    drop(server);
+    (tab, console)
+}
+
+#[test]
+fn the_insets_resolve_to_their_used_values() {
+    // D65: a positioned box's `top` to `left` as the reference browser
+    // resolves them, from a sheet the script itself put in.
+    let (_, console) = laid_out(
+        "<style>body { margin: 0 }</style><div id=c><div id=a></div><div id=r></div>\
+         <div id=s></div><div id=t></div></div><script>\
+         var s = document.createElement('style'); \
+         s.textContent = '#c { position: relative; width: 400px; height: 200px; padding: 10px; \
+         border: 5px solid } #a { position: absolute; top: 10%; bottom: auto; left: auto; \
+         right: 30px; width: 20px; height: 20px; margin: 3px } \
+         #r { position: relative; top: 10%; left: auto; right: 5px } \
+         #s { position: sticky; top: 10%; left: auto } #t { top: 5px }'; \
+         document.head.append(s); \
+         var v = function (id) { var c = getComputedStyle(document.getElementById(id)); \
+         return [c.top, c.right, c.bottom, c.left].join(' '); }; \
+         console.log(v('a')); console.log(v('r')); console.log(v('s')); console.log(v('t'));\
+         </script>",
+    );
+    assert_eq!(
+        console,
+        [
+            // 10% of the padding box's 220px; the margin box's bottom
+            // 220 - 22 - 26 short of its end; 420 - 30 - 26 from its left.
+            "22px 30px 172px 364px",
+            "20px 5px -20px -5px",
+            // Of the viewport, the scroll container here.
+            "60px auto auto auto",
+            "5px auto auto auto",
+        ]
+    );
+}
+
+#[test]
+fn a_fieldsets_absolutely_positioned_box_has_its_border_taken_off_twice() {
+    // As the reference browser has it: offsetLeft and offsetTop of an
+    // absolutely positioned box in a positioned fieldset.
+    let (_, console) = laid_out(
+        "<style>body { margin: 0 } fieldset { margin: 0; padding: 3px; border: 5px solid }\
+         </style><fieldset id=f style='position: relative; width: 200px; height: 100px'>\
+         <div id=a style='position: absolute; left: 0; top: 0; width: 10px; height: 10px'></div>\
+         <div id=s style='height: 10px'></div></fieldset><script>\
+         var a = document.getElementById('a'), s = document.getElementById('s'); \
+         console.log(a.offsetLeft, a.offsetTop, s.offsetLeft, s.offsetTop);</script>",
+    );
+    assert_eq!(console, ["-5 -5 3 3"]);
+}
+
+#[test]
+fn style_elements_sheets_namespaces_and_media_lists_follow_the_script() {
+    // G50: a `<style>`'s new text is its sheet at once; a removed one's
+    // sheet stays, its owner gone; namespace rules and selectors in
+    // their canonical forms; media lists that set.
+    let (_, console) = laid_out(
+        "<style id=s></style><script>\
+         var s = document.getElementById('s'); \
+         s.textContent = '@namespace x url(y); x|p, *.c:before { color: red } \
+         @media SCREEN and (min-width: 1px) { b { top: 0 } }'; \
+         var sheet = s.sheet, rules = sheet.cssRules; \
+         console.log(rules.length, rules[0].prefix, rules[0].namespaceURI, rules[1].selectorText); \
+         console.log(rules[2].media.mediaText); \
+         rules[2].media.appendMedium('print'); \
+         rules[2].media.deleteMedium('screen and (min-width: 1px)'); \
+         console.log(rules[2].conditionText, rules[2].media.length); \
+         sheet.media.mediaText = 'PRINT, (color)'; \
+         console.log(s.getAttribute('media'), sheet.media[1]); \
+         try { rules[2].media.deleteMedium('tv'); } catch (e) { console.log(e.name); } \
+         sheet.addRule('i', 'top: 1px'); console.log(rules[rules.length - 1].cssText); \
+         sheet.removeRule(rules.length - 1); \
+         s.remove(); console.log(sheet.ownerNode, s.sheet, sheet.cssRules.length);\
+         </script>",
+    );
+    assert_eq!(
+        console,
+        [
+            "3 x y x|p, .c::before",
+            "screen and (min-width: 1px)",
+            "print 1",
+            "print, (color) (color)",
+            "NotFoundError",
+            "i { top: 1px; }",
+            "null null 3",
+        ]
+    );
+}
+
+#[test]
+fn declarations_are_written_in_their_canonical_forms_and_shorthands() {
+    // G50: specified values at their shortest, URLs quoted, commas
+    // spaced; the box and border shorthands kept as their longhands and
+    // said from them.
+    let (_, console) = laid_out(
+        "<div id=d></div><script>var d = document.getElementById('d'); \
+         d.style.cssText = 'margin-top: .5em; margin-right: 1px; margin-bottom: .5em; \
+         margin-left: 1px; color: rgb(1,2,3); background-image: url(a.png)'; \
+         console.log(d.style.cssText); \
+         d.style.cssText = 'border: 1px solid; border-top-color: red'; \
+         console.log(d.style.borderWidth, JSON.stringify(d.style.border), d.style.cssText); \
+         d.style.removeProperty('border'); console.log(JSON.stringify(d.style.cssText));\
+         </script>",
+    );
+    assert_eq!(
+        console,
+        [
+            "margin: 0.5em 1px; color: rgb(1, 2, 3); background-image: url(\"a.png\");",
+            "1px \"\" border-width: 1px; border-style: solid; \
+             border-color: red currentcolor currentcolor; border-image: none;",
+            "\"\"",
+        ]
+    );
+}
+
+#[test]
+fn boxes_and_the_viewport_scroll_across() {
+    // Horizontal scrolling for scripts: scrollLeft, scrollTo with left,
+    // scrollBy, scrollWidth, the window's scrollX, and scrollIntoView's
+    // inline alignment; the engine takes the offsets.
+    let (tab, console) = laid_out(
+        "<style>body { margin: 0 } #s { width: 100px; height: 100px; overflow: auto } \
+         #s div { width: 300px; height: 50px } #w { width: 2000px; height: 10px } \
+         #t { margin-left: 1500px; width: 10px; height: 10px }</style>\
+         <div id=s><div></div></div><div id=w></div><div id=t></div><script>\
+         var s = document.getElementById('s'); \
+         console.log(s.scrollWidth, s.scrollLeft); \
+         s.scrollLeft = 50; console.log(s.scrollLeft); \
+         s.scrollTo({ left: 999 }); console.log(s.scrollLeft); \
+         s.scrollBy(-30, 0); console.log(s.scrollLeft); \
+         var p = s.scrollTo(1); console.log(p instanceof Promise); \
+         p.catch(function (e) { console.log(e.name); }); \
+         window.scrollTo({ left: 40 }); console.log(window.scrollX); \
+         document.getElementById('t').scrollIntoView({ inline: 'center' }); \
+         console.log(window.scrollX);</script>",
+    );
+    assert_eq!(
+        console,
+        [
+            "300 0",
+            "50",
+            "200",
+            "170",
+            "true",
+            "40",
+            "1105",
+            "TypeError"
+        ]
+    );
+    let document = tab.engine.document();
+    let s = document
+        .subtree(document.root())
+        .find(|&n| document.attr(n, "id") == Some("s"))
+        .expect("the scroller");
+    assert_eq!(tab.engine.element_scroll_x(s), 170.0);
+    assert_eq!(tab.engine.scroll_x(), 1105.0);
 }

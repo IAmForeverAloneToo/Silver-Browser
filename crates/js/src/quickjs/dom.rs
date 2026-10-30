@@ -311,9 +311,21 @@ const NATIVES: &[(&str, Decode)] = &[
         Ok(Call::ScrollOffset(a.maybe_handle(0)?))
     }),
     ("scrollTo", |a| {
-        Ok(Call::ScrollTo(a.maybe_handle(0)?, a.number(1)))
+        Ok(Call::ScrollTo(
+            a.maybe_handle(0)?,
+            a.number(1),
+            a.number(2),
+            a.bool(3),
+        ))
     }),
-    ("scrollIntoView", |a| Ok(Call::ScrollIntoView(a.handle(0)?))),
+    ("scrollIntoView", |a| {
+        Ok(Call::ScrollIntoView(
+            a.handle(0)?,
+            a.string(1)?,
+            a.string(2)?,
+            a.string(3)?,
+        ))
+    }),
     ("elementsFromPoint", |a| {
         Ok(Call::ElementsFromPoint {
             x: a.number(0),
@@ -464,6 +476,7 @@ const NATIVES: &[(&str, Decode)] = &[
     ("cssShorthand", |a| {
         Ok(Call::CssShorthand(a.string(0)?, a.strings(1)?))
     }),
+    ("cssLonghands", |a| Ok(Call::CssLonghands(a.string(0)?))),
     ("cssBlockText", |a| Ok(Call::CssBlockText(a.strings(0)?))),
     ("resolveUrl", |a| Ok(Call::ResolveUrl(a.string(0)?))),
     ("resolveUrlFromDocument", |a| {

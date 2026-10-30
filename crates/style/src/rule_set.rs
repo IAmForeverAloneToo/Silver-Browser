@@ -626,25 +626,61 @@ fn rule_at<'s>(sheet: &'s css::Stylesheet, path: &[u32]) -> &'s Rule {
     &rules[last as usize]
 }
 
+/// An `@namespace` rule's prelude read: its prefix, if any, and its
+/// namespace's URL, given as a `url()` or a string; `None` for one that
+/// does not parse.
+pub fn namespace_declaration(prelude: &[Token]) -> Option<(Option<String>, String)> {
+    let tokens: Vec<&Token> = prelude
+        .iter()
+        .filter(|t| !matches!(t, Token::Whitespace))
+        .collect();
+    let (prefix, url) = match tokens.as_slice() {
+        [url] => (None, *url),
+        [Token::Ident(prefix), url] => (Some(prefix.clone()), *url),
+        _ => return None,
+    };
+    match url {
+        Token::Url { value, bad: false } | Token::String { value, bad: false } => {
+            Some((prefix, value.clone()))
+        }
+        _ => None,
+    }
+}
+
+/// The namespaces a sheet's `rules` declare (CSS Namespaces 3): its
+/// `@namespace` rules before any rule but `@charset` and `@import`.
+pub fn sheet_namespaces(rules: &[Rule]) -> Namespaces {
+    let mut namespaces = Namespaces::default();
+    for rule in rules {
+        let Rule::At(at) = rule else {
+            break;
+        };
+        match at.name.to_ascii_lowercase().as_str() {
+            "namespace" if at.block.is_none() => {
+                if let Some((prefix, uri)) = namespace_declaration(&at.prelude) {
+                    let ns = dom::Namespace::from_uri(Some(&uri));
+                    match prefix {
+                        Some(prefix) => namespaces.prefixes.push((prefix, ns)),
+                        None => namespaces.default = Some(ns),
+                    }
+                }
+            }
+            "charset" | "import" => {}
+            _ => break,
+        }
+    }
+    namespaces
+}
+
 impl Builder<'_> {
     /// Takes an `@namespace` rule's prelude: an optional prefix, then the
     /// namespace's URL as a `url()` or a string; one that does not parse
     /// is ignored.
     fn declare_namespace(&mut self, prelude: &[Token]) {
-        let tokens: Vec<&Token> = prelude
-            .iter()
-            .filter(|t| !matches!(t, Token::Whitespace))
-            .collect();
-        let (prefix, url) = match tokens.as_slice() {
-            [url] => (None, *url),
-            [Token::Ident(prefix), url] => (Some(prefix.clone()), *url),
-            _ => return,
+        let Some((prefix, uri)) = namespace_declaration(prelude) else {
+            return;
         };
-        let uri = match url {
-            Token::Url { value, bad: false } | Token::String { value, bad: false } => value,
-            _ => return,
-        };
-        let ns = dom::Namespace::from_uri(Some(uri));
+        let ns = dom::Namespace::from_uri(Some(&uri));
         match prefix {
             Some(prefix) => self.namespaces.prefixes.push((prefix, ns)),
             None => self.namespaces.default = Some(ns),

@@ -119,7 +119,9 @@ impl Engine {
         if width == 0 {
             return None;
         }
-        let (_, offsets) = self.drawn_offsets();
+        // In the document's coordinates, the viewport unscrolled.
+        let (_, mut offsets) = self.drawn_offsets();
+        offsets.viewport_x = 0.0;
         let scroll_y = self.shown.scroll_y;
         let layout = self.layout(width as f32);
         let whole = Viewport {

@@ -3,8 +3,9 @@
 //! 6.7 serializes it, and the changes `insertRule`, `deleteRule` and the
 //! rules' setters make to the parsed sheet the cascade reads.
 
-use css::{Block, Declaration, Rule, Stylesheet};
+use css::{Block, Declaration, Rule, Stylesheet, Token};
 use js::DomError;
+use style::selector_matching::{Namespaces, parse_selector_list_in};
 
 /// The most rules a list may hold after an insertion: what a hostile
 /// script could otherwise grow a sheet by.
@@ -23,6 +24,9 @@ pub(crate) enum Kind {
     Keyframe,
     Supports,
     Layer,
+    /// `@layer` without a block (`CSSLayerStatementRule`).
+    LayerStatement,
+    Namespace,
 }
 
 impl Kind {
@@ -38,24 +42,39 @@ impl Kind {
             Kind::Keyframe => "keyframe",
             Kind::Supports => "supports",
             Kind::Layer => "layer",
+            Kind::LayerStatement => "layer-statement",
+            Kind::Namespace => "namespace",
         }
     }
 }
 
-/// What `rule` is to a script, in a keyframes rule's list or not; `None`
-/// for a rule the CSSOM leaves out: a style rule whose selector does not
-/// parse, an at-rule it has no interface for here.
-fn kind(rule: &Rule, keyframes: bool) -> Option<Kind> {
+/// What `rule` is to a script, in a keyframes rule's list or not, and in
+/// a grouping rule's or the sheet's own; `None` for a rule the CSSOM
+/// leaves out: a style rule whose selector does not parse, an import or
+/// a namespace rule in a grouping rule, an at-rule it has no interface
+/// for here.
+fn kind(rule: &Rule, keyframes: bool, nested: bool, ns: &Namespaces) -> Option<Kind> {
     match rule {
         Rule::Qualified(_) if keyframes => Some(Kind::Keyframe),
-        Rule::Qualified(rule) => style::parse_selector_list(&rule.prelude)
+        Rule::Qualified(rule) => parse_selector_list_in(&rule.prelude, ns)
             .is_ok()
             .then_some(Kind::Style),
         Rule::At(at) => {
             let rules = matches!(at.block, Some(Block::Rules(_)));
             let declarations = matches!(at.block, Some(Block::Declarations(_)));
             match at.name.to_ascii_lowercase().as_str() {
-                "import" if at.block.is_none() => Some(Kind::Import),
+                // One without a URL is no rule.
+                "import" if at.block.is_none() && !nested && starts_with_url(&at.prelude) => {
+                    Some(Kind::Import)
+                }
+                "namespace"
+                    if at.block.is_none()
+                        && !nested
+                        && style::namespace_declaration(&at.prelude).is_some() =>
+                {
+                    Some(Kind::Namespace)
+                }
+                "layer" if at.block.is_none() => Some(Kind::LayerStatement),
                 "media" if rules => Some(Kind::Media),
                 "supports" if rules => Some(Kind::Supports),
                 "layer" if rules => Some(Kind::Layer),
@@ -68,23 +87,35 @@ fn kind(rule: &Rule, keyframes: bool) -> Option<Kind> {
     }
 }
 
+/// Whether an `@import` prelude begins with its URL, a `url()` or a
+/// string.
+fn starts_with_url(prelude: &[Token]) -> bool {
+    match prelude.iter().find(|t| !matches!(t, Token::Whitespace)) {
+        Some(Token::Url { .. } | Token::String { .. }) => true,
+        Some(Token::Function(name)) => name.eq_ignore_ascii_case("url"),
+        _ => false,
+    }
+}
+
 /// The rules of `list` a script sees: each one's index in the list and
 /// its kind.
-fn visible(list: &[Rule], keyframes: bool) -> Vec<(usize, Kind)> {
+fn visible(list: &[Rule], keyframes: bool, nested: bool, ns: &Namespaces) -> Vec<(usize, Kind)> {
     list.iter()
         .enumerate()
-        .filter_map(|(at, rule)| kind(rule, keyframes).map(|kind| (at, kind)))
+        .filter_map(|(at, rule)| kind(rule, keyframes, nested, ns).map(|kind| (at, kind)))
         .collect()
 }
 
 /// The rule list `path` names in `sheet`: the sheet's, or a grouping
-/// rule's by each index a script sees, outermost first; and whether it
-/// is a keyframes rule's.
-fn list<'a>(sheet: &'a Stylesheet, path: &[usize]) -> Option<(&'a Vec<Rule>, bool)> {
+/// rule's by each index a script sees, outermost first; whether it is a
+/// keyframes rule's; and the sheet's namespaces, which its selectors are
+/// read with.
+fn list<'a>(sheet: &'a Stylesheet, path: &[usize]) -> Option<(&'a Vec<Rule>, bool, Namespaces)> {
+    let ns = style::sheet_namespaces(&sheet.rules);
     let mut rules = &sheet.rules;
     let mut keyframes = false;
-    for &index in path {
-        let (at, kind) = *visible(rules, keyframes).get(index)?;
+    for (depth, &index) in path.iter().enumerate() {
+        let (at, kind) = *visible(rules, keyframes, depth > 0, &ns).get(index)?;
         let Rule::At(rule) = &rules[at] else {
             return None;
         };
@@ -94,14 +125,18 @@ fn list<'a>(sheet: &'a Stylesheet, path: &[usize]) -> Option<(&'a Vec<Rule>, boo
         keyframes = kind == Kind::Keyframes;
         rules = inner;
     }
-    Some((rules, keyframes))
+    Some((rules, keyframes, ns))
 }
 
-fn list_mut<'a>(sheet: &'a mut Stylesheet, path: &[usize]) -> Option<(&'a mut Vec<Rule>, bool)> {
+fn list_mut<'a>(
+    sheet: &'a mut Stylesheet,
+    path: &[usize],
+) -> Option<(&'a mut Vec<Rule>, bool, Namespaces)> {
+    let ns = style::sheet_namespaces(&sheet.rules);
     let mut rules = &mut sheet.rules;
     let mut keyframes = false;
-    for &index in path {
-        let (at, kind) = *visible(rules, keyframes).get(index)?;
+    for (depth, &index) in path.iter().enumerate() {
+        let (at, kind) = *visible(rules, keyframes, depth > 0, &ns).get(index)?;
         let Rule::At(rule) = &mut rules[at] else {
             return None;
         };
@@ -111,7 +146,7 @@ fn list_mut<'a>(sheet: &'a mut Stylesheet, path: &[usize]) -> Option<(&'a mut Ve
         keyframes = kind == Kind::Keyframes;
         rules = inner;
     }
-    Some((rules, keyframes))
+    Some((rules, keyframes, ns))
 }
 
 /// The rules of the list `path` names, four strings each: the kind's
@@ -120,36 +155,49 @@ fn list_mut<'a>(sheet: &'a mut Stylesheet, path: &[usize]) -> Option<(&'a mut Ve
 /// supports rule's condition, a keyframes or layer rule's name, a
 /// keyframe's key and declarations, a font-face rule's declarations).
 pub(crate) fn rules(sheet: &Stylesheet, path: &[usize]) -> Vec<String> {
-    let Some((list, keyframes)) = list(sheet, path) else {
+    let Some((list, keyframes, ns)) = list(sheet, path) else {
         return Vec::new();
     };
     let mut out = Vec::new();
-    for (at, kind) in visible(list, keyframes) {
+    for (at, kind) in visible(list, keyframes, !path.is_empty(), &ns) {
         let rule = &list[at];
-        let (a, b) = parts(rule, kind);
-        out.extend([kind.name().to_owned(), css_text(rule, kind, ""), a, b]);
+        let (a, b) = parts(rule, kind, &ns);
+        out.extend([kind.name().to_owned(), css_text(rule, kind, "", &ns), a, b]);
     }
     out
 }
 
 /// The two strings by kind [`rules`] gives.
-fn parts(rule: &Rule, kind: Kind) -> (String, String) {
+fn parts(rule: &Rule, kind: Kind, ns: &Namespaces) -> (String, String) {
     match (rule, kind) {
         (Rule::Qualified(rule), Kind::Keyframe) => {
             (key_text(&rule.prelude), declarations(&rule.declarations))
         }
         (Rule::Qualified(rule), _) => (
-            selector_text(&rule.prelude),
+            selector_text(&rule.prelude, ns),
             declarations(&rule.declarations),
         ),
-        (Rule::At(at), Kind::Import) => {
-            let (url, rest) = import_parts(&at.prelude);
-            (url, rest)
+        (Rule::At(at), Kind::Namespace) => {
+            let (prefix, uri) = style::namespace_declaration(&at.prelude).unwrap_or_default();
+            (prefix.unwrap_or_default(), uri)
         }
+        (Rule::At(at), Kind::LayerStatement) => (layer_names(&at.prelude), String::new()),
+        // The media, then the layer and the `supports()` condition, each
+        // after a NUL and a `1` when the rule has it.
+        (Rule::At(at), Kind::Import) => {
+            let (url, _) = import_url(&at.prelude);
+            let (layer, supports, media) = import_conditions(&at.prelude);
+            let flagged = |part: Option<String>| part.map_or_else(String::new, |p| format!("1{p}"));
+            (
+                url,
+                format!("{media}\u{0}{}\u{0}{}", flagged(layer), flagged(supports)),
+            )
+        }
+        (Rule::At(at), Kind::Media) => (media_text(&at.prelude), String::new()),
         (Rule::At(at), Kind::FontFace | Kind::Page) => {
             let block = match &at.block {
                 Some(Block::Declarations(list)) if kind == Kind::FontFace => descriptors(list),
-                Some(Block::Declarations(list)) => declarations(list),
+                Some(Block::Declarations(list)) => raw_declarations(list),
                 _ => String::new(),
             };
             (selector(&at.prelude), block)
@@ -164,9 +212,410 @@ fn selector(tokens: &[css::Token]) -> String {
     style::serialize::tokens(tokens).trim().to_owned()
 }
 
-/// A style rule's selector as CSSOM serializes it: its selectors
-/// parted by `, ` and combinators by spaces, as written otherwise.
-fn selector_text(tokens: &[css::Token]) -> String {
+/// A layer statement's names, parted by `, `.
+fn layer_names(tokens: &[Token]) -> String {
+    selector(tokens)
+        .split(',')
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A style rule's selector as CSSOM serializes it (section 6.7.1): each
+/// simple selector in its canonical form, read with the sheet's
+/// namespaces; as written, but for its spacing, where it is past what
+/// [`canonical_selector`] reads.
+fn selector_text(tokens: &[Token], ns: &Namespaces) -> String {
+    let mut out = String::new();
+    match canonical_selector(tokens, ns, &mut out) {
+        Some(()) => out,
+        None => spaced_selector(tokens),
+    }
+}
+
+/// `tokens`, a selector list, written as CSSOM serializes it into
+/// `out`; `None` for a part it does not read.
+fn canonical_selector(tokens: &[Token], ns: &Namespaces, out: &mut String) -> Option<()> {
+    let mut first = true;
+    for member in split_top(tokens, |t| matches!(t, Token::Comma)) {
+        if !first {
+            out.push_str(", ");
+        }
+        first = false;
+        complex(member, ns, out)?;
+    }
+    Some(())
+}
+
+/// The pieces of `tokens` between those `at` says part them, outside
+/// brackets and functions.
+fn split_top(tokens: &[Token], at: impl Fn(&Token) -> bool) -> Vec<&[Token]> {
+    let mut pieces = Vec::new();
+    let (mut depth, mut start) = (0usize, 0);
+    for (i, t) in tokens.iter().enumerate() {
+        match t {
+            Token::Function(_) | Token::OpenParen | Token::OpenSquare => depth += 1,
+            Token::CloseParen | Token::CloseSquare => depth = depth.saturating_sub(1),
+            _ if depth == 0 && at(t) => {
+                pieces.push(&tokens[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    pieces.push(&tokens[start..]);
+    pieces
+}
+
+/// One complex selector: its compounds, a combinator between each.
+fn complex(tokens: &[Token], ns: &Namespaces, out: &mut String) -> Option<()> {
+    let tokens = trim_space(tokens);
+    if tokens.is_empty() {
+        return None;
+    }
+    let mut i = 0;
+    let mut wrote = false;
+    while i < tokens.len() {
+        // A combinator, white space around it.
+        let mut spaced = false;
+        while matches!(tokens.get(i), Some(Token::Whitespace)) {
+            spaced = true;
+            i += 1;
+        }
+        if let Some(Token::Delim(c @ ('>' | '+' | '~'))) = tokens.get(i) {
+            out.push_str(&format!(" {c} "));
+            i += 1;
+            while matches!(tokens.get(i), Some(Token::Whitespace)) {
+                i += 1;
+            }
+        } else if spaced && wrote {
+            out.push(' ');
+        }
+        let end = (i..tokens.len())
+            .find(|&j| {
+                matches!(tokens[j], Token::Whitespace | Token::Delim('>' | '+' | '~'))
+                    && depth_at(tokens, j) == 0
+            })
+            .unwrap_or(tokens.len());
+        if end == i {
+            return None;
+        }
+        compound(&tokens[i..end], ns, out)?;
+        wrote = true;
+        i = end;
+    }
+    Some(())
+}
+
+/// How deep in brackets and functions `tokens[at]` is.
+fn depth_at(tokens: &[Token], at: usize) -> usize {
+    let mut depth = 0usize;
+    for t in &tokens[..at] {
+        match t {
+            Token::Function(_) | Token::OpenParen | Token::OpenSquare => depth += 1,
+            Token::CloseParen | Token::CloseSquare => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    depth
+}
+
+fn trim_space(mut tokens: &[Token]) -> &[Token] {
+    while let [Token::Whitespace, rest @ ..] = tokens {
+        tokens = rest;
+    }
+    while let [rest @ .., Token::Whitespace] = tokens {
+        tokens = rest;
+    }
+    tokens
+}
+
+/// How a type or universal selector's namespace was written.
+enum Prefix {
+    /// No prefix.
+    Unwritten,
+    /// `*|`.
+    Any,
+    /// `|`.
+    NoNamespace,
+    /// A declared prefix.
+    Named(String),
+}
+
+/// One compound selector: its type or universal selector with the
+/// prefix that says something, the universal one left out before other
+/// simple selectors, and each of the others canonical.
+fn compound(tokens: &[Token], ns: &Namespaces, out: &mut String) -> Option<()> {
+    let name_at = |i: usize| match tokens.get(i) {
+        Some(Token::Ident(name)) => Some(ident(name)),
+        Some(Token::Delim('*')) => Some("*".to_owned()),
+        _ => None,
+    };
+    let bar = |i: usize| matches!(tokens.get(i), Some(Token::Delim('|')));
+    let (prefix, element, mut i) = match tokens.first() {
+        Some(Token::Delim('|')) => (Prefix::NoNamespace, Some(name_at(1)?), 2),
+        Some(Token::Delim('*')) if bar(1) => (Prefix::Any, Some(name_at(2)?), 3),
+        Some(Token::Ident(p)) if bar(1) => (Prefix::Named(p.clone()), Some(name_at(2)?), 3),
+        Some(Token::Ident(_) | Token::Delim('*')) => (Prefix::Unwritten, name_at(0), 1),
+        _ => (Prefix::Unwritten, None, 0),
+    };
+    let mut rest = String::new();
+    while i < tokens.len() {
+        i = simple(tokens, i, ns, &mut rest)?;
+    }
+    let prefix = match prefix {
+        Prefix::Unwritten => String::new(),
+        Prefix::Any if ns.default.is_none() => String::new(),
+        Prefix::Any => "*|".to_owned(),
+        Prefix::NoNamespace => "|".to_owned(),
+        Prefix::Named(p) => {
+            let named = ns.prefix(&p)?;
+            if ns.default.as_ref() == Some(named) {
+                String::new()
+            } else {
+                format!("{}|", ident(&p))
+            }
+        }
+    };
+    if let Some(element) = element
+        && !(element == "*" && prefix.is_empty() && !rest.is_empty())
+    {
+        out.push_str(&prefix);
+        out.push_str(&element);
+    }
+    out.push_str(&rest);
+    Some(())
+}
+
+/// The simple selector at `tokens[i]` written into `out`; where the next
+/// starts.
+fn simple(tokens: &[Token], i: usize, ns: &Namespaces, out: &mut String) -> Option<usize> {
+    match (tokens.get(i)?, tokens.get(i + 1)) {
+        (Token::Hash { value, .. }, _) => {
+            out.push('#');
+            out.push_str(&ident(value));
+            Some(i + 1)
+        }
+        (Token::Delim('.'), Some(Token::Ident(name))) => {
+            out.push('.');
+            out.push_str(&ident(name));
+            Some(i + 2)
+        }
+        (Token::OpenSquare, _) => {
+            let close = (i..tokens.len()).find(|&j| matches!(tokens[j], Token::CloseSquare))?;
+            attribute(trim_space(&tokens[i + 1..close]), out)?;
+            Some(close + 1)
+        }
+        (Token::Colon, Some(Token::Colon)) => {
+            out.push_str("::");
+            pseudo(tokens, i + 2, ns, out)
+        }
+        (Token::Colon, Some(Token::Ident(name)))
+            if matches!(
+                name.to_ascii_lowercase().as_str(),
+                "before" | "after" | "first-line" | "first-letter"
+            ) =>
+        {
+            out.push_str("::");
+            out.push_str(&name.to_ascii_lowercase());
+            Some(i + 2)
+        }
+        (Token::Colon, _) => {
+            out.push(':');
+            pseudo(tokens, i + 1, ns, out)
+        }
+        _ => None,
+    }
+}
+
+/// A pseudo-class's or pseudo-element's name at `tokens[i]` and its
+/// arguments: selectors and `An+B` canonical, others as written.
+fn pseudo(tokens: &[Token], i: usize, ns: &Namespaces, out: &mut String) -> Option<usize> {
+    match tokens.get(i)? {
+        Token::Ident(name) => {
+            out.push_str(&name.to_ascii_lowercase());
+            Some(i + 1)
+        }
+        Token::Function(name) => {
+            let name = name.to_ascii_lowercase();
+            let mut depth = 1usize;
+            let mut close = i + 1;
+            while close < tokens.len() {
+                match tokens[close] {
+                    Token::Function(_) | Token::OpenParen => depth += 1,
+                    Token::CloseParen => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                close += 1;
+            }
+            let inner = trim_space(tokens.get(i + 1..close)?);
+            out.push_str(&name);
+            out.push('(');
+            match name.as_str() {
+                "not" | "is" | "where" | "has" | "matches" | "-webkit-any" => {
+                    canonical_selector(inner, ns, out)?
+                }
+                "nth-child" | "nth-last-child" | "nth-of-type" | "nth-last-of-type" => {
+                    let parts = split_top(
+                        inner,
+                        |t| matches!(t, Token::Ident(w) if w.eq_ignore_ascii_case("of")),
+                    );
+                    out.push_str(&an_plus_b(parts.first()?)?);
+                    if let Some(of) = parts.get(1) {
+                        out.push_str(" of ");
+                        canonical_selector(trim_space(of), ns, out)?;
+                    }
+                }
+                _ => {
+                    for t in inner {
+                        match t {
+                            Token::Ident(word) => out.push_str(&ident(word)),
+                            Token::Whitespace => out.push(' '),
+                            other => {
+                                out.push_str(&style::serialize::tokens(std::slice::from_ref(other)))
+                            }
+                        }
+                    }
+                }
+            }
+            out.push(')');
+            Some(close + 1)
+        }
+        _ => None,
+    }
+}
+
+/// An attribute selector's inside: its prefix that says something, its
+/// name, operator, value as a string, and flag.
+fn attribute(tokens: &[Token], out: &mut String) -> Option<()> {
+    let (prefix, at) = match tokens {
+        [Token::Delim('|'), Token::Ident(_), ..] => (String::new(), 1),
+        [Token::Delim('*'), Token::Delim('|'), Token::Ident(_), ..] => ("*|".to_owned(), 2),
+        [Token::Ident(p), Token::Delim('|'), Token::Ident(_), ..] => (format!("{}|", ident(p)), 2),
+        _ => (String::new(), 0),
+    };
+    let Some(Token::Ident(name)) = tokens.get(at) else {
+        return None;
+    };
+    out.push('[');
+    out.push_str(&prefix);
+    out.push_str(&ident(name));
+    let rest: Vec<&Token> = tokens[at + 1..]
+        .iter()
+        .filter(|t| !matches!(t, Token::Whitespace))
+        .collect();
+    if !rest.is_empty() {
+        let mut k = 0;
+        let mut op = String::new();
+        while let Some(Token::Delim(c)) = rest.get(k) {
+            op.push(*c);
+            k += 1;
+        }
+        if !op.ends_with('=') || op.len() > 2 {
+            return None;
+        }
+        let value = match rest.get(k) {
+            Some(Token::Ident(v) | Token::String { value: v, .. }) => v,
+            _ => return None,
+        };
+        k += 1;
+        let flag = match rest.get(k) {
+            Some(Token::Ident(f)) => {
+                k += 1;
+                Some(f.to_ascii_lowercase())
+            }
+            _ => None,
+        };
+        if k != rest.len() {
+            return None;
+        }
+        out.push_str(&op);
+        out.push_str(&style::serialize::tokens(&[Token::String {
+            value: value.clone(),
+            bad: false,
+        }]));
+        if let Some(flag) = flag {
+            out.push(' ');
+            out.push_str(&flag);
+        }
+    }
+    out.push(']');
+    Some(())
+}
+
+/// An `An+B` argument at its shortest (CSS Syntax 3 section 9):
+/// `even` as `2n`, `odd` as `2n+1`, a coefficient of one left out.
+fn an_plus_b(tokens: &[Token]) -> Option<String> {
+    let text: String = style::serialize::tokens(tokens)
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let (a, b) = match text.as_str() {
+        "even" => (2, 0),
+        "odd" => (2, 1),
+        _ => match text.find('n') {
+            None => (0, text.parse::<i64>().ok()?),
+            Some(at) => {
+                let a = match &text[..at] {
+                    "" | "+" => 1,
+                    "-" => -1,
+                    a => a.parse::<i64>().ok()?,
+                };
+                let b = match &text[at + 1..] {
+                    "" => 0,
+                    b => b.strip_prefix('+').unwrap_or(b).parse::<i64>().ok()?,
+                };
+                (a, b)
+            }
+        },
+    };
+    let mut out = match a {
+        0 => return Some(b.to_string()),
+        1 => "n".to_owned(),
+        -1 => "-n".to_owned(),
+        a => format!("{a}n"),
+    };
+    if b > 0 {
+        out.push_str(&format!("+{b}"));
+    } else if b < 0 {
+        out.push_str(&b.to_string());
+    }
+    Some(out)
+}
+
+/// CSSOM's "serialize an identifier" (section 2.1).
+fn ident(name: &str) -> String {
+    let mut out = String::new();
+    let chars: Vec<char> = name.chars().collect();
+    for (i, &c) in chars.iter().enumerate() {
+        match c {
+            '\0' => out.push('\u{fffd}'),
+            '\u{1}'..='\u{1f}' | '\u{7f}' => out.push_str(&format!("\\{:x} ", c as u32)),
+            '0'..='9' if i == 0 || (i == 1 && chars[0] == '-') => {
+                out.push_str(&format!("\\{:x} ", c as u32));
+            }
+            '-' if i == 0 && chars.len() == 1 => out.push_str("\\-"),
+            c if c as u32 >= 0x80 || c.is_ascii_alphanumeric() || c == '-' || c == '_' => {
+                out.push(c);
+            }
+            c => {
+                out.push('\\');
+                out.push(c);
+            }
+        }
+    }
+    out
+}
+
+/// A selector's tokens parted as CSSOM spaces them: its selectors by
+/// `, ` and combinators by spaces, as written otherwise.
+fn spaced_selector(tokens: &[Token]) -> String {
     let raw = selector(tokens);
     let mut out = String::new();
     let mut depth = 0usize;
@@ -212,19 +661,134 @@ fn key_text(tokens: &[css::Token]) -> String {
 
 /// An import's URL, and what follows it.
 fn import_parts(prelude: &[css::Token]) -> (String, String) {
-    let mut tokens = prelude
+    let (url, rest) = import_url(prelude);
+    (url, selector(rest))
+}
+
+/// An `@import` prelude's URL, given as a `url()` or a string, and the
+/// tokens after it.
+fn import_url(prelude: &[Token]) -> (String, &[Token]) {
+    let start = prelude
         .iter()
-        .skip_while(|t| matches!(t, css::Token::Whitespace));
-    let url = match tokens.next() {
-        Some(css::Token::Url { value, .. } | css::Token::String { value, .. }) => value.clone(),
-        _ => String::new(),
-    };
-    let rest: Vec<css::Token> = tokens.cloned().collect();
-    (url, selector(&rest))
+        .position(|t| !matches!(t, Token::Whitespace))
+        .unwrap_or(prelude.len());
+    match prelude.get(start..).unwrap_or_default() {
+        [
+            Token::Url { value, .. } | Token::String { value, .. },
+            rest @ ..,
+        ] => (value.clone(), rest),
+        [Token::Function(f), rest @ ..] if f.eq_ignore_ascii_case("url") => {
+            let close = rest
+                .iter()
+                .position(|t| matches!(t, Token::CloseParen))
+                .unwrap_or(rest.len());
+            let url = rest[..close]
+                .iter()
+                .find_map(|t| match t {
+                    Token::String { value, .. } => Some(value.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            (url, rest.get(close + 1..).unwrap_or_default())
+        }
+        _ => (String::new(), &[]),
+    }
+}
+
+/// An `@import` rule's conditions after its URL: its layer (`Some("")`
+/// for an anonymous one), its `supports()` condition, and its media.
+fn import_conditions(prelude: &[Token]) -> (Option<String>, Option<String>, String) {
+    let (_, mut rest) = import_url(prelude);
+    rest = trim_space(rest);
+    let mut layer = None;
+    match rest.first() {
+        Some(Token::Ident(word)) if word.eq_ignore_ascii_case("layer") => {
+            layer = Some(String::new());
+            rest = trim_space(&rest[1..]);
+        }
+        Some(Token::Function(f)) if f.eq_ignore_ascii_case("layer") => {
+            let close = closing(rest);
+            layer = Some(selector(&rest[1..close]).replace(' ', ""));
+            rest = trim_space(rest.get(close + 1..).unwrap_or_default());
+        }
+        _ => {}
+    }
+    let mut supports = None;
+    if let Some(Token::Function(f)) = rest.first()
+        && f.eq_ignore_ascii_case("supports")
+    {
+        let close = closing(rest);
+        let inner = trim_space(&rest[1..close]);
+        // A declaration alone is written in parentheses.
+        let text = selector(inner);
+        let declaration = matches!(inner, [Token::Ident(_), ..])
+            && inner.iter().any(|t| matches!(t, Token::Colon));
+        supports = Some(if declaration {
+            format!("({text})")
+        } else {
+            text
+        });
+        rest = trim_space(rest.get(close + 1..).unwrap_or_default());
+    }
+    (layer, supports, media_text(rest))
+}
+
+/// The index of the `)` that closes the function at `tokens[0]`.
+fn closing(tokens: &[Token]) -> usize {
+    let mut depth = 0usize;
+    for (i, t) in tokens.iter().enumerate() {
+        match t {
+            Token::Function(_) | Token::OpenParen => depth += 1,
+            Token::CloseParen => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return i;
+                }
+            }
+            _ => {}
+        }
+    }
+    tokens.len()
+}
+
+/// A media query list as CSSOM serializes it (section 4.2): each query
+/// normalized, `all and` before a condition left out, invalid ones as
+/// `not all`.
+pub(crate) fn media_text(tokens: &[Token]) -> String {
+    media_items(tokens).join(", ")
+}
+
+/// [`media_text`]'s queries, each alone.
+pub(crate) fn media_items(tokens: &[Token]) -> Vec<String> {
+    if trim_space(tokens).is_empty() {
+        return Vec::new();
+    }
+    split_top(tokens, |t| matches!(t, Token::Comma))
+        .into_iter()
+        .map(|query| {
+            let text = style::serialize_media_query_list(trim_space(query));
+            let text = if text.is_empty() {
+                "not all".to_owned()
+            } else {
+                text
+            };
+            match text.strip_prefix("all and (") {
+                Some(rest) => format!("({rest}"),
+                None => text,
+            }
+        })
+        .collect()
+}
+
+/// A style rule's or keyframe's declaration block's text as CSSOM
+/// serializes it (G50): those the cascade takes, in their canonical
+/// forms, as a `style` attribute's are.
+pub(crate) fn declarations(list: &[Declaration]) -> String {
+    super::cssom::block_text(&super::cssom::declarations(&raw_declarations(list)))
 }
 
 /// A declaration block's text: `name: value;` each, `!important` kept.
-pub(crate) fn declarations(list: &[Declaration]) -> String {
+pub(crate) fn raw_declarations(list: &[Declaration]) -> String {
     let mut out = String::new();
     for declaration in list {
         if !out.is_empty() {
@@ -269,12 +833,12 @@ pub(crate) fn descriptor_list(list: &[Declaration]) -> Vec<(&'static str, String
 
 /// A rule's `cssText`, each nested line after the first indented by
 /// `indent` more.
-fn css_text(rule: &Rule, kind: Kind, indent: &str) -> String {
+fn css_text(rule: &Rule, kind: Kind, indent: &str, ns: &Namespaces) -> String {
     let block = |head: String, list: &[Declaration]| {
-        let body = if kind == Kind::FontFace {
-            descriptors(list)
-        } else {
-            declarations(list)
+        let body = match kind {
+            Kind::FontFace => descriptors(list),
+            Kind::Page => raw_declarations(list),
+            _ => declarations(list),
         };
         if body.is_empty() {
             format!("{head} {{ }}")
@@ -286,7 +850,7 @@ fn css_text(rule: &Rule, kind: Kind, indent: &str) -> String {
         (Rule::Qualified(rule), Kind::Keyframe) => {
             block(key_text(&rule.prelude), &rule.declarations)
         }
-        (Rule::Qualified(rule), _) => block(selector_text(&rule.prelude), &rule.declarations),
+        (Rule::Qualified(rule), _) => block(selector_text(&rule.prelude, ns), &rule.declarations),
         (Rule::At(at), Kind::Import) => {
             let (url, rest) = import_parts(&at.prelude);
             let url = url.replace('\\', "\\\\").replace('"', "\\\"");
@@ -296,6 +860,29 @@ fn css_text(rule: &Rule, kind: Kind, indent: &str) -> String {
                 format!("@import url(\"{url}\") {rest};")
             }
         }
+        (Rule::At(at), Kind::Media) => {
+            let mut out = format!("@media {} {{\n", media_text(&at.prelude));
+            if let Some(Block::Rules(inner)) = &at.block {
+                let deeper = format!("{indent}  ");
+                for (at, kind) in visible(inner, false, true, ns) {
+                    out.push_str(&deeper);
+                    out.push_str(&css_text(&inner[at], kind, &deeper, ns));
+                    out.push('\n');
+                }
+            }
+            out.push_str(indent);
+            out.push('}');
+            out
+        }
+        (Rule::At(at), Kind::Namespace) => {
+            let (prefix, uri) = style::namespace_declaration(&at.prelude).unwrap_or_default();
+            let uri = uri.replace('\\', "\\\\").replace('"', "\\\"");
+            match prefix {
+                Some(prefix) => format!("@namespace {} url(\"{uri}\");", ident(&prefix)),
+                None => format!("@namespace url(\"{uri}\");"),
+            }
+        }
+        (Rule::At(at), Kind::LayerStatement) => format!("@layer {};", layer_names(&at.prelude)),
         (Rule::At(at), Kind::FontFace | Kind::Page) => {
             let prelude = selector(&at.prelude);
             let head = if prelude.is_empty() {
@@ -317,9 +904,9 @@ fn css_text(rule: &Rule, kind: Kind, indent: &str) -> String {
             };
             if let Some(Block::Rules(inner)) = &at.block {
                 let deeper = format!("{indent}  ");
-                for (at, kind) in visible(inner, kind == Kind::Keyframes) {
+                for (at, kind) in visible(inner, kind == Kind::Keyframes, true, ns) {
                     out.push_str(&deeper);
-                    out.push_str(&css_text(&inner[at], kind, &deeper));
+                    out.push_str(&css_text(&inner[at], kind, &deeper, ns));
                     out.push('\n');
                 }
             }
@@ -344,9 +931,23 @@ pub(crate) fn insert(
     let parsed = css::parse_stylesheet(text).map_err(|_| syntax())?;
     let [rule] = <[Rule; 1]>::try_from(parsed.rules).map_err(|_| syntax())?;
     let top = sheet.rules.len();
-    let (list, keyframes) = list_mut(sheet, path).ok_or_else(syntax)?;
-    let new_kind = kind(&rule, keyframes).ok_or_else(syntax)?;
-    let seen = visible(list, keyframes);
+    let (list, keyframes, ns) = list_mut(sheet, path).ok_or_else(syntax)?;
+    let nested = !path.is_empty();
+    // An import or a namespace rule in a grouping rule is no rule there.
+    if nested
+        && let Rule::At(at) = &rule
+        && matches!(
+            at.name.to_ascii_lowercase().as_str(),
+            "import" | "namespace"
+        )
+    {
+        return Err(DomError::new(
+            "HierarchyRequestError",
+            "Failed to insert the rule.",
+        ));
+    }
+    let new_kind = kind(&rule, keyframes, nested, &ns).ok_or_else(syntax)?;
+    let seen = visible(list, keyframes, nested, &ns);
     if index > seen.len() {
         return Err(DomError::new(
             "IndexSizeError",
@@ -362,21 +963,30 @@ pub(crate) fn insert(
             "The sheet holds too many rules.",
         ));
     }
-    // An import only before every rule but other imports (section
-    // 6.1.2.1's constraints); none inside a grouping rule.
-    if new_kind == Kind::Import
-        && (!path.is_empty() || seen[..index].iter().any(|(_, k)| *k != Kind::Import))
-    {
+    let hierarchy = || DomError::new("HierarchyRequestError", "Failed to insert the rule.");
+    // A namespace rule only into a list of imports and namespace rules
+    // (section 6.1.2.1).
+    let preamble = |k: &Kind| matches!(k, Kind::Import | Kind::Namespace);
+    if new_kind == Kind::Namespace && path.is_empty() && !seen.iter().all(|(_, k)| preamble(k)) {
         return Err(DomError::new(
-            "HierarchyRequestError",
-            "Failed to insert the rule.",
+            "InvalidStateError",
+            "Failed to insert the rule: a namespace rule after other rules.",
         ));
     }
+    // An import only before every rule but other imports (section
+    // 6.1.2.1's constraints), a namespace rule only after them and
+    // before the rest; neither inside a grouping rule.
+    if preamble(&new_kind) && !path.is_empty() {
+        return Err(hierarchy());
+    }
+    if new_kind == Kind::Import && seen[..index].iter().any(|(_, k)| *k != Kind::Import) {
+        return Err(hierarchy());
+    }
     if new_kind != Kind::Import && seen[index..].iter().any(|(_, k)| *k == Kind::Import) {
-        return Err(DomError::new(
-            "HierarchyRequestError",
-            "Failed to insert the rule.",
-        ));
+        return Err(hierarchy());
+    }
+    if !preamble(&new_kind) && seen[index..].iter().any(|(_, k)| *k == Kind::Namespace) {
+        return Err(hierarchy());
     }
     let at = seen.get(index).map_or(list.len(), |(at, _)| *at);
     list.insert(at, rule);
@@ -403,10 +1013,22 @@ pub(crate) fn delete(
     index: usize,
 ) -> Result<Vec<Option<usize>>, DomError> {
     let top = sheet.rules.len();
-    let Some((list, keyframes)) = list_mut(sheet, path) else {
+    let Some((list, keyframes, ns)) = list_mut(sheet, path) else {
         return Err(DomError::new("NotFoundError", "The rule list is gone."));
     };
-    let seen = visible(list, keyframes);
+    let seen = visible(list, keyframes, !path.is_empty(), &ns);
+    // A namespace rule stays while rules other than imports and
+    // namespace rules follow it (section 6.1.2.2).
+    if let Some((_, Kind::Namespace)) = seen.get(index)
+        && seen
+            .iter()
+            .any(|(_, k)| !matches!(k, Kind::Import | Kind::Namespace))
+    {
+        return Err(DomError::new(
+            "InvalidStateError",
+            "Failed to delete the rule: other rules use the namespaces.",
+        ));
+    }
     let Some(&(at, _)) = seen.get(index) else {
         return Err(DomError::new(
             "IndexSizeError",
@@ -425,18 +1047,21 @@ pub(crate) fn delete(
 }
 
 /// The rule `path` names: its list's path and its index in it.
-fn rule_mut<'a>(sheet: &'a mut Stylesheet, path: &[usize]) -> Option<(&'a mut Rule, Kind)> {
+fn rule_mut<'a>(
+    sheet: &'a mut Stylesheet,
+    path: &[usize],
+) -> Option<(&'a mut Rule, Kind, Namespaces)> {
     let (&last, outer) = path.split_last()?;
-    let (list, keyframes) = list_mut(sheet, outer)?;
-    let (at, kind) = *visible(list, keyframes).get(last)?;
-    Some((&mut list[at], kind))
+    let (list, keyframes, ns) = list_mut(sheet, outer)?;
+    let (at, kind) = *visible(list, keyframes, !outer.is_empty(), &ns).get(last)?;
+    Some((&mut list[at], kind, ns))
 }
 
 /// A rule's `style` set to the declarations `text` holds; or its
 /// selector (or a keyframe's keys) set to `text`, which is ignored
 /// unless it parses, when `selector`.
 pub(crate) fn set(sheet: &mut Stylesheet, path: &[usize], text: &str, selector: bool) -> bool {
-    let Some((rule, kind)) = rule_mut(sheet, path) else {
+    let Some((rule, kind, ns)) = rule_mut(sheet, path) else {
         return false;
     };
     if selector {
@@ -444,7 +1069,7 @@ pub(crate) fn set(sheet: &mut Stylesheet, path: &[usize], text: &str, selector: 
             return false;
         };
         let tokens = css::tokenize(text);
-        if kind == Kind::Style && style::parse_selector_list(&tokens).is_err() {
+        if kind == Kind::Style && parse_selector_list_in(&tokens, &ns).is_err() {
             return false;
         }
         rule.prelude = tokens;
@@ -461,14 +1086,58 @@ pub(crate) fn set(sheet: &mut Stylesheet, path: &[usize], text: &str, selector: 
     true
 }
 
+/// A media or import rule's media set to the list `text` holds (its
+/// `MediaList`'s setters); an import's URL, layer and `supports()` are
+/// kept.
+pub(crate) fn set_media(sheet: &mut Stylesheet, path: &[usize], text: &str) -> bool {
+    let Some((Rule::At(at), kind, _)) = rule_mut(sheet, path) else {
+        return false;
+    };
+    match kind {
+        Kind::Media => at.prelude = css::tokenize(text),
+        Kind::Import => {
+            let (_, rest) = import_url(&at.prelude);
+            let rest = trim_space(rest);
+            // The layer and the condition before the media.
+            let mut kept = 0;
+            for _ in 0..2 {
+                match rest.get(kept) {
+                    Some(Token::Ident(word)) if word.eq_ignore_ascii_case("layer") => kept += 1,
+                    Some(Token::Function(f))
+                        if f.eq_ignore_ascii_case("layer")
+                            || f.eq_ignore_ascii_case("supports") =>
+                    {
+                        kept += closing(&rest[kept..]) + 1;
+                    }
+                    _ => break,
+                }
+                while matches!(rest.get(kept), Some(Token::Whitespace)) {
+                    kept += 1;
+                }
+            }
+            let (url, _) = import_url(&at.prelude);
+            let url = url.replace('\\', "\\\\").replace('"', "\\\"");
+            let conditions = selector(rest.get(..kept).unwrap_or_default());
+            at.prelude = css::tokenize(&format!(" url(\"{url}\") {conditions} {text}"));
+        }
+        _ => return false,
+    }
+    true
+}
+
 /// A sheet's rules a script sees at the top, each rule's kind name
 /// alone: for the tests.
 #[cfg(test)]
 fn kinds(sheet: &Stylesheet) -> Vec<&'static str> {
-    visible(&sheet.rules, false)
-        .into_iter()
-        .map(|(_, kind)| kind.name())
-        .collect()
+    visible(
+        &sheet.rules,
+        false,
+        false,
+        &style::sheet_namespaces(&sheet.rules),
+    )
+    .into_iter()
+    .map(|(_, kind)| kind.name())
+    .collect()
 }
 
 #[cfg(test)]
@@ -503,6 +1172,59 @@ mod tests {
             ]
         );
         assert_eq!(rules(&s, &[3])[2], "0%");
+    }
+
+    #[test]
+    fn selectors_serialize_in_their_canonical_forms() {
+        let text = |css: &str| {
+            let s = sheet(&format!("{css} {{ top: 0 }}"));
+            let flat = rules(&s, &[]);
+            flat[flat.len() - 4 + 2].clone()
+        };
+        assert_eq!(text(" *  >  div,p:before"), "* > div, p::before");
+        assert_eq!(text("*.a *#b *:hover"), ".a #b :hover");
+        assert_eq!(
+            text(":nth-child( -1n + 5 ) :nth-of-type(odd) :nth-child(+10)"),
+            ":nth-child(-n+5) :nth-of-type(2n+1) :nth-child(10)"
+        );
+        assert_eq!(text(":not(  *.x )"), ":not(.x)");
+        assert_eq!(text("[\\30zonk][a = b i][|c]"), "[\\30 zonk][a=\"b\" i][c]");
+        assert_eq!(text(":lang( j\\ a )"), ":lang(j\\ a)");
+        let ns = "@namespace url(d); @namespace x url(d); @namespace y url(e);";
+        assert_eq!(text(&format!("{ns} *|a")), "*|a");
+        assert_eq!(text(&format!("{ns} x|b")), "b");
+        assert_eq!(text(&format!("{ns} |d")), "|d");
+        assert_eq!(text(&format!("{ns} *|a x|b y|c *|*")), "*|a b y|c *|*");
+        assert_eq!(text("@namespace y url(e); *|a y|*.c"), "a y|*.c");
+        // The namespace rules are the CSSOM's too.
+        let s = sheet("@namespace y url(e); @layer a,b; y|p { top: 0 }");
+        assert_eq!(kinds(&s), ["namespace", "layer-statement", "style"]);
+        let flat = rules(&s, &[]);
+        assert_eq!(flat[1], "@namespace y url(\"e\");");
+        assert_eq!((flat[2].as_str(), flat[3].as_str()), ("y", "e"));
+        assert_eq!(flat[5], "@layer a, b;");
+    }
+
+    #[test]
+    fn namespace_rules_keep_their_place() {
+        let mut s = sheet("@namespace y url(e); p { top: 0 }");
+        assert_eq!(
+            insert(&mut s, &[], "@namespace z url(f);", 0)
+                .unwrap_err()
+                .name,
+            "InvalidStateError"
+        );
+        assert_eq!(
+            delete(&mut s, &[], 0).unwrap_err().name,
+            "InvalidStateError"
+        );
+        assert_eq!(
+            insert(&mut s, &[], "i { top: 0 }", 0).unwrap_err().name,
+            "HierarchyRequestError"
+        );
+        let mut s = sheet("@namespace y url(e);");
+        assert!(insert(&mut s, &[], "@namespace z url(f);", 1).is_ok());
+        assert!(delete(&mut s, &[], 0).is_ok());
     }
 
     #[test]

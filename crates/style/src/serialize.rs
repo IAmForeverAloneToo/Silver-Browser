@@ -194,6 +194,7 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "rx",
     "ry",
     "scale",
+    "scroll-behavior",
     "shape-rendering",
     "stop-color",
     "stop-opacity",
@@ -1062,9 +1063,36 @@ fn string(text: &str) -> String {
 /// space as one space, trimmed; and a selector's or a condition's, for
 /// the DevTools' rules (M36).
 pub fn tokens(value: &[Token]) -> String {
+    write_tokens(value, false)
+}
+
+/// A property's specified value as CSSOM serializes it (section 6.7.2,
+/// G50): [`tokens`], with each number at its shortest and each URL
+/// quoted, as the reference browser writes them.
+pub fn specified(value: &[Token]) -> String {
+    write_tokens(value, true)
+}
+
+/// [`tokens`], with `url()`s quoted when `quote_urls`.
+fn write_tokens(value: &[Token], quote_urls: bool) -> String {
     let mut out = String::new();
     for token in value {
         match token {
+            // Canonical: no space just inside brackets, and a comma
+            // followed by one space.
+            Token::Whitespace if quote_urls && out.ends_with('(') => {}
+            Token::Comma if quote_urls => {
+                while out.ends_with(' ') {
+                    out.pop();
+                }
+                out.push_str(", ");
+            }
+            Token::CloseParen if quote_urls => {
+                while out.ends_with(' ') {
+                    out.pop();
+                }
+                out.push(')');
+            }
             Token::Whitespace => {
                 if !out.is_empty() && !out.ends_with(' ') {
                     out.push(' ');
@@ -1092,6 +1120,11 @@ pub fn tokens(value: &[Token]) -> String {
                     out.push(c);
                 }
                 out.push('"');
+            }
+            Token::Url { value, .. } if quote_urls => {
+                out.push_str("url(");
+                out.push_str(&string(value));
+                out.push(')');
             }
             Token::Url { value, .. } => {
                 out.push_str("url(");
@@ -1123,6 +1156,16 @@ pub fn tokens(value: &[Token]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_specified_value_is_written_in_its_canonical_form() {
+        let written = |text: &str| specified(&css::tokenize(text));
+        assert_eq!(written(".5% -.1em -0px"), "0.5% -0.1em 0px");
+        assert_eq!(written("url(http://a/)"), "url(\"http://a/\")");
+        assert_eq!(written("'a\"b'"), "\"a\\\"b\"");
+        assert_eq!(written("rgb( 1,2 , 3 )"), "rgb(1, 2, 3)");
+        assert_eq!(tokens(&css::tokenize("url(x)")), "url(x)");
+    }
 
     #[test]
     fn values_are_written_as_the_reference_browser_writes_them() {

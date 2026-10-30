@@ -251,6 +251,29 @@ pub fn paint_order_in<'a>(
     offsets: &dyn ScrollOffsets,
     margin: f32,
 ) -> Vec<Step<'a>> {
+    order_within(roots, viewport, offsets, margin, 0.0)
+}
+
+/// [`paint_order`] with all the page's content listed, wherever it is
+/// (D65): what a script's measuring of the boxes walks, the boxes left,
+/// right, above and below the viewport too.
+pub fn paint_order_everywhere<'a>(
+    roots: &'a [Fragment],
+    viewport: Viewport,
+    offsets: &dyn ScrollOffsets,
+) -> Vec<Step<'a>> {
+    order_within(roots, viewport, offsets, 1.0e7, 1.0e7)
+}
+
+/// [`paint_order_in`] with the content `across` pixels left and right
+/// of the viewport listed too.
+fn order_within<'a>(
+    roots: &'a [Fragment],
+    viewport: Viewport,
+    offsets: &dyn ScrollOffsets,
+    margin: f32,
+    across: f32,
+) -> Vec<Step<'a>> {
     // What is listed, in document coordinates, rounded out to the rows
     // of tiles when there is a margin.
     let (mut top, mut bottom) = (
@@ -265,18 +288,29 @@ pub fn paint_order_in<'a>(
     let mut walk = Walk {
         steps: Vec::new(),
         viewport: Rect {
-            x: 0.0,
+            x: -across,
             y: top - viewport.scroll_y,
-            w: viewport.width,
+            w: viewport.width + 2.0 * across,
             h: bottom - top,
         },
-        window: Rect {
-            x: 0.0,
-            y: 0.0,
-            w: viewport.width,
-            h: viewport.height,
+        // A fixed box is listed wherever it is when everything is.
+        window: if across > 0.0 {
+            Rect {
+                x: -across,
+                y: -margin,
+                w: viewport.width + 2.0 * across,
+                h: viewport.height + 2.0 * margin,
+            }
+        } else {
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: viewport.width,
+                h: viewport.height,
+            }
         },
         scroll: viewport.scroll_y,
+        scroll_x: offsets.viewport_x(),
         ox: 0.0,
         oy: 0.0,
         ts: 0,
@@ -521,6 +555,8 @@ struct Walk<'a, 'o> {
     ink: f32,
     /// The viewport's scroll offset: the document's groups' matrix.
     scroll: f32,
+    /// The viewport's scroll offset across.
+    scroll_x: f32,
     /// Where the fragments walked over have their offsets from (M35.9):
     /// their parent's place on the page, the offsets of the boxes being
     /// walked into added up.
@@ -790,7 +826,7 @@ impl<'a> Walk<'a, '_> {
     /// Opens a group of the document's content (M19): its steps are in
     /// document coordinates, and its matrix is the scroll offset.
     fn open_segment(&mut self) {
-        let matrix = Matrix::translate(0.0, -self.scroll, 0.0);
+        let matrix = Matrix::translate(-self.scroll_x, -self.scroll, 0.0);
         self.segment = Some(self.steps.len());
         self.steps.push(Step::PushGroup {
             fragment: None,
@@ -1048,6 +1084,7 @@ impl<'a> Walk<'a, '_> {
         self.chain
             .push((node, effective, self.groups.len(), rounded));
         let offset = node.map_or(0.0, |node| self.offsets.offset(node));
+        let offset_x = node.map_or(0.0, |node| self.offsets.offset_x(node));
         // The scrolled content of a container whose `will-change` names
         // `scroll-position` is a group that is a layer (M19), its matrix
         // the offset, its steps inside unscrolled: a scroll of it is a
@@ -1061,7 +1098,7 @@ impl<'a> Walk<'a, '_> {
         });
         let opened = match scroll_layer {
             Some(node) => {
-                let matrix = Matrix::translate(0.0, -offset, 0.0);
+                let matrix = Matrix::translate(-offset_x, -offset, 0.0);
                 if emit != Emit::Nothing {
                     self.steps.push(Step::PushGroup {
                         fragment: Some(f),
@@ -1084,6 +1121,7 @@ impl<'a> Walk<'a, '_> {
             }
             None => {
                 self.dy -= offset;
+                self.dx -= offset_x;
                 1
             }
         };
@@ -1099,7 +1137,10 @@ impl<'a> Walk<'a, '_> {
                     }
                 }
             }
-            None => self.dy += offset,
+            None => {
+                self.dy += offset;
+                self.dx += offset_x;
+            }
         }
         self.chain.pop();
         if emit == Emit::ClipAndScrollbar && shows_scrollbar(f) {
@@ -2019,6 +2060,47 @@ mod tests {
             .map(String::from)
         );
         assert_eq!(names(&layout, &steps)[0], "document 0 at 20");
+    }
+
+    #[test]
+    fn offsets_across_move_a_containers_content_and_the_document_left() {
+        // The container (node 2) scrolled 30 down and 40 across, the
+        // page 15 across: the child moves left inside, and the
+        // document's group carries the page's offset across.
+        let layout = layout_of(
+            Element::new("div").push(
+                Element::new("div")
+                    .attr("class", "s")
+                    .push(Element::new("p").attr("class", "t")),
+            ),
+            "div, p { margin: 0; } .s { overflow: auto; width: 100px; height: 100px; }
+             .t { width: 300px; height: 200px; }",
+        );
+        let mut offsets = crate::Offsets {
+            viewport_x: 15.0,
+            ..crate::Offsets::default()
+        };
+        offsets.y.insert(layout.element(2), 30.0);
+        offsets.x.insert(layout.element(2), 40.0);
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &offsets);
+        let rect = |node: usize| {
+            steps
+                .iter()
+                .find_map(|s| match s {
+                    Step::Box { fragment, rect, .. } if layout.number(fragment.node) == node => {
+                        Some(*rect)
+                    }
+                    _ => None,
+                })
+                .expect("the box has a step")
+        };
+        assert_eq!((rect(2).x, rect(2).y), (0.0, 0.0));
+        assert_eq!((rect(3).x, rect(3).y), (-40.0, -30.0));
+        assert!(matches!(
+            steps[0],
+            Step::PushGroup { matrix, .. }
+                if matrix.scale_and_translation() == Some((1.0, 1.0, -15.0, 0.0))
+        ));
     }
 
     #[test]

@@ -460,12 +460,24 @@ fn background(parts: &[&[Token]], name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::declarations;
     use super::*;
 
-    /// `name`'s value read from the block `text`.
+    /// `name`'s value read from the block `text`, its declarations kept
+    /// as written: the shorthands a `style` keeps so (the box ones are
+    /// kept as their longhands, which need no reading).
     fn read(text: &str, name: &str) -> Option<String> {
-        from_shorthand(name, &declarations(text))
+        let block: Vec<Declared> = text
+            .split(';')
+            .filter_map(|piece| {
+                let (name, value) = piece.split_once(':')?;
+                Some(Declared {
+                    name: name.trim().to_owned(),
+                    value: value.trim().to_owned(),
+                    important: false,
+                })
+            })
+            .collect();
+        from_shorthand(name, &block)
     }
 
     #[test]

@@ -53,6 +53,7 @@
   const StringSplit = uncurry(String.prototype.split);
   const StringTrim = uncurry(String.prototype.trim);
   const PromiseReject = (value) => ReflectApply(Promise.reject, Promise, [value]);
+  const PromiseResolve = (value) => ReflectApply(Promise.resolve, Promise, [value]);
   const FromCharCode = String.fromCharCode;
   const MapGet = uncurry(Map.prototype.get);
   const MapSet = uncurry(Map.prototype.set);
@@ -11522,21 +11523,22 @@
     return native.parseDeclarations(text);
   }
 
-  // The shorthands a block keeps as their longhands (gap batch D).
-  const SHORTHANDS = {
-    __proto__: null,
-    font: [
-      "font-style", "font-variant-ligatures", "font-variant-caps", "font-variant-alternates",
-      "font-variant-numeric", "font-variant-east-asian", "font-variant-position",
-      "font-variant-emoji", "font-weight", "font-stretch", "font-size", "line-height",
-      "font-family", "font-feature-settings",
-    ],
-    "font-variant": [
-      "font-variant-ligatures", "font-variant-caps", "font-variant-alternates",
-      "font-variant-numeric", "font-variant-east-asian", "font-variant-position",
-      "font-variant-emoji",
-    ],
-  };
+  // The longhands a block keeps a shorthand as (G50), asked once a name;
+  // empty for a property kept as it is.
+  const shorthandLonghands = new $Map();
+  function longhandsOf(name) {
+    let longhands = MapGet(shorthandLonghands, name);
+    if (longhands === undefined) {
+      longhands = native.cssLonghands(name);
+      MapSet(shorthandLonghands, name, longhands);
+    }
+    return longhands;
+  }
+
+  // A shorthand's value from the block's longhands; "" for a longhand.
+  function shorthandOf(name, flat) {
+    return longhandsOf(name).length === 0 ? "" : native.cssShorthand(name, flat);
+  }
 
   function writeDeclarations(state, flat, method) {
     const text = native.cssBlockText(flat);
@@ -11931,6 +11933,32 @@
     native.cssom("set", sheet.handle, cssomPath(sheet, path), text, selector ? 1 : 0);
   }
 
+  // A media or import rule's media list, made once, its setters the
+  // rule's media.
+  function ruleMedia(rule, part) {
+    const state = ruleState(rule);
+    if (state.media === undefined) {
+      state.media = mediaList(
+        () => StringSplit(ruleData(state)[part], "\u0000")[0],
+        (text) => {
+          const path = rulePath(state);
+          if (path !== null) {
+            const sheet = state.list.sheet;
+            native.cssom("set", sheet.handle, cssomPath(sheet, path), text, 2);
+          }
+        },
+      );
+    }
+    return state.media;
+  }
+
+  // The import rule's conditions after its media: its layer, then its
+  // `supports()` condition, each null when it has none.
+  function importCondition(rule, i) {
+    const part = StringSplit(ruleData(ruleState(rule))[3], "\u0000")[i];
+    return part === undefined || part === "" ? null : StringSlice(part, 1);
+  }
+
   class CSSRule {
     constructor(key) {
       if (key !== KEY) {
@@ -11971,6 +11999,8 @@
     keyframe: 8,
     supports: 12,
     layer: 0,
+    "layer-statement": 0,
+    namespace: 10,
   };
   const CSSRULE_CONSTANTS = [
     "STYLE_RULE", 1, "CHARSET_RULE", 2, "IMPORT_RULE", 3, "MEDIA_RULE", 4, "FONT_FACE_RULE", 5,
@@ -12042,7 +12072,11 @@
     }
 
     get media() {
-      return mediaList(ruleData(ruleState(this))[3]);
+      return ruleMedia(this, 3);
+    }
+
+    set media(text) {
+      ruleMedia(this, 3).mediaText = text;
     }
 
     get styleSheet() {
@@ -12078,11 +12112,11 @@
     }
 
     get layerName() {
-      return null;
+      return importCondition(this, 1);
     }
 
     get supportsText() {
-      return null;
+      return importCondition(this, 2);
     }
   }
 
@@ -12110,7 +12144,11 @@
 
   class CSSMediaRule extends CSSConditionRule {
     get media() {
-      return mediaList(ruleData(ruleState(this))[2]);
+      return ruleMedia(this, 2);
+    }
+
+    set media(text) {
+      ruleMedia(this, 2).mediaText = text;
     }
   }
 
@@ -12118,6 +12156,32 @@
 
   class CSSLayerBlockRule extends CSSGroupingRule {
     get name() {
+      return ruleData(ruleState(this))[2];
+    }
+  }
+
+  // `@layer a, b;`: its names, a frozen array.
+  class CSSLayerStatementRule extends CSSRule {
+    get nameList() {
+      const text = ruleData(ruleState(this))[2];
+      const names = [];
+      if (text !== "") {
+        const parts = StringSplit(text, ", ");
+        for (let i = 0; i < parts.length; i++) {
+          ArrayPush(names, parts[i]);
+        }
+      }
+      return ObjectFreeze(names);
+    }
+  }
+
+  // `@namespace` (CSSOM section 6.4.8): its prefix and its URL.
+  class CSSNamespaceRule extends CSSRule {
+    get namespaceURI() {
+      return ruleData(ruleState(this))[3];
+    }
+
+    get prefix() {
       return ruleData(ruleState(this))[2];
     }
   }
@@ -12209,52 +12273,119 @@
   RULE_CLASSES.keyframe = CSSKeyframeRule;
   RULE_CLASSES.supports = CSSSupportsRule;
   RULE_CLASSES.layer = CSSLayerBlockRule;
+  RULE_CLASSES["layer-statement"] = CSSLayerStatementRule;
+  RULE_CLASSES.namespace = CSSNamespaceRule;
 
-  // A media list over the media text it is made of, read-only here.
+  // A media list (CSSOM section 4.1) over where its queries are kept:
+  // `get` reads their text and `set` writes it, the element's `media`
+  // attribute, a rule's or a constructed sheet's own.
+  const mediaStates = new $WeakMap();
+
+  function mediaListState(list) {
+    const state = WeakMapGet(mediaStates, list);
+    if (state === undefined) {
+      throw illegalInvocation();
+    }
+    return state;
+  }
+
+  // The queries of a media query list's text, each serialized.
+  function mediaQueries(text) {
+    return native.cssom("media", null, [], text, 0);
+  }
+
+  function mediaItems(state) {
+    return mediaQueries(state.get());
+  }
+
+  function joinMedia(items) {
+    let out = "";
+    for (let i = 0; i < items.length; i++) {
+      out += (i === 0 ? "" : ", ") + items[i];
+    }
+    return out;
+  }
+
   class MediaList {
-    #text;
-
-    constructor(key, text) {
+    constructor(key) {
       if (key !== KEY) {
         throw illegalConstructor("MediaList");
       }
-      this.#text = text;
     }
 
     get mediaText() {
-      return this.#text;
+      return joinMedia(mediaItems(mediaListState(this)));
+    }
+
+    set mediaText(text) {
+      const state = mediaListState(this);
+      state.set(joinMedia(mediaQueries(text === null ? "" : str(text))));
     }
 
     get length() {
-      return this.#items().length;
+      return mediaItems(mediaListState(this)).length;
     }
 
     item(index) {
       need(arguments.length, 1, "item", "MediaList");
-      const items = this.#items();
+      const items = mediaItems(mediaListState(this));
       const i = unsigned(index);
       return i < items.length ? items[i] : null;
     }
 
-    #items() {
-      const out = [];
-      if (this.#text === "") {
-        return out;
+    // Adds one query, unless it is there already or the text is a list.
+    appendMedium(medium) {
+      const state = mediaListState(this);
+      need(arguments.length, 1, "appendMedium", "MediaList");
+      const query = mediaQueries(str(medium));
+      if (query.length !== 1) {
+        return;
       }
-      const parts = StringSplit(this.#text, ",");
-      for (let i = 0; i < parts.length; i++) {
-        ArrayPush(out, StringTrim(parts[i]));
+      const items = mediaItems(state);
+      if (ArrayIndexOf(items, query[0]) >= 0) {
+        return;
       }
-      return out;
+      ArrayPush(items, query[0]);
+      state.set(joinMedia(items));
+    }
+
+    // Removes each query that is the one given, which must be there.
+    deleteMedium(medium) {
+      const state = mediaListState(this);
+      need(arguments.length, 1, "deleteMedium", "MediaList");
+      const query = mediaQueries(str(medium));
+      const items = mediaItems(state);
+      const kept = [];
+      for (let i = 0; i < items.length; i++) {
+        if (query.length !== 1 || items[i] !== query[0]) {
+          ArrayPush(kept, items[i]);
+        }
+      }
+      if (kept.length === items.length) {
+        throw domError(
+          "NotFoundError",
+          "Failed to delete '" + str(medium) + "'.",
+          "deleteMedium",
+          "MediaList",
+        );
+      }
+      state.set(joinMedia(kept));
     }
 
     toString() {
-      return this.#text;
+      return this.mediaText;
     }
   }
 
-  function mediaList(text) {
-    return new MediaList(KEY, text);
+  const mediaHandlers = indexedHandlers((target) => mediaItems(WeakMapGet(mediaStates, target)));
+
+  function mediaList(get, set) {
+    const list = new MediaList(KEY);
+    const proxy = new $Proxy(list, mediaHandlers);
+    const state = { get, set };
+    WeakMapSet(mediaStates, list, state);
+    WeakMapSet(mediaStates, proxy, state);
+    return proxy;
   }
 
   // ---- The sheets ------------------------------------------------------
@@ -12277,9 +12408,14 @@
       return href === "" ? null : href;
     }
 
+    // Null once the element is out of the document or has another
+    // sheet.
     get ownerNode() {
       const state = sheetState(this);
-      return state.imports.length === 0 ? state.owner : null;
+      if (state.imports.length !== 0 || state.owner === null) {
+        return null;
+      }
+      return sheetInfo(state)[3] === "1" ? state.owner : null;
     }
 
     get parentStyleSheet() {
@@ -12291,8 +12427,35 @@
       return title === "" ? null : title;
     }
 
+    // An imported sheet's is its rule's; an element's sheet's its `media`
+    // attribute; a constructed sheet's its own.
     get media() {
-      return mediaList(sheetInfo(sheetState(this))[2]);
+      const state = sheetState(this);
+      if (state.ownerRule !== null && state.ownerRule !== undefined) {
+        return state.ownerRule.media;
+      }
+      if (state.media === undefined) {
+        state.media = state.constructed
+          ? mediaList(
+              () => (state.mediaText === undefined ? "" : state.mediaText),
+              (text) => {
+                state.mediaText = text;
+              },
+            )
+          : mediaList(
+              () => sheetInfo(state)[2],
+              (text) => {
+                if (state.owner !== null) {
+                  setAttribute(state.handle, "media", text, "media");
+                }
+              },
+            );
+      }
+      return state.media;
+    }
+
+    set media(text) {
+      this.media.mediaText = text;
     }
 
     get disabled() {
@@ -12333,10 +12496,24 @@
   }
 
   class CSSStyleSheet extends StyleSheet {
+    // Its options (CSSOM section 6.1.2): `media`, as a list or as text,
+    // and `disabled`.
     constructor(options) {
       super(KEY);
       if (options !== KEY) {
-        constructSheet(this, "");
+        const state = constructSheet(this, "");
+        if (options !== undefined && options !== null && typeof options === "object") {
+          const media = options.media;
+          if (media !== undefined) {
+            state.mediaText =
+              typeof media === "object" && media !== null && WeakMapGet(mediaStates, media)
+                ? media.mediaText
+                : joinMedia(mediaQueries(str(media)));
+          }
+          if (options.disabled !== undefined) {
+            state.disabled = !!options.disabled;
+          }
+        }
       }
     }
 
@@ -12362,6 +12539,23 @@
       const state = sheetState(this);
       need(arguments.length, 1, "deleteRule", "CSSStyleSheet");
       deleteFromList(state.list, unsigned(index), "deleteRule", "CSSStyleSheet");
+    }
+
+    // The legacy members (CSSOM section 6.1.2.1): a rule of a selector
+    // and a block, at the end unless placed; -1 always.
+    addRule(selector = "undefined", style = "undefined", index) {
+      const state = sheetState(this);
+      const text = str(style) === ""
+        ? str(selector) + " { }"
+        : str(selector) + " { " + str(style) + " }";
+      const at = index === undefined ? listObjects(state.list).length : unsigned(index);
+      insertInList(state.list, text, at, "addRule", "CSSStyleSheet");
+      return -1;
+    }
+
+    removeRule(index = 0) {
+      const state = sheetState(this);
+      deleteFromList(state.list, unsigned(index), "removeRule", "CSSStyleSheet");
     }
 
     replace(text) {
@@ -12541,6 +12735,8 @@
   expose(CSSMediaRule, "CSSMediaRule");
   expose(CSSSupportsRule, "CSSSupportsRule");
   expose(CSSLayerBlockRule, "CSSLayerBlockRule");
+  expose(CSSLayerStatementRule, "CSSLayerStatementRule");
+  expose(CSSNamespaceRule, "CSSNamespaceRule");
   expose(CSSPageRule, "CSSPageRule");
   expose(CSSFontFaceRule, "CSSFontFaceRule");
   expose(CSSKeyframeRule, "CSSKeyframeRule");
@@ -12620,8 +12816,8 @@
     const at = findDeclaration(flat, name);
     if (at < 0) {
       // A shorthand kept as its longhands: they go.
-      const longhands = SHORTHANDS[name];
-      if (longhands === undefined) return "";
+      const longhands = longhandsOf(name);
+      if (longhands.length === 0) return "";
       const old = native.cssShorthand(name, flat);
       let removed = false;
       for (let i = 0; i < longhands.length; i++) {
@@ -18298,20 +18494,78 @@
     return handleOf(element) === documentElement(native.document());
   }
 
-  // `scrollTo()`'s arguments, x and y or an options dictionary, as the
-  // offset asked for, `current` kept for what is not given.
-  function scrollArguments(args, current, relative) {
-    if (args.length === 1 && args[0] !== null && typeof args[0] === "object") {
-      const top = args[0].top;
-      if (top === undefined) {
-        return relative ? 0 : current;
+  // A scroll offset asked for as CSSOM View normalizes it: not finite
+  // is 0.
+  function finiteOrZero(value) {
+    const n = $Number(value);
+    return n === n && n !== Infinity && n !== -Infinity ? n : 0;
+  }
+
+  // `scrollTo()`'s and the like's arguments (CSSOM View sections 5 and
+  // 7): x and y, or a `ScrollToOptions` dictionary; as [x, y, behavior],
+  // NaN for an axis not given. Throws a TypeError for one argument that
+  // is not a dictionary, or a behavior that is none.
+  function scrollOptions(args) {
+    let x = NaN;
+    let y = NaN;
+    let behavior = "auto";
+    if (args.length === 1) {
+      const options = args[0];
+      if (options !== null && options !== undefined) {
+        if (typeof options !== "object" && typeof options !== "function") {
+          throw new $TypeError("The provided value is not of type 'ScrollToOptions'.");
+        }
+        if (options.left !== undefined) {
+          x = finiteOrZero(options.left);
+        }
+        if (options.top !== undefined) {
+          y = finiteOrZero(options.top);
+        }
+        if (options.behavior !== undefined) {
+          behavior = str(options.behavior);
+          if (behavior !== "auto" && behavior !== "instant" && behavior !== "smooth") {
+            throw new $TypeError(
+              "The provided value '" + behavior + "' is not a valid enum value of type ScrollBehavior.",
+            );
+          }
+        }
       }
-      return $Number(top);
+    } else if (args.length >= 2) {
+      x = finiteOrZero(args[0]);
+      y = finiteOrZero(args[1]);
     }
-    if (args.length >= 2) {
-      return $Number(args[1]);
+    return [x, y, behavior];
+  }
+
+  // Whether a scroll of `element`'s box (the viewport's for the root)
+  // with `behavior` is smooth: asked, or `auto` with the box's
+  // `scroll-behavior` smooth.
+  function smoothScroll(element, behavior) {
+    if (behavior !== "auto") {
+      return behavior === "smooth";
     }
-    return relative ? 0 : current;
+    const handle = element === null ? documentElement(native.document()) : handleOf(element);
+    return handle !== null && native.computedValue(handle, "", "scroll-behavior") === "smooth";
+  }
+
+  // A scroll of the viewport (`target` null) or an element by the
+  // arguments `args` of `method`, by them or to them: a promise settled
+  // once it is made, rejected for arguments it cannot take.
+  function scrollWith(element, target, args, relative) {
+    let options;
+    try {
+      options = scrollOptions(args);
+    } catch (error) {
+      return PromiseReject(error);
+    }
+    let [x, y] = options;
+    if (relative) {
+      const now = native.scrollOffset(target);
+      x = x === x ? now[2] + x : NaN;
+      y = y === y ? now[0] + y : NaN;
+    }
+    native.scrollTo(target, x, y, smoothScroll(element, options[2]));
+    return PromiseResolve(undefined);
   }
 
   include(
@@ -18369,20 +18623,35 @@
 
       set scrollTop(value) {
         const handle = self(this);
-        native.scrollTo(scrollingRoot(this) ? null : handle, $Number(value));
+        native.scrollTo(
+          scrollingRoot(this) ? null : handle,
+          NaN,
+          finiteOrZero(value),
+          smoothScroll(this, "auto"),
+        );
       },
 
       get scrollLeft() {
-        self(this);
-        return 0;
+        const handle = self(this);
+        return native.scrollOffset(scrollingRoot(this) ? null : handle)[2];
       },
 
       set scrollLeft(value) {
-        self(this);
+        const handle = self(this);
+        native.scrollTo(
+          scrollingRoot(this) ? null : handle,
+          finiteOrZero(value),
+          NaN,
+          smoothScroll(this, "auto"),
+        );
       },
 
+      // The client width and how far the content reaches past it,
+      // whether the box scrolls or not.
       get scrollWidth() {
-        return this.clientWidth;
+        const handle = self(this);
+        const target = scrollingRoot(this) ? null : handle;
+        return this.clientWidth + MathRound(native.scrollOffset(target)[5]);
       },
 
       get scrollHeight() {
@@ -18395,28 +18664,52 @@
           return 0;
         }
         const own = g[G_SCROLL_HEIGHT];
-        return MathRound(own > 0 ? own : g[3] - g[G_BORDER] - g[G_BORDER + 2]);
+        if (own > 0) {
+          return MathRound(own);
+        }
+        return this.clientHeight + MathRound(native.scrollOffset(handle)[4]);
       },
 
       scrollTo(...args) {
         const handle = self(this);
-        const target = scrollingRoot(this) ? null : handle;
-        native.scrollTo(target, scrollArguments(args, native.scrollOffset(target)[0], false));
+        return scrollWith(this, scrollingRoot(this) ? null : handle, args, false);
       },
 
       scroll(...args) {
-        return this.scrollTo(...args);
+        const handle = self(this);
+        return scrollWith(this, scrollingRoot(this) ? null : handle, args, false);
       },
 
       scrollBy(...args) {
         const handle = self(this);
-        const target = scrollingRoot(this) ? null : handle;
-        const now = native.scrollOffset(target)[0];
-        native.scrollTo(target, now + scrollArguments(args, now, true));
+        return scrollWith(this, scrollingRoot(this) ? null : handle, args, true);
       },
 
-      scrollIntoView() {
-        native.scrollIntoView(self(this));
+      // A boolean or a `ScrollIntoViewOptions` (CSSOM View section 7):
+      // the block start (end for false), the nearest inline place.
+      scrollIntoView(arg) {
+        const handle = self(this);
+        let block = "start";
+        let inline = "nearest";
+        let behavior = "auto";
+        if (arg === false) {
+          block = "end";
+        } else if (arg !== null && typeof arg === "object") {
+          const pick = (value, fallback, names) => {
+            if (value === undefined) return fallback;
+            const text = str(value);
+            if (ArrayIndexOf(names, text) < 0) {
+              throw new $TypeError("The provided value '" + text + "' is not a valid enum value.");
+            }
+            return text;
+          };
+          const places = ["start", "center", "end", "nearest"];
+          block = pick(arg.block, "start", places);
+          inline = pick(arg.inline, "nearest", places);
+          behavior = pick(arg.behavior, "auto", ["auto", "instant", "smooth"]);
+        }
+        native.scrollIntoView(handle, block, inline, behavior);
+        return PromiseResolve(undefined);
       },
     },
     [Element.prototype],
@@ -18499,7 +18792,14 @@
     if (p.length === 0) {
       return [g[0], g[1]];
     }
-    return [g[0] - p[0] - p[G_BORDER + 3], g[1] - p[1] - p[G_BORDER]];
+    // The reference browser takes a fieldset's border off twice for an
+    // absolutely positioned box it holds.
+    const position =
+      native.tag(parent) === "fieldset"
+        ? native.computedValue(handleOf(element), "", "position")
+        : "";
+    const twice = position === "absolute" || position === "fixed" ? 2 : 1;
+    return [g[0] - p[0] - twice * p[G_BORDER + 3], g[1] - p[1] - twice * p[G_BORDER]];
   }
 
   // HTML's "rendered text fragment": `text` as text nodes, each line
@@ -18571,7 +18871,7 @@
   );
 
   // The window's scroll members (CSSOM View section 5): the viewport
-  // scrolls down only.
+  // scrolls down and across.
   const viewportScrollY = {
     get() {
       return native.scrollOffset(null)[0];
@@ -18581,7 +18881,7 @@
   };
   const viewportScrollX = {
     get() {
-      return 0;
+      return native.scrollOffset(null)[2];
     },
     enumerable: true,
     configurable: true,
@@ -18591,12 +18891,12 @@
   windowOnly("scrollX", viewportScrollX);
   windowOnly("pageXOffset", viewportScrollX);
   const windowScrollTo = function scrollTo(...args) {
-    native.scrollTo(null, scrollArguments(args, native.scrollOffset(null)[0], false));
+    return scrollWith(null, null, args, false);
   };
   windowOnly("scrollTo", { value: windowScrollTo, writable: true, enumerable: true, configurable: true });
   windowOnly("scroll", {
     value: function scroll(...args) {
-      return ReflectApply(windowScrollTo, undefined, args);
+      return scrollWith(null, null, args, false);
     },
     writable: true,
     enumerable: true,
@@ -18604,8 +18904,7 @@
   });
   windowOnly("scrollBy", {
     value: function scrollBy(...args) {
-      const now = native.scrollOffset(null)[0];
-      native.scrollTo(null, now + scrollArguments(args, now, true));
+      return scrollWith(null, null, args, true);
     },
     writable: true,
     enumerable: true,

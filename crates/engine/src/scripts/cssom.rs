@@ -86,15 +86,192 @@ fn css_wide(value: &str) -> Option<String> {
     .then_some(lower)
 }
 
+/// The four sides' longhands of a box shorthand.
+const fn sides(
+    top: &'static str,
+    right: &'static str,
+    bottom: &'static str,
+    left: &'static str,
+) -> [&'static str; 4] {
+    [top, right, bottom, left]
+}
+
+const MARGIN: [&str; 4] = sides("margin-top", "margin-right", "margin-bottom", "margin-left");
+const PADDING: [&str; 4] = sides(
+    "padding-top",
+    "padding-right",
+    "padding-bottom",
+    "padding-left",
+);
+const INSET: [&str; 4] = sides("top", "right", "bottom", "left");
+const BORDER_WIDTH: [&str; 4] = sides(
+    "border-top-width",
+    "border-right-width",
+    "border-bottom-width",
+    "border-left-width",
+);
+const BORDER_STYLE: [&str; 4] = sides(
+    "border-top-style",
+    "border-right-style",
+    "border-bottom-style",
+    "border-left-style",
+);
+const BORDER_COLOR: [&str; 4] = sides(
+    "border-top-color",
+    "border-right-color",
+    "border-bottom-color",
+    "border-left-color",
+);
+const BORDER_TOP: [&str; 3] = ["border-top-width", "border-top-style", "border-top-color"];
+const BORDER_RIGHT: [&str; 3] = [
+    "border-right-width",
+    "border-right-style",
+    "border-right-color",
+];
+const BORDER_BOTTOM: [&str; 3] = [
+    "border-bottom-width",
+    "border-bottom-style",
+    "border-bottom-color",
+];
+const BORDER_LEFT: [&str; 3] = [
+    "border-left-width",
+    "border-left-style",
+    "border-left-color",
+];
+const BORDER_IMAGE: [&str; 5] = [
+    "border-image-source",
+    "border-image-slice",
+    "border-image-width",
+    "border-image-outset",
+    "border-image-repeat",
+];
+/// `border-image`'s longhands' initial values, which `border` sets.
+const BORDER_IMAGE_INITIAL: [&str; 5] = ["none", "100%", "1", "0", "stretch"];
+const BORDER: [&str; 17] = [
+    "border-top-width",
+    "border-right-width",
+    "border-bottom-width",
+    "border-left-width",
+    "border-top-style",
+    "border-right-style",
+    "border-bottom-style",
+    "border-left-style",
+    "border-top-color",
+    "border-right-color",
+    "border-bottom-color",
+    "border-left-color",
+    "border-image-source",
+    "border-image-slice",
+    "border-image-width",
+    "border-image-outset",
+    "border-image-repeat",
+];
+const OUTLINE: [&str; 3] = ["outline-color", "outline-style", "outline-width"];
+const LIST_STYLE: [&str; 3] = ["list-style-position", "list-style-image", "list-style-type"];
+
+/// The shorthands a declaration block keeps as their longhands (G50),
+/// each with its longhands in their canonical order.
+const SHORTHANDS: [(&str, &[&str]); 17] = [
+    ("font", &FONT_LONGHANDS),
+    ("font-variant", &style::VARIANT_LONGHANDS),
+    ("margin", &MARGIN),
+    ("padding", &PADDING),
+    ("inset", &INSET),
+    ("border", &BORDER),
+    ("border-width", &BORDER_WIDTH),
+    ("border-style", &BORDER_STYLE),
+    ("border-color", &BORDER_COLOR),
+    ("border-top", &BORDER_TOP),
+    ("border-right", &BORDER_RIGHT),
+    ("border-bottom", &BORDER_BOTTOM),
+    ("border-left", &BORDER_LEFT),
+    ("border-image", &BORDER_IMAGE),
+    ("outline", &OUTLINE),
+    ("list-style", &LIST_STYLE),
+    ("gap", &["row-gap", "column-gap"]),
+];
+
+/// The longhands of the shorthand `name`, if it is one a block keeps as
+/// them.
+pub(crate) fn longhands(name: &str) -> Option<&'static [&'static str]> {
+    SHORTHANDS
+        .iter()
+        .find(|(shorthand, _)| *shorthand == name)
+        .map(|(_, longhands)| *longhands)
+}
+
+/// The pieces of `value` parted by white space outside brackets and
+/// strings.
+fn components(value: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut piece = String::new();
+    let mut scan = Scanner::default();
+    let mut chars = value.chars().peekable();
+    while let Some(c) = chars.next() {
+        if scan.top_level(c, chars.peek().copied()) && is_space(c) {
+            if !piece.is_empty() {
+                out.push(std::mem::take(&mut piece));
+            }
+            continue;
+        }
+        piece.push(c);
+    }
+    if !piece.is_empty() {
+        out.push(piece);
+    }
+    out
+}
+
+/// One to four values given to the four sides (CSS Backgrounds 3's box
+/// shorthands): top, right, bottom, left.
+fn four_sides(value: &str) -> Option<[String; 4]> {
+    let v = components(value);
+    Some(match v.as_slice() {
+        [a] => [a.clone(), a.clone(), a.clone(), a.clone()],
+        [a, b] => [a.clone(), b.clone(), a.clone(), b.clone()],
+        [a, b, c] => [a.clone(), b.clone(), c.clone(), b.clone()],
+        [a, b, c, d] => [a.clone(), b.clone(), c.clone(), d.clone()],
+        _ => return None,
+    })
+}
+
+/// The components of `value` each given to the first of `slots` (each a
+/// longhand and its initial value) it is valid for, at most one each;
+/// the slots none was given keep their initial values. `None` when a
+/// component fits no slot left.
+fn by_validity(value: &str, slots: &[(&str, &str)]) -> Option<Vec<String>> {
+    let mut given: Vec<Option<String>> = vec![None; slots.len()];
+    for piece in components(value) {
+        let slot = (0..slots.len()).find(|&i| given[i].is_none() && valid(slots[i].0, &piece))?;
+        given[slot] = Some(piece);
+    }
+    Some(
+        given
+            .into_iter()
+            .zip(slots)
+            .map(|(v, (_, initial))| v.unwrap_or_else(|| (*initial).to_owned()))
+            .collect(),
+    )
+}
+
+/// A border side's width, style and color from `value`.
+fn border_side(value: &str) -> Option<Vec<String>> {
+    let given = by_validity(
+        value,
+        &[
+            ("border-top-style", "none"),
+            ("border-top-width", "medium"),
+            ("border-top-color", "currentcolor"),
+        ],
+    )?;
+    Some(vec![given[1].clone(), given[0].clone(), given[2].clone()])
+}
+
 /// The longhands of the shorthand `name` declared `value`, each with
 /// its value's text; `None` for a property kept as it is (a longhand, a
 /// value with a substitution, a system font).
 fn expand(name: &str, value: &str) -> Option<Vec<(String, String)>> {
-    let longhands: &[&str] = match name {
-        "font" => &FONT_LONGHANDS,
-        "font-variant" => &style::VARIANT_LONGHANDS,
-        _ => return None,
-    };
+    let longhands = longhands(name)?;
     if let Some(keyword) = css_wide(value) {
         return Some(
             longhands
@@ -103,7 +280,105 @@ fn expand(name: &str, value: &str) -> Option<Vec<(String, String)>> {
                 .collect(),
         );
     }
+    if ["var(", "attr(", "env("].iter().any(|f| value.contains(f)) {
+        return None;
+    }
     let tokens = css::tokenize(value);
+    let pair = |values: Vec<String>| -> Option<Vec<(String, String)>> {
+        Some(
+            longhands
+                .iter()
+                .zip(values)
+                .map(|(l, v)| ((*l).to_owned(), written(l, &v)))
+                .collect(),
+        )
+    };
+    match name {
+        "margin" | "padding" | "inset" | "border-width" | "border-style" | "border-color" => {
+            return pair(four_sides(value)?.to_vec());
+        }
+        "border-top" | "border-right" | "border-bottom" | "border-left" => {
+            return pair(border_side(value)?);
+        }
+        "border" => {
+            let side = border_side(value)?;
+            let mut values = Vec::new();
+            for part in &side {
+                values.extend(std::iter::repeat_n(part.clone(), 4));
+            }
+            values.extend(BORDER_IMAGE_INITIAL.iter().map(|v| (*v).to_owned()));
+            return pair(values);
+        }
+        "outline" => {
+            return pair(by_validity(
+                value,
+                &[
+                    ("outline-color", "currentcolor"),
+                    ("outline-style", "none"),
+                    ("outline-width", "medium"),
+                ],
+            )?);
+        }
+        "list-style" => {
+            // `none` is the image's or the type's, whichever is not
+            // given otherwise.
+            let parts = components(value);
+            let nones = parts
+                .iter()
+                .filter(|p| p.eq_ignore_ascii_case("none"))
+                .count();
+            let rest: Vec<String> = parts
+                .iter()
+                .filter(|p| !p.eq_ignore_ascii_case("none"))
+                .cloned()
+                .collect();
+            let mut given = by_validity(
+                &rest.join(" "),
+                &[
+                    ("list-style-position", "outside"),
+                    ("list-style-image", ""),
+                    ("list-style-type", ""),
+                ],
+            )?;
+            let open = [1, 2].iter().filter(|&&i| given[i].is_empty()).count();
+            if nones > open {
+                return None;
+            }
+            if nones > 0 {
+                for i in [1, 2] {
+                    if given[i].is_empty() {
+                        given[i] = "none".to_owned();
+                    }
+                }
+            }
+            if given[1].is_empty() {
+                given[1] = "none".to_owned();
+            }
+            if given[2].is_empty() {
+                given[2] = "disc".to_owned();
+            }
+            return pair(given);
+        }
+        "gap" => {
+            let v = components(value);
+            return match v.as_slice() {
+                [a] => pair(vec![a.clone(), a.clone()]),
+                [a, b] => pair(vec![a.clone(), b.clone()]),
+                _ => None,
+            };
+        }
+        // Its initial values alone, as `border` writes it.
+        "border-image" if value.eq_ignore_ascii_case("none") => {
+            return pair(
+                BORDER_IMAGE_INITIAL
+                    .iter()
+                    .map(|v| (*v).to_owned())
+                    .collect(),
+            );
+        }
+        "font" | "font-variant" => {}
+        _ => return None,
+    }
     if name == "font" {
         let list = style::font_longhands(&tokens)?;
         return Some(
@@ -144,9 +419,14 @@ fn expand(name: &str, value: &str) -> Option<Vec<(String, String)>> {
 }
 
 /// A longhand's value as a declaration block keeps it: the font's as
-/// the reference browser writes them, the rest as given.
+/// the reference browser writes them, a custom property's or one with a
+/// substitution as given, the rest in their canonical forms (numbers at
+/// their shortest, URLs and strings quoted, G50).
 fn written(name: &str, value: &str) -> String {
-    if css_wide(value).is_some() || value.contains("var(") {
+    if let Some(keyword) = css_wide(value) {
+        return keyword;
+    }
+    if name.starts_with("--") || ["var(", "attr(", "env("].iter().any(|f| value.contains(f)) {
         return value.to_owned();
     }
     let tokens = css::tokenize(value);
@@ -165,7 +445,7 @@ fn written(name: &str, value: &str) -> String {
         }
         _ => None,
     };
-    text.unwrap_or_else(|| value.to_owned())
+    text.unwrap_or_else(|| style::serialize::specified(&tokens))
 }
 
 /// The value of the shorthand `name` from `block`'s longhands, as CSSOM
@@ -174,10 +454,10 @@ fn written(name: &str, value: &str) -> String {
 /// A longhand `block` does not declare is read from the shorthand that
 /// sets it last, where one does.
 pub(crate) fn shorthand_value(name: &str, block: &[Declared]) -> String {
-    let longhands: &[&str] = match name {
-        "font" => &FONT_LONGHANDS,
-        "font-variant" => &style::VARIANT_LONGHANDS,
-        _ => return longhands::from_shorthand(name, block).unwrap_or_default(),
+    let Some(longhands) = longhands(name) else {
+        // A shorthand not kept as longhands, or a longhand, read from the
+        // shorthand that sets it as written.
+        return longhands::from_shorthand(name, block).unwrap_or_default();
     };
     let found: Option<Vec<&Declared>> = longhands
         .iter()
@@ -200,10 +480,75 @@ pub(crate) fn shorthand_value(name: &str, block: &[Declared]) -> String {
             String::new()
         };
     }
-    if name == "font-variant" {
-        return style::write_font_variant(&values).unwrap_or_default();
+    match name {
+        "font-variant" => style::write_font_variant(&values).unwrap_or_default(),
+        "font" => font_value(&values).unwrap_or_default(),
+        "border" => {
+            // Its sides alike and its image as `border` sets it.
+            let side = |i: usize| [values[i], values[i + 4], values[i + 8]];
+            if (1..4).any(|i| side(i) != side(0)) || values[12..] != BORDER_IMAGE_INITIAL {
+                return String::new();
+            }
+            initials_left_out(&side(0), &["medium", "none", "currentcolor"], "none")
+        }
+        "border-top" | "border-right" | "border-bottom" | "border-left" => {
+            initials_left_out(&values, &["medium", "none", "currentcolor"], "none")
+        }
+        "border-image" => {
+            if values == BORDER_IMAGE_INITIAL {
+                "none".to_owned()
+            } else {
+                String::new()
+            }
+        }
+        "outline" => initials_left_out(&values, &["currentcolor", "none", "medium"], "none"),
+        "list-style" => initials_left_out(&values, &["outside", "none", "disc"], "outside"),
+        "gap" => {
+            if values[0] == values[1] {
+                values[0].to_owned()
+            } else {
+                values.join(" ")
+            }
+        }
+        // The box shorthands: at their shortest.
+        _ => shortest_sides(&values),
     }
-    font_value(&values).unwrap_or_default()
+}
+
+/// Values given to the four sides, at their shortest: the left left out
+/// when it is the right, then the bottom when it is the top, then the
+/// right when it is the top.
+fn shortest_sides(values: &[&str]) -> String {
+    let [top, right, bottom, left] = values else {
+        return String::new();
+    };
+    let mut out = vec![*top, *right, *bottom, *left];
+    if left == right {
+        out.pop();
+        if bottom == top {
+            out.pop();
+            if right == top {
+                out.pop();
+            }
+        }
+    }
+    out.join(" ")
+}
+
+/// A shorthand's longhands' values with those at their `initials` left
+/// out; `alone` when all are.
+fn initials_left_out(values: &[&str], initials: &[&str], alone: &str) -> String {
+    let kept: Vec<&str> = values
+        .iter()
+        .zip(initials)
+        .filter(|(v, initial)| !v.eq_ignore_ascii_case(initial))
+        .map(|(v, _)| *v)
+        .collect();
+    if kept.is_empty() {
+        alone.to_owned()
+    } else {
+        kept.join(" ")
+    }
 }
 
 /// `font` from its longhands' values in [`FONT_LONGHANDS`]' order, as
@@ -283,7 +628,8 @@ pub(crate) fn from_flat(flat: &[String]) -> Vec<Declared> {
 
 /// `block` as a declaration block's text (CSSOM 6.7.2): `name: value;`
 /// each, parted by spaces, a shorthand whose longhands are all there
-/// and that can say them in their first one's place.
+/// and that can say them in their first one's place, those of the most
+/// longhands tried first.
 pub(crate) fn block_text(block: &[Declared]) -> String {
     let mut out: Vec<String> = Vec::new();
     let mut done: Vec<&str> = Vec::new();
@@ -293,11 +639,14 @@ pub(crate) fn block_text(block: &[Declared]) -> String {
         }
         let mut name = declared.name.as_str();
         let mut value = declared.value.clone();
-        for (shorthand, longhands) in [
-            ("font", &FONT_LONGHANDS[..]),
-            ("font-variant", &style::VARIANT_LONGHANDS[..]),
-        ] {
-            if !longhands.contains(&name) {
+        let mut candidates: Vec<(&str, &[&str])> = SHORTHANDS
+            .iter()
+            .filter(|(_, longhands)| longhands.contains(&name))
+            .copied()
+            .collect();
+        candidates.sort_by_key(|(_, longhands)| std::cmp::Reverse(longhands.len()));
+        for (shorthand, longhands) in candidates {
+            if longhands.iter().any(|l| done.contains(l)) {
                 continue;
             }
             // A width given as a percentage stays its longhand, which
@@ -307,7 +656,8 @@ pub(crate) fn block_text(block: &[Declared]) -> String {
                     .iter()
                     .any(|d| d.name == "font-stretch" && d.value.contains('%'));
             let composed = shorthand_value(shorthand, block);
-            if !composed.is_empty() && !percentage {
+            // Only as the cascade reads it back.
+            if !composed.is_empty() && !percentage && valid(shorthand, &composed) {
                 done.extend(longhands.iter().copied());
                 name = shorthand;
                 value = composed;
@@ -673,6 +1023,46 @@ mod tests {
                 ("margin-left".into(), "calc(1px * 2)".into(), false),
                 ("color".into(), "red".into(), false)
             ]
+        );
+    }
+
+    #[test]
+    fn the_box_shorthands_are_kept_as_their_longhands_and_said_from_them() {
+        let text = |css: &str| block_text(&declarations(css));
+        assert_eq!(
+            text("margin: 1px 2px; margin-left: 4px"),
+            "margin: 1px 2px 1px 4px;"
+        );
+        assert_eq!(text("padding-top: .5em"), "padding-top: 0.5em;");
+        assert_eq!(text("border: thin solid"), "border: thin solid;");
+        assert_eq!(
+            text("border: 1px; border-top: 2px"),
+            "border-width: 2px 1px 1px; border-style: none; border-color: currentcolor; \
+             border-image: none;"
+        );
+        assert_eq!(
+            text("border: 1px; border-top: 1px !important"),
+            "border-right: 1px; border-bottom: 1px; border-left: 1px; border-image: none; \
+             border-top: 1px !important;"
+        );
+        assert_eq!(
+            text("outline: 2px dotted blue"),
+            "outline: blue dotted 2px;"
+        );
+        assert_eq!(
+            text("list-style: circle inside"),
+            "list-style: inside circle;"
+        );
+        assert_eq!(text("list-style: none"), "list-style: none;");
+        assert_eq!(
+            shorthand_value("margin", &declarations("margin: inherit")),
+            "inherit"
+        );
+        assert_eq!(longhands("border-top"), Some(&BORDER_TOP[..]));
+        assert_eq!(longhands("color"), None);
+        assert_eq!(
+            text("color: rgb(1,2,3); background-image: url(a)"),
+            "color: rgb(1, 2, 3); background-image: url(\"a\");"
         );
     }
 

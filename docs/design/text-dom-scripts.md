@@ -598,3 +598,39 @@ step:
   Not done: selectors in an XML document still match names without
   regard to case, and template contents have no owner document of their
   own (G47, G51).
+- *The CSSOM and CSSOM View* (D65, D66, G50), after the batch: a run's
+  `<style>` sheets are made again when the document changes
+  (`Page::rescan_inline`, no network: a `<link>` and a sheet's imports
+  wait for the rescan after the run, which fetches them into the sheet
+  made), so `.sheet`, `document.styleSheets` and `getComputedStyle` see
+  them at once; a sheet whose element went is kept for the objects
+  scripts hold (64 at most), its `ownerNode` null. A sheet change
+  restyles the elements the changed rules match, as a change of their
+  own, so transitions start as before. `getComputedStyle`'s `top` to
+  `left` are used values as the reference browser has them (an
+  absolutely positioned box's from its containing block's padding box,
+  a relative one's and a sticky one's percentages of the containing
+  block's or the scroll container's content box). A `style` object and
+  a rule's block keep values in canonical forms (numbers at their
+  shortest, URLs and strings quoted, commas spaced; substitutions and
+  custom properties as written), and the box, border, outline,
+  list-style and gap shorthands as their longhands, written back in a
+  shorthand where the cascade reads it. Selectors are serialized from
+  their tokens with the sheet's namespaces (`CSSNamespaceRule`,
+  `CSSLayerStatementRule`, attribute prefixes); media lists normalize
+  and set (`mediaText`, `appendMedium`, `deleteMedium`, an element's
+  `media` attribute, a rule's prelude); `addRule` and `removeRule`; a
+  constructed sheet takes `media` and `disabled`. Scrolling goes across
+  too: `paint::Offsets` carries the offsets across and the viewport's,
+  the engine animates both axes, `scrollLeft`, `scrollX`, `scrollTo`'s
+  `left`, `scrollWidth` (from `geometry::overflow`, overflow visible
+  too), `scrollIntoView`'s `block` and `inline` computed in the run;
+  `scroll-behavior` is a property, a smooth script scroll moves over
+  the frames to come, and `scrollend` follows the last `scroll`. The
+  scroll methods return promises, settled at once. A fieldset's
+  absolutely positioned child's offsets take its border off twice, as
+  the reference browser's do. Not done: `getComputedStyle` still samples
+  animations on the host's own copy (G46), the user's wheel and keys
+  and the scrollbar across, `all`, `overflow-x`/`-y` and
+  `background-position-x`/`-y` as longhands, colors in canonical forms,
+  and vertical writing modes' and `direction`'s scroll offsets.

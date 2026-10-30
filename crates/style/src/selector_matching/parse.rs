@@ -504,6 +504,22 @@ fn parse_states(c: &mut Cursor, depth: usize, spec: &mut Specificity) -> Option<
 fn parse_attribute(c: &mut Cursor) -> Option<(String, AttrOp, String, CaseFlag)> {
     c.advance(); // '['
     c.skip_ws();
+    // A namespace prefix (CSS Namespaces 3 section 6.4): `|` for none,
+    // `*|` for any, or one the sheet declares; the attribute is matched
+    // by its name, as the attributes here are kept by name.
+    match (c.peek(), c.peek_ahead(1), c.peek_ahead(2)) {
+        (Some(Token::Delim('|')), Some(Token::Ident(_)), _) => c.advance(),
+        (Some(Token::Delim('*')), Some(Token::Delim('|')), Some(Token::Ident(_))) => {
+            c.advance();
+            c.advance();
+        }
+        (Some(Token::Ident(prefix)), Some(Token::Delim('|')), Some(Token::Ident(_))) => {
+            c.namespaces.prefix(prefix)?;
+            c.advance();
+            c.advance();
+        }
+        _ => {}
+    }
     let name = match c.peek() {
         Some(Token::Ident(name)) => name.to_ascii_lowercase(),
         _ => return None,
@@ -1102,6 +1118,17 @@ mod tests {
         );
         assert_eq!(list.0[0].specificity, ok(".a:not(b)").0[0].specificity);
         assert!(parse_selector_list_in(&css::tokenize("math|mi"), &sheet).is_err());
+        // An attribute's prefix: none, any, or a declared one; the name
+        // is what is matched.
+        let attribute = |list: SelectorList| match &compound(list)[0] {
+            SimpleSelector::Attribute { name, .. } => name.clone(),
+            _ => String::new(),
+        };
+        assert_eq!(attribute(ok("[|lang]")), "lang");
+        assert_eq!(attribute(ok("[*|lang]")), "lang");
+        assert_eq!(attribute(parse_in("[svg|href]")), "href");
+        err("[math|href]");
+        assert_eq!(attribute(ok("[lang|=en]")), "lang");
     }
 
     // ---- attributes -------------------------------------------------------

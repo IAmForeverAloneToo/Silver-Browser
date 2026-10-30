@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use dom::NodeId;
 use layout::DocumentLayout;
-use paint::{Rect, Step, Viewport, padding_box, paint_order};
+use paint::{Rect, ScrollOffsets, Step, Viewport, padding_box, paint_order};
 
 use crate::scripts;
 
@@ -25,7 +25,7 @@ pub(crate) type SvgPoint = (NodeId, (f32, f32), (f32, f32));
 pub(crate) fn measure(
     layout: &DocumentLayout,
     viewport: Viewport,
-    offsets: &HashMap<NodeId, f32>,
+    offsets: &dyn ScrollOffsets,
     targets: &HashSet<NodeId>,
 ) -> HashMap<NodeId, scripts::Measured> {
     let mut out: HashMap<NodeId, scripts::Measured> = HashMap::new();
@@ -52,9 +52,8 @@ pub(crate) fn measure(
         }
         [x0, y0, x1 - x0, y1 - y0]
     };
-    // Content this far above and below the viewport is listed too:
-    // all of any page.
-    for step in paint::paint_order_in(&layout.roots, viewport, offsets, 1.0e7) {
+    // All of the page is listed, whatever side of the viewport it is.
+    for step in paint::paint_order_everywhere(&layout.roots, viewport, offsets) {
         let matrix = *matrices.last().expect("the viewport's");
         match step {
             Step::PushGroup { matrix: inner, .. } => matrices.push(matrix.then(&inner)),
@@ -118,6 +117,136 @@ pub(crate) fn measure(
     out
 }
 
+/// How far right the content of `f` reaches from `f`'s left edge: each
+/// box's and line's right edge, inside the boxes that do not clip
+/// (css-overflow-3 section 2.2's scrollable overflow, across).
+fn reach(f: &layout::Fragment) -> f32 {
+    let mut right = 0.0f32;
+    let mut stack: Vec<(f32, &layout::Fragment)> = f.children.iter().map(|c| (0.0, c)).collect();
+    while let Some((dx, c)) = stack.pop() {
+        right = right.max(dx + c.x + c.w);
+        if !c.clips() {
+            stack.extend(c.children.iter().map(|g| (dx + c.x, g)));
+        }
+    }
+    right
+}
+
+/// How far a scroll container `f` can scroll across past its padding
+/// box's width; zero for a box that is not one.
+pub(crate) fn max_scroll_x(f: &layout::Fragment) -> f32 {
+    if !f.clips() {
+        return 0.0;
+    }
+    overflow(f)[0]
+}
+
+/// How far the content of `f` reaches past its padding box, across and
+/// down, whether or not it clips (what `scrollWidth` and `scrollHeight`
+/// read): to its in-flow children's margin boxes and its end padding
+/// after them, or to any box or line inside reaching further (as the
+/// reference browser has it, which adds the end padding to the in-flow
+/// content alone).
+pub(crate) fn overflow(f: &layout::Fragment) -> [f32; 2] {
+    // A table's content is its rows', inside its own box.
+    if matches!(
+        f.style.display,
+        style::computed::Display::Table | style::computed::Display::InlineTable
+    ) {
+        return [0.0, 0.0];
+    }
+    let [top, right, bottom, left] = f.style.used_border_width();
+    let padding_w = f.w - left - right;
+    let padding_h = f.h - top - bottom;
+    let end_x = f.style.padding[1].resolve(padding_w);
+    let end_y = f.style.padding[2].resolve(padding_w);
+    let (mut flow_x, mut flow_y) = (0.0f32, 0.0f32);
+    for c in f.children.iter().filter(|c| {
+        !matches!(
+            c.style.position,
+            style::computed::Position::Absolute | style::computed::Position::Fixed
+        )
+    }) {
+        let (margin_x, margin_y) = match c.kind {
+            layout::FragmentKind::Box => (
+                c.style.margin[1].resolve(padding_w, 0.0),
+                c.style.margin[2].resolve(padding_w, 0.0),
+            ),
+            _ => (0.0, 0.0),
+        };
+        // A last child's end margin collapses through a box with no end
+        // padding or border that does not clip.
+        let margin_y = if end_y > 0.0 || bottom > 0.0 || f.clips() {
+            margin_y
+        } else {
+            0.0
+        };
+        flow_x = flow_x.max(c.x + c.w + margin_x);
+        flow_y = flow_y.max(top_of(c) + c.h + margin_y);
+    }
+    let [reach_x, reach_y] = reach_both(f);
+    let across = (flow_x - left + end_x).max(reach_x - left);
+    let down = (flow_y - top + end_y).max(reach_y - top);
+    [(across - padding_w).max(0.0), (down - padding_h).max(0.0)]
+}
+
+/// The top of `c`'s box: a text fragment's `y` is its baseline.
+fn top_of(c: &layout::Fragment) -> f32 {
+    match c.kind {
+        layout::FragmentKind::Text(_) => c.y - c.ascent,
+        _ => c.y,
+    }
+}
+
+/// [`reach`] across and down.
+fn reach_both(f: &layout::Fragment) -> [f32; 2] {
+    let (mut right, mut bottom) = (0.0f32, 0.0f32);
+    let mut stack: Vec<(f32, f32, &layout::Fragment)> =
+        f.children.iter().map(|c| (0.0, 0.0, c)).collect();
+    while let Some((dx, dy, c)) = stack.pop() {
+        right = right.max(dx + c.x + c.w);
+        bottom = bottom.max(dy + top_of(c) + c.h);
+        if !c.clips() {
+            stack.extend(c.children.iter().map(|g| (dx + c.x, dy + c.y, g)));
+        }
+    }
+    [right, bottom]
+}
+
+/// How wide the document is: how far right its boxes reach, those
+/// fixed to the viewport left out.
+pub(crate) fn document_width(layout: &DocumentLayout) -> f32 {
+    layout
+        .roots
+        .iter()
+        .filter(|f| f.style.position != style::computed::Position::Fixed)
+        .enumerate()
+        .map(|(i, f)| {
+            let own = f.x + f.w;
+            // The root's overflow is the viewport's (css-overflow-3
+            // section 3.3), so its content counts whatever it says.
+            if f.clips() && i > 0 {
+                own
+            } else {
+                own.max(f.x + reach(f))
+            }
+        })
+        .fold(0.0, f32::max)
+}
+
+/// How tall the document is: the bottom of its last margin, or of a box
+/// placed lower (an absolutely positioned one), those fixed to the
+/// viewport left out.
+pub(crate) fn document_height(layout: &DocumentLayout) -> f32 {
+    layout
+        .roots
+        .iter()
+        .filter(|f| f.style.position != style::computed::Position::Fixed)
+        .map(|f| f.y + f.h)
+        .fold(0.0f32, f32::max)
+        .max(layout.height)
+}
+
 /// What is under the viewport point `(x, y)` of `layout` at the
 /// `viewport`'s scroll offset and the scroll containers' `offsets`
 /// ([`crate::Engine::hit_test`]): the node and the clipping boxes
@@ -128,7 +257,7 @@ pub(crate) fn measure(
 pub(crate) fn hit(
     layout: &DocumentLayout,
     viewport: Viewport,
-    offsets: &HashMap<NodeId, f32>,
+    offsets: &dyn ScrollOffsets,
     x: f32,
     y: f32,
 ) -> (Option<(NodeId, Vec<NodeId>)>, Option<SvgPoint>, Vec<NodeId>) {

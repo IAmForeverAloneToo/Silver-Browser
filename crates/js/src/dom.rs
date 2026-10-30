@@ -225,12 +225,15 @@ pub enum Call {
     /// An element's `offsetParent`.
     OffsetParent(Handle),
     /// The viewport's scroll offset (`None`) or an element's, and its
-    /// most.
+    /// most, down then across.
     ScrollOffset(Option<Handle>),
-    /// Scrolls the viewport (`None`) or an element to an offset.
-    ScrollTo(Option<Handle>, f64),
-    /// Scrolls an element into view.
-    ScrollIntoView(Handle),
+    /// Scrolls the viewport (`None`) or an element across to an offset
+    /// and down to another, either kept when NaN; smoothly or not.
+    ScrollTo(Option<Handle>, f64, f64, bool),
+    /// Scrolls an element into view, aligned in the block and the
+    /// inline axes as `start`, `center`, `end` or `nearest`, with a
+    /// `ScrollBehavior` (`auto`, `instant`, `smooth`).
+    ScrollIntoView(Handle, String, String, String),
     /// The elements under a viewport point, topmost first, or the
     /// topmost alone.
     ElementsFromPoint {
@@ -350,6 +353,9 @@ pub enum Call {
     /// `ParseDeclarations` gives them: the empty string where it cannot
     /// be said.
     CssShorthand(String, Vec<String>),
+    /// The longhands a declaration block keeps a shorthand as; none for
+    /// a property it keeps as it is.
+    CssLonghands(String),
     /// A declaration block's text from its declarations, as
     /// `ParseDeclarations` gives them, shorthands said where they can be.
     CssBlockText(Vec<String>),

@@ -46,7 +46,7 @@ use style::computed::{
 };
 use style::transform::Matrix;
 
-pub use order::{Rect, Step, padding_box, paint_order, paint_order_in};
+pub use order::{Rect, Step, padding_box, paint_order, paint_order_everywhere, paint_order_in};
 use rounded::RoundedRect;
 
 /// What names a group across frames (M19), which a backend keeps a
@@ -405,9 +405,44 @@ pub const ELEMENT_SCROLLBAR_WIDTH: f32 = 8.0;
 
 /// Where each scroll container (M10.5) is scrolled to, by its element's
 /// [`NodeId`] (M13): zero for one not scrolled. The engine keeps the
-/// offsets; `()` is a document scrolled nowhere.
+/// offsets; `()` is a document scrolled nowhere. `offset` is how far
+/// down, `offset_x` how far across, and `viewport_x` how far across the
+/// viewport is (the [`Viewport`] says how far down): zero for offsets
+/// that keep none.
 pub trait ScrollOffsets {
     fn offset(&self, node: NodeId) -> f32;
+
+    fn offset_x(&self, _node: NodeId) -> f32 {
+        0.0
+    }
+
+    fn viewport_x(&self) -> f32 {
+        0.0
+    }
+}
+
+/// Scroll offsets down and across, each by its element's [`NodeId`],
+/// and the viewport's across: what the engine draws with once boxes
+/// scroll both ways.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Offsets {
+    pub y: HashMap<NodeId, f32>,
+    pub x: HashMap<NodeId, f32>,
+    pub viewport_x: f32,
+}
+
+impl ScrollOffsets for Offsets {
+    fn offset(&self, node: NodeId) -> f32 {
+        self.y.get(&node).copied().unwrap_or(0.0)
+    }
+
+    fn offset_x(&self, node: NodeId) -> f32 {
+        self.x.get(&node).copied().unwrap_or(0.0)
+    }
+
+    fn viewport_x(&self) -> f32 {
+        self.viewport_x
+    }
 }
 
 impl ScrollOffsets for () {
@@ -1089,7 +1124,7 @@ pub fn paint_fragments_with(
         pictures,
         offsets,
         viewport: Rect {
-            x: 0.0,
+            x: offsets.viewport_x(),
             y: viewport.scroll_y,
             w: viewport.width,
             h: viewport.height,
@@ -2631,6 +2666,7 @@ fn push_layers(
             Attachment::Local if placed.by.clips() => {
                 let padding = padding_box(placed.by, placed.border);
                 positioning.y -= backdrop.offsets.offset(placed.by.node);
+                positioning.x -= backdrop.offsets.offset_x(placed.by.node);
                 positioning.h += (placed.by.scroll_height - padding.h).max(0.0);
             }
             Attachment::Fixed | Attachment::Local | Attachment::Scroll => {}

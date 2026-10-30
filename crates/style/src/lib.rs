@@ -134,4 +134,4 @@ pub use media::{
     serialize_media_query_list,
 };
 pub use page::{Orientation, PageBox, PagePosition, PageSize, PageStyle};
-pub use rule_set::is_layer_name;
+pub use rule_set::{is_layer_name, namespace_declaration, sheet_namespaces};

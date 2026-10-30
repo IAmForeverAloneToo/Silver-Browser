@@ -591,6 +591,9 @@ struct Shown {
     /// The scroll offset shown, and the one being approached.
     scroll_y: f32,
     scroll_target: f32,
+    /// The scroll offset across shown, and the one being approached.
+    scroll_x: f32,
+    scroll_target_x: f32,
     /// Each scroll container's offset (M10.5), by its element's id; one
     /// never scrolled has no entry, and one freed loses its entry.
     element_scroll: HashMap<NodeId, ElementScroll>,
@@ -697,8 +700,11 @@ struct Lifecycle {
 #[derive(Debug, Clone, Default)]
 struct Rendered {
     size: (u32, u32),
+    /// The viewport's offset down and across.
     scroll_y: f32,
-    element_scroll: HashMap<NodeId, f32>,
+    scroll_x: f32,
+    /// Each scroll container's, down and across.
+    element_scroll: HashMap<NodeId, (f32, f32)>,
 }
 
 impl Shown {
@@ -722,6 +728,8 @@ impl Shown {
             layout_cache: LayoutCache::new(),
             scroll_y: 0.0,
             scroll_target: 0.0,
+            scroll_x: 0.0,
+            scroll_target_x: 0.0,
             element_scroll: HashMap::new(),
             initial: false,
             salvageable: true,
@@ -1019,11 +1027,14 @@ impl Link {
     }
 }
 
-/// A scroll container's offset shown, and the one being approached.
+/// A scroll container's offset shown, and the one being approached:
+/// down, then across.
 #[derive(Debug, Clone, Copy, Default)]
 struct ElementScroll {
     y: f32,
     target: f32,
+    x: f32,
+    target_x: f32,
 }
 
 struct CachedLayout {
@@ -3442,11 +3453,12 @@ impl Engine {
         let rendered = Rendered {
             size: (width, height),
             scroll_y: self.shown.scroll_y,
+            scroll_x: self.shown.scroll_x,
             element_scroll: self
                 .shown
                 .element_scroll
                 .iter()
-                .map(|(&node, scroll)| (node, scroll.y))
+                .map(|(&node, scroll)| (node, (scroll.y, scroll.x)))
                 .collect(),
         };
         let last = self.shown.rendered.replace(rendered.clone());
@@ -3454,17 +3466,30 @@ impl Engine {
             if last.size != rendered.size {
                 self.fire(js::Target::Window, js::EventInit::new("Event", "resize"));
             }
-            if last.scroll_y != rendered.scroll_y {
+            // A scroll that has arrived ends: `scrollend` after its last
+            // `scroll` (CSSOM View section 13.3).
+            if last.scroll_y != rendered.scroll_y || last.scroll_x != rendered.scroll_x {
                 let document = self.document_target();
                 self.fire(
                     document,
                     js::EventInit::new("Event", "scroll").with("bubbles", js::Field::Bool(true)),
                 );
+                if self.shown.scroll_y == self.shown.scroll_target
+                    && self.shown.scroll_x == self.shown.scroll_target_x
+                {
+                    self.fire(
+                        document,
+                        js::EventInit::new("Event", "scrollend")
+                            .with("bubbles", js::Field::Bool(true)),
+                    );
+                }
             }
             let mut scrolled: Vec<NodeId> = rendered
                 .element_scroll
                 .iter()
-                .filter(|&(node, y)| last.element_scroll.get(node).copied().unwrap_or(0.0) != *y)
+                .filter(|&(node, at)| {
+                    last.element_scroll.get(node).copied().unwrap_or_default() != *at
+                })
                 .map(|(&node, _)| node)
                 .collect();
             scrolled.sort_by_key(|node| node.to_bits());
@@ -3474,6 +3499,17 @@ impl Engine {
                         js::Target::Node(scripts::handle(node)),
                         js::EventInit::new("Event", "scroll"),
                     );
+                    let settled = self
+                        .shown
+                        .element_scroll
+                        .get(&node)
+                        .is_some_and(|s| s.y == s.target && s.x == s.target_x);
+                    if settled {
+                        self.fire(
+                            js::Target::Node(scripts::handle(node)),
+                            js::EventInit::new("Event", "scrollend"),
+                        );
+                    }
                 }
             }
         }
@@ -5908,11 +5944,35 @@ impl Engine {
         }
         // The faces a canvas's text asked for are fetched (D54).
         self.request_fonts();
-        // A script's scroll is at once (CSSOM View's "auto" behavior).
-        for (node, y) in self.shown.scripts.take_scrolls() {
-            match node {
-                None => self.set_scroll(y),
-                Some(node) => self.set_element_scroll(node, y),
+        // A script's scroll is at once (CSSOM View's "auto" behavior),
+        // or animated over the frames to come when smooth.
+        for scroll in self.shown.scripts.take_scrolls() {
+            let instant = !scroll.smooth;
+            match scroll.node {
+                None => {
+                    if let Some(y) = scroll.y {
+                        if instant {
+                            self.set_scroll(y);
+                        } else {
+                            self.scroll_to(y);
+                        }
+                    }
+                    if let Some(x) = scroll.x {
+                        self.scroll_to_x(x, instant);
+                    }
+                }
+                Some(node) => {
+                    if let Some(y) = scroll.y {
+                        if instant {
+                            self.set_element_scroll(node, y);
+                        } else {
+                            self.scroll_element_to(node, y);
+                        }
+                    }
+                    if let Some(x) = scroll.x {
+                        self.scroll_element_to_x(node, x, instant);
+                    }
+                }
             }
         }
         if let Some(notice) = self.shown.scripts.take_notice() {
@@ -6690,7 +6750,12 @@ impl Engine {
     /// Whether a scroll offset is on its way to its target.
     fn animating(&self) -> bool {
         self.shown.scroll_y != self.shown.scroll_target
-            || self.shown.element_scroll.values().any(|s| s.y != s.target)
+            || self.shown.scroll_x != self.shown.scroll_target_x
+            || self
+                .shown
+                .element_scroll
+                .values()
+                .any(|s| s.y != s.target || s.x != s.target_x)
     }
 
     /// The animation and transition events of the last frame (M22.2):
@@ -7251,13 +7316,22 @@ impl Engine {
     /// scroll is snapped to the pixel grid as the reference browser
     /// snaps it; the animation keeps its fraction. Hit testing and the
     /// display list read the same offsets.
-    fn drawn_offsets(&self) -> (f32, HashMap<NodeId, f32>) {
-        let offsets = self
-            .shown
-            .element_scroll
-            .iter()
-            .map(|(node, scroll)| (*node, scroll.y.round()))
-            .collect();
+    /// The offsets across are in the same [`paint::Offsets`], the
+    /// viewport's with them.
+    fn drawn_offsets(&self) -> (f32, paint::Offsets) {
+        let scrolls = &self.shown.element_scroll;
+        let offsets = paint::Offsets {
+            y: scrolls
+                .iter()
+                .map(|(node, scroll)| (*node, scroll.y.round()))
+                .collect(),
+            x: scrolls
+                .iter()
+                .filter(|(_, scroll)| scroll.x != 0.0)
+                .map(|(node, scroll)| (*node, scroll.x.round()))
+                .collect(),
+            viewport_x: self.shown.scroll_x.round(),
+        };
         (self.shown.scroll_y.round(), offsets)
     }
 
@@ -7378,13 +7452,24 @@ impl Engine {
         let max = self.max_scroll();
         self.shown.scroll_target = self.shown.scroll_target.clamp(0.0, max);
         self.shown.scroll_y = self.shown.scroll_y.clamp(0.0, max);
+        if self.shown.scroll_x != 0.0 || self.shown.scroll_target_x != 0.0 {
+            let max = self.max_scroll_x();
+            self.shown.scroll_target_x = self.shown.scroll_target_x.clamp(0.0, max);
+            self.shown.scroll_x = self.shown.scroll_x.clamp(0.0, max);
+        }
         let mut elements = std::mem::take(&mut self.shown.element_scroll);
         {
             let layout = self.layout(width as f32);
             for (node, scroll) in elements.iter_mut() {
-                let max = fragment_of(&layout.roots, *node).map_or(0.0, Fragment::max_scroll);
+                let fragment = fragment_of(&layout.roots, *node);
+                let max = fragment.map_or(0.0, Fragment::max_scroll);
                 scroll.target = scroll.target.clamp(0.0, max);
                 scroll.y = scroll.y.clamp(0.0, max);
+                if scroll.x != 0.0 || scroll.target_x != 0.0 {
+                    let max = fragment.map_or(0.0, geometry::max_scroll_x);
+                    scroll.target_x = scroll.target_x.clamp(0.0, max);
+                    scroll.x = scroll.x.clamp(0.0, max);
+                }
             }
         }
         self.shown.element_scroll = elements;
@@ -7487,15 +7572,46 @@ impl Engine {
 
     /// The furthest the last frame's viewport can scroll: the document's
     /// height past the viewport's, never negative. Zero before the first
-    /// frame, since there is no viewport to measure against yet; only
-    /// vertical scrolling exists (the document is laid out to the
-    /// viewport's width, and a wider word overflows to the right).
+    /// frame, since there is no viewport to measure against yet.
     pub fn max_scroll(&mut self) -> f32 {
         let (width, height) = self.viewport;
         if width == 0 {
             return 0.0;
         }
-        (self.layout(width as f32).height - height as f32).max(0.0)
+        (geometry::document_height(self.layout(width as f32)) - height as f32).max(0.0)
+    }
+
+    /// The scroll offset across the current frame shows, in px.
+    pub fn scroll_x(&self) -> f32 {
+        self.shown.scroll_x
+    }
+
+    /// The furthest the last frame's viewport can scroll across: how far
+    /// the document's boxes reach right past the viewport's width (the
+    /// document is laid out to that width, and what is wider overflows
+    /// to the right), never negative.
+    pub fn max_scroll_x(&mut self) -> f32 {
+        let (width, _) = self.viewport;
+        if width == 0 {
+            return 0.0;
+        }
+        (geometry::document_width(self.layout(width as f32)) - width as f32).max(0.0)
+    }
+
+    /// Scrolls across to `x`, animated as [`Engine::scroll_to`] is, or at
+    /// once when `instant`; clamped to the document, a NaN ignored.
+    pub fn scroll_to_x(&mut self, x: f32, instant: bool) {
+        if x.is_nan() {
+            return;
+        }
+        self.goal = None;
+        let max = self.max_scroll_x();
+        self.shown.scroll_target_x = x.clamp(0.0, max);
+        if instant {
+            self.changed |= self.shown.scroll_x != self.shown.scroll_target_x;
+            self.shown.scroll_x = self.shown.scroll_target_x;
+        }
+        self.settle_scrolls();
     }
 
     /// Scrolls by `dy` px (down when positive), animated over the next
@@ -7530,13 +7646,15 @@ impl Engine {
             return;
         }
         let shown = &mut self.shown;
-        if shown.scroll_y != shown.scroll_target {
+        if shown.scroll_y != shown.scroll_target || shown.scroll_x != shown.scroll_target_x {
             shown.scroll_y = shown.scroll_target;
+            shown.scroll_x = shown.scroll_target_x;
             self.changed = true;
         }
         for scroll in shown.element_scroll.values_mut() {
-            if scroll.y != scroll.target {
+            if scroll.y != scroll.target || scroll.x != scroll.target_x {
                 scroll.y = scroll.target;
+                scroll.x = scroll.target_x;
                 self.changed = true;
             }
         }
@@ -7582,8 +7700,10 @@ impl Engine {
         let frames = elapsed.as_secs_f64() / FRAME_BUDGET.as_secs_f64();
         let keep = (1.0 - f64::from(SCROLL_TICK_FRACTION)).powf(frames) as f32;
         let mut moving = approach(&mut self.shown.scroll_y, self.shown.scroll_target, keep);
+        moving |= approach(&mut self.shown.scroll_x, self.shown.scroll_target_x, keep);
         for scroll in self.shown.element_scroll.values_mut() {
             moving |= approach(&mut scroll.y, scroll.target, keep);
+            moving |= approach(&mut scroll.x, scroll.target_x, keep);
         }
         moving
     }
@@ -7687,6 +7807,39 @@ impl Engine {
             self.changed |= scroll.y != scroll.target;
             scroll.y = scroll.target;
         }
+    }
+
+    /// The offset across a scroll container's content is shown at.
+    pub fn element_scroll_x(&self, node: NodeId) -> f32 {
+        self.shown.element_scroll.get(&node).map_or(0.0, |s| s.x)
+    }
+
+    /// The furthest the element's content can scroll across in the last
+    /// frame's layout: its scrollable width past its padding box; zero
+    /// for an element that is not a scroll container.
+    pub fn element_max_scroll_x(&mut self, node: NodeId) -> f32 {
+        let (width, _) = self.viewport;
+        if width == 0 {
+            return 0.0;
+        }
+        fragment_of(&self.layout(width as f32).roots, node).map_or(0.0, geometry::max_scroll_x)
+    }
+
+    /// Scrolls the element's content across to `x`, animated as
+    /// [`Engine::scroll_element_to`] is, or at once when `instant`.
+    pub fn scroll_element_to_x(&mut self, node: NodeId, x: f32, instant: bool) {
+        if x.is_nan() {
+            return;
+        }
+        self.goal = None;
+        let max = self.element_max_scroll_x(node);
+        let scroll = self.shown.element_scroll.entry(node).or_default();
+        scroll.target_x = x.clamp(0.0, max);
+        if instant {
+            self.changed |= scroll.x != scroll.target_x;
+            scroll.x = scroll.target_x;
+        }
+        self.settle_scrolls();
     }
 
     /// A wheel turn of `dy` px (down when positive) at the viewport
@@ -8049,7 +8202,9 @@ impl Engine {
         if width == 0 {
             return None;
         }
-        let (_, offsets) = self.drawn_offsets();
+        // In the document's coordinates, the viewport unscrolled.
+        let (_, mut offsets) = self.drawn_offsets();
+        offsets.viewport_x = 0.0;
         let layout = self.layout(width as f32);
         let whole = Viewport {
             width: width as f32,

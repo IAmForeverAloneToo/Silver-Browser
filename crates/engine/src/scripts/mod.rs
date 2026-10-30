@@ -174,7 +174,7 @@ pub enum ScriptState {
     Stopped { errors: usize },
 }
 
-pub(crate) use host::DocumentHost;
+pub(crate) use host::{DocumentHost, ScriptScroll};
 pub(crate) use layout_observers::Measured;
 
 /// `text`, cut to [`MAX_CONSOLE_MESSAGE`] bytes at a character boundary.
@@ -378,7 +378,7 @@ pub(crate) struct WindowEnv {
     pub(crate) layout_fonts: Option<text::FontCollection>,
     /// The viewport's scroll offset and each scroll container's, as
     /// drawn (D65).
-    pub(crate) scroll: Arc<(f32, std::collections::HashMap<NodeId, f32>)>,
+    pub(crate) scroll: Arc<(f32, paint::Offsets)>,
     pub(crate) compat: bool,
     /// The user's languages, the most wanted first (M37).
     pub(crate) languages: Vec<String>,
@@ -764,7 +764,7 @@ pub(crate) struct Scripts {
     /// The element a script focused, to be scrolled into view (M26.6).
     scroll_to: Option<NodeId>,
     /// The scroll offsets scripts set (D65), the viewport's as `None`.
-    scrolls: Vec<(Option<NodeId>, f32)>,
+    scrolls: Vec<ScriptScroll>,
     /// What a script's validation reported, for the notice (M26.9b).
     notice: Option<String>,
     /// The events to fire at elements when its scripts next run (M26):
@@ -905,7 +905,7 @@ impl Scripts {
     }
 
     /// The scroll offsets scripts set since this was last asked (D65).
-    pub(crate) fn take_scrolls(&mut self) -> Vec<(Option<NodeId>, f32)> {
+    pub(crate) fn take_scrolls(&mut self) -> Vec<ScriptScroll> {
         std::mem::take(&mut self.scrolls)
     }
 

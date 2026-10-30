@@ -77,7 +77,15 @@ pub(crate) struct Page {
     /// in order.
     constructed: Vec<Constructed>,
     adopted: Vec<u64>,
+    /// The sheets of the elements taken out of the document (or whose
+    /// sheet was made again), the latest last, kept for the CSSOM objects
+    /// scripts still hold (CSSOM section 6.1: a sheet outlives its owner);
+    /// at most [`MAX_DETACHED_SHEETS`].
+    detached: Vec<Owner>,
 }
+
+/// The most sheets of elements taken out a page keeps for the CSSOM.
+const MAX_DETACHED_SHEETS: usize = 64;
 
 /// The most sheets a document's scripts may construct.
 pub(crate) const MAX_CONSTRUCTED_SHEETS: usize = 4096;
@@ -163,6 +171,9 @@ struct Owner {
     /// parser made the element, and its media held then (M24.3).
     blocks_scripts: bool,
     sheet: Slot,
+    /// Whether the sheet was made in a script's run and its imports are
+    /// yet to be fetched, at the rescan after it.
+    imports_waiting: bool,
 }
 
 impl Owner {
@@ -305,6 +316,7 @@ impl Page {
             cssom_edited: false,
             constructed: Vec::new(),
             adopted: Vec::new(),
+            detached: Vec::new(),
         }
     }
 
@@ -350,6 +362,7 @@ impl Page {
             cssom_edited: false,
             constructed: Vec::new(),
             adopted: Vec::new(),
+            detached: Vec::new(),
         }
     }
 
@@ -867,13 +880,33 @@ impl Page {
         for found in found {
             match old.remove(&found.node) {
                 Some(mut owner) if owner.key == found.key => {
+                    // A sheet a run made, whose imports wait for the
+                    // network (`rescan_inline`).
+                    if std::mem::take(&mut owner.imports_waiting)
+                        && let Slot::Ready(sheet) = &mut owner.sheet
+                    {
+                        let base = match media {
+                            Some(_) => found.base_here.clone(),
+                            None => base.clone(),
+                        };
+                        fetch_imports(
+                            &self.context,
+                            owner.node,
+                            &[],
+                            &[],
+                            sheet,
+                            base.as_ref(),
+                            network,
+                        );
+                    }
                     owner.title = found.title;
                     owner.media = found.media;
                     owners.push(owner);
                 }
                 kept => {
-                    if kept.is_some() {
+                    if let Some(kept) = kept {
                         network.cancel(self.context.id, Some(found.node));
+                        self.detach(kept);
                     }
                     let holds = media.is_some_and(|media| {
                         rules::media_attribute_holds(found.media.as_deref(), media)
@@ -895,10 +928,82 @@ impl Page {
                 }
             }
         }
-        for node in old.keys() {
-            network.cancel(self.context.id, Some(*node));
+        for (node, owner) in old {
+            network.cancel(self.context.id, Some(node));
+            self.detach(owner);
         }
         self.owners = owners;
+    }
+
+    /// [`Page::rescan`] in a script's run, which has no network (D65,
+    /// G50): the `<style>` elements put in or whose text changed have
+    /// their sheets made now, as the CSSOM and the cascade read them at
+    /// once, and the elements taken out lose theirs; a `<link>` waits
+    /// for the rescan after the run, as do a `<style>`'s imports, which
+    /// that rescan fetches into the sheet made here.
+    pub(crate) fn rescan_inline(&mut self, document: &Document) {
+        let csp = self.csp(document).clone();
+        let (found, _) = scan(document, &self.context, &self.nonces);
+        let mut old: HashMap<NodeId, Owner> = self
+            .owners
+            .drain(..)
+            .map(|owner| (owner.node, owner))
+            .collect();
+        let mut owners = Vec::with_capacity(found.len());
+        for found in found {
+            let kept = old.remove(&found.node);
+            let makes_now = matches!(&found.key, Key::Style { .. });
+            match kept {
+                Some(mut owner) if owner.key == found.key || !makes_now => {
+                    if owner.key == found.key {
+                        owner.title = found.title;
+                        owner.media = found.media;
+                    }
+                    owners.push(owner);
+                }
+                kept if makes_now => {
+                    if let Some(kept) = kept {
+                        self.detach(kept);
+                    }
+                    let owner = start_inline(&self.context, found, &csp);
+                    if owner.refused() {
+                        self.refused_styles.push(owner.node);
+                    }
+                    owners.push(owner);
+                }
+                _ => {}
+            }
+        }
+        for (_, owner) in old {
+            self.detach(owner);
+        }
+        self.owners = owners;
+    }
+
+    /// Keeps the sheet of an owner that has it no more, for the CSSOM.
+    fn detach(&mut self, owner: Owner) {
+        if !matches!(owner.sheet, Slot::Ready(_)) {
+            return;
+        }
+        self.detached.retain(|o| o.node != owner.node);
+        if self.detached.len() >= MAX_DETACHED_SHEETS {
+            self.detached.remove(0);
+        }
+        self.detached.push(owner);
+    }
+
+    /// The owner of `node`'s sheet: the element's in the document, or
+    /// the last it had, with whether it is still the element's.
+    fn owner_of(&self, node: NodeId) -> Option<(&Owner, bool)> {
+        match self.owners.iter().find(|o| o.node == node) {
+            Some(owner) => Some((owner, true)),
+            None => self
+                .detached
+                .iter()
+                .rev()
+                .find(|o| o.node == node)
+                .map(|owner| (owner, false)),
+        }
     }
 
     /// Whether the sheet of `owner` at `path` among its imports waits for
@@ -1013,14 +1118,21 @@ impl Page {
         self.owners.iter().all(|owner| owner.sheet.settled())
     }
 
+    /// The preferred style sheet set's name (CSSOM section 6.1): the
+    /// title of the titled sheet added first, the element made first
+    /// standing for it, as a run's rescan finds several at once.
+    fn preferred(&self) -> Option<&str> {
+        self.owners
+            .iter()
+            .filter(|owner| !owner.title.is_empty() && matches!(owner.sheet, Slot::Ready(_)))
+            .min_by_key(|owner| owner.node)
+            .map(|owner| owner.title.as_str())
+    }
+
     /// What names each of [`Page::sheets`], in the same order, for the
     /// DevTools (M36): a fetched sheet's URL, or `<style>`.
     pub(crate) fn sheet_names(&self) -> Vec<String> {
-        let preferred = self
-            .owners
-            .iter()
-            .find(|owner| !owner.title.is_empty() && matches!(owner.sheet, Slot::Ready(_)))
-            .map(|owner| owner.title.as_str());
+        let preferred = self.preferred();
         self.owners
             .iter()
             .filter_map(|owner| match &owner.sheet {
@@ -1047,11 +1159,7 @@ impl Page {
     /// and a sheet with another title is left out (CSSOM section 6.1's
     /// add steps).
     pub(crate) fn sheets(&self) -> Vec<css::Stylesheet> {
-        let preferred = self
-            .owners
-            .iter()
-            .find(|owner| !owner.title.is_empty() && matches!(owner.sheet, Slot::Ready(_)))
-            .map(|owner| owner.title.as_str());
+        let preferred = self.preferred();
         let mut sheets = Vec::new();
         for owner in &self.owners {
             if let Slot::Ready(sheet) = &owner.sheet
@@ -1097,11 +1205,7 @@ impl Page {
     /// before `load()` has them; a style its media leaves out, or the
     /// page's policies refuse, gives none.
     pub(crate) fn sheets_now(&self, document: &Document, media: &Media) -> Vec<css::Stylesheet> {
-        let preferred = self
-            .owners
-            .iter()
-            .find(|owner| !owner.title.is_empty() && matches!(owner.sheet, Slot::Ready(_)))
-            .map(|owner| owner.title.as_str());
+        let preferred = self.preferred();
         let csp = self.policies();
         let mut sheets = Vec::new();
         for node in document.subtree(document.root()) {
@@ -1133,6 +1237,11 @@ impl Page {
                 None => {}
             }
         }
+        for serial in &self.adopted {
+            if let Some(sheet) = self.constructed.iter().find(|c| c.serial == *serial) {
+                sheets.push(sheet.rules.clone());
+            }
+        }
         sheets
     }
 
@@ -1151,7 +1260,7 @@ impl Page {
     /// The sheet of `owner`, or of an import of its at `imports` (each
     /// an import's place among its sheet's `@import` rules).
     pub(crate) fn cssom_sheet(&self, owner: NodeId, imports: &[usize]) -> Option<SheetView<'_>> {
-        let owner = self.owners.iter().find(|o| o.node == owner)?;
+        let (owner, _) = self.owner_of(owner)?;
         let mut sheet = match &owner.sheet {
             Slot::Ready(sheet) => sheet,
             _ => return None,
@@ -1169,10 +1278,11 @@ impl Page {
         })
     }
 
-    /// The `title` and `media` of `owner`'s element.
-    pub(crate) fn cssom_owner(&self, owner: NodeId) -> Option<(&str, Option<&str>)> {
-        let owner = self.owners.iter().find(|o| o.node == owner)?;
-        Some((owner.title.as_str(), owner.media.as_deref()))
+    /// The `title` and `media` of `owner`'s element, and whether the
+    /// sheet is still the element's.
+    pub(crate) fn cssom_owner(&self, owner: NodeId) -> Option<(&str, Option<&str>, bool)> {
+        let (owner, attached) = self.owner_of(owner)?;
+        Some((owner.title.as_str(), owner.media.as_deref(), attached))
     }
 
     /// Changes the rules of `owner`'s sheet, or an import's, by `edit`:
@@ -1185,7 +1295,10 @@ impl Page {
         imports: &[usize],
         edit: impl FnOnce(&mut css::Stylesheet) -> Option<(R, Vec<Option<usize>>)>,
     ) -> Option<R> {
-        let owner = self.owners.iter_mut().find(|o| o.node == owner)?;
+        let owner = match self.owners.iter_mut().find(|o| o.node == owner) {
+            Some(found) => found,
+            None => self.detached.iter_mut().rev().find(|o| o.node == owner)?,
+        };
         let mut sheet = match &mut owner.sheet {
             Slot::Ready(sheet) => sheet,
             _ => return None,
@@ -1439,6 +1552,43 @@ fn start(
         environment,
         blocking: false,
         blocks_scripts: false,
+        sheet,
+        imports_waiting: false,
+    }
+}
+
+/// [`start`] for a `<style>` element in a script's run, which has no
+/// network: its imports wait for the rescan after the run.
+fn start_inline(context: &Context, found: Found, csp: &Csp) -> Owner {
+    let sheet = match &found.key {
+        key @ Key::Style { text, .. } if style_makes_sheet(key) => {
+            let violations = csp.inline_violations(Inline::Style, &found.nonce, text);
+            csp.record(&violations);
+            if net::csp::enforced(violations).is_err() {
+                Slot::Failed
+            } else {
+                Slot::Ready(Box::new(Sheet {
+                    serial: next_serial(),
+                    rules: css::parse_stylesheet(text).unwrap_or_default(),
+                    location: None,
+                    encoding: context.encoding,
+                    imports: Vec::new(),
+                }))
+            }
+        }
+        _ => Slot::None,
+    };
+    Owner {
+        node: found.node,
+        key: found.key,
+        title: found.title,
+        media: found.media,
+        environment: context.encoding,
+        blocking: false,
+        blocks_scripts: false,
+        imports_waiting: matches!(&sheet, Slot::Ready(made) if made.rules.rules.iter().any(
+            |rule| matches!(rule, css::Rule::At(at) if at.name.eq_ignore_ascii_case("import"))
+        )),
         sheet,
     }
 }

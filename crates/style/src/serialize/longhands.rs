@@ -293,6 +293,12 @@ pub(super) fn value(style: &ComputedStyle, name: &str, url: Url<'_>) -> Option<S
             BackfaceVisibility::Hidden => "hidden",
         }
         .to_owned(),
+        "scroll-behavior" => if style.effects().scroll_behavior_smooth {
+            "smooth"
+        } else {
+            "auto"
+        }
+        .to_owned(),
         "transition-property" => {
             let list = &style.motion().transition_property;
             if list.is_empty() {

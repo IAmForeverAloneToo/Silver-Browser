@@ -4030,6 +4030,15 @@ fn apply_declaration(
                 e.backface_visibility = v
             })
         }
+        // `scroll-behavior` (CSSOM View section 13.1): `auto | smooth`.
+        "scroll-behavior" => {
+            let smooth = match single_ident(value).map(str::to_ascii_lowercase).as_deref() {
+                Some("auto") => Some(false),
+                Some("smooth") => Some(true),
+                _ => None,
+            };
+            set_effects(style, smooth, |e, v| e.scroll_behavior_smooth = v)
+        }
         "box-shadow" => set_effects(style, parse_shadows(value, bases, false), |e, v| {
             e.box_shadow = v
         }),
@@ -5096,6 +5105,9 @@ fn apply_css_wide(
         }),
         "backface-visibility" => copy_effects(style, src, |e, s| {
             e.backface_visibility = s.backface_visibility
+        }),
+        "scroll-behavior" => copy_effects(style, src, |e, s| {
+            e.scroll_behavior_smooth = s.scroll_behavior_smooth
         }),
         "opacity" => copy_effects(style, src, |e, s| e.opacity = s.opacity),
         "box-shadow" => copy_effects(style, src, |e, s| e.box_shadow = s.box_shadow.clone()),
@@ -11153,6 +11165,16 @@ mod tests {
             let sheets = [sheet(css)];
             (style_of(html, &sheets, "div"), style_of(html, &sheets, "p"))
         };
+        // `scroll-behavior`: not inherited, `auto` or `smooth`.
+        let (div, p) = pair("div { scroll-behavior: Smooth; }");
+        assert!(div.effects().scroll_behavior_smooth);
+        assert!(!p.effects().scroll_behavior_smooth);
+        let (div, _) = pair("div { scroll-behavior: smooth; scroll-behavior: instant; }");
+        assert!(div.effects().scroll_behavior_smooth, "instant is no value");
+        assert_eq!(
+            crate::serialize::computed_value(&div, "scroll-behavior").as_deref(),
+            Some("smooth")
+        );
         // `table-layout`: not inherited.
         let (div, p) = pair("div { table-layout: FIXED; }");
         assert_eq!(div.table_layout, TableLayout::Fixed);

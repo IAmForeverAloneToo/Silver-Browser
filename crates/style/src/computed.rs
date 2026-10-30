@@ -1702,6 +1702,10 @@ pub struct Effects {
     pub opacity: f32,
     /// `will-change`.
     pub will_change: WillChange,
+    /// `scroll-behavior: smooth` (CSSOM View section 13.1): a script's
+    /// scroll of the box, or of the viewport for the root's, is smooth
+    /// unless it asks otherwise.
+    pub scroll_behavior_smooth: bool,
     /// Not a property: what the element's animations current or in
     /// effect animate, which the engine acts as if `will-change` named
     /// (Web Animations §5.6, M22.2), so that an animated transform or
@@ -1795,6 +1799,7 @@ impl Default for Effects {
             backface_visibility: BackfaceVisibility::Visible,
             opacity: 1.0,
             will_change: WillChange::AUTO,
+            scroll_behavior_smooth: false,
             animated: WillChange::AUTO,
             box_shadow: Vec::new(),
             filter: Vec::new(),
