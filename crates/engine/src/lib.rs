@@ -8181,6 +8181,46 @@ mod tests {
     }
 
     #[test]
+    fn comments_and_a_doctype_compare_with_a_fresh_engine_left_out() {
+        // The snapshot has no comments, doctypes or processing
+        // instructions, so the comparison counts neither engine's (found
+        // by dom_api in gap batch D).
+        let mut engine = test_engine();
+        engine.set_scripting(true);
+        engine.load_document("<!DOCTYPE html><!-- a --><p>a<!-- b -->b</p>");
+        differential::run_script(
+            &mut engine,
+            "document.body.appendChild(document.createComment('c')); \
+             document.body.appendChild(document.createProcessingInstruction('x', 'y'));",
+        );
+        engine.frame(200, 100);
+        let mut fresh = test_engine();
+        fresh.set_scripting(true);
+        if let Err(difference) = differential::compare_with_fresh(&mut engine, &mut fresh, 200, 100)
+        {
+            panic!("{difference}");
+        }
+    }
+
+    #[test]
+    fn a_rule_a_script_deleted_compares_with_a_fresh_engine_gone() {
+        // The markup still holds the rule; the fresh engine takes the
+        // sheets as the CSSOM left them (found by dom_api in gap batch
+        // D).
+        let mut engine = test_engine();
+        engine.set_scripting(true);
+        engine.load_document("<style>.c { color: red }</style><p class=c>a</p>");
+        differential::run_script(&mut engine, "document.styleSheets[0].deleteRule(0);");
+        engine.frame(200, 100);
+        let mut fresh = test_engine();
+        fresh.set_scripting(true);
+        if let Err(difference) = differential::compare_with_fresh(&mut engine, &mut fresh, 200, 100)
+        {
+            panic!("{difference}");
+        }
+    }
+
+    #[test]
     fn an_svg_a_script_made_compares_with_a_fresh_engine_by_its_place() {
         // As a canvas's: an outer svg's drawing names its element, which
         // the two engines number apart (found by dom_api at M32).

@@ -56,6 +56,14 @@
 //!
 //! Gap batch A's: mutation observers on the nodes, with any options,
 //! their callbacks changing the document a few times and disconnecting.
+//!
+//! Gap batch D's: comments, processing instructions, fragments and a
+//! template's contents; live ranges whose contents are taken, cloned,
+//! deleted and wrapped, the selection, tree walkers and node iterators
+//! over a tree that changes under them, `normalize`, the comparisons,
+//! `moveBefore` and `document.open`; the CSSOM's rules inserted, deleted
+//! and restyled; the layout queries and `innerText`; computed
+//! shorthands.
 
 #![no_main]
 #![forbid(unsafe_code)]
@@ -498,7 +506,7 @@ fn body(input: &mut Input, nested: bool) -> String {
 /// One call, read from `input`, as a statement; `nested` in a
 /// listener's or a callback's body.
 fn call(input: &mut Input, nested: bool) -> String {
-    let op = input.byte() % 77;
+    let op = input.byte() % 88;
     let a = input.node();
     match op {
         0 => format!("p(document.createElement({}))", input.pick(TAGS)),
@@ -915,6 +923,89 @@ fn call(input: &mut Input, nested: bool) -> String {
             input.byte() % 2 == 0,
             input.byte() % 4 == 0
         ),
+        77 => match input.byte() % 4 {
+            0 => format!("p(document.createComment({}))", input.text(VALUES)),
+            1 => format!("p(document.createDocumentFragment())"),
+            2 => format!(
+                "p(document.createProcessingInstruction('x', {}))",
+                input.text(VALUES)
+            ),
+            _ => format!("if ({a}.content) p({a}.content)"),
+        },
+        78 => {
+            let b = input.node();
+            let (s, e) = (input.byte() % 4, input.byte() % 4);
+            let then = [
+                "p(r.extractContents())",
+                "p(r.cloneContents())",
+                "r.deleteContents()",
+                "r.insertNode(document.createElement('i'))",
+                "r.surroundContents(document.createElement('b'))",
+                "p(r.toString())",
+            ][usize::from(input.byte()) % 6];
+            format!(
+                "var r = document.createRange(); r.setStart({a}, {s}); r.setEnd({b}, {e});                  p(r.startContainer); {then}; p(r.commonAncestorContainer)"
+            )
+        }
+        79 => {
+            let b = input.node();
+            format!(
+                "var s = getSelection(); s.selectAllChildren({a}); s.extend({b}, {});                  p(s.anchorNode); if ({}) s.deleteFromDocument()",
+                input.byte() % 3,
+                input.byte() % 4 == 0
+            )
+        }
+        80 => format!(
+            "var it = document.createNodeIterator({a}, {}); var w = document.createTreeWalker({a},              {}); for (var k = 0; k < 6; k++) {{ p(it.nextNode()); p(w.nextNode());              if (k == 2 && it.referenceNode && it.referenceNode.remove) it.referenceNode.remove(); }}              p(w.previousNode()); p(it.previousNode())",
+            input.byte(),
+            input.byte()
+        ),
+        81 => {
+            let b = input.node();
+            format!(
+                "{a}.normalize(); {a}.dataset && ({a}.dataset.c = {a}.compareDocumentPosition({b})                  + ':' + {a}.isEqualNode({b}))"
+            )
+        }
+        82 => format!("{a}.moveBefore({}, {})", input.node(), input.node()),
+        83 => match input.byte() % 8 {
+            0 => format!(
+                "document.open(); document.write({}); document.close();                  h = [document, document.documentElement, document.body]",
+                input.text(MARKUP)
+            ),
+            _ => format!("p({a}.attributes && {a}.attributes[0])"),
+        },
+        84 => format!(
+            "var sh = document.styleSheets[{} % (document.styleSheets.length || 1)];              if (sh) {{ try {{ sh.insertRule({}, {}); }} catch (e) {{}}              if (sh.cssRules.length) {{ var ru = sh.cssRules[0]; if (ru.style)              ru.style.color = 'red'; if ({}) sh.deleteRule(0); }} }}",
+            input.byte(),
+            input.pick(&[
+                "b { color: green }",
+                "@media (min-width: 1px) { i { top: 1px } }",
+                "@keyframes k { from { opacity: 0 } }",
+                "nonsense",
+            ]),
+            input.byte() % 3,
+            input.byte() % 2 == 0
+        ),
+        85 => format!(
+            "if ({a}.getBoundingClientRect) {{ var q = {a}.getBoundingClientRect();              {a}.dataset && ({a}.dataset.q = [q.x, q.height, {a}.offsetTop, {a}.clientWidth,              {a}.scrollHeight].join()); {a}.scrollTop = {}; p(document.elementFromPoint({}, {}));              if ({}) {a}.innerText = {}; else p({a}.innerText); }}",
+            input.byte(),
+            input.byte() % 64,
+            input.byte() % 64,
+            input.byte() % 4 == 0,
+            input.text(VALUES)
+        ),
+        86 => format!(
+            "getComputedStyle({a}).getPropertyValue({})",
+            input.pick(&[
+                "margin",
+                "font",
+                "border",
+                "background",
+                "transition",
+                "grid"
+            ])
+        ),
+        87 => format!("p({a}.cloneNode(true)); p(document.doctype)"),
         _ => {
             let property = ["disabled", "required", "readOnly", "multiple", "noValidate"]
                 [usize::from(input.byte()) % 5];

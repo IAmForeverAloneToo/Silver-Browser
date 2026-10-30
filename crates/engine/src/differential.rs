@@ -274,6 +274,10 @@ pub fn compare_with_fresh(
     settle_frames(engine);
     let pixels = engine.frame(width, height);
     fresh.set_document(Document::from_node(&engine.shown.document.to_node()));
+    // A script's CSSOM edits are in the sheets, not in the markup the
+    // snapshot is of: the fresh engine takes the sheets as they are.
+    fresh.shown.stylesheets = style::Stylesheets::new(engine.shown.stylesheets.sheets().to_vec());
+    fresh.shown.recascade = true;
     let order = tree_order(&engine.shown.document);
     let fresh_order = tree_order(&fresh.shown.document);
     if order.len() != fresh_order.len() {
@@ -366,9 +370,13 @@ fn settle_frames(engine: &mut Engine) {
     }
 }
 
-/// Every node of `document`'s tree, in tree order.
+/// Every node of `document`'s tree a snapshot keeps, in tree order:
+/// not its comments, doctypes and processing instructions.
 fn tree_order(document: &Document) -> Vec<NodeId> {
-    document.subtree(document.root()).collect()
+    document
+        .subtree(document.root())
+        .filter(|&n| n == document.root() || document.is_element(n) || document.is_text(n))
+        .collect()
 }
 
 /// Gives `fresh`'s snapshot of `engine`'s document, node for node in
