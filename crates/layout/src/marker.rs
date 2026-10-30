@@ -126,6 +126,7 @@ impl<'a> Marker<'a> {
             stacking_parent: None,
             parent: Some(self.b.node),
             in_3d: false,
+            legend: false,
             decorated: None,
             font: Default::default(),
         };

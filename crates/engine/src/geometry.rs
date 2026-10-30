@@ -189,8 +189,12 @@ pub(crate) fn hit(
                 if fragment.style.inert
                     || fragment.style.visibility != style::computed::Visibility::Visible => {}
             Step::Box { fragment, rect, .. } => {
-                if under(&rect, &clips, &points) {
-                    let (px, py) = points[points.len() - 1];
+                // A rounded box is hit inside its corners' curves.
+                let (px, py) = points[points.len() - 1];
+                let rounded = paint::rounded::RoundedRect::of(&fragment.style, rect);
+                if under(&rect, &clips, &points)
+                    && rounded.is_none_or(|rounded| rounded.contains(px, py))
+                {
                     let mut chain: Vec<NodeId> = chain(&clips);
                     if fragment.clips()
                         && fragment.generated.is_none()

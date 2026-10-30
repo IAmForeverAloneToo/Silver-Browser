@@ -9695,6 +9695,27 @@ mod tests {
     }
 
     #[test]
+    fn a_rounded_box_is_hit_inside_its_curves_and_a_fieldset_over_its_legends_area() {
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 } div { width: 100px; height: 100px }</style>\
+             <div id=r style='border-radius: 50px'></div>\
+             <fieldset id=f style='margin: 0; width: 200px'>\
+             <legend id=l style='width: 40px; height: 40px'></legend></fieldset>",
+        );
+        engine.frame(400, 300);
+        let document = engine.document().clone();
+        let id =
+            |node: Option<NodeId>| node.and_then(|n| document.attr(n, "id").map(str::to_string));
+        assert_eq!(id(engine.hit_test(50.0, 50.0)).as_deref(), Some("r"));
+        assert_eq!(id(engine.hit_test(5.0, 5.0)), None, "outside the circle");
+        // The fieldset is hit over its whole border box, above its
+        // border's top beside the legend too, as in the reference.
+        assert_eq!(id(engine.hit_test(150.0, 102.0)).as_deref(), Some("f"));
+        assert_eq!(id(engine.hit_test(20.0, 110.0)).as_deref(), Some("l"));
+    }
+
+    #[test]
     fn overlapping_flex_items_are_hit_in_the_order_they_paint() {
         // css-flexbox-1 §4.3 (M17): items paint as units in order-modified
         // document order, and hit testing reads the same steps. #b overlaps

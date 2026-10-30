@@ -356,7 +356,7 @@ fn more_of_the_pseudo_classes_and_their_restyles() {
              document.getElementById('q').value = 'x'; \
              console.log(before, group, m('f'), m('fs'));"
         ),
-        ["7px,7px,7px 5px 7px 0px"]
+        ["7px,7px,7px 5px 7px 2px"]
     );
     assert_eq!(
         run(
@@ -444,6 +444,6 @@ fn a_forms_validity_is_restyled_by_whatever_changes_its_controls() {
              q.remove(); out.push(m('g')); \
              console.log(out.join(' '));"
         ),
-        ["7px7px 0px0px 7px7px 0px0px 0px0px7px 0px"]
+        ["7px7px 0px2px 7px7px 0px2px 0px2px7px 0px"]
     );
 }

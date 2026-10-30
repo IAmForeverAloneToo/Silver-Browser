@@ -1225,7 +1225,8 @@ impl<'a> Collector<'a, '_> {
                 | BoxKind::ColumnGroup { .. }
                 | BoxKind::Column { .. }
                 | BoxKind::Cell { .. }
-                | BoxKind::Caption => {}
+                | BoxKind::Caption
+                | BoxKind::Legend => {}
             }
         }
     }
@@ -2202,6 +2203,7 @@ fn close_inline<'a>(
         stacking_parent: None,
         parent: b.parent,
         in_3d: b.in_3d,
+        legend: false,
         decorated: None,
         font: Default::default(),
     }
@@ -2402,6 +2404,7 @@ fn text_fragment(
         stacking_parent: None,
         parent: Some(word.node),
         in_3d: false,
+        legend: false,
         decorated,
         font,
     }

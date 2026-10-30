@@ -2019,6 +2019,7 @@ fn push_box(
     canvas_node: Option<NodeId>,
     backdrop: &Backdrop<'_>,
 ) {
+    let (rect, gap) = fieldset_border(f, rect);
     let outer = snapped(rect);
     let inner = snapped(padding_box(f, rect));
     let widths = [
@@ -2070,12 +2071,68 @@ fn push_box(
         push_layers(items, f, placed, backdrop);
     }
     push_shadows(items, f, outer, true);
-    if !push_border_image(items, f, outer, widths, backdrop.pictures)
-        && f.style.border_style.iter().any(|s| s.paints())
-    {
-        push_border(items, f, outer, widths);
+    let border = |items: &mut Vec<DisplayItem>| {
+        if !push_border_image(items, f, outer, widths, backdrop.pictures)
+            && f.style.border_style.iter().any(|s| s.paints())
+        {
+            push_border(items, f, outer, widths);
+        }
+    };
+    match gap {
+        None => border(items),
+        // A fieldset's border has a gap where its legend is: it is drawn
+        // in the three clips around the gap, left of it, right of it and
+        // below the top border.
+        Some((left, right)) => {
+            let below = outer.y + widths[0];
+            let clips = [
+                Rect {
+                    w: (left - outer.x).max(0.0),
+                    ..outer
+                },
+                Rect {
+                    x: right,
+                    w: (outer.x + outer.w - right).max(0.0),
+                    ..outer
+                },
+                Rect {
+                    x: left,
+                    y: below,
+                    w: (right - left).max(0.0),
+                    h: (outer.y + outer.h - below).max(0.0),
+                },
+            ];
+            for Rect { x, y, w, h } in clips {
+                items.push(DisplayItem::PushClip { x, y, w, h });
+                border(items);
+                items.push(DisplayItem::PopClip);
+            }
+        }
     }
     push_outline(items, f, outer);
+}
+
+/// Where a fieldset's background and border are drawn (HTML section
+/// 15.3.13, `layout::fieldset`): its border box `rect` from halfway down
+/// a rendered legend taller than its top border, so that the border is
+/// centred on the legend; and the gap in the border, across the legend's
+/// border box from its left edge to its right, snapped. `rect` and no
+/// gap for any other box.
+fn fieldset_border(f: &Fragment, rect: Rect) -> (Rect, Option<(f32, f32)>) {
+    let legend = match f.children.first() {
+        Some(legend) if f.legend => legend,
+        _ => return (rect, None),
+    };
+    let [top, ..] = f.style.used_border_width();
+    let inset = ((legend.h - top) / 2.0).clamp(0.0, rect.h);
+    let rect = Rect {
+        y: rect.y + inset,
+        h: rect.h - inset,
+        ..rect
+    };
+    let left = snap(rect.x + legend.x);
+    let right = snap(rect.x + legend.x + legend.w);
+    (rect, Some((left, right)))
 }
 
 /// A box's outline (CSS UI 4 section 5, M26.4): a band of its width
@@ -4478,6 +4535,50 @@ mod fragment_tests {
             )]
         );
         assert_eq!(rects(&list).len(), 1); // just the viewport background
+    }
+
+    #[test]
+    fn a_fieldsets_border_starts_halfway_down_its_legend_with_a_gap_there() {
+        let root = Element::new("fieldset").push(Element::new("legend"));
+        let list = display_list_of(
+            root,
+            "fieldset { width: 100px; border: 2px solid #00ff00; background-color: #ff0000 }
+             legend { width: 30px; height: 20px }",
+        );
+        // The fieldset is at (2, 0), 128 by 37.6; the legend 20 tall, so
+        // the background and border start 9 down. The legend is at 16,
+        // 34 wide: the border is drawn left of it, right of it and below
+        // the top border.
+        let red = Rgba8::rgb(255, 0, 0);
+        assert!(
+            rects(&list).contains(&&DisplayItem::Rect {
+                x: 2.0,
+                y: 9.0,
+                w: 128.0,
+                h: 29.0,
+                color: red,
+            }),
+            "{:?}",
+            rects(&list)
+        );
+        let band = (2.0, 9.0, 128.0, 29.0, [2.0; 4], Rgba8::rgb(0, 255, 0));
+        assert_eq!(borders(&list), vec![band; 3]);
+        let clips: Vec<(f32, f32, f32, f32)> = list
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                DisplayItem::PushClip { x, y, w, h } => Some((*x, *y, *w, *h)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            clips,
+            [
+                (2.0, 9.0, 14.0, 29.0),
+                (50.0, 9.0, 80.0, 29.0),
+                (16.0, 11.0, 34.0, 27.0)
+            ]
+        );
     }
 
     #[test]

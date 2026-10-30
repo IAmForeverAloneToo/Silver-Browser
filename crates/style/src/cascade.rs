@@ -1513,7 +1513,7 @@ impl Recascade for Recascader<'_> {
 /// An element's style from its `matched` declarations, inheriting from
 /// `parent`, with the values of its animations in effect, `animated`,
 /// and of its running transitions, `transitioned`: its `dir` attribute
-/// read, and the root element's `display` blockified.
+/// read, the root element's and a legend's `display` blockified.
 fn element_style(
     document: &Document,
     element: NodeId,
@@ -1538,6 +1538,13 @@ fn element_style(
     if document.document_element() == Some(element) {
         style.display = style.display.blockified();
         style.root = true;
+    }
+    // A `legend` is blockified wherever it is, as in the reference
+    // browser; a `fieldset` is marked for layout (HTML section 15.3.13).
+    match document.tag(element) {
+        Some("legend") => style.display = style.display.blockified(),
+        Some("fieldset") => style.fieldset = true,
+        _ => {}
     }
     style
 }
@@ -3323,6 +3330,9 @@ fn apply_declaration(
         }
         return apply_css_wide(style, name, keyword, parent, border_color_set);
     }
+    if let Some(applied) = apply_flow_relative(style, name, value, bases) {
+        return applied;
+    }
     match name {
         "color" => set(&mut style.color, color_of_color(value, parent, bases.dark)),
         "color-scheme" => match color_scheme_of(value, parent) {
@@ -4537,6 +4547,16 @@ fn apply_css_wide(
         CssWide::Unset => is_inherited(name),
     };
     let src = if from_parent { parent } else { &initial };
+    if let Some((property, sides)) = flow_relative(name, style.direction) {
+        for side in sides.into_iter().flatten() {
+            match property {
+                FlowRelative::Margin => style.margin[side] = src.margin[side].clone(),
+                FlowRelative::Padding => style.padding[side] = src.padding[side].clone(),
+            }
+        }
+        return true;
+    }
+    let name = physical_longhand(name, style.direction).unwrap_or(name);
     match name {
         "color" => style.color = src.color,
         "color-scheme" => style.color_scheme = src.color_scheme.clone(),
@@ -4947,6 +4967,126 @@ fn apply_css_wide(
         // SVG's (M32); else a property this engine does not know:
         // ignored, as ever.
         _ => return svg::copy(style, src, name),
+    }
+    true
+}
+
+/// Which box property a flow-relative margin or padding property sets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlowRelative {
+    Margin,
+    Padding,
+}
+
+/// The physical sides a flow-relative margin or padding property
+/// (css-logical-1 section 4.4) sets in horizontal writing, the only
+/// mode: the block axis's start and end are the top and the bottom,
+/// the inline axis's the left and the right, swapped by `direction`
+/// `rtl`. A shorthand sets both, a `-start` or `-end` longhand one.
+fn flow_relative(name: &str, direction: Direction) -> Option<(FlowRelative, [Option<usize>; 2])> {
+    let (property, rest) = if let Some(rest) = name.strip_prefix("margin-") {
+        (FlowRelative::Margin, rest)
+    } else {
+        (FlowRelative::Padding, name.strip_prefix("padding-")?)
+    };
+    let (axis, part) = rest.split_once('-').unwrap_or((rest, ""));
+    let [start, end] = match axis {
+        "block" => [TOP, BOTTOM],
+        "inline" if direction == Direction::Rtl => [RIGHT, LEFT],
+        "inline" => [LEFT, RIGHT],
+        _ => return None,
+    };
+    let sides = match part {
+        "" => [Some(start), Some(end)],
+        "start" => [Some(start), None],
+        "end" => [Some(end), None],
+        _ => return None,
+    };
+    Some((property, sides))
+}
+
+/// The physical longhand a flow-relative longhand is in horizontal
+/// writing with `direction`: a size's, or a margin's or a padding's side
+/// (css-logical-1); `None` for any other property.
+pub(crate) fn physical_longhand(name: &str, direction: Direction) -> Option<&'static str> {
+    const SIDES: [[&str; 4]; 2] = [
+        ["margin-top", "margin-right", "margin-bottom", "margin-left"],
+        [
+            "padding-top",
+            "padding-right",
+            "padding-bottom",
+            "padding-left",
+        ],
+    ];
+    if let Some((property, [Some(side), None])) = flow_relative(name, direction) {
+        return Some(SIDES[usize::from(property == FlowRelative::Padding)][side]);
+    }
+    Some(match name {
+        "inline-size" => "width",
+        "block-size" => "height",
+        "min-inline-size" => "min-width",
+        "min-block-size" => "min-height",
+        "max-inline-size" => "max-width",
+        "max-block-size" => "max-height",
+        _ => return None,
+    })
+}
+
+/// Applies a flow-relative property (css-logical-1, HTML section 15.3.13's
+/// `fieldset` takes several): a margin or padding one to its physical
+/// sides, a shorthand's one or two values to its start and end; a size
+/// one to `width` or `height` and their limits. `None` for any other
+/// property; else whether the value was valid.
+fn apply_flow_relative(
+    style: &mut ComputedStyle,
+    name: &str,
+    value: &[Token],
+    bases: &LengthBases<'_>,
+) -> Option<bool> {
+    if let Some((property, sides)) = flow_relative(name, style.direction) {
+        let groups = split_components(value);
+        let values = match (groups.as_slice(), sides) {
+            ([one], [Some(_), None]) => [Some(one), None],
+            ([one], _) => [Some(one), Some(one)],
+            ([start, end], [Some(_), Some(_)]) => [Some(start), Some(end)],
+            _ => return Some(false),
+        };
+        return Some(match property {
+            FlowRelative::Margin => set_sides(&mut style.margin, sides, values, |v| {
+                parse_length_percentage_or_auto(v, bases)
+            }),
+            FlowRelative::Padding => set_sides(&mut style.padding, sides, values, |v| {
+                parse_non_negative_length_percentage(v, bases)
+            }),
+        });
+    }
+    Some(match name {
+        "inline-size" => set(&mut style.width, parse_size(value, bases)),
+        "block-size" => set(&mut style.height, parse_size(value, bases)),
+        "min-inline-size" => set(&mut style.min_width, parse_size(value, bases)),
+        "min-block-size" => set(&mut style.min_height, parse_size(value, bases)),
+        "max-inline-size" => set(&mut style.max_width, parse_max_size(value, bases)),
+        "max-block-size" => set(&mut style.max_height, parse_max_size(value, bases)),
+        _ => return None,
+    })
+}
+
+/// Sets `edges`' `sides` to `values` as `parse` reads them, the first
+/// side to the first value: all or, when one is invalid, none.
+fn set_sides<T>(
+    edges: &mut [T; 4],
+    sides: [Option<usize>; 2],
+    values: [Option<&Vec<Token>>; 2],
+    parse: impl Fn(&[Token]) -> Option<T>,
+) -> bool {
+    let parsed = values.map(|v| v.map(|v| parse(v)));
+    if parsed.iter().flatten().any(Option::is_none) {
+        return false;
+    }
+    for (side, v) in sides.into_iter().zip(parsed) {
+        if let (Some(side), Some(Some(v))) = (side, v) {
+            edges[side] = v;
+        }
     }
     true
 }
@@ -9950,6 +10090,90 @@ mod tests {
                 "{value}"
             );
         }
+    }
+
+    #[test]
+    fn a_legend_is_blockified_and_a_fieldset_takes_the_ua_sheets_box() {
+        let document = Document::from_node(
+            &html::parse_document(
+                "<fieldset><legend>x</legend></fieldset><div><legend>y</legend></div>",
+            )
+            .unwrap(),
+        );
+        let sheets = [sheet(
+            "legend { display: inline-flex } div legend { display: inline }",
+        )];
+        let styles = cascade_document(&document, &sheets, &CascadeContext::default());
+        let legends: Vec<Display> = document
+            .subtree(document.root())
+            .filter(|&n| document.tag(n) == Some("legend"))
+            .map(|n| styles.get(n).expect("styled").display)
+            .collect();
+        assert_eq!(legends, [Display::Flex, Display::Block]);
+        let fieldset = styles.get(first(&document, "fieldset")).expect("styled");
+        assert!(fieldset.fieldset && !styles.get(first(&document, "div")).unwrap().fieldset);
+        // HTML section 15.3.13's box, at 16px.
+        assert_eq!(fieldset.margin[LEFT], LengthPercentageAuto::Px(2.0));
+        assert_eq!(fieldset.margin[TOP], LengthPercentageAuto::Px(0.0));
+        assert_eq!(fieldset.padding[TOP], LengthPercentage::Px(0.35 * 16.0));
+        assert_eq!(fieldset.padding[BOTTOM], LengthPercentage::Px(10.0));
+        assert_eq!(fieldset.padding[RIGHT], LengthPercentage::Px(12.0));
+        assert_eq!(fieldset.border_width, [2.0; 4]);
+        assert_eq!(fieldset.border_style, [BorderStyle::Groove; 4]);
+        assert_eq!(fieldset.min_width, Size::MinContent);
+        let legend = styles.get(first(&document, "legend")).expect("styled");
+        assert_eq!(legend.padding[LEFT], LengthPercentage::Px(2.0));
+    }
+
+    #[test]
+    fn the_flow_relative_box_properties_set_their_physical_sides() {
+        let document = Document::from_node(
+            &html::parse_document("<p>x</p><p dir=rtl>y</p><div><span>z</span></div>").unwrap(),
+        );
+        let sheets = [sheet(
+            "p { margin-inline: 1px 2px; margin-block-end: 3px; padding-block: 4px;
+                 padding-inline-start: 5px; min-inline-size: 6px; max-block-size: 7px;
+                 inline-size: 8px; block-size: 9px }
+             div { margin-inline: 10px; padding-inline: 1px 2px 3px }
+             span { display: block; margin-inline-start: inherit; min-block-size: min-content }",
+        )];
+        let styles = cascade_document(&document, &sheets, &CascadeContext::default());
+        let px = LengthPercentageAuto::Px;
+        let ps: Vec<NodeId> = document
+            .subtree(document.root())
+            .filter(|&n| document.tag(n) == Some("p"))
+            .collect();
+        for (p, [start, end]) in ps.into_iter().zip([[LEFT, RIGHT], [RIGHT, LEFT]]) {
+            let s = styles.get(p).expect("styled");
+            assert_eq!((&s.margin[start], &s.margin[end]), (&px(1.0), &px(2.0)));
+            assert_eq!(s.margin[BOTTOM], px(3.0));
+            assert_eq!(s.padding[TOP], LengthPercentage::Px(4.0));
+            assert_eq!(s.padding[BOTTOM], LengthPercentage::Px(4.0));
+            assert_eq!(s.padding[start], LengthPercentage::Px(5.0));
+            assert_eq!(s.min_width, Size::Px(6.0));
+            assert_eq!(s.width, Size::Px(8.0));
+            assert_eq!(s.height, Size::Px(9.0));
+            assert_eq!(
+                crate::serialize::computed_value(s, "max-block-size").as_deref(),
+                Some("7px")
+            );
+            assert_eq!(
+                crate::serialize::computed_value(s, "margin-inline-end").as_deref(),
+                Some("2px")
+            );
+        }
+        let div = styles.get(first(&document, "div")).expect("styled");
+        assert_eq!(
+            (&div.margin[LEFT], &div.margin[RIGHT]),
+            (&px(10.0), &px(10.0))
+        );
+        // Three values are not a two-sided shorthand's.
+        assert_eq!(div.padding[LEFT], LengthPercentage::Px(0.0));
+        let span = styles.get(first(&document, "span")).expect("styled");
+        assert_eq!(span.margin[LEFT], px(10.0));
+        assert_eq!(span.min_height, Size::MinContent);
+        assert!(supports("padding-block", &css::tokenize("1px 2px")));
+        assert!(!supports("margin-inline-start", &css::tokenize("1px 2px")));
     }
 
     #[test]

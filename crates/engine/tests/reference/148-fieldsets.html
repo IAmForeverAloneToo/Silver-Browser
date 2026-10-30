@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+<head>
+<title>Fieldsets: the border and background from halfway down a taller legend, and the gap the legend leaves in the border</title>
+<style>
+  body { margin: 0; background: #fff; }
+  .at { position: absolute; width: 230px; }
+  /* At 40px the UA sheet's em paddings are whole pixels: 14 at the
+     top, 25 at the bottom, 30 each side. */
+  fieldset { font-size: 40px; margin: 0; }
+  legend { width: 60px; height: 30px; background: #f0c060; }
+  .content { height: 40px; background: #9cc3e5; }
+  .solid { border: 4px solid #2f3542; background: #e0d8c8; }
+  .thick { border: 20px solid #3a7a4a; background: #f6f2ea; }
+  .thick legend { height: 10px; }
+  .double { border: 12px double #c03030; }
+  .padded { padding: 0; border: 6px solid #3050c0; background: #dfe6f5; }
+  .padded legend { margin: 0 20px; border: 3px solid #c03030; }
+</style>
+</head>
+<body>
+  <div class="at" style="left: 10px; top: 10px">
+    <fieldset><legend></legend><div class="content"></div></fieldset>
+  </div>
+  <div class="at" style="left: 280px; top: 10px">
+    <fieldset class="solid"><legend align="center"></legend><div class="content"></div></fieldset>
+  </div>
+  <div class="at" style="left: 550px; top: 10px">
+    <fieldset class="thick"><legend align="right"></legend><div class="content"></div></fieldset>
+  </div>
+  <div class="at" style="left: 10px; top: 200px">
+    <fieldset class="double" dir="rtl"><legend></legend><div class="content"></div></fieldset>
+  </div>
+  <div class="at" style="left: 280px; top: 200px">
+    <fieldset class="padded"><legend style="margin-left: auto"></legend><div class="content"></div></fieldset>
+  </div>
+  <div class="at" style="left: 550px; top: 200px">
+    <fieldset class="solid"><legend style="height: 50px"></legend>
+      <fieldset class="padded"><legend></legend><div class="content"></div></fieldset>
+    </fieldset>
+  </div>
+  <div class="at" style="left: 10px; top: 420px">
+    <fieldset class="solid"><legend style="height: 4px"></legend><div class="content"></div></fieldset>
+  </div>
+  <div class="at" style="left: 280px; top: 420px">
+    <fieldset class="solid"><div class="content"></div></fieldset>
+  </div>
+</body>
+</html>

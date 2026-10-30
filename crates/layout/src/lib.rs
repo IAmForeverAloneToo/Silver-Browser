@@ -28,6 +28,7 @@ mod cache;
 mod children;
 mod composite;
 pub mod decoration;
+mod fieldset;
 mod flex;
 mod float;
 pub mod font;
@@ -179,6 +180,7 @@ pub(crate) mod testing {
             stacking_parent: None,
             parent: None,
             in_3d: false,
+            legend: false,
             decorated: None,
             font: Default::default(),
         }

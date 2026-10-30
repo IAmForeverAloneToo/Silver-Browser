@@ -393,10 +393,11 @@ pub struct FirstLine {
 /// The builder's contract (CSS2 §9.2.1.1 and §17.2.1), which `block`
 /// relies on: a block container's ([`BoxKind::Block`]'s,
 /// [`BoxKind::InlineBlock`]'s, [`BoxKind::Float`]'s, [`BoxKind::Absolute`]'s,
-/// [`BoxKind::Cell`]'s or [`BoxKind::Caption`]'s) children are all
-/// block-level ([`BoxKind::Block`], [`BoxKind::AnonymousBlock`] or a
-/// block-level [`BoxKind::Table`]) or out of flow ([`BoxKind::Float`],
-/// [`BoxKind::Absolute`]); an [`BoxKind::AnonymousBlock`]'s and an
+/// [`BoxKind::Cell`]'s, [`BoxKind::Caption`]'s or [`BoxKind::Legend`]'s)
+/// children are all block-level ([`BoxKind::Block`],
+/// [`BoxKind::AnonymousBlock`] or a block-level [`BoxKind::Table`]) or
+/// out of flow ([`BoxKind::Float`], [`BoxKind::Absolute`]), a fieldset's
+/// rendered legend ([`BoxKind::Legend`]) first among them; an [`BoxKind::AnonymousBlock`]'s and an
 /// [`BoxKind::Inline`]'s children are all inline-level ([`BoxKind::Inline`],
 /// [`BoxKind::InlineBlock`], an inline-level [`BoxKind::Table`] or
 /// [`BoxKind::Text`]) or out of flow; a table's children are captions,
@@ -500,6 +501,13 @@ pub enum BoxKind {
     /// A caption: a block container inside, placed by its
     /// `style.caption_side` at the top or the bottom of its table.
     Caption,
+    /// A fieldset's rendered legend (HTML section 15.3.13): its first
+    /// child `legend` that neither floats nor is absolutely positioned,
+    /// which the builder makes the fieldset's first child. A block
+    /// container inside and a block formatting context root, sized as
+    /// a float is and placed by the fieldset over its top border
+    /// ([`crate::fieldset`]).
+    Legend,
     /// A flex container (css-flexbox-1, M17): block-level, or an
     /// inline-level item on its line like an inline-block when its
     /// `style.display` is `inline-flex`, as a table is by its display.
@@ -561,7 +569,9 @@ impl LayoutBox {
     pub fn is_table(&self) -> bool {
         match self.kind {
             BoxKind::Table => true,
-            BoxKind::Float | BoxKind::Absolute => self.style.display == Display::Table,
+            BoxKind::Float | BoxKind::Absolute | BoxKind::Legend => {
+                self.style.display == Display::Table
+            }
             _ => false,
         }
     }
@@ -573,7 +583,9 @@ impl LayoutBox {
     pub fn is_flex_container(&self) -> bool {
         match self.kind {
             BoxKind::Flex => true,
-            BoxKind::Float | BoxKind::Absolute => self.style.display == Display::Flex,
+            BoxKind::Float | BoxKind::Absolute | BoxKind::Legend => {
+                self.style.display == Display::Flex
+            }
             _ => false,
         }
     }
@@ -585,7 +597,9 @@ impl LayoutBox {
     pub fn is_grid_container(&self) -> bool {
         match self.kind {
             BoxKind::Grid => true,
-            BoxKind::Float | BoxKind::Absolute => self.style.display == Display::Grid,
+            BoxKind::Float | BoxKind::Absolute | BoxKind::Legend => {
+                self.style.display == Display::Grid
+            }
             _ => false,
         }
     }
@@ -1689,7 +1703,40 @@ fn is_replaced(tag: &str) -> bool {
 /// run wrapped in an anonymous block, each block found inside an inline
 /// child hoisted out to this level.
 fn build_block_container(styled: &Styled<'_>, item: Item) -> Vec<LayoutBox> {
-    build_block_container_of(styled, item, &styled.children(item))
+    let mut children = styled.children(item);
+    // A fieldset's rendered legend (HTML section 15.3.13) is taken out of
+    // its content and made its first child, which layout places over its
+    // top border (`crate::fieldset`).
+    let legend = styled
+        .style(item)
+        .filter(|style| style.fieldset)
+        .and_then(|_| children.iter().position(|&c| is_legend(styled, c)))
+        .map(|at| children.remove(at));
+    let mut boxes = build_block_container_of(styled, item, &children);
+    if let Some(legend) = legend
+        && let Some(style) = styled.style(legend)
+    {
+        let b = styled.own_box(legend, style, BoxKind::Legend, || {
+            build_inside(styled, legend, style)
+        });
+        boxes.insert(0, b);
+    }
+    boxes
+}
+
+/// Whether `item` is a `legend` element that a fieldset whose child it
+/// is renders when it is the first: one with a box, in flow, not
+/// floated.
+fn is_legend(styled: &Styled<'_>, item: Item) -> bool {
+    let Item::Node(node) = item else {
+        return false;
+    };
+    styled.document.tag(node) == Some("legend")
+        && styled.style(item).is_some_and(|style| {
+            style.display != Display::None
+                && style.float == Float::None
+                && !style.position.is_out_of_flow()
+        })
 }
 
 /// [`build_block_container`] for `children`, some of the children of
@@ -2829,6 +2876,7 @@ mod tests {
                 BoxKind::Column { span } => format!("col {span}"),
                 BoxKind::Cell { colspan, rowspan } => format!("cell {colspan}x{rowspan}"),
                 BoxKind::Caption => "caption".to_string(),
+                BoxKind::Legend => "legend".to_string(),
                 BoxKind::Flex if b.style.display == Display::InlineFlex => {
                     "inline-flex".to_string()
                 }

@@ -263,6 +263,10 @@ pub fn resolved_value(
     if let Some(value) = shorthands::value(style, name, resolver) {
         return value;
     }
+    // A flow-relative longhand is its physical one's (css-logical-1).
+    if let Some(physical) = crate::cascade::physical_longhand(name, style.direction) {
+        return resolved_value(style, physical, resolver);
+    }
     if let Some(value) = (resolver.longhand)(name) {
         return Some(value);
     }

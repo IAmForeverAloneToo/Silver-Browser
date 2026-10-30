@@ -611,6 +611,7 @@ fn mark(
             && matches!(
                 b.kind,
                 BoxKind::Block
+                    | BoxKind::Legend
                     | BoxKind::InlineBlock
                     | BoxKind::Float
                     | BoxKind::Absolute
@@ -1570,5 +1571,52 @@ mod tests {
         s.pass();
         assert!(s.kept("k") && !s.kept("f"));
         assert!(s.shares_its_lists());
+    }
+
+    #[test]
+    fn a_legend_inserted_removed_or_restyled_lays_its_fieldset_out_again() {
+        // A fieldset's rendered legend is its first legend in flow: each
+        // change below picks another, or moves it, and `pass` holds each
+        // layout to a fresh one.
+        let mut s = Session::new(
+            "<fieldset id=f><legend id=a>one</legend><p>text</p>\
+             <legend id=b>two</legend></fieldset><p id=after>after</p>",
+            "legend { width: 50px } p { margin: 0 }",
+        );
+        let rendered = |s: &Session| {
+            let f = s.box_of("f");
+            assert!(f.legend);
+            f.children[0].node
+        };
+        s.pass();
+        let (f, a, b) = (s.id("f"), s.id("a"), s.id("b"));
+        assert_eq!(rendered(&s), a);
+        s.change(|d| d.set_attribute(a, "style", "float: left").unwrap());
+        s.pass();
+        assert_eq!(rendered(&s), b);
+        s.change(|d| d.remove_attribute(a, "style").unwrap());
+        s.pass();
+        assert_eq!(rendered(&s), a);
+        s.change(|d| d.set_attribute(a, "align", "right").unwrap());
+        s.pass();
+        let first = s.document.first_child(a).expect("its text");
+        s.change(|d| d.set_text(first, "a longer legend").unwrap());
+        s.pass();
+        let mut new = None;
+        s.change(|d| {
+            let legend = d.create_element("legend").unwrap();
+            d.insert_before(f, legend, Some(a)).unwrap();
+            new = Some(legend);
+        });
+        s.pass();
+        assert_eq!(Some(rendered(&s)), new);
+        s.change(|d| d.remove_child(f, new.expect("inserted")).unwrap());
+        s.pass();
+        assert_eq!(rendered(&s), a);
+        // Nothing changed: the fieldset is taken whole.
+        assert_eq!(s.pass().0, 0);
+        s.change(|d| d.remove_child(f, a).unwrap());
+        s.pass();
+        assert_eq!(rendered(&s), b);
     }
 }

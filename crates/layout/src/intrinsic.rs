@@ -185,7 +185,8 @@ fn measure_content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
             | BoxKind::ColumnGroup { .. }
             | BoxKind::Column { .. }
             | BoxKind::Cell { .. }
-            | BoxKind::Caption => contribution(child, pass),
+            | BoxKind::Caption
+            | BoxKind::Legend => contribution(child, pass),
             // An outside marker beside the content is outside the box
             // (M21.6).
             BoxKind::Absolute | BoxKind::Marker { .. } => (0.0, 0.0),

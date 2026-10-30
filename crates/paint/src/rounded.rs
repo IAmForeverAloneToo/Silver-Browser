@@ -128,6 +128,30 @@ impl RoundedRect {
         }
     }
 
+    /// Whether the point is inside: in the rectangle and, past a
+    /// corner's centre both ways, in its ellipse (what a hit test of a
+    /// rounded box reaches, as in the reference browser).
+    pub fn contains(&self, px: f32, py: f32) -> bool {
+        if !self.rect.contains(px, py) {
+            return false;
+        }
+        (0..4).all(|corner| {
+            let (rh, rv) = self.radii[corner];
+            if rh <= 0.0 || rv <= 0.0 {
+                return true;
+            }
+            let (cx, cy) = self.centre(corner);
+            let (dx, dy) = (px - cx, py - cy);
+            let past = match corner {
+                TOP_LEFT => dx < 0.0 && dy < 0.0,
+                TOP_RIGHT => dx > 0.0 && dy < 0.0,
+                BOTTOM_RIGHT => dx > 0.0 && dy > 0.0,
+                _ => dx < 0.0 && dy > 0.0,
+            };
+            !past || (dx / rh).powi(2) + (dy / rv).powi(2) <= 1.0
+        })
+    }
+
     /// The centre of `corner`'s ellipse.
     fn centre(&self, corner: usize) -> (f32, f32) {
         let Rect { x, y, w, h } = self.rect;
@@ -380,6 +404,19 @@ mod tests {
         assert!(
             RoundedRect::of(&style("border-radius: 0 0"), rect(0.0, 0.0, 10.0, 10.0)).is_none()
         );
+    }
+
+    #[test]
+    fn a_point_in_a_corner_is_inside_only_within_its_curve() {
+        let r = RoundedRect {
+            rect: rect(10.0, 10.0, 100.0, 50.0),
+            radii: [(20.0, 10.0), (0.0, 0.0), (20.0, 10.0), (0.0, 0.0)],
+        };
+        assert!(!r.contains(11.0, 11.0), "past the top-left curve");
+        assert!(r.contains(16.0, 14.0), "inside it");
+        assert!(r.contains(109.0, 11.0), "a square corner");
+        assert!(!r.contains(109.0, 59.0), "past the bottom-right curve");
+        assert!(r.contains(60.0, 10.0) && !r.contains(60.0, 60.0));
     }
 
     #[test]

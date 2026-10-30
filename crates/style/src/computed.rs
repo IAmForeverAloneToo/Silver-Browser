@@ -3468,6 +3468,10 @@ pub struct ComputedStyle {
     /// section 2.8, CSS2 section 8.3.1: its margins do not collapse with
     /// its children's; G11).
     pub root: bool,
+    /// Not a property: whether the style is a `fieldset` element's,
+    /// whose box establishes a block formatting context and places its
+    /// rendered legend over its top border (HTML section 15.3.13).
+    pub fieldset: bool,
     /// The transition and animation properties (M22), behind one pointer
     /// as the effects are; `None` is every initial value. Read through
     /// [`ComputedStyle::motion`].
@@ -3571,6 +3575,7 @@ impl Default for ComputedStyle {
             inert: false,
             flow_root: false,
             root: false,
+            fieldset: false,
             motion: None,
             image: None,
             background: None,

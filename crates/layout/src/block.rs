@@ -94,6 +94,7 @@ use crate::box_tree::{BoxKind, LayoutBox, MarkerShape, Replaced};
 use crate::cache::{Inputs, LayoutCache};
 use crate::children::Children;
 use crate::decoration::Decorated;
+use crate::fieldset::LaidLegend;
 use crate::float::{At, FloatContext, FloatKey, PendingFloat, attach_floats};
 use crate::inline::layout_inline;
 use crate::marker::Marker;
@@ -173,6 +174,12 @@ pub struct Fragment {
     /// Whether the box takes part in a 3D rendering context (M19.5,
     /// [`crate::LayoutBox::in_3d`]).
     pub in_3d: bool,
+    /// Whether the box is a fieldset's and its first child is the
+    /// fieldset's rendered legend's (HTML section 15.3.13,
+    /// [`crate::fieldset`]): its background and border start lower
+    /// beside a legend taller than its top border, and the border has
+    /// a gap where the legend is.
+    pub legend: bool,
     /// For a text fragment, the text decorations drawn with it (M21.7):
     /// the lines, and how far past it they reach; `None` for none.
     pub decorated: Option<Box<Decorated>>,
@@ -1292,6 +1299,7 @@ pub(crate) fn establishes_bfc(style: &ComputedStyle) -> bool {
     // section 2.8; gap batch E).
     style.flow_root
         || style.root
+        || style.fieldset
         || style.overflow.scrolls()
         || style.display.is_atomic_inline()
         || matches!(
@@ -1652,7 +1660,8 @@ pub(crate) fn layout_inline_block<'a>(
 /// the margins it exposes. `content` says which float context the
 /// children are laid out in (M11): a box given a context of its own is
 /// a block formatting context root (M17); `cache` is the layout cache
-/// those placed in flow are taken from and kept in, if any (M13.2).
+/// those placed in flow are taken from and kept in, if any (M13.2). A
+/// fieldset with a rendered legend places it first ([`crate::fieldset`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn layout_block_contents<'a>(
     b: &'a LayoutBox,
@@ -1665,6 +1674,55 @@ pub(crate) fn layout_block_contents<'a>(
     pass: &Pass<'a>,
     cache: Option<&LayoutCache>,
     imposed: Option<Imposed>,
+) -> BlockLayout<'a> {
+    if crate::fieldset::rendered_legend(b).is_some() {
+        return crate::fieldset::layout_fieldset_contents(
+            b,
+            edges,
+            cb_width,
+            cb_height,
+            content_width,
+            margin_left,
+            content,
+            pass,
+            cache,
+            imposed,
+        );
+    }
+    layout_flow(
+        b,
+        &b.children,
+        edges,
+        cb_width,
+        cb_height,
+        content_width,
+        margin_left,
+        content,
+        pass,
+        cache,
+        imposed,
+        None,
+    )
+}
+
+/// [`layout_block_contents`] for `boxes`, the children of `b` laid out
+/// in flow: all of them, or a fieldset's but its rendered legend, which
+/// `legend` holds laid out, `edges` then having the legend's area for
+/// the top border.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn layout_flow<'a>(
+    b: &'a LayoutBox,
+    boxes: &'a [LayoutBox],
+    edges: &Edges,
+    cb_width: f32,
+    cb_height: Option<f32>,
+    content_width: f32,
+    margin_left: f32,
+    content: Content<'_>,
+    pass: &Pass<'a>,
+    cache: Option<&LayoutCache>,
+    imposed: Option<Imposed>,
+    legend: Option<LaidLegend<'a>>,
 ) -> BlockLayout<'a> {
     let Edges { border, padding } = edges;
     // What keeps this box's margins from adjoining its children's: a
@@ -1679,6 +1737,11 @@ pub(crate) fn layout_block_contents<'a>(
     let stops_top = bfc_root || border[TOP] > 0.0 || padding[TOP] > 0.0;
     let stops_bottom = bfc_root || border[BOTTOM] > 0.0 || padding[BOTTOM] > 0.0;
     let non_content_height = edges.vertical();
+    // How far a rendered legend's area reaches below the top border: the
+    // style's heights are the box's as if the border were the area's,
+    // the legend taking its room from the content.
+    let intrusion = legend.as_ref().map_or(0.0, |l| l.intrusion);
+    let own_non_content = non_content_height - intrusion;
     // An imposed height is the box's, already clamped (M17); its
     // children resolve percentages against it when it is definite. A
     // specified one is clamped by `min-height` and `max-height` first
@@ -1688,7 +1751,12 @@ pub(crate) fn layout_block_contents<'a>(
     // the reference browsers.
     let bounds = |content: Option<f32>| match imposed {
         Some(_) => (0.0, None),
-        None => height_bounds(&b.style, cb_height, non_content_height, content),
+        None => {
+            let content = content.map(|c| c + intrusion);
+            let (min, max) = height_bounds(&b.style, cb_height, own_non_content, content);
+            let inside = |h: f32| (h - intrusion).max(0.0);
+            (inside(min), max.map(inside))
+        }
     };
     // A box that is not replaced with a preferred aspect ratio takes its
     // `auto` height from its width (gap batch E; G36), its automatic
@@ -1710,7 +1778,9 @@ pub(crate) fn layout_block_contents<'a>(
             (Some(height), imposed.definite.then_some(height))
         }
         None => {
-            let specified = definite_height(&b.style, cb_height, non_content_height).or(ratio);
+            let specified = definite_height(&b.style, cb_height, own_non_content)
+                .map(|h| (h - intrusion).max(0.0))
+                .or(ratio);
             (specified, specified.map(|h| clamp_height(h, bounds(None))))
         }
     };
@@ -1728,8 +1798,7 @@ pub(crate) fn layout_block_contents<'a>(
     let content_x = border[LEFT] + padding[LEFT];
     // A list item's outside marker beside its content rather than on a
     // line of it (M21.6): placed once the content is laid out.
-    let beside = b
-        .children
+    let beside = boxes
         .first()
         .filter(|c| matches!(c.kind, BoxKind::Marker { outside: true, .. }))
         .map(|c| Marker::of(c, &c.style, pass.fonts));
@@ -1739,7 +1808,7 @@ pub(crate) fn layout_block_contents<'a>(
     // collapse with *each other*, escaping through as a single set on
     // both sides at once — as if the box weren't there at all,
     // margin-wise (CSS2 §8.3.1).
-    if b.children.is_empty() && can_collapse_through {
+    if boxes.is_empty() && can_collapse_through {
         let set = own_top.join(own_bottom);
         return BlockLayout {
             root: box_fragment(content_width + non_content_width, 0.0, b),
@@ -1793,7 +1862,7 @@ pub(crate) fn layout_block_contents<'a>(
     // The content box's start edges in the float context.
     let float_left = at.x;
     let mut children = layout_children(
-        &b.children,
+        boxes,
         content_width,
         children_cb_height,
         floats,
@@ -2048,15 +2117,18 @@ pub(crate) fn layout_block_contents<'a>(
             border[TOP] + padding[TOP],
         );
     }
+    // A fieldset's rendered legend comes first, with the absolutely
+    // positioned boxes carried out of it.
+    let mut inside = Vec::new();
+    if let Some(legend) = legend {
+        root.children.insert(0, legend.fragment);
+        root.legend = true;
+        inside = legend.absolutes;
+    }
+    inside.extend(carried(children.absolutes, content_x, content_y));
     // The absolutely positioned boxes met inside: laid out here when
     // this box is their containing block, carried up otherwise (M11).
-    let absolutes = settle_absolutes(
-        b,
-        &mut root,
-        border,
-        carried(children.absolutes, content_x, content_y),
-        pass,
-    );
+    let absolutes = settle_absolutes(b, &mut root, border, inside, pass);
     if b.style.overflow.clips() {
         // The scrollable overflow area (M10.5, see `Fragment::
         // scroll_height`), from the padding box's top: the content as if
@@ -2724,6 +2796,7 @@ pub(crate) fn box_fragment(w: f32, h: f32, b: &LayoutBox) -> Fragment {
         stacking_parent: None,
         parent: b.parent,
         in_3d: b.in_3d,
+        legend: false,
         decorated: None,
         font: Default::default(),
     }
@@ -2830,7 +2903,8 @@ fn layout_children<'a>(
             // A table is placed like a block, its grid laid out by
             // `layout::table` (M12); a table part that a hand-built tree
             // puts here, outside any table, is laid out as the block it
-            // is built as inside.
+            // is built as inside, and so is a rendered legend, which its
+            // fieldset places otherwise (`crate::fieldset`).
             BoxKind::Block
             | BoxKind::Table
             | BoxKind::Flex
@@ -2840,7 +2914,8 @@ fn layout_children<'a>(
             | BoxKind::ColumnGroup { .. }
             | BoxKind::Column { .. }
             | BoxKind::Cell { .. }
-            | BoxKind::Caption => {
+            | BoxKind::Caption
+            | BoxKind::Legend => {
                 let BlockPlacement {
                     layout,
                     x,

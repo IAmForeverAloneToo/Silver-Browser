@@ -129,6 +129,18 @@ listing, main, menu, nav, plaintext, search, section, summary, xmp {
   display: block;
 }
 
+/* Fieldsets and their legends (HTML section 15.3.13), as the reference
+ * browser's sheet has them; layout places a fieldset's rendered legend
+ * over its top border. */
+fieldset {
+  margin-inline: 2px;
+  padding-block: 0.35em 0.625em;
+  padding-inline: 0.75em;
+  border: 2px groove ThreeDFace;
+  min-inline-size: min-content;
+}
+legend { padding-inline: 2px; }
+
 /* `hidden` (HTML section 15.3.1), and `<center>` and the table's
  * defaults the presentational hints build on (D60). */
 [hidden]:not([hidden=until-found i]) { display: none; }
