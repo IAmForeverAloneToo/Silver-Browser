@@ -156,12 +156,29 @@ impl SoundDecoder {
 /// `decodeAudioData()`'s, within `max_samples` samples. Its rate, its
 /// channels and its samples, interleaved.
 pub fn decode_all(bytes: &[u8], max_samples: usize) -> Result<(u32, u16, Vec<f32>), Error> {
+    decode_all_within(bytes, &|_, samples| samples <= max_samples)
+}
+
+/// [`decode_all`] within what `fits` takes of a rate and a number of
+/// samples: a sound whose container says it is longer is refused before
+/// any of it is decoded.
+pub fn decode_all_within(
+    bytes: &[u8],
+    fits: &dyn Fn(u32, usize) -> bool,
+) -> Result<(u32, u16, Vec<f32>), Error> {
     let mut demuxer = Demuxer::open(Box::new(Bytes::new(bytes.to_vec())), &Hint::default())?;
     let track = demuxer
         .first_sound()
         .cloned()
         .ok_or_else(|| Error::Unsupported("no sound track".to_owned()))?;
     let mut decoder = SoundDecoder::new(&track)?;
+    let too_large = || Error::TooLarge("the decoded sound".to_owned());
+    if let Some(duration) = track.duration {
+        let said = duration * f64::from(decoder.rate()) * f64::from(decoder.channels().max(1));
+        if said.is_finite() && !fits(decoder.rate(), said.min(usize::MAX as f64) as usize) {
+            return Err(too_large());
+        }
+    }
     let mut samples = Vec::new();
     while let Some(packet) = demuxer.next_packet()? {
         if packet.track != track.id {
@@ -173,8 +190,8 @@ pub fn decode_all(bytes: &[u8], max_samples: usize) -> Result<(u32, u16, Vec<f32
             Err(Error::Malformed(_)) => continue,
             Err(e) => return Err(e),
         };
-        if samples.len() + sound.samples.len() > max_samples {
-            return Err(Error::TooLarge("the decoded sound".to_owned()));
+        if !fits(decoder.rate(), samples.len() + sound.samples.len()) {
+            return Err(too_large());
         }
         samples.extend_from_slice(&sound.samples);
     }

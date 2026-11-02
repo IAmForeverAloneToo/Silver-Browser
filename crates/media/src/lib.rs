@@ -28,7 +28,7 @@ mod tests;
 
 pub use demux::{Demuxer, Hint, Packet, PictureCodec, SoundCodec, Track, TrackKind};
 pub use resample::{Resampler, resample};
-pub use sound::{Sound, SoundDecoder, decode_all};
+pub use sound::{Sound, SoundDecoder, decode_all, decode_all_within};
 pub use source::{ByteSource, Bytes};
 pub use types::{CanPlay, can_play_type};
 pub use video::{Picture, PictureDecoder};

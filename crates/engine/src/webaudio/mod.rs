@@ -610,12 +610,13 @@ impl WebAudio {
                     .name("decodeAudioData".to_owned())
                     .spawn(move || {
                         // Audio too long once at the context's rate is
-                        // refused as audio that does not decode.
-                        let decoded = media::decode_all(&bytes, MAX_DECODE_AUDIO_BYTES / 4)
-                            .ok()
-                            .filter(|(from, _, samples)| {
-                                fits_resampled(samples.len(), *from, rate as u32)
-                            });
+                        // refused as audio that does not decode, before
+                        // it is decoded when its container says how long.
+                        let decoded = media::decode_all_within(&bytes, &|from, samples| {
+                            samples <= MAX_DECODE_AUDIO_BYTES / 4
+                                && fits_resampled(samples, from, rate as u32)
+                        })
+                        .ok();
                         match decoded {
                             Some((from, count, samples)) => {
                                 let count = usize::from(count.max(1));

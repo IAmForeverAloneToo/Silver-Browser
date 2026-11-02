@@ -300,3 +300,39 @@ fn units_that_made_rav1d_panic_fail_or_decode_but_never_panic() {
         assert_ne!(decoder.drain().err(), Some(Error::Panicked));
     }
 }
+
+#[test]
+fn a_sound_its_container_says_is_too_long_is_refused_before_decoding() {
+    // WPT's decodeAudioData-oversized-resample, whose FLAC says it holds
+    // 44,759,405 samples at 8 kHz: here a WAV whose data chunk says so
+    // and holds 64 bytes of them. Refused by its length, not decoded to
+    // find it.
+    let wav = |said: u32| {
+        let mut wav = b"RIFF".to_vec();
+        wav.extend_from_slice(&(36 + said * 2).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        for field in [16u32, 1 | 1 << 16, 8_000, 16_000, 2 | 16 << 16] {
+            wav.extend_from_slice(&field.to_le_bytes());
+        }
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(said * 2).to_le_bytes());
+        wav.extend_from_slice(&[0; 64]);
+        wav
+    };
+    let total: u32 = 683 * 65_535;
+    let seen = std::cell::Cell::new(0usize);
+    let fits = |rate: u32, samples: usize| {
+        seen.set(seen.get().max(samples));
+        rate == 8_000 && samples < 1 << 20
+    };
+    let error = decode_all_within(&wav(total), &fits).unwrap_err();
+    assert_eq!(error, Error::TooLarge("the decoded sound".to_owned()));
+    assert_eq!(seen.get(), total as usize);
+    // One that says the 32 samples it holds decodes.
+    let (_, _, samples) = decode_all_within(&wav(32), &fits).unwrap();
+    assert_eq!(samples.len(), 32);
+    // What is decoded is held to it too, whatever the container said.
+    let said_alone = |_, samples: usize| samples == total as usize || samples <= 16;
+    let error = decode_all_within(&wav(total), &said_alone).unwrap_err();
+    assert_eq!(error, Error::TooLarge("the decoded sound".to_owned()));
+}
