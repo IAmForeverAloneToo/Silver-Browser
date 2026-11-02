@@ -330,12 +330,81 @@ struct Placed<'a, 'i> {
 }
 
 impl Placed<'_, '_> {
+    /// The style of the white space before it, which its gap is as wide
+    /// as a space of.
+    fn gap_of(&self) -> &ComputedStyle {
+        self.gap_style.map_or(self.item.style(), |style| &**style)
+    }
+
     /// The width of the gap before it, when there is one.
     fn gap(&self, fonts: &FontCollection) -> f32 {
-        space_width(
-            self.gap_style.map_or(self.item.style(), |style| &**style),
-            fonts,
-        )
+        space_width(self.gap_of(), fonts)
+    }
+}
+
+/// What a line's words of one style share, kept for the next word as
+/// a line is placed: the font, metrics and space width a word asks for
+/// again and again. Only a word of ASCII text in a font with no chain
+/// takes the font and metrics kept, a text that could fall back to
+/// another face or a ranged one never; a space's width is its style's
+/// whatever the word.
+#[derive(Default)]
+struct LineMemo {
+    metrics: Option<(*const ComputedStyle, FontMetrics)>,
+    font: Option<(*const ComputedStyle, text::Font)>,
+    gap: Option<(*const ComputedStyle, f32)>,
+}
+
+impl LineMemo {
+    /// The line metrics of `text` in `style`, as [`font::line`] has them.
+    fn metrics(
+        &mut self,
+        fonts: &FontCollection,
+        text: &str,
+        style: &ComputedStyle,
+    ) -> FontMetrics {
+        let key = style as *const ComputedStyle;
+        if text.is_ascii()
+            && let Some((kept, m)) = self.metrics
+            && kept == key
+        {
+            return m;
+        }
+        let m = font::line(fonts, text, style);
+        if text.is_ascii() && self.font(fonts, text, style).chain == 0 {
+            self.metrics = Some((key, m));
+        }
+        m
+    }
+
+    /// The font `text` is in in `style`, as [`font::font_for`] has it.
+    fn font(&mut self, fonts: &FontCollection, text: &str, style: &ComputedStyle) -> text::Font {
+        let key = style as *const ComputedStyle;
+        if text.is_ascii()
+            && let Some((kept, font)) = self.font
+            && kept == key
+        {
+            return font;
+        }
+        let font = font::font_for(fonts, style, text);
+        if text.is_ascii() {
+            self.font = Some((key, font));
+        }
+        font
+    }
+
+    /// The width of `placed`'s gap, as [`Placed::gap`] has it.
+    fn gap(&mut self, fonts: &FontCollection, placed: &Placed<'_, '_>) -> f32 {
+        let style = placed.gap_of();
+        let key = style as *const ComputedStyle;
+        if let Some((kept, width)) = self.gap
+            && kept == key
+        {
+            return width;
+        }
+        let width = space_width(style, fonts);
+        self.gap = Some((key, width));
+        width
     }
 }
 
@@ -2673,6 +2742,7 @@ fn flush_line<'a>(
     // already is, so it is not added again under it. An inline box's
     // edges add nothing: its vertical padding and border are drawn
     // without changing the line's height (CSS2 §10.8).
+    let mut memo = LineMemo::default();
     let mut max_ascent = strut.ascent;
     let mut max_descent = strut.descent;
     let mut max_below = strut.descent + strut.line_gap;
@@ -2687,7 +2757,7 @@ fn flush_line<'a>(
                 // extends the existing "shared baseline sits at the
                 // tallest metrics present" rule (M7.4) to cover that,
                 // not just mixed sizes.
-                let m = font::line(fonts, word.text, word.style);
+                let m = memo.metrics(fonts, word.text, word.style);
                 max_ascent = max_ascent.max(m.ascent);
                 max_descent = max_descent.max(m.descent);
                 max_below = max_below.max(m.descent + m.line_gap);
@@ -2763,7 +2833,7 @@ fn flush_line<'a>(
     let last_content = line.iter().rposition(|p| p.item.is_content());
     for (i, placed) in line.drain(..).enumerate() {
         if i > 0 && placed.gap_before {
-            x += placed.gap(fonts) + placement.gap;
+            x += memo.gap(fonts, &placed) + placement.gap;
         }
         if i > 0 {
             x += placed.lead;
@@ -2826,7 +2896,7 @@ fn flush_line<'a>(
                     max_ascent,
                     max_descent,
                     decorated,
-                    font::font_for(fonts, word.style, word.text),
+                    memo.font(fonts, word.text, word.style),
                 ));
                 x += word.width;
             }
@@ -3476,6 +3546,96 @@ mod tests {
             replaced: None,
             control_size: None,
         }
+    }
+
+    #[test]
+    fn a_lines_words_keep_their_own_gaps_and_faces_whatever_came_before() {
+        // A line is placed with what its words of one style share kept
+        // (`LineMemo`): a gap is still its own white space's, and a word
+        // of private-use code points is not given the face an ASCII word
+        // of its style was. Ahem is the monospace face, so that its line
+        // is not the primary face's.
+        let fonts = FontCollection::from_bytes_with_monospace(
+            text::TEST_FONT.to_vec(),
+            0,
+            include_bytes!("../../engine/tests/wpt/fonts/Ahem.ttf").to_vec(),
+        )
+        .expect("parses");
+        let mut mono = text_box("ab \u{F000}", 16.0);
+        let mut style = (*mono.style).clone();
+        style.font_mut().family = "monospace, \"Not Had\"".into();
+        mono.style = style.into();
+        let (fragments, _) = lay(
+            &[text_box("a b", 16.0), text_box(" c", 32.0), mono],
+            2000.0,
+            TextAlign::Left,
+            &fonts,
+        );
+        let text: Vec<(&str, f32, f32, text::Font)> = fragments
+            .iter()
+            .filter_map(|f| match &f.kind {
+                FragmentKind::Text(t) => Some((t.as_str(), f.x, f.w, f.font)),
+                _ => None,
+            })
+            .collect();
+        let at = |word: &str| text.iter().find(|t| t.0 == word).expect(word);
+        let space = |size: f32| {
+            space_width(
+                &ComputedStyle {
+                    font_size_px: size,
+                    ..ComputedStyle::default()
+                },
+                &fonts,
+            )
+        };
+        let (b, c) = (at("b"), at("c"));
+        assert_eq!(c.1 - (b.1 + b.2), space(32.0), "the gap is the 32px space");
+        let (ab, private) = (at("ab"), at("\u{F000}"));
+        assert_ne!(ab.3, text::Font::default(), "the monospace face");
+        assert_eq!(private.3, text::Font::default(), "no named family had");
+        // And the private-use word's line metrics are its own face's: the
+        // line is as tall as the taller of the two words' lines.
+        let mono_style = |b: &LayoutBox| {
+            let mut style = (*b.style).clone();
+            style.font_mut().family = "monospace, \"Not Had\"".into();
+            Arc::new(style)
+        };
+        let line = |text: &str| {
+            let mut b = text_box(text, 40.0);
+            b.style = mono_style(&b);
+            lay(&[b], 2000.0, TextAlign::Left, &fonts).1
+        };
+        let (ascii, pua) = (line("ab"), line("\u{F000}"));
+        assert_ne!(ascii, pua, "the faces' lines differ");
+        assert_eq!(line("ab \u{F000}"), ascii.max(pua));
+    }
+
+    #[test]
+    fn a_word_of_a_partial_face_keeps_no_line_metrics_for_the_next() {
+        // A face for only "a" (`unicode-range`) ahead of the primary
+        // face: "b" is in the primary face, and its line is its own,
+        // not the line "a" had before it.
+        let faces = Arc::new(text::DocumentFaces::new(vec![text::FaceRule {
+            family: "Web".into(),
+            ranges: vec![(0x61, 0x61)],
+            ..text::FaceRule::default()
+        }]));
+        let fonts = test_fonts().with_document(faces);
+        fonts
+            .face_arrived(
+                0,
+                include_bytes!("../../engine/tests/wpt/fonts/Ahem.ttf").to_vec(),
+            )
+            .expect("a font");
+        let line = |text: &str| {
+            let mut b = text_box(text, 40.0);
+            let mut style = (*b.style).clone();
+            style.font_mut().family = "Web, sans-serif".into();
+            b.style = Arc::new(style);
+            lay(&[b], 2000.0, TextAlign::Left, &fonts).1
+        };
+        assert!(line("a") < line("b"), "Ahem's line is the shorter");
+        assert_eq!(line("a b"), line("b"));
     }
 
     fn inline_box(children: Vec<LayoutBox>) -> LayoutBox {
