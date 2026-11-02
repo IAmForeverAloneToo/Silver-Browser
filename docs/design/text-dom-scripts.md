@@ -333,21 +333,31 @@ where it is used, in paint, the canvas and serialization; a
 
 ## 2. Not in this batch, said rather than hidden
 
-- Variable fonts' axes past weight, width and slant (`font-variation-settings`),
-  color fonts, `size-adjust` and the other metric descriptors.
-- Hyphenation (`hyphens: auto`), `text-justify`'s inter-character mode,
-  `text-wrap: balance` and `pretty`, and vertical writing modes.
-- Constructed and adopted style sheets, `CSSStyleSheet.replace` of a
-  sheet with `@import`, and the CSS Typed OM.
-- `Temporal`, `Intl.DisplayNames`, `Intl.Segmenter` and
-  `Intl.DurationFormat`.
-- Speculation rules, import attributes (JSON and CSS modules), and
-  `import.meta.resolve`'s import-map edge cases beyond the standard's
-  tests.
-- `color-mix()` holding `currentcolor` kept as a recipe (its value is
-  the element's own colour mixed where it computes).
-- A selection's rendering past text: `::selection` styling and
-  selection across replaced elements.
+This section was written before the code; the batch then closed most of
+what it named (section 4). What is left:
+
+- Colour fonts, and with them `font-variant-emoji`'s choice of an emoji
+  face and the variation selectors; variable fonts' axes past weight,
+  width and slant (`font-variation-settings`).
+- Vertical writing modes and `direction` as a property (the `dir`
+  attribute alone sets it), and with them right-to-left scroll offsets;
+  bidi reordering across inline boxes.
+- `text-spacing-trim` and `text-fit` laid out (both are parsed,
+  computed and serialized); Chrome 156 ships no `hanging-punctuation`,
+  `hyphenate-limit-lines`, `word-space-transform` or `text-group-align`,
+  which are parsed alone.
+- The CSS Typed OM, `Temporal`, speculation rules, and `url()`'s request
+  modifiers.
+- A second document in a realm (`createHTMLDocument`, `DOMParser`, a
+  template's contents' own owner document: G47, G51), and a script
+  reaching another frame's document (G90).
+- A selection's painting and the user's selections (G59).
+- `preservesPitch`: `playbackRate` speeds an element's sound by
+  resampling it, with no time-stretch; `setSinkId`, `MediaDevices` and
+  `srcObject` playback.
+- In `Intl`: the Japanese calendar's Meiji years 1 to 5, the patterns'
+  numbering overrides (`d=hanidec`), and the ranges of the Chinese,
+  Hebrew and Indian calendars.
 
 ## 3. Order of work
 
@@ -375,416 +385,192 @@ where it is used, in paint, the canvas and serialization; a
 ## 4. Corrected to the code
 
 What the work found that this note did not say, or said otherwise, by
-step:
+step. Midway the maintainer set a rule for the batch: a gap found while
+closing gaps is closed in it, not listed (the last bullet says how). The
+steps below say where each part ended, not where its first commit left
+it.
 
 - **Fonts (step 1, D53).** The family moved into `FontProps` with the
-  other font properties and `line-height`, behind one pointer:
-  `ComputedStyle` went from 816 to 808 bytes. Generic `sans-serif` and
-  `system-ui` are the primary font's families (Segoe UI first), not the
-  reference browser's Arial, so that pages in the initial font draw as
-  before. Synthesis as Blink and Skia do it: bold when 600 or more is
-  asked of a face under 600, a slant of a quarter for italic.
-  Half-leading as Blink's `AddLeading`, floored above. Renderers get the
-  system's faces as a manifest in the `Fonts` message (IPC version 2).
-- **Web fonts (step 2, D54).** Layout keeps each text fragment's face
-  (`Fragment::font`, 8 bytes; a fragment 128 to 136) and render draws
-  it. A document's faces are `text::DocumentFaces` laid over the
-  collection. `unicode-range` is not read (the tokenizer keeps a
-  number's value, not its text), `local()` is not looked up, and a
-  `FontFace`'s url loads through the bootstrap's `fetch`. No font
-  loading events, and the rules' faces are not in `document.fonts`.
+  other font properties and `line-height`, behind one pointer. Generic
+  `sans-serif` and `system-ui` are the primary font's families (Segoe UI
+  first), not the reference browser's Arial, so that pages in the
+  initial font draw as before; Times, Courier and Helvetica are Times
+  New Roman, Courier New and Arial, as Blink has them. Synthesis as
+  Blink and Skia do it: bold when 600 or more is asked of a face under
+  600, a slant of a quarter for italic. A face's `font-style` is an
+  oblique range (`text::FaceSlant`), matched in the reference browser's
+  order. `font-kerning` is a property, and it, `font-feature-settings`
+  and a canvas's `lang` reach shaping: a font's shaping options are
+  kept in the registry with its face chain (`Font::chain`), so that a
+  fragment stays 136 bytes. `font-family` is kept as the reference
+  browser writes it, a quoted generic name a name; the `font-variant`
+  longhands are computed. A font asked for again is the thread's last
+  choice, compared rather than looked up (`faces::Choices`): the first
+  T4.3 found layout twice as slow from boxed keys hashed per word.
+  Renderers get the system's faces as a manifest in the `Fonts`
+  message (IPC version 2).
+- **Web fonts (step 2, D54).** A document's faces are
+  `text::DocumentFaces` laid over the collection, their ids lent by the
+  registry. `unicode-range` is read from the declaration's source text,
+  which the CSS parser keeps the spans of, and the faces of a family that
+  cover some code points make a chain; a run is split by the face for
+  each code point, a face asked for only when a text needs it. `local()`
+  is a system face by its full or PostScript name; WOFF2 is read
+  (`text::woff2`, brotli-decompressor, every size bounded before it is
+  allocated). `document.fonts` holds the rules' faces (CSS-connected
+  `FontFace`s kept by their descriptors), loads them through the engine,
+  hears when loading starts and stops (`FontFaceSetLoadEvent`), and reads
+  a `<style>` a script just put in (`Page::sheets_now`); `ready` waits
+  while a style or layout is to come, the bindings laying the document
+  out first so that its faces are asked for. Workers have `self.fonts`,
+  their canvases drawing in their own faces. A `<link rel=preload
+  as=font>` is fetched and fires `load` or `error`; a box's web font is
+  asked for when the box is laid out, text in it or not. The font-
+  relative units (`ex`, `ch`, `cap`, `ic`, `lh`, `rlh`, `rcap`, `rch`,
+  `rex`, `ric`) measure the element's own first available font
+  (`FontMeasure::units`), and styles that used them are cascaded again
+  when a face comes (`Styles::uses_font_units`, G12).
 - **Text (step 3, D55, D56).** `white-space` is a pair of longhands.
   `icu_segmenter` is pinned `~2.3.0`: 2.4 moved idna's ICU crates and
   failed IdnaTestV2. Between printable ASCII the reference browser does
-  not follow UAX #14 (no break after `/`), tailored so. A word stays one
-  item with its opportunities, cut only where a line breaks. A run with
-  no right-to-left letter is shaped left to right, and white space at a
-  run's ends apart. A text shadow is blurred over the whole ink,
-  whatever the clip, so that a partial redraw matches the whole.
-  Collapsed columns, `line-break`, `tab-size` and breaks across text
-  boxes are not done.
-- **The tree builder (step 4, D57).** A subagent wrote it in a worktree.
-  html5lib's tree tests went from 1,285 to 1,949 of 1,959; the ten left
-  run scripts mid-parse or need `selectedcontent`. The implied `tbody`,
-  `colgroup` and foster parenting changed 41 of layout's table tests,
-  whose shapes were renumbered or built by hand. XHTML is still read by
-  the HTML parser: `flexbox-table-fixup-001.xhtml` now fails ("XHTML
-  parsed as HTML").
+  not follow UAX #14: its own table, measured from Chrome 156
+  (`ascii_pair_breaks`), is used both in a fast path that skips the
+  segmenter for ASCII (a test holds the two equal over every text of up
+  to five of sixteen characters) and over it. `line-break`'s strictness
+  is the segmenter's, tailored by the content language, which the
+  cascade keeps from `lang`; breaks go across inline boxes where UAX #14
+  has one. A word stays one item with its opportunities, cut only where
+  a line breaks. `hyphens` (the `hypher` crate's patterns), `tab-size`
+  with stops from the line's start, `text-indent` with `hanging` and
+  `each-line`, `text-transform`'s full-width, kana and language
+  tailoring, `text-wrap: balance` (beside floats too) and `pretty`,
+  `text-autospace`, `letter-spacing` by grapheme cluster and not inside
+  a cursive join, hanging other space separators, justification of kept
+  spaces and of ideographs, control characters drawn. A run with no
+  right-to-left letter is shaped left to right, white space at its ends
+  apart. A text shadow is blurred over the whole ink, whatever the clip,
+  and decorations cast it. `visibility: collapse` collapses columns.
+  ASCII left to right skips bidi reordering.
+- **The tree builder (step 4, D57).** html5lib's tree tests went from
+  1,285 to 1,959 of 1,959: the scripted ones run in the engine
+  (`loader::html5lib_tests`), and `selectedcontent` takes a clone of the
+  selected option, at parse and as the selection changes. The implied
+  `tbody`, `colgroup` and foster parenting changed 41 of layout's table
+  tests. XHTML is the XML parser's (step 15).
 - **Node kinds (step 5, D58).** The doctype's fields are `Box<str>`, so
   `NodeData` stays 64 bytes. `insert_before` does the whole of "ensure
-  pre-insertion validity" (one doctype, then one element, no text under
-  the document) and moves a fragment's children. Template contents are
-  a fragment `allocate` makes with each HTML `template`; depth counts
-  across contents to their template. `to_node` leaves the new kinds out.
-  The XML parser keeps comments, processing instructions and the
-  doctype. `:empty` passes over comments and empty text, as the
-  reference browser does. `DOMImplementation` makes doctypes only.
+  pre-insertion validity" and moves a fragment's children. Template
+  contents are a fragment `allocate` makes with each HTML `template`.
+  `to_node` leaves comments, doctypes and processing instructions out, so
+  the differential comparison counts only what a snapshot keeps.
+  `:empty` passes over comments, as the reference browser does.
 - **Ranges and the rest (step 6, D59).** Live ranges and node iterators
   are kept in the document and moved directly by its operations, not by
-  the journal. Character data's mutators go through `replace_data`, by
-  UTF-16 offsets. `moveBefore` journals `Moved` after its removal and
-  insertion, so that frames, animations and media keep their state; the
-  focus stays. `document.open` gives the host a parser of its own, which
-  `write` feeds and `close` ends. A write with no insertion point opens
-  the document, as the reference browser does; the URL stays, and a
-  load still running is not aborted. Template contents, live state and
-  the move flag share one boxed field: two boxes and a flag made
-  clippy's `large_enum_variant` fire on `loader::Outcome`. The selection
-  is not painted, and the mouse does not make one yet.
-- **Presentational hints (step 7, D60).** Not done: `rules`, `frame`,
-  `pre width`, body margins. The legacy alignments are kept beside
-  `text-align` with the parent's (`legacy_align`, `placed_by`): the
-  style 808 to 816 bytes. The font-size keywords were missing
-  altogether and came with it.
-- **Binding chunks (step 8, D64).** A subagent wrote it. Six chunks,
-  each a script of its own (`js/src/quickjs/bootstrap_<name>.js`) that
-  `native.chunk(name)` reads: `gpu`, `intl`, `idb` (with
-  `StorageManager`), `audio`, `wasm` and `canvas` (the 2D context,
-  `Path2D`, `ImageData`, `OffscreenCanvas` and `ImageBitmap`). A
-  chunk's name that was a data property of the global is an accessor
-  until the chunk is made, as the realm's kind exposes it; a property
-  the bootstrap keeps calls the chunk, its descriptor and function
-  unchanged (the locale methods, `createImageBitmap`, `indexedDB`,
-  `navigator.storage`, a canvas's `getContext("2d")`). What a page put
-  in place of an accessor stays. The built-ins a chunk keeps are read
-  by the bootstrap before any page runs: M41's chunk had read
-  `Set.prototype` and others when it was made. A window's realm is made
-  in 6.2 ms, from 7.5; a chunk's first use costs 0.3 to 0.7 ms
-  (WebGPU's 3.3).
-- **Module scripts (step 9, D61).** A subagent wrote it. The graph's
-  imports are found by declaring each module in a throwaway context
-  (compiled twice), and modules are handed over dependencies first:
-  nested declaring overflowed the debug stack at 64 deep. One import
-  map a document (the reference browser merges several). Before this
-  step `import('bootstrap')` gave any page the bootstrap's module; it is
-  refused now. Not done: module service workers, an `import()`'s nonce,
-  and the preload scanner's modules.
-- **Subresource Integrity (step 10, D62).** It is checked on a body
-  taken whole, `NetworkError::Integrity` (wire tag 30).
-- **`Intl` (step 11, D63).** A subagent wrote it. ICU4X 2.3's
-  `GroupingStrategy::Always` keeps the locale's minimum grouping digits,
-  so `useGrouping: "always"` is grouped by hand. Windows' system time
-  zone has no IANA name here (`timeZone` reports the offset), and other
-  IANA zones than UTC throw. Currency writes its ISO code, units their
-  identifiers, and compact notation formats as standard.
-  `formatRange` is not done.
+  the journal; character data's mutators go through `replace_data`, by
+  UTF-16 offsets. A range set in an `Attr` is at (attr, 0), its own
+  root. `moveBefore` journals `Moved` after its removal and insertion,
+  so that frames, animations and media keep their state. `document.open`
+  gives the host a parser of its own; it aborts a load's parser and
+  fetch, erases the listeners, and leaves the document loading until
+  `close`; `DOMContentLoaded` is a task of its own. A selection's string
+  is its rendered text. Template contents, live state and the move flag
+  share one boxed field, for clippy's `large_enum_variant`.
+- **Presentational hints (step 7, D60).** The legacy alignments are kept
+  beside `text-align` with the parent's (`legacy_align`, `placed_by`).
+  The font-size keywords were missing altogether and came with it. A
+  `body`'s margins from `marginwidth`/`leftmargin` and
+  `marginheight`/`topmargin`, an iframe's own in their place (sent to a
+  frame of another renderer with its hole); a table's `frame`, `rules`
+  and `bordercolor`; `pre`'s `wrap`. `legend` and `fieldset` are laid
+  out as the reference browser does (`layout::fieldset`): the legend in
+  the top border, the border's gap behind it.
+- **Binding chunks (step 8, D64).** Six chunks, each a script of its own
+  that `native.chunk(name)` reads: `gpu`, `intl`, `idb`, `audio`, `wasm`
+  and `canvas`. A chunk's name is an accessor until the chunk is made; a
+  window's realm is made in 6.2 ms, from 7.5.
+- **Module scripts (step 9, D61).** The graph's imports are found by
+  declaring each module in a throwaway context, and modules are handed
+  over dependencies first. An `import()` in code a string compiled
+  resolves against, and fetches with the options of, the script that
+  made it; a muted script's against `about:blank`. JSON, CSS and text
+  modules by their `type`, the module map keyed by URL and type, a CSS
+  module's sheet a constructed `CSSStyleSheet`. Import maps after the
+  first are merged; module service workers run; the preload scanner sees
+  module scripts. `import('bootstrap')` had given any page the
+  bootstrap's module; it is refused now.
+- **Subresource Integrity (step 10, D62).** Checked on a body taken
+  whole, `NetworkError::Integrity` (wire tag 30); CSP lets through a
+  script whose `integrity` hashes the policy lists.
+- **`Intl` (step 11, D63).** ICU4X 2.3, with `icu_experimental` for
+  currencies, units and compact notation. Its data falls short of the
+  reference browser's in many places, so date patterns, intervals, zone
+  names and corrections are read from Chrome's own ICU data into
+  `intl_dates.txt`, `intl_units.txt`, `intl_zones.txt`, `intl_names.txt`
+  and `intl_islamic.txt` by generators kept in
+  `silver-work/tooling/intl-gen`, and compared with Chrome 156
+  (`--lang=en-US`) over more than 200,000 outputs. Windows' zone is read
+  in the sandbox (`--check-processes sandbox` holds it). `Segmenter`,
+  `DurationFormat` and `DisplayNames` came too.
 - **The flush (step 12, D65).** Not the borrow this note describes: the
   host lays out a copy from its own cascade, at most once a document
-  version, with the shown page's images lent and its fonts and scroll
-  offsets in the window's environment. `getComputedStyle` therefore
-  still samples no transitions or animations (G46). `Engine::measure`
-  and `hit` became free functions in `engine::geometry`, which both
-  use. The viewport never scrolls across (`scrollX`, `scrollLeft` are
-  0), a range's rectangles are not done, and `auto` margins answer 0.
-- **Computed values (step 13, D66).** A subagent wrote it.
-  `currentcolor` is a spare bit of `Color::missing`; the cascade keeps
-  it and `ComputedStyle::resolve_current_color` resolves each flagged
-  colour against the element's final `color`, so the channels always
-  hold the used colour and paint reads them unchanged; the style stays
-  816 bytes. `getComputedStyle` lists 193 longhands and serializes
-  their shorthands, gradients with their defaults left out and
-  calculations by Values 4 section 10.13. Not serialized: `will-change`
-  (the engine keeps bits), a `transform` with a percentage
-  translation; `rotate(90deg)`'s cosine is snapped to 0 where the
-  reference prints `6.12323e-17`.
+  version, but is lent the shown page's images, fonts, scroll offsets
+  and animations (`scripts::Lent`), so `getComputedStyle` and the layout
+  queries sample the running animations and transitions (G46).
+  `getComputedStyle`'s insets are used values. Scrolling goes across as
+  well as down, by script, wheel, arrows and a scrollbar the shell asks
+  for (IPC version 3); `scroll-behavior`, `scroll-margin` and
+  `scroll-padding`; a range's rectangles from its text fragments.
+- **Computed values (step 13, D66).** `currentcolor` is a spare bit of
+  `Color::missing`, resolved against the element's final `color`;
+  `color-mix()` with it in `background-color` is kept for inheritance.
+  `getComputedStyle` lists the longhands and serializes their
+  shorthands; `overflow-x`/`-y` and `background-position-x`/`-y` are
+  longhands of their own; `all` is every longhand but `direction` and
+  `unicode-bidi`. Gradients take 4,096 stops.
 - **The CSSOM (step 14, D66).** The rules a script sees are a view of
-  the parsed sheet the cascade reads, edited in place. An import's
-  fetched sheet follows its rule, each sheet has a serial number (a new
-  text, a new object), and the engine takes the sheets after a run that
-  changed one. Not done: `disabled`, MediaList's setters, and `style`
-  and `cssText` in canonical forms with shorthands through their
-  longhands (G50 stays open).
-- *Fonts and web fonts* (D53, D54, closed after the batch): a
-  `unicode-range` is read from its declaration's source text, which the
-  parser keeps the spans of (CSS Syntax 3 section 7.1), and kept as
-  `U+X-Y` identifiers; the faces of a family's best match that cover
-  some code points make a chain the font carries (`Font::chain`, kept
-  in the collection's registry beside the faces lent), and a run is
-  split by the chain's face for each code point, a face not had yet
-  asked for only when a text needs it. `local()` is a system face by
-  its full or PostScript name, read from its name table. `font-family`
-  is kept as the reference browser writes it, a quoted generic name a
-  name, which the text crate reads back. The `font-variant` longhands
-  are computed; `font` and `font-variant` are kept as their longhands in
-  a `style` object and said from them. An `@font-face` rule's `style`
-  holds its descriptors, checked and written back
-  (`style::font_face::descriptor`). `document.fonts` holds the rules'
-  faces (CSS-connected), loads them through the engine, and hears from
-  it when its faces start and stop loading (a `FontFaceSetLoadEvent`
-  task); a `FontFace`'s urls are fetched in turn as fonts; workers have
-  `self.fonts`. A text control's caret is measured in its own font.
-- *Fonts closed after the batch* (D53, D54): a face's `font-style` is
-  an oblique range (`text::FaceSlant`), matched in the reference
-  browser's order: italic faces first for italic, then obliques as 20
-  degrees; from 11 degrees up, the steeper first, then the rest by
-  nearness; below, those between the angle and upright, then the
-  steeper, then the rest; an italic face last for anything else.
-  `font-kerning` is a property (`auto` kerns, as the reference browser
-  does; `none` clears `kern`), and it, `font-feature-settings` and a
-  canvas's `lang` reach shaping: a font's shaping options are kept in
-  the registry with its chain (`Font::chain`), so that a fragment stays
-  136 bytes. `font` resets and serializes `font-kerning`. WOFF2 is read
-  (`text::woff2`, every size bounded before it is allocated). A face a
-  script adds is laid over the run's fonts at once, so that a layout
-  query after its `load()` measures in it. The scripts' font changes
-  are taken after their DOM changes, so that a `load()` of a rule a
-  script just put in finds it; a load asked of a face already had, or
-  had at once, is told to `document.fonts`, and a face loading when the
-  faces are made anew is fetched again; CSS-connected `FontFace`s are
-  kept by their descriptors, wherever rules come or go before them.
-  `document.fonts.ready` and `status` wait while a style or layout is
-  to come: the bindings lay the document out first, so that the faces
-  it needs are asked for. The reference browser has no `font-width`
-  and refuses `-webkit-generic()`, so neither is taken.
-- *Module scripts* (D61), after the batch: an `import()` in code a
-  string compiled (`eval`, `Function`, a timer's string) resolves
-  against, and fetches with the options of, the script that made it,
-  found from QuickJS-ng's stack when the promise is made; a handler's
-  against the document's base URL. JSON, CSS and text modules by their
-  `type` (the reference browser takes `text`), the module map keyed by
-  URL and type, a CSS module's sheet a constructed `CSSStyleSheet`,
-  which `document.adoptedStyleSheets` takes. Import maps after the
-  first are merged (HTML's "merge existing and new import maps"), not
-  refused; module service workers run; the preload scanner sees module
-  scripts and module preloads. A parser-inserted script left empty is
-  one a script may still run, and the scripts one insertion connects
-  run one at a time, in its order.
-- *Text* (D55, D56), the gaps closed after the batch: `line-break`
-  (`strict`, `normal`, `loose`, `anywhere`; `auto` as `strict`) through
-  the segmenter's strictness, tailored for Chinese and Japanese by the
-  content language, which the cascade now keeps from `lang` (with the
-  reference browser's ICU tailorings: a leader may start a line under
-  `loose`, a wide prefix may not under `normal` and `strict`); soft wrap
-  opportunities across inline boxes where UAX #14 has one, the start
-  edge of the box going with its text; grapheme clusters for
-  `overflow-wrap: anywhere`, which `word-break: break-word` counts for
-  the min-content width too; `hyphens` (soft hyphens, and `auto` by the
-  `hypher` crate's patterns for the languages it has) with
-  `hyphenate-character` and `hyphenate-limit-chars`; `tab-size`, a tab
-  an item as wide as takes the line to its next stop from the line's
-  start; `text-indent` with `hanging` and `each-line`; `text-transform`'s
-  `full-width`, `full-size-kana`, titlecase and its Turkish, Greek and
-  Dutch tailoring (`text::transform`, which `innerText` applies too);
-  `text-wrap: balance` by trying narrower lines; `text-autospace`'s
-  eighth of an em between ideographs and letters or digits, `normal`
-  being the reference browser's default; `text-shadow` on decorations;
-  `visibility: collapse` on columns. `text-spacing-trim`,
-  `hanging-punctuation`, `text-wrap: pretty`, `hyphenate-limit-lines`,
-  `word-space-transform`, `text-fit` and `text-group-align` are parsed,
-  computed, serialized and animated, but lay nothing out.
-- *The parser and the document* (D57, D58, D59), after the batch: XHTML
-  (`application/xhtml+xml`) is the XML parser's, and so is another XML
-  type with an element of the XHTML, SVG or MathML namespace or a
-  `xml-stylesheet` instruction (one without shows as its source). The
-  parser takes the body whole, then builds a slice at a time and stops
-  after each script element it closes, which runs then. The document
-  is an XML document (`dom::Document::is_xml_document`): names keep
-  their case, `document.write`, `open` and `close` throw, `innerHTML`
-  is XML's both ways. An XHTML DTD's public identifier gives HTML's
-  named references, as the reference browser's built-in DTD does: the
-  reftests that failed whole when XHTML first went to the XML parser
-  had `&nbsp;`, undefined without it, and drew their error. An error
-  is shown as the reference browser shows it, a `parsererror` block
-  above what came before. A popped `option` its `select` has selected
-  is cloned into the `select`'s `selectedcontent`. The `scripted_*`
-  html5lib files run in the
-  engine (`loader::html5lib_tests`). `document.open()` aborts a load's
-  parser and its fetch, stops a navigation under way, erases the
-  listeners of the window and of the nodes scripts hold, and leaves the
-  document loading until `close`; the URL stays, the entry document
-  being the document itself. `DOMContentLoaded` is a task queued after
-  the deferred scripts, after the timers they set. A form's controls
-  are its indexed and named properties, found through an object between
-  its prototype and `HTMLElement.prototype`, so that the builtins win.
-  Not done: selectors in an XML document still match names without
-  regard to case, and template contents have no owner document of their
-  own (G47, G51).
-- *The CSSOM and CSSOM View* (D65, D66, G50), after the batch: a run's
-  `<style>` sheets are made again when the document changes
-  (`Page::rescan_inline`, no network: a `<link>` and a sheet's imports
-  wait for the rescan after the run, which fetches them into the sheet
-  made), so `.sheet`, `document.styleSheets` and `getComputedStyle` see
-  them at once; a sheet whose element went is kept for the objects
-  scripts hold (64 at most), its `ownerNode` null. A sheet change
-  restyles the elements the changed rules match, as a change of their
-  own, so transitions start as before. `getComputedStyle`'s `top` to
-  `left` are used values as the reference browser has them (an
-  absolutely positioned box's from its containing block's padding box,
-  a relative one's and a sticky one's percentages of the containing
-  block's or the scroll container's content box). A `style` object and
-  a rule's block keep values in canonical forms (numbers at their
-  shortest, URLs and strings quoted, commas spaced; substitutions and
-  custom properties as written), and the box, border, outline,
-  list-style and gap shorthands as their longhands, written back in a
-  shorthand where the cascade reads it. Selectors are serialized from
-  their tokens with the sheet's namespaces (`CSSNamespaceRule`,
-  `CSSLayerStatementRule`, attribute prefixes); media lists normalize
-  and set (`mediaText`, `appendMedium`, `deleteMedium`, an element's
-  `media` attribute, a rule's prelude); `addRule` and `removeRule`; a
-  constructed sheet takes `media` and `disabled`. Scrolling goes across
-  too: `paint::Offsets` carries the offsets across and the viewport's,
-  the engine animates both axes, `scrollLeft`, `scrollX`, `scrollTo`'s
-  `left`, `scrollWidth` (from `geometry::overflow`, overflow visible
-  too), `scrollIntoView`'s `block` and `inline` computed in the run;
-  `scroll-behavior` is a property, a smooth script scroll moves over
-  the frames to come, and `scrollend` follows the last `scroll`. The
-  scroll methods return promises, settled at once. A fieldset's
-  absolutely positioned child's offsets take its border off twice, as
-  the reference browser's do. Not done: `getComputedStyle` still samples
-  animations on the host's own copy (G46), the user's wheel and keys
-  and the scrollbar across, `all`, `overflow-x`/`-y` and
-  `background-position-x`/`-y` as longhands, colors in canonical forms,
-  and vertical writing modes' and `direction`'s scroll offsets.
-- *Text*, the rest (D55): the tests' collection has DejaVu Sans Mono
-  as `monospace` (`text::TEST_MONO_FONT`,
-  `FontCollection::from_bytes_with_monospace`; the system collection is
-  unchanged), and `ch` is the zero of the element's own `font-family`,
-  longhand or shorthand (`FontMeasure::zero_advance_in`), not the
-  primary font's. Between two printable ASCII characters line breaking
-  is the reference browser's table as measured from Chrome 156
-  (`ascii_pair_breaks`, in the fast path and over the segmenter alike):
-  after a hyphen or question mark before most, after closing
-  punctuation before an opening one, never after `|` between letters.
-  `letter-spacing` spaces grapheme clusters, the space between words
-  too, but not a cursive script's letters, which stay joined, nor a
-  format character. The other space separators hang at a line's end
-  (but under `break-spaces`, where a line breaks after each), across
-  inline boxes too, and white space that hangs whole fits any line.
-  Justification widens kept spaces and no-break spaces, not those that
-  hang, and with `text-justify: auto` spreads the letters of words of
-  ideographs. A control character (a form feed among them) is drawn.
-  `nowrap` holds beside atomic inlines; the white space before a word
-  breaks as its own `white-space` says; a `break-all` box's last letter
-  breaks from what follows; a word glued to the text before it on a
-  line with no other opportunity is cut where `overflow-wrap` says.
-  `text-wrap: pretty` has the last word of the line before join a last
-  line that is one word alone, the lines before unchanged (the
-  reference browser's results for two to five lines). A selection's
-  string is its rendered text, as `innerText` collects it. Not done:
-  `text-spacing-trim` (the reference browser applies the font's `halt`
-  feature, which shaping here does not take), `text-fit` (shipped by
-  Chrome 156; no text is scaled), segment break transformation (Chrome
-  156 keeps the spaces too); Chrome 156 ships no `hanging-punctuation`,
-  `hyphenate-limit-lines`, `word-space-transform` or `text-group-align`.
-  Not done: template contents have no owner document of their own
-  (G47, G51).
-- *Leftovers closed after the batch*: the font-relative units `cap`,
-  `ic`, `lh`, `rlh`, `rcap`, `rch`, `rex` and `ric`, and `ex` and `ch`,
-  measure the element's first available font (`FontMeasure::units`,
-  the document's web fonts among them), its family, weight, slant,
-  features and `line-height` applied ahead of the other properties; in
-  the font properties they are the parent's, `lh` in `line-height` the
-  parent's line, the root units the initial font's in the root's.
-  Styles that used them are cascaded again when a web font comes
-  (`Styles::uses_font_units`, G12). A box's primary web font is asked
-  for when the box is laid out, text in it or not; a `<link
-  rel=preload>` (`as=font` too) a script made is fetched under the
-  page's policies and fires `load` or `error`. Times, Courier and
-  Helvetica are Times New Roman, Courier New and Arial, as Blink has
-  them. Gradients take 4,096 stops. A `background-color` mixing
-  `currentcolor` in a `color-mix()` keeps its value, which an
-  inheriting element mixes with its own colour (other colour
-  properties do not yet). An empty or fragment-only `url()` is kept as
-  written; `cursor` keeps its images. A raster image's background tile
-  is whole pixels. An inline table whose first row's cells are all
-  empty has no baseline; a list item that is a formatting context root
-  keeps its marker outside its own floats; a colour input is a 50 by 27
-  button showing its swatch. Selectors match names in their own case in
-  an XML document (Selectors 4 section 5.1), `attr()` not yet. A
-  `select`'s `selectedcontent` follows the selection a script or the
-  user makes; the parser's event handler attributes are held to the
-  policies as they are set; a `Request`'s and `Response.redirect()`'s
-  URL is parsed as UTF-8. Not done: `font-variant-emoji` and the
-  variation selectors (no colour fonts), `url()`'s request modifiers,
-  and animations of `line-height` in `lh`.
-- *The CSSOM, scrolling and text, the leftovers* (D65, D66, G46, G50):
-  a scroll whose last step a frame drew wants the frame after it, whose
-  rendering steps fire its `scroll` and `scrollend`
-  (`Engine::scroll_events_due`): the smooth scrolls by script had
-  stopped short of their `scrollend` since the scrolling across. A run
-  borrows the shown page's animations and transitions
-  (`scripts::Lent::animations`), so `getComputedStyle` and the layout
-  queries sample them at the frame's time, the keyframes a script added
-  and the transitions its changes start among them; the timeline moves
-  before a frame's callbacks run. `all` is every longhand
-  `getComputedStyle` lists but `direction` and `unicode-bidi`, in the
-  cascade and in a declaration block. `overflow-x` and `overflow-y`, and
-  `background-position-x` and `-y`, are longhands of their own
-  (`ComputedStyle::overflow` the two axes as one, what layout reads, an
-  axis left `visible` beside `clip` not clipped along in paint; the
-  positions a list each, interpolated as repeatable lists). A
-  specified value writes a hash or a colour function as its canonical
-  colour, one with a calculation or a missing component as written.
-  `scroll-margin` and `scroll-padding` are properties `scrollIntoView`
-  reads (a sticky box's container's padding aside). `@page` rules have
-  `CSSPageDescriptors` (the margins, `size`, `page-orientation`) and a
-  `selectorText` setter; `@container`, `@counter-style` and
-  `@font-feature-values` have their rule objects, the last its maps,
-  which write the rule back. A script's `disabled` on any sheet and a
-  constructed sheet's `media` and `disabled` reach the cascade, and
-  `new CSSStyleSheet({ baseURL })` resolves its rules' URLs against it.
-  `Range.getClientRects` and `getBoundingClientRect` give each
-  character's box from its text fragment, matched to the text node by
-  its characters (`scripts::range_rects`): collapsed white space takes
-  none, a space laid out as the room between two words that room. The
-  wheel and the arrow keys scroll across; the viewport has a scrollbar
-  across where `Engine::set_scrollbar_across` asks for one, as the
-  shell does (a test's capture has none, as the reference browser's
-  have no scrollbars, nor does a page the browser made), which the shell
-  drags, and a wheel's turn across, or Shift with a turn down, scrolls
-  across (IPC version 3). Text of private-use code points alone passes
-  over the generic families (`layout::font::font_for`), and atomic
-  inlines no line may break between are one piece of the min-content
-  width. `text-wrap: balance` takes the same room off each line, beside
-  a float or not, and no balancing that pushes a line down past a
-  float. Not
-  done: `direction` as a property (the `dir` attribute alone sets it)
-  and with it right-to-left scroll offsets; the insets of a box
-  positioned in a grid area or a relatively positioned inline (layout
-  places it against the block); `text-spacing-trim` and `text-fit`;
-  bidi reordering across inline boxes (the
-  right-to-left `pre` run); collapsible spaces at a line's end inside
-  an empty inline; a collapsed run of spaces breaking where any of them
-  may.
-- *`Intl`* (D63), the leftovers closed after the batch: a calendar a
-  `-u-ca-` asks for is written by the reference browser's patterns of
-  it, each language's `lang@CAL` in `intl_dates.txt` over its chain
-  (dangi over chinese, the islamic variants over islamic, every
-  calendar over generic, generic over the gregorian ones;
-  `gen_calendars.py`), its names ICU4X's; the Chinese calendars' `y` is
-  the year of the cycle and `r` the related year; the astronomical
-  islamic calendar is ICU's by a table of its months from 1800 to 2199
-  read from the reference browser (`intl_islamic.txt`), ICU4X's
-  simulated one being a day off at times. `Intl.Segmenter` by
-  `icu_segmenter` (dictionaries for the languages without spaces), with
-  Chromium's word rules that break around `.` and `:` between letters;
-  `Intl.DurationFormat` as V8 writes it, over `NumberFormat` and
-  `icu_list`'s lists of units, a numeric minute or second joining the
-  list's last element by the time separator; `Intl.DisplayNames` by
-  ICU4X's names composed as ICU's LocaleDisplayNames composes them, the
-  codes the reference browser names at all and the names where it
-  differs in `intl_names.txt` (with its calendars' and date fields'
-  names), compared over 111,075 names of 75 locales. A zone's offsets
-  run through its whole history in zoneinfo64 (local mean time with its
-  seconds, `GMT-04:56:02`); before 1970 a zone has no metazone, as ICU's
-  mappings start then, and only UTC, London and Dublin names of their
-  own. A sign's direction mark is a literal part, and a unit written in
-  words (Arabic's two days) has no sign. Not done: the Japanese
-  calendar's Meiji 1 to 5 (ICU4X's starts in 1873), the patterns'
-  numbering overrides (`d=hanidec`, `y=jpanyear`), and the ranges of the
-  Chinese, Hebrew and Indian calendars.
-- *Workers, Web Audio and the runner* (D61, D37), after the batch: a
-  classic script with muted errors (another origin's, without CORS),
-  from a `script` element or `importScripts`, has `about:blank` as the
-  base of its `import()`s. The scripts one call runs (the deferred ones
-  in turn) each see the window, which a run's host now copies rather
-  than takes: the second of two deferred scripts had none, its
-  `parent.postMessage` going nowhere. An element's sound reaches a graph
-  at the graph's rate when that is the sound's own, decoded for it
-  again from where it is when a graph takes it, and the mixer gives the
-  elements' sound before the graphs render, the graph first given a
-  lead of four quanta. `canvas.captureStream()` gives a stream of one
-  `CanvasCaptureMediaStreamTrack`, as far as the reference browser's
-  shape; it makes no frames. The WPT runner serves its own
-  `testdriver-vendor.js`, whose `test_driver.bless` the runner clicks
-  natively, the user's activation a real click's.
+  the parsed sheet the cascade reads, edited in place; a run's `<style>`
+  sheets are made again as the document changes (`Page::rescan_inline`),
+  and a sheet change restyles what the changed rules match. Specified
+  values, selectors and rule blocks are serialized canonically, the box
+  shorthands kept as their longhands; a longhand is read from a
+  shorthand kept as written (`scripts::cssom::longhands`). Constructed
+  and adopted sheets, `disabled` and media lists in the cascade, the
+  namespace, layer, page, container, counter-style and font-feature-
+  values rules.
+- **The acceptance (step 15).** WPT's batch directories came in as
+  planned, and the runner gained `WPT_ONLY`, a results file, variants, a
+  second port, https with a root of its own, the Python handlers the
+  tests need written natively, `test_driver.bless`, and a monospace face
+  (DejaVu Sans Mono) for the tests. What it found: a `br` had never
+  broken a line; the batch's support files (the modules the scripting
+  tests import) had never been copied; layout was twice as slow (step
+  1's note); the dom_api fuzz target's comparison counted nodes a
+  snapshot leaves out and missed the CSSOM's edits; a run's host took
+  the window rather than copying it, so the second of two deferred
+  scripts had none. The last T4.3 found three slowdowns, each mended: a
+  line's words asked the font collection again for their face, metrics
+  and gap (the load page's first-frame layout 23 ms against the base's
+  15.4; now 15.6, `inline::LineMemo`); a `font-variant` longhand copied
+  whole to compare one field of it, and a transition looked for among
+  the running and completed ones for each of 198 longhands (twenty class
+  changes under `transition: all`, 36.7 ms of style against 29.7; now
+  26.8 against 27.5). Six fuzz targets no longer built against the
+  batch's interfaces. Eight targets (dom_api, html_parse, xml_parse,
+  pipeline, style_document, mutation, css_stylesheet, values) then
+  replayed their corpora and ran fifteen minutes each, dom_api, at two
+  inputs a second, twenty minutes more from 200 of its seeds: nothing
+  found. The
+  gate's whole run then found a playback rate that overwrote a seek
+  still to be done, so that the element waited on it for ever (WPT's
+  preserves-pitch, by the pipeline thread's timing), and
+  `decodeAudioData` decoding 44.8 million samples to refuse them by a
+  length the container had said (`media::decode_all_within`); 3,651
+  tests pass workspace-wide, three ignored.
+- **Closing what the batch found.** Under the maintainer's rule every
+  gap the steps set aside, and the 1,533 WPT entries the first pull
+  marked undiagnosed, were worked through by agents in worktrees, each
+  merged by patch with its own tests and sabotage and the whole WPT run
+  at the merge. The WPT subset grew from 11,037 tests to 12,069 (XHTML,
+  variants, `.https`, `br`), and passes 9,284 of them and 83,166 of
+  112,336 subtests, every other result named with its reason. What is
+  left is in section 2.

@@ -600,6 +600,8 @@ earlier milestones say why each is what it is):
 | `dom` | `MAX_JOURNAL` | `1 << 16` | The most records the journal keeps between two drains. |
 | `dom` | `MAX_DATA_BYTES` | `256 << 20` | The most bytes of text, tag names and attribute names and values a document may hold in its live nodes through its mutation API: 256 MiB, what a script's heap may hold (M25), so that a script cannot make the document keep a string many times over that it holds once. |
 | `dom` | `MAX_GENERATION` | `1 << 21` | The generations a slot may have: a slot is retired once this many nodes have had it, so that an id fits in the 53 bits a script's number holds exactly ([`NodeId::to_bits`]). |
+| `dom` | `MAX_RANGES` | `1 << 12` | The most live ranges a document keeps at once (gap batch D). |
+| `dom` | `MAX_ITERATORS` | `1 << 12` | The most node iterators a document keeps at once (gap batch D). |
 | `engine` | `MAX_CONTROL` | `1 << 24` | The most bytes a text control holds, the document's own limit standing behind it. |
 | `engine` | `MAX_FRAMES` | `100` | The most frames a tab has, those of the documents its history keeps included: past them an `iframe` stays empty (the reference browser allows 1,000 a page; a frame here is a whole engine). |
 | `engine` | `MAX_FRAME_DEPTH` | `16` | How deep frames nest: a frame this deep makes none of its own. |
@@ -701,6 +703,19 @@ earlier milestones say why each is what it is):
 | `engine` | `MAX_WEBGL_CONTEXTS` | `16` | The most WebGL contexts a document keeps live; a new one past them loses the oldest, as the reference does. |
 | `engine` | `MAX_PIPELINES` | `1024` | The most pipelines a WebGL context keeps; past them the oldest go. |
 | `engine` | `MAX_SIZE` | `8192` | The largest texture side, renderbuffer and viewport WebGL's contexts give. |
+| `engine` | `MAX_DETACHED_SHEETS` | `64` | The most sheets of elements taken out a page keeps for the CSSOM (gap batch D). |
+| `engine` | `MAX_CONSTRUCTED_SHEETS` | `4096` | The most sheets a document's scripts may construct (gap batch D). |
+| `engine` | `MAX_SCRIPT_OPTIONS` | `1024` | The most sets of script fetch options a document numbers: past them a script's `import()`s fetch with the defaults (gap batch D). |
+| `engine` | `MAX_IMPORT_MAP_BYTES` | `1 << 20` | The most bytes an import map's text may hold; past it, it is a `TypeError` (gap batch D). |
+| `engine` | `MAX_IMPORT_MAP_ENTRIES` | `10_000` | The most entries an import map keeps, its imports', its scopes' and its integrity's together: each resolution goes through them. Past it, it is a `TypeError` (gap batch D). |
+| `engine` | `MAX_JAVASCRIPT_URLS` | `64` | The most `javascript:` URLs a loading document keeps to run (gap batch D). |
+| `engine` | `MAX_PARSED_HANDLERS` | `4096` | The most parser-set handlers kept as told of their refusal: past it, a refusal is told again when a script reaches its element (gap batch D). |
+| `engine` | `MAX_MODULES` | `2048` | The most modules a document's realm fetches: past them a graph that needs another fails (gap batch D). |
+| `engine` | `MAX_RESOLVED` | `10_000` | The most specifiers resolved a document keeps (HTML's resolved module set), which a later import map may not change: past them, one may (gap batch D). |
+| `engine` | `MAX_MODULE_BYTES` | `128 << 20` | The most bytes of modules a document's realm fetches, all together: past them a module fails as its fetch would (gap batch D). |
+| `engine` | `MAX_RULES` | `1 << 16` | The most rules a list may hold after an insertion: what a hostile script could otherwise grow a sheet by (gap batch D). |
+| `engine` | `MAX_AUDIO_TRACKS` | `256` | The most live `MediaStreamTrack`s a document's `MediaStreamAudioDestinationNode`s make; past them, a new one is refused (gap batch D). |
+| `engine` | `MAX_SCRIPT_BUFFERS_OWED` | `64` | The most `ScriptProcessorNode` buffers a context hands its document that it has not answered: past them a realtime one's are not handed out, and play as silence, so that a page that does not keep up does not fill its inbox (gap batch D). |
 | `glsl` | `MAX_SHADER_SOURCE` | `1 << 20` | The most bytes a shader's source may have (M41). |
 | `glsl` | `MAX_GLSL_TOKENS` | `1 << 20` | The most tokens a shader may have after preprocessing. |
 | `glsl` | `MAX_GLSL_DEPTH` | `64` | The most nesting of blocks, expressions and macros. |
@@ -715,6 +730,8 @@ earlier milestones say why each is what it is):
 | `audio` | `MAX_DELAY_SECONDS` | `180` | A `DelayNode`'s longest delay: the standard's. |
 | `audio` | `MAX_CONVOLVER_FRAMES` | `480000` | A `ConvolverNode`'s impulse response: ten seconds at 48 kHz. |
 | `audio` | `MAX_FFT_SIZE` | `32768` | An `AnalyserNode`'s FFT: the standard's. |
+| `audio` | `MAX_STREAM_WAITING` | `16_384` | The most frames of a stream kept waiting for its reader: a mixer's wake's worth twice over (gap batch D). |
+| `audio` | `MAX_READERS` | `64` | The most feeds one tap gives to (gap batch D). |
 | `silver-browser` | `MAX_CRASH_DUMPS` | `8` | The most dumps kept: past it, the oldest go. |
 | `silver-browser` | `MAX_FORWARDED` | `1024` | The most requests waiting on the page's answers. |
 | `silver-browser` | `MAX_ALL_RENDERERS` | `48` | The most renderers the windows' tabs keep alive together (M37), shared out among the windows: past a window's share, its hidden tab least recently shown is discarded. |
@@ -727,6 +744,7 @@ earlier milestones say why each is what it is):
 | `html` | `MAX_ENTITY_EXPANSION` | `1 << 20` | The most characters entities may expand to in a document. |
 | `html` | `MAX_ENTITY_FACTOR` | `10` | How many times the document's own length its entities may expand to. |
 | `html` | `MAX_ENTITY_NESTING` | `32` | How deep entities may refer to entities. |
+| `html` | `MAX_STEPS` | `256` | How many times one token may be processed, reprocessing counted: the standard's chains of "reprocess the token" are a handful long (gap batch D). |
 | `images` | `MAX_IMAGE_BYTES` | `32 << 20` | The largest encoded image taken, in bytes. |
 | `images` | `MAX_IMAGE_SIDE` | `16_384` | The largest side of an image, in pixels. |
 | `images` | `MAX_IMAGE_PIXELS` | `1 << 25` | The most pixels an image may have: width times height. |
@@ -745,6 +763,12 @@ earlier milestones say why each is what it is):
 | `js` | `MAX_WASM_RECURSION` | `10_000` | A module's calls, nested; deeper is a stack overflow (`RangeError`), as the reference browser's is. |
 | `js` | `MAX_STACK_FRAMES` | `64` | The most frames a stack keeps (M36). |
 | `js` | `MAX_PREVIEW_BYTES` | `64 << 10` | The most bytes of a console call's previews (M36): past it, the call has its text alone. |
+| `js` | `MAX_SPECIFIER_BYTES` | `2 << 20` | The longest module specifier a realm resolves, in bytes (D61): the reference browser's longest URL. A longer one throws a `TypeError` (gap batch D). |
+| `js` | `MAX_MODULE_DEPTH` | `256` | The deepest module graph a realm links (D61), its root at depth 0: the engine fetches none deeper. Its modules given leaves first, a realm links a graph twice as deep within [`MAX_SCRIPT_STACK`] in a release build, measured; QuickJS's linking is recursive (gap batch D). |
+| `js` | `MAX_TAG` | `256` | The longest language tag taken, and the most tags a list may hold: bounds the work a hostile list makes, far past any real tag's (gap batch D). |
+| `js` | `MAX_NUMBER_STRING` | `1100` | The longest numeric string formatted exactly (ECMA-402 section 15.5.16's strings); a longer one is read as a double (gap batch D). |
+| `js` | `MAX_REFERRERS` | `8192` | The most scripts and modules a realm keeps as referrers: past them a new one's `import()`s resolve against its own URL with the default options (gap batch D). |
+| `js` | `MAX_INPUT` | `256` | The most active scripts kept for promises made by code a string compiled, until the jobs run (gap batch D). |
 | `layout` | `MAX_SET` | `1024` | The most counters one element's set holds. |
 | `layout` | `MAX_COUNTERS` | `1 << 20` | The most counters one walk instantiates. |
 | `layout` | `MAX_GENERATED_TEXT` | `1 << 20` | The longest one pseudo-element's text, in bytes: a `::before`'s, an `::after`'s or a marker's. |
@@ -756,6 +780,7 @@ earlier milestones say why each is what it is):
 | `layout` | `MAX_WORKER_THREADS` | `8` | The most threads layout's pool has (M35.3): fewer on a machine with fewer cores. |
 | `layout` | `MAX_ITEM_LAYOUTS` | `4` | The most layouts of one flex item, grid item or cell the layout cache keeps (M35.9). |
 | `layout` | `MAX_PAGES` | `10_000` | The most pages a document is cut into: what is below the last is on none. |
+| `layout` | `MAX_BALANCED_LINES` | `6` | The most lines `text-wrap: balance` balances a paragraph of, as the reference browser has it: a longer one wraps as `wrap` does (gap batch D). |
 | `net` | `MAX_CACHE_BYTES` | `64 << 20` | The most the cache's bodies hold in memory: past it, the least recently used go first, to the profile if it keeps them. |
 | `net` | `MAX_PROFILE_CACHE_BYTES` | `256 << 20` | The most the bodies the profile keeps hold (M38): past it, the least recently used entries go first. |
 | `net` | `MAX_FIELDS` | `1024` | The most fields a cache record's head or `Vary` holds. |
@@ -787,6 +812,7 @@ earlier milestones say why each is what it is):
 | `net` | `MAX_FRAME_SIZE` | `16_384` | The largest frame payload either end takes until it says otherwise (`SETTINGS_MAX_FRAME_SIZE`'s initial value), which this end keeps. |
 | `net` | `HPACK_TABLE_SIZE` | `4096` | The dynamic table's size HTTP/2 starts with on both ends (RFC 9113 6.5.2), which this end keeps. |
 | `net` | `MAX_KNOWN_ORIGINS` | `1024` | The most origins the pool remembers speak HTTP/1.1 alone: past it, it forgets them all. |
+| `net` | `MAX_INTEGRITY_ENTRIES` | `64` | The most entries a metadata list is read to (gap batch D). |
 | `paint` | `MAX_GRADIENT_PIXELS` | `1 << 22` | The most pixels a gradient is rendered with: a larger tile is rendered smaller and stretched over it. |
 | `paint` | `MIN_PERIOD` | `0.5` | The period below which a repeating gradient is drawn as its average colour, the pixels being too coarse to show it (section 3.3). |
 | `paint` | `MAX_THREADS` | `8` | The most threads a gradient is rendered on, a band of rows each. |
@@ -803,7 +829,7 @@ earlier milestones say why each is what it is):
 | `style` | `MAX_ANIMATIONS` | `65_536` | The most animations and transitions a document runs together: past it a new one does not start. |
 | `style` | `MAX_DEPTH` | `32` | The deepest a calculation may nest, parentheses and math functions together: section 10.8's least that a user agent must support, as selectors' and media queries' parentheses are bounded. |
 | `style` | `MAX_LENGTH_PX` | `33_554_431.0` | The largest length, in CSS pixels, a declaration can set in either direction. |
-| `style` | `MAX_GRADIENT_STOPS` | `256` | The most colour stops a gradient may have (M23.3): one with more is invalid. |
+| `style` | `MAX_GRADIENT_STOPS` | `4_096` | The most colour stops a gradient may have (M23.3): one with more is invalid. |
 | `style` | `MAX_IMAGE_LAYERS` | `256` | The most layers a box's background may have (M23.3): a list longer than this makes its declaration invalid. |
 | `style` | `MAX_REPRESENTATION` | `60` | The longest representation a style writes, in code points; a longer one is its fallback's (Counter Styles 3 section 2: at least 60 must be supported). |
 | `style` | `MAX_FALLBACKS` | `8` | How many fallbacks are followed before `decimal` is used: more than any chain of the predefined styles, which is two long. |
@@ -821,6 +847,10 @@ earlier milestones say why each is what it is):
 | `style` | `MAX_SCHEME_WORDS` | `16` | The most scheme names a `color-scheme` may list (gap batch E). |
 | `style` | `color::MAX_DEPTH` | `32` | The deepest a `color-mix()` may nest in another (gap batch E): a deeper one is invalid. |
 | `style` | `color::MAX_COMPONENT` | `1e6` | The largest magnitude a colour's component is kept at, so that its conversions stay finite (gap batch E). |
+| `style` | `MAX_CURSOR_IMAGES` | `16` | The most images a `cursor` keeps (gap batch D). |
+| `style` | `MAX_FONT_FEATURES` | `64` | The most features a `font-feature-settings` may list: a longer list is invalid (gap batch D). |
+| `style` | `MAX_FONT_SOURCES` | `16` | The most sources a rule's `src` may list (gap batch D). |
+| `style` | `MAX_UNICODE_RANGES` | `256` | The most ranges a `unicode-range` may list (gap batch D). |
 | `svg` | `MAX_SVG_ELEMENTS` | `1 << 18` | The most elements a render tree is built from, `<use>`s' instances counted; past it, what was built is drawn. |
 | `svg` | `MAX_USE_DEPTH` | `32` | The most `<use>`s within one another, and the longest chain of gradients' templates; a `<use>` past it draws nothing. |
 | `svg` | `MAX_GRADIENT_STOPS` | `1_024` | The most stops a gradient takes; the rest are left out. |
@@ -832,6 +862,12 @@ earlier milestones say why each is what it is):
 | `text` | `MAX_SHAPE_PLANS` | `64` | The most shaping plans a font keeps (M35.8): past it a plan is made for the call and not kept. |
 | `text` | `MEASURE_SHARDS` | `16` | How many parts the kept widths are in, each behind its own lock (M35.8). |
 | `text` | `MAX_MEASURES` | `1 << 16` | The most widths a collection keeps: a few megabytes of words. |
+| `text` | `MAX_SHAPINGS` | `4096` | The most shaping options a registry keeps; past it a font shapes as the font does by itself (gap batch D). |
+| `text` | `MAX_CHAINS` | `4096` | The most chains a registry keeps; past it a font has none, its ranged faces passed over (gap batch D). |
+| `text` | `MAX_CHOICES` | `4096` | The most choices a collection keeps; past it they are forgotten and made again (gap batch D). |
+| `text` | `MAX_FONT_FACES` | `256` | The most faces a document may have (gap batch D). |
+| `text` | `MAX_FONT_BYTES` | `32 << 20` | The most bytes a face's data may have, as fetched or decoded (gap batch D). |
+| `text` | `MAX_TABLES` | `512` | The most tables a file may have (gap batch D). |
 | `ui` | `MAX_CHARS` | `1024` | The most characters of a page's title the window shows. |
 | `ui` | `MIN_FIELD_W` | `40.0` | The narrowest the field is drawn. |
 

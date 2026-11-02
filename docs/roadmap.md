@@ -2727,17 +2727,23 @@ design note first and the milestones' method:
        every failure with its reason; colours held to the reference
        browser's on WPT's 1,503 computed cases, five reference pages
        (143-147); the gaps found G224-G232 (the note's section 4).
-- [ ] GD Text, the DOM and scripts (`docs/design/text-dom-scripts.md`,
+- [x] GD Text, the DOM and scripts (`docs/design/text-dom-scripts.md`,
        D53-D66), the priorities' groups D, F, C and B: the font
        properties (G22), web fonts and `visibility` (G12, part), line
        breaking (G10), `text-shadow` (G20, part), the tree builder's
        modes (G44), every kind of node (G47), presentational hints
        (G45), `document.open` (G48), ranges and traversal (G52),
        `moveBefore` (G66), module scripts and import maps (G41),
-       Subresource Integrity (G43), `Intl` (G42), binding chunks
-       (G163), a flush for scripts (G46), the CSSOM (G50), every
-       computed value (G159, G232) and `currentcolor` kept (G226).
-       Opened at the maintainer's word, 30 October 2026.
+       Subresource Integrity (G43), `Intl` (G42), binding chunks (G163),
+       a flush for scripts (G46), the CSSOM (G50), every computed value
+       (G159, G232) and `currentcolor` kept (G226). Opened at the
+       maintainer's word, 30 October 2026. Done 3 November 2026: WPT's
+       directories for the batch pulled, the subset 12,069 tests, 9,284
+       of them passing and 83,166 of 112,336 subtests, every failure
+       with its reason; html5lib's tree tests 1,959 of 1,959; `Intl`
+       compared with Chrome 156 over 200,000 outputs; every gap the
+       batch found closed in it, at the maintainer's word of 30 October;
+       what is left in the note's section 2.
 
 Deferred from the milestones above, each with what it waits on:
 
@@ -2779,19 +2785,23 @@ Deferred from the milestones above, each with what it waits on:
        at the display's scale factor, once the engine draws at it.
        Deferred from M20.3. The resolution at the display's scale: done
        at M32.
-- [ ] G10 Line breaking by UAX #14 (css-text-3 §5): soft wrap
+- [x] G10 Line breaking by UAX #14 (css-text-3 section 5): soft wrap
        opportunities after hyphens and the rest of the line-breaking
        classes, where M7.3 wraps at white space only; and `white-space:
-       nowrap`, which M8.4 did not take. Found at M20.5.
-- [ ] G11 The root element's margins (CSS2 §8.3.1): a child's top margin
-       collapses through the root's box here, which the root's box should
-       not let it, so that the root's box starts below the margin. Found
-       at M20. Done in gap batch E.
+       nowrap`, which M8.4 did not take. Found at M20.5. Done in gap
+       batch D (D55, D56).
+- [x] G11 The root element's margins (CSS2 section 8.3.1): a child's top
+       margin collapses through the root's box here, which the root's
+       box should not let it, so that the root's box starts below the
+       margin. Found at M20. Done in gap batch E.
 - [ ] G12 What M20's web-platform-tests ask of the rest of the engine:
        the `visibility` property; `@font-face` and the page's fonts,
        which `font-format()` and `font-tech()` would answer; `:has()`;
        `::details-content` and the pseudo-elements of form controls; and
-       the HTML parser's "in head noscript" insertion mode. Found at M20.
+       the HTML parser's "in head noscript" insertion mode. Found at
+       M20. Its fonts (with `font-format()` and `font-tech()` answered),
+       `visibility` and the in head noscript mode done in gap batch D
+       (D53, D54, D57); `:has()` and the pseudo-elements remain.
 - [ ] G13 The print reftests of the web-platform-tests, which compare
        paginated renderings: the harness renders the screen alone.
        Deferred from M20.
@@ -2831,16 +2841,17 @@ Deferred from the milestones above, each with what it waits on:
 - [ ] G20 The rest of text decoration: `text-decoration-skip-ink` and
        `-skip`, emphasis marks, `text-shadow`, the spelling and grammar
        lines, and `text-decoration` on `::first-line` and
-       `::first-letter`. Deferred from M21.7.
+       `::first-letter`. Deferred from M21.7. `text-shadow` done in gap
+       batch D (D55).
 - [ ] G21 Justification beyond expanding gaps and characters:
        compressing a line, the rules of Chinese, Japanese, Korean and the
        South-East Asian scripts (with G10), cursive elongation,
        `text-align` with a string; and `match-parent` on a right-to-left
        root. Deferred from M21.7.
-- [ ] G22 The fonts' remaining properties: `font-weight`, `font-style`,
+- [x] G22 The fonts' remaining properties: `font-weight`, `font-style`,
        `font-feature-settings`, `line-height` and the `font` shorthand,
        which M5.6, M8.2 and M20's note pointed at M21 and none of its
-       items holds. Registered at M21.
+       items holds. Registered at M21. Done in gap batch D (D53).
 - [x] G23 `display: flow-root`, which the cascade does not take. Found
        at M21. Done in gap batch E.
 - [ ] G24 Logical properties (`padding-inline-start` and the rest) and
@@ -2917,19 +2928,22 @@ Deferred from the milestones above, each with what it waits on:
        axis's list the longer of the two, and the logical keywords
        (`x-start` and the rest) remain.
 - [ ] G41 Module scripts, import maps and speculation rules: a `script`
-       of those types is recognized and not run. Found at M24.
+       of those types is recognized and not run. Found at M24. Module
+       scripts and import maps done in gap batch D (D61); speculation
+       rules remain.
 - [ ] G42 `Intl` and `Temporal`, which QuickJS-ng does not implement.
-       Found at M24.
-- [ ] G43 Subresource Integrity: a `script`'s `integrity` is not
-       checked. Found at M24.
-- [ ] G44 The tree builder's missing insertion modes: the table modes,
+       Found at M24. `Intl` done in gap batch D (D63); `Temporal`
+       remains.
+- [x] G43 Subresource Integrity: a `script`'s `integrity` is not
+       checked. Found at M24. Done in gap batch D (D62).
+- [x] G44 The tree builder's missing insertion modes: the table modes,
        the active formatting elements and the adoption agency, foster
        parenting, templates and foreign content beyond self-closing
        elements; comments and doctypes in the tree ("in head noscript" is
        G12's). Found at M24. Foreign content: done at M32 (html5lib's
        tests of it pass but for those of the table, select and frameset
-       modes).
-- [ ] G45 HTML's presentational attributes and elements (HTML section
+       modes). Done in gap batch D (D57).
+- [x] G45 HTML's presentational attributes and elements (HTML section
        15, Rendering), as hints the cascade takes below the author's
        rules, as M21.6 does for lists and M23 for images: `<center>` and
        `align` on blocks, headings, tables and cells, with
@@ -2941,34 +2955,40 @@ Deferred from the milestones above, each with what it waits on:
        on images; and `<font>`'s `color`, `face` and `size`. Old pages
        and pages served to browsers without scripts lean on them:
        Google's basic page is laid out uncentred without them. Found at
-       M24.
-- [ ] G46 A style and layout flush for scripts: `getComputedStyle`
+       M24. Done in gap batch D (D60).
+- [x] G46 A style and layout flush for scripts: `getComputedStyle`
        that starts transitions, shows animations and sees the sheets a
        running script added; the resolved values of `width`, `height`
        and the rest, which are the used values; CSSOM View's layout
        queries (`offsetWidth`, `clientWidth`, `getBoundingClientRect`,
-       `scrollTop`, `scrollTo`, `innerText`). Found at M25.
+       `scrollTop`, `scrollTo`, `innerText`). Found at M25. Done in gap
+       batch D (D65).
 - [ ] G47 More kinds of node: `Comment`, `DocumentFragment`,
        `DocumentType`, `ProcessingInstruction`, `CDATASection`, `Attr`
        and `attributes`, with `createComment`, `createDocumentFragment`
        and `template`'s content, which the parser's comments and
-       doctypes (G44) would make too. Found at M25.
-- [ ] G48 `document.open` and `document.close`, and a `document.write`
+       doctypes (G44) would make too. Found at M25. Done in gap batch D
+       (D58) but for a template's contents' own owner document, which
+       waits on a second document in a realm (`createHTMLDocument`,
+       `DOMParser`).
+- [x] G48 `document.open` and `document.close`, and a `document.write`
        with no insertion point replacing the document (a `javascript:`
-       URL's string result is M26.6's). Found at M25.
+       URL's string result is M26.6's). Found at M25. Done in gap batch
+       D (D59).
 - [x] G49 `MutationObserver`, which M13 expected of M24 or M25. Found
        at M25. Done in gap batch A (D42).
-- [ ] G50 CSSOM's serialization of specified values and of shorthands
+- [x] G50 CSSOM's serialization of specified values and of shorthands
        in `style` and `cssText`, which keep the text they were given;
-       `document.styleSheets` and the CSSOM's rule objects. Found at M25.
+       `document.styleSheets` and the CSSOM's rule objects. Found at
+       M25. Done in gap batch D (D66).
 - [ ] G51 Namespaces: `createElementNS`, and MathML's elements as their
        own interfaces (SVG's are M32's). Found at M25. `createElementNS`,
        the namespaced attribute methods for XLink's and XML's, and
        `MathMLElement`: done at M32; attributes of other namespaces,
        `[ns|attr]` selectors and MathML's own interfaces remain.
-- [ ] G52 Traversal and ranges: `TreeWalker`, `NodeIterator`, `Range`,
+- [x] G52 Traversal and ranges: `TreeWalker`, `NodeIterator`, `Range`,
        `Selection`, `compareDocumentPosition`, `isEqualNode`,
-       `normalize`. Found at M25.
+       `normalize`. Found at M25. Done in gap batch D (D59).
 - [ ] G53 Custom elements and shadow trees. Found at M25.
 - [x] G54 The window's named properties (HTML 7.2.2.3): an element by
        its id as a global (`toggler.className`), which most of the
@@ -3007,8 +3027,8 @@ Deferred from the milestones above, each with what it waits on:
        `requestIdleCallback`, `ResizeObserver` and
        `IntersectionObserver` done in gap batch A (D45); the `dialog`
        form's method remains.
-- [ ] G66 DOM's `moveBefore`, a move that keeps a node's state. Found at
-       M26, by a crashtest that threw on it.
+- [x] G66 DOM's `moveBefore`, a move that keeps a node's state. Found at
+       M26, by a crashtest that threw on it. Done in gap batch D (D59).
 - [ ] G67 Streams: `ReadableStream` and the rest of the Streams Standard,
        `Response.body` and `Request.body`, a request body streamed,
        `Blob.stream()`, progress events as bytes arrive. Named at M27
@@ -3389,9 +3409,10 @@ Deferred from the milestones above, each with what it waits on:
 - [ ] G158 `navigator.storage` is defined on every window's
        `navigator`, not only a secure context's, and a worker has none.
        Found at M36.
-- [ ] G159 `getComputedStyle` (and so the computed pane) lacks
+- [x] G159 `getComputedStyle` (and so the computed pane) lacks
        properties `serialize::COMPUTED_PROPERTIES` does not list,
-       `text-decoration` among them. Found at M36.
+       `text-decoration` among them. Found at M36. Done in gap batch D
+       (D66).
 - [ ] G160 A console argument's preview may run a `Proxy`'s traps (the
        page's own code, under its budget); getters are not run. Found at
        M36.
@@ -3403,10 +3424,11 @@ Deferred from the milestones above, each with what it waits on:
        are made by the bindings' script at every call. Previews made by
        a native, or only while the panel is open with the text kept
        otherwise (T4.3's exception). Found at M36.
-- [ ] G163 A realm made 5.55 -> 6.42 ms at M36 (a worker's start 7.21
+- [x] G163 A realm made 5.55 -> 6.42 ms at M36 (a worker's start 7.21
        -> 7.93 ms): the bindings' 81 KB more script (the console,
        IndexedDB, `navigator.storage`) run in every realm. Interfaces
-       made when first reached (T4.3's exception). Found at M36.
+       made when first reached (T4.3's exception). Found at M36. Done in
+       gap batch D (D64).
 - [ ] G164 A tab discarded past `MAX_ALL_RENDERERS` keeps its URL and
        title, not its history or its `sessionStorage`, as the reference
        browser's does. Found at M37.
@@ -3635,11 +3657,12 @@ Deferred from the milestones above, each with what it waits on:
        channel when drawn, as the reference browser draws it, not
        mapped by OKLCH chroma reduction as css-color-4 section 13 asks
        (`lch(100% 110 60)` should be white). Found in gap batch E.
-- [ ] G226 `currentcolor` kept as a keyword in computed values: it is
+- [x] G226 `currentcolor` kept as a keyword in computed values: it is
        resolved when a colour computes (D48), so a property that
        inherits a value holding it explicitly (`background-color:
        inherit` under a `color-mix()` with `currentcolor`) takes the
-       parent's colour, not its own. Found in gap batch E.
+       parent's colour, not its own. Found in gap batch E. Done in gap
+       batch D (D66).
 - [ ] G227 `backdrop-filter`. Found in gap batch E (its note's section
        2).
 - [ ] G228 Infinite and NaN calculations kept as such where the value
@@ -3660,10 +3683,10 @@ Deferred from the milestones above, each with what it waits on:
        by the curve, and a corner's inner radius larger than the box
        inside it (the reference browsers clip there differently).
        Found in gap batch E (its note's section 2).
-- [ ] G232 `getComputedStyle`'s gradients: `background-image` and
+- [x] G232 `getComputedStyle`'s gradients: `background-image` and
        `border-image-source` with a gradient serialize as nothing
        (G159's largest part, some 1,100 WPT subtests). Found in gap
-       batch E.
+       batch E. Done in gap batch D (D66).
 
 ---
 

@@ -2417,3 +2417,33 @@ filter's or a shadow's reach, a damage bug of layers sharing a key,
 the runner's missing viewport for testharness pages: mended. Not in
 the batch, registered: G224 to G232. 3,297 tests pass workspace-wide, two ignored.
 
+Gap batch D (text, the DOM and scripts;
+`docs/design/text-dom-scripts.md`, D53 to D66): fonts chosen by the font
+properties (`text::faces`, a face chain per font for `unicode-range` and
+its shaping options), web fonts laid over a collection (`text::web`,
+WOFF and WOFF2, `document.fonts` and `FontFace`), line breaking by
+ICU4X's segmenter with the reference browser's ASCII table
+(`text::breaks`), hyphenation, text transforms and the css-text
+properties in `layout::inline`; the tree builder's every mode and
+`selectedcontent` (`html::tree_builder`), an incremental XML parser for
+XHTML (`html::xml`); every kind of node, live ranges and iterators
+(`dom::document::live`); presentational hints
+(`style::cascade::presentational`) and fieldsets (`layout::fieldset`);
+module scripts and import maps (`engine::scripts::modules`,
+`js::quickjs::modules`); Subresource Integrity (`net::sri`); `Intl` from
+ICU4X with the reference browser's ICU data (`js::quickjs::intl*`);
+binding chunks read at their first use; a flush for scripts lent the
+shown page's fonts, images, scroll offsets and animations
+(`engine::geometry`, `scripts::Lent`), scrolling across; the CSSOM's
+sheets, rules and canonical values (`engine::scripts::rules`,
+`scripts::cssom`), every computed value and `currentcolor` kept. Midway
+the maintainer made every gap the batch found its own to close; the
+acceptance found and mended layout made twice as slow by font lookups, a
+`br` that never broke a line, support files never copied, a window taken
+rather than copied for a run's second script, and the dom_api fuzz
+target's comparison. The WPT subset is 12,069 tests (XHTML, variants,
+`.https`), the runner with a second port, https of its own and
+`test_driver.bless`. The gate then found a playback rate that dropped a
+seek still to be done and `decodeAudioData` decoding what its length
+refused, both mended. 3,651 tests pass workspace-wide, three ignored.
+
