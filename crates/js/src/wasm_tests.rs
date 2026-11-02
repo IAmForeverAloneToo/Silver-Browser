@@ -3,7 +3,8 @@
 //! reference browser's (scratchpad m29 `p1-wasm.html`, Chrome 154)
 //! where the interface leaves them open.
 
-use crate::tests::{Recorder, realm, script};
+use crate::Limits;
+use crate::tests::{Recorder, realm, realm_with, script};
 
 /// A module's bytes, from its text, as a script's `Uint8Array`.
 fn module(text: &str) -> String {
@@ -569,6 +570,39 @@ step("midCall", () => {{ const r = p.run(); return [seen, r]; }});
             "midCall=[11,22]",
         ]
     );
+}
+
+#[test]
+fn a_memory_of_megabytes_crosses_to_the_store_in_slices_within_a_small_heap() {
+    // The nightly fuzz's: the buffer went to the store and back as one
+    // base64 string, so a memory of a few megabytes in a realm of 16 MiB
+    // ran its heap out at a call. Twelve megabytes now cross a slice at a
+    // time, both ways, and every byte arrives.
+    let memory = module(
+        r#"(module (memory (export "mem") 192)
+  (func (export "load") (param i32) (result i32) local.get 0 i32.load8_u)
+  (func (export "fill") (param i32 i32 i32)
+    local.get 0 local.get 1 local.get 2 memory.fill))"#,
+    );
+    let mut realm = realm_with(Limits {
+        heap: 16 << 20,
+        ..Limits::default()
+    });
+    let mut host = Recorder::default();
+    let source = format!(
+        r#"
+const e = new WebAssembly.Instance(new WebAssembly.Module({memory})).exports;
+const view = new Uint8Array(e.mem.buffer);
+view[70000] = 9;
+view[12582911] = 4;
+const into = [e.load(70000), e.load(12582911)];
+e.fill(1000, 7, 12000000);
+console.log(JSON.stringify([into, view[999], view[1000], view[150000], view[12000999], view[12001000]]));
+"#
+    );
+    realm.run(&script(&source), &mut host).expect("it runs");
+    let lines: Vec<&str> = host.console.iter().map(|(_, text)| text.as_str()).collect();
+    assert_eq!(lines, ["[[9,4],0,7,7,7,0]"]);
 }
 
 #[test]

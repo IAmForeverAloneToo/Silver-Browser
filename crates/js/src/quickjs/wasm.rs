@@ -18,7 +18,9 @@
 //! A memory's bytes are the store's, and a script's `buffer` of it a
 //! copy, its mirror: what scripts wrote in it goes into the memory when
 //! a call enters the store, and what modules wrote goes out into it,
-//! in runs of [`MIRROR_CHUNK`] bytes that differ, when a call leaves.
+//! in runs of [`MIRROR_CHUNK`] bytes that differ, when a call leaves;
+//! either way at most [`SYNC_SLICE`] bytes cross at once, as base64 in
+//! the realm's heap.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -142,6 +144,11 @@ impl ResourceLimiter for Limiter {
 
 /// A memory's bytes and its buffer's are compared in runs of this many.
 const MIRROR_CHUNK: usize = 4096;
+
+/// The most bytes of a memory that cross into the store or out of it at
+/// once (the bindings' `SYNC_SLICE`): a memory of megabytes as base64 at
+/// once could take the realm's whole heap.
+const SYNC_SLICE: usize = 1 << 16;
 
 /// What a realm's modules are made in.
 pub(super) struct Wasm {
@@ -1084,32 +1091,36 @@ impl Wasm {
         ArrayBuffer::new(ctx.clone(), bytes)
     }
 
-    /// What scripts wrote in their buffers, into the memories: `list` a
-    /// memory's key and its buffer's bytes as base64, in turn.
-    fn sync_in(&mut self, ctx: &Ctx<'_>, list: &Array<'_>) -> rquickjs::Result<()> {
-        for i in (0..list.len()).step_by(2) {
-            let handle: f64 = list.get(i)?;
-            let text: String = list.get(i + 1)?;
-            let memory = Wasm::kept(&self.memories, ctx, handle, "a memory")?;
-            let data = memory.data_mut(&mut self.store);
-            // Decoded into the copy kept of the buffer, in place; one of
-            // another length is the next leaving's to report.
-            let mut mirror = self.mirrors.remove(&(handle as u32)).unwrap_or_default();
-            if decode_into(text.as_bytes(), &mut mirror) && mirror.len() == data.len() {
-                data.copy_from_slice(&mirror);
-            }
-            self.mirrors.insert(handle as u32, mirror);
+    /// What a script wrote in a slice of a memory's buffer, into the
+    /// memory: the bytes at `at`, as base64 `text`, at most
+    /// [`SYNC_SLICE`] of them.
+    fn sync_in(&mut self, ctx: &Ctx<'_>, handle: f64, at: f64, text: &str) -> rquickjs::Result<()> {
+        let memory = Wasm::kept(&self.memories, ctx, handle, "a memory")?;
+        let data = memory.data_mut(&mut self.store);
+        let mut bytes = Vec::new();
+        // Into the memory and the copy kept of the buffer; a slice past a
+        // memory that grew is the next leaving's to report.
+        let at = at as usize;
+        if decode_into(text.as_bytes(), &mut bytes)
+            && let Some(mirror) = self.mirrors.get_mut(&(handle as u32))
+            && mirror.len() == data.len()
+            && let Some(end) = at.checked_add(bytes.len()).filter(|&end| end <= data.len())
+        {
+            data[at..end].copy_from_slice(&bytes);
+            mirror[at..end].copy_from_slice(&bytes);
         }
         Ok(())
     }
 
-    /// What modules wrote, for the buffers: each memory whose buffer
-    /// differs, its key and each run of bytes that differs, its offset
-    /// and its bytes as base64; a memory grown, its key alone, its
-    /// buffer to be detached.
+    /// What modules wrote, for the buffers, at most [`SYNC_SLICE`] bytes
+    /// of it, the rest the next call's (none left when it is empty): each
+    /// memory whose buffer differs, its key and each run of bytes that
+    /// differs, its offset and its bytes as base64; a memory grown, its
+    /// key alone, its buffer to be detached.
     fn sync_out<'js>(&mut self, ctx: &Ctx<'js>) -> rquickjs::Result<Array<'js>> {
         let out = Array::new(ctx.clone())?;
         let mut grown = Vec::new();
+        let mut left = SYNC_SLICE;
         for (&key, mirror) in &mut self.mirrors {
             let Some(memory) = self.memories.get(&key) else {
                 continue;
@@ -1122,15 +1133,19 @@ impl Wasm {
             } else {
                 let end = |at: usize| (at + MIRROR_CHUNK).min(data.len());
                 let mut at = 0;
-                while at < data.len() {
+                while at < data.len() && left > 0 {
                     let start = at;
-                    while at < data.len() && data[at..end(at)] != mirror[at..end(at)] {
+                    while at < data.len()
+                        && at - start < left
+                        && data[at..end(at)] != mirror[at..end(at)]
+                    {
                         at = end(at);
                     }
                     if at > start {
                         mirror[start..at].copy_from_slice(&data[start..at]);
                         change.set(change.len(), start)?;
                         change.set(change.len(), to_base64(&data[start..at]))?;
+                        left = left.saturating_sub(at - start);
                     } else {
                         at = end(at);
                     }
@@ -1703,8 +1718,8 @@ fn install_objects<'js>(
         "wasmSyncIn",
         Function::new(
             ctx.clone(),
-            move |ctx: Ctx<'js>, list: Array<'js>| -> rquickjs::Result<()> {
-                with(&shared, &ctx, |wasm| wasm.sync_in(&ctx, &list))
+            move |ctx: Ctx<'js>, handle: f64, at: f64, text: String| -> rquickjs::Result<()> {
+                with(&shared, &ctx, |wasm| wasm.sync_in(&ctx, handle, at, &text))
             },
         )?,
     )?;

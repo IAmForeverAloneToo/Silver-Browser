@@ -716,17 +716,24 @@
   // buffer, a copy kept the same as the memory at the calls' edges.
   const mirrors = new $Map();
 
+  // The most bytes of a buffer that cross to the store or back at once,
+  // so that the realm holds a slice's base64 at a time rather than a
+  // memory's (the store's SYNC_SLICE).
+  const SYNC_SLICE = 1 << 16;
+
   // Before a call enters the store: what scripts wrote in the buffers,
-  // into the memories.
+  // into the memories, a slice at a time.
   function enter() {
     if (mirrors.size === 0) {
       return;
     }
-    const list = [];
     MapForEach(mirrors, (buffer, key) => {
-      ArrayPush(list, key, ToBase64(new $Uint8Array(buffer)));
+      const length = bufferLength(buffer);
+      for (let at = 0; at < length; at += SYNC_SLICE) {
+        const size = length - at < SYNC_SLICE ? length - at : SYNC_SLICE;
+        native.wasmSyncIn(key, at, ToBase64(new $Uint8Array(buffer, at, size)));
+      }
     });
-    native.wasmSyncIn(list);
   }
 
   // After it leaves: what the modules wrote, into the buffers; a memory
@@ -735,17 +742,23 @@
     if (mirrors.size === 0) {
       return;
     }
-    const changes = native.wasmSyncOut();
-    for (let i = 0; i < changes.length; i++) {
-      const change = changes[i];
-      const buffer = MapGet(mirrors, change[0]);
-      if (change.length === 1) {
-        MapDelete(mirrors, change[0]);
-        native.wasmDetach(buffer);
-        continue;
+    // A slice's worth of changes at a time, until none is left.
+    for (;;) {
+      const changes = native.wasmSyncOut();
+      if (changes.length === 0) {
+        return;
       }
-      for (let j = 1; j < change.length; j += 2) {
-        SetFromBase64(new $Uint8Array(buffer, change[j]), change[j + 1]);
+      for (let i = 0; i < changes.length; i++) {
+        const change = changes[i];
+        const buffer = MapGet(mirrors, change[0]);
+        if (change.length === 1) {
+          MapDelete(mirrors, change[0]);
+          native.wasmDetach(buffer);
+          continue;
+        }
+        for (let j = 1; j < change.length; j += 2) {
+          SetFromBase64(new $Uint8Array(buffer, change[j]), change[j + 1]);
+        }
       }
     }
   }
