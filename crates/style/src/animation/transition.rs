@@ -301,6 +301,9 @@ impl Animations {
                 .iter()
                 .map(|(name, _)| Property::Custom(Arc::clone(name))),
         );
+        // The longhands with a running or completed transition: those
+        // looked for among them, the rest only when they change.
+        let mut tracked = vec![false; Longhand::ALL.len()];
         for property in self
             .transitions
             .get(&target)
@@ -315,7 +318,16 @@ impl Animations {
                     .map(|c| &c.property),
             )
         {
-            if !properties.contains(property) {
+            let named = match property {
+                Property::Longhand(longhand) => {
+                    let seen =
+                        longhands[*longhand as usize].is_some() || tracked[*longhand as usize];
+                    tracked[*longhand as usize] = true;
+                    seen
+                }
+                Property::Custom(_) => properties.contains(property),
+            };
+            if !named {
                 properties.push(property.clone());
             }
         }
@@ -352,6 +364,13 @@ impl Animations {
                         != after.custom.as_ref().and_then(|m| m.get(name))
                 }
             };
+            let tracked = match &property {
+                Property::Longhand(longhand) => tracked[*longhand as usize],
+                Property::Custom(_) => true,
+            };
+            if !tracked && !differs {
+                continue;
+            }
             let matching = matching(&property);
             let at = running.iter().position(|t| t.property == property);
             let done = completed.iter().position(|c| c.property == property);
