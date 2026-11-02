@@ -95,6 +95,7 @@ fuzz_target!(|data: &[u8]| {
             media: *m,
             animations: None,
             inline_styles: None,
+            frame_margins: style::FrameMargins::default(),
         };
         let styles = sheets.cascade(doc, &context);
         assert!(

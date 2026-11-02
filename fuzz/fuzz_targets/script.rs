@@ -52,6 +52,8 @@ fuzz_target!(|data: &[u8]| {
         url: "https://example.com/fuzz.html",
         line: 1,
         muted: false,
+        base: "",
+        options: 0,
     };
     // Twice, so that a second run meets what the first left.
     for _ in 0..2 {

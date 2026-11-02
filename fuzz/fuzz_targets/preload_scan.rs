@@ -34,7 +34,9 @@ fuzz_target!(|data: &[u8]| {
     assert_eq!(whole, scan(&text, scripting, piece), "pieces of {piece}");
     for hint in &whole {
         let named = match hint.kind {
-            HintKind::Base | HintKind::Stylesheet | HintKind::Preload => "href",
+            HintKind::Base | HintKind::Stylesheet | HintKind::Preload | HintKind::ModulePreload => {
+                "href"
+            }
             HintKind::Script | HintKind::Image => "src",
             HintKind::Policy => {
                 assert!(hint.url.is_empty());

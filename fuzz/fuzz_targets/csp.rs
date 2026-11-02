@@ -49,6 +49,16 @@ const KINDS: [Inline; 5] = [
 
 const NONCES: [&str; 3] = ["", "n1", "abc+/="];
 
+/// A script's `integrity`: none, one hash, two, a hash with an option,
+/// and one that is not a hash.
+const INTEGRITIES: [&str; 5] = [
+    "",
+    "sha256-AAAA",
+    "sha384-AAAA sha512-BBBB",
+    "sha256-AAAA?x",
+    "md5-AAAA",
+];
+
 /// The input, read a byte or a string at a time; zeros once it ends.
 struct Input<'a>(&'a [u8]);
 
@@ -141,8 +151,16 @@ fuzz_target!(|data: &[u8]| {
         let redirects = usize::from(input.byte() % 3);
         let nonce = NONCES[usize::from(input.byte()) % NONCES.len()];
         let parser = input.byte() % 2 == 0;
+        let integrity = INTEGRITIES[usize::from(input.byte()) % INTEGRITIES.len()];
         let check = |csp: &Csp| {
-            csp.request_violations(destination, (&url, &first), redirects, nonce, parser)
+            csp.request_violations(
+                destination,
+                (&url, &first),
+                redirects,
+                nonce,
+                integrity,
+                parser,
+            )
         };
         held(check(&csp), check(&more), check(&reports));
         let form = |csp: &Csp| csp.form_action_violations((&url, &first), redirects);

@@ -133,6 +133,8 @@ fuzz_target!(|data: &[u8]| {
         url: "https://example.com/fuzz.html",
         line: 1,
         muted: false,
+        base: "",
+        options: 0,
     };
     if let Err(error) = realm.run(&script, &mut host) {
         assert!(

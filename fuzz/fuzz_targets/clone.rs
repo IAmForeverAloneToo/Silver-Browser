@@ -57,6 +57,8 @@ fn listening() -> Box<dyn Realm<Recorder>> {
         url: "https://example.com/clone.html",
         line: 1,
         muted: false,
+        base: "",
+        options: 0,
     };
     realm
         .run(&script, &mut Recorder::default())
