@@ -716,6 +716,7 @@ earlier milestones say why each is what it is):
 | `engine` | `MAX_RULES` | `1 << 16` | The most rules a list may hold after an insertion: what a hostile script could otherwise grow a sheet by (gap batch D). |
 | `engine` | `MAX_AUDIO_TRACKS` | `256` | The most live `MediaStreamTrack`s a document's `MediaStreamAudioDestinationNode`s make; past them, a new one is refused (gap batch D). |
 | `engine` | `MAX_SCRIPT_BUFFERS_OWED` | `64` | The most `ScriptProcessorNode` buffers a context hands its document that it has not answered: past them a realtime one's are not handed out, and play as silence, so that a page that does not keep up does not fill its inbox (gap batch D). |
+| `engine` | `MAX_WEBGL_BYTES` | `1 << 30` | The most bytes a context's textures and renderbuffers hold, as their storage keeps them: an image past it is GL's `OUT_OF_MEMORY` rather than made. |
 | `glsl` | `MAX_SHADER_SOURCE` | `1 << 20` | The most bytes a shader's source may have (M41). |
 | `glsl` | `MAX_GLSL_TOKENS` | `1 << 20` | The most tokens a shader may have after preprocessing. |
 | `glsl` | `MAX_GLSL_DEPTH` | `64` | The most nesting of blocks, expressions and macros. |

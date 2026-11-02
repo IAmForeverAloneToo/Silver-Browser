@@ -11,7 +11,7 @@ use js::{Answer, CanvasCall};
 
 use super::formats::{self, Layout, Sample, has_depth, has_stencil, texel_bytes};
 use super::gl::*;
-use super::texture::{SamplerObject, Texture};
+use super::texture::{SamplerObject, Texture, storage_bytes};
 use super::{Context, MAX_SIZE, i, n, u, wait};
 use crate::gpu::wire::{Command, RenderCommand, Reply, Request};
 
@@ -648,6 +648,20 @@ impl Context {
             self.error(INVALID_OPERATION);
             return;
         };
+        let replacing = {
+            let r = &self.surfaces.renderbuffers[&id];
+            r.storage.map_or(0, |storage| {
+                storage_bytes((r.width, r.height, r.samples.max(1)), storage, false)
+            })
+        };
+        let adding = storage_bytes(
+            (w as u32, h as u32, if samples > 0 { 4 } else { 1 }),
+            format.storage,
+            false,
+        );
+        if !self.room_for(replacing, adding) {
+            return;
+        }
         let old: Vec<u32> = {
             let r = &self.surfaces.renderbuffers[&id];
             [r.gpu, r.resolve]

@@ -12,7 +12,7 @@ use js::{Answer, CanvasCall};
 
 use super::formats::{self, Format, Layout, Sample, has_depth, has_stencil, texel_bytes};
 use super::gl::*;
-use super::{Context, MAX_SIZE, i, n, u};
+use super::{Context, MAX_SIZE, MAX_WEBGL_BYTES, i, n, u};
 use crate::gpu::wire::{Command, GPU_CHUNK, RenderCommand, Request};
 use crate::ipc::Bytes;
 
@@ -219,6 +219,27 @@ pub(crate) fn renderable_storage(storage: &str, rg11b10: bool) -> bool {
 }
 
 /// A level's side from the base's.
+/// The bytes `image`'s storage holds.
+pub(crate) fn image_bytes(image: &Image) -> u64 {
+    storage_bytes(
+        (image.width, image.height, image.depth),
+        image.format.storage,
+        image.format.compressed(),
+    )
+}
+
+/// The bytes `size` texels of `storage` take: a compressed one's in
+/// blocks of 4 by 4.
+pub(crate) fn storage_bytes(size: (u32, u32, u32), storage: &str, compressed: bool) -> u64 {
+    let (w, h, d) = (u64::from(size.0), u64::from(size.1), u64::from(size.2));
+    let texel = u64::from(texel_bytes(storage));
+    if compressed {
+        w.div_ceil(4) * h.div_ceil(4) * d * texel
+    } else {
+        w * h * d * texel
+    }
+}
+
 fn mip(side: u32, level: u32) -> u32 {
     (side >> level).max(1)
 }
@@ -800,6 +821,15 @@ impl Context {
         mut image: Image,
         texels: Option<(Vec<u8>, u32, u32)>,
     ) {
+        let replacing = self
+            .surfaces
+            .textures
+            .get(&id)
+            .and_then(|t| t.images.get(&key))
+            .map_or(0, image_bytes);
+        if !self.room_for(replacing, image_bytes(&image)) {
+            return;
+        }
         // What was recorded reads the image as it was.
         self.gpu_flush();
         let old = self
@@ -830,6 +860,35 @@ impl Context {
         let t = self.surfaces.textures.get_mut(&id).expect("bound");
         t.images.insert(key, image);
         t.generation += 1;
+    }
+
+    /// Whether `adding` bytes of storage, in place of `replacing`, keep
+    /// the context's textures and renderbuffers within
+    /// [`MAX_WEBGL_BYTES`]: false, and GL's `OUT_OF_MEMORY`, when not.
+    pub(crate) fn room_for(&mut self, replacing: u64, adding: u64) -> bool {
+        let images: u64 = self
+            .surfaces
+            .textures
+            .values()
+            .flat_map(|t| t.images.values())
+            .map(image_bytes)
+            .sum();
+        let renderbuffers: u64 = self
+            .surfaces
+            .renderbuffers
+            .values()
+            .map(|r| {
+                r.storage.map_or(0, |storage| {
+                    storage_bytes((r.width, r.height, r.samples.max(1)), storage, false)
+                })
+            })
+            .sum();
+        let held = (images + renderbuffers).saturating_sub(replacing);
+        if held.saturating_add(adding) > MAX_WEBGL_BYTES {
+            self.error(OUT_OF_MEMORY);
+            return false;
+        }
+        true
     }
 
     /// GL's checks of a level and size: false, and GL's error, when wrong.
@@ -965,6 +1024,14 @@ impl Context {
         let (w, h, d) = (w as u32, h as u32, d as u32);
         if !up.sub && self.version == 1 && up.level > 0 && (!pot(w) || !pot(h)) {
             self.error(INVALID_VALUE);
+            return;
+        }
+        if !up.sub
+            && !self.room_for(
+                existing.as_ref().map_or(0, image_bytes),
+                storage_bytes((w, h, d), fmt.storage, fmt.compressed()),
+            )
+        {
             return;
         }
         // Depth textures: 2D (cubes and arrays too in WebGL 2), WebGL 1's
@@ -1157,6 +1224,20 @@ impl Context {
             return;
         }
         let faces: u8 = if slot == SLOT_CUBE { 6 } else { 1 };
+        let replacing = self.surfaces.textures[&id]
+            .images
+            .values()
+            .map(image_bytes)
+            .sum();
+        let adding = (0..levels as u32)
+            .map(|level| {
+                let size = (mip(w, level), mip(h, level), mip_depth(slot, d, level));
+                storage_bytes(size, fmt.storage, fmt.compressed()) * u64::from(faces)
+            })
+            .sum();
+        if !self.room_for(replacing, adding) {
+            return;
+        }
         for level in 0..levels as u32 {
             let size = (mip(w, level), mip(h, level), mip_depth(slot, d, level));
             for face in 0..faces {

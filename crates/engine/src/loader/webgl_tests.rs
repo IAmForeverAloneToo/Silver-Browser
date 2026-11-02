@@ -1082,3 +1082,45 @@ fn the_acceptance_pages_draw_what_the_reference_browser_draws() {
     let differences = acceptance::differences(&lines);
     assert!(differences.is_empty(), "{differences:#?}");
 }
+
+#[test]
+fn an_image_past_the_contexts_bytes_is_out_of_memory_and_not_made() {
+    // The nightly fuzz's: a 3D texture of 2048 a side, of zeros a page
+    // need not send, was 32 GiB the renderer tried to make. Past
+    // MAX_WEBGL_BYTES an image is GL's OUT_OF_MEMORY, and the texture
+    // keeps what it had.
+    let Some(lines) = run(r#"
+const g = document.createElement('canvas').getContext('webgl2');
+const t = g.createTexture();
+g.bindTexture(g.TEXTURE_3D, t);
+g.texImage3D(g.TEXTURE_3D, 0, g.RGBA8, 2, 2, 2, 0, g.RGBA, g.UNSIGNED_BYTE, null);
+log('small ' + g.getError());
+g.texImage3D(g.TEXTURE_3D, 0, g.RGBA8, 2048, 2048, 2048, 0, g.RGBA, g.UNSIGNED_BYTE, null);
+log('huge ' + (g.getError() === g.OUT_OF_MEMORY));
+g.texSubImage3D(g.TEXTURE_3D, 0, 0, 0, 0, 2, 2, 2, g.RGBA, g.UNSIGNED_BYTE, new Uint8Array(32));
+log('kept ' + g.getError());
+const s = g.createTexture();
+g.bindTexture(g.TEXTURE_2D_ARRAY, s);
+g.texStorage3D(g.TEXTURE_2D_ARRAY, 1, g.RGBA32F, 2048, 2048, 64);
+log('storage ' + (g.getError() === g.OUT_OF_MEMORY) + ' ' + g.getTexParameter(g.TEXTURE_2D_ARRAY, g.TEXTURE_IMMUTABLE_FORMAT));
+const r = g.createRenderbuffer();
+g.bindRenderbuffer(g.RENDERBUFFER, r);
+// A gibibyte exactly, with the texture's 32 bytes held: past it.
+g.renderbufferStorageMultisample(g.RENDERBUFFER, 4, g.RGBA8, 8192, 8192);
+log('renderbuffer ' + (g.getError() === g.OUT_OF_MEMORY) + ' ' + g.getRenderbufferParameter(g.RENDERBUFFER, g.RENDERBUFFER_WIDTH));
+log('done');
+"#)
+    else {
+        return;
+    };
+    assert_eq!(
+        lines,
+        [
+            "small 0",
+            "huge true",
+            "kept 0",
+            "storage true false",
+            "renderbuffer true 0"
+        ]
+    );
+}

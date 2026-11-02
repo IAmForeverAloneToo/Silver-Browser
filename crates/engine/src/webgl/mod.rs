@@ -38,6 +38,12 @@ pub const MAX_PIPELINES: usize = 1024;
 /// The largest texture side, renderbuffer and viewport the contexts give.
 pub const MAX_SIZE: u32 = 8192;
 
+/// The most bytes a context's textures and renderbuffers hold, as their
+/// storage keeps them: an image past it is GL's `OUT_OF_MEMORY` (which
+/// GL may give at any call) rather than made, where a 3D texture of
+/// 2048 a side, of zeros a page need not send, is 32 GiB.
+pub const MAX_WEBGL_BYTES: u64 = 1 << 30;
+
 /// How long the renderer waits on the GPU process for what GL makes it
 /// wait for (a context's device, `readPixels`).
 const WAIT: Duration = Duration::from_secs(30);
@@ -1714,13 +1720,22 @@ impl Context {
         }
     }
 
-    /// The context lost: its objects in the GPU process gone.
+    /// The context lost: its objects in the GPU process gone, and what
+    /// it kept of them here too (a buffer's data, a texture's images): a
+    /// lost context answers nothing that reads them, one restored is made
+    /// anew, and a page making contexts past MAX_WEBGL_CONTEXTS loses
+    /// one each time it makes one.
     pub(crate) fn lose(&mut self) {
         if self.lost {
             return;
         }
         self.lost = true;
         self.gpu.release(&self.client);
+        self.buffers.clear();
+        self.shaders.clear();
+        self.programs.clear();
+        self.locations.clear();
+        self.surfaces = framebuffer::Surfaces::default();
     }
 
     fn vertex_attrib(&mut self, index: usize, name: u32) -> Answer {
@@ -2476,5 +2491,35 @@ fn write_uniform(
             };
             put(bytes, base + c * matrix_stride as usize + r * 4, bits(v));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_lost_context_keeps_none_of_its_objects() {
+        // The nightly webgl_ops fuzz's harness, which loses a context and
+        // makes another every 32 inputs, grew by what the lost ones kept.
+        let Some(client) = crate::gpu::local_client() else {
+            eprintln!("no adapter here: WebGL is not checked");
+            return;
+        };
+        let mut h = Harness::new(client);
+        if !h.create(1) {
+            return;
+        }
+        h.call("createBuffer", &[], Vec::new(), None);
+        h.call("createTexture", &[], Vec::new(), None);
+        let id = h.context.expect("made");
+        let held = |h: &Harness| {
+            let c = &h.webgl.contexts[&id];
+            (c.buffers.len(), c.surfaces.textures.len())
+        };
+        assert_eq!(held(&h), (1, 1));
+        h.call("loseContext", &[], Vec::new(), None);
+        assert_eq!(held(&h), (0, 0));
+        assert!(!h.made());
     }
 }
