@@ -511,3 +511,24 @@ fn a_partner_of_either_stage_compiles_and_links() {
         link(v, f, &LinkOptions::default()).unwrap_or_else(|log| panic!("{log}"));
     }
 }
+
+#[test]
+fn a_constant_divisor_of_zero_is_left_undefined_not_refused() {
+    // The nightly glsl_parse fuzz's: GLSL leaves `n %= 0` and
+    // `mod(11.0, 0.0)` undefined where naga refuses an integer's constant
+    // divisor of zero and a constant quotient that is not finite; both
+    // compile, and their translations validate.
+    let vs = "#version 300 es\nin vec4 p;\nvoid main() { gl_Position = p; }\n";
+    let fs = "#version 300 es\nprecision highp float;\nprecision highp int;\n\
+        uniform int s;\nuniform uint u;\nout vec4 color;\n\
+        int pick(int a) { int n = a; n %= 0; n = n / 0; n /= 0;\n\
+          ivec2 v = ivec2(a) / ivec2(0, 1); uint w = u % 0u; uvec3 x = uvec3(u) / uvec3(0u);\n\
+          return n + v.x + int(w) + int(x.y); }\n\
+        void main() { float r = mod(11.0, 0.0); vec2 m = mod(vec2(1.0, 2.0), 0.0);\n\
+          color = vec4(float(pick(s)), r, m); }\n";
+    program(vs, fs, &webgl2());
+    let fs1 = "precision highp float;\nvoid main() { float c = 1.0;\n\
+        float r = c * mod(11.0, 0.0); gl_FragColor = vec4(r); }\n";
+    let vs1 = "attribute vec4 p;\nvoid main() { gl_Position = p; }\n";
+    program(vs1, fs1, &webgl1());
+}

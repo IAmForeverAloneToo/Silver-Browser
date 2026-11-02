@@ -259,6 +259,15 @@ fn scalar_literal(c: Comp) -> String {
 }
 
 /// A full constant of any type, by its flattened components.
+/// Whether `op` divides an integer by `divisor`, a constant (of a scalar
+/// or a vector): naga refuses one of zero, which GLSL leaves undefined.
+fn divides_by_a_constant(op: Option<BinOp>, divisor: &Expr) -> bool {
+    matches!(op, Some(BinOp::Div | BinOp::Rem))
+        && divisor.value.is_some()
+        && !divisor.ty.is_matrix()
+        && matches!(divisor.ty.scalar(), Some(Scalar::Int | Scalar::Uint))
+}
+
 fn constant(unit: &Unit, ty: &Type, comps: &[Comp]) -> String {
     match ty {
         Type::Array(element, n) => {
@@ -1156,6 +1165,20 @@ impl<'a> Emitter<'a> {
     fn temp(&mut self) -> String {
         self.temps += 1;
         format!("webgl_t{}", self.temps)
+    }
+
+    /// `text`, a constant of `ty` (a scalar's or a vector's), as a value
+    /// of the run, which naga does not fold: a constant integer divisor
+    /// of zero, and a quotient of constants that is no finite number,
+    /// are errors in WGSL where GLSL leaves the value undefined.
+    fn unfolded(&mut self, text: &str, ty: &Type) -> String {
+        let (name, scalar) = match ty.scalar() {
+            Some(Scalar::Int) => ("webgl_zero_i", "i32"),
+            Some(Scalar::Uint) => ("webgl_zero_u", "u32"),
+            _ => ("webgl_zero_f", "f32"),
+        };
+        self.helper(name, || format!("var<private> {name}: {scalar};\n"));
+        format!("({text} + {name})")
     }
 
     fn helper(&mut self, name: &str, code: impl FnOnce() -> String) -> String {
@@ -2067,7 +2090,10 @@ impl<'a> Emitter<'a> {
                 }
             }
             ExprKind::Binary(op, a, b) => {
-                let parts = self.operands(&[a, b])?;
+                let mut parts = self.operands(&[a, b])?;
+                if divides_by_a_constant(Some(*op), b) {
+                    parts[1] = self.unfolded(&parts[1], &b.ty);
+                }
                 self.binary(*op, &parts[0], &a.ty, &parts[1], &b.ty, &e.ty)?
             }
             ExprKind::And(a, b) | ExprKind::Or(a, b) => {
@@ -2536,6 +2562,11 @@ impl<'a> Emitter<'a> {
     fn assign(&mut self, op: Option<BinOp>, target: &Expr, value: &Expr) -> R<String> {
         // GLSL evaluates the right side, then the left's place.
         let rhs = self.expr(value)?;
+        let rhs = if divides_by_a_constant(op, value) {
+            self.unfolded(&rhs, &value.ty)
+        } else {
+            rhs
+        };
         let rhs = if has_effects(target) || !self.simple(value) {
             let t = self.temp();
             self.line(&format!("let {t} = {rhs};"));
@@ -2814,7 +2845,12 @@ impl<'a> Emitter<'a> {
             "faceforward" => format!("faceForward({}, {}, {})", a(0), a(1), a(2)),
             "mod" => {
                 let x = self.let_of(&a(0));
-                let y = self.let_of(&splat_to(&a(1), &args[1].ty, &args[0].ty));
+                let mut y = splat_to(&a(1), &args[1].ty, &args[0].ty);
+                // `floor(x / 0.0)` of constants folded is no number WGSL has.
+                if args[1].value.is_some() {
+                    y = self.unfolded(&y, &args[0].ty);
+                }
+                let y = self.let_of(&y);
                 format!("({x} - {y} * floor({x} / {y}))")
             }
             "min" | "max" => format!(
