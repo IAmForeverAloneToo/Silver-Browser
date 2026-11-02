@@ -310,6 +310,21 @@ pub fn variant_field<'v>(variant: &'v mut FontVariant, name: &str) -> Option<&'v
     })
 }
 
+/// The value of `variant`'s longhand `name`: [`variant_field`] read,
+/// with no copy of `variant` to borrow it from.
+pub fn variant_value<'v>(variant: &'v FontVariant, name: &str) -> Option<&'v str> {
+    Some(match name {
+        "font-variant-ligatures" => &variant.ligatures,
+        "font-variant-caps" => &variant.caps,
+        "font-variant-alternates" => &variant.alternates,
+        "font-variant-numeric" => &variant.numeric,
+        "font-variant-east-asian" => &variant.east_asian,
+        "font-variant-position" => &variant.position,
+        "font-variant-emoji" => &variant.emoji,
+        _ => return None,
+    })
+}
+
 /// The `font-variant` longhands, in the order the reference browser
 /// lists them.
 pub const VARIANT_LONGHANDS: [&str; 7] = [

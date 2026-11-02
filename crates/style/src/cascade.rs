@@ -141,7 +141,7 @@ mod effects;
 mod fonts;
 pub use fonts::font_shorthand_families;
 pub use fonts::{
-    VARIANT_LONGHANDS, font_longhands, parse_variant, stretch_name, variant_field,
+    VARIANT_LONGHANDS, font_longhands, parse_variant, stretch_name, variant_field, variant_value,
     write_font_variant,
 };
 pub(crate) use fonts::{plain_angle, plain_number};
@@ -5174,8 +5174,7 @@ fn apply_css_wide(
         | "font-variant-east-asian"
         | "font-variant-position"
         | "font-variant-emoji" => {
-            let mut from = (*src.font().variant).clone();
-            let value = fonts::variant_field(&mut from, name).map(|v| v.clone());
+            let value = fonts::variant_value(&src.font().variant, name).map(str::to_owned);
             let font = style.font_mut();
             if let (Some(value), Some(field)) = (
                 value,
@@ -8760,6 +8759,17 @@ mod tests {
         assert_eq!(
             style_of("<div><p>x</p></div>", &sheets, "p").font_size_px,
             30.0
+        );
+        // A `font-variant` longhand's `initial` is its own, not what the
+        // element inherited.
+        let sheets = [sheet(
+            "div { font-variant-caps: small-caps; } p { font-variant-caps: initial; }",
+        )];
+        let html = "<div><p>x</p><a>y</a></div>";
+        assert_eq!(style_of(html, &sheets, "p").font().variant.caps, "normal");
+        assert_eq!(
+            style_of(html, &sheets, "a").font().variant.caps,
+            "small-caps"
         );
     }
 

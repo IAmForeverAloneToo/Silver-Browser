@@ -511,9 +511,9 @@ pub fn copy(property: Longhand, from: &ComputedStyle, to: &mut ComputedStyle) {
         | FontVariantEastAsian
         | FontVariantPosition
         | FontVariantEmoji => {
-            let mut from = (*from.font().variant).clone();
             let name = property.name();
-            let value = crate::cascade::variant_field(&mut from, name).map(|v| v.clone());
+            let value =
+                crate::cascade::variant_value(&from.font().variant, name).map(str::to_owned);
             let font = to.font_mut();
             if let (Some(value), Some(field)) = (
                 value,
@@ -933,10 +933,10 @@ pub fn same(property: Longhand, a: &ComputedStyle, b: &ComputedStyle) -> bool {
         | FontVariantEastAsian
         | FontVariantPosition
         | FontVariantEmoji => {
-            let (mut a, mut b) = ((*a.font().variant).clone(), (*b.font().variant).clone());
+            let (a, b) = (&a.font().variant, &b.font().variant);
             let name = property.name();
-            crate::cascade::variant_field(&mut a, name)
-                == crate::cascade::variant_field(&mut b, name)
+            Arc::ptr_eq(a, b)
+                || crate::cascade::variant_value(a, name) == crate::cascade::variant_value(b, name)
         }
         FontFeatureSettings => a.font().features == b.font().features,
         FontKerning => a.font().kerning == b.font().kerning,

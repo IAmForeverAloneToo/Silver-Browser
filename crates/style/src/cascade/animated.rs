@@ -1015,6 +1015,22 @@ mod tests {
     }
 
     #[test]
+    fn a_font_variant_longhand_transitions_discretely_when_it_changes() {
+        let mut page = Page::new(
+            "#a { transition: all 1s allow-discrete }
+             #a.on { font-variant-caps: small-caps }",
+            "<div id=a></div>",
+        );
+        page.frame(0.0);
+        page.class("a", "on");
+        assert_eq!(page.animations.borrow().len(), 1);
+        page.frame(0.25);
+        assert_eq!(page.style("a").font().variant.caps, "normal");
+        page.frame(0.75);
+        assert_eq!(page.style("a").font().variant.caps, "small-caps");
+    }
+
+    #[test]
     fn transitions_end_with_the_element_rendered_and_a_whole_cascade_starts_them() {
         let mut page = Page::new(
             WIDTHS,
