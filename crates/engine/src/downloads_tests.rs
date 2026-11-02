@@ -51,6 +51,17 @@ fn a_name_is_made_safe() {
     assert_eq!(name("trailing.txt. . "), "trailing.txt");
     assert_eq!(name("CON.txt"), "_CON.txt");
     assert_eq!(name("nul"), "_nul.pdf");
+    // A device's name a cut leaves (the nightly fuzz's): `CON`, white
+    // space past the bound, then more. A space of three bytes first or
+    // not, so that one of the two cuts fills the bound to its last byte.
+    for pad in ["", "\u{2003}"] {
+        let long = format!("CON{pad}{}x", "\u{85}".repeat(MAX_FILE_NAME));
+        let cut = name(&long);
+        assert!(
+            cut.starts_with("_CON") && cut.len() <= MAX_FILE_NAME,
+            "{cut:?}"
+        );
+    }
     assert_eq!(name("   "), "report.pdf", "the URL's when none is given");
     // The URL's last segment, decoded; else `download`, with the type's
     // extension.

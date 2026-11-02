@@ -600,20 +600,24 @@ pub fn safe_name(suggested: Option<&str>, url: &Url, mime: &str) -> String {
     if name.is_empty() {
         name = "download".to_owned();
     }
-    let stem = name.split('.').next().unwrap_or_default().trim_end();
-    if RESERVED
-        .iter()
-        .any(|reserved| reserved.eq_ignore_ascii_case(stem))
-    {
-        name.insert(0, '_');
-    }
     if !name.contains('.')
         && let Some(extension) = extension_of(mime)
     {
         name.push('.');
         name.push_str(extension);
     }
-    cut(&name)
+    // A device's name looked for once the name is cut: a cut may leave
+    // one where the whole had more after it.
+    let mut name = cut(&name);
+    let stem = name.split('.').next().unwrap_or_default().trim_end();
+    if RESERVED
+        .iter()
+        .any(|reserved| reserved.eq_ignore_ascii_case(stem))
+    {
+        name.insert(0, '_');
+        name = cut(&name);
+    }
+    name
 }
 
 /// `name` cut to [`MAX_FILE_NAME`] bytes at a character's boundary, its
