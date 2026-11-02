@@ -291,6 +291,28 @@ fn lock(shared: &Shared) -> MutexGuard<'_, State> {
 }
 
 impl Shared {
+    /// A pipeline's state before its resource is read: paused at 0.
+    fn new(sound: Arc<ElementSound>) -> Arc<Shared> {
+        Arc::new(Shared {
+            state: Mutex::new(State {
+                playing: false,
+                rate: 1.0,
+                seek: None,
+                stopped: false,
+                meta: None,
+                pictures: VecDeque::new(),
+                base: 0.0,
+                since: None,
+                drained: false,
+                ended: false,
+                dry: false,
+                ready: false,
+            }),
+            changed: Condvar::new(),
+            sound,
+        })
+    }
+
     /// The playback position the clock says.
     fn position(&self, state: &State) -> f64 {
         let has_sound = state.meta.as_ref().is_some_and(|m| m.sound) && !state.dry;
@@ -338,24 +360,7 @@ impl Pipeline {
         sound.retarget.store(false, Ordering::Relaxed);
         sound.taken.store(0, Ordering::Relaxed);
         sound.tainted.store(false, Ordering::Relaxed);
-        let shared = Arc::new(Shared {
-            state: Mutex::new(State {
-                playing: false,
-                rate: 1.0,
-                seek: None,
-                stopped: false,
-                meta: None,
-                pictures: VecDeque::new(),
-                base: 0.0,
-                since: None,
-                drained: false,
-                ended: false,
-                dry: false,
-                ready: false,
-            }),
-            changed: Condvar::new(),
-            sound: sound.clone(),
-        });
+        let shared = Shared::new(sound.clone());
         let mixing = mixer::add_element(&sound);
         let running = shared.clone();
         let _ = std::thread::Builder::new()
@@ -393,7 +398,9 @@ impl Pipeline {
         self.shared.changed.notify_all();
     }
 
-    /// The playback rate from now: a seek to where it is, unheard.
+    /// The playback rate from now: a seek to where it is, unheard, but
+    /// that a seek still to be done is kept, its sound decoded at this
+    /// rate and told done.
     pub(crate) fn set_rate(&self, rate: f64) {
         let mut state = lock(&self.shared);
         if state.rate == rate {
@@ -401,7 +408,9 @@ impl Pipeline {
         }
         let now = self.shared.position(&state);
         state.rate = rate;
-        state.seek = Some((0, now));
+        if state.seek.is_none() {
+            state.seek = Some((0, now));
+        }
         drop(state);
         self.shared.changed.notify_all();
     }
@@ -848,6 +857,27 @@ impl Report {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rate_set_before_a_seek_is_done_keeps_the_seek() {
+        // WPT's preserves-pitch: a seek to 0, then `playbackRate`, before
+        // the pipeline's thread took the seek. The seek is still told
+        // done, else the element waits on it for ever; a rate set with no
+        // seek waiting seeks to where it is, unheard.
+        let sound = Arc::new(ElementSound::default());
+        let pipeline = Pipeline {
+            shared: Shared::new(sound.clone()),
+            _mixing: mixer::add_element(&sound),
+        };
+        pipeline.seek(7, 0.0);
+        pipeline.set_rate(2.0);
+        let state = lock(&pipeline.shared);
+        assert_eq!((state.seek, state.rate), (Some((7, 0.0)), 2.0));
+        drop(state);
+        lock(&pipeline.shared).seek = None;
+        pipeline.set_rate(0.5);
+        assert_eq!(lock(&pipeline.shared).seek, Some((0, 0.0)));
+    }
 
     #[test]
     fn a_graph_at_the_sounds_rate_takes_it_as_it_was() {

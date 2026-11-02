@@ -89,11 +89,22 @@ fn a_renderer_refuses_a_hello_of_another_version() {
     assert!(said.contains("a hello of version"), "{said}");
 }
 
-/// Whether a process of number `id` runs.
+/// Whether a process of number `id` runs, the browser's program: the
+/// number another program's process took since is not it.
 #[cfg(windows)]
 fn runs(id: u32) -> bool {
+    let image = std::path::Path::new(BROWSER)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("the browser's file name");
     let list = Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {id}"), "/NH"])
+        .args([
+            "/FI",
+            &format!("PID eq {id}"),
+            "/FI",
+            &format!("IMAGENAME eq {image}"),
+            "/NH",
+        ])
         .output()
         .expect("tasklist ran");
     String::from_utf8_lossy(&list.stdout).contains(&format!(" {id} "))
@@ -114,7 +125,9 @@ fn a_renderer_ends_with_the_browser_that_started_it() {
         .and_then(|id| id.parse().ok())
         .expect("its process's number");
     let began = std::time::Instant::now();
-    while runs(id) && began.elapsed() < std::time::Duration::from_secs(10) {
+    // Thirty seconds: a machine running the whole workspace's tests at
+    // once has taken more than ten for the renderer to end.
+    while runs(id) && began.elapsed() < std::time::Duration::from_secs(30) {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     assert!(!runs(id), "renderer process {id} outlived its browser");
